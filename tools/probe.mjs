@@ -1,0 +1,8 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch();
+const p = await b.newPage({viewport:{width:400,height:300}});
+p.on('pageerror', e=>console.log('ERR',e.message));
+await p.goto('http://localhost:5178');
+await p.waitForFunction(()=>window.__ready===true,null,{timeout:180000,polling:300});
+console.log(await p.evaluate(process.argv[2] || "'no expr'"));
+await b.close();

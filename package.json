@@ -1,0 +1,27 @@
+{
+  "name": "procedural-autumn",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5178",
+    "build": "vite build",
+    "preview": "vite preview --port 5179"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.19.0",
+    "alea": "^1.0.1",
+    "lil-gui": "^0.20.0",
+    "n8ao": "^1.9.4",
+    "postprocessing": "^6.37.8",
+    "simplex-noise": "^4.0.3",
+    "stats-gl": "^3.6.0",
+    "three": "^0.180.0",
+    "three-mesh-bvh": "^0.9.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1",
+    "vite": "^7.1.5",
+    "vite-plugin-glsl": "^1.5.1"
+  }
+}

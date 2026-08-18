@@ -1,0 +1,69 @@
+// Keyboard / gamepad / pointer input, normalised into a small action set.
+export class Input {
+  constructor(domElement = window) {
+    this.dom = domElement;
+    this.keys = new Set();
+    this.axes = { throttle: 0, brake: 0, steer: 0, handbrake: 0, lookX: 0, lookY: 0, zoom: 0 };
+    this.pressed = new Set();
+    this.mouse = { x: 0, y: 0, dx: 0, dy: 0, down: false, wheel: 0 };
+    this._bind();
+  }
+
+  _bind() {
+    const kd = (e) => {
+      if (e.repeat) return;
+      this.keys.add(e.code);
+      this.pressed.add(e.code);
+      if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+    };
+    const ku = (e) => this.keys.delete(e.code);
+    window.addEventListener('keydown', kd);
+    window.addEventListener('keyup', ku);
+    window.addEventListener('blur', () => this.keys.clear());
+
+    window.addEventListener('mousemove', (e) => {
+      this.mouse.dx += e.movementX || 0;
+      this.mouse.dy += e.movementY || 0;
+      this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    });
+    window.addEventListener('mousedown', () => (this.mouse.down = true));
+    window.addEventListener('mouseup', () => (this.mouse.down = false));
+    window.addEventListener('wheel', (e) => { this.mouse.wheel += e.deltaY; }, { passive: true });
+  }
+
+  key(code) { return this.keys.has(code); }
+  justPressed(code) { return this.pressed.has(code); }
+
+  /** Call once per frame, after all systems have read input. */
+  update(dt) {
+    const gp = navigator.getGamepads?.()[0];
+
+    let throttle = 0, brake = 0, steer = 0, handbrake = 0;
+    if (this.key('KeyW') || this.key('ArrowUp')) throttle = 1;
+    if (this.key('KeyS') || this.key('ArrowDown')) brake = 1;
+    if (this.key('KeyA') || this.key('ArrowLeft')) steer += 1;
+    if (this.key('KeyD') || this.key('ArrowRight')) steer -= 1;
+    if (this.key('Space')) handbrake = 1;
+
+    if (gp) {
+      const dz = (v) => (Math.abs(v) < 0.14 ? 0 : v);
+      throttle = Math.max(throttle, gp.buttons[7]?.value ?? 0);
+      brake = Math.max(brake, gp.buttons[6]?.value ?? 0);
+      steer += -dz(gp.axes[0] ?? 0);
+      handbrake = Math.max(handbrake, gp.buttons[0]?.value ?? 0);
+      this.axes.lookX += dz(gp.axes[2] ?? 0) * dt * 2.2;
+      this.axes.lookY += dz(gp.axes[3] ?? 0) * dt * 1.4;
+    }
+
+    this.axes.throttle = throttle;
+    this.axes.brake = brake;
+    this.axes.steer = Math.max(-1, Math.min(1, steer));
+    this.axes.handbrake = handbrake;
+
+    this.mouse.dx = 0;
+    this.mouse.dy = 0;
+    this.mouse.wheel = 0;
+    this.pressed.clear();
+  }
+}

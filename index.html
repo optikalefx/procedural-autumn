@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Procedural Autumn</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#1b1420; }
+  body { font-family: ui-rounded, "SF Pro Rounded", "Segoe UI", system-ui, sans-serif; }
+  #app { position:fixed; inset:0; display:block; }
+  canvas#gl { display:block; width:100%; height:100%; }
+
+  #loader {
+    position:fixed; inset:0; z-index:50;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background: radial-gradient(120% 90% at 50% 30%, #f6d5b0 0%, #e0956a 42%, #7c4a5e 78%, #2b1c33 100%);
+    transition: opacity .9s ease; color:#3a2230;
+  }
+  #loader.hidden { opacity:0; pointer-events:none; }
+  #loader h1 {
+    font-size: clamp(2.2rem, 6vw, 4.4rem); font-weight:800; letter-spacing:.02em;
+    color:#fff8ee; text-shadow: 0 3px 24px rgba(90,40,30,.45); margin-bottom:.15em;
+  }
+  #loader .sub { color:#fff2e2; opacity:.85; font-size:clamp(.85rem,1.6vw,1.05rem); letter-spacing:.22em; text-transform:uppercase; margin-bottom:2.4em; }
+  #bar { width:min(420px, 62vw); height:6px; border-radius:99px; background:rgba(255,255,255,.24); overflow:hidden; box-shadow:inset 0 1px 3px rgba(0,0,0,.2); }
+  #bar > i { display:block; height:100%; width:0%; border-radius:99px; background:linear-gradient(90deg,#ffd88a,#fff6e8); transition:width .3s ease; }
+  #status { margin-top:1.1em; font-size:.86rem; letter-spacing:.14em; text-transform:uppercase; color:#fff3e4; opacity:.8; }
+  #hint { position:absolute; bottom:2.2rem; color:#fff3e4; opacity:.6; font-size:.78rem; letter-spacing:.16em; }
+</style>
+</head>
+<body>
+  <div id="app"><canvas id="gl"></canvas></div>
+  <div id="loader">
+    <h1>Procedural Autumn</h1>
+    <div class="sub">A quiet drive through the fall</div>
+    <div id="bar"><i></i></div>
+    <div id="status">Waking the valley…</div>
+    <div id="hint">WASD / arrows to drive · Space handbrake · C camera · F photo mode</div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
