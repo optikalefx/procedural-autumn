@@ -391,48 +391,56 @@ const DEER = () => ({
   pelvis: [0, 1.02, -0.42],
   spine: [[0, 1.05, -0.16], [0, 1.06, 0.10]],
   chest: [0, 1.07, 0.34],
-  neck: [[0, 1.20, 0.46], [0, 1.42, 0.60]],
-  head: [0, 1.54, 0.68],
+  neck: [[0, 1.19, 0.45], [0, 1.37, 0.57]],
+  head: [0, 1.47, 0.63],
   barrel: [
     { z: -0.68, y: 1.00, rx: 0.085, ry: 0.105, mix: MIX.pale, shade: 1.06 },
-    { z: -0.58, y: 1.02, rx: 0.145, ry: 0.170, mix: mixLerp(MIX.coat, MIX.pale, 0.55), key: 1 },
-    { z: -0.40, y: 1.03, rx: 0.172, ry: 0.200, key: 1 },
-    { z: -0.16, y: 1.03, rx: 0.176, ry: 0.212 },
-    { z: 0.08, y: 1.035, rx: 0.172, ry: 0.220, key: 1 },
-    { z: 0.28, y: 1.045, rx: 0.163, ry: 0.212 },
-    { z: 0.44, y: 1.03, rx: 0.130, ry: 0.170, key: 1 },
+    { z: -0.58, y: 1.02, rx: 0.158, ry: 0.178, mix: mixLerp(MIX.coat, MIX.pale, 0.55), key: 1 },
+    // The haunch and the shoulder are the two places a deer is widest. Without
+    // them the barrel is a tube on four sticks, which is what the first pass
+    // read as — an alpaca rather than a deer.
+    { z: -0.42, y: 1.03, rx: 0.196, ry: 0.208, key: 1 },
+    { z: -0.16, y: 1.03, rx: 0.178, ry: 0.214 },
+    { z: 0.08, y: 1.035, rx: 0.176, ry: 0.222, key: 1 },
+    { z: 0.28, y: 1.045, rx: 0.186, ry: 0.216 },
+    { z: 0.44, y: 1.03, rx: 0.138, ry: 0.172, key: 1 },
   ],
   belly: [
     { z: -0.30, y: 0.885, rx: 0.105, ry: 0.045 },
     { z: -0.02, y: 0.870, rx: 0.118, ry: 0.050 },
     { z: 0.26, y: 0.885, rx: 0.108, ry: 0.045 },
   ],
+  // A deer's neck is a wedge, thick where it leaves the chest and only
+  // slightly narrower at the skull. Tapering it to a stalk is what turned the
+  // first pass into a camelid.
   neckProfile: [
-    { rx: 0.125, ry: 0.150 },
-    { rx: 0.100, ry: 0.128 },
-    { rx: 0.081, ry: 0.100 },
-    { rx: 0.070, ry: 0.084 },
+    { rx: 0.142, ry: 0.166 },
+    { rx: 0.118, ry: 0.142 },
+    { rx: 0.098, ry: 0.114 },
+    { rx: 0.085, ry: 0.096 },
   ],
   headProfile: [
-    { dy: -0.005, dz: -0.055, rx: 0.065, ry: 0.072 },
-    { dy: 0.005, dz: 0.010, rx: 0.072, ry: 0.080 },
-    { dy: -0.010, dz: 0.075, rx: 0.048, ry: 0.052 },
-    { dy: -0.030, dz: 0.150, rx: 0.038, ry: 0.040, mix: mixLerp(MIX.coat, MIX.pale, 0.55) },
-    { dy: -0.042, dz: 0.185, rx: 0.033, ry: 0.032, mix: MIX.dark },
+    { dy: -0.005, dz: -0.060, rx: 0.078, ry: 0.084 },
+    { dy: 0.006, dz: 0.012, rx: 0.084, ry: 0.092 },
+    { dy: -0.012, dz: 0.082, rx: 0.056, ry: 0.060 },
+    { dy: -0.034, dz: 0.158, rx: 0.044, ry: 0.045, mix: mixLerp(MIX.coat, MIX.pale, 0.55) },
+    { dy: -0.048, dz: 0.196, rx: 0.037, ry: 0.035, mix: MIX.dark },
   ],
-  ear: { at: [0.062, 0.048, -0.020], dir: [0.62, 0.74, -0.26], len: 0.155, w: 0.048, h: 0.014 },
-  tail: [[0, 1.00, -0.62], [0, 0.94, -0.70], [0, 0.87, -0.74]],
-  tailR: [0.045, 0.012], tailFlat: 0.7, tailMix: MIX.pale,
+  ear: { at: [0.066, 0.050, -0.022], dir: [0.60, 0.76, -0.26], len: 0.165, w: 0.056, h: 0.016 },
+  // The white scut is a deer's signature at any distance, so it is a broad flat
+  // paddle rather than a thin rope — it has to catch light when it lifts.
+  tail: [[0, 1.00, -0.62], [0, 0.95, -0.70], [0, 0.89, -0.75]],
+  tailR: [0.058, 0.034], tailFlat: 0.52, tailMix: MIX.pale,
   hind: {
     tag: 'hind', front: false, bend: 1,
     hip: [0.148, 0.98, -0.42], knee: [0, -0.36, 0.12], hock: [0, -0.26, -0.16], foot: [0, -0.36, 0.04],
-    rTop: 0.098, rMid: 0.062, rLow: 0.036, rFoot: 0.026, flat: 0.82,
+    rTop: 0.140, rMid: 0.062, rLow: 0.036, rFoot: 0.026, flat: 0.82,
     hoofH: 0.055, hoofR: 0.036, hoofLong: 1.35, hoofFwd: 0.008, sockTop: 0.5,
   },
   fore: {
     tag: 'fore', front: true, bend: -1,
     hip: [0.138, 1.06, 0.30], knee: [0, -0.36, -0.10], hock: [0, -0.28, 0.10], foot: [0, -0.42, 0.0],
-    rTop: 0.082, rMid: 0.055, rLow: 0.033, rFoot: 0.025, flat: 0.82,
+    rTop: 0.120, rMid: 0.055, rLow: 0.033, rFoot: 0.025, flat: 0.82,
     hoofH: 0.055, hoofR: 0.034, hoofLong: 1.35, hoofFwd: 0.008, sockTop: 0.5,
   },
 });
@@ -442,47 +450,51 @@ const DEER = () => ({
 // short columns and the feet are plantigrade plates. Plate 3 exactly.
 const BEAR = () => ({
   key: 'bear',
-  pelvis: [0, 0.80, -0.52],
-  spine: [[0, 0.84, -0.20], [0, 0.88, 0.12]],
-  chest: [0, 0.92, 0.40],
-  neck: [[0, 0.94, 0.62]],
-  head: [0, 0.90, 0.82],
+  // A bear is a long low mass carried on short columns, with the head slung
+  // below and in front of the shoulder hump. The first pass stood it too tall
+  // and tucked the head into the shoulder, which read as a boar.
+  pelvis: [0, 0.74, -0.52],
+  spine: [[0, 0.78, -0.20], [0, 0.82, 0.12]],
+  chest: [0, 0.86, 0.40],
+  neck: [[0, 0.85, 0.62]],
+  head: [0, 0.71, 0.92],
   barrel: [
-    { z: -0.86, y: 0.74, rx: 0.150, ry: 0.155 },
-    { z: -0.68, y: 0.78, rx: 0.235, ry: 0.235, key: 1 },
-    { z: -0.42, y: 0.80, rx: 0.272, ry: 0.268 },
-    { z: -0.12, y: 0.82, rx: 0.288, ry: 0.290, key: 1 },
-    { z: 0.14, y: 0.86, rx: 0.290, ry: 0.315 },
-    { z: 0.34, y: 0.90, rx: 0.278, ry: 0.345, key: 1 },   // the hump
-    { z: 0.52, y: 0.88, rx: 0.235, ry: 0.270 },
-    { z: 0.64, y: 0.85, rx: 0.185, ry: 0.200, key: 1 },
+    { z: -0.80, y: 0.68, rx: 0.196, ry: 0.196 },
+    { z: -0.66, y: 0.72, rx: 0.245, ry: 0.242, key: 1 },
+    { z: -0.42, y: 0.74, rx: 0.272, ry: 0.268 },
+    { z: -0.12, y: 0.76, rx: 0.288, ry: 0.290, key: 1 },
+    { z: 0.14, y: 0.80, rx: 0.290, ry: 0.315 },
+    { z: 0.34, y: 0.84, rx: 0.278, ry: 0.345, key: 1 },   // the hump
+    { z: 0.52, y: 0.82, rx: 0.230, ry: 0.262 },
+    { z: 0.64, y: 0.78, rx: 0.168, ry: 0.182, key: 1 },
   ],
   belly: null,
+  // Waisted at the throat so the skull is a separate mass from the hump.
   neckProfile: [
-    { rx: 0.200, ry: 0.215 },
-    { rx: 0.175, ry: 0.180 },
-    { rx: 0.150, ry: 0.150 },
+    { rx: 0.205, ry: 0.220 },
+    { rx: 0.162, ry: 0.166 },
+    { rx: 0.118, ry: 0.116 },
   ],
   headProfile: [
-    { dy: 0.010, dz: -0.075, rx: 0.130, ry: 0.130 },
-    { dy: 0.008, dz: 0.010, rx: 0.126, ry: 0.122 },
+    { dy: 0.014, dz: -0.070, rx: 0.108, ry: 0.112 },
+    { dy: 0.006, dz: 0.014, rx: 0.122, ry: 0.118 },
     { dy: -0.020, dz: 0.090, rx: 0.083, ry: 0.078, mix: mixLerp(MIX.coat, MIX.pale, 0.40) },
     { dy: -0.036, dz: 0.170, rx: 0.062, ry: 0.058, mix: mixLerp(MIX.coat, MIX.pale, 0.55) },
     { dy: -0.046, dz: 0.210, rx: 0.050, ry: 0.044, mix: MIX.dark },
   ],
-  ear: { at: [0.093, 0.098, -0.062], dir: [0.42, 0.86, -0.28], len: 0.082, w: 0.056, h: 0.026 },
-  tail: [[0, 0.80, -0.86], [0, 0.76, -0.92]],
+  ear: { at: [0.096, 0.100, -0.066], dir: [0.44, 0.86, -0.26], len: 0.100, w: 0.066, h: 0.030 },
+  tail: [[0, 0.74, -0.86], [0, 0.70, -0.92]],
   tailR: [0.045, 0.018], tailFlat: 1,
   hind: {
     tag: 'hind', front: false, bend: 1,
-    hip: [0.205, 0.78, -0.50], knee: [0, -0.30, 0.12], hock: [0, -0.24, -0.16], foot: [0, -0.24, 0.10],
-    rTop: 0.155, rMid: 0.105, rLow: 0.078, rFoot: 0.062, flat: 0.88, k: 0.85,
+    hip: [0.205, 0.72, -0.50], knee: [0, -0.28, 0.11], hock: [0, -0.22, -0.15], foot: [0, -0.22, 0.10],
+    rTop: 0.190, rMid: 0.132, rLow: 0.096, rFoot: 0.074, flat: 0.88, k: 0.85,
     hoofH: 0.070, hoofR: 0.082, hoofLong: 1.9, hoofFwd: 0.055, sockTop: 0.30,
   },
   fore: {
     tag: 'fore', front: true, bend: -1,
-    hip: [0.225, 0.92, 0.28], knee: [0, -0.36, -0.12], hock: [0, -0.32, 0.14], foot: [0, -0.24, 0.06],
-    rTop: 0.150, rMid: 0.112, rLow: 0.086, rFoot: 0.070, flat: 0.90, k: 0.85,
+    hip: [0.225, 0.86, 0.28], knee: [0, -0.33, -0.11], hock: [0, -0.30, 0.13], foot: [0, -0.23, 0.06],
+    rTop: 0.186, rMid: 0.136, rLow: 0.102, rFoot: 0.082, flat: 0.90, k: 0.85,
     hoofH: 0.070, hoofR: 0.088, hoofLong: 1.7, hoofFwd: 0.048, sockTop: 0.30,
   },
 });
@@ -494,8 +506,8 @@ const RABBIT = () => ({
   pelvis: [0, 0.175, -0.095],
   spine: [[0, 0.180, -0.025]],
   chest: [0, 0.165, 0.055],
-  neck: [[0, 0.180, 0.105]],
-  head: [0, 0.205, 0.150],
+  neck: [[0, 0.178, 0.092]],
+  head: [0, 0.196, 0.126],
   barrel: [
     { z: -0.185, y: 0.150, rx: 0.048, ry: 0.052, mix: MIX.pale },
     { z: -0.135, y: 0.170, rx: 0.075, ry: 0.082, key: 1 },
@@ -507,20 +519,23 @@ const RABBIT = () => ({
     { z: -0.10, y: 0.100, rx: 0.048, ry: 0.020 },
     { z: 0.01, y: 0.096, rx: 0.052, ry: 0.022 },
   ],
+  // A rabbit has no visible neck at all. The head has to sit straight on the
+  // shoulders or the crouch reads as a bird.
   neckProfile: [
-    { rx: 0.058, ry: 0.060 },
-    { rx: 0.050, ry: 0.052 },
-    { rx: 0.044, ry: 0.046 },
+    { rx: 0.066, ry: 0.068 },
+    { rx: 0.060, ry: 0.062 },
+    { rx: 0.054, ry: 0.055 },
   ],
   headProfile: [
-    { dy: 0.000, dz: -0.032, rx: 0.042, ry: 0.044 },
-    { dy: 0.002, dz: 0.008, rx: 0.044, ry: 0.045 },
-    { dy: -0.010, dz: 0.042, rx: 0.032, ry: 0.032 },
-    { dy: -0.020, dz: 0.068, rx: 0.023, ry: 0.022, mix: MIX.dark },
+    { dy: 0.000, dz: -0.034, rx: 0.050, ry: 0.052 },
+    { dy: 0.003, dz: 0.008, rx: 0.052, ry: 0.053 },
+    { dy: -0.012, dz: 0.044, rx: 0.037, ry: 0.036 },
+    { dy: -0.024, dz: 0.072, rx: 0.026, ry: 0.024, mix: MIX.dark },
   ],
-  ear: { at: [0.024, 0.030, -0.016], dir: [0.20, 0.94, -0.28], len: 0.118, w: 0.023, h: 0.008 },
-  tail: [[0, 0.165, -0.185], [0, 0.168, -0.212]],
-  tailR: [0.030, 0.026], tailFlat: 1, tailMix: MIX.pale,
+  // Ears are the whole identity at fifteen metres, so they are generous.
+  ear: { at: [0.025, 0.032, -0.014], dir: [0.17, 0.96, -0.22], len: 0.145, w: 0.034, h: 0.011 },
+  tail: [[0, 0.163, -0.190], [0, 0.166, -0.214]],
+  tailR: [0.036, 0.033], tailFlat: 1, tailMix: MIX.pale,
   hind: {
     tag: 'hind', front: false, bend: 1,
     hip: [0.050, 0.170, -0.100], knee: [0, -0.048, 0.070], hock: [0, -0.062, -0.098], foot: [0, -0.060, 0.058],

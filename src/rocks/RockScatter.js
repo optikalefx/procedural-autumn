@@ -163,7 +163,7 @@ export class RockScatter {
     // the mask that stops the meadow reading as evenly sprinkled gravel.
     const field = this.noise.fbm(x * 0.0034, z * 0.0034, 3, 2.1, 0.5, 1) * 0.5 + 0.5
                 + this.noise.fbm(x * 0.011, z * 0.011, 2, 2.0, 0.5, 1) * 0.22;
-    const m = smoothstep(0.55, 0.84, field);
+    const m = smoothstep(0.50, 0.80, field);
     if (m > 0.02 && slope < 0.95) return { kind: 'erratic', s: m, h, slope, hard };
     return null;
   }
@@ -199,7 +199,12 @@ export class RockScatter {
         if (cragDone) continue;
         // Ridge sites are strongly favoured: those are the ones that can put
         // rock against the sky, which is the only reason this exists.
-        if (rng() > 0.05 + c.ridge * 0.20) continue;
+        // Rare. A mountain face shows a handful of crags, not fifty. The mass
+        // that reads at distance comes from each *group* being big, not from
+        // there being many groups or from any single block being huge — a
+        // block bigger than the conifers beside it turns the massif into a
+        // pile of cardboard boxes, and that is a much worse failure.
+        if (rng() > 0.045 + c.ridge * 0.20) continue;
         cragDone = true;
       } else if (rng() > Math.sqrt(c.s)) continue;
       this._cluster(x, z, c, up, rng, minSize, out);
@@ -231,16 +236,19 @@ export class RockScatter {
       const r = R * Math.sqrt(rng());
       const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
       if (!W.isInBounds(px, pz)) continue;
-      const river = W.getRiver(px, pz);
       const depth = W.getWaterDepth(px, pz);
-      if (river < 0.02 && depth <= 0) continue;
+      // Deliberately NOT gated on being *in* the channel. The cluster centre
+      // already is, so the whole disc is riverside ground, and the reference
+      // plates put their biggest slabs on the bank above the waterline rather
+      // than in the flow. Requiring river > 0 at every point emptied every
+      // bank in the game and left the river view without a single rock.
       const slope = W.getSlope(px, pz);
       if (slope > 1.9) continue;
 
       const roll = rng();
       let arch, size;
       if (roll < 0.20 && depth < 0.9) { arch = 'slab'; size = powSize(rng, 1.6, 5.2, 1.5); }
-      else if (roll < 0.28) { arch = 'hero'; size = powSize(rng, 2.2, 4.6, 1.7); }
+      else if (roll < 0.28) { arch = 'hero'; size = powSize(rng, 1.8, 3.6, 1.7); }
       else if (roll < 0.62) { arch = 'boulder'; size = powSize(rng, 0.5, 3.0, 1.8); }
       else { arch = 'rubble'; size = powSize(rng, 0.12, 0.50, 2.0); }
       if (size * 2 < minSize) continue;
@@ -340,33 +348,50 @@ export class RockScatter {
     }
   }
 
-  /** Glacial erratic in the meadow: one hero and its court. */
+  /**
+   * Glacial erratic in the meadow: one hero and its court.
+   *
+   * This is the "signature image" placement — a house-sized boulder alone in
+   * gold grass with a long shadow off it. It only works if the size hierarchy
+   * is brutal: one rock that dominates, a couple of car-sized companions, and
+   * rubble. An earlier pass produced an even spread of knee-high cobbles that
+   * simply disappeared into the grass, which is worse than no rocks at all.
+   */
   _clusterErratic(x, z, c, rng, minSize, out) {
     const W = this.world;
-    const heroSize = powSize(rng, 1.6, 7.2, 2.1) * (0.62 + c.s * 0.62);
-    if (heroSize * 2 >= minSize && W.getWaterDepth(x, z) < 0.3) {
+    // Grass in this game stands well over a metre. A boulder has to clear it
+    // decisively or it is invisible from the driver's seat.
+    const heroSize = Math.min(powSize(rng, 2.2, 9.0, 1.9) * (0.66 + c.s * 0.58), 5.4);
+    let placed = false;
+    if (heroSize * 2 >= minSize && W.getWaterDepth(x, z) < 0.3 && W.getSlope(x, z) < 1.1) {
       // The compound hero mesh is the most expensive thing this system draws;
       // it is reserved for genuinely house-sized erratics.
-      const arch = (heroSize > 2.8 && rng() < 0.55) ? 'hero' : 'boulder';
-      this._place(x, z, arch, heroSize, rng, 0.22, 0.10, out);
+      const arch = (heroSize > 3.2 && rng() < 0.6) ? 'hero' : 'boulder';
+      this._place(x, z, arch, heroSize, rng, 0.20, 0.10, out);
+      placed = true;
     }
-    const n = 2 + ((rng() * 7 * c.s) | 0);
-    const R = heroSize * 2.4 + 6 + rng() * 14;
+    // The court hugs the hero. Scattered wide it stops being a group and
+    // becomes the uniform sprinkle the brief calls an instant reject.
+    const n = 2 + ((rng() * 6 * c.s) | 0);
+    const R = heroSize * 1.5 + 3 + rng() * 7;
     for (let i = 0; i < n; i++) {
       const a = rng() * Math.PI * 2;
-      const r = heroSize * 1.6 + R * Math.sqrt(rng());
+      const r = heroSize * 0.9 + R * Math.sqrt(rng());
       const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
       if (!W.isInBounds(px, pz)) continue;
       if (W.getWaterDepth(px, pz) > 0.3) continue;
       if (W.getSlope(px, pz) > 1.6) continue;
       const roll = rng();
+      // Companions are a definite step down from the hero but still read at
+      // 40 m; the rubble is the third tier.
       let arch, size;
-      if (roll < 0.32) { arch = 'boulder'; size = powSize(rng, 0.5, 1.8, 1.8); }
-      else if (roll < 0.50) { arch = 'slab'; size = powSize(rng, 0.6, 2.0, 1.8); }
-      else { arch = 'rubble'; size = powSize(rng, 0.14, 0.5, 1.8); }
+      if (roll < 0.34) { arch = 'boulder'; size = heroSize * (0.24 + rng() * 0.30); }
+      else if (roll < 0.54) { arch = 'slab'; size = heroSize * (0.20 + rng() * 0.34); }
+      else { arch = 'rubble'; size = powSize(rng, 0.18, 0.75, 1.6); }
       if (size * 2 < minSize) continue;
       this._place(px, pz, arch, size, rng, 0.28, 0.16, out);
     }
+    void placed;
   }
 
   /**
@@ -395,36 +420,42 @@ export class RockScatter {
     // Harder bedrock, bigger crag: this is what ties the outcrops to the
     // terrain author's geology instead of scattering them at random.
     //
-    // The absolute number matters more than anything else here. A mountain is
-    // 800 m of screen; an 8 m block on it is one percent of that and reads as
-    // a chip of gravel no matter how well it is shaded. These are sized in
-    // *tens* of metres so that a crag changes the mountain's shape.
-    const scale = (6.0 + c.hard * 8.0 + c.s * 5.0) * (0.72 + rng() * 0.60);
+    // Scale is bounded at both ends and both bounds are load-bearing. Below
+    // ~5 m a block is a chip of gravel on an 800 m mountain and reads as
+    // litter; above ~20 m it dwarfs the conifers standing next to it and the
+    // whole massif turns into a pile of cardboard boxes. Crag blocks are
+    // house-to-barn sized, and the *group* is what carries the landform.
+    const scale = clamp((3.6 + c.hard * 4.2 + c.s * 3.0) * (0.82 + rng() * 0.46), 3.0, 9.5);
 
     // Crests are strongly preferred. Rock on a flank is decoration; rock on a
     // crest is the mountain's outline, and the outline is what the peaks and
     // hero views are actually judged on.
     if (c.ridge > 0.22 && rng() < 0.55 + c.ridge * 0.45) {
       this._cragCrest(x, z, c, sx, sz, scale, rng, minSize, out);
-    } else if (c.slope > 1.15) {
+    } else if (c.slope > 1.00) {
       this._cragBand(x, z, c, up, sx, sz, scale * 0.75, rng, minSize, out);
     }
   }
 
-  /** Towers and blades along a ridge crest. */
+  /**
+   * A crag massif on a ridge crest.
+   *
+   * The unit that has to read from 500 m is the *group*, not the block. Six to
+   * ten blocks of eight-to-twenty metres, packed at less than one body-width
+   * apart so they interpenetrate, make one continuous outcrop forty to eighty
+   * metres long with a broken top edge. Spread the same blocks out and you get
+   * a picket fence; make one block that size and it dwarfs the trees.
+   */
   _cragCrest(x, z, c, sx, sz, scale, rng, minSize, out) {
     const W = this.world;
-    const n = 2 + ((rng() * 3) | 0);
-    // Spacing under one body-width: neighbours interpenetrate, so the group
-    // resolves as one continuous rocky spine with notches in it. Spaced out,
-    // the same towers read as a picket fence.
-    const step = scale * (0.85 + rng() * 0.55);
+    const n = 5 + ((rng() * 5) | 0);
+    const step = scale * (0.62 + rng() * 0.30);
     // Start behind the site so the group straddles it rather than trailing off.
-    let px = x - sx * step * n * 0.4, pz = z - sz * step * n * 0.4;
+    let px = x - sx * step * n * 0.45, pz = z - sz * step * n * 0.45;
 
     for (let i = 0; i < n; i++) {
-      px += sx * step + (rng() * 2 - 1) * scale * 0.5;
-      pz += sz * step + (rng() * 2 - 1) * scale * 0.5;
+      px += sx * step + (rng() * 2 - 1) * scale * 0.35;
+      pz += sz * step + (rng() * 2 - 1) * scale * 0.35;
       if (!W.isInBounds(px, pz)) break;
       // Follow the crest: if we have wandered off it, the group ends. That is
       // what keeps a tower line reading as one landform.
@@ -434,7 +465,7 @@ export class RockScatter {
       // A tapering profile — tallest near the middle — so the group has a peak
       // instead of being a picket fence.
       const t = 1 - Math.abs((i + 0.5) / n - 0.5) * 1.7;
-      const size = scale * (0.55 + t * 0.75) * (0.8 + rng() * 0.5);
+      const size = Math.min(scale * (0.55 + t * 0.75) * (0.8 + rng() * 0.5), 10.0);
       if (size * 2 < minSize) continue;
 
       // Mostly bench mass with the occasional tower on top of it. A crest of
@@ -452,6 +483,18 @@ export class RockScatter {
       // or a patch of snow. Tipping it puts a vertical face in view.
       this._place(px, pz, arch, size, rng, arch === 'tower' ? 0.05 : 0.14,
         arch === 'tower' ? 0.10 : 0.34, out, arch === 'tower' ? 0.16 : 0.10, 'min', 0.0);
+
+      // A second block set back off the crest line. Without it the group is a
+      // single-file wall and the outcrop has no shoulder.
+      if (rng() < 0.55) {
+        const off = scale * (0.6 + rng() * 0.7) * (rng() < 0.5 ? 1 : -1);
+        const bx = px - sz * off, bz = pz + sx * off;
+        const bs = size * (0.55 + rng() * 0.45);
+        if (W.isInBounds(bx, bz) && bs * 2 >= minSize) {
+          this._place(bx, bz, rng() < 0.25 ? 'tower' : 'bench', bs, rng,
+            0.14, 0.30, out, 0.12, 'min', 0.0);
+        }
+      }
 
       // Blocks calved off the tower, resting against its foot.
       if (rng() < 0.35) {
@@ -498,7 +541,7 @@ export class RockScatter {
         if (slope < 0.80) break;                    // the band dies on the bench
         if (W.getWaterDepth(px, pz) > 0.5) break;
 
-        const size = cScale * (0.62 + rng() * 0.62);
+        const size = Math.min(cScale * (0.62 + rng() * 0.62), 9.0);
         if (size * 2 < minSize) continue;
         const roll = rng();
         const arch = roll < 0.58 ? 'bench' : (roll < 0.80 ? 'ledge' : (roll < 0.93 ? 'slab' : 'tower'));
@@ -551,21 +594,47 @@ export class RockScatter {
       if (L > 1e-4) { x -= (n.x / L) * size * shove; z -= (n.z / L) * size * shove; }
     }
 
-    let minH;
-    if (mode === 'centre') {
-      // On a steep face the lowest sample under the footprint is metres below
-      // the centre, so min-of-samples would bury the block completely.
-      minH = W.getHeight(x, z);
-    } else {
-      // Lowest ground under the footprint: guarantees nothing hovers on a ridge.
-      minH = W.getHeight(x, z);
-      const fr = size * 0.85;
+    // ── ground anchor ────────────────────────────────────────────────────────
+    //
+    // Two things must both hold: the rock may never hover, and on a steep face
+    // it must still be able to stand out over air as an overhang.
+    //
+    // Hovering was not a maths error. It is that the terrain the player *sees*
+    // is a coarser mesh than the heightfield we sample: chunks two LOD bands
+    // out carry a vertex every 6–24 m, so a ridge crest renders several metres
+    // below getHeight() and anything planted on the true crest detaches and
+    // floats. The cure is to anchor to the lowest ground across a footprint
+    // wide enough to swallow that error — with a floor on the radius, because
+    // the blocks that float are on ridges seen from 400 m+, where the LOD step
+    // is larger than a small rock's own footprint.
+    const centreH = W.getHeight(x, z);
+    // Crag forms need a much wider footprint than their own size implies. They
+    // sit on ridge crests seen from 400 m+, where the rendered chunk carries a
+    // vertex every 6-24 m; a ring narrower than that samples inside a single
+    // LOD quad and completely misses how far the drawn surface has sagged
+    // below the heightfield. Two rings, because one at a single radius can sit
+    // neatly on the quad's diagonal and miss it again.
+    const wide = arch === 'bench' || arch === 'tower' || arch === 'ledge';
+    const fr = Math.max(size * 0.85, wide ? 12 : (mode === 'centre' ? 9 : 3));
+    let ringMin = centreH;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2 + 0.4;
+      const hh = W.getHeight(x + Math.cos(a) * fr, z + Math.sin(a) * fr);
+      if (hh < ringMin) ringMin = hh;
+    }
+    if (wide) {
       for (let k = 0; k < 4; k++) {
-        const a = (k / 4) * Math.PI * 2 + 0.4;
-        const hh = W.getHeight(x + Math.cos(a) * fr, z + Math.sin(a) * fr);
-        if (hh < minH) minH = hh;
+        const a = (k / 4) * Math.PI * 2 + 1.1;
+        const hh = W.getHeight(x + Math.cos(a) * fr * 1.7, z + Math.sin(a) * fr * 1.7);
+        if (hh < ringMin) ringMin = hh;
       }
     }
+    // On a cliff the ring minimum is tens of metres down; following it all the
+    // way would bury the block entirely and there would be no relief at all.
+    // Clamping the drop keeps the uphill half deeply embedded (which is what
+    // stops the float) while the downhill half projects — an overhang.
+    const maxDrop = mode === 'centre' ? size * 0.85 : size * 3.0;
+    const minH = Math.max(ringMin, centreH - maxDrop);
 
     const up = this._up.set(0, 1, 0).lerp(n, align).normalize();
     const q = this._q.setFromUnitVectors(UP, up);
@@ -598,6 +667,10 @@ export class RockScatter {
       tint: rng() * 2 - 1,
       waterY: waterY === null ? -9999 : waterY,
       frost: smoothstep(200, 285, h),
+      // Terrain height under the rock. The shader darkens the band just above
+      // it: contact occlusion is the cheapest and strongest cue that a heavy
+      // object is *sitting in* the ground rather than resting on top of it.
+      groundY: minH,
       // Visible radius. Paired with Rocks._minSizeFor: a cell far away is only
       // asked for rocks big enough that this radius still reaches the camera,
       // so nothing is ever generated that cannot be seen.

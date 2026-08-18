@@ -248,6 +248,20 @@ export class AnimRig {
     const duty = G.duty;
     const liftM = G.lift * this.cfg.liftScale * (0.55 + 0.75 * sn);   // model units
     const lift = liftM * S;
+
+    // Ballistic suspension. During the flight window nothing is in stance, so
+    // this is a genuine arc rather than a fudge — the animal really is airborne.
+    // It is computed here, before the feet, because a swinging foot has to rise
+    // with the body: leaving it tracking the ground while the barrel launches
+    // leaves a bounding deer with its legs dangling straight down like a
+    // helicopter's, which is exactly what the first motion strip showed.
+    let flight = 0;
+    if (G.flight > 0) {
+      const u = (this.phase - G.flightAt) / G.flight;
+      if (u >= 0 && u <= 1) flight = 4 * u * (1 - u);
+    }
+    const flightY = flight * liftM * 2.4 * (0.45 + 0.85 * sn);
+    const swingLift = lift + flightY * S;
     // How far ahead of neutral the foot lands. Falls straight out of "the foot
     // is planted for `duty` of the cycle while the body travels one stride".
     const reach = this.strideLen * (1 - duty * 0.5);
@@ -295,7 +309,9 @@ export class AnimRig {
         if (!cheap && u > 0.5) lg.to.y = world.getHeight(lg.to.x, lg.to.z);
         lg.foot.x = lerp(lg.from.x, lg.to.x, e);
         lg.foot.z = lerp(lg.from.z, lg.to.z, e);
-        lg.foot.y = lerp(lg.from.y, lg.to.y, e) + Math.sin(Math.PI * u) * lift;
+        // One arc covers both the step-over and the tuck: zero at lift-off and
+        // at touchdown, so the foot still lands exactly on its planted target.
+        lg.foot.y = lerp(lg.from.y, lg.to.y, e) + Math.sin(Math.PI * u) * swingLift;
       }
     }
 
@@ -304,15 +320,6 @@ export class AnimRig {
     const bodyW = Math.abs(this.info.legs[0].restX) * 2 * S;
     const pitchGround = -Math.atan2(gF - gR, Math.max(0.25, bodyLen));
     const rollGround = Math.atan2(gRt - gL, Math.max(0.25, bodyW));
-
-    // Ballistic suspension. During the flight window nothing is in stance, so
-    // this is a genuine arc rather than a fudge — the animal really is airborne.
-    let flight = 0;
-    if (G.flight > 0) {
-      const u = (this.phase - G.flightAt) / G.flight;
-      if (u >= 0 && u <= 1) flight = 4 * u * (1 - u);
-    }
-    const flightY = flight * liftM * 2.4 * (0.45 + 0.85 * sn);
 
     const bob = -Math.cos(this.phase * Math.PI * 2 * G.bobHz) *
       this.cfg.bobAmp * (0.35 + 0.95 * sn);
@@ -389,6 +396,17 @@ export class AnimRig {
       _c.lerp(_b, alert);
     }
     _c.y += this.root.position.y * 0.28;
+
+    // A walking quadruped nods. The head reaches forward as the shoulder
+    // unloads and settles back as it takes weight, one nod per stride. It is a
+    // few centimetres, and its absence is most of what makes a procedural walk
+    // read as a puppet sliding along a rail.
+    if (sn > 0.001 && graze < 0.999) {
+      const nod = Math.sin(this.phase * Math.PI * 2 * this.gait.bobHz - 0.9);
+      const k = (1 - graze) * Math.min(1, sn * 3.2);
+      _c.z += nod * 0.045 * k;
+      _c.y -= Math.abs(nod) * 0.022 * k;
+    }
 
     const lam = 7 + 11 * alert;
     this.headTarget.x = damp(this.headTarget.x, _c.x, lam, dt);

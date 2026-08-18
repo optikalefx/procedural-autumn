@@ -85,7 +85,7 @@ export class Rocks extends System {
         // Per-instance shading inputs. Kept separate from the matrix so a
         // repack can rewrite them without touching transforms.
         g.setAttribute('aRockA', new THREE.InstancedBufferAttribute(new Float32Array(cfg.cap * 4), 4));
-        g.setAttribute('aRockB', new THREE.InstancedBufferAttribute(new Float32Array(cfg.cap * 2), 2));
+        g.setAttribute('aRockB', new THREE.InstancedBufferAttribute(new Float32Array(cfg.cap * 3), 3));
 
         const mesh = new THREE.InstancedMesh(g, this.material, cfg.cap);
         mesh.name = `rock_${arch}_${v}`;
@@ -224,8 +224,9 @@ export class Rocks extends System {
         a[i * 4 + 2] = inst.tint;
         a[i * 4 + 3] = inst.size;
         const b = mesh.geometry.attributes.aRockB.array;
-        b[i * 2 + 0] = inst.waterY;
-        b[i * 2 + 1] = inst.frost;
+        b[i * 3 + 0] = inst.waterY;
+        b[i * 3 + 1] = inst.frost;
+        b[i * 3 + 2] = inst.groundY;
 
         counts.set(mesh, i + 1);
         total++;

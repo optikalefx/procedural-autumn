@@ -402,3 +402,76 @@ a settle-frames wait or a "is the frame non-trivial" retry in the harness.
 the first frame through `globalThis.__engine`, which costs one material
 recompile at boot. `sun.shadow.radius` / `blurSamples` are therefore dead
 values — PCF-soft ignores them. Harmless, but confusing to read.
+
+---
+
+## From the Rocks author
+
+**5. Something outside `src/rocks/` is drawing near-white faceted boulders, and
+they dominate the near field.**
+
+Verified by two independent tests at fixed cameras (`--pos/--look`, so the
+framing is identical between runs):
+
+- forcing `RockMaterial`'s albedo to flat magenta, then to flat green, leaves
+  those boulders unchanged;
+- setting `Rocks.group.visible = false` removes only a couple of objects per
+  frame — the pale boulder fields in `meadow`, `drive`, `river` and along every
+  treeline are all still there.
+
+So they belong to another system (they look like a ground-cover or terrain-decal
+layer). Two things worth knowing about them:
+
+- *Value.* Measured off the reference plates, a sunlit foreground boulder sits
+  at about `(168,153,148)` with the gold meadow beside it at `(241,166,85)` —
+  the rock is roughly two thirds of the meadow's luminance. These render at
+  `(200-220, …)`, i.e. brighter than the meadow, which is why they read as
+  patches of snow rather than as stone. `src/rocks/RockMaterial.js` now carries
+  an explicit exposure-match factor (`rock *= 0.72`) derived from that
+  measurement; whoever owns these may want the same.
+- *Ownership.* If they were intended as rocks, they overlap this system and we
+  should delete one of the two. Happy to take them over.
+
+**6. POI anchors are not stable between runs.** `poi.best('meadow', 0)` and
+`poi.best('river', 0)` returned visibly different places on consecutive
+`tools/shot.mjs` runs against the same seed — different terrain, different tree
+mix — which makes any before/after comparison from `--view` unreliable. Some of
+it is `bake-watch` re-baking mid-session while the terrain author edits, but if
+POI ranking has a non-deterministic tiebreak it is worth pinning. Working around
+it with explicit `--pos/--look` for now.
+
+## RESOLVED — the near-white boulders ARE `src/rocks/`
+
+**Reported by:** rocks author (as belonging to another system). **Investigated by:** engine owner.
+
+The rocks author concluded the pale faceted boulders were not theirs, on the
+strength of a magenta-albedo test and a `Rocks.group.visible = false` test. That
+conclusion is wrong, and it cost them several rounds of tuning against what they
+believed was someone else's artifact.
+
+Isolated with `tools/shot.mjs --eval`, at a frozen anchor so the framing is
+identical between runs:
+
+| capture | Rocks | GroundCover | pale boulders present |
+|---|---|---|---|
+| `shots/diag/base.png` | on | on | yes |
+| `shots/diag/no-rocks-cover.png` | off | off | **no** |
+| `shots/diag/no-cover-only.png` | **on** | off | **yes** |
+
+Hiding GroundCover alone changes nothing; hiding Rocks removes them. They are
+`src/rocks/`.
+
+The value analysis in that report is still correct and still unapplied in
+practice: measured off the reference plates a sunlit boulder sits at about
+`(168,153,148)` against gold meadow at `(241,166,85)` — roughly two thirds of
+the meadow's luminance. In the current build they render brighter than the
+meadow, which is why they read as patches of snow rather than stone. The
+`rock *= 0.72` factor in `RockMaterial.js` is not enough at the current global
+exposure, and may not be reaching every archetype.
+
+**Lesson for everyone:** when testing whether an artifact is yours, hide the
+system *and* confirm the artifact disappears — a negative result from a material
+override only proves that particular material path is not involved.
+`tools/shot.mjs --eval "<js>"` runs arbitrary page code before capture and
+`shots/_anchors.json` freezes view framings, so this kind of A/B is now cheap
+and controlled.

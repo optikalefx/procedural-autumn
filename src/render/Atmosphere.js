@@ -143,27 +143,47 @@ function neutralCloudMap() {
 
 const DEFAULTS = {
   density: 0.0015,
-  // ~550 m scale height.
+  // ~180 m scale height. This is the single number that makes ridgelines
+  // separate into layers, and it was previously set 2.7x too gentle on the
+  // argument that raising it scales the whole vista frame down. It does — and
+  // that is a *global* term you compensate with `density`, not a reason to
+  // flatten the altitude profile that carries the whole depth cue.
   //
-  // A short scale height sounds like the right lever for ridgeline layering,
-  // and it is not — measured, it makes it worse. The vista cameras sit at
-  // 300–400 m, so `exp(-k * cameraHeight)` scales the *whole* frame down, while
-  // the far peaks (at camera altitude, dy ~ 0) lose more optical depth than the
-  // valley floor below does. At k = 0.0035 the far/near optical-depth ratio in
-  // `peaks` was 1.3; at 0.0020 it is 1.7. Distance, not altitude, is what has
-  // to separate the planes in a valley only ~1.5 km across. Height falloff
-  // stays gentle — enough that a peak sits clear of valley mist, no more.
-  heightFalloff: 0.0020,
-  baseHeight: 10.0,
+  // What layering actually needs is that a ridge *crest* and the valley floor
+  // *below it*, at the same distance, receive different optical depth. Worked
+  // out for the `hero` camera (367 m over the vista anchor) at 3 km:
+  //
+  //   k = 0.0020   crest at 350 m: fogFactor 0.88   valley at 40 m: 0.90
+  //   k = 0.0055   crest at 350 m: fogFactor 0.49   valley at 40 m: 0.84
+  //
+  // The first is one flat cream wash — which is exactly what `hero` and `dawn`
+  // measured (contrastStd 0.107 against a reference band of 0.13–0.22). The
+  // second is the reference: crests standing clear of mist that pools in the
+  // valleys, each successive ridge a little paler than the one in front.
+  //
+  // Eye-level frames are unaffected: with baseHeight at 20 m a driving camera
+  // sits within a few metres of the base of the profile either way.
+  heightFalloff: 0.0055,
+  baseHeight: 20.0,
   inscatter: 1.35,
   // Capped lower than it was: at 0.62 a sun-facing vista pulled two thirds of
   // the haze toward the (bright) sun colour, which lifted the whole middle
   // distance to sky value and erased the horizon line.
   inscatterMax: 0.45,
   anisotropy: 0.60,
-  farStart: 300.0,
+  // The near->far haze colour crossfade runs from farStart to farStart*5, so
+  // this also sets how deep the frame is before the haze stops changing hue.
+  // At 300 it finished at 1.5 km, and everything beyond that was one colour at
+  // one density — the flat pale band that filled the middle third of `hero`.
+  farStart: 400.0,
   onset: 130.0,
-  max: 0.90,               // never a perfect wash — the last ridge keeps 10%
+  // Never a perfect wash, and the exact number decides how many planes the far
+  // field can show. Anything that reaches the cap renders identically to
+  // everything else at the cap, so a high cap collapses every distant ridge
+  // into one silhouette-free field — which is what filled the middle third of
+  // the hero frame. At 0.76 a ridge keeps a quarter of its own value and
+  // shading, and successive ridges separate again.
+  max: 0.76,
   // High on purpose. Now that this bleeds toward the haze *hue* rather than
   // toward grey it cannot neutralise the frame, and the reference wants it
   // strong: its distant ridges measure chroma 0.13–0.26 against a foreground

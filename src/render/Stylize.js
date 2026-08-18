@@ -57,12 +57,25 @@ const DEFAULTS = {
   // banding, and almost no direct specular. The reference's shaded meadow sits
   // only slightly below its lit meadow in value — the shading does very little
   // work, and colour does the rest.
-  wrap: 0.42,        // 0 = physical, 1 = fully wrapped
-  steps: 3.0,        // number of quantisation bands
-  soft: 0.26,        // band edge softness (0.5 = no banding at all)
-  banding: 0.45,     // blend between smooth wrap and hard bands
+  wrap: 0.36,        // 0 = physical, 1 = fully wrapped
+  // Banding is the direct expression of the brief's "large areas of uniform
+  // colour with few shading gradients". At 0.45/3.0 the quantisation was a
+  // suggestion — a smooth terrain normal still produced a smooth ramp, which is
+  // exactly the "realistic renderer" tell the art director called out. Fewer,
+  // firmer, still-soft-edged steps make a mountain flank read as two or three
+  // painted masses instead of a gradient.
+  steps: 2.6,        // number of quantisation bands
+  soft: 0.24,        // band edge softness (0.5 = no banding at all)
+  banding: 0.62,     // blend between smooth wrap and hard bands
   specular: 0.14,    // direct specular scale
-  floor: 0.11,       // minimum diffuse response — nothing goes fully unlit
+  // Minimum diffuse response — nothing goes fully unlit. Lowered from 0.11:
+  // the floor is not the thing that keeps foliage out of a hole (foliage is
+  // ShaderMaterial and never ran this term at all — the grade's black lift is
+  // what does that job), it is the thing that decides how much *form* a big
+  // terrain mass keeps. At 0.11, plus ambient, the shaded flank of the `hero`
+  // massif arrived within 7% display of its lit flank and the mountain read as
+  // one smooth beige lump.
+  floor: 0.07,
 };
 
 let patched = false;

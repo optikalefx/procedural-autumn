@@ -51,40 +51,40 @@ const KEYS = [
   // Cool dawn — long low light, pale horizon. Cool is a *relative* statement:
   // the zenith is the bluest of the day, but the haze itself stays peach, or
   // the frame measures out at a fifth of the reference's chroma.
-  { h: 7.4,  sun: 0xffc08a, sunI: 2.60, hemiSky: 0xc0bcc6, hemiGnd: 0xc8a68c, hemiI: 1.14,
-    zen: 0x83aeda, hor: 0xe4c2a4, sunHor: 0xf9c79c, glow: 0xffd4ab, glowI: 0.95,
-    fogNear: 0xe0b48c, fogFar: 0xd8c2c2, fogSun: 0xffd0a0, fogD: 0.0024,
+  { h: 7.4,  sun: 0xffbc80, sunI: 2.60, hemiSky: 0xb8bcd0, hemiGnd: 0xd0a482, hemiI: 1.14,
+    zen: 0x76abdc, hor: 0xf2c8a2, sunHor: 0xffc794, glow: 0xffd4ab, glowI: 0.95,
+    fogNear: 0xe6ab7c, fogFar: 0xd2b4c4, fogSun: 0xffcc96, fogD: 0.0024,
     cloudLit: 0xffe0c4, cloudDark: 0x8c94b8, cover: 0.43 },
 
-  { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xc0c4e0, hemiGnd: 0xdcb072, hemiI: 0.96,
-    zen: 0x63a0dc, hor: 0xe6cdb0, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
-    fogNear: 0xdcbb92, fogFar: 0xdcc6ba, fogSun: 0xffe8c8, fogD: 0.0021,
+  { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xb6c0e4, hemiGnd: 0xdcb072, hemiI: 0.96,
+    zen: 0x63a0dc, hor: 0xecd8c6, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
+    fogNear: 0xdcbb92, fogFar: 0xd8bec4, fogSun: 0xffe8c8, fogD: 0.0021,
     cloudLit: 0xfff6ec, cloudDark: 0xa4abc6, cover: 0.37 },
 
-  { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xc4cbe8, hemiGnd: 0xe0b476, hemiI: 0.90,
-    zen: 0x5fa0de, hor: 0xe0cdb6, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
-    fogNear: 0xd8c3a0, fogFar: 0xd6c4b6, fogSun: 0xf8ecd8, fogD: 0.0015,
+  { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xbac6ec, hemiGnd: 0xe0b476, hemiI: 0.90,
+    zen: 0x5fa0de, hor: 0xe8d6c8, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
+    fogNear: 0xd8c3a0, fogFar: 0xd2bcc0, fogSun: 0xf8ecd8, fogD: 0.0015,
     cloudLit: 0xfffaf4, cloudDark: 0xa6aecc, cover: 0.33 },
 
-  { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xcdc6d8, hemiGnd: 0xd8ae76, hemiI: 1.00,
-    zen: 0x9ec0e6, hor: 0xe8c9a4, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
-    fogNear: 0xdcb488, fogFar: 0xe6cec3, fogSun: 0xffdfb4, fogD: 0.0021,
+  { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xbfbede, hemiGnd: 0xd8ae76, hemiI: 1.00,
+    zen: 0x9ec0e6, hor: 0xf0d4bc, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
+    fogNear: 0xdcb488, fogFar: 0xe2c4c6, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xa4a4c4, cover: 0.39 },
 
   // The money frame: deep golden hour.
-  { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xcebec4, hemiGnd: 0xd2a066, hemiI: 0.98,
-    zen: 0xa9c4e4, hor: 0xe6c294, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
-    fogNear: 0xe0ac72, fogFar: 0xe8cdc0, fogSun: 0xffc98c, fogD: 0.0027,
+  { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.98,
+    zen: 0xa9c4e4, hor: 0xf0d0b8, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
+    fogNear: 0xe0ac72, fogFar: 0xe4c0c4, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0x9c90b6, cover: 0.43 },
 
-  { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xc4aeb8, hemiGnd: 0xcc9060, hemiI: 1.16,
+  { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xb4a8cc, hemiGnd: 0xcc9060, hemiI: 1.16,
     zen: 0x5b83c2, hor: 0xf3c8a0, sunHor: 0xf8a262, glow: 0xffae66, glowI: 1.20,
-    fogNear: 0xe2a266, fogFar: 0xdfbcb4, fogSun: 0xffa860, fogD: 0.0035,
+    fogNear: 0xe2a266, fogFar: 0xdcb0b6, fogSun: 0xffa860, fogD: 0.0035,
     cloudLit: 0xffcc9c, cloudDark: 0x8a80aa, cover: 0.47 },
 
   { h: 19.0, sun: 0xff8446, sunI: 1.50, hemiSky: 0xb49eac, hemiGnd: 0xb27a58, hemiI: 1.14,
     zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
-    fogNear: 0xd88a62, fogFar: 0xc09098, fogSun: 0xff8a48, fogD: 0.0040,
+    fogNear: 0xd88a62, fogFar: 0xbe8c9c, fogSun: 0xff8a48, fogD: 0.0040,
     cloudLit: 0xffb078, cloudDark: 0x766698, cover: 0.49 },
 
   { h: 19.8, sun: 0x9c5a76, sunI: 0.32, hemiSky: 0x8a92ae, hemiGnd: 0x7a6672, hemiI: 0.72,
@@ -118,7 +118,7 @@ const SCALAR_FIELDS = ['sunI', 'hemiI', 'glowI', 'fogD', 'cover'];
 // fogFactor ~0.25 on its furthest ridge, so near, mid and far read as one
 // plane. 0.34 was over-correcting for the fact that the old desaturation term
 // was neutralising the frame, which is fixed at source in Atmosphere now.
-const FOG_DENSITY_SCALE = 0.58;
+const FOG_DENSITY_SCALE = 0.54;
 
 // The hemisphere fill was authored to keep shadows off the floor while the
 // Stylize diffuse floor was not running (same wiring bug as the fog). With both
@@ -128,7 +128,18 @@ const FOG_DENSITY_SCALE = 0.58;
 // reference's rock runs #c3bfcc lit against #5c5a75 shaded, a ratio of about
 // 0.19 in linear; at full ambient ours measured 0.7. Scaling the whole authored
 // curve keeps its time-of-day shape, which is right.
-const AMBIENT_SCALE = 0.62;
+//
+// 0.62 was still too much for a vista. Worked through for the `hero` massif at
+// golden hour: sun 2.95, ambient 0.61, stylised diffuse 0.72 lit / 0.12 shaded.
+// Ambient was then 22% of the lit face but 64% of the shaded one, so it set the
+// contrast of every mountain in the frame. At 0.50, with a lower Stylize floor,
+// the shaded flank drops from 0.92 to about 0.74 display against a lit flank at
+// 0.98 — which is the difference between a beige lump and a mountain. Settled a
+// little above that: the eye-level frames (river, forest, waterfall, vehicle)
+// are mostly shaded ground and dark conifer, and 0.50 put all four of them
+// below the reference's 0.37 lumaMean floor. Ambient is the one lever that
+// lifts those without also brightening the lit rock the vistas are made of.
+const AMBIENT_SCALE = 0.55;
 
 // Pre-convert the table once; per-frame we only lerp.
 const BAKED = KEYS.map((k) => {
@@ -203,9 +214,12 @@ export class Lighting {
     scene.add(this.sun);
     scene.add(this.sun.target);
 
-    // Sky fill (cool) + ground bounce (warm). Kept close to neutral: the
-    // violet in the reference is a *tint* on a still-warm shadow, so a
-    // saturated hemisphere light is a bug, not the style.
+    // Sky fill (cool) + ground bounce (warm). The split has to be *visible* —
+    // the hemiSky keys used to be pinkish greys, so a shaded cliff got a warm
+    // fill from both hemispheres and rendered dark chocolate brown, against a
+    // brief that says rock is lavender-grey lit and violet-grey shaded and
+    // never brown. It is still a tint, not a hue replacement: a shadow that has
+    // gone saturated blue is a bug.
     this.hemi = new THREE.HemisphereLight(0xffffff, 0xffffff, 1.1);
     scene.add(this.hemi);
 
@@ -325,9 +339,12 @@ export class Lighting {
     // Warm the counter-key toward the key when the sun is low: at golden hour
     // the bounce off a gold valley floor is the dominant fill, and a purely
     // cool one drives every shaded face to the saturated blue the brief calls
-    // out as a bug.
+    // out as a bug. Kept well short of fully warm, though — at 0.65 the fill
+    // was almost pure ground bounce and a cast shadow on gold meadow rendered
+    // as dark red-brown mud instead of the lighter, slightly cooled gold the
+    // reference shows.
     const lowSun = 1 - smoothstep(0.06, 0.34, elev);
-    this.fill.color.copy(k.hemiSky).lerp(k.hemiGnd, 0.30 + 0.35 * lowSun);
+    this.fill.color.copy(k.hemiSky).lerp(k.hemiGnd, 0.18 + 0.24 * lowSun);
     this.fill.intensity = lerp(0.10, 0.24, day);
 
     // Atmosphere palette for this hour (main.js copies these into Atmosphere).

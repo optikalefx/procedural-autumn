@@ -1,15 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  Post chain — the grade is where the painterly look actually lands.
-//  Order: render -> SSAO -> bloom -> DOF -> custom grade -> SMAA -> output
+//  Order: render -> SSAO -> DOF -> bloom -> tone map -> vignette -> grade -> SMAA
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import {
   EffectComposer, RenderPass, EffectPass, BloomEffect, SMAAEffect,
   DepthOfFieldEffect, VignetteEffect,
-  Effect, BlendFunction, KernelSize, NoiseEffect,
+  Effect, BlendFunction, KernelSize,
 } from 'postprocessing';
 import { N8AOPostPass } from 'n8ao';
-import { QUALITY_PRESETS, PALETTE } from '../world/WorldConfig.js';
+import { QUALITY_PRESETS } from '../world/WorldConfig.js';
 
 // ── Custom grade: aerial perspective, warm/cool split-tone, film curve ───────
 const GRADE_FRAG = /* glsl */`
@@ -23,7 +23,6 @@ uniform vec3  uLiftTint;
 uniform float uVibrance;
 uniform float uGrain;
 uniform float uTime;
-uniform float uCAStrength;
 
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
@@ -38,7 +37,12 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // up pivoting its contrast near the highlights and lifting the toe by a
   // quarter of the display range.
 
-  // Split toning: cool violet in shadow, warm gold in highlight.
+  // Split toning: cool violet in shadow, warm gold in highlight. This is the
+  // brief's complementary split, and it is also the only tool that puts chroma
+  // into near-neutral pixels — bare rock is the biggest of those, and the
+  // forest frame was measuring 31% near-neutral against a reference ceiling of
+  // 28%. Strong enough to read as a tint, nowhere near enough to make a shadow
+  // blue.
   float l = luma(c);
   float shadowW = 1.0 - smoothstep(0.0, 0.14, l);   // ~0 … 0.41 display
   float highW   = smoothstep(0.25, 0.85, l);        // ~0.55 … 0.94 display
@@ -54,9 +58,12 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // near-field frames were measuring lumaP05 0.00–0.08 against a reference band
   // of 0.16–0.42 because of it.
   c = max(c, 0.0);
-  // 0.026 linear is ~0.18 sRGB, inside the reference's own 0.16–0.42 band for the
+  // 0.034 linear is ~0.21 sRGB, inside the reference's own 0.16–0.42 band for the
   // 5th percentile — the point of the whole exercise: the reference lifts its
-  // blacks, never crushes them.
+  // blacks, never crushes them. The reach matters as much as the amount: at a
+  // 0.10 knee only literal black was caught, and the dense conifer masses that
+  // dominate the river and forest frames sit just above it. Those are the ones that
+  // measured lumaP05 0.02.
   //
   // Tinted, not neutral. A grey lift on a near-black coloured pixel is mostly
   // grey by the time it lands, and it showed: the forest interiors went from
@@ -64,9 +71,14 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // amber, so this lifts the value without draining the colour — and warm is
   // the right direction, because the brief measures blue/violet/magenta at
   // about 1% of the reference's chromatic pixels.
-  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, 0.10, luma(c)));
+  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, 0.17, luma(c)));
 
-  // Vibrance: boost the unsaturated, protect the already-saturated.
+  // Vibrance up, global saturation down. The pair is a chroma *compressor*, not
+  // a chroma trim, and that is what the frames needed: the gold meadow measured
+  // 0.51 against a reference band of 0.28–0.42 while the hazed vistas measured
+  // 0.24–0.26 under it. A flat saturation cut moves both the same way and only
+  // trades one error for the other; boosting by (1 - sat) pulls the pale haze up
+  // and the neon meadow down in the same pass.
   float mx = max(c.r, max(c.g, c.b));
   float mn = min(c.r, min(c.g, c.b));
   float sat = mx - mn;
@@ -126,17 +138,16 @@ class GradeEffect extends Effect {
     super('AutumnGrade', GRADE_FRAG, {
       blendFunction: BlendFunction.NORMAL,
       uniforms: new Map([
-        ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.97, 0.95, 1.06))],
-        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.12, 1.02, 0.86))],
-        ['uSplitStrength', new THREE.Uniform(0.14)],
-        ['uSaturation',    new THREE.Uniform(0.96)],
+        ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.93, 0.94, 1.12))],
+        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.14, 1.02, 0.83))],
+        ['uSplitStrength', new THREE.Uniform(0.21)],
+        ['uSaturation',    new THREE.Uniform(0.74)],
         ['uContrast',      new THREE.Uniform(1.18)],
-        ['uLift',          new THREE.Uniform(0.026)],
-        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.34, 0.96, 0.60))],
-        ['uVibrance',      new THREE.Uniform(0.16)],
+        ['uLift',          new THREE.Uniform(0.034)],
+        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.14, 1.00, 0.88))],
+        ['uVibrance',      new THREE.Uniform(0.90)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
-        ['uCAStrength',    new THREE.Uniform(0.0006)],
       ]),
     });
   }
@@ -156,7 +167,14 @@ class GradeEffect extends Effect {
 // `peaks` measured lumaP05 ≈ 0.53–0.61 against a reference band of 0.16–0.42
 // and chromaMean 0.21 against 0.28–0.42. Backing exposure off keeps the bright
 // end below the shoulder, which buys back both the value range and the colour.
-const EXPOSURE = 1.0;
+//
+// 1.0 was still not enough. PBR Neutral starts compressing at 0.76 and is very
+// aggressive above it: at 1.0 a lit rock face landed at 0.97 and its shaded
+// face at 0.80, so a 3:1 scene ratio arrived as 0.99 vs 0.92 on screen. That is
+// the whole reason `peaks` and `hero` read as pale tan with no form — it is the
+// shoulder eating the highlights, not the lighting failing to make them. The
+// bright end has to sit *under* the shoulder for form to survive it.
+const EXPOSURE = 0.86;
 
 export class PostFX {
   constructor(engine, quality = 'ultra') {
@@ -174,15 +192,22 @@ export class PostFX {
 
     if (this.preset.ssao) {
       this.ao = new N8AOPostPass(scene, camera, engine.width, engine.height);
-      this.ao.configuration.aoRadius = 3.2;
-      this.ao.configuration.distanceFalloff = 1.4;
+      // A grass field is hundreds of thousands of mutually-occluding sheets, so
+      // a metres-wide AO radius finds a contact between every pair of adjacent
+      // blades and fills the canopy interior with salt-and-pepper — the exact
+      // high-frequency noise the brief rules out, and the grass author's logged
+      // request. Pulling the radius in to roughly a blade-height keeps the cue
+      // that actually reads (a rock or a trunk meeting the ground) and drops
+      // the one that only adds noise.
+      this.ao.configuration.aoRadius = 1.1;
+      this.ao.configuration.distanceFalloff = 1.0;
       // Weaker and less blue than it was. Ambient occlusion is a contact cue,
       // not a grade: at 2.6 with a near-navy tint it was stamping a cold violet
       // into every crease of a gold meadow, which is the exact failure the
       // brief calls out — the cool note belongs to distant rock and haze, not
       // to shaded ground. Blue/violet/magenta together are about 1% of the
       // reference's chromatic pixels.
-      this.ao.configuration.intensity = 1.7;
+      this.ao.configuration.intensity = 1.15;
       this.ao.configuration.color = new THREE.Color(0x40303f);
       this.ao.configuration.halfRes = true;
       this.ao.configuration.denoiseSamples = 8;
@@ -201,11 +226,23 @@ export class PostFX {
       blendFunction: BlendFunction.ADD,
     });
 
+    // Depth of field. `focusDistance` is a fraction of camera.far, so the
+    // default has to be derived from it rather than hard-coded — 0.02 put the
+    // focal plane at a fixed ~60 m, which is wrong at every chase distance and
+    // wrong in every headless capture (CameraRig drives the focus in game, but
+    // nothing does during a capture).
+    //
+    // bokehScale is down from 1.6. At that size a blown highlight behind the
+    // focal plane resolved as a hard white disc several percent of frame width
+    // — the waterfall view was full of them — and the whole frame read as
+    // tilt-shift miniature rather than cozy, which the camera author also
+    // logged. A smaller circle of confusion still separates the camper from the
+    // valley without turning specular into confetti.
     this.dof = this.preset.dof
       ? new DepthOfFieldEffect(camera, {
-          focusDistance: 0.02,
-          focalLength: 0.20,
-          bokehScale: 1.6,
+          focusDistance: 55 / camera.far,
+          focalLength: 0.26,
+          bokehScale: 0.60,
           height: 720,
         })
       : null;
@@ -214,7 +251,13 @@ export class PostFX {
     // contrast in the vista views, which are otherwise a single 0.60–0.70 value
     // band from the valley floor to the sky (contrastStd 0.09 against a
     // reference band of 0.13–0.22).
-    this.vignette = new VignetteEffect({ offset: 0.36, darkness: 0.38 });
+    //
+    // It runs *before* the grade (see the pass order below). Running it after
+    // meant the corners were darkened by up to 38% with nothing downstream to
+    // catch them, which is how `river` and `forest` — frames whose edges are
+    // dense conifer — measured lumaP05 0.02 despite a shadow lift specifically
+    // designed to stop exactly that.
+    this.vignette = new VignetteEffect({ offset: 0.40, darkness: 0.30 });
     this.grade = new GradeEffect();
     // Khronos PBR Neutral, not AgX. AgX is a filmic curve built for
     // photographic realism: it has a long toe and it deliberately desaturates
@@ -230,10 +273,17 @@ export class PostFX {
     // mapping converts to display range, and the grade must run *after* that
     // so its contrast/saturation operate on the values the player actually
     // sees. Renderer tone mapping is disabled (see Engine) so this is the only
-    // place the conversion happens.
-    const effects = [this.bloom];
+    // place the conversion happens. The vignette sits between the two: it is a
+    // darkening, so the grade's black lift has to be the last thing that
+    // touches the shadows or the corners fall through it.
+    // Depth of field runs *before* bloom. The other way round, bloom turned
+    // every specular sparkle on the waterfall into a bright point and the DOF
+    // kernel then resolved each one as a hard white disc a few percent of frame
+    // width across — the single most conspicuous artifact left in that view.
+    // Defocusing first means the highlight is already spread when bloom sees it.
+    const effects = [];
     if (this.dof) effects.push(this.dof);
-    effects.push(this.tone, this.grade, this.vignette, this.smaa);
+    effects.push(this.bloom, this.tone, this.vignette, this.grade, this.smaa);
     this.mainPass = new EffectPass(camera, ...effects);
     this.composer.addPass(this.mainPass);
 

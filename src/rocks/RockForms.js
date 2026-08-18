@@ -293,8 +293,8 @@ export const ARCHETYPES = {
       // Few planes, big lumps, low-frequency: the support radius has to swing
       // a long way across the body or every facet comes out the same size and
       // the boulder reads as a geodesic dome instead of a rock.
-      fill: 15, dirJitter: 0.32, lump: 0.20, lumpFreq: 0.85, offJitter: 0.10,
-      erode: 0.22, erodeCount: 15, erodeEdges: true,
+      fill: 9, dirJitter: 0.34, lump: 0.26, lumpFreq: 0.80, offJitter: 0.12,
+      erode: 0.16, erodeCount: 7, erodeEdges: true,
     })],
   },
 
@@ -323,8 +323,8 @@ export const ARCHETYPES = {
     variants: 4, sink: 0.30,
     build: (rng, noise) => [makeBody(rng, noise, {
       axes: V3(1, 0.56 + rng() * 0.28, 0.76 + rng() * 0.24),
-      fill: 8, dirJitter: 0.36, lump: 0.24, lumpFreq: 1.1, offJitter: 0.12,
-      erode: 0.20, erodeCount: 7, erodeEdges: true,
+      fill: 6, dirJitter: 0.38, lump: 0.28, lumpFreq: 1.0, offJitter: 0.13,
+      erode: 0.16, erodeCount: 5, erodeEdges: true,
     })],
   },
 
@@ -344,16 +344,16 @@ export const ARCHETYPES = {
     build: (rng, noise) => {
       const main = makeBody(rng, noise, {
         axes: V3(1, 0.66 + rng() * 0.26, 0.82 + rng() * 0.20),
-        boxTilt: 0.34, fill: 13, dirJitter: 0.32, lump: 0.20, lumpFreq: 0.85, offJitter: 0.10,
-        erode: 0.17, erodeCount: 13, erodeEdges: true,
+        boxTilt: 0.34, fill: 8, dirJitter: 0.34, lump: 0.26, lumpFreq: 0.80, offJitter: 0.12,
+        erode: 0.13, erodeCount: 7, erodeEdges: true,
       });
       const out = [main];
       const n = 1 + ((rng() * 2) | 0);
       for (let i = 0; i < n; i++) {
         const sub = makeBody(rng, noise, {
           axes: V3(1, 0.50 + rng() * 0.34, 0.76 + rng() * 0.24),
-          boxTilt: 0.6, fill: 8, dirJitter: 0.36, lump: 0.18, lumpFreq: 1.0, offJitter: 0.11,
-          erode: 0.13, erodeCount: 8, erodeEdges: true,
+          boxTilt: 0.6, fill: 5, dirJitter: 0.38, lump: 0.22, lumpFreq: 0.9, offJitter: 0.12,
+          erode: 0.10, erodeCount: 5, erodeEdges: true,
         });
         // Pushed far enough out that it actually breaks the main silhouette —
         // a shoulder you cannot see is just triangles.
@@ -371,7 +371,7 @@ export const ARCHETYPES = {
   // Cliff relief: a wide flat wedge that gets driven into a steep face so the
   // slope grows ledges and overhangs instead of reading as a painted ramp.
   ledge: {
-    variants: 3, sink: 0.05,
+    variants: 3, sink: 0.30,
     build: (rng, noise) => [makeBody(rng, noise, {
       axes: V3(1, 0.24 + rng() * 0.14, 0.52 + rng() * 0.24),
       boxTilt: 0.24, fill: 4, dirJitter: 0.32, lump: 0.10, lumpFreq: 0.7, offJitter: 0.11,
@@ -384,12 +384,12 @@ export const ARCHETYPES = {
   // is one flat sunlit top, one dark vertical face and a hard horizontal edge
   // between them. Extra facets only mush that up.
   bench: {
-    variants: 4, sink: 0.02,
+    variants: 4, sink: 0.34,
     build: (rng, noise) => {
       const main = makeBody(rng, noise, {
         axes: V3(1, 0.66 + rng() * 0.34, 0.76 + rng() * 0.24),
-        boxTilt: 0.26, fill: 3, dirJitter: 0.26, lump: 0.07, lumpFreq: 0.6, offJitter: 0.13,
-        erode: 0.05, erodeCount: 3, erodeEdges: false,
+        boxTilt: 0.30, fill: 7, dirJitter: 0.34, lump: 0.16, lumpFreq: 0.75, offJitter: 0.14,
+        erode: 0.10, erodeCount: 6, erodeEdges: false,
       });
       const out = [main];
       // One or two stacked/offset blocks: a crag is a pile of beds, and the
@@ -398,8 +398,8 @@ export const ARCHETYPES = {
       for (let i = 0; i < n; i++) {
         const sub = makeBody(rng, noise, {
           axes: V3(1, 0.34 + rng() * 0.28, 0.60 + rng() * 0.28),
-          boxTilt: 0.16, fill: 2, dirJitter: 0.3, lump: 0.07, lumpFreq: 0.6, offJitter: 0.14,
-          erode: 0.04, erodeCount: 2, erodeEdges: false,
+          boxTilt: 0.22, fill: 5, dirJitter: 0.34, lump: 0.14, lumpFreq: 0.7, offJitter: 0.15,
+          erode: 0.08, erodeCount: 4, erodeEdges: false,
         });
         const a = rng() * Math.PI * 2;
         const q = new THREE.Quaternion().setFromEuler(
@@ -416,7 +416,7 @@ export const ARCHETYPES = {
   // Tall, prismatic, capped by an oblique fracture so the top is never a
   // horizontal cut — a flat-topped tower reads as a chimney, not a crag.
   tower: {
-    variants: 4, sink: 0.10,
+    variants: 4, sink: 0.26,
     build: (rng, noise) => {
       const main = makeBody(rng, noise, {
         axes: V3(0.66 + rng() * 0.20, 1.20 + rng() * 0.55, 0.58 + rng() * 0.20),

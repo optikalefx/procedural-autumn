@@ -12,8 +12,14 @@
  */
 import { chromium } from 'playwright';
 import { acquire } from './_lock.mjs';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+
+// POI ranking shifts whenever the terrain bake changes, so `--view meadow` can
+// frame a different place between runs and quietly invalidate a before/after
+// comparison. Anchors are resolved once into this file and reused; delete it or
+// pass --refresh-views after a deliberate terrain change.
+const VIEWS_CACHE = 'shots/_anchors.json';
 
 const argv = process.argv.slice(2);
 const arg = (name, def = null) => {
@@ -94,11 +100,20 @@ await acquire('shot');
   const dir = arg('dir', 'shots');
   const results = [];
 
+  // Frozen anchors keep --view framings identical across runs, so a before/after
+  // comparison measures the change and not a different patch of the map.
+  let frozen = null;
+  if (!has('refresh-views') && existsSync(VIEWS_CACHE)) {
+    try { frozen = JSON.parse(readFileSync(VIEWS_CACHE, 'utf8')); }
+    catch { frozen = null; }
+  }
+  const resolvedAll = { ...(frozen ?? {}) };
+
   for (const name of views) {
     const v = VIEWS[name];
     if (!v && !has('pos')) { console.error(`unknown view: ${name}`); continue; }
 
-    await page.evaluate(async ({ v, name, posStr, lookStr, hourArg }) => {
+    await page.evaluate(async ({ v, name, posStr, lookStr, hourArg, frozen }) => {
       const THREE = window.__THREE;
       const e = window.__engine, wd = window.__world;
       const api = window.__cameraAnchors || {};
@@ -114,7 +129,12 @@ await acquire('shot');
         pos = new THREE.Vector3(p[0], p[1], p[2]);
         look = new THREE.Vector3(l[0], l[1], l[2]);
       } else {
-        const anchor = (api[v.anchor] || api.vista || (() => ({ x: 0, z: 0, yaw: 0 })))();
+        const cached = frozen && frozen[v.anchor];
+        const anchor = cached ?? (api[v.anchor] || api.vista || (() => ({ x: 0, z: 0, yaw: 0 })))();
+        window.__lastResolvedAnchor = cached ? null : {
+          key: v.anchor,
+          value: { x: anchor.x, z: anchor.z, yaw: anchor.yaw, lookY: anchor.lookY },
+        };
         let yaw = (anchor.yaw ?? 0) + (v.yawOffset ?? 0);
         if (v.faceSun) {
           const sd = window.__lighting.sunDir;
@@ -141,9 +161,41 @@ await acquire('shot');
       // Let streaming, LOD and any temporal effects settle.
       if (window.__settle) await window.__settle(60);
       void name;
-    }, { v, name, posStr: arg('pos'), lookStr: arg('look'), hourArg: arg('hour') });
+    }, { v, name, posStr: arg('pos'), lookStr: arg('look'), hourArg: arg('hour'), frozen });
+
+    // Record whatever this run had to resolve fresh.
+    const justResolved = await page.evaluate(() => window.__lastResolvedAnchor ?? null);
+    if (justResolved) resolvedAll[justResolved.key] = justResolved.value;
+
+    // Optional page-side setup: toggling systems, debug masks, etc.
+    const evalSrc = arg('eval');
+    if (evalSrc) await page.evaluate((src) => eval(src), evalSrc);
 
     await page.waitForTimeout(1400);
+
+    // A capture that comes back black, or as the loading screen, silently
+    // poisons any measurement taken from the batch — and it happened often
+    // enough that authors were re-running whole rounds. Verify the frame is
+    // real before writing it.
+    //
+    // Note: reading the WebGL canvas back through a 2D context does NOT work
+    // here — the context is created without preserveDrawingBuffer, so outside
+    // of a frame it reads as empty and every frame looks blank. Check the
+    // renderer's own state instead.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const state = await page.evaluate(() => ({
+        ready: window.__ready === true,
+        hidden: document.getElementById('loader')?.classList.contains('hidden') ?? true,
+        calls: window.__engine?.renderer?.info?.render?.calls ?? 0,
+        err: window.__bootError ?? null,
+      }));
+      if (state.ready && state.hidden && state.calls > 10) break;
+      console.error(`[shot] ${name} not renderable yet ` +
+                    `(ready=${state.ready} calls=${state.calls}${state.err ? ` err=${state.err}` : ''}); ` +
+                    `settling and retrying (${attempt + 1}/3)`);
+      await page.evaluate(() => window.__settle?.(90));
+      await page.waitForTimeout(1200);
+    }
 
     const out = has('all') || !arg('out')
       ? resolve(dir, `${name}.png`)
@@ -152,6 +204,11 @@ await acquire('shot');
     await page.screenshot({ path: out });
     results.push(out);
     console.log(`shot: ${out}`);
+  }
+
+  if (Object.keys(resolvedAll).length) {
+    mkdirSync(dirname(resolve(VIEWS_CACHE)), { recursive: true });
+    writeFileSync(resolve(VIEWS_CACHE), JSON.stringify(resolvedAll, null, 1));
   }
 
   const stats = await page.evaluate(() => ({

@@ -30,6 +30,12 @@ export function createRockMaterial() {
     uRockLit:    { value: PALETTE.rockLit.clone() },
     uRockMid:    { value: PALETTE.rockMid.clone() },
     uRockShadow: { value: PALETTE.rockShadow.clone() },
+    // Bottom of the working ramp. PALETTE.rockShadow is a *crevice* colour and
+    // is strongly violet; using it as the ramp base gave mid-value facets a
+    // pink-lilac cast, and the brief is explicit that a shadow which has become
+    // saturated violet is a bug rather than the style. This is the same hue,
+    // pulled toward neutral, and rockShadow stays for creases and contact only.
+    uRockDeep:   { value: new THREE.Color().setHex(0x6e6b7c, THREE.SRGBColorSpace) },
     uRockWarm:   { value: PALETTE.rockWarm.clone() },
     // Golden-hour cast for sun-facing planes. Measuring the reference plates,
     // lit rock sits around (185,145,119) — clearly warm — while shaded rock
@@ -59,10 +65,10 @@ export function createRockMaterial() {
     shader.vertexShader = /* glsl */`
       attribute vec3 aBake;      // ao, upward exposure, height in rock
       attribute vec4 aRockA;     // wetness, moisture, tint jitter, size
-      attribute vec2 aRockB;     // water surface Y, altitude/frost factor
+      attribute vec3 aRockB;     // water surface Y, frost factor, ground Y
       varying vec3 vBake;
       varying vec4 vRockA;
-      varying vec2 vRockB;
+      varying vec3 vRockB;
       varying vec3 vWPos;
       varying vec3 vWNrm;
       varying vec3 vLPos;
@@ -93,12 +99,12 @@ export function createRockMaterial() {
         }`);
 
     shader.fragmentShader = /* glsl */`
-      uniform vec3 uRockLit, uRockMid, uRockShadow, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
+      uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
       uniform vec3 uSunDir, uShadowTint, uSunTint;
       uniform float uAOStrength, uTime;
       varying vec3 vBake;
       varying vec4 vRockA;
-      varying vec2 vRockB;
+      varying vec3 vRockB;
       varying vec3 vWPos;
       varying vec3 vWNrm;
       varying vec3 vLPos;
@@ -149,33 +155,49 @@ export function createRockMaterial() {
         bed *= 1.0 - abs( N.y );          // only visible on near-vertical faces
 
         // ── base lavender-grey ────────────────────────────────────────────
-        // Rock in the reference is a HIGH-VALUE material: a lit face sits close
-        // to the sky's value and only genuine creases go dark. Everything here
-        // stays between rockMid and rockLit; rockShadow is a crevice colour, not
-        // a shading colour, and letting it into the open faces is what made the
-        // first pass read as wet slate.
-        // The up-term is weighted lightly on purpose. Global lighting already
-        // brightens upward faces; baking a second big up-term into the albedo
-        // double-counted it and blew every horizontal facet out to near-white,
-        // which is what made the rocks read as polystyrene chips on the hill.
-        float val = 0.38
+        //
+        // The value here was measured off the plates, not guessed, because
+        // every intuition about it turned out to be wrong. In the reference a
+        // sunlit foreground boulder sits at about (168,153,148) with the gold
+        // meadow beside it at (241,166,85): the rock is roughly two thirds of
+        // the meadow's luminance and very close to neutral. An earlier pass
+        // had it *brighter* than the meadow and warm-tinted, which is exactly
+        // why the rocks read as polystyrene chips and patches of snow rather
+        // than as stone. Dark neutral masses in a bright gold field is the
+        // whole effect.
+        //
+        // So the working ramp is rockShadow → rockLit, not rockMid → rockLit.
+        // rockLit is the top of the range, reached only by the brightest
+        // facets; most of the rock lives in the lower half of it.
+        //
+        // The up-term is weighted lightly on purpose: global lighting already
+        // brightens upward faces, and baking a second big up-term into the
+        // albedo double-counted it and blew every horizontal facet out.
+        float val = 0.19
                   + up * 0.06
-                  + facet * 0.17              // per-facet tone, the main split
+                  + facet * 0.20              // per-facet tone, the main split
                   + bed * 0.07
-                  + tint * 0.09
+                  + tint * 0.08
                   - (1.0 - hN) * 0.07;        // bases sit a little darker
-        vec3 rock = mix( uRockMid, uRockLit, clamp( val, 0.0, 1.0 ) );
-        rock = mix( rock, uRockShadow, ( 1.0 - ao ) * 0.34 );
+        vec3 rock = mix( uRockDeep, uRockLit, clamp( val, 0.0, 1.0 ) );
+        rock *= mix( 0.62, 1.0, ao );         // creases: multiplied, not tinted
 
-        // Warm key / cool shadow, applied per facet in albedo. Doing it here
-        // rather than in lighting is what keeps the flat cel look: a facet is
-        // still one uniform colour, it just is not the same colour as the
-        // facet beside it. This is also the fix for rocks reading as chalk —
-        // a lit plane has to join the warm family the rest of the frame is in.
+        // A hint of the key light's warmth on sun-facing planes, and no more.
+        // The reference rock is near-neutral even in full golden hour; pushing
+        // this further turned it mustard, which is the brown-grey the brief
+        // bans outright.
         float sunFace = clamp( dot( N, normalize( uSunDir ) ), -1.0, 1.0 );
         float warmM = smoothstep( -0.25, 0.60, sunFace );
-        rock = mix( rock, uRockSun * uSunTint, 0.06 + warmM * 0.54 );
-        rock = mix( rock, uRockShadow, ( 1.0 - warmM ) * 0.22 );
+        rock = mix( rock, uRockSun * uSunTint, 0.04 + warmM * 0.14 );
+
+        // Exposure match. The palette hues are correct but this pipeline —
+        // light rig, Stylize floor, exposure, PBR-Neutral tone map, grade —
+        // has an end-to-end gain of about 1.45 on rock albedo, which landed a
+        // lit face at ~200 against gold meadow at ~220. Measured on the plates
+        // the same pair is 168 against 241. This factor is what closes that
+        // gap; without it the rocks read as snow patches, which is precisely
+        // how every earlier build looked.
+        rock *= 0.72;
 
         // ── lichen and moss ───────────────────────────────────────────────
         // Big soft blotches, never speckle. Pale lichen crusts the sunny tops,
@@ -204,6 +226,17 @@ export function createRockMaterial() {
 
         // Frost-shattered high ground reads paler and cooler.
         rock = mix( rock, rock * vec3( 1.06, 1.05, 1.10 ), clamp( vRockB.y, 0.0, 1.0 ) * 0.5 );
+
+        // ── contact with the ground ───────────────────────────────────────
+        // A band of occlusion just above the terrain line. Cheap, and it is
+        // the single strongest cue that a heavy object is bedded *into* the
+        // ground rather than pasted on top of it — the baked AO cannot know
+        // about the hillside the rock is half buried in, only about the rock.
+        // Height of the band scales with the rock so a cobble gets a few
+        // centimetres and a crag block gets a couple of metres.
+        float above = vWPos.y - vRockB.z;
+        float contact = 1.0 - smoothstep( 0.0, 0.45 + size * 0.55, max( above, 0.0 ) );
+        rock *= mix( 1.0, 0.66, contact );
 
         diffuseColor.rgb *= rock;
       }`)
