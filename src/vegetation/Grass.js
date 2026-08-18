@@ -31,17 +31,17 @@ const RINGS = [
   // rather than with more instances. 3 segments still reads as a curve at 2 m.
   {
     tileSize: 16, segments: 3, maxBlades: 19000, perClump: 26, clumpRadius: 0.48,
-    width: 0.055, height: 0.84, salt: 0x1111,
+    width: 0.055, height: 0.84, salt: 0x1111, floor: 0.46,
     fadeIn: [-20, -10], fadeOut: [20, 30], widthGain: 0.0, aoScale: 1.0,
   },
   {
-    tileSize: 40, segments: 2, maxBlades: 20000, perClump: 30, clumpRadius: 1.20,
-    width: 0.125, height: 0.86, salt: 0x2222,
+    tileSize: 40, segments: 2, maxBlades: 18500, perClump: 30, clumpRadius: 1.20,
+    width: 0.125, height: 0.86, salt: 0x2222, floor: 0.40,
     fadeIn: [18, 28], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
   },
   {
-    tileSize: 96, segments: 1, maxBlades: 18000, perClump: 34, clumpRadius: 3.2,
-    width: 0.320, height: 1.05, salt: 0x3333,
+    tileSize: 96, segments: 1, maxBlades: 16000, perClump: 34, clumpRadius: 3.2,
+    width: 0.320, height: 1.05, salt: 0x3333, floor: 0.34,
     fadeIn: [54, 72], fadeOut: [150, 182], widthGain: 1.2, aoScale: 0.30,
   },
 ];
@@ -67,7 +67,6 @@ export class Grass extends System {
     // Resume state for the tile currently under construction. Reused, never
     // reallocated — update() must not allocate.
     this._st = { a: 0, n: 0, minY: 0, maxY: 0, weights: {}, deadline: 0 };
-    this._camXZ = new THREE.Vector2();
     this._size = new THREE.Vector2();
     this._first = true;
     // A tile is built atomically, so the true worst-case frame cost is this
@@ -87,7 +86,29 @@ export class Grass extends System {
     for (const cfg of RINGS) {
       const ring = Object.assign({}, cfg);
       ring.maxBlades = Math.max(400, Math.round(cfg.maxBlades * mul * (VEG.grassBladesPerChunk / 26000)));
+
+      // ── how the field degrades ──────────────────────────────────────────
+      // Spending grassMul purely on blade count is the obvious thing and it
+      // looks broken: at `low` the tuft count falls with it and the meadow
+      // becomes islands of grass marooned on bare ground. A thinner, shorter-
+      // ranged field reads as a deliberate art choice; islands read as a bug.
+      //
+      // So the budget is spent two other ways first. Blades per tuft fall
+      // sub-linearly, which keeps most of the tufts and so keeps the ground
+      // covered; and the whole fade ladder contracts, so the smaller budget
+      // is spread over less ground and stays dense where the player is
+      // actually looking. Scaling every ring by the same factor preserves the
+      // ring-to-ring overlap, and shrinking fadeOut only ever helps the
+      // tile-recycling margin asserted below.
+      ring.perClump = Math.max(5, Math.round(cfg.perClump * Math.pow(mul, 0.75)));
       ring.clumpAttempts = Math.ceil((ring.maxBlades / ring.perClump) * 1.35);
+
+      const reach = 0.62 + 0.38 * Math.min(1, mul);
+      if (reach < 0.999) {
+        ring.fadeIn = cfg.fadeIn.map((v) => v * reach);
+        ring.fadeOut = cfg.fadeOut.map((v) => v * reach);
+        ring.clumpRadius = cfg.clumpRadius * (0.80 + 0.20 * mul);
+      }
 
       // The no-pop guarantee rests entirely on a tile being fully faded out
       // before the toroidal grid can ever recycle it. Worst case the camera
@@ -102,7 +123,10 @@ export class Grass extends System {
       }
 
       const blade = makeBladeGeometry(cfg.segments);
-      const mat = createGrassMaterial(this.uniforms, cfg);
+      // `ring`, not `cfg` — the material has to be given the *scaled* fade
+      // ladder, or the shader keeps fading blades out at the ultra distances
+      // while the CPU culls tiles at the contracted ones.
+      const mat = createGrassMaterial(this.uniforms, ring);
       ring.blade = blade;
       ring.material = mat;
       ring.tiles = [];
@@ -131,8 +155,10 @@ export class Grass extends System {
         mesh.renderOrder = 1;
         this.group.add(mesh);
 
+        // build/built carry a part-finished fill across frames; see _build().
         ring.tiles.push({ ix: 1e9, iz: 1e9, mesh, geo, ib, data,
-                          dirty: false, dist: 0, count: 0, minY: 0, maxY: 0 });
+                          dirty: false, dist: 0, count: 0, minY: 0, maxY: 0,
+                          build: 0, built: 0 });
       }
       this.rings.push(ring);
     }
@@ -154,7 +180,7 @@ export class Grass extends System {
           const tile = ring.tiles[sz * GRID + sx];
           if (tile.ix !== ix || tile.iz !== iz) {
             tile.ix = ix; tile.iz = iz; tile.dirty = true; tile.count = 0;
-            tile.build = 0;                       // restart a partial build
+            tile.build = 0; tile.built = 0;       // restart a partial build
             tile.mesh.visible = false;
           }
 

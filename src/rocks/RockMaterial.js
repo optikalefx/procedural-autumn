@@ -31,6 +31,17 @@ export function createRockMaterial() {
     uRockMid:    { value: PALETTE.rockMid.clone() },
     uRockShadow: { value: PALETTE.rockShadow.clone() },
     uRockWarm:   { value: PALETTE.rockWarm.clone() },
+    // Golden-hour cast for sun-facing planes. Measuring the reference plates,
+    // lit rock sits around (185,145,119) — clearly warm — while shaded rock
+    // stays neutral-to-cool. That split is the light, not the material, but
+    // the global rig cannot know a plane is rock, so the albedo carries part
+    // of it. Without this the rock is the only desaturated thing in a frame
+    // that is 95% warm, and a desaturated mid-value object reads as chalk.
+    uRockSun:    { value: new THREE.Color().setHex(0xd7ac7f, THREE.SRGBColorSpace) },
+    // The key light's own colour, fed in each frame. Tinting the warm mix by
+    // it means the rock is gold at golden hour and pink at dawn without any
+    // per-time-of-day tuning here.
+    uSunTint:    { value: new THREE.Color(1, 1, 1) },
     uLichen:     { value: new THREE.Color().setHex(0x9aa86a, THREE.SRGBColorSpace) },
     uMoss:       { value: new THREE.Color().setHex(0x5d7440, THREE.SRGBColorSpace) },
     uBounce:     { value: PALETTE.ambientGround.clone() },
@@ -82,8 +93,8 @@ export function createRockMaterial() {
         }`);
 
     shader.fragmentShader = /* glsl */`
-      uniform vec3 uRockLit, uRockMid, uRockShadow, uRockWarm, uLichen, uMoss, uBounce;
-      uniform vec3 uSunDir, uShadowTint;
+      uniform vec3 uRockLit, uRockMid, uRockShadow, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
+      uniform vec3 uSunDir, uShadowTint, uSunTint;
       uniform float uAOStrength, uTime;
       varying vec3 vBake;
       varying vec4 vRockA;
@@ -143,16 +154,28 @@ export function createRockMaterial() {
         // stays between rockMid and rockLit; rockShadow is a crevice colour, not
         // a shading colour, and letting it into the open faces is what made the
         // first pass read as wet slate.
-        float val = 0.52
-                  + up * 0.26                 // upward faces catch the sky
-                  + facet * 0.13
-                  + bed * 0.075
+        // The up-term is weighted lightly on purpose. Global lighting already
+        // brightens upward faces; baking a second big up-term into the albedo
+        // double-counted it and blew every horizontal facet out to near-white,
+        // which is what made the rocks read as polystyrene chips on the hill.
+        float val = 0.38
+                  + up * 0.06
+                  + facet * 0.17              // per-facet tone, the main split
+                  + bed * 0.07
                   + tint * 0.09
-                  - (1.0 - hN) * 0.06;        // bases sit a little darker
+                  - (1.0 - hN) * 0.07;        // bases sit a little darker
         vec3 rock = mix( uRockMid, uRockLit, clamp( val, 0.0, 1.0 ) );
         rock = mix( rock, uRockShadow, ( 1.0 - ao ) * 0.34 );
-        // A whisper of warm grey keeps the lavender from going synthetic.
-        rock = mix( rock, uRockWarm, 0.06 + tint * 0.04 );
+
+        // Warm key / cool shadow, applied per facet in albedo. Doing it here
+        // rather than in lighting is what keeps the flat cel look: a facet is
+        // still one uniform colour, it just is not the same colour as the
+        // facet beside it. This is also the fix for rocks reading as chalk —
+        // a lit plane has to join the warm family the rest of the frame is in.
+        float sunFace = clamp( dot( N, normalize( uSunDir ) ), -1.0, 1.0 );
+        float warmM = smoothstep( -0.25, 0.60, sunFace );
+        rock = mix( rock, uRockSun * uSunTint, 0.06 + warmM * 0.54 );
+        rock = mix( rock, uRockShadow, ( 1.0 - warmM ) * 0.22 );
 
         // ── lichen and moss ───────────────────────────────────────────────
         // Big soft blotches, never speckle. Pale lichen crusts the sunny tops,

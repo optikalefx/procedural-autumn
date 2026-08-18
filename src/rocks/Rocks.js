@@ -35,7 +35,9 @@ const CAPS = {
   rubble:   { cap: 620, shadow: false },
   talus:    { cap: 300, shadow: true },
   hero:     { cap: 70,  shadow: true },
-  ledge:    { cap: 210, shadow: true },
+  ledge:    { cap: 220, shadow: true },
+  bench:    { cap: 420, shadow: true },
+  tower:    { cap: 200, shadow: true },
 };
 
 export class Rocks extends System {
@@ -254,8 +256,15 @@ export class Rocks extends System {
   update(dt, elapsed) {
     const cam = this.ctx.camera.position;
     const u = this.material.userData.uniforms;
-    const sun = this.ctx.lighting?.sunDir;
-    if (sun) u.uSunDir.value.copy(sun);
+    const lighting = this.ctx.lighting;
+    if (lighting?.sunDir) u.uSunDir.value.copy(lighting.sunDir);
+    // Normalised so only the sun's *hue* reaches the albedo; its intensity is
+    // already applied by the light rig and must not be double-counted.
+    const sc = lighting?.sun?.color;
+    if (sc) {
+      const m = Math.max(sc.r, sc.g, sc.b, 1e-3);
+      u.uSunTint.value.setRGB(sc.r / m, sc.g / m, sc.b / m);
+    }
     u.uTime.value = elapsed;
 
     // A teleport (capture harness, fast travel) invalidates the whole cache;

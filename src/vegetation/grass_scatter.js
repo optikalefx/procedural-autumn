@@ -84,6 +84,22 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
 
     const moist = world.getMoisture(cx, cz);
 
+    // ── shoreline ─────────────────────────────────────────────────────────
+    // The clump centre being dry is not enough: a far-ring tuft frays out over
+    // four metres, and on a lake shore — where the river mask is 0 and only
+    // depth can tell you there is water — that put blades standing in open
+    // water. Probe the spill radius, and when it reaches water, pull the tuft
+    // in and test every blade individually. The per-blade water lookup is
+    // affordable precisely because only shoreline clumps ever pay for it.
+    const spill = ring.clumpRadius * 1.35;
+    const sd = spill * 0.72;
+    const nearWater =
+      world.getWaterDepth(cx + spill, cz) > 0.02 || world.getWaterDepth(cx - spill, cz) > 0.02 ||
+      world.getWaterDepth(cx, cz + spill) > 0.02 || world.getWaterDepth(cx, cz - spill) > 0.02 ||
+      world.getWaterDepth(cx + sd, cz + sd) > 0.02 || world.getWaterDepth(cx - sd, cz + sd) > 0.02 ||
+      world.getWaterDepth(cx + sd, cz - sd) > 0.02 || world.getWaterDepth(cx - sd, cz - sd) > 0.02;
+
+
     // Thin out on gravel bars, and on anything steep enough to be scree.
     d *= 1 - smoothstep(0.05, 0.40, river) * 0.95;
     d *= 1 - smoothstep(0.52, 1.05, slope);
@@ -107,8 +123,11 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     const stature = noise.fbm(cx * 0.021 + 91.7, cz * 0.021 + 13.3, 2, 2.0, 0.5, 1);
     const lay = drift * 0.55 + patch * 0.75;
     // Never all the way to zero: a hole in the field shows raw terrain, and a
-    // black hole in the near ground is far uglier than a thin patch.
-    d *= 0.34 + 0.66 * smoothstep(-0.45, 0.28, lay);
+    // black hole in the near ground is far uglier than a thin patch. The floor
+    // rises for the near ring, where a thin drift is read as a bald spot and
+    // whatever is underneath it is close enough to be legible.
+    const floor = ring.floor ?? 0.34;
+    d *= floor + (1 - floor) * smoothstep(-0.45, 0.28, lay);
     if (d < 0.03) continue;
 
     // ── the tuft ────────────────────────────────────────────────────────────
@@ -132,7 +151,8 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     // Olive is an accent: it needs damp ground or a riverbank to win, but the
     // patch octave lets a few drifts inside a dry meadow go green so the field
     // is not one flat hue from horizon to horizon.
-    const tone = clamp01(moist * 1.70 - 0.62 + river * 0.90 + patch * 0.30);
+    let tone = clamp01(moist * 1.70 - 0.62 + river * 0.90 + patch * 0.30);
+    if (nearWater) tone = clamp01(tone + 0.35);
     const dry = clamp01((1 - moist) * 1.35 - 0.55 + smoothstep(0.18, 0.62, slope) * 0.50
                         + drift * 0.22) * (1 - tone * 0.8);
     // Per-*clump* brightness reads as painterly drifts; per-*blade* brightness
@@ -144,18 +164,23 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     // Tall stands in damp hollows, cropped on dry exposed ground.
     const stand = ring.height * (0.46 + moist * 0.72 + stature * 0.58 + patch * 0.16
                                  - smoothstep(0.25, 0.85, slope) * 0.30);
-    const clumpH = Math.max(0.16, stand * (0.82 + rng() * 0.36));
+    // Reeds at the waterline: taller than the meadow behind them, and greener.
+    // Blades *at* the water sell a shoreline; blades standing in two metres of
+    // it read as a bug, which is what the per-blade test below prevents.
+    const clumpH = Math.max(0.16, stand * (0.82 + rng() * 0.36) * (nearWater ? 1.30 : 1.0));
     const clumpBend = 0.11 + rng() * 0.38;   // a tuft has a lay, not a haircut
     const clumpYaw = rng() * TAU;
-    // Tufts on a bank must not fray out over the water, so the spill shrinks
-    // as the channel mask rises.
-    const radius = ring.clumpRadius * (0.55 + rng() * 0.75) * (1 - river * 0.75);
+    let radius = ring.clumpRadius * (0.55 + rng() * 0.75) * (1 - river * 0.75);
+    if (nearWater) radius *= 0.55;
 
     for (let b = 0; b < count; b++) {
       // Gaussian-ish falloff so a tuft is dense in the middle and frays out.
       const r = radius * (rng() * rng() * 0.6 + rng() * 0.4);
       const ang = rng() * TAU;
       const dx = Math.cos(ang) * r, dz = Math.sin(ang) * r;
+
+      // Shallows are a reed bed; anything deeper is a blade standing in a lake.
+      if (nearWater && world.getWaterDepth(cx + dx, cz + dz) > 0.15) continue;
 
       const i = n * STRIDE;
       const y = baseH + gx * dx + gz * dz;

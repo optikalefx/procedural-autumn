@@ -355,3 +355,50 @@ set, so every author is being judged on a frame that is mostly foliage. Either
 the anchor wants a clearance test against tree instances, or the two views want
 a small offset. Worked around by capturing the falls with explicit `--pos/--look`
 frames (`tools/_scratch/water_xshot.mjs --frames`).
+
+## Look / render author — 2026-08-18
+
+**1. Custom `ShaderMaterial`s do not get the global cel-shading (trees, water,
+waterfalls).** `Stylize` patches `lights_physical_pars_fragment`, which only
+reaches materials that use Three's physical lighting. Anything rolling its own
+lighting gets none of the wrap, the banding or — the one that shows — the
+diffuse floor. Measured in the `waterfall` view, a near, shadowed conifer card
+rendered at literal RGB zero, where the darkest foliage in the reference plates
+sits at luma 0.37; the global grade then has to lift a black hole, which is a
+much worse tool than not making the hole.
+
+`Stylize.js` now exports the same thing `Atmosphere.fogUniforms()` does:
+
+```js
+import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
+uniforms: THREE.UniformsUtils.merge([fogUniforms(), stylizeUniforms(), { … }]),
+fragmentShader: STYLIZE_PARS + `
+  …
+  float nl = stylizeDiffuse( dot( N, L ) );   // wrapped, banded, floored
+  vec3 direct = nl * shadowMask * uSunColor;
+`,
+```
+
+No action needed from me; adopting it is a one-line change per material and it
+will remove the black foliage. Trees, water and waterfall authors — this is
+yours to take when convenient.
+
+**2. `Engine.exposure` is now a fallback, not the value in force.** Exposure is
+a look decision graded in the same pass as the tone curve, so `PostFX` owns it
+(`const EXPOSURE`, currently 1.0). `Engine.exposure` is still read if that is
+ever set to null. Flagging so nobody tunes `Engine.exposure` and wonders why
+nothing moves. Moving it onto Engine properly would be fine by me.
+
+**3. `VIEWS.waterfall` and `VIEWS.vehicle` capture unreliably.** Roughly one run
+in three, `tools/shot.mjs --all` returns either a pure-black frame or the title
+screen for those two views, and the whole batch sometimes aborts with
+`Execution context was destroyed`. Some of that is HMR firing while other
+authors save, but the black frames also happen on clean runs. It costs everyone
+re-captures and it silently poisons any measurement taken from the batch. Worth
+a settle-frames wait or a "is the frame non-trivial" retry in the harness.
+
+**4. Renderer shadow-map type (restating request 1 above, still true).**
+`Engine` sets `VSMShadowMap`; `Lighting` overrides it to `PCFSoftShadowMap` on
+the first frame through `globalThis.__engine`, which costs one material
+recompile at boot. `sun.shadow.radius` / `blurSamples` are therefore dead
+values — PCF-soft ignores them. Harmless, but confusing to read.

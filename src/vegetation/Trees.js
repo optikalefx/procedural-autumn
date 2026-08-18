@@ -46,11 +46,6 @@ const CFG = {
   impostorTileH: 288,
 };
 
-// Trees now share the authored fog density with everything else. This was
-// briefly scaled to 0.37 to compensate for a global wiring bug in which
-// MeshStandardMaterial received no fog uniforms at all, so only opt-in
-// ShaderMaterials were hazed. That bug is fixed (see render/uniformPatch.js).
-const FOG_MATCH = 1.0;
 
 // VEG.treeDensity is the per-hectare figure the whole game shares; trees want a
 // closed canopy in the groves, so they scale it up rather than redefining it.
@@ -136,42 +131,6 @@ export class Trees extends System {
     }
   }
 
-  /**
-   * Sit in the same aerial perspective as the rest of the frame.
-   *
-   * The shared atmospheric fog currently only reaches materials that opted in
-   * with `fogUniforms()` — trees, water and waterfalls. Terrain, rock, grass
-   * and the camper are MeshStandardMaterials, and `THREE.ShaderLib.physical`
-   * was built at three's own module-init, *before* `Atmosphere.patchFogChunks`
-   * added `uFogDensity` and friends to `THREE.UniformsLib.fog`. Adding keys to
-   * the library afterwards does not retroactively add them to an already-merged
-   * ShaderLib entry, so those programs declare the uniforms and never receive a
-   * value: `uFogDensity` is zero and they render with no haze at all. (Verified
-   * in the running game: `ShaderLib.physical.uniforms` has no `uFog*` keys.)
-   *
-   * The net effect is that trees were the only tall thing in the frame carrying
-   * the full haze. A crown is also the darkest thing in the far field, so it
-   * went to haze colour first — which is why every distant stand, conifers
-   * included, rendered as pale cream cones standing on ground that had kept all
-   * of its gold. Matching the *nominal* density did not help, because the
-   * ground is not being fogged at that density; it is not being fogged at all,
-   * and only carries the terrain's own internal distance desaturation.
-   *
-   * So this matches what the frame actually shows rather than what it nominally
-   * asks for: a fraction of the authored density, measured against the terrain
-   * at 300–900 m in the `peaks` and `hero` views. Logged in
-   * docs/INTEGRATION_REQUESTS.md; delete this whole method once standard
-   * materials are genuinely fogged, and trees will fall straight back in line.
-   */
-  _syncFogDensity() {
-    const lib = THREE.UniformsLib?.fog?.uFogDensity;
-    if (!lib || !this._fogMats) return;
-    const d = lib.value * FOG_MATCH;
-    for (const m of this._fogMats) {
-      const u = m?.uniforms?.uFogDensity;
-      if (u) u.value = d;
-    }
-  }
 
   _buildMaterials() {
     this.leafNear = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40 });
@@ -856,7 +815,6 @@ export class Trees extends System {
 
   lateUpdate() {
     // After Atmosphere has had its say for this frame.
-    this._syncFogDensity();
   }
 
   dispose() {

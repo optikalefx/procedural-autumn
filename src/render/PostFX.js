@@ -19,6 +19,7 @@ uniform float uSplitStrength;
 uniform float uSaturation;
 uniform float uContrast;
 uniform float uLift;
+uniform vec3  uLiftTint;
 uniform float uVibrance;
 uniform float uGrain;
 uniform float uTime;
@@ -53,9 +54,17 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // near-field frames were measuring lumaP05 0.00–0.08 against a reference band
   // of 0.16–0.42 because of it.
   c = max(c, 0.0);
-  // 0.022 linear is 0.16 sRGB — the reference's own 5th percentile, and the
-  // point of the whole exercise: the reference lifts its blacks, never crushes.
-  c += uLift * (1.0 - smoothstep(0.0, 0.10, luma(c)));
+  // 0.026 linear is ~0.18 sRGB, inside the reference's own 0.16–0.42 band for the
+  // 5th percentile — the point of the whole exercise: the reference lifts its
+  // blacks, never crushes them.
+  //
+  // Tinted, not neutral. A grey lift on a near-black coloured pixel is mostly
+  // grey by the time it lands, and it showed: the forest interiors went from
+  // crushed to 33–50% near-neutral pixels. The tint is luminance-normalised
+  // amber, so this lifts the value without draining the colour — and warm is
+  // the right direction, because the brief measures blue/violet/magenta at
+  // about 1% of the reference's chromatic pixels.
+  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, 0.10, luma(c)));
 
   // Vibrance: boost the unsaturated, protect the already-saturated.
   float mx = max(c.r, max(c.g, c.b));
@@ -122,7 +131,8 @@ class GradeEffect extends Effect {
         ['uSplitStrength', new THREE.Uniform(0.14)],
         ['uSaturation',    new THREE.Uniform(0.96)],
         ['uContrast',      new THREE.Uniform(1.18)],
-        ['uLift',          new THREE.Uniform(0.022)],
+        ['uLift',          new THREE.Uniform(0.026)],
+        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.34, 0.96, 0.60))],
         ['uVibrance',      new THREE.Uniform(0.16)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
@@ -166,8 +176,14 @@ export class PostFX {
       this.ao = new N8AOPostPass(scene, camera, engine.width, engine.height);
       this.ao.configuration.aoRadius = 3.2;
       this.ao.configuration.distanceFalloff = 1.4;
-      this.ao.configuration.intensity = 2.6;
-      this.ao.configuration.color = new THREE.Color(0x2c2a4a);
+      // Weaker and less blue than it was. Ambient occlusion is a contact cue,
+      // not a grade: at 2.6 with a near-navy tint it was stamping a cold violet
+      // into every crease of a gold meadow, which is the exact failure the
+      // brief calls out — the cool note belongs to distant rock and haze, not
+      // to shaded ground. Blue/violet/magenta together are about 1% of the
+      // reference's chromatic pixels.
+      this.ao.configuration.intensity = 1.7;
+      this.ao.configuration.color = new THREE.Color(0x40303f);
       this.ao.configuration.halfRes = true;
       this.ao.configuration.denoiseSamples = 8;
       this.ao.configuration.denoiseRadius = 12;
@@ -198,7 +214,7 @@ export class PostFX {
     // contrast in the vista views, which are otherwise a single 0.60–0.70 value
     // band from the valley floor to the sky (contrastStd 0.09 against a
     // reference band of 0.13–0.22).
-    this.vignette = new VignetteEffect({ offset: 0.36, darkness: 0.30 });
+    this.vignette = new VignetteEffect({ offset: 0.36, darkness: 0.38 });
     this.grade = new GradeEffect();
     // Khronos PBR Neutral, not AgX. AgX is a filmic curve built for
     // photographic realism: it has a long toe and it deliberately desaturates

@@ -378,6 +378,66 @@ export const ARCHETYPES = {
       erode: 0.07, erodeCount: 3, erodeEdges: false,
     })],
   },
+
+  // Bench: the big blocky mass that makes a crag band. Deliberately near-
+  // cuboid with only a handful of planes — at 200 m the thing that has to read
+  // is one flat sunlit top, one dark vertical face and a hard horizontal edge
+  // between them. Extra facets only mush that up.
+  bench: {
+    variants: 4, sink: 0.02,
+    build: (rng, noise) => {
+      const main = makeBody(rng, noise, {
+        axes: V3(1, 0.66 + rng() * 0.34, 0.76 + rng() * 0.24),
+        boxTilt: 0.26, fill: 3, dirJitter: 0.26, lump: 0.07, lumpFreq: 0.6, offJitter: 0.13,
+        erode: 0.05, erodeCount: 3, erodeEdges: false,
+      });
+      const out = [main];
+      // One or two stacked/offset blocks: a crag is a pile of beds, and the
+      // step between them is the silhouette notch that reads from far away.
+      const n = 1 + ((rng() * 2) | 0);
+      for (let i = 0; i < n; i++) {
+        const sub = makeBody(rng, noise, {
+          axes: V3(1, 0.34 + rng() * 0.28, 0.60 + rng() * 0.28),
+          boxTilt: 0.16, fill: 2, dirJitter: 0.3, lump: 0.07, lumpFreq: 0.6, offJitter: 0.14,
+          erode: 0.04, erodeCount: 2, erodeEdges: false,
+        });
+        const a = rng() * Math.PI * 2;
+        const q = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler((rng() - 0.5) * 0.30, rng() * 6.28, (rng() - 0.5) * 0.30));
+        out.push(transformBody(sub, q,
+          V3(Math.cos(a) * (0.45 + rng() * 0.5), 0.30 + rng() * 0.55, Math.sin(a) * (0.45 + rng() * 0.5)),
+          0.52 + rng() * 0.34));
+      }
+      return out;
+    },
+  },
+
+  // Tower / blade: the thing that actually punches a notch in the skyline.
+  // Tall, prismatic, capped by an oblique fracture so the top is never a
+  // horizontal cut — a flat-topped tower reads as a chimney, not a crag.
+  tower: {
+    variants: 4, sink: 0.10,
+    build: (rng, noise) => {
+      const main = makeBody(rng, noise, {
+        axes: V3(0.66 + rng() * 0.20, 1.20 + rng() * 0.55, 0.58 + rng() * 0.20),
+        columnar: 5 + ((rng() * 3) | 0), lump: 0.13, lumpFreq: 0.55, offJitter: 0.12,
+        erode: 0.07, erodeCount: 4, erodeEdges: false,
+      });
+      const out = [main];
+      // A buttress at the foot: towers taper, and a bare prism looks extruded.
+      const a = rng() * Math.PI * 2;
+      const sub = makeBody(rng, noise, {
+        axes: V3(0.8, 0.7 + rng() * 0.5, 0.7),
+        boxTilt: 0.4, fill: 3, dirJitter: 0.35, lump: 0.1, lumpFreq: 0.7, offJitter: 0.12,
+        erode: 0.06, erodeCount: 3, erodeEdges: false,
+      });
+      const q = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler((rng() - 0.5) * 0.5, rng() * 6.28, (rng() - 0.5) * 0.5));
+      out.push(transformBody(sub, q,
+        V3(Math.cos(a) * 0.42, -1.05 - rng() * 0.4, Math.sin(a) * 0.42), 0.62 + rng() * 0.26));
+      return out;
+    },
+  },
 };
 
 // ── AO bake ──────────────────────────────────────────────────────────────────

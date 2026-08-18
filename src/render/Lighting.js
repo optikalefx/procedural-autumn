@@ -52,37 +52,37 @@ const KEYS = [
   // the zenith is the bluest of the day, but the haze itself stays peach, or
   // the frame measures out at a fifth of the reference's chroma.
   { h: 7.4,  sun: 0xffc08a, sunI: 2.60, hemiSky: 0xc0bcc6, hemiGnd: 0xc8a68c, hemiI: 1.14,
-    zen: 0x6b9ad2, hor: 0xecccae, sunHor: 0xf9c79c, glow: 0xffd4ab, glowI: 0.95,
+    zen: 0x83aeda, hor: 0xe4c2a4, sunHor: 0xf9c79c, glow: 0xffd4ab, glowI: 0.95,
     fogNear: 0xe0b48c, fogFar: 0xd8c2c2, fogSun: 0xffd0a0, fogD: 0.0024,
     cloudLit: 0xffe0c4, cloudDark: 0x8c94b8, cover: 0.43 },
 
-  { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xc4cbdc, hemiGnd: 0xd8b380, hemiI: 0.96,
+  { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xc0c4e0, hemiGnd: 0xdcb072, hemiI: 0.96,
     zen: 0x63a0dc, hor: 0xe6cdb0, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
     fogNear: 0xdcbb92, fogFar: 0xdcc6ba, fogSun: 0xffe8c8, fogD: 0.0021,
     cloudLit: 0xfff6ec, cloudDark: 0xa4abc6, cover: 0.37 },
 
-  { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xc8d2e4, hemiGnd: 0xdcb682, hemiI: 0.90,
+  { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xc4cbe8, hemiGnd: 0xe0b476, hemiI: 0.90,
     zen: 0x5fa0de, hor: 0xe0cdb6, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
     fogNear: 0xd8c3a0, fogFar: 0xd6c4b6, fogSun: 0xf8ecd8, fogD: 0.0015,
     cloudLit: 0xfffaf4, cloudDark: 0xa6aecc, cover: 0.33 },
 
-  { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xc6cee2, hemiGnd: 0xd6b184, hemiI: 1.00,
-    zen: 0x86b4de, hor: 0xeed6b6, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
-    fogNear: 0xe4bf92, fogFar: 0xe6cec3, fogSun: 0xffdfb4, fogD: 0.0021,
+  { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xcdc6d8, hemiGnd: 0xd8ae76, hemiI: 1.00,
+    zen: 0x9ec0e6, hor: 0xe8c9a4, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
+    fogNear: 0xdcb488, fogFar: 0xe6cec3, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xa4a4c4, cover: 0.39 },
 
   // The money frame: deep golden hour.
-  { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xbcc2d8, hemiGnd: 0xd2a066, hemiI: 0.98,
-    zen: 0x93b6dc, hor: 0xf0cfa4, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
-    fogNear: 0xeab77e, fogFar: 0xe8cdc0, fogSun: 0xffc98c, fogD: 0.0027,
+  { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xcebec4, hemiGnd: 0xd2a066, hemiI: 0.98,
+    zen: 0xa9c4e4, hor: 0xe6c294, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
+    fogNear: 0xe0ac72, fogFar: 0xe8cdc0, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0x9c90b6, cover: 0.43 },
 
-  { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xb4b4cc, hemiGnd: 0xcc9060, hemiI: 1.16,
+  { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xc4aeb8, hemiGnd: 0xcc9060, hemiI: 1.16,
     zen: 0x5b83c2, hor: 0xf3c8a0, sunHor: 0xf8a262, glow: 0xffae66, glowI: 1.20,
     fogNear: 0xe2a266, fogFar: 0xdfbcb4, fogSun: 0xffa860, fogD: 0.0035,
     cloudLit: 0xffcc9c, cloudDark: 0x8a80aa, cover: 0.47 },
 
-  { h: 19.0, sun: 0xff8446, sunI: 1.50, hemiSky: 0xa8a6c2, hemiGnd: 0xb27a58, hemiI: 1.14,
+  { h: 19.0, sun: 0xff8446, sunI: 1.50, hemiSky: 0xb49eac, hemiGnd: 0xb27a58, hemiI: 1.14,
     zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
     fogNear: 0xd88a62, fogFar: 0xc09098, fogSun: 0xff8a48, fogD: 0.0040,
     cloudLit: 0xffb078, cloudDark: 0x766698, cover: 0.49 },
@@ -198,7 +198,7 @@ export class Lighting {
     // running lumaP05 0.00–0.08 against a reference band of 0.16–0.42, i.e.
     // crushed. At 0.55 the shadow removes just over half the key and the
     // ambient plus the diffuse floor keep the shaded ground coloured.
-    this.sun.shadow.intensity = 0.72;
+    this.sun.shadow.intensity = 0.56;
     this._setShadowExtent(220);
     scene.add(this.sun);
     scene.add(this.sun.target);
@@ -384,6 +384,16 @@ export class Lighting {
       this.sun.target.updateMatrixWorld();
       this.sun.shadow.camera.far = Math.max(this.shadowExtent * 2.4, 420) + this.shadowExtent * 2;
       this.sun.shadow.camera.updateProjectionMatrix();
+
+      // Both biases have to track the frustum, because the extent now spans
+      // 150 m (eye level) to 900 m (vista) and a texel is six times wider at
+      // the top of that range. The constants that were clean at 150 m produced
+      // a regular diamond moiré of self-shadowing on every shallow distant
+      // slope once the extent grew — classic acne, and very visible at driving
+      // speed because it crawls. Normal offset does the real work; the depth
+      // bias is kept small so ridgelines do not peter-pan.
+      this.sun.shadow.normalBias = clamp(texelWorld * 1.7, 0.12, 0.90);
+      this.sun.shadow.bias = -0.00018 - texelWorld * 0.0004;
     }
   }
 
