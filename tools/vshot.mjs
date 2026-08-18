@@ -60,6 +60,26 @@ async function main() {
     args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist', '--disable-frame-rate-limit'],
   });
   const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+
+  // Seven authors share the dev server; every save reloads the page and throws
+  // out of whatever evaluate was in flight. Stub the HMR socket so a contact
+  // sheet is not a coin toss. Pass --hmr to keep live reload.
+  if (!argv.includes('--hmr')) {
+    await page.addInitScript(() => {
+      const Real = window.WebSocket;
+      window.WebSocket = function (url, protocols) {
+        if (protocols === 'vite-hmr' || String(protocols).includes('vite')) {
+          return {
+            readyState: 3, url, protocol: '',
+            addEventListener() {}, removeEventListener() {}, send() {}, close() {},
+            set onopen(_) {}, set onmessage(_) {}, set onclose(_) {}, set onerror(_) {},
+          };
+        }
+        return new Real(url, protocols);
+      };
+      window.WebSocket.prototype = Real.prototype;
+    });
+  }
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));

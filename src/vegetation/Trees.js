@@ -46,17 +46,29 @@ const CFG = {
   impostorTileH: 288,
 };
 
+// Trees now share the authored fog density with everything else. This was
+// briefly scaled to 0.37 to compensate for a global wiring bug in which
+// MeshStandardMaterial received no fog uniforms at all, so only opt-in
+// ShaderMaterials were hazed. That bug is fixed (see render/uniformPatch.js).
+const FOG_MATCH = 1.0;
+
 // VEG.treeDensity is the per-hectare figure the whole game shares; trees want a
 // closed canopy in the groves, so they scale it up rather than redefining it.
-const DENSITY_MUL = 2.6;
+const DENSITY_MUL = 3.5;
 
 // Beyond `nearDist` a tree's importance rank (0..1, small = big tree) has to
 // beat this curve to survive. Saplings at 600 m are three pixels of noise.
+// Beyond `nearDist` a tree's importance rank (0..1, small = big tree) has to
+// beat this curve to survive. It used to thin hard, which left the far field as
+// evenly-spaced hero trees — a polka-dot of identical cones rather than the
+// continuous textured band the reference paints. Impostors cost two triangles
+// in one shared draw call, so the thinning only needs to keep saplings out of
+// the last few hundred metres.
 function rankCutoff(d) {
-  if (d < 260) return 1.0;
-  if (d < 480) return 0.72;
-  if (d < 760) return 0.42;
-  return 0.20;
+  if (d < 300) return 1.0;
+  if (d < 560) return 0.90;
+  if (d < 820) return 0.70;
+  return 0.48;
 }
 
 export class Trees extends System {
@@ -111,7 +123,7 @@ export class Trees extends System {
           height: top,
           halfWidth: halfW,
           near: {
-            bark: buildBarkGeometry(tree, sp, { radialSegs: 4, maxLevel: 1 }),
+            bark: buildBarkGeometry(tree, sp, { radialSegs: 4, maxLevel: 2 }),
             leaf: buildLeafGeometry(tree, { keep: 1 }),
           },
           mid: vi < CFG.midVariants ? {
@@ -124,6 +136,43 @@ export class Trees extends System {
     }
   }
 
+  /**
+   * Sit in the same aerial perspective as the rest of the frame.
+   *
+   * The shared atmospheric fog currently only reaches materials that opted in
+   * with `fogUniforms()` — trees, water and waterfalls. Terrain, rock, grass
+   * and the camper are MeshStandardMaterials, and `THREE.ShaderLib.physical`
+   * was built at three's own module-init, *before* `Atmosphere.patchFogChunks`
+   * added `uFogDensity` and friends to `THREE.UniformsLib.fog`. Adding keys to
+   * the library afterwards does not retroactively add them to an already-merged
+   * ShaderLib entry, so those programs declare the uniforms and never receive a
+   * value: `uFogDensity` is zero and they render with no haze at all. (Verified
+   * in the running game: `ShaderLib.physical.uniforms` has no `uFog*` keys.)
+   *
+   * The net effect is that trees were the only tall thing in the frame carrying
+   * the full haze. A crown is also the darkest thing in the far field, so it
+   * went to haze colour first — which is why every distant stand, conifers
+   * included, rendered as pale cream cones standing on ground that had kept all
+   * of its gold. Matching the *nominal* density did not help, because the
+   * ground is not being fogged at that density; it is not being fogged at all,
+   * and only carries the terrain's own internal distance desaturation.
+   *
+   * So this matches what the frame actually shows rather than what it nominally
+   * asks for: a fraction of the authored density, measured against the terrain
+   * at 300–900 m in the `peaks` and `hero` views. Logged in
+   * docs/INTEGRATION_REQUESTS.md; delete this whole method once standard
+   * materials are genuinely fogged, and trees will fall straight back in line.
+   */
+  _syncFogDensity() {
+    const lib = THREE.UniformsLib?.fog?.uFogDensity;
+    if (!lib || !this._fogMats) return;
+    const d = lib.value * FOG_MATCH;
+    for (const m of this._fogMats) {
+      const u = m?.uniforms?.uFogDensity;
+      if (u) u.value = d;
+    }
+  }
+
   _buildMaterials() {
     this.leafNear = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40 });
     // A lower cutout at distance compensates for mip-chain alpha erosion, which
@@ -132,6 +181,8 @@ export class Trees extends System {
     this.bark = createBarkMaterial(this.shared);
     this.leafBake = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40, bake: true });
     this.barkBake = createBarkMaterial(this.shared, { bake: true });
+    // Impostor material is created later in _bakeImpostors; it appends itself.
+    this._fogMats = [this.leafNear.mat, this.leafMid.mat, this.bark.mat];
   }
 
   // ── instanced meshes ───────────────────────────────────────────────────────
@@ -304,7 +355,8 @@ export class Trees extends System {
     this._impostorRT = rt;
 
     this.impostorMat = createImpostorMaterial(
-      this.impostorTex, this.shared, N, [CFG.farDist * 0.86, CFG.farDist]);
+      this.impostorTex, this.shared, N, [CFG.farDist * 0.80, CFG.farDist]);
+    this._fogMats.push(this.impostorMat.mat);
 
     const geom = buildImpostorGeometry();
     geom.setAttribute('aColA', this.farSlot.colA);
@@ -374,7 +426,7 @@ export class Trees extends System {
         d = Math.max(d, smoothstep(0.05, 0.45, river) * 0.85);
         // Lone sentinels: a thin floor everywhere drivable keeps the meadows
         // from being empty, and gives the long raking shadows something to cast.
-        d = Math.max(d, 0.035 * slopeLim * treeLine);
+        d = Math.max(d, 0.055 * slopeLim * treeLine);
         d *= slopeLim * treeLine;
 
         density[idx] = clamp01(d) * VEG.treeDensity * DENSITY_MUL * this.treeMul;
@@ -383,6 +435,39 @@ export class Trees extends System {
         for (let s = 0; s < SPECIES.length; s++) {
           sppBias[idx * SPECIES.length + s] =
             N.fbm(x * 0.0095 + s * 137.1, z * 0.0095 + s * 71.3, 2, 2.0, 0.5, 1) * 0.5 + 0.5;
+        }
+      }
+    }
+
+    // ── keep-out mask along the dirt tracks ──────────────────────────────────
+    // A cozy driving game whose roads have trees growing down the middle is not
+    // a driving game. Stamping the polylines into a coarse bitmask once is far
+    // cheaper than testing every candidate against every road segment.
+    const RM = 4;                                   // metres per mask cell
+    const RW = Math.ceil(size / RM);
+    const roadMask = new Uint8Array(RW * RW);
+    const stamp = (x, z, r) => {
+      const gx = ((x + half) / RM) | 0, gz = ((z + half) / RM) | 0;
+      const R = Math.ceil(r / RM);
+      for (let j = -R; j <= R; j++) {
+        const zz = gz + j; if (zz < 0 || zz >= RW) continue;
+        for (let i = -R; i <= R; i++) {
+          const xx = gx + i; if (xx < 0 || xx >= RW) continue;
+          if (i * i + j * j <= R * R) roadMask[zz * RW + xx] = 1;
+        }
+      }
+    };
+    for (const road of (W.roads ?? [])) {
+      for (let i = 0; i < road.length - 1; i++) {
+        const a = road[i], b = road[i + 1];
+        const len = Math.hypot(b.x - a.x, b.z - a.z);
+        const steps = Math.max(1, Math.ceil(len / RM));
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          // Just wide enough to keep the track drivable. The reference plates
+          // have trees crowding right up to the verge; a 13 m clear corridor
+          // reads as a fire break, not as a cozy dirt road.
+          stamp(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t, 4.5);
         }
       }
     }
@@ -422,6 +507,8 @@ export class Trees extends System {
           const z = oz + rng() * dfStep;
 
           if (W.getWaterDepth(x, z) > 0.0) continue;
+          const rgx = ((x + half) / RM) | 0, rgz = ((z + half) / RM) | 0;
+          if (roadMask[rgz * RW + rgx]) continue;
           const slope = W.getSlope(x, z);
           if (slope > 1.15) continue;
           const h = W.getHeight(x, z);
@@ -434,13 +521,17 @@ export class Trees extends System {
           const vi = (rng() * CFG.variants) | 0;
           const proto = this.protos[si][vi];
 
-          // Size hierarchy: mostly saplings and mid trees, a few heroes.
+          // Size hierarchy. The reference reads as a *forest* because it has
+          // three populations, not one: a floor of knee-high saplings, a bulk
+          // of mid trees, and a handful of heroes that are twice anything near
+          // them. A single lerp over one random gives a mush of mediums, which
+          // is exactly what the art review called out.
           const u = rng();
-          let scale = lerp(0.42, 1.0, u * u);
-          if (rng() < 0.045) scale = lerp(1.06, 1.42, rng());     // hero
+          let scale = lerp(0.26, 0.98, u * u * u);
+          if (rng() < 0.085) scale = lerp(1.05, 1.85, rng() * rng());   // hero
           // Altitude and dryness stunt growth — treeline trees are runts.
-          scale *= lerp(0.72, 1.0, 1 - smoothstep(150, 250, h));
-          scale *= lerp(0.86, 1.06, clamp01(m));
+          scale *= lerp(0.70, 1.0, 1 - smoothstep(150, 250, h));
+          scale *= lerp(0.84, 1.08, clamp01(m));
 
           const radius = proto.halfWidth * scale;
           if (!this._space(occ, OW, OCC, half, x, z, radius, px, pz, pradius)) continue;
@@ -542,7 +633,12 @@ export class Trees extends System {
     w[1] = (0.46 * (0.30 + wet) * (1 - smoothstep(140, 205, h))) + river * 0.9;        // aspen
     w[2] = 0.42 * (0.45 + wet * 0.85) * (1 - smoothstep(105, 180, h));                 // maple
     w[3] = 0.38 * (1.05 - wet * 0.45) * (1 - smoothstep(85, 155, h));                  // oak
-    w[4] = (0.22 + 0.95 * high + smoothstep(0.5, 1.0, slope) * 0.45) * (0.45 + wet * 0.8); // spruce
+    // Spruce is the value anchor of the palette — the only deep, cool, dark
+    // mass in a frame that is otherwise entirely hot. Confining it to the
+    // treeline (which the altitude term alone does) leaves the valley with
+    // nothing to read against, so it gets a substantial floor at every height
+    // and wins outright wherever its regional bias is strong.
+    w[4] = (0.72 + 1.15 * high + smoothstep(0.5, 1.0, slope) * 0.55) * (0.55 + wet * 0.7);
 
     let best = -1, bi = 0;
     for (let s = 0; s < S; s++) {
@@ -550,6 +646,10 @@ export class Trees extends System {
       // pure single-colour groves it does in life.
       let b = bias[dfIdx * S + s];
       if (SPECIES[s].clonal) b = b * b * 1.6;
+      // Conifer stands are large and near-pure in the reference plates, never
+      // one spruce salted through a birch wood. Sharpening the bias turns the
+      // regional field into a hard stand boundary.
+      if (SPECIES[s].conifer) b = b * b * 2.1;
       const v = w[s] * (0.18 + 1.9 * b) * (0.8 + 0.4 * rng());
       if (v > best) { best = v; bi = s; }
     }
@@ -562,7 +662,11 @@ export class Trees extends System {
     const hsl = this._hsl;
     col.setHSL(
       (hsl.h + hueShift + 1) % 1,
-      clamp01(hsl.s * (1.02 + Math.abs(hueShift) * 2)),
+      // Slightly *below* unity on average. Measured against the plates, the
+      // reference tops out around chromaMean 0.42 and a stand of crimson maple
+      // was pushing the frame past 0.49; inflating saturation per tree on top
+      // of an already-saturated palette is how a warm frame tips into garish.
+      clamp01(hsl.s * (0.94 + Math.abs(hueShift) * 2)),
       clamp01(hsl.l * valueScale)
     );
   }
@@ -740,7 +844,7 @@ export class Trees extends System {
       u.uAmbient.value = (lighting.hemi.intensity + lighting.fill.intensity * 0.5) / Math.PI;
       // Backlight glow rides the sun's own colour, hottest near the horizon.
       const lowSun = 1 - smoothstep(0.05, 0.42, Math.max(0, lighting.sunDir.y));
-      u.uTransStrength.value = lerp(1.15, 2.60, lowSun);
+      u.uTransStrength.value = lerp(1.40, 3.20, lowSun);
     }
 
     const p = camera.position;
@@ -748,6 +852,11 @@ export class Trees extends System {
       this._lastRebuildPos.copy(p);
       this._rebuild(p);
     }
+  }
+
+  lateUpdate() {
+    // After Atmosphere has had its say for this frame.
+    this._syncFogDensity();
   }
 
   dispose() {

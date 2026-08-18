@@ -21,6 +21,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
+import { injectUniforms, verifyUniforms } from './uniformPatch.js';
 
 const FOG_PARS = /* glsl */`
 #ifdef USE_FOG
@@ -156,8 +157,15 @@ export function patchFogChunks() {
   sharedCloudMap = neutralCloudMap();
 
   // Register the extra uniforms so three uploads them for every fogged
-  // material, and so `fogUniforms()` hands opt-in ShaderMaterials the same set.
-  Object.assign(THREE.UniformsLib.fog, {
+  // material, and so fogUniforms() hands opt-in ShaderMaterials the same set.
+  //
+  // This MUST go through injectUniforms, not Object.assign. Three clones every
+  // ShaderLib entry from UniformsLib at module-init, before this runs, so
+  // writing to UniformsLib alone leaves MeshStandardMaterial declaring these
+  // uniforms in its shader with no value behind them — and the entire
+  // landscape silently renders with no aerial perspective while the opt-in
+  // ShaderMaterials (trees, water) are correctly hazed.
+  injectUniforms('fog', {
     uFogFarColor:      { value: PALETTE.fogFar.clone() },
     uFogSunColor:      { value: PALETTE.sunDisc.clone() },
     uFogSunDir:        { value: new THREE.Vector3(0, 1, 0) },
@@ -176,6 +184,7 @@ export function patchFogChunks() {
     uCloudAltitude:    { value: DEFAULTS.cloudAltitude },
     uCloudOffset:      { value: new THREE.Vector2() },
   });
+  verifyUniforms('Atmosphere', ['uFogDensity', 'uFogFarColor', 'uFogSunDir', 'uCloudMap']);
 }
 
 /**

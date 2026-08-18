@@ -50,13 +50,27 @@ function drawClump(g, ox, oy, size, rng, opts) {
   const cx = ox + size * 0.5, cy = oy + size * 0.5;
   const R = size * 0.46 * (opts.spread ?? 1);
   const n = opts.count;
+
+  // Torn envelope. A clump drawn inside a circle stays a circle no matter how
+  // the marks inside it are distributed, and a canopy assembled out of circles
+  // reads as a bunch of grapes however cleverly the clumps are placed. Two
+  // angular harmonics turn the outline into a lopsided paint dab with bays and
+  // promontories — which is what the reference plates actually paint, and it
+  // costs nothing at runtime because it is baked into the atlas.
+  const k1 = 2 + ((rng() * 3) | 0), k2 = 5 + ((rng() * 4) | 0);
+  const p1 = rng() * TAU, p2 = rng() * TAU;
+  const a1 = (0.17 + 0.17 * rng()) * (opts.tear ?? 1);
+  const a2 = (0.08 + 0.11 * rng()) * (opts.tear ?? 1);
+  const env = (a) => 1 + a1 * Math.sin(k1 * a + p1) + a2 * Math.sin(k2 * a + p2);
+
   for (let i = 0; i < n; i++) {
     // pow < 0.5 concentrates toward the centre; the rim gets the leftovers.
     const t = Math.pow(rng(), opts.corePull);
     const a = rng() * TAU;
+    const RR = R * env(a);
     // Slightly squashed vertically so a clump is wider than tall, like a spray.
-    const px = cx + Math.cos(a) * t * R;
-    const py = cy + Math.sin(a) * t * R * 0.86;
+    const px = cx + Math.cos(a) * t * RR;
+    const py = cy + Math.sin(a) * t * RR * 0.86;
     const shrink = 1 - opts.rimShrink * t;
     const r = size * opts.markSize * shrink * (0.65 + 0.7 * rng());
     // Marks near the rim are dimmer only in *jitter*, not alpha — a soft alpha
@@ -70,30 +84,33 @@ function drawClump(g, ox, oy, size, rng, opts) {
 function drawNeedleFan(g, ox, oy, size, rng) {
   const cx = ox + size * 0.5;
   const top = oy + size * 0.16;
-  const strands = 22;
+  const strands = 26;
   for (let s = 0; s < strands; s++) {
     const side = s & 1 ? 1 : -1;
     const f = (s >> 1) / (strands / 2 - 1);          // 0 centre .. 1 outermost
-    const spread = 0.20 + 1.05 * f + (rng() - 0.5) * 0.14;
-    const len = size * (0.52 - 0.16 * f) * (0.8 + 0.4 * rng());
+    const spread = 0.20 + 1.05 * f + (rng() - 0.5) * 0.16;
+    // Wide length variance is the whole point: an even fringe reads as a plate,
+    // a ragged one reads as needles. Every fourth strand is a runt.
+    const stub = rng() < 0.26 ? 0.45 : 1.0;
+    const len = size * (0.56 - 0.17 * f) * (0.70 + 0.60 * rng()) * stub;
     const dx = Math.sin(spread) * side, dy = Math.cos(spread);
-    const steps = 9;
+    const steps = 10;
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
       // Quadratic droop: boughs sag under their own weight.
       const px = cx + dx * len * t;
       const py = top + dy * len * t * 0.55 + t * t * size * 0.30;
-      const r = size * 0.052 * (1 - 0.5 * t) * (0.7 + 0.6 * rng());
-      mark(g, px, py, r, 2.6 + rng() * 1.6, Math.atan2(dy, dx) + (rng() - 0.5) * 0.5,
+      const r = size * 0.046 * (1 - 0.5 * t) * (0.7 + 0.6 * rng());
+      mark(g, px, py, r, 2.8 + rng() * 1.8, Math.atan2(dy, dx) + (rng() - 0.5) * 0.5,
            0.22 + 0.55 * rng());
     }
   }
   // A denser wedge near the trunk so the whorl is not see-through at its root.
-  for (let i = 0; i < 34; i++) {
+  for (let i = 0; i < 26; i++) {
     const t = Math.pow(rng(), 0.6);
     const a = (rng() - 0.5) * 1.5;
-    mark(g, cx + Math.sin(a) * size * 0.22 * t, top + size * 0.16 * t + size * 0.05,
-         size * 0.055 * (0.6 + 0.8 * rng()), 2.2, a, 0.2 + 0.4 * rng());
+    mark(g, cx + Math.sin(a) * size * 0.20 * t, top + size * 0.15 * t + size * 0.05,
+         size * 0.048 * (0.6 + 0.8 * rng()), 2.2, a, 0.2 + 0.4 * rng());
   }
 }
 
@@ -113,24 +130,28 @@ export function buildClusterAtlas(seed = 7, px = 256) {
   // the mip chain erases by 25 m (marks too small). So: a coarse pass builds a
   // solid, lobed mass, then a fine pass sprays past its rim. That is exactly
   // what the reference plates paint — a definite mass with a fizzing edge.
+  // Fewer, larger marks in the coarse pass than you would expect: they are
+  // meant to read as three or four overlapping lobes, not to fill a disc. The
+  // fine pass then sprays well past them. Between the two, the tile has a
+  // definite mass with a torn edge and marks you can still count at 5 m.
   drawClump(g, 0, 0, px, mulberry32(seed + 11), {
-    count: 46, corePull: 0.60, markSize: 0.082, rimShrink: 0.34, elong: 1.4, spread: 0.86,
+    count: 54, corePull: 0.52, markSize: 0.061, rimShrink: 0.34, elong: 1.4, spread: 0.84, tear: 1.15,
   });
   drawClump(g, 0, 0, px, mulberry32(seed + 12), {
-    count: 260, corePull: 0.80, markSize: 0.031, rimShrink: 0.30, elong: 1.7, spread: 1.14,
+    count: 340, corePull: 0.80, markSize: 0.023, rimShrink: 0.30, elong: 1.7, spread: 1.20, tear: 1.3,
   });
   drawClump(g, px, 0, px, mulberry32(seed + 23), {
-    count: 40, corePull: 0.55, markSize: 0.100, rimShrink: 0.30, elong: 0.8, spread: 0.86,
+    count: 58, corePull: 0.50, markSize: 0.063, rimShrink: 0.30, elong: 0.8, spread: 0.84, tear: 1.1,
   });
   drawClump(g, px, 0, px, mulberry32(seed + 24), {
-    count: 190, corePull: 0.85, markSize: 0.040, rimShrink: 0.26, elong: 1.1, spread: 1.12,
+    count: 290, corePull: 0.85, markSize: 0.028, rimShrink: 0.26, elong: 1.1, spread: 1.18, tear: 1.25,
   });
   drawNeedleFan(g, 0, px, px, mulberry32(seed + 37));
   drawClump(g, px, px, px, mulberry32(seed + 53), {
-    count: 16, corePull: 0.95, markSize: 0.085, rimShrink: 0.10, elong: 1.6, spread: 0.9,
+    count: 24, corePull: 0.95, markSize: 0.062, rimShrink: 0.10, elong: 1.6, spread: 0.9, tear: 1.5,
   });
   drawClump(g, px, px, px, mulberry32(seed + 54), {
-    count: 150, corePull: 1.05, markSize: 0.033, rimShrink: 0.10, elong: 1.8, spread: 1.16,
+    count: 195, corePull: 1.05, markSize: 0.025, rimShrink: 0.10, elong: 1.8, spread: 1.22, tear: 1.6,
   });
 
   // Second pass in JS: write the radial core mask into G. Doing it here rather

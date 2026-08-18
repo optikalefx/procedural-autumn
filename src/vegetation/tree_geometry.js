@@ -11,6 +11,27 @@ import { tileUV } from './tree_textures.js';
 import { clamp01 } from '../core/MathUtils.js';
 
 /**
+ * Drop trailing points of a limb that lie outside every leaf clump, so no twig
+ * protrudes past the canopy. Never trims below two points — a limb still has to
+ * connect to its parent.
+ */
+function trimToFoliage(pts, clusters) {
+  let last = pts.length - 1;
+  for (; last >= 1; last--) {
+    const p = pts[last].p;
+    let inside = false;
+    for (let i = 0; i < clusters.length; i++) {
+      const c = clusters[i];
+      const r = Math.max(c.sx, c.sy) * 1.05 + 0.25;
+      const dx = c.x - p.x, dy = c.y - p.y, dz = c.z - p.z;
+      if (dx * dx + dy * dy + dz * dz < r * r) { inside = true; break; }
+    }
+    if (inside) break;
+  }
+  return last >= 1 ? pts.slice(0, last + 1) : pts.slice(0, 2);
+}
+
+/**
  * Extrude the strand poly-lines into tapered tubes.
  *
  * `maxLevel` drops twig-level geometry for the mid LOD; `radialSegs` is 5 near
@@ -25,9 +46,18 @@ export function buildBarkGeometry(tree, species, opts = {}) {
   // Limbs stop one segment short of their real tip. The last segment is a bare
   // dark wire poking out past the foliage, which reads as an antenna rather
   // than as a branch; the clumps are placed on the true tip regardless.
+  //
+  // That is not enough on its own now that the crown is built from a handful of
+  // lobes: most branch tips deliberately carry no foliage, so any limb that ran
+  // past the last lobe left a bare twig protruding through the silhouette. Trim
+  // each limb back to the last point that is actually inside some leaf clump —
+  // which keeps the branch structure you see *through* the canopy (that is a
+  // feature of the reference) while removing the ones that stick out of it.
   const strands = tree.strands
     .filter((s) => s.level <= maxLevel)
-    .map((s) => (s.level > 0 && s.pts.length > 2 ? { ...s, pts: s.pts.slice(0, -1) } : s));
+    .map((s) => (s.level > 0 && s.pts.length > 2 ? { ...s, pts: s.pts.slice(0, -1) } : s))
+    .map((s) => (s.level > 0 ? { ...s, pts: trimToFoliage(s.pts, tree.clusters) } : s))
+    .filter((s) => s.pts.length > 1);
   let vCount = 0, iCount = 0;
   for (const s of strands) {
     vCount += s.pts.length * (radialSegs + 1);

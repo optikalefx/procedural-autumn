@@ -248,7 +248,7 @@ export class Vehicle extends System {
         const n = Math.min(4, Math.floor(absSpeed * dt * 9 + Math.random() * 0.8));
         for (let k = 0; k < n; k++) {
           const sp = 1.2 + absSpeed * 0.22;
-          c.setRGB(0.93, 0.97, 1.0);
+          c.setRGB(0.76, 0.82, 0.86);
           P.spawn(
             cx + (Math.random() - 0.5) * 0.3,
             cy + 0.1 + Math.random() * 0.2,
@@ -270,12 +270,18 @@ export class Vehicle extends System {
       if (Math.random() < rate * dt * 26 - n) n++;
       for (let k = 0; k < Math.min(n, 5); k++) {
         surfaceDust(weights, c);
-        const j = 0.85 + Math.random() * 0.3;
-        c.multiplyScalar(j);
+        // Particles are unlit, so the raw surface colour is *brighter* than the
+        // lit ground it came off — right on the bloom threshold, which is what
+        // turned the rooster tail into a string of glowing white beads. Bring
+        // it down to roughly what that soil looks like in the frame.
+        c.multiplyScalar((0.85 + Math.random() * 0.3) * 0.58);
+        // Wide scatter around the contact patch: puffs spawned in a tight line
+        // stay in a tight line, which reads as two rails of beads rather than a
+        // cloud the camper is dragging.
         P.spawn(
-          cx + (Math.random() - 0.5) * 0.34,
-          cy + 0.08 + Math.random() * 0.12,
-          cz + (Math.random() - 0.5) * 0.34,
+          cx + (Math.random() - 0.5) * 0.62,
+          cy + 0.06 + Math.random() * 0.26,
+          cz + (Math.random() - 0.5) * 0.62,
           -this.forward.x * (0.8 + absSpeed * 0.16) * (0.4 + Math.random()) + (Math.random() - 0.5) * 1.1,
           0.5 + Math.random() * 1.1,
           -this.forward.z * (0.8 + absSpeed * 0.16) * (0.4 + Math.random()) + (Math.random() - 0.5) * 1.1,
@@ -298,7 +304,11 @@ export class Vehicle extends System {
       // ── tracks in soft ground ─────────────────────────────────────────────
       if (soft > 0.28 && absSpeed > 1.0) {
         surfaceDust(weights, c);
-        c.multiplyScalar(0.55);          // a rut is the same soil, in shadow
+        // The ribbon multiplies into the ground, so this is a *tint*, not a
+        // colour: normalise the soil hue to a fixed value just under white so a
+        // rut darkens whatever it lies on instead of painting over it.
+        const l = Math.max(1e-3, c.r * 0.3 + c.g * 0.6 + c.b * 0.1);
+        c.multiplyScalar(0.70 / l);
         this.tracks.emit(i, cx, cz, this.right.x, this.right.z, 0.19, c,
           clamp01(soft * 1.1) * clamp01(absSpeed * 0.5), this._sample);
       }
@@ -313,7 +323,7 @@ export class Vehicle extends System {
         this._tmp.copy(this.position)
           .addScaledVector(this.forward, 2.1 * Math.sign(this.speed || 1))
           .addScaledVector(this.right, s * 0.95);
-        c.setRGB(0.95, 0.98, 1.0);
+        c.setRGB(0.80, 0.86, 0.90);
         P.spawn(this._tmp.x, wl + 0.08, this._tmp.z,
           this.forward.x * absSpeed * 0.28 + s * 1.6, 1.0 + Math.random() * 1.8,
           this.forward.z * absSpeed * 0.28 + s * 1.6,
@@ -326,7 +336,7 @@ export class Vehicle extends System {
     while (this._exhaustAcc > 1) {
       this._exhaustAcc -= 1;
       this._tmp.set(0.46, DIM.floor - 0.06, DIM.rear - 0.05).applyQuaternion(this.quaternion).add(this.position);
-      c.setRGB(0.52, 0.50, 0.50);
+      c.setRGB(0.40, 0.385, 0.385);
       P.spawn(this._tmp.x, this._tmp.y, this._tmp.z,
         -this.forward.x * 1.6 + (Math.random() - 0.5) * 0.5,
         0.35 + Math.random() * 0.4,
@@ -359,14 +369,25 @@ export class Vehicle extends System {
     if (this._anchorPatched || !window.__cameraAnchors) return;
     this._anchorPatched = true;
     window.__cameraAnchors.vehicle = () => {
-      const a = this.heading + 2.30;         // rear three-quarter
-      return {
-        x: this.position.x + Math.sin(a) * 9,
-        z: this.position.z + Math.cos(a) * 9,
-        y: this.position.y,
-        yaw: a + Math.PI,
-        lookY: 1.4,
-      };
+      const w = this.ctx.world;
+      const R = 9;
+      // Rear three-quarter by preference, but swing round rather than stand in
+      // a river or in a hole: the harness plants the camera 2.1 m above the
+      // ground *at this point*, so a wet or sunken one buries the shot.
+      let best = null;
+      for (let i = 0; i < 15; i++) {
+        const off = (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 0.32;
+        const a = this.heading + 2.30 + off;
+        const x = this.position.x + Math.sin(a) * R;
+        const z = this.position.z + Math.cos(a) * R;
+        const drop = this.position.y - w.getHeight(x, z);
+        const score = -Math.abs(off) * 0.7
+          - w.getWaterDepth(x, z) * 8
+          - Math.max(0, drop - 1.0) * 1.6      // camera below the camper
+          - Math.max(0, -drop - 0.6) * 1.2;    // camera up a bank above it
+        if (!best || score > best.score) best = { a, x, z, score };
+      }
+      return { x: best.x, z: best.z, y: this.position.y, yaw: best.a + Math.PI, lookY: 1.4 };
     };
   }
 

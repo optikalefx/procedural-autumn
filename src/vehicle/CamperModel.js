@@ -35,6 +35,13 @@ export const DIM = {
   archR: 0.545,
 };
 
+// Greenhouse wall thickness, and how deep the glass sits inside its aperture.
+// The reveal is what makes a window read as a hole in a panel rather than a
+// sticker on one, so it is generous by real-car standards.
+const WALL_T = 0.11;
+const GLASS_T = 0.03;
+const GLASS_INSET = 0.05;
+
 const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,15 +294,18 @@ export function buildWheel(materials, { spare = false } = {}) {
   lip.rotateY(Math.PI / 2);
   parts.add(lip, 'rim', at(halfW * 0.60, 0, 0), [1.1, 1.1, 1.1]);
 
+  // Ventilation slots, not round holes. Five dark circles ringing a pale hub
+  // read as a face at any distance — the wheels looked like skulls in profile.
+  // Radial slots read as a pressed steel wheel and stay quiet.
+  // The face is a solid disc and geometry cannot be subtracted, so a slot sunk
+  // behind it is simply invisible — that attempt left a blank cream dinner
+  // plate. These sit a few millimetres *proud* instead and read as slots
+  // because of their shape and value, not their depth.
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2 + 0.31;
-    // window through the face…
-    parts.add(new THREE.CylinderGeometry(0.066, 0.066, 0.09, 14), 'rimDark',
-      at(halfW * 0.52, Math.cos(a) * 0.172, Math.sin(a) * 0.172, 0, 0, Math.PI / 2));
-    // …with a bright bevel around it
-    const ring = new THREE.TorusGeometry(0.070, 0.012, 6, 14);
-    ring.rotateY(Math.PI / 2);
-    parts.add(ring, 'rim', at(halfW * 0.565, Math.cos(a) * 0.172, Math.sin(a) * 0.172), [1.05, 1.05, 1.05]);
+    // Long axis along Y, rotated about the axle (X) to point radially outward.
+    parts.add(rbox(0.02, 0.150, 0.058, 0.026, 1), 'trim',
+      at(halfW * 0.562, Math.cos(a) * 0.168, Math.sin(a) * 0.168, a, 0, 0), [1.3, 1.3, 1.36]);
   }
   // hub + lug nuts
   parts.add(new THREE.CylinderGeometry(0.085, 0.09, 0.05, 16), 'chrome',
@@ -322,27 +332,36 @@ export function buildWheel(materials, { spare = false } = {}) {
 export function buildMaterials(env, bodyColor = 0xc4551f) {
   const std = (o) => new THREE.MeshStandardMaterial({ vertexColors: true, envMap: env, ...o });
 
+  // Stylize.js flattens *direct* specular but leaves image-based lighting
+  // alone, so a hot env probe is now the loudest thing on a horizontal panel:
+  // at 0.85 the bonnet reflected so much sky it went pale pink and lost the
+  // body colour entirely. Keep a sheen, lose the wash — the brief wants broad
+  // flat masses of saturated colour, and paint is the biggest mass we own.
   const paint = new THREE.MeshPhysicalMaterial({
     color: C(bodyColor),
-    roughness: 0.44, metalness: 0.16,
-    clearcoat: 0.62, clearcoatRoughness: 0.30,
-    envMap: env, envMapIntensity: 0.85,
+    roughness: 0.52, metalness: 0.06,
+    clearcoat: 0.34, clearcoatRoughness: 0.34,
+    envMap: env, envMapIntensity: 0.32,
     vertexColors: true,
   });
   const cream = new THREE.MeshPhysicalMaterial({
-    color: C(0xe6ddc9), roughness: 0.5, metalness: 0.1,
-    clearcoat: 0.5, clearcoatRoughness: 0.34,
-    envMap: env, envMapIntensity: 0.8, vertexColors: true,
+    color: C(0xe6ddc9), roughness: 0.55, metalness: 0.06,
+    clearcoat: 0.28, clearcoatRoughness: 0.36,
+    envMap: env, envMapIntensity: 0.28, vertexColors: true,
   });
   // Glass has to carry a *reflection*, not just a tint: unlit dark glass reads
-  // as a hole cut in the silhouette, which is exactly how it looked at first.
-  // Metalness lets the little sky/sun probe show up as a bright sweep.
+  // as a hole cut in the silhouette. But the first pass over-corrected — high
+  // metalness plus a hot env probe made every pane a pale blue-grey slab
+  // *lighter* than the paint, which is the single loudest tell of a fake
+  // window. Glass is now clearly darker than the body, with the reflection as
+  // a sheen on top rather than the whole of it. Front-facing only: these are
+  // solid slabs now, so the back faces would just double the tint.
   const glass = new THREE.MeshPhysicalMaterial({
-    color: C(0x3d5a68), roughness: 0.05, metalness: 0.34,
-    transparent: true, opacity: 0.66,
-    clearcoat: 1.0, clearcoatRoughness: 0.03,
-    envMap: env, envMapIntensity: 1.7,
-    side: THREE.DoubleSide, depthWrite: false, vertexColors: true,
+    color: C(0x33454a), roughness: 0.07, metalness: 0.12,
+    transparent: true, opacity: 0.74,
+    clearcoat: 1.0, clearcoatRoughness: 0.04,
+    envMap: env, envMapIntensity: 1.0,
+    side: THREE.FrontSide, depthWrite: false, vertexColors: true,
   });
 
   return {
@@ -364,7 +383,7 @@ export function buildMaterials(env, bodyColor = 0xc4551f) {
     wood:    std({ color: C(0x8a6640), roughness: 0.85, metalness: 0.0, envMapIntensity: 0.3 }),
     lensHead: new THREE.MeshStandardMaterial({
       color: C(0xfff4dd), emissive: C(0xffe6b4), emissiveIntensity: 0.35,
-      roughness: 0.12, metalness: 0.0, vertexColors: true, envMap: env, envMapIntensity: 1.2,
+      roughness: 0.26, metalness: 0.0, vertexColors: true, envMap: env, envMapIntensity: 0.45,
     }),
     lensTail: new THREE.MeshStandardMaterial({
       color: C(0x8e1512), emissive: C(0xff2a18), emissiveIntensity: 0.55,
@@ -395,19 +414,25 @@ export function buildCamper(materials, seed = 7) {
     const arch = clamp01(1.2 - Math.min(
       Math.hypot(z - D.wheelZ, y - D.wheelY),
       Math.hypot(z + D.wheelZ, y - D.wheelY)) * 1.1);
-    const k = clamp01(low * (0.38 + 0.5 * splash) + arch * 0.30);
-    const d = 1 - k * 0.30;
+    // The arch term does double duty: mud thrown up the flanks, and knocking
+    // back the inner arch faces, which the global lighting floor otherwise
+    // leaves glowing bright orange inside a wheel well that should read dark.
+    const k = clamp01(low * (0.38 + 0.5 * splash) + arch * 0.55);
+    const d = 1 - k * 0.42;
     return [d * (1 - k * 0.10), d * (1 + k * 0.13), d * (1 + k * 0.42)];
   };
 
   // ── tub (full width) + greenhouse walls (thin, one per side) ─────────────
-  const tub = extrudeAcross(tubShape(), D.halfWidth * 2 - 0.06, 0.035);
-  tub.translate(-(D.halfWidth - 0.03), 0, 0);
-  P.add(tub, 'paint', null, grime);
+  // `extrudeAcross` already centres its output on the body axis — an extra
+  // translate here put the entire painted shell a full half-width off centre,
+  // which is what the front view was really showing: no wing on one side, a
+  // double-width bonnet on the other, and greenhouse walls nudged sideways to
+  // chase the symptom.
+  P.add(extrudeAcross(tubShape(), D.halfWidth * 2 - 0.06, 0.035), 'paint', null, grime);
 
   for (const s of [-1, 1]) {
-    const wall = extrudeAcross(houseShape(), 0.11, 0.028);
-    wall.translate(s * (D.halfWidth - 0.055) - 0.055, 0, 0);
+    const wall = extrudeAcross(houseShape(), WALL_T, 0.028);
+    wall.translate(s * (D.halfWidth - 0.005 - WALL_T * 0.5), 0, 0);
     P.add(wall, 'paint', null, grime);
   }
 
@@ -544,8 +569,10 @@ export function buildCamper(materials, seed = 7) {
   for (const s of [-1, 1]) {
     P.add(new THREE.CylinderGeometry(0.135, 0.15, 0.10, 18), 'chrome',
       at(s * 0.60, 0.205, D.front - 0.02, Math.PI / 2));
-    P.add(new THREE.SphereGeometry(0.118, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), 'lensHead',
-      at(s * 0.60, 0.205, D.front + 0.028, Math.PI / 2));
+    // A shallow dome. A full hemisphere at this radius caught the sky square-on
+    // and blew out to a white ball in every daylight frame.
+    P.add(new THREE.SphereGeometry(0.122, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.5), 'lensHead',
+      at(s * 0.60, 0.205, D.front + 0.012, Math.PI / 2, 0, 0, 1, 0.42, 1));
     // indicator + side marker
     P.add(rbox(0.13, 0.075, 0.05, 0.018), 'lensAmber', at(s * 0.80, 0.36, D.front - 0.005));
   }
@@ -639,36 +666,57 @@ export function buildCamper(materials, seed = 7) {
     at(-(D.halfWidth + 0.005), 0.18, -1.62, 0, 0, Math.PI / 2));
 
   // ── glass ────────────────────────────────────────────────────────────────
-  const glassPane = (z0, z1, y0, y1, x) => {
-    const g = new THREE.PlaneGeometry(Math.abs(z1 - z0), y1 - y0);
-    g.rotateY(Math.PI / 2);
-    P.add(g, 'glass', at(x, (y0 + y1) / 2, (z0 + z1) / 2));
-  };
+  // Real slabs set into real apertures. Each pane is slightly larger than its
+  // hole so the edges bury themselves in the panel, and sits GLASS_INSET behind
+  // the outer skin so the reveal catches a shadow.
+  const wallOuter = D.halfWidth - 0.005;
+  const glassX = wallOuter - GLASS_INSET - GLASS_T * 0.5;
   for (const s of [-1, 1]) {
-    const x = s * (D.halfWidth - 0.055);
-    glassPane(0.54, -0.22, 0.58, 1.04, x);
-    glassPane(-0.46, -1.20, 0.58, 1.04, x);
-    glassPane(-1.44, -1.98, 0.58, 1.04, x);
-  }
-  // windscreen (raked) and rear window
-  const ws = new THREE.PlaneGeometry(1.70, 0.68);
-  P.add(ws, 'glass', at(0, 0.77, 0.905, -0.16));
-  const rw = new THREE.PlaneGeometry(1.46, 0.50);
-  P.add(rw, 'glass', at(0, 0.72, D.rear + 0.03));
-
-  // window rubbers / frames around the side lights
-  for (const s of [-1, 1]) {
-    const x = s * (D.halfWidth - 0.035);
-    for (const [z0, z1] of [[0.54, -0.22], [-0.46, -1.20], [-1.44, -1.98]]) {
-      const w = Math.abs(z1 - z0), cz = (z0 + z1) / 2;
-      P.add(rbox(0.024, 0.03, w, 0.010), 'trim', at(x, 0.575, cz), [1.15, 1.15, 1.2]);
-      P.add(rbox(0.024, 0.03, w, 0.010), 'trim', at(x, 1.045, cz), [1.15, 1.15, 1.2]);
+    for (const [z0, z1] of WINDOWS) {
+      P.add(rbox(GLASS_T, 0.52, Math.abs(z1 - z0) + 0.05, 0.008, 1), 'glass',
+        at(s * glassX, 0.81, (z0 + z1) / 2));
     }
   }
-  // windscreen frame + wipers
-  P.add(rbox(1.76, 0.07, 0.05, 0.022), 'paint', at(0, 0.455, 0.96, -0.16), grime);
+
+  // Windscreen: raked to match the A-pillar exactly, and narrow enough to sit
+  // *between* the pillars. The previous full-width pane covered them, which is
+  // precisely why the front of the camper read as one painted slab.
+  const wsRake = Math.atan2(0.99 - 0.83, D.roof - (D.waist - 0.08));
+  P.add(rbox(1.68, 0.70, GLASS_T, 0.01, 1), 'glass', at(0, 0.79, 0.862, -wsRake));
+
+  // Rear window, set into the tailgate wall the same way.
+  P.add(rbox(1.52, 0.50, GLASS_T, 0.01, 1), 'glass', at(0, 0.79, D.rear + 0.025));
+
+  // ── window surrounds ─────────────────────────────────────────────────────
+  // A bright frame all the way round each aperture. Without the verticals the
+  // apertures had only a top and bottom rail and read as decals; these also
+  // give the flat flank something to catch the light on.
   for (const s of [-1, 1]) {
-    P.add(rbox(0.02, 0.015, 0.52, 0.006), 'trim', at(s * 0.34, 0.50, 0.90, -0.16, s * 0.35), [0.4, 0.4, 0.45]);
+    const x = s * (wallOuter + 0.006);
+    for (const [z0, z1] of WINDOWS) {
+      const w = Math.abs(z1 - z0), cz = (z0 + z1) / 2;
+      for (const y of [0.567, 1.053]) {
+        P.add(rbox(0.022, 0.030, w + 0.052, 0.008), 'chrome', at(x, y, cz), [0.95, 0.95, 1.0]);
+      }
+      for (const e of [-1, 1]) {
+        P.add(rbox(0.022, 0.516, 0.030, 0.008), 'chrome',
+          at(x, 0.810, cz + e * (w / 2 + 0.011)), [0.95, 0.95, 1.0]);
+      }
+    }
+  }
+  // rear window surround
+  for (const e of [-1, 1]) {
+    P.add(rbox(0.030, 0.50, 0.022, 0.008), 'chrome', at(e * 0.755, 0.79, D.rear - 0.028), [0.95, 0.95, 1.0]);
+    P.add(rbox(1.54, 0.030, 0.022, 0.008), 'chrome', at(0, 0.79 + e * 0.252, D.rear - 0.028), [0.95, 0.95, 1.0]);
+  }
+
+  // windscreen frame + wipers. The cowl rail caps the bottom edge of the glass
+  // and the header rail caps the top, so neither edge floats.
+  P.add(rbox(1.80, 0.075, 0.07, 0.022), 'paint', at(0, 0.452, 0.952, -wsRake), grime);
+  P.add(rbox(1.80, 0.075, 0.09, 0.022), 'paint', at(0, 1.128, 0.806, -wsRake), grime);
+  for (const s of [-1, 1]) {
+    P.add(rbox(0.02, 0.015, 0.52, 0.006), 'trim',
+      at(s * 0.34, 0.50, 0.905, -wsRake, s * 0.35), [0.4, 0.4, 0.45]);
   }
 
   // ── wing mirrors ─────────────────────────────────────────────────────────
@@ -676,7 +724,7 @@ export function buildCamper(materials, seed = 7) {
     P.add(rod(0.02, 0.30), 'steel', at(s * (D.halfWidth + 0.11), 0.70, 0.72, 0, 0, s * 1.05), [0.7, 0.7, 0.75]);
     P.add(rbox(0.055, 0.22, 0.17, 0.03, 2), 'trim', at(s * (D.halfWidth + 0.24), 0.72, 0.70, 0, 0.1 * s));
     P.add(new THREE.PlaneGeometry(0.16, 0.14), 'chrome',
-      at(s * (D.halfWidth + 0.268), 0.72, 0.70, 0, s * (Math.PI / 2 + 0.1)));
+      at(s * (D.halfWidth + 0.268), 0.72, 0.70, 0, s * (Math.PI / 2 + 0.1)), [0.42, 0.45, 0.50]);
   }
 
   // ── roof rack + load ─────────────────────────────────────────────────────

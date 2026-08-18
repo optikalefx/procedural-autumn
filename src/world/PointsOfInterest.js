@@ -57,7 +57,12 @@ export class PointsOfInterest {
             for (let a = 0; a < 16; a++) {
               const ang = (a / 16) * Math.PI * 2;
               const ca = Math.cos(ang), sa = Math.sin(ang);
-              for (const d of [340, 460, 580]) {
+              // Stand well back. At 340 m from a 340 m peak the massif subtends
+              // more than the whole frame and the shot becomes a close-up of one
+              // face — you cannot read a mountain you are pressed against. These
+              // ranges put the summit around a third of the frame height and
+              // leave room for the middle distance the reference plates all have.
+              for (const d of [620, 780, 950]) {
                 const vx = x + ca * d, vz = z + sa * d;
                 if (!W.isInBounds(vx, vz)) continue;
                 const vh = W.getHeight(vx, vz);
@@ -81,8 +86,12 @@ export class PointsOfInterest {
         }
 
         // Meadow: flat, dry-ish, open, low.
+        // Open ground, and DRY open ground at that. Scoring meadows *up* for
+        // moisture aimed the camera at the dampest spot in the valley, which is
+        // precisely where the tree scatter is densest — several captures came
+        // back from inside a trunk. A meadow is the clearing, not the wood.
         if (slope < 0.20 && h > 4 && h < 95 && depth === 0) {
-          this.list.meadow.push({ x, z, y: h, score: (0.25 - slope) * 100 + moist * 10 });
+          this.list.meadow.push({ x, z, y: h, score: (0.25 - slope) * 100 + (0.5 - moist) * 40 });
         }
 
         // Forest: damp, moderate slope, mid altitude.
@@ -109,7 +118,14 @@ export class PointsOfInterest {
               }
               if (acc > bestR) { bestR = acc; byaw = ang; }
             }
-            this.list.river.push({ x, z, y: h, yaw: byaw, score: nearRiver * 100 });
+            // Dry, open, level bank. Scoring on proximity to water alone put
+            // the camera in the wettest spot on the bank, which is exactly
+            // where the conifer scatter is densest — the capture came back
+            // looking at the inside of a tree.
+            this.list.river.push({
+              x, z, y: h, yaw: byaw,
+              score: nearRiver * 100 - moist * 35 - slope * 45,
+            });
           }
         }
       }
@@ -120,10 +136,27 @@ export class PointsOfInterest {
       // standing in it and picking a yaw by terrain score points at a wall.
       const dx = wf.bottom[0] - wf.top[0], dz = wf.bottom[2] - wf.top[2];
       const len = Math.hypot(dx, dz) || 1;
-      const off = 34;
-      let px = wf.bottom[0] + (dx / len) * off;
-      let pz = wf.bottom[2] + (dz / len) * off;
-      if (!W.isInBounds(px, pz)) { px = wf.bottom[0]; pz = wf.bottom[2]; }
+      // Try several stand-offs and keep the one with a clear line of sight to
+      // the lip. One fixed distance is a coin toss: on some bakes it lands on
+      // open bank, on others behind a spur or inside the treeline, and a
+      // capture from inside a conifer is not a shot of a waterfall.
+      let px = wf.bottom[0], pz = wf.bottom[2], bestScore = -Infinity;
+      for (const off of [30, 46, 64, 84]) {
+        const cx = wf.bottom[0] + (dx / len) * off;
+        const cz = wf.bottom[2] + (dz / len) * off;
+        if (!W.isInBounds(cx, cz)) continue;
+        if (W.getWaterDepth(cx, cz) > 0.4) continue;      // not standing in it
+        const cy = W.getHeight(cx, cz) + 1.4;
+        // Nothing may poke above the sight line from here up to the lip.
+        let blocked = 0;
+        for (let t = 0.15; t < 0.95; t += 0.12) {
+          const sx = cx + (wf.top[0] - cx) * t, sz = cz + (wf.top[2] - cz) * t;
+          blocked = Math.max(blocked, W.getHeight(sx, sz) - (cy + (wf.top[1] - cy) * t));
+        }
+        // Prefer open, gently sloping bank; damp ground is where the trees are.
+        const score = -blocked * 6.0 - W.getSlope(cx, cz) * 40 - W.getMoisture(cx, cz) * 25;
+        if (score > bestScore) { bestScore = score; px = cx; pz = cz; }
+      }
       this.list.waterfall.push({
         x: px, z: pz, y: W.getHeight(px, pz),
         yaw: Math.atan2(wf.top[0] - px, wf.top[2] - pz),

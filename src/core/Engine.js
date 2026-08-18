@@ -28,7 +28,7 @@ export class Engine {
     // Scene exposure, applied by the tone mapping effect in the post chain.
     // Measured target: the reference plates sit at ~0.56 mean luminance with a
     // 0.16–0.87 range.
-    this.exposure = 2.15;
+    this.exposure = 1.28;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.VSMShadowMap;
     this.renderer.shadowMap.autoUpdate = true;

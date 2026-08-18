@@ -23,17 +23,32 @@ import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { clamp, clamp01, lerp, smoothstep, damp, dampAngle, wrapAngle } from '../core/MathUtils.js';
 
-const MODES = ['chase', 'orbit', 'cockpit'];
+// Cockpit is built (see `_cockpit`) but not in the player-facing cycle: the
+// body panels are single-sided, so from the driver's seat you see straight out
+// through the roof and the doors, and the wipers sit in your face. Fixing it
+// means double-siding the shell — a triangle cost the whole game pays for one
+// optional camera — so it stays behind a flag until someone wants it enough.
+// `window.__cockpitCam = true` before boot to get it back.
+const MODES = ['chase', 'orbit'];
 
 // Boom length limits. The low end lets you inspect the roof rack; the high end
 // is what the reference vista plates are shot at.
-const ZOOM_MIN = 4.5;
-const ZOOM_MAX = 52;
-const ZOOM_DEFAULT = 12.5;
-const PITCH_DEFAULT = 0.30;      // radians above the horizon
-const PITCH_MIN = -0.16;         // just under the sill, looking up
-const PITCH_MAX = 1.28;          // near-vertical, looking straight down
+const ZOOM_MIN = 5.5;
+const ZOOM_MAX = 68;
+const ZOOM_DEFAULT = 19;         // deliberately wide: the camper is a figure in
+                                 // a landscape, not the subject of a portrait
+const PITCH_MIN = -0.20;         // just under the sill, looking up into the trees
+const PITCH_MAX = 1.30;          // near-vertical, looking straight down
 const RECENTER_DELAY = 2.0;      // seconds of no mouse before easing back
+
+/**
+ * Where the camera settles when the player is not steering it. Close in you
+ * want an over-the-shoulder eye-line; far out you want to be looking *down*
+ * into the valley, which is how the wide reference plate is framed.
+ */
+const PITCH_REST_NEAR = 0.20;
+const restPitch = (zoom) =>
+  PITCH_REST_NEAR + 0.35 * Math.pow(clamp01((zoom - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN)), 0.7);
 
 export class CameraRig extends System {
   constructor(ctx) {
@@ -49,9 +64,10 @@ export class CameraRig extends System {
     this.roll = 0;
 
     // free-look state
-    this.zoom = ZOOM_DEFAULT;
+    this.zoom = ZOOM_DEFAULT;      // smoothed boom length
+    this.zoomTarget = ZOOM_DEFAULT; // what the wheel actually sets
     this.orbitYaw = 0;             // offset from the trailing direction
-    this.orbitPitch = PITCH_DEFAULT;
+    this.orbitPitch = restPitch(ZOOM_DEFAULT);
     this._idle = 99;               // seconds since the player last touched it
 
     this.orbitAngle = 0.7;         // photo mode's own slow sweep
@@ -64,10 +80,24 @@ export class CameraRig extends System {
     this._axis = new THREE.Vector3(0, 0, 1);
     this._primed = false;
     this._shake = 0;
+    this._boomFrac = 1;            // how much of the boom the terrain allows
   }
 
   async init() {
     this.vehicle = this.ctx.systems.vehicle;
+
+    // Debug surface for tools/drive.mjs --scenario camera.
+    window.__cameraState = () => {
+      const w = this.ctx.world;
+      const p = this.camPos;
+      const g = Math.max(w.getHeight(p.x, p.z), w.getWaterHeight(p.x, p.z) ?? -1e9);
+      return {
+        mode: this.mode, zoom: this.zoom, zoomTarget: this.zoomTarget,
+        yaw: this.orbitYaw, pitch: this.orbitPitch, fov: this.fov,
+        x: p.x, y: p.y, z: p.z, ground: g, clearance: p.y - g,
+        limits: { zoomMin: ZOOM_MIN, zoomMax: ZOOM_MAX, pitchMin: PITCH_MIN, pitchMax: PITCH_MAX },
+      };
+    };
   }
 
   lateUpdate(dt) {
@@ -76,7 +106,8 @@ export class CameraRig extends System {
     this.vehicle = v;
 
     if (this.ctx.input.justPressed('KeyC')) {
-      this.mode = MODES[(MODES.indexOf(this.mode) + 1) % MODES.length];
+      const modes = window.__cockpitCam ? [...MODES, 'cockpit'] : MODES;
+      this.mode = modes[(modes.indexOf(this.mode) + 1) % modes.length];
       if (this.mode === 'cockpit') this._primed = false;
     }
     // The capture harness poses the camera itself; do not fight it.
@@ -100,10 +131,15 @@ export class CameraRig extends System {
     const m = input.mouse;
     let touched = false;
 
-    if (m.down && (m.dx || m.dy)) {
-      this.orbitYaw = wrapAngle(this.orbitYaw - m.dx * 0.0042);
-      this.orbitPitch = clamp(this.orbitPitch + m.dy * 0.0032, PITCH_MIN, PITCH_MAX);
+    // Holding the button counts as touching it even with the mouse still —
+    // otherwise the rig would start recentring under the player's own hand.
+    if (m.down) {
       touched = true;
+      if (m.dx || m.dy) {
+        this.orbitYaw = wrapAngle(this.orbitYaw - m.dx * 0.0042);
+        // Pull down to look down on the roof, push up to look at the treetops.
+        this.orbitPitch = clamp(this.orbitPitch + m.dy * 0.0032, PITCH_MIN, PITCH_MAX);
+      }
     }
     const ax = input.axes;
     if (ax.lookX || ax.lookY) {
@@ -113,20 +149,25 @@ export class CameraRig extends System {
       touched = true;
     }
     if (m.wheel) {
-      // Multiplicative so a notch feels the same close-in and far out.
-      this.zoom = clamp(this.zoom * Math.exp(m.wheel * 0.0011), ZOOM_MIN, ZOOM_MAX);
+      // Multiplicative so a notch feels the same close-in and far out. One
+      // Chrome notch is ~100 deltaY, i.e. ~17% of the current boom.
+      this.zoomTarget = clamp(this.zoomTarget * Math.exp(m.wheel * 0.0016), ZOOM_MIN, ZOOM_MAX);
       touched = true;
     }
+    // Damped so a fast flick of the wheel dollies out instead of teleporting.
+    this.zoom = damp(this.zoom, this.zoomTarget, 9, dt);
 
     this._idle = touched ? 0 : this._idle + dt;
 
     // Ease back behind the camper — but only when it is actually going
     // somewhere. Parked, the player is sightseeing; leave their framing alone.
-    const moving = Math.abs(v.speed) > 1.6;
-    if (moving && this._idle > RECENTER_DELAY) {
-      const k = smoothstep(RECENTER_DELAY, RECENTER_DELAY + 1.2, this._idle) * 1.5;
+    // Ramped with speed rather than switched, so rolling gently to a stop does
+    // not yank the view around at the last moment.
+    const moving = smoothstep(2.2, 7.0, Math.abs(v.speed));
+    if (moving > 0.02 && this._idle > RECENTER_DELAY) {
+      const k = smoothstep(RECENTER_DELAY, RECENTER_DELAY + 1.2, this._idle) * 1.5 * moving;
       this.orbitYaw = dampAngle(this.orbitYaw, 0, k, dt);
-      this.orbitPitch = damp(this.orbitPitch, PITCH_DEFAULT, k, dt);
+      this.orbitPitch = damp(this.orbitPitch, restPitch(this.zoom), k, dt);
     }
   }
 
@@ -141,29 +182,75 @@ export class CameraRig extends System {
   }
 
   /**
-   * Lift the camera over anything between it and the camper. Sampling the boom
-   * (rather than a single point under the camera) is what stops a ridge between
-   * the two from cutting the vehicle out of frame — and it matters far more at
-   * full zoom-out, where the boom can be 50 m of hillside.
+   * Keep the boom out of the hillside.
+   *
+   * Two mechanisms, in this order, because they fix different failures:
+   *
+   *  1. **Shorten.** March along the boom from the camper outwards and stop at
+   *     the first point that would be underground. A camera that slides in when
+   *     a bank rises behind you keeps the camper framed; one that only rises
+   *     ends up looking down at it from a corner of the screen.
+   *  2. **Lift.** Whatever length survives, hold it clear of the ground under
+   *     it, so a boom that is blocked all the way down still ends up in the air
+   *     rather than inside the slope.
+   *
+   * Both matter far more at full zoom-out, where the boom is 68 m of hillside,
+   * so the sample count follows the boom length rather than being fixed.
    */
-  _clearBoom(anchor, dt) {
+  _boomFit(anchor, desired, dt) {
     const w = this.ctx.world;
-    const steps = this.zoom > 20 ? 9 : 5;
-    let need = -1e9;
+    const dx = desired.x - anchor.x, dy = desired.y - anchor.y, dz = desired.z - anchor.z;
+    const run = Math.hypot(dx, dz);
+    const steps = clamp(Math.ceil(run / 2.0), 6, 30);
+    // Required air under the boom, from "may skim the grass" near the camper to
+    // a comfortable gap at the camera end.
+    const nearCam = lerp(1.6, 4.0, clamp01((this.zoom - 12) / (ZOOM_MAX - 12)));
+    const clr = (t) => lerp(0.35, nearCam, t);
+
+    let free = 1;
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
-      const sx = lerp(anchor.x, this.camPos.x, t);
-      const sz = lerp(anchor.z, this.camPos.z, t);
-      need = Math.max(need, w.getHeight(sx, sz) + lerp(0.7, 2.2, t));
+      const sx = anchor.x + dx * t, sz = anchor.z + dz * t;
+      const g = Math.max(w.getHeight(sx, sz), w.getWaterHeight(sx, sz) ?? -1e9);
+      if (anchor.y + dy * t < g + clr(t)) { free = (i - 1) / steps; break; }
     }
-    if (this.camPos.y < need) this.camPos.y = damp(this.camPos.y, need, 22, dt);
-    this._clearGround(this.camPos, 1.5);
+    // Never collapse all the way onto the camper — past this the shot is just
+    // the roof rack, and lifting takes over instead.
+    free = Math.max(free, 0.34);
+    // Snap in hard (being inside a hill is a hard failure), ease back out slowly
+    // so cresting a rise does not fling the camera backwards.
+    this._boomFrac = free < this._boomFrac
+      ? damp(this._boomFrac, free, 24, dt)
+      : damp(this._boomFrac, free, 1.6, dt);
+    return this._boomFrac;
+  }
+
+  /** How much air the camera itself wants under it, in metres. */
+  _camClearance() {
+    return lerp(1.6, 4.0, clamp01((this.zoom - 12) / (ZOOM_MAX - 12)));
+  }
+
+  _groundAt(x, z) {
+    const w = this.ctx.world;
+    return Math.max(w.getHeight(x, z), w.getWaterHeight(x, z) ?? -1e9);
+  }
+
+  /**
+   * Raise a boom endpoint out of the ground it landed on, and report by how
+   * much — the caller uses that to back off the look-ahead, because a camera
+   * the terrain has shoved upwards is no longer where the shot was composed.
+   */
+  _liftEnd(p) {
+    const floor = this._groundAt(p.x, p.z) + this._camClearance();
+    const lifted = Math.max(0, floor - p.y);
+    if (lifted > 0) p.y = floor;
+    return lifted;
   }
 
   _chase(dt, v) {
     const speed = Math.abs(v.speed);
     const fast = smoothstep(2, 21, speed);
-    const wide = clamp01((this.zoom - 14) / (ZOOM_MAX - 14));
+    const wide = clamp01((this.zoom - 16) / (ZOOM_MAX - 16));
 
     // Follow a damped heading. Reversing keeps the camera behind the *nose*,
     // which is what players expect when backing out of a ditch.
@@ -177,7 +264,12 @@ export class CameraRig extends System {
       if (Math.abs(d) < 1.4) slideYaw = this.followYaw + d * 0.35;
     }
 
-    const anchor = this._t.copy(v.position).addScaledVector(this._up, 1.05 + wide * 1.2);
+    // Where the boom pivots and where the eye rests. Wound right in, aim at the
+    // waistline so the whole camper sits in frame instead of the roof rack;
+    // wound out, ride high above the roof so it reads as a figure in a valley.
+    const close = clamp01((10 - this.zoom) / 4.5);
+    const anchor = this._t.copy(v.position)
+      .addScaledVector(this._up, lerp(1.05, 0.62, close) + wide * 2.4);
 
     // Spherical boom: yaw around the camper, pitch above the horizon.
     const yaw = slideYaw + this.orbitYaw;
@@ -189,6 +281,11 @@ export class CameraRig extends System {
       anchor.z - Math.cos(yaw) * dist * cp,
     );
 
+    // Pull the boom in past anything solid, then keep what is left in the air.
+    const frac = this._boomFit(anchor, desired, dt);
+    desired.lerpVectors(anchor, desired, frac);
+    const lifted = this._liftEnd(desired);
+
     if (!this._primed) { this.camPos.copy(desired); this._primed = true; }
 
     // While the player is dragging, track hard so the camera feels attached to
@@ -198,23 +295,34 @@ export class CameraRig extends System {
     this.camPos.z = damp(this.camPos.z, desired.z, grab, dt);
     this.camPos.y = damp(this.camPos.y, desired.y, Math.max(grab, 5.4), dt);
 
-    this._clearBoom(anchor, dt);
+    // Hard safety, undamped: whatever the damping did, the camera does not get
+    // to be underground for even one frame.
+    this._clearGround(this.camPos, this._camClearance() * 0.7);
 
     // ── look-ahead: strong close in, almost none when zoomed way out (there,
-    //    leading the vehicle just pushes it out of a very wide frame) ───────
-    const lead = lerp(3.0, 9.5, fast) * (1 - wide * 0.85);
+    //    leading the vehicle just pushes it out of a very wide frame), and
+    //    faded out entirely once the player has orbited off the tail — looking
+    //    at the camper's flank, "ahead" is sideways and only spoils the shot.
+    // A boom that had to be shortened or lifted is looking at the camper from
+    // somewhere it did not choose; leading the shot from there throws the
+    // subject into a corner, so fade the look-ahead out with the compromise.
+    const composed = clamp01(1 - (1 - frac) * 1.6) * clamp01(1 - lifted * 0.25);
+    const trail = clamp01(Math.cos(this.orbitYaw)) * composed;
+    const lead = lerp(3.0, 9.5, fast) * (1 - wide * 0.85) * (1 - close * 0.8) * trail;
     const target = this._t2.copy(anchor)
       .addScaledVector(v.forward, lead)
-      .addScaledVector(v.right, -(v.phys.steerAngle ?? 0) * lerp(2.0, 9.0, fast) * (1 - wide))
+      .addScaledVector(v.right, -(v.phys.steerAngle ?? 0) * lerp(2.0, 9.0, fast) * (1 - wide) * trail)
       .addScaledVector(this._up, lerp(0.35, -0.15, fast));
     this.lookAt.x = damp(this.lookAt.x, target.x, 6.5, dt);
     this.lookAt.y = damp(this.lookAt.y, target.y, 5.0, dt);
     this.lookAt.z = damp(this.lookAt.z, target.z, 6.5, dt);
 
     // ── grade: FOV opens with speed, a hint of roll, a shake on hard landings
-    this.fov = damp(this.fov, lerp(50, 62, fast) - wide * 6, 3.2, dt);
+    this.fov = damp(this.fov, lerp(50, 62, fast) - wide * 9, 3.2, dt);
     const bank = clamp((v.phys.lateral ?? 0) * -0.006, -0.045, 0.045) * (1 - wide);
     this.roll = damp(this.roll, bank, 4.0, dt);
+
+    this._focus(v);
 
     const landed = v.wheels.filter((wl) => wl.grounded).length >= 3;
     if (v._wasAirborne && landed) this._shake = Math.min(0.4, Math.abs(v.velocity.y) * 0.035);
@@ -236,15 +344,18 @@ export class CameraRig extends System {
       anchor.y + r * sp,
       anchor.z + Math.cos(a) * r * cp,
     );
+    desired.lerpVectors(anchor, desired, this._boomFit(anchor, desired, dt));
+    this._liftEnd(desired);
     if (!this._primed) { this.camPos.copy(desired); this._primed = true; }
     const k = this._idle < 0.15 ? 16 : 4.0;
     this.camPos.x = damp(this.camPos.x, desired.x, k, dt);
     this.camPos.y = damp(this.camPos.y, desired.y, k, dt);
     this.camPos.z = damp(this.camPos.z, desired.z, k, dt);
-    this._clearBoom(anchor, dt);
+    this._clearGround(this.camPos, this._camClearance() * 0.7);
     this.lookAt.lerp(anchor, 1 - Math.exp(-6 * dt));
     this.fov = damp(this.fov, 46, 3, dt);
     this.roll = damp(this.roll, 0, 4, dt);
+    this._focus(v);
     this._apply();
   }
 
@@ -261,7 +372,7 @@ export class CameraRig extends System {
     const fz = v.forward.z * cy - v.right.z * sy;
     const look = this._t2.set(
       this.camPos.x + fx * 22,
-      this.camPos.y + 22 * Math.tan(clamp(this.orbitPitch - PITCH_DEFAULT, -0.5, 0.5)) - 1.0,
+      this.camPos.y + 22 * Math.tan(clamp(this.orbitPitch - PITCH_REST_NEAR, -0.5, 0.5)) - 1.0,
       this.camPos.z + fz * 22,
     ).addScaledVector(v.right, -(v.phys.steerAngle ?? 0) * 9);
     this.lookAt.x = damp(this.lookAt.x, look.x, 9, dt);
@@ -269,7 +380,21 @@ export class CameraRig extends System {
     this.lookAt.z = damp(this.lookAt.z, look.z, 9, dt);
     this.fov = damp(this.fov, 66, 4, dt);
     this.roll = damp(this.roll, 0, 5, dt);
+    this._focus(v);
     this._apply();
+  }
+
+  /**
+   * Depth of field focuses on the camper, not on a fixed distance. Nothing else
+   * owns this: PostFX ships a default focus plane that was right for one boom
+   * length, so at 6 m the subject was a blur and at 60 m so was the foreground.
+   * Pushed a little past the camper so the ground it stands on stays sharp.
+   */
+  _focus(v) {
+    const fx = this.ctx.postfx;
+    if (!fx?.setFocus) return;
+    const d = this.camPos.distanceTo(v.position);
+    fx.setFocus(d * 1.15 + 4);
   }
 
   _apply() {

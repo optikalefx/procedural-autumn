@@ -20,6 +20,7 @@
 //    specular   direct specular is scaled down toward matte
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+import { injectUniforms, verifyUniforms, patchChunk } from './uniformPatch.js';
 
 const STYLIZED_DIRECT = /* glsl */`
 	// ── stylised diffuse response ──────────────────────────────────────────
@@ -71,40 +72,36 @@ export function patchStylizedLighting() {
   patched = true;
 
   const CHUNK = 'lights_physical_pars_fragment';
-  let src = THREE.ShaderChunk[CHUNK];
 
-  const marker =
-    '\tfloat dotNL = saturate( dot( geometryNormal, directLight.direction ) );\n' +
-    '\n' +
-    '\tvec3 irradiance = dotNL * directLight.color;\n';
+  // Whitespace-tolerant: three's bundled build strips the blank line that its
+  // source tree has between these two statements, and an exact-string match
+  // against the source form silently no-ops against the build.
+  const ok = patchChunk(
+    CHUNK,
+    /float dotNL = saturate\( dot\( geometryNormal, directLight\.direction \) \);\s*vec3 irradiance = dotNL \* directLight\.color;/,
+    STYLIZED_DIRECT,
+    'Stylize'
+  );
+  if (!ok) return;
 
-  if (!src.includes(marker)) {
-    console.warn('[Stylize] three\'s lighting chunk does not match the expected ' +
-                 'shape; leaving physical lighting in place.');
-    return;
-  }
-
-  src = src.replace(marker, STYLIZED_DIRECT);
-
-  // Direct specular must use the unbanded term.
-  src = src.replace(
-    'reflectedLight.directSpecular += irradiance * BRDF_GGX( directLight.direction, geometryViewDir, geometryNormal, material );',
-    'reflectedLight.directSpecular += specIrradiance * BRDF_GGX( directLight.direction, geometryViewDir, geometryNormal, material );'
+  // Direct specular must use the unbanded term — banding a highlight rings.
+  patchChunk(
+    CHUNK,
+    /reflectedLight\.directSpecular \+= irradiance \* BRDF_GGX\(/,
+    'reflectedLight.directSpecular += specIrradiance * BRDF_GGX(',
+    'Stylize'
   );
 
-  // Declare the uniforms at the top of the chunk.
-  src = `
+  THREE.ShaderChunk[CHUNK] = `
 uniform float uStyleWrap;
 uniform float uStyleSteps;
 uniform float uStyleSoft;
 uniform float uStyleBanding;
 uniform float uStyleSpecular;
 uniform float uStyleFloor;
-` + src;
+` + THREE.ShaderChunk[CHUNK];
 
-  THREE.ShaderChunk[CHUNK] = src;
-
-  Object.assign(THREE.UniformsLib.lights, {
+  injectUniforms('lights', {
     uStyleWrap:     { value: DEFAULTS.wrap },
     uStyleSteps:    { value: DEFAULTS.steps },
     uStyleSoft:     { value: DEFAULTS.soft },
@@ -112,6 +109,7 @@ uniform float uStyleFloor;
     uStyleSpecular: { value: DEFAULTS.specular },
     uStyleFloor:    { value: DEFAULTS.floor },
   });
+  verifyUniforms('Stylize', ['uStyleWrap', 'uStyleSpecular', 'uStyleFloor']);
 }
 
 export class Stylize {

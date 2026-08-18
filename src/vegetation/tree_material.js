@@ -95,7 +95,7 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // glows everywhere, not only where you are staring into the disc; keying
   // transmission purely off "toward" lights one tree and leaves the rest of the
   // backlit stand as brown cardboard.
-  float trans = (0.34 + 0.66 * pow(toward, 1.7)) * (0.22 + 0.78 * back) * uTransStrength;
+  float trans = (0.46 + 0.54 * pow(toward, 1.3)) * (0.30 + 0.70 * back) * uTransStrength;
   trans *= mix(0.25, 1.0, shadow) * thin;
   // Normalise by the leaf's own brightness. A crimson maple reflects almost
   // nothing and needs the full glow; a gold aspen is already near white, and
@@ -103,7 +103,7 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // which reads as washed-out cream, not as light. This is what keeps a distant
   // gold stand *coloured* instead of turning it into popcorn.
   float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-  trans /= 1.0 + lum * 2.4;
+  trans /= 1.0 + lum * 1.5;
   vec3 transC = uSunColor * albedo * uTransTint;
 
   // Rim: a thin bright edge where the crown turns away — cheap silhouette pop.
@@ -112,12 +112,14 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
 
   vec3 col = albedo * (direct + hemi) + transC * trans + uSunColor * albedo * rim * 0.5;
 
-  // Per-channel shoulder before the global tone curve. Sunlit gold foliage plus
-  // transmission lands well above 1.0 in two channels at once, and AgX resolves
-  // that to cream — a whole hillside of aspen turning to popcorn. Rolling each
-  // channel off separately keeps the channels apart, so the mass stays yellow
-  // instead of white while still reading as "bright".
-  return col / (1.0 + col * 0.34);
+  // A *gentle* per-channel shoulder, and no more than that. This used to be an
+  // aggressive roll-off because the post chain ran AgX, a filmic curve that
+  // deliberately desaturates highlights and turned a lit gold crown to cream.
+  // The chain is Khronos PBR Neutral now, which holds hue into the highlights
+  // and has its own knee; stacking a second hard curve on top of it is what was
+  // flattening the backlit glow into brown cardboard. Keep just enough to stop
+  // two channels clipping together.
+  return col / (1.0 + col * 0.13);
 }
 `;
 
@@ -265,9 +267,14 @@ void main() {
   vec3 col = canopyShade(albedo, N, V, ao, mix(1.15, 0.62, core), canopyShadow());
 
   gl_FragColor = vec4(col, 1.0);
+  // Chunk order matters: three's own materials apply fog *before* the output
+  // colour-space encode, and the atmosphere's haze colour is a linear value.
+  // Encoding first and fogging second lifts a dark crown by more than 6x before
+  // it is mixed with the haze, which turned every distant stand into white
+  // popcorn while the near trees — where fogFactor is ~0 — looked correct.
   #include <tonemapping_fragment>
-  #include <colorspace_fragment>
   #include <fog_fragment>
+  #include <colorspace_fragment>
 }
 `;
 
@@ -422,6 +429,15 @@ float h21(vec2 p) {
   return fract(p.x * p.y);
 }
 
+/** Smooth value noise. Bark grain has to be fibrous; a floor()ed hash is a grid. */
+float vnoise2(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = h21(i), b = h21(i + vec2(1.0, 0.0));
+  float c = h21(i + vec2(0.0, 1.0)), d = h21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 /** One scale of birch lenticels: lens-shaped horizontal dashes on a jittered grid. */
 float lenticel(vec2 uv, vec2 freq, float density, float strength) {
   vec2 g = uv * freq;
@@ -456,15 +472,23 @@ void main() {
     pat = mix(pat * 0.46, pat, smoothstep(0.0, 1.8, vHeight));
     pat *= 0.95 + 0.10 * h21(vUv * 40.0);
   } else if (style < 1.5) {
-    // Rough bark: vertical ridges, dark in the fissures.
-    float ridge = sin(vUv.x * 44.0 + h21(vec2(floor(vUv.y * 6.0), 1.0)) * 6.0) * 0.5 + 0.5;
-    ridge = pow(ridge, 1.6);
-    float grain = h21(vec2(floor(vUv.x * 22.0), floor(vUv.y * 9.0)));
-    pat *= mix(0.48, 1.12, ridge) * (0.86 + 0.28 * grain);
+    // Rough bark: vertical fissures that wander up the trunk. The old version
+    // took its ridge phase from floor(v * 6) and its grain from a floor()ed
+    // hash grid, which at 2 m read as a woven basket rather than as bark — two
+    // superimposed rectangular lattices are very hard for the eye to miss.
+    // Drifting the phase with smooth noise turns the ridges into continuous
+    // fibres and leaves nothing rectangular in the pattern.
+    float wander = vnoise2(vec2(vUv.x * 4.5, vUv.y * 1.0)) * 3.4;
+    float ridge = sin(vUv.x * 40.0 + wander) * 0.5 + 0.5;
+    ridge = pow(ridge, 1.7);
+    float grain = vnoise2(vec2(vUv.x * 26.0, vUv.y * 7.0));
+    pat *= mix(0.45, 1.14, ridge) * (0.84 + 0.30 * grain);
   } else {
-    // Conifer: dark, finely flaked.
-    float flake = h21(vec2(floor(vUv.x * 16.0), floor(vUv.y * 14.0)));
-    pat *= 0.72 + 0.5 * flake;
+    // Conifer: dark, finely flaked. Two octaves so the flakes vary in size
+    // instead of tiling on one grid.
+    float flake = vnoise2(vec2(vUv.x * 14.0, vUv.y * 11.0)) * 0.65
+                + vnoise2(vec2(vUv.x * 31.0, vUv.y * 26.0)) * 0.35;
+    pat *= 0.70 + 0.56 * flake;
   }
 
   if (uBake > 0.5) {
@@ -484,9 +508,14 @@ void main() {
 
   vec3 col = albedo * (uSunColor * wrap + hemi) + uSunColor * rim * 0.35 * shadow;
   gl_FragColor = vec4(col, 1.0);
+  // Chunk order matters: three's own materials apply fog *before* the output
+  // colour-space encode, and the atmosphere's haze colour is a linear value.
+  // Encoding first and fogging second lifts a dark crown by more than 6x before
+  // it is mixed with the haze, which turned every distant stand into white
+  // popcorn while the near trees — where fogFactor is ~0 — looked correct.
   #include <tonemapping_fragment>
-  #include <colorspace_fragment>
   #include <fog_fragment>
+  #include <colorspace_fragment>
 }
 `;
 
@@ -618,19 +647,44 @@ ${CANOPY_LIGHT}
 
 void main() {
   vec4 t = texture2D(uAtlas, vUv);
-  if (t.a < uAlphaTest) discard;
-  vec3 albedo = t.r * vColA + t.g * vColB + t.b * vColC;
-  float ao = clamp(t.r + t.g + t.b, 0.15, 1.0);
+  // Dissolve rather than pop: raising the cutout toward opaque as the card
+  // reaches the draw distance eats the crown away from its thinnest marks
+  // inward, which reads as a tree receding into haze.
+  if (t.a < mix(1.02, uAlphaTest, vFade)) discard;
+  // The bake stores palette *weights*, and the mip chain averages them. Summing
+  // the weighted colours means a minified texel whose weights total more than
+  // one comes out brighter than any colour in the palette — and because the
+  // near-white bark channel bleeds across the crown as the tile shrinks, that
+  // is precisely what turned every distant birch stand into white popcorn.
+  // Normalise by the total weight so the sum is a weighted *average*: hue then
+  // survives minification and only the shading term varies with coverage.
+  float w = t.r + t.g + t.b;
+  vec3 albedo = (t.r * vColA + t.g * vColB + t.b * vColC) / max(w, 1e-3);
+  // The haze desaturates by 0.72 x fogFactor, which is the shared depth cue and
+  // not ours to change — but a canopy starts far less saturated than the gold
+  // ground beside it, so it hits neutral grey while the meadow is still orange.
+  // Pushing chroma before the haze eats it keeps a distant stand reading as
+  // sage-green or dusty rust rather than as grey cones on an orange hill.
+  albedo = mix(vec3(dot(albedo, vec3(0.2126, 0.7152, 0.0722))), albedo, 1.22);
+  float ao = clamp(w * 0.95, 0.16, 1.0);
   vec3 N = normalize(vN);
   vec3 V = normalize(vWorld - cameraPosition);
-  // Distant canopy reads as a mass that is slightly darker than the sunlit
-  // ground, never brighter — impostors lit as if fully exposed turn a fogged
-  // hillside into popcorn instead of letting it recede.
-  vec3 col = canopyShade(albedo, N, V, ao, 0.5, 0.8) * 0.78;
+  // A card has no shadow varyings, so the shadow term is a constant — and it is
+  // deliberately well below 1. A stand seen at 400 m is mostly self-shadowed
+  // canopy plus whatever the hillside is casting over it; lighting it as fully
+  // exposed is what makes a far treeline sit *above* the meadow in value
+  // instead of below it, which no landscape ever does. Transmission is pulled
+  // back for the same reason: a crown that glows at 600 m has no depth.
+  vec3 col = canopyShade(albedo, N, V, ao, 0.34, 0.60) * 0.78;
   gl_FragColor = vec4(col, 1.0);
+  // Chunk order matters: three's own materials apply fog *before* the output
+  // colour-space encode, and the atmosphere's haze colour is a linear value.
+  // Encoding first and fogging second lifts a dark crown by more than 6x before
+  // it is mixed with the haze, which turned every distant stand into white
+  // popcorn while the near trees — where fogFactor is ~0 — looked correct.
   #include <tonemapping_fragment>
-  #include <colorspace_fragment>
   #include <fog_fragment>
+  #include <colorspace_fragment>
 }
 `;
 

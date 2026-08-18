@@ -105,6 +105,14 @@ const COLOR_FIELDS = ['sun', 'hemiSky', 'hemiGnd', 'zen', 'hor', 'sunHor', 'glow
                       'fogNear', 'fogFar', 'fogSun', 'cloudLit', 'cloudDark'];
 const SCALAR_FIELDS = ['sunI', 'hemiI', 'glowI', 'fogD', 'cover'];
 
+// The fogD curve below was authored while a wiring bug meant MeshStandardMaterial
+// received no fog uniforms at all (see docs/INTEGRATION_REQUESTS.md). Only the
+// opt-in ShaderMaterials were hazed, so the densities were pushed high to make
+// trees recede — and once the terrain started receiving fog too, every distant
+// view turned into a white-out. This scales the whole authored curve rather
+// than flattening its time-of-day shape, which is still right.
+const FOG_DENSITY_SCALE = 0.34;
+
 // Pre-convert the table once; per-frame we only lerp.
 const BAKED = KEYS.map((k) => {
   const o = { h: k.h };
@@ -302,7 +310,7 @@ export class Lighting {
     (this.fogNear ??= new THREE.Color()).copy(k.fogNear);
     (this.fogFar ??= new THREE.Color()).copy(k.fogFar);
     (this.fogSun ??= new THREE.Color()).copy(k.fogSun);
-    this.fogDensity = k.fogD;
+    this.fogDensity = k.fogD * FOG_DENSITY_SCALE;
 
     // Publish for Sky / Clouds.
     const s = SKY_STATE;

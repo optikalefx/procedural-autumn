@@ -92,6 +92,10 @@ const PARTICLE_FRAG = /* glsl */`
       float d = length(c);
       float wob = 0.5 + 0.5 * sin(atan(c.y, c.x) * 4.0 + vRot * 3.0);
       alpha *= smoothstep(0.50 - wob * 0.06, 0.08, d);
+      // Dust is a haze, not a solid. At full opacity these read as a string of
+      // hard white pearls behind the wheels — especially once bloom gets hold
+      // of them — instead of a warm cloud the camper is dragging along.
+      alpha *= vKind < 0.5 ? 0.42 : 0.62;
     }
     if (alpha < 0.004) discard;
     gl_FragColor = vec4(vColor, alpha);
@@ -212,7 +216,12 @@ const TRACK_FRAG = /* glsl */`
     float e = smoothstep(0.0, 0.22, vUv.x) * smoothstep(1.0, 0.78, vUv.x);
     float a = vAlpha * e * 0.62;
     if (a < 0.005) discard;
-    gl_FragColor = vec4(vColor, a);
+    // Multiply, not paint. A rut is disturbed soil seen under the same light as
+    // the ground around it; an opaque colour laid over the top glowed in
+    // shadow, which read as ski tracks rather than tyre marks.
+    gl_FragColor = vec4(mix(vec3(1.0), vColor, a), 1.0);
+    // Fog fades a multiply toward the (bright) haze colour, i.e. toward no
+    // darkening at all, which is what distance should do to a rut anyway.
     #include <fog_fragment>
   }`;
 
@@ -280,7 +289,7 @@ class Ribbon {
 export class TrackRibbons {
   constructor(scene, lanes = 4, segs = 190) {
     this.lanes = lanes;
-    this.life = 26;
+    this.life = 17;   // ~250 m of trail at speed; longer and it reads as a road
     this.time = 0;
     this.material = new THREE.ShaderMaterial({
       uniforms: THREE.UniformsUtils.merge([fogUniforms(), {
@@ -289,6 +298,10 @@ export class TrackRibbons {
       vertexShader: TRACK_VERT,
       fragmentShader: TRACK_FRAG,
       transparent: true,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.DstColorFactor,
+      blendDst: THREE.ZeroFactor,
+      blendEquation: THREE.AddEquation,
       depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -4,

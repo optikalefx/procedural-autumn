@@ -240,13 +240,18 @@ export class TerrainGen {
         const band = n.fbm(rwx * 2.7 + 21.7, rwy * 2.7 - 13.9, 4, 2.35, 0.5, 1);
         hard[i] = clamp01(0.34 + band * 0.44 + massif * 0.30);
 
-        // Bedding. Layers 24–56 m thick, and — critically — *dipping*. A bed is
-        // a tilted plane, so its outcrop trace cuts diagonally across a hillside.
-        // A bed with no dip has its trace exactly on an elevation contour, and
-        // the whole range ends up wearing topographic lines like a survey map.
-        // The dip direction rotates slowly so neighbouring massifs are not all
-        // leaning the same way.
-        const thickness = 34.0 + (n.fbm(u * 1.4 + 4.4, v * 1.4 - 9.1, 2, 2, 0.5, 1) * 0.5 + 0.5) * 46.0;
+        // Bedding. Dipping, so an outcrop trace cuts diagonally across a
+        // hillside rather than following an elevation contour exactly.
+        //
+        // THICKNESS IS THE WHOLE BALLGAME. A bed's outcrop width in map view is
+        // its thickness divided by how steeply the ground falls across it, so on
+        // the 45°+ faces where strata are visible at all, a 34 m bed paints a
+        // 10-15 m rib — measured, not guessed. Dozens of 10 m ribs down a flank
+        // is corduroy, and corduroy is what made the mountains read as a
+        // topographic map. Beds of 90-190 m put three or four real ledges on a
+        // massif instead, which is what the canyon reference plate actually
+        // shows and roughly what a 340 m range should carry.
+        const thickness = 92.0 + (n.fbm(u * 1.4 + 4.4, v * 1.4 - 9.1, 2, 2, 0.5, 1) * 0.5 + 0.5) * 98.0;
         const k = (Math.PI * 2) / thickness;
         this.bedK[i] = k;
         const dipDir = n.fbm(u * 0.80 - 60.2, v * 0.80 + 25.5, 2, 2.0, 0.5, 1) * Math.PI * 2;
@@ -257,11 +262,11 @@ export class TerrainGen {
         this.bedPhase[i] = -bedRise * k;
         // Mesas are the most obviously layered thing in the reference art;
         // alpine horns are jointed but not benched; grassy domes hide it all.
-        // Every massif gets *some* bedding. Dropping the rounded archetype to
-        // near zero left its flanks with no structure at all — in shadow they
-        // read as a flat violet cut-out. Rounded country is grassier and softer,
-        // not geologically featureless.
-        this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.62 + wRound * 0.32)
+        // Weighted hard toward mesa country: in four of the five reference
+        // plates the mountains carry no visible bedding whatsoever, and the one
+        // that does is a canyon. Alpine and rounded flanks get their structure
+        // from the drainage grain the erosion sim cuts, not from stratigraphy.
+        this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.26 + wRound * 0.10)
                                   * smoothstep(0.16, 0.48, massif));
       }
     }
@@ -275,6 +280,14 @@ export class TerrainGen {
    * sine gives every massif the same corduroy ripple. And the hard fraction is
    * biased so only about a third of the column is resistant: real cliff country
    * is a few prominent ledges in a lot of soft rock, not evenly striped.
+   *
+   * ALWAYS CALL THIS WITH A FROZEN REFERENCE HEIGHT (`this.bedRef`), never with
+   * the live surface. Evaluating it against a surface that the same loop is
+   * lowering closes a feedback loop — weather a cell, it drops into the next
+   * bed, weather it again — and that runaway is what covered every flank in
+   * fine evenly-spaced ripples far thinner than any bed. Freezing the reference
+   * at the post-erosion surface keeps one bed per cell for the whole
+   * relaxation, which is what turns dozens of ripples into a few real ledges.
    */
   _bedHard(i, hv) {
     const t = hv * this.bedK[i] + this.bedPhase[i];
@@ -385,7 +398,7 @@ export class TerrainGen {
               const bi = (ny + brushDY[b]) * R + (nx + brushDX[b]);
               h[bi] += amount * brushW[b];
             }
-            sedMap[cellIdx] = Math.min(1, sedMap[cellIdx] + amount * 2.4);
+            sedMap[cellIdx] += amount;     // raw metres; normalised at the end of _relax
           }
           void cellFx; void cellFy;
         } else {
@@ -432,6 +445,21 @@ export class TerrainGen {
     const texel = this.worldSize / R;
     const N = R * R;
 
+    // Which bed each cell exposes, frozen at the post-erosion surface — and
+    // frozen against a *smoothed* copy of it. A bed is a geological plane tens
+    // of metres thick; the metre-scale roughness the droplet sim leaves behind
+    // has no business deciding which bed a cell is in. Sampling the raw surface
+    // swings the bed phase by a radian between adjacent cells, so `bedHard`
+    // came out as per-cell binary flicker rather than as bands, and weathering
+    // then amplified that flicker into the fine corduroy ripple that made every
+    // flank read as wood grain. Smoothing first is what turns it back into a
+    // handful of broad ledges.
+    this.bedRef = this._boxBlur(h, 16, 2);
+    this.bedHard = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      this.bedHard[i] = this.strataW[i] > 0.02 ? this._bedHard(i, this.bedRef[i]) : 0.5;
+    }
+
     // Weathering budget. Without a cap a cell keeps stepping down through bed
     // after bed and the whole range ends up ribbed like corduroy; in reality a
     // retreating face is armoured by its own debris after a few metres.
@@ -456,13 +484,14 @@ export class TerrainGen {
     const DL = D.map(([a, b]) => Math.hypot(a, b));
     const DI = D.map(([a, b]) => b * R + a);
 
-    this._talusParity = 0;
-    // Three weather/waste cycles. Each talus pass is also a low-pass filter, so
+    // Weather/waste cycles. Each talus pass is also a low-pass filter, so
     // spending more of them buys stepped cliffs at the price of erasing the
-    // drainage grain the droplet sim just cut. Three is where both survive.
-    for (let cycle = 0; cycle < 2; cycle++) {
-      this._weather(1.85, DI, DL);
-      this._talus(2, talusLo, talusHi, DI, DL);
+    // drainage grain the droplet sim just cut. The under-relaxed talus below
+    // moves roughly half as much per pass as the old over-relaxed one, so the
+    // pass count is up to match — same total mass wasting, no ripple.
+    for (let cycle = 0; cycle < 3; cycle++) {
+      this._weather(1.55, DI, DL);
+      this._talus(3, talusLo, talusHi, DI, DL);
       this.onProgress(0.52 + 0.02 * cycle, 'Settling the bedrock');
     }
 
@@ -479,8 +508,12 @@ export class TerrainGen {
                      + (tmp[i - R - 1] + tmp[i - R + 1] + tmp[i + R - 1] + tmp[i + R + 1]) * 0.075;
           const dev = tmp[i] - mean;
           // Blend proportionally to how far this texel deviates: 0 for smooth
-          // ground, up to 0.8 for a spike.
-          const w = Math.min(0.55, Math.abs(dev) / (texel * 3.6));
+          // ground, up to the cap for a genuine single-texel spike. The ramp is
+          // deliberately late and shallow — at the old settings a 4 m bump (a
+          // cliff lip, a spur nose, exactly the relief a mountain needs) lost
+          // half its height, which is a lot of what made the massifs read as
+          // smooth. Only fizz finer than the grid should be removed here.
+          const w = Math.min(0.40, Math.max(0.0, Math.abs(dev) / texel - 1.4) * 0.45);
           h[i] = tmp[i] - dev * w;
         }
       }
@@ -492,9 +525,53 @@ export class TerrainGen {
     // independent noise field that happens to sit on top of it.
     for (let i = 0; i < N; i++) {
       const sw = this.strataW[i];
-      const bh = sw > 0.02 ? this._bedHard(i, h[i]) : 0.5;
-      this.hardness[i] = clamp01(hard[i] * (1 - sw * 0.55) + bh * sw * 0.95);
+      this.hardness[i] = clamp01(hard[i] * (1 - sw * 0.55) + this.bedHard[i] * sw * 0.95);
     }
+
+    // Sediment has accumulated as raw metres of debris. Squash it through
+    // x/(x+k) rather than clamping the running total, because clamping is what
+    // it used to do and a third of the map came out sitting at exactly 1.0 —
+    // the shader could no longer tell a talus fan from a valley floor a single
+    // droplet had once crossed, and it painted a fifth of the world scree grey.
+    // A soft saturation keeps the ordering intact: a metre of debris reads
+    // ~0.4, a real fan reads near 1, and ground that only ever saw a dusting
+    // stays near 0.
+    const K = 1.5;
+    const sed = this.sediment;
+    for (let i = 0; i < N; i++) {
+      const s = sed[i];
+      sed[i] = s > 0 ? s / (s + K) : 0;
+    }
+  }
+
+  /** Separable box blur with a radius in metres. O(N) per pass, edge-clamped. */
+  _boxBlur(src, radiusM, passes) {
+    const R = this.res;
+    const rad = Math.max(1, Math.round(radiusM / (this.worldSize / R)));
+    const inv = 1 / (rad * 2 + 1);
+    const cl = (v) => (v < 0 ? 0 : v >= R ? R - 1 : v);
+    let a = Float32Array.from(src);
+    const b = new Float32Array(a.length);
+    for (let p = 0; p < passes; p++) {
+      for (let y = 0; y < R; y++) {
+        const row = y * R;
+        let sum = 0;
+        for (let k = -rad; k <= rad; k++) sum += a[row + cl(k)];
+        for (let x = 0; x < R; x++) {
+          b[row + x] = sum * inv;
+          sum += a[row + cl(x + rad + 1)] - a[row + cl(x - rad)];
+        }
+      }
+      for (let x = 0; x < R; x++) {
+        let sum = 0;
+        for (let k = -rad; k <= rad; k++) sum += b[cl(k) * R + x];
+        for (let y = 0; y < R; y++) {
+          a[y * R + x] = sum * inv;
+          sum += b[cl(y + rad + 1) * R + x] - b[cl(y - rad) * R + x];
+        }
+      }
+    }
+    return a;
   }
 
   /**
@@ -519,8 +596,7 @@ export class TerrainGen {
         const w = sw[i];
         if (w < 0.06) continue;
 
-        const hv = src[i];
-        const bh = this._bedHard(i, hv);
+        const bh = this.bedHard[i];
         // Exposure: a bed only retreats where it is already a face. Requiring a
         // real gradient (~14 deg) before anything happens is what keeps the
         // benching on cliffs instead of ribbing the meadow with contour lines.
@@ -551,11 +627,11 @@ export class TerrainGen {
         if (b1 >= 0 && d1 > 0) {
           const s = d0 + d1;
           h[b0] += give * (d0 / s); h[b1] += give * (d1 / s);
-          sed[b0] = Math.min(1, sed[b0] + give * 1.6);
-          sed[b1] = Math.min(1, sed[b1] + give * 1.6);
+          sed[b0] += give * (d0 / s);
+          sed[b1] += give * (d1 / s);
         } else {
           h[b0] += give;
-          sed[b0] = Math.min(1, sed[b0] + give * 2.0);
+          sed[b0] += give;
         }
       }
     }
@@ -564,38 +640,66 @@ export class TerrainGen {
   /**
    * Angle-of-repose limiter, with the repose angle set by the exposed bed.
    *
-   * The sweep alternates direction every pass. An in-place raster sweep moves
-   * material many cells downstream within one pass but only one cell upstream,
-   * so running it always forwards combs the whole range into parallel smears
-   * pointing the same way — which is what "blobby, motion-blurred mountains"
-   * actually is. Alternating cancels the bias.
+   * JACOBI, AND MASS-CONSERVING. This used to be an in-place Gauss–Seidel sweep
+   * that shed 28% of the excess to *each* of eight neighbours independently —
+   * up to 2.24x the material actually needed. That is an over-relaxation, and
+   * an over-relaxed diffusion oscillates: it was the single largest source of
+   * the fine corduroy ripple that made every mountain flank read as wood grain
+   * or as a topographic map. Alternating the sweep direction hid the scan-order
+   * bias but could not fix the overshoot, because the overshoot is per-cell.
+   *
+   * The replacement accumulates into a delta buffer (so no cell can see a
+   * neighbour that has already moved this pass, which is what made the result
+   * depend on raster order at all), and each cell sheds a fixed fraction of the
+   * *worst* single excess, split between the over-steep neighbours in
+   * proportion to how over-steep each one is. Shedding less than the full
+   * excess makes the iteration monotone — it can approach the repose angle but
+   * never cross it — so the ripple has nowhere to come from.
+   *
+   * Being gentler per pass, it needs more passes for the same amount of mass
+   * wasting; that is the trade and it is worth it.
    */
   _talus(passes, talusLo, talusHi, DI, DL) {
     const R = this.res, h = this.height, sw = this.strataW;
+    const N = h.length;
+    const delta = this._talusDelta || (this._talusDelta = new Float32Array(N));
+    const ex = this._talusEx || (this._talusEx = new Float64Array(8));
+    // Under-relaxation factor. Above ~0.5 the Jacobi update can overshoot when
+    // a cell is shedding into a neighbour that is shedding back.
+    const RELAX = 0.45;
+
     for (let pass = 0; pass < passes; pass++) {
-      const back = (this._talusParity++ & 1) === 1;
-      for (let yy = 1; yy < R - 1; yy++) {
-        const y = back ? R - 1 - yy : yy;
-        for (let xx = 1; xx < R - 1; xx++) {
-          const x = back ? R - 1 - xx : xx;
+      delta.fill(0);
+      for (let y = 1; y < R - 1; y++) {
+        for (let x = 1; x < R - 1; x++) {
           const i = y * R + x;
           const hi = h[i];
           const w = sw[i];
-          // Unbedded ground just uses the soft limit; no need to pay for a sin.
+          // Unbedded ground just uses the soft limit. Note the bedded limit
+          // comes from the *frozen* bed: a repose angle that oscillated with
+          // the live surface height put every slumping cell into a limit cycle
+          // — hold, slump, hold — which ripples a flank as surely as the
+          // weathering feedback did.
           const t = w < 0.06 ? talusLo[i]
-                             : lerp(talusLo[i], talusHi[i], this._bedHard(i, hi) * w);
+                             : lerp(talusLo[i], talusHi[i], this.bedHard[i] * w);
+
+          let total = 0, worst = 0;
           for (let k = 0; k < 8; k++) {
-            const ni = i + DI[k];
-            const diff = hi - h[ni];
-            const lim = t * DL[k];
-            if (diff > lim) {
-              const move = (diff - lim) * 0.28;
-              h[i] -= move;
-              h[ni] += move;
-            }
+            const e = hi - h[i + DI[k]] - t * DL[k];
+            if (e > 0) { ex[k] = e; total += e; if (e > worst) worst = e; }
+            else ex[k] = 0;
+          }
+          if (total <= 0) continue;
+
+          const give = worst * RELAX;
+          delta[i] -= give;
+          const inv = give / total;
+          for (let k = 0; k < 8; k++) {
+            if (ex[k] > 0) delta[i + DI[k]] += ex[k] * inv;
           }
         }
       }
+      for (let i = 0; i < N; i++) h[i] += delta[i];
     }
   }
 
@@ -806,7 +910,15 @@ export class TerrainGen {
         // interfluves and buttresses standing between the gullies.
         const soft = 1.28 - hard[i] * 0.88;
         const w = 0.24 + Math.min(1.0, g * 1.25) * 0.78;
-        rill[i] = Math.pow(t, 1.5) * 3.0 * w * soft;
+        // And it scales super-linearly with slope. A uniform 3 m incision gave
+        // the meadow a decent grain but left a 45-degree massif as a smooth
+        // cone with a faint texture on it — the "mountains read as smooth
+        // painted ramps" note from the art review. Real alpine flanks are
+        // grooved by gullies ten or twenty metres deep with spurs standing
+        // between them, and that relief is what gives a silhouette its
+        // ridgelines and gives the shading something to catch on.
+        const steepGain = 1.0 + Math.min(1.6, g) * 2.4;
+        rill[i] = Math.pow(t, 1.5) * 2.6 * w * soft * steepGain;
       }
     }
 
