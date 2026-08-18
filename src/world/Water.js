@@ -9,10 +9,12 @@
 //            channel tangent rotates the ripple basis, discharge and surface
 //            gradient drive foam. Nothing is a global scroll.
 //
-//    LAKES   flat tiles, two triangles each, masked per-pixel against the baked
-//            heightfield. Calm, near-mirror at grazing angles, gentle wind
-//            ripple. The geometry is trivial because the shoreline comes from
-//            the terrain, not from the polygon edge.
+//    LAKES   a mesh built cell-by-cell from the baked water grid, one vertex
+//            every ~8 m, each carrying the *local* baked surface height. Calm,
+//            near-mirror at grazing angles, gentle wind ripple. The polygon
+//            only ever has to be roughly right: the visible edge is a per-pixel
+//            depth fade against the terrain, so the shoreline comes from the
+//            ground, not from where the mesh happens to stop.
 //
 //  The shoreline in both cases is a depth fade computed from the data texture,
 //  so the water edge is soft and follows the carved bank rather than reading as
@@ -30,7 +32,13 @@ import { clamp01, smoothstep } from '../core/MathUtils.js';
 // bank and are hidden by the terrain, which is what makes the edge crisp.
 const COLS = [-1.5, -1.05, -0.72, -0.36, 0, 0.36, 0.72, 1.05, 1.5];
 const RIVER_BUCKET = 1024;   // metres; coarse spatial split so culling can work
-const LAKE_TILE = 48;        // metres per lake quad
+const LAKE_QUAD = 8;         // metres per lake quad — fine enough that the surface
+                             // follows the baked water instead of averaging it
+const LAKE_CHUNK = 768;      // metres per lake draw call
+// A ribbon and a lake covering the same flooded reach are coplanar and would
+// z-fight. Six centimetres is far more than depth precision at these ranges and
+// far less than anything the eye can read as a step.
+const RIVER_LIFT = 0.06;
 
 // ── river surface ────────────────────────────────────────────────────────────
 const RIVER_VERT = /* glsl */`
@@ -122,7 +130,13 @@ void main() {
   // swallow the ±0.4 m of micro-detail the terrain mesh adds on top of the
   // baked heightfield, so the water never shows a hairline of z-fight.
   float shoreFade = smoothstep(0.0, 0.62, depth);
-  float alpha = shoreFade * smoothstep(1.52, 1.34, abs(vSide));
+  // Taper across the profile as well. The outer columns exist to give the
+  // shoreline fade somewhere to finish, not to be water: on an incised channel
+  // the terrain cuts them off first, but on a flat flood plain nothing does,
+  // and a 12 m river then paints itself 32 m wide as a flat blue film over the
+  // meadow. The channel is as wide as the channel.
+  float profile = smoothstep(1.38, 0.98, abs(vSide));
+  float alpha = shoreFade * profile;
   if (alpha < 0.012) discard;
 
   // ── flow space: u across the channel, v downstream, both in metres ────────
@@ -189,21 +203,34 @@ void main() {
   float foam = smoothstep(cut, cut + 0.10, fn);
   foam = max(foam, smoothstep(cut + 0.12, cut + 0.21, fn2) * 0.7);
   foam *= smoothstep(0.04, 0.16, drive);
-  // A crisp lace of foam on the waterline itself, and only there: it needs the
-  // bank to break against, so it lives in the outer third of the channel.
-  float lace = (1.0 - smoothstep(shoreBand * 0.3, shoreBand * 1.3, distShore))
-             * shoreFade * smoothstep(0.30, 0.75, abs(vSide));
-  foam = max(foam, lace * smoothstep(0.40, 0.56, fn) * 0.85);
+
+  // The waterline itself. This is the single loudest cue in the reference: even
+  // a lazy meander is drawn with a bright broken white line where the water
+  // meets the bank, and without it a river reads as a sheet of blue vinyl laid
+  // in a ditch. So it is unconditional — turbulence changes how *much*, never
+  // whether there is any at all.
+  float lace = (1.0 - smoothstep(shoreBand * 0.35, shoreBand * 1.9, distShore))
+             * shoreFade * smoothstep(0.22, 0.68, abs(vSide));
+  // Broken by a noise that rides downstream, so the line reads as painted marks
+  // travelling with the current rather than a stencilled outline.
+  float laceN = wFbm3(fp * vec2(0.9, 0.22) - vec2(0.0, uTime * speed * 0.26)) * 0.5 + 0.5;
+  foam = max(foam, lace * smoothstep(0.34, 0.52, laceN) * (0.72 + 0.28 * vFlow));
   foam = clamp(foam, 0.0, 1.0);
 
   // ── colour ───────────────────────────────────────────────────────────────
   float deepT = smoothstep(0.15, 2.2, depth);
   vec3 body = mix(uShallow, uDeep, deepT);
+  // The margins of a channel are always paler than its core, whatever the bed
+  // happens to be doing — the water is thinner there and half full of air.
+  // Driving it off the channel profile rather than off the sampled bed keeps
+  // the read legible on the many reaches where the bed is nearly flat.
+  body = mix(body, uShallow * 1.06, smoothstep(0.40, 1.20, abs(vSide)) * 0.55);
   // Broad soft bands riding downstream. This is the painted-water read in the
   // reference: the surface is never one flat tint, it is lanes of slightly
   // different value drifting with the current.
   float band = wFbm2(fp * vec2(0.26, 0.05) - vec2(0.0, uTime * speed * 0.18)) * 0.5 + 0.5;
-  body *= 0.80 + 0.40 * band;
+  float lanes = wFbm2(fp * vec2(1.30, 0.09) - vec2(0.0, uTime * speed * 0.30)) * 0.5 + 0.5;
+  body *= 0.74 + 0.30 * band + 0.30 * lanes;
   // Shallow water shows the bed through it; a warm bounce keeps the palette
   // from going cold and dead where the river is only ankle-deep.
   body = mix(body, uSubsurface * 1.05, (1.0 - deepT) * 0.35);
@@ -237,7 +264,7 @@ void main() {
 
   // Foam is lit almost flat — it is a diffuse mass of bubbles, and flattening
   // it is what makes it read as a painted shape.
-  vec3 foamCol = uFoam * (uSunLight * (0.35 + 0.65 * shadow) * 0.30 + uAmbient * 0.55) / PI * 2.3;
+  vec3 foamCol = uFoam * (uSunLight * (0.24 + 0.52 * shadow) + uAmbient * 0.60) / PI * 2.6;
   col = mix(col, foamCol, foam * 0.94);
 
   // A whisper of cool in the whole channel. Water in the reference is never
@@ -257,10 +284,28 @@ const LAKE_VERT = /* glsl */`
 #include <common>
 #include <fog_pars_vertex>
 #include <shadowmap_pars_vertex>
-varying vec3 vWPos;
+attribute float aWet;     // 1 inside the baked water body, 0 on the overhang ring
+attribute float aShore;   // metres to the nearest dry cell, capped
+
+uniform float uTime;
+
+varying vec3  vWPos;
+varying float vWet;
+varying float vShore;
+
 void main() {
   vec3 transformed = position;
-  vWPos = transformed;
+
+  // A long, shallow swell so a big lake is not a dead sheet. Two centimetres:
+  // enough to move the specular path, far too little to break the shoreline.
+  float sw = sin(transformed.x * 0.021 + uTime * 0.31)
+           + sin(transformed.z * 0.017 - uTime * 0.24);
+  transformed.y += sw * 0.02 * smoothstep(3.0, 25.0, aShore);
+
+  vWPos  = transformed;
+  vWet   = aWet;
+  vShore = aShore;
+
   vec3 objectNormal = vec3(0.0, 1.0, 0.0);
   vec3 transformedNormal = normalMatrix * objectNormal;
   vec4 worldPosition = modelMatrix * vec4(transformed, 1.0);
@@ -291,44 +336,75 @@ uniform vec2  uWind;
 uniform float uBodyGain;
 uniform vec3  uCoolTint;
 
-varying vec3 vWPos;
+varying vec3  vWPos;
+varying float vWet;
+varying float vShore;
 
 ${WATER_NOISE}
 ${WATER_ENV}
 
 void main() {
   vec4 D = wWorldData(vWPos.xz);
-  // The baked water channel is -9999 on dry ground; bilinear filtering smears
-  // that over one texel, so anything under -400 is "at least a texel outside
-  // the lake" and gets cut. The depth fade does the fine edge.
-  if (D.g < -400.0) discard;
   float depth = vWPos.y - D.r;
-  float shoreFade = smoothstep(0.0, 0.55, depth);
-  if (shoreFade < 0.012) discard;
+  // The whole shoreline, in one line: water exists exactly where the surface is
+  // above the ground. Not where the polygon ends, not where the baked wet/dry
+  // flag flips — both of those are quantised to the grid and read as a cut
+  // edge. The band is wide enough to swallow the ±0.5 m of micro-detail the
+  // terrain mesh adds on top of the baked heightfield.
+  float shoreFade = smoothstep(0.0, 0.62, depth);
+  // The mesh is dilated one ring beyond the baked water so the fade has room to
+  // finish inside geometry. That ring is the only place this gate does anything
+  // — it stops a perched lake from painting itself down a cliff face.
+  float alpha = shoreFade * smoothstep(0.05, 0.55, vWet);
+  if (alpha < 0.012) discard;
 
-  // ── wind ripple: two crossed scales, very low amplitude ──────────────────
+  // ── wind ripple: crossed scales, very low amplitude ───────────────────────
   vec2 p = vWPos.xz;
   vec2 wdir = normalize(uWind + vec2(1e-4));
   float wmag = length(uWind);
   vec2 g = vec2(0.0);
-  g += wWaveGrad(p, wdir,                                 0.30, 1.45, uTime, 0.30 * wmag);
-  g += wWaveGrad(p, normalize(wdir + vec2( 0.55, -0.35)), 0.72, 1.05, uTime, 0.15 * wmag);
-  g += wWaveGrad(p, normalize(wdir + vec2(-0.62,  0.30)), 1.55, 0.72, uTime, 0.060 * wmag);
-  g += wWaveGrad(p, normalize(wdir + vec2( 0.20,  0.90)), 3.40, 0.48, uTime, 0.022 * wmag);
-  // Sheltered water near the shore is glassier than open water.
-  float fetch = 0.35 + 0.65 * smoothstep(0.4, 6.0, depth);
+  g += wWaveGrad(p, wdir,                                 0.30, 1.45, uTime, 0.34 * wmag);
+  g += wWaveGrad(p, normalize(wdir + vec2( 0.55, -0.35)), 0.72, 1.05, uTime, 0.17 * wmag);
+  g += wWaveGrad(p, normalize(wdir + vec2(-0.62,  0.30)), 1.55, 0.72, uTime, 0.065 * wmag);
+  g += wWaveGrad(p, normalize(wdir + vec2( 0.20,  0.90)), 3.40, 0.48, uTime, 0.024 * wmag);
+  // Fetch is a *distance* thing, not a depth thing: a puddle is glass however
+  // deep it is, and the middle of a lake is textured however shallow it is.
+  float fetch = 0.42 + 0.58 * smoothstep(4.0, 55.0, vShore);
   // Fade the fine scales out with distance or they turn into aliasing crawl at
   // the far end of a kilometre of lake.
   float dist = length(cameraPosition - vWPos);
   g *= fetch * (0.35 + 0.65 * exp(-dist * 0.006));
+  // A fine chop that survives close up. The scales above are metres wide, so at
+  // two metres from the camera they are off-screen gradients and the surface has
+  // nothing in it — this is the scale you actually see from a car window.
+  float near = 1.0 - smoothstep(3.0, 34.0, dist);
+  g += wWaveGrad(p, normalize(wdir + vec2(0.9, 0.1)),  6.5, 0.55, uTime, 0.012 * near);
+  g += wWaveGrad(p, normalize(wdir + vec2(-0.7, 0.6)), 11.0, 0.42, uTime, 0.006 * near);
+
+  // Wind on water is patchy: cat's-paws of ripple with glassy lanes between
+  // them. Four pure sinusoids without this read as corduroy — regular parallel
+  // dashes marching across the surface, which is the single most artificial
+  // thing a lake can do.
+  float gust = 0.30 + 1.05 * (wFbm2(p * 0.045 - vec2(uTime * 0.05, 0.0)) * 0.5 + 0.5);
+  g *= gust;
 
   vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
   vec3 V = normalize(cameraPosition - vWPos);
   if (!gl_FrontFacing) N = -N;
 
-  float deepT = smoothstep(0.4, 9.0, depth);
+  float deepT = smoothstep(0.25, 4.0, depth);
   vec3 body = mix(uShallow, uDeep, deepT);
-  body = mix(body, uSubsurface, (1.0 - deepT) * 0.30);
+  // Painterly value structure: broad, slow, low-frequency masses rather than a
+  // single flat tint. Large areas of near-uniform colour with soft boundaries
+  // is what makes the reference read as painted.
+  float band = wFbm2(p * 0.012 + vec2(uTime * 0.006, 0.0)) * 0.5 + 0.5;
+  // Same idea at arm's length: broad masses read at 300 m, these read at 3 m.
+  float fine = wFbm2(p * 0.16 + vec2(uTime * 0.03, uTime * 0.012)) * 0.5 + 0.5;
+  body *= 0.86 + 0.28 * band + 0.16 * (fine - 0.5) * near;
+  // Ankle-deep water over gold meadow is warm, not cyan. Letting the bed colour
+  // through the shallows is what stops a flooded flat reading as a plastic
+  // sheet laid over the ground.
+  body = mix(body, uSubsurface, (1.0 - deepT) * 0.34);
 
   float shadow = min(getShadowMask(), wSunShadow(vWPos + vec3(0.0, 0.4, 0.0)));
   float ndl = max(dot(N, uSunDir), 0.0);
@@ -342,33 +418,41 @@ void main() {
   // faithfully gives a hole full of cream sky. Water is a coloured medium:
   // tinting the reflection with the body keeps the surface reading as water
   // even when it is mostly showing the sky back at you.
-  vec3 env = wEnvReflect(vWPos, R) * mix(vec3(1.0), medium * 2.6, 0.38);
-  vec3 col = mix(lit, env, clamp(fres * 0.80, 0.0, 0.78));
+  vec3 env = wEnvReflect(vWPos, R) * mix(vec3(1.0), medium * 2.6, 0.55);
+  // Shallow water has almost no path length to reflect out of — the shelf at
+  // the shore should show its bed, not the sky.
+  float mirror = clamp(fres * 0.70, 0.0, 0.50) * smoothstep(0.10, 1.2, depth);
+  vec3 col = mix(lit, env, mirror);
 
-  // Broad sun path plus a tight glitter, both riding the ripple normal.
+  // Sun path. Broad and graded, never a hard hotspot.
   vec3 H = normalize(uSunDir + V);
   float nh = max(dot(N, H), 0.0);
-  col += uSunLight * (pow(nh, 900.0) * 1.6 + pow(nh, 90.0) * 0.10) * shadow;
+  col += uSunLight * (pow(nh, 260.0) * 0.55 + pow(nh, 40.0) * 0.09) * shadow;
 
   // A thin lapping line where the water meets the ground. Measured in metres
   // from the shore, not in depth: a shallow shelf is not a beach.
-  float foam = 0.0;
   float fn = wFbm3(p * 0.75 + vec2(uTime * 0.05, 0.0)) * 0.5 + 0.5;
-  if (depth < 3.0) {
-    float bx = wBed(p + vec2(2.0, 0.0)) - wBed(p - vec2(2.0, 0.0));
-    float bz = wBed(p + vec2(0.0, 2.0)) - wBed(p - vec2(0.0, 2.0));
-    float slope = length(vec2(bx, bz)) * 0.25;
-    float distShore = depth / max(slope, 0.05);
-    float lace = (1.0 - smoothstep(0.5, 2.4, distShore)) * shoreFade;
-    foam = lace * smoothstep(0.42, 0.58, fn);
-  }
-  vec3 foamCol = uFoam * (uSunLight * shadow * 0.28 + uAmbient * 0.55) / PI * 2.3;
-  col = mix(col, foamCol, foam * 0.85);
+  float bx = wBed(p + vec2(2.0, 0.0)) - wBed(p - vec2(2.0, 0.0));
+  float bz = wBed(p + vec2(0.0, 2.0)) - wBed(p - vec2(0.0, 2.0));
+  float slope = length(vec2(bx, bz)) * 0.25;
+  float distShore = depth / max(slope, 0.05);
+  // Narrow and broken. A continuous two-metre white band around every lake in
+  // the map reads as an ice fringe rather than water lapping at a bank.
+  float lace = (1.0 - smoothstep(0.35, 2.0, distShore)) * shoreFade;
+  // Far shorelines get a pale edge, not a white rope: the lace noise is
+  // sub-pixel past a couple of hundred metres and averages to a solid band.
+  float foam = lace * smoothstep(0.42, 0.60, fn) * 0.74
+             * mix(1.0, 0.45, smoothstep(140.0, 520.0, dist));
+  // Foam is a diffuse mass of bubbles: lit nearly flat, and never allowed to
+  // sink to the ambient's blue — white water that is not white is haze.
+  vec3 foamCol = uFoam * (uSunLight * (0.22 + 0.48 * shadow) + uAmbient * 0.60) / PI * 2.6;
+  col = mix(col, foamCol, foam);
 
   col *= uCoolTint;
 
-  float alpha = mix(shoreFade, 1.0, min(deepT * 1.6, 1.0));
-  alpha = max(alpha, foam * 0.9);
+  // Shallows are see-through; the body closes up as it deepens.
+  alpha *= mix(0.62, 1.0, smoothstep(0.12, 1.5, depth));
+  alpha = max(alpha, foam * 0.92);
 
   gl_FragColor = vec4(col, alpha);
   #include <fog_fragment>
@@ -398,6 +482,7 @@ export class Water extends System {
       uTime:         { value: 0 },
       uDataTex:      { value: world.dataTexture },
       uWorldSize:    { value: world.worldSize },
+      uDataTexel:    { value: 1 / world.res },
       uSunDir:       { value: new THREE.Vector3(0.4, 0.5, 0.3) },
       uSunColor:     { value: new THREE.Color(1, 1, 1) },
       uSunLight:     { value: new THREE.Color(1, 1, 1) },
@@ -409,10 +494,18 @@ export class Water extends System {
       uSnowLine:     { value: 262.0 },
       uReflectSteps: { value: reflectSteps },
       uShallow:      { value: PALETTE.waterShallow.clone() },
-      uDeep:         { value: PALETTE.waterDeep.clone() },
+      // The palette's deep blue is the colour of a *sample* of deep water, not
+      // of a lake seen under a bright sky. Taken literally it makes every basin
+      // in the map a dark hole, which fails the brief's lifted-blacks target;
+      // lifting it a quarter of the way to the shallow tone keeps the hue and
+      // gets the value back.
+      uDeep:         { value: PALETTE.waterDeep.clone().lerp(PALETTE.waterShallow, 0.26) },
       uFoam:         { value: PALETTE.waterFoam.clone() },
       uSubsurface:   { value: PALETTE.waterSubsurface.clone() },
-      uBodyGain:     { value: 3.1 },
+      // Shallow water at 3.1 clipped every channel past 1.0 — the surface then
+      // has no structure left to see, which is how a pond two metres from the
+      // camera ends up reading as flat turquoise vinyl.
+      uBodyGain:     { value: 2.1 },
       uCoolTint:     { value: new THREE.Vector3(0.94, 1.00, 1.05) },
     };
 
@@ -567,7 +660,7 @@ export class Water extends System {
         const hw = s.w * 0.5;
         for (let c = 0; c < COLS.length; c++) {
           const off = COLS[c] * hw;
-          b.pos.push(s.x - s.tz * off, s.y, s.z + s.tx * off);
+          b.pos.push(s.x - s.tz * off, s.y + RIVER_LIFT, s.z + s.tx * off);
           b.side.push(COLS[c]);
           b.dist.push(s.d);
           b.flow.push(s.flow);
@@ -622,77 +715,182 @@ export class Water extends System {
 
   // ── lakes ──────────────────────────────────────────────────────────────────
   /**
-   * Any patch of baked water whose surface is *flat* is a lake; anything with a
-   * gradient across it is a river reach and belongs to the ribbons. Classifying
-   * by surface slope rather than by the river mask means ox-bows, ponds and
-   * flooded basins all end up on the calm shader without a special case.
+   * The lake surface is a mesh over the baked water grid, not a set of flat
+   * tiles laid on top of it.
+   *
+   * The previous build averaged the water height over a 48 m tile and drew one
+   * quad at that level. Over the near-flat valley floors this map is full of,
+   * a neighbouring tile averaging 0.4 m differently moves the waterline by tens
+   * of metres — which is precisely why the lakes read as hard-edged slabs
+   * floating over the ground, with dead-straight tile seams through the middle
+   * of a single body of water.
+   *
+   * Instead: one vertex every ~8 m carrying the *local* baked surface height,
+   * cells emitted only where there is water, the whole thing dilated one ring
+   * so the per-pixel depth fade has geometry to finish inside. The polygon
+   * boundary is then always well outside the visible waterline, and the
+   * waterline itself is decided by the terrain.
    */
   _buildLakes() {
     const world = this.ctx.world;
     const R = world.res;
     const half = world.half;
-    const texel = world.texelSize ?? (world.worldSize / R);
-    const cells = Math.max(1, Math.round(LAKE_TILE / texel));
-    const tiles = Math.floor(R / cells);
+    const texel = world.texel ?? (world.worldSize / R);
 
-    // Four quadrant meshes: enough for coarse culling, few enough that lakes
-    // never cost more than four draw calls.
-    const quads = [[], [], [], []];
+    const S = Math.max(1, Math.round(LAKE_QUAD / texel));  // grid cells per quad
+    const quadM = S * texel;
+    const G = Math.floor(R / S);                           // quads per side
+    const DRY = -9999;
 
-    for (let tz = 0; tz < tiles; tz++) {
-      for (let tx = 0; tx < tiles; tx++) {
-        let wet = 0, riv = 0, lo = Infinity, hi = -Infinity, sum = 0;
-        for (let j = 0; j < cells; j++) {
-          const gz = tz * cells + j;
-          const row = gz * R;
-          for (let i = 0; i < cells; i++) {
-            const v = world.water[row + tx * cells + i];
+    // ── coarse pass: is there water in this quad, and at what level? ─────────
+    const level = new Float32Array(G * G).fill(DRY);
+    const wet = new Uint8Array(G * G);
+    for (let cz = 0; cz < G; cz++) {
+      for (let cx = 0; cx < G; cx++) {
+        let n = 0, sum = 0;
+        for (let j = 0; j < S; j++) {
+          const row = (cz * S + j) * R;
+          for (let i = 0; i < S; i++) {
+            const v = world.water[row + cx * S + i];
             if (v < -9000) continue;
-            wet++; sum += v;
-            if (v < lo) lo = v;
-            if (v > hi) hi = v;
-            if (world.riverMask[row + tx * cells + i] > 0.35) riv++;
+            n++; sum += v;
           }
         }
-        if (wet < 3) continue;
-        if (hi - lo > 1.0) continue;              // sloping water: that's a river
-        if (riv > wet * 0.55) continue;           // channel: the ribbon owns it
-        const y = sum / wet;
-
-        const x0 = -half + tx * cells * texel;
-        const z0 = -half + tz * cells * texel;
-        const x1 = x0 + cells * texel;
-        const z1 = z0 + cells * texel;
-        const q = quads[(x0 > 0 ? 1 : 0) + (z0 > 0 ? 2 : 0)];
-        q.push(x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1);
+        if (!n) continue;
+        wet[cz * G + cx] = 1;
+        level[cz * G + cx] = sum / n;
       }
     }
 
-    let count = 0;
-    for (const q of quads) {
-      if (!q.length) continue;
-      const verts = q.length / 3;
-      const idx = new Uint32Array((verts / 4) * 6);
-      for (let t = 0, p = 0; t < verts / 4; t++) {
-        const b = t * 4;
-        idx[p++] = b; idx[p++] = b + 2; idx[p++] = b + 1;
-        idx[p++] = b; idx[p++] = b + 3; idx[p++] = b + 2;
+    // ── dilate one ring, carrying the neighbouring level outward ────────────
+    // These cells are never *seen* as water unless the ground genuinely lies
+    // below the lake there; they exist so the shoreline fade never coincides
+    // with the edge of the mesh.
+    const mask = Uint8Array.from(wet);
+    for (let cz = 0; cz < G; cz++) {
+      for (let cx = 0; cx < G; cx++) {
+        const k = cz * G + cx;
+        if (wet[k]) continue;
+        let n = 0, sum = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          const z = cz + dz; if (z < 0 || z >= G) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const x = cx + dx; if (x < 0 || x >= G) continue;
+            if (!wet[z * G + x]) continue;
+            n++; sum += level[z * G + x];
+          }
+        }
+        if (!n) continue;
+        mask[k] = 1;
+        level[k] = sum / n;
       }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(q, 3));
-      geo.setIndex(new THREE.BufferAttribute(idx, 1));
-      geo.computeBoundingSphere();
-      const mesh = new THREE.Mesh(geo, this.lakeMaterial);
-      mesh.receiveShadow = true;
-      mesh.renderOrder = 4;
-      mesh.matrixAutoUpdate = false;
-      mesh.updateMatrix();
-      mesh.name = 'LakeQuadrant';
-      this.group.add(mesh);
-      this._meshes.push(mesh);
-      count += verts / 4;
     }
-    this.lakeTiles = count;
+
+    // ── distance to the nearest dry cell, in metres (two-pass chamfer) ───────
+    // Fetch, not depth, is what decides whether water is glassy or textured.
+    const FAR = 1e6;
+    const dist = new Float32Array(G * G);
+    for (let k = 0; k < G * G; k++) dist[k] = wet[k] ? FAR : 0;
+    for (let cz = 0; cz < G; cz++) {
+      for (let cx = 0; cx < G; cx++) {
+        const k = cz * G + cx;
+        let d = dist[k];
+        if (cx > 0) d = Math.min(d, dist[k - 1] + 1);
+        if (cz > 0) d = Math.min(d, dist[k - G] + 1);
+        if (cx > 0 && cz > 0) d = Math.min(d, dist[k - G - 1] + 1.41);
+        if (cx < G - 1 && cz > 0) d = Math.min(d, dist[k - G + 1] + 1.41);
+        dist[k] = d;
+      }
+    }
+    for (let cz = G - 1; cz >= 0; cz--) {
+      for (let cx = G - 1; cx >= 0; cx--) {
+        const k = cz * G + cx;
+        let d = dist[k];
+        if (cx < G - 1) d = Math.min(d, dist[k + 1] + 1);
+        if (cz < G - 1) d = Math.min(d, dist[k + G] + 1);
+        if (cx < G - 1 && cz < G - 1) d = Math.min(d, dist[k + G + 1] + 1.41);
+        if (cx > 0 && cz < G - 1) d = Math.min(d, dist[k + G - 1] + 1.41);
+        dist[k] = d;
+      }
+    }
+
+    // ── emit, chunked for frustum culling ───────────────────────────────────
+    const perChunk = Math.max(8, Math.round(LAKE_CHUNK / quadM));
+    const chunks = Math.ceil(G / perChunk);
+    const vmap = new Int32Array((perChunk + 1) * (perChunk + 1));
+    let quadCount = 0, tris = 0;
+
+    // Vertex value = mean over the (up to four) mesh cells touching it, so the
+    // surface is continuous across chunk borders.
+    const vertexAt = (vx, vz, out) => {
+      let n = 0, lv = 0, w = 0, sh = 0;
+      for (let dz = -1; dz <= 0; dz++) {
+        const cz = vz + dz; if (cz < 0 || cz >= G) continue;
+        for (let dx = -1; dx <= 0; dx++) {
+          const cx = vx + dx; if (cx < 0 || cx >= G) continue;
+          const k = cz * G + cx;
+          if (!mask[k]) continue;
+          n++; lv += level[k]; w += wet[k]; sh += Math.min(dist[k], 12) * quadM;
+        }
+      }
+      if (!n) return false;
+      out[0] = lv / n; out[1] = w / n; out[2] = sh / n;
+      return true;
+    };
+
+    const vv = [0, 0, 0];
+    for (let bz = 0; bz < chunks; bz++) {
+      for (let bx = 0; bx < chunks; bx++) {
+        const cz0 = bz * perChunk, cx0 = bx * perChunk;
+        const cz1 = Math.min(G, cz0 + perChunk), cx1 = Math.min(G, cx0 + perChunk);
+        vmap.fill(-1);
+        const pos = [], wetA = [], shoreA = [], idx = [];
+
+        const vert = (vx, vz) => {
+          const li = (vz - cz0) * (perChunk + 1) + (vx - cx0);
+          const hit = vmap[li];
+          if (hit >= 0) return hit;
+          if (!vertexAt(vx, vz, vv)) return -1;
+          const id = pos.length / 3;
+          pos.push(-half + vx * quadM, vv[0], -half + vz * quadM);
+          wetA.push(vv[1]);
+          shoreA.push(vv[2]);
+          vmap[li] = id;
+          return id;
+        };
+
+        for (let cz = cz0; cz < cz1; cz++) {
+          for (let cx = cx0; cx < cx1; cx++) {
+            if (!mask[cz * G + cx]) continue;
+            const a = vert(cx, cz), b = vert(cx + 1, cz);
+            const c = vert(cx + 1, cz + 1), d = vert(cx, cz + 1);
+            if (a < 0 || b < 0 || c < 0 || d < 0) continue;
+            idx.push(a, c, b, a, d, c);
+            quadCount++;
+          }
+        }
+        if (!idx.length) continue;
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setAttribute('aWet', new THREE.Float32BufferAttribute(wetA, 1));
+        geo.setAttribute('aShore', new THREE.Float32BufferAttribute(shoreA, 1));
+        geo.setIndex(idx);
+        geo.computeBoundingSphere();
+        geo.boundingSphere.radius *= 1.05;
+        const mesh = new THREE.Mesh(geo, this.lakeMaterial);
+        mesh.receiveShadow = true;
+        mesh.renderOrder = 4;
+        mesh.matrixAutoUpdate = false;
+        mesh.updateMatrix();
+        mesh.name = 'LakeChunk';
+        this.group.add(mesh);
+        this._meshes.push(mesh);
+        tris += idx.length / 3;
+      }
+    }
+    this.lakeQuads = quadCount;
+    this.lakeTriangles = tris;
   }
 
   // ── per frame ──────────────────────────────────────────────────────────────

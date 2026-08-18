@@ -45,49 +45,51 @@ const KEYS = [
   // Blue hour — the sun is still under the horizon, the sky does the lighting.
   { h: 6.3,  sun: 0x9a7ea0, sunI: 0.55, hemiSky: 0x8d96b2, hemiGnd: 0x776a76, hemiI: 0.84,
     zen: 0x25407e, hor: 0xb59aa4, sunHor: 0xe0a088, glow: 0xf0ac82, glowI: 0.50,
-    fogNear: 0xa297a8, fogFar: 0x7c86ab, fogSun: 0xe0a088, fogD: 0.0036,
+    fogNear: 0x9c8a94, fogFar: 0x8a82a0, fogSun: 0xe0a088, fogD: 0.0036,
     cloudLit: 0xc9a8b0, cloudDark: 0x4a4a70, cover: 0.39 },
 
-  // Cold dawn — long low light, pale washed horizon, genuinely blue shadows.
-  { h: 7.4,  sun: 0xffc492, sunI: 2.60, hemiSky: 0xbfc4d2, hemiGnd: 0xc2a898, hemiI: 1.14,
-    zen: 0x3f74c0, hor: 0xdcd4d2, sunHor: 0xf6cba8, glow: 0xffd4ab, glowI: 0.95,
-    fogNear: 0xd8cfd0, fogFar: 0xa9b7d8, fogSun: 0xffd8b0, fogD: 0.0024,
+  // Cool dawn — long low light, pale horizon. Cool is a *relative* statement:
+  // the zenith is the bluest of the day, but the haze itself stays peach, or
+  // the frame measures out at a fifth of the reference's chroma.
+  { h: 7.4,  sun: 0xffc08a, sunI: 2.60, hemiSky: 0xc0bcc6, hemiGnd: 0xc8a68c, hemiI: 1.14,
+    zen: 0x6b9ad2, hor: 0xecccae, sunHor: 0xf9c79c, glow: 0xffd4ab, glowI: 0.95,
+    fogNear: 0xe0b48c, fogFar: 0xd8c2c2, fogSun: 0xffd0a0, fogD: 0.0024,
     cloudLit: 0xffe0c4, cloudDark: 0x8c94b8, cover: 0.43 },
 
-  { h: 9.5,  sun: 0xffe6c4, sunI: 3.10, hemiSky: 0xc4cfe2, hemiGnd: 0xd0b58e, hemiI: 1.00,
-    zen: 0x4283d2, hor: 0xe9e0d6, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
-    fogNear: 0xe2ddd6, fogFar: 0xb4c4e2, fogSun: 0xffe8c8, fogD: 0.0021,
+  { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xc4cbdc, hemiGnd: 0xd8b380, hemiI: 0.96,
+    zen: 0x63a0dc, hor: 0xe6cdb0, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
+    fogNear: 0xdcbb92, fogFar: 0xdcc6ba, fogSun: 0xffe8c8, fogD: 0.0021,
     cloudLit: 0xfff6ec, cloudDark: 0xa4abc6, cover: 0.37 },
 
-  { h: 12.5, sun: 0xfff2e0, sunI: 3.40, hemiSky: 0xccd8e8, hemiGnd: 0xd8bf98, hemiI: 1.02,
-    zen: 0x3f86d6, hor: 0xe2e0dc, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
-    fogNear: 0xdfe0de, fogFar: 0xb8c8e4, fogSun: 0xf8ecd8, fogD: 0.0017,
+  { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xc8d2e4, hemiGnd: 0xdcb682, hemiI: 0.90,
+    zen: 0x5fa0de, hor: 0xe0cdb6, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
+    fogNear: 0xd8c3a0, fogFar: 0xd6c4b6, fogSun: 0xf8ecd8, fogD: 0.0015,
     cloudLit: 0xfffaf4, cloudDark: 0xa6aecc, cover: 0.33 },
 
   { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xc6cee2, hemiGnd: 0xd6b184, hemiI: 1.00,
-    zen: 0x5091d4, hor: 0xf3e2ca, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
-    fogNear: 0xecd9c2, fogFar: 0xc8d2e6, fogSun: 0xffdfb4, fogD: 0.0021,
+    zen: 0x86b4de, hor: 0xeed6b6, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
+    fogNear: 0xe4bf92, fogFar: 0xe6cec3, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xa4a4c4, cover: 0.39 },
 
   // The money frame: deep golden hour.
   { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xbcc2d8, hemiGnd: 0xd2a066, hemiI: 0.98,
-    zen: 0x6699cf, hor: 0xf7dcb8, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
-    fogNear: 0xf0d6b4, fogFar: 0xd2c9de, fogSun: 0xffc98c, fogD: 0.0027,
+    zen: 0x93b6dc, hor: 0xf0cfa4, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
+    fogNear: 0xeab77e, fogFar: 0xe8cdc0, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0x9c90b6, cover: 0.43 },
 
-  { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xafb2cc, hemiGnd: 0xc08356, hemiI: 0.92,
+  { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xb4b4cc, hemiGnd: 0xcc9060, hemiI: 1.16,
     zen: 0x5b83c2, hor: 0xf3c8a0, sunHor: 0xf8a262, glow: 0xffae66, glowI: 1.20,
-    fogNear: 0xecc5a0, fogFar: 0xceb6ca, fogSun: 0xffa860, fogD: 0.0035,
+    fogNear: 0xe2a266, fogFar: 0xdfbcb4, fogSun: 0xffa860, fogD: 0.0035,
     cloudLit: 0xffcc9c, cloudDark: 0x8a80aa, cover: 0.47 },
 
-  { h: 19.0, sun: 0xff7a3e, sunI: 1.15, hemiSky: 0x9fa2c0, hemiGnd: 0xa26a50, hemiI: 0.86,
+  { h: 19.0, sun: 0xff8446, sunI: 1.50, hemiSky: 0xa8a6c2, hemiGnd: 0xb27a58, hemiI: 1.14,
     zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
-    fogNear: 0xe4ac94, fogFar: 0xb298b8, fogSun: 0xff8a48, fogD: 0.0040,
+    fogNear: 0xd88a62, fogFar: 0xc09098, fogSun: 0xff8a48, fogD: 0.0040,
     cloudLit: 0xffb078, cloudDark: 0x766698, cover: 0.49 },
 
   { h: 19.8, sun: 0x9c5a76, sunI: 0.32, hemiSky: 0x8a92ae, hemiGnd: 0x7a6672, hemiI: 0.72,
     zen: 0x33508e, hor: 0xb890a0, sunHor: 0xd0756e, glow: 0xe07a62, glowI: 0.66,
-    fogNear: 0xb69aa8, fogFar: 0x8288ae, fogSun: 0xd8756e, fogD: 0.0043,
+    fogNear: 0xa8808e, fogFar: 0x92849e, fogSun: 0xd8756e, fogD: 0.0043,
     cloudLit: 0xd09aa0, cloudDark: 0x554f76, cover: 0.45 },
 
   { h: 21.0, sun: 0x4a4a80, sunI: 0.12, hemiSky: 0x64709a, hemiGnd: 0x40425a, hemiI: 0.48,
@@ -111,7 +113,22 @@ const SCALAR_FIELDS = ['sunI', 'hemiI', 'glowI', 'fogD', 'cover'];
 // trees recede — and once the terrain started receiving fog too, every distant
 // view turned into a white-out. This scales the whole authored curve rather
 // than flattening its time-of-day shape, which is still right.
-const FOG_DENSITY_SCALE = 0.34;
+// Recalibrated once the aerial perspective stopped bleeding toward grey: at
+// 0.34 there was barely any haze left to layer with — `peaks` reached only
+// fogFactor ~0.25 on its furthest ridge, so near, mid and far read as one
+// plane. 0.34 was over-correcting for the fact that the old desaturation term
+// was neutralising the frame, which is fixed at source in Atmosphere now.
+const FOG_DENSITY_SCALE = 0.58;
+
+// The hemisphere fill was authored to keep shadows off the floor while the
+// Stylize diffuse floor was not running (same wiring bug as the fog). With both
+// active it is doing the job twice, and a large near-white ambient is the
+// classic way to flatten a stylised frame: it lifts the shaded side of every
+// high-albedo surface — bare rock most of all — until form disappears. The
+// reference's rock runs #c3bfcc lit against #5c5a75 shaded, a ratio of about
+// 0.19 in linear; at full ambient ours measured 0.7. Scaling the whole authored
+// curve keeps its time-of-day shape, which is right.
+const AMBIENT_SCALE = 0.62;
 
 // Pre-convert the table once; per-frame we only lerp.
 const BAKED = KEYS.map((k) => {
@@ -175,6 +192,13 @@ export class Lighting {
     this.sun.shadow.normalBias = 0.35;
     this.sun.shadow.radius = 3.5;
     this.sun.shadow.blurSamples = 10;
+    // A cast shadow in the reference is a warm, semi-transparent shape on gold
+    // meadow, not a hole. Three defaults `shadow.intensity` to 1 — fully black
+    // — and that default was in force: measured, the near-field views were
+    // running lumaP05 0.00–0.08 against a reference band of 0.16–0.42, i.e.
+    // crushed. At 0.55 the shadow removes just over half the key and the
+    // ambient plus the diffuse floor keep the shaded ground coloured.
+    this.sun.shadow.intensity = 0.72;
     this._setShadowExtent(220);
     scene.add(this.sun);
     scene.add(this.sun.target);
@@ -293,7 +317,7 @@ export class Lighting {
 
     this.hemi.color.copy(k.hemiSky);
     this.hemi.groundColor.copy(k.hemiGnd);
-    this.hemi.intensity = k.hemiI;
+    this.hemi.intensity = k.hemiI * AMBIENT_SCALE;
 
     // Counter-key sits opposite the sun and slightly above, so it fills the
     // shadow side without flattening the form.
@@ -304,7 +328,7 @@ export class Lighting {
     // out as a bug.
     const lowSun = 1 - smoothstep(0.06, 0.34, elev);
     this.fill.color.copy(k.hemiSky).lerp(k.hemiGnd, 0.30 + 0.35 * lowSun);
-    this.fill.intensity = lerp(0.14, 0.36, day);
+    this.fill.intensity = lerp(0.10, 0.24, day);
 
     // Atmosphere palette for this hour (main.js copies these into Atmosphere).
     (this.fogNear ??= new THREE.Color()).copy(k.fogNear);
@@ -334,10 +358,20 @@ export class Lighting {
 
     // ── shadow camera ────────────────────────────────────────────────────────
     if (focus) {
-      // Grow the covered area when the camera climbs: a vista shot needs a
-      // 500 m frustum, an eye-level drive shot wants every texel it can get.
+      // Grow the covered area when the camera climbs: a vista shot needs the
+      // whole massif in frustum, an eye-level drive shot wants every texel it
+      // can get.
+      //
+      // The old 520 m cap was the reason `peaks` had no value structure. From
+      // a 350 m camera the mountains that fill the frame sit 600–1300 m out —
+      // entirely outside the shadow frustum — so a 28° sun threw no ridge
+      // shadows on them at all and the massif rendered as one flat tan mass
+      // (contrastStd 0.087 against a reference band of 0.13–0.22). Terrain
+      // already casts out to LOD 2 (~720 m); this is what lets those casters
+      // land. At 900 m and a 4096 map that is 0.44 m per texel, which is soft
+      // but perfectly clean at the distance the extent only reaches from.
       const ground = focus.y - 6;
-      this._setShadowExtent(clamp(150 + Math.max(ground, 0) * 1.9, 150, 520));
+      this._setShadowExtent(clamp(150 + Math.max(ground, 0) * 2.4, 150, 900));
 
       const texelWorld = (this.shadowExtent * 2) / this.preset.shadowMapSize;
       const sx = Math.round(focus.x / texelWorld) * texelWorld;

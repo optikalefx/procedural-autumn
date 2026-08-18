@@ -42,6 +42,7 @@ vec2 wWaveGrad(vec2 p, vec2 dir, float k, float speed, float t, float amp){
 export const WATER_ENV = /* glsl */`
 uniform sampler2D uDataTex;
 uniform float uWorldSize;
+uniform float uDataTexel;   // 1 / dataTexture resolution, in UV
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
 uniform vec3  uSkyZenith;
@@ -52,7 +53,15 @@ uniform vec3  uRefRock;
 uniform float uSnowLine;
 uniform float uReflectSteps;
 
-vec4 wWorldData(vec2 xz){ return texture2D(uDataTex, xz / uWorldSize + 0.5); }
+// Texel centres, not texel corners. WorldData's CPU bilinear puts sample i at
+// world -half + i*texel, which is UV (i + 0.5) / res — so the naive
+// xz/worldSize + 0.5 lookup is half a texel off. On a 2 m grid that is a metre
+// of horizontal slip between the bed the water thinks it has and the bed the
+// terrain mesh actually draws, which on any steep bank is several metres of
+// height error and is exactly what makes a water edge miss its shoreline.
+vec4 wWorldData(vec2 xz){
+  return texture2D(uDataTex, xz / uWorldSize + 0.5 + uDataTexel * 0.5);
+}
 float wBed(vec2 xz){ return wWorldData(xz).r; }
 
 // A compact restatement of Sky.js's gradient. Close enough that a mirror-calm
@@ -72,7 +81,12 @@ vec3 wSky(vec3 d){
  * more than enough for a stylised near-mirror at grazing angles.
  */
 vec3 wEnvReflect(vec3 P, vec3 R){
-  vec3 sky = wSky(R);
+  // A rippled surface reflects a *cone*, not a ray, and at grazing angles half
+  // that cone is pointed at higher, bluer sky. Sampling the mirror direction
+  // literally returns the cream horizon band and turns every lake into a sheet
+  // of silver — lifting the sample is both closer to the truth and the reason
+  // water stays the cool note in a hot frame.
+  vec3 sky = wSky(normalize(vec3(R.x, R.y + 0.42, R.z)));
   if (uReflectSteps < 1.0 || R.y <= 0.004) return sky;
   float t = 2.5, dt = 3.5;
   int N = int(uReflectSteps);
@@ -87,7 +101,13 @@ vec3 wEnvReflect(vec3 P, vec3 R){
       col = mix(col, vec3(0.95, 0.95, 1.0), smoothstep(uSnowLine, uSnowLine + 45.0, d.r) * 0.8);
       // Reflected hills sit behind a double thickness of haze — they should be
       // paler and flatter than the real thing, never a crisp mirror copy.
-      col = mix(col, uSkyHorizon, clamp(t / 520.0, 0.0, 0.80));
+      // Rolled off hard: a lake that faithfully mirrors a gold hillside is a
+      // brown lake, and water in the reference is always the cool note in the
+      // frame however hot the land around it is.
+      // Toward the *cool* end of the sky, not the cream horizon band: hazing a
+      // gold hillside toward cream leaves khaki, and khaki water is mud.
+      vec3 haze = mix(uSkyHorizon, uSkyZenith, 0.62);
+      col = mix(col, haze, clamp(0.34 + t / 260.0, 0.0, 0.88));
       return col;
     }
     t += dt; dt *= 1.24;

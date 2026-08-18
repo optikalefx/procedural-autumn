@@ -26,51 +26,25 @@ export const STRIDE = 14;
 const TAU = Math.PI * 2;
 
 /**
- * Fill (or continue filling) one tile.
- *
- * Resumable: a 19 000-blade tile costs several milliseconds, and building one
- * atomically put a ~5 ms spike in the frame every time the camera crossed a
- * tile boundary at speed. `st.deadline` stops the loop mid-tile and `st.a` /
- * `st.n` carry the position over to the next frame.
- *
- * Resuming is only possible because each clump owns an independent RNG stream
- * keyed off (tile, clump index) rather than drawing from one sequential stream
- * for the whole tile — which also means a tile is bit-identical no matter how
- * many pieces it was built in.
- *
- * @param {{a:number,n:number,minY:number,maxY:number,weights:object,deadline:number}} st
- * @returns {boolean} true when the tile is complete
+ * @returns {number} blades written (the tile's instanceCount)
  */
-export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
+export function fillTile(world, roads, ring, ox, oz, seed, out, bounds) {
   const S = ring.tileSize;
-  const max = ring.maxBlades;
-  const tileKey = (hash2i(Math.round(ox / S), Math.round(oz / S), seed ^ ring.salt) * 4294967296) >>> 0;
+    const max = ring.maxBlades;
+  const rng = mulberry32(hash2i(Math.round(ox / S), Math.round(oz / S), seed ^ ring.salt));
   const noise = world.noise;
-  const w = st.weights;
+  const w = bounds.weights;
 
-  let n = st.n;
-  let minY = st.minY, maxY = st.maxY;
+  let n = 0;
+  let minY = Infinity, maxY = -Infinity;
 
   const attempts = ring.clumpAttempts;
-  let a = st.a;
-  for (; a < attempts && n < max; a++) {
-    // Deadline checked in blocks: performance.now() every clump would itself
-    // be a measurable share of the build.
-    if ((a & 31) === 0 && a > st.a && performance.now() > st.deadline) break;
-
-    const rng = mulberry32((hash2i(a, ring.salt, tileKey) * 4294967296) >>> 0);
+  for (let a = 0; a < attempts && n < max; a++) {
     const cx = ox + (rng() - 0.5) * S;
     const cz = oz + (rng() - 0.5) * S;
 
     // ── hard rejects ────────────────────────────────────────────────────────
     if (world.getWaterDepth(cx, cz) > 0.02) continue;
-
-    // getWaterDepth is a heightfield test and reads 0 in stretches of channel
-    // that Water.js still surfaces (measured: getRiver 0.33 with depth 0.0 on
-    // the river anchor). Trusting depth alone left blades standing in the
-    // stream, so the channel mask is a hard reject in its own right.
-    const river = world.getRiver(cx, cz);
-    if (river > 0.42) continue;
 
     const slope = world.getSlope(cx, cz);
     if (slope > 1.15) continue;
@@ -83,9 +57,10 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     if (d < 0.02) continue;
 
     const moist = world.getMoisture(cx, cz);
+    const river = world.getRiver(cx, cz);
 
     // Thin out on gravel bars, and on anything steep enough to be scree.
-    d *= 1 - smoothstep(0.05, 0.40, river) * 0.95;
+    d *= 1 - smoothstep(0.06, 0.32, river) * 0.80;
     d *= 1 - smoothstep(0.52, 1.05, slope);
 
     // Forest floor keeps grass but loses the thick meadow stand. Trees.js owns
@@ -100,11 +75,6 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     // give the meadow its lay.
     const drift = noise.fbm(cx * 0.0115, cz * 0.0115, 2, 2.1, 0.5, 1);
     const patch = noise.fbm(cx * 0.049 + 17.3, cz * 0.049 - 4.1, 2, 2.3, 0.5, 1);
-    // A separate ~50 m field for *height* alone. Driving density and height off
-    // the same noise makes thin patches short and thick patches tall, which is
-    // one relationship and reads as one texture; the reference meadow has
-    // cropped ground under a full stand and tall stands over thin ground.
-    const stature = noise.fbm(cx * 0.021 + 91.7, cz * 0.021 + 13.3, 2, 2.0, 0.5, 1);
     const lay = drift * 0.55 + patch * 0.75;
     // Never all the way to zero: a hole in the field shows raw terrain, and a
     // black hole in the near ground is far uglier than a thin patch.
@@ -129,27 +99,19 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     // ── colour ──────────────────────────────────────────────────────────────
     // Gold is the key. Olive is an accent that only wins in genuinely damp
     // ground and along the riverbank; straw wins on dry exposed slopes.
-    // Olive is an accent: it needs damp ground or a riverbank to win, but the
-    // patch octave lets a few drifts inside a dry meadow go green so the field
-    // is not one flat hue from horizon to horizon.
-    const tone = clamp01(moist * 1.70 - 0.62 + river * 0.90 + patch * 0.30);
+    const tone = clamp01(moist * 1.85 - 0.82 + river * 0.80 + patch * 0.18);
     const dry = clamp01((1 - moist) * 1.35 - 0.55 + smoothstep(0.18, 0.62, slope) * 0.50
                         + drift * 0.22) * (1 - tone * 0.8);
-    // Per-*clump* brightness reads as painterly drifts; per-*blade* brightness
-    // reads as salt-and-pepper noise. Keep the spread on the clump and let the
-    // blade vary only enough to break the tuft into strokes.
-    const shade = 0.82 + rng() * 0.32 + drift * 0.14;
+    const shade = 0.78 + rng() * 0.40 + drift * 0.08;
 
     // ── height ──────────────────────────────────────────────────────────────
     // Tall stands in damp hollows, cropped on dry exposed ground.
-    const stand = ring.height * (0.46 + moist * 0.72 + stature * 0.58 + patch * 0.16
-                                 - smoothstep(0.25, 0.85, slope) * 0.30);
+    const stand = ring.height * (0.52 + moist * 0.85 + patch * 0.30
+                                 - smoothstep(0.25, 0.85, slope) * 0.28);
     const clumpH = Math.max(0.16, stand * (0.82 + rng() * 0.36));
-    const clumpBend = 0.11 + rng() * 0.38;   // a tuft has a lay, not a haircut
+    const clumpBend = 0.08 + rng() * 0.24;
     const clumpYaw = rng() * TAU;
-    // Tufts on a bank must not fray out over the water, so the spill shrinks
-    // as the channel mask rises.
-    const radius = ring.clumpRadius * (0.55 + rng() * 0.75) * (1 - river * 0.75);
+    const radius = ring.clumpRadius * (0.55 + rng() * 0.75);
 
     for (let b = 0; b < count; b++) {
       // Gaussian-ish falloff so a tuft is dense in the middle and frays out.
@@ -164,14 +126,13 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
       out[i + 2] = cz + dz - oz;
 
       // Trimodal: a cropped understorey closes the gaps at eye level, the main
-      // stand carries the mass, and a *few* tall seed stalks break the flat top.
-      // At 6% the stalks stopped reading as an accent and started reading as
-      // wires laid across the frame — they want to be rare.
+      // stand carries the mass, and a few tall seed stalks break the flat top —
+      // a meadow with a level haircut is the giveaway of procedural grass.
       const rh = rng();
       let hj, thin = 1;
-      if (rh < 0.38)       hj = 0.34 + rng() * 0.36;
-      else if (rh > 0.978) { hj = 1.30 + rng() * 0.55; thin = 0.55; }
-      else                 hj = 0.66 + rng() * 0.62;
+      if (rh < 0.30)      hj = 0.28 + rng() * 0.32;
+      else if (rh > 0.94) { hj = 1.45 + rng() * 0.80; thin = 0.62; }
+      else                hj = 0.66 + rng() * 0.62;
       out[i + 3] = clumpH * hj;
       out[i + 4] = ring.width * thin * (0.70 + rng() * 0.66);
       out[i + 5] = clumpBend * (0.50 + rng() * 0.85);
@@ -182,7 +143,7 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
       out[i +  7] = clumpYaw + (rng() - 0.5) * 1.5;
       out[i +  8] = tone;
       out[i +  9] = dry;
-      out[i + 10] = shade * (0.965 + rng() * 0.07);
+      out[i + 10] = shade * (0.93 + rng() * 0.14);
 
       out[i + 11] = nX;
       out[i + 12] = nZ;
@@ -195,11 +156,10 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     }
   }
 
-  st.a = a;
-  st.n = n;
-  st.minY = minY;
-  st.maxY = maxY;
-  return a >= attempts || n >= max;
+  if (n === 0) { bounds.minY = 0; bounds.maxY = 0; return 0; }
+  bounds.minY = minY;
+  bounds.maxY = maxY;
+  return n;
 }
 
 /**

@@ -35,9 +35,9 @@ export const VIEWS = {
   // Forest interior — canopy, trunks, dappled light.
   forest:    { anchor: 'forest',   height: 3.0, dist: 14,  pitch: 0.02,  fov: 60, hour: 16.4 },
   // River bank, water in frame.
-  river:     { anchor: 'river',    height: 3.4, dist: 16,  pitch: -0.12, fov: 54, hour: 16.9 },
+  river:     { anchor: 'river',    height: 5.2, dist: 26,  pitch: -0.16, fov: 54, hour: 16.9, yawOffset: 0.42 },
   // The tallest waterfall, framed from below.
-  waterfall: { anchor: 'waterfall',height: 8,   dist: 46,  pitch: 0.10,  fov: 50, hour: 16.2 },
+  waterfall: { anchor: 'waterfall',height: 11,  dist: 58,  pitch: 0.08,  fov: 50, hour: 16.2, yawOffset: -0.55 },
   // High peaks and aerial perspective.
   peaks:     { anchor: 'peak',     height: 120, dist: 420, pitch: -0.10, fov: 42, hour: 16.0 },
   // The vehicle, three-quarter hero framing.
@@ -115,7 +115,7 @@ await acquire('shot');
         look = new THREE.Vector3(l[0], l[1], l[2]);
       } else {
         const anchor = (api[v.anchor] || api.vista || (() => ({ x: 0, z: 0, yaw: 0 })))();
-        let yaw = anchor.yaw ?? 0;
+        let yaw = (anchor.yaw ?? 0) + (v.yawOffset ?? 0);
         if (v.faceSun) {
           const sd = window.__lighting.sunDir;
           yaw = Math.atan2(sd.x, sd.z);

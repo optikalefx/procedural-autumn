@@ -86,16 +86,22 @@ void main() {
   float fine   = wFbm2(sp * vec2(4.5, 1.7) + 11.0) * 0.5 + 0.5;
   float hair   = wFbm2(sp * vec2(11.0, 3.2) + 41.0) * 0.5 + 0.5;
 
-  // The sheet is coherent at the lip and shreds into ribbons as it falls.
-  float shred = smoothstep(0.10, 0.80, vU);
-  float body = mix(1.0, smoothstep(0.34, 0.60, streak), shred * 0.92);
+  // The sheet is coherent at the lip and shreds into ribbons as it falls — but
+  // it stays a *curtain* the whole way down. Shredding it to translucent
+  // threads (which is what a linear ramp to a thresholded noise does) turns a
+  // 74 m fall into a bootlace; the reference shows a solid white column with
+  // structure inside it, so the noise modulates the density and never the
+  // existence of the sheet.
+  float shred = smoothstep(0.16, 0.95, vU);
+  float body = mix(1.0, 0.46 + 0.54 * smoothstep(0.30, 0.62, streak), shred);
   body = max(body, smoothstep(0.55, 0.72, fine) * shred * 0.55);
 
-  // Edges tear before the middle does.
-  float edge = 1.0 - smoothstep(0.55, 1.0, abs(vSide));
-  edge = mix(edge, edge * smoothstep(0.30, 0.62, streak), shred);
+  // Edges tear before the middle does, and only the edges.
+  float edge = 1.0 - smoothstep(0.72, 1.06, abs(vSide));
+  float rim = smoothstep(0.40, 1.0, abs(vSide));
+  edge = mix(edge, edge * (0.30 + 0.70 * smoothstep(0.24, 0.60, streak)), shred * rim);
 
-  float alpha = body * edge * (0.34 + 0.66 * vDisc);
+  float alpha = body * edge * (0.62 + 0.38 * vDisc);
   // Let go just before the pool so the sheet never clips through the foam.
   alpha *= 1.0 - smoothstep(0.93, 1.0, vU);
   alpha = clamp(alpha, 0.0, 1.0);
@@ -115,13 +121,20 @@ void main() {
   // Value structure *inside* the sheet. Without it a fall is a strip of white
   // paper: correct silhouette, no water. The dark lanes are the unaerated
   // ribbons still carrying the channel's colour, so they go blue, not grey.
-  float lanes = 0.62 + 0.50 * streak + 0.22 * hair;
-  tint = mix(uShallow * 1.15, tint, clamp(lanes - 0.25, 0.0, 1.0));
-  vec3 col = tint * lanes * (uSunLight * (0.24 + 0.46 * ndl) * shadow + uAmbient * 0.80) / PI * 1.65;
+  // Value structure has to live in the *colour*, not in the alpha: shredding
+  // the alpha gives a bootlace, and pushing the brightness until the sheet
+  // clips gives a strip of white paper. So the sheet stays opaque and bright
+  // and carries its ribbons as darker, bluer lanes inside itself — with enough
+  // contrast, and enough headroom under white, that they can actually be seen.
+  float lanes = 0.52 + 0.62 * streak + 0.26 * hair;
+  tint = mix(uShallow * 1.05, tint, clamp(lanes - 0.10, 0.0, 1.0));
+  // The torn edges of a curtain are the most aerated part of it.
+  tint = mix(tint, uFoam, smoothstep(0.55, 1.0, abs(vSide)) * 0.5 * shred);
+  vec3 col = tint * lanes * (uSunLight * (0.40 + 0.52 * ndl) * shadow + uAmbient * 1.05) / PI * 1.85;
 
   // Backlight: a curtain of white water in front of a low sun glows.
   float back = pow(max(dot(-V, uSunDir), 0.0), 2.0);
-  col += uFoam * uSunLight * back * 0.20 * shadow * (0.4 + 0.6 * vU);
+  col += uFoam * uSunLight * back * 0.34 * shadow * (0.4 + 0.6 * vU);
 
   // A hard specular sliver on the unbroken lip reads as glass.
   vec3 H = normalize(uSunDir + V);
@@ -207,7 +220,7 @@ void main() {
   float a = pow(1.0 - smoothstep(0.0, 1.0, r), 1.8) * vFade;
   if (a < 0.01) discard;
   vec3 col = uFoam * (uSunLight * 0.55 + uAmbient * 0.8) / PI * 2.4;
-  gl_FragColor = vec4(col, a * 0.34);
+  gl_FragColor = vec4(col, a * 0.52);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -307,7 +320,7 @@ void main() {
   col += spectrum(t) * band * uRainbow * uSunLight * 0.45
        * smoothstep(0.25, 0.7, a) * smoothstep(0.02, 0.16, uSunDir.y);
 
-  gl_FragColor = vec4(col, a * 0.20);
+  gl_FragColor = vec4(col, a * 0.34);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -348,8 +361,12 @@ ${WATER_ENV}
 const float PI = 3.14159265;
 
 void main() {
-  vec4 D = wWorldData(vWPos.xz);
-  if (vWPos.y - D.r < 0.02) discard;      // never paint foam onto dry rock
+  // The pool is draped on the surface it lands on, so it is always in contact.
+  // What it must not do is climb a cliff: churn collects on something flat.
+  vec2 e = vec2(1.6, 0.0);
+  float bx = wBed(vWPos.xz + e.xy) - wBed(vWPos.xz - e.xy);
+  float bz = wBed(vWPos.xz + e.yx) - wBed(vWPos.xz - e.yx);
+  float bench = 1.0 - smoothstep(0.55, 1.35, length(vec2(bx, bz)) / 3.2);
 
   float r = length(vLocal) / max(vRadius, 0.5);
   if (r > 1.0) discard;
@@ -369,10 +386,13 @@ void main() {
   float density = (1.0 - smoothstep(0.0, 1.0, rEff)) * vPower;
   float cut = 0.70 - density * 0.58;
   float foam = smoothstep(cut, cut + 0.16, churn) * smoothstep(1.05, 0.55, rEff);
-  foam = max(foam, (1.0 - smoothstep(0.0, 0.42, rEff)) * 0.9);
+  // The white core under the impact, chewed by the same churn so it is a
+  // painted shape rather than a printed disc.
+  foam = max(foam, (1.0 - smoothstep(0.0, 0.46, rEff)) * (0.55 + 0.45 * churn));
+  foam *= bench;
 
   vec3 col = mix(uShallow, uFoam, foam);
-  col *= (uSunLight * 0.42 * wSunShadow(vWPos) + uAmbient * 0.7) / PI * 2.4;
+  col *= (uSunLight * 0.48 * wSunShadow(vWPos) + uAmbient * 0.75) / PI * 2.6;
 
   float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.15, 0.55, rEff);
   if (alpha < 0.02) discard;
@@ -404,6 +424,7 @@ export class Waterfalls extends System {
       uTime:         { value: 0 },
       uDataTex:      { value: world.dataTexture },
       uWorldSize:    { value: world.worldSize },
+      uDataTexel:    { value: 1 / world.res },
       uSunDir:       { value: new THREE.Vector3(0.4, 0.5, 0.3) },
       uSunColor:     { value: new THREE.Color(1, 1, 1) },
       uSunLight:     { value: new THREE.Color(1, 1, 1) },
@@ -589,7 +610,7 @@ export class Waterfalls extends System {
 
     for (let f = 0; f < N; f++) {
       const fl = this.falls[f];
-      const count = Math.round(clamp(24 + fl.disc * 170 + fl.height * 1.6, 20, 220));
+      const count = Math.round(clamp(30 + fl.disc * 240 + fl.height * 2.2, 26, 300));
       const row = (f + 0.5) / N;
       // Time of flight sets the loop rate: a 60 m fall must take much longer
       // to traverse than a 6 m one or the scale reads wrong.
@@ -660,7 +681,7 @@ export class Waterfalls extends System {
     for (const fl of this.falls) {
       const b = fl.pts[fl.pts.length - 1];
       const energy = clamp01(fl.disc * 0.7 + fl.height / 70);
-      const count = Math.round(clamp(4 + energy * 16, 4, 20));
+      const count = Math.round(clamp(6 + energy * 28, 6, 34));
       const spread = 3 + energy * 16;
       for (let i = 0; i < count; i++) {
         // Most of the mist boils off the plunge point; a little climbs the
@@ -675,7 +696,7 @@ export class Waterfalls extends System {
         );
         phase.push(rng());
         rate.push(0.045 + rng() * 0.055);
-        size.push((2.4 + rng() * 5.0) * (0.5 + energy * 0.9));
+        size.push((3.0 + rng() * 6.5) * (0.5 + energy * 1.0));
         rise.push((3 + rng() * 9) * (0.5 + energy));
         const a = rng() * Math.PI * 2;
         drift.push(Math.cos(a) * spread * 0.5, 0, Math.sin(a) * spread * 0.5);
@@ -726,22 +747,30 @@ export class Waterfalls extends System {
     const world = this.ctx.world;
     const pos = [], local = [], rad = [], pow = [], idx = [];
     let base = 0;
-    const RINGS = 3, SEG = 16;
+    const RINGS = 4, SEG = 24;
+
+    // Drape each vertex on whatever it lands on. A flat disc at the recorded
+    // plunge height is buried by any ground that rises across it and leaves a
+    // thin crescent of foam floating in the air — which is exactly what a
+    // waterfall landing on a sloping apron used to look like.
+    const drapeY = (x, z) => {
+      const surf = world.getWaterHeight(x, z);
+      const g = world.getHeight(x, z);
+      return (surf !== null && surf > g ? surf : g) + 0.12;
+    };
 
     for (const fl of this.falls) {
       const b = fl.pts[fl.pts.length - 1];
-      const surf = world.getWaterHeight(b.x, b.z);
-      const y = (surf ?? fl.wf.bottom[1]) + 0.07;
       const radius = clamp(2.2 + Math.sqrt(fl.disc * fl.height) * 2.4, 2.5, 16);
       const power = clamp01(0.45 + fl.disc * 0.7);
 
-      pos.push(b.x, y, b.z); local.push(0, 0); rad.push(radius); pow.push(power);
+      pos.push(b.x, drapeY(b.x, b.z), b.z); local.push(0, 0); rad.push(radius); pow.push(power);
       for (let r = 1; r <= RINGS; r++) {
         const rr = radius * (r / RINGS);
         for (let s = 0; s < SEG; s++) {
           const a = (s / SEG) * Math.PI * 2;
           const lx = Math.cos(a) * rr, lz = Math.sin(a) * rr;
-          pos.push(b.x + lx, y, b.z + lz);
+          pos.push(b.x + lx, drapeY(b.x + lx, b.z + lz), b.z + lz);
           local.push(lx, lz); rad.push(radius); pow.push(power);
         }
       }

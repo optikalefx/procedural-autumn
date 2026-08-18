@@ -26,23 +26,20 @@ import { fillTile, RoadMask, STRIDE } from './grass_scatter.js';
 const GRID = 4;
 
 const RINGS = [
-  // Blade coverage is width × count, but triangles are only count — so the
-  // near ring buys its density with *wider* blades and one fewer segment
-  // rather than with more instances. 3 segments still reads as a curve at 2 m.
   {
-    tileSize: 16, segments: 3, maxBlades: 19000, perClump: 26, clumpRadius: 0.48,
-    width: 0.055, height: 0.84, salt: 0x1111,
-    fadeIn: [-20, -10], fadeOut: [20, 30], widthGain: 0.0, aoScale: 1.0,
+    tileSize: 20, segments: 4, maxBlades: 21000, perClump: 26, clumpRadius: 0.52,
+    width: 0.043, height: 0.78, salt: 0x1111,
+    fadeIn: [-20, -10], fadeOut: [26, 38], widthGain: 0.0, aoScale: 1.0,
   },
   {
-    tileSize: 40, segments: 2, maxBlades: 20000, perClump: 30, clumpRadius: 1.20,
-    width: 0.125, height: 0.86, salt: 0x2222,
-    fadeIn: [18, 28], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
+    tileSize: 44, segments: 2, maxBlades: 19000, perClump: 22, clumpRadius: 1.05,
+    width: 0.115, height: 0.84, salt: 0x2222,
+    fadeIn: [24, 36], fadeOut: [66, 86], widthGain: 0.40, aoScale: 0.55,
   },
   {
-    tileSize: 96, segments: 1, maxBlades: 18000, perClump: 34, clumpRadius: 3.2,
-    width: 0.320, height: 1.05, salt: 0x3333,
-    fadeIn: [54, 72], fadeOut: [150, 182], widthGain: 1.2, aoScale: 0.30,
+    tileSize: 96, segments: 1, maxBlades: 16000, perClump: 18, clumpRadius: 2.6,
+    width: 0.300, height: 1.05, salt: 0x3333,
+    fadeIn: [60, 82], fadeOut: [150, 180], widthGain: 1.2, aoScale: 0.22,
   },
 ];
 
@@ -64,17 +61,11 @@ export class Grass extends System {
 
     // Scratch — update() must never allocate.
     this._queue = [];
-    // Resume state for the tile currently under construction. Reused, never
-    // reallocated — update() must not allocate.
-    this._st = { a: 0, n: 0, minY: 0, maxY: 0, weights: {}, deadline: 0 };
+    this._bounds = { minY: 0, maxY: 0, weights: {} };
     this._camXZ = new THREE.Vector2();
     this._size = new THREE.Vector2();
     this._first = true;
-    // A tile is built atomically, so the true worst-case frame cost is this
-    // budget plus one tile. Measured at 5.7 ms with the old far-ring clump
-    // granularity; the far rings now emit larger tufts, which is the same
-    // silhouette at 60–180 m for roughly half the world sampling.
-    this._budgetMs = 2.0;
+    this._budgetMs = 2.6;
   }
 
   async init() {
@@ -88,18 +79,6 @@ export class Grass extends System {
       const ring = Object.assign({}, cfg);
       ring.maxBlades = Math.max(400, Math.round(cfg.maxBlades * mul * (VEG.grassBladesPerChunk / 26000)));
       ring.clumpAttempts = Math.ceil((ring.maxBlades / ring.perClump) * 1.35);
-
-      // The no-pop guarantee rests entirely on a tile being fully faded out
-      // before the toroidal grid can ever recycle it. Worst case the camera
-      // sits at the far corner of its own cell, so a 4×4 grid only guarantees
-      // 2 × tileSize. Assert it rather than trust the arithmetic in the table
-      // above — the failure mode is a row of blades popping in at speed, which
-      // is easy to miss in a still and impossible to miss while driving.
-      if (ring.fadeOut[1] > 2 * ring.tileSize - 2) {
-        console.warn(`[Grass] ring tileSize ${ring.tileSize} only covers ` +
-          `${2 * ring.tileSize} m but fades out at ${ring.fadeOut[1]} m — tiles ` +
-          `can be recycled while still visible.`);
-      }
 
       const blade = makeBladeGeometry(cfg.segments);
       const mat = createGrassMaterial(this.uniforms, cfg);
@@ -154,7 +133,6 @@ export class Grass extends System {
           const tile = ring.tiles[sz * GRID + sx];
           if (tile.ix !== ix || tile.iz !== iz) {
             tile.ix = ix; tile.iz = iz; tile.dirty = true; tile.count = 0;
-            tile.build = 0;                       // restart a partial build
             tile.mesh.visible = false;
           }
 
@@ -180,51 +158,32 @@ export class Grass extends System {
     }
   }
 
-  /**
-   * Advance one tile's fill until it is finished or `deadline` passes.
-   * A part-built tile stays invisible: dirty tiles only ever sit beyond their
-   * ring's fade-out, so nothing is missing from the frame while it completes.
-   * @returns {boolean} true when the tile is finished
-   */
-  _build(ring, tile, deadline) {
+  _build(ring, tile) {
     const S = ring.tileSize;
     const ox = (tile.ix + 0.5) * S, oz = (tile.iz + 0.5) * S;
-    const st = this._st;
-    st.a = tile.build;
-    st.n = tile.built;
-    st.minY = tile.build === 0 ? Infinity : tile.minY;
-    st.maxY = tile.build === 0 ? -Infinity : tile.maxY;
-    st.deadline = deadline;
+    const n = fillTile(this.ctx.world, this.roads, ring, ox, oz,
+                       SEED, tile.data, this._bounds);
 
-    const done = fillTile(this.ctx.world, this.roads, ring, ox, oz,
-                          SEED, tile.data, st);
-
-    tile.build = st.a;
-    tile.built = st.n;
-    tile.minY = st.minY;
-    tile.maxY = st.maxY;
-    if (!done) return false;
-
-    const n = st.n;
     tile.geo.instanceCount = n;
     tile.count = n;
-    if (n === 0) { tile.minY = 0; tile.maxY = 0; }
+    tile.minY = this._bounds.minY;
+    tile.maxY = this._bounds.maxY;
     tile.mesh.visible = n > 0;
     tile.mesh.position.set(ox, 0, oz);
     tile.mesh.updateMatrix();
     tile.mesh.updateMatrixWorld(true);
 
     if (n > 0) {
-      const midY = (tile.minY + tile.maxY) * 0.5;
+      const b = this._bounds;
+      const midY = (b.minY + b.maxY) * 0.5;
       const s = tile.geo.boundingSphere;
       s.center.set(0, midY, 0);
       // Half-diagonal of the tile, plus the vertical spread, plus headroom for
       // the wind swing so a gusting tile never gets culled at the screen edge.
-      s.radius = Math.hypot(S * 0.5, S * 0.5) + (tile.maxY - tile.minY) * 0.5 + ring.height * 2.0;
+      s.radius = Math.hypot(S * 0.5, S * 0.5) + (b.maxY - b.minY) * 0.5 + ring.height * 2.0;
       tile.ib.needsUpdate = true;
     }
     tile.dirty = false;
-    return true;
   }
 
   update(dt, elapsed) {
@@ -260,14 +219,11 @@ export class Grass extends System {
       q[j + 2] = r; q[j + 3] = t;
     }
 
-    // One deadline for the whole frame's build work. Because fillTile is
-    // resumable this is a real bound, not "budget plus however long one more
-    // tile happens to take".
     const budget = this._first ? 400 : this._budgetMs;
-    const deadline = performance.now() + budget;
+    const t0 = performance.now();
     for (let i = 0; i < q.length; i += 2) {
-      if (!this._build(q[i], q[i + 1], deadline)) break;
-      if (performance.now() > deadline) break;
+      this._build(q[i], q[i + 1]);
+      if (performance.now() - t0 > budget) break;
     }
     this._first = false;
     void dt;

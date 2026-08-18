@@ -257,3 +257,101 @@ So the stylised lighting was not running either.
 **Action for authors:** `Trees.FOG_MATCH` is back to 1.0. If your system worked
 around missing fog on standard materials, remove the workaround. If you patch
 shader chunks or add uniforms to `UniformsLib`, use `uniformPatch.js`.
+
+---
+
+## Grass → PostFX: SSAO intensity/radius over the grass canopy
+
+**From:** Grass author. **Owner needed:** `src/render/PostFX.js` (n8ao pass).
+
+`tools/grass_dev/grass_diag.mjs` captures the `low` / `lowsun` meadow views with
+`postfx.ao.enabled` toggled. Compare
+`shots/grass/diag/low_on.png` against `shots/grass/diag/low_noao.png`, or the
+magnified crops `shots/grass/crop/ao_on.png` / `ao_off.png`.
+
+A grass field is hundreds of thousands of thin, mutually-occluding sheets, so
+every blade pair generates an AO contact. With AO on, the canopy interior fills
+with high-frequency dark speckle — the exact salt-and-pepper the CORRECTION
+section rules out, and it is the largest remaining source of chroma/value noise
+in a meadow frame. With it off the field reads as the flat painterly mass the
+reference plates show.
+
+**Request:** either
+
+- reduce the AO pass's `intensity` (and/or `aoRadius` — the current radius is
+  large enough to occlude between adjacent blades), or
+- expose `postfx.ao.intensity` so quality presets can taper it, or
+- restrict AO to the opaque pass before grass is drawn.
+
+Terrain contact shadowing is worth keeping; it is specifically the sub-metre
+radius over vegetation that hurts. **Not blocking** — the grass ships with AO on
+and compensates with a lifted blade-base occlusion of its own
+(`uBaseAO` in `src/shaders/grass_material.js`), which is why blade AO there is
+deliberately shallower than it would otherwise be.
+
+---
+
+## Grass → whoever owns the grade: whole-frame chroma runs hot vs the plates
+
+**From:** Grass author. **Owner needed:** `src/render/PostFX.js` grade / exposure.
+
+Measured with `tools/colorstats.mjs` on matched grass-only crops (see
+`shots/grass/crop/`, and `tools/grass_dev/crop.mjs` for the crop harness):
+
+| region | lumaMean | chromaMean |
+|---|---|---|
+| reference plate 1, meadow | 0.62 | **0.54** |
+| reference plate 3, mid meadow | 0.36 | **0.35** |
+| ours, mid meadow | 0.39 | **0.63** |
+| ours, foreground | 0.35 | **0.59** |
+
+Luminance, range and `contrastStd` all land inside the brief's table; chroma is
+the one metric that does not, and it is ~0.15–0.25 high everywhere. It is not a
+clipping artifact — dropping grass exposure by 15% moved luma but left chroma
+unchanged — and it is not confined to grass: a bare-terrain `drive` frame
+measures 0.478.
+
+The difference is the blue channel. The reference's sunlit ochre carries
+B ≈ 0.23 where ours carries B ≈ 0.13, at identical luminance.
+
+**Not acting on it in grass alone.** I trialled a luminance-preserving
+desaturation and a sky-coloured fill strong enough to hit the target
+(`uDesat` 0.20, `uSkyFill` 0.22 — compare `shots/grass/r13/drive.png` against
+`shots/grass/r7/drive.png`): the field then read visibly duller than the vivid
+orange terrain underneath it, which is a worse and more obvious defect than
+being saturated in company. Grass now ships at `uDesat` 0.07 / `uSkyFill` 0.14,
+matching the terrain. If the global grade is ever pulled toward the reference,
+`uDesat`/`uSkyFill` in `src/shaders/grass_material.js` are the two dials to
+raise with it.
+
+## Water author — 2026-08-18
+
+**1. Half-texel offset when sampling `world.dataTexture` (terrain / grass authors).**
+`WorldData._buildTextures` writes grid sample *i* at world `-half + i*texel`,
+which is UV `(i + 0.5) / res`. The lookup used in `TerrainMaterial.js` (and
+formerly in `water_common.js`) is `vWorldPos.xz / uWorldSize + 0.5`, i.e. UV
+`i / res` — half a texel out in both axes. Measured against `getBaseHeight` at
+one arbitrary point: CPU 81.10 m, uncorrected texture sample 85.58 m, corrected
+sample 81.10 m exactly. On a 2 m grid that is a metre of horizontal slip, and on
+a steep bank several metres of height error, so anything the terrain shader
+derives from the height channel (slope, snow line, shore blending) is registered
+slightly off the mesh it is drawn on. Fix is one term:
+`xz / uWorldSize + 0.5 + (0.5 / res)`. Done in `water_common.js`; not touched in
+files I do not own.
+
+**2. Scatter does not respect standing water (grass / trees authors).**
+Grass blades and some saplings are placed inside lakes and river channels — they
+are clearly visible growing out of open water in the `drive` and `vehicle`
+frames. `world.getWaterDepth(x, z) > 0.15` is the test; reeds *at* the waterline
+would be very welcome, blades in two metres of water are not. I cannot fix this
+from the water side: the water is drawn correctly and the grass is in front of
+it.
+
+**3. Two canonical views are blocked by a tree (POI / trees authors).**
+`waterfall` puts the camera 8 m up and 46 m out from the tallest fall, and a
+conifer occupies the entire right half of the frame; the `river` view at full
+bake resolution is likewise half-blocked. Both frames are in the standard review
+set, so every author is being judged on a frame that is mostly foliage. Either
+the anchor wants a clearance test against tree instances, or the two views want
+a small offset. Worked around by capturing the falls with explicit `--pos/--look`
+frames (`tools/_scratch/water_xshot.mjs --frames`).

@@ -9,7 +9,7 @@
  *
  *   node tools/lint.mjs
  */
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -23,7 +23,22 @@ const files = [];
 })('src');
 try { walk('tools'); } catch { /* optional */ }
 
-let bad = 0;
+// GLSL ES keywords that look like perfectly ordinary variable names in JS.
+// Declaring one is a shader compile error, which surfaces at runtime as a black
+// object rather than as a build failure — `float flat` and `patch` have both
+// already cost us time here.
+const GLSL_RESERVED = [
+  'flat', 'smooth', 'noperspective', 'patch', 'sample', 'shared', 'layout',
+  'precision', 'invariant', 'centroid', 'buffer', 'active', 'filter',
+  'resource', 'common', 'partition', 'subroutine', 'input', 'output',
+  'attribute', 'varying', 'uniform', 'in', 'out', 'inout', 'const',
+  'lowp', 'mediump', 'highp', 'discard', 'struct', 'coherent', 'volatile',
+  'restrict', 'readonly', 'writeonly', 'atomic_uint', 'packed',
+];
+const TYPE = '(?:float|int|uint|bool|vec[234]|ivec[234]|uvec[234]|bvec[234]|mat[234](?:x[234])?)';
+const DECL_RE = new RegExp(`\\b${TYPE}\\s+(${GLSL_RESERVED.join('|')})\\b\\s*[=;,)\\[]`, 'g');
+
+let bad = 0, warned = 0;
 for (const f of files) {
   try {
     execFileSync(process.execPath, ['--check', f], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -31,7 +46,18 @@ for (const f of files) {
     bad++;
     console.error(`\n✗ ${f}`);
     console.error(String(e.stderr).split('\n').slice(0, 6).join('\n'));
+    continue;
+  }
+
+  const src = readFileSync(f, 'utf8');
+  for (const m of src.matchAll(DECL_RE)) {
+    const line = src.slice(0, m.index).split('\n').length;
+    console.error(`\n⚠ ${f}:${line} declares GLSL reserved word "${m[1]}" — ` +
+                  `if this is inside a shader it will fail to compile at runtime.`);
+    warned++;
   }
 }
-console.log(bad ? `\n${bad} file(s) failed to parse` : `✓ ${files.length} files parse cleanly`);
+
+if (bad) console.log(`\n${bad} file(s) failed to parse`);
+else console.log(`✓ ${files.length} files parse cleanly${warned ? `, ${warned} GLSL warning(s)` : ''}`);
 process.exit(bad ? 1 : 0);

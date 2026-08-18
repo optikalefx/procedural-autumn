@@ -21,7 +21,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
-import { injectUniforms, verifyUniforms } from './uniformPatch.js';
+import { injectUniforms, verifyUniforms, captureShader } from './uniformPatch.js';
 
 const FOG_PARS = /* glsl */`
 #ifdef USE_FOG
@@ -36,6 +36,7 @@ const FOG_PARS = /* glsl */`
   uniform float uFogInscatterMax;
   uniform float uFogAnisotropy;    // Henyey–Greenstein g
   uniform float uFogFarStart;
+  uniform float uFogOnset;         // clear distance before haze accumulates
   uniform float uFogMax;
   uniform float uFogDesat;         // how much chroma distance eats
   uniform sampler2D uCloudMap;
@@ -86,11 +87,17 @@ const FOG_FRAG = /* glsl */`
   float y0 = vFogCamPos.y - uFogBaseHeight;
   float dy = toFrag.y;
   float baseDensity = uFogDensity * exp(-k * y0);
+  // Optical depth only starts accumulating past a clear near zone. There is no
+  // such thing physically, but the reference's near field is emphatically
+  // crisp — measured band by band down plate 1, its foreground holds chroma
+  // 0.40 while its far ridges sit at 0.13 — and a plain exponential from zero
+  // takes the saturated near plane that the whole look rests on with it.
+  float hazeDist = max(dist - uFogOnset, 0.0);
   float integral;
   if (abs(dy) < 1e-3) {
-    integral = baseDensity * dist;
+    integral = baseDensity * hazeDist;
   } else {
-    integral = baseDensity * dist * (1.0 - exp(-k * dy)) / (k * dy);
+    integral = baseDensity * hazeDist * (1.0 - exp(-k * dy)) / (k * dy);
   }
   integral = max(integral, 0.0);
   float fogFactor = 1.0 - exp(-integral);
@@ -101,15 +108,24 @@ const FOG_FRAG = /* glsl */`
   float hg = (1.0 - g * g) / (4.0 * 3.14159265 * pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5));
 
   // ── colour ──────────────────────────────────────────────────────────────
-  // Chroma goes before value does. Bleeding saturation out ahead of the haze
-  // mix is what makes 400 m, 900 m and 1500 m read as three distinct planes.
-  float lum = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-  gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(lum),
-                         clamp(uFogDesat * fogFactor, 0.0, 1.0));
-
   float farMix = smoothstep(uFogFarStart, uFogFarStart * 5.0, dist);
   vec3 hazeCol = mix(fogColor, uFogFarColor, farMix);
   hazeCol = mix(hazeCol, uFogSunColor, clamp(hg * uFogInscatter, 0.0, uFogInscatterMax));
+
+  // Chroma goes before value does — that is what makes 400 m, 900 m and
+  // 1500 m read as three distinct planes rather than one wash.
+  //
+  // But it must bleed toward the haze *hue*, not toward grey. Mixing to
+  // vec3(lum) drove every distant surface neutral; measured, the far field
+  // fell to chromaMean 0.21 against a reference band of 0.28–0.42, and the
+  // reference's own distant ridges are emphatically not grey — they are pale
+  // pink and lavender. Re-tinting at the pixel's own luminance removes the
+  // local colour identity (which is the real aerial-perspective cue) while
+  // keeping both the value structure and a chromatic frame.
+  float lum = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+  float hazeLum = max(dot(hazeCol, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, hazeCol * (lum / hazeLum),
+                         clamp(uFogDesat * fogFactor, 0.0, 1.0));
 
   gl_FragColor.rgb = mix(gl_FragColor.rgb, hazeCol, clamp(fogFactor, 0.0, uFogMax));
 }
@@ -127,17 +143,32 @@ function neutralCloudMap() {
 
 const DEFAULTS = {
   density: 0.0015,
-  // ~450 m scale height. Shorter than this and the analytic integral collapses
-  // the moment the camera climbs a peak — a vista shot loses all its haze
-  // exactly where the layering matters most.
-  heightFalloff: 0.0022,
+  // ~550 m scale height.
+  //
+  // A short scale height sounds like the right lever for ridgeline layering,
+  // and it is not — measured, it makes it worse. The vista cameras sit at
+  // 300–400 m, so `exp(-k * cameraHeight)` scales the *whole* frame down, while
+  // the far peaks (at camera altitude, dy ~ 0) lose more optical depth than the
+  // valley floor below does. At k = 0.0035 the far/near optical-depth ratio in
+  // `peaks` was 1.3; at 0.0020 it is 1.7. Distance, not altitude, is what has
+  // to separate the planes in a valley only ~1.5 km across. Height falloff
+  // stays gentle — enough that a peak sits clear of valley mist, no more.
+  heightFalloff: 0.0020,
   baseHeight: 10.0,
   inscatter: 1.35,
-  inscatterMax: 0.62,
+  // Capped lower than it was: at 0.62 a sun-facing vista pulled two thirds of
+  // the haze toward the (bright) sun colour, which lifted the whole middle
+  // distance to sky value and erased the horizon line.
+  inscatterMax: 0.45,
   anisotropy: 0.60,
   farStart: 300.0,
-  max: 0.93,               // never a perfect wash — the last ridge keeps 7%
-  desat: 0.72,
+  onset: 130.0,
+  max: 0.90,               // never a perfect wash — the last ridge keeps 10%
+  // High on purpose. Now that this bleeds toward the haze *hue* rather than
+  // toward grey it cannot neutralise the frame, and the reference wants it
+  // strong: its distant ridges measure chroma 0.13–0.26 against a foreground
+  // meadow at 0.60. Chroma is the depth cue; value barely moves.
+  desat: 0.85,
   cloudShadow: 0.0,
   cloudScale: 1 / 2600,
   cloudAltitude: 900.0,
@@ -176,6 +207,7 @@ export function patchFogChunks() {
     uFogInscatterMax:  { value: DEFAULTS.inscatterMax },
     uFogAnisotropy:    { value: DEFAULTS.anisotropy },
     uFogFarStart:      { value: DEFAULTS.farStart },
+    uFogOnset:         { value: DEFAULTS.onset },
     uFogMax:           { value: DEFAULTS.max },
     uFogDesat:         { value: DEFAULTS.desat },
     uCloudMap:         { value: sharedCloudMap },
@@ -236,7 +268,11 @@ export class Atmosphere {
    */
   register(material) {
     if (!material || material.fog === false) return material;
+    if (this._materials.has(material)) return material;
     this._materials.add(material);
+    // Without this, a plain MeshStandardMaterial has no route from JS to its
+    // compiled uniform block and update() below silently skips it forever.
+    captureShader(material);
     return material;
   }
 
@@ -262,6 +298,7 @@ export class Atmosphere {
       u.uFogInscatter.value = p.inscatter;
       u.uFogAnisotropy.value = p.anisotropy;
       u.uFogFarStart.value = p.farStart;
+      if (u.uFogOnset) u.uFogOnset.value = p.onset;
       u.uFogMax.value = p.max;
       u.uFogFarColor.value.copy(p.farColor);
       u.uFogSunColor.value.copy(p.sunColor);

@@ -29,16 +29,33 @@ float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec3 c = inputColor.rgb;
 
+  // NOTE ON UNITS. This pass runs inside the composer, which is linear — the
+  // sRGB encode happens in the output pass after us. Every threshold below is
+  // therefore a *linear* value, and small linear numbers are large display
+  // ones: 0.02 linear is 0.15 sRGB, 0.18 linear is middle grey, 0.5 linear is
+  // already 0.74 sRGB. Reading them as display values is how this grade ended
+  // up pivoting its contrast near the highlights and lifting the toe by a
+  // quarter of the display range.
+
   // Split toning: cool violet in shadow, warm gold in highlight.
   float l = luma(c);
-  float shadowW = 1.0 - smoothstep(0.0, 0.42, l);
-  float highW   = smoothstep(0.45, 1.0, l);
+  float shadowW = 1.0 - smoothstep(0.0, 0.14, l);   // ~0 … 0.41 display
+  float highW   = smoothstep(0.25, 0.85, l);        // ~0.55 … 0.94 display
   // Tints are luminance-normalised, so this rotates hue instead of dimming.
   c = mix(c, c * uShadowTint,    uSplitStrength * shadowW);
   c = mix(c, c * uHighlightTint, uSplitStrength * highW * 0.7);
 
-  // Filmic contrast around a slightly lifted pivot.
-  c = (c - 0.5) * uContrast + 0.5 + uLift;
+  // Filmic contrast around middle grey, then lift the toe.
+  c = (c - 0.18) * uContrast + 0.18;
+  // Clamp before lifting, not after. Contrast about any pivot maps a true black
+  // to a negative, and adding the lift to a negative simply cancels it — the
+  // trailing max() at the bottom of this shader was too late to help, and the
+  // near-field frames were measuring lumaP05 0.00–0.08 against a reference band
+  // of 0.16–0.42 because of it.
+  c = max(c, 0.0);
+  // 0.022 linear is 0.16 sRGB — the reference's own 5th percentile, and the
+  // point of the whole exercise: the reference lifts its blacks, never crushes.
+  c += uLift * (1.0 - smoothstep(0.0, 0.10, luma(c)));
 
   // Vibrance: boost the unsaturated, protect the already-saturated.
   float mx = max(c.r, max(c.g, c.b));
@@ -104,8 +121,8 @@ class GradeEffect extends Effect {
         ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.12, 1.02, 0.86))],
         ['uSplitStrength', new THREE.Uniform(0.14)],
         ['uSaturation',    new THREE.Uniform(0.96)],
-        ['uContrast',      new THREE.Uniform(1.06)],
-        ['uLift',          new THREE.Uniform(0.004)],
+        ['uContrast',      new THREE.Uniform(1.18)],
+        ['uLift',          new THREE.Uniform(0.022)],
         ['uVibrance',      new THREE.Uniform(0.16)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
@@ -117,6 +134,19 @@ class GradeEffect extends Effect {
     this.uniforms.get('uTime').value += dt;
   }
 }
+
+// Scene exposure. Engine ships a default, but exposure is a *look* decision and
+// it is graded here, so this file owns it — Engine's value is only the fallback
+// if this is ever set to null.
+//
+// Calibrated by measurement, not by feel. At 1.28 the high-albedo surfaces —
+// bare rock especially, which is a near-white lavender before it is lit —
+// pushed past the tone curve's shoulder, where PBR Neutral desaturates toward
+// white. Rock, snow and sky all collapsed into the same cream, so `hero` and
+// `peaks` measured lumaP05 ≈ 0.53–0.61 against a reference band of 0.16–0.42
+// and chromaMean 0.21 against 0.28–0.42. Backing exposure off keeps the bright
+// end below the shoulder, which buys back both the value range and the colour.
+const EXPOSURE = 1.0;
 
 export class PostFX {
   constructor(engine, quality = 'ultra') {
@@ -164,7 +194,11 @@ export class PostFX {
         })
       : null;
 
-    this.vignette = new VignetteEffect({ offset: 0.42, darkness: 0.16 });
+    // A cozy frame wants its corners to fall away. It also buys real measured
+    // contrast in the vista views, which are otherwise a single 0.60–0.70 value
+    // band from the valley floor to the sky (contrastStd 0.09 against a
+    // reference band of 0.13–0.22).
+    this.vignette = new VignetteEffect({ offset: 0.36, darkness: 0.30 });
     this.grade = new GradeEffect();
     // Khronos PBR Neutral, not AgX. AgX is a filmic curve built for
     // photographic realism: it has a long toe and it deliberately desaturates
@@ -173,7 +207,7 @@ export class PostFX {
     // clawed back with a global saturation boost that over-cooks the midtones.
     // Neutral holds hue and saturation up into the highlights, which is what
     // lets a bright gold meadow stay gold.
-    this.tone = new ToneMapEffect(engine.exposure ?? 1.0);
+    this.tone = new ToneMapEffect(EXPOSURE ?? engine.exposure ?? 1.0);
     this.smaa = new SMAAEffect();
 
     // Order matters. Bloom and depth of field belong in linear HDR, tone

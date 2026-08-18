@@ -69,6 +69,36 @@ export function verifyUniforms(label, names, shaderLibKeys = ['physical', 'stand
 }
 
 /**
+ * Make a material's compiled uniform block reachable from JS.
+ *
+ * `injectUniforms` gets a *value* into every built-in material, but only at
+ * compile time — three clones the ShaderLib block per material, so afterwards
+ * there is no path from the material back to the live uniforms unless someone
+ * stashed the shader. Materials with a custom `onBeforeCompile` (terrain,
+ * grass, rock) stash it themselves; plain `MeshStandardMaterial`s do not, and
+ * measured in the running game 19 of 36 fogged materials were in that state —
+ * the camper and every prop rendering a *static* atmosphere, with a sun
+ * direction frozen at the (0,1,0) it was injected with, so their inscattering
+ * pointed at the zenith regardless of the time of day.
+ *
+ * Chains onto any existing hook rather than replacing it, and is idempotent.
+ */
+export function captureShader(material) {
+  if (!material || material.userData?.shader || material.__shaderCaptured) return material;
+  material.__shaderCaptured = true;
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = function (shader, renderer) {
+    if (prev) prev.call(this, shader, renderer);
+    this.userData.shader = shader;
+  };
+  // Changing onBeforeCompile changes three's program cache key, so a material
+  // that already compiled needs one recompile to pick the hook up. Once per
+  // material at harvest time; callers guard against re-registering.
+  material.needsUpdate = true;
+  return material;
+}
+
+/**
  * Replace a snippet inside a ShaderChunk, tolerating the whitespace differences
  * between three's source tree and its bundled build (the build strips blank
  * lines, which silently broke an exact-string match here once already).
