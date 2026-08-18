@@ -5,8 +5,10 @@
  * and cheaply (small viewport, low bake resolution).
  */
 import { chromium } from 'playwright';
+import { acquire } from './_lock.mjs';
 
 const res = process.argv[2] ?? '512';
+await acquire('health');
 const b = await chromium.launch();
 const p = await b.newPage({ viewport: { width: 640, height: 360 } });
 const errs = [];

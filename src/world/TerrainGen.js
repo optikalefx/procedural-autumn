@@ -40,7 +40,7 @@ export class TerrainGen {
     this.sediment = new Float32Array(N);
 
     this._tectonic();          this.onProgress(0.15, 'Raising mountains');
-    this._erode(320000);       this.onProgress(0.52, 'Carving valleys');
+    this._erode(Math.round(R * R * 0.22));  this.onProgress(0.52, 'Carving valleys');
     this._relax();             this.onProgress(0.58, 'Settling the bedrock');
     this._fillDepressions();   this.onProgress(0.66, 'Filling lake basins');
     this._flowAccumulation();  this.onProgress(0.76, 'Routing rivers');
@@ -133,7 +133,7 @@ export class TerrainGen {
         // Squared once here (rather than at use) so the basin/mountain
         // transition is a definite edge instead of a long mushy ramp.
         const massifRaw = clamp01(smoothstep(-0.10, 0.52, cont) * 0.78 + rim * 0.72 - bowl * 0.30);
-        const massif = smoothstep(0.06, 0.72, massifRaw);
+        const massif = smoothstep(0.13, 0.78, massifRaw);
 
         // ── massif character ───────────────────────────────────────────────
         // Two very low frequency selectors give each range one personality for
@@ -159,12 +159,17 @@ export class TerrainGen {
         // Same ridge field, three different transfer curves. Raising a 0..1
         // ridge to a power >1 narrows the crests (alpine); <1 fattens the
         // shoulders and flattens the summits (mesa / rounded).
-        const ridgeSharp = Math.pow(ridge, 1.55);
-        const ridgeFat   = Math.pow(ridge, 0.70);
+        //
+        // Both curves are renormalised to the same mean (E[x^p] = 1/(p+1) for
+        // x on 0..1) before blending. Without that the archetypes sit at
+        // different average elevations and the character boundary shows up as
+        // a 100 m smear across the map — a seam, not a mountain.
+        const ridgeSharp = Math.pow(ridge, 1.55) * 2.55 * 0.5;
+        const ridgeFat   = Math.pow(ridge, 0.70) * 1.70 * 0.5;
         const relief =
-          (ridgeSharp * 0.86 + ridge2 * 0.14) * wAlpine +
-          (ridgeFat * 0.80 + dome * 0.20)     * wMesa +
-          (ridgeFat * 0.52 + dome * 0.48)     * wRound;
+          (ridgeSharp * 0.86 + ridge2 * 1.4 * 0.14) * wAlpine +
+          (ridgeFat * 0.80 + dome * 0.20)           * wMesa +
+          (ridgeFat * 0.52 + dome * 0.48)           * wRound;
 
         // ── foothills: broad shoulders that tie mountains into the basin ────
         const foot = (n.fbm(rwx * 1.25 + 41.0, rwy * 1.25 + 12.0, 3, 2.05, 0.42, 1) * 0.5 + 0.5);
@@ -187,7 +192,7 @@ export class TerrainGen {
         let elev =
           basin * 34.0 * (1 - m2 * 0.75) +                 // 0–34 m meadow relief
           foot  * 78.0 * smoothstep(0.05, 0.70, massif) +  // 0–78 m foothills
-          relief * A * 1.02 * m2;                          // the big peaks
+          relief * A * 0.94 * m2;                          // the big peaks
 
         // Grain everywhere, but taller on open ground than on cliff faces
         // (where erosion products, not noise, should be doing the work).
@@ -196,24 +201,35 @@ export class TerrainGen {
         // A dedicated low basin so there is somewhere for lakes and meadows.
         elev -= bowl * 9.0;
         elev += regionalTilt;
-        // Cut the gorge floor down through the rim so the outlet actually flows.
-        elev -= gate * smoothstep(0.55, 1.20, r) * 92.0;
+
+        // Carve the outlet gorge to a *target floor* rather than subtracting a
+        // fixed depth. Subtracting 90 m produced a trench that then had to be
+        // clamped, and the clamp turned the whole gorge into a flat pan that
+        // flooded — 9% of the map was dead water. A floor that falls gently
+        // from +5 m to -10 m is all the basin needs to drain, and it reads as a
+        // river mouth instead of an inland sea.
+        const gTaper = gate * smoothstep(0.40, 0.70, r);
+        if (gTaper > 0) {
+          const gateFloor = 5.0 - smoothstep(0.48, 1.35, r) * 15.0;
+          elev = lerp(elev, Math.min(elev, gateFloor - 4.0), gTaper);
+        }
 
         // Mesas / benches — the reference art has flat shelves. Driven by the
         // character field now, so terracing lands on the mesa massifs instead
         // of being sprinkled at random.
         if (wMesa > 0.02 && massif > 0.14) {
-          const t = smoothstep(0.02, 0.45, wMesa) * smoothstep(0.14, 0.46, massif);
-          const stepH = 21.0 + (n.fbm(u * 1.7, v * 1.7, 2, 2, 0.5, 1) * 0.5 + 0.5) * 15.0;
+          // Kept mild: differential weathering now cuts the real benches, and
+          // stacking a second terracing operator on top reads as contour lines.
+          const t = smoothstep(0.02, 0.45, wMesa) * smoothstep(0.14, 0.46, massif) * 0.42;
+          const stepH = 34.0 + (n.fbm(u * 1.7, v * 1.7, 2, 2, 0.5, 1) * 0.5 + 0.5) * 26.0;
           const q = elev / stepH;
           const terraced = (Math.floor(q) + smoothstep(0.30, 0.70, q - Math.floor(q))) * stepH;
           elev = lerp(elev, terraced, t * 0.70);
         }
 
-        // Soft floor. The outlet gorge must fall below the basin so water
-        // drains, but a raw 90 m trench just fills with a black sea; compress
-        // everything under -2 m logarithmically so outlets read as river mouths.
-        if (elev < -2) elev = -2 - Math.log1p(-2 - elev) * 2.4;
+        // Backstop only — nothing should reach this now, but a runaway negative
+        // would flood the map and it costs one compare.
+        if (elev < -16) elev = -16 - Math.log1p(-16 - elev) * 1.5;
 
         const i = y * R + x;
         h[i] = elev + 4.0;   // a little ground below sea level for lakes
@@ -224,25 +240,42 @@ export class TerrainGen {
         const band = n.fbm(rwx * 2.7 + 21.7, rwy * 2.7 - 13.9, 4, 2.35, 0.5, 1);
         hard[i] = clamp01(0.34 + band * 0.44 + massif * 0.30);
 
-        // Bedding. Layers 15–34 m thick, dipping gently: the phase offset is a
-        // smooth function of position, so beds are tilted planes rather than
-        // perfectly horizontal contours (which would read as topo lines).
-        const thickness = 15.0 + (n.fbm(u * 1.4 + 4.4, v * 1.4 - 9.1, 2, 2, 0.5, 1) * 0.5 + 0.5) * 19.0;
-        this.bedK[i] = (Math.PI * 2) / thickness;
-        const dip = n.fbm(u * 1.1 - 60.2, v * 1.1 + 25.5, 2, 2.0, 0.5, 1) * 46.0;
-        this.bedPhase[i] = dip * this.bedK[i];
+        // Bedding. Layers 24–56 m thick, and — critically — *dipping*. A bed is
+        // a tilted plane, so its outcrop trace cuts diagonally across a hillside.
+        // A bed with no dip has its trace exactly on an elevation contour, and
+        // the whole range ends up wearing topographic lines like a survey map.
+        // The dip direction rotates slowly so neighbouring massifs are not all
+        // leaning the same way.
+        const thickness = 34.0 + (n.fbm(u * 1.4 + 4.4, v * 1.4 - 9.1, 2, 2, 0.5, 1) * 0.5 + 0.5) * 46.0;
+        const k = (Math.PI * 2) / thickness;
+        this.bedK[i] = k;
+        const dipDir = n.fbm(u * 0.80 - 60.2, v * 0.80 + 25.5, 2, 2.0, 0.5, 1) * Math.PI * 2;
+        const dipMag = 0.26 + (n.fbm(u * 0.95 + 12.7, v * 0.95 - 4.1, 2, 2, 0.5, 1) * 0.5 + 0.5) * 0.34;
+        // Metres of bed rise per metre travelled, resolved into world XZ.
+        const wx = u * (this.worldSize * 0.5), wz = v * (this.worldSize * 0.5);
+        const bedRise = (wx * Math.cos(dipDir) + wz * Math.sin(dipDir)) * dipMag;
+        this.bedPhase[i] = -bedRise * k;
         // Mesas are the most obviously layered thing in the reference art;
         // alpine horns are jointed but not benched; grassy domes hide it all.
-        this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.46 + wRound * 0.12)
-                                  * smoothstep(0.04, 0.34, massif));
+        this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.34 + wRound * 0.10)
+                                  * smoothstep(0.18, 0.52, massif));
       }
     }
   }
 
-  /** Hard-band fraction (0 soft rock, 1 hard rock) of the bed exposed at `hv`. */
+  /**
+   * Hard-band fraction (0 soft rock, 1 hard rock) of the bed exposed at `hv`.
+   *
+   * Two details matter more than they look. The phase is frequency-modulated,
+   * so bed thicknesses alternate instead of marching at a fixed pitch — a pure
+   * sine gives every massif the same corduroy ripple. And the hard fraction is
+   * biased so only about a third of the column is resistant: real cliff country
+   * is a few prominent ledges in a lot of soft rock, not evenly striped.
+   */
   _bedHard(i, hv) {
-    const b = 0.5 + 0.5 * Math.sin(hv * this.bedK[i] + this.bedPhase[i]);
-    return smoothstep(0.40, 0.60, b);
+    const t = hv * this.bedK[i] + this.bedPhase[i];
+    const b = 0.5 + 0.5 * Math.sin(t + 0.85 * Math.sin(t * 0.41 + 1.7));
+    return smoothstep(0.50, 0.74, b);
   }
 
   // ── 2. Hydraulic erosion (droplet / particle based) ────────────────────────
@@ -252,19 +285,25 @@ export class TerrainGen {
     const R = this.res, h = this.height, hard = this.hardness, sedMap = this.sediment;
     const rng = this.rng;
 
-    // Constants are in METRES, scaled to this grid's 2 m texel pitch.
+    // Constants are in METRES, scaled to this grid's texel pitch.
+    //
+    // These used to be set so conservatively that the whole stage was a no-op:
+    // a droplet could shift ~1 mm per cell, so "eroded" and "tectonic" came out
+    // within 0.5% of each other and every mountain was raw ridged noise wearing
+    // an erosion label. Carrying capacity and the per-step edit clamp are the
+    // two that matter; everything else follows from them.
     const texel = this.worldSize / R;
-    const maxLifetime = 56;
-    const inertia = 0.06;
-    const capacityFactor = 0.09;    // sediment carried per metre of descent
-    const minSlope = 0.008 * texel; // metres of drop treated as the floor
-    const depositSpeed = 0.26;
-    const erodeSpeed = 0.28;
-    const gravity = 0.55;           // speed^2 gain per metre dropped
-    const evaporate = 0.018;
-    const radius = 3;
-    const MAX_EDIT = 0.085;         // metres per droplet step — stability net
-    const MAX_SPEED = 5.0;
+    const maxLifetime = 64;
+    const inertia = 0.09;
+    const capacityFactor = 0.62;    // sediment carried per metre of descent
+    const minSlope = 0.010 * texel; // metres of drop treated as the floor
+    const depositSpeed = 0.34;
+    const erodeSpeed = 0.42;
+    const gravity = 0.90;           // speed^2 gain per metre dropped
+    const evaporate = 0.014;
+    const radius = 2;               // tighter brush -> channels, not dimples
+    const MAX_EDIT = 0.42;          // metres per droplet step — stability net
+    const MAX_SPEED = 5.5;
 
     // Soft-disc erosion brush so channels do not alias into the grid.
     const brushDX = [], brushDY = [], brushW = [];
@@ -384,6 +423,11 @@ export class TerrainGen {
     const texel = this.worldSize / R;
     const N = R * R;
 
+    // Weathering budget. Without a cap a cell keeps stepping down through bed
+    // after bed and the whole range ends up ribbed like corduroy; in reality a
+    // retreating face is armoured by its own debris after a few metres.
+    this._weatherBudget = new Float32Array(N).fill(7.0);
+
     // Precompute the two repose limits per cell. Soft beds and grassy country
     // lie back at 28-42°; competent, well-bedded rock stands at up to ~82°.
     const talusLo = new Float32Array(N);
@@ -391,20 +435,26 @@ export class TerrainGen {
     const DEG = Math.PI / 180;
     for (let i = 0; i < N; i++) {
       const sw = this.strataW[i];
-      talusLo[i] = Math.tan((28 + hard[i] * 14) * DEG) * texel;
-      talusHi[i] = Math.tan((48 + hard[i] * 26 + sw * 8) * DEG) * texel;
+      // The soft limit governs everything that is not a resistant bed, which
+      // includes every gully wall the droplet sim just cut. At 42 deg it was
+      // quietly back-filling all of them, which is why the mountains came out
+      // smooth however hard the erosion ran. Competent rock holds much steeper.
+      talusLo[i] = Math.tan((29 + hard[i] * 24) * DEG) * texel;
+      talusHi[i] = Math.tan((48 + hard[i] * 22 + sw * 9) * DEG) * texel;
     }
 
     const D = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
     const DL = D.map(([a, b]) => Math.hypot(a, b));
     const DI = D.map(([a, b]) => b * R + a);
 
-    // Six weather/wast cycles. More than this and the beds saturate: every
-    // soft cell has already retreated to its bed boundary and nothing moves.
-    for (let cycle = 0; cycle < 6; cycle++) {
-      this._weather(0.95, DI, DL);
+    this._talusParity = 0;
+    // Three weather/waste cycles. Each talus pass is also a low-pass filter, so
+    // spending more of them buys stepped cliffs at the price of erasing the
+    // drainage grain the droplet sim just cut. Three is where both survive.
+    for (let cycle = 0; cycle < 2; cycle++) {
+      this._weather(1.85, DI, DL);
       this._talus(2, talusLo, talusHi, DI, DL);
-      if ((cycle & 1) === 0) this.onProgress(0.52 + 0.05 * (cycle / 6), 'Settling the bedrock');
+      this.onProgress(0.52 + 0.02 * cycle, 'Settling the bedrock');
     }
 
     // Curvature-selective smoothing: only texels that stick out from their own
@@ -421,7 +471,7 @@ export class TerrainGen {
           const dev = tmp[i] - mean;
           // Blend proportionally to how far this texel deviates: 0 for smooth
           // ground, up to 0.8 for a spike.
-          const w = Math.min(0.80, Math.abs(dev) / (texel * 2.4));
+          const w = Math.min(0.55, Math.abs(dev) / (texel * 3.6));
           h[i] = tmp[i] - dev * w;
         }
       }
@@ -448,6 +498,11 @@ export class TerrainGen {
     const R = this.res, h = this.height, hard = this.hardness, sed = this.sediment;
     const texel = this.worldSize / R;
     const sw = this.strataW;
+    // Read the surface from a snapshot. Reading and writing the same buffer
+    // lets a cell weather, receive its neighbour's debris, and weather again in
+    // the same sweep — a standing wave that ripples every gentle slope.
+    const src = this._weatherSrc || (this._weatherSrc = new Float32Array(h.length));
+    src.set(h);
 
     for (let y = 1; y < R - 1; y++) {
       for (let x = 1; x < R - 1; x++) {
@@ -455,17 +510,21 @@ export class TerrainGen {
         const w = sw[i];
         if (w < 0.06) continue;
 
-        const hv = h[i];
+        const hv = src[i];
         const bh = this._bedHard(i, hv);
-        // Exposure: a bed only weathers back where it is already a face. Flat
-        // ground weathers in place (which we do not model) rather than retreat.
-        const gx = (h[i + 1] - h[i - 1]) / (2 * texel);
-        const gy = (h[i + R] - h[i - R]) / (2 * texel);
-        const expo = Math.min(1, Math.hypot(gx, gy) * 1.5);
-        if (expo < 0.04) continue;
+        // Exposure: a bed only retreats where it is already a face. Requiring a
+        // real gradient (~14 deg) before anything happens is what keeps the
+        // benching on cliffs instead of ribbing the meadow with contour lines.
+        const gx = (src[i + 1] - src[i - 1]) / (2 * texel);
+        const gy = (src[i + R] - src[i - R]) / (2 * texel);
+        const expo = smoothstep(0.25, 0.85, Math.hypot(gx, gy));
+        if (expo <= 0.001) continue;
 
-        const amount = (1 - bh) * w * expo * rate * (1.2 - hard[i] * 0.55);
+        let amount = (1 - bh) * w * expo * rate * (1.2 - hard[i] * 0.55);
+        const budget = this._weatherBudget[i];
+        if (amount > budget) amount = budget;
         if (amount <= 0.0005) continue;
+        this._weatherBudget[i] = budget - amount;
 
         h[i] -= amount;
 
@@ -474,7 +533,7 @@ export class TerrainGen {
         let b0 = -1, b1 = -1, d0 = 0, d1 = 0;
         for (let k = 0; k < 8; k++) {
           const ni = i + DI[k];
-          const drop = (h[i] - h[ni]) / DL[k];
+          const drop = (src[i] - src[ni]) / DL[k];
           if (drop > d0) { d1 = d0; b1 = b0; d0 = drop; b0 = ni; }
           else if (drop > d1) { d1 = drop; b1 = ni; }
         }
@@ -493,12 +552,23 @@ export class TerrainGen {
     }
   }
 
-  /** Angle-of-repose limiter, with the repose angle set by the exposed bed. */
+  /**
+   * Angle-of-repose limiter, with the repose angle set by the exposed bed.
+   *
+   * The sweep alternates direction every pass. An in-place raster sweep moves
+   * material many cells downstream within one pass but only one cell upstream,
+   * so running it always forwards combs the whole range into parallel smears
+   * pointing the same way — which is what "blobby, motion-blurred mountains"
+   * actually is. Alternating cancels the bias.
+   */
   _talus(passes, talusLo, talusHi, DI, DL) {
     const R = this.res, h = this.height, sw = this.strataW;
     for (let pass = 0; pass < passes; pass++) {
-      for (let y = 1; y < R - 1; y++) {
-        for (let x = 1; x < R - 1; x++) {
+      const back = (this._talusParity++ & 1) === 1;
+      for (let yy = 1; yy < R - 1; yy++) {
+        const y = back ? R - 1 - yy : yy;
+        for (let xx = 1; xx < R - 1; xx++) {
+          const x = back ? R - 1 - xx : xx;
           const i = y * R + x;
           const hi = h[i];
           const w = sw[i];
@@ -510,7 +580,7 @@ export class TerrainGen {
             const diff = hi - h[ni];
             const lim = t * DL[k];
             if (diff > lim) {
-              const move = (diff - lim) * 0.34;
+              const move = (diff - lim) * 0.28;
               h[i] -= move;
               h[ni] += move;
             }
@@ -661,6 +731,8 @@ export class TerrainGen {
     for (let i = 0; i < N; i++) h[i] -= carve[i];
     this.carve = carve;
 
+    this._carveRills();
+
     // Recompute slope after carving — used everywhere downstream.
     const slope = new Float32Array(N);
     const texel = this.worldSize / R;
@@ -682,6 +754,73 @@ export class TerrainGen {
     this.maxHeight = mx;
   }
 
+  /**
+   * Hillslope rill network — the micro-relief the player actually reads.
+   *
+   * Everything above works at 100 m and up; at 2-40 m from the bonnet that is a
+   * dead flat plane, which is why the ground used to look like a sand dune.
+   * Every cell drains somewhere, and below the river threshold that drainage
+   * still leaves a grain in the ground: gullies on slopes, swales and dry beds
+   * on the flat. Unlike added noise this structure is topologically correct —
+   * it converges downhill, it never crosses itself, and it lines up with the
+   * rivers it eventually feeds.
+   */
+  _carveRills() {
+    const R = this.res, N = R * R, h = this.height, flow = this.flow;
+    const texel = this.worldSize / R;
+    const rill = new Float32Array(N);
+
+    const RILL_MIN = 30;     // upstream cells before a rill is worth cutting
+    const RILL_MAX = 900;    // where the river carver takes over
+    const invLog = 1 / Math.log(RILL_MAX / RILL_MIN);
+    const hard = this.hardness;
+
+    for (let y = 1; y < R - 1; y++) {
+      for (let x = 1; x < R - 1; x++) {
+        const i = y * R + x;
+        const f = flow[i];
+        if (f <= RILL_MIN) continue;
+        let t = Math.log(f / RILL_MIN) * invLog;
+        if (t > 1) t = 1;
+
+        const gx = (h[i + 1] - h[i - 1]) / (2 * texel);
+        const gy = (h[i + R] - h[i - R]) / (2 * texel);
+        const g = Math.hypot(gx, gy);
+        // Depth grows with catchment and slope: a swale in the meadow is
+        // knee-deep, the same drainage on a mountain flank is a gully you could
+        // stand in, and that contrast is most of what makes a hillside read.
+        //
+        // Incision is also gated on rock competence. Cutting every drainage
+        // line to the same depth combs a mountain into identical vertical
+        // flutes — it reads as drapery, not as a hillside. Letting soft ground
+        // incise while hard ground resists is what leaves the smooth
+        // interfluves and buttresses standing between the gullies.
+        const soft = 1.28 - hard[i] * 0.88;
+        const w = 0.24 + Math.min(1.0, g * 1.25) * 0.78;
+        rill[i] = Math.pow(t, 1.5) * 3.0 * w * soft;
+      }
+    }
+
+    // A 2 m-wide slot cut straight into a 2 m grid aliases into a staircase.
+    // Two cheap box passes spread it into a channel with banks.
+    const tmp = new Float32Array(N);
+    for (let pass = 0; pass < 2; pass++) {
+      const src = pass === 0 ? rill : tmp;
+      const dst = pass === 0 ? tmp : rill;
+      for (let y = 1; y < R - 1; y++) {
+        for (let x = 1; x < R - 1; x++) {
+          const i = y * R + x;
+          dst[i] = (src[i] * 4
+                  + (src[i - 1] + src[i + 1] + src[i - R] + src[i + R]) * 2
+                  + (src[i - R - 1] + src[i - R + 1] + src[i + R - 1] + src[i + R + 1])) * (1 / 16);
+        }
+      }
+    }
+
+    for (let i = 0; i < N; i++) h[i] -= rill[i];
+    this.rill = rill;
+  }
+
   // ── 6. Water surface & waterfall detection ─────────────────────────────────
   _waterSurface() {
     const R = this.res, N = R * R, h = this.height, rm = this.riverMask;
@@ -692,7 +831,9 @@ export class TerrainGen {
     // River surface sits just above the carved bed.
     for (let i = 0; i < N; i++) {
       if (rm[i] > 0) water[i] = h[i] + 0.22 + rm[i] * 0.9;
-      if (this.lakeDepth[i] > 0.12) {
+      // 0.12 m was low enough that the priority-flood's epsilon flats counted
+      // as lakes, sheeting water over huge areas of merely-level meadow.
+      if (this.lakeDepth[i] > 0.55) {
         water[i] = Math.max(water[i], this.filled[i] + 0.05);
       }
     }

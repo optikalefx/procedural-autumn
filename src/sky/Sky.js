@@ -1,14 +1,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Sky — an art-directed gradient dome with a physically-motivated sun,
-//  Mie forward-scatter halo and horizon haze. Tuned for golden hour.
+//  Sky — an art-directed gradient dome with a bounded sun aureole.
+//
+//  The hard constraint here is the post chain: the scene is AgX tone-mapped in
+//  the material, then bloom runs on the *display-referred* result with a 0.62
+//  luminance threshold. So anything the dome writes above roughly 0.9 linear
+//  blooms, and a sky that sits at 1.5 linear blooms *everywhere* and turns the
+//  whole upper frame into white paper. That is exactly what the first pass did.
+//
+//  The rule this shader obeys: the gradient stays under ~0.85 linear, and only
+//  the aureole and the ~0.6° disc are allowed over 1.0. Everything else is
+//  hue, not headroom.
+//
+//  All colours come from the shared time-of-day record in Lighting.js.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
+import { SKY_STATE } from '../render/Lighting.js';
 
 const VERT = /* glsl */`
 varying vec3 vDir;
 void main() {
-  vDir = normalize(position);
+  vDir = position;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mv;
   gl_Position.z = gl_Position.w;   // always at the far plane
@@ -21,92 +33,86 @@ varying vec3 vDir;
 uniform vec3  uSunDir;
 uniform vec3  uZenith;
 uniform vec3  uHorizon;
-uniform vec3  uGround;
+uniform vec3  uSunHorizon;   // horizon colour in the sun's azimuth
+uniform vec3  uGround;       // value multiplier applied below the skyline
+uniform vec3  uGlow;
 uniform vec3  uSunColor;
-uniform float uSunIntensity;
-uniform float uTurbidity;
+uniform float uGlowIntensity;
+uniform float uDiscIntensity;
+uniform float uNight;        // 1 at full night, 0 in daylight
 uniform float uTime;
-uniform float uExposure;
 
-float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
-vec2 hash22(vec2 p){
-  p = vec2(dot(p, vec2(127.1,311.7)), dot(p, vec2(269.5,183.3)));
-  return fract(sin(p) * 43758.5453) * 2.0 - 1.0;
-}
-float vnoise(vec2 p){
-  vec2 i = floor(p), f = fract(p);
-  vec2 u = f*f*(3.0-2.0*f);
-  return mix(mix(dot(hash22(i+vec2(0,0)), f-vec2(0,0)), dot(hash22(i+vec2(1,0)), f-vec2(1,0)), u.x),
-             mix(dot(hash22(i+vec2(0,1)), f-vec2(0,1)), dot(hash22(i+vec2(1,1)), f-vec2(1,1)), u.x), u.y);
-}
-float fbm(vec2 p){
-  float a=0.5, s=0.0, n=0.0;
-  for(int i=0;i<6;i++){ s += a*vnoise(p); n += a; a*=0.5; p*=2.13; }
-  return s/n;
-}
+float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
 void main() {
   vec3 dir = normalize(vDir);
   float h = dir.y;
+  float up = clamp(h, 0.0, 1.0);
 
-  // ── base gradient: horizon cream -> zenith blue, with a soft below-horizon
-  float t = pow(clamp(h * 0.5 + 0.5, 0.0, 1.0), 0.62);
-  float horizonBand = pow(1.0 - clamp(abs(h), 0.0, 1.0), 3.2);
-  vec3 col = mix(uHorizon, uZenith, smoothstep(0.0, 0.55, t));
-  col = mix(col, uHorizon, horizonBand * 0.85);
-  col = mix(col, uGround, smoothstep(0.02, -0.14, h));
+  // ── base gradient ────────────────────────────────────────────────────────
+  // Cream hugs the skyline, blue is well established by ~15°. The canonical
+  // camera views only ever see up to about 15° of sky, so the whole gradient
+  // has to happen inside that band or the frame reads as one flat cream wash.
+  vec3 col = mix(uZenith, uHorizon, pow(1.0 - up, 3.4));
+  col = mix(col, uHorizon, pow(1.0 - up, 11.0) * 0.45);
+  // Below the skyline: keep the *same* hue and only lose value. A separate
+  // ground colour here reads as a flat fake sea in any view that sees past
+  // the last ridge, which is most vista shots.
+  col = mix(col, col * uGround, smoothstep(0.01, -0.30, h));
 
-  // ── sun scattering ───────────────────────────────────────────────────────
   float cosT = dot(dir, uSunDir);
-  // Mie forward scattering (Henyey–Greenstein)
-  float g = 0.76;
-  float hg = (1.0 - g*g) / pow(1.0 + g*g - 2.0*g*cosT, 1.5);
-  vec3 mie = uSunColor * hg * 0.055 * uTurbidity;
+  float c = max(cosT, 0.0);
 
-  // Broad warm bloom around the sun, hugging the horizon
-  float halo = pow(max(cosT, 0.0), 5.0) * 0.55 + pow(max(cosT, 0.0), 48.0) * 1.4;
-  col += uSunColor * halo * uSunIntensity * 0.75;
-  col += mie * uSunIntensity;
+  // ── the warm wedge ───────────────────────────────────────────────────────
+  // Haze scatters sunlight sideways, so the sky *toward* the sun and near the
+  // horizon runs warm. Driven off cosT rather than azimuth so it follows the
+  // sun up and down without a second set of numbers.
+  float wedge = pow(c, 3.0) * pow(1.0 - up, 3.5);
+  col = mix(col, uSunHorizon, clamp(wedge * 0.70, 0.0, 0.76));
 
-  // Sun disc with a soft limb
-  float disc = smoothstep(0.99955, 0.99988, cosT);
-  col += uSunColor * disc * 12.0 * uSunIntensity;
+  // ── aureole ──────────────────────────────────────────────────────────────
+  // Three lobes: a ~20° lift, a ~7° glow, and the near-disc flare. Additive
+  // but deliberately tight — a broad lobe here pushes the whole upper frame
+  // over the bloom threshold and the sky turns to white paper.
+  float aureole = pow(c, 14.0) * 0.13 + pow(c, 110.0) * 0.34 + pow(c, 1400.0) * 1.15;
+  col += uGlow * aureole * uGlowIntensity;
 
-  // Warm the whole sky toward the sun azimuth near the horizon
-  float azWarm = pow(max(cosT, 0.0), 1.6) * horizonBand;
-  col = mix(col, uSunColor * 1.05, azWarm * 0.42);
+  // ── sun disc: ~0.6° with a soft limb ─────────────────────────────────────
+  float disc = smoothstep(0.99986, 0.99995, cosT);
+  col += uSunColor * disc * uDiscIntensity;
 
-  // ── thin high cirrus, drifting ───────────────────────────────────────────
-  if (h > 0.015) {
-    vec2 sp = dir.xz / max(h, 0.02);
-    float c = fbm(sp * 0.55 + vec2(uTime * 0.0055, uTime * 0.0021));
-    float c2 = fbm(sp * 1.35 - vec2(uTime * 0.0091, 0.0));
-    float cloud = smoothstep(0.10, 0.52, c * 0.72 + c2 * 0.38);
-    cloud *= smoothstep(0.0, 0.30, h) * (1.0 - smoothstep(0.72, 1.0, h) * 0.5);
-    vec3 cloudCol = mix(vec3(1.0, 0.93, 0.86), uSunColor * 1.12, pow(max(cosT,0.0), 2.0));
-    col = mix(col, cloudCol, cloud * 0.55);
+  // ── stars, night only ────────────────────────────────────────────────────
+  if (uNight > 0.01 && h > 0.0) {
+    vec2 sp = floor(dir.xz / max(abs(h) + 0.35, 0.05) * 340.0);
+    float r = hash21(sp);
+    float star = smoothstep(0.9975, 0.9995, r) * (0.4 + 0.6 * hash21(sp + 7.3));
+    // Gentle scintillation; the floor() cell keeps it from crawling.
+    star *= 0.65 + 0.35 * sin(uTime * 1.7 + r * 40.0);
+    col += vec3(0.85, 0.88, 1.0) * star * uNight * smoothstep(0.0, 0.25, h) * 0.9;
   }
 
-  // Subtle dithering kills banding in the big smooth gradient.
+  // Dithering kills banding across a very smooth 4000-pixel-wide gradient.
   float dither = (hash21(gl_FragCoord.xy) - 0.5) / 255.0;
-  gl_FragColor = vec4(col * uExposure + dither, 1.0);
+  gl_FragColor = vec4(max(col + dither, 0.0), 1.0);
 }`;
 
 export class Sky {
   constructor(scene) {
     this.uniforms = {
-      uSunDir:       { value: new THREE.Vector3(0.4, 0.35, 0.85).normalize() },
-      uZenith:       { value: PALETTE.skyZenith.clone() },
-      uHorizon:      { value: PALETTE.skyHorizon.clone() },
-      uGround:       { value: PALETTE.fogFar.clone().multiplyScalar(0.85) },
-      uSunColor:     { value: PALETTE.sunDisc.clone() },
-      uSunIntensity: { value: 1.0 },
-      uTurbidity:    { value: 2.4 },
-      uTime:         { value: 0 },
-      uExposure:     { value: 1.0 },
+      uSunDir:        { value: new THREE.Vector3(0.4, 0.35, 0.85).normalize() },
+      uZenith:        { value: PALETTE.skyZenith.clone() },
+      uHorizon:       { value: PALETTE.skyHorizon.clone() },
+      uSunHorizon:    { value: PALETTE.skyHorizon.clone() },
+      uGround:        { value: new THREE.Vector3(0.86, 0.87, 0.92) },
+      uGlow:          { value: PALETTE.sunDisc.clone() },
+      uSunColor:      { value: PALETTE.sunDisc.clone() },
+      uGlowIntensity: { value: 1.0 },
+      uDiscIntensity: { value: 9.0 },
+      uNight:         { value: 0.0 },
+      uTime:          { value: 0 },
     };
 
-    const geo = new THREE.SphereGeometry(1, 64, 32);
+    const geo = new THREE.SphereGeometry(1, 64, 40);
     const mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
       vertexShader: VERT,
@@ -124,11 +130,31 @@ export class Sky {
     this.mesh.name = 'Sky';
     scene.add(this.mesh);
     this.scene = scene;
+
   }
 
   update(dt, elapsed, camera, sunDir) {
-    this.uniforms.uTime.value = elapsed;
-    if (sunDir) this.uniforms.uSunDir.value.copy(sunDir);
+    const u = this.uniforms;
+    const s = SKY_STATE;
+    u.uTime.value = elapsed;
+    u.uSunDir.value.copy(sunDir ?? s.sunDir);
+
+    u.uZenith.value.copy(s.zenith);
+    u.uHorizon.value.copy(s.horizon);
+    u.uSunHorizon.value.copy(s.sunHorizon);
+    u.uGlow.value.copy(s.glow);
+    u.uSunColor.value.copy(s.glow);
+    u.uGlowIntensity.value = s.glowIntensity;
+    // Below the horizon the disc has to go, or the dome lights up from under
+    // the terrain on any downhill view.
+    const above = Math.min(Math.max((s.sunElev + 0.01) / 0.03, 0), 1);
+    // A setting sun is an ember, not a searing point: extinction near the
+    // horizon is what stops the disc punching a hole in the frame.
+    const ext = 0.30 + 0.70 * Math.min(Math.max((s.sunElev - 0.0) / 0.28, 0), 1);
+    u.uDiscIntensity.value = above * ext * 11.0;
+    u.uNight.value = 1.0 - s.dayFactor;
+
+
     this.mesh.position.copy(camera.position);
   }
 

@@ -11,6 +11,7 @@
  * Deterministic: same seed + same view = comparable frames.
  */
 import { chromium } from 'playwright';
+import { acquire } from './_lock.mjs';
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -64,6 +65,7 @@ const URL = arg('url', 'http://localhost:5178') + (qs ? `?${qs}` : '');
 const TIMEOUT = parseInt(arg('timeout', '180000'), 10);
 
 async function main() {
+await acquire('shot');
   const browser = await chromium.launch({
     args: [
       '--use-gl=angle', '--use-angle=metal',

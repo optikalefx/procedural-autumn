@@ -9,6 +9,7 @@
  * between views — colour, contrast, density — impossible to miss.
  */
 import { chromium } from 'playwright';
+import { acquire } from './_lock.mjs';
 import { readdirSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 
@@ -49,6 +50,7 @@ const html = `<!doctype html><meta charset="utf-8"><style>
     font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#ffd9a8;border-top-right-radius:6px}
 </style><h1>${TITLE} — ${files.length} views</h1><div class="grid">${cells}</div>`;
 
+await acquire('sheet');
 const browser = await chromium.launch();
 const page = await browser.newPage({
   viewport: { width: COLS * CELL + COLS * 10 + 28, height: rows * (Math.round(CELL * 9 / 16) + 10) + 60 },

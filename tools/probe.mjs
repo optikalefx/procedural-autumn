@@ -1,4 +1,6 @@
 import { chromium } from 'playwright';
+import { acquire } from './_lock.mjs';
+await acquire('probe');
 const b = await chromium.launch();
 const p = await b.newPage({viewport:{width:400,height:300}});
 p.on('pageerror', e=>console.log('ERR',e.message));

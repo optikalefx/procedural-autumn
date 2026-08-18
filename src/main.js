@@ -12,6 +12,11 @@ import { Input } from './core/Input.js';
 import { WORLD, SEED, QUALITY_PRESETS } from './world/WorldConfig.js';
 import { WorldData } from './world/WorldData.js';
 import { PointsOfInterest } from './world/PointsOfInterest.js';
+import { decodeBake, bakeFilename, sourceHash } from './world/bakeFormat.js';
+// Raw source of the generator, purely so the bake cache key tracks it.
+import terrainGenSource from './world/TerrainGen.js?raw';
+
+const GEN_HASH = sourceHash(terrainGenSource);
 import { Terrain } from './world/Terrain.js';
 import { Atmosphere } from './render/Atmosphere.js';
 import { Lighting } from './render/Lighting.js';
@@ -68,7 +73,48 @@ function pickQuality() {
   return 'low';
 }
 
-function bakeWorld() {
+/**
+ * Load a pre-baked world if one exists, otherwise bake in a worker.
+ *
+ * Baking costs ~25 s of CPU. During development that is paid on every reload
+ * and on every headless capture, which is the single largest cost in the whole
+ * project. `node tools/bake.mjs` writes the result to public/bakes/ and this
+ * picks it up; ?nocache=1 forces a live bake.
+ */
+async function loadCachedBake(seed, res) {
+  if (new URLSearchParams(location.search).has('nocache')) return null;
+  try {
+    const t0 = performance.now();
+    let url = `/${bakeFilename(seed, res, GEN_HASH)}`;
+    let stale = false;
+    let r = await fetch(url, { cache: 'force-cache' });
+
+    if (!r.ok) {
+      // Exact generator hash missing — most likely someone is mid-edit on
+      // TerrainGen.js. Fall back to the newest bake for this (seed, res) so
+      // other authors keep fast captures, but flag it loudly.
+      const man = await fetch('/bakes/manifest.json', { cache: 'no-store' }).then((x) => x.ok ? x.json() : null).catch(() => null);
+      const alt = man?.entries?.find((e) => e.seed === seed && e.res === res);
+      if (!alt) return null;
+      url = `/bakes/${alt.file}`;
+      stale = true;
+      r = await fetch(url, { cache: 'force-cache' });
+      if (!r.ok) return null;
+      console.warn(`[world] STALE BAKE: generator is ${GEN_HASH}, using ${alt.hash}. ` +
+                   `Run "node tools/bake.mjs --force" to refresh, or add ?nocache=1 to bake live.`);
+    }
+
+    setProgress(0.30, 'Loading the valley');
+    const buf = await r.arrayBuffer();
+    const data = decodeBake(buf);
+    return { data, ms: performance.now() - t0, cached: true, stale };
+  } catch (e) {
+    console.warn('[world] cached bake unusable, baking live:', e.message);
+    return null;
+  }
+}
+
+function bakeWorld(seed, res) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./world/worldWorker.js', import.meta.url), { type: 'module' });
     worker.onmessage = (e) => {
@@ -76,13 +122,7 @@ function bakeWorld() {
       else if (e.data.type === 'done') { worker.terminate(); resolve(e.data); }
     };
     worker.onerror = reject;
-    const params = new URLSearchParams(location.search);
-    worker.postMessage({
-      res: parseInt(params.get('res') ?? WORLD.heightmapRes, 10),
-      worldSize: WORLD.size,
-      seed: parseInt(params.get('seed') ?? SEED, 10),
-      maxAltitude: WORLD.maxAltitude,
-    });
+    worker.postMessage({ res, worldSize: WORLD.size, seed, maxAltitude: WORLD.maxAltitude });
   });
 }
 
@@ -92,13 +132,20 @@ async function boot() {
   const engine = new Engine(canvas, quality);
   const input = new Input();
 
+  const params = new URLSearchParams(location.search);
+  const seed = parseInt(params.get('seed') ?? SEED, 10);
+  const res = parseInt(params.get('res') ?? WORLD.heightmapRes, 10);
+
   setProgress(0.02, 'Raising mountains');
-  const baked = await bakeWorld();
-  console.log(`[world] baked in ${baked.ms.toFixed(0)} ms`);
+  const baked = (await loadCachedBake(seed, res)) ?? (await bakeWorld(seed, res));
+  console.log(`[world] ${baked.cached ? 'loaded cached bake' : 'baked live'} in ${baked.ms.toFixed(0)} ms (gen ${GEN_HASH})`);
+  window.__bakeCached = !!baked.cached;
+  window.__bakeStale = !!baked.stale;
+  if (baked.stale) console.warn('[world] rendering a STALE terrain bake');
 
   setProgress(0.66, 'Reading the water');
-  const world = new WorldData(baked.data, SEED);
-  const poi = new PointsOfInterest(world, SEED);
+  const world = new WorldData(baked.data, seed);
+  const poi = new PointsOfInterest(world, seed);
 
   setProgress(0.70, 'Lighting the valley');
   const atmosphere = new Atmosphere(engine.scene);

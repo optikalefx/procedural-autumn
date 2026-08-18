@@ -37,14 +37,47 @@ export class PointsOfInterest {
           if (maxDrop > 42) this.list.vista.push({ x, z, y: h, score: maxDrop + h * 0.3 });
         }
 
-        // Peak: local maximum.
+        // Peak: a *vantage on* a summit group, not the summit itself.
+        //
+        // Standing on the highest thing in sight and looking out at the given
+        // pitch fills the frame with sky, which is what the "peaks" capture
+        // used to be. What reads as mountains is a shoulder a few hundred
+        // metres out and well below the crest, aimed back at the massif.
         if (h > 175) {
           let isPeak = true;
           for (let a = 0; a < 6 && isPeak; a++) {
             const ang = (a / 6) * Math.PI * 2;
             if (W.getHeight(x + Math.cos(ang) * 45, z + Math.sin(ang) * 45) > h) isPeak = false;
           }
-          if (isPeak) this.list.peak.push({ x, z, y: h, score: h });
+          if (isPeak) {
+            // Search the ring around the summit for the best stand-off: low
+            // enough to look up from, and with clear air between it and the
+            // peak so we are not staring at an intervening spur.
+            let bestScore = -Infinity, best = null;
+            for (let a = 0; a < 16; a++) {
+              const ang = (a / 16) * Math.PI * 2;
+              const ca = Math.cos(ang), sa = Math.sin(ang);
+              for (const d of [340, 460, 580]) {
+                const vx = x + ca * d, vz = z + sa * d;
+                if (!W.isInBounds(vx, vz)) continue;
+                const vh = W.getHeight(vx, vz);
+                if (W.getWaterDepth(vx, vz) > 0.2) continue;
+                // Nothing may poke above the sight line to the summit.
+                let blocked = 0;
+                for (let t = 0.25; t < 0.95; t += 0.15) {
+                  const sx = vx + (x - vx) * t, sz = vz + (z - vz) * t;
+                  const sightY = vh + (h - vh) * t;
+                  blocked = Math.max(blocked, W.getHeight(sx, sz) - sightY);
+                }
+                const score = (h - vh) * 1.0 - blocked * 4.0 - W.getSlope(vx, vz) * 60;
+                if (score > bestScore) {
+                  bestScore = score;
+                  best = { x: vx, z: vz, y: vh, yaw: Math.atan2(x - vx, z - vz), score: h + bestScore * 0.2 };
+                }
+              }
+            }
+            if (best && h - best.y > 90) this.list.peak.push(best);
+          }
         }
 
         // Meadow: flat, dry-ish, open, low.
@@ -64,14 +97,36 @@ export class PointsOfInterest {
             const ang = (a / 6) * Math.PI * 2;
             nearRiver = Math.max(nearRiver, W.getRiver(x + Math.cos(ang) * 14, z + Math.sin(ang) * 14));
           }
-          if (nearRiver > 0.22) this.list.river.push({ x, z, y: h, score: nearRiver * 100 });
+          if (nearRiver > 0.22) {
+            // Face the water. Scoring for a distant view instead reliably aims
+            // a "river" shot at the hillside behind the photographer.
+            let byaw = 0, bestR = -1;
+            for (let a = 0; a < 16; a++) {
+              const ang = (a / 16) * Math.PI * 2;
+              let acc = 0;
+              for (const d of [12, 24, 40, 60]) {
+                acc += W.getRiver(x + Math.sin(ang) * d, z + Math.cos(ang) * d) * (80 - d);
+              }
+              if (acc > bestR) { bestR = acc; byaw = ang; }
+            }
+            this.list.river.push({ x, z, y: h, yaw: byaw, score: nearRiver * 100 });
+          }
         }
       }
     }
 
     for (const wf of W.waterfalls) {
+      // Stand off downstream of the plunge pool and look back up the fall —
+      // standing in it and picking a yaw by terrain score points at a wall.
+      const dx = wf.bottom[0] - wf.top[0], dz = wf.bottom[2] - wf.top[2];
+      const len = Math.hypot(dx, dz) || 1;
+      const off = 34;
+      let px = wf.bottom[0] + (dx / len) * off;
+      let pz = wf.bottom[2] + (dz / len) * off;
+      if (!W.isInBounds(px, pz)) { px = wf.bottom[0]; pz = wf.bottom[2]; }
       this.list.waterfall.push({
-        x: wf.bottom[0], z: wf.bottom[2], y: wf.bottom[1],
+        x: px, z: pz, y: W.getHeight(px, pz),
+        yaw: Math.atan2(wf.top[0] - px, wf.top[2] - pz),
         score: wf.height * 10 + wf.discharge * 40,
         meta: wf,
       });
@@ -135,16 +190,24 @@ export class PointsOfInterest {
       for (let a = 0; a < 32; a++) {
         const ang = (a / 32) * Math.PI * 2;
         const sx = Math.sin(ang), sz = Math.cos(ang);
+        // The occlusion test has to reach past the near ground. Checking only
+        // the first 90 m happily picks a direction where a whole massif starts
+        // at 120 m and fills two thirds of the frame, which is not a vista —
+        // it is a wall. 260 m of clearance is what buys the open middle
+        // distance the reference plates all have.
         let near = 0, far = 0, blocked = 0;
-        for (let d = 12; d <= 90; d += 12) {
+        for (let d = 12; d <= 90; d += 13) {
           const dh = W.getHeight(p.x + sx * d, p.z + sz * d) - h0;
           near += dh;
-          if (dh > 6) blocked += dh;          // something in the way
         }
-        for (let d = 180; d <= 620; d += 70) {
+        for (let d = 20; d <= 260; d += 20) {
+          const dh = W.getHeight(p.x + sx * d, p.z + sz * d) - h0;
+          if (dh > 4) blocked += dh;
+        }
+        for (let d = 320; d <= 900; d += 80) {
           far += W.getHeight(p.x + sx * d, p.z + sz * d) - h0;
         }
-        const score = -near * 1.6 - blocked * 3.0 + far * 0.55;
+        const score = -near * 1.4 - blocked * 2.4 + far * 0.42;
         if (score > best) { best = score; yaw = ang; }
       }
     }

@@ -45,38 +45,45 @@ export class Terrain {
     const ox = -this.world.half + cx * size;
     const oz = -this.world.half + cz * size;
 
-    const vertsPerSide = res + 1;
-    const skirt = true;
-    const total = vertsPerSide * vertsPerSide;
+    // The grid carries a one-vertex skirt ring all the way round: the outer
+    // ring sits at the same XZ as the chunk edge but dropped below it. Two
+    // chunks at different LODs sample the shared edge at different rates, so
+    // their edges do not agree to the millimetre and daylight shows through the
+    // T-junction. The skirt is a vertical curtain that plugs that gap. It costs
+    // ~6% more vertices at LOD0 and it is the only reason there are no seams.
+    const step = size / res;
+    const skirtDepth = Math.max(2.0, step * 2.2);
+    const vps = res + 3;                    // res+1 surface + 1 skirt each side
+    const total = vps * vps;
     const positions = new Float32Array(total * 3);
     const normals = new Float32Array(total * 3);
     const uvs = new Float32Array(total * 2);
-
-    const step = size / res;
     const W = this.world;
-
-    for (let j = 0; j <= res; j++) {
-      for (let i = 0; i <= res; i++) {
-        const idx = j * vertsPerSide + i;
-        const x = ox + i * step;
-        const z = oz + j * step;
-        const y = W.getHeight(x, z);
-        positions[idx * 3 + 0] = x;
-        positions[idx * 3 + 1] = y;
-        positions[idx * 3 + 2] = z;
-        uvs[idx * 2 + 0] = i / res;
-        uvs[idx * 2 + 1] = j / res;
-      }
-    }
-
-    // Normals from the analytic field (smooth across chunk seams, unlike
-    // per-geometry computeVertexNormals which would produce visible edges).
     const n = new THREE.Vector3();
     const eps = Math.max(0.8, step * 0.6);
-    for (let j = 0; j <= res; j++) {
-      for (let i = 0; i <= res; i++) {
-        const idx = j * vertsPerSide + i;
-        const x = positions[idx * 3], z = positions[idx * 3 + 2];
+
+    for (let j = 0; j < vps; j++) {
+      // Skirt rows reuse the clamped edge sample, so the curtain hangs from
+      // exactly the surface height rather than from a second evaluation.
+      const jj = j === 0 ? 0 : (j > res + 1 ? res : j - 1);
+      const skirtJ = (j === 0 || j === vps - 1);
+      for (let i = 0; i < vps; i++) {
+        const ii = i === 0 ? 0 : (i > res + 1 ? res : i - 1);
+        const skirtI = (i === 0 || i === vps - 1);
+        const idx = j * vps + i;
+        const x = ox + ii * step;
+        const z = oz + jj * step;
+        const y = W.getHeight(x, z);
+        positions[idx * 3 + 0] = x;
+        positions[idx * 3 + 1] = (skirtI || skirtJ) ? y - skirtDepth : y;
+        positions[idx * 3 + 2] = z;
+        uvs[idx * 2 + 0] = ii / res;
+        uvs[idx * 2 + 1] = jj / res;
+
+        // Normals from the analytic field (smooth across chunk seams, unlike
+        // per-geometry computeVertexNormals which would produce visible edges).
+        // Skirt vertices inherit the edge normal so the curtain shades exactly
+        // like the ground it hangs from and stays invisible.
         W.getNormal(x, z, n, eps);
         normals[idx * 3 + 0] = n.x;
         normals[idx * 3 + 1] = n.y;
@@ -96,23 +103,25 @@ export class Terrain {
     geom.boundingSphere.radius *= 1.15;
 
     const mesh = new THREE.Mesh(geom, this.material);
-    mesh.castShadow = lod <= 1;
+    // Distant massifs throwing shadows across the valley floor is a signature
+    // of the reference art, so terrain casts two LOD bands out, not one.
+    mesh.castShadow = lod <= 2;
     mesh.receiveShadow = true;
     mesh.frustumCulled = true;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     mesh.userData.chunk = { cx, cz, lod };
-    void skirt;
     return mesh;
   }
 
   _indicesFor(res) {
     if (this._geomCache.has(res)) return this._geomCache.get(res);
-    const vps = res + 1;
-    const idx = new Uint32Array(res * res * 6);
+    const quads = res + 2;                  // surface quads plus the skirt ring
+    const vps = res + 3;
+    const idx = new Uint32Array(quads * quads * 6);
     let p = 0;
-    for (let j = 0; j < res; j++) {
-      for (let i = 0; i < res; i++) {
+    for (let j = 0; j < quads; j++) {
+      for (let i = 0; i < quads; i++) {
         const a = j * vps + i;
         const b = a + 1;
         const c = a + vps;

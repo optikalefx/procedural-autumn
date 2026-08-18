@@ -205,3 +205,30 @@ density, waterfall count and rock placement all change with the bake res.
 
 `--quality ultra|high|medium|low` forces a preset; `--seed N` bakes a different
 world (worth checking your system on 2-3 seeds so it is not tuned to one map).
+
+---
+
+## Appendix: CPU discipline (IMPORTANT — read this)
+
+Seven authors share one laptop. Uncoordinated captures pinned all 12 cores and
+made everyone slower. Three things now protect the machine:
+
+1. **A capture semaphore.** `shot.mjs`, `probe.mjs`, `health.mjs`, `sheet.mjs`
+   and `terrain-lab.mjs` take one of **2 machine-wide slots**. If you see
+   `waiting for a capture slot`, that is working as intended — do not work
+   around it, and do not run captures in parallel with `&`.
+
+2. **A pre-baked world cache.** `public/bakes/` holds the baked world, keyed by
+   a content hash of `TerrainGen.js`. The browser loads it instead of spending
+   ~25 s of CPU per page load. `tools/bake-watch.mjs` runs in the background and
+   re-bakes automatically when the generator changes.
+   - If the console says `STALE BAKE`, the terrain author is mid-edit. Either
+     wait, or run `node tools/bake.mjs --force`.
+   - `?nocache=1` forces a live bake. Only the terrain author should need it.
+
+3. **Capture at the resolution you actually need.**
+   `--res 768` for iteration, full res only for final judgement.
+
+**Please batch your work.** One capture of several views (`--all --dir …`) costs
+far less than ten separate `--view` runs. Read the frames you already have
+before taking more. Do not poll `probe.mjs` in a loop.

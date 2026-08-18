@@ -2,9 +2,23 @@
 //  Terrain material — a MeshStandardMaterial hijacked at compile time so we keep
 //  three's shadow/light plumbing but drive albedo, normal detail and the
 //  warm/cool shadow split entirely from procedural rules.
+//
+//  Two principles run through the whole shader:
+//
+//  1. STRUCTURE COMES FROM THE BAKE, NOT FROM NOISE. Slope, bedded hardness,
+//     talus/alluvium and flow accumulation are all real fields produced by
+//     TerrainGen, and they are already at 2 m resolution. Painting from them
+//     means the strata land on the actual benches and the gravel lands in the
+//     actual stream beds. Procedural noise is used only to break up edges.
+//
+//  2. EVERY FREQUENCY HAS A DISTANCE BUDGET. Any albedo detail finer than a
+//     couple of screen pixels crawls when the camera moves. Each octave here
+//     fades to its own mean over a range chosen for its wavelength, so distant
+//     slopes settle into flat colour masses — which is also exactly how the
+//     reference art reads.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { PALETTE, WORLD } from './WorldConfig.js';
+import { PALETTE } from './WorldConfig.js';
 
 export function createTerrainMaterial(world, opts = {}) {
   const mat = new THREE.MeshStandardMaterial({
@@ -31,12 +45,16 @@ export function createTerrainMaterial(world, opts = {}) {
     uRockLit:     { value: PALETTE.rockLit.clone() },
     uRockMid:     { value: PALETTE.rockMid.clone() },
     uRockShadow:  { value: PALETTE.rockShadow.clone() },
+    uScree:       { value: PALETTE.scree.clone() },
     uSnow:        { value: PALETTE.snow.clone() },
     uSand:        { value: PALETTE.sand.clone() },
+    // Leaf litter under the deciduous canopy. Warm russet, low chroma — it has
+    // to sit *under* the trees without competing with them.
+    uLitter:      { value: new THREE.Color(0xa8613a).convertSRGBToLinear() },
     // Luminance-normalised so tinting shifts hue without crushing values.
     uShadowTint:  { value: new THREE.Vector3(0.84, 0.88, 1.16) },
 
-    uSnowLine:    { value: 262.0 },
+    uSnowLine:    { value: 268.0 },
     uMacroStrength: { value: 0.55 },
   };
 
@@ -66,8 +84,8 @@ export function createTerrainMaterial(world, opts = {}) {
       uniform float uTime;
       uniform vec3 uSunDir;
       uniform vec3 uGrassGold, uGrassDeep, uGrassOlive, uGrassDry;
-      uniform vec3 uDirt, uDirtDark, uRockLit, uRockMid, uRockShadow;
-      uniform vec3 uSnow, uSand;
+      uniform vec3 uDirt, uDirtDark, uRockLit, uRockMid, uRockShadow, uScree;
+      uniform vec3 uSnow, uSand, uLitter;
       uniform vec3 uShadowTint;
       uniform float uSnowLine, uMacroStrength;
 
@@ -96,17 +114,15 @@ export function createTerrainMaterial(world, opts = {}) {
         }
         return s / n;
       }
-      // Worley for rock cracking
-      float worley(vec2 p){
-        vec2 i = floor(p), f = fract(p);
-        float d = 8.0;
-        for (int y = -1; y <= 1; y++)
-        for (int x = -1; x <= 1; x++){
-          vec2 g = vec2(float(x), float(y));
-          vec2 o = 0.5 + 0.5 * hash22(i + g);
-          d = min(d, length(g + o - f));
-        }
-        return d;
+
+      // The reference art reads as broad colour *masses* with definite edges,
+      // not as a gradient between two tints. Thresholding a smooth field with a
+      // width taken from its own screen-space derivative gives exactly that:
+      // a crisp boundary at any distance, antialiased for free, and it degrades
+      // to a flat mass rather than to noise as the pixel footprint grows.
+      float massEdge(float field, float threshold){
+        float w = max(fwidth(field) * 1.4, 0.010);
+        return smoothstep(threshold - w, threshold + w, field);
       }
     ` + shader.fragmentShader.replace(
       '#include <color_fragment>',
@@ -117,67 +133,124 @@ export function createTerrainMaterial(world, opts = {}) {
         vec4 data = texture2D(uDataTex, uvw);
         vec4 aux  = texture2D(uAuxTex, uvw);
 
-        float slope   = aux.r;
-        float hardRock= aux.g;
-        float sedim   = aux.b;
+        float slope   = aux.r;          // |gradient|, 1.0 == 45 degrees
+        float hardRock= aux.g;          // bedded hardness at the exposed surface
+        float loose   = aux.b;          // talus / alluvium deposited by the sim
+        float logFlow = aux.a;          // log(1 + upstream cells) / 14
         float river   = data.b;
         float moist   = data.a;
         float waterH  = data.g;
         float depth   = max(0.0, waterH - vWorldPos.y);
 
         vec3 N = normalize(vWorldNormal);
-        float flat_ = clamp(N.y, 0.0, 1.0);
-        float steep = 1.0 - smoothstep(0.55, 0.90, flat_);
+        float camDist = length(vWorldPos - cameraPosition);
 
-        // ── macro variation: big painterly patches, like the concept art ────
-        float macro  = fbm(vWorldPos.xz * 0.0042, 4) * 0.5 + 0.5;
-        float macro2 = fbm(vWorldPos.xz * 0.0165 + 31.4, 4) * 0.5 + 0.5;
-        float meso   = fbm(vWorldPos.xz * 0.075 + 7.7, 3) * 0.5 + 0.5;
-        float micro  = fbm(vWorldPos.xz * 0.62, 3) * 0.5 + 0.5;
+        // ── frequency budget ───────────────────────────────────────────────
+        // Each band fades to its own mean once a cycle is worth about two
+        // pixels. Without this the fine octaves crawl on every distant slope.
+        float fFine = 1.0 - smoothstep(38.0, 130.0, camDist);
+        float fMeso = 1.0 - smoothstep(150.0, 520.0, camDist);
+        float fMacro= 1.0 - smoothstep(900.0, 2000.0, camDist);
 
-        // ── ground: gold meadow <-> olive damp grass <-> dry straw ─────────
-        // Gold is the dominant key; olive is an accent that only wins where the
-        // ground is genuinely wet. This is the single biggest colour decision.
-        float goldSel = clamp(macro * 0.55 + macro2 * 0.35 - moist * 0.30 + 0.48, 0.0, 1.0);
-        vec3 grass = mix(uGrassOlive, uGrassGold, smoothstep(0.12, 0.58, goldSel));
-        grass = mix(grass, uGrassDry, smoothstep(0.62, 1.00, goldSel) * 0.45);
-        grass = mix(grass, uGrassDeep, meso * 0.22);
-        // damp riverbanks and shaded hollows keep their green
-        grass = mix(grass, uGrassOlive, smoothstep(0.66, 0.95, moist) * 0.55);
-        // fine tonal break-up so it never reads as flat vertex colour
-        grass *= 0.90 + micro * 0.20;
+        float macro  = fbm(vWorldPos.xz * 0.0042, 4) * 0.5 + 0.5;       // ~240 m
+        float macro2 = fbm(vWorldPos.xz * 0.0155 + 31.4, 3) * 0.5 + 0.5; // ~65 m
+        float meso   = mix(0.5, fbm(vWorldPos.xz * 0.062 + 7.7, 3) * 0.5 + 0.5, fMeso);
+        float fine   = mix(0.5, fbm(vWorldPos.xz * 0.47, 3) * 0.5 + 0.5, fFine);
 
-        // ── rock: layered strata + worley cracking ─────────────────────────
-        float strata = sin(vWorldPos.y * 0.42 + fbm(vWorldPos.xz * 0.02, 3) * 5.5) * 0.5 + 0.5;
-        // Jointing at a believable scale — a few metres, not a few centimetres,
-        // otherwise it reads as dirt specks sprayed over the rock.
-        float crack  = smoothstep(0.03, 0.34, worley(vWorldPos.xz * 0.055 + vWorldPos.y * 0.012));
-        vec3 rock = mix(uRockMid, uRockLit, strata * 0.65 + macro2 * 0.35);
-        rock = mix(uRockShadow, rock, 0.58 + crack * 0.42);
-        rock *= 0.88 + fbm(vWorldPos.xz * 0.9 + vWorldPos.y * 0.4, 3) * 0.24;
-        rock = mix(rock, uRockLit * 1.04, smoothstep(0.55, 0.95, hardRock) * 0.35);
+        // Slope taken from the baked field rather than the vertex normal: it is
+        // identical at every LOD, so the grass/rock line never crawls or pops
+        // when a chunk swaps resolution.
+        float steep = smoothstep(0.58, 1.12, slope);
+        float bench = 1.0 - smoothstep(0.10, 0.34, slope);   // flat shelf / meadow
 
-        // ── dirt / scree on medium slopes and eroded gullies ───────────────
-        vec3 dirt = mix(uDirtDark, uDirt, meso * 0.7 + micro * 0.3);
-        float dirtSel = smoothstep(0.30, 0.62, slope) * (1.0 - steep) + sedim * 0.45;
+        // ── ground cover: gold meadow, olive damp grass, pale dry straw ─────
+        // Gold is the key and must dominate; olive is an accent that only wins
+        // where the ground is genuinely damp. Patch edges rather than gradients
+        // are what make this read as painted masses.
+        // Gold has to win by a wide margin. Keyed on moisture alone, olive took
+        // every riverbank and hollow in the valley — which is most of where the
+        // player drives — and the game stopped being gold. Olive is now a
+        // genuinely wet-ground accent and it never fully replaces the key.
+        float wet    = macro * 0.30 + moist * 0.70;
+        float oliveM = massEdge(wet + macro2 * 0.16, 0.74);
+        float dryM   = massEdge(macro * 0.55 + macro2 * 0.45 - moist * 0.30, 0.56);
+
+        vec3 grass = uGrassGold;
+        grass = mix(grass, uGrassOlive, oliveM * 0.55);
+        grass = mix(grass, uGrassDry,   dryM * 0.62);
+        // Slow tonal drift inside each mass, so a big flat area still has life.
+        grass = mix(grass, uGrassDeep, (1.0 - macro2) * 0.20 + meso * 0.10);
+        grass *= 0.94 + fine * 0.12;
+
+        // Leaf litter accumulates on damp, sheltered, gently sloping ground —
+        // which is where the forest will be. Patchy, because it drifts.
+        float litterM = massEdge(moist * 0.72 + macro2 * 0.28, 0.60)
+                      * bench * (1.0 - smoothstep(150.0, 205.0, vWorldPos.y));
+        grass = mix(grass, uLitter, litterM * 0.42);
+
+        // ── rock ───────────────────────────────────────────────────────────
+        // The banding is read straight out of the baked hardness, so it lies on
+        // the benches the weathering actually cut. Painting strata from an
+        // independent sin() of world height is what produced contour stripes.
+        // Weighted toward the mid tone: only the most resistant beds catch the
+        // light. Sitting mostly on uRockLit under a strongly warm key turns the
+        // whole massif salmon, and the reference keeps its rock cool-grey even
+        // at golden hour.
+        vec3 rock = mix(uRockShadow, uRockMid, smoothstep(0.10, 0.46, hardRock));
+        rock = mix(rock, uRockLit, smoothstep(0.62, 0.94, hardRock) * 0.85);
+        // Jointing: two decorrelated low-frequency bands crossing at an angle.
+        // Cheap, never axis-aligned, and it survives being fully faded out.
+        vec2 jr = vec2(vWorldPos.x * 0.94 - vWorldPos.z * 0.34,
+                       vWorldPos.x * 0.34 + vWorldPos.z * 0.94);
+        float joint = fbm(jr * 0.085 + vHeight * 0.006, 2) * 0.5 + 0.5;
+        rock = mix(rock, rock * 0.86, smoothstep(0.62, 0.86, joint) * fMeso * 0.55);
+        rock *= 0.95 + fine * 0.10;
 
         // ── assemble ───────────────────────────────────────────────────────
         vec3 albedo = grass;
-        albedo = mix(albedo, dirt, clamp(dirtSel, 0.0, 0.75));
-        albedo = mix(albedo, rock, steep);
-        // exposed bedrock ribs on hard bands even where it is not that steep
-        albedo = mix(albedo, rock, smoothstep(0.82, 0.97, hardRock) * smoothstep(0.18, 0.42, slope) * 0.8);
 
-        // river gravel bed + damp darkening near water
+        // Dry stream beds and gullies: flow accumulation below the river
+        // threshold, i.e. the rills the bake actually cut. Gravel, not dirt.
+        float bedM = smoothstep(0.30, 0.46, logFlow) * (1.0 - steep);
+        vec3 gravel = mix(uDirt, uScree, 0.35 + fine * 0.30);
+        albedo = mix(albedo, gravel, bedM * 0.60);
+
+        // Exposed bedrock. Two ways it reaches daylight on gentle ground:
+        // a resistant bed standing proud of a shoulder, and a river scouring
+        // its banks down to rock. The reference art leans hard on the second —
+        // gold grass sitting in defined blobs on lavender bedrock is the whole
+        // look of the gorge plates — and it never happens if rock is gated on
+        // slope alone.
+        float ribM = massEdge(hardRock, 0.72) * smoothstep(0.16, 0.44, slope);
+        float scourM = smoothstep(0.40, 0.62, logFlow) * massEdge(hardRock + macro2 * 0.3, 0.62);
+        albedo = mix(albedo, rock, max(ribM, scourM) * 0.78);
+
+        // The main grass/rock line. A patchy edge lets grass creep up gullies
+        // and lets rock break through shoulders, instead of drawing a contour.
+        float rockM = clamp(steep + (macro2 - 0.5) * 0.34 * fMacro, 0.0, 1.0);
+        albedo = mix(albedo, rock, smoothstep(0.16, 0.72, rockM));
+
+        // Scree: the sim records where talus and alluvium came to rest. It
+        // piles at cliff bases, which is exactly where the reference puts it.
+        float screeM = smoothstep(0.10, 0.42, loose) * (1.0 - smoothstep(0.95, 1.35, slope));
+        vec3 screeCol = mix(uScree, uRockMid, meso * 0.45);
+        albedo = mix(albedo, screeCol, screeM * 0.72);
+
+        // ── water margins ──────────────────────────────────────────────────
         float shore = smoothstep(1.6, 0.0, depth);
-        vec3 gravel = mix(uSand, uRockMid, 0.45 + micro * 0.3);
-        albedo = mix(albedo, gravel, smoothstep(0.02, 0.30, river) * 0.85);
-        albedo = mix(albedo, albedo * 0.62, smoothstep(0.6, 0.02, depth) * step(0.001, depth));
-        albedo = mix(albedo, uSand, shore * smoothstep(0.05, 0.25, river) * 0.35);
+        vec3 riverBed = mix(uSand, uRockMid, 0.42 + fine * 0.28);
+        albedo = mix(albedo, riverBed, smoothstep(0.02, 0.26, river) * 0.85);
+        albedo = mix(albedo, uSand, shore * smoothstep(0.04, 0.22, river) * 0.30);
+        // Damp darkening: a band of wet ground either side of the waterline,
+        // plus genuinely submerged bed. Wet rock is darker and a touch cooler.
+        float damp = max(smoothstep(0.55, 0.02, depth) * step(0.001, depth),
+                         smoothstep(0.16, 0.55, river) * 0.55);
+        albedo = mix(albedo, albedo * vec3(0.56, 0.58, 0.66), damp);
 
-        // snow on high, flat ground with a wind-scoured edge
-        float snowSel = smoothstep(uSnowLine, uSnowLine + 46.0, vWorldPos.y + fbm(vWorldPos.xz * 0.01, 3) * 26.0);
-        snowSel *= smoothstep(0.62, 0.88, flat_);
+        // ── snow: genuine high alpine only, wind-scoured off the steep faces ─
+        float snowSel = smoothstep(uSnowLine, uSnowLine + 52.0,
+                                   vWorldPos.y + fbm(vWorldPos.xz * 0.008, 3) * 30.0);
+        snowSel *= 1.0 - smoothstep(0.85, 1.30, slope);
         albedo = mix(albedo, uSnow, snowSel);
 
         diffuseColor.rgb *= albedo;
@@ -191,12 +264,13 @@ export function createTerrainMaterial(world, opts = {}) {
         float shade = 1.0 - smoothstep(0.0, 0.38, ndl);
         gl_FragColor.rgb = mix(gl_FragColor.rgb,
                                gl_FragColor.rgb * uShadowTint,
-                               shade * 0.50);
+                               shade * 0.38);
       }
       #include <dithering_fragment>`
     );
   };
 
-  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v1';
+  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v2';
+  void opts;
   return mat;
 }

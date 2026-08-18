@@ -12,6 +12,7 @@ import { TerrainGen } from '../src/world/TerrainGen.js';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import zlib from 'node:zlib';
+import { acquire } from './_lock.mjs';
 
 let CRC_TABLE = null;
 
@@ -24,6 +25,8 @@ const STAGE = arg('stage', 'full');   // tectonic | eroded | relaxed | full
 const OUT = arg('out', 'shots/lab.png');
 const SEED = parseInt(arg('seed', '20261018'), 10);
 
+await acquire('terrain-lab');
+
 const gen = new TerrainGen({ res: RES, worldSize: WORLD, seed: SEED, maxAltitude: parseFloat(arg('alt', '340')) });
 
 const t0 = Date.now();
@@ -35,7 +38,7 @@ const tTect = Date.now();
 let stats = { tectonic: roughness(gen.height, RES, WORLD / RES) };
 
 if (STAGE !== 'tectonic') {
-  gen._erode(Math.round(RES * RES * 0.14));
+  gen._erode(Math.round(RES * RES * 0.22));
   stats.eroded = roughness(gen.height, RES, WORLD / RES);
 }
 const tEro = Date.now();
