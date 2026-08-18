@@ -49,7 +49,18 @@ export const VIEWS = {
 
 const OUT_W = parseInt(arg('w', '1600'), 10);
 const OUT_H = parseInt(arg('h', '900'), 10);
-const URL = arg('url', 'http://localhost:5178');
+// --res lowers the heightmap resolution for a much faster world bake (the full
+// 1536 bake costs ~25 s). Use it for fast iteration; capture final frames at
+// full res. --quality forces a preset instead of auto-detecting.
+const RES = arg('res', null);
+const QUALITY = arg('quality', null);
+const SEED = arg('seed', null);
+const params = new URLSearchParams();
+if (RES) params.set('res', RES);
+if (QUALITY) params.set('quality', QUALITY);
+if (SEED) params.set('seed', SEED);
+const qs = params.toString();
+const URL = arg('url', 'http://localhost:5178') + (qs ? `?${qs}` : '');
 const TIMEOUT = parseInt(arg('timeout', '180000'), 10);
 
 async function main() {

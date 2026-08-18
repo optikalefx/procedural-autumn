@@ -48,3 +48,16 @@ The bar is a shipping first-party Nintendo cozy title. Compare against
 - Missing a defect because you already saw it last round and normalised it.
   Re-read the reference every round.
 - Accepting a frame that only works from one angle or one time of day.
+
+## Contact sheets
+
+Judging ten PNGs one at a time makes it easy to normalise a defect you have
+already seen. Tile them instead:
+
+```bash
+node tools/sheet.mjs --dir shots/round7 --out shots/sheet-r7.png --cols 4 --cell 480
+```
+
+Read the sheet first to catch *inconsistency between views* — colour drift,
+contrast that only works at one time of day, density that collapses at one
+distance — then read the individual full-resolution frames for detail defects.

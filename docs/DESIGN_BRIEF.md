@@ -186,3 +186,22 @@ Your system is done when **all** of these hold:
    picks yours — and cannot name a specific thing that looks amateur.
 
 Ship nothing you would not put on a store page.
+
+---
+
+## Appendix: faster iteration
+
+The full 1536² world bake costs ~25 s per browser load. For fast iteration pass
+a lower heightmap resolution — the terrain shape is identical, just coarser:
+
+```bash
+node tools/shot.mjs --view meadow --res 640 --out shots/x.png     # ~4 s bake
+node tools/shot.mjs --all --dir shots/x --res 768                 # mid
+node tools/shot.mjs --all --dir shots/final --w 1600 --h 900      # full res
+```
+
+Always capture your **final** judgement frames at full resolution — river
+density, waterfall count and rock placement all change with the bake res.
+
+`--quality ultra|high|medium|low` forces a preset; `--seed N` bakes a different
+world (worth checking your system on 2-3 seeds so it is not tuned to one map).

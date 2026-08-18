@@ -68,16 +68,29 @@ export class TerrainGen {
   }
 
   // ── 1. Tectonic base ───────────────────────────────────────────────────────
-  //  Composed in three deliberate scales so the world reads as *places*:
+  //  Composed in four deliberate scales so the world reads as *places*:
   //    continent  – where the massifs and the basin are          (~1.5 cycles)
   //    relief     – ridgelines and foothills, masked to massifs  (~6-50 cycles)
   //    surface    – rolling meadow undulation in the basin       (~10 cycles)
-  //  Erosion then supplies the fine detail, so nothing here is high-frequency.
+  //    grain      – 40-120 m swells and swales you drive over    (~25-40 cycles)
+  //  Erosion then supplies everything finer, so nothing here is high-frequency.
+  //
+  //  It also lays down the *rock record*: a regional competence field plus a
+  //  bedded stratigraphy (dipping layers of alternating hardness). Those beds
+  //  are what later stages turn into cliffs, benches and talus fans — the
+  //  single biggest difference between "a noise field" and "a mountain".
   _tectonic() {
     const R = this.res, h = this.height, hard = this.hardness;
     const n = this.noise;
     const inv = 1 / R;
     const A = this.maxAltitude;
+    const N = R * R;
+
+    // Stratigraphy, kept as its own arrays because later stages must re-sample
+    // the bed at the *current* surface height, not the original one.
+    this.bedK = new Float32Array(N);       // radians of bed phase per metre
+    this.bedPhase = new Float32Array(N);   // dip / offset of the bedding plane
+    this.strataW = new Float32Array(N);    // how strongly this region is bedded
 
     for (let y = 0; y < R; y++) {
       for (let x = 0; x < R; x++) {
@@ -117,16 +130,41 @@ export class TerrainGen {
         const regionalTilt = (u * tiltX + v * tiltY) * -7.0;
 
         // Highland mask, 0 in the meadow basin, 1 in the high massifs.
-        const massif = clamp01(smoothstep(-0.10, 0.52, cont) * 0.78 + rim * 0.72 - bowl * 0.30);
+        // Squared once here (rather than at use) so the basin/mountain
+        // transition is a definite edge instead of a long mushy ramp.
+        const massifRaw = clamp01(smoothstep(-0.10, 0.52, cont) * 0.78 + rim * 0.72 - bowl * 0.30);
+        const massif = smoothstep(0.06, 0.72, massifRaw);
+
+        // ── massif character ───────────────────────────────────────────────
+        // Two very low frequency selectors give each range one personality for
+        // its whole length. Without this every mountain is the average of all
+        // mountains, which is exactly what "blobby" means.
+        //   alpine  – jagged, high-relief, steep repose, weakly bedded
+        //   mesa    – terraced benches, strongly bedded, flat tops
+        //   rounded – grassy domes, shallow repose, almost unbedded
+        const cs1 = n.fbm(u * 1.05 + 90.3, v * 1.05 - 51.7, 2, 2.0, 0.5, 1);
+        const cs2 = n.fbm(u * 0.85 - 14.6, v * 0.85 + 77.2, 2, 2.0, 0.5, 1);
+        const wAlpine = smoothstep(0.00, 0.30, cs1);
+        const wMesa   = smoothstep(0.04, 0.34, cs2) * (1 - wAlpine);
+        const wRound  = clamp01(1 - wAlpine - wMesa);
 
         // ── relief: ridged mountains, only where the mask allows ────────────
         const [rwx, rwy] = n.warp2(u * 1.9, v * 1.9, 0.17, 0.07, 0.42, 2);
         // Spectrum is deliberately steep: at 2 m per texel, an octave with a
         // 20 m wavelength and 10 m amplitude is indistinguishable from noise.
         // Erosion — not noise — is what supplies convincing fine detail.
-        const ridge  = n.ridged(rwx * 1.00, rwy * 1.00, 5, 2.05, 0.40, 1.0, 1.25);
-        const ridge2 = n.ridged(rwx * 2.55 + 5.1, rwy * 2.55 - 3.7, 3, 2.10, 0.40, 1.0, 1.6);
-        const relief = ridge * 0.85 + ridge2 * 0.15;
+        const ridge  = n.ridged(rwx * 1.00, rwy * 1.00, 5, 2.05, 0.40, 1.0, 1.0);
+        const ridge2 = n.ridged(rwx * 2.55 + 5.1, rwy * 2.55 - 3.7, 3, 2.10, 0.40, 1.0, 1.4);
+        const dome   = n.billow(rwx * 1.15 + 3.3, rwy * 1.15 - 7.9, 3, 2.1, 0.45, 1) * 0.5 + 0.5;
+        // Same ridge field, three different transfer curves. Raising a 0..1
+        // ridge to a power >1 narrows the crests (alpine); <1 fattens the
+        // shoulders and flattens the summits (mesa / rounded).
+        const ridgeSharp = Math.pow(ridge, 1.55);
+        const ridgeFat   = Math.pow(ridge, 0.70);
+        const relief =
+          (ridgeSharp * 0.86 + ridge2 * 0.14) * wAlpine +
+          (ridgeFat * 0.80 + dome * 0.20)     * wMesa +
+          (ridgeFat * 0.52 + dome * 0.48)     * wRound;
 
         // ── foothills: broad shoulders that tie mountains into the basin ────
         const foot = (n.fbm(rwx * 1.25 + 41.0, rwy * 1.25 + 12.0, 3, 2.05, 0.42, 1) * 0.5 + 0.5);
@@ -136,12 +174,24 @@ export class TerrainGen {
         const roll2 = n.billow(u * 7.0 - 11.4, v * 7.0 + 30.9, 2, 2.2, 0.38, 1) * 0.5 + 0.5;
         const basin = roll * 0.72 + roll2 * 0.28;
 
+        // ── grain: the scale the driver actually reads ──────────────────────
+        // Everything above has a wavelength of 400 m or more, which at 40 m
+        // from the bonnet is a dead flat plane. These two octaves put swells,
+        // shallow bowls and low ribs at 40-120 m, still gentle enough to drive.
+        const grainA = n.fbm(u * 24.0 + 5.5, v * 24.0 - 18.2, 3, 2.15, 0.45, 1);
+        const grainB = n.ridged(u * 41.0 - 33.1, v * 41.0 + 9.4, 2, 2.2, 0.45, 1, 1.1);
+        const grain = grainA * 4.6 + (grainB - 0.42) * 3.1;
+
         // ── compose, in metres ─────────────────────────────────────────────
         const m2 = massif * massif;                        // sharpen the transition
         let elev =
           basin * 34.0 * (1 - m2 * 0.75) +                 // 0–34 m meadow relief
           foot  * 78.0 * smoothstep(0.05, 0.70, massif) +  // 0–78 m foothills
-          relief * A * 0.92 * m2;                          // the big peaks
+          relief * A * 1.02 * m2;                          // the big peaks
+
+        // Grain everywhere, but taller on open ground than on cliff faces
+        // (where erosion products, not noise, should be doing the work).
+        elev += grain * (1.0 - m2 * 0.62);
 
         // A dedicated low basin so there is somewhere for lakes and meadows.
         elev -= bowl * 9.0;
@@ -149,25 +199,50 @@ export class TerrainGen {
         // Cut the gorge floor down through the rim so the outlet actually flows.
         elev -= gate * smoothstep(0.55, 1.20, r) * 92.0;
 
-        // Mesas / benches in a few regions — the reference art has flat shelves.
-        const shelfSel = n.fbm(u * 1.15 - 7.1, v * 1.15 + 3.3, 3, 2, 0.5, 1) * 0.5 + 0.5;
-        if (shelfSel > 0.60 && massif > 0.25) {
-          const t = smoothstep(0.60, 0.84, shelfSel) * smoothstep(0.25, 0.55, massif);
-          const stepH = 26.0;
+        // Mesas / benches — the reference art has flat shelves. Driven by the
+        // character field now, so terracing lands on the mesa massifs instead
+        // of being sprinkled at random.
+        if (wMesa > 0.02 && massif > 0.14) {
+          const t = smoothstep(0.02, 0.45, wMesa) * smoothstep(0.14, 0.46, massif);
+          const stepH = 21.0 + (n.fbm(u * 1.7, v * 1.7, 2, 2, 0.5, 1) * 0.5 + 0.5) * 15.0;
           const q = elev / stepH;
-          const terraced = (Math.floor(q) + smoothstep(0.36, 0.64, q - Math.floor(q))) * stepH;
-          elev = lerp(elev, terraced, t * 0.62);
+          const terraced = (Math.floor(q) + smoothstep(0.30, 0.70, q - Math.floor(q))) * stepH;
+          elev = lerp(elev, terraced, t * 0.70);
         }
 
-        h[y * R + x] = elev + 4.0;   // a little ground below sea level for lakes
+        // Soft floor. The outlet gorge must fall below the basin so water
+        // drains, but a raw 90 m trench just fills with a black sea; compress
+        // everything under -2 m logarithmically so outlets read as river mouths.
+        if (elev < -2) elev = -2 - Math.log1p(-2 - elev) * 2.4;
 
-        // Hardness: banded bedrock. Drives erosion resistance, cliff formation,
-        // the angle of repose in relaxation, and rock colour in the shader.
+        const i = y * R + x;
+        h[i] = elev + 4.0;   // a little ground below sea level for lakes
+
+        // ── the rock record ────────────────────────────────────────────────
+        // Regional competence: which parts of the range are made of tough rock.
+        // Deliberately smooth — it selects *where* cliffs are possible.
         const band = n.fbm(rwx * 2.7 + 21.7, rwy * 2.7 - 13.9, 4, 2.35, 0.5, 1);
-        const strata = Math.abs(n.n2(u * 0.9 + elev * 0.004, v * 0.9));
-        hard[y * R + x] = clamp01(0.30 + band * 0.42 + strata * 0.30 + massif * 0.34);
+        hard[i] = clamp01(0.34 + band * 0.44 + massif * 0.30);
+
+        // Bedding. Layers 15–34 m thick, dipping gently: the phase offset is a
+        // smooth function of position, so beds are tilted planes rather than
+        // perfectly horizontal contours (which would read as topo lines).
+        const thickness = 15.0 + (n.fbm(u * 1.4 + 4.4, v * 1.4 - 9.1, 2, 2, 0.5, 1) * 0.5 + 0.5) * 19.0;
+        this.bedK[i] = (Math.PI * 2) / thickness;
+        const dip = n.fbm(u * 1.1 - 60.2, v * 1.1 + 25.5, 2, 2.0, 0.5, 1) * 46.0;
+        this.bedPhase[i] = dip * this.bedK[i];
+        // Mesas are the most obviously layered thing in the reference art;
+        // alpine horns are jointed but not benched; grassy domes hide it all.
+        this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.46 + wRound * 0.12)
+                                  * smoothstep(0.04, 0.34, massif));
       }
     }
+  }
+
+  /** Hard-band fraction (0 soft rock, 1 hard rock) of the bed exposed at `hv`. */
+  _bedHard(i, hv) {
+    const b = 0.5 + 0.5 * Math.sin(hv * this.bedK[i] + this.bedPhase[i]);
+    return smoothstep(0.40, 0.60, b);
   }
 
   // ── 2. Hydraulic erosion (droplet / particle based) ────────────────────────
@@ -293,50 +368,50 @@ export class TerrainGen {
   }
 
   /**
-   * Slope-limited relaxation. Droplet erosion occasionally leaves single-cell
-   * spires; this walks the field and shaves anything steeper than the angle of
-   * repose for the local rock, then applies one light smoothing pass. Cheap,
-   * and it is the difference between "mountains" and "a bed of nails".
+   * Hillslope processes: differential weathering, then mass wasting.
+   *
+   * These are the two mechanisms that turn a noise field into rock. Erosion by
+   * water carves *down*; weathering eats *sideways* into whatever is softest,
+   * and gravity then limits how steep the result can stand. Alternating them is
+   * what produces the cliff-and-bench profile the reference art is full of:
+   * a soft bed retreats until the hard bed above it is undercut, the debris
+   * runs out at the angle of repose, and you get a riser, a ledge, and a talus
+   * fan at the bottom. Doing only the talus limiter (as this used to) can never
+   * make a cliff — it can only ever make things gentler.
    */
   _relax() {
     const R = this.res, h = this.height, hard = this.hardness;
     const texel = this.worldSize / R;
     const N = R * R;
 
-    // Angle of repose: soft ground ~34°, hard rock up to ~72°.
-    const talus = new Float32Array(N);
+    // Precompute the two repose limits per cell. Soft beds and grassy country
+    // lie back at 28-42°; competent, well-bedded rock stands at up to ~82°.
+    const talusLo = new Float32Array(N);
+    const talusHi = new Float32Array(N);
+    const DEG = Math.PI / 180;
     for (let i = 0; i < N; i++) {
-      const deg = 34 + hard[i] * 38;
-      talus[i] = Math.tan((deg * Math.PI) / 180) * texel;
+      const sw = this.strataW[i];
+      talusLo[i] = Math.tan((28 + hard[i] * 14) * DEG) * texel;
+      talusHi[i] = Math.tan((48 + hard[i] * 26 + sw * 8) * DEG) * texel;
     }
 
     const D = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
     const DL = D.map(([a, b]) => Math.hypot(a, b));
+    const DI = D.map(([a, b]) => b * R + a);
 
-    for (let pass = 0; pass < 6; pass++) {
-      for (let y = 1; y < R - 1; y++) {
-        for (let x = 1; x < R - 1; x++) {
-          const i = y * R + x;
-          const hi = h[i];
-          const t = talus[i];
-          for (let k = 0; k < 8; k++) {
-            const ni = i + D[k][1] * R + D[k][0];
-            const diff = hi - h[ni];
-            const lim = t * DL[k];
-            if (diff > lim) {
-              const move = (diff - lim) * 0.36;
-              h[i] -= move;
-              h[ni] += move;
-            }
-          }
-        }
-      }
+    // Six weather/wast cycles. More than this and the beds saturate: every
+    // soft cell has already retreated to its bed boundary and nothing moves.
+    for (let cycle = 0; cycle < 6; cycle++) {
+      this._weather(0.95, DI, DL);
+      this._talus(2, talusLo, talusHi, DI, DL);
+      if ((cycle & 1) === 0) this.onProgress(0.52 + 0.05 * (cycle / 6), 'Settling the bedrock');
     }
 
     // Curvature-selective smoothing: only texels that stick out from their own
     // neighbourhood get pulled in. Ridgelines have low local curvature relative
     // to their run, so they survive intact while single-texel fizz is erased.
-    for (let pass = 0; pass < 2; pass++) {
+    // One pass only — two was quietly rounding off every cliff lip we just cut.
+    {
       const tmp = new Float32Array(h);
       for (let y = 1; y < R - 1; y++) {
         for (let x = 1; x < R - 1; x++) {
@@ -345,9 +420,101 @@ export class TerrainGen {
                      + (tmp[i - R - 1] + tmp[i - R + 1] + tmp[i + R - 1] + tmp[i + R + 1]) * 0.075;
           const dev = tmp[i] - mean;
           // Blend proportionally to how far this texel deviates: 0 for smooth
-          // ground, up to 0.85 for a spike.
-          const w = Math.min(0.85, Math.abs(dev) / (texel * 1.6));
+          // ground, up to 0.8 for a spike.
+          const w = Math.min(0.80, Math.abs(dev) / (texel * 2.4));
           h[i] = tmp[i] - dev * w;
+        }
+      }
+    }
+
+    // Bake the *displayed* hardness: regional competence modulated by whichever
+    // bed the final surface actually exposes. This is what paints the banding
+    // on cliff faces, and it now agrees with the geometry instead of being an
+    // independent noise field that happens to sit on top of it.
+    for (let i = 0; i < N; i++) {
+      const sw = this.strataW[i];
+      const bh = sw > 0.02 ? this._bedHard(i, h[i]) : 0.5;
+      this.hardness[i] = clamp01(hard[i] * (1 - sw * 0.55) + bh * sw * 0.95);
+    }
+  }
+
+  /**
+   * Differential weathering. Soft beds retreat; hard beds hold. `rate` is the
+   * maximum metres removed per pass from a fully soft, fully exposed cell.
+   * The debris is handed to the steepest downhill neighbour, which is what
+   * grows the talus fans (and marks them in the sediment map for the shader).
+   */
+  _weather(rate, DI, DL) {
+    const R = this.res, h = this.height, hard = this.hardness, sed = this.sediment;
+    const texel = this.worldSize / R;
+    const sw = this.strataW;
+
+    for (let y = 1; y < R - 1; y++) {
+      for (let x = 1; x < R - 1; x++) {
+        const i = y * R + x;
+        const w = sw[i];
+        if (w < 0.06) continue;
+
+        const hv = h[i];
+        const bh = this._bedHard(i, hv);
+        // Exposure: a bed only weathers back where it is already a face. Flat
+        // ground weathers in place (which we do not model) rather than retreat.
+        const gx = (h[i + 1] - h[i - 1]) / (2 * texel);
+        const gy = (h[i + R] - h[i - R]) / (2 * texel);
+        const expo = Math.min(1, Math.hypot(gx, gy) * 1.5);
+        if (expo < 0.04) continue;
+
+        const amount = (1 - bh) * w * expo * rate * (1.2 - hard[i] * 0.55);
+        if (amount <= 0.0005) continue;
+
+        h[i] -= amount;
+
+        // Hand the debris downhill. Splitting it over the two steepest
+        // neighbours keeps fans from turning into single-texel tongues.
+        let b0 = -1, b1 = -1, d0 = 0, d1 = 0;
+        for (let k = 0; k < 8; k++) {
+          const ni = i + DI[k];
+          const drop = (h[i] - h[ni]) / DL[k];
+          if (drop > d0) { d1 = d0; b1 = b0; d0 = drop; b0 = ni; }
+          else if (drop > d1) { d1 = drop; b1 = ni; }
+        }
+        if (b0 < 0) continue;
+        const give = amount * 0.62;
+        if (b1 >= 0 && d1 > 0) {
+          const s = d0 + d1;
+          h[b0] += give * (d0 / s); h[b1] += give * (d1 / s);
+          sed[b0] = Math.min(1, sed[b0] + give * 1.6);
+          sed[b1] = Math.min(1, sed[b1] + give * 1.6);
+        } else {
+          h[b0] += give;
+          sed[b0] = Math.min(1, sed[b0] + give * 2.0);
+        }
+      }
+    }
+  }
+
+  /** Angle-of-repose limiter, with the repose angle set by the exposed bed. */
+  _talus(passes, talusLo, talusHi, DI, DL) {
+    const R = this.res, h = this.height, sw = this.strataW;
+    for (let pass = 0; pass < passes; pass++) {
+      for (let y = 1; y < R - 1; y++) {
+        for (let x = 1; x < R - 1; x++) {
+          const i = y * R + x;
+          const hi = h[i];
+          const w = sw[i];
+          // Unbedded ground just uses the soft limit; no need to pay for a sin.
+          const t = w < 0.06 ? talusLo[i]
+                             : lerp(talusLo[i], talusHi[i], this._bedHard(i, hi) * w);
+          for (let k = 0; k < 8; k++) {
+            const ni = i + DI[k];
+            const diff = hi - h[ni];
+            const lim = t * DL[k];
+            if (diff > lim) {
+              const move = (diff - lim) * 0.34;
+              h[i] -= move;
+              h[ni] += move;
+            }
+          }
         }
       }
     }
