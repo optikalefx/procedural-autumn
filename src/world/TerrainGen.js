@@ -257,8 +257,12 @@ export class TerrainGen {
         this.bedPhase[i] = -bedRise * k;
         // Mesas are the most obviously layered thing in the reference art;
         // alpine horns are jointed but not benched; grassy domes hide it all.
-        this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.34 + wRound * 0.10)
-                                  * smoothstep(0.18, 0.52, massif));
+        // Every massif gets *some* bedding. Dropping the rounded archetype to
+        // near zero left its flanks with no structure at all — in shadow they
+        // read as a flat violet cut-out. Rounded country is grassier and softer,
+        // not geologically featureless.
+        this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.62 + wRound * 0.32)
+                                  * smoothstep(0.16, 0.48, massif));
       }
     }
   }
@@ -294,15 +298,20 @@ export class TerrainGen {
     // two that matter; everything else follows from them.
     const texel = this.worldSize / R;
     const maxLifetime = 64;
-    const inertia = 0.09;
-    const capacityFactor = 0.62;    // sediment carried per metre of descent
+    // Inertia is what stops every droplet cutting its own private groove
+    // straight down the fall line. At near zero the sim combs a mountain into
+    // dozens of identical parallel flutes that read as fabric, not rock; with
+    // momentum the droplets wander, capture each other and merge into fewer,
+    // larger valleys with interfluves between them.
+    const inertia = 0.24;
+    const capacityFactor = 0.50;    // sediment carried per metre of descent
     const minSlope = 0.010 * texel; // metres of drop treated as the floor
     const depositSpeed = 0.34;
     const erodeSpeed = 0.42;
     const gravity = 0.90;           // speed^2 gain per metre dropped
     const evaporate = 0.014;
-    const radius = 2;               // tighter brush -> channels, not dimples
-    const MAX_EDIT = 0.42;          // metres per droplet step — stability net
+    const radius = 3;               // brush width sets channel width
+    const MAX_EDIT = 0.30;          // metres per droplet step — stability net
     const MAX_SPEED = 5.5;
 
     // Soft-disc erosion brush so channels do not alias into the grid.

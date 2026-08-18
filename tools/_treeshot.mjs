@@ -8,9 +8,23 @@
  */
 import { chromium } from 'playwright';
 import { acquire } from './_lock.mjs';
-import { VIEWS } from './shot.mjs';
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+
+// Inlined rather than imported: shot.mjs runs its capture at module scope, so
+// importing it would fire a second full browser run on every invocation.
+const VIEWS = {
+  hero:      { anchor: 'vista',    height: 62,  dist: 150, pitch: -0.16, fov: 46, hour: 16.7 },
+  drive:     { anchor: 'road',     height: 4.2, dist: 12,  pitch: -0.10, fov: 55, hour: 16.7 },
+  meadow:    { anchor: 'meadow',   height: 1.6, dist: 6,   pitch: -0.05, fov: 58, hour: 17.2 },
+  forest:    { anchor: 'forest',   height: 3.0, dist: 14,  pitch: 0.02,  fov: 60, hour: 16.4 },
+  river:     { anchor: 'river',    height: 3.4, dist: 16,  pitch: -0.12, fov: 54, hour: 16.9 },
+  waterfall: { anchor: 'waterfall',height: 8,   dist: 46,  pitch: 0.10,  fov: 50, hour: 16.2 },
+  peaks:     { anchor: 'peak',     height: 120, dist: 420, pitch: -0.10, fov: 42, hour: 16.0 },
+  vehicle:   { anchor: 'vehicle',  height: 2.1, dist: 9,   pitch: -0.06, fov: 44, hour: 17.0 },
+  backlit:   { anchor: 'meadow',   height: 2.4, dist: 10,  pitch: 0.04,  fov: 52, hour: 17.9, faceSun: true },
+  dawn:      { anchor: 'vista',    height: 48,  dist: 130, pitch: -0.13, fov: 46, hour: 7.4 },
+};
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const i = argv.indexOf(`--${n}`); return i === -1 ? d : argv[i + 1]; };

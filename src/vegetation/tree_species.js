@@ -49,7 +49,7 @@ export const SPECIES = [
     subLen: 0.52, subCount: [2, 3], subAngle: [0.5, 0.9],
     bark: BARK.BIRCH,
     barkColor: PALETTE.barkBirch,
-    clusterCount: 195,
+    clusterCount: 230,
     clusterSize: [0.048, 0.082], // fraction of H
     clusterAspect: 1.15,
     tipBlob: 0.090,
@@ -79,7 +79,7 @@ export const SPECIES = [
     subLen: 0.5, subCount: [1, 2], subAngle: [0.4, 0.7],
     bark: BARK.BIRCH,
     barkColor: PALETTE.barkAspen,
-    clusterCount: 180,
+    clusterCount: 215,
     clusterSize: [0.044, 0.074],
     clusterAspect: 1.0,
     tipBlob: 0.078,
@@ -110,8 +110,9 @@ export const SPECIES = [
     branchSegs: 4,
     subLen: 0.55, subCount: [2, 4], subAngle: [0.6, 1.05],
     bark: BARK.ROUGH,
-    barkColor: PALETTE.barkMaple,
-    clusterCount: 235,
+    barkColor: c(0x8a6853),   // lighter than the palette's shadow value: a
+    // trunk that reads black at 30 m loses the branch structure entirely
+    clusterCount: 280,
     clusterSize: [0.058, 0.098],
     clusterAspect: 1.25,
     tipBlob: 0.125,
@@ -141,8 +142,8 @@ export const SPECIES = [
     branchSegs: 5,
     subLen: 0.5, subCount: [2, 4], subAngle: [0.7, 1.2],
     bark: BARK.ROUGH,
-    barkColor: c(0x5d4634),
-    clusterCount: 245,
+    barkColor: c(0x7a604b),
+    clusterCount: 290,
     clusterSize: [0.062, 0.105],
     clusterAspect: 1.3,
     tipBlob: 0.135,
@@ -169,7 +170,7 @@ export const SPECIES = [
     boughs: [6, 9],
     boughDroop: 0.34,
     bark: BARK.CONIFER,
-    barkColor: PALETTE.barkPine,
+    barkColor: c(0x63483a),
     clusterSize: [0.042, 0.066],
     clusterAspect: 2.0,         // boughs are wide and flat
     tile: TILE.NEEDLE,
@@ -374,10 +375,13 @@ function finishDeciduous(P, rng, H, strands, tips) {
              * lerp(0.62, 1.0, smoothstep(-1.0, 0.6, ey));
 
     const size = randRange(rng, P.clusterSize) * H * lerp(1.0, 0.78, clamp01(d));
+    // Per-clump aspect jitter. Uniform discs are the single biggest tell that a
+    // canopy is billboards; letting each clump be a different oval hides them.
+    const ax = 0.70 + rng() * 0.75, ay = 0.72 + rng() * 0.62;
     clusters.push({
       x: px, y: py, z: pz,
-      sx: size * (P.clusterAspect ?? 1) * 0.5,
-      sy: size * 0.5,
+      sx: size * (P.clusterAspect ?? 1) * 0.5 * ax,
+      sy: size * 0.5 * ay,
       nx, ny, nz,
       ao,
       tone: clamp01(vnoise3(px * 0.42 + 11.3, py * 0.30, pz * 0.42) * 1.5 - 0.25),

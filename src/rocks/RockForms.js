@@ -293,8 +293,8 @@ export const ARCHETYPES = {
       // Few planes, big lumps, low-frequency: the support radius has to swing
       // a long way across the body or every facet comes out the same size and
       // the boulder reads as a geodesic dome instead of a rock.
-      fill: 12, dirJitter: 0.32, lump: 0.22, lumpFreq: 0.75, offJitter: 0.10,
-      erode: 0.24, erodeCount: 10, erodeEdges: true,
+      fill: 15, dirJitter: 0.32, lump: 0.20, lumpFreq: 0.85, offJitter: 0.10,
+      erode: 0.22, erodeCount: 15, erodeEdges: true,
     })],
   },
 
@@ -323,8 +323,8 @@ export const ARCHETYPES = {
     variants: 4, sink: 0.30,
     build: (rng, noise) => [makeBody(rng, noise, {
       axes: V3(1, 0.56 + rng() * 0.28, 0.76 + rng() * 0.24),
-      fill: 7, dirJitter: 0.36, lump: 0.24, lumpFreq: 1.1, offJitter: 0.12,
-      erode: 0.20, erodeCount: 5, erodeEdges: true,
+      fill: 8, dirJitter: 0.36, lump: 0.24, lumpFreq: 1.1, offJitter: 0.12,
+      erode: 0.20, erodeCount: 7, erodeEdges: true,
     })],
   },
 
@@ -344,16 +344,16 @@ export const ARCHETYPES = {
     build: (rng, noise) => {
       const main = makeBody(rng, noise, {
         axes: V3(1, 0.66 + rng() * 0.26, 0.82 + rng() * 0.20),
-        boxTilt: 0.34, fill: 9, dirJitter: 0.32, lump: 0.20, lumpFreq: 0.8, offJitter: 0.10,
-        erode: 0.17, erodeCount: 8, erodeEdges: true,
+        boxTilt: 0.34, fill: 13, dirJitter: 0.32, lump: 0.20, lumpFreq: 0.85, offJitter: 0.10,
+        erode: 0.17, erodeCount: 13, erodeEdges: true,
       });
       const out = [main];
       const n = 1 + ((rng() * 2) | 0);
       for (let i = 0; i < n; i++) {
         const sub = makeBody(rng, noise, {
           axes: V3(1, 0.50 + rng() * 0.34, 0.76 + rng() * 0.24),
-          boxTilt: 0.6, fill: 6, dirJitter: 0.36, lump: 0.18, lumpFreq: 1.0, offJitter: 0.11,
-          erode: 0.13, erodeCount: 6, erodeEdges: true,
+          boxTilt: 0.6, fill: 8, dirJitter: 0.36, lump: 0.18, lumpFreq: 1.0, offJitter: 0.11,
+          erode: 0.13, erodeCount: 8, erodeEdges: true,
         });
         // Pushed far enough out that it actually breaks the main silhouette —
         // a shoulder you cannot see is just triangles.

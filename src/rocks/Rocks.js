@@ -19,10 +19,10 @@ import { System } from '../core/System.js';
 import { SEED } from '../world/WorldConfig.js';
 import { buildRockLibrary, ARCHETYPES } from './RockForms.js';
 import { createRockMaterial } from './RockMaterial.js';
-import { RockScatter } from './RockScatter.js';
+import { RockScatter, VIS_PER_METRE } from './RockScatter.js';
 
 const CELL = 64;              // metres per scatter cell
-const STREAM_RADIUS = 800;    // metres; matches the largest instance vis radius
+const STREAM_RADIUS = 920;    // metres; matches the largest instance vis radius
 const REPACK_MOVE = 14;       // metres of camera travel before we repack
 
 // Per-variant instance capacity, and whether the archetype casts shadows.
@@ -105,8 +105,12 @@ export class Rocks extends System {
     }
     scene.add(this.group);
 
+    // This runs on every page load in the project, including six other
+    // authors' captures — keep an eye on it.
+    this.buildMs = performance.now() - t0;
+    window.__rocksBuildMs = this.buildMs;
     console.log(`[rocks] ${this.meshes.length} meshes, ${baseTris | 0} base tris, ` +
-                `built in ${(performance.now() - t0).toFixed(0)} ms`);
+                `built in ${this.buildMs.toFixed(0)} ms`);
 
     // Fill the world around wherever the camera starts before the first frame.
     this._catchup = 48;
@@ -114,11 +118,20 @@ export class Rocks extends System {
 
   // ── streaming ──────────────────────────────────────────────────────────────
 
-  /** Detail floor for a cell at distance `d`: far cells only keep big rock. */
+  /**
+   * Detail floor for a cell at distance `d`, in metres of rock *width*.
+   * Derived from the visibility rule rather than guessed: a rock of radius r
+   * is drawn out to r * VIS_PER_METRE, so anything narrower than 2d/V could
+   * never be seen from here and generating it is pure waste. Quantised into
+   * bands so a metre of camera drift does not trigger a regeneration.
+   */
   _minSizeFor(d) {
-    if (d > 330) return 1.7;
-    if (d > 150) return 0.75;
-    return 0;
+    const need = (2 * d) / VIS_PER_METRE;
+    if (need < 0.9) return 0;
+    if (need < 2.2) return 0.8;
+    if (need < 4.0) return 2.0;
+    if (need < 6.5) return 3.8;
+    return 6.2;
   }
 
   _refreshQueue(cam) {

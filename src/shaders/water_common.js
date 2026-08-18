@@ -95,16 +95,25 @@ vec3 wEnvReflect(vec3 P, vec3 R){
   return sky;
 }
 
-/** 6-tap march toward the sun so ridges actually shade the water below them. */
+/**
+ * March toward the sun so ridges actually shade the water below them.
+ *
+ * Water is the one surface in the scene that is not a lit standard material,
+ * so it gets no shadow map. Without this a river running along the foot of a
+ * ridge stays in full golden key while the ground around it has gone violet,
+ * and the ribbon reads as painted on. The steps grow geometrically out to
+ * ~500 m, which is the scale of the shadows that actually matter here.
+ */
 float wSunShadow(vec3 P){
   if (uReflectSteps < 1.0) return 1.0;
-  float t = 3.0, occ = 0.0;
-  for (int i = 0; i < 6; i++){
+  float t = 4.0, occ = 0.0;
+  for (int i = 0; i < 12; i++){
     vec3 p = P + uSunDir * t;
+    if (p.y > 345.0) break;
     float h = wBed(p.xz);
-    occ = max(occ, clamp((h - p.y) * 0.5, 0.0, 1.0));
-    t *= 2.15;
+    occ = max(occ, clamp((h - p.y) * 0.45, 0.0, 1.0));
+    t *= 1.55;
   }
-  return 1.0 - occ * 0.82;
+  return 1.0 - occ * 0.90;
 }
 `;

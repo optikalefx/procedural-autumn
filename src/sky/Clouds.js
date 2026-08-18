@@ -29,7 +29,7 @@ import { SKY_STATE } from '../render/Lighting.js';
 
 // Cloud deck geometry, in metres. The valley tops out at ~340 m.
 const BASE = 800;
-const TOP = 1660;
+const TOP = 1700;
 const TILE = 8200;          // world size of one wrap of the noise tile
 const CIRRUS_ALT = 6200;
 const CIRRUS_TILE = 34000;
@@ -64,7 +64,7 @@ uniform float uOpacity;     // global fade (kills clouds at night gracefully)
 const float BASE_Y = ${BASE.toFixed(1)};
 const float TOP_Y  = ${TOP.toFixed(1)};
 const float THICK  = ${(TOP - BASE).toFixed(1)};
-const float MAXT   = 22000.0;
+const float MAXT   = 60000.0;
 
 float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
@@ -94,8 +94,8 @@ float densityAt(vec3 p, float cov) {
   // The erosion octaves are skewed hard with height. Without that shear the
   // density is a 2D shape extruded straight up, and from the side the deck
   // reads as stacked flat plates instead of billowing cloud.
-  float e1 = texture2D(uNoise, uv * 3.3 + vec2(0.46, -0.31) * hf + uWind * 1.6).g;
-  float e2 = texture2D(uNoise, uv * 10.5 + vec2(1.15, 0.72) * hf - uWind * 2.4).b;
+  float e1 = texture2D(uNoise, uv * 2.1 + vec2(0.30, -0.20) * hf + uWind * 1.6).g;
+  float e2 = texture2D(uNoise, uv * 2.2 + vec2(0.34, 0.22) * hf - uWind * 2.4).b;
 
   // Flat base, cauliflower crown whose height is driven by both coverage and
   // the mid octave — a constant lid is the other half of the "plate" look.
@@ -104,8 +104,11 @@ float densityAt(vec3 p, float cov) {
   float d = cov * prof;
   // Erosion carves the silhouette; too much of it and the low-frequency core
   // is all that survives, which reads as fog rather than as cumulus.
-  d -= (e1 * 0.24 + e2 * 0.11) * (0.25 + 0.75 * hf);
-  return max(d, 0.0) * 1.7;
+  // Amplitude matters more than frequency here: at 0.24 the erosion barely
+  // dented a base shape that peaks at 1.0, and every cloud came out as a
+  // smooth lens. It has to be able to cut the silhouette open.
+  d -= (e1 * 0.52 + e2 * 0.24) * (0.35 + 0.65 * hf);
+  return max(d, 0.0) * 2.4;
 }
 
 float hg(float c, float g) {
@@ -125,11 +128,15 @@ void main() {
 
   // ── cirrus veil, behind everything ───────────────────────────────────────
   if (uCirrus > 0.004) {
-    float tc = (${CIRRUS_ALT.toFixed(1)} - uCamPos.y) / d.y;
+    // Clamp the slant range and fade hard near the skyline. An unclamped
+    // 1/d.y blows the uv derivative up at grazing angles, and with no mipmaps
+    // the veil aliases into a hatched venetian-blind pattern across the
+    // entire horizon band.
+    float tc = min((${CIRRUS_ALT.toFixed(1)} - uCamPos.y) / d.y, 42000.0);
     vec2 cu = (uCamPos.xz + d.xz * tc) / ${CIRRUS_TILE.toFixed(1)} + uWind * 0.30;
     // Anisotropic lookup: squashing one axis turns fbm blobs into wind streaks.
     float ci = texture2D(uNoise, vec2(cu.x * 0.34, cu.y)).a;
-    float ca = smoothstep(0.44, 0.86, ci) * uCirrus * smoothstep(0.02, 0.22, d.y);
+    float ca = smoothstep(0.42, 0.92, ci) * uCirrus * smoothstep(0.10, 0.42, d.y);
     float lit = 0.55 + 0.45 * hg(dot(d, uSunDir), 0.55) * 0.25;
     acc = mix(uAmbient, uLit, clamp(lit, 0.0, 1.0)) * ca;
     alpha = ca;
@@ -153,9 +160,9 @@ void main() {
       // gives ~70 m resolution on the cumulus you are actually looking at and
       // lets the tail of the ray run cheap and coarse, where the distance fade
       // is about to swallow it anyway.
-      float span = min(t1 - t0, 16000.0);
+      float span = min(t1 - t0, 40000.0);
       t1 = t0 + span;
-      const float GROW = 1.10;
+      const float GROW = 1.06;
       float s0 = span * (GROW - 1.0) / (pow(GROW, float(STEPS)) - 1.0);
       // Stable per-pixel jitter (no temporal term) breaks the slab banding
       // without introducing crawl — there is no TAA in the chain to clean up
@@ -180,7 +187,11 @@ void main() {
       for (int i = 0; i < STEPS; i++) {
         if (trans < 0.02) break;
         if (t > t1) break;
-        vec3 p = uCamPos + d * t;
+        // Jitter proportionally to the *current* step. A fixed offset only
+        // dithers the first sample, and because every pixel on a screen row
+        // shares the same step positions, the residual shows up as horizontal
+        // venetian-blind ribbons across the whole sky.
+        vec3 p = uCamPos + d * (t + ign * stepLen);
         float cov = coverageAt(p.xz);
         float dens = cov <= 0.001 ? 0.0 : densityAt(p, cov);
         if (dens <= 0.001) { t += stepLen; stepLen *= GROW; continue; }
@@ -228,7 +239,11 @@ void main() {
   // higher than ~15°, so an elevation-based fade erases the entire deck; a
   // distance fade keeps the cumulus that sit 3–8 km out, which is where they
   // actually read as clouds with size.
-  float far = smoothstep(7500.0, 17000.0, tEntry);
+  // Two fades: distance, and a floor near the skyline. The elevation term is
+  // what keeps the deck from ending in a dead-straight horizontal line across
+  // the frame where the distance fade happens to finish.
+  float far = max(smoothstep(9000.0, 34000.0, tEntry),
+                  1.0 - smoothstep(0.028, 0.085, d.y));
   col = mix(col, uHorizon, far * 0.85);
 
   float a = clamp(alpha, 0.0, 1.0) * (1.0 - far * 0.75) * uOpacity;
@@ -278,13 +293,17 @@ function fbm(size, freqs, rand, billow = false) {
   return out;
 }
 
+// Nyquist note: a channel whose top lattice frequency is F, sampled in the
+// shader at `uv * S`, needs F * S <= size / 2 or it aliases into hard blocks.
+// The B channel used to be [16,32,64] read at uv*10.5 — 672 cycles across a
+// 512-texel tile — and every cloud picked up stair-stepped edges.
 function buildNoiseTexture(size, seed) {
   const rand = mulberry32(seed);
   // R is deliberately the *softest* field: it doubles as the ground shadow,
   // and high-frequency detail there just reads as dirt on the meadow.
   const r = fbm(size, [4, 8, 15], rand);
   const g = fbm(size, [8, 16, 32], rand, true);
-  const b = fbm(size, [16, 32, 64], rand, true);
+  const b = fbm(size, [8, 16, 28], rand, true);
   const a = fbm(size, [4, 9, 18], rand);
 
   const data = new Uint8Array(size * size * 4);
@@ -307,11 +326,14 @@ function buildNoiseTexture(size, seed) {
   return tex;
 }
 
+// The density field is deliberately band-limited to roughly the step size:
+// features finer than one march step alias into a visible woven cross-hatch
+// on every cloud face, and there is no TAA in the chain to hide it.
 const TIERS = {
-  ultra:  { steps: 26, size: 512 },
-  high:   { steps: 24, size: 384 },
-  medium: { steps: 14, size: 256 },
-  low:    { steps: 9,  size: 192 },
+  ultra:  { steps: 38, size: 512 },
+  high:   { steps: 30, size: 384 },
+  medium: { steps: 19, size: 256 },
+  low:    { steps: 12, size: 192 },
 };
 
 export class Clouds extends System {

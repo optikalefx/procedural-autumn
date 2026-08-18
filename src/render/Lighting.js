@@ -32,72 +32,72 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 //  middle grey. Anything whose *linear* luminance exceeds ~0.9 will clip to
 //  white once bloom is applied, so the sky keys deliberately stay under it.
 const KEYS = [
-  { h: 0.0,  sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x4a5476, hemiGnd: 0x2e3040, hemiI: 0.32,
+  { h: 0.0,  sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x5c6892, hemiGnd: 0x3a3c52, hemiI: 0.42,
     zen: 0x0d1226, hor: 0x1c2440, sunHor: 0x2e3050, glow: 0x2a3358, glowI: 0.12,
-    fogNear: 0x1e2740, fogFar: 0x151b30, fogSun: 0x2a3358, fogD: 0.0016,
+    fogNear: 0x1e2740, fogFar: 0x151b30, fogSun: 0x2a3358, fogD: 0.0030,
     cloudLit: 0x3a4468, cloudDark: 0x131a2e, cover: 0.35 },
 
-  { h: 5.2,  sun: 0x3f5080, sunI: 0.12, hemiSky: 0x4e5878, hemiGnd: 0x30323f, hemiI: 0.36,
+  { h: 5.2,  sun: 0x3f5080, sunI: 0.12, hemiSky: 0x606c96, hemiGnd: 0x3c3e54, hemiI: 0.46,
     zen: 0x111834, hor: 0x2a3352, sunHor: 0x4b4468, glow: 0x50486e, glowI: 0.22,
-    fogNear: 0x2a3350, fogFar: 0x1d2440, fogSun: 0x4b4468, fogD: 0.0017,
+    fogNear: 0x2a3350, fogFar: 0x1d2440, fogSun: 0x4b4468, fogD: 0.0031,
     cloudLit: 0x4a5074, cloudDark: 0x191f36, cover: 0.37 },
 
   // Blue hour — the sun is still under the horizon, the sky does the lighting.
-  { h: 6.3,  sun: 0x9a7ea0, sunI: 0.55, hemiSky: 0x7d86a4, hemiGnd: 0x6b5f6c, hemiI: 0.74,
+  { h: 6.3,  sun: 0x9a7ea0, sunI: 0.55, hemiSky: 0x8d96b2, hemiGnd: 0x776a76, hemiI: 0.84,
     zen: 0x25407e, hor: 0xb59aa4, sunHor: 0xe0a088, glow: 0xf0ac82, glowI: 0.50,
-    fogNear: 0xa297a8, fogFar: 0x7c86ab, fogSun: 0xe0a088, fogD: 0.0020,
+    fogNear: 0xa297a8, fogFar: 0x7c86ab, fogSun: 0xe0a088, fogD: 0.0036,
     cloudLit: 0xc9a8b0, cloudDark: 0x4a4a70, cover: 0.39 },
 
   // Cold dawn — long low light, pale washed horizon, genuinely blue shadows.
-  { h: 7.4,  sun: 0xffc492, sunI: 2.30, hemiSky: 0xb2bcd6, hemiGnd: 0xb5a49c, hemiI: 1.00,
+  { h: 7.4,  sun: 0xffc492, sunI: 2.60, hemiSky: 0xbfc4d2, hemiGnd: 0xc2a898, hemiI: 1.14,
     zen: 0x3f74c0, hor: 0xdcd4d2, sunHor: 0xf6cba8, glow: 0xffd4ab, glowI: 0.95,
-    fogNear: 0xd8cfd0, fogFar: 0xa9b7d8, fogSun: 0xffd8b0, fogD: 0.0016,
+    fogNear: 0xd8cfd0, fogFar: 0xa9b7d8, fogSun: 0xffd8b0, fogD: 0.0024,
     cloudLit: 0xffe0c4, cloudDark: 0x8c94b8, cover: 0.43 },
 
   { h: 9.5,  sun: 0xffe6c4, sunI: 3.10, hemiSky: 0xc4cfe2, hemiGnd: 0xd0b58e, hemiI: 1.00,
     zen: 0x4283d2, hor: 0xe9e0d6, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
-    fogNear: 0xe2ddd6, fogFar: 0xb4c4e2, fogSun: 0xffe8c8, fogD: 0.0011,
+    fogNear: 0xe2ddd6, fogFar: 0xb4c4e2, fogSun: 0xffe8c8, fogD: 0.0021,
     cloudLit: 0xfff6ec, cloudDark: 0xa4abc6, cover: 0.37 },
 
   { h: 12.5, sun: 0xfff2e0, sunI: 3.40, hemiSky: 0xccd8e8, hemiGnd: 0xd8bf98, hemiI: 1.02,
     zen: 0x3f86d6, hor: 0xe2e0dc, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
-    fogNear: 0xdfe0de, fogFar: 0xb8c8e4, fogSun: 0xf8ecd8, fogD: 0.0009,
+    fogNear: 0xdfe0de, fogFar: 0xb8c8e4, fogSun: 0xf8ecd8, fogD: 0.0017,
     cloudLit: 0xfffaf4, cloudDark: 0xa6aecc, cover: 0.33 },
 
   { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xc6cee2, hemiGnd: 0xd6b184, hemiI: 1.00,
     zen: 0x5091d4, hor: 0xf3e2ca, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
-    fogNear: 0xecd9c2, fogFar: 0xbdc9e0, fogSun: 0xffdfb4, fogD: 0.0011,
+    fogNear: 0xecd9c2, fogFar: 0xc8d2e6, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xa4a4c4, cover: 0.39 },
 
   // The money frame: deep golden hour.
   { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xbcc2d8, hemiGnd: 0xd2a066, hemiI: 0.98,
     zen: 0x6699cf, hor: 0xf7dcb8, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
-    fogNear: 0xf0d6b4, fogFar: 0xc6bed6, fogSun: 0xffc98c, fogD: 0.0015,
+    fogNear: 0xf0d6b4, fogFar: 0xd2c9de, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0x9c90b6, cover: 0.43 },
 
   { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xafb2cc, hemiGnd: 0xc08356, hemiI: 0.92,
     zen: 0x5b83c2, hor: 0xf3c8a0, sunHor: 0xf8a262, glow: 0xffae66, glowI: 1.20,
-    fogNear: 0xecc5a0, fogFar: 0xc2aac0, fogSun: 0xffa860, fogD: 0.0019,
+    fogNear: 0xecc5a0, fogFar: 0xceb6ca, fogSun: 0xffa860, fogD: 0.0035,
     cloudLit: 0xffcc9c, cloudDark: 0x8a80aa, cover: 0.47 },
 
   { h: 19.0, sun: 0xff7a3e, sunI: 1.15, hemiSky: 0x9fa2c0, hemiGnd: 0xa26a50, hemiI: 0.86,
     zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
-    fogNear: 0xe4ac94, fogFar: 0xb298b8, fogSun: 0xff8a48, fogD: 0.0022,
+    fogNear: 0xe4ac94, fogFar: 0xb298b8, fogSun: 0xff8a48, fogD: 0.0040,
     cloudLit: 0xffb078, cloudDark: 0x766698, cover: 0.49 },
 
-  { h: 19.8, sun: 0x9c5a76, sunI: 0.32, hemiSky: 0x78809e, hemiGnd: 0x6d5c68, hemiI: 0.62,
+  { h: 19.8, sun: 0x9c5a76, sunI: 0.32, hemiSky: 0x8a92ae, hemiGnd: 0x7a6672, hemiI: 0.72,
     zen: 0x33508e, hor: 0xb890a0, sunHor: 0xd0756e, glow: 0xe07a62, glowI: 0.66,
-    fogNear: 0xb69aa8, fogFar: 0x8288ae, fogSun: 0xd8756e, fogD: 0.0023,
+    fogNear: 0xb69aa8, fogFar: 0x8288ae, fogSun: 0xd8756e, fogD: 0.0043,
     cloudLit: 0xd09aa0, cloudDark: 0x554f76, cover: 0.45 },
 
-  { h: 21.0, sun: 0x4a4a80, sunI: 0.12, hemiSky: 0x545e80, hemiGnd: 0x363848, hemiI: 0.38,
+  { h: 21.0, sun: 0x4a4a80, sunI: 0.12, hemiSky: 0x64709a, hemiGnd: 0x40425a, hemiI: 0.48,
     zen: 0x151c3a, hor: 0x35395c, sunHor: 0x53476c, glow: 0x54486e, glowI: 0.22,
-    fogNear: 0x333a58, fogFar: 0x232a48, fogSun: 0x53476c, fogD: 0.0018,
+    fogNear: 0x333a58, fogFar: 0x232a48, fogSun: 0x53476c, fogD: 0.0034,
     cloudLit: 0x4a5074, cloudDark: 0x191f36, cover: 0.39 },
 
-  { h: 24.0, sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x4a5476, hemiGnd: 0x2e3040, hemiI: 0.32,
+  { h: 24.0, sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x5c6892, hemiGnd: 0x3a3c52, hemiI: 0.42,
     zen: 0x0d1226, hor: 0x1c2440, sunHor: 0x2e3050, glow: 0x2a3358, glowI: 0.12,
-    fogNear: 0x1e2740, fogFar: 0x151b30, fogSun: 0x2a3358, fogD: 0.0016,
+    fogNear: 0x1e2740, fogFar: 0x151b30, fogSun: 0x2a3358, fogD: 0.0030,
     cloudLit: 0x3a4468, cloudDark: 0x131a2e, cover: 0.35 },
 ];
 
@@ -290,8 +290,13 @@ export class Lighting {
     // Counter-key sits opposite the sun and slightly above, so it fills the
     // shadow side without flattening the form.
     this.fill.position.copy(dir).multiplyScalar(-1).setY(0.42).normalize().multiplyScalar(400);
-    this.fill.color.copy(k.hemiSky);
-    this.fill.intensity = lerp(0.14, 0.34, day);
+    // Warm the counter-key toward the key when the sun is low: at golden hour
+    // the bounce off a gold valley floor is the dominant fill, and a purely
+    // cool one drives every shaded face to the saturated blue the brief calls
+    // out as a bug.
+    const lowSun = 1 - smoothstep(0.06, 0.34, elev);
+    this.fill.color.copy(k.hemiSky).lerp(k.hemiGnd, 0.30 + 0.35 * lowSun);
+    this.fill.intensity = lerp(0.14, 0.36, day);
 
     // Atmosphere palette for this hour (main.js copies these into Atmosphere).
     (this.fogNear ??= new THREE.Color()).copy(k.fogNear);

@@ -22,7 +22,12 @@ export function buildBarkGeometry(tree, species, opts = {}) {
   const maxLevel = opts.maxLevel ?? 9;
   const H = tree.height;
 
-  const strands = tree.strands.filter((s) => s.level <= maxLevel);
+  // Limbs stop one segment short of their real tip. The last segment is a bare
+  // dark wire poking out past the foliage, which reads as an antenna rather
+  // than as a branch; the clumps are placed on the true tip regardless.
+  const strands = tree.strands
+    .filter((s) => s.level <= maxLevel)
+    .map((s) => (s.level > 0 && s.pts.length > 2 ? { ...s, pts: s.pts.slice(0, -1) } : s));
   let vCount = 0, iCount = 0;
   for (const s of strands) {
     vCount += s.pts.length * (radialSegs + 1);

@@ -625,6 +625,15 @@ export class Trees extends System {
     this.stats.near = near.reduce((a, s) => a + s.count, 0);
     this.stats.mid = mid.reduce((a, s) => a + (s ? s.count : 0), 0);
     this.stats.far = far.count;
+    // Trees are the biggest triangle consumer in the game; keep the number in
+    // front of us rather than inferring it from the global counter.
+    let tris = far.count * 2;
+    for (const s of [...near, ...mid]) {
+      if (!s || !s.count) continue;
+      for (const m of s.meshes) tris += s.count * (m.geometry.index.count / 3);
+    }
+    this.stats.tris = tris;
+    this.stats.calls = this.meshes.filter((m) => m.visible).length + (far.count ? 1 : 0);
     this.stats.buildMs = performance.now() - t0;
   }
 
@@ -731,7 +740,7 @@ export class Trees extends System {
       u.uAmbient.value = (lighting.hemi.intensity + lighting.fill.intensity * 0.5) / Math.PI;
       // Backlight glow rides the sun's own colour, hottest near the horizon.
       const lowSun = 1 - smoothstep(0.05, 0.42, Math.max(0, lighting.sunDir.y));
-      u.uTransStrength.value = lerp(0.95, 2.15, lowSun);
+      u.uTransStrength.value = lerp(1.15, 2.60, lowSun);
     }
 
     const p = camera.position;

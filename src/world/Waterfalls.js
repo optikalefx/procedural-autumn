@@ -84,6 +84,7 @@ void main() {
 
   float streak = wFbm3(sp * vec2(1.5, 0.55)) * 0.5 + 0.5;
   float fine   = wFbm2(sp * vec2(4.5, 1.7) + 11.0) * 0.5 + 0.5;
+  float hair   = wFbm2(sp * vec2(11.0, 3.2) + 41.0) * 0.5 + 0.5;
 
   // The sheet is coherent at the lip and shreds into ribbons as it falls.
   float shred = smoothstep(0.10, 0.80, vU);
@@ -110,11 +111,17 @@ void main() {
   // Glassy and blue at the lip where the sheet is unbroken, white where the
   // water has aerated. Aeration is what turns water into foam, not speed.
   vec3 tint = mix(uShallow, uFoam, smoothstep(0.0, 0.35, vU) * 0.85 + 0.15);
-  vec3 col = tint * (uSunLight * (0.30 + 0.55 * ndl) * shadow + uAmbient * 0.85) / PI * 2.2;
+
+  // Value structure *inside* the sheet. Without it a fall is a strip of white
+  // paper: correct silhouette, no water. The dark lanes are the unaerated
+  // ribbons still carrying the channel's colour, so they go blue, not grey.
+  float lanes = 0.62 + 0.50 * streak + 0.22 * hair;
+  tint = mix(uShallow * 1.15, tint, clamp(lanes - 0.25, 0.0, 1.0));
+  vec3 col = tint * lanes * (uSunLight * (0.24 + 0.46 * ndl) * shadow + uAmbient * 0.80) / PI * 1.65;
 
   // Backlight: a curtain of white water in front of a low sun glows.
   float back = pow(max(dot(-V, uSunDir), 0.0), 2.0);
-  col += uFoam * uSunLight * back * 0.30 * shadow * (0.4 + 0.6 * vU);
+  col += uFoam * uSunLight * back * 0.20 * shadow * (0.4 + 0.6 * vU);
 
   // A hard specular sliver on the unbroken lip reads as glass.
   vec3 H = normalize(uSunDir + V);
@@ -163,8 +170,8 @@ void main() {
 
   // The last quarter is the burst off the plunge pool: outward and up.
   float b = smoothstep(0.70, 1.0, u);
-  p += aOutward * b * b * aSpread * 2.2;
-  p.y += b * (1.0 - b) * 4.0 * aSpread;
+  p += aOutward * b * b * aSpread * 0.9;
+  p.y += b * (1.0 - b) * 2.2 * aSpread;
 
   float size = aSize * (0.35 + 1.5 * u);
   vFade = smoothstep(0.0, 0.10, f) * (1.0 - smoothstep(0.72, 1.0, f));
@@ -174,7 +181,7 @@ void main() {
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   if (-mv.z > uCullDist) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   // Streaks are taller than wide — falling water is a line, not a dot.
-  mv.xy += vec2(position.x * size * 0.55, position.y * size * (1.0 + u * 1.6));
+  mv.xy += vec2(position.x * size * 0.62, position.y * size * (1.0 + u * 0.7));
 
   vec3 transformed = p;
   gl_Position = projectionMatrix * mv;
@@ -196,11 +203,11 @@ const float PI = 3.14159265;
 
 void main() {
   vec2 d = vUv * 2.0 - 1.0;
-  float r = length(vec2(d.x, d.y * 0.7));
-  float a = (1.0 - smoothstep(0.25, 1.0, r)) * vFade;
+  float r = length(vec2(d.x, d.y * 0.55));
+  float a = pow(1.0 - smoothstep(0.0, 1.0, r), 1.8) * vFade;
   if (a < 0.01) discard;
   vec3 col = uFoam * (uSunLight * 0.55 + uAmbient * 0.8) / PI * 2.4;
-  gl_FragColor = vec4(col, a * 0.55);
+  gl_FragColor = vec4(col, a * 0.34);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -237,6 +244,9 @@ void main() {
 
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   if (-mv.z > uCullDist) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // Ramp a puff out as the camera enters it, or driving past a fall wipes the
+  // whole screen with a cream card.
+  vFade *= smoothstep(1.5, 14.0, -mv.z);
   float s = sin(aSeed * 6.28), c = cos(aSeed * 6.28);
   vec2 q = vec2(position.x * c - position.y * s, position.x * s + position.y * c);
   mv.xy += q * size;
@@ -292,16 +302,12 @@ void main() {
   float deg = degrees(acos(clamp(dot(V, -uSunDir), -1.0, 1.0)));
   float t = (deg - 40.2) / 2.4;
   float band = smoothstep(0.0, 0.18, t) * (1.0 - smoothstep(0.80, 1.0, t));
-  col += spectrum(t) * band * uRainbow * uSunLight * 0.65;
+  // Only where there is enough spray to disperse in, and only while the sun is
+  // actually up — a bow floating over thin air is worse than no bow at all.
+  col += spectrum(t) * band * uRainbow * uSunLight * 0.45
+       * smoothstep(0.25, 0.7, a) * smoothstep(0.02, 0.16, uSunDir.y);
 
-  // Forward-scatter iridescence: the faint colour fringe you get looking
-  // straight through spray toward a low sun.
-  float fdeg = degrees(acos(clamp(fwd, -1.0, 1.0)));
-  float ft = (fdeg - 3.0) / 7.0;
-  col += spectrum(1.0 - ft) * smoothstep(0.0, 0.25, ft) * (1.0 - smoothstep(0.7, 1.0, ft))
-       * uRainbow * uSunLight * 0.22;
-
-  gl_FragColor = vec4(col, a * 0.30);
+  gl_FragColor = vec4(col, a * 0.20);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -355,15 +361,20 @@ void main() {
   float n = wFbm3(sp) * 0.5 + 0.5;
   float churn = n * 0.7 + ring * 0.3;
 
-  float density = (1.0 - smoothstep(0.0, 1.0, r)) * vPower;
-  float cut = 0.68 - density * 0.55;
-  float foam = smoothstep(cut, cut + 0.14, churn) * smoothstep(1.0, 0.72, r);
-  foam = max(foam, (1.0 - smoothstep(0.0, 0.34, r)) * 0.95);
+  // Chew the outline with low-frequency noise so the pool never reads as the
+  // disc it is actually built from.
+  float lobes = wFbm2(normalize(vLocal + 1e-4) * 2.4 + vec2(uTime * 0.09, 0.0)) * 0.5 + 0.5;
+  float rEff = r / mix(0.62, 1.05, lobes);
+
+  float density = (1.0 - smoothstep(0.0, 1.0, rEff)) * vPower;
+  float cut = 0.70 - density * 0.58;
+  float foam = smoothstep(cut, cut + 0.16, churn) * smoothstep(1.05, 0.55, rEff);
+  foam = max(foam, (1.0 - smoothstep(0.0, 0.42, rEff)) * 0.9);
 
   vec3 col = mix(uShallow, uFoam, foam);
   col *= (uSunLight * 0.42 * wSunShadow(vWPos) + uAmbient * 0.7) / PI * 2.4;
 
-  float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.0, 0.80, r);
+  float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.15, 0.55, rEff);
   if (alpha < 0.02) discard;
 
   gl_FragColor = vec4(col, alpha);
@@ -578,7 +589,7 @@ export class Waterfalls extends System {
 
     for (let f = 0; f < N; f++) {
       const fl = this.falls[f];
-      const count = Math.round(clamp(14 + fl.disc * 110 + fl.height * 1.1, 12, 130));
+      const count = Math.round(clamp(24 + fl.disc * 170 + fl.height * 1.6, 20, 220));
       const row = (f + 0.5) / N;
       // Time of flight sets the loop rate: a 60 m fall must take much longer
       // to traverse than a 6 m one or the scale reads wrong.
@@ -590,8 +601,8 @@ export class Waterfalls extends System {
         rate.push((1 / tof) * (burst ? 1.9 : 1.0) * (0.85 + rng() * 0.3));
         u0.push(burst ? 0.55 + rng() * 0.25 : rng() * 0.30);
         sideOff.push((rng() * 2 - 1) * 0.55);
-        size.push((0.22 + rng() * 0.55) * (0.6 + fl.width * 0.12) * (burst ? 1.5 : 1.0));
-        spread.push((0.5 + rng() * 1.6) * (0.6 + fl.disc * 2.2));
+        size.push((0.10 + rng() * 0.26) * (0.6 + fl.width * 0.10) * (burst ? 1.7 : 1.0));
+        spread.push((0.35 + rng() * 1.0) * (0.5 + fl.disc * 1.6));
         seed.push(rng());
         sideDir.push(fl.sideX, 0, fl.sideZ);
         const a = rng() * Math.PI * 2;
@@ -664,7 +675,7 @@ export class Waterfalls extends System {
         );
         phase.push(rng());
         rate.push(0.045 + rng() * 0.055);
-        size.push((4 + rng() * 9) * (0.6 + energy * 1.5));
+        size.push((2.4 + rng() * 5.0) * (0.5 + energy * 0.9));
         rise.push((3 + rng() * 9) * (0.5 + energy));
         const a = rng() * Math.PI * 2;
         drift.push(Math.cos(a) * spread * 0.5, 0, Math.sin(a) * spread * 0.5);

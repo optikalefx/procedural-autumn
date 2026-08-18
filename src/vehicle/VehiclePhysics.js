@@ -130,7 +130,7 @@ export class VehiclePhysics {
     // single hard bump turning into a launch.
     this.tuning = {
       stiffness: SPRING_K, zComp: 0.62, zRelax: 0.85,
-      travel: 0.26, maxForce: VEHICLE.mass * 9.81 * 0.7,
+      travel: 0.24, maxForce: VEHICLE.mass * 9.81 * 0.7,
     };
     for (let i = 0; i < WHEELS.length; i++) {
       this.vc.setWheelFrictionSlip(i, WHEELS[i].front ? 2.6 : 2.9);

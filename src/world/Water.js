@@ -23,7 +23,7 @@ import { System } from '../core/System.js';
 import { PALETTE, WORLD } from './WorldConfig.js';
 import { fogUniforms } from '../render/Atmosphere.js';
 import { WATER_NOISE, WATER_ENV } from '../shaders/water_common.js';
-import { clamp01 } from '../core/MathUtils.js';
+import { clamp01, smoothstep } from '../core/MathUtils.js';
 
 // Cross-channel profile, in half-widths. Denser near the banks where the foam
 // and the shoreline fade need the resolution; the outer ±1.5 columns run up the
@@ -34,7 +34,9 @@ const LAKE_TILE = 48;        // metres per lake quad
 
 // ── river surface ────────────────────────────────────────────────────────────
 const RIVER_VERT = /* glsl */`
+#include <common>
 #include <fog_pars_vertex>
+#include <shadowmap_pars_vertex>
 attribute float aSide;    // -1.5 … 1.5, in half-widths
 attribute float aDist;    // metres travelled downstream
 attribute float aFlow;    // 0..1 discharge
@@ -69,12 +71,25 @@ void main() {
   vWidth = aWidth;
   vTan   = aTan;
 
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+  vec3 objectNormal = vec3(0.0, 1.0, 0.0);
+  vec3 transformedNormal = normalMatrix * objectNormal;
+  vec4 worldPosition = modelMatrix * vec4(transformed, 1.0);
+  vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);
+  #include <shadowmap_vertex>
+
+  gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
 }`;
 
 const RIVER_FRAG = /* glsl */`
+#include <common>
+#include <packing>
 #include <fog_pars_fragment>
+#include <shadowmap_pars_fragment>
+// Three declares this one only for its own material types; getShadowMask()
+// references it regardless, so a ShaderMaterial has to bring its own.
+uniform bool receiveShadow;
+#include <shadowmask_pars_fragment>
 precision highp float;
 
 uniform float uTime;
@@ -97,8 +112,6 @@ varying vec2  vTan;
 
 ${WATER_NOISE}
 ${WATER_ENV}
-
-const float PI = 3.14159265;
 
 void main() {
   vec4 D = wWorldData(vWPos.xz);
@@ -150,10 +163,15 @@ void main() {
   float across = abs(bedAcross - bed) * 0.5;
   float distShore = depth / max(across, 0.055);
 
+  // The width of everything shore-related has to scale with the channel. A
+  // fixed one-metre band is the whole surface of a two-metre brook, which is
+  // how a quiet creek ends up rendered as solid whitewater.
+  float shoreBand = clamp(vWidth * 0.16, 0.30, 1.6);
+
   // 1. against the banks — the water piles up and aerates on the edge, but
-  //    only within a couple of metres of it
+  //    only within a fraction of a channel width of it
   float bankFoam = smoothstep(0.80, 1.35, abs(vSide)) * (0.15 + 0.55 * vFlow);
-  bankFoam *= 1.0 - smoothstep(0.8, 2.6, distShore);
+  bankFoam *= 1.0 - smoothstep(shoreBand * 0.8, shoreBand * 2.6, distShore);
 
   // 2. over obstacles — a bed rising into fast water is a standing wave. It is
   //    the *rise* that makes whitewater, not shallowness on its own; a calm
@@ -166,30 +184,39 @@ void main() {
   // 3. steep, fast reaches go white all over
   float rapids = smoothstep(0.28, 0.85, vTurb) * (0.35 + 0.65 * vFlow);
 
-  float drive = clamp(bankFoam * 0.75 + obstacle * 0.85 + rapids * 1.15, 0.0, 1.4);
-  float cut = uFoamCut - drive * 0.40;
+  float drive = clamp(bankFoam * 0.70 + obstacle * 0.80 + rapids * 0.95, 0.0, 1.0);
+  float cut = uFoamCut - drive * 0.34;
   float foam = smoothstep(cut, cut + 0.10, fn);
   foam = max(foam, smoothstep(cut + 0.12, cut + 0.21, fn2) * 0.7);
   foam *= smoothstep(0.04, 0.16, drive);
-  // A crisp lace of foam on the waterline itself — a metre wide, never more.
-  float lace = (1.0 - smoothstep(0.25, 1.3, distShore)) * shoreFade;
+  // A crisp lace of foam on the waterline itself, and only there: it needs the
+  // bank to break against, so it lives in the outer third of the channel.
+  float lace = (1.0 - smoothstep(shoreBand * 0.3, shoreBand * 1.3, distShore))
+             * shoreFade * smoothstep(0.30, 0.75, abs(vSide));
   foam = max(foam, lace * smoothstep(0.40, 0.56, fn) * 0.85);
   foam = clamp(foam, 0.0, 1.0);
 
   // ── colour ───────────────────────────────────────────────────────────────
-  float deepT = smoothstep(0.25, 3.2, depth);
+  float deepT = smoothstep(0.15, 2.2, depth);
   vec3 body = mix(uShallow, uDeep, deepT);
+  // Broad soft bands riding downstream. This is the painted-water read in the
+  // reference: the surface is never one flat tint, it is lanes of slightly
+  // different value drifting with the current.
+  float band = wFbm2(fp * vec2(0.26, 0.05) - vec2(0.0, uTime * speed * 0.18)) * 0.5 + 0.5;
+  body *= 0.80 + 0.40 * band;
   // Shallow water shows the bed through it; a warm bounce keeps the palette
   // from going cold and dead where the river is only ankle-deep.
   body = mix(body, uSubsurface * 1.05, (1.0 - deepT) * 0.35);
 
-  float shadow = wSunShadow(vWPos + vec3(0.0, 0.4, 0.0));
+  float shadow = min(getShadowMask(), wSunShadow(vWPos + vec3(0.0, 0.4, 0.0)));
   float ndl = max(dot(N, uSunDir), 0.0);
-  // The gain is not a fudge: what we see coming out of a shallow gravel-bed
-  // river is light that entered, scattered off the bed and came back up. A
-  // plain Lambert term on the surface normal renders that far too dark, and
-  // dark water is the fastest way to lose the reference's pale, airy channels.
-  vec3 lit = body * (uSunLight * ndl * shadow + uAmbient) / PI * uBodyGain;
+  // What leaves the surface is light that went *through* water, bounced off the
+  // bed and came back through it, so it is filtered twice. Squaring part of the
+  // body colour is what keeps a channel blue under a hard amber key instead of
+  // turning it into a ribbon of pink. The gain then puts the value back: dark
+  // water is the fastest way to lose the reference's pale, airy channels.
+  vec3 medium = body * mix(vec3(1.0), body * 1.7, 0.55);
+  vec3 lit = medium * (uSunLight * ndl * shadow + uAmbient) / PI * uBodyGain;
 
   // Fresnel-weighted environment. Rivers are broken up and half-aerated, so
   // they never mirror as hard as a lake does — and letting them try buries the
@@ -197,8 +224,10 @@ void main() {
   float fres = 0.024 + 0.976 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
   fres *= 0.62 * (1.0 - foam * 0.9) * (1.0 - vTurb * 0.45);
   vec3 R = reflect(-V, N);
-  vec3 env = wEnvReflect(vWPos, R);
-  vec3 col = mix(lit, env * 0.92, clamp(fres, 0.0, 0.42));
+  // Tinted by the medium for the same reason the body is: an untinted mirror
+  // of a cream horizon turns every grazing view of a river into a pink ribbon.
+  vec3 env = wEnvReflect(vWPos, R) * mix(vec3(1.0), medium * 2.4, 0.45) * 0.92;
+  vec3 col = mix(lit, env, clamp(fres, 0.0, 0.30));
 
   // Specular glints — tight, and killed inside foam so nothing sparkles on
   // what is meant to read as aerated white water.
@@ -225,17 +254,31 @@ void main() {
 
 // ── lake surface ─────────────────────────────────────────────────────────────
 const LAKE_VERT = /* glsl */`
+#include <common>
 #include <fog_pars_vertex>
+#include <shadowmap_pars_vertex>
 varying vec3 vWPos;
 void main() {
   vec3 transformed = position;
   vWPos = transformed;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+  vec3 objectNormal = vec3(0.0, 1.0, 0.0);
+  vec3 transformedNormal = normalMatrix * objectNormal;
+  vec4 worldPosition = modelMatrix * vec4(transformed, 1.0);
+  vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);
+  #include <shadowmap_vertex>
+  gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
 }`;
 
 const LAKE_FRAG = /* glsl */`
+#include <common>
+#include <packing>
 #include <fog_pars_fragment>
+#include <shadowmap_pars_fragment>
+// Three declares this one only for its own material types; getShadowMask()
+// references it regardless, so a ShaderMaterial has to bring its own.
+uniform bool receiveShadow;
+#include <shadowmask_pars_fragment>
 precision highp float;
 
 uniform float uTime;
@@ -252,8 +295,6 @@ varying vec3 vWPos;
 
 ${WATER_NOISE}
 ${WATER_ENV}
-
-const float PI = 3.14159265;
 
 void main() {
   vec4 D = wWorldData(vWPos.xz);
@@ -289,9 +330,10 @@ void main() {
   vec3 body = mix(uShallow, uDeep, deepT);
   body = mix(body, uSubsurface, (1.0 - deepT) * 0.30);
 
-  float shadow = wSunShadow(vWPos + vec3(0.0, 0.4, 0.0));
+  float shadow = min(getShadowMask(), wSunShadow(vWPos + vec3(0.0, 0.4, 0.0)));
   float ndl = max(dot(N, uSunDir), 0.0);
-  vec3 lit = body * (uSunLight * ndl * shadow + uAmbient) / PI * uBodyGain;
+  vec3 medium = body * mix(vec3(1.0), body * 1.7, 0.55);
+  vec3 lit = medium * (uSunLight * ndl * shadow + uAmbient) / PI * uBodyGain;
 
   // Near-mirror at grazing angles: this is the whole point of a lake.
   float fres = 0.020 + 0.980 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
@@ -300,7 +342,7 @@ void main() {
   // faithfully gives a hole full of cream sky. Water is a coloured medium:
   // tinting the reflection with the body keeps the surface reading as water
   // even when it is mostly showing the sky back at you.
-  vec3 env = wEnvReflect(vWPos, R) * mix(vec3(1.0), body * 2.6, 0.30);
+  vec3 env = wEnvReflect(vWPos, R) * mix(vec3(1.0), medium * 2.6, 0.38);
   vec3 col = mix(lit, env, clamp(fres * 0.80, 0.0, 0.78));
 
   // Broad sun path plus a tight glitter, both riding the ripple normal.
@@ -370,12 +412,14 @@ export class Water extends System {
       uDeep:         { value: PALETTE.waterDeep.clone() },
       uFoam:         { value: PALETTE.waterFoam.clone() },
       uSubsurface:   { value: PALETTE.waterSubsurface.clone() },
-      uBodyGain:     { value: 2.4 },
+      uBodyGain:     { value: 3.1 },
       uCoolTint:     { value: new THREE.Vector3(0.94, 1.00, 1.05) },
     };
 
     this.riverMaterial = new THREE.ShaderMaterial({
-      uniforms: Object.assign(fogUniforms(), this.shared, {
+      lights: true,
+      uniforms: Object.assign(THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
+                              fogUniforms(), this.shared, {
         uFoamCut: { value: 0.74 },
       }),
       vertexShader: RIVER_VERT,
@@ -387,7 +431,9 @@ export class Water extends System {
     });
 
     this.lakeMaterial = new THREE.ShaderMaterial({
-      uniforms: Object.assign(fogUniforms(), this.shared, {
+      lights: true,
+      uniforms: Object.assign(THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
+                              fogUniforms(), this.shared, {
         uWind: { value: new THREE.Vector2(0.62, 0.36) },
       }),
       vertexShader: LAKE_VERT,
@@ -489,9 +535,15 @@ export class Water extends System {
         stations[k].tz = dz / len;
         const ds = Math.max(b.d - a.d, 1e-3);
         const grad = Math.max(0, (a.y - b.y) / ds);
-        // narrow + high discharge = fast; steep = broken
-        const pinch = clamp01(stations[k].flow * 6 / Math.max(stations[k].w, 1));
-        stations[k].turb = clamp01(grad * 14 + pinch * 0.35);
+        // Calibration matters more than the formula here. A 2 % surface
+        // gradient is a lazy meander and a 20 % one is a genuine rapid; a
+        // linear ramp saturates every mountain creek in the map at "full
+        // whitewater" and renders the whole river network as white paint.
+        const steep = smoothstep(0.015, 0.20, grad);
+        // Discharge squeezed through a narrow channel is fast, and fast water
+        // over a rough bed aerates even where it is not steep.
+        const pinch = clamp01(stations[k].flow * 5 / Math.max(stations[k].w, 1.5));
+        stations[k].turb = clamp01(steep * 0.85 + pinch * 0.25);
       }
       // Smooth turbulence along the reach — foam does not switch on per-vertex.
       const sm = stations.map((s) => s.turb);
@@ -556,6 +608,7 @@ export class Water extends System {
       geo.computeBoundingSphere();
       geo.boundingSphere.radius *= 1.1;
       const mesh = new THREE.Mesh(geo, this.riverMaterial);
+      mesh.receiveShadow = true;
       mesh.renderOrder = 6;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();
@@ -630,6 +683,7 @@ export class Water extends System {
       geo.setIndex(new THREE.BufferAttribute(idx, 1));
       geo.computeBoundingSphere();
       const mesh = new THREE.Mesh(geo, this.lakeMaterial);
+      mesh.receiveShadow = true;
       mesh.renderOrder = 4;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();

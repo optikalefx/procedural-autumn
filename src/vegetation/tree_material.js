@@ -62,37 +62,62 @@ uniform float uAmbient;
 uniform vec3  uTransTint;
 uniform float uTransStrength;
 uniform float uBands;
+uniform float uCanopyGain;
 
 vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow) {
   float ndl = dot(N, uSunDir);
 
   // Wrapped diffuse: a canopy is a translucent mass, so light bleeds well past
   // the terminator. A hard N·L makes it read as painted plastic.
-  float wrap = clamp((ndl + 0.44) / 1.44, 0.0, 1.0);
+  float wrap = clamp((ndl + 0.32) / 1.32, 0.0, 1.0);
   // Gentle posterisation — the reference art bands, it does not ramp.
   wrap = mix(wrap, floor(wrap * uBands + 0.5) / uBands, 0.38);
   wrap *= mix(0.18, 1.0, shadow);
 
-  vec3 direct = uSunColor * wrap * mix(0.50, 1.0, ao);
-  vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5) * uAmbient * ao;
+  // uCanopyGain < 1 on purpose. A leaf mass shaded with a wrapped diffuse
+  // collects far more light than the terrain's N·L at the same sun angle, so
+  // matching the two numerically leaves the canopy a full stop brighter than
+  // the meadow it stands in — which is why distant gold stands were reading as
+  // cream popcorn instead of as gold. The canopy must sit *at or below* the
+  // sunlit ground, exactly as it does in the reference plates.
+  vec3 direct = uSunColor * wrap * mix(0.28, 0.94, ao) * uCanopyGain;
+  // Sky dominates from above: without the extra lift the tops of crowns go as
+  // dark as their undersides and the canopy loses all vertical form.
+  vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5)
+            * uAmbient * ao * (0.80 + 0.48 * clamp(N.y, 0.0, 1.0));
 
   // Transmission. The money shot: at golden hour the far side of every crown
   // lights up like stained glass. Strongest where we look into the sun, where
   // the surface faces away from it, and where the clump is thin.
   float toward = clamp(dot(V, uSunDir), 0.0, 1.0);
   float back = clamp(-ndl, 0.0, 1.0);
-  float trans = pow(toward, 2.4) * (0.30 + 0.70 * back) * uTransStrength;
+  // The base term matters more than the peak. A canopy with the sun behind it
+  // glows everywhere, not only where you are staring into the disc; keying
+  // transmission purely off "toward" lights one tree and leaves the rest of the
+  // backlit stand as brown cardboard.
+  float trans = (0.34 + 0.66 * pow(toward, 1.7)) * (0.22 + 0.78 * back) * uTransStrength;
   trans *= mix(0.25, 1.0, shadow) * thin;
-  // Transmitted light is the leaf's own colour pushed hot and *brightened*.
-  // Multiplying albedo by a tint below 1 (the obvious formulation) makes a
-  // backlit crimson maple read as brown mud instead of stained glass.
-  vec3 transC = uSunColor * (albedo * uTransTint + albedo * albedo * 0.6);
+  // Normalise by the leaf's own brightness. A crimson maple reflects almost
+  // nothing and needs the full glow; a gold aspen is already near white, and
+  // boosting it the same amount drives it through the top of the tone curve —
+  // which reads as washed-out cream, not as light. This is what keeps a distant
+  // gold stand *coloured* instead of turning it into popcorn.
+  float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+  trans /= 1.0 + lum * 2.4;
+  vec3 transC = uSunColor * albedo * uTransTint;
 
   // Rim: a thin bright edge where the crown turns away — cheap silhouette pop.
   float rim = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 3.5)
             * clamp(toward * 1.4, 0.0, 1.0) * shadow;
 
-  return albedo * (direct + hemi) + transC * trans + uSunColor * albedo * rim * 0.5;
+  vec3 col = albedo * (direct + hemi) + transC * trans + uSunColor * albedo * rim * 0.5;
+
+  // Per-channel shoulder before the global tone curve. Sunlit gold foliage plus
+  // transmission lands well above 1.0 in two channels at once, and AgX resolves
+  // that to cream — a whole hillside of aspen turning to popcorn. Rolling each
+  // channel off separately keeps the channels apart, so the mass stays yellow
+  // instead of white while still reading as "bright".
+  return col / (1.0 + col * 0.34);
 }
 `;
 
@@ -123,9 +148,10 @@ export function makeSharedUniforms() {
     uSkyColor:      { value: PALETTE.ambientSky.clone() },
     uGroundColor:   { value: PALETTE.ambientGround.clone() },
     uAmbient:       { value: 0.55 },
-    uTransTint:     { value: new THREE.Color(2.30, 1.55, 0.72) },
-    uTransStrength: { value: 1.6 },
+    uTransTint:     { value: new THREE.Color(1.62, 1.10, 0.58) },
+    uTransStrength: { value: 1.9 },
     uBands:         { value: 4.0 },
+    uCanopyGain:    { value: 0.82 },
   };
 }
 
@@ -396,6 +422,22 @@ float h21(vec2 p) {
   return fract(p.x * p.y);
 }
 
+/** One scale of birch lenticels: lens-shaped horizontal dashes on a jittered grid. */
+float lenticel(vec2 uv, vec2 freq, float density, float strength) {
+  vec2 g = uv * freq;
+  vec2 cell = floor(g);
+  vec2 f = fract(g) - 0.5;
+  float r = h21(cell);
+  if (r > density) return 0.0;
+  f.x -= (h21(cell + 3.7) - 0.5) * 0.55;
+  f.y -= (h21(cell + 9.1) - 0.5) * 0.6;
+  float w = 0.16 + 0.28 * h21(cell + 5.3);      // half-length
+  float t = 0.030 + 0.048 * h21(cell + 7.9);    // half-thickness at the middle
+  float ex = clamp(abs(f.x) / w, 0.0, 1.0);
+  float th = t * sqrt(max(0.0, 1.0 - ex * ex)); // lens profile
+  return strength * smoothstep(th, th * 0.3, abs(f.y)) * (1.0 - smoothstep(0.80, 1.0, ex));
+}
+
 void main() {
   // pat is the bark *pattern*, kept separate from the base colour so the
   // impostor bake can store shading without baking a species hue into it.
@@ -406,19 +448,13 @@ void main() {
   if (style < 0.5) {
     // Birch / aspen: near-white paper bark with dark horizontal lenticels and
     // a smudged, darker base. The high-value trunk is a signature of the plates.
-    vec2 cell = vec2(floor(vUv.x * 7.0), floor(vUv.y * 3.2));
-    float r = h21(cell);
-    float len = 0.10 + 0.55 * h21(cell + 3.7);
-    float x = fract(vUv.x * 7.0);
-    float y = fract(vUv.y * 3.2);
-    float scar = step(r, 0.34)
-               * smoothstep(0.5 + len * 0.5, 0.5 + len * 0.5 - 0.06, abs(x - 0.5) + 0.5)
-               * smoothstep(0.16, 0.09, abs(y - 0.5));
-    // Knots: a few dark chevrons where a limb was shed.
-    float knot = step(h21(cell * 1.7 + 9.1), 0.06) * smoothstep(0.32, 0.10, length(vec2(x, y) - 0.5));
-    pat = mix(pat, pat * 0.20, clamp(scar * 0.85 + knot, 0.0, 1.0));
-    pat = mix(pat * 0.42, pat, smoothstep(0.0, 1.6, vHeight));
-    pat *= 0.94 + 0.12 * h21(vUv * 40.0);
+    // A lenticel is a lens, not a rectangle — tapering the dash at both ends is
+    // the whole difference between "birch" and "trunk with black stickers".
+    float scar = lenticel(vUv, vec2(6.0, 2.6), 0.42, 1.0)
+               + lenticel(vUv, vec2(11.0, 6.5), 0.30, 0.55);
+    pat = mix(pat, pat * 0.16, clamp(scar, 0.0, 1.0));
+    pat = mix(pat * 0.46, pat, smoothstep(0.0, 1.8, vHeight));
+    pat *= 0.95 + 0.10 * h21(vUv * 40.0);
   } else if (style < 1.5) {
     // Rough bark: vertical ridges, dark in the fissures.
     float ridge = sin(vUv.x * 44.0 + h21(vec2(floor(vUv.y * 6.0), 1.0)) * 6.0) * 0.5 + 0.5;
@@ -587,7 +623,10 @@ void main() {
   float ao = clamp(t.r + t.g + t.b, 0.15, 1.0);
   vec3 N = normalize(vN);
   vec3 V = normalize(vWorld - cameraPosition);
-  vec3 col = canopyShade(albedo, N, V, ao, 0.8, 1.0);
+  // Distant canopy reads as a mass that is slightly darker than the sunlit
+  // ground, never brighter — impostors lit as if fully exposed turn a fogged
+  // hillside into popcorn instead of letting it recede.
+  vec3 col = canopyShade(albedo, N, V, ao, 0.5, 0.8) * 0.78;
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>

@@ -1,6 +1,7 @@
 // Multi-view capture in ONE browser session, resilient to Vite full-reloads
 // (peers are editing the same tree, which reloads the page mid-run).
 import { chromium } from 'playwright';
+import { acquire } from '../_lock.mjs';
 import { mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 
@@ -25,15 +26,18 @@ const list = (arg('views','hero drive meadow forest river backlit dawn low lowsu
 const W=parseInt(arg('w','1600'),10), H=parseInt(arg('h','900'),10);
 const pause = parseFloat(arg('pause','0'));
 const hourOv = arg('hour', null);
+const RES = arg('res', null);
+const URL = 'http://localhost:5178' + (RES ? ('?res='+RES) : '');
 
 mkdirSync(resolve(dir),{recursive:true});
+await acquire('grass-cap');
 const browser = await chromium.launch({args:['--use-gl=angle','--use-angle=metal','--ignore-gpu-blocklist','--disable-frame-rate-limit']});
 const page = await browser.newPage({viewport:{width:W,height:H},deviceScaleFactor:1});
 page.on('pageerror', e=>console.log('PAGEERR', e.message));
 page.on('console', m=>{ if(m.type()==='error') console.log('CONSOLE', m.text().slice(0,200)); });
 
 async function ready(){
-  await page.goto('http://localhost:5178',{waitUntil:'domcontentloaded'});
+  await page.goto(URL,{waitUntil:'domcontentloaded'});
   await page.waitForFunction(()=>window.__ready===true,null,{timeout:240000,polling:250});
 }
 await ready();

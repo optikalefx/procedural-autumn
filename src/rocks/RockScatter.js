@@ -23,6 +23,9 @@ import { NoiseField } from '../core/Noise.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
+/** Metres of draw distance per metre of rock radius. Rocks.js reads this too. */
+export const VIS_PER_METRE = 190;
+
 /** Power-law size pick: many small, few large. `k` > 1 biases small. */
 const powSize = (rng, lo, hi, k) => lo + (hi - lo) * Math.pow(rng(), k);
 
@@ -78,15 +81,22 @@ export class RockScatter {
     const depth = W.getWaterDepth(x, z);
     const hard = this.hardness(x, z);
 
-    if (slope > 1.95) return { kind: 'cliff', s: clamp01((slope - 1.95) * 0.9), h, slope, hard };
+    if (slope > 1.55) return { kind: 'cliff', s: clamp01((slope - 1.5) * 1.0), h, slope, hard };
 
     if (river > 0.05 || depth > 0.02) {
       return { kind: 'riverbed', s: clamp01(river * 2.2 + 0.35), h, slope, hard };
     }
 
     const cliffAbove = this._uphill(x, z, up);
-    if (slope > 0.5 && slope < 2.1 && cliffAbove > 2.0) {
-      return { kind: 'talus', s: clamp01((cliffAbove - 2.0) * 0.8) * clamp01(1.6 - slope * 0.5), h, slope, hard };
+    if (slope > 0.5 && slope < 2.1 && cliffAbove > 1.7) {
+      return { kind: 'talus', s: clamp01((cliffAbove - 1.7) * 0.9) * clamp01(1.6 - slope * 0.5), h, slope, hard };
+    }
+
+    // Upper mountain flanks. Without this the terrain shader paints a 40-degree
+    // massif as one smooth ramp and the whole skyline reads as a matte
+    // painting; these are the outcrop bands that give it a real edge.
+    if (slope > 0.95 && h > 110) {
+      return { kind: 'crag', s: clamp01((slope - 0.9) * 1.2) * smoothstep(105, 190, h), h, slope, hard };
     }
 
     if (h > 195 && slope > 0.45) {
@@ -101,7 +111,7 @@ export class RockScatter {
     // the mask that stops the meadow reading as evenly sprinkled gravel.
     const field = this.noise.fbm(x * 0.0034, z * 0.0034, 3, 2.1, 0.5, 1) * 0.5 + 0.5
                 + this.noise.fbm(x * 0.011, z * 0.011, 2, 2.0, 0.5, 1) * 0.22;
-    const m = smoothstep(0.50, 0.80, field);
+    const m = smoothstep(0.55, 0.84, field);
     if (m > 0.02 && slope < 0.95) return { kind: 'erratic', s: m, h, slope, hard };
     return null;
   }
@@ -120,7 +130,7 @@ export class RockScatter {
     // Four candidate sites per cell; each that lands on an active process
     // becomes a cluster. Cells that land on nothing stay genuinely empty —
     // negative space is what makes the populated ground read as deliberate.
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 5; i++) {
       const x = ox + rng() * cellSize;
       const z = oz + rng() * cellSize;
       if (!W.isInBounds(x, z)) continue;
@@ -132,6 +142,7 @@ export class RockScatter {
   }
 
   _cluster(x, z, c, up, rng, minSize, out) {
+    this._kind = c.kind;          // tagged onto every instance, for debugging
     switch (c.kind) {
       case 'riverbed': return this._clusterRiver(x, z, c, rng, minSize, out);
       case 'talus':    return this._clusterTalus(x, z, c, up, rng, minSize, out);
@@ -139,6 +150,7 @@ export class RockScatter {
       case 'scree':    return this._clusterScree(x, z, c, rng, minSize, out);
       case 'erratic':  return this._clusterErratic(x, z, c, rng, minSize, out);
       case 'cliff':    return this._clusterCliff(x, z, c, rng, minSize, out);
+      case 'crag':     return this._clusterCrag(x, z, c, up, rng, minSize, out);
       default: return;
     }
   }
@@ -148,7 +160,7 @@ export class RockScatter {
   /** Rapids: big framing slabs on the banks, worn cobbles in the channel. */
   _clusterRiver(x, z, c, rng, minSize, out) {
     const W = this.world;
-    const n = 6 + ((rng() * 12) | 0);
+    const n = 5 + ((rng() * 10) | 0);
     const R = 9 + rng() * 16;
     for (let i = 0; i < n; i++) {
       const a = rng() * Math.PI * 2;
@@ -163,13 +175,20 @@ export class RockScatter {
 
       const roll = rng();
       let arch, size;
-      if (roll < 0.10 && depth < 0.9) { arch = 'slab'; size = powSize(rng, 1.3, 3.4, 1.5); }
-      else if (roll < 0.20) { arch = 'hero'; size = powSize(rng, 1.6, 2.8, 1.8); }
-      else if (roll < 0.55) { arch = 'boulder'; size = powSize(rng, 0.55, 1.9, 2.0); }
-      else { arch = 'rubble'; size = powSize(rng, 0.16, 0.62, 1.8); }
+      if (roll < 0.12 && depth < 0.9) { arch = 'slab'; size = powSize(rng, 1.2, 3.2, 1.5); }
+      else if (roll < 0.16) { arch = 'hero'; size = powSize(rng, 1.8, 3.0, 1.8); }
+      else if (roll < 0.52) { arch = 'boulder'; size = powSize(rng, 0.45, 2.1, 1.9); }
+      else { arch = 'rubble'; size = powSize(rng, 0.12, 0.50, 2.0); }
       if (size * 2 < minSize) continue;
+      // A rock that never breaks the surface is invisible and still costs a
+      // draw. Rather than delete the whole channel, grow whatever the river
+      // gives us until it stands proud of the water; only true pools stay bare.
+      if (depth > 0.05) {
+        if (depth > 2.4) continue;
+        size = Math.max(size, depth * 1.15 + 0.25);
+      }
       // Water-worn rock lies on its flattest face and barely tips.
-      this._place(px, pz, arch, size, rng, 0.30, 0.10, out);
+      this._place(px, pz, arch, size, rng, 0.30, 0.10, out, depth > 0.05 ? 0.06 : 0.14);
     }
   }
 
@@ -260,9 +279,12 @@ export class RockScatter {
   /** Glacial erratic in the meadow: one hero and its court. */
   _clusterErratic(x, z, c, rng, minSize, out) {
     const W = this.world;
-    const heroSize = powSize(rng, 1.6, 4.4, 1.7) * (0.6 + c.s * 0.6);
+    const heroSize = powSize(rng, 1.3, 4.4, 1.9) * (0.6 + c.s * 0.6);
     if (heroSize * 2 >= minSize && W.getWaterDepth(x, z) < 0.3) {
-      this._place(x, z, rng() < 0.62 ? 'hero' : 'boulder', heroSize, rng, 0.22, 0.10, out);
+      // The compound hero mesh is the most expensive thing this system draws;
+      // it is reserved for genuinely house-sized erratics.
+      const arch = (heroSize > 2.5 && rng() < 0.45) ? 'hero' : 'boulder';
+      this._place(x, z, arch, heroSize, rng, 0.22, 0.10, out);
     }
     const n = 2 + ((rng() * 7 * c.s) | 0);
     const R = heroSize * 2.4 + 6 + rng() * 14;
@@ -301,13 +323,61 @@ export class RockScatter {
       if (slope < 1.5) continue;
 
       const roll = rng();
-      let arch, size, sink;
-      if (roll < 0.55) { arch = 'ledge'; size = powSize(rng, 1.2, 4.0, 1.3); sink = 0.30; }
-      else if (roll < 0.80) { arch = 'slab'; size = powSize(rng, 0.9, 2.8, 1.4); sink = 0.34; }
-      else { arch = 'standing'; size = powSize(rng, 0.7, 2.0, 1.5); sink = 0.28; }
+      let arch, size;
+      if (roll < 0.55) { arch = 'ledge'; size = powSize(rng, 1.6, 5.5, 1.2); }
+      else if (roll < 0.80) { arch = 'slab'; size = powSize(rng, 1.1, 3.6, 1.3); }
+      else { arch = 'standing'; size = powSize(rng, 0.9, 2.8, 1.4); }
       if (size * 2 < minSize) continue;
-      // Aligned hard to the face so the block reads as a ledge cut out of it.
-      this._place(px, pz, arch, size, rng, 0.88, 0.12, out, sink);
+      // Kept near horizontal and shoved back into the face: an overhang is a
+      // flat bed sticking OUT of a slope. Aligning it to the slope normal
+      // instead just wallpapers the hill with tilted plates.
+      this._place(px, pz, arch, size, rng, 0.20, 0.16, out, 0.05, 'centre', 0.55);
+    }
+  }
+
+  /**
+   * Crag band: outcrops stepping along the strike of a steep flank, the way a
+   * resistant bed weathers out into a line of benches and towers. These are the
+   * big shapes that carry the mountain silhouette from 400 m away, so they are
+   * sized to read at that range and given a long visible radius.
+   */
+  _clusterCrag(x, z, c, up, rng, minSize, out) {
+    const W = this.world;
+    let sx = -up.z, sz = up.x;                    // strike = across the slope
+    if (Math.abs(sx) + Math.abs(sz) < 0.1) { sx = 1; sz = 0; }
+    const n = 4 + ((rng() * 7) | 0);
+    const step = 7 + rng() * 12;
+    // Harder rock, bigger crag. This is what ties the outcrops to the bedding.
+    const scale = 0.75 + c.hard * 1.15 + c.s * 0.5;
+    let px = x, pz = z;
+    for (let i = 0; i < n; i++) {
+      px += sx * step + (rng() * 2 - 1) * 5;
+      pz += sz * step + (rng() * 2 - 1) * 5;
+      // Drift a little up or down the face so the band is not a drawn line.
+      const drift = (rng() * 2 - 1) * 9;
+      px += up.x * drift; pz += up.z * drift;
+      if (!W.isInBounds(px, pz)) break;
+      const slope = W.getSlope(px, pz);
+      if (slope < 0.75) break;                    // the band dies out on the bench
+
+      const roll = rng();
+      let arch, size;
+      if (roll < 0.42) { arch = 'ledge'; size = powSize(rng, 1.4, 5.0, 1.2) * scale; }
+      else if (roll < 0.72) { arch = 'slab'; size = powSize(rng, 1.1, 3.8, 1.3) * scale; }
+      else if (roll < 0.90) { arch = 'standing'; size = powSize(rng, 1.0, 3.2, 1.3) * scale; }
+      else { arch = 'talus'; size = powSize(rng, 0.8, 2.4, 1.4) * scale; }
+      if (size * 2 < minSize) continue;
+      this._place(px, pz, arch, size, rng, 0.24, 0.20, out, 0.06, 'centre', 0.45);
+
+      // Debris shed off the band, on the ground just below it.
+      if (rng() < 0.5) {
+        const dx = px - up.x * (size * 2.5 + rng() * 8);
+        const dz = pz - up.z * (size * 2.5 + rng() * 8);
+        const ds = powSize(rng, 0.3, 1.4, 1.5) * scale;
+        if (W.isInBounds(dx, dz) && ds * 2 >= minSize) {
+          this._place(dx, dz, rng() < 0.5 ? 'talus' : 'rubble', ds, rng, 0.6, 0.7, out);
+        }
+      }
     }
   }
 
@@ -320,18 +390,31 @@ export class RockScatter {
    *               ground sample under its footprint. The min-of-samples is what
    *               guarantees nothing ever hovers on a convex ridge.
    */
-  _place(x, z, arch, size, rng, align, tumble, out, sink = 0.14) {
+  _place(x, z, arch, size, rng, align, tumble, out, sink = 0.14, mode = 'min', shove = 0) {
     const W = this.world;
     const n = this._n;
     W.getNormal(x, z, n, Math.max(1.0, size * 0.8));
 
-    // Lowest ground under the footprint.
-    let minH = W.getHeight(x, z);
-    const fr = size * 0.85;
-    for (let k = 0; k < 4; k++) {
-      const a = (k / 4) * Math.PI * 2 + 0.4;
-      const hh = W.getHeight(x + Math.cos(a) * fr, z + Math.sin(a) * fr);
-      if (hh < minH) minH = hh;
+    // Push the rock back into the hill so only its outer part protrudes.
+    if (shove > 0) {
+      const L = Math.hypot(n.x, n.z);
+      if (L > 1e-4) { x -= (n.x / L) * size * shove; z -= (n.z / L) * size * shove; }
+    }
+
+    let minH;
+    if (mode === 'centre') {
+      // On a steep face the lowest sample under the footprint is metres below
+      // the centre, so min-of-samples would bury the block completely.
+      minH = W.getHeight(x, z);
+    } else {
+      // Lowest ground under the footprint: guarantees nothing hovers on a ridge.
+      minH = W.getHeight(x, z);
+      const fr = size * 0.85;
+      for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * Math.PI * 2 + 0.4;
+        const hh = W.getHeight(x + Math.cos(a) * fr, z + Math.sin(a) * fr);
+        if (hh < minH) minH = hh;
+      }
     }
 
     const up = this._up.set(0, 1, 0).lerp(n, align).normalize();
@@ -357,6 +440,7 @@ export class RockScatter {
       sy: size * (0.84 + rng() * 0.34),
       sz: size * (0.86 + rng() * 0.30),
       arch,
+      kind: this._kind,
       variant: 0,                       // assigned by the caller from the library
       size,
       wet: clamp01(depth * 1.4 + river * 0.30),
@@ -364,9 +448,10 @@ export class RockScatter {
       tint: rng() * 2 - 1,
       waterY: waterY === null ? -9999 : waterY,
       frost: smoothstep(200, 285, h),
-      // Visible radius: heroes carry for half a kilometre, cobbles do not
-      // survive past the near field. This is most of the perf story.
-      vis: clamp(size * 210, 85, 780),
+      // Visible radius. Paired with Rocks._minSizeFor: a cell far away is only
+      // asked for rocks big enough that this radius still reaches the camera,
+      // so nothing is ever generated that cannot be seen.
+      vis: clamp(size * VIS_PER_METRE, 80, 900),
       rnd: rng(),
     });
   }

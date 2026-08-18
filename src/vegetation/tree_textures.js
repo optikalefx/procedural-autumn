@@ -70,30 +70,30 @@ function drawClump(g, ox, oy, size, rng, opts) {
 function drawNeedleFan(g, ox, oy, size, rng) {
   const cx = ox + size * 0.5;
   const top = oy + size * 0.16;
-  const strands = 30;
+  const strands = 22;
   for (let s = 0; s < strands; s++) {
     const side = s & 1 ? 1 : -1;
     const f = (s >> 1) / (strands / 2 - 1);          // 0 centre .. 1 outermost
     const spread = 0.20 + 1.05 * f + (rng() - 0.5) * 0.14;
     const len = size * (0.52 - 0.16 * f) * (0.8 + 0.4 * rng());
     const dx = Math.sin(spread) * side, dy = Math.cos(spread);
-    const steps = 14;
+    const steps = 9;
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
       // Quadratic droop: boughs sag under their own weight.
       const px = cx + dx * len * t;
       const py = top + dy * len * t * 0.55 + t * t * size * 0.30;
-      const r = size * 0.030 * (1 - 0.55 * t) * (0.7 + 0.6 * rng());
+      const r = size * 0.052 * (1 - 0.5 * t) * (0.7 + 0.6 * rng());
       mark(g, px, py, r, 2.6 + rng() * 1.6, Math.atan2(dy, dx) + (rng() - 0.5) * 0.5,
            0.22 + 0.55 * rng());
     }
   }
   // A denser wedge near the trunk so the whorl is not see-through at its root.
-  for (let i = 0; i < 90; i++) {
+  for (let i = 0; i < 34; i++) {
     const t = Math.pow(rng(), 0.6);
     const a = (rng() - 0.5) * 1.5;
     mark(g, cx + Math.sin(a) * size * 0.22 * t, top + size * 0.16 * t + size * 0.05,
-         size * 0.028 * (0.6 + 0.8 * rng()), 2.2, a, 0.2 + 0.4 * rng());
+         size * 0.055 * (0.6 + 0.8 * rng()), 2.2, a, 0.2 + 0.4 * rng());
   }
 }
 
@@ -108,15 +108,29 @@ export function buildClusterAtlas(seed = 7, px = 256) {
   const g = cv.getContext('2d', { willReadFrequently: true });
   g.clearRect(0, 0, size, size);
 
+  // Two passes per tile, and the second one is what sells it. A single mark
+  // size gives you either a smooth lobe (marks too big) or a disc whose stipple
+  // the mip chain erases by 25 m (marks too small). So: a coarse pass builds a
+  // solid, lobed mass, then a fine pass sprays past its rim. That is exactly
+  // what the reference plates paint — a definite mass with a fizzing edge.
   drawClump(g, 0, 0, px, mulberry32(seed + 11), {
-    count: 1100, corePull: 0.55, markSize: 0.0165, rimShrink: 0.40, elong: 1.5,
+    count: 46, corePull: 0.60, markSize: 0.082, rimShrink: 0.34, elong: 1.4, spread: 0.86,
+  });
+  drawClump(g, 0, 0, px, mulberry32(seed + 12), {
+    count: 260, corePull: 0.80, markSize: 0.031, rimShrink: 0.30, elong: 1.7, spread: 1.14,
   });
   drawClump(g, px, 0, px, mulberry32(seed + 23), {
-    count: 780, corePull: 0.50, markSize: 0.0225, rimShrink: 0.36, elong: 0.7,
+    count: 40, corePull: 0.55, markSize: 0.100, rimShrink: 0.30, elong: 0.8, spread: 0.86,
+  });
+  drawClump(g, px, 0, px, mulberry32(seed + 24), {
+    count: 190, corePull: 0.85, markSize: 0.040, rimShrink: 0.26, elong: 1.1, spread: 1.12,
   });
   drawNeedleFan(g, 0, px, px, mulberry32(seed + 37));
   drawClump(g, px, px, px, mulberry32(seed + 53), {
-    count: 380, corePull: 0.88, markSize: 0.0185, rimShrink: 0.22, elong: 1.6, spread: 1.08,
+    count: 16, corePull: 0.95, markSize: 0.085, rimShrink: 0.10, elong: 1.6, spread: 0.9,
+  });
+  drawClump(g, px, px, px, mulberry32(seed + 54), {
+    count: 150, corePull: 1.05, markSize: 0.033, rimShrink: 0.10, elong: 1.8, spread: 1.16,
   });
 
   // Second pass in JS: write the radial core mask into G. Doing it here rather

@@ -35,7 +35,7 @@ export function createRockMaterial() {
     uMoss:       { value: new THREE.Color().setHex(0x5d7440, THREE.SRGBColorSpace) },
     uBounce:     { value: PALETTE.ambientGround.clone() },
     uSunDir:     { value: new THREE.Vector3(0.4, 0.6, 0.3) },
-    uShadowTint: { value: new THREE.Vector3(0.84, 0.88, 1.16) },
+    uShadowTint: { value: new THREE.Vector3(0.91, 0.94, 1.10) },
     uAOStrength: { value: 0.55 },
     uTime:       { value: 0 },
   };
@@ -133,7 +133,7 @@ export function createRockMaterial() {
         // ── bedding planes ────────────────────────────────────────────────
         // Horizontal in world space so a boulder train shares one stratigraphy.
         // Frequency falls off with rock size or cobbles turn into liquorice.
-        float bedF = 1.5 / (0.55 + size * 0.45);
+        float bedF = 1.15 / (0.5 + size * 0.5);
         float bed  = sin( vWPos.y * bedF + rnoise( vWPos.xz * 0.05 ) * 3.0 );
         bed *= 1.0 - abs( N.y );          // only visible on near-vertical faces
 
@@ -145,12 +145,12 @@ export function createRockMaterial() {
         // first pass read as wet slate.
         float val = 0.52
                   + up * 0.26                 // upward faces catch the sky
-                  + facet * 0.18
-                  + bed * 0.05
+                  + facet * 0.13
+                  + bed * 0.075
                   + tint * 0.09
                   - (1.0 - hN) * 0.06;        // bases sit a little darker
         vec3 rock = mix( uRockMid, uRockLit, clamp( val, 0.0, 1.0 ) );
-        rock = mix( rock, uRockShadow, ( 1.0 - ao ) * 0.42 );
+        rock = mix( rock, uRockShadow, ( 1.0 - ao ) * 0.34 );
         // A whisper of warm grey keeps the lavender from going synthetic.
         rock = mix( rock, uRockWarm, 0.06 + tint * 0.04 );
 
@@ -197,7 +197,7 @@ export function createRockMaterial() {
 
         // Cool violet drift on unlit planes — a tint, never a hue replacement.
         float shade = 1.0 - smoothstep( 0.0, 0.34, ndl );
-        gl_FragColor.rgb = mix( gl_FragColor.rgb, gl_FragColor.rgb * uShadowTint, shade * 0.45 );
+        gl_FragColor.rgb = mix( gl_FragColor.rgb, gl_FragColor.rgb * uShadowTint, shade * 0.30 );
       }
       #include <dithering_fragment>`);
   };

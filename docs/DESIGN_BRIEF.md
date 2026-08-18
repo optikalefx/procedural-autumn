@@ -37,6 +37,72 @@ replacement — a shadow that has become saturated blue is a bug, not the style.
 | Water | `#9dc4d8` shallow → `#2f5f86` deep, white foam | |
 | Sky | cream `#fbe3c8` at horizon → `#6f9fd8` zenith | |
 
+### CORRECTION — read this, it supersedes earlier guidance
+
+Direct feedback from the art director on the first playable build:
+
+> "Yours is too realistic, and not as flat or as soft as the references. The
+> reference art is much softer, less realistic, more cell-shaded. It could also
+> be your shadows are too sharp / too much contrast."
+
+This was correct, and it has been addressed globally rather than per-system:
+
+**`src/render/Stylize.js` now patches Three's direct-lighting term for every
+material in the game.** Diffuse response is wrapped (a very wide, soft
+terminator), gently quantised into bands, floored so nothing goes fully unlit,
+and direct specular is scaled down toward matte. You get this automatically on
+any lit material — do not hand-roll your own toon shading, and do not fight it
+with per-material specular hacks. If it genuinely breaks something specific,
+say so and the global parameters will be adjusted.
+
+Shadows are now soft (`shadow.radius` 8, 24 blur samples) and deliberately
+**not** black (`sun.shadow.intensity ≈ 0.52`). A tree's shadow on gold meadow
+should read as a soft, warm, semi-transparent shape.
+
+**Shadows are warm, not violet.** Earlier guidance overplayed the cool shadow.
+Measuring the reference plates, blue/violet/magenta together account for about
+**1%** of chromatic pixels. An intermediate build of ours hit 20%. The cool note
+belongs to *distant rock and atmospheric haze*, which the shared Atmosphere
+supplies — not to every shaded surface in the frame.
+
+### Measured targets (use `tools/colorstats.mjs`)
+
+"Flat and soft" does **not** mean low contrast or desaturated — measurement
+proved the opposite. Across the five reference plates:
+
+| metric | reference range | meaning |
+|---|---|---|
+| `lumaMean` | 0.37 – 0.68 | bright; a dark frame is wrong |
+| `lumaP05` | 0.16 – 0.42 | blacks are *lifted*, never crushed |
+| `lumaP95` | 0.60 – 0.93 | highlights reach near-white |
+| `lumaRange` | 0.41 – 0.71 | substantial range, not flat |
+| `contrastStd` | 0.13 – 0.22 | |
+| `chromaMean` | 0.28 – 0.42 | **highly saturated** |
+| `neutralPct` | 0 – 28 % | few grey pixels |
+| `vividPct` | 31 – 79 % | most of the frame is strongly coloured |
+
+Hue is overwhelmingly red/orange/yellow — about 95% of chromatic pixels.
+
+What actually makes the reference read as flat and cel-shaded is **large areas
+of uniform colour with few shading gradients**, not low contrast and not low
+saturation. Aim for broad flat masses of saturated colour separated by soft
+edges.
+
+```bash
+node tools/colorstats.mjs "reference-art/Zight 2026-08-18 at 10.28.48 AM.jpg" shots/mine/meadow.png
+```
+
+Check your work against that table. If your `chromaMean` is under 0.25 or your
+`lumaMean` is under 0.35, the frame is wrong regardless of how it feels.
+
+### Tone mapping
+
+Tone mapping happens **in the post chain** (`src/render/PostFX.js`), after bloom
+and depth of field, before the grade. The renderer's own tone mapping is off.
+The curve is Khronos PBR Neutral, not AgX — AgX is a filmic curve that
+deliberately desaturates highlights, which drains the gold out of every sunlit
+surface. Scene exposure lives on `engine.exposure`.
+
 ### Rendering style
 - **Painterly, not photoreal.** Shapes read as brush marks at distance.
   Foliage is *clumped masses*, not individually modelled leaves.

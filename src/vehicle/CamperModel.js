@@ -32,7 +32,7 @@ export const DIM = {
   wheelX: 0.93,
   wheelY: -0.42,      // hub height at rest
   wheelR: 0.44,
-  archR: 0.63,
+  archR: 0.545,
 };
 
 const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
@@ -130,41 +130,53 @@ function archPoints(out, cz, R, yBase, H, n = 12) {
   }
 }
 
-function bodyShape({ windows = true } = {}) {
+// The body is TWO extrusions, not one.  A single side-profile extrusion makes
+// the windscreen a painted wall with a pane stuck on it — you cannot cut a hole
+// across the extrusion axis.  So: a full-width *tub* from the sill to the waist,
+// and a thin *greenhouse* wall per side carrying the pillars and side glass.
+// The roof cap closes the top and the windscreen is simply the gap between the
+// two A-pillars, which is what it is on a real hardtop.
+function tubShape() {
   const D = DIM;
   const pts = [];
   const P = (z, y) => pts.push(new THREE.Vector2(z, y));
 
   P(D.rear + 0.06, D.floor + 0.02);
   P(D.rear + 0.16, D.floor);
-  P(-2.14, D.floor);
+  P(-2.06, D.floor);
   archPoints(pts, -D.wheelZ, D.archR, D.floor, 0.50);
-  P(-0.88, D.floor);
-  P(0.88, D.floor);
+  P(-0.94, D.floor);
+  P(0.94, D.floor);
   archPoints(pts, D.wheelZ, D.archR, D.floor, 0.50);
-  P(2.14, D.floor);
+  P(2.06, D.floor);
   P(2.24, D.floor + 0.01);
   P(D.front, -0.06);                 // front valance
   P(D.front, 0.26);
   P(2.28, 0.42);                     // bonnet leading edge
   P(2.22, 0.44);
-  P(0.96, 0.46);                     // cowl
-  P(0.80, 1.08);                     // windscreen rake
-  P(0.76, D.roof);
-  P(-2.20, D.roof);
-  P(D.rear, D.roof - 0.16);          // rear roof radius
+  P(0.99, 0.46);                     // cowl
+  P(0.93, D.waist);
+  P(D.rear, D.waist);
   P(D.rear, -0.04);
+  return new THREE.Shape(pts);
+}
 
+function houseShape() {
+  const D = DIM;
+  const pts = [];
+  const P = (z, y) => pts.push(new THREE.Vector2(z, y));
+  P(0.99, D.waist - 0.08);
+  P(0.83, D.roof);                   // A-pillar rake
+  P(-2.20, D.roof);
+  P(D.rear, D.roof - 0.16);
+  P(D.rear, D.waist - 0.08);
   const shape = new THREE.Shape(pts);
-
-  if (windows) {
-    // Three side lights: front door, rear door, quarter panel.
-    shape.holes.push(roundRect(0.58, -0.26, 0.58, 1.04, 0.10));
-    shape.holes.push(roundRect(-0.42, -1.26, 0.58, 1.04, 0.10));
-    shape.holes.push(roundRect(-1.42, -2.04, 0.58, 1.04, 0.10));
-  }
+  for (const [z0, z1] of WINDOWS) shape.holes.push(roundRect(z0, z1, 0.58, 1.04, 0.10));
   return shape;
 }
+
+/** Side-light apertures, shared by the wall, the glazing and the rubbers. */
+export const WINDOWS = [[0.54, -0.22], [-0.46, -1.20], [-1.44, -1.98]];
 
 function roundRect(z0, z1, y0, y1, r) {
   const a = Math.min(z0, z1), b = Math.max(z0, z1);
@@ -266,18 +278,24 @@ export function buildWheel(materials, { spare = false } = {}) {
   barrel.rotateZ(Math.PI / 2);
   parts.add(barrel, 'rim', null, [1, 1, 1]);
 
-  const face = new THREE.CylinderGeometry(0.272, 0.272, 0.03, 26);
+  // Dished face: a solid outer lip, five deep windows, a raised centre. The
+  // first version used tiny holes and read as a plain white disc at any range.
+  const face = new THREE.CylinderGeometry(0.278, 0.278, 0.028, 26);
   face.rotateZ(Math.PI / 2);
-  parts.add(face, 'rim', at(halfW * 0.62, 0, 0));
+  parts.add(face, 'rim', at(halfW * 0.52, 0, 0));
+  const lip = new THREE.TorusGeometry(0.272, 0.026, 8, 26);
+  lip.rotateY(Math.PI / 2);
+  parts.add(lip, 'rim', at(halfW * 0.60, 0, 0), [1.1, 1.1, 1.1]);
 
-  // slots
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2 + 0.31;
-    parts.add(
-      new THREE.CylinderGeometry(0.052, 0.052, 0.07, 12),
-      'rimDark',
-      at(halfW * 0.62, Math.cos(a) * 0.165, Math.sin(a) * 0.165, 0, 0, Math.PI / 2),
-    );
+    // window through the face…
+    parts.add(new THREE.CylinderGeometry(0.066, 0.066, 0.09, 14), 'rimDark',
+      at(halfW * 0.52, Math.cos(a) * 0.172, Math.sin(a) * 0.172, 0, 0, Math.PI / 2));
+    // …with a bright bevel around it
+    const ring = new THREE.TorusGeometry(0.070, 0.012, 6, 14);
+    ring.rotateY(Math.PI / 2);
+    parts.add(ring, 'rim', at(halfW * 0.565, Math.cos(a) * 0.172, Math.sin(a) * 0.172), [1.05, 1.05, 1.05]);
   }
   // hub + lug nuts
   parts.add(new THREE.CylinderGeometry(0.085, 0.09, 0.05, 16), 'chrome',
@@ -316,24 +334,30 @@ export function buildMaterials(env, bodyColor = 0xc4551f) {
     clearcoat: 0.5, clearcoatRoughness: 0.34,
     envMap: env, envMapIntensity: 0.8, vertexColors: true,
   });
+  // Glass has to carry a *reflection*, not just a tint: unlit dark glass reads
+  // as a hole cut in the silhouette, which is exactly how it looked at first.
+  // Metalness lets the little sky/sun probe show up as a bright sweep.
   const glass = new THREE.MeshPhysicalMaterial({
-    color: C(0x14252c), roughness: 0.075, metalness: 0.0,
-    transparent: true, opacity: 0.52,
-    clearcoat: 1.0, clearcoatRoughness: 0.05,
-    envMap: env, envMapIntensity: 1.5,
+    color: C(0x3d5a68), roughness: 0.05, metalness: 0.34,
+    transparent: true, opacity: 0.66,
+    clearcoat: 1.0, clearcoatRoughness: 0.03,
+    envMap: env, envMapIntensity: 1.7,
     side: THREE.DoubleSide, depthWrite: false, vertexColors: true,
   });
 
   return {
     paint, cream, glass,
-    trim:    std({ color: C(0x2b2b30), roughness: 0.62, metalness: 0.14, envMapIntensity: 0.5 }),
-    rubber:  std({ color: C(0x17171a), roughness: 0.90, metalness: 0.02, envMapIntensity: 0.25 }),
-    steel:   std({ color: C(0x8d939c), roughness: 0.36, metalness: 0.88, envMapIntensity: 1.0 }),
+    trim:    std({ color: C(0x3c3c44), roughness: 0.62, metalness: 0.14, envMapIntensity: 0.6 }),
+    rubber:  std({ color: C(0x33333a), roughness: 0.86, metalness: 0.04, envMapIntensity: 0.55 }),
+    flare:   std({ color: C(0x4a4a53), roughness: 0.74, metalness: 0.06, envMapIntensity: 0.5 }),
+    orange:  std({ color: C(0xd2731c), roughness: 0.62, metalness: 0.05, envMapIntensity: 0.5 }),
+    steel:   std({ color: C(0x8a8a86), roughness: 0.48, metalness: 0.50, envMapIntensity: 0.6 }),
+    rack:    std({ color: C(0x33363c), roughness: 0.48, metalness: 0.55, envMapIntensity: 0.55 }),
     chrome:  std({ color: C(0xc9ccd2), roughness: 0.14, metalness: 1.0, envMapIntensity: 1.2 }),
     rim:     std({ color: C(0xdedac9), roughness: 0.40, metalness: 0.45, envMapIntensity: 0.8 }),
     rimDark: std({ color: C(0x1d1d20), roughness: 0.8, metalness: 0.1, envMapIntensity: 0.3 }),
     interior:std({ color: C(0x1c1a20), roughness: 0.92, metalness: 0.0, envMapIntensity: 0.15 }),
-    canvas:  std({ color: C(0xcfc19c), roughness: 0.95, metalness: 0.0, envMapIntensity: 0.3 }),
+    canvas:  std({ color: C(0xbfa87e), roughness: 0.95, metalness: 0.0, envMapIntensity: 0.3 }),
     olive:   std({ color: C(0x53603a), roughness: 0.72, metalness: 0.15, envMapIntensity: 0.4 }),
     drum:    std({ color: C(0x3d7fae), roughness: 0.52, metalness: 0.05, envMapIntensity: 0.6 }),
     crimson: std({ color: C(0x8e2f28), roughness: 0.7, metalness: 0.05, envMapIntensity: 0.4 }),
@@ -376,20 +400,50 @@ export function buildCamper(materials, seed = 7) {
     return [d * (1 - k * 0.10), d * (1 + k * 0.13), d * (1 + k * 0.42)];
   };
 
-  // ── shell ────────────────────────────────────────────────────────────────
-  const shell = extrudeAcross(bodyShape({ windows: true }), D.halfWidth * 2 - 0.06, 0.035);
-  shell.translate(-(D.halfWidth - 0.03), 0, 0);
-  P.add(shell, 'paint', null, grime);
+  // ── tub (full width) + greenhouse walls (thin, one per side) ─────────────
+  const tub = extrudeAcross(tubShape(), D.halfWidth * 2 - 0.06, 0.035);
+  tub.translate(-(D.halfWidth - 0.03), 0, 0);
+  P.add(tub, 'paint', null, grime);
 
-  // interior box seen through the glass
-  P.add(rbox(1.72, 0.78, 2.72, 0.05), 'interior', at(0, 0.66, -0.66));
+  for (const s of [-1, 1]) {
+    const wall = extrudeAcross(houseShape(), 0.11, 0.028);
+    wall.translate(s * (D.halfWidth - 0.055) - 0.055, 0, 0);
+    P.add(wall, 'paint', null, grime);
+  }
+
+  // rear wall of the greenhouse, with the back window cut out of it
+  {
+    const w = D.halfWidth * 2 - 0.02, y0 = D.waist - 0.08, y1 = D.roof;
+    const outer = new THREE.Shape();
+    outer.moveTo(-w / 2, y0); outer.lineTo(w / 2, y0);
+    outer.lineTo(w / 2, y1 - 0.05); outer.lineTo(w / 2 - 0.06, y1);
+    outer.lineTo(-w / 2 + 0.06, y1); outer.lineTo(-w / 2, y1 - 0.05);
+    const hole = new THREE.Path();
+    const hw = 0.74, hy0 = 0.56, hy1 = 1.02, r = 0.08;
+    hole.moveTo(-hw + r, hy0); hole.lineTo(hw - r, hy0);
+    hole.quadraticCurveTo(hw, hy0, hw, hy0 + r); hole.lineTo(hw, hy1 - r);
+    hole.quadraticCurveTo(hw, hy1, hw - r, hy1); hole.lineTo(-hw + r, hy1);
+    hole.quadraticCurveTo(-hw, hy1, -hw, hy1 - r); hole.lineTo(-hw, hy0 + r);
+    hole.quadraticCurveTo(-hw, hy0, -hw + r, hy0);
+    outer.holes.push(hole);
+    const g = new THREE.ExtrudeGeometry(outer, {
+      depth: 0.09, bevelEnabled: true, bevelThickness: 0.022, bevelSize: 0.022,
+      bevelSegments: 2, curveSegments: 4, steps: 1,
+    });
+    g.translate(0, 0, D.rear - 0.02);
+    P.add(g, 'paint', null, grime);
+  }
+
+  // interior: a dark box you see *into* through the screen, plus a cabin floor
+  P.add(rbox(1.74, 0.86, 2.44, 0.05), 'interior', at(0, 0.72, -0.98));
+  P.add(rbox(1.80, 0.03, 3.30, 0.01), 'interior', at(0, D.waist + 0.015, -0.70));
   // seats
   for (const s of [-1, 1]) {
-    P.add(rbox(0.44, 0.30, 0.46, 0.06), 'interior', at(s * 0.42, 0.42, 0.28));
-    P.add(rbox(0.44, 0.52, 0.12, 0.05), 'interior', at(s * 0.42, 0.66, 0.02, -0.12));
+    P.add(rbox(0.44, 0.30, 0.46, 0.06), 'interior', at(s * 0.42, 0.46, 0.28));
+    P.add(rbox(0.44, 0.56, 0.12, 0.05), 'interior', at(s * 0.42, 0.74, 0.02, -0.12));
   }
   // dashboard + steering column shroud
-  P.add(rbox(1.66, 0.22, 0.30, 0.05), 'interior', at(0, 0.50, 0.72, 0.18));
+  P.add(rbox(1.66, 0.22, 0.30, 0.05), 'interior', at(0, 0.56, 0.74, 0.18));
 
   // wheel-well shells so you cannot see through the arches
   for (const sz of [-1, 1]) for (const sx of [-1, 1]) {
@@ -397,8 +451,8 @@ export function buildCamper(materials, seed = 7) {
     const shellG = new THREE.CylinderGeometry(wellR, wellR, 0.40, 16, 1, true, 0, Math.PI);
     shellG.rotateZ(Math.PI / 2);
     shellG.rotateX(-Math.PI / 2);
-    P.add(shellG, 'trim', at(sx * (D.wheelX - 0.03), D.floor, sz * D.wheelZ), [0.7, 0.7, 0.75]);
-    P.add(new THREE.CircleGeometry(wellR, 14, 0, Math.PI), 'trim',
+    P.add(shellG, 'flare', at(sx * (D.wheelX - 0.03), D.floor, sz * D.wheelZ), [0.55, 0.55, 0.6]);
+    P.add(new THREE.CircleGeometry(wellR, 14, 0, Math.PI), 'flare',
       at(sx * (D.wheelX - 0.23), D.floor, sz * D.wheelZ, 0, sx > 0 ? -Math.PI / 2 : Math.PI / 2, 0),
       [0.55, 0.55, 0.6]);
   }
@@ -421,13 +475,33 @@ export function buildCamper(materials, seed = 7) {
   }
 
   // ── cream hardtop roof ───────────────────────────────────────────────────
-  P.add(rbox(D.halfWidth * 2 + 0.02, 0.15, 3.06, 0.055, 2), 'cream', at(0, D.roof + 0.045, -0.79));
+  P.add(rbox(D.halfWidth * 2 + 0.03, 0.15, 3.10, 0.055, 2), 'cream', at(0, D.roof + 0.045, -0.72));
   // rain gutters
   for (const s of [-1, 1]) {
-    P.add(rbox(0.05, 0.05, 3.02, 0.018), 'cream', at(s * (D.halfWidth + 0.005), D.roof - 0.005, -0.79));
+    P.add(rbox(0.05, 0.05, 3.06, 0.018), 'cream', at(s * (D.halfWidth + 0.01), D.roof - 0.005, -0.72));
   }
-  // windscreen header cap
-  P.add(rbox(D.halfWidth * 2 + 0.02, 0.12, 0.20, 0.045, 2), 'cream', at(0, D.roof + 0.03, 0.66));
+
+  // ── wheel-arch flares ────────────────────────────────────────────────────
+  // Black plastic flares are half of what makes a 4x4 read as a 4x4 in
+  // silhouette, and they hide the seam where the arch meets the tyre.
+  const flare = (cz) => {
+    const n = 13, R = D.archR + 0.05, H = 0.55;
+    const pt = (k) => {
+      const a = Math.PI - (k / n) * Math.PI;
+      return [cz + R * Math.cos(a), D.floor + H * Math.pow(Math.sin(a), 0.62)];
+    };
+    for (let k = 0; k < n; k++) {
+      const [z0, y0] = pt(k), [z1, y1] = pt(k + 1);
+      const len = Math.hypot(z1 - z0, y1 - y0);
+      const ang = Math.atan2(y1 - y0, z1 - z0);
+      for (const sx of [-1, 1]) {
+        P.add(rbox(0.16, 0.075, len + 0.03, 0.028, 1), 'flare',
+          at(sx * (D.halfWidth - 0.03), (y0 + y1) / 2, (z0 + z1) / 2, -ang, 0, 0), [1, 1, 1]);
+      }
+    }
+  };
+  flare(D.wheelZ);
+  flare(-D.wheelZ);
 
   // ── doors: proud skins leave a real panel gap all round ──────────────────
   const doorSkin = (z0, z1, y0, y1) => {
@@ -437,26 +511,26 @@ export function buildCamper(materials, seed = 7) {
         'paint', at(s * (D.halfWidth - 0.045), cy, cz), grime);
     }
   };
-  doorSkin(0.60, -0.32, -0.24, 0.40);
-  doorSkin(-0.44, -1.34, -0.24, 0.40);
+  doorSkin(0.52, -0.24, -0.24, 0.44);
+  doorSkin(-0.48, -1.22, -0.24, 0.44);
 
   // door handles + hinges
   for (const s of [-1, 1]) {
     for (const dz of [0.14, -0.90]) {
-      P.add(rbox(0.045, 0.045, 0.20, 0.018), 'chrome', at(s * (D.halfWidth - 0.005), 0.28, dz));
-      P.add(rbox(0.03, 0.05, 0.055, 0.012), 'chrome', at(s * (D.halfWidth - 0.01), 0.28, dz + 0.13));
+      P.add(rbox(0.045, 0.045, 0.20, 0.018), 'chrome', at(s * (D.halfWidth - 0.005), 0.30, dz));
+      P.add(rbox(0.03, 0.05, 0.055, 0.012), 'chrome', at(s * (D.halfWidth - 0.01), 0.30, dz + 0.13));
     }
-    for (const dz of [0.56, -0.40]) for (const dy of [0.34, -0.16]) {
+    for (const dz of [0.54, -0.40]) for (const dy of [0.36, -0.16]) {
       P.add(rbox(0.028, 0.05, 0.09, 0.012), 'trim', at(s * (D.halfWidth - 0.012), dy, dz), [0.6, 0.6, 0.65]);
     }
   }
 
   // ── bonnet: separate panel with a shut line, plus latches and a vent ──────
-  P.add(rbox(1.78, 0.055, 1.30, 0.026, 2), 'paint', at(0, 0.412, 1.66, -0.012), grime);
+  P.add(rbox(1.78, 0.055, 1.22, 0.026, 2), 'paint', at(0, 0.452, 1.60, -0.012), grime);
   for (const s of [-1, 1]) {
-    P.add(rbox(0.06, 0.03, 0.09, 0.012), 'chrome', at(s * 0.74, 0.44, 2.28));   // latches
+    P.add(rbox(0.06, 0.03, 0.09, 0.012), 'chrome', at(s * 0.72, 0.48, 2.20));   // latches
   }
-  P.add(rbox(0.62, 0.02, 0.14, 0.008), 'trim', at(0, 0.442, 1.20), [0.6, 0.6, 0.65]);  // cowl vent
+  P.add(rbox(0.62, 0.02, 0.14, 0.008), 'trim', at(0, 0.482, 1.16), [0.6, 0.6, 0.65]);  // cowl vent
 
   // ── grille + front face ──────────────────────────────────────────────────
   P.add(rbox(1.64, 0.30, 0.06, 0.02), 'trim', at(0, 0.20, D.front - 0.02), [0.55, 0.55, 0.62]);
@@ -524,15 +598,15 @@ export function buildCamper(materials, seed = 7) {
   }
 
   // ── snorkel up the right A-pillar ────────────────────────────────────────
-  const snX = D.halfWidth - 0.02;
-  P.add(tube(0.055, 0.44, 10), 'trim', at(snX, 0.28, 1.42, 0, 0, 0), [0.75, 0.75, 0.8]);
-  P.add(new THREE.TorusGeometry(0.10, 0.055, 8, 12, Math.PI / 2), 'trim',
-    at(snX, 0.50, 1.32, Math.PI / 2, 0, 0), [0.75, 0.75, 0.8]);
-  P.add(tube(0.055, 0.86, 10), 'trim', at(snX, 0.86, 1.22, -0.10), [0.75, 0.75, 0.8]);
-  P.add(rbox(0.13, 0.24, 0.16, 0.03, 2), 'trim', at(snX, 1.34, 1.16, -0.10), [0.8, 0.8, 0.85]);
-  P.add(rbox(0.135, 0.10, 0.03, 0.012), 'trim', at(snX, 1.34, 1.245, -0.10), [0.45, 0.45, 0.5]);
-  for (const y of [0.62, 1.00]) {
-    P.add(new THREE.TorusGeometry(0.062, 0.012, 6, 12), 'chrome', at(snX, y, 1.26 - (y - 0.62) * 0.10, 1.47));
+  const snX = D.halfWidth - 0.015;
+  P.add(tube(0.07, 0.40, 10), 'trim', at(snX, 0.28, 1.44), [0.85, 0.85, 0.9]);
+  P.add(new THREE.TorusGeometry(0.115, 0.07, 8, 14, Math.PI / 2), 'trim',
+    at(snX, 0.49, 1.325, Math.PI / 2, 0, 0), [0.85, 0.85, 0.9]);
+  P.add(tube(0.07, 0.62, 10), 'trim', at(snX, 0.80, 1.19, -0.055), [0.85, 0.85, 0.9]);
+  P.add(rbox(0.15, 0.24, 0.18, 0.035, 2), 'trim', at(snX, 1.22, 1.16, -0.055), [0.9, 0.9, 0.95]);
+  P.add(rbox(0.155, 0.10, 0.03, 0.014), 'trim', at(snX, 1.22, 1.245, -0.055), [0.5, 0.5, 0.55]);
+  for (const y of [0.66, 0.98]) {
+    P.add(new THREE.TorusGeometry(0.08, 0.014, 6, 12), 'chrome', at(snX, y, 1.245 - (y - 0.66) * 0.055, 1.515));
   }
 
   // ── side steps / rock sliders ────────────────────────────────────────────
@@ -547,9 +621,9 @@ export function buildCamper(materials, seed = 7) {
 
   // ── mud flaps ────────────────────────────────────────────────────────────
   for (const sz of [-1, 1]) for (const sx of [-1, 1]) {
-    P.add(rbox(0.30, 0.30, 0.02, 0.012), 'rubber',
-      at(sx * (D.wheelX - 0.02), D.floor - 0.10, sz * (D.wheelZ + 0.66) * 1.0, sz > 0 ? -0.16 : 0.16),
-      [1, 1, 1]);
+    const z = sz > 0 ? D.wheelZ - 0.70 : -(D.wheelZ + 0.70);
+    P.add(rbox(0.32, 0.32, 0.02, 0.012), 'rubber',
+      at(sx * (D.wheelX - 0.02), D.floor - 0.12, z, 0.14), [1, 1, 1]);
   }
 
   // ── exhaust ──────────────────────────────────────────────────────────────
@@ -572,66 +646,66 @@ export function buildCamper(materials, seed = 7) {
   };
   for (const s of [-1, 1]) {
     const x = s * (D.halfWidth - 0.055);
-    glassPane(0.62, -0.30, 0.52, 0.90, x);
-    glassPane(-0.42, -1.32, 0.52, 0.90, x);
-    glassPane(-1.44, -2.12, 0.52, 0.90, x);
+    glassPane(0.54, -0.22, 0.58, 1.04, x);
+    glassPane(-0.46, -1.20, 0.58, 1.04, x);
+    glassPane(-1.44, -1.98, 0.58, 1.04, x);
   }
   // windscreen (raked) and rear window
-  const ws = new THREE.PlaneGeometry(1.68, 0.60);
-  P.add(ws, 'glass', at(0, 0.70, 0.885, -0.28));
-  const rw = new THREE.PlaneGeometry(1.44, 0.46);
-  P.add(rw, 'glass', at(0, 0.62, D.rear + 0.03));
+  const ws = new THREE.PlaneGeometry(1.70, 0.68);
+  P.add(ws, 'glass', at(0, 0.77, 0.905, -0.16));
+  const rw = new THREE.PlaneGeometry(1.46, 0.50);
+  P.add(rw, 'glass', at(0, 0.72, D.rear + 0.03));
 
   // window rubbers / frames around the side lights
   for (const s of [-1, 1]) {
     const x = s * (D.halfWidth - 0.035);
-    for (const [z0, z1] of [[0.62, -0.30], [-0.42, -1.32], [-1.44, -2.12]]) {
+    for (const [z0, z1] of [[0.54, -0.22], [-0.46, -1.20], [-1.44, -1.98]]) {
       const w = Math.abs(z1 - z0), cz = (z0 + z1) / 2;
-      P.add(rbox(0.02, 0.025, w, 0.008), 'trim', at(x, 0.52, cz), [0.5, 0.5, 0.55]);
-      P.add(rbox(0.02, 0.025, w, 0.008), 'trim', at(x, 0.90, cz), [0.5, 0.5, 0.55]);
+      P.add(rbox(0.024, 0.03, w, 0.010), 'trim', at(x, 0.575, cz), [1.15, 1.15, 1.2]);
+      P.add(rbox(0.024, 0.03, w, 0.010), 'trim', at(x, 1.045, cz), [1.15, 1.15, 1.2]);
     }
   }
   // windscreen frame + wipers
-  P.add(rbox(1.74, 0.06, 0.05, 0.02), 'paint', at(0, 0.415, 0.96, -0.28), grime);
+  P.add(rbox(1.76, 0.07, 0.05, 0.022), 'paint', at(0, 0.455, 0.96, -0.16), grime);
   for (const s of [-1, 1]) {
-    P.add(rbox(0.02, 0.015, 0.52, 0.006), 'trim', at(s * 0.34, 0.46, 0.86, -0.28, s * 0.35), [0.4, 0.4, 0.45]);
+    P.add(rbox(0.02, 0.015, 0.52, 0.006), 'trim', at(s * 0.34, 0.50, 0.90, -0.16, s * 0.35), [0.4, 0.4, 0.45]);
   }
 
   // ── wing mirrors ─────────────────────────────────────────────────────────
   for (const s of [-1, 1]) {
-    P.add(rod(0.02, 0.30), 'steel', at(s * (D.halfWidth + 0.11), 0.60, 0.70, 0, 0, s * 1.05), [0.7, 0.7, 0.75]);
-    P.add(rbox(0.055, 0.20, 0.16, 0.03, 2), 'trim', at(s * (D.halfWidth + 0.24), 0.62, 0.68, 0, 0.1 * s));
-    P.add(new THREE.PlaneGeometry(0.15, 0.13), 'chrome',
-      at(s * (D.halfWidth + 0.268), 0.62, 0.68, 0, s * (Math.PI / 2 + 0.1)));
+    P.add(rod(0.02, 0.30), 'steel', at(s * (D.halfWidth + 0.11), 0.70, 0.72, 0, 0, s * 1.05), [0.7, 0.7, 0.75]);
+    P.add(rbox(0.055, 0.22, 0.17, 0.03, 2), 'trim', at(s * (D.halfWidth + 0.24), 0.72, 0.70, 0, 0.1 * s));
+    P.add(new THREE.PlaneGeometry(0.16, 0.14), 'chrome',
+      at(s * (D.halfWidth + 0.268), 0.72, 0.70, 0, s * (Math.PI / 2 + 0.1)));
   }
 
   // ── roof rack + load ─────────────────────────────────────────────────────
   const rackY = D.roof + 0.14;
-  const rackZ0 = 0.60, rackZ1 = -2.32, rackLen = rackZ0 - rackZ1;
+  const rackZ0 = 0.64, rackZ1 = -2.22, rackLen = rackZ0 - rackZ1;
   const rackHalf = D.halfWidth - 0.02;
   // perimeter rails
   for (const s of [-1, 1]) {
-    P.add(rod(0.028, rackLen), 'steel',
+    P.add(rod(0.028, rackLen), 'rack',
       at(s * rackHalf, rackY + 0.16, (rackZ0 + rackZ1) / 2, Math.PI / 2), [0.9, 0.9, 0.95]);
-    P.add(rod(0.026, rackLen), 'steel',
+    P.add(rod(0.026, rackLen), 'rack',
       at(s * rackHalf, rackY, (rackZ0 + rackZ1) / 2, Math.PI / 2), [0.9, 0.9, 0.95]);
   }
   for (const z of [rackZ0, rackZ1]) {
-    P.add(rod(0.028, rackHalf * 2), 'steel', at(0, rackY + 0.16, z, 0, 0, Math.PI / 2), [0.9, 0.9, 0.95]);
-    P.add(rod(0.026, rackHalf * 2), 'steel', at(0, rackY, z, 0, 0, Math.PI / 2), [0.9, 0.9, 0.95]);
+    P.add(rod(0.028, rackHalf * 2), 'rack', at(0, rackY + 0.16, z, 0, 0, Math.PI / 2), [0.9, 0.9, 0.95]);
+    P.add(rod(0.026, rackHalf * 2), 'rack', at(0, rackY, z, 0, 0, Math.PI / 2), [0.9, 0.9, 0.95]);
   }
   // uprights + floor slats
   for (let i = 0; i <= 6; i++) {
     const z = rackZ0 - (i / 6) * rackLen;
-    for (const s of [-1, 1]) P.add(rod(0.02, 0.18), 'steel', at(s * rackHalf, rackY + 0.08, z), [0.9, 0.9, 0.95]);
-    P.add(rod(0.017, rackHalf * 2), 'steel', at(0, rackY - 0.01, z, 0, 0, Math.PI / 2), [0.85, 0.85, 0.9]);
+    for (const s of [-1, 1]) P.add(rod(0.02, 0.18), 'rack', at(s * rackHalf, rackY + 0.08, z), [0.9, 0.9, 0.95]);
+    P.add(rod(0.017, rackHalf * 2), 'rack', at(0, rackY - 0.01, z, 0, 0, Math.PI / 2), [0.85, 0.85, 0.9]);
   }
   for (let i = 0; i < 3; i++) {
     const x = (i - 1) * (rackHalf * 0.62);
-    P.add(rod(0.016, rackLen), 'steel', at(x, rackY - 0.02, (rackZ0 + rackZ1) / 2, Math.PI / 2), [0.85, 0.85, 0.9]);
+    P.add(rod(0.016, rackLen), 'rack', at(x, rackY - 0.02, (rackZ0 + rackZ1) / 2, Math.PI / 2), [0.85, 0.85, 0.9]);
   }
   // rack feet
-  for (const z of [0.44, -0.70, -2.14]) for (const s of [-1, 1]) {
+  for (const z of [0.48, -0.66, -2.06]) for (const s of [-1, 1]) {
     P.add(rbox(0.07, 0.14, 0.09, 0.02), 'trim', at(s * rackHalf, D.roof + 0.07, z), [0.6, 0.6, 0.65]);
   }
 
@@ -682,8 +756,11 @@ export function buildCamper(materials, seed = 7) {
   }
 
   // rooftop storage box
-  P.add(rbox(0.80, 0.30, 0.62, 0.055, 2), 'trim', at(-0.02, load + 0.17, -1.16), [0.8, 0.8, 0.88]);
-  P.add(rbox(0.82, 0.04, 0.64, 0.02), 'cream', at(-0.02, load + 0.33, -1.16), [0.9, 0.9, 0.9]);
+  P.add(rbox(0.80, 0.30, 0.62, 0.055, 2), 'olive', at(-0.02, load + 0.17, -1.16), [0.85, 0.85, 0.9]);
+  P.add(rbox(0.82, 0.05, 0.64, 0.022), 'trim', at(-0.02, load + 0.335, -1.16), [0.95, 0.95, 1.0]);
+  for (const dz of [-0.36, 0.34]) {                       // ratchet straps over the lid
+    P.add(rbox(0.84, 0.07, 0.05, 0.015), 'canvas', at(-0.02, load + 0.30, -1.16 + dz), [0.8, 0.78, 0.72]);
+  }
   for (const s of [-1, 1]) {
     P.add(rbox(0.06, 0.06, 0.05, 0.015), 'chrome', at(s * 0.28, load + 0.30, -0.86));
   }
@@ -696,20 +773,21 @@ export function buildCamper(materials, seed = 7) {
 
   // traction boards strapped to the rack side
   for (let i = 0; i < 2; i++) {
-    P.add(rbox(0.035, 0.28, 1.10, 0.02), 'lensAmber',
+    P.add(rbox(0.035, 0.28, 1.10, 0.02), 'orange',
       at(-(rackHalf + 0.05) - i * 0.045, rackY + 0.10, -0.90, 0, 0, 0.03));
   }
 
   // ── awning roll along the left roof edge ─────────────────────────────────
-  P.add(new THREE.CylinderGeometry(0.105, 0.105, 2.30, 14), 'canvas',
-    at(-(D.halfWidth + 0.14), D.roof + 0.20, -0.70, Math.PI / 2), [0.95, 0.92, 0.85]);
+  const awY = D.roof + 0.24, awX = -(D.halfWidth + 0.115);
+  P.add(new THREE.CylinderGeometry(0.095, 0.095, 2.26, 14), 'olive',
+    at(awX, awY, -0.72, Math.PI / 2), [1.05, 1.05, 1.05]);
   for (const e of [-1, 1]) {
-    P.add(new THREE.CylinderGeometry(0.115, 0.115, 0.07, 12), 'trim',
-      at(-(D.halfWidth + 0.14), D.roof + 0.20, -0.70 + e * 1.16, Math.PI / 2), [0.6, 0.6, 0.66]);
+    P.add(new THREE.CylinderGeometry(0.105, 0.105, 0.08, 12), 'trim',
+      at(awX, awY, -0.72 + e * 1.14, Math.PI / 2), [0.6, 0.6, 0.66]);
   }
-  for (const dz of [0.28, -1.66]) {
-    P.add(rbox(0.16, 0.05, 0.05, 0.015), 'steel',
-      at(-(D.halfWidth + 0.07), D.roof + 0.20, dz), [0.8, 0.8, 0.85]);
+  for (const dz of [0.20, -1.64]) {
+    P.add(new THREE.TorusGeometry(0.105, 0.012, 5, 14), 'trim', at(awX, awY, dz, 0, Math.PI / 2, 0), [0.5, 0.5, 0.55]);
+    P.add(rbox(0.14, 0.05, 0.05, 0.015), 'steel', at(-(D.halfWidth + 0.05), awY, dz), [0.8, 0.8, 0.85]);
   }
 
   // ── roof-mounted light bar ───────────────────────────────────────────────

@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import {
   EffectComposer, RenderPass, EffectPass, BloomEffect, SMAAEffect,
-  DepthOfFieldEffect, VignetteEffect, ToneMappingEffect, ToneMappingMode,
+  DepthOfFieldEffect, VignetteEffect,
   Effect, BlendFunction, KernelSize, NoiseEffect,
 } from 'postprocessing';
 import { N8AOPostPass } from 'n8ao';
@@ -54,19 +54,60 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   outputColor = vec4(max(c, 0.0), inputColor.a);
 }`;
 
+// ── Exposure + Khronos PBR Neutral tone map ─────────────────────────────────
+// Written out rather than using the library's ToneMappingEffect so exposure
+// lives in the same pass as the curve, and so the curve is visible and tunable
+// here instead of buried in a dependency.
+const TONEMAP_FRAG = /* glsl */`
+uniform float uExposure;
+
+vec3 pbrNeutral( vec3 c ) {
+  const float startCompression = 0.8 - 0.04;
+  const float desaturation = 0.15;
+
+  float x = min( c.r, min( c.g, c.b ) );
+  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  c -= offset;
+
+  float peak = max( c.r, max( c.g, c.b ) );
+  if ( peak < startCompression ) return c;
+
+  float d = 1.0 - startCompression;
+  float newPeak = 1.0 - d * d / ( peak + d - startCompression );
+  c *= newPeak / peak;
+
+  float g = 1.0 - 1.0 / ( desaturation * ( peak - newPeak ) + 1.0 );
+  return mix( c, vec3( newPeak ), g );
+}
+
+void mainImage( const in vec4 inputColor, const in vec2 uv, out vec4 outputColor ) {
+  outputColor = vec4( pbrNeutral( max( inputColor.rgb * uExposure, 0.0 ) ), inputColor.a );
+}`;
+
+class ToneMapEffect extends Effect {
+  constructor(exposure = 1.0) {
+    super('AutumnToneMap', TONEMAP_FRAG, {
+      blendFunction: BlendFunction.NORMAL,
+      uniforms: new Map([['uExposure', new THREE.Uniform(exposure)]]),
+    });
+  }
+  get exposure() { return this.uniforms.get('uExposure').value; }
+  set exposure(v) { this.uniforms.get('uExposure').value = v; }
+}
+
 class GradeEffect extends Effect {
   constructor() {
     super('AutumnGrade', GRADE_FRAG, {
       blendFunction: BlendFunction.NORMAL,
       uniforms: new Map([
-        ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.88, 0.92, 1.12))],
-        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.10, 1.01, 0.88))],
-        ['uSplitStrength', new THREE.Uniform(0.34)],
-        ['uSaturation',    new THREE.Uniform(1.10)],
-        ['uContrast',      new THREE.Uniform(1.09)],
-        ['uLift',          new THREE.Uniform(0.006)],
-        ['uVibrance',      new THREE.Uniform(0.22)],
-        ['uGrain',         new THREE.Uniform(0.016)],
+        ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.97, 0.95, 1.06))],
+        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.12, 1.02, 0.86))],
+        ['uSplitStrength', new THREE.Uniform(0.14)],
+        ['uSaturation',    new THREE.Uniform(0.96)],
+        ['uContrast',      new THREE.Uniform(1.06)],
+        ['uLift',          new THREE.Uniform(0.004)],
+        ['uVibrance',      new THREE.Uniform(0.16)],
+        ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
         ['uCAStrength',    new THREE.Uniform(0.0006)],
       ]),
@@ -105,11 +146,11 @@ export class PostFX {
     }
 
     this.bloom = new BloomEffect({
-      intensity: 0.72,
-      luminanceThreshold: 0.62,
-      luminanceSmoothing: 0.34,
+      intensity: 0.38,
+      luminanceThreshold: 0.80,
+      luminanceSmoothing: 0.45,
       mipmapBlur: true,
-      radius: 0.78,
+      radius: 0.68,
       kernelSize: KernelSize.HUGE,
       blendFunction: BlendFunction.ADD,
     });
@@ -123,20 +164,26 @@ export class PostFX {
         })
       : null;
 
-    this.vignette = new VignetteEffect({ offset: 0.28, darkness: 0.42 });
+    this.vignette = new VignetteEffect({ offset: 0.42, darkness: 0.16 });
     this.grade = new GradeEffect();
-    this.tone = new ToneMappingEffect({
-      mode: ToneMappingMode.AGX,
-      resolution: 256,
-      whitePoint: 8.0,
-      middleGrey: 0.6,
-      adaptive: false,
-    });
+    // Khronos PBR Neutral, not AgX. AgX is a filmic curve built for
+    // photographic realism: it has a long toe and it deliberately desaturates
+    // highlights. Against a painterly reference that is exactly backwards —
+    // it drains the gold out of every sunlit surface, which then has to be
+    // clawed back with a global saturation boost that over-cooks the midtones.
+    // Neutral holds hue and saturation up into the highlights, which is what
+    // lets a bright gold meadow stay gold.
+    this.tone = new ToneMapEffect(engine.exposure ?? 1.0);
     this.smaa = new SMAAEffect();
 
+    // Order matters. Bloom and depth of field belong in linear HDR, tone
+    // mapping converts to display range, and the grade must run *after* that
+    // so its contrast/saturation operate on the values the player actually
+    // sees. Renderer tone mapping is disabled (see Engine) so this is the only
+    // place the conversion happens.
     const effects = [this.bloom];
     if (this.dof) effects.push(this.dof);
-    effects.push(this.grade, this.vignette, this.smaa);
+    effects.push(this.tone, this.grade, this.vignette, this.smaa);
     this.mainPass = new EffectPass(camera, ...effects);
     this.composer.addPass(this.mainPass);
 
@@ -149,6 +196,10 @@ export class PostFX {
   render(dt) {
     this.composer.render(dt);
   }
+
+  /** Scene exposure applied immediately before the tone curve. */
+  setExposure(v) { this.tone.exposure = v; }
+  getExposure() { return this.tone.exposure; }
 
   setFocus(distance) {
     if (!this.dof) return;

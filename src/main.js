@@ -19,6 +19,7 @@ import terrainGenSource from './world/TerrainGen.js?raw';
 const GEN_HASH = sourceHash(terrainGenSource);
 import { Terrain } from './world/Terrain.js';
 import { Atmosphere } from './render/Atmosphere.js';
+import { Stylize } from './render/Stylize.js';
 import { Lighting } from './render/Lighting.js';
 import { PostFX } from './render/PostFX.js';
 import { Sky } from './sky/Sky.js';
@@ -148,6 +149,9 @@ async function boot() {
   const poi = new PointsOfInterest(world, seed);
 
   setProgress(0.70, 'Lighting the valley');
+  // Stylize patches Three's lighting chunk, so it must exist before any
+  // material is compiled.
+  const stylize = new Stylize(engine.scene);
   const atmosphere = new Atmosphere(engine.scene);
   const lighting = new Lighting(engine.scene, quality);
   const sky = new Sky(engine.scene);
@@ -157,7 +161,7 @@ async function boot() {
   const ctx = {
     THREE, engine, input,
     scene: engine.scene, camera: engine.camera, renderer: engine.renderer,
-    world, poi, terrain, atmosphere, lighting, sky, postfx,
+    world, poi, terrain, atmosphere, stylize, lighting, sky, postfx,
     quality, preset: QUALITY_PRESETS[quality],
     systems: {},
   };
@@ -194,6 +198,8 @@ async function boot() {
   setProgress(0.96, 'Warming the shaders');
   for (let i = 0; i < 20; i++) terrain.update(cam, 30);
   atmosphere.harvest();
+  stylize.harvest();
+  stylize.update();
   engine.renderer.compile(engine.scene, cam);
 
   engine.setRenderCallback((dt) => postfx.render(dt));
@@ -228,7 +234,8 @@ async function boot() {
       atmosphere.params.sunColor.copy(lighting.fogSun);
       atmosphere.params.density = lighting.fogDensity;
     }
-    if ((engine.frame & 15) === 0) atmosphere.harvest();
+    if ((engine.frame & 15) === 0) { atmosphere.harvest(); stylize.harvest(); }
+    stylize.update();
     atmosphere.update(lighting.sunDir, lighting.sun.color, lighting.sunDir.y);
 
     sky.update(dt, t, cam, lighting.sunDir);
@@ -260,6 +267,7 @@ async function boot() {
   window.__terrain = terrain;
   window.__lighting = lighting;
   window.__atmosphere = atmosphere;
+  window.__stylize = stylize;
   window.__postfx = postfx;
   window.__sky = sky;
   window.__systems = ctx.systems;

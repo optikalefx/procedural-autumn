@@ -20,8 +20,15 @@ export class Engine {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.preset.pixelRatioCap));
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.AgXToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    // Tone mapping happens in the post chain (after bloom, before the grade),
+    // not here — see PostFX. Leaving it on would tone map into the HDR buffer
+    // and bloom would then work on already-compressed values.
+    this.renderer.toneMapping = THREE.NoToneMapping;
+        this.renderer.toneMappingExposure = 1.0;
+    // Scene exposure, applied by the tone mapping effect in the post chain.
+    // Measured target: the reference plates sit at ~0.56 mean luminance with a
+    // 0.16–0.87 range.
+    this.exposure = 2.15;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.VSMShadowMap;
     this.renderer.shadowMap.autoUpdate = true;

@@ -41,7 +41,6 @@ export function createTerrainMaterial(world, opts = {}) {
     uGrassOlive:  { value: PALETTE.grassOlive.clone() },
     uGrassDry:    { value: PALETTE.grassDry.clone() },
     uDirt:        { value: PALETTE.dirtPath.clone() },
-    uDirtDark:    { value: PALETTE.dirtDark.clone() },
     uRockLit:     { value: PALETTE.rockLit.clone() },
     uRockMid:     { value: PALETTE.rockMid.clone() },
     uRockShadow:  { value: PALETTE.rockShadow.clone() },
@@ -50,12 +49,11 @@ export function createTerrainMaterial(world, opts = {}) {
     uSand:        { value: PALETTE.sand.clone() },
     // Leaf litter under the deciduous canopy. Warm russet, low chroma — it has
     // to sit *under* the trees without competing with them.
-    uLitter:      { value: new THREE.Color(0xa8613a).convertSRGBToLinear() },
+    uLitter:      { value: new THREE.Color(0xb8814e).convertSRGBToLinear() },
     // Luminance-normalised so tinting shifts hue without crushing values.
     uShadowTint:  { value: new THREE.Vector3(0.84, 0.88, 1.16) },
 
     uSnowLine:    { value: 268.0 },
-    uMacroStrength: { value: 0.55 },
   };
 
   mat.userData.uniforms = uniforms;
@@ -84,10 +82,10 @@ export function createTerrainMaterial(world, opts = {}) {
       uniform float uTime;
       uniform vec3 uSunDir;
       uniform vec3 uGrassGold, uGrassDeep, uGrassOlive, uGrassDry;
-      uniform vec3 uDirt, uDirtDark, uRockLit, uRockMid, uRockShadow, uScree;
+      uniform vec3 uDirt, uRockLit, uRockMid, uRockShadow, uScree;
       uniform vec3 uSnow, uSand, uLitter;
       uniform vec3 uShadowTint;
-      uniform float uSnowLine, uMacroStrength;
+      uniform float uSnowLine;
 
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
@@ -134,7 +132,6 @@ export function createTerrainMaterial(world, opts = {}) {
         vec4 aux  = texture2D(uAuxTex, uvw);
 
         float slope   = aux.r;          // |gradient|, 1.0 == 45 degrees
-        float hardRock= aux.g;          // bedded hardness at the exposed surface
         float loose   = aux.b;          // talus / alluvium deposited by the sim
         float logFlow = aux.a;          // log(1 + upstream cells) / 14
         float river   = data.b;
@@ -156,6 +153,23 @@ export function createTerrainMaterial(world, opts = {}) {
         float macro2 = fbm(vWorldPos.xz * 0.0155 + 31.4, 3) * 0.5 + 0.5; // ~65 m
         float meso   = mix(0.5, fbm(vWorldPos.xz * 0.062 + 7.7, 3) * 0.5 + 0.5, fMeso);
         float fine   = mix(0.5, fbm(vWorldPos.xz * 0.47, 3) * 0.5 + 0.5, fFine);
+
+        // ── bedded hardness, sampled defensively ───────────────────────────
+        // The bake dips its bedding planes, so outcrop traces already cut
+        // across a hillside rather than following a contour. Two extra guards,
+        // because contour banding is the artefact that most loudly announces
+        // "procedural" and it is cheap to make impossible:
+        //   · a ~14 m domain warp, so a trace wanders like a real outcrop
+        //     instead of drawing a clean level curve;
+        //   · contrast that dies with distance, because at 2 m per texel one
+        //     band is sub-pixel by ~500 m and would alias into moire.
+        // Only the hardness lookup is warped — slope, sediment and flow must
+        // stay registered to the geometry they describe.
+        vec2 bedWarp = vec2(fbm(vWorldPos.xz * 0.011 + 11.3, 2),
+                            fbm(vWorldPos.xz * 0.011 + 53.7, 2)) * (14.0 / uWorldSize);
+        float hardRaw = texture2D(uAuxTex, uvw + bedWarp).g;
+        float bandFade = 1.0 - smoothstep(240.0, 760.0, camDist);
+        float hardRock = mix(0.5, hardRaw, bandFade);
 
         // Slope taken from the baked field rather than the vertex normal: it is
         // identical at every LOD, so the grass/rock line never crawls or pops
@@ -179,32 +193,54 @@ export function createTerrainMaterial(world, opts = {}) {
         grass = mix(grass, uGrassOlive, oliveM * 0.55);
         grass = mix(grass, uGrassDry,   dryM * 0.62);
         // Slow tonal drift inside each mass, so a big flat area still has life.
-        grass = mix(grass, uGrassDeep, (1.0 - macro2) * 0.20 + meso * 0.10);
-        grass *= 0.94 + fine * 0.12;
+        // Kept light: uGrassDeep is a dark orange, and leaning on it turns the
+        // meadow the colour of brick once the cool shadow tint lands on top.
+        grass = mix(grass, uGrassDeep, (1.0 - macro2) * 0.13 + meso * 0.07);
+        grass *= 0.93 + meso * 0.08 + fine * 0.11;
 
         // Leaf litter accumulates on damp, sheltered, gently sloping ground —
-        // which is where the forest will be. Patchy, because it drifts.
-        float litterM = massEdge(moist * 0.72 + macro2 * 0.28, 0.60)
+        // which is where the forest will be. Patchy, because it drifts, and
+        // restrained: this sits *under* the trees and must not read as mud.
+        float litterM = massEdge(moist * 0.72 + macro2 * 0.28, 0.68)
                       * bench * (1.0 - smoothstep(150.0, 205.0, vWorldPos.y));
-        grass = mix(grass, uLitter, litterM * 0.42);
+        grass = mix(grass, uLitter, litterM * 0.28);
 
         // ── rock ───────────────────────────────────────────────────────────
-        // The banding is read straight out of the baked hardness, so it lies on
-        // the benches the weathering actually cut. Painting strata from an
-        // independent sin() of world height is what produced contour stripes.
-        // Weighted toward the mid tone: only the most resistant beds catch the
-        // light. Sitting mostly on uRockLit under a strongly warm key turns the
-        // whole massif salmon, and the reference keeps its rock cool-grey even
-        // at golden hour.
-        vec3 rock = mix(uRockShadow, uRockMid, smoothstep(0.10, 0.46, hardRock));
-        rock = mix(rock, uRockLit, smoothstep(0.62, 0.94, hardRock) * 0.85);
+        // Value comes from the regional fields and from which way the face
+        // points. Bedded hardness gets a *small* tonal step on top, and only
+        // where a bed could genuinely outcrop.
+        //
+        // This is the important line in the whole shader. Hardness is a
+        // periodic function of surface height, so mapping it across the full
+        // rockShadow..rockLit range paints perfect level curves on every peak —
+        // wood grain, or a contour map, and it announces "procedural" from
+        // across the valley. Geology earns a tonal hint, not the value range.
+        vec3 rock = mix(uRockMid, uRockLit, smoothstep(0.42, 0.88, macro));
+        rock = mix(rock, uRockShadow, smoothstep(0.62, 0.20, macro2) * 0.42);
+        float bedStep = (hardRock - 0.5) * 2.0;                  // -1 .. 1
+        rock *= 1.0 + bedStep * 0.11 * smoothstep(0.60, 1.05, slope);
         // Jointing: two decorrelated low-frequency bands crossing at an angle.
         // Cheap, never axis-aligned, and it survives being fully faded out.
         vec2 jr = vec2(vWorldPos.x * 0.94 - vWorldPos.z * 0.34,
                        vWorldPos.x * 0.34 + vWorldPos.z * 0.94);
         float joint = fbm(jr * 0.085 + vHeight * 0.006, 2) * 0.5 + 0.5;
         rock = mix(rock, rock * 0.86, smoothstep(0.62, 0.86, joint) * fMeso * 0.55);
-        rock *= 0.95 + fine * 0.10;
+
+        // Faceting by aspect. The reference paints a massif as a handful of
+        // planes at slightly different values, and the cue it uses is which way
+        // each plane faces. Driving the tone from the surface normal gives that
+        // for free, and because it is geometric it cannot shimmer or crawl at
+        // any distance — unlike a texture at the same apparent frequency.
+        float aspect = atan(N.z, N.x);
+        float faceTone = 0.5 + 0.5 * sin(aspect * 3.0 + macro * 5.0);
+        rock *= 0.88 + faceTone * 0.24;
+        // Broad tonal drift so a big face is never one flat value.
+        rock *= 0.90 + macro * 0.14 + macro2 * 0.10;
+        // Close-range weathering grain. Both terms are already distance-faded
+        // to their own mean, so this buys texture on the face you are standing
+        // under without putting anything on the ridge two kilometres away —
+        // which is where an unfaded octave of this strength would crawl.
+        rock *= 0.88 + meso * 0.14 + fine * 0.12;
 
         // ── assemble ───────────────────────────────────────────────────────
         vec3 albedo = grass;
@@ -221,20 +257,34 @@ export function createTerrainMaterial(world, opts = {}) {
         // gold grass sitting in defined blobs on lavender bedrock is the whole
         // look of the gorge plates — and it never happens if rock is gated on
         // slope alone.
-        float ribM = massEdge(hardRock, 0.72) * smoothstep(0.16, 0.44, slope);
+        float ribM = massEdge(hardRock, 0.72) * smoothstep(0.30, 0.62, slope);
         float scourM = smoothstep(0.40, 0.62, logFlow) * massEdge(hardRock + macro2 * 0.3, 0.62);
         albedo = mix(albedo, rock, max(ribM, scourM) * 0.78);
 
-        // The main grass/rock line. A patchy edge lets grass creep up gullies
-        // and lets rock break through shoulders, instead of drawing a contour.
-        float rockM = clamp(steep + (macro2 - 0.5) * 0.34 * fMacro, 0.0, 1.0);
-        albedo = mix(albedo, rock, smoothstep(0.16, 0.72, rockM));
+        // The main grass/rock line. Grass does not stop at a clean contour: it
+        // climbs the gullies, holds on the benches, and gives out on the
+        // buttresses between them. Breaking the threshold with two scales of
+        // noise and resolving it as a mass edge is what turns a bare striped
+        // cone back into a mountain with places on it.
+        float rockM = clamp(steep * 1.12 - 0.08
+                          + (macro2 - 0.5) * 0.50 * fMacro
+                          + (meso - 0.5) * 0.26 * fMeso
+                          + smoothstep(165.0, 255.0, vWorldPos.y) * 0.45, 0.0, 1.0);
+        albedo = mix(albedo, rock, massEdge(rockM, 0.44));
 
         // Scree: the sim records where talus and alluvium came to rest. It
         // piles at cliff bases, which is exactly where the reference puts it.
         float screeM = smoothstep(0.10, 0.42, loose) * (1.0 - smoothstep(0.95, 1.35, slope));
         vec3 screeCol = mix(uScree, uRockMid, meso * 0.45);
         albedo = mix(albedo, screeCol, screeM * 0.72);
+
+        // Shelves. A terrace cut into a massif is nearly flat, so it misses
+        // every slope-driven rule above and comes out as a bare grey plate —
+        // the one place the terrain still reads as untextured. Anything that
+        // lands on a ledge stays there: broken rock, wind-blown grit, and
+        // enough tough grass to break the plane up.
+        float shelfM = bench * smoothstep(0.30, 0.70, rockM) * (1.0 - screeM);
+        albedo = mix(albedo, mix(screeCol, uGrassDry, 0.30 + macro2 * 0.34), shelfM * 0.62);
 
         // ── water margins ──────────────────────────────────────────────────
         float shore = smoothstep(1.6, 0.0, depth);
@@ -243,9 +293,12 @@ export function createTerrainMaterial(world, opts = {}) {
         albedo = mix(albedo, uSand, shore * smoothstep(0.04, 0.22, river) * 0.30);
         // Damp darkening: a band of wet ground either side of the waterline,
         // plus genuinely submerged bed. Wet rock is darker and a touch cooler.
-        float damp = max(smoothstep(0.55, 0.02, depth) * step(0.001, depth),
-                         smoothstep(0.16, 0.55, river) * 0.55);
-        albedo = mix(albedo, albedo * vec3(0.56, 0.58, 0.66), damp);
+        // Restrained: at 0.55 over the whole river mask this swallowed every
+        // gorge and plunge pool in the game into one flat violet mass. Wet rock
+        // is a band along the waterline, not a region.
+        float damp = max(smoothstep(0.50, 0.02, depth) * step(0.001, depth),
+                         smoothstep(0.34, 0.72, river) * 0.30);
+        albedo = mix(albedo, albedo * vec3(0.62, 0.64, 0.71), damp);
 
         // ── snow: genuine high alpine only, wind-scoured off the steep faces ─
         float snowSel = smoothstep(uSnowLine, uSnowLine + 52.0,
