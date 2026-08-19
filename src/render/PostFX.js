@@ -23,6 +23,7 @@ uniform float uLift;
 uniform float uLiftKnee;
 uniform float uToe;
 uniform vec3  uLiftTint;
+uniform vec3  uLiftTintCool;
 uniform float uVibrance;
 uniform float uGoldRotate;
 uniform float uHuePivot;
@@ -149,7 +150,27 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // to 0.13 the lift keeps its actual job (a near-black leaf or a hole under a
   // canopy still lands on a warm brown rather than on nothing: at 0.02 linear it
   // is still at 92% strength) and stops paying for the shaded mid-tones.
-  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, uLiftKnee, luma(c)));
+  //
+  // TWO tints, chosen by what the pixel already is, and this is the seam where
+  // the cool cast-shadow mass was being destroyed. Stylize rotates a shadowed
+  // pixel to the plate's blue *before* the grade; the lift then arrived as a
+  // fixed warm brown that is larger than the whole pixel. Traced with real
+  // numbers from the meadow view at full rotation, the shadow reaches this line
+  // at linear (0.0117, 0.0176, 0.0417) — decisively blue-led — and the warm
+  // lift adds (0.0369, 0.0270, 0.0193), which lands it on srgb(62,59,72): a
+  // near-neutral, chroma 0.05, below the 0.06 the histogram even counts as
+  // chromatic. That is the whole reason a full-strength rotation still measured
+  // 0% azure. The rotation was never the thing that was too weak.
+  //
+  // So pick the tint off the pixel's own blue lead. A dark warm leaf, a shaded
+  // trunk, a hole under a canopy — every one of them has coolLead 0 and lands
+  // on exactly the warm brown this line has always given them. A cast-shadow
+  // mass lands on srgb(44,60,96) instead, against plate 3's own srgb(47,66,102).
+  // The cool tint carries the same luminance as the warm one (1.005), so this
+  // chooses a colour and never a brightness, and the two agree at the seam.
+  float coolLead = clamp((c.b - max(c.r, c.g)) / max(c.b, 1e-4), 0.0, 1.0);
+  vec3 liftTint = mix(uLiftTint, uLiftTintCool, smoothstep(0.02, 0.30, coolLead));
+  c += uLift * liftTint * (1.0 - smoothstep(0.0, uLiftKnee, luma(c)));
 
   // Vibrance up, global saturation down. The pair is a chroma *compressor*, not
   // a chroma trim, and that is what the frames needed: the gold meadow measured
@@ -391,12 +412,13 @@ class GradeEffect extends Effect {
         ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.10, 1.02, 0.90))],
         ['uSplitStrength', new THREE.Uniform(0.21)],
         ['uSaturation',    new THREE.Uniform(0.80)],
-        ['uContrast',      new THREE.Uniform(1.30)],
+        ['uContrast',      new THREE.Uniform(1.36)],
         ['uContrastHue',   new THREE.Uniform(0.55)],
-        ['uLift',          new THREE.Uniform(0.030)],
+        ['uLift',          new THREE.Uniform(0.020)],
         ['uLiftKnee',      new THREE.Uniform(0.130)],
-        ['uToe',           new THREE.Uniform(0.032)],
+        ['uToe',           new THREE.Uniform(0.022)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.30, 0.95, 0.68))],
+        ['uLiftTintCool',  new THREE.Uniform(new THREE.Vector3(0.78, 1.02, 1.48))],
         ['uVibrance',      new THREE.Uniform(0.90)],
         ['uGoldRotate',    new THREE.Uniform(1.75)],
         ['uHuePivot',      new THREE.Uniform(28.5)],

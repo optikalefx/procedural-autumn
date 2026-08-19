@@ -50,13 +50,104 @@ const STYLIZED_DIRECT = /* glsl */`
 	// Specular is computed from the true geometric term, then scaled toward
 	// matte — banding a highlight produces visible rings.
 	vec3 specIrradiance = saturate( rawNL ) * directLight.color * uStyleSpecular;
+
+	// ── golden-hour rim ──────────────────────────────────────────────────────
+	// The brief budgets for backlight as one of four named items and the
+	// backlit view exists to test it; it was measured with no rim, no bright
+	// silhouette edge and 77.6% of its chromatic pixels in one hue band. This
+	// is the global half of the fix, on the same argument the rest of this file
+	// makes: eleven authors should not each hand-roll a rim, and one that only
+	// some materials have reads as an inconsistency rather than as light.
+	//
+	// Two gates, multiplied. Fresnel puts it at the silhouette and nowhere
+	// else, which is what makes it read as light wrapping an edge instead of as
+	// a wash over the whole object. The back gate confines it to surfaces the
+	// sun is actually behind — without it every grazing angle in the frame
+	// glows and a front-lit vista gains a halo it should not have.
+	//
+	// It is added to directSpecular, not folded into irradiance, and that is
+	// the point of it: irradiance is multiplied by albedo, so a rim through
+	// that path on a near-black conifer would be near-black. Light coming past
+	// an edge is not the surface's own colour.
+	float _rimF = 1.0 - saturate( dot( geometryNormal, geometryViewDir ) );
+	float _rimB = saturate( -dot( geometryViewDir, directLight.direction ) );
+	vec3 rimIrradiance = directLight.color * ( uStyleRim
+		* pow( _rimF, uStyleRimPow )
+		* smoothstep( uStyleRimBack, 1.0, _rimB ) );
 `;
 
 const SHADOW_COOL = /* glsl */`
 {
-	float _coolM = ( 1.0 - gSunShadow ) * uShadowCoolAmt;
+	// Reach, not depth. Straight ( 1.0 - gSunShadow ) makes the cool proportional
+	// to how shadowed a pixel is, which sounds right and produces stipple: our
+	// meadow is thin blades standing on ground, the ground is fully occluded and
+	// the blades in the same shadow are only half occluded, so the cool landed in
+	// the gaps and the frame stayed a warm field with blue speckle between the
+	// grass. The reference's shadow is one flat mass with gold strokes over it.
+	// So saturate the mask early — anything meaningfully occluded joins the mass
+	// at full strength — and let the amount alone say how blue the mass is.
+	float _coolM = smoothstep( 0.0, uShadowCoolReach, 1.0 - gSunShadow ) * uShadowCoolAmt;
+
+	// ── and it is a near-field effect ────────────────────────────────────────
+	// The brief is explicit that eye-level views are judged against plate 3 and
+	// vistas against plate 1, and the two plates disagree about this exact
+	// thing: plate 3's cast shadows are blue, plate 1's are warm dark gold and
+	// its distance is pink-lavender haze instead. Applied at one strength
+	// everywhere, the amount that makes "meadow" right turns the whole
+	// foreground ridge of "hero" violet — measured, 33% of hero's chromatic
+	// pixels went cool against plate 1's 1.5%.
+	//
+	// Distance is the discriminator, and not arbitrarily: past a few hundred
+	// metres aerial perspective owns the colour of everything, which is what
+	// plate 1 shows and what Atmosphere already does to the value and the
+	// chroma. So hand the far field over to the haze and keep the painted blue
+	// for the ground the player is actually driving on.
+	//
+	// Read off the fog varyings rather than vViewPosition, deliberately:
+	// vViewPosition exists only in the physical program, and this chunk is
+	// shared with lambert and phong. Same reasoning as the uniform declarations
+	// living in "common". A material with fog off keeps the full effect, which
+	// is the right default — everything in this game that has no fog is either
+	// unlit or in the near field.
+	float _coolDist = 0.0;
+	#ifdef USE_FOG
+		_coolDist = length( vFogWorldPos - vFogCamPos );
+	#endif
+	_coolM *= 1.0 - smoothstep( uShadowCoolNear, uShadowCoolFar, _coolDist );
+
+	// ── and it belongs to the ground ─────────────────────────────────────────
+	// The brief's word for what this draws is a cast-shadow *mass*, and in every
+	// plate that mass lies on the ground. Applied to all orientations, the same
+	// amount that makes the meadow right turned the camper's flanks navy in the
+	// vehicle view — a red vehicle arriving at the frame as dark slate is not a
+	// style, it is a broken asset — and it does the same to trunks and cliff
+	// faces, which the brief separately says keep their own hue.
+	//
+	// So taper it off toward vertical. This is also the physical story rather
+	// than a fudge: the blue in a real cast shadow is skylight, a wall sees half
+	// the dome that a floor does, and the reference paints it that way.
+	// geometryNormal is view-space and viewMatrix is a rotation, so the
+	// transpose-multiply below is its world-space form; viewMatrix is declared
+	// in three's own fragment prefix for every program.
+	vec3 _coolWN = normalize( ( vec4( geometryNormal, 0.0 ) * viewMatrix ).xyz );
+	_coolM *= mix( uShadowCoolUp, 1.0, smoothstep( 0.20, 0.70, _coolWN.y ) );
+
 	vec3 _d = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
-	vec3 _cool = uShadowCool * dot( _d, vec3( 0.2126, 0.7152, 0.0722 ) );
+	// The brief's words for the mass are "soft, HIGH-VALUE violet-blue", and that
+	// last part is the half this term was missing. Measured over every blue-led
+	// pixel in the frame (tools/_scratch/coolstat.mjs), plate 3's shadow mass
+	// averages srgb(64,85,119) at luma 0.326 against sunlit gold at 0.47 — a
+	// ratio of 0.69 — while ours came back at luma 0.20-0.24 against sunlit 0.61,
+	// a ratio of 0.40. Same hue, same coverage, half the value: which is exactly
+	// why the frames read as cobalt spilled on the ground rather than as shade.
+	//
+	// Note this is NOT sun.shadow.intensity's job after all, and that was worth
+	// finding out by sweeping it: 0.82 / 0.70 / 0.58 moved the blue mass from
+	// luma 0.236 to 0.235 to 0.235. Lightening the shadow lets more sun into the
+	// pixel, the rotation then has more warm to cancel, and the two effects
+	// almost exactly annul. The value has to be put back on the cool side of the
+	// rotation, which is where the reference has it.
+	vec3 _cool = uShadowCool * ( dot( _d, vec3( 0.2126, 0.7152, 0.0722 ) ) * uShadowCoolLift );
 	reflectedLight.indirectDiffuse += ( _cool - _d ) * _coolM;
 }
 `;
@@ -95,6 +186,42 @@ const DEFAULTS = {
   // percent of its lit flank and the mountain reads as one smooth beige lump.
   floor: 0.13,
 
+  // ── golden-hour rim ──────────────────────────────────────────────────────
+  // Strength is generous because it is gated hard: the fresnel exponent keeps
+  // it inside a few degrees of the silhouette and the back gate switches it off
+  // entirely on anything the sun is not behind, so it costs nothing in the
+  // front-lit views and everything it does show up in is a backlit edge.
+  //
+  // Note it rides on directLight.color, which carries the shadow factor, so a
+  // silhouette edge that the shadow map calls occluded gets 1 - intensity of
+  // it (0.18 at the shipping value). That is the right sign — a rim needs the
+  // light to actually reach the edge — and it is why the strength reads high.
+  // 0.50, not the 1.30 the first pass wanted. Swept on the backlit view at
+  // 0 / 1.3 / 2.4, and the failure mode is specific to what this game's near
+  // field is made of: a grass blade is a thin card seen edge-on, so
+  // 1 - dot(N,V) is near 1 across the *whole* field, and a rim strong enough
+  // to draw a tree edge instead lifts every blade at once. At 1.3 the backlit
+  // field went pale pink and lost the blue shadow structure underneath it; at
+  // 2.4 it blew out. The rim is therefore priced for the surfaces that have a
+  // real silhouette — rock, terrain ridges, the camper, animals — and the
+  // grass keeps getting its backlight from its own translucency term, which is
+  // the right owner of it.
+  //
+  // The tree canopy, which is what the backlit view is actually for, is on raw
+  // ShaderMaterials and gets none of this. stylizeRim() below is the opt-in for
+  // it, matching the stylizeDiffuse() pattern; adopting it is the trees
+  // author's call and is written up in docs/INTEGRATION_REQUESTS.md.
+  // Down again to 0.22 after a full-res round at 0.50. It did widen the value
+  // range on paper — hero lumaP95 0.754 -> 0.847, lumaRange 0.407 -> 0.493 —
+  // but every bit of that was bought at the *top* end, by lifting grazing
+  // terrain and grass, and the frames read paler rather than deeper. A range
+  // bought by blowing highlights is not the range the reference has; plate 1
+  // gets its 0.705 from a black point at 0.161. So the rim keeps only the job
+  // it does honestly: a defined edge on rock, ridgelines and the camper.
+  rim: 0.22,
+  rimPow: 3.4,       // fresnel exponent: higher = tighter edge
+  rimBack: 0.10,     // how far behind the surface the sun has to be
+
   // ── the cool cast-shadow mass ────────────────────────────────────────────
   // Plate 3 — the plate the brief says to judge eye-level views by — puts about
   // 40% of its ground under one large, soft cast shadow, and that shadow is not
@@ -122,13 +249,86 @@ const DEFAULTS = {
   // shadowCool is the target hue, normalised to luminance 1 at construction so
   // the amount below is a pure hue rotation. Authored from the plate's own
   // srgb(47,66,102), which in linear is 1 : 2.04 : 4.81 about its own luma.
-  shadowCool: new THREE.Color(0.50, 0.98, 2.14),
-  // How far a fully shadowed pixel goes. 1.0 would put a cast shadow exactly on
-  // the plate's blue and read as a hole in the palette; the eye-level frames
-  // measure 0.1-0.8% cool pixels against the plate's 35.5%, and an earlier
-  // build that went to 20% cool *everywhere* was rejected, so the target is
-  // neither end. See the sweep in review/INDEX.md.
-  shadowCoolAmt: 0.42,
+  //
+  // RE-AUTHORED after seeing it at full strength. The old triple was read off
+  // the *deepest* blue in plate 3, srgb(47,66,102), which is the darkest corner
+  // of the shadow and not the mass. Rotated all the way onto it, our meadow and
+  // drive frames came back with a royal-blue paint between the grass — the
+  // right shape and the wrong pigment; it read as spilled water, not as shade.
+  //
+  // The mass itself, sampled across plate 3's shadowed meadow on a 12x8 grid,
+  // is much quieter: srgb(41,63,77) chroma 0.14 and srgb(42,65,87) chroma 0.18,
+  // against sunlit gold beside it at srgb(177,109,44) chroma 0.52. So it is a
+  // *desaturated* slate at about half the sunlit value, and the previous triple
+  // was three times its chroma.
+  //
+  // The amount cannot fix that, and this is the trap worth writing down: our
+  // shadowed gold starts at G/R 0.52, B/R 0.14, so a partial rotation does not
+  // give a paler blue — it gives grey, because the path from that gold to any
+  // blue passes through neutral. The plate's shadow is unambiguously blue-led,
+  // i.e. a full rotation. The saturation therefore has to come out of the
+  // *target*, with the amount left high. Landing colour, computed at our
+  // shadow's own luminance: srgb(39,50,61) before the grade, which the grade's
+  // vibrance and cool lift then carry to about the plate.
+  // Trimmed once more to (0.70, 1.00, 1.51) after seeing a full-res round where
+  // a whole hillside was inside one cast shadow. At (0.62, 1.00, 1.60) the mass
+  // measured chroma 0.213 — the number plate 3 gives if you average its shadow
+  // together with its river, which is not the comparison that matters. The
+  // shadow *alone* in that plate is chroma 0.14-0.18, and at this game's scale
+  // (a low golden-hour sun puts entire slopes in shadow, not just tree shapes)
+  // the difference between those two numbers is the difference between shade
+  // and a hill painted cornflower. Swept: 0.213 / 0.178 / 0.144 chroma at three
+  // desaturations; 0.178 is the plate.
+  shadowCool: new THREE.Color(0.70, 1.00, 1.51),
+  // How far a fully shadowed pixel goes.
+  //
+  // 0.42 was picked on the reasoning that 1.0 would put a cast shadow exactly on
+  // the plate's blue and read as a hole. Swept and measured, that reasoning was
+  // wrong in an important way: the rotation is a *mix*, so between about 0.4 and
+  // 0.6 a gold pixel is not part-way to blue, it is sitting on the crossing
+  // point where no channel leads — a neutral. Measured across 0.42 / 0.65 / 0.85
+  // / 1.0 on meadow and drive, cool pixels went 0.6% / 1.4% / 5.2% / 8.0%: the
+  // whole first half of the range buys nothing at all, because it is spent
+  // walking the gold down to grey rather than up to blue. A value under ~0.7 is
+  // not a subtle version of this effect, it is the effect switched off with the
+  // saturation cost still paid.
+  //
+  // So it sits in the upper half, and the ceiling is held by the *grade*
+  // instead: the cool lift tint in PostFX lands a fully-rotated shadow on
+  // srgb(44,60,96) against plate 3's srgb(47,66,102), which is the plate rather
+  // than an overshoot of it. The guardrail that matters (an earlier build was
+  // rejected at ~20% blue *everywhere*) is held by the gSunShadow mask, not by
+  // this number — a surface merely turned away from the sun is untouched at any
+  // amount.
+  shadowCoolAmt: 0.92,
+  // Where the shadow mask saturates. 1.0 is the old linear behaviour; lower
+  // values pull partially-occluded pixels into the mass at full strength, which
+  // is what turns speckle into a shape. Swept — see the note in SHADOW_COOL.
+  shadowCoolReach: 0.30,
+  // Where the painted blue hands over to aerial perspective. See the note in
+  // SHADOW_COOL: eye-level ground is inside `near`, a vista's mid and far
+  // ground is past `far`, and the crossfade between them is wide enough that
+  // driving toward a shadow never shows a moving edge.
+  // How much of it a vertical surface keeps. Not zero: a cliff face or a trunk
+  // in a big shadow does pick up some sky, and cutting it to nothing puts a
+  // visible seam where the ground meets anything standing on it.
+  shadowCoolUp: 0.30,
+  // Value gain applied as the pixel rotates. 1.0 is the luminance-preserving
+  // rotation this started as. See the note beside _cool.
+  // Swept at 1.0 / 1.4 / 1.8, measured over the blue-led population of the
+  // meadow frame against plate 3's own:
+  //           blue mass                luma   chroma   frame lumaP05
+  //   1.0     srgb( 43, 53, 80)        0.208   0.150      0.186
+  //   1.4     srgb( 47, 66,101)        0.254   0.214      0.211
+  //   1.8     srgb( 54, 80,118)        0.303   0.253      0.231
+  //   plate3  srgb( 64, 85,119)        0.326   0.221      0.195
+  // 1.8 lands the mass almost exactly on the plate and costs 0.045 of the
+  // frame's black point to do it, which is the wrong trade in a round whose
+  // other ship-blocker is that the blacks are too high. 1.55 keeps the mass
+  // recognisably the plate's colour and the black point at the plate's.
+  shadowCoolLift: 1.45,
+  shadowCoolNear: 110.0,
+  shadowCoolFar: 520.0,
   // NOT A KNOB, DELIBERATELY. A shaped floor — one that fades across the back
   // hemisphere so a surface 70 degrees past the terminator sits below one at 40
   // — was built here and reverted, because it measured as a no-op. The river
@@ -142,8 +342,8 @@ const DEFAULTS = {
 };
 
 /** shadowCool, scaled to luminance 1 so the amount is a pure hue rotation. */
-function normalisedCool() {
-  const c = DEFAULTS.shadowCool.clone();
+function normalisedCool(src = DEFAULTS.shadowCool) {
+  const c = src.clone();
   const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
   return c.multiplyScalar(1 / Math.max(l, 1e-4));
 }
@@ -194,7 +394,7 @@ export function patchStylizedLighting() {
   patchChunk(
     CHUNK,
     /reflectedLight\.directSpecular \+= irradiance \* BRDF_GGX\(/,
-    'reflectedLight.directSpecular += specIrradiance * BRDF_GGX(',
+    'reflectedLight.directSpecular += rimIrradiance + specIrradiance * BRDF_GGX(',
     'Stylize'
   );
 
@@ -216,7 +416,7 @@ export function patchStylizedLighting() {
   // than an undefined value. Unused declarations in the vertex and depth
   // programs cost nothing; the compiler drops them.
   THREE.ShaderChunk.common =
-    'uniform vec3 uShadowCool;\nuniform float uShadowCoolAmt;\nfloat gSunShadow = 1.0;\n'
+    'uniform vec3 uShadowCool;\nuniform float uShadowCoolAmt;\nuniform float uShadowCoolReach;\nuniform float uShadowCoolUp;\nuniform float uShadowCoolLift;\nuniform float uShadowCoolNear;\nuniform float uShadowCoolFar;\nfloat gSunShadow = 1.0;\n'
     + THREE.ShaderChunk.common;
 
   injectUniforms('lights', {
@@ -226,8 +426,16 @@ export function patchStylizedLighting() {
     uStyleBanding:  { value: DEFAULTS.banding },
     uStyleSpecular: { value: DEFAULTS.specular },
     uStyleFloor:    { value: DEFAULTS.floor },
+    uStyleRim:      { value: DEFAULTS.rim },
+    uStyleRimPow:   { value: DEFAULTS.rimPow },
+    uStyleRimBack:  { value: DEFAULTS.rimBack },
     uShadowCool:    { value: normalisedCool() },
     uShadowCoolAmt: { value: DEFAULTS.shadowCoolAmt },
+    uShadowCoolReach: { value: DEFAULTS.shadowCoolReach },
+    uShadowCoolUp: { value: DEFAULTS.shadowCoolUp },
+    uShadowCoolLift: { value: DEFAULTS.shadowCoolLift },
+    uShadowCoolNear: { value: DEFAULTS.shadowCoolNear },
+    uShadowCoolFar: { value: DEFAULTS.shadowCoolFar },
   });
   verifyUniforms('Stylize', ['uStyleWrap', 'uStyleSpecular', 'uStyleFloor', 'uShadowCool']);
 }
@@ -251,6 +459,9 @@ uniform float uStyleSteps;
 uniform float uStyleSoft;
 uniform float uStyleBanding;
 uniform float uStyleFloor;
+uniform float uStyleRim;
+uniform float uStyleRimPow;
+uniform float uStyleRimBack;
 
 // rawNL is the unclamped dot(normal, lightDir). Returns the stylised diffuse
 // response: wide soft terminator, gently banded, floored so nothing goes to a
@@ -264,6 +475,17 @@ float stylizeDiffuse( float rawNL ) {
   float nl = mix( wrapNL, band, uStyleBanding );
   return uStyleFloor + ( 1.0 - uStyleFloor ) * nl;
 }
+
+// Golden-hour rim, for a shader that does its own lighting. rawNV is
+// dot(normal, viewDir) and rawVL is dot(viewDir, lightDir), both unclamped
+// and both with viewDir pointing from the surface toward the camera. Returns a
+// scalar to multiply by the light colour and ADD — never multiply it by albedo,
+// or a dark conifer gets a dark rim, which is the one thing a rim must not do.
+float stylizeRim( float rawNV, float rawVL ) {
+  float f = 1.0 - clamp( rawNV, 0.0, 1.0 );
+  float b = clamp( -rawVL, 0.0, 1.0 );
+  return uStyleRim * pow( f, uStyleRimPow ) * smoothstep( uStyleRimBack, 1.0, b );
+}
 #endif`;
 
 /** Uniform block a custom ShaderMaterial merges in to use `stylizeDiffuse`. */
@@ -274,6 +496,9 @@ export function stylizeUniforms() {
     uStyleSoft:    { value: DEFAULTS.soft },
     uStyleBanding: { value: DEFAULTS.banding },
     uStyleFloor:   { value: DEFAULTS.floor },
+    uStyleRim:     { value: DEFAULTS.rim },
+    uStyleRimPow:  { value: DEFAULTS.rimPow },
+    uStyleRimBack: { value: DEFAULTS.rimBack },
   };
 }
 
@@ -315,7 +540,16 @@ export class Stylize {
       u.uStyleBanding.value = p.banding;
       u.uStyleSpecular.value = p.specular;
       u.uStyleFloor.value = p.floor;
+      if (u.uStyleRim) u.uStyleRim.value = p.rim;
+      if (u.uStyleRimPow) u.uStyleRimPow.value = p.rimPow;
+      if (u.uStyleRimBack) u.uStyleRimBack.value = p.rimBack;
       if (u.uShadowCoolAmt) u.uShadowCoolAmt.value = p.shadowCoolAmt;
+      if (u.uShadowCoolReach) u.uShadowCoolReach.value = p.shadowCoolReach;
+      if (u.uShadowCoolUp) u.uShadowCoolUp.value = p.shadowCoolUp;
+      if (u.uShadowCoolLift) u.uShadowCoolLift.value = p.shadowCoolLift;
+      if (u.uShadowCoolNear) u.uShadowCoolNear.value = p.shadowCoolNear;
+      if (u.uShadowCoolFar) u.uShadowCoolFar.value = p.shadowCoolFar;
+      if (u.uShadowCool) u.uShadowCool.value.copy(normalisedCool(p.shadowCool));
     }
   }
 }

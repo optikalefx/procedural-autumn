@@ -14,9 +14,53 @@
 //  triangles at the screen edge and buys back ~200 draw calls.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { TERRAIN, WORLD } from './WorldConfig.js';
+import { TERRAIN, WORLD, SEED } from './WorldConfig.js';
 import { createTerrainMaterial } from './TerrainMaterial.js';
-import { clamp } from '../core/MathUtils.js';
+import { clamp, clamp01, smoothstep } from '../core/MathUtils.js';
+import { NoiseField } from '../core/Noise.js';
+
+// ── The world edge ───────────────────────────────────────────────────────────
+// The playable heightfield is 3072 m square and several canonical cameras stand
+// *outside* it (the peaks framing resolves to 341 m beyond the -Z boundary), so
+// the map's rim was drawn as a dead-straight vertical cliff with empty sky past
+// it, and the chunk skirts along that rim hung into the sky as black curtains.
+//
+// The apron is a square annulus of extra ground beyond the boundary, built once
+// and never streamed. Three things make it work:
+//
+//   · Its inner band is the interior heightfield MIRRORED across the boundary,
+//     so ground, slope and surface materials cross the seam continuously and
+//     the near field (which a camera can stand on) is real terrain rather than
+//     a radial smear of edge texels. TerrainMaterial mirrors its data-texture
+//     lookup the same way, so the shading agrees with the surface.
+//   · Its outer band rises into a distant range. That is not decoration: the
+//     haze cap is 0.76, so a *falling* skirt keeps a quarter of its own value
+//     and its far edge stays a visible line on the sky forever. A crest higher
+//     than any camera occludes everything behind it instead, and a pale hazy
+//     range on the horizon is what the reference vista plate actually shows.
+//   · Behind that crest the surface falls away hard, so the true outer edge is
+//     geometrically unreachable from anywhere in the world.
+const APRON_WIDTH = 4200;      // metres of ground beyond the boundary
+const APRON_RINGS = 34;        // radial divisions, geometric from the seam
+const APRON_PER_SIDE = 192;    // perimeter samples per world side (16 m pitch)
+const APRON_SEGMENTS = 16;     // meshes the ring is split into, for culling
+// Crest of the far range, and the one number that decides whether the horizon
+// reads as a cozy valley or as the Himalayas.
+//
+// The floor is a sightline constraint, not a taste one: every camera must sit
+// BELOW the crest, because then every ray that clears it is climbing and the
+// ground behind it is unreachable at any distance. MEASURED, not assumed — the
+// three vista cameras resolve to 153 m (peaks), 213 m (hero) and 210 m (dawn),
+// and the highest ground in the world is 362 m, so 490 m is the floor with a
+// third of it in hand. The minimum crest is 0.72 of this constant.
+//
+// The ceiling is taste, and two attempts got it wrong before this one. At
+// 1180 m the range subtended 20 degrees at foreground contrast and dwarfed the
+// world's own massifs — the hero frame stopped being a valley with mountains
+// behind it and became mountains with a valley in front. At 870 m it was a
+// blown-out white wall across the whole horizon. 680 m at 2.4 km is a band
+// about five degrees high, which is what the reference vista plate carries.
+const APRON_CREST = 700;
 
 // Chunks at this LOD or coarser are batched into blocks.
 //
@@ -304,6 +348,7 @@ export class Terrain {
     // Recomputing the wanted set is a sweep over every chunk in the world plus
     // a Set and a job object per cell. It only ever changes its answer when the
     // camera has moved, so gate it on that rather than paying it every frame.
+    if (!this.apron) this.buildApron();
     const moved = this._scanAt.distanceToSquared(p);
     if (moved > RESCAN_DIST * RESCAN_DIST) {
       this._scanAt.copy(p);
@@ -440,6 +485,207 @@ export class Terrain {
     else q.copyWithin(0, i), q.length -= i;
   }
 
+  // ── World-edge apron ───────────────────────────────────────────────────────
+
+  /** Reflect a world coordinate back inside the map. Continuous in value and
+   *  in first derivative at the boundary, which is what keeps the seam invisible. */
+  _mirror(v) {
+    const H = this.world.half;
+    // Clamped to a SINGLE reflection. The apron is wider than the map, so a
+    // naive reflection runs off the far side and lands back outside; the
+    // shader's matching mirror has the same one-fold range, and the two have to
+    // agree texel for texel or the far apron is lit for a surface it is not.
+    if (v > H) return Math.max(-H, 2 * H - v);
+    if (v < -H) return Math.min(H, -2 * H - v);
+    return v;
+  }
+
+  /**
+   * Apron surface height at a world point outside the boundary.
+   *
+   * `s` runs 0 at the seam to 1 at the outer edge. The profile is three things
+   * added: the mirrored interior (dominant at the seam, gone by ~1.4 km out), a
+   * gentle outward fall that stops the mirror reading as one ruler-straight
+   * ridge running the full length of the boundary, and the far range.
+   */
+  _apronHeight(x, z) {
+    const H = this.world.half;
+    const d = Math.max(0, Math.max(Math.abs(x), Math.abs(z)) - H);
+    const s = clamp01(d / APRON_WIDTH);
+    const n = this._apronNoise;
+
+    const mt = this.world.getHeight(this._mirror(x), this._mirror(z));
+
+    // Two ranges rather than one, at 2200 m and 900 m, and the ridge transfer
+    // is deliberately BLUNT (sharpness 0.62, half its weight in a billow). At
+    // 1.15 the silhouette came back as a row of near-identical shark teeth,
+    // which is what a sharpened ridged fractal always gives when every crest is
+    // clipped to the same height by the same profile. Fat shoulders and round
+    // summits are also what the reference plate's far field is made of.
+    const w1 = n.ridged(x * 0.00045, z * 0.00045, 4, 2.04, 0.48, 1, 0.62);
+    const w2 = n.billow(x * 0.0011 + 8.3, z * 0.0011 - 5.1, 3, 2.1, 0.45, 1) * 0.5 + 0.5;
+    const w3 = n.fbm(x * 0.0026 - 21.4, z * 0.0026 + 13.7, 3, 2.1, 0.42, 1) * 0.5 + 0.5;
+    const wall = clamp01(w1 * 0.50 + w2 * 0.32 + w3 * 0.18);
+
+    // Rises from the seam, tops out at ~0.62 of the width (2.6 km out), then
+    // falls away behind its own crest.
+    // THE CREST MUST NOT SIT AT ONE DISTANCE. With `shape` a function of s
+    // alone the only thing that varied along the range was its height, by 28%,
+    // and the result was a flat-topped wall with a nearly straight top edge
+    // running the whole width of the hero frame — a mesa, not a range. Letting
+    // the profile advance and recede by up to 550 m puts ridges in front of
+    // other ridges, which is the layering the reference vista is built from and
+    // the only reason a far field reads as deep rather than as a backdrop.
+    const sOff = n.fbm(x * 0.00035 + 3.7, z * 0.00035 - 9.1, 2, 2.0, 0.5, 1) * 0.13;
+    const shape = smoothstep(0.24 + sOff, 0.58 + sOff, s)
+                * (1 - smoothstep(0.70 + sOff, 0.90 + sOff, s));
+    // 420-826 m. The floor still clears the highest camera (213 m) by 200 m, so
+    // widening the spread costs no sightline and buys a real skyline.
+    const crest = (0.60 + 0.58 * wall) * APRON_CREST;
+
+    // Foothills at 260 m and 110 m. Without them the mid apron — the band a
+    // vista camera looks straight at, 300 m to 1.5 km beyond the boundary — is
+    // the difference of two fields a kilometre wide and reads as one smooth
+    // waxy ramp filling a third of the frame. This is the only structure out
+    // there once the mirrored interior has faded.
+    const detail = (n.ridged(x * 0.0038, z * 0.0038, 3, 2.1, 0.45, 1, 0.8) - 0.38) * 62.0
+                 + n.fbm(x * 0.0092, z * 0.0092, 3, 2.1, 0.42, 1) * 24.0;
+
+    // The mirrored interior is the near band's material: real ground, real
+    // slope, real surface colour, continuous across the seam. It is held to
+    // 18% by ~1.9 km out, past which the reflection would be a recognisable
+    // second copy of the valley rather than a continuation of its rim.
+    let y = mt * (1 - smoothstep(0.04, 0.46, s) * 0.82)
+          - smoothstep(0.0, 0.14, s) * 52.0
+          + detail * smoothstep(0.03, 0.30, s) * (1.0 - smoothstep(0.52, 0.86, s) * 0.60)
+          + crest * shape;
+    // Behind the crest, out of every sightline in the game.
+    y -= smoothstep(0.80, 1.0, s) * 900.0;
+    return y;
+  }
+
+  /**
+   * Build the apron once. One mesh per perimeter segment so frustum culling
+   * still works — the whole ring as a single object would be drawn from the
+   * middle of the map with none of it on screen.
+   */
+  buildApron() {
+    if (this.apron) return;
+    this._apronNoise = new NoiseField(SEED ^ 0x5ed6e1);
+    const H = this.world.half;
+    const group = new THREE.Group();
+    group.name = 'TerrainApron';
+
+    const P = APRON_PER_SIDE * 4;               // perimeter samples, wrapping
+    const perSeg = P / APRON_SEGMENTS;
+    // Radial spacing is GEOMETRIC, not a power of the parameter: 10 m at the
+    // seam growing 13% a ring. A power law spends most of its rings in the last
+    // kilometre, where everything is haze, and leaves 60-70 m steps at 500 m
+    // out, where a vista camera can still resolve them.
+    const dist = new Float32Array(APRON_RINGS + 1);
+    {
+      let step = 10.0, d = 0;
+      for (let j = 0; j <= APRON_RINGS; j++) { dist[j] = d; d += step; step *= 1.13; }
+      const k = APRON_WIDTH / dist[APRON_RINGS];
+      for (let j = 0; j <= APRON_RINGS; j++) dist[j] *= k;
+    }
+
+    // Boundary point for perimeter index i (0..P), walking the square.
+    const bx = new Float32Array(P + 1), bz = new Float32Array(P + 1);
+    for (let i = 0; i <= P; i++) {
+      const side = Math.min(3, Math.floor(i / APRON_PER_SIDE));
+      const u = (i - side * APRON_PER_SIDE) / APRON_PER_SIDE;
+      if (side === 0) { bx[i] = -H + u * 2 * H; bz[i] = -H; }
+      else if (side === 1) { bx[i] = H; bz[i] = -H + u * 2 * H; }
+      else if (side === 2) { bx[i] = H - u * 2 * H; bz[i] = H; }
+      else { bx[i] = -H; bz[i] = H - u * 2 * H; }
+    }
+
+    const rows = APRON_RINGS + 2;               // skirt row + ring rows
+    const nrm = new THREE.Vector3();
+    let tris = 0;
+
+    for (let seg = 0; seg < APRON_SEGMENTS; seg++) {
+      const i0 = seg * perSeg;
+      const cols = perSeg + 1;
+      const positions = new Float32Array(cols * rows * 3);
+      const normals = new Float32Array(cols * rows * 3);
+      const uvs = new Float32Array(cols * rows * 2);
+
+      for (let c = 0; c < cols; c++) {
+        const i = i0 + c;
+        for (let r = 0; r < rows; r++) {
+          const j = Math.max(0, r - 1);         // r 0 and 1 share the seam ring
+          const scale = (H + dist[j]) / H;
+          const x = bx[i] * scale, z = bz[i] * scale;
+          let y = j === 0 ? this.world.getHeight(x, z) : this._apronHeight(x, z);
+          if (r === 0) y -= 40.0;               // seam skirt
+
+          const o = (r * cols + c);
+          positions[o * 3] = x; positions[o * 3 + 1] = y; positions[o * 3 + 2] = z;
+          uvs[o * 2] = c / perSeg; uvs[o * 2 + 1] = j / APRON_RINGS;
+        }
+      }
+
+      // Normals from finite differences on the built grid. Cheap and exact for
+      // this surface, and it needs no second pass over the height function.
+      for (let c = 0; c < cols; c++) {
+        for (let r = 0; r < rows; r++) {
+          const o = r * cols + c;
+          const cL = Math.max(0, c - 1), cR = Math.min(cols - 1, c + 1);
+          const rD = Math.max(1, r - 1), rU = Math.min(rows - 1, r + 1);
+          const aL = (r * cols + cL) * 3, aR = (r * cols + cR) * 3;
+          const aD = (rD * cols + c) * 3, aU = (rU * cols + c) * 3;
+          const ex = positions[aR] - positions[aL], ez = positions[aR + 2] - positions[aL + 2];
+          const ey = positions[aR + 1] - positions[aL + 1];
+          const fx = positions[aU] - positions[aD], fz = positions[aU + 2] - positions[aD + 2];
+          const fy = positions[aU + 1] - positions[aD + 1];
+          nrm.set(ey * fz - ez * fy, ez * fx - ex * fz, ex * fy - ey * fx);
+          if (nrm.lengthSq() < 1e-12) nrm.set(0, 1, 0); else nrm.normalize();
+          if (nrm.y < 0) nrm.negate();
+          normals[o * 3] = nrm.x; normals[o * 3 + 1] = nrm.y; normals[o * 3 + 2] = nrm.z;
+        }
+      }
+
+      const idx = new Uint32Array((cols - 1) * (rows - 1) * 6);
+      let p = 0;
+      for (let r = 0; r < rows - 1; r++) {
+        for (let c = 0; c < cols - 1; c++) {
+          const a = r * cols + c, b = a + 1, e = a + cols, f = e + 1;
+          // Wound so the outward-facing side is front — the ring is built with
+          // +r pointing away from the map, so this is the mirror of the chunk
+          // grid's winding.
+          idx[p++] = a; idx[p++] = b; idx[p++] = e;
+          idx[p++] = b; idx[p++] = f; idx[p++] = e;
+        }
+      }
+      tris += idx.length / 3;
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+      geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geom.setIndex(new THREE.BufferAttribute(idx, 1));
+      geom.computeBoundingSphere();
+      geom.computeBoundingBox();
+
+      const mesh = new THREE.Mesh(geom, this.material);
+      // Never a caster and never a receiver: it is outside the cascade extent
+      // and putting a 1.1 km range into the shadow map would spend the whole
+      // texel budget on ground the player can never reach.
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = true;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      group.add(mesh);
+    }
+
+    this.apron = group;
+    this.apronTriangles = tris;
+    this.scene.add(group);
+  }
+
   setSunDir(v) {
     this.material.userData.uniforms.uSunDir.value.copy(v);
   }
@@ -449,6 +695,11 @@ export class Terrain {
   }
 
   dispose() {
+    if (this.apron) {
+      for (const m of this.apron.children) m.geometry.dispose();
+      this.scene.remove(this.apron);
+      this.apron = null;
+    }
     for (const [, c] of this.chunks) c.mesh.geometry.dispose();
     for (const [, b] of this.blocks) b.mesh.geometry.dispose();
     this.chunks.clear();

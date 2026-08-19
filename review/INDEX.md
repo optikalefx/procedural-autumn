@@ -36,3 +36,5 @@ same places are photographed every round and the sheets are directly comparable.
 | 028 | 2026-08-19 | hue rotated back toward gold | [028](028-2026-08-19-hue-rotated-back-toward-gold.png) |
 | 029 | 2026-08-19 | rock chroma hole and ground substrate | [029](029-2026-08-19-rock-chroma-hole-and-ground-substrate.png) |
 | 030 | 2026-08-19 | hue width restored, NaN black square fixed, shadow bias | [030](030-2026-08-19-hue-width-restored-nan-black-square-fixed-shadow.png) |
+| 031 | 2026-08-19 | cool cast-shadow mass and value range | [031](031-2026-08-19-cool-cast-shadow-mass-and-value-range.png) |
+| 032 | 2026-08-19 | world edge apron and contour ribbons | [032](032-2026-08-19-world-edge-apron-and-contour-ribbons.png) |

@@ -276,6 +276,23 @@ export function createTerrainMaterial(world, opts = {}) {
         // registered ~1 m off the mesh it is painted on. Measured at one point:
         // CPU 81.10 m, uncorrected sample 85.58 m, corrected 81.10 m exactly.
         vec2 uvw = (vWorldPos.xz / uWorldSize) + 0.5 + (0.5 / uDataRes);
+        // How far outside the playable square this fragment is. Terrain.js
+        // builds an apron of ground beyond the boundary so the world does not
+        // end in a vertical cliff against empty sky; the apron's surface is the
+        // interior heightfield REFLECTED across the boundary, so reflecting the
+        // lookup here is what makes its shading agree with its shape. Clamping
+        // instead (the default wrap) smears the boundary texels radially for
+        // 2.6 km, which is exactly the streak this replaces.
+        float uOutM = max(0.0, max(abs(vWorldPos.x), abs(vWorldPos.z)) - uWorldSize * 0.5);
+        float uOutside = smoothstep(0.0, 46.0, uOutM);
+        // Past ~1.4 km out the apron's surface has left the reflection behind
+        // and is its own landform, so the reflected lookup stops describing it
+        // and everything keyed on the data texture has to hand over to the
+        // geometry. Beyond this the far range is lit by its own mesh normal and
+        // painted from its own slope and altitude.
+        float uFarApron = smoothstep(320.0, 1400.0, uOutM);
+        uvw = abs(uvw);
+        uvw = clamp(mix(uvw, 2.0 - uvw, step(1.0, uvw)), 0.0, 1.0);
         vec4 data = texture2D(uDataTex, uvw);
         vec4 aux  = texture2D(uAuxTex, uvw);
 
@@ -496,9 +513,49 @@ export function createTerrainMaterial(world, opts = {}) {
         // stone. So the angle at which soil gives out falls with altitude: ~53
         // degrees down in the valley, ~44 up on the massifs, interpolated
         // across the same band the tree line occupies.
+        // ── THE SLOPE THE GRASS/ROCK LINE IS ALLOWED TO SEE ────────────────
+        // NOT aux.r, and this is the gold contour ribbons. Three previous
+        // rounds looked for a shading bug and all measured as exact no-ops,
+        // because the defect is arithmetic and has nothing to do with light.
+        //
+        // rockM moves 1.26 for every 1.0 of steep, and steep used to cross
+        // its whole range in 0.62 of slope, so the boundary resolved its entire
+        // decision inside about 0.03 of slope — under one degree. Measured on
+        // the bake (tools/_scratch/slopecal.mjs), the 2 m slope field on steep
+        // massif faces carries an RMS wobble of 0.659 against its own 30 m
+        // average: twenty times the width of the decision. 29.8% of steep
+        // samples fall on the opposite side of the line from where the 16 m
+        // slope puts them. Every micro-bench of the erosion grain therefore
+        // dips under the cut and the mask paints a grass ribbon along it — an
+        // isoline of the slope field, pixel-identical at every sun angle
+        // because nothing about it is shading.
+        //
+        // So the line reads the slope at the scale the line is supposed to
+        // describe: a two-ring disc average about 24 m across. Measured mean
+        // falls 1.382 -> ~1.02 and the wobble falls to ~0.10, so the thresholds
+        // below are re-scaled by the same ratio rather than re-guessed.
+        // Eight taps on two rings, and the count is not padding — a four-tap
+        // version with 28% of its weight on the centre texel put the streaks
+        // back on the peaks shoulder in the same place at all three hours,
+        // which is the isoline signature returning. The centre texel is the
+        // one carrying the wobble, so it gets the smallest share.
+        vec2 rA = vec2(11.0 / uWorldSize, 0.0);
+        vec2 rB = vec2(17.0 / uWorldSize, 17.0 / uWorldSize);
+        float slopeLP =
+            slope * 0.20
+          + (texture2D(uAuxTex, uvw + rA.xy).r + texture2D(uAuxTex, uvw - rA.xy).r
+           + texture2D(uAuxTex, uvw + rA.yx).r + texture2D(uAuxTex, uvw - rA.yx).r) * 0.11
+          + (texture2D(uAuxTex, uvw + rB).r + texture2D(uAuxTex, uvw - rB).r
+           + texture2D(uAuxTex, uvw + vec2(rB.x, -rB.y)).r
+           + texture2D(uAuxTex, uvw + vec2(-rB.x, rB.y)).r) * 0.09;
+
         float alpine = smoothstep(120.0, 250.0, vWorldPos.y);
-        float soilHold = mix(1.02, 0.72, alpine);
-        float steep = smoothstep(soilHold, soilHold + 0.62, slope);
+        // Re-scaled with the field, not re-guessed: 1.02*0.71 and 0.72*0.71.
+        // The ramp is left wider than the same rescale would give (0.72 against
+        // 0.44), which is the second half of the fix — a blend wide enough to
+        // swallow what wobble survives the low-pass.
+        float soilHold = mix(0.72, 0.51, alpine);
+        float steep = smoothstep(soilHold, soilHold + 0.72, slopeLP);
         float bench = 1.0 - smoothstep(0.10, 0.34, slope);   // flat shelf / meadow
 
         // ── ground cover: gold meadow, olive damp grass, pale dry straw ─────
@@ -514,8 +571,15 @@ export function createTerrainMaterial(world, opts = {}) {
         // watercourse, so a 0.74 threshold handed 55% olive to every riverbank
         // in the valley — which is most of where the player drives — and with
         // the damp darkening on top the banks came out the colour of mud.
-        float oliveM = massEdge(wet + macro2 * 0.16, 0.84);
-        float dryM   = massEdge(macro * 0.55 + macro2 * 0.45 - moist * 0.30, 0.56);
+        // softMass, not massEdge, and for the same reason the rock line needed
+        // it. moisture is a smooth field, so fwidth across the olive boundary
+        // collapses to massEdge's 0.010 anti-divide-by-zero floor and the two
+        // grass albedos meet on a 1-2 px cut — a saturated orange and a
+        // desaturated olive-mustard sharing a hard edge in the middle of one
+        // continuous meadow, with nothing in the ground to explain it. A floor
+        // in field units spans real ground: about 6 m of transition here.
+        float oliveM = softMass(wet + macro2 * 0.16, 0.84, 0.045);
+        float dryM   = softMass(macro * 0.55 + macro2 * 0.45 - moist * 0.30, 0.56, 0.040);
 
         vec3 grass = uGrassGold;
         grass = mix(grass, uGrassOlive, oliveM * 0.45);
@@ -812,8 +876,18 @@ export function createTerrainMaterial(world, opts = {}) {
         // which already means sloped ground, so nothing on the valley floor can
         // be reached by it.
         float breakAmp = nearLine;
+        // A breaker that survives to vista range. Past ~520 m meso and fine
+        // are both at their means and the only octaves left were 240 m and
+        // 65 m, which are too broad to break a line: between two of their blobs
+        // the boundary is free to follow whatever the slope field says, and on
+        // a cone that is a contour. This one is ~34 m, triplanar so it does not
+        // compress into horizontal streaks on a steep face, and it holds until
+        // a cycle is worth about two pixels at 2.2 km.
+        float bream = fbmTP(vWorldPos * 0.029 + 19.6, 3, tpw) * 0.5 + 0.5;
+        float fBream = 1.0 - smoothstep(1100.0, 2200.0, camDist);
         float rockM = clamp(rockBase
                           + ((macro - 0.5) * 0.52 + (macro2 - 0.5) * 0.46) * fMacro * breakAmp
+                          + (bream - 0.5) * 0.42 * fBream * breakAmp
                           + (meso - 0.5) * 0.34 * fMeso * breakAmp
                           + (fine - 0.5) * 0.30 * breakAmp, 0.0, 1.0);
         // FEATHERED, NOT MASS-EDGED, AND THAT IS THE FIX FOR THE POLYGON.
@@ -842,8 +916,16 @@ export function createTerrainMaterial(world, opts = {}) {
         // broad definite masses the reference is built from. Near wide, far
         // crisp — and far is where the derivative width is honest anyway,
         // because a distant face crosses the whole field inside a pixel.
+        // THE FAR FLOOR IS NO LONGER A TOKEN WIDTH. At 0.045 the boundary
+        // resolved inside 0.015 of slope — a fifth of a degree — at exactly the
+        // distances (800-1500 m) where the massifs are, so whatever residual
+        // structure the slope field carried was traced out as a 1-2 px hard
+        // line. That is the other half of the ribbon defect: corrugated data
+        // plus a zero-width cut. With the line now reading a 24 m disc average
+        // the field behind it is smooth, so a real width can be afforded
+        // without the mush the old taper was guarding against.
         float rockFeather = max(fwidth(rockM) * 1.4,
-                                mix(0.26, 0.045, smoothstep(140.0, 520.0, camDist)));
+                                mix(0.26, 0.17, smoothstep(140.0, 520.0, camDist)));
         float rockCover = smoothstep(0.44 - rockFeather, 0.44 + rockFeather, rockM);
         albedo = mix(albedo, rock, rockCover);
         // Transition material along the line. A feather on its own only
@@ -999,7 +1081,54 @@ export function createTerrainMaterial(world, opts = {}) {
         float snowSel = smoothstep(uSnowLine, uSnowLine + 52.0,
                                    vWorldPos.y + fbm(vWorldPos.xz * 0.008, 3) * 30.0);
         snowSel *= 1.0 - smoothstep(0.85, 1.30, slope);
+        // Never on the world-edge apron. Its far range crests above 700 m so
+        // that no camera can see past it, which is a sightline number and not
+        // an altitude the snow line was ever calibrated against; left alone it
+        // caps the whole horizon white, and no reference plate has snow in it.
+        snowSel *= 1.0 - uOutside;
         albedo = mix(albedo, uSnow, snowSel);
+
+        // ── the far apron ──────────────────────────────────────────────────
+        // Out here the data texture is describing ground 1.5 km away on the
+        // other side of the reflection, not the range the fragment is actually
+        // on, so every mask above is answering the wrong question — which is
+        // what put soft orange meadow blotches on a mountainside and lit it
+        // with a normal belonging to somewhere else. Painted from its own
+        // geometry instead: rock on the faces, gold on the shoulders, nothing
+        // finer, because at 2-4 km through the haze nothing finer survives.
+        if (uFarApron > 0.001) {
+          float slopeGeo = length(N.xz) / max(N.y, 1e-3);
+          float soft = (1.0 - smoothstep(0.42, 0.96, slopeGeo))
+                     * (1.0 - smoothstep(190.0, 330.0, vWorldPos.y));
+          // Deliberately a stop darker than the near rock. A distant plane is
+          // read by its VALUE relative to the sky as much as by its hue, and
+          // painted at the near rock's albedo the range came back brighter than
+          // the foreground once inscatter was added — an aerial perspective
+          // that runs the wrong way and reads as snow.
+          vec3 farRock = mix(uRockMid, uRockShadow, 0.40);
+          farRock = mix(farRock, uRockLit, smoothstep(0.24, 0.78, macro) * 0.40);
+          farRock = mix(farRock, uRockWarm, 0.10);
+          // Relief comes from a noise field rather than from the mesh out here,
+          // and it has to. The apron ring spends its vertex budget over 4.2 km,
+          // so its radial pitch is ~70 m by the time it is a kilometre out —
+          // coarser than the flanks it is drawing — and a mountain lit by a
+          // normal that smooth is the waxy white dome that filled a third of
+          // the hero frame. Three fbm taps at ~130 m put the flank structure
+          // back into the light for a fraction of the cost of the geometry.
+          float e = 26.0;
+          vec2 P = vWorldPos.xz * 0.0075;
+          float d0 = fbm(P, 4);
+          float dX = fbm(P + vec2(e * 0.0075, 0.0), 4);
+          float dZ = fbm(P + vec2(0.0, e * 0.0075), 4);
+          float gK = 46.0 / e;
+          vec3 Nfar = normalize(vec3(N.x + (d0 - dX) * gK, N.y, N.z + (d0 - dZ) * gK));
+          vec3 farCol = mix(farRock, mix(uGrassGold, uGrassDeep, 0.46), soft * 0.62);
+          farCol *= 0.90 + (d0 * 0.5 + 0.5) * 0.20;
+          albedo = mix(albedo, farCol, uFarApron);
+          gRockM = mix(gRockM, 1.0 - soft * 0.86, uFarApron);
+          gReliefN = normalize(mix(gReliefN, Nfar, uFarApron));
+          gReliefW = mix(gReliefW, 0.92, uFarApron);
+        }
 
         // Debug read-out. Written to gDebug and blitted OVER the lit colour at
         // the end of the shader rather than multiplied into the albedo, which

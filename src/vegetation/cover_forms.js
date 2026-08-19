@@ -174,7 +174,24 @@ function frond(b, o) {
     nx /= nl; ny /= nl; nz /= nl;
     const l = b.vert(px + sx, py, pz + sz, nx, ny, nz, chan, ao, sway, o.trans ?? 0.9);
     const r = b.vert(px - sx, py, pz - sz, nx, ny, nz, chan, ao, sway, o.trans ?? 0.9);
-    if (s > 0) b.quad(pl, l, r, pr);
+    // Wound to agree with the normals above, and this is the largest single
+    // defect that was in this file.
+    //
+    // `quad(pl, l, r, pr)` produced a face normal of roughly −n. Strips render
+    // on the *double-sided* material, and three flips the shading normal for
+    // back faces (`normal *= gl_FrontFacing ? 1 : -1`) precisely so that a
+    // double-sided surface faces the viewer from either side. That only works
+    // when the winding agrees with the stored normal. When it disagrees the
+    // logic runs backwards and the shading normal points *away from the camera
+    // from both sides at once* — so the surface is unlit whichever way you look
+    // at it, and no albedo, palette lift or ambient floor can recover it.
+    //
+    // Everything this library builds out of strips went through here: every
+    // shrub's leaf canopy, the scrub sprays, the fern fronds, the flower stems
+    // and the straw mats. It is why the scrub bush measured as "the darkest
+    // object in every frame it appears in", and it is almost certainly why the
+    // palette in cover_scatter had to be lifted 1.8x to be visible at all.
+    if (s > 0) b.quad(pr, r, l, pl);
     pl = l; pr = r;
     px += dirx * Math.sin(ang) * step;
     pz += dirz * Math.sin(ang) * step;
@@ -224,11 +241,20 @@ function fringe(b, h, w, count, rng, chanBase) {
 function skirt(b, w, rng, count = 5, chan = 0.0) {
   for (let i = 0; i < count; i++) {
     const a = (i / count) * TAU + rng() * 1.1;
-    const r = w * (0.40 + rng() * 0.38);
-    const s = w * (0.19 + rng() * 0.16);
+    // Tightened hard against the foot of the mass. At r up to 0.78 w with a
+    // 0.50 radial jitter these landed a metre clear of the bush they belong to,
+    // and at ry ≈ 0.3 s they were plates rather than lumps — so what the frame
+    // actually showed was isolated flat dark-green polygons lying on the meadow
+    // with nothing attached to them, which is the exact defect the skirt exists
+    // to fix. Half the radius, a third of the footprint, and proportioned as
+    // lumps (ry 0.55-0.90 s) so they turn through the light instead of
+    // presenting one flat facet. `ao` off the floor for the same reason: 0.16
+    // was dark enough to read as a hole rather than as contact.
+    const r = w * (0.25 + rng() * 0.24);
+    const s = w * (0.10 + rng() * 0.09);
     lobe(b, Math.cos(a) * r, w * 0.03, Math.sin(a) * r,
-         s, s * (0.26 + rng() * 0.18), s, 0, rng,
-         { chan, trans: 0.22, ragged: 0.50, lift: 0.70, ao: 0.16, sway: 0.05 });
+         s, s * (0.55 + rng() * 0.35), s, 0, rng,
+         { chan, trans: 0.22, ragged: 0.38, lift: 0.55, ao: 0.30, sway: 0.05 });
   }
 }
 
@@ -251,15 +277,31 @@ function skirt(b, w, rng, count = 5, chan = 0.0) {
 function leafShell(b, h, w, count, rng, chanBase, o = {}) {
   const wide = o.wide ?? 0.062;
   const len = o.len ?? 0.125;
+  // `inset` < 1 pulls every base in toward the mass. At 1.0 the blades ring the
+  // outline and read as a halo of separate cards; at ~0.75 they start inside
+  // the crowns and only their tips clear the edge, which is a ragged silhouette
+  // rather than a detached one.
+  const inset = o.inset ?? 1.0;
+  // taper 0.55 left the blade near-parallel-sided, and a near-parallel-sided
+  // quad *is* a rectangle — forty of them at forty rotations is precisely the
+  // "same rectangle at different rotations" the critic counted. `frond`'s
+  // alternating serration widens the base ring and narrows the tip ring, so at
+  // 0.84 the same two triangles come out as a pointed leaf at no extra cost.
+  // (0.55 was chosen to avoid the old scrub "almond pile"; that failed on
+  // *large* fanned strips, and these are an order of magnitude smaller.)
+  const taper = o.taper ?? 0.84;
   for (let i = 0; i < count; i++) {
     const a = i * 2.39996 + rng() * 0.6;
     const t = (i + 0.5) / count;
-    // Bases sit near the outer edge of the core, and the blade is short enough
-    // that its tip lands only about a quarter of a radius beyond it. Longer
-    // blades — the first attempt used nearly half the bush's width — project
-    // as straight rigid planks radiating out of the mass, which is worse than
-    // the smooth blob they were meant to fix.
-    const r = w * (0.24 + 0.20 * Math.sin(t * Math.PI)) * (0.82 + rng() * 0.36);
+    // Bases sit inside the mass, and the blade is short enough that its tip
+    // lands only about a quarter of a radius beyond it. Longer blades — the
+    // first attempt used nearly half the bush's width — project as straight
+    // rigid planks radiating out of the mass, which is worse than the smooth
+    // blob they were meant to fix.
+    // Radius is drawn over a wide range rather than a thin shell. Blades deep
+    // inside the mass are not wasted: they are what the outer ones overlap, and
+    // overlap is where a canopy of strokes gets its interior depth from.
+    const r = w * inset * (0.24 + 0.20 * Math.sin(t * Math.PI)) * (0.34 + rng() * 0.92);
     frond(b, {
       x: Math.cos(a) * r, y: h * (0.12 + t * 0.80), z: Math.sin(a) * r,
       yaw: a + (rng() - 0.5) * 1.1,
@@ -267,17 +309,27 @@ function leafShell(b, h, w, count, rng, chanBase, o = {}) {
       tilt: (o.tilt ?? 0.30) + rng() * 0.62,
       len: w * len * (0.7 + rng() * 0.7),
       w: w * wide * (0.7 + rng() * 0.6),
-      // taper 0.55 leaves the blade near-parallel-sided: a strongly tapered
-      // strip is a spike, and a fan of spikes is the almond pile again.
-      segs: 1, droop: 0.30, taper: 0.55,
+      segs: 1, droop: 0.30, taper,
       chanA: chanBase, chanB: chanBase + 0.60,
       aoA: 0.60 + t * 0.30, aoB: 1.0, swayA: 0.45, trans: 1.0,
     });
   }
 }
 
-/** A flat-ish leaf blade lying near the ground — the broadleaf undergrowth. */
-function leafBlade(b, ox, oy, oz, yaw, len, wide, tilt, chan, trans) {
+/**
+ * A flat-ish leaf blade lying near the ground — the broadleaf undergrowth and
+ * the fallen-leaf scatter.
+ *
+ * `cup` rolls the two edge normals away from the midrib. Geometrically the
+ * blade is still four vertices and two triangles; what changes is that its
+ * shading is no longer constant across its width, and under the game's
+ * quantised diffuse response the two halves land in different bands. That is
+ * the whole difference between a leaf and a piece of green plastic: with cup 0
+ * every one of these renders as a single flat polygon of one value, which is
+ * exactly how they read on bare ground in `river` and `cool` — hard-edged
+ * cards attached to nothing.
+ */
+function leafBlade(b, ox, oy, oz, yaw, len, wide, tilt, chan, trans, cup = 0.55) {
   const dx = Math.cos(yaw), dz = Math.sin(yaw);
   const ny = Math.cos(tilt), nh = Math.sin(tilt);
   const tip = { x: ox + dx * len * Math.sin(tilt + 0.9), y: oy + len * Math.cos(tilt + 0.9) * 0.55, z: oz + dz * len * Math.sin(tilt + 0.9) };
@@ -286,10 +338,18 @@ function leafBlade(b, ox, oy, oz, yaw, len, wide, tilt, chan, trans) {
   const px = -dz * wide, pz = dx * wide;
   const nrm = [dx * nh * 0.3, ny, dz * nh * 0.3];
   const nl = Math.hypot(nrm[0], nrm[1], nrm[2]) || 1;
-  const a = b.vert(ox, oy, oz, nrm[0] / nl, nrm[1] / nl, nrm[2] / nl, chan * 0.2, 0.42, 0.1, trans);
-  const l = b.vert(mx + px, midY, mz + pz, nrm[0] / nl, nrm[1] / nl, nrm[2] / nl, chan * 0.6, 0.85, 0.6, trans);
-  const r = b.vert(mx - px, midY, mz - pz, nrm[0] / nl, nrm[1] / nl, nrm[2] / nl, chan * 0.6, 0.85, 0.6, trans);
-  const t = b.vert(tip.x, tip.y, tip.z, nrm[0] / nl, nrm[1] / nl, nrm[2] / nl, chan, 1.0, 1.0, trans);
+  const n0 = [nrm[0] / nl, nrm[1] / nl, nrm[2] / nl];
+  // Roll about the blade's own axis: the width axis is (-dz, 0, dx).
+  const roll = (sgn) => {
+    const vx = n0[0] + sgn * -dz * cup, vy = n0[1], vz = n0[2] + sgn * dx * cup;
+    const l = Math.hypot(vx, vy, vz) || 1;
+    return [vx / l, vy / l, vz / l];
+  };
+  const nL = roll(1), nR = roll(-1);
+  const a = b.vert(ox, oy, oz, n0[0], n0[1], n0[2], chan * 0.2, 0.42, 0.1, trans);
+  const l = b.vert(mx + px, midY, mz + pz, nL[0], nL[1], nL[2], chan * 0.6, 0.85, 0.6, trans);
+  const r = b.vert(mx - px, midY, mz - pz, nR[0], nR[1], nR[2], chan * 0.6, 0.85, 0.6, trans);
+  const t = b.vert(tip.x, tip.y, tip.z, n0[0], n0[1], n0[2], chan, 1.0, 1.0, trans);
   b.tri(a, l, r);
   b.tri(l, t, r);
 }
@@ -324,14 +384,26 @@ function tube(b, path, sides, chan, trans, capEnds = true) {
     }
     rings.push(ring);
   }
+  // Wound so the *outer* wall is the front face.
+  //
+  // This was inverted, and it is the single reason every piece of fallen wood
+  // in the game rendered as a near-black ribbon on a pale gold ground. The ring
+  // runs u→v, which is right-handed about the tube's axis, so `quad(A[s], B[s],
+  // B[s2], A[s2])` produced a face normal of exactly −n: on the front-sided
+  // solid material the lit outer surface was culled and what reached the screen
+  // was the *far inner wall*, whose vertex normals point away from both the
+  // camera and the sun. No albedo can survive that — the pale `barkGrey` was
+  // arriving as `srgb(46,38,32)`. Logs, stumps and branches all shared it.
   for (let i = 1; i < rings.length; i++) {
     const A = rings[i - 1], B2 = rings[i];
     for (let s = 0; s < sides; s++) {
       const s2 = (s + 1) % sides;
-      b.quad(A[s], B2[s], B2[s2], A[s2]);
+      b.quad(A[s], A[s2], B2[s2], B2[s]);
     }
   }
   if (capEnds) {
+    // The caps were always right — natural ring order gives a +axis face, so
+    // the start cap is the flipped one. Only the side quads were inverted.
     for (const [ring, flip] of [[rings[0], true], [rings[rings.length - 1], false]]) {
       for (let s = 1; s < sides - 1; s++) {
         if (flip) b.tri(ring[0], ring[s + 1], ring[s]);
@@ -356,24 +428,55 @@ function buildShrubDark(rng) {
   // across a third of the frame.
   const h = 1.00 + rng() * 0.66;
   const w = h * (1.02 + rng() * 0.46);            // decisively wider than tall
-  // Two overlapping cores carry the value and nothing else — they live inside
-  // the leaf shell and should barely reach the outline. Asymmetric, so the
-  // mass reads as a bush that grew on one side first rather than as a dome.
-  for (let i = 0; i < 2; i++) {
-    const a = i * Math.PI + rng() * 1.2;
-    const r = w * 0.17 * i;
-    // Only the first is subdivided. Both cores live inside the blade shell and
-    // never reach the outline, so the second is buying value and nothing else,
-    // and eight faces buy value as well as thirty-two do. Across the ~900
-    // instances this archetype streams that is 22 k triangles for no visible
-    // difference — measured by swapping it and comparing the crops.
-    lobe(b, Math.cos(a) * r, h * (0.34 + rng() * 0.12), Math.sin(a) * r,
-         w * (0.32 + rng() * 0.10), h * (0.28 + rng() * 0.09), w * (0.30 + rng() * 0.10),
-         i === 0 ? 1 : 0, rng,
-         { chan: 0.05 + rng() * 0.10, trans: 0.42, ragged: 0.30, lift: 0.34 });
+
+  // REBUILT. The previous form was a *core plus a shell*: two concentric
+  // ellipsoids carrying all the value, ringed by forty separate blades. At 2 m
+  // that read exactly as the critic described it — "a solid near-black
+  // hexagonal core with one flat value and no interior form, surrounded by a
+  // halo of detached rectangular leaf quads". Both halves of that were
+  // structural, not shading:
+  //
+  //  · two concentric lobes sharing one centre, one `chan`, one `lift` and one
+  //    narrow height band have nothing to vary *across* them. Every face
+  //    landed in the same quantised lighting band, so thirty-two triangles
+  //    resolved to one flat polygon whatever the albedo was.
+  //  · a shell whose blades all start at 0.24-0.44 w and run outward puts
+  //    every card beyond the core's own outline, against bright background,
+  //    with a gap behind it. That is what makes them read as detached.
+  //
+  // So the mass is now a *clump*: seven crowns of different size at different
+  // heights on a golden-angle spiral, deliberately overlapping. Their edges cut
+  // across each other, which is where interior contour comes from; and each
+  // carries its own albedo mix, its own AO and — the strongest of the three —
+  // its own normal lift, so a crown low on the flank splays its normals
+  // sideways and sits a whole lighting band below the crown above it. Value
+  // range inside the silhouette is the thing that was missing.
+  // The armature is deliberately *small*. This is the second correction to the
+  // same defect and it is the one that matters: a low-poly lobe is a convex
+  // polyhedron, and no amount of subdividing or jittering stops it presenting
+  // 20 cm flat plates at 2 m — nine crowns of them read as folded green card
+  // exactly as two did. So the lobes retreat to being an interior armature that
+  // carries value and blocks light, and the *visible surface* becomes a canopy
+  // of a hundred-odd leaf strokes over the top of it. That is what the plates
+  // actually paint: a shrub there is a cluster of small dark marks with a
+  // bitten edge, not a solid with facets. Same triangle budget, spent on the
+  // part of the form the player can resolve.
+  const crowns = 5 + ((rng() * 2) | 0);
+  for (let i = 0; i < crowns; i++) {
+    const a = i * 2.39996 + rng() * 0.5;
+    // Biased low: most of the mass is the broad body near the ground, and the
+    // last one or two crowns ride up on the shoulder and break the top line.
+    const rise = Math.pow(rng(), 0.75);
+    const r = w * (0.05 + 0.26 * rise) * (0.70 + rng() * 0.60);
+    const sz = w * (0.185 - 0.07 * rise) * (0.80 + rng() * 0.44);
+    lobe(b, Math.cos(a) * r, h * (0.24 + 0.42 * rise), Math.sin(a) * r,
+         sz, sz * (0.72 + rng() * 0.34) * (h / w), sz * (0.84 + rng() * 0.36),
+         0, rng,
+         { chan: 0.03 + rise * 0.50 + rng() * 0.16,
+           trans: 0.34 + rise * 0.30, ragged: 0.44, lift: 0.08 + rise * 0.54 });
   }
-  leafShell(b, h, w, 44, rng, 0.14);
-  skirt(b, w, rng, 5, 0.0);
+  leafShell(b, h, w, 118, rng, 0.14, { len: 0.150, wide: 0.056, inset: 0.86 });
+  skirt(b, w, rng, 6, 0.0);
   return b.finish(h);
 }
 
@@ -382,19 +485,35 @@ function buildShrubBerry(rng) {
   const b = new Builder();
   const h = 0.95 + rng() * 0.60;
   const w = h * (0.95 + rng() * 0.40);
-  lobe(b, 0, h * 0.40, 0, w * 0.34, h * 0.34, w * 0.32, 1, rng,
-       { chan: 0.12, trans: 0.80, ragged: 0.32, lift: 0.38 });
-  // A third of the shell rides the accent channel, so the bush turns colour in
-  // patches the way a real one does rather than uniformly.
-  leafShell(b, h, w, 24, rng, 0.10);
-  leafShell(b, h, w, 13, rng, 0.55, { len: 0.11 });
-  for (let i = 0; i < 3; i++) {                    // berry knots, fully accent
-    const a = rng() * TAU, r = w * (0.34 + rng() * 0.32);
-    lobe(b, Math.cos(a) * r, h * (0.38 + rng() * 0.42), Math.sin(a) * r,
-         w * 0.070, w * 0.058, w * 0.070, 0, rng,
-         { chan: 1.0, trans: 0.35, ragged: 0.24, lift: 0.3 });
+  // Same clumped construction as `shrubDark`, for the same reason: a single
+  // core plus a shell renders as one smooth dome with two flat facets, and at
+  // 2 m the berry knots sitting on top of it read as pink diamonds stuck to a
+  // ball. Fewer, slightly larger crowns than the dark shrub — an autumn berry
+  // bush is rangier — and the colour turn runs by crown rather than by patch,
+  // so a whole shoulder goes over to the accent at once.
+  const crowns = 5 + ((rng() * 2) | 0);
+  for (let i = 0; i < crowns; i++) {
+    const a = i * 2.39996 + rng() * 0.6;
+    const rise = Math.pow(rng(), 0.70);
+    const rr = w * (0.05 + 0.26 * rise) * (0.70 + rng() * 0.60);
+    const sz = w * (0.195 - 0.07 * rise) * (0.80 + rng() * 0.44);
+    lobe(b, Math.cos(a) * rr, h * (0.24 + 0.46 * rise), Math.sin(a) * rr,
+         sz, sz * (0.74 + rng() * 0.32) * (h / w), sz * (0.84 + rng() * 0.34),
+         0, rng,
+         { chan: rng() < 0.34 ? 0.55 + rng() * 0.30 : 0.05 + rise * 0.28,
+           trans: 0.55 + rise * 0.35, ragged: 0.44, lift: 0.08 + rise * 0.52 });
   }
-  skirt(b, w, rng, 5, 0.0);
+  leafShell(b, h, w, 72, rng, 0.08, { len: 0.150, wide: 0.056, inset: 0.86 });
+  leafShell(b, h, w, 34, rng, 0.52, { len: 0.130, wide: 0.050, inset: 0.90 });
+  // Berry knots, fully accent, and small enough to read as a fleck rather than
+  // as a facet. Tucked *into* the crowns, not perched on the outside.
+  for (let i = 0; i < 5; i++) {
+    const a = rng() * TAU, rr = w * (0.16 + rng() * 0.30);
+    lobe(b, Math.cos(a) * rr, h * (0.34 + rng() * 0.44), Math.sin(a) * rr,
+         w * 0.050, w * 0.042, w * 0.050, 0, rng,
+         { chan: 1.0, trans: 0.35, ragged: 0.24, lift: 0.35 });
+  }
+  skirt(b, w, rng, 6, 0.0);
   return b.finish(h);
 }
 
@@ -430,7 +549,7 @@ function buildScrubDry(rng) {
   // Broad short blades, not sprays. The whole point of the rebuild is that a
   // long tapered strip seen flat-on is a pale oval; keeping them short and
   // near-parallel-sided keeps them reading as a bristly edge on a mass.
-  leafShell(b, h, w, 28, rng, 0.30, { wide: 0.060, len: 0.15, tilt: 0.42 });
+  leafShell(b, h, w, 54, rng, 0.30, { wide: 0.055, len: 0.19, tilt: 0.42, inset: 0.86 });
   skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
@@ -453,7 +572,7 @@ function buildThicket(rng) {
          i === 0 ? 1 : 0, rng,
          { chan: rng() * 0.35, trans: 0.85, ragged: 0.40, lift: 0.36 });
   }
-  leafShell(b, h, w, 30, rng, 0.30, { wide: 0.045, len: 0.13 });
+  leafShell(b, h, w, 78, rng, 0.30, { wide: 0.052, len: 0.155, inset: 0.88 });
   skirt(b, w, rng, 5, 0.10);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {
@@ -487,29 +606,75 @@ function buildFern(rng) {
   return b.finish(h * 1.1);
 }
 
-/** Low broadleaf — the flat green stuff between the ferns. */
+/**
+ * Low broadleaf — the flat green stuff between the ferns.
+ *
+ * REBUILT, and it is one of the two things that were producing the loose green
+ * cards lying on bare ground. Five to eight blades up to `h * 2.4` long,
+ * radiating from one point at one height, with `h` up to 0.38 and an instance
+ * scale up to 1.5, put metre-long flat planes on the terrain — and because
+ * every vertex of a blade carried the *same* normal they rendered as single
+ * untextured green polygons. From a low camera a whole plant is edge-on and
+ * all you see is the two or three blades facing you, so the "plant" they belong
+ * to is invisible and the cards read as orphans.
+ *
+ * Now: two thirds the height, blades a third the length, a squat body lobe
+ * underneath them so there is a mass they visibly grow out of, and the leaves
+ * cupped so each one shades across its width.
+ */
 function buildBroadleaf(rng) {
   const b = new Builder();
-  const h = 0.20 + rng() * 0.18;
-  const n = 5 + ((rng() * 4) | 0);
+  const h = 0.13 + rng() * 0.12;
+  const n = 7 + ((rng() * 5) | 0);
+  lobe(b, 0, h * 0.20, 0, h * (0.62 + rng() * 0.30), h * 0.28, h * (0.58 + rng() * 0.30),
+       0, rng, { chan: 0.0, trans: 0.35, ragged: 0.46, lift: 0.55, ao: 0.44 });
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * TAU + rng() * 0.8;
-    leafBlade(b, 0, h * 0.04, 0, a,
-              h * (1.5 + rng() * 0.9), h * (0.34 + rng() * 0.22),
-              0.55 + rng() * 0.55, 0.35 + rng() * 0.6, 1.0);
+    const a = i * 2.39996 + rng() * 0.9;
+    const r = h * (0.08 + rng() * 0.26);
+    leafBlade(b, Math.cos(a) * r, h * (0.08 + rng() * 0.20), Math.sin(a) * r, a,
+              h * (0.80 + rng() * 0.70), h * (0.22 + rng() * 0.14),
+              0.60 + rng() * 0.52, 0.30 + rng() * 0.65, 1.0, 0.62);
   }
-  return b.finish(h);
+  return b.finish(h * 1.2);
 }
 
-/** Moss cushion for the damp north side of logs, rocks and trunks. */
+/**
+ * Moss cushion for the damp north side of logs, rocks and trunks.
+ *
+ * REBUILT, and it is the other source of the loose green cards. Three
+ * unsubdivided octahedra is *eight flat faces each*, at 0.2-0.36 m across and
+ * 0.09-0.16 m tall — squashed almost flat. Seen from a standing camera an
+ * octahedron squashed on Y presents one large upward-facing quad, so a moss
+ * patch on the open clay in `river` resolved to two or three green
+ * parallelograms with hard polygon edges and no interior variation.
+ *
+ * Now: smaller and more numerous lobes so no single facet dominates, the first
+ * one subdivided, per-lobe albedo mix, and a fuzz of tiny tufts over the rim so
+ * the outline is never a straight polygon edge. (Also moved to the double-sided
+ * material — the tufts are one-sided quads.)
+ */
 function buildMoss(rng) {
   const b = new Builder();
-  const h = 0.09 + rng() * 0.07;
-  for (let i = 0; i < 3; i++) {
-    const a = rng() * TAU, r = 0.16 + rng() * 0.20;
-    lobe(b, Math.cos(a) * r, h * (0.3 + rng() * 0.3), Math.sin(a) * r,
-         0.20 + rng() * 0.16, h * (0.7 + rng() * 0.5), 0.20 + rng() * 0.16, 0, rng,
-         { chan: rng() * 0.4, trans: 0.35, ragged: 0.40, lift: 0.85, ao: 0.85 });
+  const h = 0.07 + rng() * 0.06;
+  const n = 4 + ((rng() * 3) | 0);
+  for (let i = 0; i < n; i++) {
+    const a = i * 2.39996 + rng() * 0.9;
+    const r = 0.05 + rng() * 0.16;
+    const s = 0.085 + rng() * 0.105;
+    lobe(b, Math.cos(a) * r, h * (0.30 + rng() * 0.40), Math.sin(a) * r,
+         s, h * (0.70 + rng() * 0.55), s * (0.78 + rng() * 0.44), i === 0 ? 1 : 0, rng,
+         { chan: rng() * 0.60, trans: 0.35, ragged: 0.48, lift: 0.85,
+           ao: 0.66 + rng() * 0.32 });
+  }
+  for (let i = 0; i < 7; i++) {
+    const a = rng() * TAU, r = 0.07 + rng() * 0.15;
+    frond(b, {
+      x: Math.cos(a) * r, y: h * 0.45, z: Math.sin(a) * r,
+      yaw: a, tilt: 0.22 + rng() * 0.50,
+      len: 0.040 + rng() * 0.050, w: 0.013 + rng() * 0.011,
+      segs: 1, droop: 0.20, taper: 0.85,
+      chanA: 0.30, chanB: 1.0, aoA: 0.88, aoB: 1.0, swayA: 0.10, trans: 0.9,
+    });
   }
   return b.finish(h * 2.2);
 }
@@ -538,7 +703,7 @@ function buildFlowerAster(rng) {
     const c1 = b.vert(tip.x + hw, tip.y, tip.z - hw, 0, 1, 0, 1, 1, 1, 0.5);
     const c2 = b.vert(tip.x + hw, tip.y + hw * 0.5, tip.z + hw, 0, 1, 0, 1, 1, 1, 0.5);
     const c3 = b.vert(tip.x - hw, tip.y + hw * 0.5, tip.z + hw, 0, 1, 0, 1, 1, 1, 0.5);
-    b.quad(c0, c1, c2, c3);
+    b.quad(c3, c2, c1, c0);            // face up, to match the (0,1,0) normals
   }
   return b.finish(h);
 }
@@ -598,25 +763,37 @@ function buildSeedHead(rng) {
  */
 function buildLeafDrift(rng) {
   const b = new Builder();
-  const R = 0.55 + rng() * 0.55;
-  const n = 10;
-  const c = b.vert(0, 0.055, 0, 0, 1, 0, 0.25, 1.0, 0.0, 0.35);
-  const rim = [];
+  const R = 0.50 + rng() * 0.50;
+
+  // REBUILT as a shallow *mound*. The previous form was a scalloped ten-sided
+  // disc lying flat with every normal pointing straight up, and that is a decal
+  // however it is wound: one polygon, one normal, therefore one value across
+  // half a metre of ground, with a hard straight edge where it stops. Under a
+  // 20-degree sun that single value sits far enough under the terrain beside it
+  // to read as a black hole in the meadow — which is exactly how it measured at
+  // every deciduous tree base.
+  //
+  // A drift of leaves has depth. Small flattened lobes give it a top that turns
+  // through the light and an edge that breaks up, and the loose leaves over
+  // them do the rest.
+  const n = 5 + ((rng() * 4) | 0);
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * TAU;
-    const r = R * (0.62 + rng() * 0.55);
-    rim.push(b.vert(Math.cos(a) * r, 0.006 + rng() * 0.02, Math.sin(a) * r,
-                    Math.cos(a) * 0.18, 1, Math.sin(a) * 0.18,
-                    rng() < 0.35 ? 1.0 : 0.1, 0.86, 0.0, 0.5));
+    const a = i * 2.39996 + rng() * 0.8;
+    const r = R * (0.08 + rng() * 0.46);
+    const s = R * (0.16 + rng() * 0.16);
+    lobe(b, Math.cos(a) * r, 0.018 + rng() * 0.055, Math.sin(a) * r,
+         s, 0.035 + rng() * 0.060, s * (0.80 + rng() * 0.45), i === 0 ? 1 : 0, rng,
+         { chan: rng() < 0.38 ? 0.80 + rng() * 0.20 : 0.10 + rng() * 0.22,
+           trans: 0.35, ragged: 0.48, lift: 0.50 + rng() * 0.30,
+           ao: 0.68 + rng() * 0.32 });
   }
-  for (let i = 0; i < n; i++) b.tri(c, rim[i], rim[(i + 1) % n]);
-  for (let i = 0; i < 5; i++) {                  // leaves caught on edge
-    const a = rng() * TAU, r = R * (0.45 + rng() * 0.55);
-    const x = Math.cos(a) * r, z = Math.sin(a) * r;
-    leafBlade(b, x, 0.01, z, rng() * TAU, 0.20 + rng() * 0.13, 0.075,
-              1.05 + rng() * 0.35, rng() < 0.5 ? 1.0 : 0.35, 0.9);
+  for (let i = 0; i < 14; i++) {                 // loose leaves over the mound
+    const a = rng() * TAU, r = R * (0.20 + rng() * 0.85);
+    leafBlade(b, Math.cos(a) * r, 0.012 + rng() * 0.055, Math.sin(a) * r,
+              rng() * TAU, 0.115 + rng() * 0.115, 0.050 + rng() * 0.030,
+              0.72 + rng() * 0.58, rng() < 0.5 ? 1.0 : 0.30, 0.9, 0.60);
   }
-  return b.finish(0.4);
+  return b.finish(0.34);
 }
 
 /** Fallen log — the cheapest thing there is that makes a forest look inhabited. */
@@ -707,21 +884,62 @@ function buildStump(rng) {
  */
 function buildPebble(rng, variant) {
   const b = new Builder();
+  // Three tiers, not two, and they are separated by a factor of four rather
+  // than the previous 1.6. The critic measured the old scatter as "a uniform
+  // grade with every stone within ±30% of the same size" — the brief's named
+  // anti-pattern — and two variants that overlap in size cannot fix that
+  // however they are weighted. Grit reads as ground texture, stones as
+  // objects, cobbles as landmarks at the 30 cm scale, and the scatter picks
+  // between them on a power law so cobbles stay rare.
+  //
+  // The ceiling still matters: an earlier pass reached 0.34 m before instance
+  // scale and dotted the meadow with metre-wide wedges. Those are boulders and
+  // they belong to the rocks system.
   const big = variant === 1;
   const n = big ? 2 + ((rng() * 2) | 0) : 3 + ((rng() * 3) | 0);
-  // Hard ceiling on the size. At the first pass the large variant reached
-  // 0.34 m before instance scale and rendered as metre-wide dark wedges dotted
-  // over the meadow — boulders, which belong to the rocks system, not stones,
-  // which belong here. The whole point of this archetype is the *bottom* of
-  // the size hierarchy.
-  const R = big ? 0.090 + rng() * 0.080 : 0.055 + rng() * 0.055;
+  const R = big ? 0.078 + rng() * 0.062 : 0.032 + rng() * 0.034;
   for (let i = 0; i < n; i++) {
     const a = rng() * TAU, r = R * (0.4 + rng() * 1.5);
-    const s = R * (0.45 + rng() * 0.75);
+    // Members of a cluster vary among themselves too, so even one site is a
+    // bigger stone with two chips beside it rather than three equal dice.
+    const s = R * (0.32 + rng() * rng() * 1.10);
     lobe(b, Math.cos(a) * r, s * (0.30 + rng() * 0.22), Math.sin(a) * r,
          s, s * (0.40 + rng() * 0.30), s * (0.70 + rng() * 0.50), 0, rng,
          { chan: 0.30 + rng() * 0.65, trans: 0.0, ragged: 0.44, lift: 0.30,
            ao: 0.80 + rng() * 0.20, sway: 0 });
+  }
+  return b.finish(R);
+}
+
+/**
+ * The top rung of the stone ladder — a 20-45 cm cobble with a chip or two
+ * beside it.
+ *
+ * Its own archetype rather than a third `pebble` variant, and the reason is the
+ * visibility radius. Density is cap / π·vis², so grit that has to be thick
+ * underfoot wants a short radius; but a short radius on the *large* stones is
+ * what left the river bank measuring as half a frame of bare clay, because
+ * every stone on it had already shrunk away by the time the bank was in view.
+ * Splitting them lets the big ones carry two and a half times the radius on a
+ * third of the count — which is also simply what a size hierarchy is: big
+ * things visible from far off, small things only close up.
+ */
+function buildCobble(rng, variant) {
+  const b = new Builder();
+  const R = (variant === 1 ? 0.235 : 0.155) + rng() * 0.110;
+  const n = 1 + ((rng() * 3) | 0);
+  for (let i = 0; i < n; i++) {
+    const a = rng() * TAU;
+    const r = i === 0 ? 0 : R * (0.6 + rng() * 1.2);
+    const s = i === 0 ? R * (0.80 + rng() * 0.35) : R * (0.18 + rng() * 0.34);
+    lobe(b, Math.cos(a) * r, s * (0.26 + rng() * 0.20), Math.sin(a) * r,
+         s, s * (0.44 + rng() * 0.30), s * (0.70 + rng() * 0.48),
+         i === 0 ? 1 : 0, rng,
+         { chan: 0.28 + rng() * 0.66, trans: 0.0,
+           // Blockier than the grit. A cobble carrying the small stones' 0.44
+           // jitter comes out as a smooth pebble the size of a football, which
+           // reads as dough; a chipped stone wants flatter, harder facets.
+           ragged: 0.28, lift: 0.22, ao: 0.78 + rng() * 0.22, sway: 0 });
   }
   return b.finish(R);
 }
@@ -757,41 +975,102 @@ function buildLeafScatter(rng, variant) {
  */
 function buildDeadTuft(rng, variant) {
   const b = new Builder();
-  const n = (variant === 1 ? 6 : 8) + ((rng() * 5) | 0);
+  const n = (variant === 1 ? 11 : 15) + ((rng() * 7) | 0);
   const R = 0.26 + rng() * 0.30;
+
+  // REBUILT — this was the starburst. Spreading the origins along the radius
+  // was not enough, because the *yaw* still came from the same angular sweep:
+  // every strand pointed away from the centre, so the mat still resolved to
+  // eight strips radiating from a point, and because `len` was a flat
+  // 0.42-0.86 R they were all near enough the same length. Three of those per
+  // frame, at one height, is a drawn asterisk — "scratches on the lens".
+  //
+  // Weather does not lay straw radially. It lays it *down*, all one way, in
+  // overlapping courses. So there is now a single lay direction per instance
+  // with a modest spread about it, the patch is elongated along that direction
+  // rather than circular, and length is drawn from a squared curve so most
+  // strands are stubs and one or two run right across — a size hierarchy
+  // inside a single 20-triangle prop.
+  const lay = rng() * TAU;
+  const cl = Math.cos(lay), sl = Math.sin(lay);
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * TAU + rng() * 1.2;
-    // Origins spread along the radius rather than sharing one hub: at a
-    // common centre a straw mat reads as a drawn asterisk, which is not a
-    // thing that exists on a hillside.
-    const or_ = R * (0.10 + rng() * 0.62);
+    const u = (rng() - 0.5) * R * 1.5, v = (rng() - 0.5) * R * 0.8;
     frond(b, {
-      x: Math.cos(a) * or_, y: 0.012, z: Math.sin(a) * or_,
-      yaw: a + (rng() - 0.5) * 1.6,
-      tilt: 1.12 + rng() * 0.36,                 // laid over, not standing
-      len: R * (0.42 + rng() * 0.44), w: 0.026 + rng() * 0.020,
-      segs: 1, droop: 0.10, taper: 0.75,
-      chanA: 0.05, chanB: 1.0, aoA: 0.62, aoB: 0.95, swayA: 0.05, trans: 0.8,
+      x: cl * u - sl * v, y: 0.004 + rng() * 0.030, z: sl * u + cl * v,
+      yaw: lay + (rng() - 0.5) * 1.5,
+      // Past vertical: the strand lies over and its far end settles slightly
+      // *into* the ground, which is what a flattened stem actually does and
+      // what stops the mat reading as a decal floating on the surface.
+      tilt: 1.34 + rng() * 0.30,
+      // Narrow. At 0.012-0.031 the serrated base ring came out 16 cm wide
+      // after instance scale, and a 16 cm wide flat strip is a wood chip.
+      len: R * (0.16 + 1.05 * rng() * rng()), w: 0.007 + rng() * 0.011,
+      segs: 1, droop: 0.10, taper: 0.60,
+      chanA: 0.05, chanB: 1.0,
+      aoA: 0.52 + rng() * 0.34, aoB: 0.95, swayA: 0.05, trans: 0.8,
     });
   }
   return b.finish(0.12);
 }
 
-/** Broken branch litter. Tiny, but it is what fills the gaps between logs. */
-function buildBranch(rng) {
+/**
+ * Fallen deadwood — the sticks that fill the gaps between the logs.
+ *
+ * REBUILT. The old form was 0.9-2.2 m long at a single radius, dead straight
+ * with one hard kink, floating at `y = r` with a second stick crossing it at a
+ * right angle — and, because `tube` was wound inside out, rendered in
+ * near-black. At 2 m it read as a broken plastic strut, not as wood.
+ *
+ * Two size tiers now, because a stick field where every stick is the same
+ * length is a texture rather than litter; a real taper along the length; a
+ * bowed profile so the middle rides over whatever it fell across; and one end
+ * in three driven under the surface, which is what actually sells contact.
+ */
+function buildBranch(rng, variant) {
   const b = new Builder();
-  const len = 0.9 + rng() * 1.3;
-  const r = 0.035 + rng() * 0.03;
-  tube(b, [
-    { x: 0, y: r, z: 0, r },
-    { x: len * 0.55, y: r * 1.15, z: (rng() - 0.5) * 0.25, r: r * 0.75 },
-    { x: len, y: r * 0.9, z: (rng() - 0.5) * 0.4, r: r * 0.4 },
-  ], 4, 0.0, 0.05);
-  const a = rng() * TAU;
-  tube(b, [
-    { x: len * 0.45, y: r, z: 0, r: r * 0.5 },
-    { x: len * 0.45 + Math.cos(a) * 0.35, y: r * 1.6, z: Math.sin(a) * 0.35, r: r * 0.2 },
-  ], 3, 0.0, 0.05);
+  const big = variant === 1;
+  const len = big ? 0.85 + rng() * 0.95 : 0.34 + rng() * 0.52;
+  const r = (big ? 0.030 : 0.015) + rng() * 0.019;
+  // Built *centred on the origin and sagging through it*: the middle rides a
+  // little above the surface and both ends finish below y = 0.
+  //
+  // This is the correction to the first attempt, which modelled the stick from
+  // one end outward. An instance only takes 55% of the terrain's tilt, so a
+  // stick laid out along +x lifts its far end clear of the ground on any slope
+  // at all — and a two-metre stick hanging in mid-air over the grass is a worse
+  // defect than the black scratch it replaced. Centred, the same tilt error is
+  // halved and lands on ends that were already buried. The length came down
+  // with it: deadfall *litter* is under two metres, and anything longer is a
+  // log, which is its own archetype and knows how to sit on a hillside.
+  const dip = r * (1.3 + rng() * 1.6);
+  const bow = r * (0.2 + rng() * 1.3);
+  const bend = (rng() - 0.5) * len * 0.26;
+  const yAt = (u) => (r + bow + dip) * (1 - 4 * u * u) - dip;
+  const path = [];
+  for (let i = 0; i <= 3; i++) {
+    const u = i / 3 - 0.5;
+    path.push({
+      x: u * len,
+      y: yAt(u),
+      z: Math.sin((u + 0.5) * Math.PI) * bend + (rng() - 0.5) * r * 1.2,
+      // Real taper along the length rather than a single radius: a stick of
+      // constant thickness reads as a dowel.
+      r: r * (0.55 + 0.85 * (0.5 - u)) * (0.85 + rng() * 0.3),
+    });
+  }
+  tube(b, path, 4, 0.0, 0.05);
+  const stubs = big ? 1 + ((rng() * 2) | 0) : (rng() < 0.4 ? 1 : 0);
+  for (let i = 0; i < stubs; i++) {
+    const u = -0.34 + rng() * 0.6;
+    const px = u * len, py = yAt(u), pz = Math.sin((u + 0.5) * Math.PI) * bend;
+    const a = rng() * TAU;
+    const sl = len * (0.10 + rng() * 0.20);
+    tube(b, [
+      { x: px, y: py, z: pz, r: r * 0.42 },
+      { x: px + Math.cos(a) * sl, y: py + sl * (0.08 + rng() * 0.40),
+        z: pz + Math.sin(a) * sl, r: r * 0.15 },
+    ], 3, 0.0, 0.05);
+  }
   return b.finish(r * 4);
 }
 
@@ -842,23 +1121,32 @@ function buildBranch(rng) {
 //  boxy blobs. The closed forms (stones, logs) stay front-sided.
 
 export const COVER_ARCHETYPES = [
-  { key: 'shrubDark',   variants: 3, card: true,  cap: 300, vis: 190, band: 3, recv: false, wind: 0.030, shadow: true,  build: buildShrubDark },
+  { key: 'shrubDark',   variants: 3, card: true,  cap: 380, vis: 175, band: 3, recv: true , wind: 0.030, shadow: true,  build: buildShrubDark },
   { key: 'shrubBerry',  variants: 2, card: true,  cap: 130, vis: 155, band: 2, recv: false, wind: 0.032, shadow: false,  build: buildShrubBerry },
-  { key: 'scrubDry',    variants: 3, card: true,  cap: 240, vis: 110, band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
-  { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: false, wind: 0.055, shadow: true,  build: buildThicket },
-  { key: 'fern',        variants: 2, card: true,  cap: 380, vis: 64,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
-  { key: 'broadleaf',   variants: 2, card: true,  cap: 340, vis: 40,  band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
-  { key: 'moss',        variants: 2, card: false, cap: 420, vis: 40,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss },
+  { key: 'scrubDry',    variants: 3, card: true,  cap: 820, vis: 58,  band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
+  { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: true , wind: 0.055, shadow: true,  build: buildThicket },
+  { key: 'fern',        variants: 2, card: true,  cap: 620, vis: 54,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
+  { key: 'broadleaf',   variants: 2, card: true,  cap: 640, vis: 32,  band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
+  { key: 'moss',        variants: 2, card: true,  cap: 640, vis: 30,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss },
   { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 42,  band: 0, recv: false, wind: 0.055, shadow: false, build: buildFlowerAster },
   { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 44,  band: 0, recv: false, wind: 0.065, shadow: false, build: buildGoldenrod },
   { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 44,  band: 0, recv: false, wind: 0.085, shadow: false, build: buildSeedHead },
   { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, recv: false, wind: 0.006, shadow: false, build: buildLeafDrift },
-  { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildLog },
-  { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildStump },
-  { key: 'branch',      variants: 2, card: false, cap: 150, vis: 88,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
-  { key: 'pebble',      variants: 2, card: false, cap: 800, vis: 40,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
-  { key: 'leafScatter', variants: 2, card: true,  cap: 800, vis: 38,  band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
-  { key: 'deadTuft',    variants: 2, card: true,  cap: 620, vis: 38,  band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
+  { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, recv: true , wind: 0.000, shadow: true,  build: buildLog },
+  { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, recv: true , wind: 0.000, shadow: true,  build: buildStump },
+  { key: 'branch',      variants: 2, card: false, cap: 420, vis: 54,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
+  // The substrate tier. Caps raised hard and radii pulled in, and the two move
+  // together on purpose: what the eye reads is *density*, which is cap over
+  // π·vis², and the previous numbers bought 800 stones spread over 5000 m² —
+  // 0.16 per square metre. That is why the 2 m close-up still showed a bare
+  // clay slab with half a dozen objects on it after the substrate layer was
+  // added. Shrinking the radius is nearly free (these are 20-60 triangle props
+  // that contribute nothing past 30 m anyway) and it triples the density under
+  // the player's nose for the same triangle count.
+  { key: 'pebble',      variants: 2, card: false, cap: 2000, vis: 29, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
+  { key: 'cobble',      variants: 2, card: false, cap: 880,  vis: 74, band: 1, recv: false, wind: 0.000, shadow: false, build: buildCobble },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 1700, vis: 26, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
+  { key: 'deadTuft',    variants: 2, card: true,  cap: 1700, vis: 26, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
 ];
 
 /** arch key -> index into COVER_ARCHETYPES, for the flat instance buffers. */

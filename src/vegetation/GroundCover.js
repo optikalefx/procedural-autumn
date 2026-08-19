@@ -35,7 +35,11 @@ const CELL = 48;                 // metres per scatter cell
 // cell is created and pops rather than fading in.
 const STREAM_RADIUS = 300;
 const REPACK_MOVE = 12;          // metres of camera travel before a repack
-const MAX_PER_CELL = 2200;       // scratch capacity for one cell's generation
+// Scratch capacity for one cell's generation. A 48 m cell is 2304 m², and the
+// ground-substrate layer now aims at roughly one clump every 3 m² with up to
+// twenty pieces in a clump, so the old 2200 was clipping the far half of every
+// cell — silently, and worst in exactly the dense hollows the layer exists for.
+const MAX_PER_CELL = 5600;
 
 // One prevailing wind for the whole valley, matching the leaf-drift direction
 // in cover_scatter.js. Held constant so each instance's local sway axis can be

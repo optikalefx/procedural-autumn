@@ -2128,3 +2128,27 @@ frame is still the boot pipeline stall at ~1.2 s that needs the warm-up frame in
 The three new fbm octaves in the ground-mass block each sit behind their own
 distance gate rather than all three behind the widest one, so past 260 m the
 block costs one evaluation instead of three.
+
+## Trees / Water: opt into `stylizeRim()` for the golden-hour backlight
+*from the look author, 2026-08-19*
+
+`src/render/Stylize.js` now exports a `stylizeRim( rawNV, rawVL )` alongside the
+existing `stylizeDiffuse()`, and its uniforms are already in `stylizeUniforms()`
+— so any shader that has merged that block once has them and needs no new
+plumbing. Usage:
+
+```glsl
+// viewDir points from the surface toward the camera; L toward the sun.
+float rim = stylizeRim( dot( N, viewDir ), dot( viewDir, L ) );
+col += uSunColor * rim * shadowMask;   // ADD it; never multiply it by albedo
+```
+
+Every `MeshStandardMaterial` in the game (terrain, rock, grass, ground cover,
+camper, wildlife) gets this automatically through the patched direct-lighting
+term. Trees and water roll their own lighting and therefore get none of it,
+which is most of why the `backlit` view still measures no bright silhouette
+edge — the canopy is the surface that view exists to photograph.
+
+One caution learned from tuning the global strength: do not multiply the rim by
+albedo. A rim through the albedo path on a dark conifer comes out dark, which
+is the opposite of what a backlit edge does.

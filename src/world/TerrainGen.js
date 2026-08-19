@@ -689,6 +689,13 @@ export class TerrainGen {
       }
     }
 
+    // ── de-fluting ───────────────────────────────────────────────────────────
+    // Run between the spur emphasis and the terrace, deliberately: the unsharp
+    // mask above is a broadband amplifier and it doubles contour-parallel
+    // ripple along with the ribs it is there for, and the terrace wants to cut
+    // into clean ground.
+    this._deflute(src);
+
     for (let y = 0; y < R; y++) {
       const y0 = y * R;
       for (let x = 0; x < R; x++) {
@@ -744,6 +751,93 @@ export class TerrainGen {
     }
 
     h.set(out);
+  }
+
+  /**
+   * Fall-line smoothing of the fine band on steep faces — the "combed hair"
+   * fix, and half of the gold-ribbon fix.
+   *
+   * MEASURED DEFECT. On steep massif faces the residual after a 30 m low-pass
+   * decorrelates markedly faster along the fall line than along the contour
+   * (ACF at 30 m lag: 0.148 down-slope against 0.318 across it). That is a
+   * corrugation whose crests run along the contours, and it does two things.
+   * Rendered, it is the brushed-metal surface every flank was wearing instead
+   * of plane-and-crease. And because the grass/rock mask is a threshold on
+   * slope, each micro-bench of it dips under the cut and gets painted as a thin
+   * grass ribbon — twelve parallel gold bands across the peaks massif, in the
+   * same place at every hour of the day, because none of it is shading.
+   *
+   * The operator is a 1-D Gaussian applied ALONG THE LOCAL FALL LINE, to the
+   * band finer than 20 m only. That direction is the whole point: relief that
+   * runs down the slope — the drainage flutes, the gullies, the spur noses,
+   * everything the erosion sim cut and everything the reference cliffs actually
+   * show — varies slowly along the fall line and passes through untouched,
+   * while relief that runs across it is exactly what the kernel averages away.
+   * An isotropic blur would take both and give back the wax drape this file has
+   * already been criticised for twice.
+   *
+   * Everything coarser than 20 m is reconstructed bit for bit, so the benches,
+   * the ledges and the massif silhouette are not in scope.
+   */
+  _deflute(buf) {
+    const R = this.res, N = R * R;
+    const texel = this.worldSize / R;
+    const mw = this.massifW;
+    const lp = this._boxBlur(buf, 48, 1);
+    // Direction is taken from a much wider read than the signal being filtered,
+    // so the kernel cannot align itself with the very ripple it is removing.
+    const dir = this._boxBlur(buf, 60, 1);
+    const fine = new Float32Array(N);
+    for (let i = 0; i < N; i++) fine[i] = buf[i] - lp[i];
+
+    // sigma 15 m, taps out to +/-30 m. Sized by measurement, not by eye: the
+    // ripple that reaches the slope field lives at 20-45 m, so a 6 m sigma
+    // (the first attempt) removed 8% of it and measured as a no-op. This takes
+    // 97% of a 30 m wave and 90% of a 45 m one while leaving a 120 m ledge at
+    // two thirds of its height, which is the line between a corrugation and the
+    // bedding-plane benching that is supposed to be there.
+    //
+    // Expressed in METRES and converted, so a 512 or 768 preview bake filters
+    // the same ground as the shipping 1536 one rather than a kernel four times
+    // wider.
+    const px = R / this.worldSize;
+    const T = [0, 7.5, -7.5, 15, -15, 22.5, -22.5, 30, -30].map(v => v * px);
+    const Wt = [1.0, 0.885, 0.885, 0.607, 0.607, 0.325, 0.325, 0.135, 0.135];
+    let wsum = 0; for (const w of Wt) wsum += w;
+    for (let k = 0; k < Wt.length; k++) Wt[k] /= wsum;
+
+    const bil = (gx, gy) => {
+      if (gx < 0) gx = 0; else if (gx > R - 1.001) gx = R - 1.001;
+      if (gy < 0) gy = 0; else if (gy > R - 1.001) gy = R - 1.001;
+      const x = gx | 0, y = gy | 0, fx = gx - x, fy = gy - y, i = y * R + x;
+      return fine[i] * (1 - fx) * (1 - fy) + fine[i + 1] * fx * (1 - fy)
+           + fine[i + R] * (1 - fx) * fy + fine[i + R + 1] * fx * fy;
+    };
+
+    for (let y = 1; y < R - 1; y++) {
+      const y0 = y * R;
+      for (let x = 1; x < R - 1; x++) {
+        const i = y0 + x;
+        const gx = dir[i + 1] - dir[i - 1], gz = dir[i + R] - dir[i - R];
+        const L = Math.hypot(gx, gz);
+        if (L < 1e-5) continue;
+        // THE GATE READS THE SMOOTHED SLOPE, NOT THE RAW ONE, AND THAT IS THE
+        // WHOLE PASS. Gated on slopeBuf the operator defeated itself: the
+        // corrugation swings the local slope by +/-0.6, so on a 1.0 face the
+        // troughs of the very ripple being removed fell under the gate and
+        // were preserved. Measured on a synthetic 20 m ripple over a 45 degree
+        // plane, the raw gate took it from 1.34 to 0.48 where the arithmetic
+        // says 0.09; on the smoothed gate it reaches 0.09.
+        const slopeSm = L / (2 * texel);
+        const w = 0.96 * smoothstep(0.44, 0.92, slopeSm)
+                       * smoothstep(0.06, 0.34, mw[i]);
+        if (w < 0.02) continue;
+        const fx = gx / L, fz = gz / L;
+        let s = 0;
+        for (let k = 0; k < T.length; k++) s += Wt[k] * bil(x + fx * T[k], y + fz * T[k]);
+        buf[i] = lp[i] + fine[i] + (s - fine[i]) * w;
+      }
+    }
   }
 
   /** Separable box blur with a radius in metres. O(N) per pass, edge-clamped. */

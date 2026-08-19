@@ -72,6 +72,10 @@ const PAL = {
   // (#f0ad46). Dry scrub against gold meadow is a *tonal* accent — it has to
   // sit below the ground it stands on or it reads as a pale rag.
   scrubBase:   C(0xc9954c), scrubTip:    C(0xefc972), scrubPale: C(0xdcaf5e),
+  // Plate 1's open meadow is dotted with small *rust* tufts, not only tan
+  // ones. They are the mid rung of the size ladder and the only warm-red note
+  // at ankle height, so a share of the dry scrub takes them.
+  scrubRust:   C(0xb56a35), scrubRustTip: C(0xd99a4e),
   willow:      C(0x8fa855), willowTip:   C(0xd8e078),
   alder:       C(0x6b8a4e), alderTip:    C(0xaec258),
   fernBase:    C(0x718646), fernBronze:  C(0xd08e4e), fernGold: C(0xecc05e),
@@ -81,7 +85,11 @@ const PAL = {
   aster:       C(0xa993e4), asterPink:   C(0xd292c8),
   goldenrod:   C(0xf3d060),
   seedTip:     C(0xe3cd9e),
-  litterWarm:  C(0xc26f30), litterGold:  C(0xdfa844), litterRed: C(0x9c3730),
+  // Lifted about a fifth. The rule these follow is still the right one — a
+  // fallen leaf must be a step *down* from the meadow it lies on or it reads
+  // as paper confetti — but a step down from #f0ad46 is a warm rust, and at
+  // the previous values a leaf scatter at 2 m read as small black chips.
+  litterWarm:  C(0xd2803a), litterGold:  C(0xe8b455), litterRed: C(0xb04338),
   // Weathered wood, and much paler than it looks written down. Forcing this
   // pair to pure white and re-capturing showed a correctly lit, clearly
   // faceted cylinder, so the normals and the light were always fine — the
@@ -94,7 +102,11 @@ const PAL = {
   // lavender-grey lit, violet-grey shaded, never brown-grey — and it is the
   // only cool note this layer puts at ground level. Straw sits just below the
   // sunlit meadow gold so a mat of it reads as texture, not as a bald patch.
-  stoneLit:    C(0xdad5e2), stoneDeep:   C(0xa5a1b6),
+  // Pushed further round toward violet than the brief's literal `#c3bfcc` /
+  // `#5c5a75`, because the key light is strongly gold: a stone authored at
+  // neutral lavender arrives on screen as salmon, and the only cool note
+  // this layer is allowed at ground level then does not exist.
+  stoneLit:    C(0xd3d0e6), stoneDeep:   C(0x9695b4),
   strawPale:   C(0xdcb264), strawDeep:   C(0xa88146),
 };
 
@@ -252,10 +264,21 @@ export class CoverScatter {
     const y = W.getHeight(x, z) - (o.sink ?? 0.04);
 
     // Terrain normal from the same central difference the grass field uses.
-    const e = 0.9;
-    const gx = (W.getHeight(x + e, z) - W.getHeight(x - e, z)) / (2 * e);
-    const gz = (W.getHeight(x, z + e) - W.getHeight(x, z - e)) / (2 * e);
-    const inv = 1 / Math.sqrt(gx * gx + gz * gz + 1);
+    //
+    // `flat` skips it. Four extra `getHeight` calls are ~80% of the cost of
+    // emitting one instance, and the substrate props are 3-30 cm objects that
+    // only ever take 55% of the terrain's tilt anyway — a pebble leaning half a
+    // degree is not a thing anyone can see. Skipping it is what makes the
+    // several-thousand-instance ground layer affordable inside the per-frame
+    // cell budget; without it the density this layer needs was a measurable
+    // hitch on every new cell.
+    let gx = 0, gz = 0, inv = 1;
+    if (!o.flat) {
+      const e = 0.9;
+      gx = (W.getHeight(x + e, z) - W.getHeight(x - e, z)) / (2 * e);
+      gz = (W.getHeight(x, z + e) - W.getHeight(x, z - e)) / (2 * e);
+      inv = 1 / Math.sqrt(gx * gx + gz * gz + 1);
+    }
 
     const c = this._c.copy(o.colA);
     const c2 = this._c2.copy(o.colB);
@@ -283,7 +306,12 @@ export class CoverScatter {
     out[i + 15] = o.tone ?? 1;
     out[i + 16] = arch.vis * (o.visMul ?? 1);
     out[i + 17] = ai;
-    out[i + 18] = Math.min(arch.variants - 1, (rng() * arch.variants) | 0);
+    // `variant` lets a caller weight the choice. The uniform roll is right for
+    // foliage, where the variants are the same plant grown twice, and wrong for
+    // the stone tiers, where they are three different sizes and a flat third
+    // each is the uniform grade the brief forbids.
+    out[i + 18] = Math.min(arch.variants - 1,
+      o.variant !== undefined ? o.variant : (rng() * arch.variants) | 0);
     out[i + 19] = -gx * inv;
     out[i + 20] = -gz * inv;
     return n + 1;
@@ -340,7 +368,11 @@ export class CoverScatter {
     const N = this.noise, W = this.world;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_GROUND);
-    const sites = Math.round(260 * this.mul);
+    // 260 sites over a 48 m cell put roughly one accepted clump every 12 m²,
+    // and after the visibility radius took its share the 2 m close-up still
+    // measured as a bare slab with a handful of objects on it. What reads as
+    // "the ground has stuff on it" is closer to one clump every 3 m².
+    const sites = Math.round(620 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_GROUND, key) * 4294967296) >>> 0);
@@ -349,7 +381,10 @@ export class CoverScatter {
       if (g < 0.20) continue;
 
       const acc = smoothstep(-0.50, 0.50, N.fbm(x * 0.045 + 17.3, z * 0.045 + 91.7, 2, 2.2, 0.5, 1));
-      if (rng() > clamp01(0.42 + acc * 0.72) * g) continue;
+      // Floor raised: the accumulation field is there to make hollows richer
+      // than ridges, not to leave whole stretches of ground with nothing on
+      // them at all — a swept ridge in the plates still has grit and straw.
+      if (rng() > clamp01(0.66 + acc * 0.56) * g) continue;
 
       const w = W.getSurfaceWeights(x, z, this._w);
       const moist = W.getMoisture(x, z);
@@ -368,12 +403,27 @@ export class CoverScatter {
       // of the three: it sits inside the meadow's own gold, so it adds texture
       // but no value or hue break, and the slab it is covering is gold too.
       const wStraw = (0.34 + (1 - moist) * 0.55) * (1 - clamp01(can * 0.75));
-      const wMoss  = Math.max(0, moist - 0.52) * 2.4 + can * 0.45 - road * 1.0;
+      // Moss needs shade *and* damp, not either. On its own the moisture term
+      // was putting green cushions all over the open river clay, where they had
+      // nothing to grow on and read as loose green cards lying on bare dirt —
+      // half the "orphaned quads" in `river`. Moss in the plates is always
+      // against something: a trunk, a log, the shaded side of a stone.
+      const wMoss  = Math.max(0, moist - 0.55) * 2.2 * clamp01(can * 1.6 + 0.10)
+                   + can * 0.35 - road * 1.0;
       const wTwig  = 0.10 + can * 0.80 + lit * 0.35;
       const total = Math.max(1e-4, wStone + wLeaf + wStraw + wMoss + wTwig);
 
-      const members = 4 + ((rng() * (5 + acc * 6)) | 0);
-      const spread = 0.5 + rng() * (1.2 + acc * 2.4);
+      // Clump size runs with the accumulation field rather than sitting in a
+      // narrow band, so a swept ridge gets three or four scattered pieces and a
+      // hollow gets a proper drift of twenty. Even spacing at a fixed count is
+      // the anti-pattern; the variance is the point.
+      const members = 3 + ((rng() * (5 + acc * 15)) | 0);
+      const spread = 0.4 + rng() * (1.1 + acc * 2.6);
+      // One stick per clump, at most. A clump can run to twenty members inside a
+      // 2 m radius, and three or four sticks landing in one is a star of thin
+      // dark strips radiating from a point — the same "scratches on the lens"
+      // read the straw mats had, arrived at from the other direction.
+      let sticks = 0;
       for (let m = 0; m < members && n < cap; m++) {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
         const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;
@@ -381,9 +431,18 @@ export class CoverScatter {
 
         let roll = rng() * total;
         if ((roll -= wStone) < 0) {
-          n = this._emit(out, n, cap, 'pebble', mx, mz, rng, {
+          // Power law over the three stone tiers. Grit is the common case and
+          // a cobble is a once-in-a-while event, which is what gives a stony
+          // stretch a readable size hierarchy instead of a uniform grade.
+          const t = rng();
+          n = this._emit(out, n, cap, t < 0.86 ? 'pebble' : 'cobble', mx, mz, rng, {
             colA: PAL.stoneDeep, colB: PAL.stoneLit, sink: 0.02,
-            scale: 0.65 + rng() * 0.55, tone: 0.86 + rng() * 0.28, hue: 0.020,
+            variant: t < 0.58 ? 0 : t < 0.86 ? 1 : (t < 0.96 ? 0 : 1),
+            // Squared, so within a tier most stones sit near the bottom of its
+            // range and only a few reach the top. A flat scale range is what
+            // produced the measured "every stone within ±30% of the same size".
+            scale: 0.55 + rng() * rng() * 1.05, tone: 0.86 + rng() * 0.28,
+            hue: 0.020, flat: true,
           });
         } else if ((roll -= wLeaf) < 0) {
           // Weighted to the rust and crimson end rather than the gold. A
@@ -394,24 +453,35 @@ export class CoverScatter {
           n = this._emit(out, n, cap, 'leafScatter', mx, mz, rng, {
             colA: warm < 0.62 ? PAL.litterWarm : PAL.litterRed,
             colB: warm < 0.40 ? PAL.litterRed : PAL.litterGold,
-            sink: 0.01, scale: 0.8 + rng() * 0.8,
-            tone: 0.90 + rng() * 0.24, hue: 0.028,
+            sink: 0.01, scale: 0.65 + rng() * rng() * 1.10,
+            tone: 0.90 + rng() * 0.24, hue: 0.028, flat: true,
           });
         } else if ((roll -= wStraw) < 0) {
           n = this._emit(out, n, cap, 'deadTuft', mx, mz, rng, {
             colA: PAL.strawDeep, colB: PAL.strawPale, sink: 0.01,
-            scale: 0.8 + rng() * 0.9, tone: 0.90 + rng() * 0.24, hue: 0.022,
+            scale: 0.65 + rng() * rng() * 1.30, tone: 0.90 + rng() * 0.24,
+            hue: 0.022, flat: true,
           });
         } else if ((roll -= wMoss) < 0) {
           n = this._emit(out, n, cap, 'moss', mx, mz, rng, {
             colA: PAL.mossDeep, colB: PAL.moss, sink: 0.01,
             scale: 0.7 + rng() * 0.8, tone: 0.88 + rng() * 0.22, hue: 0.03,
+            flat: true,
           });
-        } else {
+        } else if (sticks === 0) {
+          sticks++;
           n = this._emit(out, n, cap, 'branch', mx, mz, rng, {
-            colA: rng() < 0.5 ? PAL.barkGrey : PAL.barkWarm, colB: PAL.moss,
-            scale: 0.42 + rng() * 0.55, sink: 0.0,
-            tone: 0.86 + rng() * 0.26, hue: 0.015,
+            // Weighted to the pale end out in the open. Weathered wood lying in
+            // full sun is close to the value of the stone beside it; the darker
+            // `barkWarm` belongs under canopy, and out here a scatter of it
+            // reads as a handful of dark dashes on gold.
+            colA: rng() < 0.72 ? PAL.barkGrey : PAL.barkWarm, colB: PAL.moss,
+            // Big sticks are the rare case out on open ground; under a canopy
+            // the deadfall layer supplies them properly.
+            variant: rng() < 0.78 ? 0 : 1,
+            scale: 0.55 + rng() * rng() * 0.85, sink: 0.0,
+            tone: 0.86 + rng() * 0.26, hue: 0.015, flat: true,
+            visMul: 0.75,
           });
         }
       }
@@ -522,7 +592,7 @@ export class CoverScatter {
     const N = this.noise, W = this.world;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_SCRUB);
-    const sites = Math.round(22 * this.mul);
+    const sites = Math.round(34 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_SCRUB, key) * 4294967296) >>> 0);
@@ -544,9 +614,14 @@ export class CoverScatter {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
         const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;
         if (this._ground(mx, mz, 0.8) < 0.08) continue;
+        const rust = rng() < 0.32;
         n = this._emit(out, n, cap, 'scrubDry', mx, mz, rng, {
-          colA: rng() < 0.4 ? PAL.scrubPale : PAL.scrubBase, colB: PAL.scrubTip,
-          scale: 0.58 + rng() * 0.42, tone: 0.92 + rng() * 0.22, hue: 0.02,
+          colA: rust ? PAL.scrubRust : (rng() < 0.4 ? PAL.scrubPale : PAL.scrubBase),
+          colB: rust ? PAL.scrubRustTip : PAL.scrubTip,
+          // Squared so most tufts are small and a few are twice the size —
+          // the ladder inside one archetype, which a flat 0.58-1.00 had none of.
+          scale: 0.45 + rng() * rng() * 0.95,
+          tone: 0.92 + rng() * 0.22, hue: 0.02,
         });
       }
     }
@@ -628,7 +703,7 @@ export class CoverScatter {
         } else if (roll < 0.86) {
           n = this._emit(out, n, cap, 'broadleaf', mx, mz, rng, {
             colA: PAL.broadleaf, colB: PAL.broadTip,
-            scale: 0.75 + rng() * 0.75, tone: 0.86 + rng() * 0.26, hue: 0.035,
+            scale: 0.80 + rng() * 0.55, tone: 0.86 + rng() * 0.26, hue: 0.035,
           });
         } else if (moist > 0.5) {
           n = this._emit(out, n, cap, 'moss', mx, mz, rng, {
@@ -769,7 +844,10 @@ export class CoverScatter {
         if (this._ground(mx, mz, 0.6) < 0.12) continue;
         n = this._emit(out, n, cap, 'branch', mx, mz, rng, {
           colA: grey ? PAL.barkGrey : PAL.barkWarm, colB: PAL.moss,
-          scale: 0.75 + rng() * 0.7, sink: 0.0,
+          // Under a canopy the sticks are limbs off the trees overhead, so the
+          // long tier dominates here and the short one is the filler.
+          variant: rng() < 0.62 ? 1 : 0,
+          scale: 0.70 + rng() * 0.75, sink: 0.0,
           tone: 0.86 + rng() * 0.26, hue: 0.015,
         });
       }
@@ -856,7 +934,7 @@ export class CoverScatter {
               } else if (roll < 0.8) {
                 n = this._emit(out, n, cap, 'broadleaf', mx, mz, rng, {
                   colA: PAL.broadleaf, colB: PAL.broadTip,
-                  scale: 0.75 + rng() * 0.7, tone: 0.86 + rng() * 0.24, hue: 0.035,
+                  scale: 0.80 + rng() * 0.50, tone: 0.86 + rng() * 0.24, hue: 0.035,
                 });
               } else {
                 // Moss on the damp north side, not all the way round.

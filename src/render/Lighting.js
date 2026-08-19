@@ -175,7 +175,30 @@ const SCALAR_FIELDS = ['sunI', 'hemiI', 'glowI', 'fogD', 'cover'];
 // object at the right distance. Kept short of the 0.78 that looked best at eye
 // level, because the vistas pay for it: at 0.78 hero lumaP05 climbs to 0.40 and
 // its range falls to 0.41, i.e. back toward the flat cream wash.
-const FOG_DENSITY_SCALE = 0.64;
+// Cut again, to 0.42, and this is the vista half of the "no true dark anywhere"
+// finding. Measured on `hero` by sweeping this multiplier alone in one boot
+// (tools/_scratch/coolsweep.mjs, fogScale):
+//
+//   scale   lumaP05   lumaRange   contrastStd
+//   0.64     0.397      0.337        0.109
+//   0.45     0.351      0.383        0.120
+//   0.29     0.312      0.421        0.131
+//   0.16     0.277      0.457        0.143
+//
+// against plate 1's 0.161 / 0.705 / 0.218. Nothing else in the chain comes
+// close to that authority over a vista: the grade's toe and lift, swept over
+// the same frame across a 3.5x range, moved lumaP05 by 0.004 in total, because
+// nothing in `hero` was ever near the toe. The frame had no darks because the
+// haze had already eaten them, several hundred metres before the grade saw the
+// pixel.
+//
+// It is a real trade and it is deliberately not taken to the end: aerial
+// perspective is the brief's named depth cue, and at 0.16 the far peaks are as
+// contrasty as the near ones and the layering is gone. 0.42 keeps the ridge
+// separation (the altitude profile in heightFalloff does most of that work and
+// is untouched) while letting the shadowed forest mass in the near third
+// arrive dark enough to be the frame's black point.
+const FOG_DENSITY_SCALE = 0.42;
 
 // The hemisphere fill was authored to keep shadows off the floor while the
 // Stylize diffuse floor was not running (same wiring bug as the fog). With both
@@ -243,6 +266,14 @@ export class Lighting {
     this.hour = TOD.hour;
     this.azimuth = TOD.sunAzimuth;
     this.cycleSpeed = TOD.cycleSpeed;
+    // Runtime multipliers on the two authored curves. They exist so a value
+    // decision can be *swept* in one browser boot instead of one boot per
+    // candidate — both of these were previously module constants that could
+    // only be changed by editing the file, which is why every note beside them
+    // records three data points and not fifteen. They default to 1.0 and the
+    // constants below remain the shipping values.
+    this.ambientScale = 1.0;
+    this.fogScale = 1.0;
 
     // Sunrise / sunset in hours. The elevation curve is shaped so that the
     // canonical golden-hour views (16.4 … 17.9) sit between 5° and 18° — a
@@ -335,7 +366,15 @@ export class Lighting {
     // srgb(76,64,48) at its darkest. The reason a bigger number than 0.46 no
     // longer reads as harsh is that the softness comes from the map (PCF_SOFT at
     // a 150 m extent) rather than from the shadow being pale.
-    this.sun.shadow.intensity = 0.82;
+    // 0.74, down from 0.82, and the reason is that the shadow no longer has to
+    // carry its own weight in value alone. With the cool rotation in Stylize
+    // giving a cast shadow a different *hue* from the ground it lies on, it
+    // reads as a shape at a shallower value drop than it needed when it was
+    // only a darker gold — which is the trade every one of the reference plates
+    // makes. Measured on the meadow view, dropping from 0.82 also took the blue
+    // mass from chroma 0.111 to 0.144 without moving its luminance, because a
+    // shadow with more sun in it has more chroma for the rotation to work with.
+    this.sun.shadow.intensity = 0.74;
     this._setShadowExtent(220);
     scene.add(this.sun);
     scene.add(this.sun.target);
@@ -500,7 +539,7 @@ export class Lighting {
 
     this.hemi.color.copy(k.hemiSky);
     this.hemi.groundColor.copy(k.hemiGnd);
-    this.hemi.intensity = k.hemiI * AMBIENT_SCALE;
+    this.hemi.intensity = k.hemiI * AMBIENT_SCALE * this.ambientScale;
 
     // Counter-key sits opposite the sun and slightly above, so it fills the
     // shadow side without flattening the form.
@@ -520,7 +559,7 @@ export class Lighting {
     (this.fogNear ??= new THREE.Color()).copy(k.fogNear);
     (this.fogFar ??= new THREE.Color()).copy(k.fogFar);
     (this.fogSun ??= new THREE.Color()).copy(k.fogSun);
-    this.fogDensity = k.fogD * FOG_DENSITY_SCALE;
+    this.fogDensity = k.fogD * FOG_DENSITY_SCALE * this.fogScale;
 
     // Publish for Sky / Clouds.
     const s = SKY_STATE;
