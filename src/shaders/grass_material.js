@@ -25,11 +25,19 @@ import { PALETTE } from '../world/WorldConfig.js';
  *   side ∈ [-1,1] across the blade, v ∈ [0,1] along it.
  * The last row collapses to a single tip vertex so the silhouette comes to a
  * point rather than a chisel end.
+ *
+ * `tipBias` < 1 packs the rows toward the tip. This is not a nicety. With three
+ * segments at uniform spacing the top third of the blade is one unbroken
+ * straight-sided quad, and both of the things that give a blade its outline —
+ * the taper and the arc — do nearly all their work inside it. What rasterised
+ * was a straight-sided isoceles triangle with its base on the dirt, which is
+ * precisely what the near field was judged as. Vertices have to be where the
+ * curvature is.
  */
-export function makeBladeGeometry(segments) {
+export function makeBladeGeometry(segments, tipBias = 1.0) {
   const pos = [];
   for (let i = 0; i < segments; i++) {
-    const v = i / segments;
+    const v = Math.pow(i / segments, tipBias);
     pos.push(-1, v, 0, 1, v, 0);
   }
   pos.push(0, 1, 0);                       // tip
@@ -95,8 +103,25 @@ export function makeGrassUniforms() {
 
     uOliveMax:    { value: 0.78 },    // olive is an accent; gold always shows through
     uRootMix:     { value: 0.30 },    // how far the base drifts to uRootCol
-    uTipMix:      { value: 0.46 },
-    uTipBias:     { value: 0.88 },    // <1 pushes the warm tip colour further down
+    // Raised with uTipBias: confining the pale straw to the top of the blade
+    // only reads as a ladder if the top is actually paler than it used to be.
+    uTipMix:      { value: 0.54 },
+    // Exponent on the root->tip mix. Below 1 the tip pigment carries most of
+    // the way down the blade, which was the right call when a blade was a wide
+    // wedge whose lower half was a large area of screen. Now that it is a hair,
+    // that same setting flattened the whole blade to one pale value and the
+    // root-to-tip ladder — which the critic names explicitly — stopped existing
+    // at 2 m. Above 1 the pale straw is confined to the top third and the mid
+    // and lower blade keep the base gold, so each blade has a value gradient
+    // again and the field gets its internal structure back.
+    //
+    // Measured, because the first attempt overshot: a matched A/B on the fixed
+    // meadow low view went srgb(160,129,55) -> srgb(135,103,45) at 1.30, a 16%
+    // luma drop across the whole near field. The ladder is worth having; a dark
+    // meadow is not, and the brief's floor is explicit about it. 1.05 keeps most
+    // of the gradient and the tip pigment below carries the top of the range
+    // instead of the exponent doing it.
+    uTipBias:     { value: 1.05 },
     uBaseAO:      { value: 0.86 },    // occlusion at the blade root
     uAOHeight:    { value: 0.24 },    // how far up the blade that occlusion reaches
     // How far the shading normal is pulled from the blade's own face toward
@@ -107,6 +132,10 @@ export function makeGrassUniforms() {
     // the field shade as one soft surface, which is what the reference does.
     uNormalUp:    { value: 0.82 },    // blend of face normal -> terrain normal
     uCurve:       { value: 0.12 },    // cross-blade rounding of the normal
+    // How far the bend is pushed up the blade. 0 is a circular arc — constant
+    // curvature, the base tilting as much as the tip, which is the shape that
+    // read as a shard. 1 puts the turn almost entirely in the top third.
+    uCurl:        { value: 0.74 },
     uTrans:       { value: 2.10 },    // backlit translucency strength
     uTransPow:    { value: 1.6 },     // lower = the glow spreads over more of the field
     uSheen:       { value: 0.26 },
@@ -165,6 +194,7 @@ uniform float uWindGust;
 uniform float uFlutter;
 uniform float uNormalUp;
 uniform float uCurve;
+uniform float uCurl;
 uniform float uPxWorld;
 uniform vec2  uFadeIn;    // ring hand-off: 0 blades below x, all above y
 uniform vec2  uFadeOut;   // far edge: all blades below x, none above y
@@ -222,32 +252,82 @@ const VERT_BODY = /* glsl */`
   // Flutter is small and gated by the gust, otherwise the whole field jellies.
   float flut = sin( uTime * 5.1 + aShape.w * 39.5 ) * 0.6
              + sin( uTime * 9.3 - aShape.w * 61.2 ) * 0.4;
-  float bend = aShape.z + breeze * ( 0.62 + 0.38 * aShape.w ) + flut * uFlutter * gust;
-  bend = clamp( bend, 0.03, 1.15 );
-
-  // Blades swing toward the wind as the gust builds.
+  // ── the blade's own frame ───────────────────────────────────────────────
+  // A blade is a thin sheet: stiff in its own plane, floppy across it. So it
+  // bends about its *width* axis, and that axis belongs to the blade, not to
+  // the weather.
+  //
+  // The old code derived the width axis from the wind-blended lean direction,
+  // which meant that at the crest of a gust — mix factor up to 0.72 toward a
+  // single world wind vector — most of the field rotated its broad face into
+  // alignment and every blade presented the same profile at once. That reads
+  // as a stamped pattern rather than a stand of grass, and it is worst exactly
+  // where the player is, because near blades are the only ones you can resolve
+  // individually. It also made yaw unstable for blades lying against the wind,
+  // where normalize() of a nearly-cancelling sum flips.
+  //
+  // Yaw is now fixed to the blade for its whole life. Only the *amount* of
+  // bend follows the wind.
   vec2 ownDir = vec2( sin( aTint.x ), cos( aTint.x ) );
-  vec2 leanDir = normalize( mix( ownDir, uWindDir, clamp( breeze * 0.85, 0.0, 0.72 ) ) );
-  vec3 lean3 = vec3( leanDir.x, 0.0, leanDir.y );
-  vec3 side3 = vec3( leanDir.y, 0.0, -leanDir.x );
+  vec3 lean3 = vec3( ownDir.x, 0.0, ownDir.y );
+  vec3 side3 = vec3( ownDir.y, 0.0, -ownDir.x );
 
   // Terrain normal, and the direction the blade actually grows: mostly up,
   // leaned a little into the slope so hillside grass does not look glued on.
   float nx = aMisc.x, nz = aMisc.y;
   vec3 upN = normalize( vec3( nx, sqrt( max( 1.0 - nx * nx - nz * nz, 0.04 ) ), nz ) );
   vec3 growDir = normalize( mix( vec3( 0.0, 1.0, 0.0 ), upN, 0.38 ) );
+  // The arc below only preserves length if its two basis vectors are
+  // perpendicular. On a 30-degree slope growDir tilts ~11 degrees off vertical
+  // and a purely horizontal lean3 costs the blade up to 10% of its length —
+  // which showed on the 'vehicle' hillside as grass mysteriously shorter than
+  // the grass beside it. lean3 is horizontal and growDir is within ~11 degrees
+  // of up, so they can never be parallel and this normalize is always safe.
+  lean3 = normalize( lean3 - growDir * dot( lean3, growDir ) );
 
-  // Length-preserving circular arc: a blade that bends does not get shorter.
-  float sB = sin( bend * t ), cB = cos( bend * t );
-  vec3 spine = lean3 * ( bh * ( 1.0 - cB ) / bend ) + growDir * ( bh * sB / bend );
+  // ── how hard it bends ───────────────────────────────────────────────────
+  // A blade lying along the wind is pushed over; one lying across it is barely
+  // touched; one facing into it is straightened. Signing the gust by that
+  // alignment is what lets a gust read as a wave crossing the field while
+  // every blade keeps its own facing.
+  float align = dot( ownDir, uWindDir );
+  float bend = aShape.z + breeze * ( 0.62 + 0.38 * aShape.w ) * ( 0.34 + 0.66 * align )
+             + flut * uFlutter * gust;
+  bend = clamp( bend, -0.34, 1.55 );
 
-  // The reference blade is a broad brush stroke that only closes at the very
-  // top — a low exponent keeps it near full width for most of its length and
-  // then comes to a point, which reads as a stroke rather than as a dart.
-  float taper = pow( max( 1.0 - t, 0.0 ), 0.42 );
+  // ── the spine: curvature that grows toward the tip ──────────────────────
+  // A circular arc has *constant* curvature, so a blade drawn on one is a
+  // straight line with a slight tilt — its base leans exactly as much as its
+  // tip, and at three vertices the sagitta is invisible. Real dry grass is
+  // stiff at the sheath and floppy at the tip: the whole turn is concentrated
+  // in the top third, and that asymmetry is what the eye reads as grass rather
+  // than as a spike.
+  //
+  // phi(s) is therefore superlinear in s, and the spine is the integral of a
+  // *unit* tangent, so a blade still cannot get shorter by bending. Simpson
+  // over three samples is exact to well under a millimetre for a turn of a
+  // radian and a half, and costs one extra sin/cos pair per vertex. It also
+  // removes the old form's division by 'bend', which is why that one needed a
+  // hard 0.03 floor and could never straighten or reverse.
+  float phiH = bend * ( t * 0.5 ) * mix( 1.0, t * 0.5, uCurl );
+  float phiT = bend * t * mix( 1.0, t, uCurl );
+  float sH = sin( phiH ), cH = cos( phiH );
+  float sT = sin( phiT ), cT = cos( phiT );
+  float q = bh * t * ( 1.0 / 6.0 );
+  vec3 spine = lean3   * ( q * ( 4.0 * sH + sT ) )
+             + growDir * ( q * ( 1.0 + 4.0 * cH + cT ) );
+
+  // ── the outline ─────────────────────────────────────────────────────────
+  // The old profile was pow(1-t, 0.42): widest at the ground, near-straight
+  // sided, sampled at three rows. A real blade is narrow at the sheath, widest
+  // about a fifth of the way up, then a long concave taper to a hair. Pulling
+  // the base in is what stops each blade reading as a shard planted in dirt —
+  // the wide base corners were half of the triangle silhouette.
+  float taper = pow( max( 1.0 - t, 0.0 ), 0.44 )
+              * ( 0.58 + 0.42 * smoothstep( 0.0, 0.24, t ) );
   vec3 bladePos = aPos + spine + side3 * ( side * bw * 0.5 * taper );
 
-  vec3 tangent = normalize( lean3 * sB + growDir * cB );
+  vec3 tangent = lean3 * sT + growDir * cT;      // unit: the basis is orthonormal
   vec3 faceN = normalize( cross( side3, tangent ) );
   faceN = normalize( faceN + side3 * ( side * uCurve ) );   // cup across the blade
 

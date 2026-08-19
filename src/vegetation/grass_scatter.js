@@ -151,7 +151,19 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     // Olive is an accent: it needs damp ground or a riverbank to win, but the
     // patch octave lets a few drifts inside a dry meadow go green so the field
     // is not one flat hue from horizon to horizon.
-    let tone = clamp01(moist * 1.70 - 0.62 + river * 0.90 + patch * 0.30);
+    // Tone was a smooth function of moisture and one 20 m noise octave, which
+    // meant every tuft inside a drift agreed with its neighbours exactly and
+    // the field read as one hue with a slow gradient across it — "grass is one
+    // hue, one blade shape and one height across 200 m" in the critic's words.
+    // Plate 3's near meadow is an olive/gold *two-tone*: adjacent stands differ,
+    // and the difference is what gives the mass its internal structure. The
+    // jitter is per-clump, never per-blade — per-blade is the salt-and-pepper
+    // the CORRECTION section rules out, and the shade term below is already
+    // deliberately kept at clump granularity for the same reason.
+    // Mean-zero on purpose. An off-centre jitter here biases the whole field
+    // toward olive, and the first version of it (-0.42) measurably did.
+    let tone = clamp01(moist * 1.70 - 0.62 + river * 0.90 + patch * 0.30
+                       + (rng() - 0.5) * 0.40);
     if (nearWater) tone = clamp01(tone + 0.35);
     const dry = clamp01((1 - moist) * 1.35 - 0.55 + smoothstep(0.18, 0.62, slope) * 0.50
                         + drift * 0.22) * (1 - tone * 0.8);
@@ -167,13 +179,30 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     // typical and ~2 m at the waterline, which visually swallowed the camper.
     // Keep the *relative* structure (damp hollows tall, dry slopes cropped) and
     // narrow the spread so the field reads as ground cover, not as a wheat crop.
+    // The slope penalty used to double-dip: `d` above already thins the stand
+    // on anything steep, and then this cropped what was left. On the open
+    // hillside the `vehicle` view is taken from — the frame the critic called
+    // "hard-edged pale-yellow spikes standing on flat bare red-brown dirt" —
+    // the two together took roughly a third of the cover off the one slope the
+    // player spends the most time driving across. Keep the relationship, halve
+    // the depth of it.
     const stand = ring.height * (0.62 + moist * 0.54 + stature * 0.44 + patch * 0.12
-                                 - smoothstep(0.25, 0.85, slope) * 0.28);
+                                 - smoothstep(0.25, 0.85, slope) * 0.16);
     // Reeds at the waterline: taller than the meadow behind them, and greener.
     // Blades *at* the water sell a shoreline; blades standing in two metres of
     // it read as a bug, which is what the per-blade test below prevents.
     const clumpH = Math.max(0.12, stand * (0.84 + rng() * 0.32) * (nearWater ? 1.34 : 1.0));
-    const clumpBend = 0.11 + rng() * 0.38;   // a tuft has a lay, not a haircut
+    // A tuft has a lay, not a haircut.
+    //
+    // This used to be 0.11 + r*0.38 — mean 0.30 rad, and with the old circular
+    // arc that put the tip a fifth of a blade-length off vertical: a spike with
+    // an apology. Grass at the end of a dry autumn is arched, not erect, and
+    // the arch is doing two jobs here. It is the silhouette cue that separates
+    // a blade from a shard, and it is the only way left to cover bare ground
+    // without new instances: a blade that lies over at 40 degrees shadows
+    // several times the footprint of one standing straight up. Coverage is what
+    // the width cut in Grass.js spends, and this is where it is earned back.
+    const clumpBend = 0.30 + rng() * 0.62;
     const clumpYaw = rng() * TAU;
     let radius = ring.clumpRadius * (0.55 + rng() * 0.75) * (1 - river * 0.75);
     if (nearWater) radius *= 0.55;
@@ -198,18 +227,49 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
       // At 6% the stalks stopped reading as an accent and started reading as
       // wires laid across the frame — they want to be rare.
       const rh = rng();
-      let hj, thin = 1;
+      let hj, thin = 1, stiff = 1;
       if (rh < 0.38)       hj = 0.34 + rng() * 0.36;
-      else if (rh > 0.978) { hj = 1.30 + rng() * 0.55; thin = 0.55; }
+      // A seed stalk is a stem, not a leaf: it holds itself up. Left on the
+      // same bend as everything else the extra arc turned the 2% tall mode
+      // into long curved wires laid across the frame — the exact failure the
+      // 6%-to-2% note below was written about, arriving by a different route.
+      else if (rh > 0.978) { hj = 1.30 + rng() * 0.55; thin = 0.55; stiff = 0.34; }
       else                 hj = 0.66 + rng() * 0.62;
       out[i + 3] = clumpH * hj;
-      out[i + 4] = ring.width * thin * (0.70 + rng() * 0.66);
-      out[i + 5] = clumpBend * (0.50 + rng() * 0.85);
+      // Width tracks height. The critic asked for "a clear blade-size ladder"
+      // and the trimodal above only ever laddered *height*, so a cropped blade
+      // and a full-stand blade were the same width and read as the same object
+      // at two scales rather than as two kinds of blade. Tie them and the tuft
+      // gets a real hierarchy: fine short blades in the understorey, broader
+      // strokes carrying the mass. Bounded so a seed stalk stays a stalk.
+      const sizeLadder = Math.min(1.35, 0.62 + 0.52 * hj);
+      out[i + 4] = ring.width * thin * sizeLadder * (0.74 + rng() * 0.52);
+
+      // How far out in the tuft this blade sits, 0 at the centre and 1 at the
+      // fringe. Two things ride on it.
+      const rr = radius > 1e-4 ? Math.min(1, r / radius) : 0;
+
+      // An outer blade of a tuft arches harder than one held up by its
+      // neighbours in the middle. This is what turns a bundle into a fountain.
+      out[i + 5] = clumpBend * (0.50 + rng() * 0.85) * (1 + rr * 0.55) * stiff;
       out[i + 6] = rng();                                   // wind phase
 
       // Blades in a tuft share a facing, splayed a little — that read of a
-      // common lay is what stops a meadow looking like a pin cushion.
-      out[i +  7] = clumpYaw + (rng() - 0.5) * 1.5;
+      // common lay is what stops a meadow looking like a pin cushion. But a
+      // shared facing plus a symmetric jitter is still a *bundle*: every blade
+      // arcs over the same point and the tuft has one silhouette. A real tuft
+      // radiates, so a blade's facing is pulled toward its own offset from the
+      // clump centre, and the pull grows with the offset. The fringe blades
+      // then arch outward and away, which both breaks the silhouette and — the
+      // reason it is here — spreads the canopy sideways over the bare ground
+      // between tufts for no extra instances.
+      //
+      // The shader reads yaw as (sin, cos) -> (x, z), so the world direction of
+      // the offset (cos(ang), sin(ang)) is the yaw PI/2 - ang. No atan2 needed;
+      // this loop runs 19 000 times per near tile inside a 2 ms budget.
+      let dyaw = (Math.PI * 0.5 - ang) - clumpYaw;
+      dyaw = ((dyaw + Math.PI) % TAU + TAU) % TAU - Math.PI;   // shortest way round
+      out[i +  7] = clumpYaw + dyaw * (0.62 * rr) + (rng() - 0.5) * 0.95;
       out[i +  8] = tone;
       out[i +  9] = dry;
       out[i + 10] = shade * (0.965 + rng() * 0.07);

@@ -26,17 +26,41 @@ import { fillTile, RoadMask, STRIDE } from './grass_scatter.js';
 const GRID = 4;
 
 const RINGS = [
-  // Blade coverage is width × count, but triangles are only count — so the
-  // near ring buys its density with *wider* blades and one fewer segment
-  // rather than with more instances. 3 segments still reads as a curve at 2 m.
+  // The near ring is the 2 m band — the surface the player looks at for the
+  // whole game — so it is the one ring whose *individual blades* can be
+  // resolved, and it is budgeted the other way round from the far two.
+  //
+  // "3 segments still reads as a curve at 2 m" was wrong, and it was the fourth
+  // blocker of critic pass 4. Three uniformly-spaced rows put the entire top
+  // third of the blade in one straight-sided quad, so the taper and the arc
+  // both flattened into a line and what rasterised was an isoceles triangle.
+  // Five rows packed toward the tip (see `tipBias`) resolve the curl.
+  //
+  // The triangles that buys are paid for out of *width*: the perf author's
+  // measurement (INTEGRATION_REQUESTS, "Grass is the single largest p95
+  // contributor") is that grass costs overdraw, not geometry — hiding it is
+  // p95 -7.6 ms for only 0.37 M triangles — and names near-ring blade width as
+  // the cheapest lever. So the near blade goes from a 0.055 m wedge to a
+  // 0.044 m hair, and the ground coverage that loses is bought back with bend
+  // and tuft splay in grass_scatter.js, which cost no instances at all.
   {
-    tileSize: 16, segments: 3, maxBlades: 19000, perClump: 26, clumpRadius: 0.48,
-    width: 0.055, height: 0.38, salt: 0x1111, floor: 0.46,
+    tileSize: 16, segments: 5, tipBias: 0.72, maxBlades: 19000, perClump: 26, clumpRadius: 0.48,
+    // Height is the other half of the coverage trade, and the cheap half. An
+    // arched blade's horizontal reach scales with its length, so 0.38 -> 0.44
+    // buys back most of the ground the narrower blade stopped hiding, for no
+    // extra instances and no extra triangles — only the overdraw of the blade
+    // itself, which the width cut has already more than paid for. Still well
+    // inside the "ground cover, not a wheat crop" bound in grass_scatter.js:
+    // typical stand goes ~0.34 m to ~0.39 m against a 2 m vehicle.
+    width: 0.052, height: 0.44, salt: 0x1111, floor: 0.46,
     fadeIn: [-20, -10], fadeOut: [20, 30], widthGain: 0.0, aoScale: 1.0,
   },
+  // Mid ring: two rows still cannot carry a curl, but at 20–70 m the blade is a
+  // few pixels wide and only its *lean* survives, so it gets the extra row that
+  // buys the bent tip and nothing more.
   {
-    tileSize: 40, segments: 2, maxBlades: 18500, perClump: 30, clumpRadius: 1.20,
-    width: 0.125, height: 0.40, salt: 0x2222, floor: 0.40,
+    tileSize: 40, segments: 3, tipBias: 0.78, maxBlades: 18500, perClump: 30, clumpRadius: 1.20,
+    width: 0.115, height: 0.40, salt: 0x2222, floor: 0.40,
     fadeIn: [18, 28], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
   },
   {
@@ -122,7 +146,7 @@ export class Grass extends System {
           `can be recycled while still visible.`);
       }
 
-      const blade = makeBladeGeometry(cfg.segments);
+      const blade = makeBladeGeometry(cfg.segments, cfg.tipBias ?? 1.0);
       // `ring`, not `cfg` — the material has to be given the *scaled* fade
       // ladder, or the shader keeps fading blades out at the ultra distances
       // while the CPU culls tiles at the contracted ones.
