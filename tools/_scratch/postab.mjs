@@ -57,7 +57,7 @@ const RESET = `
     for (const k in d) if (c[k] !== d[k]) c[k] = d[k];
   }
   P.sanity.enabled = true;
-  if (P.dof) { P.dof.resolution.height = window.__dofH; P.dof.bokehScale = window.__dofBokeh; }
+  if (P.dof) { P.dof.resolution.scale = 1; P.dof.resolution.height = window.__dofH; P.dof.bokehScale = window.__dofBokeh; }
   window.__rebuild(window.__defaultEffects);
 `;
 

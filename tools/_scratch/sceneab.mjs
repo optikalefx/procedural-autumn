@@ -39,6 +39,8 @@ const ARMS = arg('arms', 'base=').split('::').map((s) => {
 });
 
 const RESET = `
+  for (const [o, k, f] of window.__fn) if (o[k] !== f) o[k] = f;
+  window.__d = true;
   E.scene.traverse((o) => {
     const s = window.__snap.get(o.uuid);
     if (!s) return;
@@ -70,6 +72,18 @@ try {
     e.adaptive = false;
     e.resolutionScale = scale;
     e._applyResolution();
+
+    // Method snapshot, so an arm can stub out one system's per-frame work
+    // (streaming, re-binning, repacking) and the reset puts it back.
+    window.__fn = [];
+    const keep = (o, k) => { if (o && typeof o[k] === 'function') window.__fn.push([o, k, o[k]]); };
+    const S0 = window.__systems, T0 = window.__terrain;
+    keep(T0, 'update');
+    for (const n of Object.keys(S0)) { keep(S0[n], 'update'); keep(S0[n], 'lateUpdate'); }
+    keep(S0.trees, '_rebuild');
+    keep(S0.groundCover, '_repack'); keep(S0.groundCover, '_buildCells'); keep(S0.groundCover, '_buildGround');
+    keep(S0.rocks, '_repack'); keep(S0.rocks, '_buildCells');
+    keep(S0.grass, '_build'); keep(S0.grass, '_reassign');
 
     window.__snap = new Map();
     e.scene.traverse((o) => window.__snap.set(o.uuid, { v: o.visible, c: o.castShadow }));

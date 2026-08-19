@@ -82,6 +82,21 @@ export class PerfOverlay {
         `px   ${mp.toFixed(2)} MP   dpr ${window.devicePixelRatio}   ${e.quality}`,
       );
     }
+    // Audio state. "The sound is gone" is otherwise undiagnosable: the context
+    // needs a gesture before it can start, and the mute flag is PERSISTED to
+    // localStorage — so one stray click on the speaker chip silences the game
+    // across every future reload with no visible cause.
+    const a = window.__systems?.audio;
+    if (a) {
+      let tag, colour;
+      if (a.failed) { tag = 'failed'; colour = '#ff7a6b'; }
+      else if (!a.started) { tag = 'waiting for input'; colour = '#ffab6b'; }
+      else if (a.muted) { tag = 'MUTED'; colour = '#ff7a6b'; }
+      else if (a.actx?.state !== 'running') { tag = a.actx?.state ?? 'no context'; colour = '#ffab6b'; }
+      else { tag = `on  vol ${Math.round((a.volume ?? 0) * 100)}%`; colour = '#9fe08a'; }
+      lines.push(`snd  <span style="color:${colour}">${tag}</span>`);
+    }
+
     if (this.detail >= 2) {
       lines.push(
         `draw ${info.calls}   tris ${(info.triangles / 1e6).toFixed(2)}M`,
