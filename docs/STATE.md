@@ -135,3 +135,55 @@ to raise `perKm2`.
 - The perf overlay hides itself during captures.
 - The dev server now names the cause when a backtick closes a GLSL template
   literal — the eighth occurrence reached the player today.
+
+
+## Wildlife: RESOLVED, and the cause was not what W2 assumed
+
+W2 said the gap was legibility rather than density, and that was right as far as
+it went — but it was still an art answer to what turned out to be a logic bug.
+
+`ALERT`'s exit conditions were written against `d`, while the override at the
+top of `Brain.update` re-arms `ALERT` against `dEff` (= `d` minus about fifteen
+metres at driving speed). Every threat distance between those two thresholds
+fell out of `ALERT` and was slammed back into it on the same frame, **for as
+long as the player stayed near**. That band is 43-77 m of threat distance, or
+**62-96 m from the eye** — and the measured median closest approach is 77 m.
+
+So at exactly the distance where the encounter was supposed to happen, the deer
+stood frozen with `speed: 0`, head up, indefinitely. A statue is the least
+visible thing this game can draw. That is the player's "I haven't found any".
+
+Fixed in `d7471d5`: the freeze is now a beat that resolves into WATCH — moving,
+broadside, still wary — instead of re-arming into itself. Alert-band freeze
+multiplier cut 1.6x -> 1.05x, because 4.2 s of freeze is 55 m of approach at
+13 m/s, i.e. the whole encounter. Freeze pose squared up 43 deg -> 69 deg (a deer
+head-on is ~0.5 m wide, across the flank ~1.9 m). Distance silhouette darkened
+and flattened (`uSilDark` 0.58 -> 0.44, `uSilFlat` 0.62 -> 0.85).
+
+`wdrive --km 6 --offroad`, before -> after: motion median gap **3.1 s -> 1.9 s**,
+p90 32.9 -> 29.0, episodes 39 -> 45. Within-70 m 17.4% -> 16.6%. No `perKm2` and
+no `live` cap touched.
+
+**The lesson is the recurring one on this project.** W2's measurement was sound
+and its conclusion ("not density") was correct and useful, but I reached for an
+art explanation — 16 px is small — for a symptom whose cause was a state machine
+comparing two different quantities. The instrument could not see it because
+`wdrive` counts animals in frame and cannot see that one of them has not moved
+in ninety seconds. Worth remembering that "the measurement rules out X" does not
+mean "therefore Y", when Y was the next thing I happened to think of.
+
+## Gate, verified independently at lower ambient load
+
+`dprtest --dpr 2 --w 1170 --h 870 --seconds 26 --gate`: **PASS**, p50 18.6 ms,
+p95 40.1, settled 57.5 fps, at load 6.95 with 9 Chromium processes. The wildlife
+author's standalone run failed at p95 49.7 under load 11 / 69 processes, and
+their back-to-back A/B against `3003973` (baseline FAIL 48.8, theirs PASS 41.3)
+correctly identified that as ambient. Confirmed.
+
+## Housekeeping
+
+Four stale snapshot copies of the cover modules had appeared in `src/wildlife/`
+(`GroundCover.js`, `cover_forms.js`, `cover_material.js`, `cover_scatter.js`).
+Nothing imported them, one was byte-identical to `src/shaders/cover_material.js`,
+and the live `src/vegetation/` versions were strictly further along. Moved to the
+scratchpad rather than deleted, since their author is still running.
