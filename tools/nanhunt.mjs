@@ -43,6 +43,8 @@ const closeBrowser = async () => { try { await browser.close(); } catch { /* alr
 process.on('exit', () => { browser.close().catch(() => {}); });
 process.on('SIGINT', async () => { await closeBrowser(); process.exit(130); });
 process.on('SIGTERM', async () => { await closeBrowser(); process.exit(143); });
+let out;
+try {
 const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
 page.on('pageerror', (e) => console.log('PAGEERROR', String(e.message).slice(0, 200)));
 await page.routeWebSocket(new RegExp(`^wss?://(localhost|127\\.0\\.0\\.1):${PORT}/`), () => {});
@@ -54,10 +56,22 @@ await page.waitForTimeout(1500);
 const pre = arg('eval', null);
 if (pre) await page.evaluate((src) => eval(src), pre);
 
-const out = await page.evaluate(async ({ SECONDS, BISECT }) => {
+out = await page.evaluate(async ({ SECONDS, BISECT }) => {
   const e = window.__engine, ctx = window.__ctx, r = e.renderer, pf = ctx.postfx;
   const S = window.__systems ?? ctx.systems ?? {};
   const input = ctx.input;
+
+  // Sample UPSTREAM of the HDR sanity pass.
+  //
+  // This is not optional and it is easy to get wrong: composer.inputBuffer
+  // after a full render holds the sanitised buffer, so with the guard on, this
+  // tool reports a clean run even when a material is emitting NaN on every
+  // frame — verified, 0/943 with the camper bug deliberately reintroduced. The
+  // guard's job is to stop a source becoming a black square; this tool's job is
+  // to find the source. Leaving it on would turn the regression test into a
+  // test of the guard.
+  const hadSanity = pf.sanity ? pf.sanity.enabled : null;
+  if (pf.sanity) pf.sanity.enabled = false;
 
   // Half-float: exponent all ones is Inf or NaN. This is the cause the black
   // square is the symptom of, so it is what gets counted.
@@ -149,17 +163,23 @@ const out = await page.evaluate(async ({ SECONDS, BISECT }) => {
     step();
   });
   window.__nanDrive = false;
+  if (pf.sanity && hadSanity !== null) pf.sanity.enabled = hadSanity;
   return { n: P.n, hits: P.hits, worst: P.worst, events: P.events,
-    rt: [bw, bh], systems: Object.keys(S) };
+    rt: [bw, bh], systems: Object.keys(S), sanityFound: !!pf.sanity };
 }, { SECONDS, BISECT });
+} finally {
+  await closeBrowser();
+}
 
 console.log(`\nnanhunt — driving, port ${PORT}, ${W}x${H}, HDR buffer ${out.rt.join('x')}`);
+console.log(out.sanityFound
+  ? 'sampled with the HDR sanity pass disabled, so sources are visible rather than masked'
+  : 'WARNING: no postfx.sanity pass found — the HDR guard is missing from the post chain');
 console.log(`frames sampled: ${out.n}`);
 console.log(`frames with a non-finite HDR pixel: ${out.hits}  (${(100 * out.hits / Math.max(1, out.n)).toFixed(2)}%)   worst channel count: ${out.worst}`);
 for (const ev of out.events) {
   console.log(`\n  t=${ev.t}s  bad=${ev.bad}  first at ${ev.at.join(',')}  cam ${ev.cam.join(',')}  reproduced-on-rerender=${ev.reproduced}`);
   for (const [l, v] of ev.trials) console.log(`      ${String(l).padEnd(18)} ${v}`);
 }
-await browser.close();
 if (out.hits) { console.log('\nFAIL: non-finite pixels reached the HDR buffer.'); process.exit(1); }
 console.log('\nclean: no non-finite pixel in any sampled frame.');

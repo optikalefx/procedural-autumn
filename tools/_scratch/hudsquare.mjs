@@ -26,9 +26,17 @@ const HUD = !has('nohud');
 const DRIVE = has('drive');
 
 await acquire('perf');
+// --headed uses the real browser rendering path. The window is parked far
+// off-screen and never fronted — this machine belongs to somebody.
 const browser = await chromium.launch({ headless: !has('headed'), args: [
   '--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist',
-  '--enable-gpu-rasterization', '--disable-frame-rate-limit'] });
+  '--enable-gpu-rasterization', '--disable-frame-rate-limit',
+  ...(has('headed') ? [`--window-position=-4000,-4000`, `--window-size=${W},${H}`] : [])] });
+const closeBrowser = async () => { try { await browser.close(); } catch { /* already gone */ } };
+process.on('exit', () => { browser.close().catch(() => {}); });
+process.on('SIGINT', async () => { await closeBrowser(); process.exit(130); });
+process.on('SIGTERM', async () => { await closeBrowser(); process.exit(143); });
+try {
 const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
 const helper = await browser.newPage();
 await helper.goto('about:blank');
@@ -63,7 +71,6 @@ let mouseAlive = true;
     await new Promise((r) => setTimeout(r, 120)); }
 })();
 
-await page.bringToFront();
 const cdp = await page.context().newCDPSession(page);
 const frames = [];
 cdp.on('Page.screencastFrame', async (p) => { frames.push(p.data);
@@ -118,4 +125,6 @@ console.log(`black rectangles: ${bad.length} / ${res.length} frames  (${(100 * b
 for (const b of bad.slice(0, 10)) console.log('   ', JSON.stringify(b));
 const worst = res.slice().sort((a, b2) => b2.frac - a.frac).slice(0, 4);
 console.log('darkest frames seen:'); for (const w of worst) console.log('   ', JSON.stringify(w));
-await browser.close();
+} finally {
+  await closeBrowser();
+}

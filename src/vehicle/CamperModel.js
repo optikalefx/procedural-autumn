@@ -44,6 +44,52 @@ const GLASS_INSET = 0.05;
 
 const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 
+/**
+ * Give every vertex a normal a shader can normalize().
+ *
+ * THIS IS THE BLACK-SQUARE FIX. The camper is built by merging a few hundred
+ * primitives, and some of them meet at an edge or a corner that collapses —
+ * RoundedBoxGeometry with a radius clamped against a thin dimension is the main
+ * producer. Those triangles have zero area, so their cross product is zero, and
+ * computeVertexNormals() leaves the result as a *zero-length* normal rather than
+ * failing: three's normalizeNormals() divides by `length() || 1`, which quietly
+ * turns 0/0 into (0,0,0) on the CPU instead of NaN. Nothing complains.
+ *
+ * The GPU is not so forgiving. three's fragment prelude does
+ * `normalize( vNormal )`, and normalize(vec3(0.0)) is 0.0/0.0 — NaN. Every
+ * lighting term for that fragment is then NaN, it lands in the HDR buffer, and
+ * the bloom mip chain averages it outward into the ~800 px black square the
+ * player has been seeing (see PostFX MIN_BLOOM_MIP for the amplification).
+ *
+ * Zero-area triangles cannot cover a sample point in exact arithmetic, which is
+ * why this is intermittent rather than constant: the vertices are degenerate in
+ * the float64 the CPU computed them in, but the GPU re-derives clip-space
+ * positions in float32 through a model matrix that changes every frame while
+ * driving, and the rounding occasionally gives the triangle a sliver of area.
+ * Measured on a 150 s drive: 36 frames carried a non-finite HDR pixel, all of
+ * them from the camper, and repairing these normals in the same frame took it
+ * to zero every time (tools/_scratch/normpair.mjs).
+ *
+ * The replacement direction is arbitrary on purpose. These triangles are
+ * invisible; the only thing that matters is that the value is finite, so this
+ * cannot change how any pixel that was already correct is shaded.
+ */
+function sanitizeNormals(g) {
+  const n = g.getAttribute('normal');
+  if (!n) return 0;
+  const a = n.array;
+  let fixed = 0;
+  for (let i = 0; i < a.length; i += 3) {
+    const x = a[i], y = a[i + 1], z = a[i + 2];
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) &&
+        x * x + y * y + z * z > 0) continue;
+    a[i] = 0; a[i + 1] = 1; a[i + 2] = 0;
+    fixed++;
+  }
+  if (fixed) n.needsUpdate = true;
+  return fixed;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Part accumulator: collects transformed geometry per material key and merges.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +126,7 @@ class Parts {
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     g.deleteAttribute('normal');
     g.computeVertexNormals();
+    sanitizeNormals(g);
     if (!this.bins.has(key)) this.bins.set(key, []);
     this.bins.get(key).push(g);
     return this;

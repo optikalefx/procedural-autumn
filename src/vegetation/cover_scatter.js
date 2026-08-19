@@ -336,8 +336,12 @@ export class CoverScatter {
     n = this._layerDeadfall(cx, cz, S, band, out, n, cap);
     if (band <= 1) n = this._layerUnderstory(cx, cz, S, out, n, cap);
     if (band <= 0) n = this._layerFlowers(cx, cz, S, out, n, cap);
-    if (band <= 0) n = this._layerGround(cx, cz, S, out, n, cap);
+    // Skirt before substrate. Both want the same near-field budget, and if one
+    // of them has to be cut short it must be the grit: a tree with no clumps at
+    // its foot reads as a post pushed into a lawn, which is a structural defect,
+    // where a square metre with four pebbles instead of six is not.
     n = this._layerTreeSkirt(cx, cz, S, band, out, n, cap);
+    if (band <= 0) n = this._layerGround(cx, cz, S, out, n, cap);
     return n;
   }
 
@@ -381,12 +385,22 @@ export class CoverScatter {
       if (g < 0.20) continue;
 
       const acc = smoothstep(-0.50, 0.50, N.fbm(x * 0.045 + 17.3, z * 0.045 + 91.7, 2, 2.2, 0.5, 1));
+
+      const w = W.getSurfaceWeights(x, z, this._w);
+      // How bare this spot is. The surface weights are read before the accept
+      // roll rather than after it, and that ordering is the point: the whole
+      // reason this layer exists is the *bare* ground, and until now it was
+      // spread at one density over grass and clay alike. So the places that
+      // needed it most — the river bank, the roadside, the dirt shoulders —
+      // got exactly the same dusting as a meadow that already had a full grass
+      // carpet hiding it. `river` measured as half a frame of open clay with
+      // seventy stones on it for precisely that reason.
+      const bare = clamp01(1 - w.grass * 1.15) * (1 - clamp01(w.snow * 2));
       // Floor raised: the accumulation field is there to make hollows richer
       // than ridges, not to leave whole stretches of ground with nothing on
       // them at all — a swept ridge in the plates still has grit and straw.
-      if (rng() > clamp01(0.66 + acc * 0.56) * g) continue;
+      if (rng() > clamp01((0.60 + acc * 0.50) * (1 + bare * 1.15)) * g) continue;
 
-      const w = W.getSurfaceWeights(x, z, this._w);
       const moist = W.getMoisture(x, z);
       const slope = W.getSlope(x, z);
       const can = this._canopyAt(x, z);
@@ -402,7 +416,7 @@ export class CoverScatter {
       // while stone and leaf sat at a quarter of theirs. It is also the weakest
       // of the three: it sits inside the meadow's own gold, so it adds texture
       // but no value or hue break, and the slab it is covering is gold too.
-      const wStraw = (0.34 + (1 - moist) * 0.55) * (1 - clamp01(can * 0.75));
+      const wStraw = (0.34 + (1 - moist) * 0.55 + bare * 0.55) * (1 - clamp01(can * 0.75));
       // Moss needs shade *and* damp, not either. On its own the moisture term
       // was putting green cushions all over the open river clay, where they had
       // nothing to grow on and read as loose green cards lying on bare dirt —
@@ -410,59 +424,105 @@ export class CoverScatter {
       // against something: a trunk, a log, the shaded side of a stone.
       const wMoss  = Math.max(0, moist - 0.55) * 2.2 * clamp01(can * 1.6 + 0.10)
                    + can * 0.35 - road * 1.0;
-      const wTwig  = 0.10 + can * 0.80 + lit * 0.35;
+      // Halved on open ground. Twigs are the only thing in this layer that
+      // renders as a *line*, and a line on a flat gold slab is read as a
+      // scratch on the picture long before it is read as wood. Under a canopy
+      // they still belong; out in the meadow they were the loudest thing in a
+      // 2 m frame at a twentieth of the instance count.
+      const wTwig  = 0.045 + can * 0.60 + lit * 0.30;
       const total = Math.max(1e-4, wStone + wLeaf + wStraw + wMoss + wTwig);
 
       // Clump size runs with the accumulation field rather than sitting in a
       // narrow band, so a swept ridge gets three or four scattered pieces and a
       // hollow gets a proper drift of twenty. Even spacing at a fixed count is
       // the anti-pattern; the variance is the point.
-      const members = 3 + ((rng() * (5 + acc * 15)) | 0);
-      const spread = 0.4 + rng() * (1.1 + acc * 2.6);
+      const members = 3 + ((rng() * (5 + acc * 13 + bare * 9)) | 0);
+      // Tightened by roughly half. A twenty-member clump spread over a 3.7 m
+      // radius is not a clump, it is a dusting with a soft edge — which is
+      // exactly what the river bank measured as: "~70 identical pebbles with no
+      // clumping". The accumulation field still widens it, but a drift now
+      // lands inside a metre or two and leaves real gaps between drifts, which
+      // is the only way a scatter reads as weather rather than as noise.
+      const spread = 0.30 + rng() * (0.55 + acc * 1.45);
+
+      // ONE TYPE WINS PER CLUMP. Rolling the mix independently per member is
+      // what turned every drift into confetti: twenty pieces inside two metres,
+      // each independently a stone, a leaf, a straw mat or a twig, average to
+      // "some small brown things" wherever you stand, and the whole layer
+      // reads as one uniform noise field over the entire valley. The flower
+      // layer already knew this — "mixed confetti reads as a texture; a
+      // single-species drift reads as a plant that grew there" — and it is just
+      // as true of detritus. So the weights choose the clump's *character*
+      // once, and only a quarter of the members are drawn against the mix
+      // again, which is enough to keep a straw drift from being pure straw.
+      const pickKind = () => {
+        let roll = rng() * total;
+        if ((roll -= wStone) < 0) return 0;
+        if ((roll -= wLeaf) < 0) return 1;
+        if ((roll -= wStraw) < 0) return 2;
+        if ((roll -= wMoss) < 0) return 3;
+        return 4;
+      };
+      // …except that a twig can never *lead* a clump. Only one stick is allowed
+      // per clump (see below), so a twig-led clump would skip three quarters of
+      // its own members and leave a hole in the ground exactly where the field
+      // said to put something.
+      let lead = pickKind();
+      if (lead === 4) lead = wStone > wStraw ? 0 : 2;
       // One stick per clump, at most. A clump can run to twenty members inside a
       // 2 m radius, and three or four sticks landing in one is a star of thin
       // dark strips radiating from a point — the same "scratches on the lens"
       // read the straw mats had, arrived at from the other direction.
       let sticks = 0;
+      // A stone drift gets exactly one big stone, and it is the first member —
+      // placed at the centre, with the grit landing around it. That is the
+      // difference between a size *hierarchy* and a size *range*: a range gives
+      // you seventy stones of assorted sizes evenly spaced, which measures as
+      // varied and reads as uniform, because there is nothing for the eye to
+      // group the small ones around.
+      let bigStone = false;
       for (let m = 0; m < members && n < cap; m++) {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
-        const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;
+        const mx = m === 0 ? x : x + Math.cos(ang) * r;
+        const mz = m === 0 ? z : z + Math.sin(ang) * r;
         if (this._groundTiny(mx, mz) < 0.20) continue;
 
-        let roll = rng() * total;
-        if ((roll -= wStone) < 0) {
+        const kind = rng() < 0.76 ? lead : pickKind();
+        if (kind === 0) {
           // Power law over the three stone tiers. Grit is the common case and
           // a cobble is a once-in-a-while event, which is what gives a stony
           // stretch a readable size hierarchy instead of a uniform grade.
-          const t = rng();
+          const anchor = !bigStone && m === 0 && rng() < 0.62;
+          if (anchor) bigStone = true;
+          const t = anchor ? 0.90 + rng() * 0.10 : rng() * 0.86;
           n = this._emit(out, n, cap, t < 0.86 ? 'pebble' : 'cobble', mx, mz, rng, {
             colA: PAL.stoneDeep, colB: PAL.stoneLit, sink: 0.02,
             variant: t < 0.58 ? 0 : t < 0.86 ? 1 : (t < 0.96 ? 0 : 1),
             // Squared, so within a tier most stones sit near the bottom of its
             // range and only a few reach the top. A flat scale range is what
             // produced the measured "every stone within ±30% of the same size".
-            scale: 0.55 + rng() * rng() * 1.05, tone: 0.86 + rng() * 0.28,
-            hue: 0.020, flat: true,
+            scale: (anchor ? 0.85 + rng() * 0.75 : 0.50 + rng() * rng() * 0.95),
+            tone: 0.86 + rng() * 0.28, hue: 0.020, flat: true,
           });
-        } else if ((roll -= wLeaf) < 0) {
+        } else if (kind === 1) {
           // Weighted to the rust and crimson end rather than the gold. A
           // fallen leaf that is *lighter* than the meadow it lies on reads as
           // paper confetti at 2 m; the reference's litter is always a step
           // down in value from the ground and a step round toward red.
           const warm = rng();
           n = this._emit(out, n, cap, 'leafScatter', mx, mz, rng, {
-            colA: warm < 0.62 ? PAL.litterWarm : PAL.litterRed,
+            colA: warm < 0.82 ? PAL.litterWarm : PAL.litterRed,
             colB: warm < 0.40 ? PAL.litterRed : PAL.litterGold,
             sink: 0.01, scale: 0.65 + rng() * rng() * 1.10,
             tone: 0.90 + rng() * 0.24, hue: 0.028, flat: true,
           });
-        } else if ((roll -= wStraw) < 0) {
+        } else if (kind === 2) {
           n = this._emit(out, n, cap, 'deadTuft', mx, mz, rng, {
             colA: PAL.strawDeep, colB: PAL.strawPale, sink: 0.01,
-            scale: 0.65 + rng() * rng() * 1.30, tone: 0.90 + rng() * 0.24,
+            scale: 0.70 + rng() * rng() * 0.80, tone: 0.90 + rng() * 0.24,
             hue: 0.022, flat: true,
           });
-        } else if ((roll -= wMoss) < 0) {
+        } else if (kind === 3) {
           n = this._emit(out, n, cap, 'moss', mx, mz, rng, {
             colA: PAL.mossDeep, colB: PAL.moss, sink: 0.01,
             scale: 0.7 + rng() * 0.8, tone: 0.88 + rng() * 0.22, hue: 0.03,
@@ -669,7 +729,10 @@ export class CoverScatter {
     const W = this.world, N = this.noise;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_UNDER);
-    const sites = Math.round(20 * this.mul);
+    // 36 rather than 20. The forest floor measured as bare violet substrate
+    // between grass tufts, and at 20 sites a 2304 m2 cell placed one fern bed
+    // every 30 m of walking.
+    const sites = Math.round(36 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_UNDER, key) * 4294967296) >>> 0);
@@ -686,8 +749,8 @@ export class CoverScatter {
       d *= g;
       if (rng() > d * 1.3) continue;
 
-      const members = 2 + ((rng() * 4.5) | 0);
-      const spread = 1.1 + rng() * 2.6;
+      const members = 2 + ((rng() * 6.0) | 0);
+      const spread = 0.9 + rng() * 2.1;
       // Bronzing runs by patch, so a whole bed turns colour together.
       const bronze = N.fbm(x * 0.012 + 5.0, z * 0.012 + 9.0, 2, 2, 0.5, 1);
       for (let m = 0; m < members && n < cap; m++) {

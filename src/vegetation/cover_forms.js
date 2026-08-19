@@ -153,6 +153,10 @@ function frond(b, o) {
   let ang = o.tilt ?? 0.4;                       // radians from vertical
   const step = o.len / segs;
   let pl = -1, pr = -1;
+  // The tilt angle that carries the strip from the previous ring to this one.
+  // The quad's *geometric* normal is fixed by that tangent; the stored normal
+  // is not. See the winding note below.
+  let segAng = ang;
 
   for (let s = 0; s <= segs; s++) {
     const t = s / segs;
@@ -191,8 +195,35 @@ function frond(b, o) {
     // and the straw mats. It is why the scrub bush measured as "the darkest
     // object in every frame it appears in", and it is almost certainly why the
     // palette in cover_scatter had to be lifted 1.8x to be visible at all.
-    if (s > 0) b.quad(pr, r, l, pl);
+    //
+    // SECOND CORRECTION, and this is the half the first fix missed. Flipping
+    // the quad made the winding agree with the stored normal *for an upright
+    // spray only*. The strip's true normal is `G = (dirx·cos a, −sin a,
+    // dirz·cos a)`, and what gets stored is `FROND_OUT·G + FROND_UP·ŷ`. So
+    //
+    //     dot( G , stored ) = FROND_OUT − FROND_UP · sin a
+    //
+    // which goes negative once `sin a > 0.55/0.85`, i.e. past about 40° of
+    // tilt. Beyond that the artistic up-lift has carried the normal across the
+    // strip's own plane and out the other side, so a fixed winding cannot
+    // agree with it — the surface is unlit from both sides again, exactly as
+    // before, and only on the forms that droop.
+    //
+    // That is precisely the set the audit still flagged: `deadTuft` lays its
+    // straw past horizontal (tilt 1.34–1.64) and scored 0%, `fern` arches its
+    // fronds to the 2.35 cap and scored 12%. It was also quietly costing a
+    // quarter of every shrub, whose `leafShell` blades tilt 0.30–0.92.
+    //
+    // The lift is right — a straw lying flat on the ground *should* shade as
+    // if it faces the sky, and that is the whole reason a mat of it reads as
+    // ground texture rather than as a pile of edge-on slivers. So the winding
+    // follows the normal rather than the other way round.
+    if (s > 0) {
+      if (FROND_OUT - FROND_UP * Math.sin(segAng) >= 0) b.quad(pr, r, l, pl);
+      else b.quad(pl, l, r, pr);
+    }
     pl = l; pr = r;
+    segAng = ang;
     px += dirx * Math.sin(ang) * step;
     pz += dirz * Math.sin(ang) * step;
     py += Math.cos(ang) * step;
@@ -461,21 +492,50 @@ function buildShrubDark(rng) {
   // actually paint: a shrub there is a cluster of small dark marks with a
   // bitten edge, not a solid with facets. Same triangle budget, spent on the
   // part of the form the player can resolve.
-  const crowns = 5 + ((rng() * 2) | 0);
+  //
+  // THIRD CORRECTION, and it reverses part of the second. Measuring the
+  // reference rather than reasoning about it: crop plate 1 at the birch bases
+  // and plate 2 at the river bank and a low bush there is a *dense cluster of
+  // small rounded lobes* — overlapping florets with bright tops, dark flanks
+  // and near-black pockets between them, ragged at the edge. It is not a cloud
+  // of blades over nothing. Retreating the armature to "interior" left ninety
+  // blades carrying the whole silhouette, each one 10-20 px on a 90 px bush,
+  // and a hundred separate marks with gold showing between them is precisely
+  // the "faceted scribble" the critic named.
+  //
+  // So the split changes: the florets are the mass and are meant to be seen,
+  // and the blades come *down* to a size where they read as texture on that
+  // mass rather than as the mass itself. Two things keep the florets from
+  // reading as the folded card they did last time — there are twelve rather
+  // than six, so no single 8-face lobe is a large share of the outline; and
+  // the rise runs in spiral order rather than being drawn at random, which
+  // fills a dome evenly instead of clumping two thirds of them into one height
+  // band and leaving a ring.
+  const crowns = 10 + ((rng() * 4) | 0);
   for (let i = 0; i < crowns; i++) {
-    const a = i * 2.39996 + rng() * 0.5;
-    // Biased low: most of the mass is the broad body near the ground, and the
-    // last one or two crowns ride up on the shoulder and break the top line.
-    const rise = Math.pow(rng(), 0.75);
-    const r = w * (0.05 + 0.26 * rise) * (0.70 + rng() * 0.60);
-    const sz = w * (0.185 - 0.07 * rise) * (0.80 + rng() * 0.44);
-    lobe(b, Math.cos(a) * r, h * (0.24 + 0.42 * rise), Math.sin(a) * r,
-         sz, sz * (0.72 + rng() * 0.34) * (h / w), sz * (0.84 + rng() * 0.36),
+    const a = i * 2.39996 + rng() * 0.55;
+    const rise = Math.pow((i + 0.35) / crowns, 0.60);
+    // Radius closes with height so the silhouette is a dome. The previous
+    // ordering widened with height, which is a bowl, and a bowl seen from a
+    // standing camera shows its inside.
+    const r = w * (0.30 - 0.17 * rise) * (0.45 + rng() * 1.05);
+    const sz = w * (0.205 - 0.065 * rise) * (0.84 + rng() * 0.34);
+    lobe(b, Math.cos(a) * r, h * (0.17 + 0.56 * rise), Math.sin(a) * r,
+         sz, sz * (0.74 + rng() * 0.30) * (h / w), sz * (0.86 + rng() * 0.30),
          0, rng,
-         { chan: 0.03 + rise * 0.50 + rng() * 0.16,
-           trans: 0.34 + rise * 0.30, ragged: 0.44, lift: 0.08 + rise * 0.54 });
+         { chan: 0.02 + rise * 0.62 + rng() * 0.20,
+           trans: 0.32 + rise * 0.34, ragged: 0.46,
+           // Per-floret normal bias is where the interior value range actually
+           // comes from. The palette pair is deliberately narrow, so albedo
+           // cannot supply it; what can is adjacent faces landing in different
+           // bands of the global quantised diffuse response, and `lift` is the
+           // one parameter that moves a whole floret across a band boundary.
+           lift: 0.04 + rise * 0.64 });
   }
-  leafShell(b, h, w, 98, rng, 0.14, { len: 0.158, wide: 0.060, inset: 0.86 });
+  // Half the length, six tenths the width, a third more of them. On a 1.2 m
+  // bush these come out 7-15 cm — a mark, not a leaf — which is the scale the
+  // plates paint and roughly half what was there.
+  leafShell(b, h, w, 112, rng, 0.12, { len: 0.086, wide: 0.036, inset: 0.94, tilt: 0.24 });
   skirt(b, w, rng, 6, 0.0);
   return b.finish(h);
 }
@@ -491,20 +551,25 @@ function buildShrubBerry(rng) {
   // ball. Fewer, slightly larger crowns than the dark shrub — an autumn berry
   // bush is rangier — and the colour turn runs by crown rather than by patch,
   // so a whole shoulder goes over to the accent at once.
-  const crowns = 5 + ((rng() * 2) | 0);
+  // Follows `shrubDark`'s third correction: ordered rise up a golden-angle
+  // spiral so the florets fill a dome rather than a band, a radius that closes
+  // with height, and marks small enough to be texture on the mass instead of
+  // the large flat plates that made this one read as folded dark-red card
+  // beside the dark shrub in `meadow`.
+  const crowns = 9 + ((rng() * 4) | 0);
   for (let i = 0; i < crowns; i++) {
     const a = i * 2.39996 + rng() * 0.6;
-    const rise = Math.pow(rng(), 0.70);
-    const rr = w * (0.05 + 0.26 * rise) * (0.70 + rng() * 0.60);
-    const sz = w * (0.195 - 0.07 * rise) * (0.80 + rng() * 0.44);
-    lobe(b, Math.cos(a) * rr, h * (0.24 + 0.46 * rise), Math.sin(a) * rr,
+    const rise = Math.pow((i + 0.35) / crowns, 0.58);
+    const rr = w * (0.31 - 0.17 * rise) * (0.45 + rng() * 1.05);
+    const sz = w * (0.215 - 0.065 * rise) * (0.84 + rng() * 0.34);
+    lobe(b, Math.cos(a) * rr, h * (0.17 + 0.58 * rise), Math.sin(a) * rr,
          sz, sz * (0.74 + rng() * 0.32) * (h / w), sz * (0.84 + rng() * 0.34),
          0, rng,
-         { chan: rng() < 0.34 ? 0.55 + rng() * 0.30 : 0.05 + rise * 0.28,
-           trans: 0.55 + rise * 0.35, ragged: 0.44, lift: 0.08 + rise * 0.52 });
+         { chan: rng() < 0.34 ? 0.55 + rng() * 0.30 : 0.03 + rise * 0.40,
+           trans: 0.55 + rise * 0.35, ragged: 0.46, lift: 0.05 + rise * 0.60 });
   }
-  leafShell(b, h, w, 72, rng, 0.08, { len: 0.150, wide: 0.056, inset: 0.86 });
-  leafShell(b, h, w, 34, rng, 0.52, { len: 0.130, wide: 0.050, inset: 0.90 });
+  leafShell(b, h, w, 80, rng, 0.08, { len: 0.084, wide: 0.034, inset: 0.94, tilt: 0.24 });
+  leafShell(b, h, w, 34, rng, 0.52, { len: 0.076, wide: 0.032, inset: 0.96, tilt: 0.24 });
   // Berry knots, fully accent, and small enough to read as a fleck rather than
   // as a facet. Tucked *into* the crowns, not perched on the outside.
   for (let i = 0; i < 5; i++) {
@@ -572,7 +637,10 @@ function buildThicket(rng) {
          i === 0 ? 1 : 0, rng,
          { chan: rng() * 0.35, trans: 0.85, ragged: 0.40, lift: 0.36 });
   }
-  leafShell(b, h, w, 78, rng, 0.30, { wide: 0.052, len: 0.155, inset: 0.88 });
+  // Same mark scale as the two shrubs. A thicket is bigger, so a blade sized
+  // as a fraction of *its* width was a 40 cm plate — the widest flat facet in
+  // the layer, on the archetype with the longest visibility radius.
+  leafShell(b, h, w, 118, rng, 0.30, { wide: 0.034, len: 0.090, inset: 0.94, tilt: 0.26 });
   skirt(b, w, rng, 5, 0.10);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {
@@ -988,8 +1056,8 @@ function buildLeafScatter(rng, variant) {
  */
 function buildDeadTuft(rng, variant) {
   const b = new Builder();
-  const n = (variant === 1 ? 9 : 12) + ((rng() * 6) | 0);
-  const R = 0.26 + rng() * 0.30;
+  const n = (variant === 1 ? 13 : 17) + ((rng() * 7) | 0);
+  const R = 0.20 + rng() * 0.22;
 
   // REBUILT — this was the starburst. Spreading the origins along the radius
   // was not enough, because the *yaw* still came from the same angular sweep:
@@ -1017,7 +1085,15 @@ function buildDeadTuft(rng, variant) {
       tilt: 1.34 + rng() * 0.30,
       // Narrow. At 0.012-0.031 the serrated base ring came out 16 cm wide
       // after instance scale, and a 16 cm wide flat strip is a wood chip.
-      len: R * (0.16 + 1.05 * rng() * rng()), w: 0.007 + rng() * 0.011,
+      // SHORTENED, and this is the defect the 2 m road frame led with. The
+      // width was fixed last round; the *length* was not, and `R * 1.21` at an
+      // instance scale of up to 1.95 put 1.3 m strands on open ground. A 1.3 m
+      // strand two centimetres wide is not straw, it is a lath — and the frame
+      // showed a dozen of them lying at angles across the track like dropped
+      // timber. The mat needs to be many short pieces, because what it is for
+      // is *texture*: one long piece is an object, twenty short ones are a
+      // surface. Same triangle order, spent on count instead of reach.
+      len: R * (0.20 + 0.58 * rng() * rng()), w: 0.006 + rng() * 0.008,
       segs: 1, droop: 0.10, taper: 0.60,
       chanA: 0.05, chanB: 1.0,
       aoA: 0.52 + rng() * 0.34, aoB: 0.95, swayA: 0.05, trans: 0.8,
@@ -1042,8 +1118,12 @@ function buildDeadTuft(rng, variant) {
 function buildBranch(rng, variant) {
   const b = new Builder();
   const big = variant === 1;
-  const len = big ? 0.85 + rng() * 0.95 : 0.34 + rng() * 0.52;
-  const r = (big ? 0.030 : 0.015) + rng() * 0.019;
+  const len = big ? 0.70 + rng() * 0.62 : 0.30 + rng() * 0.42;
+  // Thickened by about a fifth. At the previous radius a short stick on open
+  // ground projected to a one-pixel dark line — the critic's "thin black twig
+  // hairlines" in `drive` — which reads as a scratch on the frame rather than
+  // as wood, and no amount of albedo fixes a line that thin.
+  const r = (big ? 0.035 : 0.019) + rng() * 0.022;
   // Built *centred on the origin and sagging through it*: the middle rides a
   // little above the surface and both ends finish below y = 0.
   //
@@ -1102,6 +1182,26 @@ function buildBranch(rng, variant) {
 //  `shadow` casts into the sun's shadow map. `recv` is **false everywhere**,
 //  and that is a bug fix, not a style choice.
 //
+//  IT WAS NOT FALSE EVERYWHERE. `shrubDark`, `thicket`, `log` and `stump` were
+//  carrying `recv: true` under this exact paragraph, and the note below —
+//  written when the flag was turned off — was left describing a state the table
+//  no longer had. The four that kept it are also the four with `shadow: true`,
+//  which is the worst possible pairing: a form that writes itself into the
+//  shadow map and then samples it is guaranteed to sit inside its own penumbra.
+//
+//  What that looked like is the critic's blocker 15. Zooming `meadow` on the
+//  named pixels shows a shrub whose upper shoulder is a correct mid-green and
+//  whose lower two thirds is a flat `#2a2d1e` hole with a hard, curved edge
+//  between them — the outline of the plant's own shadow lying across itself,
+//  not a lack of interior form. It was read as "no internal value range"
+//  because the range that was there was one lit cap over one black body.
+//
+//  Turning it off costs something real and it is worth saying plainly: a bush
+//  standing inside a tree's shadow band is now lit as though it were in the
+//  sun. Against that, every one of them was previously black in full sunlight.
+//  The trade only stops being right if the sun's `shadow.normalBias` is raised
+//  (logged in docs/INTEGRATION_REQUESTS.md); until then, cast yes, receive no.
+//
 //  Every mesh in this layer used to do both, and the result was that shrubs,
 //  logs, stumps and scrub rendered as flat, hueless, near-black silhouettes
 //  with no normal response at all — the exact pathology the critic measured
@@ -1134,20 +1234,20 @@ function buildBranch(rng, variant) {
 //  boxy blobs. The closed forms (stones, logs) stay front-sided.
 
 export const COVER_ARCHETYPES = [
-  { key: 'shrubDark',   variants: 3, card: true,  cap: 380, vis: 175, band: 3, recv: true , wind: 0.030, shadow: true,  build: buildShrubDark },
+  { key: 'shrubDark',   variants: 3, card: true,  cap: 330, vis: 145, band: 3, recv: false, wind: 0.030, shadow: true,  build: buildShrubDark },
   { key: 'shrubBerry',  variants: 2, card: true,  cap: 130, vis: 155, band: 2, recv: false, wind: 0.032, shadow: false,  build: buildShrubBerry },
   { key: 'scrubDry',    variants: 3, card: true,  cap: 700, vis: 55,  band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
-  { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: true , wind: 0.055, shadow: true,  build: buildThicket },
-  { key: 'fern',        variants: 2, card: true,  cap: 620, vis: 54,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
+  { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: false, wind: 0.055, shadow: true,  build: buildThicket },
+  { key: 'fern',        variants: 2, card: true,  cap: 950, vis: 44,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
   { key: 'broadleaf',   variants: 2, card: true,  cap: 640, vis: 32,  band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
-  { key: 'moss',        variants: 2, card: true,  cap: 640, vis: 30,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss },
+  { key: 'moss',        variants: 2, card: true,  cap: 440, vis: 26,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss },
   { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 42,  band: 0, recv: false, wind: 0.055, shadow: false, build: buildFlowerAster },
   { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 44,  band: 0, recv: false, wind: 0.065, shadow: false, build: buildGoldenrod },
   { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 44,  band: 0, recv: false, wind: 0.085, shadow: false, build: buildSeedHead },
   { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, recv: false, wind: 0.006, shadow: false, build: buildLeafDrift },
-  { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, recv: true , wind: 0.000, shadow: true,  build: buildLog },
-  { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, recv: true , wind: 0.000, shadow: true,  build: buildStump },
-  { key: 'branch',      variants: 2, card: false, cap: 420, vis: 54,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
+  { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildLog },
+  { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildStump },
+  { key: 'branch',      variants: 2, card: false, cap: 300, vis: 50,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
   // The substrate tier. Caps raised hard and radii pulled in, and the two move
   // together on purpose: what the eye reads is *density*, which is cap over
   // π·vis², and the previous numbers bought 800 stones spread over 5000 m² —

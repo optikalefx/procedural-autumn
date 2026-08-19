@@ -39,7 +39,15 @@ const REPACK_MOVE = 12;          // metres of camera travel before a repack
 // ground-substrate layer now aims at roughly one clump every 3 m² with up to
 // twenty pieces in a clump, so the old 2200 was clipping the far half of every
 // cell — silently, and worst in exactly the dense hollows the layer exists for.
-const MAX_PER_CELL = 5600;
+//
+// 5600 was still clipping, and the diagnostic is unambiguous: seven of the nine
+// nearest band-0 cells came back holding exactly 5600 instances — the value of
+// this constant, which is what a truncation looks like. Every one of those
+// cells lost the tail of the ground layer and the whole of the tree skirt after
+// it, in the 50 m ring the player is actually looking at. The layer order below
+// now puts the structural skirt ahead of the substrate as well, so that if this
+// ever binds again it drops grit rather than the clumps at the foot of a tree.
+const MAX_PER_CELL = 8200;
 
 // One prevailing wind for the whole valley, matching the leaf-drift direction
 // in cover_scatter.js. Held constant so each instance's local sway axis can be

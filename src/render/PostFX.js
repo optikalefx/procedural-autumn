@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import {
-  EffectComposer, RenderPass, EffectPass, BloomEffect, SMAAEffect,
+  EffectComposer, RenderPass, EffectPass, ShaderPass, BloomEffect, SMAAEffect,
   DepthOfFieldEffect, VignetteEffect,
   Effect, BlendFunction, KernelSize,
 } from 'postprocessing';
@@ -522,6 +522,49 @@ const MIN_BLOOM_MIP = 12;
 // here rather than by re-darkening the haze, which would undo the hue work.
 const EXPOSURE = 0.88;
 
+// ── HDR sanity gate ──────────────────────────────────────────────────────────
+//
+// A structural backstop, not a fix for any particular bug. One non-finite
+// fragment anywhere in the scene is not a wrong pixel — the bloom mip chain
+// averages it outward roughly a texel per level while each level's texel is
+// twice as wide, so six levels turn it into a black square several hundred
+// pixels across. That is the difference between an invisible defect and one the
+// player calls immersion-breaking, and it has now cost three authors a hunt.
+//
+// This runs once, before anything that blurs, and replaces any non-finite or
+// absurd channel with zero. Cost is one full-screen half-float blit.
+//
+// Note the test is written as "is this value inside a sane range" and takes the
+// *failure* branch, rather than testing for badness directly. That is not a
+// style choice: every comparison against NaN is false, so `if ( c > BIG )` and
+// `if ( c != c )` are not equivalent, and the first one silently does nothing.
+// The same trap is why `if ( alpha < 0.004 ) discard;` never discards a NaN.
+const SANITY_FRAG = /* glsl */`
+uniform sampler2D inputBuffer;
+varying vec2 vUv;
+
+// Well below half-float max (65504) so an Inf, a NaN, or a value that would
+// overflow the buffer on the next multiply all fail together.
+const float SANE = 60000.0;
+
+float sane( float c ) {
+	return ( c >= -SANE && c <= SANE ) ? c : 0.0;
+}
+
+void main() {
+	vec4 c = texture2D( inputBuffer, vUv );
+	gl_FragColor = vec4( sane( c.r ), sane( c.g ), sane( c.b ), sane( c.a ) );
+}
+`;
+
+const SANITY_VERT = /* glsl */`
+varying vec2 vUv;
+void main() {
+	vUv = uv;
+	gl_Position = vec4( position.xy, 1.0, 1.0 );
+}
+`;
+
 export class PostFX {
   constructor(engine, quality = 'ultra') {
     this.engine = engine;
@@ -644,6 +687,21 @@ export class PostFX {
     // kernel then resolved each one as a hard white disc a few percent of frame
     // width across — the single most conspicuous artifact left in that view.
     // Defocusing first means the highlight is already spread when bloom sees it.
+    // Between the scene (plus AO) and everything that blurs. It has to be its
+    // own pass rather than the first effect in mainPass: bloom's mipmap blur
+    // reads the pass's input buffer directly in update(), not the chained
+    // inputColor, so an inline effect would sanitise the value bloom's own
+    // output is composited over and none of the values bloom actually samples.
+    this.sanity = new ShaderPass(new THREE.ShaderMaterial({
+      name: 'HdrSanityMaterial',
+      uniforms: { inputBuffer: { value: null } },
+      vertexShader: SANITY_VERT,
+      fragmentShader: SANITY_FRAG,
+      depthWrite: false,
+      depthTest: false,
+    }), 'inputBuffer');
+    this.composer.addPass(this.sanity);
+
     const effects = [];
     if (this.dof) effects.push(this.dof);
     effects.push(this.bloom, this.tone, this.vignette, this.grade, this.smaa);

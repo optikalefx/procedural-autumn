@@ -37,7 +37,16 @@ export function makeCoverUniforms() {
     uWindSpeed:    { value: 1.15 },
     // Backlight through a leaf. Generous, because it is only ever visible when
     // the camera is looking into the sun and the surface is turned away.
-    uTransmit:     { value: 1.00 },
+    //
+    // Raised from 1.00 after measuring what the terms actually multiply out to
+    // in the `backlit` frame. A shrub 40 deg off the sun axis takes
+    // `pow(0.77, 2.4) = 0.53` from the view term and about 0.31 from the
+    // surface term, so at 1.00 the whole effect was a 16% lift on the albedo —
+    // present in the buffer and invisible on screen, which is why the critic
+    // could write "no rim or translucency in the backlit frame" about a
+    // material that has a transmission term. The brief asks for glowing tips at
+    // golden hour and says to budget for it; 1.7 is what that costs.
+    uTransmit:     { value: 1.70 },
     // How dark the buried interior of a clump goes. Not zero — the brief is
     // explicit that shaded areas stay as tinted colour, never as holes.
     uAoDepth:      { value: 0.72 },
@@ -151,7 +160,7 @@ export function createCoverMaterial(uniforms, card = false) {
           float coverToward = clamp( dot( -coverV, uSunDir ), 0.0, 1.0 );
           float coverThru = clamp( 0.5 - 0.62 * dot( normalize( vCoverNW ), uSunDir ), 0.0, 1.0 );
           totalEmissiveRadiance += uSunColor * diffuseColor.rgb *
-            ( uTransmit * vCoverTrans * coverThru * pow( coverToward, 2.4 ) );
+            ( uTransmit * vCoverTrans * coverThru * pow( coverToward, 1.9 ) );
         }
       `);
   };
