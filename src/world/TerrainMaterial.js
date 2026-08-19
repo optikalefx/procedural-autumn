@@ -696,6 +696,12 @@ export function createTerrainMaterial(world, opts = {}) {
           float bZ = fbm(Pb + vec2(0.0, dP), 2);
           vec2 gxz = vec2(bX - b0, bZ - b0) * (BED_K / BED_E);
           bedG = vec3(gxz.x, 0.0, gxz.y);
+          // The riser is deliberately 43% of the band and not the 26% a smaller
+          // e would give. Tried at 0.150 with the amplitude rescaled to match:
+          // the flutes stopped reading as planes and started reading as
+          // scratches — thin bright lines on a grey face, which is the drawn
+          // contour note arriving a fourth way. The brief asks for broad flat
+          // masses separated by SOFT edges, and this is where that is bought.
           bedS = plateStep(b0 * BED_K, 0.215);
           // ── the anti-contour filter, and it is not optional ──────────────
           // A level set of a horizontal field is a closed curve, and near an
@@ -1427,7 +1433,37 @@ export function createTerrainMaterial(world, opts = {}) {
         float bedOn = gRockM * smoothstep(0.16, 0.58, slopeLP);
         if (bedOn > 0.003 && fBed > 0.003) {
           vec3 bedD = bedG * (bedS.y * uBedRelief * fBed);
-          gBedDelta = bedD - dot(bedD, N) * N;
+          bedD -= dot(bedD, N) * N;
+          // Soft-clipped, for the same reason curv is above. The staircase's
+          // derivative peaks at 3.5 in the middle of a riser, so on the steeper
+          // part of the field the honest displacement gradient reaches nearly
+          // 4 — a 75 degree bend in the shading normal, which is not a ledge,
+          // it is a face pointing somewhere the surface does not go. The tail
+          // is compressed rather than cut, so the direction of every tilt
+          // survives and only its magnitude is held.
+          //
+          // MEASURED, because the first draft of this comment claimed the
+          // clamp was nearly a no-op and that was not true of the raw field.
+          // Sampled offline against this exact fbm at uBedRelief 36 and
+          // uBedLevels 13, with fBed left at 1: the median |bedD| is 1.66 —
+          // a 59 degree bend — and the 90th percentile is 3.86, i.e. 75.5
+          // degrees. What makes the clamp gentle in the frame is not the field,
+          // it is fBed: bedD is already multiplied by the anisotropy filter and
+          // the pitch fade before it gets here, and both are well under one
+          // over most of a massif. So the honest claim is the capture's, not
+          // the field's — clamped against unclamped, peaks moves 7.7% of its
+          // pixels by more than 2/255, worst pixel 78, and what moves is the
+          // middle of a riser going from a hard cut to a broad plane.
+          //
+          // A soft KNEE and not a plain 1/(1+x): that shape starts bending at
+          // zero and would quietly take a third off every ordinary tilt in the
+          // frame, which is a look change wearing a safety change's clothes.
+          // Below 0.55 of slope this is the identity to the last bit; above it
+          // the excess is compressed toward an asymptote near 1.08.
+          float bedLen = length(bedD);
+          float bedX = max(bedLen - 0.55, 0.0);
+          gBedDelta = bedD * ((bedLen - bedX + bedX / (1.0 + bedX * 1.9))
+                              / max(bedLen, 1e-5));
           gBedW = bedOn;
         }
 
