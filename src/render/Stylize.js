@@ -57,7 +57,7 @@ const DEFAULTS = {
   // banding, and almost no direct specular. The reference's shaded meadow sits
   // only slightly below its lit meadow in value — the shading does very little
   // work, and colour does the rest.
-  wrap: 0.36,        // 0 = physical, 1 = fully wrapped
+  wrap: 0.48,        // 0 = physical, 1 = fully wrapped
   // Banding is the direct expression of the brief's "large areas of uniform
   // colour with few shading gradients". At 0.45/3.0 the quantisation was a
   // suggestion — a smooth terrain normal still produced a smooth ramp, which is

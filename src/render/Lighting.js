@@ -139,7 +139,7 @@ const FOG_DENSITY_SCALE = 0.54;
 // are mostly shaded ground and dark conifer, and 0.50 put all four of them
 // below the reference's 0.37 lumaMean floor. Ambient is the one lever that
 // lifts those without also brightening the lit rock the vistas are made of.
-const AMBIENT_SCALE = 0.55;
+const AMBIENT_SCALE = 0.72;
 
 // Pre-convert the table once; per-frame we only lerp.
 const BAKED = KEYS.map((k) => {
@@ -209,7 +209,7 @@ export class Lighting {
     // running lumaP05 0.00–0.08 against a reference band of 0.16–0.42, i.e.
     // crushed. At 0.55 the shadow removes just over half the key and the
     // ambient plus the diffuse floor keep the shaded ground coloured.
-    this.sun.shadow.intensity = 0.56;
+    this.sun.shadow.intensity = 0.46;
     this._setShadowExtent(220);
     scene.add(this.sun);
     scene.add(this.sun.target);

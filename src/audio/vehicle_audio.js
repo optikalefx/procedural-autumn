@@ -178,6 +178,11 @@ export class VehicleAudio {
     const slip = 1 - smoothstep(0.6, 4.2, speed);
     const flare = lerp(IDLE_RPM, 2500, this._throttleSm);
     let target = lerp(geared, Math.max(geared, flare), slip);
+    // A real idle hunts by a few tens of rpm. Without this the camper sits at
+    // exactly 760.0 rpm forever and reads as a held synth note rather than as
+    // an engine ticking over.
+    const t = actx.currentTime;
+    target += (1 - smoothstep(0.4, 2.2, speed)) * (Math.sin(t * 3.1) * 15 + Math.sin(t * 7.7 + 1.3) * 9);
     // Revs hang a little on the way down; a step response sounds electric.
     this.rpm = damp(this.rpm, target, target > this.rpm ? 5.5 : 2.6, dt);
     this._shiftDip = damp(this._shiftDip, 0, 9, dt);

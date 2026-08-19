@@ -78,7 +78,7 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // amber, so this lifts the value without draining the colour — and warm is
   // the right direction, because the brief measures blue/violet/magenta at
   // about 1% of the reference's chromatic pixels.
-  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, 0.17, luma(c)));
+  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, 0.22, luma(c)));
 
   // Vibrance up, global saturation down. The pair is a chroma *compressor*, not
   // a chroma trim, and that is what the frames needed: the gold meadow measured
@@ -164,8 +164,8 @@ class GradeEffect extends Effect {
         ['uSplitStrength', new THREE.Uniform(0.21)],
         ['uSaturation',    new THREE.Uniform(0.74)],
         ['uContrast',      new THREE.Uniform(1.26)],
-        ['uLift',          new THREE.Uniform(0.034)],
-        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.14, 1.00, 0.88))],
+        ['uLift',          new THREE.Uniform(0.040)],
+        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.42, 0.92, 0.55))],
         ['uVibrance',      new THREE.Uniform(0.90)],
         ['uRedToGold',     new THREE.Uniform(0.070)],
         ['uGrain',         new THREE.Uniform(0.005)],

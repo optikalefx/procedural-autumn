@@ -75,16 +75,25 @@ export class WaterAudio {
     this.bus = gain(actx, 1);
     this.bus.connect(bus);
 
+    // Falls and rivers get their own sub-bus. Partly so the mix between "the
+    // big thing over the ridge" and "the creek at my wheels" is one number,
+    // and partly so each can be metered on its own — measuring them together
+    // makes a distant fall indistinguishable from a near stream.
+    this.fallBus = gain(actx, 1.0);
+    this.riverBus = gain(actx, 0.9);
+    this.fallBus.connect(this.bus);
+    this.riverBus.connect(this.bus);
+
     const bufA = noiseBuffer(actx, 4, 'pink', 0x2277);
     const bufB = noiseBuffer(actx, 4, 'white', 0x91ab);
 
     this.falls = [];
     for (let i = 0; i < FALL_VOICES; i++) {
-      this.falls.push(new WaterVoice(actx, this.bus, bufA, 0.88 + i * 0.09, true));
+      this.falls.push(new WaterVoice(actx, this.fallBus, bufA, 0.88 + i * 0.09, true));
     }
     this.rivers = [];
     for (let i = 0; i < RIVER_VOICES; i++) {
-      this.rivers.push(new WaterVoice(actx, this.bus, bufB, 0.97 + i * 0.06, false));
+      this.rivers.push(new WaterVoice(actx, this.riverBus, bufB, 0.97 + i * 0.06, false));
     }
 
     // ── source tables ───────────────────────────────────────────────────────

@@ -129,24 +129,33 @@ export class Audio extends System {
       };
       for (const b of Object.values(this.buses)) b.connect(this.master);
 
-      // Metering taps. An analyser only runs if it is reachable from the
-      // destination, so each one is followed by a silent gain into the master.
-      this.taps = {};
-      for (const name of ['water', 'vehicle', 'ambience', 'music']) {
-        const a = actx.createAnalyser();
-        a.fftSize = 2048;
-        a.smoothingTimeConstant = 0.2;
-        const sink = gain(actx, 0);
-        this.buses[name].connect(a).connect(sink).connect(this.master);
-        this.taps[name] = a;
-      }
-
       // ── layers ──────────────────────────────────────────────────────────
       this.ambience = new Ambience(actx, this.buses.ambience, this.reverb);
       this.water = new WaterAudio(actx, this.buses.water, this.ctx.world);
       this.vehicle = new VehicleAudio(actx, this.buses.vehicle, this.ctx);
       this.wildlife = new WildlifeAudio(actx, this.buses.wildlife, this.reverb, this.ctx);
       this.music = new Music(actx, this.buses.music, this.reverb, this.ctx);
+
+      // Metering taps, added after the layers so the water sub-buses exist.
+      // An analyser only runs if it is reachable from the destination, so each
+      // is followed by a silent gain into the master.
+      this.taps = {};
+      const tapPoints = {
+        water: this.buses.water,
+        falls: this.water.fallBus,
+        rivers: this.water.riverBus,
+        vehicle: this.buses.vehicle,
+        ambience: this.buses.ambience,
+        music: this.buses.music,
+      };
+      for (const [name, node] of Object.entries(tapPoints)) {
+        const a = actx.createAnalyser();
+        a.fftSize = 2048;
+        a.smoothingTimeConstant = 0.2;
+        const sink = gain(actx, 0);
+        node.connect(a).connect(sink).connect(this.master);
+        this.taps[name] = a;
+      }
 
       this.started = true;
       this._applyVolume(0.9);          // fade in, never a step

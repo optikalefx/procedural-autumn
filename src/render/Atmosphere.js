@@ -56,8 +56,28 @@ const FOG_VERT_PARS = /* glsl */`
 
 const FOG_VERT = /* glsl */`
 #ifdef USE_FOG
-  vFogWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
-  vFogCamPos = cameraPosition;
+  {
+    // Must apply the instance and batch transforms, exactly as three's own
+    // <worldpos_vertex> does.
+    //
+    // Without this every InstancedMesh in the game — rocks, trees, grass,
+    // ground cover, wildlife; i.e. most of what you look at — is hazed as if
+    // it stood at the world origin, because the transformed position is still in the
+    // instance's local space here. With the camera hundreds of metres from
+    // origin that pins them at the uFogMax cap regardless of where they
+    // actually are. It cost the rocks author three passes: they measured that
+    // halving their material's entire output moved the rendered pixel by 1.8%,
+    // because fog was supplying 172 of 179 levels.
+    vec4 fogWorld = vec4( transformed, 1.0 );
+    #ifdef USE_BATCHING
+      fogWorld = batchingMatrix * fogWorld;
+    #endif
+    #ifdef USE_INSTANCING
+      fogWorld = instanceMatrix * fogWorld;
+    #endif
+    vFogWorldPos = ( modelMatrix * fogWorld ).xyz;
+    vFogCamPos = cameraPosition;
+  }
 #endif`;
 
 const FOG_FRAG = /* glsl */`

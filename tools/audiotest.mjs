@@ -119,8 +119,6 @@ async function main() {
   if (!s1) { await browser.close(); return finish(); }
   check('context resumes on gesture', s1.state === 'running',
         `before="${beforeGesture}" after="${s1.state}"`);
-  check('audio clock advances', s2.time > s1.time,
-        `t=${f(s1.time, 3)}s → ${f(s2.time, 3)}s (+${f(s2.time - s1.time, 3)}s)`);
 
   // KeyM is also the HUD's mute binding; put the mix back before measuring.
   await page.evaluate(() => window.__audio.setMuted(false));
@@ -132,7 +130,12 @@ async function main() {
         nodes ? `buses=${nodes.buses} fallVoices=${nodes.fallVoices} riverVoices=${nodes.riverVoices}` : 'no nodes');
 
   const taps = await page.evaluate(() => Object.keys(window.__audio.taps ?? {}));
-  check('metering taps present', taps.length === 4, taps.join(','));
+  check('metering taps present', taps.length === 6, taps.join(','));
+
+  // Chromium's audio thread does not start rendering the instant the context
+  // is created — the clock legitimately reads 0 for the first second or so, so
+  // this is checked against a reading taken later rather than immediately.
+  const clockA = s2.time;
 
   // ── 3. ambience is actually making sound ────────────────────────────────
   // Park in open meadow, away from every waterfall, at midday.
@@ -144,6 +147,9 @@ async function main() {
     return { x: p.x, y, z: p.z };
   });
   await page.waitForTimeout(2500);
+  const clockB = await page.evaluate(() => window.__audio.debugState().time);
+  check('audio clock advances', clockB > clockA + 1,
+        `t=${f(clockA, 3)}s → ${f(clockB, 3)}s (+${f(clockB - clockA, 3)}s of rendered audio)`);
   const amb = await page.evaluate(() => window.__meter('ambience', 2500));
   const ambState = await page.evaluate(() => window.__audio.debugState().ambience);
   check('ambience audible in the open', amb.rms > 0.0015,
@@ -170,10 +176,15 @@ async function main() {
       window.__place(fx + dd, fy + 6, fz);
     }, { fx: fall.x, fy: fall.y, fz: fall.z, d });
     await page.waitForTimeout(2200);
-    const m = await page.evaluate(() => window.__meter('water', 1600));
+    // The falls sub-bus, not the whole water bus: rivers are everywhere in
+    // this valley and a creek beside the camera at 800 m would otherwise read
+    // as the waterfall being loud from far away.
+    const m = await page.evaluate(() => window.__meter('falls', 1600));
+    const riv = await page.evaluate(() => window.__meter('rivers', 200));
     const st = await page.evaluate(() => window.__audio.debugState().water);
     waterCurve.push({ d, rms: m.rms, peak: m.peak, fallGain: st.fallGain, voices: st.voices });
-    console.log(`  water @ ${String(d).padStart(4)} m: rms=${f(m.rms)} peak=${f(m.peak)} modelGain=${f(st.fallGain)} voices=${st.voices}`);
+    console.log(`  falls @ ${String(d).padStart(4)} m: rms=${f(m.rms)} peak=${f(m.peak)} ` +
+                `modelGain=${f(st.fallGain)} voices=${st.voices} (rivers rms=${f(riv.rms)})`);
   }
   const monotonic = waterCurve.every((v, i) => i === 0 || v.rms > waterCurve[i - 1].rms);
   check('water rises monotonically on approach', monotonic,
@@ -183,41 +194,70 @@ async function main() {
         `800 m rms=${f(waterCurve[0].rms)}, 30 m rms=${f(waterCurve[3].rms)}, ×${f(ratio, 1)}`);
 
   // ── 5. engine pitch tracks speed ────────────────────────────────────────
+  // Measured, not asserted: the peak of an FFT taken on the vehicle bus, over
+  // a real acceleration run, correlated against the model's own rpm.
   await page.evaluate(() => { window.__forceCamera = false; });
   await page.waitForTimeout(400);
-  const engine = [];
+
   const sampleEngine = async (label) => {
     const spec = await page.evaluate(async () => {
-      // Average the FFT peak over a second so a single frame's noise cannot
-      // decide the result.
       const out = [];
-      for (let i = 0; i < 20; i++) {
-        out.push(window.__audio.spectrum('vehicle', 900));
-        await new Promise((r) => setTimeout(r, 50));
+      for (let i = 0; i < 16; i++) {
+        out.push(window.__audio.spectrum('vehicle', 700));
+        await new Promise((r) => setTimeout(r, 45));
       }
-      const hz = out.map((o) => o.hz).sort((a, b) => a - b)[10];
+      // Median rather than mean: one frame of a suspension knock would drag a
+      // mean anywhere.
+      const hz = out.map((o) => o.hz).sort((a, b) => a - b)[8];
       const st = window.__audio.debugState();
-      return { hz, rpm: st.vehicle.rpm, gear: st.vehicle.gear, f0: st.vehicle.f0, speed: window.__vehicleState().speed };
+      return { hz, rpm: st.vehicle.rpm, gear: st.vehicle.gear, f0: st.vehicle.f0,
+               load: st.vehicle.load, speed: Math.abs(window.__vehicleState().speed) };
     });
-    engine.push({ label, ...spec });
-    console.log(`  engine ${label}: speed=${f(spec.speed, 1)} m/s rpm=${f(spec.rpm, 0)} gear=${spec.gear} ` +
-                `model f0=${f(spec.f0, 1)} Hz  measured peak=${f(spec.hz, 1)} Hz`);
-    return spec;
+    console.log(`  engine ${label}: speed=${String(f(spec.speed, 1)).padStart(5)} m/s  ` +
+                `rpm=${String(f(spec.rpm, 0)).padStart(4)}  gear=${spec.gear}  ` +
+                `model f0=${f(spec.f0, 1)} Hz  measured peak=${f(spec.hz, 1)} Hz  ` +
+                `(${f(spec.hz / Math.max(spec.f0, 1e-6), 2)}× f0)`);
+    return { label, ...spec };
   };
 
-  await sampleEngine('idle  ');
+  const idle = await sampleEngine('idle    ');
+  const run = [idle];
   await page.keyboard.down('KeyW');
-  await page.waitForTimeout(3500);
-  await sampleEngine('moving');
-  await page.waitForTimeout(6000);
-  await sampleEngine('fast  ');
+  for (let i = 0; i < 6; i++) {
+    await page.waitForTimeout(1200);
+    run.push(await sampleEngine(`accel ${i + 1} `));
+  }
+  await page.keyboard.up('KeyW');
 
-  const [idle, moving, fast] = engine;
-  check('engine rpm tracks speed', fast.rpm > idle.rpm * 1.25 && moving.rpm >= idle.rpm,
-        `idle ${f(idle.rpm, 0)} → moving ${f(moving.rpm, 0)} → fast ${f(fast.rpm, 0)} rpm`);
-  check('measured engine pitch rises with speed', fast.hz > idle.hz * 1.15,
-        `${f(idle.hz, 1)} Hz → ${f(fast.hz, 1)} Hz (model ${f(idle.f0, 1)} → ${f(fast.f0, 1)} Hz)`);
-  check('gearbox shifts up', fast.gear > 1, `gear ${idle.gear} → ${fast.gear}`);
+  const fastest = run.reduce((a, b) => (b.rpm > a.rpm ? b : a));
+  check('engine rpm tracks speed', fastest.rpm > idle.rpm * 1.5,
+        `idle ${f(idle.rpm, 0)} rpm → peak ${f(fastest.rpm, 0)} rpm at ${f(fastest.speed, 1)} m/s`);
+
+  // Pearson r between the model's rpm and the frequency actually coming out of
+  // the graph. If the oscillator were not following the model this collapses.
+  const rs = run.map((r) => r.rpm), hzs = run.map((r) => r.hz);
+  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  const mr = mean(rs), mh = mean(hzs);
+  let num = 0, dr = 0, dh = 0;
+  for (let i = 0; i < rs.length; i++) {
+    num += (rs[i] - mr) * (hzs[i] - mh);
+    dr += (rs[i] - mr) ** 2;
+    dh += (hzs[i] - mh) ** 2;
+  }
+  const r = num / Math.sqrt(Math.max(dr * dh, 1e-9));
+  check('measured pitch correlates with rpm', r > 0.85,
+        `r=${f(r, 3)} over ${run.length} samples, ${f(Math.min(...hzs), 1)}–${f(Math.max(...hzs), 1)} Hz`);
+
+  // The measured peak should be a harmonic of the firing frequency — the
+  // strongest partial moves between the 1st and 2nd order with load, so the
+  // test allows either but not "somewhere unrelated".
+  const harmonic = run.every((s3) => {
+    const k = s3.hz / Math.max(s3.f0, 1e-6);
+    return Math.abs(k - Math.round(k)) < 0.22 && k >= 0.8 && k <= 3.2;
+  });
+  check('measured peak is a firing harmonic', harmonic,
+        run.map((s3) => `${f(s3.hz / Math.max(s3.f0, 1e-6), 2)}×`).join(' '));
+  check('gearbox shifts up', fastest.gear > 1, `gear ${idle.gear} → ${fastest.gear}`);
 
   // ── 6. worst case: does anything clip? ──────────────────────────────────
   // Full throttle, beside the loudest waterfall, at dawn chorus, everything on.
@@ -225,6 +265,7 @@ async function main() {
     window.__lighting.hour = 6.2;
     window.__vehicleTeleport?.(fx + 12, fz + 4, 1.2);
   }, { fx: fall.x, fy: fall.y, fz: fall.z });
+  await page.keyboard.down('KeyW');
   await page.waitForTimeout(2600);
   const loud = await page.evaluate(() => window.__meter('master', 4000));
   const red = await page.evaluate(() => window.__audio.debugState().nodes.limiterReduction);
