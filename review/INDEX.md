@@ -46,3 +46,4 @@ same places are photographed every round and the sheets are directly comparable.
 | 038 | 2026-08-19 | cover: scrub canopy rebuild, deadfall, substrate ladder | [038](038-2026-08-19-cover-scrub-canopy-rebuild-deadfall-substrate-la.png) |
 | 039 | 2026-08-19 | leaf winding fixed, scrub rebuilt, substrate density | [039](039-2026-08-19-leaf-winding-fixed-scrub-rebuilt-substrate-densi.png) |
 | 040 | 2026-08-19 | rim light, birch bark, form variety | [040](040-2026-08-19-rim-light-birch-bark-form-variety.png) |
+| 041 | 2026-08-19 | rock value and placement | [041](041-2026-08-19-rock-value-and-placement.png) |

@@ -90,8 +90,18 @@ const CONTACT_MARGIN = 4.0;
 /**
  * How many of the nine base probes may stay above ground. An overhanging corner
  * is cliff-like; an overhanging half is a crate on a hillside.
+ *
+ * 1, not 0, and the shrink loop in `_place` uses the same probe. They have to
+ * agree: with the shrink testing the second-lowest probe and the anchor using
+ * the lowest, a block off the end of an arete would be shrunk until its second
+ * probe fitted, then anchored against a first probe tens of metres lower, then
+ * clamped back up by MAX_PLANT — and end up hanging in clear sky with its whole
+ * base in the air. That is exactly the artifact in `waterfall`, and it is the
+ * same disagreement in the same two lines that produced the original floating
+ * report. One probe of nine over air is a corner overhang; the guard below
+ * throws the block away rather than let it become anything more.
  */
-const BASE_TOLERATE = 0;
+const BASE_TOLERATE = 1;
 
 /**
  * Deepest a crag block is planted, as a multiple of its own size. A block is
@@ -330,7 +340,15 @@ export class RockScatter {
     const R = 9 + rng() * 16;
     for (let i = 0; i < n; i++) {
       const a = rng() * Math.PI * 2;
-      const r = R * Math.sqrt(rng());
+      // `R * sqrt(rng)` is uniform over the disc, which is the flattest
+      // distribution there is — and with three or four of these discs
+      // overlapping on one bank the result is the even sprinkle the brief calls
+      // an automatic reject. It is what `river` came back as: two hundred
+      // near-identical cobbles spread at constant density over a whole
+      // hillside. A power above a half concentrates the group toward its own
+      // centre, so a rock field has a core and an edge.
+      const rt = Math.pow(rng(), 1.15);
+      const r = R * rt;
       const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
       if (!W.isInBounds(px, pz)) continue;
       const depth = W.getWaterDepth(px, pz);
@@ -342,12 +360,21 @@ export class RockScatter {
       const slope = W.getSlope(px, pz);
       if (slope > 1.9) continue;
 
-      const roll = rng();
+      // Size follows the same envelope as position: the biggest rock in a
+      // riverbed group sits in its middle and the debris rings it. Without this
+      // the group has a hierarchy on paper — a power law over four archetypes —
+      // and none at all in the picture, because the big ones are as likely to
+      // be on the rim as anywhere else and the eye reads density, not tiers.
+      const core = 1.0 - rt;
+      // Smaller roll = bigger archetype, so the core biases the draw toward the
+      // top of the table and the rim toward rubble.
+      const roll = rng() * (1.45 - core * 0.85);
       let arch, size;
       if (roll < 0.20 && depth < 0.9) { arch = 'slab'; size = powSize(rng, 1.6, 5.2, 1.5); }
       else if (roll < 0.28) { arch = 'hero'; size = powSize(rng, 1.8, 3.6, 1.7); }
       else if (roll < 0.62) { arch = 'boulder'; size = powSize(rng, 0.5, 3.0, 1.8); }
       else { arch = 'rubble'; size = powSize(rng, 0.12, 0.50, 2.0); }
+      size *= 0.66 + core * 0.52;
       if (size * 2 < minSize) continue;
       // Shallows only. A rock that never breaks the surface is invisible and
       // still costs a draw, so in the wash at the channel edge it is grown
@@ -368,7 +395,10 @@ export class RockScatter {
     for (let i = 0; i < n; i++) {
       // Elongate the cluster downhill — a fan, not a disc.
       const t = rng();
-      const spread = (rng() * 2 - 1) * R * 0.55;
+      // Triangular across the fan rather than uniform: a run-out has a dense
+      // axis and thins to its edges. Uniform across-slope spread is half of why
+      // overlapping fans read as one flat rash of stones.
+      const spread = (rng() + rng() - 1) * R * 0.62;
       const along = -(0.1 + t * 1.5) * R;          // negative = downhill
       const px = x + up.x * along - up.z * spread;
       const pz = z + up.z * along + up.x * spread;
@@ -430,15 +460,21 @@ export class RockScatter {
     const R = 10 + rng() * 18;
     for (let i = 0; i < n; i++) {
       const a = rng() * Math.PI * 2;
-      const r = R * Math.sqrt(rng());
+      // Concentrated, for the reason given in _clusterRiver: a scree apron has
+      // a dense heart and a thinning fringe, and a uniform disc of it laid over
+      // the same ground as its neighbours is a texture, not a landform.
+      const rt = Math.pow(rng(), 1.25);
+      const r = R * rt;
+      const core = 1.0 - rt;
       const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
       if (!W.isInBounds(px, pz)) continue;
       if (W.getSlope(px, pz) > 2.2) continue;
-      const roll = rng();
+      const roll = rng() * (1.4 - core * 0.7);
       let arch, size;
       if (roll < 0.10) { arch = 'talus'; size = powSize(rng, 0.6, 1.7, 1.6); }
       else if (roll < 0.20) { arch = 'slab'; size = powSize(rng, 0.5, 1.3, 1.6); }
       else { arch = 'rubble'; size = powSize(rng, 0.12, 0.46, 1.6); }
+      size *= 0.66 + core * 0.62;
       if (size * 2 < minSize) continue;
       this._place(px, pz, arch, size, rng, 0.6, 0.7, out);
     }
@@ -546,22 +582,70 @@ export class RockScatter {
     // shipping crate; the same block on a 250 m shoulder is 800 m away and
     // reads as a cliff. Tying size to altitude is also the honest geology — the
     // higher a bed sits the more of it has been stripped bare.
-    const alt = 0.62 + 0.55 * smoothstep(95, 250, c.h);
-    const base = clamp((9 + c.hard * 11 + c.s * 7) * (0.85 + rng() * 0.40) * alt, 7, 17);
-    const courses = 1 + ((rng() * 2) | 0);
+    // The upper clamp is altitude-aware rather than a flat 17. At 17 the clamp
+    // bound before the altitude term did, so a 110 m outcrop you drive past at
+    // 300 m got the same 34 m-wide blocks as an 800 m crag — which is the
+    // ~550 px flat slab the critic found intersecting the mountainside in the
+    // starting view. Low crags now top out around 11 m and high ones at 18.
+    const altT = smoothstep(95, 250, c.h);
+    const alt = 0.62 + 0.55 * altT;
+    const base = clamp((9 + c.hard * 11 + c.s * 7) * (0.85 + rng() * 0.40) * alt,
+      6, 9 + 9 * altT);
+    // Two to four beds, not one or two. A single course on a face is exactly
+    // the "string of beads laid on the mountain" read: one line, at one
+    // altitude, with nothing above or below it to say it is strata. Banding
+    // needs at least a few courses before the eye reads them as a system, and
+    // they have to differ from each other in weight and length or the system
+    // reads as a repeat.
+    const courses = 2 + ((rng() * 3) | 0);
     let cx = x0, cz = z0;
     let targetY = W.getHeight(cx, cz);
 
     for (let k = 0; k < courses; k++) {
-      const scale = base * (1 - k * 0.13);
-      this._contourCourse(cx, cz, targetY, scale, c, up, rng, minSize, out);
+      // Not a monotonic taper. A stratigraphic sequence has one or two thick
+      // resistant beds and several thin ones, in no particular order; stepping
+      // the scale down by 13% per course just draws parallel lines of
+      // decreasing weight, which still reads as a repeat.
+      const scale = base * (0.65 + rng() * 0.65);
+      // …and they do not all start above one another. Offsetting each course
+      // along the strike is what stops the ends of the courses lining up into a
+      // vertical seam down the face.
+      this._uphill(cx, cz, up);
+      const shift = (rng() * 2 - 1) * scale * 2.6;
+      const sx0 = cx - up.z * shift, sz0 = cz + up.x * shift;
+      // Length varies course to course, and some beds are barely exposed at
+      // all. A course that dies to a stub is discarded inside _contourCourse.
+      this._contourCourse(W.isInBounds(sx0, sz0) ? sx0 : cx,
+        W.isInBounds(sx0, sz0) ? sz0 : cz,
+        targetY, scale, c, up, rng, minSize, out, 0.45 + rng() * 0.95);
+
+      // Talus under each course, not only under the last one. A bed that is
+      // weathering out is shedding blocks, and the fan of debris directly below
+      // it is most of what says the wall above is *rock breaking off a
+      // mountain* rather than boxes set down on a slope — which is exactly how
+      // the crags in `peaks` read once the value was fixed and the form became
+      // legible at all. Small and close in, so it is an apron and not a second
+      // scatter layer.
+      this._uphill(cx, cz, up);
+      const na = 2 + ((rng() * 3) | 0);
+      for (let a = 0; a < na; a++) {
+        const along = scale * (0.9 + rng() * 2.6);
+        const across = (rng() + rng() - 1) * scale * 2.2;
+        const ax = cx - up.x * along - up.z * across;
+        const az = cz - up.z * along + up.x * across;
+        if (!W.isInBounds(ax, az)) continue;
+        if (W.getWaterDepth(ax, az) > 0.4) continue;
+        const as = scale * powSize(rng, 0.08, 0.30, 1.6);
+        if (as * 2 < minSize) continue;
+        this._place(ax, az, rng() < 0.6 ? 'talus' : 'slab', as, rng, 0.55, 0.5, out, 0.28);
+      }
 
       // Down the fall line to the next bed, by about two block heights, so
       // there is bare slope between the courses. Converting a vertical drop
       // into a horizontal step needs the slope, or the courses bunch up on a
       // cliff and spread out on a bench — the opposite of what rock does.
       this._uphill(cx, cz, up);
-      const drop = scale * (1.7 + rng() * 1.5);
+      const drop = scale * (1.5 + rng() * 2.2);
       const slope = clamp(W.getSlope(cx, cz), 0.45, 2.6);
       cx -= up.x * (drop / slope);
       cz -= up.z * (drop / slope);
@@ -597,7 +681,7 @@ export class RockScatter {
    * a chain held at one altitude reads as a bed of harder rock, which is what
    * it is meant to be and what the eye recognises on a real mountain.
    */
-  _contourCourse(x0, z0, targetY, scale, c, up, rng, minSize, out) {
+  _contourCourse(x0, z0, targetY, scale, c, up, rng, minSize, out, lenMul = 1.0) {
     const W = this.world;
     // Anything shorter than this is not a cliff band, it is two or three blocks
     // sitting on a smooth slope — which is what every "the crags look like they
@@ -607,26 +691,70 @@ export class RockScatter {
     // on a bare hillside simply has no visible contact and the eye cannot place
     // it. So a course that dies early is discarded rather than left as a stub.
     const startAt = out.length;
-    const MIN_COURSE = 4;
+    const MIN_COURSE = 3;
     // Blocks are about two scales wide and land two thirds of a scale apart, so
     // each overlaps its neighbours by most of its length. The union is the
     // cliff; no single block is ever meant to read on its own, and any block
     // that ends up isolated on a smooth slope reads as a crate dropped on it —
     // that, and not any actual hovering, is what "the crags look like they are
     // floating" turned out to mean when measured.
-    const step = scale * (0.58 + rng() * 0.24);
+    //
+    // The stride is a fraction of the LOCAL block, not of the course's nominal
+    // scale. That distinction only started to matter once the blocks were
+    // allowed to taper: a fixed stride plus a block tapered to 40% leaves a
+    // gap two thirds of a block wide at each end of every course, the chain
+    // stops overlapping into a wall, and what is left is a line of separate
+    // pale blocks on a smooth mountain — the popcorn read, arrived at from the
+    // opposite direction to the usual one.
+    const stepK = 0.58 + rng() * 0.24;
 
     for (let dir = -1; dir <= 1; dir += 2) {
       let px = x0, pz = z0;
       // Long. The unit that has to read from 800 m is not the block and not even
       // the course — it is the whole band crossing the face, so a chain runs up
       // to eleven blocks in each direction, 300 m a side.
-      const n = 4 + ((rng() * 6) | 0);
+      const n = Math.max(2, Math.round((4 + rng() * 7) * lenMul));
+      // ── the turn budget ──────────────────────────────────────────────────
+      //
+      // This is what stops a course becoming the necklace. Walking
+      // perpendicular to the local gradient follows a contour, and on a
+      // conical massif — which is what our peaks are, with rocks hidden — a
+      // contour is a *closed ring*. The chain therefore does exactly what it
+      // is told, circles the peak, and comes out as forty near-identical
+      // blocks strung on one isoline with sky under the far side of the ring.
+      //
+      // A real resistant bed crossing a face is an arc, not a circle: it is
+      // cut off by the spurs and gullies either side of the face it outcrops
+      // on. Budgeting the total heading change enforces that directly, and it
+      // is the only rule here that can tell an arc from a ring, because
+      // locally the two are identical.
+      let hx = 0, hz = 0, turned = 0;
+      // Gaps. A bed is not continuously exposed along its whole outcrop; it is
+      // buried under scree, cut by a gully, weathered away. Without this the
+      // course is a solid line of touching blocks whatever else varies, and a
+      // solid line is a line.
+      let gap = 0;
       for (let i = 0; i < n; i++) {
         this._uphill(px, pz, up);
         if (Math.abs(up.x) + Math.abs(up.z) < 0.05) break;
-        px += -up.z * dir * step;
-        pz += up.x * dir * step;
+        const sx = -up.z * dir, sz = up.x * dir;
+        if (i > 0) {
+          const dot = clamp(sx * hx + sz * hz, -1, 1);
+          turned += Math.acos(dot);
+          // ~110 degrees: enough for a bed to wrap a broad spur, far short of
+          // the 360 a ring needs.
+          if (turned > 1.95) break;
+        }
+        hx = sx; hz = sz;
+        // Taper. A course is thickest where the bed is best exposed and thins
+        // toward both ends; blocks of one size laid end to end are what makes a
+        // chain read as beads however long it is. Evaluated here, before the
+        // step, because the stride has to shrink with it or the chain stops
+        // overlapping (see stepK).
+        const env = 0.50 + 0.50 * Math.sin(Math.PI * Math.min(1, (i + 0.8) / n));
+        const step = scale * env * stepK;
+        px += sx * step;
+        pz += sz * step;
         if (!W.isInBounds(px, pz)) break;
 
         // Correct back to the bed's altitude along the fall line. Note the
@@ -636,7 +764,14 @@ export class RockScatter {
         // as a vertical clump of boulders instead of a horizontal course.
         this._uphill(px, pz, up);
         const slope = clamp(W.getSlope(px, pz), 0.35, 3.0);
-        const err = W.getHeight(px, pz) - targetY;
+        // The bed rolls. Holding the chain at one exact altitude is what draws
+        // the isoline — geologically a bed is folded and its outcrop wanders up
+        // and down the face by a good fraction of its own thickness. The
+        // undulation is a smooth function of world position, so neighbouring
+        // courses on the same face roll together and it reads as structure
+        // rather than as jitter.
+        const rollY = this.noise.fbm(px * 0.0042, pz * 0.0042, 2, 2.1, 0.5, 7) * scale * 1.5;
+        const err = W.getHeight(px, pz) - (targetY + rollY);
         const corr = clamp(err / slope, -step * 1.3, step * 1.3);
         px -= up.x * corr; pz -= up.z * corr;
         if (!W.isInBounds(px, pz)) break;
@@ -644,7 +779,13 @@ export class RockScatter {
         if (this.hardness(px, pz) < 0.22) break;     // and where the rock softens
         if (W.getWaterDepth(px, pz) > 0.5) break;
 
-        const size = scale * (0.90 + rng() * 0.50);
+        // The bed is buried here — advance the walk but leave no rock. One or
+        // two slots at a time, so what the gap breaks is one wall into two
+        // walls; longer and the segments stop being walls.
+        if (gap > 0) { gap--; continue; }
+        if (i > 1 && rng() < 0.13) { gap = 1 + ((rng() * 2) | 0); continue; }
+
+        const size = scale * env * (0.86 + rng() * 0.60);
         if (size * 2 < minSize) continue;
 
         // Local +Z faces downhill, local +X runs along the strike, so the
@@ -680,10 +821,15 @@ export class RockScatter {
         // edge reaches the ground, so either it floats or it disappears. Laid
         // along the dip it needs to be sunk only by its own thickness, which
         // is what lets it both sit in the hill and stand out of it.
+        // Shove varies block to block, so the face is broken in *plan* as well
+        // as in elevation: some blocks stand proud of the wall and some are set
+        // back into it. A chain at one constant depth is a flat ribbon, and a
+        // flat ribbon on a hillside is the other half of the bead read.
+        const shove = (arch === 'cliff' ? 0.14 : 0.20) * (0.62 + rng() * 0.85);
         this._place(px, pz, arch, size * (arch === 'tower' ? 0.66 : 1.0), rng,
           arch === 'cliff' ? 0.62 : 0.55, 0.0, out,
-          arch === 'cliff' ? 0.12 : 0.22, 'sag',
-          arch === 'cliff' ? 0.14 : 0.20, yaw);
+          (arch === 'cliff' ? 0.12 : 0.22) * (0.7 + rng() * 0.8), 'sag',
+          shove, yaw);
       }
     }
     if (out.length - startAt < MIN_COURSE) out.length = startAt;
@@ -710,8 +856,13 @@ export class RockScatter {
     const startAt = out.length;              // stub groups are dropped, as above
     const scale = clamp((8 + c.hard * 8 + c.s * 5) * (0.80 + rng() * 0.45)
       * (0.70 + 0.45 * smoothstep(95, 250, c.h)), 6, 14);
-    const n = 4 + ((rng() * 5) | 0);
-    const step = scale * (0.62 + rng() * 0.26);
+    const n = 5 + ((rng() * 5) | 0);
+    // Stride as a fraction of the local block, not of the group's scale — see
+    // _contourCourse. The crest taper is steeper than the course's, so this
+    // matters more here: at a fixed stride the small blocks at the far end of
+    // a crest stand well clear of one another and the arete reads as a row of
+    // chips rather than as broken bedrock.
+    const stepK = 0.62 + rng() * 0.26;
 
     for (let dir = -1; dir <= 1; dir += 2) {
       let px = x0, pz = z0;
@@ -721,15 +872,30 @@ export class RockScatter {
       const L0 = Math.hypot(hx, hz) || 1;
       hx /= L0; hz /= L0;
 
+      // Total heading change spent so far. The dot > 0.2 test below rejects
+      // only a reversal — it happily allows 78 degrees of turn per step, and
+      // on a summit, where the gradient rotates through a full circle, a
+      // sequence of legal turns is exactly how the chain ends up ringing the
+      // peak. That ring is the "necklace" in `peaks`: twenty-odd near-identical
+      // blocks on one isoline, some of them over the back of the summit with
+      // sky beneath. A per-step limit alone cannot catch it, because every
+      // individual step is small; only the accumulated turn can.
+      let turned = 0;
+      const seedX = hx, seedZ = hz;
       for (let i = 0; i < n; i++) {
         this._uphill(px, pz, up);
         // Blend the carried heading with the local strike: enough to follow a
         // curving ridge, not enough to let the chain turn back on itself.
         const tx = -up.z * dir, tz = up.x * dir;
-        if (tx * hx + tz * hz > 0.2) {
-          hx = hx * 0.62 + tx * 0.38; hz = hz * 0.62 + tz * 0.38;
+        if (tx * hx + tz * hz > 0.86) {
+          hx = hx * 0.74 + tx * 0.26; hz = hz * 0.74 + tz * 0.26;
           const L = Math.hypot(hx, hz) || 1; hx /= L; hz /= L;
         }
+        turned = Math.acos(clamp(hx * seedX + hz * seedZ, -1, 1));
+        if (turned > 1.05) break;               // ~60 degrees off the seed line
+        // Tapering profile, so the group has a summit rather than a flat top.
+        const t = 1 - (i / n) * 0.75;
+        const step = scale * (0.62 + t * 0.62) * stepK;
         px += hx * step + (rng() * 2 - 1) * scale * 0.10;
         pz += hz * step + (rng() * 2 - 1) * scale * 0.10;
         if (!W.isInBounds(px, pz)) break;
@@ -746,10 +912,17 @@ export class RockScatter {
         if (this.convexity(px, pz, 30) < 0.010) break;
         if (W.getWaterDepth(px, pz) > 0.3) break;
 
-        // Tapering profile, so the group has a summit rather than a flat top.
-        const t = 1 - (i / n) * 0.75;
-        const size = Math.min(scale * (0.62 + t * 0.62) * (0.84 + rng() * 0.36), 12);
+        // Widened from 0.84–1.20. A crest built out of blocks that differ by
+        // 40% is a broken outcrop; one built out of blocks that differ by 15%
+        // is a row of teeth, and at 800 m the eye reads the *repeat* long
+        // before it reads any individual block.
+        const size = Math.min(scale * (0.62 + t * 0.62) * (0.70 + 0.72 * rng()), 12);
         if (size * 2 < minSize) continue;
+        // A notch in the crest. Not every metre of an arete is bedrock; the
+        // gaps are what let the sky through in the places a crest is supposed
+        // to let it through, instead of under blocks that are meant to be
+        // standing on the ridge.
+        if (i > 1 && rng() < 0.11) continue;
 
         // Yaw from the carried heading, not from the local gradient. On an
         // arete the gradient is nearly degenerate and the 2 m normal sample
@@ -788,6 +961,33 @@ export class RockScatter {
     if (out.length - startAt < 4) out.length = startAt;
   }
 
+  /**
+   * How deep a crag block of size `s` has to sit before every one of its base
+   * probes is in the hill. Fills `this._req` with, per probe, the highest the
+   * block's centre may be and still have that part of the base in contact, and
+   * returns how many probes the mesh actually reaches.
+   *
+   * A method rather than a closure inside `_place` on purpose: placement runs
+   * thousands of times per cell build and must not allocate.
+   */
+  _probeBase(x, z, q, fp, s) {
+    const W = this.world;
+    const v = this._fv, req = this._req;
+    // The per-axis scale jitter applied at push time is 0.84–1.18, and it pulls
+    // both ways: a wider block reaches further downhill, a shallower one has
+    // less of itself to bury. Take the unsafe end of each.
+    const ex = fp.rx * s * 1.18, ez = fp.rz * s * 1.18;
+    let n = 0;
+    for (let k = 0; k < BASE_SAMPLES.length; k += 2) {
+      const sx = BASE_SAMPLES[k], sz = BASE_SAMPLES[k + 1];
+      const lo = fp.lo[(sx + 1) * 3 + (sz + 1)];
+      if (lo === null || lo === undefined) continue;      // mesh does not reach here
+      v.set(sx * ex, lo * s * 0.84, sz * ez).applyQuaternion(q);
+      req[n++] = W.getHeight(x + v.x, z + v.z) - v.y;
+    }
+    return n;
+  }
+
   // ── the single placement routine ───────────────────────────────────────────
 
   /**
@@ -800,6 +1000,31 @@ export class RockScatter {
   _place(x, z, arch, size, rng, align, tumble, out, sink = 0.14, mode = 'min', shove = 0,
     yaw = null) {
     const W = this.world;
+
+    // ── loose-stone clumping ─────────────────────────────────────────────────
+    //
+    // Rubble is by far the most numerous thing this system emits and by far the
+    // smallest, and every cluster type sheds it. Summed over the three or four
+    // clusters that overlap on any given hillside, the result is a field of
+    // near-identical pebbles at constant density from the camera to the horizon
+    // — "perfectly even scatter density" and "every object the same size", two
+    // separate entries on the brief's automatic-reject list, arrived at without
+    // any single cluster being at fault.
+    //
+    // A 50 m clump field over the top fixes it where it is caused: loose stone
+    // collects in some places and not others, so about half the ground carries
+    // none at all and the eye gets the negative space that makes the rest read
+    // as deliberate. Deliberately NOT applied to anything larger — a boulder or
+    // a crag block is placed by a geological argument and must not be second
+    // guessed by a noise field.
+    // Gated on size rather than on archetype alone: measured at the `drive` and
+    // `river` anchors, the even sprinkle is not mostly rubble, it is knee-high
+    // `boulder` from erratic courts and rib debris. The threshold is where a
+    // stone stops being a *thing in the picture* and becomes ground texture.
+    if (arch === 'rubble' || size < 1.0) {
+      if (this.noise.fbm(x * 0.021, z * 0.021, 2, 2.1, 0.5, 13) < -0.08) return;
+    }
+
     const n = this._n;
     W.getNormal(x, z, n, Math.max(1.0, size * 0.8));
 
@@ -873,24 +1098,67 @@ export class RockScatter {
       // either far too wide (26 m for a 12 m block: the whole band vanished)
       // or, once corrected for slope, effectively zero.
       const fp = this._foot[arch]?.[variant] ?? FOOT_FALLBACK;
-      const v = this._fv;
-      // The per-axis scale jitter applied below is 0.84–1.18, and it pulls both
-      // ways: a wider block reaches further downhill, a shallower one has less
-      // of itself to bury. Take the unsafe end of each.
-      const ex = fp.rx * size * 1.18, ez = fp.rz * size * 1.18;
-      const req = this._req;
-      let nreq = 0;
-      for (let k = 0; k < BASE_SAMPLES.length; k += 2) {
-        const sx = BASE_SAMPLES[k], sz = BASE_SAMPLES[k + 1];
-        const lo = fp.lo[(sx + 1) * 3 + (sz + 1)];
-        if (lo === null || lo === undefined) continue;   // mesh does not reach here
-        v.set(sx * ex, lo * size * 0.84, sz * ez).applyQuaternion(q);
-        // The block's centre may sit no higher than this, or that part of the
-        // base lifts off the ground.
-        req[nreq++] = W.getHeight(x + v.x, z + v.z) - v.y;
+
+      // ── shrink to fit ────────────────────────────────────────────────────
+      //
+      // A block whose base cannot be got into the ground within MAX_PLANT used
+      // to be clamped: planted as deep as allowed and left with the rest of its
+      // base in the air. That is the residual "sky visible beneath them" the
+      // critic found on the `dawn` and `peaks` crests, and it is a different
+      // case from the one the base-clearance audit measured — on a *ridge* the
+      // ground falls away on both sides, so the plant depth a block needs grows
+      // with its own width and a big enough block can never be seated.
+      //
+      // The answer is not to bury it further (it disappears) and not to drop it
+      // (the chain gets a hole), but to make it smaller: the required depth
+      // falls roughly with size, the allowance falls exactly with size, so a
+      // block that does not fit at 20 m fits at 12 m and is still a block on a
+      // ridge. Two damped steps get within a few percent; a third is noise.
+      //
+      // Two guards on how hard this is allowed to pull, both learned by
+      // capture. Unbounded, it shrank crest blocks to a third of their size on
+      // steep ground and the massifs came back sprinkled with pale chips —
+      // which is the anti-pattern this whole system exists to avoid, traded
+      // straight across for the floating one.
+      //
+      //   * the criterion is the BASE_TOLERATE'th lowest probe — the same one
+      //     the anchor below uses, which is the whole point. A crag block
+      //     straddling an arete has to have a corner over air; that is what an
+      //     overhang is, and demanding all nine probes be in the hill on a
+      //     convex ridge is a demand no block of any size can meet.
+      //   * and it may not lose more than half its size whatever happens. Past
+      //     that the block has stopped being the thing the course needed —
+      //     instead the guard after the loop throws it away.
+      const size0 = size;
+      let nreq = this._probeBase(x, z, q, fp, size);
+      let plant = 0;
+      for (let it = 0; it < 4; it++) {
+        if (nreq === 0) { this._req[0] = centreH; nreq = 1; }
+        // The BASE_TOLERATE'th lowest probe, without sorting the whole array.
+        let ref = Infinity;
+        for (let k = 0; k < nreq; k++) {
+          let seen = 0;
+          for (let j = 0; j < nreq; j++) if (this._req[j] < this._req[k]) seen++;
+          if (seen === Math.min(BASE_TOLERATE, nreq - 1)) { ref = this._req[k]; break; }
+        }
+        if (!isFinite(ref)) ref = centreH;
+        plant = centreH - ref;
+        if (plant <= size * MAX_PLANT) break;
+        const next = Math.max(size * clamp((size * MAX_PLANT) / plant, 0.72, 0.94), size0 * 0.50);
+        if (next >= size - 1e-3) break;
+        size = next;
+        nreq = this._probeBase(x, z, q, fp, size);
       }
-      if (!nreq) { req[0] = centreH; nreq = 1; }
-      const reqs = req.subarray(0, nreq);
+      // Nowhere to stand. The block has been shrunk as far as it is allowed to
+      // go and its base still cannot be got into the hill, which happens where
+      // a crest walk runs off the end of an arete: the ground falls away on
+      // every side and the "hillside" under the block is a hundred metres down.
+      // Clamping there is what put a house-sized slab in clear sky above the
+      // ridge in `waterfall`, the single worst artifact this system has shipped.
+      // A hole in a chain is a much cheaper mistake than a rock in the sky.
+      if (plant > size * MAX_PLANT * 1.30) return;
+
+      const reqs = this._req.subarray(0, nreq);
       reqs.sort();
       // Not the strict minimum: BASE_TOLERATE of the nine probes are allowed to
       // stay above ground. One corner of a thirty-metre wall reaching out over

@@ -83,12 +83,24 @@ export function createRockMaterial() {
     //  colour toward its own luminance. That is stable under any sun colour,
     //  any time of day and any global grade — all of which are other authors'
     //  dials and all of which move.
-    uRockDesat:  { value: 0.80 },
+    //  Raised from 0.80. See uRockRamp: the reason the rendered pixel came back
+    //  as a red-led brown (1:0.746:0.656) despite an 80% pull to neutral is that
+    //  the 20% which survived was a *very* warm pixel and the grade downstream
+    //  warms dark pixels harder than bright ones. Both halves of that are fixed
+    //  here — this raises the neutral fraction, the ramp raises the value.
+    uRockDesat:  { value: 0.90 },
     // The neutral is not pure grey. Rock is the one place the brief allows the
     // cool complementary note, and a whisper of lavender is what stops a
     // desaturated object reading as dead cardboard. Luma-normalised, so this
     // rotates hue without touching value.
-    uRockCast:   { value: new THREE.Vector3(0.965, 0.995, 1.085) },
+    //
+    // Pushed further from grey than the old (0.965, 0.995, 1.085) because it is
+    // not fighting a neutral pipeline: measured on the terrain rock beside ours
+    // in `hero`, a surface the shader hands over as pure grey comes back as
+    // 1:0.837:0.813. Whatever the grade is doing costs roughly 0.16 of the blue
+    // ratio, so the material has to leave the surface bluer than the target by
+    // about that much for the *pixel* to land on it.
+    uRockCast:   { value: new THREE.Vector3(0.925, 0.985, 1.165) },
     // Single exposure-match dial, applied to the surface colour *before* fog,
     // so the far field still resolves into the haze rather than glowing out of
     // it. It is above 1 because the key light reaching rock in this build is
@@ -106,7 +118,53 @@ export function createRockMaterial() {
     //     gain 1.65 -> boulder 0.88 of the meadow, just over the band
     //     gain 1.45 -> 0.88 of the meadow, still at the top of the band
     //     gain 1.36 -> 0.83, mid-band, and the distant crags stop reading pale
+    //
+    // Kept only as the fallback end of `uRockAnchor` — the ramp below is what
+    // actually sets the value now. A single multiplicative gain cannot fix this
+    // system, and that is why three passes of moving it did not: it scales the
+    // lit end and the shadow end by the same factor, so the shadow end stays at
+    // a quarter of the shadow anchor no matter where it is set, and pushing it
+    // far enough to rescue the shadows blows the lit facets out.
     uRockGain:   { value: 1.36 },
+    // ── the value ramp ───────────────────────────────────────────────────────
+    //
+    // This is the fix for the #1 blocker: "every crag renders near-black warm
+    // brown", measured srgb(66,49,43), a quarter of the *shadow* anchor.
+    //
+    // Rather than gain the rendered luminance, remap it. (lo, hi) is where the
+    // material's own shading actually lands, in scene-linear before the gain;
+    // (shadowL, litL) is where the brief's two anchors sit in the same units.
+    // Everything between is a straight line, so the facet-to-facet steps and
+    // the cast shadows survive as a *compressed* range rather than being
+    // clamped — and low internal contrast on stone is reference-correct, not a
+    // compromise: plate 2's foreground boulder measures lumaP05 0.571 against
+    // lumaP95 0.595, i.e. essentially one flat value across the whole rock.
+    //
+    // The endpoints were derived from the two scene-linear measurements the
+    // previous pass left behind (a deep shaded slab at 0.036 post-gain, a
+    // sunlit facet at 0.54 post-gain, rendering at 0.13 and 0.61 display).
+    // Fitting display = 0.867 * linear^0.571 through that pair and asking for
+    // 0.32 and 0.72 display — the brief's lifted black point and a value that
+    // sits just under the sunlit meadow, which is where all five plates put
+    // their rock — gives 0.17 and 0.72 linear.
+    //
+    //   x = lo        scene-linear luminance of the darkest shaded facet
+    //   y = hi        …and of a facet in full sun
+    //   z = shadowL   target for x
+    //   w = litL      target for y
+    //
+    // litL was 0.720 for one round. Measured against the terrain's own rock at
+    // the frozen `peaks` anchor, that put a sunlit crag facet at 1.02–1.26 of
+    // the hillside it is cut out of (mean 1.08), and a rock brighter than the
+    // mountain reads as pasted onto it — the "torn paper" / white-chip failure
+    // this system has hit from the other direction twice before. 0.60 lands the
+    // same facets at 0.88–1.08, i.e. stone of the same body as the massif, with
+    // the brightest tops still the brightest thing on the rock.
+    uRockRamp:   { value: new THREE.Vector4(0.0265, 0.397, 0.170, 0.600) },
+    // How much of the ramp to believe. Below 1 the surface keeps some of the
+    // light rig's own response, so a rock still dims at dawn and still darkens
+    // going into a cast shadow rather than being pinned to a constant.
+    uRockAnchor: { value: 0.85 },
     // Luminance floor, in scene-linear units, applied after the gain.
     //
     // The global cel-shading in Stylize.js floors the *direct* diffuse term, so
@@ -186,7 +244,8 @@ export function createRockMaterial() {
     shader.fragmentShader = /* glsl */`
       uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
       uniform vec3 uSunDir, uShadowTint, uSunTint, uRockCast;
-      uniform float uAOStrength, uTime, uRockDesat, uRockGain, uRockFloorL;
+      uniform vec4 uRockRamp;
+      uniform float uAOStrength, uTime, uRockDesat, uRockGain, uRockFloorL, uRockAnchor;
       varying vec3 vBake;
       varying vec4 vRockA;
       varying vec3 vRockB;
@@ -235,10 +294,52 @@ export function createRockMaterial() {
 
         // ── bedding planes ────────────────────────────────────────────────
         // Horizontal in world space so a boulder train shares one stratigraphy.
-        // Frequency falls off with rock size or cobbles turn into liquorice.
-        float bedF = 1.15 / (0.5 + size * 0.5);
+        //
+        // The frequency used to be 1.15/(0.5 + size*0.5), which is a *fixed
+        // number of bands per rock* — so a cobble got its stripes and a 55 m
+        // cliff block got one 70 m wavelength across a face 55 m tall, i.e.
+        // nothing. That is the untextured slab the critic found intersecting
+        // the mountainside in the starting view: at close range the largest
+        // instance in the game presented a bare, flat, unbroken plane.
+        //
+        // Bedding is a property of the *rock mass*, not of the block cut out of
+        // it, so the wavelength is now set in metres and only clamped by size.
+        // A 25 m block gets four or five courses across its face; a 0.4 m
+        // cobble still gets one, and nothing anywhere runs above ~2 cycles per
+        // metre, which is the speckle limit this material has to respect.
+        float bedLambda = clamp( size * 0.55, 0.55, 7.0 );
+        float bedF = 6.2832 / bedLambda;
         float bed  = sin( vWPos.y * bedF + rnoise( vWPos.xz * 0.05 ) * 3.0 );
         bed *= 1.0 - abs( N.y );          // only visible on near-vertical faces
+
+        // ── joints ────────────────────────────────────────────────────────
+        // The cross set: near-vertical fractures that divide a long face into
+        // panels. Bedding alone gives a big wall horizontal structure and
+        // leaves it reading as one continuous ribbon; the joints are what make
+        // it read as blocks of a bed rather than as a painted stripe.
+        // Panels are metres wide, again independent of the block, so a chain of
+        // neighbouring blocks shares one joint pattern across the whole cliff.
+        float jointS = rnoise( vWPos.xz * ( 0.115 / max( bedLambda * 0.16, 0.10 ) )
+                             + vWPos.y * 0.02 );
+        float joint = smoothstep( 0.02, 0.30, abs( jointS ) ) - 0.5;
+        joint *= 1.0 - abs( N.y );
+        // Both of these are procedural and unmipped, so they must fade out
+        // before they become sub-pixel or the far field crawls. Past ~250 m a
+        // 5 m band is under two pixels and its only contribution is aliasing.
+        float camD = distance( vWPos, cameraPosition );
+        float detailFade = 1.0 - smoothstep( 130.0, 340.0, camD / max( bedLambda * 0.35, 1.0 ) );
+
+        // ── weathering on horizontal faces ────────────────────────────────
+        // Both terms above are multiplied by (1 - |N.y|), i.e. they exist only
+        // on vertical faces — which leaves the one surface that most needs
+        // help completely bare. The largest instance in the game is a 60 m
+        // slab, and what the player sees of it at close range is its *top*:
+        // one plane, one facet hash, one flat value, no bedding and no joints.
+        // That is the untextured slab the critic found in the starting view.
+        // Broad weathering mottle in plan, gated the other way round.
+        float wearN = rnoise( vWPos.xz * ( 1.05 / max( bedLambda * 0.62, 0.45 ) ) )
+                    + rnoise( vWPos.xz * ( 0.34 / max( bedLambda * 0.62, 0.45 ) ) ) * 0.7;
+        float wear = wearN * abs( N.y );
 
         // ── base lavender-grey ────────────────────────────────────────────
         //
@@ -266,8 +367,14 @@ export function createRockMaterial() {
         float val = 0.13
                   + up * 0.17                 // sky exposure: tops, not sides
                   + facet * 0.24              // per-facet tone, the main split
-                  + bed * 0.06
-                  + tint * 0.07
+                  + bed * 0.075 * detailFade
+                  + joint * 0.13 * detailFade
+                  + wear * 0.085 * detailFade
+                  // Per-instance value jitter, raised from 0.07. A bank of
+                  // cobbles all at one value is a texture; the field needs an
+                  // internal value range before any single stone in it reads
+                  // as an object.
+                  + tint * 0.11
                   - (1.0 - hN) * 0.08;        // bases sit a little darker
         vec3 rock = mix( uRockDeep, uRockLit, clamp( val, 0.0, 1.0 ) );
         // Creases: multiplied, not tinted. The floor was 0.52, which stacked
@@ -364,7 +471,23 @@ export function createRockMaterial() {
         // grade — belongs to other authors and moves without warning.
         float rockL = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
         gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( rockL ) * uRockCast, uRockDesat );
-        gl_FragColor.rgb *= uRockGain;
+
+        // ── value ramp (see uRockRamp) ────────────────────────────────────
+        // Remap the rendered luminance onto the brief's shadow→lit anchors
+        // instead of scaling it. Purely a scale on the colour we already have,
+        // so the hue set by the governor above is untouched.
+        float L0 = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+        float t  = clamp( ( L0 - uRockRamp.x ) / max( uRockRamp.y - uRockRamp.x, 1e-4 ), 0.0, 1.0 );
+        // Linear inside the band, and let anything brighter than the sunlit
+        // anchor keep going rather than clamping — a specular-ish top facet or
+        // a snow-lit crest should still be the brightest thing on the rock.
+        // Anything brighter than the sunlit anchor keeps going rather than
+        // clamping, so a specular-ish top facet is still the brightest thing on
+        // the rock — but at a third of its own slope, or the few facets past
+        // the top of the ramp punch out of the massif as white chips.
+        float over = max( L0 - uRockRamp.y, 0.0 );
+        float Lt = mix( uRockRamp.z, uRockRamp.w, t ) + over * 0.30;
+        gl_FragColor.rgb *= mix( uRockGain, Lt / max( L0, 1e-5 ), uRockAnchor );
 
         // Lifted black point (see uRockFloorL). Additive rather than a max() so
         // the facet-to-facet steps survive inside the shadow instead of all
@@ -376,6 +499,6 @@ export function createRockMaterial() {
       #include <fog_fragment>`);
   };
 
-  mat.customProgramCacheKey = () => 'procedural-autumn-rock-v2';
+  mat.customProgramCacheKey = () => 'procedural-autumn-rock-v3';
   return mat;
 }
