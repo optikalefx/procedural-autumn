@@ -22,3 +22,4 @@ same places are photographed every round and the sheets are directly comparable.
 | 014 | 2026-08-19 | conifer canopy and silhouette | [014](014-2026-08-19-conifer-canopy-and-silhouette.png) |
 | 015 | 2026-08-19 | conifer canopy, silhouette, birch bark, stand variety | [015](015-2026-08-19-conifer-canopy-silhouette-birch-bark-stand-varie.png) |
 | 016 | 2026-08-19 | terrain: mountain structure, triplanar fix, ground substrate | [016](016-2026-08-19-terrain-mountain-structure-triplanar-fix-ground-.png) |
+| 017 | 2026-08-19 | conifer canopy value range, size hierarchy and far-field variety | [017](017-2026-08-19-conifer-canopy-value-range-size-hierarchy-and-fa.png) |

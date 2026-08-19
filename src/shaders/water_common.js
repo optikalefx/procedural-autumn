@@ -206,8 +206,22 @@ vec3 wEnvReflect(vec3 P, vec3 R){
       // surface then rotates it toward the water hue the lake fills with olive
       // patches that read as scum. In the plates a reflected bank is a darker,
       // near-monochrome smear — value, not colour.
-      col = wDesat(col, 0.62);
-      col = mix(col, haze, clamp(0.46 + t / 260.0, 0.0, 0.90));
+      // Hazed, but not out of existence. At 0.46 + t/260 a bank forty metres
+      // away came back 61% haze and a far shore 90%, so even once the march
+      // was allowed to reach them there was nothing left of them to see. A
+      // reflection *is* a darker, flatter copy — it is not fog.
+      col = wDesat(col, 0.55);
+      // And a *darker* copy, which matters more than it sounds. A reflected
+      // bank in the plates is a dark, faintly violet mass — the near shore of
+      // plate 3 reads as a shadow lying on the water, and it is that dark band
+      // that gives the river its value composition. Handing back the hillside
+      // at its own brightness instead does two bad things: the water loses the
+      // one dark note it has, and a warm gold reflection mixed into a blue body
+      // cancels to neutral. Measured mid-channel at #5c6077, chroma 0.107 —
+      // the grey a critic pass called out, arriving from the reflection rather
+      // than from the body.
+      col *= 0.58;
+      col = mix(col, haze, clamp(0.22 + t / 620.0, 0.0, 0.80));
       return col;
     }
     t += dt; dt *= 1.24;

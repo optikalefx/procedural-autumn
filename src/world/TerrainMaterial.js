@@ -73,13 +73,27 @@ export function createTerrainMaterial(world, opts = {}) {
     // single cast vector (0.965, 0.995, 1.085), so a crag block and the massif
     // it stands on still agree; what this adds is the palette's own lit/shadow
     // rock split, which a flat cast was averaging away.
-    uRockCastLit:   { value: new THREE.Vector3(1.050, 1.000, 0.955) },
+    // REBALANCED AGAIN, and this time toward neutral on the LIT side too.
+    // The warm lit cast was there to hold hero's chroma above the brief's 0.28
+    // floor, and measurement says the trade did not pay: hero came back at
+    // 0.273 anyway — still under the floor — while neutralPct sat at 0.1%
+    // against reference plate 2's 28.4%, and a zoom on the massif showed a
+    // warm putty tan where the palette specifies #c3bfcc lavender-grey and
+    // says in as many words "never brown-grey". The plates are bimodal: nearly
+    // neutral stone beside strongly coloured ground. Chroma is bought back on
+    // the ground (uGrassSat) where it is on-palette, not on the rock where it
+    // is a palette violation.
+    //
+    // The mean of the two is still (0.958, 0.993, 1.098) against the rocks
+    // system's single cast of (0.965, 0.995, 1.085), so a crag block and the
+    // massif it stands on continue to agree.
+    uRockCastLit:   { value: new THREE.Vector3(0.985, 0.995, 1.045) },
     uRockCastShade: { value: new THREE.Vector3(0.930, 0.990, 1.150) },
-    uRockDesat:   { value: 0.38 },
+    uRockDesat:   { value: 0.45 },
     // Pulling a colour to its own luminance loses the brightest channel, so
     // the governed result needs a gain or the massifs go a stop darker than
     // the boulders standing on them.
-    uRockGain:    { value: 1.05 },
+    uRockGain:    { value: 1.13 },
     // Counterweight to the governor. See the block at the end of the fragment
     // shader: the plates are bimodal — near-neutral stone against strongly
     // coloured ground — and greying the rock without lifting the ground gives
@@ -89,7 +103,9 @@ export function createTerrainMaterial(world, opts = {}) {
     // than the palette's #f0ad46, so a plain saturation gain amplifies the red
     // bias and the vehicle frame's bare slope came back a flat scarlet ramp. The
     // slope's real defect is that it has no marks on it, not that it is pale.
-    uGrassSat:    { value: 0.10 },
+    // Raised with the governor. Greying the stone harder has to be paid for
+    // somewhere, and the plates say it is paid on the meadow.
+    uGrassSat:    { value: 0.19 },
 
     uSnowLine:    { value: 268.0 },
 
@@ -268,9 +284,36 @@ export function createTerrainMaterial(world, opts = {}) {
         // real world-space size of a pixel on *this* surface at *this* angle,
         // so taking the wider of the two makes the low-pass correct on a
         // grazing wall and on a face square to camera alike.
-        vec2 fp = fwidth(vWorldPos.xz);
-        float footM = length(fp);
-        float stencilM = clamp(max(camDist * 0.009, footM * 2.2), 7.0, 64.0);
+        // THE FOOTPRINT IS COMPUTED ANALYTICALLY, NOT WITH fwidth, AND THAT IS
+        // THE FIX FOR THE HERRINGBONE. A screen-space derivative of an
+        // interpolated attribute is *constant across a triangle* and jumps at
+        // every triangle edge. Feeding it into the stencil width therefore made
+        // the stencil — and so the curvature and the relief normal derived from
+        // it — piecewise constant per triangle, and on a face seen edge-on that
+        // printed the LOD grid onto the rock as a regular lattice of chevrons.
+        // Measured on the drive cliff: pitch ~30 px at ~800 m, which is 14 m,
+        // which is the LOD-3 vertex spacing exactly.
+        //
+        // The same quantity in closed form is continuous everywhere: a pixel
+        // subtends a fixed angle, so it covers camDist * k metres square to the
+        // eye and camDist * k / cos(view, normal) metres along a surface tilted
+        // away from it. N is a smoothly interpolated attribute, so this varies
+        // smoothly across a triangle boundary and cannot print the mesh.
+        //
+        // THE GRAZING TERM IS ALSO CAPPED HARD, and that is the other half of
+        // the same defect. Opened to 64 m it did not merely blur — it changed
+        // what the curvature below *means*. A 60 m Laplacian taken anywhere on
+        // the concave lower half of a mountain flank is strongly positive over
+        // the entire face, so curv saturated across the whole drive cliff and
+        // the crease darkening — meant to be a crease — multiplied the largest
+        // mass in that frame by 0.6 wholesale. Debug mask 2 showed it: the face
+        // came back solid red, "everything here is a deep hollow". That is what
+        // made it a dark muddy slab, and the chevrons were only the residual
+        // structure showing through a term that was pinned everywhere else.
+        vec3 Vv = normalize(cameraPosition - vWorldPos);
+        float graze = max(abs(dot(Vv, N)), 0.30);
+        float footM = camDist * 0.0012 / graze;
+        float stencilM = clamp(max(camDist * 0.009, footM * 3.0), 7.0, 30.0);
         vec2 e2 = vec2(stencilM / uWorldSize, 0.0);
         float hL = texture2D(uDataTex, uvw - e2.xy).r;
         float hR = texture2D(uDataTex, uvw + e2.xy).r;
@@ -285,7 +328,16 @@ export function createTerrainMaterial(world, opts = {}) {
         // oblique cliff the moment the relief stencil was narrowed. Aspect is
         // a property of the massif's big planes, so it gets a stencil four
         // times wider and the fine relief is left to the lighting.
-        float coarseM = stencilM * 3.2;
+        // FLOORED IN WORLD UNITS, not just scaled off the fine stencil. Aspect
+        // is a property of a massif's big planes — which buttress you are
+        // looking at — and at vista range the fine stencil clamps to 7 m, so
+        // 3.2x of it was 22 m: finer than the drainage flutes themselves. The
+        // three-step aspect staircase below then quantised a signal that
+        // oscillates left-right across every flute, and the result on the
+        // oblique drive cliff was a regular herringbone of dark chevrons in
+        // rows — measured across the entire upper third of that frame. A
+        // stencil wider than the flutes cannot chevron on them.
+        float coarseM = max(stencilM * 3.2, 62.0);
         vec2 e4 = vec2(coarseM / uWorldSize, 0.0);
         float cL = texture2D(uDataTex, uvw - e4.xy).r;
         float cR = texture2D(uDataTex, uvw + e4.xy).r;
@@ -316,7 +368,17 @@ export function createTerrainMaterial(world, opts = {}) {
         // flipped sign pixel to pixel. Compressing the tail keeps the ordinary
         // gully signal at full strength and stops only the spikes.
         curvF = curvF / (1.0 + abs(curvF) * 0.55);
-        float curv = curvC * 0.52 + curvF * 0.48;
+        // THE WIDE READ IS NOW A MINORITY TERM, AND THAT IS A CORRECTION.
+        // A Laplacian is only a crease detector at crease scale. Taken at 60 m
+        // or more it is a landform detector, and a landform detector is not
+        // zero-mean over a mountain flank: the whole concave lower half of any
+        // massif reads strongly positive, so the crease darkening stopped being
+        // a crease and became a flat brightness cut over the largest mass in
+        // the drive frame. Debug mask 2 came back solid red across that entire
+        // cliff. Held to a fifth, and soft-clipped like its narrow sibling, it
+        // still carries the benches without being able to pin the transfer.
+        curvC = curvC / (1.0 + abs(curvC) * 0.85);
+        float curv = curvC * 0.20 + curvF * 0.80;
 
         // Hand the heightfield normal to the lighting block. Past ~200 m the
         // drawn mesh is 6-24 m per vertex, which is coarser than the relief it
@@ -457,12 +519,16 @@ export function createTerrainMaterial(world, opts = {}) {
         // very dark violet) gave a massif whose shaded half was a low-value
         // blue slab — measured at 46% blue+violet on the peaks view against a
         // reference that runs about 1%.
-        vec3 rock = mix(uRockMid, uRockLit, smoothstep(0.24, 0.80, macro));
+        // Biased brighter than it was. The palette's rock is a HIGH-value
+        // lavender-grey and ours measured luma 0.55 in the hero vista where
+        // reference plate 2's cliff sits at 0.60-0.75 — the massif was reading
+        // as a dark substance under haze rather than as pale stone in it.
+        vec3 rock = mix(uRockMid, uRockLit, smoothstep(0.14, 0.72, macro));
         // Only a whisper of warm. At 0.30 the massifs came out peach and read
         // as sand dunes rather than rock, which the palette forbids outright.
         // The lavender has to survive a warm key light, so the albedo stays
         // cool and the shade rebalance below does the anti-blue work instead.
-        rock = mix(rock, uRockWarm, 0.14);
+        rock = mix(rock, uRockWarm, 0.07);
         rock = mix(rock, uRockShadow, smoothstep(0.58, 0.16, macro2) * 0.22);
         float bedStep = (hardRock - 0.5) * 2.0;                  // -1 .. 1
         rock *= 1.0 + bedStep * 0.15 * smoothstep(0.60, 1.05, slope);
@@ -507,7 +573,15 @@ export function createTerrainMaterial(world, opts = {}) {
         // the *light*, which is both more convincing and free of the artefacts
         // painted tone brings, so this drops to a hint of plane-to-plane
         // difference on top of it rather than carrying the whole load.
-        rock *= 0.87 + faceTone * (0.15 + 0.20 * (1.0 - fMeso));
+        // The distance boost is gone. It read "the far massif has no form, so
+        // paint some", and it inverted into the worst artefact in the set: at
+        // vista range the amplitude reached 0.35 of value, quantised to three
+        // steps, on an aspect signal fine enough to flip across every flute.
+        // Form at range is now the heightfield's job — the bench pass in
+        // TerrainGen cuts real treads and risers and the relief normal lights
+        // them — so this goes back to what it is honestly worth: a hint of
+        // plane-to-plane difference laid on top of geometry that already reads.
+        rock *= 0.91 + faceTone * 0.12;
         // Broad tonal drift so a big face is never one flat value.
         rock *= 0.92 + macro * 0.11 + macro2 * 0.08;
         // Crease and lip. This is the cue the close reference plates lean on
@@ -519,7 +593,7 @@ export function createTerrainMaterial(world, opts = {}) {
         // that survives an oblique view: this is the "distinct planes with dark
         // crevice lines between them" of the close reference plate, and it is
         // earned from real geometry rather than painted as a line.
-        rock *= 1.0 - smoothstep(0.10, 0.95, curv) * 0.44;
+        rock *= 1.0 - smoothstep(0.22, 1.05, curv) * 0.50;
         rock *= 1.0 + smoothstep(-0.15, -0.95, curv) * 0.20;
         // The deepest hollows go to the crevice colour outright. Reference
         // plate 2's cliff gets its read from the near-black lines between
@@ -527,7 +601,7 @@ export function createTerrainMaterial(world, opts = {}) {
         // against the plate's 0.18. rockShadow is a dark violet and would be
         // wrong over a whole face — used only where the curvature says a
         // genuine cleft is, it is exactly the crevice line the plate shows.
-        rock = mix(rock, uRockShadow, smoothstep(0.40, 1.05, curv) * 0.34);
+        rock = mix(rock, uRockShadow, smoothstep(0.48, 1.15, curv) * 0.44);
         // Close-range weathering grain. Both terms are already distance-faded
         // to their own mean, so this buys texture on the face you are standing
         // under without putting anything on the ridge two kilometres away —
@@ -598,7 +672,7 @@ export function createTerrainMaterial(world, opts = {}) {
         // the shading in the gullies, and it is the thing that stops a big
         // slope reading as one smooth painted ramp. Geometric, so it tracks the
         // real drainage the bake cut rather than inventing texture.
-        albedo *= 1.0 - smoothstep(0.14, 1.00, curv) * 0.23;
+        albedo *= 1.0 - smoothstep(0.30, 1.15, curv) * 0.20;
         albedo *= 1.0 + smoothstep(-0.20, -1.00, curv) * 0.13;
 
         // Scree: the sim records where talus and alluvium came to rest. It

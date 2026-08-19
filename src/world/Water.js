@@ -35,6 +35,11 @@ const RIVER_BUCKET = 1024;   // metres; coarse spatial split so culling can work
 const LAKE_QUAD = 8;         // metres per lake quad — fine enough that the surface
                              // follows the baked water instead of averaging it
 const LAKE_CHUNK = 768;      // metres per lake draw call
+// Metres a single lake quad's four corners may disagree about the surface
+// height before the quad is thrown away. Standing water is level; anything
+// steeper than this is the mesh bridging two different bodies across a lip,
+// and it draws as a vertical wall of water down the rock between them.
+const LAKE_LEVEL_STEP = 2.5;
 // A ribbon and a lake covering the same flooded reach are coplanar and would
 // z-fight. Six centimetres is far more than depth precision at these ranges and
 // far less than anything the eye can read as a step.
@@ -210,14 +215,23 @@ void main() {
   //    the *rise* that makes whitewater, not shallowness on its own; a calm
   //    ankle-deep run is glass, and treating depth alone as foam is what turns
   //    a whole river white.
-  float bedAhead = wBed(vWPos.xz + vTan * (1.5 + vWidth * 0.35));
+  float aheadM = 1.5 + vWidth * 0.35;
+  float bedAhead = wBed(vWPos.xz + vTan * aheadM);
   float rise = clamp((bedAhead - bed) * 2.6, 0.0, 1.0);
+  // Downstream gradient of the bed, as a rise over run. Past about 30 degrees
+  // the channel is not a channel any more, and the ribbon draws a thin blue
+  // thread straight down a rock face — visible as a hairline scratch on the
+  // cliff beside the big fall. That water is the falls system's job, so the
+  // ribbon hands over: it goes white first (a cascade on stone is whitewater,
+  // never a blue line) and then fades out entirely.
+  float drop = (bed - bedAhead) / aheadM;
+  float cliff = smoothstep(0.58, 1.15, drop);
   float obstacle = rise * (0.15 + 0.85 * vFlow) * smoothstep(1.8, 0.35, depth);
 
   // 3. steep, fast reaches go white all over
   float rapids = smoothstep(0.28, 0.85, vTurb) * (0.35 + 0.65 * vFlow);
 
-  float drive = clamp(bankFoam * 0.70 + obstacle * 0.80 + rapids * 0.95, 0.0, 1.0);
+  float drive = clamp(bankFoam * 0.70 + obstacle * 0.80 + rapids * 0.95 + cliff, 0.0, 1.0);
   float cut = uFoamCut - drive * 0.34;
   float foam = smoothstep(cut, cut + 0.10, fn);
   foam = max(foam, smoothstep(cut + 0.12, cut + 0.21, fn2) * 0.7);
@@ -292,7 +306,9 @@ void main() {
   // the marched reflection is noise, not detail.
   vec3 Nr = normalize(mix(N, vec3(0.0, 1.0, 0.0), clamp(foot * 3.0, 0.0, 0.94)));
   vec3 R = reflect(-V, Nr);
-  float marchOn = 1.0 - smoothstep(0.03, 0.11, foot);
+  // Same correction as the lake: the old cutoff at a footprint of 0.11 m meant
+  // a river reflected nothing but sky past a few metres.
+  float marchOn = 1.0 - smoothstep(1.2, 4.0, foot);
   vec3 envRaw = wSkyTilt(R);
   if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
   // Rotated a fraction toward the channel's own hue, never multiplied by it: a
@@ -321,6 +337,12 @@ void main() {
   col *= uCoolTint;
 
   alpha = mix(alpha, min(1.0, alpha + 0.45), foam);
+  // Hand the steep reaches over to the falls system (see cliff, above). A hard
+  // hand-off, not a fade: a ribbon left at even a few percent alpha in front
+  // of a curtain shows up as dark blotches chopping the white water into
+  // segments, which is worse than either surface on its own.
+  alpha *= 1.0 - cliff;
+  if (alpha < 0.012) discard;
 
   gl_FragColor = vec4(col, alpha);
   #include <fog_fragment>
@@ -556,7 +578,19 @@ void main() {
   // flattened by a footprint of 0.31 m the reflected direction is a smooth
   // function of position again and the hit/miss test stops dithering. So the
   // cutoff belongs *past* the point where Nr goes flat, not before it.
-  float marchOn = 1.0 - smoothstep(0.40, 1.25, foot);
+  //
+  // ...and it was still an order of magnitude too tight. The footprint on a
+  // lake seen from its own bank is *dominated by the grazing angle*, not by
+  // distance: three metres of eye height over water sixty metres away gives
+  // cosI ~ 0.05 and a footprint near two metres, so a cutoff at 1.25 switched
+  // the landscape reflection off about twenty-five metres out. Every lake in
+  // the game was therefore body colour plus flat sky — measured, and it is
+  // exactly the "no reflection of sky or shore anywhere in the build" a critic
+  // recorded. Nr is fully flat by a footprint of 0.31, so past that the march
+  // is a smooth function of position and there is nothing left to dither; the
+  // cutoff only has to stay ahead of the point where the *heightfield itself*
+  // is coarser than the pixel.
+  float marchOn = 1.0 - smoothstep(3.0, 9.0, foot);
   vec3 envRaw = wSkyTilt(R);
   if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
   // A reflection off the air/water interface is spectrally neutral: it is the
@@ -576,7 +610,22 @@ void main() {
   // peaks anchor. Past a few hundred metres the only thing that still says
   // "water" through that much haze is *value*, and value is what the body
   // colour has and the reflected sky does not.
-  float mirror = clamp(fres * mix(0.86, 0.22, far), 0.0, 0.62) * smoothstep(0.10, 1.2, depth);
+  // ...and the distant throttle is gone entirely. It was compensating for the
+  // *content* of the reflection, not for its strength: with the march cut off
+  // at twenty-five metres the only thing a grazing lake could hand back was
+  // the cream horizon band, so pulling the mirror down at distance was the
+  // only way to stop a basin reading as a pale slab.
+  //
+  // But that is also what killed every distant lake in the game. Measured on
+  // the peaks mask: the water averaged #8f6d47 against #bf7838 for the land
+  // it covers — a desaturated copy of the hillside, because a diffuse body
+  // this dark (linear luma ~0.07) is almost entirely eaten by four hundred
+  // metres of haze. Water is bright at a grazing angle *because* it is a
+  // mirror; taking the mirror away leaves nothing for the haze to work on.
+  // With the march now reaching the far bank the reflection is hills and the
+  // higher, bluer sky above them — cooler and darker than the gold valley —
+  // so fresnel can simply be allowed to do its job.
+  float mirror = clamp(fres * 0.90, 0.0, 0.88) * smoothstep(0.10, 1.2, depth);
   vec3 col = mix(lit, env, mirror);
 
   // Sun path. Broad and graded, never a hard hotspot — and band-limited, which
@@ -1104,6 +1153,25 @@ export class Water extends System {
             const a = vert(cx, cz), b = vert(cx + 1, cz);
             const c = vert(cx + 1, cz + 1), d = vert(cx, cz + 1);
             if (a < 0 || b < 0 || c < 0 || d < 0) continue;
+            // A lake surface is level. Reject any quad whose corners disagree
+            // about where the surface is by more than a step.
+            //
+            // This is the bug behind everything a critic pass logged against
+            // the waterfall view. The baked water grid marks the pool above a
+            // lip and the pool below it as water, sixty metres apart in
+            // height; the mesh then joins them with one 8 m quad, which is a
+            // near-vertical wall of "lake" hanging down the cliff face. Two of
+            // them across one gorge is the floating pale-blue X with no source
+            // and no ground contact. One of them in front of a fall is the
+            // "flat pale rectangle with horizontal pencil streaking" — the
+            // pencil streaking is the *lake's* wind ripple seen edge on, and
+            // an isolation capture (lake chunks hidden, everything else on)
+            // shows the falls system's curtain behind it, correctly white and
+            // fully streaked, having been covered up the whole time.
+            const ya = pos[a * 3 + 1], yb = pos[b * 3 + 1];
+            const yc = pos[c * 3 + 1], yd = pos[d * 3 + 1];
+            const span = Math.max(ya, yb, yc, yd) - Math.min(ya, yb, yc, yd);
+            if (span > LAKE_LEVEL_STEP) continue;
             idx.push(a, c, b, a, d, c);
             quadCount++;
           }

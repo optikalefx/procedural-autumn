@@ -42,7 +42,14 @@ const CFG = {
   // nothing visible and this system has to stay inside 120.
   midVariants: 2,        // how many of them survive into the mid LOD
 
-  nearDist: 96,          // full geometry
+  // 84 m, down from 96. The near LOD carries three times the leaf cards of the
+  // mid one *and* it is the only foliage that casts, so every near instance is
+  // paid for twice — once in the shadow pass and once in the main pass, both
+  // as double-sided alpha-tested quads. Shrinking the radius by an eighth drops
+  // near instances by a quarter (area, not radius) and it is the cheapest
+  // frame-time this system has to give: at 84 m a crown is still 80 px across
+  // and the mid prototype it hands over to is the same tree.
+  nearDist: 84,          // full geometry
   midDist: 255,          // reduced geometry
   farDist: 1000,         // impostor card; past this, nothing (fog owns it)
 
@@ -55,6 +62,13 @@ const CFG = {
 
   impostorTileW: 192,
   impostorTileH: 288,
+  // Distinct impostor silhouettes baked per species. One tile per species meant
+  // every spruce past 255 m was literally the same outline pasted across a
+  // hillside — the "hundreds of same-size cones" the critic counted are mostly
+  // this, not the scatter. Two tiles doubles the far-field silhouette vocabulary
+  // for one extra bake each and no runtime cost at all: the atlas is still one
+  // texture and the far field is still one draw call.
+  impVariants: 2,
 };
 
 
@@ -62,19 +76,29 @@ const CFG = {
 // closed canopy in the groves, so they scale it up rather than redefining it.
 const DENSITY_MUL = 3.9;
 
-// Beyond `nearDist` a tree's importance rank (0..1, small = big tree) has to
-// beat this curve to survive. Saplings at 600 m are three pixels of noise.
-// Beyond `nearDist` a tree's importance rank (0..1, small = big tree) has to
-// beat this curve to survive. It used to thin hard, which left the far field as
-// evenly-spaced hero trees — a polka-dot of identical cones rather than the
-// continuous textured band the reference paints. Impostors cost two triangles
-// in one shared draw call, so the thinning only needs to keep saplings out of
-// the last few hundred metres.
-function rankCutoff(d) {
-  if (d < 300) return 1.0;
-  if (d < 560) return 0.90;
-  if (d < 820) return 0.70;
-  return 0.48;
+// Far-field thinning.
+//
+// This used to be a hard threshold on tree size: past 820 m only trees above
+// 0.72 scale survived at all. That is *why* every distant hillside came back as
+// hundreds of identically-sized cones — the cull was selecting a narrow slice
+// out of the middle of the size distribution and throwing the rest away, so the
+// surviving population genuinely had no size hierarchy left in it. A hard cut
+// also pops: a tree crosses one metre and appears.
+//
+// Instead, thin with a *probability* that ramps across a size window which
+// widens with distance. Every big tree still survives at every range (so the
+// stand keeps its structure and its ridge line), mid trees thin out gradually,
+// and saplings fade out first. The draw is deterministic per tree — keyed off
+// its own stored phase — so a tree does not flicker in and out as the camera
+// moves, and the same world always thins the same way.
+//
+// lo = size below which a tree is certainly dropped, hi = size above which it
+// is certainly kept.
+function thinWindow(d) {
+  if (d < 300) return null;                 // keep everything
+  if (d < 560) return [0.00, 0.30];         // saplings only
+  if (d < 820) return [0.18, 0.62];
+  return [0.32, 0.96];
 }
 
 export class Trees extends System {
@@ -98,7 +122,15 @@ export class Trees extends System {
     const { scene, preset } = this.ctx;
     this.treeMul = preset?.treeMul ?? 1;
 
-    this.atlas = buildClusterAtlas(SEED & 0xffff, 256);
+    // 448 texels a tile, not 256. A leaf dab on a hero tree is over a metre
+    // across, so when the camera comes within a few metres of a crown the tile
+    // is magnified five to ten times and its marks stop reading as crisp brush
+    // strokes and start reading as soft overlapping cellophane ellipses — which
+    // is what the `waterfall` anchor catches whenever a big tree stands near it.
+    // The atlas is one texture shared by every tree in the game, so this is 3 MB
+    // for a defect that shows on the closest, most-looked-at foliage.
+    this.atlas = buildClusterAtlas(SEED & 0xffff, 448);
+    this.atlasTexels = 896;
     this._buildPrototypes();
     this._buildMaterials();
     this._buildMeshes();
@@ -134,7 +166,14 @@ export class Trees extends System {
           },
           mid: vi < CFG.midVariants ? {
             bark: buildBarkGeometry(tree, sp, { radialSegs: 3, maxLevel: 0 }),
-            leaf: buildLeafGeometry(tree, { keep: 2, sizeBoost: 0.86 }),
+            // Every third clump, not every second. Mid instances outnumber near
+            // ones four to one, so their leaf quads are the single biggest
+            // triangle line item in the game's largest triangle consumer. The
+            // survivors are grown by sqrt(keep) so the crown's silhouette area
+            // is held, and at 96-255 m the loss of mark *count* is not visible —
+            // a crown is forty pixels wide there and it is the mass, not the
+            // individual mark, that the eye is reading.
+            leaf: buildLeafGeometry(tree, { keep: 3, sizeBoost: 0.82 }),
           } : null,
         });
       }
@@ -144,12 +183,13 @@ export class Trees extends System {
 
 
   _buildMaterials() {
-    this.leafNear = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40 });
+    const texels = this.atlasTexels;
+    this.leafNear = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40, atlasTexels: texels });
     // A lower cutout at distance compensates for mip-chain alpha erosion, which
     // otherwise makes mid-LOD crowns visibly thin out as you back away.
-    this.leafMid = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.26 });
+    this.leafMid = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.26, atlasTexels: texels });
     this.bark = createBarkMaterial(this.shared);
-    this.leafBake = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40, bake: true });
+    this.leafBake = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40, bake: true, atlasTexels: texels });
     this.barkBake = createBarkMaterial(this.shared, { bake: true });
     // Impostor material is created later in _bakeImpostors; it appends itself.
     this._fogMats = [this.leafNear.mat, this.leafMid.mat, this.bark.mat];
@@ -261,9 +301,11 @@ export class Trees extends System {
   _bakeImpostors() {
     const renderer = this.ctx.renderer;
     const N = SPECIES.length;
+    const IV = CFG.impVariants;
+    const TILES = N * IV;
     const W = CFG.impostorTileW, H = CFG.impostorTileH;
 
-    const rt = new THREE.WebGLRenderTarget(W * N, H, {
+    const rt = new THREE.WebGLRenderTarget(W * TILES, H, {
       minFilter: THREE.LinearMipmapLinearFilter,
       magFilter: THREE.LinearFilter,
       generateMipmaps: true,
@@ -287,8 +329,9 @@ export class Trees extends System {
 
     this.impostorDims = [];
 
-    for (let si = 0; si < N; si++) {
-      const p = this.protos[si][0];
+    for (let ti = 0; ti < TILES; ti++) {
+      const si = (ti / IV) | 0, vi = ti % IV;
+      const p = this.protos[si][vi];
       const src = p.mid ?? p.near;
       bakeScene.clear();
 
@@ -317,8 +360,8 @@ export class Trees extends System {
       cam.updateProjectionMatrix();
       cam.updateMatrixWorld();
 
-      rt.viewport.set(si * W, 0, W, H);
-      rt.scissor.set(si * W, 0, W, H);
+      rt.viewport.set(ti * W, 0, W, H);
+      rt.scissor.set(ti * W, 0, W, H);
       renderer.setRenderTarget(rt);
       renderer.render(bakeScene, cam);
 
@@ -327,8 +370,8 @@ export class Trees extends System {
     }
 
     rt.scissorTest = false;
-    rt.viewport.set(0, 0, W * N, H);
-    rt.scissor.set(0, 0, W * N, H);
+    rt.viewport.set(0, 0, W * TILES, H);
+    rt.scissor.set(0, 0, W * TILES, H);
     renderer.setRenderTarget(prevTarget);
     renderer.setClearColor(prevClear, prevAlpha);
 
@@ -336,7 +379,7 @@ export class Trees extends System {
     this._impostorRT = rt;
 
     this.impostorMat = createImpostorMaterial(
-      this.impostorTex, this.shared, N, [CFG.farDist * 0.80, CFG.farDist], W * N);
+      this.impostorTex, this.shared, TILES, [CFG.farDist * 0.80, CFG.farDist], W * TILES);
     this._fogMats.push(this.impostorMat.mat);
 
     const geom = buildImpostorGeometry();
@@ -475,10 +518,11 @@ export class Trees extends System {
     const cap = 120000;
     const px = new Float32Array(cap), py = new Float32Array(cap), pz = new Float32Array(cap);
     const pscale = new Float32Array(cap), pcos = new Float32Array(cap), psin = new Float32Array(cap);
-    const pspec = new Uint8Array(cap), pvar = new Uint8Array(cap), prank = new Float32Array(cap);
+    const pspec = new Uint8Array(cap), pvar = new Uint8Array(cap), pjit = new Float32Array(cap);
     const pcolA = new Float32Array(cap * 3), pcolB = new Float32Array(cap * 3), pbark = new Float32Array(cap * 3);
     const pphase = new Float32Array(cap), pstiff = new Float32Array(cap);
     const pImpH = new Float32Array(cap), pImpW = new Float32Array(cap);
+    const pImpT = new Float32Array(cap);
     const pradius = new Float32Array(cap);
     let n = 0;
 
@@ -519,12 +563,30 @@ export class Trees extends System {
           // of mid trees, and a handful of heroes that are twice anything near
           // them. A single lerp over one random gives a mush of mediums, which
           // is exactly what the art review called out.
+          // The cube gave a distribution whose *visible* half was all crammed
+          // against its own ceiling: the median tree came out at 0.35 scale
+          // (hidden in the grass) while everything big enough to read on a
+          // skyline sat between 0.85 and 0.98 — which is why a treeline came
+          // back looking like a trimmed hedge with every crown at one height.
+          // A gentler exponent over a wider range keeps the sapling floor the
+          // forest floor needs and gives the canopy an actual continuum above
+          // it, so a stand has a top storey, an understorey and something in
+          // between rather than two populations with a gap.
           const u = rng();
-          let scale = lerp(0.26, 0.98, u * u * u);
-          if (rng() < 0.085) scale = lerp(1.05, 1.85, rng() * rng());   // hero
+          let scale = lerp(0.26, 1.16, Math.pow(u, 2.1));
+          if (rng() < 0.085) scale = lerp(1.20, 1.95, rng() * rng());   // hero
           // Altitude and dryness stunt growth — treeline trees are runts.
           scale *= lerp(0.70, 1.0, 1 - smoothstep(150, 250, h));
           scale *= lerp(0.84, 1.08, clamp01(m));
+          // Absolute ceiling, in metres. Scale is a multiplier on a prototype
+          // whose own height was already rolled from a range, so the two ranges
+          // multiply: a hero draw on a 30 m spruce prototype grew a 58 m tree.
+          // Beyond the fact that no spruce is 58 m, every foliage card on it is
+          // scaled by the same factor, so its needle sprays came out five to
+          // eight metres across and a near conifer read as a banana palm. The
+          // cap is on the tree, not on the draw, so the size hierarchy is intact
+          // everywhere below it.
+          if (sp.maxHeight) scale = Math.min(scale, sp.maxHeight / proto.height);
 
           const radius = proto.halfWidth * scale;
           if (!this._space(occ, OW, OCC, half, x, z, radius, px, pz, pradius)) continue;
@@ -552,8 +614,8 @@ export class Trees extends System {
           pcos[n] = Math.cos(rot); psin[n] = Math.sin(rot);
           pspec[n] = si; pvar[n] = vi;
           pradius[n] = radius;
-          // Importance: big trees first when the far field is thinned.
-          prank[n] = clamp01(1 - scale * 0.72);
+          // Stable per-tree draw for the far-field thinning (see thinWindow).
+          pjit[n] = rng();
           pcolA[n * 3] = cA.r; pcolA[n * 3 + 1] = cA.g; pcolA[n * 3 + 2] = cA.b;
           pcolB[n * 3] = cB.r; pcolB[n * 3 + 1] = cB.g; pcolB[n * 3 + 2] = cB.b;
           pbark[n * 3] = cBk.r; pbark[n * 3 + 1] = cBk.g; pbark[n * 3 + 2] = cBk.b;
@@ -561,8 +623,13 @@ export class Trees extends System {
           // Slender trees whip; heavy oaks and stiff conifers barely move.
           pstiff[n] = (sp.conifer ? 0.45 : lerp(1.15, 0.62, clamp01(sp.trunkRadiusK * 22))) *
                       lerp(1.15, 0.85, clamp01(scale));
-          pImpH[n] = this.impostorDims[si].height * scale;
-          pImpW[n] = this.impostorDims[si].halfWidth * scale;
+          // Which baked silhouette this tree wears in the far field. Keyed off
+          // the near-LOD variant so a tree does not change outline as it
+          // crosses the mid/far boundary.
+          const ti = si * CFG.impVariants + (vi % CFG.impVariants);
+          pImpT[n] = ti;
+          pImpH[n] = this.impostorDims[ti].height * scale;
+          pImpW[n] = this.impostorDims[ti].halfWidth * scale;
 
           const oi = (((z + half) / OCC) | 0) * OW + (((x + half) / OCC) | 0);
           if (oi >= 0 && oi < occ.length) occ[oi] = n;
@@ -589,8 +656,8 @@ export class Trees extends System {
     for (let t = 0; t < n; t++) order[cursor[bucketOf[t]]++] = t;
 
     this.trees = {
-      n, px, py, pz, pscale, pcos, psin, pspec, pvar, prank,
-      pcolA, pcolB, pbark, pphase, pstiff, pImpH, pImpW,
+      n, px, py, pz, pscale, pcos, psin, pspec, pvar, pjit,
+      pcolA, pcolB, pbark, pphase, pstiff, pImpH, pImpW, pImpT,
       order, bucketStart: counts, BW, BS, half,
     };
     this.stats.total = n;
@@ -728,7 +795,13 @@ export class Trees extends System {
             const slot = mid[T.pspec[t] * V + (T.pvar[t] % CFG.midVariants)];
             this._push(slot, T, t);
           } else {
-            if (T.prank[t] > rankCutoff(Math.sqrt(d2))) continue;
+            const win = thinWindow(Math.sqrt(d2));
+            if (win) {
+              const keep = (T.pscale[t] - win[0]) / (win[1] - win[0]);
+              // T.pjit is a stable per-tree uniform in 0..1, so the decision is
+              // the same every frame and every session.
+              if (keep < 1 && T.pjit[t] > keep) continue;
+            }
             this._pushFar(far, T, t);
           }
         }
@@ -791,7 +864,7 @@ export class Trees extends System {
     a[j3] = T.pcolA[s3]; a[j3 + 1] = T.pcolA[s3 + 1]; a[j3 + 2] = T.pcolA[s3 + 2];
     bb[j3] = T.pcolB[s3]; bb[j3 + 1] = T.pcolB[s3 + 1]; bb[j3 + 2] = T.pcolB[s3 + 2];
     cc[j3] = T.pbark[s3]; cc[j3 + 1] = T.pbark[s3 + 1]; cc[j3 + 2] = T.pbark[s3 + 2];
-    im[j3] = T.pspec[t]; im[j3 + 1] = T.pImpH[t]; im[j3 + 2] = T.pImpW[t];
+    im[j3] = T.pImpT[t]; im[j3 + 1] = T.pImpH[t]; im[j3 + 2] = T.pImpW[t];
     const w = slot.wind.array;
     w[k * 2] = T.pphase[t]; w[k * 2 + 1] = T.pstiff[t];
   }

@@ -100,7 +100,17 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // an interior clump threw away nearly three quarters of the light before the
   // shadow term had even been applied. A conifer reads as a solid mass because
   // of its albedo and its normals; it does not also need the light removed.
-  vec3 direct = uSunColor * wrap * mix(0.50, 1.22, ao) * uCanopyGain;
+  //
+  // The window is wide and it is deliberately *asymmetric*. Fixing the dark
+  // hole left the opposite defect: measured over 165k pixels of pure canopy the
+  // river frame's crowns spanned luma 0.32 to 0.46, where the same crowns in
+  // plates 1 and 3 span 0.21-0.63 and 0.18-0.78. A canopy compressed into a
+  // seventh of the reference's value range is a flat orange mat — it has no
+  // lit tops, no shaded undersides, and no individual trees in it, which is
+  // exactly what the river anchor came back as. Almost all of the correction
+  // belongs at the top: the shaded end already measures close to the plates
+  // and is the end that turns into a hole if it is pushed.
+  vec3 direct = uSunColor * wrap * mix(0.42, 1.62, ao) * uCanopyGain;
   // Sky dominates from above: without the extra lift the tops of crowns go as
   // dark as their undersides and the canopy loses all vertical form. The
   // constant term is the part that matters for the dark-hole defect — it is
@@ -113,8 +123,16 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // the term that decides whether a shadowed crown is a dark green mass or a
   // hole, because in shadow it is nearly the whole signal.
   vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5)
-            * uAmbient * uCanopyAmbient * (0.42 + 0.72 * ao)
-            * (0.80 + 0.48 * clamp(N.y, 0.0, 1.0));
+            * uAmbient * uCanopyAmbient * (0.36 + 1.00 * ao)
+            // The downward end of this used to be 0.80. A crown seen from
+            // underneath — which is most of what the backlit and drive
+            // anchors look at, standing under a stand at eye level — then came
+            // back as a flat dark brown-red ceiling. Physically a leaf facing
+            // down is the one collecting the bounce off a sunlit gold meadow,
+            // so it should be the *least* starved of ambient, not the most. The
+            // lit end is unchanged, so this lifts undersides without touching
+            // the crown tops that now measure on the plates.
+            * (0.92 + 0.36 * clamp(N.y, 0.0, 1.0));
 
   // Transmission. The money shot: at golden hour the far side of every crown
   // lights up like stained glass. Strongest where we look into the sun, where
@@ -205,8 +223,8 @@ export function makeSharedUniforms() {
     uTransTint:     { value: new THREE.Color(1.62, 1.10, 0.58) },
     uTransStrength: { value: 1.9 },
     uBands:         { value: 4.0 },
-    uCanopyGain:    { value: 1.14 },
-    uCanopyAmbient: { value: 1.55 },
+    uCanopyGain:    { value: 1.34 },
+    uCanopyAmbient: { value: 1.42 },
   };
 }
 
@@ -310,7 +328,11 @@ void main() {
   // that, so it has to be wide enough to see.
   float jitter = 0.62 + 0.74 * t.r;
   float core = t.g;                      // 1 deep in the clump, 0 at its rim
-  float ao = clamp(vAO * mix(1.05, 0.86, core), 0.0, 1.2);
+  // Each mark is modelled in its own right, not only positioned in the crown:
+  // its rim catches light and its middle sits back. At 1.05/0.86 that was a
+  // 20% swing and the marks fused; the reference paints a visible turn inside
+  // every dab, which is what stops a canopy reading as one printed texture.
+  float ao = clamp(vAO * mix(1.16, 0.72, core), 0.0, 1.35);
 
   if (uBake > 0.5) {
     // Impostor bake: encode palette weights, not colour, so a distant tree can

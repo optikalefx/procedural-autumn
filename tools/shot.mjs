@@ -11,6 +11,7 @@
  * Deterministic: same seed + same view = comparable frames.
  */
 import { chromium } from 'playwright';
+import { execFileSync } from 'node:child_process';
 import { acquire } from './_lock.mjs';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -75,6 +76,28 @@ const URL = arg('url', 'http://localhost:5178') + (qs ? `?${qs}` : '');
 const TIMEOUT = parseInt(arg('timeout', '180000'), 10);
 
 async function main() {
+/**
+ * Refuse to capture against a broken tree.
+ *
+ * Six separate authors have taken the build down by putting a backtick inside a
+ * GLSL template literal. The failure surfaces as a blank page or a confusing
+ * runtime error a minute later, after a capture has already been spent. Linting
+ * first costs ~1 s and names the file and line.
+ */
+function assertTreeParses() {
+  try {
+    execFileSync(process.execPath, ['tools/lint.mjs'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    const out = (e.stdout?.toString() ?? '') + (e.stderr?.toString() ?? '');
+    console.error('\n[capture] refusing to run — the source tree does not parse:\n');
+    console.error(out.trim());
+    console.error('\nFix the syntax error and re-run. If the offending file is not yours, a peer is');
+    console.error('mid-edit: wait a moment and retry rather than editing their file.\n');
+    process.exit(2);
+  }
+}
+
+assertTreeParses();
 await acquire('shot');
   const browser = await chromium.launch({
     args: [

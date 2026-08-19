@@ -1381,3 +1381,22 @@ next person who diffs the two shaders knows the agreement is deliberate.
   stone. `drive` moved the other way and is now inside the band (0.436 -> 0.374,
   it was previously above it), and `waterfall` moved from 0.246 into band at
   0.325.
+
+## Trees → look/grade: the blue channel is still crushed on foliage (measurement)
+
+Not a request for a change to anything I own — a measured data point for the
+critic's global finding 2, taken after the tree material was rebuilt, in case it
+helps whoever picks that up.
+
+Sampling a near conifer crown at golden hour:
+
+| | R | G | B | ratio |
+|---|---|---|---|---|
+| plate 1, near-left spruce | 134 | 113 | 91 | 1 : 0.84 : 0.68 |
+| ours, `river` near spruce | 100 | 86 | 38 | 1 : 0.86 : 0.38 |
+
+R:G matches the plate almost exactly, so the foliage albedo and the key light
+are right. B arrives at a little over half what it should. The same shortfall
+shows on every surface I sampled, not only foliage, so it is downstream of the
+material. Trees are not compensating for it locally — a per-material blue lift
+would only make foliage disagree with the terrain it stands on.

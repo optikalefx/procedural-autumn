@@ -141,7 +141,7 @@ void main() {
   // structure inside it, so the noise modulates the density and never the
   // existence of the sheet.
   float shred = smoothstep(0.16, 0.95, vU);
-  float body = mix(1.0, 0.46 + 0.54 * smoothstep(0.30, 0.62, streak), shred);
+  float body = mix(1.0, 0.62 + 0.38 * smoothstep(0.30, 0.62, streak), shred);
   body = max(body, smoothstep(0.55, 0.72, fine) * shred * 0.55);
 
   // Edges tear before the middle does, and only the edges. Eroding the side
@@ -153,7 +153,15 @@ void main() {
   float rim = smoothstep(0.40, 1.0, abs(vSide));
   edge = mix(edge, edge * (0.30 + 0.70 * smoothstep(0.24, 0.60, streak)), shred * rim);
 
-  float alpha = body * edge * (0.62 + 0.38 * vDisc);
+  // Opacity is where the fall's *value* actually lives. Measured against
+  // reference plate 5 the curtain there is #aec1d3 at luma 0.75; ours came
+  // back at 0.55, and the shader is not the reason — the lit colour leaves
+  // this function at a linear 0.7-0.8. It was the alpha: at 0.62 + 0.38*disc a
+  // typical fall ran about 0.78 opaque, so a fifth of the near-black gorge
+  // wall behind it was showing through every pixel of white water, and the
+  // depth-of-field pass then smeared more of that wall into it. A curtain of
+  // aerated water a metre thick is opaque. Only the torn edges are not.
+  float alpha = body * edge * (0.84 + 0.16 * vDisc);
   // Let go just before the pool so the sheet never clips through the foam.
   alpha *= 1.0 - smoothstep(0.93, 1.0, vU);
   alpha = clamp(alpha, 0.0, 1.0);

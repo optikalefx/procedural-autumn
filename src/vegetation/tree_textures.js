@@ -132,7 +132,14 @@ function drawFrond(g, x0, y0, dx, dy, len, halfW, droop, rng, value) {
 function drawNeedleFan(g, ox, oy, size, rng) {
   const cx = ox + size * 0.5;
   const top = oy + size * 0.14;
-  const strands = 15;
+  // A conifer bough card is a metre or two across, so at 2 m the tile is drawn
+  // several times life size and its fronds read individually. At 15 they were
+  // wide enough that a near spruce looked like a palm rather than a spruce.
+  // More, slightly narrower fronds cost nothing at runtime — the card count and
+  // therefore the triangle count are unchanged — and they are still single
+  // connected polygons, so distance erodes their outline instead of dissolving
+  // them into the fleck noise that shape replaced.
+  const strands = 33;
   for (let s = 0; s < strands; s++) {
     const side = s & 1 ? 1 : -1;
     const f = (s >> 1) / (strands / 2 - 1);          // 0 centre .. 1 outermost
@@ -142,7 +149,7 @@ function drawNeedleFan(g, ox, oy, size, rng) {
     const stub = rng() < 0.24 ? 0.52 : 1.0;
     const len = size * (0.58 - 0.16 * f) * (0.74 + 0.52 * rng()) * stub;
     const dx = Math.sin(spread) * side, dy = Math.cos(spread);
-    drawFrond(g, cx, top, dx, dy, len, size * (0.052 + 0.030 * (1 - f)),
+    drawFrond(g, cx, top, dx, dy, len, size * (0.030 + 0.020 * (1 - f)),
               size * 0.26, rng, 0.24 + 0.56 * rng());
   }
   // A solid wedge near the trunk so the whorl is not see-through at its root

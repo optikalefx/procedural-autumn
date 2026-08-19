@@ -34,6 +34,7 @@ export const SPECIES = [
   {
     key: 'birch',
     height: [13, 21],
+    maxHeight: 25,        // metres, after per-instance scale
     trunkFrac: 0.94,            // how much of H the leader occupies
     trunkRadiusK: 0.0165,       // base radius / height — birch is a wand
     taperPow: 0.85,
@@ -66,6 +67,7 @@ export const SPECIES = [
   {
     key: 'aspen',
     height: [12, 19],
+    maxHeight: 23,
     trunkFrac: 0.96,
     trunkRadiusK: 0.0150,
     taperPow: 0.80,
@@ -100,6 +102,7 @@ export const SPECIES = [
   {
     key: 'maple',
     height: [11, 17],
+    maxHeight: 21,
     trunkFrac: 0.58,            // short bole, then it forks
     trunkRadiusK: 0.030,
     taperPow: 0.65,
@@ -141,6 +144,7 @@ export const SPECIES = [
   {
     key: 'oak',
     height: [10, 16],
+    maxHeight: 20,
     trunkFrac: 0.46,
     trunkRadiusK: 0.045,        // heavy bole
     taperPow: 0.50,
@@ -186,6 +190,7 @@ export const SPECIES = [
     key: 'spruce',
     conifer: true,
     height: [16, 30],
+    maxHeight: 36,
     trunkRadiusK: 0.020,
     taperPow: 1.15,
     lean: 0.018, curve: 0.10, gnarl: 0.08,
@@ -198,8 +203,14 @@ export const SPECIES = [
     boughDroop: 0.34,
     bark: BARK.CONIFER,
     barkColor: c(0x63483a),
-    clusterSize: [0.042, 0.066],
-    clusterAspect: 2.0,         // boughs are wide and flat
+    // A card is scaled by the tree's height, so on a 30 m spruce these were
+    // three metres wide and the fronds drawn in the tile were a metre across
+    // each — a near conifer read as a banana palm rather than as needles. The
+    // tile now carries half again as many, much narrower fronds (free: the card
+    // count is unchanged), and the cards themselves are smaller and less
+    // stretched, with an extra spray per bough to hold the crown's coverage.
+    clusterSize: [0.038, 0.058],
+    clusterAspect: 1.70,        // boughs are wide and flat
     tile: TILE.NEEDLE,
     // The B entry of each pair is the *shaded* half of the crown, and it was
     // sitting on PALETTE.coniferDeep (#1f3527, linear ~0.02). No lighting model
@@ -436,7 +447,14 @@ function finishDeciduous(P, rng, H, strands, tips) {
   const clusters = [];
   const budget = P.clusterCount;
 
-  const push = (px, py, pz, size, dx, dy, dz, sprig) => {
+  // `buried` is 0 for a dab sitting on the outside of its lobe and 1 for one
+  // pushed right into its middle. It is the term the crown was missing: crown
+  // AO is a function of distance from the *crown* centre, so every dab inside
+  // one lobe came out at the same value and a lobe rendered as one flat mass of
+  // colour — the "solid red felt" a crimson maple measured as, against plates
+  // whose every crown shows bright marks over dark ones. This is what turns a
+  // lobe back into a heap of individually-lit brush marks.
+  const push = (px, py, pz, size, dx, dy, dz, sprig, buried = 0) => {
     const ex = (px - centre.x) / rad;
     const ey = (py - centre.y) / radY;
     const ez = (pz - centre.z) / rad;
@@ -452,7 +470,8 @@ function finishDeciduous(P, rng, H, strands, tips) {
     nx /= nl; ny /= nl; nz /= nl;
 
     const ao = clamp01(0.26 + 0.74 * smoothstep(0.10, 1.0, d))
-             * lerp(0.58, 1.0, smoothstep(-1.0, 0.6, ey));
+             * lerp(0.58, 1.0, smoothstep(-1.0, 0.6, ey))
+             * lerp(1.06, 0.40, buried);
 
     // Per-dab aspect jitter. Uniform discs are the single biggest tell that a
     // canopy is billboards; letting each dab be a different oval hides them.
@@ -482,7 +501,11 @@ function finishDeciduous(P, rng, H, strands, tips) {
       // filling the volume solid is what buries the branches and closes the
       // sky holes the reference plates are full of.
       const a = rng() * TAU, b = Math.acos(2 * rng() - 1);
-      const sh = lerp(0.62, 1.0, Math.pow(rng(), 0.34));
+      // Hollower than it was. At 0.62 the dabs filled their lobe about five
+      // times over, and an overdrawn lobe has no holes in it at any distance —
+      // which is both why the broad-leaved crowns read as one opaque mass and a
+      // large part of why this system is the game's biggest triangle consumer.
+      const sh = lerp(0.74, 1.02, Math.pow(rng(), 0.30));
       const dx = Math.sin(b) * Math.cos(a), dy = Math.cos(b), dz = Math.sin(b) * Math.sin(a);
       const px = L.c.x + dx * L.ax * sh;
       const py = L.c.y + dy * L.ay * sh;
@@ -499,7 +522,7 @@ function finishDeciduous(P, rng, H, strands, tips) {
       // magnified atlas tile, and a crown built from four of those reads as
       // cauliflower however good the tile is.
       const dab = Math.min(L.r * lerp(0.26, 0.70, Math.pow(rng(), 1.6)), H * 0.082);
-      push(px, py, pz, dab, dx, dy, dz, false);
+      push(px, py, pz, dab, dx, dy, dz, false, clamp01((1.0 - sh) / 0.32));
     }
 
     // Protruding sprigs: a few small dabs thrown clear of the mass. Cheap, and
@@ -592,7 +615,7 @@ function growConifer(P, rng) {
       }
 
       // 2–3 needle sprays along the bough, biggest at the tip.
-      const nS = R > H * 0.05 ? 5 : 3;
+      const nS = R > H * 0.05 ? 5 : 4;
       for (let s = 0; s < nS; s++) {
         const ft = 0.22 + 0.78 * (s / Math.max(1, nS - 1));
         const px = o.x + dx * len * ft;

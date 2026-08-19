@@ -92,6 +92,15 @@ export class TerrainGen {
     this.bedPhase = new Float32Array(N);   // dip / offset of the bedding plane
     this.strataW = new Float32Array(N);    // how strongly this region is bedded
 
+    // Structural benching (see _structure). Same plane family as the bedding
+    // above, subdivided, and carried in metres so the terrace operator does not
+    // have to go back through radians.
+    this.benchStep = new Float32Array(N);  // metres of elevation per bench
+    this.benchPhase = new Float32Array(N); // where the bench boundary sits, metres
+    this.benchW = new Float32Array(N);     // how strongly this region benches
+    this.massifW = new Float32Array(N);    // 0 basin .. 1 high massif
+    this.spurGain = new Float32Array(N);   // see the spur emphasis in _structure
+
     for (let y = 0; y < R; y++) {
       for (let x = 0; x < R; x++) {
         const u = (x * inv) * 2 - 1;
@@ -268,6 +277,46 @@ export class TerrainGen {
         // from the drainage grain the erosion sim cuts, not from stratigraphy.
         this.strataW[i] = clamp01((wMesa * 1.00 + wAlpine * 0.26 + wRound * 0.10)
                                   * smoothstep(0.16, 0.48, massif));
+
+        // ── the bench family ───────────────────────────────────────────────
+        // Stratigraphy above selects where *albedo* banding and differential
+        // weathering happen. This selects where the surface itself steps, and
+        // it is a different problem, so it gets its own numbers.
+        //
+        // A 92-190 m bed is the right scale for "this massif has three or four
+        // prominent ledges" and the wrong scale for what the critic actually
+        // asked for, which is planar faces at 10-60 m that catch and lose the
+        // light. Subdividing the same plane family by four gives 23-48 m
+        // benches that sit *inside* the big ledges rather than fighting them.
+        //
+        // Phase carries the dip, so a bench trace cuts diagonally across a
+        // flank instead of drawing a level curve, plus a ~170 m wander worth a
+        // fifth of a step. The wander is the whole defence against the failure
+        // mode this pass could otherwise cause: a terrace whose boundary is a
+        // clean iso-height line reads as a contour map, and that artefact has
+        // already been removed from this game twice.
+        const benchStep = thickness * 0.42;
+        const wander = n.fbm(u * 9.3 + 7.7, v * 9.3 - 31.4, 2, 2.1, 0.5, 1) * benchStep * 0.55;
+        this.benchStep[i] = benchStep;
+        this.benchPhase[i] = -bedRise + wander;
+        // Alpine gets far more weight here than it does in strataW. Jointed
+        // horns do not carry bedding *colour*, but they very much carry planar
+        // faces and ledges — that is what a fractured face is — and alpine is
+        // the character on the massifs the hero, peaks and dawn cameras look
+        // at. Rounded stays near zero: a grassy dome is supposed to be smooth.
+        // Patchy in space. Benching every steep cell in the world at the same
+        // strength is corduroy however wide the pitch is — the first version of
+        // this pass did exactly that and the hillshade came back as a contour
+        // map. A ~250 m octave means one buttress is strongly stepped and the
+        // spur beside it is a plain face, which is both what the reference
+        // cliffs look like and what stops the eye reading a repeating texture.
+        const benchPatch = 0.42 + 0.58 * clamp01(
+          n.fbm(u * 12.4 - 22.1, v * 12.4 + 63.5, 2, 2.1, 0.5, 1) * 0.9 + 0.5);
+        this.benchW[i] = clamp01((wMesa * 1.00 + wAlpine * 1.00 + wRound * 0.30)
+                                 * smoothstep(0.10, 0.42, massif)) * benchPatch;
+        this.massifW[i] = massif;
+        // Spur emphasis gain, ~180 m. Signed on purpose: see _structure.
+        this.spurGain[i] = 0.10 + n.fbm(u * 17.3 + 13.1, v * 17.3 - 46.2, 2, 2.15, 0.5, 1) * 0.82;
       }
     }
   }
@@ -542,6 +591,142 @@ export class TerrainGen {
       const s = sed[i];
       sed[i] = s > 0 ? s / (s + K) : 0;
     }
+
+    this._structure();
+  }
+
+  /**
+   * Structural benching — the pass that puts planes on a mountain.
+   *
+   * THE DEFECT THIS EXISTS FOR. Every massif in hero, peaks and dawn arrived as
+   * a smooth satin drape: a single continuous gradient from crest to foot, with
+   * the rocks system's crag blocks sitting on it looking like faceted stone
+   * dropped onto a wax candle. Raking dawn light revealed nothing because there
+   * was nothing in the surface to reveal. Everything the pipeline produced
+   * before this point is either far too coarse (400 m+ tectonic octaves) or far
+   * too fine (the droplet sim's metre-scale drainage grain, which the talus
+   * limiter then low-passes). The 10-60 m band — the band that decides whether
+   * a face reads as one ramp or as a set of planes — was empty.
+   *
+   * TWO PREVIOUS ATTEMPTS AT THIS DEFECT WERE ALBEDO, AND BOTH WERE REVERTED.
+   * A dark curve painted on a shaded face reads as a contour line on a map, and
+   * that is true however it is weighted. The fix has to be in the surface, so
+   * that a plane is genuinely turned toward or away from the sun and the light
+   * does the work — then it survives every hour of the day, appears in the
+   * shadow map and in the silhouette, and cannot look like ink.
+   *
+   * The operator is a terrace on the *bedding plane family*, not on elevation.
+   * That distinction is the whole reason this is not a contour map: terracing
+   * elevation puts the step boundary on a level curve by construction, whereas
+   * a bed dips, so its outcrop trace runs diagonally across a flank and changes
+   * direction with the regional dip. A ~170 m wander on top breaks the residual
+   * straightness. The transfer is flat over the first 44% of each band and
+   * rises through the rest, which is what makes a tread and a riser instead of
+   * a sine.
+   *
+   * Placed after mass wasting deliberately. Running it before the talus limiter
+   * would have the limiter immediately lie the risers back down — which is what
+   * the limiter is for — and running it after depression filling would let the
+   * treads pond water. Here, the hydrology stages downstream re-route on the
+   * benched surface, so streams find the new ledges and any tread that closes a
+   * hollow is filled as a tarn rather than left as a pit.
+   */
+  _structure() {
+    const R = this.res, h = this.height;
+    const texel = this.worldSize / R;
+    const N = R * R;
+    const step = this.benchStep, phase = this.benchPhase, bw = this.benchW;
+    if (!step) return;
+
+    // Slope is read from the surface as it stands, once, into a scratch buffer,
+    // because the pass must not see its own output — benching a cell, finding
+    // it steeper, and benching it harder is a runaway, and a runaway here is
+    // exactly the corduroy artefact this file has fought before.
+    const src = new Float32Array(h);
+    const out = new Float32Array(N);
+    const mw = this.massifW, sg = this.spurGain;
+
+    // ── spur emphasis ────────────────────────────────────────────────────────
+    // The droplet sim cuts drainage grain at a fairly constant pitch, and every
+    // rill on a flank ends up about as deep as every other one. Rendered, that
+    // is corduroy: a pleated curtain of identical parallel flutes running the
+    // full height of the face, which is the note the peaks and drive massifs
+    // still drew after the benches landed. Real ranges are not uniform — one
+    // buttress is deeply ribbed, the spur beside it is a plain sheet of rock —
+    // and it is the *variation* that reads as structure, not the ribs.
+    //
+    // An unsharp mask with a signed, spatially varying gain does exactly that
+    // for the price of one blur: where the gain is positive the flutes deepen
+    // into real ribs, where it is negative they are pressed back into a plain
+    // face. It only ever scales relief that is already there, so it cannot
+    // invent a pattern of its own, and it is applied before the terrace so the
+    // benches cut across the ribs it leaves.
+    const lowPass = this._boxBlur(h, 22, 1);
+    const slopeBuf = new Float32Array(N);
+    for (let y = 0; y < R; y++) {
+      const ym = Math.max(0, y - 1) * R, yp = Math.min(R - 1, y + 1) * R, y0 = y * R;
+      for (let x = 0; x < R; x++) {
+        const i = y0 + x;
+        const xm = Math.max(0, x - 1), xp = Math.min(R - 1, x + 1);
+        const gx = (h[y0 + xp] - h[y0 + xm]) / (2 * texel);
+        const gz = (h[yp + x] - h[ym + x]) / (2 * texel);
+        const sl = Math.hypot(gx, gz);
+        slopeBuf[i] = sl;
+        const gate = smoothstep(0.24, 0.60, sl) * smoothstep(0.08, 0.40, mw[i]);
+        if (gate < 0.02) continue;
+        // Clamped below at -0.72: at -1 the flank is planed perfectly flat and
+        // a perfectly flat natural slope is its own artefact.
+        const g = clamp(sg[i], -0.72, 0.95) * gate;
+        src[i] = h[i] + (h[i] - lowPass[i]) * g;
+      }
+    }
+
+    for (let y = 0; y < R; y++) {
+      const y0 = y * R;
+      for (let x = 0; x < R; x++) {
+        const i = y0 + x;
+        out[i] = src[i];
+        const w0 = bw[i];
+        if (w0 < 0.02) continue;
+
+        const slope = slopeBuf[i];
+
+        // Steep ground only. A bench cut into a meadow is a farm terrace, and
+        // the player drives on that ground: the gate opens at ~17 degrees and
+        // is only at full strength past ~35, which is above anything drivable.
+        // It also keeps the operator away from valley floors, where a step
+        // across a stream course would dam it.
+        // Benches live on moderate ground and die on walls, and that is not a
+        // compromise — it is what a bench is. A bed's outcrop width in map view
+        // is its thickness divided by the local fall, so on a 65 degree face a
+        // 55 m bench compresses to a 25 m stripe and a stack of them is ruled
+        // corduroy again; the hillshade showed exactly that when the gate was a
+        // plain smoothstep. Above ~63 degrees the surface is the riser, and a
+        // riser wants to be one clean plane.
+        const wSlope = smoothstep(0.28, 0.62, slope) * (1.0 - smoothstep(1.15, 2.00, slope));
+        let w = w0 * wSlope * 0.58;
+        if (w < 0.01) continue;
+
+        const s = step[i];
+        const u = (src[i] + phase[i]) / s;
+        const uf = Math.floor(u);
+        const fr = u - uf;
+        // Per-band prominence. Real cliff country is two or three conspicuous
+        // ledges in a lot of ordinary slope, not an evenly ruled staircase, and
+        // an evenly ruled staircase is the exact artefact that gets this kind of
+        // pass reverted. Hashed on the band index, so a band keeps the same
+        // prominence along its whole outcrop and neighbouring cells agree.
+        const bh = Math.sin(uf * 12.9898 + 4.13) * 43758.5453;
+        w *= 0.24 + 0.76 * (bh - Math.floor(bh));
+        // Tread over the low 44%, riser through the rest. Not a hard step: a
+        // hard step is a vertical wall one texel wide, which aliases into a
+        // stair-tread pattern the moment the mesh LOD samples it at 6 m.
+        const target = (uf + smoothstep(0.40, 0.86, fr)) * s - phase[i];
+        out[i] = src[i] + (target - src[i]) * w;
+      }
+    }
+
+    h.set(out);
   }
 
   /** Separable box blur with a radius in metres. O(N) per pass, edge-clamped. */
