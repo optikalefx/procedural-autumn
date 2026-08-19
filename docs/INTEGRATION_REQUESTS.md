@@ -3074,6 +3074,16 @@ behind them — but that is a habitat and composition decision with an ecology
 argument against it (deer really do live at forest edges), and it is worth an
 integrator call before I spend it. It is the largest lever left.
 
+> **Resolved (integrator, same day): do it as a stand-off, not a habitat
+> change.** Habitat scoring stays exactly as it is; what moves is where *within*
+> a chosen site the animal stands — a few metres onto the open side of the edge
+> it is already on. Shipped in `2152eef`. Measured over 322 streamed deer, the
+> canopy weight where the animal actually stands went from a median of 3.12 to
+> 2.54, heavy cover 76.4% -> 59.6%, and open ground 8.7% -> 17.7%; rabbit is the
+> control at zero stand-off and does not move. `shots/wl/natfinal/` has
+> naturally-streamed encounters (not `debugSpawn`, which is exempt from the
+> stand-off precisely so capture harnesses keep framing where they are told).
+
 ### 2. Stray files in `src/wildlife/` that are not mine.
 
 `src/wildlife/GroundCover.js`, `cover_forms.js`, `cover_material.js` and
