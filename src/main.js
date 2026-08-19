@@ -188,6 +188,18 @@ async function boot() {
     }
   }
 
+  // Quality changes propagate to every system that implements onQuality.
+  engine.onQuality((preset, name) => {
+    for (const [n, s2] of built) {
+      if (!s2.enabled || !s2.onQuality) continue;
+      try { s2.onQuality(preset, name); }
+      catch (e) { console.error(`[system:${n}] onQuality threw`, e); }
+    }
+    postfx.onQuality?.(preset, name);
+    lighting.onQuality?.(preset, name);
+    terrain.onQuality?.(preset, name);
+  });
+
   // ── camera: systems may take over via ctx.systems.cameraRig ───────────────
   const cam = engine.camera;
   const startPoi = poi.best('road') ?? poi.best('meadow') ?? { x: 0, z: 0 };

@@ -6,6 +6,7 @@ export class Input {
     this.axes = { throttle: 0, brake: 0, steer: 0, handbrake: 0, lookX: 0, lookY: 0, zoom: 0 };
     this.pressed = new Set();
     this.mouse = { x: 0, y: 0, dx: 0, dy: 0, down: false, wheel: 0 };
+    this.suppressed = false;
     this._bind();
   }
 
@@ -37,6 +38,17 @@ export class Input {
 
   /** Call once per frame, after all systems have read input. */
   update(dt) {
+    // A UI layer (menus, photo mode) sets this so gameplay does not act on the
+    // same buttons it is using to navigate. Gamepad button 0 is the handbrake,
+    // and is also the natural "confirm" — without this the two fight.
+    if (this.suppressed) {
+      this.axes.throttle = 0; this.axes.brake = 0;
+      this.axes.steer = 0; this.axes.handbrake = 0;
+      this.mouse.dx = 0; this.mouse.dy = 0; this.mouse.wheel = 0;
+      this.pressed.clear();
+      return;
+    }
+
     const gp = navigator.getGamepads?.()[0];
 
     let throttle = 0, brake = 0, steer = 0, handbrake = 0;

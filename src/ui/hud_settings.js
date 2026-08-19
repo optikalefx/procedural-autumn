@@ -48,7 +48,10 @@ export class Settings {
       this._toggle('Mute', () => hud.isMuted(), (v) => hud.applyMute(v)),
     ]));
 
-    this.node.appendChild(this._group('Camera', [
+    // "View", not "Camera": the group also carries HUD visibility, and a
+    // player looking for the setting that hides the interface does not look
+    // under Camera.
+    this.node.appendChild(this._group('View', [
       this._toggle('Invert look', () => hud.invertY, (v) => hud.applyInvert(v)),
       this._seg('Interface', HUD_MODES, () => hud.hudOpacity, (v) => hud.applyHudMode(v)),
     ]));

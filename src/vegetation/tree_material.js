@@ -79,7 +79,13 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   float wrap = stylizeDiffuse(ndl);
   // Gentle posterisation — the reference art bands, it does not ramp.
   wrap = mix(wrap, floor(wrap * uBands + 0.5) / uBands, 0.38);
-  wrap *= mix(0.18, 1.0, shadow);
+  // The shadow mask already carries the light's own shadowIntensity (0.66), so
+  // it arrives in 0.34..1 and has *already* been softened for us. Multiplying a
+  // second 0.18 on top of it double-counted the same darkening: combined with
+  // the AO term below, a shadowed interior card kept roughly 5% of the key and
+  // reached the grade at effectively zero. Nothing downstream can rescue that.
+  // Keep only enough range that a cast shadow is still legible across a crown.
+  wrap *= mix(0.62, 1.0, shadow);
 
   // uCanopyGain < 1 on purpose. A leaf mass shaded with a wrapped diffuse
   // collects far more light than the terrain's N·L at the same sun angle, so
@@ -87,11 +93,18 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // the meadow it stands in — which is why distant gold stands were reading as
   // cream popcorn instead of as gold. The canopy must sit *at or below* the
   // sunlit ground, exactly as it does in the reference plates.
-  vec3 direct = uSunColor * wrap * mix(0.28, 0.94, ao) * uCanopyGain;
+  // AO is a *modulation* of the key, not a second occluder. At mix(0.28, 0.94)
+  // an interior clump threw away nearly three quarters of the light before the
+  // shadow term had even been applied. A conifer reads as a solid mass because
+  // of its albedo and its normals; it does not also need the light removed.
+  vec3 direct = uSunColor * wrap * mix(0.60, 1.02, ao) * uCanopyGain;
   // Sky dominates from above: without the extra lift the tops of crowns go as
-  // dark as their undersides and the canopy loses all vertical form.
+  // dark as their undersides and the canopy loses all vertical form. The
+  // constant term is the part that matters for the dark-hole defect — it is
+  // what guarantees a fully occluded, fully shadowed clump still arrives at the
+  // grade carrying its own hue instead of as a neutral silhouette.
   vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5)
-            * uAmbient * ao * (0.80 + 0.48 * clamp(N.y, 0.0, 1.0));
+            * uAmbient * (0.34 + 0.74 * ao) * (0.80 + 0.48 * clamp(N.y, 0.0, 1.0));
 
   // Transmission. The money shot: at golden hour the far side of every crown
   // lights up like stained glass. Strongest where we look into the sun, where
@@ -103,7 +116,7 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // transmission purely off "toward" lights one tree and leaves the rest of the
   // backlit stand as brown cardboard.
   float trans = (0.46 + 0.54 * pow(toward, 1.3)) * (0.30 + 0.70 * back) * uTransStrength;
-  trans *= mix(0.25, 1.0, shadow) * thin;
+  trans *= mix(0.45, 1.0, shadow) * thin;
   // Normalise by the leaf's own brightness. A crimson maple reflects almost
   // nothing and needs the full glow; a gold aspen is already near white, and
   // boosting it the same amount drives it through the top of the tone curve —
@@ -682,7 +695,7 @@ void main() {
   // exposed is what makes a far treeline sit *above* the meadow in value
   // instead of below it, which no landscape ever does. Transmission is pulled
   // back for the same reason: a crown that glows at 600 m has no depth.
-  vec3 col = canopyShade(albedo, N, V, ao, 0.34, 0.60) * 0.78;
+  vec3 col = canopyShade(albedo, N, V, ao, 0.34, 0.72) * 0.86;
   gl_FragColor = vec4(col, 1.0);
   // Chunk order matters: three's own materials apply fog *before* the output
   // colour-space encode, and the atmosphere's haze colour is a linear value.

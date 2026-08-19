@@ -185,10 +185,18 @@ export const SPECIES = [
     clusterSize: [0.042, 0.066],
     clusterAspect: 2.0,         // boughs are wide and flat
     tile: TILE.NEEDLE,
+    // The B entry of each pair is the *shaded* half of the crown, and it was
+    // sitting on PALETTE.coniferDeep (#1f3527, linear ~0.02). No lighting model
+    // can turn an albedo that dark into anything but a hole; the reference's
+    // shaded foliage measures srgb(56,66,32) — a mid olive that still has hue.
+    // These stay the coolest, most desaturated masses in a hot frame, which is
+    // the job the brief gives conifers, but they are now masses and not
+    // absences. Four pairs, not three, so a stand carries visible variation.
     palettes: [
-      [c(0x6d9a52), PALETTE.coniferDeep],
-      [PALETTE.coniferLit, PALETTE.coniferMid],
-      [c(0x7ea855), c(0x24402c)],
+      [c(0x7ba653), c(0x3a5b38)],
+      [PALETTE.coniferLit, c(0x33502f)],
+      [c(0x8ab35c), c(0x40603f)],
+      [c(0x628f4a), c(0x2e4a34)],
     ],
   },
 ];
@@ -570,10 +578,13 @@ function growConifer(P, rng) {
           sx: size * P.clusterAspect * 0.5,
           sy: size * 0.5,
           nx, ny, nz,
-          // Deep inside the cone is nearly black; the tips catch the light.
-          // The spread matters more than the floor — a conifer with no internal
-          // value range is a black triangle, not a tree.
-          ao: clamp01(0.22 + 0.92 * ft) * lerp(0.60, 1.05, t),
+          // The tips catch the light and the inside of the cone sits lower —
+          // but only by a stop or so. The old floor (0.22 x 0.60 = 0.13) meant
+          // most of a spire's cards were nearly unlit *before* the shadow term,
+          // which is exactly how a conifer turns into a flat black hole. The
+          // spread is what makes it read as a cone; the floor only decides
+          // whether there is anything left to read.
+          ao: clamp01(0.44 + 0.70 * ft) * lerp(0.80, 1.06, t),
           tone: clamp01(vnoise3(px * 0.5, py * 0.22, pz * 0.5) * 1.4 - 0.2),
           tile: TILE.NEEDLE,
           rot: 0,                       // a needle fan must stay the right way up

@@ -159,14 +159,40 @@ export class PhotoMode {
   capture() {
     const canvas = this.ctx.renderer?.domElement;
     if (!canvas) return false;
+
+    // Render, check, then read — up to three times.
+    //
+    // One full-resolution capture in testing came back as a 31 KB PNG where
+    // every other one was 2.5 MB: the forced render landed while the composer
+    // was between buffers and produced a near-empty frame. The player only
+    // finds out about that when they open the file, so the frame is inspected
+    // before it is written. The 64x36 probe has to happen in the same task as
+    // the render, for the same reason toDataURL does — the drawing buffer is
+    // gone by the next one.
     let url = null;
-    try {
-      this.ctx.postfx?.render?.(1 / 60);
-      url = canvas.toDataURL('image/png');
-    } catch (e) {
-      console.warn('[hud] photo failed', e);
-      this.hud.toast('Could not save photo');
-      return false;
+    for (let attempt = 0; attempt < 3 && !url; attempt++) {
+      try {
+        this.ctx.postfx?.render?.(1 / 60);
+        const c = this._probeCanvas ??= document.createElement('canvas');
+        c.width = 64; c.height = 36;
+        const g = c.getContext('2d', { willReadFrequently: true });
+        g.drawImage(canvas, 0, 0, 64, 36);
+        const d = g.getImageData(0, 0, 64, 36).data;
+        let sum = 0, sumSq = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const l = (d[i] + d[i + 1] + d[i + 2]) / 3;
+          sum += l; sumSq += l * l;
+        }
+        const n = d.length / 4;
+        const mean = sum / n;
+        const varr = sumSq / n - mean * mean;
+        // A real frame of this game is bright and has structure. Both tests
+        // matter: a black frame fails the first, a flat wash fails the second.
+        if (mean < 6 || varr < 4) continue;
+        url = canvas.toDataURL('image/png');
+      } catch (e) {
+        console.warn('[hud] photo failed', e);
+      }
     }
     if (!url || url.length < 2048) { this.hud.toast('Could not save photo'); return false; }
 

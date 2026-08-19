@@ -918,3 +918,70 @@ terminated the string and took the whole build down. The fix is kept; the
 backticks are gone. Please do not put a backtick in a GLSL string — `lint.mjs`
 catches it, so run it. The fix also removed most of the game's aerial
 perspective in one commit, which is why `FOG_DENSITY_SCALE` went 0.54 → 0.64.
+
+---
+
+## From the Audio & UI author
+
+### 4. `engine.setQuality(name)` — so the HUD can change quality without reaching in
+
+The settings panel offers a live quality switch. Applying it means three things:
+`ctx.quality` / `ctx.preset`, `renderer.setPixelRatio(...)`, and calling
+`onQuality(preset)` on every system — the first and third are clean, the second
+is not. `Engine._onResize` re-reads `this.preset.pixelRatioCap` on every resize,
+so a HUD that only calls `setPixelRatio` has its change reverted the next time
+the window moves. `src/ui/HUD.js#applyQuality` therefore assigns
+`engine.quality` and `engine.preset` directly, which is reaching into another
+author's object.
+
+A two-line `Engine.setQuality(name)` that updates both fields and re-applies the
+pixel ratio would remove that. Not a blocker — the current code works — but it is
+the one place the HUD touches something it does not own.
+
+Related, and lower priority: `Lighting`, `PostFX` and `Terrain` do not implement
+`onQuality`, so a live switch changes pixel ratio and per-system density but not
+shadow map size, SSAO or DOF. The HUD calls the hook defensively on all three
+already; it starts working the moment any of them implements it.
+
+### 5. Gamepad button 0 is the handbrake, so menus cannot use it (no action needed)
+
+`Input.update` maps `buttons[0]` (A / cross) to `handbrake` unconditionally, and
+`Input.update` runs *after* every system's update, so a UI layer cannot suppress
+it for the frame a menu is open. The HUD works around this by using button 2
+(X / square) to activate menu items and leaving button 0 alone — worth knowing
+before anyone adds a second gamepad-driven panel and wonders why the camper
+lurches. If `Input` ever grows a `consume('handbrake')` or a UI-modal flag, the
+HUD would switch to the conventional button.
+
+### 6. Two harness notes for whoever owns `tools/`
+
+* `tools/shot.mjs` runs `main()` at module scope, so `import { VIEWS } from
+  './shot.mjs'` silently takes a capture slot and writes a stray `hero.png`.
+  Anything importing from it needs the views split into their own module (or an
+  `import.meta.main` guard). `tools/hudshot.mjs` duplicates the five views it
+  needs as a workaround.
+* The intermittent all-black frame that `shot.mjs` already retries for also hits
+  any other harness. `tools/hudshot.mjs` and `tools/audiotest.mjs` both carry
+  their own copy of that check; a shared `ensureFrame(page)` helper would be
+  better than three copies.
+
+## RESOLVED — Engine.setQuality() and input suppression
+
+**Requested by:** audio/UI author. **Fixed by:** engine owner.
+
+1. **`Engine.setQuality(name)`** now exists and is the supported way to change
+   tier at runtime. It updates `quality`/`preset`, reapplies the pixel-ratio cap,
+   forces a resize, and calls every registered handler. `main.js` wires it to
+   each system's optional `onQuality(preset, name)` plus `postfx`, `lighting` and
+   `terrain`. The settings panel should call `ctx.engine.setQuality(q)` instead
+   of assigning `engine.preset` directly.
+
+   **System authors:** implement `onQuality(preset, name)` if your system has
+   anything worth changing per tier. Right now `Lighting` (shadow map size),
+   `PostFX` (SSAO / DOF / bloom) and `Terrain` (LOD distances) do not, so
+   switching tiers still leaves the most expensive settings untouched.
+
+2. **`ctx.input.suppressed`** — set it true while a menu or photo-mode overlay
+   owns input, and gameplay axes read zero for that frame. Gamepad button 0 is
+   the handbrake and is also the natural confirm button; this is how a UI layer
+   takes priority without either side hard-coding the other's bindings.

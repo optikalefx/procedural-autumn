@@ -16,3 +16,4 @@ same places are photographed every round and the sheets are directly comparable.
 | 008 | 2026-08-18 | pre-fog-fix reference | [008](008-2026-08-18-pre-fog-fix-reference.png) |
 | 009 | 2026-08-19 | painterly contrast restored | [009](009-2026-08-19-painterly-contrast-restored.png) |
 | 010 | 2026-08-19 | grade clamp fixed blue restored | [010](010-2026-08-19-grade-clamp-fixed-blue-restored.png) |
+| 011 | 2026-08-19 | crag floating fixed | [011](011-2026-08-19-crag-floating-fixed.png) |

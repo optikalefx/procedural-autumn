@@ -20,7 +20,7 @@
  * came out of it, because a screenshot cannot tell you that.
  */
 import { chromium } from 'playwright';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { acquire } from './_lock.mjs';
 
@@ -207,9 +207,18 @@ async function main() {
     page.evaluate(() => window.__hud.photo.capture()),
   ]);
   const bytes = await page.evaluate(() => window.__hud.photo.lastPhotoBytes ?? 0);
-  console.log(download
-    ? `photo save: "${download.suggestedFilename()}" (${(bytes / 1024 / 1024).toFixed(2)} MB of base64)`
-    : `photo save: NO DOWNLOAD FIRED (dataURL ${bytes} chars)`);
+  if (download) {
+    // Keep the file. A byte count proves a download fired; only the image
+    // proves the photo is a photo — the first full-res run wrote a 40 KB PNG
+    // and nothing but opening it would have said whether that was a flat sky
+    // or an empty frame.
+    const saved = resolve(DIR, 'saved_photo.png');
+    await download.saveAs(saved);
+    const { size } = statSync(saved);
+    console.log(`photo save: "${download.suggestedFilename()}" -> ${saved} (${(size / 1024).toFixed(0)} KB on disk)`);
+  } else {
+    console.log(`photo save: NO DOWNLOAD FIRED (dataURL ${bytes} chars)`);
+  }
 
   await page.waitForTimeout(600);
   await page.evaluate(() => window.__hud.togglePhoto());

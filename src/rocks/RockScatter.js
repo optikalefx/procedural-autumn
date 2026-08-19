@@ -85,7 +85,7 @@ const BASE_SAMPLES = [
  * 0.2–0.6 m mean, 6.4 m worst at 800 m) plus enough to put the ground line
  * across the block's face instead of exactly on its bottom edge.
  */
-const CONTACT_MARGIN = 2.0;
+const CONTACT_MARGIN = 4.0;
 
 /**
  * How many of the nine base probes may stay above ground. An overhanging corner
@@ -953,7 +953,11 @@ export class RockScatter {
       // as contact. Tilted to the hillside, the band lands where the rock
       // actually enters the hill and draws the ground line the eye is looking
       // for. On flat ground the gradient is zero and nothing changes.
-      groundY: minH,
+      // The true terrain height at the origin, not the anchor: the anchor is
+      // deliberately a few metres under the surface, and hanging the contact
+      // band off it puts the dark line below the ground where nobody can see
+      // it. The band belongs where the rock actually enters the hill.
+      groundY: centreH,
       groundGX: -n.x / Math.max(n.y, 1e-3),
       groundGZ: -n.z / Math.max(n.y, 1e-3),
       // Visible radius. Paired with Rocks._minSizeFor: a cell far away is only

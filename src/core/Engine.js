@@ -44,6 +44,7 @@ export class Engine {
     this._updaters = [];
     this._lateUpdaters = [];
     this._resizeCbs = [];
+    this._qualityCbs = [];
     this._running = false;
 
     this._onResize = this._onResize.bind(this);
@@ -60,6 +61,31 @@ export class Engine {
   onUpdate(fn) { this._updaters.push(fn); return fn; }
   onLateUpdate(fn) { this._lateUpdaters.push(fn); return fn; }
   onResize(fn) { this._resizeCbs.push(fn); return fn; }
+
+  /**
+   * Change the quality tier at runtime and tell everyone who cares.
+   *
+   * Previously the settings panel assigned `engine.preset` directly, which
+   * changed pixel ratio and per-system scatter density but never reached the
+   * things that actually cost the most — shadow map size, SSAO, depth of field.
+   * Systems opt in by implementing `onQuality(preset, name)`; those that do not
+   * are simply skipped, so this is safe to call before they all support it.
+   */
+  setQuality(name) {
+    const preset = QUALITY_PRESETS[name];
+    if (!preset) { console.warn(`[engine] unknown quality tier: ${name}`); return false; }
+    this.quality = name;
+    this.preset = preset;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.pixelRatioCap));
+    this._onResize();
+    for (const fn of this._qualityCbs) {
+      try { fn(preset, name); } catch (e) { console.error('[engine] onQuality handler threw', e); }
+    }
+    return true;
+  }
+
+  /** Register a quality-change handler. Systems' own onQuality is wired by main. */
+  onQuality(fn) { this._qualityCbs.push(fn); return fn; }
 
   setRenderCallback(fn) { this._render = fn; }
 

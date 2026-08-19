@@ -240,7 +240,7 @@
   font-size: 0.32em;
   letter-spacing: 0.22em;
   color: var(--ink-faint);
-  margin-left: 0.55em;
+  margin-left: 0.6em;
   vertical-align: 0.28em;
   font-weight: 600;
 }
@@ -254,7 +254,7 @@
   font-variant-numeric: tabular-nums;
   text-shadow: 0 1px 8px rgba(46, 18, 28, 0.55);
 }
-.pa-readout-value .pa-unit { font-size: 0.62em; color: var(--ink-faint); margin-left: 0.42em; letter-spacing: 0.12em; }
+.pa-readout-value .pa-unit { font-size: 0.62em; color: var(--ink-faint); margin-left: 0.62em; letter-spacing: 0.12em; }
 .pa-readout-value .pa-leaf { color: var(--gold); margin-right: 0.34em; vertical-align: -0.08em; }
 .pa-readout-value .pa-leaf svg { width: 0.82em; height: 0.82em; display: inline-block; }
 
