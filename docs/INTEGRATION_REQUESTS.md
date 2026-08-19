@@ -3202,6 +3202,20 @@ recorded a four-commit restoration as a docs change.
 3. `git show --stat HEAD` immediately after committing. It takes two seconds and
    it is the only cheap check that catches this.
 
+**4. A shared document is a special case, and an explicit pathspec is NOT enough
+for it.** I hit this myself in `d946124`. I ran `git add docs/INTEGRATION_REQUESTS.md`
+— an explicit path, obeying rule 1 — and it swept the water author's un-staged
+section of the *same file* into my commit. Adding a file adds every change in
+that file, whoever wrote it. This is the third occurrence of the general error
+and it happened inside the document that describes it.
+
+Nothing was lost (it is prose, and the text survived intact), but it left two
+sections numbered X2 and put another author's analysis under my commit message.
+For `docs/INTEGRATION_REQUESTS.md`, `docs/CRITIC_FINDINGS.md` and any other file
+several people append to: run `git diff <file>` and read it before you add. If
+someone else's section is in there, either leave it and let them commit it, or
+commit it separately with their authorship named in the message.
+
 **And a rule for me:** when a measurement moves by 2x, verify the tree is
 coherent before believing the number. `git log --stat` across the round would
 have shown a cover commit touching `Waterfalls.js` in about ten seconds. I went
@@ -3210,6 +3224,77 @@ messages said it was.
 
 The water author found this, not me, and found it while stopped and under
 suspicion.
+
+## X2. The ground lost its shadow mass — and we removed it answering the player
+
+**2026-08-19, integrator. This is the most important open item in the project.**
+
+The critic's blind A/B has round 048 losing to its own history **8 wins, 18
+losses, 4 ties** against rounds 045, 040 and 035 — and it declared its own
+contamination ran *toward* 048, which it had seen whole beforehand. I have
+compared `review/040-*.png` against `review/048-*.png` myself and I agree. Look
+at the two `drive` tiles: 040 has a broad soft dark mass sweeping across the
+meadow that gives the ground depth and structure. In 048 the ground is a uniform
+gold wash with no large-scale value event anywhere in it.
+
+**Two corrections to the critic's account, because they change what to do.**
+
+**(a) It measured the wrong plate.** It judged `drive`'s ground region against
+plate 1's `lumaP05 0.184 / lumaRange 0.541 / contrastStd 0.177`. `drive` is an
+eye-level gameplay framing, and the brief is explicit at line 119: *"Judge
+eye-level views against plates 3/4/5 and vistas against plate 1, per plate,
+every time."* Plate 1 is a wide hazy aerial. This is the same error that
+produced a crushed-black regression earlier in the project and that the brief
+was amended to prevent. **The statistical case is not sound. The visual case
+is, and it stands on its own.**
+
+**(b) "Someone fixed #4 by removing the rose, and the rose *was* the shadow
+mass" is right about the mechanism and unfair about the motive.** The change was
+mine, and it was made on a direct player instruction. The player said, of that
+exact mass: *"adjust the color of the 'gray' ground you see in this photo.
+That's creating too much contrast for me. It would be more cozy if that was a
+soft yellow or a light brown or something like that."* I cut
+`Stylize.DEFAULTS.shadowCoolAmt` from 1.0 to 0.30. Separately, the player asked
+for fewer clouds — *"the sky is like 90% clouds, maybe less clouds would be
+calming"* — and `COVER_BIAS` went 0.745 to 0.950, which removed most of the
+cloud-shadow patches from the valley floor as a side effect.
+
+**So the player asked us to change the shadow mass's colour and soften it. We
+deleted it instead.** Both requests were legitimate and both were implemented
+literally rather than in spirit, and the sum of two literal readings is a
+flatter world than either request implied.
+
+**What is wanted, precisely.** Restore large-scale cast-shadow structure on the
+ground, at the size and softness it had at round 040, **in a warm hue** — the
+soft yellow or light brown the player asked for — not the mauve/rose it was
+then, and not the cool blue that 035 tried and 036 pulled back. Contrast should
+stay at or below where it is now; this is about *area and shape*, not about
+deepening anything. A large soft warm shadow is lower contrast than a small hard
+one, and it is what plates 3, 4 and 5 actually show under a low sun.
+
+**Levers, in the order I would try them.** Note that raising cloud *coverage* is
+ruled out — the player asked for a calmer sky and got one.
+
+1. `params.cloudShadow` in Atmosphere (currently 0.42, already raised from 0.34
+   for this reason by the author of P9). Fewer, larger, more meaningful patches.
+2. The scale of the cloud-shadow map relative to the world: bigger, slower
+   shapes read as weather; small ones read as noise.
+3. Long-range terrain self-shadowing. The terrain author noted at round 018 that
+   valley-crossing massif shadows are a signature of the reference art and
+   extended chunk shadow-casting to LOD 2 for exactly this reason. Check it is
+   still reaching the valley floor.
+4. `Stylize.shadowCoolAmt` — but this is the one that was cut on player
+   instruction, so if it goes back up it goes back up *warm*. Read
+   `shadowCool` (currently `THREE.Color(0.86, 1.02, 1.16)`, a cool colour) and
+   understand that raising the amount with that colour is what produced the grey
+   the player objected to.
+
+**Whoever takes this: the player has already told us what they want it to look
+like. Soft yellow or light brown, cozy, low contrast, large. Do not reintroduce
+grey, mauve or blue ground shadow. If your change makes the ground read as grey
+at any hour, it is wrong regardless of what it measures.**
+
+---
 
 ## X3. TERRAIN — the "shadow" beside the waterfall is a one-texel river channel painted down a 62° cliff (water, 2026-08-19)
 
@@ -3320,72 +3405,3 @@ full strength — which is the whole finding. Hiding `water`, `waterfalls` and
 
 
 ---
-
-## X2. The ground lost its shadow mass — and we removed it answering the player
-
-**2026-08-19, integrator. This is the most important open item in the project.**
-
-The critic's blind A/B has round 048 losing to its own history **8 wins, 18
-losses, 4 ties** against rounds 045, 040 and 035 — and it declared its own
-contamination ran *toward* 048, which it had seen whole beforehand. I have
-compared `review/040-*.png` against `review/048-*.png` myself and I agree. Look
-at the two `drive` tiles: 040 has a broad soft dark mass sweeping across the
-meadow that gives the ground depth and structure. In 048 the ground is a uniform
-gold wash with no large-scale value event anywhere in it.
-
-**Two corrections to the critic's account, because they change what to do.**
-
-**(a) It measured the wrong plate.** It judged `drive`'s ground region against
-plate 1's `lumaP05 0.184 / lumaRange 0.541 / contrastStd 0.177`. `drive` is an
-eye-level gameplay framing, and the brief is explicit at line 119: *"Judge
-eye-level views against plates 3/4/5 and vistas against plate 1, per plate,
-every time."* Plate 1 is a wide hazy aerial. This is the same error that
-produced a crushed-black regression earlier in the project and that the brief
-was amended to prevent. **The statistical case is not sound. The visual case
-is, and it stands on its own.**
-
-**(b) "Someone fixed #4 by removing the rose, and the rose *was* the shadow
-mass" is right about the mechanism and unfair about the motive.** The change was
-mine, and it was made on a direct player instruction. The player said, of that
-exact mass: *"adjust the color of the 'gray' ground you see in this photo.
-That's creating too much contrast for me. It would be more cozy if that was a
-soft yellow or a light brown or something like that."* I cut
-`Stylize.DEFAULTS.shadowCoolAmt` from 1.0 to 0.30. Separately, the player asked
-for fewer clouds — *"the sky is like 90% clouds, maybe less clouds would be
-calming"* — and `COVER_BIAS` went 0.745 to 0.950, which removed most of the
-cloud-shadow patches from the valley floor as a side effect.
-
-**So the player asked us to change the shadow mass's colour and soften it. We
-deleted it instead.** Both requests were legitimate and both were implemented
-literally rather than in spirit, and the sum of two literal readings is a
-flatter world than either request implied.
-
-**What is wanted, precisely.** Restore large-scale cast-shadow structure on the
-ground, at the size and softness it had at round 040, **in a warm hue** — the
-soft yellow or light brown the player asked for — not the mauve/rose it was
-then, and not the cool blue that 035 tried and 036 pulled back. Contrast should
-stay at or below where it is now; this is about *area and shape*, not about
-deepening anything. A large soft warm shadow is lower contrast than a small hard
-one, and it is what plates 3, 4 and 5 actually show under a low sun.
-
-**Levers, in the order I would try them.** Note that raising cloud *coverage* is
-ruled out — the player asked for a calmer sky and got one.
-
-1. `params.cloudShadow` in Atmosphere (currently 0.42, already raised from 0.34
-   for this reason by the author of P9). Fewer, larger, more meaningful patches.
-2. The scale of the cloud-shadow map relative to the world: bigger, slower
-   shapes read as weather; small ones read as noise.
-3. Long-range terrain self-shadowing. The terrain author noted at round 018 that
-   valley-crossing massif shadows are a signature of the reference art and
-   extended chunk shadow-casting to LOD 2 for exactly this reason. Check it is
-   still reaching the valley floor.
-4. `Stylize.shadowCoolAmt` — but this is the one that was cut on player
-   instruction, so if it goes back up it goes back up *warm*. Read
-   `shadowCool` (currently `THREE.Color(0.86, 1.02, 1.16)`, a cool colour) and
-   understand that raising the amount with that colour is what produced the grey
-   the player objected to.
-
-**Whoever takes this: the player has already told us what they want it to look
-like. Soft yellow or light brown, cozy, low contrast, large. Do not reintroduce
-grey, mauve or blue ground shadow. If your change makes the ground read as grey
-at any hour, it is wrong regardless of what it measures.**
