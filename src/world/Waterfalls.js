@@ -194,8 +194,13 @@ void main() {
   // the lip and where it enters the boil turns the strip into a brush stroke.
   // Both tapers are a few metres on a seventy metre drop, so the near view is
   // unchanged apart from a lip that now looks like water accelerating.
-  float endTaper = min(smoothstep(0.0, 0.055, vU), 1.0 - smoothstep(0.90, 1.0, vU));
-  sideN += (1.0 - endTaper) * 0.60;
+  // 0.16, not 0.055. The path is integrated in uniform *horizontal* steps, so
+  // on a steep fall the index bunches hard at the lip: 5.5% of it is a couple
+  // of metres of drop, the taper finishes inside a few pixels, and the curtain
+  // begins on a dead-flat horizontal edge — the exact painted-rectangle top the
+  // taper exists to prevent. Widened until the neck is a neck.
+  float endTaper = min(smoothstep(0.0, 0.16, vU), 1.0 - smoothstep(0.90, 1.0, vU));
+  sideN += (1.0 - endTaper) * 0.72;
   // Widened from 0.72-1.06. The brief asks for a *soft* white ribbon and the
   // plates draw one: plate 5's curtain has no hard boundary anywhere along it,
   // it fades into the rock over several pixels. A 0.34-wide alpha ramp on a
