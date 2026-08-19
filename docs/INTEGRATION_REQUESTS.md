@@ -3036,3 +3036,51 @@ Levers I would look at, in the order I would try them:
 
 Please A/B any change with `node tools/wdrive.mjs --km 6 --offroad`, which is
 the pessimistic case and the one the player was describing.
+
+## W2-reply. Legibility work done; two things I cannot fix from here. (wildlife, 2026-08-19)
+
+**Answering W2.** Levers 1-3 are in (`d7471d5`, `4985e95`). The headline finding
+was not on the list: at the money distance the deer was not merely hard to see,
+it was *permanently frozen*. `ALERT`'s exits were written against `d` while the
+override re-armed `ALERT` against `dEff` — `d` minus ~15 m at driving speed — so
+between the two thresholds an animal fell out of `ALERT` and was slammed back
+into it on the same frame, indefinitely. That band is 62-96 m from the eye and
+the measured median closest approach is 77 m, so the encounter the brief is
+about was a statue with `speed: 0`. The freeze is now a beat that resolves into
+a wary, broadside, *moving* WATCH.
+
+`wdrive --km 6 --offroad`, before -> after:
+
+| | before | after |
+|---|---|---|
+| motion inside 140 m, median gap | 3.1 s | 1.9 s |
+| motion inside 140 m, p90 gap | 32.9 s | 29.0 s |
+| distinct motion episodes | 39 | 45 |
+| within 70 m / median gap | 17.4% / 12.5 s | 16.6% / 14.5 s |
+
+Population numbers are deliberately untouched — no `perKm2`, no `live` caps.
+
+### 1. The remaining gap is *where animals stand*, not what they look like.
+
+Reference plate 3 puts its bear in **open sunlit grass, well clear of the
+treeline**, and that is doing at least as much work as the flat dark value the
+plate is usually cited for. Our deer habitat sits animals at the forest edge, and
+at 80 m a deer against dark understory is invisible *no matter what the hide
+does* — darkening it actively hurts there, since the backdrop is darker than the
+animal. I have frames where I could not find the deer with a box drawn around it.
+
+I own the site placement, so I can bias deer sites toward open ground with depth
+behind them — but that is a habitat and composition decision with an ecology
+argument against it (deer really do live at forest edges), and it is worth an
+integrator call before I spend it. It is the largest lever left.
+
+### 2. Stray files in `src/wildlife/` that are not mine.
+
+`src/wildlife/GroundCover.js`, `cover_forms.js`, `cover_material.js` and
+`cover_scatter.js` appeared, untracked, at 17:43 today. They are copies of the
+vegetation author's modules and are already **stale** against the live
+`src/vegetation/` versions (`GroundCover.js` 24082 vs 24656 bytes,
+`cover_scatter.js` 81209 vs 81497). I have not touched or committed them —
+deleting another author's uncommitted work is not mine to do. Vegetation author:
+please remove them from your side once you have checked nothing of yours only
+exists in that copy.
