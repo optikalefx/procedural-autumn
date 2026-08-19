@@ -996,7 +996,16 @@ export class Waterfalls extends System {
             dt = dsH / v0;
             vy -= G * dt;
             let yNext = y + vy * dt;
-            const ground = world.getHeight(x, z) + 0.35;
+            // 0.9, not 0.35. This samples the *baked* heightfield, and the
+            // terrain mesh adds up to half a metre of micro-detail on top of
+            // it — so at 0.35 the rock pokes through the curtain wherever the
+            // detail happens to rise, and because that rock is faceted the
+            // intersection is a set of dead-straight vertical lines cut into
+            // the sheet's silhouette. That is the hard-edged left boundary and
+            // the notch beside it in the waterfall view, and it is why the
+            // curtain reads hard on one side and feathered on the other: only
+            // one side is against the wall.
+            const ground = world.getHeight(x, z) + 0.9;
             if (yNext < ground) {
               yNext = ground;
               // Landed on rock: the water now slides, so its vertical speed is
@@ -1095,9 +1104,27 @@ export class Waterfalls extends System {
         // anyway, so it is continuous with the non-degenerate case.
         if (nl > 1e-5) { nx /= nl; ny /= nl; nz /= nl; }
         else { nx = -f.dirX; ny = 0; nz = -f.dirZ; }
+        // ...and it has to point *away from the wall*, which cross(t, side)
+        // does not guarantee — its sign depends on which way round the width
+        // axis was built. For a vertical drop it resolves to -dir, i.e. back up
+        // the channel, which is straight into the cliff: standing the sheet off
+        // along it buried the curtain in the rock and the fall came back a
+        // third narrower. Downstream is the honest outward direction, because
+        // the rock a fall hangs in front of is by construction the thing it
+        // just left.
+        if (nx * f.dirX + nz * f.dirZ < 0.0) { nx = -nx; ny = -ny; nz = -nz; }
+        // Stand the sheet off the rock along its own normal. A curtain of
+        // water is a *volume* — a metre or so of it on a fall this size — and
+        // it hangs in front of the wall rather than being painted on it. The
+        // path clamp above keeps the sheet's centreline off the baked ground;
+        // this keeps the near face of the curtain off the faceted mesh, which
+        // is what the eye actually sees intersecting.
+        const stand = Math.min(0.25 + p.w * 0.06, 0.9);
         for (let c = 0; c < C; c++) {
           const off = SHEET_COLS[c] * p.w * 0.5;
-          pos.push(p.x + f.sideX * off, p.y, p.z + f.sideZ * off);
+          pos.push(p.x + f.sideX * off + nx * stand,
+                   p.y + ny * stand,
+                   p.z + f.sideZ * off + nz * stand);
           u.push(p.u); side.push(SHEET_COLS[c]); flight.push(p.flight);
           wid.push(p.w); disc.push(f.disc);
           nrm.push(nx, ny, nz);
