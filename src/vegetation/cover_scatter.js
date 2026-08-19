@@ -55,8 +55,10 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 // exists to supply; everything else is accent. Nothing here is at full
 // saturation, and nothing here is grey.
 const PAL = {
-  shrubDeep:   C(0x35563a), shrubLit:    C(0x5e8449),
-  shrubMaroon: C(0x6a3226), shrubMarLit: C(0x99542a),
+  // Lifted off near-black: at the previous values these silhouetted to solid
+  // holes in the frame rather than reading as foliage with form.
+  shrubDeep:   C(0x4a6b47), shrubLit:    C(0x7a9c58),
+  shrubMaroon: C(0x8a4a32), shrubMarLit: C(0xb06a38),
   berryLeaf:   C(0x7d3a27), berryLit:    C(0xb8471f), berry: C(0x9e2b28),
   // A step darker and a step more saturated than the terrain's sunlit gold
   // (#f0ad46). Dry scrub against gold meadow is a *tonal* accent — it has to
@@ -319,7 +321,10 @@ export class CoverScatter {
         const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;
         const mg = this._ground(mx, mz, 1.1);
         if (mg < 0.06) continue;
-        const sc = (0.80 + rng() * 0.55) * (0.85 + mg * 0.30);
+        // Scrub reads as head-height black blobs along the treeline at the
+        // previous scale. In the plates these are knee-to-waist shrubs dotted
+        // through the meadow — small enough that the gold reads past them.
+        const sc = (0.48 + rng() * 0.34) * (0.85 + mg * 0.30);
         if (berry) {
           n = this._emit(out, n, cap, 'shrubBerry', mx, mz, rng, {
             colA: PAL.berryLeaf, colB: rng() < 0.5 ? PAL.berry : PAL.berryLit,
@@ -370,7 +375,7 @@ export class CoverScatter {
         if (this._ground(mx, mz, 0.8) < 0.08) continue;
         n = this._emit(out, n, cap, 'scrubDry', mx, mz, rng, {
           colA: rng() < 0.4 ? PAL.scrubPale : PAL.scrubBase, colB: PAL.scrubTip,
-          scale: 0.80 + rng() * 0.60, tone: 0.92 + rng() * 0.22, hue: 0.02,
+          scale: 0.58 + rng() * 0.42, tone: 0.92 + rng() * 0.22, hue: 0.02,
         });
       }
     }
