@@ -123,7 +123,7 @@ export function createTerrainMaterial(world, opts = {}) {
     // height times the gradient of the field the ledge is cut from — so where
     // the field is locally flat the tilt goes to zero on its own instead of
     // sitting at a constant angle in an undefined direction.
-    uBedRelief:   { value: 11.0 },
+    uBedRelief:   { value: 36.0 },
     // Levels of staircase per unit of the plane-break field, i.e. how many
     // plane traces cross a face. Median band pitch is BED_L / (2.7 * this).
     uBedLevels:   { value: 13.0 },
@@ -676,11 +676,19 @@ export function createTerrainMaterial(world, opts = {}) {
         // at 13 levels of swing gives 23 m — and, more to the point, a SPREAD
         // of pitches from about 13 m to 60 m, because the field's gradient is
         // not constant. That spread is the whole difference from a ramp.
-        const float BED_L = 160.0, BED_E = 13.0;
+        const float BED_L = 160.0, BED_E = 13.0, BED_FAR = 8.0;
         float BED_K = uBedLevels;
         // Coherent everywhere it matters: a screen region is all flank or all
         // valley floor, so the branch is taken or skipped by whole hillsides.
-        if (steep > 0.02) {
+        // The footM half of the test is economy, and it is set to exactly
+        // where the fade below reaches zero rather than to a round number —
+        // an early-out that cuts a term still worth something draws a hard
+        // edge across a hillside at whatever distance it happens to sit. The
+        // fade's own thresholds are clamped to the same 8 m so the two agree by
+        // construction and not by luck. Past that the three noise taps would be
+        // computed only to be multiplied by zero, which in a vista frame is
+        // most of the screen.
+        if (steep > 0.02 && footM < BED_FAR) {
           vec2 Pb = vWorldPos.xz / BED_L;
           float dP = BED_E / BED_L;
           float b0 = fbm(Pb, 2);
@@ -746,7 +754,8 @@ export function createTerrainMaterial(world, opts = {}) {
           // an interpolated attribute, which is constant across a triangle and
           // would print the mesh.
           float pitchM = 1.0 / max(length(gxz), 1e-5);
-          fBed = (1.0 - smoothstep(pitchM * 0.045, pitchM * 0.100, footM)) * aniso;
+          fBed = (1.0 - smoothstep(min(pitchM * 0.045, BED_FAR * 0.44),
+                                   min(pitchM * 0.100, BED_FAR), footM)) * aniso;
         }
 
         // ── ground cover: gold meadow, olive damp grass, pale dry straw ─────
@@ -1444,7 +1453,15 @@ export function createTerrainMaterial(world, opts = {}) {
           // Half a round has been lost twice to tuning a near-field mask for a
           // defect that turned out to be painted by the far-apron block.
           else if (uDebugMask < 7.5) gDebug = vec3(bedM, screeM, shelfM);
-          else                       gDebug = vec3(uFarApron, uOutside, gRockM);
+          else if (uDebugMask < 8.5) gDebug = vec3(uFarApron, uOutside, gRockM);
+          // 9 is the plane-break budget, and it exists because every argument
+          // about how much structure a massif should carry turns out to be an
+          // argument about how many PIXELS a band is worth on that massif.
+          // red = the surviving weight, green = the pixel footprint over 20 m,
+          // blue = camera distance over 3 km. Guessing at these three numbers
+          // is what produced two rounds of wrong amplitude.
+          else                       gDebug = vec3(fBed, footM / 20.0,
+                                                  camDist / 3000.0);
         }
 
         diffuseColor.rgb *= albedo;
