@@ -21,6 +21,10 @@ import { dirname, resolve } from 'node:path';
 // pass --refresh-views after a deliberate terrain change.
 const VIEWS_CACHE = 'shots/_anchors.json';
 
+// Anchors that track a moving object must never be frozen — pinning the camper's
+// position from an earlier run just aims the camera at empty meadow.
+const DYNAMIC_ANCHORS = new Set(['vehicle']);
+
 const argv = process.argv.slice(2);
 const arg = (name, def = null) => {
   const i = argv.indexOf(`--${name}`);
@@ -35,7 +39,7 @@ export const VIEWS = {
   // Wide establishing shot over the valley — the "box art" frame.
   hero:      { anchor: 'vista',    height: 62,  dist: 150, pitch: -0.16, fov: 46, hour: 16.7 },
   // Eye-level drive shot: what the player actually stares at for hours.
-  drive:     { anchor: 'road',     height: 4.2, dist: 12,  pitch: -0.10, fov: 55, hour: 16.7 },
+  drive:     { anchor: 'road',     height: 4.2, dist: 12,  pitch: -0.10, fov: 55, hour: 16.7, standOff: 16 },
   // Down in the meadow, grass in the foreground.
   meadow:    { anchor: 'meadow',   height: 1.6, dist: 6,   pitch: -0.05, fov: 58, hour: 17.2 },
   // Forest interior — canopy, trunks, dappled light.
@@ -47,7 +51,7 @@ export const VIEWS = {
   // High peaks and aerial perspective.
   peaks:     { anchor: 'peak',     height: 120, dist: 420, pitch: -0.10, fov: 42, hour: 16.0 },
   // The vehicle, three-quarter hero framing.
-  vehicle:   { anchor: 'vehicle',  height: 2.1, dist: 9,   pitch: -0.06, fov: 44, hour: 17.0 },
+  vehicle:   { anchor: 'vehicle',  height: 2.6, dist: 11,  pitch: -0.10, fov: 44, hour: 17.0, subject: true },
   // Golden-hour backlit shot — the money frame for foliage translucency.
   backlit:   { anchor: 'meadow',   height: 2.4, dist: 10,  pitch: 0.04,  fov: 52, hour: 17.9, faceSun: true },
   // Dawn cool pass, checks the grade does not fall apart off-golden-hour.
@@ -113,7 +117,7 @@ await acquire('shot');
     const v = VIEWS[name];
     if (!v && !has('pos')) { console.error(`unknown view: ${name}`); continue; }
 
-    await page.evaluate(async ({ v, name, posStr, lookStr, hourArg, frozen }) => {
+    await page.evaluate(async ({ v, name, posStr, lookStr, hourArg, frozen, dynamicAnchors }) => {
       const THREE = window.__THREE;
       const e = window.__engine, wd = window.__world;
       const api = window.__cameraAnchors || {};
@@ -129,9 +133,9 @@ await acquire('shot');
         pos = new THREE.Vector3(p[0], p[1], p[2]);
         look = new THREE.Vector3(l[0], l[1], l[2]);
       } else {
-        const cached = frozen && frozen[v.anchor];
+        const cached = (frozen && !dynamicAnchors.includes(v.anchor)) ? frozen[v.anchor] : null;
         const anchor = cached ?? (api[v.anchor] || api.vista || (() => ({ x: 0, z: 0, yaw: 0 })))();
-        window.__lastResolvedAnchor = cached ? null : {
+        window.__lastResolvedAnchor = (cached || dynamicAnchors.includes(v.anchor)) ? null : {
           key: v.anchor,
           value: { x: anchor.x, z: anchor.z, yaw: anchor.yaw, lookY: anchor.lookY },
         };
@@ -140,16 +144,31 @@ await acquire('shot');
           const sd = window.__lighting.sunDir;
           yaw = Math.atan2(sd.x, sd.z);
         }
-        // Stand AT the landmark and look along its yaw. Offsetting backwards
-        // reliably buries the camera in whatever hill is behind it.
-        const gx = anchor.x, gz = anchor.z;
-        const gy = wd.getHeight(gx, gz) + v.height;
-        pos = new THREE.Vector3(gx, gy, gz);
-        look = new THREE.Vector3(
-          gx + Math.sin(yaw) * v.dist,
-          gy + Math.tan(v.pitch) * v.dist,
-          gz + Math.cos(yaw) * v.dist
-        );
+        if (v.subject) {
+          // Subject framing: orbit the landmark and look AT it. Standing on the
+          // anchor puts the camera *inside* the thing we came to photograph —
+          // which is exactly why the `vehicle` view rendered pure black.
+          const gx = anchor.x - Math.sin(yaw) * v.dist;
+          const gz = anchor.z - Math.cos(yaw) * v.dist;
+          const gy = wd.getHeight(gx, gz) + v.height;
+          pos = new THREE.Vector3(gx, gy, gz);
+          const ty = wd.getHeight(anchor.x, anchor.z) + (anchor.lookY ?? 1.4);
+          look = new THREE.Vector3(anchor.x, ty, anchor.z);
+        } else {
+          // Landscape framing: stand at the landmark and look along its yaw,
+          // optionally stepped back so the camera is not inside the camper
+          // parked on the same road node.
+          const back = v.standOff ?? 0;
+          const gx = anchor.x - Math.sin(yaw) * back;
+          const gz = anchor.z - Math.cos(yaw) * back;
+          const gy = wd.getHeight(gx, gz) + v.height;
+          pos = new THREE.Vector3(gx, gy, gz);
+          look = new THREE.Vector3(
+            gx + Math.sin(yaw) * v.dist,
+            gy + Math.tan(v.pitch) * v.dist,
+            gz + Math.cos(yaw) * v.dist
+          );
+        }
       }
 
       e.camera.fov = v ? v.fov : 50;
@@ -161,7 +180,7 @@ await acquire('shot');
       // Let streaming, LOD and any temporal effects settle.
       if (window.__settle) await window.__settle(60);
       void name;
-    }, { v, name, posStr: arg('pos'), lookStr: arg('look'), hourArg: arg('hour'), frozen });
+    }, { v, name, posStr: arg('pos'), lookStr: arg('look'), hourArg: arg('hour'), frozen, dynamicAnchors: [...DYNAMIC_ANCHORS] });
 
     // Record whatever this run had to resolve fresh.
     const justResolved = await page.evaluate(() => window.__lastResolvedAnchor ?? null);

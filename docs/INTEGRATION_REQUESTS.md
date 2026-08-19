@@ -621,3 +621,40 @@ That entry describes bloom running after **AgX** with `luminanceThreshold`
 0.80. Scene exposure is `EXPOSURE` in `PostFX.js`, now **0.86** — `Engine.exposure`
 is still only the fallback. Sky and cloud keyframes authored against the old
 ceiling may want a look.
+
+## Open defects at the session-limit pause — 2026-08-18
+
+Recorded so whoever picks these up does not have to rediscover them.
+
+**1. Grass is far too tall (grass author).** Blades reach roughly 2 m and
+visually swallow the camper — see `shots/diag/vehicle2.png`, where the vehicle
+is almost entirely hidden by the field it is parked in. The blade *quality* is
+good; the height distribution is wrong for a 2 m-tall vehicle. Reference plate 3
+has grass at roughly knee height on a bear, i.e. well under a metre for most of
+the field, with taller stands only in damp hollows.
+
+**2. Whole-frame chroma is monochromatic orange (look author).** Every view now
+reads as a single hue. The grass author already flagged this and deliberately
+declined to fix it from their side, because desaturating grass alone made it
+duller than the terrain beneath it — a worse defect. It needs to be solved
+globally: the terrain, grass, ground cover and leaf palettes are all sitting in
+the same narrow orange band, and the value structure that should separate them
+has collapsed. `tools/colorstats.mjs` measures it; the reference plates keep
+~95% of chromatic pixels in red/orange/yellow but hold a much wider *value*
+range across them.
+
+**3. Ground-cover scrub is too large and too dark (ground cover author).** Their
+own last note before being interrupted. Visible as black blobs along the
+treeline in `backlit`.
+
+**4. Rocks still read too bright.** The `rock *= 0.72` exposure match and the new
+`uRockGain` / `uRockDesat` chroma governor are in, but the value target
+(a sunlit boulder at roughly two thirds of the meadow's luminance) is not met.
+
+**5. Harness fixes landed** — worth knowing about:
+- `VIEWS.vehicle` is now `subject: true`, meaning the camera orbits the anchor
+  and looks at it. It previously *stood on* the anchor, i.e. inside the camper,
+  which is why that view captured pure black. `VIEWS.drive` gained a `standOff`
+  for the same reason (the camper parks on the road node it frames).
+- `DYNAMIC_ANCHORS` excludes the vehicle from the frozen-anchor cache. Freezing
+  a moving subject's position just aims the camera at empty meadow.

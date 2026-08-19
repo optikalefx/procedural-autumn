@@ -309,7 +309,6 @@ export function createRockMaterial() {
         float rockL = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
         gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( rockL ) * uRockCast, uRockDesat );
         gl_FragColor.rgb *= uRockGain;
-        gl_FragColor.rgb = vec3( 1.0, 0.0, 1.0 );   // DIAG
       }
       #include <fog_fragment>`);
   };
