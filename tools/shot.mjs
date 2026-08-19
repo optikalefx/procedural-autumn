@@ -12,7 +12,7 @@
  */
 import { chromium } from 'playwright';
 import { acquire } from './_lock.mjs';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 // POI ranking shifts whenever the terrain bake changes, so `--view meadow` can
@@ -177,6 +177,13 @@ await acquire('shot');
       e.camera.lookAt(look);
       window.__forceCamera = true;
 
+      // Force a renderer resize before settling. Playwright's viewport is set
+      // after the page loads, and if the resize handler has not propagated to
+      // the renderer by capture time the screenshot comes back as a narrow
+      // strip of scene on a black field — which reads as "the camera is inside
+      // something" and sends you hunting the wrong bug.
+      window.dispatchEvent(new Event('resize'));
+
       // Let streaming, LOD and any temporal effects settle.
       if (window.__settle) await window.__settle(60);
       void name;
@@ -206,13 +213,24 @@ await acquire('shot');
         ready: window.__ready === true,
         hidden: document.getElementById('loader')?.classList.contains('hidden') ?? true,
         calls: window.__engine?.renderer?.info?.render?.calls ?? 0,
+        // The drawing buffer must cover the viewport, or the capture is a strip.
+        sized: (() => {
+          const c = document.getElementById('gl');
+          if (!c) return false;
+          const dpr = window.__engine?.renderer?.getPixelRatio?.() ?? 1;
+          return Math.abs(c.width / dpr - window.innerWidth) < 4 &&
+                 Math.abs(c.height / dpr - window.innerHeight) < 4;
+        })(),
         err: window.__bootError ?? null,
       }));
-      if (state.ready && state.hidden && state.calls > 10) break;
+      if (state.ready && state.hidden && state.calls > 10 && state.sized) break;
       console.error(`[shot] ${name} not renderable yet ` +
-                    `(ready=${state.ready} calls=${state.calls}${state.err ? ` err=${state.err}` : ''}); ` +
-                    `settling and retrying (${attempt + 1}/3)`);
-      await page.evaluate(() => window.__settle?.(90));
+                    `(ready=${state.ready} calls=${state.calls} sized=${state.sized}` +
+                    `${state.err ? ` err=${state.err}` : ''}); retrying (${attempt + 1}/3)`);
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event('resize'));
+        return window.__settle?.(90);
+      });
       await page.waitForTimeout(1200);
     }
 
@@ -220,7 +238,59 @@ await acquire('shot');
       ? resolve(dir, `${name}.png`)
       : resolve(arg('out'));
     if (!existsSync(dirname(out))) mkdirSync(dirname(out), { recursive: true });
-    await page.screenshot({ path: out });
+
+    // Capture, then verify the PNG we actually wrote.
+    //
+    // Renderer-side checks are not enough: this harness intermittently produces
+    // a frame where only a narrow strip down one edge is drawn and the rest is
+    // black, while the renderer reports a correctly-sized canvas and a healthy
+    // draw-call count. The only thing that reliably detects it is measuring the
+    // written image. Reading it back through an <img> works fine — unlike the
+    // WebGL canvas, which has no preserveDrawingBuffer and always reads blank.
+    let wrote = false;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await page.screenshot({ path: out });
+      const q = await page.evaluate(async (b64) => {
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + b64;
+        await img.decode();
+        const W = 160, H = Math.max(1, Math.round(img.height / img.width * W));
+        const c = new OffscreenCanvas(W, H);
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0, W, H);
+        const d = g.getImageData(0, 0, W, H).data;
+        let dark = 0, n = 0;
+        // Column coverage catches the partial-strip case, which a whole-image
+        // mean would not: a bright strip can drag the average above any floor.
+        const colDark = new Array(W).fill(0);
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const i = (y * W + x) * 4;
+            const l = (d[i] + d[i + 1] + d[i + 2]) / 3;
+            if (l < 12) { dark++; colDark[x]++; }
+            n++;
+          }
+        }
+        const deadCols = colDark.filter((c) => c >= H * 0.98).length;
+        return { darkFrac: dark / n, deadColFrac: deadCols / W };
+      }, readFileSync(out).toString('base64'));
+
+      if (q.darkFrac < 0.6 && q.deadColFrac < 0.25) { wrote = true; break; }
+      console.error(`[shot] ${name} came back ${(q.darkFrac * 100).toFixed(0)}% black ` +
+                    `(${(q.deadColFrac * 100).toFixed(0)}% dead columns); re-rendering (${attempt}/4)`);
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event('resize'));
+        return window.__settle?.(120);
+      });
+      await page.waitForTimeout(900);
+    }
+    if (!wrote) {
+      console.error(`[shot] ${name} never produced a usable frame; removing so it ` +
+                    `cannot be mistaken for a result`);
+      try { unlinkSync(out); } catch { /* nothing written */ }
+      continue;
+    }
+
     results.push(out);
     console.log(`shot: ${out}`);
   }
