@@ -35,3 +35,4 @@ same places are photographed every round and the sheets are directly comparable.
 | 027 | 2026-08-19 | ground substrate and scrub — final | [027](027-2026-08-19-ground-substrate-and-scrub-final.png) |
 | 028 | 2026-08-19 | hue rotated back toward gold | [028](028-2026-08-19-hue-rotated-back-toward-gold.png) |
 | 029 | 2026-08-19 | rock chroma hole and ground substrate | [029](029-2026-08-19-rock-chroma-hole-and-ground-substrate.png) |
+| 030 | 2026-08-19 | hue width restored, NaN black square fixed, shadow bias | [030](030-2026-08-19-hue-width-restored-nan-black-square-fixed-shadow.png) |

@@ -2001,3 +2001,130 @@ transcendentals — it is the register budget, and the cost only appears when th
 branch is actually taken. Anyone adding to this pass should measure with the new
 code branched around rather than deleted, which separates "this maths is
 expensive" from "this program now spills".
+
+---
+
+## TERRAIN — round 029: the grey chroma hole is closed; two things I could not reach
+
+### To the look author, with thanks — your bisection was right, and the cause was
+### one step further back than the governor
+
+The polygon in `river` was the grass/rock mask, not the chroma governor, though
+the governor is what made it visible. Recorded here because the numbers cost
+several capture rounds and they generalise.
+
+I added an unlit debug read-out to the terrain material to get them. `uDebugMask`
+now blits the mask **over** the lit colour instead of multiplying it into the
+albedo. The old behaviour was worse than useless on exactly the surfaces these
+investigations are about: a mask painted into the albedo is still multiplied by
+the light, so on a slope facing away from the sun every channel returns the
+diffuse floor and two completely different masks look like the same dark smudge.
+I read a false answer off it for most of a round. Modes are now:
+
+```
+1 rock / grass / scree      2 curvature      3 talus / hardness / slope
+4 olive / dry / litter      5 steep / rockM / rim band
+6 THE FINISHED ALBEDO, UNLIT                 7 dry bed / scree / shelf
+```
+
+Mode 6 is the one to reach for first. "Is the ground flat because the paint is
+flat, or because the light is flat?" is the opening question in every one of
+these and it answers it in one capture. Pair it with your grade bypass —
+
+```
+node tools/shot.mjs --view river --eval "const p=window.__postfx;\
+[p.bloom,p.tone,p.vignette,p.grade,p.dof].forEach(e=>{try{e.blendMode.opacity.value=0}\
+catch(_){}});window.__terrain.material.userData.uniforms.uDebugMask.value=6;"
+```
+
+— and the numbers you read are the shader's own.
+
+**What the slab actually was.** With the grade bypassed, mask 5 gives `steep`
+0.70 inside the slab and 0.17-0.29 on the ground either side: slope 1.19 against
+0.95-1.00, six degrees apart. The line resolved its entire decision inside those
+six degrees, so a wooded valley flank at 88 m altitude flipped to bare stone.
+`massEdge` then collapsed the boundary to a one-pixel contour, and because the
+field's gradient there is almost nil the *shape* of that contour was dictated by
+the 2 m texel structure of the slope map underneath — which is why it came out as
+straight segments meeting at corners rather than as a wandering line.
+
+Fixed three ways: the rock line is now a function of altitude as well as slope
+(soil holds to ~53 degrees in the valley and ~44 up on the massifs, interpolated
+across the tree-line band); the boundary is feathered with a floor in *field*
+units, wide near and crisp far; and the breakers may only ruffle the line where
+the line is, so a 240 m octave can no longer open a plate in the middle of a
+flank. There is also a transition band of straw, grit and scoured dirt at the
+meeting — no reference plate butt-joints gold against grey.
+
+**Your point 2, the governor, was also right, but the axis was value not chroma.**
+Measured against the plates: reference rock runs luma 0.40-0.51 hazy (plate 1)
+and 0.56-0.70 in the near field (plates 3 and 5), at chroma 0.04-0.16. Our slab
+was luma **0.217** at chroma 0.066 — the chroma was already on-palette; it was a
+stop and a half too dark, and hueless *and* dark next to gold is what reads as a
+hole. The governor now has a shade-weighted, distance-faded value floor, and it
+is gated so a gravel shelf on gentle ground keeps some warmth.
+
+`river` measures lumaRange 0.342 -> 0.368, contrastStd 0.107 -> 0.112,
+lumaP95 0.568 -> **0.612** (reference 0.604).
+
+### 1. LOOK / GRADE: `river` is still under the contrast band, and it is now a
+### lighting-separation problem, not an albedo one
+
+Range moved but contrast did not (0.112 against a 0.13-0.18 band). The reason is
+measurable. In reference plate 1 the sunlit gold ground sits at luma 0.415 and
+the shaded gold bank at 0.229-0.287 — a separation of about **0.15**. In our
+`river` frame the sunlit gold on the right measures 0.41 and the shaded bank
+filling the left half measures 0.34: a separation of **0.06**.
+
+The albedo under both is the same and it is correct — sampled unlit it is
+`rgb(250,181,75)`, and lit it comes back `rgb(147,90,42)` against the plate's
+`rgb(151,99,44)`. So the frame's missing contrast is the sun/shade ratio on
+ground, which lives in the stylised diffuse floor and the shadow intensity, not
+in anything I own. I have taken it as far as albedo can: mass-to-mass value
+difference on the ground is now real (worn soil, straw, deep gold, olive), and
+it buys 0.005 of contrastStd. The other 0.02 is in the light.
+
+Worth knowing before anyone else measures this view: **the `river` stats swing by
+0.05 of lumaRange on cloud shadow alone.** Three consecutive captures of the same
+build gave 0.312 / 0.313 / 0.315, and the same build with
+`atmosphere.params.cloudShadow = 0` gave 0.363 — the drifting cloud happened to
+be sitting on the hillside. Any A/B on this view that is not either cloud-frozen
+or repeated is measuring the weather.
+
+### 2. TERRAIN (mine, not done): gold contour ribbons on the peaks massif
+
+Pre-existing — it is in round 000 through 028 as well — and I did not fix it.
+The grass/rock line survives in the drainage flutes of the eroded cone, and
+because the flutes are horizontal and evenly spaced the surviving gold reads as
+a set of parallel contour lines rather than as gullies. I removed the worst
+contributor (the altitude term was an unwarped smoothstep on world height, i.e.
+a level curve by construction, and it is now domain-warped like the snow line)
+and dropped the `edgeBreak` factor that was turning the ruffle *down* exactly
+where the gold sits. Both helped a little; neither closed it. The honest fix is
+an opening operation on the mask at vista range, or a heightfield change, and
+both are bigger than the round I was given.
+
+Measured cost of my round on that view: `peaks` lumaRange 0.425 -> 0.376 and
+contrastStd 0.142 -> 0.123, with chromaMean 0.305 -> 0.283 (band floor 0.28). I
+tried three separate hypotheses for it over three capture rounds — the far
+feather width, the transition band at range, and the olive accent's distance
+budget — and all three measured as exact no-ops, so I reverted the two that
+bought nothing rather than leave changes in that do not do what they claim. The
+remaining difference is the rock line itself, and it is the price of the valley
+flanks no longer wearing grey plates. Flagging it rather than hiding it.
+
+### 3. Performance: no regression, but the harness was loaded
+
+`perf.mjs --seconds 45 --res 1536` immediately after this work: p50 **15.8 ms**,
+p95 **34.0 ms**, peak 5.08 M tris — against the recorded baseline of 15.5 / 33.6.
+Three further runs in the same hour degraded monotonically to p50 19.3 / p95 51.9
+with `load average 3.0` and thirteen chrome processes alive, i.e. other authors
+capturing. The first run is the honest number. The four asserted failures
+(p95, >50 ms count, the one >100 ms frame, and the 5.08 M triangle peak) are all
+pre-existing and all already documented above by other authors — the >100 ms
+frame is still the boot pipeline stall at ~1.2 s that needs the warm-up frame in
+`main.js`.
+
+The three new fbm octaves in the ground-mass block each sit behind their own
+distance gate rather than all three behind the widest one, so past 260 m the
+block costs one evaluation instead of three.
