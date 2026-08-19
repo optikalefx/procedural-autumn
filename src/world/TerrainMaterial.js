@@ -115,6 +115,23 @@ export function createTerrainMaterial(world, opts = {}) {
 
     uSnowLine:    { value: 268.0 },
 
+    // Plane breaks on bare rock. See the block in the fragment shader.
+    //
+    // This is a LEDGE HEIGHT IN METRES, not a tilt. That is the whole
+    // difference between this and the version it replaces: the shading normal
+    // is bent by the surface gradient of a displacement, which is the ledge
+    // height times the gradient of the field the ledge is cut from — so where
+    // the field is locally flat the tilt goes to zero on its own instead of
+    // sitting at a constant angle in an undefined direction.
+    uBedRelief:   { value: 11.0 },
+    // Levels of staircase per unit of the plane-break field, i.e. how many
+    // plane traces cross a face. Median band pitch is BED_L / (2.7 * this).
+    uBedLevels:   { value: 13.0 },
+    // A whisper of value on the ledge itself. Deliberately tiny: the plane
+    // break is carried by the light, and painted bands on rock are how this
+    // file produced a contour map twice before.
+    uBedAlbedo:   { value: 0.055 },
+
     // Dev only, always 0 in the shipped frame. Set from the console or the
     // capture harness to false-colour the surface masks:
     //   window.__terrain.material.userData.uniforms.uDebugMask.value = 1
@@ -159,6 +176,7 @@ export function createTerrainMaterial(world, opts = {}) {
       uniform vec3 uShadowTint;
       uniform vec3 uRockCastLit, uRockCastShade;
       uniform float uRockDesat, uRockGain, uRockLift, uGrassSat;
+      uniform float uBedRelief, uBedLevels, uBedAlbedo;
       uniform float uSnowLine;
       uniform float uDebugMask;
 
@@ -187,6 +205,13 @@ export function createTerrainMaterial(world, opts = {}) {
       // post-lighting blocks can keep their corrections off the distant
       // massifs, where the atmosphere is already doing the work.
       float gNear = 1.0;
+      // World-space tangential bend applied to the shading normal by the
+      // bedding/joint block, and how much of it to use. Carried forward for
+      // the same reason gReliefN is: the plane sets are derived where the
+      // heightfield is already being read, and the shading normal does not
+      // exist until <normal_fragment_maps>.
+      vec3  gBedDelta = vec3(0.0);
+      float gBedW = 0.0;
       // Dev only. See the uDebugMask block; blitted unlit at the end.
       vec3 gDebug = vec3(0.0);
 
@@ -263,6 +288,26 @@ export function createTerrainMaterial(world, opts = {}) {
       float softMass(float field, float threshold, float floorW){
         float w = max(fwidth(field) * 1.4, floorW);
         return smoothstep(threshold - w, threshold + w, field);
+      }
+
+      // ── one plane set, as a soft staircase in its own field coordinate ────
+      // Returns (step, slope): the 0..1 position through the step, and the
+      // derivative of the staircase DISPLACEMENT with respect to the field
+      // coordinate, in units of displacement per unit of field.
+      //
+      // The step rises once per period, so its mean derivative over a period
+      // is exactly 1; subtracting that leaves a zero-mean signal. That matters
+      // more than it looks: a normal perturbation with a non-zero mean is a
+      // brightness change dressed up as form, and it would tilt every rock
+      // face in the game the same way at every distance. This tilts the riser
+      // one way and the tread the other and leaves the face's average normal
+      // exactly where the geometry put it.
+      vec2 plateStep(float u, float e){
+        float f = fract(u);
+        float x = clamp((f - 0.5 + e) / (2.0 * e), 0.0, 1.0);
+        float q  = x * x * (3.0 - 2.0 * x);
+        float dq = 6.0 * x * (1.0 - x) / (2.0 * e);
+        return vec2(q, dq - 1.0);
       }
 
     ` + shader.fragmentShader.replace(
@@ -450,6 +495,7 @@ export function createTerrainMaterial(world, opts = {}) {
         // real face rather than the relief normal derived below.
         vec3 tpw = tpWeights(N);
 
+
         // The 240 m octave stays planar: it is a regional selector (which side
         // of the valley you are on) and it has to agree between a cliff and the
         // meadow at its foot. At that wavelength the projection cannot streak
@@ -557,6 +603,151 @@ export function createTerrainMaterial(world, opts = {}) {
         float soilHold = mix(0.72, 0.51, alpine);
         float steep = smoothstep(soilHold, soilHold + 0.72, slopeLP);
         float bench = 1.0 - smoothstep(0.10, 0.34, slope);   // flat shelf / meadow
+
+        // ── plane breaks on bare rock ─────────────────────────────────────
+        // BLOCKER 6: the massifs had no surface structure at any scale. Measured
+        // on the peaks frame, the sunward flank of the main cone came back at
+        // luma 0.569 and the shaded flank at 0.579 — ten thousandths apart,
+        // over the largest mass in the picture. Debug mask 6 (albedo, no light)
+        // showed why: everything this shader owns for rock — the jointing, the
+        // weathering grain, the aspect facet — is faded to its own mean by
+        // 520 m, and every massif in the game stands further away than that.
+        // What is left at vista range is the mesh normal, which past 200 m is
+        // 6-24 m per vertex over a landform the erosion bake left smooth.
+        //
+        // The reference plates do not paint rock with texture. They paint it as
+        // PLANES, with a definite value step where one plane turns into the
+        // next. That is a NORMAL and not an albedo, which is also why it is the
+        // right answer at distance — aerial perspective washes chroma out of a
+        // face and leaves its form alone, so form is the only cue that still
+        // works through haze.
+        //
+        // A PERIODIC PLANE SET CANNOT DELIVER IT, AND THAT IS NOW SETTLED BY
+        // TWO CAPTURES. Bedding written as a linear plane coordinate — u =
+        // dot(worldPos, bedDir) / L through a staircase — has bedDir near
+        // vertical by definition, because that is what "bedding" means. So u is
+        // world HEIGHT over a constant, every step of the staircase is a level
+        // curve, and a level curve drawn on a landform is a contour map. It
+        // printed evenly spaced horizontal terraces across the distant massifs
+        // in the peaks view; crossed with a vertical joint set it printed a regular
+        // diamond weave over the main cone that reads as quilted fabric rather
+        // than as stone. That is blocker 8's isolines arriving in grey — which
+        // is the useful part of the evidence, because it proves the isoline
+        // problem was never in the colour ramp.
+        //
+        // Phase-warping the ramp does not rescue it; it adds a third artefact.
+        // A warp has to be worth about a period to break the tiling, and the
+        // period is 34 m, so the warp's own spatial gradient is necessarily the
+        // same size as the 1/L it is perturbing. Where the two nearly cancel
+        // the local period collapses toward zero, the band pitch falls under a
+        // pixel, and the far range in hero came back as a moire ripple. NO
+        // DISTANCE FADE KEYED ON THE NOMINAL WAVELENGTH CAN CATCH THAT, because
+        // the frequency that aliases is not the nominal wavelength — which is
+        // exactly why the previous version's careful footM fade did nothing.
+        //
+        // So the coordinate is a BOUNDED FIELD instead of a ramp, and both
+        // failure modes leave with the ramp:
+        //
+        //   · the field has no y term at all, so no level set of it can be a
+        //     contour. The bands are the level sets of a 160 m noise: they
+        //     wander, they pinch out, they vary in width, and where the field
+        //     is locally flat there are no bands at all — which is the
+        //     "part of this massif is massively bedded and part of it is not"
+        //     that the previous version had to fake with a separate modulation.
+        //   · the field is band-limited, so the band pitch is bounded, and —
+        //     better — it is MEASURED here from the same finite differences
+        //     that give the tilt direction. The fade is against the pitch this
+        //     fragment actually has, not against a nominal wavelength.
+        //
+        // On a face steeper than the field is wide the level sets run down the
+        // fall line, and that is also what the plates show on rock: gullies and
+        // spurs running DOWN a slope, never ledges running across it.
+        //
+        // The tilt is the surface gradient of a displacement — ledge height in
+        // metres times the field's gradient in levels per metre — and not a
+        // fixed angle along a normalised direction. That is what makes it safe
+        // where the field is flat: the direction is undefined there, but the
+        // magnitude is zero, so nothing is drawn.
+        vec2  bedS = vec2(0.5, 0.0);
+        vec3  bedG = vec3(0.0);        // levels per metre, world space
+        float fBed = 0.0;
+        // Measured offline against this exact fbm (tools/_scratch/terrain/bedcal.mjs):
+        // median band pitch is BED_L / (0.527 * uBedLevels), so 160 m of field
+        // at 13 levels of swing gives 23 m — and, more to the point, a SPREAD
+        // of pitches from about 13 m to 60 m, because the field's gradient is
+        // not constant. That spread is the whole difference from a ramp.
+        const float BED_L = 160.0, BED_E = 13.0;
+        float BED_K = uBedLevels;
+        // Coherent everywhere it matters: a screen region is all flank or all
+        // valley floor, so the branch is taken or skipped by whole hillsides.
+        if (steep > 0.02) {
+          vec2 Pb = vWorldPos.xz / BED_L;
+          float dP = BED_E / BED_L;
+          float b0 = fbm(Pb, 2);
+          float bX = fbm(Pb + vec2(dP, 0.0), 2);
+          float bZ = fbm(Pb + vec2(0.0, dP), 2);
+          vec2 gxz = vec2(bX - b0, bZ - b0) * (BED_K / BED_E);
+          bedG = vec3(gxz.x, 0.0, gxz.y);
+          bedS = plateStep(b0 * BED_K, 0.215);
+          // ── the anti-contour filter, and it is not optional ──────────────
+          // A level set of a horizontal field is a closed curve, and near an
+          // extremum of the field it is a NEST of closed curves. On a gently
+          // domed summit seen obliquely that nest compresses into concentric
+          // rings and reads as a fingerprint — measured on the pale peak left
+          // of centre in hero, six rings across 40 px. Different arithmetic
+          // from the ramp's terraces, same note to a player: contour map.
+          //
+          // What separates a trace that reads as geology from one that reads
+          // as a contour is which way it runs relative to the slope. A trace
+          // running DOWN the fall line is a flute, a spur, a gully — it is
+          // what every reference plate paints on rock. A trace running ACROSS
+          // it is a contour whatever drew it. The trace is perpendicular to
+          // the field's gradient, so the test is one dot product: suppress the
+          // band exactly where its gradient lines up with the fall line.
+          //
+          // This also earns the noise its keep on a cone. The level sets that
+          // survive are the ones already running down the flanks, so the same
+          // field that made rings on a dome makes fluting on a face.
+          vec2 fallD = Nm.xz;
+          float fallL = length(fallD);
+          vec2 gN = gxz / max(length(gxz), 1e-6);
+          float across = 1.0 - abs(dot(gN, fallD / max(fallL, 1e-6)));
+          // Floored rather than cut to zero: a face whose fluting all runs one
+          // way is its own kind of wrong, and the floor is what leaves the
+          // occasional cross break.
+          //
+          // The second factor was first written as "only apply the filter
+          // where there is a fall line", i.e. mix back to 1 on gentle ground.
+          // That is backwards and the capture said so: gentle ground is where
+          // the fingerprint lives, because a shallow dome shows the whole nest
+          // of level sets at once. Gentle ground does not need the filter
+          // relaxed, it needs the TERM off — a plane break is a property of a
+          // face, and ground with no fall line has no face. So the same
+          // quantity gates the term instead of gating the filter.
+          float aniso = (0.12 + 0.88 * smoothstep(0.08, 0.68, across))
+                      * smoothstep(0.10, 0.34, fallL);
+          // THE DISTANCE BUDGET FOR A FORM CUE IS NOT THE ALIASING LIMIT, and
+          // that is the correction the third capture forced. The first version
+          // of this line held the band on until its riser was about three
+          // pixels — the ordinary frequency budget this file applies to albedo
+          // octaves. Measured on the pale shoulder in hero: at 2 km the pitch
+          // is 34 m against a 4.8 m footprint, so six bands landed inside 40 px
+          // and the peak came back as a fingerprint. Nothing was aliasing; the
+          // bands were simply too small to be read as planes, and a nest of
+          // small ones is a contour map by another route.
+          //
+          // A plane break has to be worth an AREA to read as a plane. Off under
+          // about ten pixels of pitch, full over about twenty-two. Distant
+          // massifs go back to being soft masses, which is what plate 1 shows
+          // through haze anyway, and the cue is spent where it is legible.
+          //
+          // Everything here is in metres on the surface: footM comes
+          // analytically from distance and grazing angle, never from fwidth of
+          // an interpolated attribute, which is constant across a triangle and
+          // would print the mesh.
+          float pitchM = 1.0 / max(length(gxz), 1e-5);
+          fBed = (1.0 - smoothstep(pitchM * 0.045, pitchM * 0.100, footM)) * aniso;
+        }
 
         // ── ground cover: gold meadow, olive damp grass, pale dry straw ─────
         // Gold is the key and must dominate; olive is an accent that only wins
@@ -714,6 +905,11 @@ export function createTerrainMaterial(world, opts = {}) {
         rock = mix(rock, uRockShadow, smoothstep(0.58, 0.16, macro2) * 0.22);
         float bedStep = (hardRock - 0.5) * 2.0;                  // -1 .. 1
         rock *= 1.0 + bedStep * 0.15 * smoothstep(0.60, 1.05, slope);
+        // The ledges take a whisper of value with them, so a bed still reads
+        // as a bed on the shadowed half of a massif where there is no key
+        // light left to model it. Kept an order of magnitude below the normal
+        // tilt on purpose — see uBedAlbedo.
+        rock *= 1.0 + (bedS.x - 0.5) * uBedAlbedo * fBed;
         // Jointing, as broad BLOCKS and not as drawn lines.
         //
         // A fracture-trace version of this lived here and was removed on the
@@ -973,6 +1169,71 @@ export function createTerrainMaterial(world, opts = {}) {
         vec3 screeCol = mix(uScree, uRockMid, meso * 0.45);
         albedo = mix(albedo, screeCol, screeM * 0.66);
         gRockM = max(gRockM, screeM * 0.66);
+
+        // ── alpine turf: the gold contour ribbons ──────────────────────────
+        // THIS IS NOT A THRESHOLD PROBLEM, AND THAT IS THE FINDING. Measured on
+        // the bake (tools/_scratch/terrain/rockcal.mjs): 28.5% of all ground
+        // above 150 m is painted grass, and it is painted grass because the
+        // erosion bake cuts treads into the massifs and a tread is gentle
+        // ground. A slope threshold on a landform whose slope varies with
+        // height IS a contour. Widening the low-pass the line reads makes it
+        // WORSE, measured: at the shipped 11/17 m disc, 26.7% of that grass is
+        // a band sandwiched between rock above and below; at 56/92 m it is
+        // 44.2%, because smoothing removes the local wander that was breaking
+        // the band up. Folding drainage curvature in was tried on the same
+        // harness and also made it worse (26.7% -> 33.6% at unit weight).
+        //
+        // So the boundary is left where the geometry puts it and the MATERIAL
+        // on the alpine side of it is corrected instead, which is what was
+        // actually wrong. Above the tree line the ground lying in the folds of
+        // a crag is not valley meadow: it is bleached turf, lichen and grit,
+        // close in value and chroma to the stone it sits on. A pale grey-gold
+        // band winding through rock reads as ground. Valley gold at 1.5 km —
+        // measured here at chroma 0.42 against stone at 0.03 in the same frame
+        // — reads as a drawn line, which is exactly the note.
+        //
+        // THE GATE IS REGIONAL SLOPE, AND TWO WRONG GATES WERE TRIED FIRST.
+        //
+        // Altitude does not work: the ribbons on the gorge walls sit at
+        // 100-180 m, under any sensible tree line, and are wrong because of
+        // what is around them rather than how high they are.
+        //
+        // rockM does not work either, and the reason is worth writing down
+        // because it looks like it should. rockM is CLAMPED to 0..1, so every
+        // piece of ground that is comfortably grass — a valley meadow and an
+        // alpine tread alike — reads exactly 0 and there is no signal left to
+        // gate on. Even unclamped they agree: a tread's local slope is as
+        // gentle as a meadow's, which is the whole reason it is painted grass.
+        //
+        // What actually separates them is the NEIGHBOURHOOD. A tread is gentle
+        // ground on a mountain; a meadow is gentle ground on a valley floor.
+        // Nc is already in hand — the heightfield normal over the 62-96 m
+        // coarse stencil the aspect facet uses — so its gradient is the
+        // regional slope for free. Measured on the bake
+        // (tools/_scratch/terrain/tread.mjs): 0.58 median on ribbon ground
+        // against 0.40 on honest hillside meadow.
+        //
+        // Applied as a CONTINUOUS blend and never as a threshold, which is what
+        // makes the weak separation usable and the stencil's own 62-96 m drift
+        // with camera distance harmless: a 12% drift in a colour mix is
+        // invisible, where the same drift across a cut would crawl. Nothing is
+        // reclassified, no gold area is lost, and no new edge can be drawn —
+        // the gold simply stops being valley gold as the ground under it
+        // becomes a wall.
+        //
+        // This is the near-field rimBand generalised to every distance, and
+        // deliberately so. rimBand was cut off at 300 m on the grounds that a
+        // transition band is sub-pixel at vista range. A gold ribbon on a
+        // massif is not sub-pixel — it is tens of pixels of chroma 0.42 lying
+        // against stone at 0.03 — and mediating that meeting with a material is
+        // what every reference plate does.
+        float slopeReg = length(Nc.xz) / max(Nc.y, 1e-3);
+        float alpTurf = (1.0 - rockCover) * (1.0 - screeM)
+                      * smoothstep(0.34, 0.95, slopeReg)
+                      * (0.55 + 0.45 * smoothstep(110.0, 240.0, altWarp));
+        vec3 turfCol = mix(uGrassDry, mix(uScree, uRockMid, 0.45),
+                           0.46 + macro2 * 0.30);
+        albedo = mix(albedo, turfCol, alpTurf * 0.80);
         // Only genuinely rock-shaped ground gets the full chroma governor — see
         // the block after the lighting. A gravel shelf, a scoured bank or a
         // talus fan on gentle ground is stone, but it is stone lying in a warm
@@ -1142,6 +1403,25 @@ export function createTerrainMaterial(world, opts = {}) {
           gReliefW = mix(gReliefW, 0.92, farN);
         }
 
+        // ── hand the plane breaks to the lighting ──────────────────────────
+        // Tangential projection of the displacement gradient, taken against the
+        // geometric normal so the planes follow the real face rather than the
+        // relief normal derived from a stencil that changes with distance.
+        //
+        // uBedRelief is metres of ledge and bedG is levels per metre, so the
+        // product is a dimensionless slope — the honest surface gradient of the
+        // displacement this staircase describes. It is zero wherever the field
+        // is locally flat, which is what keeps a wrong answer off the parts of
+        // a massif that have no plane structure, and it is zero on flat ground
+        // for the same reason the gate below is: a meadow is neither rock nor
+        // steep.
+        float bedOn = gRockM * smoothstep(0.16, 0.58, slopeLP);
+        if (bedOn > 0.003 && fBed > 0.003) {
+          vec3 bedD = bedG * (bedS.y * uBedRelief * fBed);
+          gBedDelta = bedD - dot(bedD, N) * N;
+          gBedW = bedOn;
+        }
+
         // Debug read-out. Written to gDebug and blitted OVER the lit colour at
         // the end of the shader rather than multiplied into the albedo, which
         // is how it used to work and which made it useless exactly where it was
@@ -1160,7 +1440,11 @@ export function createTerrainMaterial(world, opts = {}) {
           // the light is flat?" is the first question in every one of these
           // investigations and this answers it in one capture.
           else if (uDebugMask < 6.5) gDebug = albedo;
-          else                       gDebug = vec3(bedM, screeM, shelfM);
+          // 8 answers "is this ground the world, or the apron beyond it?".
+          // Half a round has been lost twice to tuning a near-field mask for a
+          // defect that turned out to be painted by the far-apron block.
+          else if (uDebugMask < 7.5) gDebug = vec3(bedM, screeM, shelfM);
+          else                       gDebug = vec3(uFarApron, uOutside, gRockM);
         }
 
         diffuseColor.rgb *= albedo;
@@ -1185,6 +1469,14 @@ export function createTerrainMaterial(world, opts = {}) {
       // vNormal is view space; gReliefN is world space.
       if (gReliefW > 0.001) {
         normal = normalize(mix(normal, normalize(mat3(viewMatrix) * gReliefN), gReliefW));
+      }
+      // Bedding and master joints, bent in after the relief mix rather than
+      // folded into gReliefN. gReliefN is a heightfield normal and is weighted
+      // to zero inside 110 m, where the drawn mesh is already finer than the
+      // stencil; the plane sets are a property of the rock itself and have to
+      // reach the near field too, so they get their own weight.
+      if (gBedW > 0.001) {
+        normal = normalize(normal - mat3(viewMatrix) * (gBedDelta * gBedW));
       }`
     ).replace(
       '#include <dithering_fragment>',
@@ -1198,6 +1490,7 @@ export function createTerrainMaterial(world, opts = {}) {
         // Keyed on the relief normal, not the mesh normal, so the warm shade
         // note lands on the same planes the lighting now breaks the face into.
         vec3 shadeN = normalize(mix(normalize(vWorldNormal), gReliefN, gReliefW));
+        shadeN = normalize(shadeN - gBedDelta * gBedW);
         float ndl = clamp(dot(shadeN, normalize(uSunDir)), 0.0, 1.0);
         float shade = 1.0 - smoothstep(0.0, 0.38, ndl);
         gl_FragColor.rgb = mix(gl_FragColor.rgb,
@@ -1292,7 +1585,7 @@ export function createTerrainMaterial(world, opts = {}) {
     );
   };
 
-  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v3';
+  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v4';
   void opts;
   return mat;
 }
