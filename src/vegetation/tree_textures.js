@@ -29,15 +29,38 @@ export const TILE = {
 
 const TAU = Math.PI * 2;
 
-/** One mark. Slight elongation + rotation stops them reading as dots. */
+const byte = (v) => Math.round(THREE.MathUtils.clamp(v, 0, 1) * 255);
+
+/**
+ * One mark. Slight elongation + rotation stops them reading as dots.
+ *
+ * The fill is a radial gradient, not a flat colour, and that is the difference
+ * between a brush mark and a sticker. A flat ellipse is fine while the tile is
+ * minified — the mip chain averages it away — but a hero tree at three metres
+ * magnifies this atlas four or five times, and every mark then reads as a solid
+ * cellophane oval with a hard rim. The reference paints a visible turn inside
+ * every dab: a lit shoulder and a shaded far side. Baking it here costs nothing
+ * at runtime (R is already sampled as the per-mark value jitter) and it is the
+ * only thing in the pipeline carrying shape *inside* a mark — the crown normal
+ * shades the clump, and the G mask shades the tile, but nothing shaded the mark.
+ *
+ * Alpha is flat across the gradient, so the coverage cutout is untouched.
+ */
 function mark(g, x, y, r, elong, rot, value, alpha = 1) {
   g.save();
   g.translate(x, y);
   g.rotate(rot);
   g.beginPath();
   g.ellipse(0, 0, r * elong, r, 0, 0, TAU);
-  const v = Math.round(THREE.MathUtils.clamp(value, 0, 1) * 255);
-  g.fillStyle = 'rgba(' + v + ',0,128,' + alpha + ')';
+  const hi = byte(value * 1.30 + 0.13);
+  const lo = byte(value * 0.58);
+  const grad = g.createRadialGradient(
+    -r * elong * 0.36, -r * 0.36, r * 0.05,
+    0, 0, r * elong * 1.10);
+  grad.addColorStop(0, 'rgba(' + hi + ',0,128,' + alpha + ')');
+  grad.addColorStop(0.55, 'rgba(' + byte(value) + ',0,128,' + alpha + ')');
+  grad.addColorStop(1, 'rgba(' + lo + ',0,128,' + alpha + ')');
+  g.fillStyle = grad;
   g.fill();
   g.restore();
 }

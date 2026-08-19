@@ -44,3 +44,5 @@ same places are photographed every round and the sheets are directly comparable.
 | 036 | 2026-08-19 | cool shadow pulled back to plate 3 level | [036](036-2026-08-19-cool-shadow-pulled-back-to-plate-3-level.png) |
 | 037 | 2026-08-19 | contour ribbons fixed, world edge closed | [037](037-2026-08-19-contour-ribbons-fixed-world-edge-closed.png) |
 | 038 | 2026-08-19 | cover: scrub canopy rebuild, deadfall, substrate ladder | [038](038-2026-08-19-cover-scrub-canopy-rebuild-deadfall-substrate-la.png) |
+| 039 | 2026-08-19 | leaf winding fixed, scrub rebuilt, substrate density | [039](039-2026-08-19-leaf-winding-fixed-scrub-rebuilt-substrate-densi.png) |
+| 040 | 2026-08-19 | rim light, birch bark, form variety | [040](040-2026-08-19-rim-light-birch-bark-form-variety.png) |

@@ -165,7 +165,7 @@ export class Trees extends System {
             leaf: buildLeafGeometry(tree, { keep: 1 }),
           },
           mid: vi < CFG.midVariants ? {
-            bark: buildBarkGeometry(tree, sp, { radialSegs: 3, maxLevel: 0 }),
+            bark: buildBarkGeometry(tree, sp, { radialSegs: 3, maxLevel: 0, leaderBonus: 0 }),
             // Every third clump, not every second. Mid instances outnumber near
             // ones four to one, so their leaf quads are the single biggest
             // triangle line item in the game's largest triangle consumer. The
@@ -173,7 +173,17 @@ export class Trees extends System {
             // is held, and at 96-255 m the loss of mark *count* is not visible —
             // a crown is forty pixels wide there and it is the mass, not the
             // individual mark, that the eye is reading.
-            leaf: buildLeafGeometry(tree, { keep: 3, sizeBoost: 0.82 }),
+            // Every fourth clump, not every third. The size-hierarchy field
+            // added this round puts genuinely large trees close to the camera
+            // where before the population was mush in the middle, and that took
+            // the whole-game triangle peak from 4.16 M to 4.36 M against a
+            // 4.5 M cap — too little headroom for a system that is already the
+            // largest consumer. Mid instances outnumber near ones four to one,
+            // so this is where the cheap triangles are, and at 84-255 m a crown
+            // is forty pixels across: the survivors are grown by sqrt(keep) so
+            // the silhouette area is held and the loss of mark *count* is not
+            // resolvable at that range.
+            leaf: buildLeafGeometry(tree, { keep: 4, sizeBoost: 0.86 }),
           } : null,
         });
       }
@@ -572,9 +582,22 @@ export class Trees extends System {
           // forest floor needs and gives the canopy an actual continuum above
           // it, so a stand has a top storey, an understorey and something in
           // between rather than two populations with a gap.
+          //
+          // Size is now *spatially correlated*, which is the part that was
+          // missing. Drawing every tree's scale from one global distribution
+          // gives a hillside of independent samples, and independent samples of
+          // anything read to the eye as uniform — which is exactly the note on
+          // the `peaks` view, a field of cones at one size with no hierarchy in
+          // it, even though the distribution behind it was wide. Real forests
+          // are patchy in *age*: a dense young thicket next to a stand of old
+          // giants. One low-frequency field (~70 m) bends the exponent, so a
+          // mature patch runs large and a young one runs small, and the heroes
+          // land where the big trees already are instead of alone in a meadow.
+          const mature = this.noise.fbm(x * 0.014 + 311.7, z * 0.014 - 177.3, 2, 2.2, 0.5, 1) * 0.5 + 0.5;
+          const mat = clamp01(mature * 1.35 - 0.18);
           const u = rng();
-          let scale = lerp(0.26, 1.16, Math.pow(u, 2.1));
-          if (rng() < 0.085) scale = lerp(1.20, 1.95, rng() * rng());   // hero
+          let scale = lerp(0.24, 1.18, Math.pow(u, lerp(2.9, 1.15, mat)));
+          if (rng() < 0.028 + 0.135 * mat * mat) scale = lerp(1.20, 2.05, rng() * rng());   // hero
           // Altitude and dryness stunt growth — treeline trees are runts.
           scale *= lerp(0.70, 1.0, 1 - smoothstep(150, 250, h));
           scale *= lerp(0.84, 1.08, clamp01(m));
@@ -946,7 +969,14 @@ export class Trees extends System {
       u.uAmbient.value = (lighting.hemi.intensity + lighting.fill.intensity * 0.5) / Math.PI;
       // Backlight glow rides the sun's own colour, hottest near the horizon.
       const lowSun = 1 - smoothstep(0.05, 0.42, Math.max(0, lighting.sunDir.y));
-      u.uTransStrength.value = lerp(1.40, 3.20, lowSun);
+      // Down from 1.40 / 3.20. With uTransTint no longer supplying a third
+      // warm multiplier the transmitted term arrives much *whiter*, so the same
+      // strength reads far hotter than it did — the near crowns in `backlit`
+      // measured srgb(156,81,53) against grass at srgb(206,118,84), i.e. the
+      // same hue at a lower value, and simply vanished into the meadow. The
+      // glow is meant to separate a crown from what is behind it, not to bleach
+      // it to the background.
+      u.uTransStrength.value = lerp(1.10, 2.40, lowSun);
     }
 
     const p = camera.position;

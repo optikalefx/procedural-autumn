@@ -92,10 +92,23 @@ export function buildBarkGeometry(tree, species, opts = {}) {
     const pts = s.pts.slice(0, Math.min(s.pts.length, last + 1));
     if (pts.length > 1) strands.push({ ...s, pts });
   }
+  // Segment count per strand, not one for the whole tree. The bole is the only
+  // part of the skeleton a 3 m camera reads as a solid — at four segments it is
+  // a square in cross-section, so its silhouette has visible flats and the rim
+  // light breaks at the corners — while the twigs are three pixels wide and
+  // hidden inside the crown. On a spruce the boughs are 119 three-point
+  // poly-lines and cost 80% of the bark budget, so spending the extra rings
+  // uniformly would be paying almost all of it where nothing can see it.
+  // Near LOD only: at the mid LOD the bole is a few pixels wide and there are
+  // four times as many instances, so the extra rings there cost more than the
+  // whole near-field saving.
+  const leaderBonus = opts.leaderBonus ?? 2;
+  const segsOf = (s) => (s.level === 0 ? radialSegs + leaderBonus : radialSegs);
   let vCount = 0, iCount = 0;
   for (const s of strands) {
-    vCount += s.pts.length * (radialSegs + 1);
-    iCount += (s.pts.length - 1) * radialSegs * 6;
+    const rs = segsOf(s);
+    vCount += s.pts.length * (rs + 1);
+    iCount += (s.pts.length - 1) * rs * 6;
   }
 
   const pos = new Float32Array(vCount * 3);
@@ -114,6 +127,7 @@ export function buildBarkGeometry(tree, species, opts = {}) {
   let vo = 0, io = 0;
   for (const s of strands) {
     const pts = s.pts;
+    const rs = segsOf(s);
     let run = 0;
     prevNormal.set(1, 0, 0);
     for (let i = 0; i < pts.length; i++) {
@@ -141,30 +155,40 @@ export function buildBarkGeometry(tree, species, opts = {}) {
       // Wind weight: quadratic in height so the base is pinned and the tips fly.
       const w = Math.pow(clamp01(p.y / (H * 0.95)), 1.8);
 
-      for (let k = 0; k <= radialSegs; k++) {
-        const ang = (k / radialSegs) * Math.PI * 2;
+      for (let k = 0; k <= rs; k++) {
+        const ang = (k / rs) * Math.PI * 2;
         const ca = Math.cos(ang), sa = Math.sin(ang);
         tmp.copy(normal).multiplyScalar(ca).addScaledVector(binormal, sa);
-        const o = (vo + i * (radialSegs + 1) + k);
+        const o = (vo + i * (rs + 1) + k);
         pos[o * 3 + 0] = p.x + tmp.x * r;
         pos[o * 3 + 1] = p.y + tmp.y * r;
         pos[o * 3 + 2] = p.z + tmp.z * r;
         nrm[o * 3 + 0] = tmp.x; nrm[o * 3 + 1] = tmp.y; nrm[o * 3 + 2] = tmp.z;
-        uv[o * 2 + 0] = k / radialSegs;
+        uv[o * 2 + 0] = k / rs;
         uv[o * 2 + 1] = run;
         bark[o * 2 + 0] = species.bark;
         bark[o * 2 + 1] = w * (s.level > 0 ? 1.35 : 1.0);
       }
     }
-    const ring = radialSegs + 1;
+    const ring = rs + 1;
     for (let i = 0; i < pts.length - 1; i++) {
-      for (let k = 0; k < radialSegs; k++) {
+      for (let k = 0; k < rs; k++) {
         const a = vo + i * ring + k;
         const b = a + 1;
         const c = a + ring;
         const d = c + 1;
-        idx[io++] = a; idx[io++] = c; idx[io++] = b;
-        idx[io++] = b; idx[io++] = c; idx[io++] = d;
+        // Winding must agree with the outward normal written above, and it did
+        // not. With tangent +Y and ring offset normal*cos + binormal*sin (where
+        // binormal = tangent x normal), the ring advances *clockwise* seen from
+        // outside, so (a, c, b) put the front face on the *inside* of the tube.
+        // Under `side: FrontSide` that culls the near wall and draws the far
+        // one, whose stored normal points away from the camera — a trunk lit
+        // from the front therefore rendered shaded and one lit from behind
+        // rendered lit, which is why every trunk in the game read as a flat
+        // dark stick from every angle and why the birch bark had accumulated a
+        // 1.30x key and a 1.95x ambient lift trying to compensate.
+        idx[io++] = a; idx[io++] = b; idx[io++] = c;
+        idx[io++] = b; idx[io++] = d; idx[io++] = c;
       }
     }
     vo += pts.length * ring;

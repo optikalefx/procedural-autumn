@@ -65,6 +65,7 @@ uniform float uTransStrength;
 uniform float uBands;
 uniform float uCanopyGain;
 uniform float uCanopyAmbient;
+uniform float uRimBoost;
 
 vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow) {
   float ndl = dot(N, uSunDir);
@@ -122,8 +123,34 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // faces, so it collects appreciably more than that convention allows. This is
   // the term that decides whether a shadowed crown is a dark green mass or a
   // hole, because in shadow it is nearly the whole signal.
+  // Backlit self-shading.
+  //
+  // A crown is an opaque mass a few metres thick. The face of it turned toward
+  // a camera that is looking into the sun is the face standing in the tree's
+  // own shadow — in the reference that face is the darkest thing in the frame,
+  // and the contrast between it and the blazing edge around it *is* the backlit
+  // effect. We were giving it full hemisphere ambient, which is why the near
+  // conifer in the backlit anchor read as lit on the side facing the camera
+  // with the sun plainly behind it, and why the whole view came back as one
+  // pale wash with no silhouette in it.
+  //
+  // Note this deliberately does *not* touch the transmission term below. Losing
+  // reflected light and gaining transmitted light is exactly what a backlit
+  // leaf does; running both at full strength at once is what washed it out.
+  // 0.46, not 0.58, after measuring the relationship the reference actually
+  // holds. Plate 3's near crowns sit *below* the gold meadow they stand in —
+  // the crimson maple reads srgb(153,49,9) and a gold crown srgb(106,92,56)
+  // against sunlit grass at srgb(130-149, 91-100, 45-56). Ours came back at
+  // srgb(161,86,57) beside grass at srgb(199,114,81): the same hue at a similar
+  // value, so the near crown in the backlit anchor did not separate from the
+  // field behind it at all. This is the term that owns that separation.
+  float faceCam = clamp(-dot(N, V), 0.0, 1.0);
+  float intoSun = clamp(dot(V, uSunDir) * 1.3, 0.0, 1.0);
+  float backFace = faceCam * intoSun;
+  float selfShade = mix(1.0, 0.46, backFace);
+
   vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5)
-            * uAmbient * uCanopyAmbient * (0.36 + 1.00 * ao)
+            * uAmbient * uCanopyAmbient * (0.36 + 1.00 * ao) * selfShade
             // The downward end of this used to be 0.80. A crown seen from
             // underneath — which is most of what the backlit and drive
             // anchors look at, standing under a stand at eye level — then came
@@ -133,6 +160,7 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
             // lit end is unchanged, so this lifts undersides without touching
             // the crown tops that now measure on the plates.
             * (0.92 + 0.36 * clamp(N.y, 0.0, 1.0));
+  direct *= mix(1.0, 0.80, backFace);
 
   // Transmission. The money shot: at golden hour the far side of every crown
   // lights up like stained glass. Strongest where we look into the sun, where
@@ -154,11 +182,37 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   trans /= 1.0 + lum * 1.5;
   vec3 transC = uSunColor * albedo * uTransTint;
 
-  // Rim: a thin bright edge where the crown turns away — cheap silhouette pop.
-  float rim = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 3.5)
-            * clamp(toward * 1.4, 0.0, 1.0) * shadow;
+  // Rim — the shared golden-hour edge from Stylize, which every
+  // MeshStandardMaterial in the game gets through the patched direct-lighting
+  // term and which a raw ShaderMaterial has to opt into. This replaces a local
+  // rim that was multiplied *through* the albedo: on a conifer, whose albedo is
+  // the darkest thing in the frame, that produced a dark rim, which is the one
+  // thing a backlit edge must never be. It is added to the light now, not to
+  // the surface.
+  //
+  // Two adaptations to the documented call, both because a leaf card is a
+  // double-sided billboard rather than a solid:
+  //   · V here points camera -> surface, so the helper's view vector is -V;
+  //   · the fresnel is fed |N.V| rather than N.-V. The sign of a billboard's
+  //     crown normal carries no facing information — a card on the far side of
+  //     the crown has an outward normal pointing away from us — so the raw form
+  //     would return a full rim for roughly half of every canopy instead of for
+  //     its silhouette. |N.V| is zero at the true grazing band from either
+  //     side, which is where the edge actually is.
+  float rim = stylizeRim(abs(dot(N, V)), dot(-V, uSunDir)) * uRimBoost;
+  // A rim needs the light to physically reach the edge, but a canopy edge is
+  // exactly where the shadow map is least reliable (it is a cutout billboard
+  // one texel wide), so this keeps most of the rim inside a shadowed crown.
+  // Gated on the clump's own exposure as well. A conifer's needle normals point
+  // outward and horizontally, so on the left and right thirds of a spire the
+  // fresnel is near its peak even for cards buried well inside the crown —
+  // ungated, the rim lit the whole tree pale cream and the spire stopped being
+  // the dark mass the palette needs from it. ao runs from ~0.4 at the trunk
+  // to ~1.1 at a bough tip, which is exactly the gradient wanted: the tips
+  // blaze and the interior stays where it was.
+  rim *= mix(0.55, 1.0, shadow) * clamp(ao * ao * 1.05, 0.0, 1.25);
 
-  vec3 col = albedo * (direct + hemi) + transC * trans + uSunColor * albedo * rim * 0.5;
+  vec3 col = albedo * (direct + hemi) + transC * trans + uSunColor * rim;
 
   // A *gentle* per-channel shoulder, and no more than that. This used to be an
   // aggressive roll-off because the post chain ran AgX, a filmic curve that
@@ -220,11 +274,31 @@ export function makeSharedUniforms() {
     uSkyColor:      { value: PALETTE.ambientSky.clone() },
     uGroundColor:   { value: PALETTE.ambientGround.clone() },
     uAmbient:       { value: 0.55 },
-    uTransTint:     { value: new THREE.Color(1.62, 1.10, 0.58) },
+    // Near-neutral, and this is a correction, not a preference. Transmission is
+    // already tinted twice — by the leaf it passes through (albedo is in the
+    // product) and by the sun (uSunColor, which at golden hour is about
+    // 1 : 0.66 : 0.35 linear). The old 1.62 : 1.10 : 0.58 is itself
+    // 1 : 0.68 : 0.36, i.e. a *third* warm multiplier of the same strength, and
+    // stacking it gave transmitted light a net 1 : 0.44 : 0.13. That is the
+    // crushed blue channel the critic measured on foliage, and — because
+    // transmission is the dominant term in exactly the frame that exists to
+    // test backlight — it is most of why the backlit view came back 68% red
+    // against plate 3's 37% and read as one salmon wash rather than as
+    // stained glass. It stays slightly warm because sunlight through a leaf
+    // does pick up a little of the leaf's own warmth beyond its reflectance,
+    // but it is a nudge now rather than a hue replacement.
+    uTransTint:     { value: new THREE.Color(1.30, 1.13, 0.95) },
     uTransStrength: { value: 1.9 },
     uBands:         { value: 4.0 },
     uCanopyGain:    { value: 1.34 },
     uCanopyAmbient: { value: 1.42 },
+    // Multiplier on the shared rim, which Stylize holds at 0.22 globally. That
+    // number is priced for grass: a blade is a thin card seen edge-on, so its
+    // fresnel is near 1 across the whole field and a rim strong enough to draw
+    // a tree edge lifts the entire meadow instead. A crown has a real
+    // silhouette and is the subject of the backlit view, so it is allowed more.
+    // Set from Trees.update() so it can follow the sun's elevation.
+    uRimBoost:      { value: 6.0 },
   };
 }
 
@@ -345,7 +419,7 @@ void main() {
   vec3 albedo = mix(vColA, vColB, vTone) * jitter;
   vec3 N = normalize(vN);
   vec3 V = normalize(vWorld - cameraPosition);
-  vec3 col = canopyShade(albedo, N, V, ao, mix(1.15, 0.62, core), canopyShadow());
+  vec3 col = canopyShade(albedo, N, V, ao, mix(1.28, 0.40, core), canopyShadow());
 
   gl_FragColor = vec4(col, 1.0);
   // Chunk order matters: three's own materials apply fog *before* the output
@@ -538,6 +612,44 @@ float lenticel(vec2 uv, vec2 freq, float density, float strength) {
   return strength * smoothstep(th, th * 0.3, abs(f.y)) * (1.0 - smoothstep(0.80, 1.0, ex));
 }
 
+/**
+ * A birch branch scar: the dark chevron under an old branch stub. This is the
+ * mark that makes a white trunk read as *birch* rather than as a painted pole,
+ * and it was missing — the bark carried lenticels only, which are a fine grain
+ * and vanish past about 6 m, so at every range beyond arm's length our birches
+ * were featureless sticks. In the plates the chevrons are the coarsest thing on
+ * the trunk and are still legible at 30 m.
+ *
+ * Shape: a wide inverted V, fattest at the apex and tapering to the tips, with
+ * the stub itself as a dark blot sitting inside the apex. Sparse and jittered
+ * so no two trunks carry the same arrangement.
+ */
+float chevronScar(vec2 uv, vec2 freq, float density) {
+  vec2 g = uv * freq;
+  vec2 cell = floor(g);
+  if (h21(cell + 17.31) > density) return 0.0;
+  vec2 f = fract(g) - 0.5;
+  f.x -= (h21(cell + 2.13) - 0.5) * 0.30;
+  f.y -= (h21(cell + 6.47) - 0.5) * 0.60;
+  // The cell is wildly anisotropic and that matters: vUv.x is 0..1 around the
+  // whole trunk while vUv.y is arc length in *metres*, so at freq (2, 0.55) a
+  // cell is half a circumference wide and 1.8 m tall — call it 1:10. Numbers
+  // that look like a squat chevron in cell space came out as a vertical arrow
+  // on the trunk. Everything below is therefore sized for that aspect: w is a
+  // fraction of the circumference, rise and t are fractions of 1.8 m.
+  float w = 0.20 + 0.09 * h21(cell + 4.21);          // half-width, in cell x
+  float ex = abs(f.x) / w;
+  float rise = 0.050 + 0.035 * h21(cell + 9.03);     // 9-15 cm of trunk
+  float arch = rise * (1.0 - ex);                    // apex at the centre
+  // Fat at the apex, thin at the tips — that taper is the whole read.
+  float t = (0.0060 + 0.0060 * h21(cell + 11.53)) * (1.0 + 2.2 * (1.0 - ex));
+  float v = smoothstep(t, t * 0.15, abs(f.y - arch));
+  // The stub: a small blot just under the apex.
+  float blot = 1.0 - smoothstep(0.55, 1.05,
+    length(vec2(f.x / (w * 0.42), (f.y - arch * 0.30) / (rise * 0.55))));
+  return clamp(max(v, blot) * (1.0 - smoothstep(0.86, 1.05, ex)), 0.0, 1.0);
+}
+
 void main() {
   // pat is the bark *pattern*, kept separate from the base colour so the
   // impostor bake can store shading without baking a species hue into it.
@@ -550,9 +662,21 @@ void main() {
     // a smudged, darker base. The high-value trunk is a signature of the plates.
     // A lenticel is a lens, not a rectangle — tapering the dash at both ends is
     // the whole difference between "birch" and "trunk with black stickers".
+    // vUv.y is arc length in metres, so these frequencies are per-metre: the
+    // chevrons land roughly one every 1.7 m of trunk on a third of the
+    // circumference, which is what the plates show.
+    // One cell per circumference, so a row of the grid carries at most one
+    // scar — which is what a branch scar is. Roughly one every 1.8 m, plus a
+    // sparser finer octave.
+    float chev = chevronScar(vUv, vec2(1.0, 0.55), 0.58)
+               + chevronScar(vUv, vec2(1.0, 1.30), 0.30) * 0.85;
     float scar = lenticel(vUv, vec2(6.0, 2.6), 0.42, 1.0)
                + lenticel(vUv, vec2(11.0, 6.5), 0.30, 0.55);
-    pat = mix(pat, pat * 0.16, clamp(scar, 0.0, 1.0));
+    pat = mix(pat, pat * 0.20, clamp(scar, 0.0, 1.0));
+    // Chevrons go darker than the lenticels and are what carries the trunk at
+    // 3-30 m. 0.13 against a near-white base is srgb ~90 on srgb ~235, which is
+    // the contrast plate 5 holds at that range.
+    pat = mix(pat, pat * 0.13, clamp(chev, 0.0, 1.0));
     pat = mix(pat * 0.74, pat, smoothstep(0.0, 1.6, vHeight));
     pat *= 0.95 + 0.10 * h21(vUv * 40.0);
   } else if (style < 1.5) {
@@ -568,11 +692,19 @@ void main() {
     float grain = vnoise2(vec2(vUv.x * 26.0, vUv.y * 7.0));
     pat *= mix(0.45, 1.14, ridge) * (0.84 + 0.30 * grain);
   } else {
-    // Conifer: dark, finely flaked. Two octaves so the flakes vary in size
-    // instead of tiling on one grid.
-    float flake = vnoise2(vec2(vUv.x * 14.0, vUv.y * 11.0)) * 0.65
-                + vnoise2(vec2(vUv.x * 31.0, vUv.y * 26.0)) * 0.35;
-    pat *= 0.70 + 0.56 * flake;
+    // Conifer: dark, and *scaly* rather than merely noisy. Spruce bark is a
+    // mosaic of loose plates, and at 3 m — which is where the forest anchor
+    // stands — two octaves of smooth noise at 0.70+0.56 gave a value swing of
+    // barely 25% on an already-dark albedo, so the near bole read as a
+    // featureless red-brown pole. Sharpening one octave into plate edges and
+    // widening the swing puts a readable texture on it without adding a
+    // rectangular grid, which is what the previous version of the rough-bark
+    // branch was rejected for.
+    float flake = vnoise2(vec2(vUv.x * 13.0, vUv.y * 9.0)) * 0.62
+                + vnoise2(vec2(vUv.x * 29.0, vUv.y * 24.0)) * 0.38;
+    // Plate edges: the ridges of the noise field, not its value.
+    float plate = smoothstep(0.42, 0.50, abs(flake - 0.5) * 2.0);
+    pat *= (0.56 + 0.86 * flake) * (1.0 - 0.34 * plate);
   }
 
   if (uBake > 0.5) {
@@ -586,7 +718,13 @@ void main() {
   float ndl = dot(N, uSunDir);
   float wrap = stylizeDiffuse(ndl) * mix(0.58, 1.0, shadow);
   vec3 key = uSunColor * wrap;
-  vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5) * uAmbient;
+  // 1.40x on the hemisphere term, for the same reason the canopy carries
+  // uCanopyAmbient > 1: uAmbient arrives as three's irradiance for a lone
+  // Lambert surface, and a trunk stands in a bowl of sunlit gold meadow that
+  // bounces into it from every side. Without it a conifer bole under its own
+  // crown reached the grade at srgb ~25 — a flat black column with no bark on
+  // it at two metres, which is the closest, most-looked-at trunk in the game.
+  vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5) * uAmbient * 1.40;
 
   if (style < 0.5) {
     // Birch is the one surface in this game the key light is not allowed to
@@ -597,21 +735,43 @@ void main() {
     // Pulling the *light* toward neutral for this bark style (not the albedo,
     // which would flatten the scars) is what keeps the trunk high-value while
     // its lenticels, its taper and its shading all still read.
+    //
+    // What "neutral" means here had drifted. #e9e6dd is srgb(233,230,221) —
+    // a ratio of 1 : 0.987 : 0.949, which is *warm* neutral, a paper cream. The
+    // previous target (1 : 0.99 : 0.97 on the key, and a blue-pushed ambient
+    // below) put the trunk on the cool side of grey, and cool grey plus this
+    // game's violet cast-shadow mass is the "pale blue-grey" the trunks were
+    // measuring. Neutralise the *hue* of the key, then re-tint it to the plate
+    // colour rather than to nothing.
     float kl = dot(key, vec3(0.2126, 0.7152, 0.0722));
-    key = mix(key, vec3(kl * 1.02, kl * 1.01, kl * 0.99), 0.88) * 1.30;
+    key = mix(key, vec3(kl * 1.030, kl * 1.005, kl * 0.965), 0.93) * 1.10;
     // Paper bark is a very strong diffuse reflector and it stands in a gold
     // meadow that bounces into it, so its shaded side never falls anywhere near
     // as far as a brown trunk's. In the plates a birch is near-white on *both*
     // sides and the scars carry the form; without this lift ours went to srgb
     // 120 in shade and read as a grey stick.
+    // The 1.95x lift and the 1.12 blue push were both compensation for the
+    // trunk tubes being wound against their own normals: the visible wall was
+    // the far one, its normal faced away from the camera, so the key never
+    // landed and the only thing holding the trunk up was ambient — which in
+    // this game is ambientSky #7d94c9, a cool blue. Turn a blue fill up
+    // twice over and you get a blue-grey stick. With the winding fixed the key
+    // arrives, so the ambient only has to keep the *shaded* side of a paper
+    // trunk from falling as far as a brown one's, and it can keep the plates'
+    // faint cool cast instead of being made of it.
     float hl = dot(hemi, vec3(0.2126, 0.7152, 0.0722));
-    hemi = mix(hemi, vec3(hl * 0.98, hl * 1.02, hl * 1.12), 0.62) * 1.95;
+    hemi = mix(hemi, vec3(hl * 0.995, hl * 1.010, hl * 1.065), 0.88) * 1.34;
   }
-  // A touch of rim so a white birch trunk still separates from a gold meadow.
   vec3 V = normalize(vWorld - cameraPosition);
-  float rim = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 4.0) * clamp(dot(V, uSunDir), 0.0, 1.0);
+  // Shared golden-hour rim, same opt-in as the canopy. A trunk is a solid with
+  // an honest normal, so this one takes the documented form directly (viewDir
+  // is -V, pointing surface -> camera). It is added to the light, never
+  // multiplied by the bark colour: a conifer's near-black bark needs the rim
+  // more than a birch does, and through the albedo it would get it least.
+  float rim = stylizeRim(dot(N, -V), dot(-V, uSunDir))
+            * (style < 0.5 ? 3.0 : 5.0) * mix(0.5, 1.0, shadow);
 
-  vec3 col = albedo * (key + hemi) + uSunColor * rim * 0.35 * shadow;
+  vec3 col = albedo * (key + hemi) + uSunColor * rim;
   gl_FragColor = vec4(col, 1.0);
   // Chunk order matters: three's own materials apply fog *before* the output
   // colour-space encode, and the atmosphere's haze colour is a linear value.

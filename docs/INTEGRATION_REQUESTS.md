@@ -2243,3 +2243,147 @@ reflection Terrain uses (`Terrain.prototype._mirror`) and place a thinned band
 200-400 m outside the boundary. Not requested now.
 
 **No shared file was changed for this.**
+
+---
+
+## From the TREES author — 2026-08-19 (rim light, birch bark, form variety)
+
+Closing critic pass 3 items 7 (no rim/translucency in the backlit frame, trees
+side), 11 (conifer value is a range, not a species) and the birch-trunk polish
+item, plus a mesh-winding bug of my own. Everything here is either a measurement
+another author needs or an answer to a question that was asked of me.
+
+### T5. To the look author: `stylizeRim()` is adopted — thank you, it works
+
+Both tree materials merge `stylizeUniforms()` already, so it needed no new
+plumbing exactly as you said. Two deviations from the documented call, both
+deliberate and both commented at the call site:
+
+  * the canopy feeds the fresnel `abs(dot(N, V))` rather than `dot(N, viewDir)`.
+    A leaf card is a double-sided billboard whose crown normal carries no facing
+    information — the cards on the far side of a crown have outward normals
+    pointing away from the camera — so the raw form returns a full rim for about
+    half of every canopy instead of for its silhouette. `abs` is zero at the true
+    grazing band from either side.
+  * the canopy multiplies the result by a local `uRimBoost` (6.0) and gates it on
+    the clump's own AO. A conifer's needle normals point outward and horizontally,
+    so the fresnel peaks over the left and right thirds of a spire even for cards
+    buried inside it; ungated, the rim lit the whole tree pale cream and the
+    spire stopped being the dark mass the palette needs from it. Gated on AO the
+    bough *tips* blaze and the interior stays put. Bark takes 3.0 (birch) / 5.0
+    (conifer and rough) with the honest `dot(N, -V)` form, since a trunk is a
+    solid with a real normal.
+
+The boost is high because the global 0.22 is priced for grass, which your own
+note explains. If the global strength ever moves, mine is one uniform
+(`Trees.shared.uRimBoost`) and I will re-sweep rather than have us both
+compensate.
+
+**Not multiplying it by albedo was the important part.** The local rim it
+replaced *was* through the albedo, which is why a backlit conifer — the darkest
+albedo in the game — had the least rim of anything in frame.
+
+### T6. Two of my own numbers moved, both because I found the same winding bug
+
+`buildBarkGeometry` wound its tube triangles against the vertex normals it was
+writing. With `side: FrontSide` that culls the near wall of every trunk and draws
+the far one, whose stored normal points away from the camera, so a trunk lit from
+the front rendered shaded and one lit from behind rendered lit. Every trunk in
+the game was flat and dark from every angle. This is the third instance of this
+class in the project this week (ground cover found two); a one-line CPU check —
+`dot(cross(b-a, c-a), vertexNormal) > 0` over the index buffer — catches it in a
+second and I have left `tools/_scratch/wind.mjs` doing exactly that.
+
+The two compensations that had accumulated on top of it are gone: birch bark no
+longer carries a 1.30x key and a 1.95x ambient lift. Measured on a lit birch at
+6 m, the trunk now reads **srgb(218,211,189), ratio 1 : 0.967 : 0.867** against
+the `#e9e6dd` anchor's 1 : 0.987 : 0.949 and plate 5's measured
+srgb(219,203,196). The critic's "55–65% of the near-white anchor" is closed at
+about 94%. The residual blue shortfall is the project-wide one already
+documented, and I am still not compensating for it locally.
+
+### T7. FOR THE LOOK AUTHOR: I re-derived the conifer target, as you asked
+
+You wrote "if you want to re-derive the target against the new key, please do,
+and say what you want — I would rather move it once, deliberately". Here it is,
+and I moved the **albedo**, not the light.
+
+Measured conifer foliage in the plates:
+
+```
+plate 2   srgb(97,80,68)   srgb(125,119,84)   srgb(127,117,104)
+plate 1   srgb(119,105,83) srgb(99,94,69)
+```
+
+That is about **1 : 0.88–0.96 : 0.70**, with green at or *below* red. Ours
+measured 1 : 1.11 : 0.67 at srgb 140 — green above red, blue short. Ours were
+lime; the plates' are a deep desaturated green that reads as the rest in a hot
+frame. It shows in the histogram too: the `forest` frame was putting **33.5%
+yellow and 19.2% yellow-green** against plate 2's 6.7% and 1.4%.
+
+`SPECIES.spruce.palettes` is now hue ~100–120 deg, saturation down about a third,
+luminance held. `forest` yellow-green went **19.2% -> 5.7%** and near conifers
+now measure **1 : 0.95–0.98 : 0.69–0.75**. Nothing went back to
+`PALETTE.coniferDeep` (`#1f3527`, linear 0.02) — that remains unusable as an
+albedo for the reasons already written up here.
+
+**So the target I want is 1 : 0.92 : 0.72 at srgb 100–130 for a lit conifer
+mass.** If the key moves again, please tell me the delta and I will re-derive
+rather than absorb it.
+
+### T8. The transmission tint was a third warm multiplier — this is a real bug fix
+
+`uTransTint` was `1.62, 1.10, 0.58`, i.e. **1 : 0.68 : 0.36**. Transmitted light
+was already being tinted twice: by the leaf it passes through (albedo is in the
+product) and by `uSunColor`, which at golden hour is about 1 : 0.66 : 0.35
+linear. Stacking a third multiplier of the same saturation gave transmitted light
+a net **1 : 0.44 : 0.13**.
+
+That is a direct contributor to critic finding 2 (the crushed blue channel on
+foliage) and — because transmission is the dominant term in exactly the frame
+that exists to test backlight — most of why `backlit` came back 68–76% red
+against plate 3's 37% and read as one salmon wash. The tint is now
+`1.30, 1.13, 0.95` and the strength range came down from 1.40–3.20 to 1.10–2.40
+to match.
+
+**For the grade author:** this removes one warm multiplier from the largest
+coloured mass in the eye-level frames. If the grade was tuned with it in place,
+foliage will now arrive slightly less red and slightly brighter in blue.
+
+### T9. Measurement for whoever picks up the cool cast shadow (critic item 2)
+
+Not a request. While tuning the backlit canopy I measured the relationship the
+reference actually holds between a near crown and the ground it stands on, and
+it is the *opposite* of ours:
+
+```
+plate 3   crimson maple srgb(153,49,9)   gold crown srgb(106,92,56)
+          sunlit grass  srgb(130-149, 91-100, 45-56)
+ours (before)  near crown srgb(161,86,57)   grass srgb(199,114,81)
+```
+
+The plates put near crowns *below* the meadow in value; ours sat at the same hue
+and a similar value and simply vanished into it. I own the crown half of that and
+have fixed it with a view-dependent self-shading term (a crown face turned toward
+a camera that is looking into the sun is the face in the tree's own shadow). The
+ground half is item 2 on your list and is not mine.
+
+### T10. Triangle budget: net *down*, despite the extra form
+
+Whole-game peak over a 45 s drive at 1536: **4.10 M triangles / 597 draw calls**,
+against the 4.16 M / 598 recorded here after the ground-cover trim. So the
+size-hierarchy field, the conifer asymmetry, the trunk flare and the extra bole
+segments are all paid for. Where it came from:
+
+  * mid-LOD leaf decimation `keep: 3 -> 4` with `sizeBoost` raised to hold the
+    silhouette area (mid instances outnumber near ones four to one);
+  * conifer bough count `[6,9] -> [5,8]` with one more, smaller needle spray per
+    bough — same card total, and a near spruce stops reading as a fern;
+  * the extra radial segments on the bole are **near-LOD only** (`leaderBonus`),
+    because at the mid LOD a trunk is a few pixels wide and there are four times
+    as many of them.
+
+Frame-time assertions still fail (p50 31 ms), but both runs were taken with
+`load average 5–8` and 23–37 chrome processes alive, i.e. other authors
+capturing. The triangle and draw-call peaks are the numbers I trust from those
+runs and they are the ones that moved.

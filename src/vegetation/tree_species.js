@@ -193,24 +193,35 @@ export const SPECIES = [
     maxHeight: 36,
     trunkRadiusK: 0.020,
     taperPow: 1.15,
-    lean: 0.018, curve: 0.10, gnarl: 0.08,
+    // Lean and curve up from 0.018 / 0.10. At three degrees of lean over a
+    // 25 m spire the top moved 1.3 m and every conifer on a hillside still
+    // stood dead plumb, which is a strong CG tell in a wide shot — plates 1
+    // and 2 have visibly leaning conifers in every stand.
+    lean: 0.075, curve: 0.34, gnarl: 0.14,
     trunkSegs: 10,
     crownR: 0.155,              // crown radius / H — a narrow spire
     crownBase: 0.10,            // whorls start at this fraction of H
     whorls: [15, 20],          // more, closer tiers: too few and the spire
     // reads as a stack of separate plates rather than as one dark mass
-    boughs: [6, 9],
+    boughs: [5, 8],
     boughDroop: 0.34,
     bark: BARK.CONIFER,
-    barkColor: c(0x63483a),
+    barkColor: c(0x6f5645),
     // A card is scaled by the tree's height, so on a 30 m spruce these were
     // three metres wide and the fronds drawn in the tile were a metre across
     // each — a near conifer read as a banana palm rather than as needles. The
     // tile now carries half again as many, much narrower fronds (free: the card
     // count is unchanged), and the cards themselves are smaller and less
     // stretched, with an extra spray per bough to hold the crown's coverage.
-    clusterSize: [0.038, 0.058],
-    clusterAspect: 1.70,        // boughs are wide and flat
+    // Smaller again, and with an extra spray per bough to pay for it. A card is
+    // scaled by the tree's height and a mature spruce is 30 m, so at 0.058 the
+    // near hero's cards were 1.7 m wide and each *frond drawn inside the tile*
+    // was half a metre — the tree read as a fern. The bough itself is genuinely
+    // 3-4 m long on a tree that size; what is wrong is building it from three
+    // huge cards instead of six small ones. Bough count comes down to keep the
+    // card total, and therefore the triangle total, roughly where it was.
+    clusterSize: [0.030, 0.047],
+    clusterAspect: 1.55,        // boughs are wide and flat
     tile: TILE.NEEDLE,
     // The B entry of each pair is the *shaded* half of the crown, and it was
     // sitting on PALETTE.coniferDeep (#1f3527, linear ~0.02). No lighting model
@@ -219,11 +230,32 @@ export const SPECIES = [
     // These stay the coolest, most desaturated masses in a hot frame, which is
     // the job the brief gives conifers, but they are now masses and not
     // absences. Four pairs, not three, so a stand carries visible variation.
+    // Re-derived against the plates, not against the old key (the look author
+    // asked for this to be moved once, deliberately, rather than compensated
+    // for on both sides — see docs/INTEGRATION_REQUESTS.md).
+    //
+    // Measured conifer foliage in the references:
+    //     plate 2  srgb(97,80,68)  srgb(125,119,84)  srgb(127,117,104)
+    //     plate 1  srgb(119,105,83)  srgb(99,94,69)
+    // i.e. about 1 : 0.88-0.96 : 0.70, with green at or *below* red. Ours
+    // measured 1 : 1.11 : 0.67 at srgb 140 — green above red, blue short. The
+    // difference is visible without a meter: the plates' conifers are a deep
+    // desaturated green that reads as the rest in a hot frame, and ours were
+    // lime. It shows in the histogram too — the `forest` frame was putting
+    // 33.5% yellow and 19.2% yellow-green against plate 2's 6.7% and 1.4%,
+    // and the trees author's own earlier note records that the plates' small
+    // yellow-green mass is *chartreuse deciduous canopy*, not conifer.
+    //
+    // So: hue rotated from ~90 deg to ~100-120, saturation down about a third,
+    // luminance held. These are still nowhere near PALETTE.coniferDeep
+    // (#1f3527, linear 0.02), which remains unusable as an albedo for the
+    // reasons already written up — this moves toward the brief's *lit* conifer
+    // anchor #4e7346 (hue 113), which is a perfectly renderable colour.
     palettes: [
-      [c(0x86ae5e), c(0x4a7040)],
-      [c(0x6f9c54), c(0x43663b)],
-      [c(0x93b96a), c(0x52794a)],
-      [c(0x74a057), c(0x3e6039)],
+      [c(0x80a874), c(0x4a6848)],
+      [c(0x6f9668), c(0x445f45)],
+      [c(0x8cb27c), c(0x527056)],
+      [c(0x749c6a), c(0x405a43)],
     ],
   },
 ];
@@ -292,9 +324,19 @@ function growDeciduous(P, rng) {
   const trunkPts = [];
   const p = V(0, 0, 0);
   const step = trunkH / P.trunkSegs;
+  // Per-variant taper and a root flare. The critic's note was that trunks are
+  // "identical untapered cylinders": the taper was in fact there, but it was
+  // the *same* curve on every variant of a species, and the bottom two metres —
+  // the part a 3 m camera actually sees — were the straightest part of it.
+  // Rolling the exponent per variant gives one species a wand and another a
+  // column, and the flare gives every trunk the swelling where it meets the
+  // ground that separates a tree from a pole stuck in the dirt.
+  const taperP = P.taperPow * (0.78 + 0.44 * rng());
+  const flareK = 0.34 + 0.42 * rng();
   for (let i = 0; i <= P.trunkSegs; i++) {
     const t = i / P.trunkSegs;
-    trunkPts.push({ p: p.clone(), r: r0 * Math.pow(1 - t * 0.93, P.taperPow) + 0.012 });
+    const flare = 1 + flareK * Math.pow(Math.max(0, 1 - t * 3.4), 2);
+    trunkPts.push({ p: p.clone(), r: r0 * Math.pow(1 - t * 0.93, taperP) * flare + 0.012 });
     p.addScaledVector(dir, step);
     // Sway the leader a little more with height — a dead-straight stick reads CG.
     dir.x += (rng() - 0.5) * P.gnarl * 0.055 + Math.cos(leanAz) * P.curve * 0.014;
@@ -521,7 +563,7 @@ function finishDeciduous(P, rng, H, strands, tips) {
       // single dab any larger than this fills a third of the screen with one
       // magnified atlas tile, and a crown built from four of those reads as
       // cauliflower however good the tile is.
-      const dab = Math.min(L.r * lerp(0.26, 0.70, Math.pow(rng(), 1.6)), H * 0.082);
+      const dab = Math.min(L.r * lerp(0.26, 0.70, Math.pow(rng(), 1.6)), H * 0.070);
       push(px, py, pz, dab, dx, dy, dz, false, clamp01((1.0 - sh) / 0.32));
     }
 
@@ -558,9 +600,12 @@ function growConifer(P, rng) {
   const trunkPts = [];
   const p = V(0, 0, 0);
   const step = H / P.trunkSegs;
+  const taperP = P.taperPow * (0.82 + 0.36 * rng());
+  const flareK = 0.55 + 0.55 * rng();          // conifers flare hardest of all
   for (let i = 0; i <= P.trunkSegs; i++) {
     const t = i / P.trunkSegs;
-    trunkPts.push({ p: p.clone(), r: r0 * Math.pow(1 - t * 0.985, P.taperPow) + 0.008 });
+    const flare = 1 + flareK * Math.pow(Math.max(0, 1 - t * 5.0), 2);
+    trunkPts.push({ p: p.clone(), r: r0 * Math.pow(1 - t * 0.985, taperP) * flare + 0.008 });
     p.addScaledVector(dir, step);
     dir.x += (rng() - 0.5) * P.gnarl * 0.03 + Math.cos(leanAz) * P.curve * 0.01;
     dir.z += (rng() - 0.5) * P.gnarl * 0.03 + Math.sin(leanAz) * P.curve * 0.01;
@@ -573,6 +618,29 @@ function growConifer(P, rng) {
   const base = P.crownBase * (0.7 + 0.8 * rng());
   let az = rng() * TAU;
 
+  // Breaking the cone of revolution.
+  //
+  // Everything above this was axially symmetric: the whorl radius came from a
+  // profile curve in height alone and the bough length from that radius, so a
+  // spruce was a solid of revolution with noise on it. The eye reads that as
+  // mirror symmetry however much you jitter the individual boughs, and the
+  // critic named it on the hero conifer. Two fields fix it, and they are the
+  // two things that actually shape a real spruce:
+  //
+  //   · `asym` — the tree grew toward the light and away from the prevailing
+  //     wind, so one flank carries systematically longer boughs at every
+  //     height. This is the term that makes the left and right silhouettes
+  //     different curves rather than mirror images.
+  //   · `vigour` — a slow wave over the whorl index, so short and long tiers
+  //     arrive in *runs*. Per-whorl white noise reads as fuzz and leaves the
+  //     outline a cone; a run of three stunted whorls is a notch in the
+  //     silhouette, which is what the reference conifers are full of.
+  const asymAz = rng() * TAU;
+  const asym = 0.18 + 0.26 * rng();
+  const vigPhase = rng() * TAU;
+  const vigRate = 0.55 + 1.15 * rng();
+  const vigDepth = 0.16 + 0.20 * rng();
+
   const pointAt = (t) => {
     const fi = clamp01(t) * P.trunkSegs;
     const i0 = Math.min(P.trunkSegs - 1, Math.floor(fi));
@@ -584,14 +652,25 @@ function growConifer(P, rng) {
     const o = pointAt(t);
     // Cone profile with a slight bulge low down — a pure cone reads as a party hat.
     const prof = Math.pow(clamp01((0.995 - t) / (0.995 - base)), 0.72);
-    const R = crownR * prof * (0.85 + 0.3 * rng());
+    const vigour = 1 + vigDepth * Math.sin(vigPhase + w * vigRate)
+                     + vigDepth * 0.45 * Math.sin(vigPhase * 2.3 + w * vigRate * 2.7);
+    const R = crownR * prof * vigour * (0.90 + 0.20 * rng());
     if (R < H * 0.012) continue;
 
     const nB = Math.max(3, randInt(rng, P.boughs) - Math.floor(w / 4));
     for (let b = 0; b < nB; b++) {
       az += GOLDEN * 0.62 + (rng() - 0.5) * 0.4;
-      const droop = P.boughDroop * (0.6 + 0.8 * rng());
-      const len = R * (0.8 + 0.4 * rng());
+      // An occasional missing bough. A whorl that is complete all the way round
+      // closes the crown into a solid disc at that height; the gaps are what
+      // let sky through the middle of a spire, which every reference conifer
+      // has and ours had none of.
+      if (w > 2 && rng() < 0.11) continue;
+      // Long boughs are heavier, so they droop more — the asymmetry then shows
+      // in the vertical profile as well as the plan, which is the difference
+      // between a lopsided cone and a tree.
+      const side = 1 + asym * Math.cos(az - asymAz);
+      const droop = P.boughDroop * (0.6 + 0.8 * rng()) * (0.80 + 0.32 * side);
+      const len = R * (0.8 + 0.4 * rng()) * side;
       const dx = Math.cos(az), dz = Math.sin(az);
 
       // Each bough sits a little above or below its whorl. A ring of boughs at
@@ -615,7 +694,7 @@ function growConifer(P, rng) {
       }
 
       // 2–3 needle sprays along the bough, biggest at the tip.
-      const nS = R > H * 0.05 ? 5 : 4;
+      const nS = R > H * 0.05 ? 6 : 5;
       for (let s = 0; s < nS; s++) {
         const ft = 0.22 + 0.78 * (s / Math.max(1, nS - 1));
         const px = o.x + dx * len * ft;
