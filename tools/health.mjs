@@ -30,9 +30,22 @@ const p = await b.newPage({ viewport: { width: 640, height: 360 } });
     Object.assign(window.WebSocket, RealWS);
   });
 
+// A shader that fails to LINK is invisible to lint and to the winding audit:
+// the module parses, the geometry is correct, and the system simply renders
+// nothing. That is how the game shipped for a while with no grass anywhere and
+// no trunks on any tree, while every other check passed. Three's link failures
+// arrive on the console, so gate on them explicitly.
+const SHADER_FAIL = /Shader Error|VALIDATE_STATUS|not compiled|redefinition|ERROR: 0:/i;
+const shaderErrs = [];
 const errs = [];
 p.on('pageerror', (e) => errs.push(String(e.message)));
-p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
+p.on('console', (m) => {
+  if (m.type() !== 'error') return;
+  const t = m.text();
+  errs.push(t.slice(0, 300));
+  if (SHADER_FAIL.test(t)) shaderErrs.push(t.slice(0, 900));
+});
+p.on('pageerror', (e) => { if (SHADER_FAIL.test(String(e.message))) shaderErrs.push(String(e.message).slice(0, 900)); });
 
 let ok = false;
 try {
@@ -48,6 +61,20 @@ const info = ok ? await p.evaluate(() => ({
   systems: Object.fromEntries(Object.entries(window.__systems ?? {}).map(([k, v]) => [k, v.enabled !== false])),
 })) : { bootError: await p.evaluate(() => window.__bootError ?? null) };
 
-console.log(JSON.stringify({ ok, ...info, errors: [...new Set(errs)].slice(0, 6) }, null, 1));
+const uniqShader = [...new Set(shaderErrs)];
+console.log(JSON.stringify({
+  ok: ok && uniqShader.length === 0,
+  ...info,
+  shaderFailures: uniqShader.length,
+  errors: [...new Set(errs)].slice(0, 6),
+}, null, 1));
+
+if (uniqShader.length) {
+  console.error(`\n✗ ${uniqShader.length} shader(s) failed to compile or link.`);
+  console.error('  A system whose shader does not link renders NOTHING, silently —');
+  console.error('  lint and the winding audit both pass while it is happening.\n');
+  for (const e of uniqShader) console.error(e.split('\n').slice(0, 12).join('\n') + '\n');
+}
+
 await b.close();
-process.exit(ok ? 0 : 1);
+process.exit(ok && !uniqShader.length ? 0 : 1);

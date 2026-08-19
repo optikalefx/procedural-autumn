@@ -197,10 +197,13 @@ void main() {
 
   float alpha = body * edge * (0.84 + 0.16 * vDisc);
   // Let go just before the pool so the sheet never clips through the foam.
-  // Hand the last stretch over to the churn rather than cutting it. Over 7% of
-  // the path this was an abrupt stop; the sheet has to dissolve into the boil
-  // it is feeding, and the boil has to be visible underneath it while it does.
-  alpha *= 1.0 - smoothstep(0.86, 1.0, vU);
+  // The sheet has to arrive. Faded over the last 14% of the path it died
+  // roughly eight metres above the rock, and the plunge pool is a ground decal
+  // that cannot climb to meet it — so the curtain broke, and a strip of bare
+  // tan channel showed between the two. That gap is the "column breaks" a
+  // critic logged. It holds full strength to the waterline now, and the boil
+  // and the burst take over there, where the water actually is.
+  alpha *= 1.0 - smoothstep(0.955, 1.0, vU);
   // Pay back a little of the width the LOD borrowed. Not all of it: a fall on
   // a far ridge is a *bright* thread in the reference, not a grey one, so the
   // exponent is well under the 1.0 that would conserve energy exactly.
@@ -615,7 +618,7 @@ void main() {
   // far away is a faint haze of spray rather than a cloud that grows as it
   // recedes. Not all of it: the reference keeps a distant plunge bright.
   a *= pow(1.0 / vGrow, 1.45);
-  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.46 * vDist);
+  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.62 * vDist);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -1157,7 +1160,7 @@ export class Waterfalls extends System {
     for (const fl of this.falls) {
       const b = fl.pts[fl.pts.length - 1];
       const energy = clamp01(fl.disc * 0.6 + fl.height / 90);
-      const count = Math.round(clamp(48 + energy * 210, 44, 260));
+      const count = Math.round(clamp(70 + energy * 330, 64, 400));
       for (let i = 0; i < count; i++) {
         // Spread the launch points across the foot of the curtain, not from one
         // node: a burst radiating from a single point is a firework.
@@ -1191,7 +1194,12 @@ export class Waterfalls extends System {
         // Long enough for the arc to come back down, and no longer — a droplet
         // still on screen after it should have landed reads as snow.
         life.push(clamp(0.50 + vUp * 0.21, 0.6, 2.2));
-        size.push((0.16 + rng() * 0.30) * (0.65 + fl.width * 0.07));
+        // A plunge is a *mass* of thrown water. At 0.16-0.46 m these clots
+        // were four pixels at ninety metres and half a pixel at eight hundred,
+        // so the burst never registered as anything but grit. The pixel floor
+        // in BURST_VERT keeps them legible at range; this makes them worth
+        // seeing up close.
+        size.push((0.30 + rng() * 0.55) * (0.65 + fl.width * 0.07));
         seed.push(rng());
       }
     }

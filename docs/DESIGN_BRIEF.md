@@ -445,3 +445,27 @@ Audits every geometry in the live scene: for each triangle, the geometric normal
 from the winding must agree with the average of its three vertex normals. Exit 0
 means clean. Run it after building any procedural mesh, and **before** concluding
 that a dark surface is a lighting problem.
+
+---
+
+## Appendix: a shader that fails to link renders nothing, silently
+
+`lint.mjs` proves your file parses. `winding.mjs` proves your geometry agrees
+with its normals. **Neither can see a shader that fails to compile or link** —
+the module is valid, the geometry is correct, and the system simply draws
+nothing.
+
+The game once shipped for a stretch with **no grass anywhere and no trunks on
+any tree**, because two unguarded uniform blocks declared the same eight
+uniforms twice. Every check passed. Every visual judgement made in that window
+was made on half a frame.
+
+```bash
+node tools/health.mjs        # now exits non-zero on any shader link failure
+```
+
+Run it after any shader edit, and read `shot.mjs`'s `page-errors` block rather
+than skipping past it. If you concatenate shared GLSL (`STYLIZE_PARS`,
+`fogUniforms()`, `<common>`), **guard your declarations** with `#ifndef` — two
+paths can legitimately include the same block, and there is no way for a shader
+author to tell from inside which path they are on.

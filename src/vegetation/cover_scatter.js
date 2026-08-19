@@ -261,7 +261,7 @@ export class CoverScatter {
    * painted stripe, and the 2 m close-up the critic measured is taken standing
    * on one.
    */
-  _groundTiny(x, z, wet = false) {
+  _groundTiny(x, z, wet = false, slopeCheck = true) {
     const W = this.world;
     if (!W.isInBounds(x, z)) return 0;
     if (W.getWaterDepth(x, z) > 0.08) return 0;
@@ -279,7 +279,12 @@ export class CoverScatter {
       if (W.getWaterDepth(x + s, z) > 0.08 || W.getWaterDepth(x - s, z) > 0.08 ||
           W.getWaterDepth(x, z + s) > 0.08 || W.getWaterDepth(x, z - s) > 0.08) return 0;
     }
-    if (W.getSlope(x, z) > 1.35) return 0;
+    // Skipped for clump *members*. The site two metres away already tested it,
+    // terrain slope does not change meaningfully over a clump's own radius, and
+    // this call runs ten thousand times per band-0 cell against the site's few
+    // hundred — it is pure cost in the hot loop for a result that is a copy of
+    // one already taken.
+    if (slopeCheck && W.getSlope(x, z) > 1.35) return 0;
     return 1 - this.roads.sample(x, z) * 0.30;
   }
 
@@ -323,15 +328,45 @@ export class CoverScatter {
 
     const c = this._c.copy(o.colA);
     const c2 = this._c2.copy(o.colB);
-    const hue = o.hue ?? 0.035;
-    c.getHSL(this._hsl);
-    c.setHSL(this._hsl.h + (rng() - 0.5) * hue,
-             clamp01(this._hsl.s * (0.90 + rng() * 0.22)),
-             clamp01(this._hsl.l * (0.82 + rng() * 0.30)));
-    c2.getHSL(this._hsl);
-    c2.setHSL(this._hsl.h + (rng() - 0.5) * hue,
-              clamp01(this._hsl.s * (0.90 + rng() * 0.22)),
-              clamp01(this._hsl.l * (0.86 + rng() * 0.24)));
+    // Two colour paths, and which one you get is the same `flat` flag that
+    // skips the terrain normal — for the same reason, measured the same way.
+    //
+    // The round trip through HSL is four `getHSL`/`setHSL` calls per instance,
+    // and `setHSL` runs three `hue2rgb` branches. `tools/_scratch/cover/
+    // costprobe.mjs` times one band-0 cell at 6-7 ms for ~10,000 instances, and
+    // the substrate is nearly all of that count — so this one block is a
+    // several-millisecond spike on every cell the streamer builds, which is
+    // exactly the shape of the >50 ms frames `perf.mjs` reports (140 of them
+    // with this layer present, 2 with it hidden).
+    //
+    // A pebble does not need a hue rotation. What per-instance jitter is *for*
+    // is stopping forty identical props reading as decals, and on a 4 cm stone
+    // a value-and-saturation jitter does that as well as a hue one does. So the
+    // substrate takes a multiply in RGB — value, plus a pull toward or away
+    // from its own luma for saturation — and foliage, where the hue turn is the
+    // whole point of a bronzing fern or a rust-tipped scrub, keeps HSL.
+    if (o.flat) {
+      const v1 = 0.82 + rng() * 0.30, s1 = 0.90 + rng() * 0.22;
+      const v2 = 0.86 + rng() * 0.24, s2 = 0.90 + rng() * 0.22;
+      const l1 = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+      c.setRGB(clamp01((l1 + (c.r - l1) * s1) * v1),
+               clamp01((l1 + (c.g - l1) * s1) * v1),
+               clamp01((l1 + (c.b - l1) * s1) * v1));
+      const l2 = c2.r * 0.299 + c2.g * 0.587 + c2.b * 0.114;
+      c2.setRGB(clamp01((l2 + (c2.r - l2) * s2) * v2),
+                clamp01((l2 + (c2.g - l2) * s2) * v2),
+                clamp01((l2 + (c2.b - l2) * s2) * v2));
+    } else {
+      const hue = o.hue ?? 0.035;
+      c.getHSL(this._hsl);
+      c.setHSL(this._hsl.h + (rng() - 0.5) * hue,
+               clamp01(this._hsl.s * (0.90 + rng() * 0.22)),
+               clamp01(this._hsl.l * (0.82 + rng() * 0.30)));
+      c2.getHSL(this._hsl);
+      c2.setHSL(this._hsl.h + (rng() - 0.5) * hue,
+                clamp01(this._hsl.s * (0.90 + rng() * 0.22)),
+                clamp01(this._hsl.l * (0.86 + rng() * 0.24)));
+    }
 
     const s = o.scale ?? 1;
     const i = n * COVER_STRIDE;
@@ -364,11 +399,18 @@ export class CoverScatter {
 
   // ── the layers ─────────────────────────────────────────────────────────────
 
+  /** How many resumable slices the substrate layer is cut into. */
+  static GROUND_SLICES = 4;
+
+  /** Sites per slice, so the streamer can size its jobs without guessing. */
+  groundSites() { return Math.round(720 * this.mul); }
+
   /**
    * @param {number} band 0 = closest (everything) … 3 = far (big shapes only)
+   * @param {boolean} deferGround leave the substrate to `generateGroundSlice`
    * @returns {number} instances written
    */
-  generateCell(cx, cz, S, band, out, cap) {
+  generateCell(cx, cz, S, band, out, cap, deferGround = false) {
     let n = 0;
     n = this._layerOpen(cx, cz, S, band, out, n, cap);
     if (band <= 2) n = this._layerScrub(cx, cz, S, out, n, cap);
@@ -383,8 +425,31 @@ export class CoverScatter {
     // its foot reads as a post pushed into a lawn, which is a structural defect,
     // where a square metre with four pebbles instead of six is not.
     n = this._layerTreeSkirt(cx, cz, S, band, out, n, cap);
-    if (band <= 0) n = this._layerGround(cx, cz, S, out, n, cap);
+    if (band <= 0 && !deferGround) n = this._layerGround(cx, cz, S, out, n, cap, 0, Infinity);
     return n;
+  }
+
+  /**
+   * One slice of the substrate layer for a cell, so the streamer can spread a
+   * band-0 cell over several frames.
+   *
+   * This exists because of a measured hitch and it is worth stating what the
+   * measurement was. `tools/_scratch/cover/costprobe.mjs` times one band-0 cell
+   * at 5-7 ms, generating 8-10,000 instances; the streamer's per-frame budget
+   * is 1.6 ms and is only checked *between* cells, so one cell is one 5 ms
+   * spike however small the budget is. `perf.mjs` over a 45 s drive: 140 frames
+   * over 50 ms with this layer present against 2 with it hidden, and three
+   * frames over 100 ms against none.
+   *
+   * Slicing is safe here only because of the determinism rule at the top of
+   * this file: every *site* owns an RNG stream keyed on (cell, layer, site
+   * index) rather than drawing from one sequential stream, so sites 240-479
+   * produce bit-identical output whether or not sites 0-239 ran first. That
+   * property was put there for band refinement and it pays for itself twice.
+   */
+  generateGroundSlice(cx, cz, S, out, n, cap, slice) {
+    const per = Math.ceil(this.groundSites() / CoverScatter.GROUND_SLICES);
+    return this._layerGround(cx, cz, S, out, n, cap, slice * per, (slice + 1) * per);
   }
 
   /**
@@ -418,7 +483,7 @@ export class CoverScatter {
     // and after the visibility radius took its share the 2 m close-up still
     // measured as a bare slab with a handful of objects on it. What reads as
     // "the ground has stuff on it" is closer to one clump every 3 m².
-    const sites = Math.round(820 * this.mul);
+    const sites = Math.round(720 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_GROUND, key) * 4294967296) >>> 0);
@@ -549,7 +614,7 @@ export class CoverScatter {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
         const mx = m === 0 ? x : x + Math.cos(ang) * r;
         const mz = m === 0 ? z : z + Math.sin(ang) * r;
-        if (this._groundTiny(mx, mz, wet) < 0.20) continue;
+        if (this._groundTiny(mx, mz, wet, false) < 0.20) continue;
 
         const kind = rng() < 0.76 ? lead : pickKind();
         if (kind === 0) {
