@@ -51,6 +51,16 @@ export class PerfOverlay {
     this._times.push(dt);
     if (this._times.length > 120) this._times.shift();
 
+    // Hide during captures, the same way the HUD does. Otherwise every review
+    // sheet carries a readout in the corner of all ten tiles, which is both
+    // noise and a small lie — the fps shown is the harness's, not a player's.
+    const capturing = !!window.__forceCamera;
+    if (capturing !== this._wasCapturing) {
+      this._wasCapturing = capturing;
+      this.el.style.display = (this.visible && !capturing) ? 'block' : 'none';
+    }
+    if (capturing) return;
+
     this._acc += dt;
     if (this._acc < 250 || !this.visible) return;   // refresh 4x a second
     this._acc = 0;
