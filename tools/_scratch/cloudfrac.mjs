@@ -17,6 +17,7 @@ import { chromium } from 'playwright';
 import { acquire } from '../_lock.mjs';
 
 const argv = process.argv.slice(2);
+const argvHas = (n) => argv.includes('--' + n);
 const arg = (n, d) => { const i = argv.indexOf('--' + n); return i === -1 ? d : argv[i + 1]; };
 
 // Duplicated from tools/shot.mjs — importing that module runs its capture.
@@ -39,7 +40,7 @@ page.on('pageerror', (e) => errs.push(String(e.message).slice(0, 160)));
 await page.goto(`http://localhost:5178/?res=${arg('res', '640')}`, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
 
-const rows = await page.evaluate(async (VIEWS) => {
+const rows = await page.evaluate(async ({ VIEWS, NOCIRRUS }) => {
   const e = window.__engine, wd = window.__world, cam = e.camera;
   window.__forceCamera = true;
   window.__lighting.cycleSpeed = 0;
@@ -48,6 +49,9 @@ const rows = await page.evaluate(async (VIEWS) => {
   e.clock.getDelta = () => 0;
   const clouds = window.__systems.clouds;
   clouds.wind.set(0, 0);
+  // Clouds.update rewrites uCirrus every frame, so the override has to land
+  // after it and before the render — which is what lateUpdate is.
+  if (NOCIRRUS) e.onLateUpdate(() => { clouds.uniforms.uCirrus.value = 0; });
 
   const gl = e.renderer.getContext();
   const grab = () => {
@@ -90,12 +94,13 @@ const rows = await page.evaluate(async (VIEWS) => {
     clouds.mesh.visible = true;
     shot(2);
 
-    let sky = 0, any = 0, solid = 0;
+    let sky = 0, any = 0, mid = 0, solid = 0;
     for (let i = 0; i < R1.length; i += 4) {
       if (dif(R2, R3, i) <= 8) continue;      // not a sky pixel
       sky++;
       const d = dif(R1, R2, i);
       if (d > 5) any++;
+      if (d > 11) mid++;
       if (d > 20) solid++;
     }
     const total = R1.length / 4;
@@ -103,17 +108,18 @@ const rows = await page.evaluate(async (VIEWS) => {
       view: name, hour: v.hour,
       skyPctOfFrame: +(100 * sky / total).toFixed(1),
       cloudPctOfSky: +(100 * any / Math.max(sky, 1)).toFixed(1),
+      midPctOfSky: +(100 * mid / Math.max(sky, 1)).toFixed(1),
       solidPctOfSky: +(100 * solid / Math.max(sky, 1)).toFixed(1),
       cover: +window.__systems.clouds.uniforms.uCover.value.toFixed(3),
     });
     e._lateUpdaters.splice(e._lateUpdaters.indexOf(rel), 1);
   }
   return out;
-}, VIEWS);
+}, { VIEWS, NOCIRRUS: argvHas('nocirrus') });
 
 for (const r of rows) {
   console.log(`${r.view.padEnd(7)} h${String(r.hour).padEnd(5)} cover ${r.cover}  sky ${String(r.skyPctOfFrame).padStart(5)}% of frame` +
-              `   cloud ${String(r.cloudPctOfSky).padStart(5)}% of sky   solid ${String(r.solidPctOfSky).padStart(5)}%`);
+              `   cloud ${String(r.cloudPctOfSky).padStart(5)}% of sky   mid ${String(r.midPctOfSky).padStart(5)}%   solid ${String(r.solidPctOfSky).padStart(5)}%`);
 }
 if (errs.length) console.log('page-errors:', JSON.stringify(errs.slice(0, 5)));
 await browser.close();

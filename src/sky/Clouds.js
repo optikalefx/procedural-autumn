@@ -186,7 +186,7 @@ void main() {
   // palette is built on. So the threshold is now set from the field's measured
   // distribution rather than an assumed one: 0.86 at the shipping hour is the
   // top ~17% of the field by area, which lands the visible sky around a third
-  // cloud. `tools/_scratch/cloudfrac.mjs` is the measurement.
+  // cloud. tools/_scratch/cloudfrac.mjs is the measurement.
   float lo = 0.950 - 0.44 * uCover;
 
   // Fine detail: two taps, once, at the middle of the slab. See topAt().

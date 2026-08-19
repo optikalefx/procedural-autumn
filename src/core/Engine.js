@@ -47,6 +47,7 @@ export class Engine {
     // overridden.
     this.autoQuality = !new URLSearchParams(location.search).get('quality');
     this._strainSince = 0;
+    this._bootAt = performance.now();
     this.onQualityAutoChange = null;
 
     this.renderer.setPixelRatio(this.basePixelRatio);
@@ -62,7 +63,11 @@ export class Engine {
     // 0.16–0.87 range.
     this.exposure = 1.28;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.VSMShadowMap;
+    // PCFSoft, not VSM, because Lighting flips it to PCFSoft on the first frame
+    // and every material in the scene then recompiles — five linkProgram calls
+    // costing 62-702 ms, right when the player is first looking at the game.
+    // Setting the final value here makes Lighting's switch a no-op.
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.shadowMap.autoUpdate = true;
     this.renderer.info.autoReset = false;
 
@@ -133,7 +138,15 @@ export class Engine {
    */
   _adapt(now) {
     if (!this.adaptive) return;
-    if (this._frameTimes.length < 45 || now - this._lastAdapt < 900) return;
+    // Changing resolution reallocates the drawing buffer, and that measures at
+    // 450-2500 ms depending on buffer size — it is not a cost that can be
+    // amortised, so the only lever is to do it rarely. This scaler was itself
+    // the player's p95 of 232 ms. Hence: a long cooldown, a long warm-up so it
+    // never fires while the scene is still streaming in, and quantised steps so
+    // it settles instead of creeping.
+    if (this._frameTimes.length < 90) return;
+    if (now - this._lastAdapt < 6000) return;
+    if (now - this._bootAt < 8000) { this._frameTimes.length = 0; return; }
 
     const sorted = [...this._frameTimes].sort((a, b) => a - b);
     const p80 = sorted[Math.floor(sorted.length * 0.8)] * 1000;
@@ -141,10 +154,17 @@ export class Engine {
     this._lastAdapt = now;
 
     const target = this.targetFrameMs;
-    let next = this.resolutionScale;
+    // A short ladder rather than a continuous ratio: each rung costs a buffer
+    // reallocation, so there is no value in fine gradations.
+    const floorScale = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
+    const rungs = [...new Set([1, 0.85, 0.72, floorScale])].filter((r) => r >= floorScale - 1e-6)
+      .sort((a, b) => b - a);
+    let i = rungs.findIndex((r) => Math.abs(r - this.resolutionScale) < 0.02);
+    if (i < 0) i = 0;
 
-    if (p80 > target * 1.25) next = this.resolutionScale * 0.90;
-    else if (p80 < target * 0.80) next = this.resolutionScale * 1.04;
+    let next = this.resolutionScale;
+    if (p80 > target * 1.30 && i < rungs.length - 1) next = rungs[i + 1];
+    else if (p80 < target * 0.70 && i > 0) next = rungs[i - 1];
     else return;
 
     const floor = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
