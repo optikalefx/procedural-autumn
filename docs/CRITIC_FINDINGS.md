@@ -407,3 +407,341 @@ above are `tools/colorstats.mjs` or `tools/_scratch/crop.mjs` output, never
 impression. The `river` slab diagnosis was checked against
 `src/rocks/RockScatter.js` before being asserted, and it contradicts the
 clipping-geometry hypothesis it was handed.
+
+---
+
+# Critic pass 5 — 2026-08-19 (correction, extended lookback, and HEAD `d451616`)
+
+`SHIP 0 · CLOSE 3 (meadow, drive, vehicle) · REJECT 7 · 1 pass-4 finding corrected · 1 new standing regression (backlit)`
+
+## 1. Correction to pass 4 — the ground table judged `drive` against a vista plate
+
+Pass 4 measured `drive`'s ground region against **plate 1's gold meadow**
+(`lumaP05 0.184 / lumaRange 0.541 / contrastStd 0.177`). `drive` is eye-level
+gameplay framing. `docs/DESIGN_BRIEF.md` line 119: *"Judge eye-level views
+against plates 3/4/5 and vistas against plate 1, per plate, every time."* That
+line exists because this exact substitution produced a crushed-black regression
+earlier in this project. The target is withdrawn.
+
+**Pass 4's measurement of our own frames is sound and reproduces.** Same region
+(`drive` cell of the archived sheet, lower 52%), independently re-measured:
+0.303 / 0.277 / 0.388 / 0.392 for `lumaP05` against its 0.301 / 0.275 / 0.385 /
+0.390. Every axis agrees to ±0.003. The error is only in what it was compared
+to.
+
+### The corrected table
+
+Ground region = lower 52% of the `drive` cell, measured off the archived sheets
+so all rounds go through one downsample. `045` and `048` cross-checked against
+the full-resolution `shots/round045|048/drive.png` and agree to ±0.011.
+Plate columns are the lower 52% of the plate, full width, except the two named
+plate-3 sub-crops. **No column is an average of plates.**
+
+| | 035 | 040 | 045 | 048 | now | p3 meadow+shadow | p3 lit gold only | p4 | p5 | *(p1 meadow — pass 4's target)* |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `lumaP05` | 0.303 | 0.277 | 0.388 | 0.392 | **0.377** | 0.163 | 0.186 | 0.381 | 0.489 | *0.152* |
+| `lumaRange` | 0.366 | 0.388 | 0.316 | 0.311 | **0.312** | 0.378 | 0.372 | 0.232 | 0.408 | *0.577* |
+| `contrastStd` | 0.108 | 0.121 | 0.101 | 0.100 | **0.094** | 0.125 | 0.119 | 0.071 | 0.123 | *0.186* |
+| `P05/P50` | 0.52 | 0.49 | 0.63 | 0.64 | **0.64** | 0.48 | 0.45 | 0.83 | 0.58 | *0.23* |
+| dark area %¹ | 13.9 | 21.0 | 11.2 | 10.9 | **10.8** | 25.5 | 13.4 | 0.3 | 8.3 | *30.5* |
+| cool %² | 9.6 | 3.9 | 0.0 | 0.0 | **0.0** | 24.3 | 5.8 | 0.0 | 14.0 | *1.0* |
+
+¹ share of region pixels below 75% of the region's own median luma — an
+exposure-invariant proxy for "how much of the ground is in shadow".
+² cyan+azure+blue+violet+magenta+rose as a share of chromatic pixels.
+"now" = `shots/critic4`, HEAD `d451616`. Plate crops: p3 meadow+shadow
+`0.15,0.28,0.60,0.34`; p3 lit gold `0.20,0.42,0.45,0.18`; p1 meadow
+`0.35,0.45,0.40,0.40`.
+
+### What survives, what is withdrawn
+
+**Withdrawn:**
+
+- *"The reference meadow has 1.9× our contrast and 1.76× our range."* Against
+  the plates the brief actually names: plate 3 is **1.33× / 1.21×**, plate 5 is
+  **1.31× / 1.31×**, and plate 4 is **0.76× / 0.74×** — against plate 4 we have
+  *more* contrast and *more* range than the reference.
+- *"Away from the plate on all three axes at once."* True against plate 3 only.
+  Against plate 5 our ground's black point is **less** lifted than the
+  reference's (0.377 vs 0.489), and plate 4's is 0.381 — statistically
+  indistinguishable from ours.
+- The 0.115 black-point "lift" between 040 and 045 is real as a *delta*, but it
+  is not a departure from an eye-level reference; two of the three eye-level
+  plates sit at or above where we landed.
+
+**Survives, and is stronger evidence than what pass 4 cited:**
+
+1. **Zero cool.** The ground region contains **0.0% cool-family pixels** at 045,
+   048 and now, down from 9.6% at 035. Plate 3's equivalent region is 24.3%,
+   plate 5's is 14.0%. Only plate 4 — the into-the-sun outlier — is 0.
+2. **One hue.** **97.9%** of chromatic ground pixels sit in a single 30° hue
+   bucket. Plate 3 spreads over five buckets, plate 5 over four. "Large areas of
+   uniform colour" has been taken past its limit into a single-hue field.
+3. **The shadow area halved.** Dark-area share went 21.0% (040) → 10.9% (048) →
+   10.8% (now). At 040 it sat between plate 5's 8.3% and plate 3's 25.5%; it now
+   sits at plate 5's floor. This metric is exposure-invariant and is the
+   cleanest support for "the mass is gone".
+4. **Exposure-invariant black point.** `P05/P50` was 0.49 at 040 — plate 3 is
+   0.45–0.48 — and is 0.64 now, past plate 5's 0.58 and heading for plate 4's
+   0.83.
+
+**So: finding #20 stands. Its numbers do not.** The case is *area, hue count and
+cool share*, not black point and contrast. Note the pass-4 caution about `river`
+cuts both ways here: a region can measure inside a plate's band and still look
+wrong, and `drive`'s ground now measures acceptably against plate 5 while
+plainly having no large-scale value event in it.
+
+### A measured warm target for the X2 work
+
+`docs/INTEGRATION_REQUESTS.md` X2 asks for the mass back **in a warm hue**. That
+hue exists in exactly one plate, so it is measured there and the plate is
+declared: plate 1 is a vista, but it is the only reference that contains a warm
+cast shadow lying on sunlit gold meadow at all — plates 3 and 5 put their
+shadows in the cool half.
+
+| | sRGB | ratio | luma |
+|---|---|---|---|
+| plate 1, lit gold meadow (`0.50,0.625,0.09,0.045`) | `srgb(244,166,89)` | 1 : 0.68 : 0.36 | 0.694 |
+| plate 1, soft cast shadow on it (`0.50,0.735,0.09,0.055`) | `srgb(155,108,47)` | 1 : 0.70 : 0.30 | 0.446 |
+| ours, `drive` 048, lit ground | `srgb(201,159,70)` | 1 : 0.79 : 0.35 | 0.633 |
+| ours, `drive` 048, under the tree | `srgb(173,119,62)` | 1 : 0.69 : 0.36 | 0.496 |
+
+The reference warm shadow is **64% of lit luma**, holds its red:green ratio
+almost exactly (0.68 → 0.70) and drops its **blue** ratio 17%. Ours is **78% of
+lit**, drops *green* by 13% and holds blue flat. The player's "soft yellow or
+light brown" is a **deeper, marginally more saturated gold**, not a browner or
+greyer one, and it is a third of a stop deeper than what we currently render.
+
+## 2. Extended blind A/B — rounds 024, 029 and 033 against HEAD
+
+The instruction was to look for a second X2 hiding further back. **There is not
+one, and that is a real result.** Thirty blind pairs, ten views each against
+rounds **024**, **029** and **033**:
+
+| against | HEAD wins | older wins |
+|---|---|---|
+| 024 | 9 | 1 (backlit) |
+| 029 | 8 | 2 (vehicle, waterfall) |
+| 033 | 7 | 3 (hero, dawn, backlit) |
+| **total** | **24** | **6** |
+
+Combined with pass 4 (048 losing 8–18 to 035/040/045), the archive's shape is
+now legible: **the build improved monotonically to about round 040 and has been
+flat-to-down since.** Rounds 024–033 are decisively worse. Nothing before 034
+is worth reviving wholesale.
+
+**The six losses share one axis, and it is the same axis as #20.** Every frame
+that beat HEAD did so on *distance separation or ground shadow structure*:
+
+- **`hero` and `dawn` vs 033** — 033's far ranges are lavender/rose and sit
+  clearly behind the grey mid massifs and the gold foreground: three separated
+  depth zones. HEAD's far ranges are the same warm tan as the mid ranges and
+  merge into them. This is pass-3 blocker #10 and pass-4's `hero` blocker, and
+  it was *better thirteen rounds ago*.
+- **`backlit` vs 024 and vs 033** — see below.
+- **`vehicle` vs 029** — 029's ground is a solid gold mass with a treeline
+  behind it; HEAD's is bare red-brown dirt with individual blades standing on
+  it. HEAD's frame has a better composition and a worse surface.
+- **`waterfall` vs 029** — 029 carried orange deciduous crowns and a legible
+  near/mid/far stack; HEAD (at 048) was grey wax.
+
+### NEW — `backlit` is a standing regression, not a standing failure
+
+`backlit` is the only view that lost **two of its three** pairs, to rounds 024
+and 033. It is also the view `tools/shot.mjs` labels in its own source as *"the
+money frame for foliage translucency"*. What the older rounds had that HEAD does
+not: 024 had legible orange backlit canopies with birch trunks reading as the
+compositional spine; 033 had actual cast-shadow structure across the ground
+(over-saturated blue, and still better than nothing) plus a stronger canopy.
+HEAD's `backlit` is one salmon value from 2 m to 200 m with a beige blob tree in
+the middle of it. Treat this as a second, smaller instance of #20 rather than as
+"backlit has always been bad" — it has not always been bad.
+
+### One thing the lookback settles
+
+The cool-shadow experiments at 029/033 were **not** a lost good version. In
+`drive`, `meadow`, `vehicle`, `forest` and `river` at those rounds the ground is
+a *saturated navy field* — hue replacement, not tint, exactly what the brief
+calls "a bug, not the style" — and I picked against it every time without
+knowing which side it was. Whoever removed it was right to. The error was
+removing the *shape* along with the hue, which is #20. Restoring 033's colour
+would be a regression; restoring 040's area would not.
+
+### Method and contamination, declared
+
+Pairs cut from the archived sheets at 1.5×, side chosen by `crypto.randomBytes`,
+all thirty shuffled by a crypto Fisher-Yates so pair order carried no round or
+view information, key written to a file that was not opened until all thirty
+calls were recorded. Contamination:
+
+- I had read pass 4 in full before judging, which enumerates HEAD's defects in
+  detail and therefore biases **against** HEAD. HEAD won 24 of 30 anyway.
+- I had seen a 160×22 px caption sliver of each sheet (to verify cell order) and
+  nothing else of 024, 029, 033 or 048 before judging.
+- **Structural leak, and it is inherent to the design pass 4 used too:** with
+  three lookbacks × ten views, the HEAD side recurs in every pair, so by the
+  fourth or fifth pair the repeated image is identifiable as the common build. I
+  noticed this at pair 04. A future pass should interleave old-vs-old decoys.
+
+## 3. `forest` — verdict
+
+**REJECT, and it got worse this round.** `chromaMean` 0.183 (048) → **0.154**
+(now), against plate 3's 0.307 and the brief's hard floor of 0.25. `vividPct`
+11.1 → **2.9** against plate 3's 31.2. It is the least saturated and least vivid
+frame in the game by a wide margin, and it is now also the darkest
+(`lumaMean` 0.351).
+
+It is not "desaturated" in the sense the grade can fix. Three physical causes,
+measured:
+
+1. **The frame is yellow-green, and yellow-green is where chroma goes to die in
+   this palette.** `forest` puts **43.7%** of its chromatic pixels in the
+   yellow + yellow-green buckets (048; 30.1% now). Every other view in the game
+   runs 0–12%, and the five reference plates run **0–8.1%**. That single number
+   is the most out-of-family measurement in the project, and it is view-local,
+   not global.
+
+2. **The conifer needles are green-led where every reference conifer is
+   red-led.** Measured at 3 m in `forest`: shaded needles `srgb(68,74,53)` =
+   **1 : 1.09 : 0.78**, lit needles `srgb(126,145,121)` = **1 : 1.15 : 0.96**.
+   Green exceeds red in both. Plate 1's near spruce is `srgb(153,130,109)` =
+   1 : 0.85 : 0.71 and plate 3's near conifer is `srgb(137,102,90)` =
+   1 : 0.74 : 0.66 — red exceeds green in the references at the same distance.
+   Our own `drive` conifers measure `srgb(176,146,97)` = 1 : 0.83 : 0.55, i.e.
+   red-led and correct.
+   **Hypothesis, offered as a hypothesis and not as a diagnosis:** `forest` is
+   the only canonical view with conifers inside 20 m, and the warm haze
+   (`fogNear 0xe0b296` at h16) is what reddens them everywhere else. If so, the
+   needle albedo is green-led and nine views are hiding it. The discriminating
+   test before anyone edits anything: capture `forest` and `drive` with fog
+   forced off and compare the same needle patch. Do **not** re-tint the albedo
+   on the strength of this paragraph.
+
+3. **There is no autumn in it.** Not one deciduous crown inside roughly 40 m;
+   every tree in the near and mid field is conifer, and the only warm mass is
+   the grass plus a thin gold strip on the far bank. Nine views carry orange and
+   crimson crowns. This one reads as a different game, and no grade change will
+   put colour into it that the placement did not put there.
+
+Standing defects, unchanged: bare brown substrate between blades across the
+whole centre slope; grass as uniform pale triangles at uniform spacing;
+stretched-UV vertical smears on the cliff at 22–32% across, 22–32% down; the
+lake's top edge hard and aliased with no shore transition.
+
+**One thing not to do:** `forest`'s `lumaRange` (0.610) and `contrastStd`
+(0.193) are already *above* plate 3's 0.408 / 0.134. It does not need more
+contrast. The range it has is spent between sky and shadow, not on modelling
+the masses in between.
+
+**I withdraw one thing I nearly wrote.** I was going to say the trunks all
+render at the same apparent width. Measured at y = 396: runs of 30, 3, 6, 3, 27,
+19 and 32 px. There is a 10:1 ladder. The claim was false and the measurement
+caught it.
+
+## 4. HEAD `d451616` — what the six live authors have landed
+
+Captured `shots/critic4` at 1280×720, HEAD `d451616`, 79 fps / 392 draw calls /
+2.38 M tris.
+
+**Closed or clearly moved:**
+
+- **The khaki sphere-chain beside the waterfall is gone.** Confirmed on the new
+  frame. That was the single most broken object in the round.
+- **The camper casts a directional shadow.** `vehicle` now has a soft warm
+  shadow under and downsun of the chassis, and the conifer beside it casts one
+  too. #Blocker closed.
+- **The depth-of-field mush is gone from `waterfall`** — cliff, spray and far
+  bank are sharp. `neutralPct` 36.6 → **19.0**, against plate 5's 18.2: in band
+  for the first time. Red-family pixels 8.6% → 38.1%.
+- **`meadow` is the best frame in the game now.** Near grass has a root-to-tip
+  value gradient and a height ladder, the gold is a mass rather than spikes on
+  dirt, and the crimson maple gives the frame a subject. `chromaMean` 0.274 →
+  **0.325**, `vividPct` 38.1 → **53.3**. This is the first eye-level frame that
+  would survive a screenshot comparison. (Its ground dark-area still slipped
+  22.3 → 20.4, so #20 is untouched here too.)
+- **The `peaks` massif has strata.** Real plane breaks and vertical grooves
+  where there was a cloth drape. Not closed — see below — but it is the first
+  movement on pass-3 #6 in thirty rounds.
+
+**Not landed:** X2. `drive`'s ground region is unchanged: `lumaP05` 0.377,
+`contrastStd` 0.094, **0.0% cool**, **97.9% of chromatic pixels in one hue
+bucket**. Whatever the look author is doing has not reached a capture yet.
+
+**New and regressed:**
+
+- **`forest` regressed** — see §3. `chromaMean` 0.183 → 0.154, `vividPct`
+  11.1 → 2.9, `lumaMean` 0.425 → 0.351.
+- **`waterfall` traded grey for dark.** `neutralPct` is fixed but `lumaMean`
+  fell 0.612 → 0.450 against plate 5's 0.700 and `chromaMean` fell 0.181 →
+  0.169. The massif now occupies ~45% of the frame as one warm-neutral grey at
+  a single value; the frame reads overcast rather than golden-hour. Fixing the
+  neutral share by darkening is not fixing it.
+- **`peaks`: the rock necklace is back and worse.** A chain of ~15 pale tan
+  angular blocks strung horizontally across the massif face at **47–62% across,
+  20–33% down**, plus a second cluster at 62–68% / 24–30%. Warm tan
+  (1 : 0.86 : 0.84 measured last pass) against cool grey cliff, none casting a
+  shadow onto the face, several with void beneath the lower edge. Commit
+  `82cc330` closed this on one view; it is open on this one, and it is now the
+  most obviously broken object in the round.
+- **`peaks`: the gold hillside on the right two-fifths is still a bare smooth
+  slab** from 72% across to the frame edge — no grass, no scrub, no rock — with
+  flat violet-grey lozenges pasted on it at 85–92% / 42–50% and 88–92% / 68–75%
+  that read as decals rather than as shadow or outcrop.
+- **`vehicle`: the ground is bare red-brown dirt with sparse blades standing on
+  it** across the lower-left 40% of frame. Ground `contrastStd` 0.107,
+  `lumaRange` 0.331, dark-area 8.7%. The camper finally has a shadow and it is
+  standing on the worst surface in the round.
+- **`river`: the cards are still cards and the moiré is still there.** Flat tan
+  parallelograms with hard straight corners up to ~60 px wide across 0–45% of
+  frame width, and fine regular diagonal striations running lower-left to
+  upper-right on the terrain surface beneath them at 10–40% across, 20–50% down.
+  The untreated grey overhang facet at 63–72% across / 33–42% down is unchanged,
+  and the 1-px dark hairline still runs up-right from it.
+- **`backlit`: still no rim light, still no translucency.** The conifer at
+  8–25% across is directly between the camera and the sun and its needles are
+  opaque flat mid-green with no edge glow. The beige blob tree at 15–45% across
+  is still the worst asset in the game and still sits in the brightest part of
+  the frame. ~6 unlit unfogged black specks remain in the sky.
+- **Gold isolines still pour over rock lips** — `vehicle` at 24–42% across,
+  22–27% down; `waterfall` at 48–58% across, 40–48% down. Pass-3 #8, five passes
+  open.
+- **Chroma is going the wrong way overall.** Seven of ten views are below the
+  reference `chromaMean` band of 0.28–0.42, and four are below the brief's hard
+  floor of 0.25: `forest` 0.154, `waterfall` 0.169, `dawn` 0.209, `hero` 0.230 —
+  with `river` (0.250) and `peaks` (0.251) sitting exactly on it. Only `drive`
+  (0.367), `backlit` (0.350) and `meadow` (0.325) are in band, and `forest` fell
+  further this round.
+
+## Ranked blockers after this pass
+
+1. **#20, unchanged and unlanded — the ground has no large-scale value event.**
+   `drive` ground: 0.0% cool, 97.9% one hue, dark-area 10.8%. The target is now
+   measured and warm (§1): 64% of lit luma, red:green held, blue down 17%. This
+   is still why the build loses to its own history at 035/040/045.
+2. **`peaks` — the rock necklace, and the bare right-hand slab beside it.** Two
+   named blockers in one frame, both regressions of things closed elsewhere.
+3. **`forest` — a tenth of the game measures 0.154 chroma and 2.9% vivid, and it
+   got worse this round.** Root cause is hue family and tree placement, not the
+   grade. Run the fog-off comparison before touching the needle albedo.
+4. **`backlit` — no rim light, no translucency, and it now loses blind A/B to
+   rounds 024 and 033.** The one frame the capture harness itself calls the money
+   shot for foliage translucency, and nothing has been spent on it in fifteen
+   rounds.
+5. **Near-field ground surface in `vehicle` and `river` — bare dirt and flat
+   cards at 2 m.** `meadow` proved this round that it is solvable; two views
+   have not received the fix.
+
+Runners-up, unchanged: gold isoline caps on rock (#8, five passes); stretched-UV
+smears (#6); unlit unfogged specks (#9); scrub as flat cardboard cut-outs (#15);
+detached white slabs on the `meadow` cliff at 15–28% across, 5–16% down; the
+`vehicle` far ridge as one repeated triangular tooth at a single value.
+
+## Method note
+
+Every number above is `tools/colorstats.mjs`, `tools/_scratch/crop.mjs`, or a
+rect-restricted re-implementation of `colorstats`' own statistics, run at the
+time of writing. Plate crops are quoted as fractional rects so they can be
+re-run. `reference-art/` was read only. Two claims I was about to make were
+killed by measuring them — the uniform trunk width in `forest`, and pass 4's
+contrast multipliers — and one pass-4 claim was reproduced exactly, which is why
+the rest of that pass should be trusted.
