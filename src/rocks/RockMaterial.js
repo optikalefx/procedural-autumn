@@ -286,9 +286,14 @@ export function createRockMaterial() {
         float band = waterY < -9000.0 ? 0.0
                    : smoothstep( waterY + 0.55, waterY - 0.25, vWPos.y );
         float soak = clamp( max( wet, band ), 0.0, 1.0 );
-        vec3 wetRock = rock * 0.42;
+        // 0.42 x 0.85 took a shaded riverside slab to within a few percent of
+        // black. The water author measured a single one of these costing the
+        // forest frame 0.045 of lumaMean, and the brief's floor is a lifted
+        // black (lumaP05 0.16-0.42), so wet rock is now a clear step darker
+        // rather than a hole in the picture.
+        vec3 wetRock = rock * 0.62;
         wetRock = mix( wetRock, wetRock * vec3( 0.86, 0.96, 1.10 ), 0.55 );
-        rock = mix( rock, wetRock, soak * 0.85 );
+        rock = mix( rock, wetRock, soak * 0.72 );
 
         // Frost-shattered high ground reads cooler — but NOT paler. Anything
         // that lifts value at altitude compounds with aerial haze and turns a

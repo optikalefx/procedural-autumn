@@ -292,13 +292,12 @@ export class RockScatter {
       else if (roll < 0.62) { arch = 'boulder'; size = powSize(rng, 0.5, 3.0, 1.8); }
       else { arch = 'rubble'; size = powSize(rng, 0.12, 0.50, 2.0); }
       if (size * 2 < minSize) continue;
-      // A rock that never breaks the surface is invisible and still costs a
-      // draw. Rather than delete the whole channel, grow whatever the river
-      // gives us until it stands proud of the water; only true pools stay bare.
-      if (depth > 0.05) {
-        if (depth > 2.4) continue;
-        size = Math.max(size, depth * 1.15 + 0.25);
-      }
+      // Shallows only. A rock that never breaks the surface is invisible and
+      // still costs a draw, so in the wash at the channel edge it is grown
+      // until it stands proud — but only there. Growing rocks to clear any
+      // depth is what put a slab in the middle of a lake.
+      if (depth > 0.4) continue;
+      if (depth > 0.05) size = Math.max(size, depth * 1.15 + 0.25);
       // Water-worn rock lies on its flattest face and barely tips.
       this._place(px, pz, arch, size, rng, 0.30, 0.10, out, depth > 0.05 ? 0.06 : 0.14);
     }
@@ -809,6 +808,17 @@ export class RockScatter {
     const river = W.getRiver(x, z);
     const waterY = W.getWaterHeight(x, z);
     const h = W.getHeight(x, z);
+
+    // Nothing stands in open water. Reported by the water author, who isolated
+    // it: a house-sized slab was sitting in the middle of the lake in `forest`,
+    // the most conspicuous object in that frame. `_clusterRiver` used to *grow*
+    // a rock until it broke the surface, which is right for a boulder in a
+    // rapid and badly wrong for a lake. A part-submerged boulder at the
+    // waterline is still wanted, so the veto is at 0.4 m rather than at zero,
+    // and it lives here so every cluster type inherits it — the rng has already
+    // been consumed at this point, so dropping the instance does not disturb
+    // the rest of the cell.
+    if (depth > 0.4) return;
 
     out.push({
       x, y: minH - size * sink, z,

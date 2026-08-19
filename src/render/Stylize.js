@@ -105,14 +105,14 @@ export function patchStylizedLighting() {
     'Stylize'
   );
 
-  THREE.ShaderChunk[CHUNK] = `
-uniform float uStyleWrap;
-uniform float uStyleSteps;
-uniform float uStyleSoft;
-uniform float uStyleBanding;
-uniform float uStyleSpecular;
-uniform float uStyleFloor;
-` + THREE.ShaderChunk[CHUNK];
+  // Guarded, and it declares stylizeDiffuse() as well as the uniforms. A
+  // MeshStandardMaterial already receives the stylised response through the
+  // patched RE_Direct_Physical, but its author may also include STYLIZE_PARS
+  // (there is no way to tell from inside a shader which path you are on).
+  // Without the guard that is a redefinition error and the material silently
+  // fails to compile.
+  THREE.ShaderChunk[CHUNK] =
+    STYLIZE_PARS + '\nuniform float uStyleSpecular;\n' + THREE.ShaderChunk[CHUNK];
 
   injectUniforms('lights', {
     uStyleWrap:     { value: DEFAULTS.wrap },
@@ -137,6 +137,8 @@ uniform float uStyleFloor;
 //   uniforms: THREE.UniformsUtils.merge([stylizeUniforms(), { … }])
 //   fragmentShader: STYLIZE_PARS + `… float nl = stylizeDiffuse( dot(N, L) ); …`
 export const STYLIZE_PARS = /* glsl */`
+#ifndef STYLIZE_DECLARED
+#define STYLIZE_DECLARED
 uniform float uStyleWrap;
 uniform float uStyleSteps;
 uniform float uStyleSoft;
@@ -154,7 +156,8 @@ float stylizeDiffuse( float rawNL ) {
   float band = ( f + smoothstep( 0.5 - uStyleSoft, 0.5 + uStyleSoft, fr ) ) / uStyleSteps;
   float nl = mix( wrapNL, band, uStyleBanding );
   return uStyleFloor + ( 1.0 - uStyleFloor ) * nl;
-}`;
+}
+#endif`;
 
 /** Uniform block a custom ShaderMaterial merges in to use `stylizeDiffuse`. */
 export function stylizeUniforms() {
