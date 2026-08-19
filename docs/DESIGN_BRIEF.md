@@ -418,3 +418,30 @@ pictures of different scenery rather than a before and after.
   so everyone knows sheets either side are not comparable.
 - The `vehicle` anchor is excluded on purpose: it tracks a moving subject, and
   pinning a moving thing just aims the camera at empty meadow.
+
+---
+
+## Appendix: check your winding
+
+Three separate authors have shipped geometry whose triangle winding disagreed
+with the vertex normals it wrote — `frond()`, `tube()` and `buildBarkGeometry()`.
+A fourth and fifth case (ferns, dead tufts) were found by audit afterwards.
+
+The symptom is a surface that stays **dark from every angle**. Under `FrontSide`
+the near wall is culled and you see the far one, whose normal points away from
+the camera. Under a double-sided material, three's back-face normal flip
+(`normal *= gl_FrontFacing ? 1 : -1`) only works if winding agrees with the
+stored normal — inverted, the surface is unlit from *both* sides at once.
+
+**Every time, it was misdiagnosed first** — as a shadow-receive problem, as a
+grade clamp, as a palette that needed lifting — and every time the "fix" was a
+compensating brightness multiplier somewhere else, which then had to be unwound.
+
+```bash
+node tools/winding.mjs
+```
+
+Audits every geometry in the live scene: for each triangle, the geometric normal
+from the winding must agree with the average of its three vertex normals. Exit 0
+means clean. Run it after building any procedural mesh, and **before** concluding
+that a dark surface is a lighting problem.

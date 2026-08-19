@@ -1,0 +1,12 @@
+import { chromium } from 'playwright';
+import { acquire } from '../_lock.mjs';
+const rel = await acquire('query');
+const b = await chromium.launch({ args:['--use-gl=angle','--use-angle=metal','--ignore-gpu-blocklist'] });
+const ctx = await b.newContext({ viewport:{width:800,height:450} });
+await ctx.addInitScript(() => { const R=window.WebSocket; window.WebSocket=function(u,p){ if(p==='vite-hmr'||String(p).includes('vite')) return {readyState:3,url:u,protocol:'',addEventListener(){},removeEventListener(){},send(){},close(){},set onopen(_){},set onmessage(_){},set onclose(_){},set onerror(_){}}; return new R(u,p); }; window.WebSocket.prototype=R.prototype; });
+const p = await ctx.newPage();
+await p.goto('http://localhost:5178?res=1536');
+await p.waitForFunction(() => window.__ready === true, null, { timeout: 300000, polling: 300 });
+await p.evaluate(() => window.__settle(60));
+console.log(await p.evaluate((s) => eval(s), process.argv[2]));
+await b.close(); rel?.();

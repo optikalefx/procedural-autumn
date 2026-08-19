@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+import { acquire } from '../_lock.mjs';
+const PORT=process.argv[2]||'5179';
+await acquire('perf');
+const b=await chromium.launch({args:['--use-gl=angle','--use-angle=metal','--ignore-gpu-blocklist','--enable-gpu-rasterization']});
+const p=await b.newPage({viewport:{width:2000,height:1100},deviceScaleFactor:1});
+p.on('pageerror',e=>console.log('PAGEERROR',String(e.message).slice(0,200)));
+await p.goto(`http://127.0.0.1:${PORT}/?res=1536`,{waitUntil:'domcontentloaded'});
+await p.waitForFunction(()=>window.__ready===true,null,{timeout:300000,polling:250});
+await p.waitForTimeout(4000);
+console.log(await p.evaluate(()=>{const h=document.getElementById('pa-hud');
+ return JSON.stringify({exists:!!h, cls:h&&h.className, op:h&&getComputedStyle(h).opacity, forceCam:!!window.__forceCamera, hudForce:!!window.__hudForce});}));
+await p.screenshot({path:'/tmp/hs/live.png'});
+await p.waitForTimeout(2500); await p.screenshot({path:'/tmp/hs/live2.png'});
+await b.close();

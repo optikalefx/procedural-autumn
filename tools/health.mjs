@@ -11,6 +11,25 @@ const res = process.argv[2] ?? '512';
 await acquire('health');
 const b = await chromium.launch();
 const p = await b.newPage({ viewport: { width: 640, height: 360 } });
+// Neuter Vite's HMR client before any page script runs. A dozen authors edit
+  // this tree concurrently, and a peer saving a file mid-run reloads the page
+  // and kills the run with "Execution context was destroyed".
+  await p.addInitScript(() => {
+    const RealWS = window.WebSocket;
+    window.WebSocket = function (url, protocols) {
+      if (typeof url === 'string' && /[?&]token=|vite-hmr|__vite/.test(url)) {
+        return {
+          readyState: 3, url, close() {}, send() {},
+          addEventListener() {}, removeEventListener() {},
+          set onopen(_) {}, set onclose(_) {}, set onerror(_) {}, set onmessage(_) {},
+        };
+      }
+      return new RealWS(url, protocols);
+    };
+    window.WebSocket.prototype = RealWS.prototype;
+    Object.assign(window.WebSocket, RealWS);
+  });
+
 const errs = [];
 p.on('pageerror', (e) => errs.push(String(e.message)));
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
