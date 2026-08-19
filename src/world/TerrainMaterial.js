@@ -1115,19 +1115,31 @@ export function createTerrainMaterial(world, opts = {}) {
           // normal that smooth is the waxy white dome that filled a third of
           // the hero frame. Three fbm taps at ~130 m put the flank structure
           // back into the light for a fraction of the cost of the geometry.
-          float e = 26.0;
+          // TWO octaves and a 60 m epsilon. At four octaves the finest band is
+          // 17 m, which at 2 km is thirteen pixels and dominates the gradient:
+          // the whole middle distance came back as a crumpled-foil ripple. A
+          // distant flank is read by its big planes, so the field is held to
+          // 133 m and 66 m and the derivative is taken wide enough to ignore
+          // anything under it.
+          float e = 60.0;
           vec2 P = vWorldPos.xz * 0.0075;
-          float d0 = fbm(P, 4);
-          float dX = fbm(P + vec2(e * 0.0075, 0.0), 4);
-          float dZ = fbm(P + vec2(0.0, e * 0.0075), 4);
-          float gK = 46.0 / e;
+          float d0 = fbm(P, 2);
+          float dX = fbm(P + vec2(e * 0.0075, 0.0), 2);
+          float dZ = fbm(P + vec2(0.0, e * 0.0075), 2);
+          float gK = 96.0 / e;
           vec3 Nfar = normalize(vec3(N.x + (d0 - dX) * gK, N.y, N.z + (d0 - dZ) * gK));
           vec3 farCol = mix(farRock, mix(uGrassGold, uGrassDeep, 0.46), soft * 0.62);
           farCol *= 0.90 + (d0 * 0.5 + 0.5) * 0.20;
           albedo = mix(albedo, farCol, uFarApron);
           gRockM = mix(gRockM, 1.0 - soft * 0.86, uFarApron);
-          gReliefN = normalize(mix(gReliefN, Nfar, uFarApron));
-          gReliefW = mix(gReliefW, 0.92, uFarApron);
+          // Only at range. The synthetic normal stands in for flank structure
+          // the apron mesh is too coarse to carry at 2-4 km; walked up to — a
+          // camera can stand on the boundary and look straight out at it — the
+          // same field resolves as a crumpled-foil ripple across the whole
+          // middle distance, because it is a normal with no surface under it.
+          float farN = uFarApron * smoothstep(500.0, 1500.0, camDist);
+          gReliefN = normalize(mix(gReliefN, Nfar, farN));
+          gReliefW = mix(gReliefW, 0.92, farN);
         }
 
         // Debug read-out. Written to gDebug and blitted OVER the lit colour at

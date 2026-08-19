@@ -38,3 +38,7 @@ same places are photographed every round and the sheets are directly comparable.
 | 030 | 2026-08-19 | hue width restored, NaN black square fixed, shadow bias | [030](030-2026-08-19-hue-width-restored-nan-black-square-fixed-shadow.png) |
 | 031 | 2026-08-19 | cool cast-shadow mass and value range | [031](031-2026-08-19-cool-cast-shadow-mass-and-value-range.png) |
 | 032 | 2026-08-19 | world edge apron and contour ribbons | [032](032-2026-08-19-world-edge-apron-and-contour-ribbons.png) |
+| 033 | 2026-08-19 | cool cast-shadow mass, haze reduced, rim light | [033](033-2026-08-19-cool-cast-shadow-mass-haze-reduced-rim-light.png) |
+| 034 | 2026-08-19 | scrub rebuilt, deadfall, substrate | [034](034-2026-08-19-scrub-rebuilt-deadfall-substrate.png) |
+| 035 | 2026-08-19 | edge apron tuned, ribbons gone at 12/16.4/18.6 | [035](035-2026-08-19-edge-apron-tuned-ribbons-gone-at-12-16-4-18-6.png) |
+| 036 | 2026-08-19 | cool shadow pulled back to plate 3 level | [036](036-2026-08-19-cool-shadow-pulled-back-to-plate-3-level.png) |

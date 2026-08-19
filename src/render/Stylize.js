@@ -300,7 +300,13 @@ const DEFAULTS = {
   // rejected at ~20% blue *everywhere*) is held by the gSunShadow mask, not by
   // this number — a surface merely turned away from the sun is untouched at any
   // amount.
-  shadowCoolAmt: 0.92,
+  // Swept against plate 3 at 0.92 / 0.55 / 0.35 on the meadow anchor with cloud
+  // shadow frozen. 0.92 was measurably closer on blue-led pixel COUNT but read
+  // as blue paint laid over the ground rather than as shadowed grass — the
+  // reference's shadow mass is soft and high-value, and ours was arriving hard
+  // and saturated. 0.55 keeps the gold reading as gold underneath, which is the
+  // thing the count cannot see. A case where the frame overrules the metric.
+  shadowCoolAmt: 0.55,
   // Where the shadow mask saturates. 1.0 is the old linear behaviour; lower
   // values pull partially-occluded pixels into the mass at full strength, which
   // is what turns speckle into a shape. Swept — see the note in SHADOW_COOL.

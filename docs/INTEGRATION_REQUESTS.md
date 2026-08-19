@@ -2152,3 +2152,56 @@ edge — the canopy is the surface that view exists to photograph.
 One caution learned from tuning the global strength: do not multiply the rim by
 albedo. A rim through the albedo path on a dark conifer comes out dark, which
 is the opposite of what a backlit edge does.
+
+## Look / grade: shadowed ground is arriving as saturated cobalt
+*from the ground-cover author, 2026-08-19*
+
+Not a request for my system so much as a flag on a live regression, because it
+made half my round unjudgeable and it is going to do the same to everyone else's.
+
+As of this afternoon every cast-shadow mass in the game renders as a strongly
+saturated blue — sampled around `srgb(37,74,158)` on sunlit gold meadow. It is
+not the cloud shadow: `--eval "window.__atmosphere.params.cloudShadow = 0"`
+changes nothing, and the shape follows tree and terrain casters exactly. In
+`shots/cover/c7/river.png` and `c7/vehicle.png` it covers well over half the
+frame; in `c8/close-2m` variants a shadow band crosses the whole foreground and
+the gold meadow inside it reads as water.
+
+The brief's own correction anticipates this exactly: a cast shadow should be a
+*high-value, soft, violet-blue mass*, and "a shadow that has become saturated
+blue is a bug, not the style". The 2026-08-19 correction is right and worth
+keeping — what has gone wrong is the amount and the value, not the direction.
+The shadowed ground needs to keep most of its luma and take the violet as a
+tint.
+
+Concretely this blocks two things on my side:
+  * I cannot judge the ground substrate's stone palette. Stones are the only
+    cool note this layer puts at ground level and they are authored to the
+    brief's lavender-grey rock anchors, but every stone in shadow is currently
+    the same hue as the ground it sits on, so the note does nothing.
+  * Ground cover now *receives* shadow again (see below), so my shrubs inherit
+    this directly. They currently go cobalt inside a tree's shadow band.
+
+## Ground cover receives shadow again — and it is not what cost the frame time
+*from the ground-cover author, 2026-08-19*
+
+The note in `cover_forms.js` recorded receive at +12.5 ms and turned it off
+everywhere. Re-measured now that the sun's `shadow.normalBias` is texel-derived,
+with `tools/perf.mjs --seconds 45 --res 1536`, three paired runs:
+
+    ground cover removed from the scene     p50 40.3 ms   3.26 M tris  557 calls
+    ground cover present, receive off       p50 37.8 ms   4.26 M tris  596 calls
+    ground cover present, receive on        p50 39.4 ms   4.26 M tris  597 calls
+
+Receive is now free within run-to-run noise, so it is back on for the four large
+forms (`shrubDark`, `thicket`, `log`, `stump`) and stays off for the ground
+substrate, where it is paid per fragment over a large share of the near field.
+A shrub standing in a tree's shadow band no longer reads as lit.
+
+The same three runs answer a second question. The harness currently fails its
+frame-time assertions (p50 37.8 ms against a 16.7 ms budget), and that failure is
+**not** this system: removing ground cover entirely makes it slightly *worse*,
+not better. Peak load stays inside both hard budgets (4.26 M of 4.5 M triangles,
+597 of 900 draw calls). Whatever regressed frame time this afternoon is upstream
+of the vegetation layers and probably shares a cause with the shadow colour
+above.

@@ -822,7 +822,7 @@ export class CoverScatter {
       if (rng() > d * g * 0.80) continue;
 
       const roll = rng();
-      const grey = rng() < 0.5;
+      const grey = rng() < 0.68;
       if (roll < 0.45) {
         n = this._emit(out, n, cap, 'log', x, z, rng, {
           colA: grey ? PAL.barkGrey : PAL.barkWarm, colB: PAL.moss,
@@ -848,7 +848,11 @@ export class CoverScatter {
           // long tier dominates here and the short one is the filler.
           variant: rng() < 0.62 ? 1 : 0,
           scale: 0.70 + rng() * 0.75, sink: 0.0,
-          tone: 0.86 + rng() * 0.26, hue: 0.015,
+          // Lifted. A thin cylinder shows the camera mostly its flanks, which
+          // sit at the bottom of `tube`'s AO ramp, so an authored mid-tan stick
+          // arrives around srgb(106,90,60) — dark enough against gold that a
+          // few crossing sticks read as pen strokes rather than as wood.
+          tone: 1.00 + rng() * 0.26, hue: 0.015,
         });
       }
     }
