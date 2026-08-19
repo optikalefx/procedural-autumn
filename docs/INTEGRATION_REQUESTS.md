@@ -3210,3 +3210,159 @@ messages said it was.
 
 The water author found this, not me, and found it while stopped and under
 suspicion.
+
+## X2. TERRAIN — the "shadow" beside the waterfall is a one-texel river channel painted down a 62° cliff (water, 2026-08-19)
+
+**Owner: whoever holds `src/world/TerrainMaterial.js` / `src/world/TerrainGen.js`.
+Not mine to fix — filing rather than editing.**
+
+In `shots/round48/waterfall.png` there is a dark vertical band immediately to the
+right of the falling water, running most of its height. It was read as a seam or
+a shadow artifact. It is neither, and it is not a shading problem — it is
+structural, which on this project now makes four.
+
+**It is not water.** Captured with each system hidden in turn
+(`shots/water-diag/`): the band survives `water.group.visible=false`, survives
+`waterfalls.group.visible=false`, survives `groundCover`, and survives hiding
+*every* system in the scene. `shots/water-diag/wf-terrainonly.png` is terrain and
+nothing else, and the band is still there, at full strength.
+
+**What it is.** A transect of the baked data texture across the fall, at seven
+heights down its 96 m path (fall at top `[-720, 120.6, -30]`, the one framed by
+the `waterfall` view):
+
+```
+u     slope   river mask (data.b) across ±14 m of the path, in 2 m steps
+0.00  1.71    0 0 0 0 0 0 0 .263 0 0 0 0 0 0 0
+0.17  2.02    0 0 0 0 0 .263 0 0 0 0 0 0 0 0 0
+0.34  1.95    0 0 0 .263 .263 0 0 0 0 0 0 0 0 0 0
+0.51  1.99    0 0 0 .286 0 0 0 0 0 0 0 0 0 0 0
+0.66  1.93    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+0.83  1.88    0 0 0 0 0 .290 0 0 0 0 0 0 0 0 0
+1.00  1.46    0 0 0 0 0 0 .294 0 0 0 0 0 0 0 0
+```
+
+The river mask is **exactly one 2 m texel wide** the whole way down, it wanders
+sideways from texel to texel, and in places it drops out entirely. Slope is
+1.46–2.02 — that is 56° to 64°. The channel is being carried over the lip and
+painted down the cliff face, and a channel cannot exist on a 62° face: a
+waterfall is precisely the place where the river stops being a channel.
+
+`TerrainMaterial.js:1335` then draws it at full strength:
+
+```glsl
+albedo = mix(albedo, riverBed, smoothstep(0.02, 0.26, river) * 0.85);
+```
+
+`smoothstep(0.02, 0.26, 0.263)` is 1.0, so an isolated texel gets the whole
+0.85 of `riverBed` (a warm `uSand`/`uRockMid` mix). Measured in the frame the
+band is `srgb(147,133,129)`, `1:0.90:0.88` — warm and red-led — against
+neighbouring rock at `srgb(162,150,159)`, `1:0.93:0.98`. It reads dark because
+it is warm and desaturating against a cool mauve cliff, not because anything is
+shadowing it.
+
+**And that is where the beads come from.** Magnified, the band is not a band at
+all — it is a chain of overlapping round tan blobs with a straight dark line down
+one side. A one-texel-wide mask stepping diagonally across a 2 m grid, bilinearly
+filtered and magnified onto a near-vertical face, *is* a string of beads: each
+isolated texel blooms into a disc about two texels across and the discs do not
+quite touch. At ~190 m and fov 50 one texel subtends ~14 px and the beads measure
+~22 px, which is the same number. The necklace is the sampling, not the shading.
+
+**Suggested fix, one line, in your file not mine.** `slope` is already in scope
+at that point (`TerrainMaterial.js:344`, `float slope = aux.r`), and the snow
+term four lines below already uses it the same way:
+
+```glsl
+// A river channel is a channel because water lingers in it. Past about 40° it
+// does not linger — it becomes a waterfall, and the mask should stop at the lip.
+river *= 1.0 - smoothstep(0.85, 1.40, slope);
+```
+
+That kills the band on the 1.46–2.02 faces and leaves every valley channel
+(slope well under 0.85) untouched. Gating in the *bake* instead would be
+equally correct and would also stop the mask feeding `damp` and `shore`.
+
+Please do not fix this by darkening or desaturating `riverBed` — the band is one
+texel of a mask that should not be there, and every earlier attempt on this
+project to shade away a structural defect made the structure harder to find.
+
+**Verification captures, all at the canonical `waterfall` framing:**
+
+- `shots/water-diag/waterfall.png` — baseline, everything on
+- `shots/water-diag/wf-nowater.png` — Water hidden, band present
+- `shots/water-diag/wf-nofalls.png` — Waterfalls hidden, band present and unobstructed
+- `shots/water-diag/wf-nocover.png` — ground cover hidden, band present
+- `shots/water-diag/wf-terrainonly.png` — **every** system hidden, band present
+
+
+---
+
+## X2. The ground lost its shadow mass — and we removed it answering the player
+
+**2026-08-19, integrator. This is the most important open item in the project.**
+
+The critic's blind A/B has round 048 losing to its own history **8 wins, 18
+losses, 4 ties** against rounds 045, 040 and 035 — and it declared its own
+contamination ran *toward* 048, which it had seen whole beforehand. I have
+compared `review/040-*.png` against `review/048-*.png` myself and I agree. Look
+at the two `drive` tiles: 040 has a broad soft dark mass sweeping across the
+meadow that gives the ground depth and structure. In 048 the ground is a uniform
+gold wash with no large-scale value event anywhere in it.
+
+**Two corrections to the critic's account, because they change what to do.**
+
+**(a) It measured the wrong plate.** It judged `drive`'s ground region against
+plate 1's `lumaP05 0.184 / lumaRange 0.541 / contrastStd 0.177`. `drive` is an
+eye-level gameplay framing, and the brief is explicit at line 119: *"Judge
+eye-level views against plates 3/4/5 and vistas against plate 1, per plate,
+every time."* Plate 1 is a wide hazy aerial. This is the same error that
+produced a crushed-black regression earlier in the project and that the brief
+was amended to prevent. **The statistical case is not sound. The visual case
+is, and it stands on its own.**
+
+**(b) "Someone fixed #4 by removing the rose, and the rose *was* the shadow
+mass" is right about the mechanism and unfair about the motive.** The change was
+mine, and it was made on a direct player instruction. The player said, of that
+exact mass: *"adjust the color of the 'gray' ground you see in this photo.
+That's creating too much contrast for me. It would be more cozy if that was a
+soft yellow or a light brown or something like that."* I cut
+`Stylize.DEFAULTS.shadowCoolAmt` from 1.0 to 0.30. Separately, the player asked
+for fewer clouds — *"the sky is like 90% clouds, maybe less clouds would be
+calming"* — and `COVER_BIAS` went 0.745 to 0.950, which removed most of the
+cloud-shadow patches from the valley floor as a side effect.
+
+**So the player asked us to change the shadow mass's colour and soften it. We
+deleted it instead.** Both requests were legitimate and both were implemented
+literally rather than in spirit, and the sum of two literal readings is a
+flatter world than either request implied.
+
+**What is wanted, precisely.** Restore large-scale cast-shadow structure on the
+ground, at the size and softness it had at round 040, **in a warm hue** — the
+soft yellow or light brown the player asked for — not the mauve/rose it was
+then, and not the cool blue that 035 tried and 036 pulled back. Contrast should
+stay at or below where it is now; this is about *area and shape*, not about
+deepening anything. A large soft warm shadow is lower contrast than a small hard
+one, and it is what plates 3, 4 and 5 actually show under a low sun.
+
+**Levers, in the order I would try them.** Note that raising cloud *coverage* is
+ruled out — the player asked for a calmer sky and got one.
+
+1. `params.cloudShadow` in Atmosphere (currently 0.42, already raised from 0.34
+   for this reason by the author of P9). Fewer, larger, more meaningful patches.
+2. The scale of the cloud-shadow map relative to the world: bigger, slower
+   shapes read as weather; small ones read as noise.
+3. Long-range terrain self-shadowing. The terrain author noted at round 018 that
+   valley-crossing massif shadows are a signature of the reference art and
+   extended chunk shadow-casting to LOD 2 for exactly this reason. Check it is
+   still reaching the valley floor.
+4. `Stylize.shadowCoolAmt` — but this is the one that was cut on player
+   instruction, so if it goes back up it goes back up *warm*. Read
+   `shadowCool` (currently `THREE.Color(0.86, 1.02, 1.16)`, a cool colour) and
+   understand that raising the amount with that colour is what produced the grey
+   the player objected to.
+
+**Whoever takes this: the player has already told us what they want it to look
+like. Soft yellow or light brown, cozy, low contrast, large. Do not reintroduce
+grey, mauve or blue ground shadow. If your change makes the ground read as grey
+at any hour, it is wrong regardless of what it measures.**
