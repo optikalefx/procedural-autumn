@@ -42,7 +42,7 @@ const out = await page.evaluate(async (P) => {
 
   const samples = [];
   const perSpecies = { deer: 0, bear: 0, rabbit: 0 };
-  let steps = 0, seen = 0, birdsSeen = 0;
+  let steps = 0, seen = 0, seenClose = 0, seenNoticeable = 0, birdsSeen = 0;
   // Nothing may ever stand in standing water. Measured, not assumed.
   let maxDepth = 0, wetSamples = 0, maxSlope = 0;
 
@@ -64,7 +64,7 @@ const out = await page.evaluate(async (P) => {
 
         pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
         fr.setFromProjectionMatrix(pm);
-        let inView = 0, nearest = 1e9;
+        let inView = 0, nearest = 1e9, close = 0, mid = 0;
         for (const key of Object.keys(wl.pool)) {
           for (const per of wl.pool[key]) {
             for (const A of per) {
@@ -77,7 +77,18 @@ const out = await page.evaluate(async (P) => {
               sp.center.set(A.brain.pos.x, A.brain.pos.y + 0.8, A.brain.pos.z);
               sp.radius = 1.5;
               // Under 220 m a deer is still a readable speck; past that it is fog.
-              if (d < 220 && fr.intersectsSphere(sp)) { inView++; perSpecies[key]++; nearest = Math.min(nearest, d); }
+              if (d < 220 && fr.intersectsSphere(sp)) {
+                inView++; perSpecies[key]++; nearest = Math.min(nearest, d);
+                // Bucket by apparent size, because "intersects the frustum at
+                // 220 m" is not a sighting. At the player's 870 px viewport and
+                // a 55 deg vertical fov, a 1.5 m deer subtends 870*1.5/(2*d*
+                // tan(27.5)) px: 21 px at 60 m, 12 px at 100 m, 7 px at 172 m —
+                // and the far end of that is a fog-coloured speck against gold
+                // grass. The old headline number counted all three the same,
+                // which is how this tool reported an animal in view 45% of the
+                // time while the player drove the valley and found nothing.
+                if (d < 70) close++; else if (d < 140) mid++;
+              }
             }
           }
         }
@@ -87,23 +98,33 @@ const out = await page.evaluate(async (P) => {
         }
         steps++;
         if (inView > 0) seen++;
-        samples.push({ inView, nearest: nearest > 1e8 ? -1 : Math.round(nearest), live: wl.stats.live });
+        if (close > 0) seenClose++;
+        if (close + mid > 0) seenNoticeable++;
+        samples.push({ inView, close, mid, nearest: nearest > 1e8 ? -1 : Math.round(nearest), live: wl.stats.live });
         if (inView > best.inView) { best.inView = inView; best.x = x; best.z = z; best.yaw = yaw; }
       }
     }
   }
 
-  // Longest run of consecutive samples with nothing in sight.
-  let gap = 0, worst = 0;
-  const gaps = [];
-  for (const s of samples) {
-    if (s === null) { if (gap) gaps.push(gap); gap = 0; continue; }
-    if (s.inView === 0) { gap++; worst = Math.max(worst, gap); }
-    else { if (gap) gaps.push(gap); gap = 0; }
-  }
-  if (gap) gaps.push(gap);
-  gaps.sort((a, b) => a - b);
-  const pct = (q) => (gaps.length ? gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * q))] : 0);
+  // Longest run of consecutive samples with nothing in sight. Computed over a
+  // chosen sighting test, so the same drive can be scored strictly or loosely.
+  const gapStats = (hit) => {
+    let gap = 0, worst = 0;
+    const gaps = [];
+    for (const s of samples) {
+      if (s === null) { if (gap) gaps.push(gap); gap = 0; continue; }
+      if (!hit(s)) { gap++; worst = Math.max(worst, gap); }
+      else { if (gap) gaps.push(gap); gap = 0; }
+    }
+    if (gap) gaps.push(gap);
+    gaps.sort((a, b) => a - b);
+    const q = (f) => (gaps.length ? gaps[Math.min(gaps.length - 1, Math.floor(gaps.length * f))] : 0);
+    const sec = (n) => +((n * P.STEP) / P.SPEED).toFixed(1);
+    return { median: sec(q(0.5)), p90: sec(q(0.9)), worst: sec(worst) };
+  };
+  const gapAny        = gapStats((s) => s.inView > 0);
+  const gapNoticeable = gapStats((s) => s.close + s.mid > 0);
+  const gapClose      = gapStats((s) => s.close > 0);
 
   const real = samples.filter(Boolean);
   const liveMax = real.reduce((m, s) => Math.max(m, s.live), 0);
@@ -127,7 +148,12 @@ const out = await page.evaluate(async (P) => {
   return {
     roadSamples: steps,
     fractionWithAnimalInView: +(seen / Math.max(1, steps)).toFixed(3),
-    worstDrySpellSeconds: +((worst * P.STEP) / P.SPEED).toFixed(1),
+    // The two numbers that describe what a player experiences.
+    fractionNoticeable: +(seenNoticeable / Math.max(1, steps)).toFixed(3),   // inside 140 m
+    fractionClose: +(seenClose / Math.max(1, steps)).toFixed(3),             // inside 70 m
+    gapSecondsAny: gapAny,
+    gapSecondsNoticeable: gapNoticeable,
+    gapSecondsClose: gapClose,
     meanLive: +meanLive.toFixed(2), liveMax, inViewMax,
     perSpeciesSightings: perSpecies,
     birdFlockInViewPct: +(100 * birdsSeen / Math.max(1, steps)).toFixed(1),
@@ -135,8 +161,6 @@ const out = await page.evaluate(async (P) => {
     maxWaterDepthUnderAnimal: +maxDepth.toFixed(3),
     animalsInWaterSamples: wetSamples,
     maxSlopeUnderAnimal: +maxSlope.toFixed(2),
-    drySpellSecondsMedian: +((pct(0.5) * P.STEP) / P.SPEED).toFixed(1),
-    drySpellSecondsP90: +((pct(0.9) * P.STEP) / P.SPEED).toFixed(1),
     busiestInView: best.inView,
     costAtBusiest: {
       calls: withW.calls - without.calls,
