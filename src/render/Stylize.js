@@ -65,8 +65,8 @@ const DEFAULTS = {
   // firmer, still-soft-edged steps make a mountain flank read as two or three
   // painted masses instead of a gradient.
   steps: 2.6,        // number of quantisation bands
-  soft: 0.24,        // band edge softness (0.5 = no banding at all)
-  banding: 0.62,     // blend between smooth wrap and hard bands
+  soft: 0.30,        // band edge softness (0.5 = no banding at all)
+  banding: 0.52,     // blend between smooth wrap and hard bands
   specular: 0.14,    // direct specular scale
   // Minimum diffuse response — nothing goes fully unlit. Lowered from 0.11:
   // the floor is not the thing that keeps foliage out of a hole (foliage is
@@ -75,7 +75,7 @@ const DEFAULTS = {
   // terrain mass keeps. At 0.11, plus ambient, the shaded flank of the `hero`
   // massif arrived within 7% display of its lit flank and the mountain read as
   // one smooth beige lump.
-  floor: 0.07,
+  floor: 0.13,
 };
 
 let patched = false;

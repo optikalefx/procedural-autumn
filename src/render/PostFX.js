@@ -167,7 +167,7 @@ class GradeEffect extends Effect {
         ['uLift',          new THREE.Uniform(0.034)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.14, 1.00, 0.88))],
         ['uVibrance',      new THREE.Uniform(0.90)],
-        ['uRedToGold',     new THREE.Uniform(0.125)],
+        ['uRedToGold',     new THREE.Uniform(0.070)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
       ]),

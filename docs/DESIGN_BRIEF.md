@@ -336,3 +336,28 @@ node tools/prune.mjs --keep 5
 
 Prune before starting a long session, and archive anything you want to keep to
 `review/` first — that is what survives.
+
+---
+
+## Appendix: performance is a gate, not an afterthought
+
+Everything else in this harness judges **still frames**, taken after the scene
+has settled. A hitch, a flashing black tile, or a leak is therefore invisible to
+it. `tools/perf.mjs` drives the camper on a real route and watches frames as
+they happen:
+
+```bash
+node tools/perf.mjs --seconds 45 --res 1536 --json shots/perf/run.json
+```
+
+It reports and asserts on: frame-time distribution (p50/p95/p99 and the worst
+frame with its timestamp), hitch counts at 33/50/100 ms, frames sampled **during
+motion** that came back black or partially rendered, peak draw calls and
+triangles, and growth in geometries/textures/programs over the run — which is
+the leak signal, and shows up long before a leak becomes a frame-time problem.
+It also prints the ten worst frames with their draw-call load, so a hitch can be
+correlated with what the renderer was doing.
+
+**Run it after any change that builds, streams, or disposes geometry**, and
+before declaring a system done. Exit code 0 means within budget. A system that
+looks perfect in stills and stutters while driving is not done.

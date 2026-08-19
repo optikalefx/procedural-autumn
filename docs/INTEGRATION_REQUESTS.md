@@ -774,3 +774,91 @@ each silently re-resolved to a completely different subject at least twice
 happen on the retry path — a view that reports `not renderable yet` and re-runs
 comes back with a fresh anchor. It makes before/after comparison and `ab.mjs`
 much weaker than they should be for everyone. Harness owner: worth a look.
+
+---
+
+## Rocks author — 2026-08-18, third pass
+
+### RESOLVED (and the cause of three wasted passes): rocks were 96% haze
+
+**Confirming the ground-cover author's `fog_vertex` report from their own
+section above — it is not just ground cover, and the effect on rock was total.**
+
+`Atmosphere`'s shared `fog_vertex` chunk computes
+
+```glsl
+vFogWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+```
+
+with no `instanceMatrix`. Every rock is an `InstancedMesh`, so every rock in the
+game was hazed as if it stood at the world origin and came back pinned at the
+`uFogMax` cap.
+
+Measured at the frozen `drive` anchor, boulder ~50 m from the camera, by moving
+only `uRockGain` and reading the same rect:
+
+| `uRockGain` | boulder pixel | Δ |
+|---|---|---|
+| 0.62 | luma 178.9 | — |
+| 0.31 | luma 175.7 | 3.2 |
+
+Halving the material's entire output moved the rendered pixel by **1.8%**. Fog
+was supplying 172 of those 179 levels. That is why the boulders were near-white
+and why three consecutive passes concluded the exposure-match factor needed to
+go *lower* — the dial they were turning was connected to almost nothing.
+
+*Worked around locally* in `src/rocks/RockMaterial.js`, the same way
+`src/shaders/cover_material.js` does it: overwrite `vFogWorldPos` with the
+correctly-instanced world position after the chunk has run. **The real fix
+belongs in `Atmosphere.js`** (the three-line patch in the ground-cover author's
+section is correct); wildlife, props and anything else instancing a standard
+material are still affected. When it lands, delete the `#include <fog_vertex>`
+replace block in `RockMaterial.js` — nothing else in rock depends on it.
+
+With fog corrected, `uRockGain` is 1.36 and a sunlit boulder measures 0.83 of
+the meadow's display luminance at the `drive` anchor (reference plates: 0.78 –
+0.86), with chroma 18–31 against the plates' 18–42.
+
+### For the water author: both items are done
+
+1. **The slab in the lake is gone.** `RockScatter._place` now vetoes any
+   instance where `world.getWaterDepth(x, z) > 0.4`, and `_clusterRiver` no
+   longer grows a rock until it clears the water — that rule was right for a
+   boulder in a rapid and was what put a house-sized block in open water.
+   Part-submerged boulders at the waterline are unchanged.
+2. **Near-black rock is lifted.** Wet rock was multiplying albedo by 0.42 and
+   mixing at 0.85; it is now 0.62 / 0.72. Separately, `RockMaterial` now carries
+   an explicit luminance floor (`uRockFloorL`, 0.085 scene-linear, additive so
+   facet steps survive inside shadow). The worst case in any canonical view —
+   the big backlit bank slab in the bottom-right of `river` — went from 0.13
+   display to 0.22, i.e. from below the brief's black point to inside it.
+
+### Terrain author: thank you, the LOD sag is gone and I depended on it
+
+The previous rocks author's note that "terrain chunks two LOD bands out render
+several metres below `getHeight()`" is no longer true, and it mattered a lot:
+their fix for it was to anchor crag blocks to the minimum of two 12 m+ sample
+rings, which on a 40-degree face buries a cliff band entirely and is why the
+massif could never carry relief. Re-measured by raycasting the live `Terrain`
+group against `world.getHeight` at the `hero` and `peaks` framings:
+
+| distance | mean sag | worst |
+|---|---|---|
+| 200–600 m | 0.0 m | 0.8 m |
+| 800 m | 0.2 m | 6.4 m |
+| 1000–1400 m | −0.3 m | 1.7 m |
+
+Crag anchoring now subtracts only a curvature-derived estimate capped at 5 m,
+which is what let cliff bands stand out of the slope at all.
+
+### Everyone: "the rocks look like they are floating" was mis-diagnosed
+
+Left here because two authors have now reported it and the obvious reading is
+wrong. `tools/_scratch/rockfloat.mjs` transforms every crag instance's actual
+vertices and compares them with the terrain under the block's own centre: **zero
+blocks out of ~1000 float, and the least-buried cliff block sits 5.2 m below the
+ground.** What reads as floating is an *isolated* block on a smooth slope — no
+neighbours, no visible intersection line, and its own cast shadow beside it
+rather than under it. The cure was compositional, not positional: chains that
+overlap by more than half a block, and any course shorter than four blocks
+discarded rather than emitted as a stub.

@@ -484,7 +484,13 @@ export class RockScatter {
     // so 9-19 here is an 18-38 m wall segment. It has to clear the visibility
     // cutoff at the range the massif is actually seen from (600-900 m in
     // `peaks`) or the band exists in the scatter and never renders.
-    const base = clamp((9 + c.hard * 11 + c.s * 7) * (0.85 + rng() * 0.40), 9, 19);
+    // Scaled by altitude as well as by hardness. A crag at 110 m is a low
+    // outcrop on a hill you drive past at 300 m, where a 50 m block reads as a
+    // shipping crate; the same block on a 250 m shoulder is 800 m away and
+    // reads as a cliff. Tying size to altitude is also the honest geology — the
+    // higher a bed sits the more of it has been stripped bare.
+    const alt = 0.62 + 0.55 * smoothstep(95, 250, c.h);
+    const base = clamp((9 + c.hard * 11 + c.s * 7) * (0.85 + rng() * 0.40) * alt, 7, 17);
     const courses = 1 + ((rng() * 2) | 0);
     let cx = x0, cz = z0;
     let targetY = W.getHeight(cx, cz);
@@ -638,7 +644,8 @@ export class RockScatter {
   _cragCrest(x0, z0, c, up, rng, minSize, out) {
     const W = this.world;
     const startAt = out.length;              // stub groups are dropped, as above
-    const scale = clamp((8 + c.hard * 8 + c.s * 5) * (0.80 + rng() * 0.45), 7, 15);
+    const scale = clamp((8 + c.hard * 8 + c.s * 5) * (0.80 + rng() * 0.45)
+      * (0.70 + 0.45 * smoothstep(95, 250, c.h)), 6, 14);
     const n = 4 + ((rng() * 5) | 0);
     const step = scale * (0.62 + rng() * 0.26);
 

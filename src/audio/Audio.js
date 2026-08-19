@@ -1,16 +1,392 @@
-// Procedural ambience, engine, water, wildlife, music.
-// Stub — owned by a dedicated system author. See docs/DESIGN_BRIEF.md.
+// ─────────────────────────────────────────────────────────────────────────────
+//  AUDIO — everything you hear, synthesised at runtime. No asset files.
+//
+//  Structure:
+//
+//    ambience ┐
+//    water    ├─→ master ─→ limiter ─→ analyser ─→ speakers
+//    vehicle  │      ↑
+//    wildlife │   reverb (shared, synthesised impulse)
+//    music    ┘
+//
+//  Three rules the whole system obeys:
+//
+//   1. **Never throw, never assume.** Browsers refuse to start audio without a
+//      gesture, some machines have no output device at all, and every peer
+//      system this reads from may be missing or mid-init. Audio failing must
+//      never be able to take a frame with it.
+//   2. **One listener sample per frame.** Biome, moisture and surface lookups
+//      are shared by every layer and smoothed, so driving across a boundary
+//      cross-fades instead of switching.
+//   3. **Mix by exclusion.** Layers are faded *against* each other. Ambience
+//      that plays everything everywhere is wallpaper.
+// ─────────────────────────────────────────────────────────────────────────────
 import { System } from '../core/System.js';
+import { clamp, clamp01, damp, smoothstep } from '../core/MathUtils.js';
+import { BIOME } from '../world/WorldConfig.js';
+import { gain, valleyImpulse } from './synth.js';
+import { Ambience } from './ambience.js';
+import { WaterAudio } from './water.js';
+import { VehicleAudio } from './vehicle_audio.js';
+import { WildlifeAudio } from './wildlife_audio.js';
+import { Music } from './music.js';
+
+const STORE = 'pa.audio';
 
 export class Audio extends System {
   constructor(ctx) {
     super(ctx);
     this.name = 'Audio';
+    this.loadLabel = 'Tuning the valley';
+
+    this.actx = null;
+    this.started = false;
+    this.failed = false;
+    this.volume = 0.75;
+    this.muted = false;
+
+    // The shared listener sample. Allocated once; `update` only writes fields.
+    this.L = {
+      x: 0, y: 0, z: 0, yaw: 0,
+      hour: 16.6, wind: 1, speed: 0,
+      open: 0.6, forest: 0.2, altitude: 0, indoors: 1,
+      moisture: 0.4, biome: BIOME.MEADOW,
+    };
+    this._surf = {};
+    this._targets = { open: 0.6, forest: 0.2, altitude: 0 };
+    this._tick = 0;
+    this._probe = null;
+    this._hidden = false;
+
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE) ?? 'null');
+      if (saved) {
+        this.volume = clamp01(saved.volume ?? 0.75);
+        this.muted = !!saved.muted;
+      }
+    } catch { /* private mode, or a corrupt entry — defaults are fine */ }
   }
 
-  async init() {}
+  async init() {
+    // The context is *not* created here. Creating one before a gesture leaves a
+    // suspended context that some browsers never let you resume, and it logs a
+    // warning on every load. It is built on the first real input instead.
+    const start = () => this._start();
+    this._gesture = start;
+    for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
+      window.addEventListener(ev, start, { passive: true });
+    }
 
-  update(dt, elapsed) { void dt; void elapsed; }
+    // Tab-away: duck rather than suspend. Suspending races with the
+    // resume-on-gesture path above and can leave the context stuck; a ducked
+    // graph costs a fraction of a millisecond and always comes back.
+    this._onVis = () => { this._hidden = document.visibilityState === 'hidden'; this._applyVolume(); };
+    document.addEventListener('visibilitychange', this._onVis);
 
-  dispose() {}
+    window.__audio = this;
+  }
+
+  // ── lifecycle ─────────────────────────────────────────────────────────────
+
+  /** Build the graph. Safe to call repeatedly; only the first call does work. */
+  _start() {
+    if (this.started || this.failed) { this._resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { this.failed = true; return; }
+    try {
+      const actx = new AC({ latencyHint: 'interactive' });
+      this.actx = actx;
+
+      // ── master chain ────────────────────────────────────────────────────
+      // Headroom: buses are mixed to peak around -12 dBFS, the master trims to
+      // -3, and the limiter only ever catches transients (a splash landing on
+      // top of a waterfall). It is not being used as a mix tool.
+      this.master = gain(actx, 0);
+      this.limiter = actx.createDynamicsCompressor();
+      this.limiter.threshold.value = -6;
+      this.limiter.knee.value = 6;
+      this.limiter.ratio.value = 14;
+      this.limiter.attack.value = 0.004;
+      this.limiter.release.value = 0.18;
+      this.analyser = actx.createAnalyser();
+      this.analyser.fftSize = 2048;
+      this.analyser.smoothingTimeConstant = 0.3;
+      this.master.connect(this.limiter).connect(this.analyser).connect(actx.destination);
+
+      // Shared reverb. One convolver for the whole game: birds, animals and
+      // music all sit in the same valley, and they should share its tail.
+      this.reverb = valleyImpulse(actx, 2.8, 2.4);
+      this.reverbOut = gain(actx, 0.5);
+      this.reverb.connect(this.reverbOut).connect(this.master);
+
+      // ── buses ───────────────────────────────────────────────────────────
+      this.buses = {
+        ambience: gain(actx, 0.9),
+        water: gain(actx, 1.0),
+        vehicle: gain(actx, 0.85),
+        wildlife: gain(actx, 0.9),
+        music: gain(actx, 0.8),
+      };
+      for (const b of Object.values(this.buses)) b.connect(this.master);
+
+      // Metering taps. An analyser only runs if it is reachable from the
+      // destination, so each one is followed by a silent gain into the master.
+      this.taps = {};
+      for (const name of ['water', 'vehicle', 'ambience', 'music']) {
+        const a = actx.createAnalyser();
+        a.fftSize = 2048;
+        a.smoothingTimeConstant = 0.2;
+        const sink = gain(actx, 0);
+        this.buses[name].connect(a).connect(sink).connect(this.master);
+        this.taps[name] = a;
+      }
+
+      // ── layers ──────────────────────────────────────────────────────────
+      this.ambience = new Ambience(actx, this.buses.ambience, this.reverb);
+      this.water = new WaterAudio(actx, this.buses.water, this.ctx.world);
+      this.vehicle = new VehicleAudio(actx, this.buses.vehicle, this.ctx);
+      this.wildlife = new WildlifeAudio(actx, this.buses.wildlife, this.reverb, this.ctx);
+      this.music = new Music(actx, this.buses.music, this.reverb, this.ctx);
+
+      this.started = true;
+      this._applyVolume(0.9);          // fade in, never a step
+      this._resume();
+      for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
+        window.removeEventListener(ev, this._gesture);
+      }
+    } catch (e) {
+      // No output device, blocked context, anything: the game keeps running.
+      console.warn('[audio] unavailable:', e?.message ?? e);
+      this.failed = true;
+      this.actx = null;
+    }
+  }
+
+  _resume() {
+    if (!this.actx) return;
+    if (this.actx.state === 'suspended') this.actx.resume().catch(() => {});
+  }
+
+  // ── public mix control (the HUD drives these) ──────────────────────────────
+
+  setVolume(v) {
+    this.volume = clamp01(v);
+    this._applyVolume();
+    this._save();
+  }
+
+  setMuted(m) {
+    this.muted = !!m;
+    this._applyVolume();
+    this._save();
+  }
+
+  toggleMute() { this.setMuted(!this.muted); return this.muted; }
+
+  _applyVolume(ramp = 0.12) {
+    if (!this.master || !this.actx) return;
+    // -3 dBFS ceiling before the limiter, so a full-scale moment still has
+    // somewhere to go.
+    const target = this.muted || this._hidden ? 0 : this.volume * 0.71;
+    this.master.gain.setTargetAtTime(target, this.actx.currentTime, ramp);
+  }
+
+  _save() {
+    try { localStorage.setItem(STORE, JSON.stringify({ volume: this.volume, muted: this.muted })); }
+    catch { /* nothing important lost */ }
+  }
+
+  /** One-shots the HUD asks for by name. */
+  cue(name) {
+    if (!this.started) return;
+    try {
+      if (name === 'shutter') this.vehicle.shutter();
+      else if (name === 'door') this.vehicle.door();
+      else if (name === 'tick' || name === 'select') this._tickCue(name === 'select');
+    } catch { /* a UI click is never worth an exception */ }
+  }
+
+  /** A soft wooden tick for menu movement — deliberately not a digital beep. */
+  _tickCue(select) {
+    const actx = this.actx;
+    const t = actx.currentTime + 0.005;
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(select ? 880 : 660, t);
+    o.frequency.exponentialRampToValueAtTime(select ? 560 : 470, t + 0.06);
+    const g = gain(actx, 0);
+    const f = this._tickFilter ??= (() => {
+      const bp = actx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.frequency.value = 900; bp.Q.value = 0.9;
+      bp.connect(this.master);
+      return bp;
+    })();
+    o.connect(g).connect(f);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(select ? 0.05 : 0.032, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    o.start(t); o.stop(t + 0.14);
+    setTimeout(() => { try { o.disconnect(); g.disconnect(); } catch { /* gone */ } }, 260);
+  }
+
+  // ── frame ─────────────────────────────────────────────────────────────────
+
+  update(dt) {
+    if (!this.started || !this.actx || this.actx.state !== 'running') return;
+    // A stalled tab hands us a huge dt; scheduling a phrase against that would
+    // put notes in the past.
+    dt = Math.min(dt, 0.1);
+    this._sample(dt);
+    const L = this.L;
+    try { this.ambience.update(dt, L); } catch (e) { this._layerFail('ambience', e); }
+    try { this.water.update(dt, L); } catch (e) { this._layerFail('water', e); }
+    try { this.vehicle.update(dt, L); } catch (e) { this._layerFail('vehicle', e); }
+    try { this.wildlife.update(dt, L); } catch (e) { this._layerFail('wildlife', e); }
+    try { this.music.update(dt, L); } catch (e) { this._layerFail('music', e); }
+  }
+
+  _layerFail(name, e) {
+    // One bad layer must not silence the rest, and must not spam the console.
+    if (!this._failed) this._failed = new Set();
+    if (this._failed.has(name)) return;
+    this._failed.add(name);
+    console.warn(`[audio:${name}] disabled after`, e);
+    const l = this[name];
+    if (l) l.update = () => {};
+  }
+
+  /**
+   * Build the shared listener sample.
+   *
+   * The world lookups are staggered over four frames and then damped, because
+   * they are the only per-frame cost in the audio system that scales with the
+   * world, and because a hard biome switch across a boundary is audible as a
+   * click in the ambience mix.
+   */
+  _sample(dt) {
+    const cam = this.ctx.camera;
+    const L = this.L;
+    L.x = cam.position.x;
+    L.y = cam.position.y;
+    L.z = cam.position.z;
+
+    // Camera forward azimuth, straight off the view matrix — no allocation.
+    const e = cam.matrixWorld.elements;
+    L.yaw = Math.atan2(-e[8], -e[10]);
+
+    const lighting = this.ctx.lighting;
+    if (lighting) L.hour = lighting.hour ?? L.hour;
+
+    const weather = this.ctx.systems?.weather;
+    L.wind = clamp(weather?.windScale ?? weather?.wind?.gust ?? 1, 0.35, 2.2);
+
+    const veh = this.ctx.systems?.vehicle;
+    L.speed = Math.abs(veh?.speed ?? 0);
+
+    if ((++this._tick & 3) === 0) {
+      const W = this.ctx.world;
+      const x = L.x, z = L.z;
+      if (W.isInBounds(x, z)) {
+        const s = W.getSurfaceWeights(x, z, this._surf);
+        const biome = W.getBiome(x, z);
+        const moist = W.getMoisture(x, z);
+        L.moisture = moist;
+        L.biome = biome;
+        // Trees follow moisture in this world, so moisture is the honest proxy
+        // for canopy — and it is continuous, which the biome enum is not.
+        const wooded = smoothstep(0.44, 0.72, moist) * (biome === BIOME.FOREST ? 1 : 0.55);
+        this._targets.forest = clamp01(wooded);
+        this._targets.open = clamp01(((s.grass ?? 0) + (s.dry ?? 0) * 1.1) * (1 - wooded * 0.7));
+        // Ground height, not camera height: an orbiting photo camera 60 m up in
+        // the meadow is not at altitude.
+        const ground = W.getHeight(x, z);
+        this._targets.altitude = smoothstep(150, 265, ground);
+      }
+    }
+    // ~1.5 s to cross a biome boundary: slow enough to be a transition, fast
+    // enough that driving out of a wood does not trail the picture.
+    L.open = damp(L.open, this._targets.open, 2.2, dt);
+    L.forest = damp(L.forest, this._targets.forest, 2.2, dt);
+    L.altitude = damp(L.altitude, this._targets.altitude, 1.4, dt);
+  }
+
+  // ── measurement (used by tools/audiotest.mjs) ─────────────────────────────
+
+  /** Time-domain peak and RMS on a bus, in linear amplitude. */
+  measure(which = 'master') {
+    const a = which === 'master' ? this.analyser : this.taps?.[which];
+    if (!a) return null;
+    const buf = this._probe ??= new Float32Array(a.fftSize);
+    a.getFloatTimeDomainData(buf);
+    let peak = 0, sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = buf[i];
+      const av = v < 0 ? -v : v;
+      if (av > peak) peak = av;
+      sum += v * v;
+    }
+    return { peak, rms: Math.sqrt(sum / buf.length) };
+  }
+
+  /**
+   * Dominant frequency on a bus, below `maxHz`. Used to prove that engine pitch
+   * really does track speed rather than merely being asserted to.
+   */
+  spectrum(which = 'vehicle', maxHz = 900) {
+    const a = which === 'master' ? this.analyser : this.taps?.[which];
+    if (!a || !this.actx) return null;
+    const bins = new Float32Array(a.frequencyBinCount);
+    a.getFloatFrequencyData(bins);
+    const hzPerBin = this.actx.sampleRate / a.fftSize;
+    const last = Math.min(bins.length - 1, Math.floor(maxHz / hzPerBin));
+    let best = -Infinity, bestI = 0, total = 0;
+    for (let i = 1; i <= last; i++) {
+      total += Math.pow(10, bins[i] / 20);
+      if (bins[i] > best) { best = bins[i]; bestI = i; }
+    }
+    // Parabolic interpolation across the peak: the FFT is 21 Hz per bin here
+    // and the engine fundamental moves in smaller steps than that.
+    let refine = bestI;
+    if (bestI > 1 && bestI < last) {
+      const l = bins[bestI - 1], c = bins[bestI], r = bins[bestI + 1];
+      const d = (l - r) / (2 * (l - 2 * c + r) || 1e-6);
+      if (Math.abs(d) < 1) refine = bestI + d;
+    }
+    return { hz: refine * hzPerBin, db: best, energy: total };
+  }
+
+  /** Everything a test or the HUD might want, in one readable object. */
+  debugState() {
+    return {
+      started: this.started,
+      failed: this.failed,
+      state: this.actx?.state ?? 'none',
+      time: this.actx?.currentTime ?? 0,
+      sampleRate: this.actx?.sampleRate ?? 0,
+      volume: this.volume,
+      muted: this.muted,
+      listener: { ...this.L },
+      ambience: this.ambience?.state ?? null,
+      water: this.water?.state ?? null,
+      vehicle: this.vehicle?.state ?? null,
+      wildlife: this.wildlife?.state ?? null,
+      music: this.music?.state ?? null,
+      nodes: this.started ? {
+        buses: Object.keys(this.buses).length,
+        fallVoices: this.water.falls.length,
+        riverVoices: this.water.rivers.length,
+        limiterReduction: this.limiter.reduction,
+      } : null,
+      master: this.started ? this.measure('master') : null,
+    };
+  }
+
+  dispose() {
+    document.removeEventListener('visibilitychange', this._onVis);
+    for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
+      window.removeEventListener(ev, this._gesture);
+    }
+    try { this.actx?.close(); } catch { /* already closed */ }
+    this.started = false;
+  }
 }
