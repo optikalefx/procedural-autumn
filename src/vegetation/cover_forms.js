@@ -206,6 +206,32 @@ function fringe(b, h, w, count, rng, chanBase) {
   }
 }
 
+/**
+ * A ring of small ground-hugging lobes at the foot of a mass.
+ *
+ * Two jobs, both aimed at the same defect: a bush meeting the terrain on a
+ * clean curve reads as an object *placed on* the ground rather than one that
+ * grew out of it, and the critic called that line out in five separate views.
+ * The ring widens and ruffles the base so the silhouette flares into the
+ * ground; and because these vertices sit at y ≈ 0, where the height-derived AO
+ * bottoms out, they lay a band of the darkest value exactly along the contact,
+ * which is the job a contact shadow would do if we could afford one.
+ *
+ * Lobes rather than a flat skirt disc on purpose. A disc large enough to read
+ * would float on its uphill side, because an instance only takes 55% of the
+ * terrain's tilt; a lobe has thickness and simply intersects instead.
+ */
+function skirt(b, w, rng, count = 5, chan = 0.0) {
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * TAU + rng() * 1.1;
+    const r = w * (0.40 + rng() * 0.38);
+    const s = w * (0.19 + rng() * 0.16);
+    lobe(b, Math.cos(a) * r, w * 0.03, Math.sin(a) * r,
+         s, s * (0.26 + rng() * 0.18), s, 0, rng,
+         { chan, trans: 0.22, ragged: 0.50, lift: 0.70, ao: 0.16, sway: 0.05 });
+  }
+}
+
 /** A flat-ish leaf blade lying near the ground — the broadleaf undergrowth. */
 function leafBlade(b, ox, oy, oz, yaw, len, wide, tilt, chan, trans) {
   const dx = Math.cos(yaw), dz = Math.sin(yaw);
@@ -281,84 +307,121 @@ function tube(b, path, sides, chan, trans, capEnds = true) {
  */
 function buildShrubDark(rng) {
   const b = new Builder();
-  const h = 1.50 + rng() * 0.90;
-  const w = h * (0.78 + rng() * 0.36);            // wider than tall — not a tree
+  // Knee-to-waist. At the previous 1.5-2.4 m these silhouetted taller than the
+  // camper's wheel arches and read as saplings, and the 2 m close-up put one
+  // across a third of the frame.
+  const h = 1.00 + rng() * 0.66;
+  const w = h * (1.02 + rng() * 0.46);            // decisively wider than tall
   // Two big overlapping lobes rather than one, so the dome is asymmetric and
   // the silhouette has a shoulder. A single lobe plus buds reads as a ball with
   // warts; two masses read as a bush that grew on one side first.
   for (let i = 0; i < 2; i++) {
     const a = i * Math.PI + rng() * 1.2;
-    const r = w * 0.20 * i;
-    lobe(b, Math.cos(a) * r, h * (0.40 + rng() * 0.16), Math.sin(a) * r,
-         w * (0.50 + rng() * 0.16), h * (0.38 + rng() * 0.12), w * (0.48 + rng() * 0.16), 1, rng,
-         { chan: 0.05 + rng() * 0.12, trans: 0.42, ragged: 0.24, lift: 0.34 });
+    const r = w * 0.19 * i;
+    lobe(b, Math.cos(a) * r, h * (0.38 + rng() * 0.14), Math.sin(a) * r,
+         w * (0.44 + rng() * 0.14), h * (0.34 + rng() * 0.10), w * (0.42 + rng() * 0.14), 1, rng,
+         { chan: 0.05 + rng() * 0.12, trans: 0.42, ragged: 0.38, lift: 0.34 });
   }
-  const n = 3 + ((rng() * 3) | 0);
+  const n = 6 + ((rng() * 3) | 0);
   for (let i = 0; i < n; i++) {
     const a = (i / n) * TAU + rng() * 0.9;
-    const r = w * (0.36 + rng() * 0.40);
-    const s = w * (0.24 + rng() * 0.20);
-    // The 8-face lobe is a diamond, so heavy raggedness on it produces literal
-    // spikes rather than a bitten outline. Keep the jitter modest here and let
-    // the *arrangement* of buds do the silhouette work.
-    lobe(b, Math.cos(a) * r, h * (0.26 + rng() * 0.55), Math.sin(a) * r,
+    const r = w * (0.30 + rng() * 0.34);
+    // SIZE is what makes an 8-face lobe legal here. At the previous
+    // 0.24-0.44 w each bud was eight flat facets a third of a metre across,
+    // and at 2 m the bush silhouetted as a stack of black slabs — the single
+    // worst asset in the close-up. At 0.13-0.23 w the same eight facets are a
+    // few centimetres each and read as the bitten edge they were meant to be.
+    // More of them, smaller, also costs fewer triangles than subdividing.
+    const s = w * (0.13 + rng() * 0.10);
+    lobe(b, Math.cos(a) * r, h * (0.24 + rng() * 0.52), Math.sin(a) * r,
          s, s * (0.72 + rng() * 0.32), s, 0, rng,
-         { chan: 0.10 + rng() * 0.35, trans: 0.72, ragged: 0.22, lift: 0.46 });
+         { chan: 0.10 + rng() * 0.35, trans: 0.72, ragged: 0.34, lift: 0.46 });
   }
-  fringe(b, h, w, 9, rng, 0.30);
+  fringe(b, h, w, 10, rng, 0.30);
+  skirt(b, w, rng, 5, 0.0);
   return b.finish(h);
 }
 
 /** Autumn berry bush: rust foliage with crimson accent lobes and berry knots. */
 function buildShrubBerry(rng) {
   const b = new Builder();
-  const h = 1.35 + rng() * 0.80;
-  const w = h * (0.72 + rng() * 0.34);
-  lobe(b, 0, h * 0.46, 0, w * 0.58, h * 0.48, w * 0.55, 1, rng,
-       { chan: 0.12, trans: 0.80, ragged: 0.26, lift: 0.38 });
-  const n = 4 + ((rng() * 3) | 0);
+  const h = 0.95 + rng() * 0.60;
+  const w = h * (0.95 + rng() * 0.40);
+  lobe(b, 0, h * 0.44, 0, w * 0.50, h * 0.42, w * 0.48, 1, rng,
+       { chan: 0.12, trans: 0.80, ragged: 0.38, lift: 0.38 });
+  const n = 6 + ((rng() * 3) | 0);
   for (let i = 0; i < n; i++) {
     const a = (i / n) * TAU + rng() * 1.0;
-    const r = w * (0.36 + rng() * 0.42);
-    const s = w * (0.24 + rng() * 0.22);
+    const r = w * (0.30 + rng() * 0.36);
+    const s = w * (0.13 + rng() * 0.11);
     // A couple of lobes ride high on the accent channel, so the bush turns
     // colour in patches the way a real one does, not uniformly.
-    lobe(b, Math.cos(a) * r, h * (0.30 + rng() * 0.60), Math.sin(a) * r,
+    lobe(b, Math.cos(a) * r, h * (0.28 + rng() * 0.56), Math.sin(a) * r,
          s, s * 0.82, s, 0, rng,
-         { chan: rng() < 0.45 ? 0.85 : 0.20, trans: 0.95, ragged: 0.24, lift: 0.46 });
+         { chan: rng() < 0.45 ? 0.85 : 0.20, trans: 0.95, ragged: 0.34, lift: 0.46 });
   }
-  fringe(b, h, w, 8, rng, 0.15);
+  fringe(b, h, w, 9, rng, 0.15);
   for (let i = 0; i < 3; i++) {                    // berry knots, fully accent
-    const a = rng() * TAU, r = w * (0.42 + rng() * 0.40);
-    lobe(b, Math.cos(a) * r, h * (0.42 + rng() * 0.45), Math.sin(a) * r,
-         w * 0.11, w * 0.09, w * 0.11, 0, rng,
+    const a = rng() * TAU, r = w * (0.40 + rng() * 0.36);
+    lobe(b, Math.cos(a) * r, h * (0.40 + rng() * 0.42), Math.sin(a) * r,
+         w * 0.075, w * 0.062, w * 0.075, 0, rng,
          { chan: 1.0, trans: 0.35, ragged: 0.24, lift: 0.3 });
   }
+  skirt(b, w, rng, 5, 0.0);
   return b.finish(h);
 }
 
 /**
- * Rangy dry scrub — the low ochre stuff on plate 2's slope. No mass at all:
- * a fan of stiff sprays. It reads as texture rather than as an object, which
- * is exactly what a gold hillside needs between the grass and the bushes.
+ * Low dry scrub — the ochre clumps dotted through plate 1's meadow and banked
+ * along plate 2's slope.
+ *
+ * REBUILT. The previous form had no mass at all: it was a fan of ten to
+ * sixteen tapered strips, and a tapered strip seen anywhere near flat-on is a
+ * pale oval. A hillside of them read, exactly as the critic put it, as a heap
+ * of almonds — and it corresponded to nothing in any plate. What the plates
+ * actually show is a *low dense clump* with a bitten outline: a squat body
+ * carrying its value, with twiggy sprays as the fuzz on its edge rather than
+ * as the whole plant. Wider than tall by half again, and knee-high at most, so
+ * it sits below the grass line and reads as ground texture rather than as
+ * another bush.
  */
 function buildScrubDry(rng) {
   const b = new Builder();
-  const h = 0.40 + rng() * 0.46;
-  const n = 10 + ((rng() * 7) | 0);
+  const h = 0.32 + rng() * 0.26;
+  const w = h * (1.50 + rng() * 0.95);
+  for (let i = 0; i < 2; i++) {
+    const a = i * 2.4 + rng() * 1.4;
+    const r = w * 0.15 * i;
+    lobe(b, Math.cos(a) * r, h * (0.30 + rng() * 0.12), Math.sin(a) * r,
+         w * (0.38 + rng() * 0.14), h * (0.30 + rng() * 0.10), w * (0.36 + rng() * 0.14), 1, rng,
+         { chan: 0.0, trans: 0.55, ragged: 0.44, lift: 0.32 });
+  }
+  const n = 5 + ((rng() * 3) | 0);
   for (let i = 0; i < n; i++) {
-    const a = rng() * TAU;
-    const r = h * 0.16 * rng();
+    const a = (i / n) * TAU + rng() * 0.9;
+    const r = w * (0.24 + rng() * 0.30);
+    const s = w * (0.10 + rng() * 0.09);
+    lobe(b, Math.cos(a) * r, h * (0.22 + rng() * 0.44), Math.sin(a) * r,
+         s, s * (0.66 + rng() * 0.30), s, 0, rng,
+         { chan: 0.30 + rng() * 0.45, trans: 0.85, ragged: 0.42, lift: 0.50 });
+  }
+  // Stiff twiggy sprays standing proud of the body. Short and thin: they are
+  // an edge treatment on a mass, and the moment they get long enough to be
+  // read individually the almond problem comes straight back.
+  const sprays = 9 + ((rng() * 5) | 0);
+  for (let i = 0; i < sprays; i++) {
+    const a = (i / sprays) * TAU + rng() * 0.7;
+    const t = 0.25 + rng() * 0.55;
     frond(b, {
-      x: Math.cos(a) * r, y: 0, z: Math.sin(a) * r,
-      yaw: a + (rng() - 0.5) * 1.4,
-      tilt: 0.10 + rng() * 0.52,
-      len: h * (0.62 + rng() * 0.62),
-      w: h * (0.048 + rng() * 0.038),
-      segs: 3, droop: 0.20 + rng() * 0.22, taper: 0.88,
-      chanA: 0.0, chanB: 0.88, aoA: 0.44, aoB: 1.0, swayA: 0.30, trans: 0.95,
+      x: Math.cos(a) * w * 0.26 * t, y: h * (0.28 + rng() * 0.38), z: Math.sin(a) * w * 0.26 * t,
+      yaw: a + (rng() - 0.5) * 0.8,
+      tilt: 0.30 + rng() * 0.80,
+      len: h * (0.40 + rng() * 0.44), w: h * 0.028,
+      segs: 1, droop: 0.20, taper: 0.92,
+      chanA: 0.45, chanB: 1.0, aoA: 0.85, aoB: 1.0, swayA: 0.65, trans: 1.0,
     });
   }
+  skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
 
@@ -377,9 +440,10 @@ function buildThicket(rng) {
     const top = h * (0.62 + rng() * 0.38);
     lobe(b, Math.cos(a) * r, top * 0.62, Math.sin(a) * r,
          w * (0.36 + rng() * 0.22), top * 0.40, w * (0.34 + rng() * 0.20), 1, rng,
-         { chan: rng() * 0.35, trans: 0.85, ragged: 0.26, lift: 0.36 });
+         { chan: rng() * 0.35, trans: 0.85, ragged: 0.40, lift: 0.36 });
   }
   fringe(b, h, w, 10, rng, 0.35);
+  skirt(b, w, rng, 5, 0.10);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {
     const a = rng() * TAU;
@@ -601,7 +665,96 @@ function buildStump(rng) {
   }
   lobe(b, (rng() - 0.5) * r, h * 0.98, (rng() - 0.5) * r, r * 0.7, r * 0.22, r * 0.7, 0, rng,
        { chan: 1.0, trans: 0.3, ragged: 0.45, lift: 0.9, ao: 0.95 });
+  // Moss and needle litter banked against the root flares. A stump is a
+  // cylinder pushed into a hillside without this, and the join gives it away.
+  skirt(b, r * 2.4, rng, 4, 0.85);
   return b.finish(h);
+}
+
+// ── the ground substrate ─────────────────────────────────────────────────────
+//
+//  These three exist to answer one measured defect: two thirds of the 2 m road
+//  close-up and 40% of `vehicle` were a smooth, untextured orange slab — the
+//  brief's named anti-pattern, in the exact place the player spends the whole
+//  game looking. Nothing else in the build can fix it. The terrain can only
+//  ever paint that slab a different colour, and grass grows in tufts with bare
+//  ground between them by construction. What was missing is *objects at the
+//  5-30 cm scale*, and they have to be wherever the player can see the ground,
+//  not only where a canopy or a river says they may be.
+//
+//  All three are deliberately cheap (14-40 triangles) and carry short
+//  visibility radii, because they only ever pay for themselves within about
+//  50 m and there will be thousands of them inside that.
+
+/**
+ * A small stone cluster. The strongest of the three, because it breaks the
+ * slab on *two* axes at once: stones are lighter in value than the shaded
+ * substrate and — per the brief's rock anchors, lavender-grey and never
+ * brown-grey — they are the one cool note allowed at ground level in a frame
+ * that is otherwise 95% red-orange. Heavily jittered so no two facets are
+ * parallel and the cluster reads as chipped rather than as dice.
+ */
+function buildPebble(rng, variant) {
+  const b = new Builder();
+  const big = variant === 1;
+  const n = big ? 2 + ((rng() * 2) | 0) : 3 + ((rng() * 3) | 0);
+  const R = big ? 0.19 + rng() * 0.15 : 0.070 + rng() * 0.065;
+  for (let i = 0; i < n; i++) {
+    const a = rng() * TAU, r = R * (0.4 + rng() * 1.5);
+    const s = R * (0.45 + rng() * 0.75);
+    lobe(b, Math.cos(a) * r, s * (0.30 + rng() * 0.22), Math.sin(a) * r,
+         s, s * (0.40 + rng() * 0.30), s * (0.70 + rng() * 0.50), 0, rng,
+         { chan: rng() * 0.9, trans: 0.0, ragged: 0.44, lift: 0.30,
+           ao: 0.74 + rng() * 0.26, sway: 0 });
+  }
+  return b.finish(R);
+}
+
+/**
+ * Fallen leaves lying flat. Deliberately *not* the scalloped disc `leafDrift`
+ * uses — a disc is fine at 30 m and gives itself away as a painted decal the
+ * moment you walk up to it, and this is the layer the player is closest to.
+ * Individual blades at random yaws survive the walk-up.
+ */
+function buildLeafScatter(rng, variant) {
+  const b = new Builder();
+  const n = variant === 1 ? 4 + ((rng() * 3) | 0) : 6 + ((rng() * 5) | 0);
+  const R = 0.26 + rng() * 0.34;
+  for (let i = 0; i < n; i++) {
+    const a = rng() * TAU, r = R * Math.sqrt(rng());
+    // tilt ≈ 0.67 is where `leafBlade` lays the blade flat with its normal
+    // still pointing up; the spread either side of that gives one leaf in a
+    // patch a different share of the key light than its neighbour, which is
+    // what stops the patch reading as one tone.
+    leafBlade(b, Math.cos(a) * r, 0.006 + rng() * 0.024, Math.sin(a) * r,
+              rng() * TAU, 0.080 + rng() * 0.085, 0.030 + rng() * 0.024,
+              0.56 + rng() * 0.30, rng() < 0.45 ? 1.0 : 0.15, 0.85);
+  }
+  return b.finish(0.10);
+}
+
+/**
+ * Collapsed dry stalks — the straw mat that lies between standing grass tufts
+ * in a late-season meadow. Laid over rather than upright, so it never competes
+ * with the grass system's silhouette; its job is value texture inside the gold
+ * family, where a stone would be too strong a note.
+ */
+function buildDeadTuft(rng, variant) {
+  const b = new Builder();
+  const n = (variant === 1 ? 4 : 6) + ((rng() * 4) | 0);
+  const R = 0.20 + rng() * 0.24;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU + rng() * 1.2;
+    frond(b, {
+      x: Math.cos(a) * R * 0.16, y: 0.012, z: Math.sin(a) * R * 0.16,
+      yaw: a,
+      tilt: 1.12 + rng() * 0.36,                 // laid over, not standing
+      len: R * (0.85 + rng() * 0.95), w: 0.016 + rng() * 0.012,
+      segs: 1, droop: 0.10, taper: 0.75,
+      chanA: 0.05, chanB: 1.0, aoA: 0.62, aoB: 0.95, swayA: 0.05, trans: 0.8,
+    });
+  }
+  return b.finish(0.12);
 }
 
 /** Broken branch litter. Tiny, but it is what fills the gaps between logs. */
@@ -634,21 +787,30 @@ function buildBranch(rng) {
 //  triangle budget, and it is also the right art call: the far field should be
 //  composed of the big shapes only.
 
+//  `card` selects the double-sided material. Every archetype whose silhouette
+//  is carried by strips wants it — a `fringe` spray is a one-sided quad, so on
+//  a front-sided material roughly half of every bush's ragged edge was simply
+//  not drawn, which is a large part of why the shrubs silhouetted as smooth
+//  boxy blobs. The closed forms (stones, logs) stay front-sided.
+
 export const COVER_ARCHETYPES = [
-  { key: 'shrubDark',   variants: 3, card: false, cap: 420, vis: 240, band: 3, wind: 0.030, shadow: true,  build: buildShrubDark },
-  { key: 'shrubBerry',  variants: 2, card: false, cap: 190, vis: 165, band: 2, wind: 0.032, shadow: true,  build: buildShrubBerry },
-  { key: 'scrubDry',    variants: 3, card: true,  cap: 330, vis: 135, band: 2, wind: 0.075, shadow: false, build: buildScrubDry },
-  { key: 'thicket',     variants: 2, card: false, cap: 200, vis: 250, band: 3, wind: 0.055, shadow: true,  build: buildThicket },
-  { key: 'fern',        variants: 2, card: true,  cap: 620, vis: 64,  band: 1, wind: 0.045, shadow: false, build: buildFern },
-  { key: 'broadleaf',   variants: 2, card: true,  cap: 520, vis: 46,  band: 0, wind: 0.030, shadow: false, build: buildBroadleaf },
-  { key: 'moss',        variants: 1, card: false, cap: 480, vis: 40,  band: 0, wind: 0.000, shadow: false, build: buildMoss },
-  { key: 'flowerAster', variants: 2, card: true,  cap: 300, vis: 48,  band: 0, wind: 0.055, shadow: false, build: buildFlowerAster },
-  { key: 'goldenrod',   variants: 1, card: true,  cap: 260, vis: 58,  band: 0, wind: 0.065, shadow: false, build: buildGoldenrod },
-  { key: 'seedHead',    variants: 1, card: true,  cap: 320, vis: 52,  band: 0, wind: 0.085, shadow: false, build: buildSeedHead },
-  { key: 'leafDrift',   variants: 2, card: true,  cap: 420, vis: 120, band: 2, wind: 0.006, shadow: false, build: buildLeafDrift },
-  { key: 'log',         variants: 2, card: false, cap: 120, vis: 210, band: 3, wind: 0.000, shadow: true,  build: buildLog },
-  { key: 'stump',       variants: 1, card: false, cap: 110, vis: 165, band: 3, wind: 0.000, shadow: true,  build: buildStump },
-  { key: 'branch',      variants: 1, card: false, cap: 200, vis: 88,  band: 1, wind: 0.000, shadow: false, build: buildBranch },
+  { key: 'shrubDark',   variants: 3, card: true,  cap: 150, vis: 240, band: 3, wind: 0.030, shadow: true,  build: buildShrubDark },
+  { key: 'shrubBerry',  variants: 2, card: true,  cap: 100, vis: 165, band: 2, wind: 0.032, shadow: true,  build: buildShrubBerry },
+  { key: 'scrubDry',    variants: 3, card: true,  cap: 150, vis: 135, band: 2, wind: 0.075, shadow: false, build: buildScrubDry },
+  { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, wind: 0.055, shadow: true,  build: buildThicket },
+  { key: 'fern',        variants: 2, card: true,  cap: 380, vis: 64,  band: 1, wind: 0.045, shadow: false, build: buildFern },
+  { key: 'broadleaf',   variants: 2, card: true,  cap: 340, vis: 46,  band: 0, wind: 0.030, shadow: false, build: buildBroadleaf },
+  { key: 'moss',        variants: 2, card: false, cap: 420, vis: 40,  band: 0, wind: 0.000, shadow: false, build: buildMoss },
+  { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 48,  band: 0, wind: 0.055, shadow: false, build: buildFlowerAster },
+  { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 58,  band: 0, wind: 0.065, shadow: false, build: buildGoldenrod },
+  { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 52,  band: 0, wind: 0.085, shadow: false, build: buildSeedHead },
+  { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, wind: 0.006, shadow: false, build: buildLeafDrift },
+  { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, wind: 0.000, shadow: true,  build: buildLog },
+  { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, wind: 0.000, shadow: true,  build: buildStump },
+  { key: 'branch',      variants: 2, card: false, cap: 220, vis: 88,  band: 1, wind: 0.000, shadow: false, build: buildBranch },
+  { key: 'pebble',      variants: 2, card: false, cap: 560, vis: 58,  band: 0, wind: 0.000, shadow: false, build: buildPebble },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 520, vis: 52,  band: 0, wind: 0.004, shadow: false, build: buildLeafScatter },
+  { key: 'deadTuft',    variants: 2, card: true,  cap: 480, vis: 46,  band: 0, wind: 0.020, shadow: false, build: buildDeadTuft },
 ];
 
 /** arch key -> index into COVER_ARCHETYPES, for the flat instance buffers. */

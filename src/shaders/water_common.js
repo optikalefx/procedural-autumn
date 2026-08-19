@@ -37,6 +37,37 @@ vec3 wTint(vec3 c, vec3 tint, float amount){
 vec3 wDesat(vec3 c, float amount){
   return mix(c, vec3(wLuma(c)), amount);
 }
+
+// The cool governor.
+//
+// Everything above is value-preserving and hue-honest, and under a hard amber
+// key that is not enough on its own: the illuminant, the inscattered haze and
+// the reflected hillside are all warm, and their sum drifts the surface to a
+// warm grey-brown. Measured on the peaks water mask at three of four times of
+// day — #8d6c5f at 7.4, #8f7355 at 16.7, #935d42 at 18.6, against #b36f39,
+// #c57c40 and #b26533 for the land immediately behind. A desaturated copy of
+// the ground it sits in is not water; it is wet dirt.
+//
+// Reference plate 3 settles the art direction: a golden-hour frame whose grass
+// is pure orange puts a strongly blue-violet river through the middle of it.
+// So water is allowed one asymmetric rule — it may drift *cool*, never warm.
+//
+// The governor asks how far apart blue and red have ended up, relative to how
+// far apart the water's own body colour would put them, and rotates back
+// toward the body until a floor is met. It is a floor and not a target: water
+// that is already blue enough is left alone entirely, so nothing here can make
+// a lake *more* saturated than the shader asked for.
+//
+// A neutral pixel counts as a failure, not just a warm one. Shaded water in
+// plate 3 is a strong blue-violet; ours measured #4a4344 at chroma 0.027,
+// which is charcoal.
+vec3 wCoolGovern(vec3 c, vec3 absorb, float amount){
+  float y = max(wLuma(c), 1e-4);
+  float cool = (c.b - c.r) / y;
+  float want = max(absorb.b - absorb.r, 1e-3) * 0.34;
+  float miss = clamp(1.0 - cool / want, 0.0, 1.0);
+  return wTint(c, absorb, clamp(miss * amount, 0.0, 0.72));
+}
 `;
 
 /** Cheap value noise + fbm. Deliberately low-octave: this is painterly water. */

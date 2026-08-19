@@ -75,6 +75,12 @@ const PAL = {
   seedTip:     C(0xd6bb86),
   litterWarm:  C(0xbb6524), litterGold:  C(0xd49a33), litterRed: C(0x8f2723),
   barkGrey:    C(0x857a6c), barkWarm:    C(0x6a5341),
+  // Ground substrate. Stone follows the brief's rock anchors exactly —
+  // lavender-grey lit, violet-grey shaded, never brown-grey — and it is the
+  // only cool note this layer puts at ground level. Straw sits just below the
+  // sunlit meadow gold so a mat of it reads as texture, not as a bald patch.
+  stoneLit:    C(0xbdb8c8), stoneDeep:   C(0x6e6b84),
+  strawPale:   C(0xc59a4e), strawDeep:   C(0x8b6630),
 };
 
 // Fixed leaf-drift direction. Litter piles downwind of a crown, and the whole
@@ -87,6 +93,7 @@ const CAN_CELL = 6;                  // metres per canopy raster cell
 // Layer salts. Distinct constants so no two layers can ever share a stream.
 const L_OPEN = 0x51a1, L_SCRUB = 0x5c2b, L_BANK = 0xba17;
 const L_UNDER = 0x0fe2, L_FLOWER = 0xf10e, L_LITTER = 0x11e2, L_DEAD = 0xdead;
+const L_GROUND = 0x9704;
 
 export class CoverScatter {
   constructor(world, seed, opts = {}) {
@@ -197,6 +204,24 @@ export class CoverScatter {
     return g;
   }
 
+  /**
+   * Plantability for a 10 cm object. No eight-point spill probe and no surface
+   * weights: a pebble cannot straddle a shoreline, and this runs a few hundred
+   * times per cell where `_ground` runs a few dozen.
+   *
+   * Roads are only *thinned* here, not excluded. A dirt track with stones and
+   * twigs on it reads as a track; a track swept clean of them reads as a
+   * painted stripe, and the 2 m close-up the critic measured is taken standing
+   * on one.
+   */
+  _groundTiny(x, z) {
+    const W = this.world;
+    if (!W.isInBounds(x, z)) return 0;
+    if (W.getWaterDepth(x, z) > 0.08) return 0;
+    if (W.getSlope(x, z) > 1.35) return 0;
+    return 1 - this.roads.sample(x, z) * 0.50;
+  }
+
   // ── instance emission ──────────────────────────────────────────────────────
 
   /**
@@ -268,7 +293,106 @@ export class CoverScatter {
     n = this._layerDeadfall(cx, cz, S, band, out, n, cap);
     if (band <= 1) n = this._layerUnderstory(cx, cz, S, out, n, cap);
     if (band <= 0) n = this._layerFlowers(cx, cz, S, out, n, cap);
+    if (band <= 0) n = this._layerGround(cx, cz, S, out, n, cap);
     n = this._layerTreeSkirt(cx, cz, S, band, out, n, cap);
+    return n;
+  }
+
+  /**
+   * The ground substrate: stones, fallen leaves, straw mats, twigs and moss on
+   * the bare dirt between the grass tufts.
+   *
+   * This layer answers the measured ship-blocker — 65% of the 2 m road
+   * close-up and 40% of `vehicle` were a smooth untextured orange slab, which
+   * is the brief's named anti-pattern in the exact place the player looks
+   * while driving. It is the only layer here with no ecological gate: every
+   * other layer asks permission from a canopy, a river or a moisture field
+   * first, and the consequence was that open meadow — most of the game —
+   * received nothing at all below knee height.
+   *
+   * What it does still respect is *clumping*. A uniform dusting of pebbles is
+   * the brief's other anti-pattern, so accumulation runs off a mid-frequency
+   * field: hollows and lees collect, ridges stay swept. The floor under that
+   * field is high enough that no open stretch is ever completely bare.
+   *
+   * The mix is chosen from what the ground actually is at each site. Stony,
+   * dry and sloped emits stone; under a deciduous crown emits leaves; damp and
+   * shaded emits moss; the default open meadow emits straw. That correlation
+   * is doing the same job the shrub layer's region field does — it makes the
+   * detritus look like it came from somewhere.
+   */
+  _layerGround(cx, cz, S, out, n, cap) {
+    const N = this.noise, W = this.world;
+    const ox = cx * S, oz = cz * S;
+    const key = this._cellKey(cx, cz, L_GROUND);
+    const sites = Math.round(70 * this.mul);
+
+    for (let a = 0; a < sites && n < cap; a++) {
+      const rng = mulberry32((hash2i(a, L_GROUND, key) * 4294967296) >>> 0);
+      const x = ox + rng() * S, z = oz + rng() * S;
+      const g = this._groundTiny(x, z);
+      if (g < 0.20) continue;
+
+      const acc = smoothstep(-0.50, 0.50, N.fbm(x * 0.045 + 17.3, z * 0.045 + 91.7, 2, 2.2, 0.5, 1));
+      if (rng() > clamp01(0.42 + acc * 0.72) * g) continue;
+
+      const w = W.getSurfaceWeights(x, z, this._w);
+      const moist = W.getMoisture(x, z);
+      const slope = W.getSlope(x, z);
+      const can = this._canopyAt(x, z);
+      const lit = this._litterAt(x, z);
+      const road = this.roads.sample(x, z);
+
+      // Unnormalised weights; the roll below divides through by the total, so
+      // these read as "how much more stone than straw", not as probabilities.
+      const wStone = 0.30 + w.rock * 2.2 + w.dirt * 0.5 + slope * 0.9
+                   + road * 1.6 - moist * 0.35;
+      const wLeaf  = 0.16 + lit * 2.4 + can * 0.55;
+      const wStraw = (0.60 + (1 - moist) * 0.85) * (1 - clamp01(can * 0.75));
+      const wMoss  = Math.max(0, moist - 0.52) * 2.4 + can * 0.45 - road * 1.0;
+      const wTwig  = 0.10 + can * 0.80 + lit * 0.35;
+      const total = Math.max(1e-4, wStone + wLeaf + wStraw + wMoss + wTwig);
+
+      const members = 2 + ((rng() * (3 + acc * 4)) | 0);
+      const spread = 0.5 + rng() * (1.2 + acc * 2.2);
+      for (let m = 0; m < members && n < cap; m++) {
+        const ang = rng() * TAU, r = spread * Math.sqrt(rng());
+        const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;
+        if (this._groundTiny(mx, mz) < 0.20) continue;
+
+        let roll = rng() * total;
+        if ((roll -= wStone) < 0) {
+          n = this._emit(out, n, cap, 'pebble', mx, mz, rng, {
+            colA: PAL.stoneDeep, colB: PAL.stoneLit, sink: 0.02,
+            scale: 0.7 + rng() * 0.9, tone: 0.86 + rng() * 0.28, hue: 0.020,
+          });
+        } else if ((roll -= wLeaf) < 0) {
+          const warm = rng();
+          n = this._emit(out, n, cap, 'leafScatter', mx, mz, rng, {
+            colA: warm < 0.55 ? PAL.litterWarm : PAL.litterGold,
+            colB: warm < 0.28 ? PAL.litterRed : PAL.litterGold,
+            sink: 0.01, scale: 0.8 + rng() * 0.8,
+            tone: 0.90 + rng() * 0.24, hue: 0.028,
+          });
+        } else if ((roll -= wStraw) < 0) {
+          n = this._emit(out, n, cap, 'deadTuft', mx, mz, rng, {
+            colA: PAL.strawDeep, colB: PAL.strawPale, sink: 0.01,
+            scale: 0.8 + rng() * 0.9, tone: 0.90 + rng() * 0.24, hue: 0.022,
+          });
+        } else if ((roll -= wMoss) < 0) {
+          n = this._emit(out, n, cap, 'moss', mx, mz, rng, {
+            colA: PAL.mossDeep, colB: PAL.moss, sink: 0.01,
+            scale: 0.7 + rng() * 0.8, tone: 0.88 + rng() * 0.22, hue: 0.03,
+          });
+        } else {
+          n = this._emit(out, n, cap, 'branch', mx, mz, rng, {
+            colA: rng() < 0.5 ? PAL.barkGrey : PAL.barkWarm, colB: PAL.moss,
+            scale: 0.42 + rng() * 0.55, sink: 0.0,
+            tone: 0.86 + rng() * 0.26, hue: 0.015,
+          });
+        }
+      }
+    }
     return n;
   }
 
@@ -336,6 +460,30 @@ export class CoverScatter {
             colB: maroon ? PAL.shrubMarLit : PAL.shrubLit,
             scale: sc, tone: 0.90 + rng() * 0.20, hue: 0.028,
           });
+        }
+        // Debris banked against the foot of the bush. The form carries its own
+        // skirt of ground-hugging lobes, but litter that is visibly *separate*
+        // from the plant is what actually kills the cut line: it puts small
+        // objects across the intersection at a different scale and colour, so
+        // there is no single silhouette edge left to read as a straight join.
+        // Band 0 only — the join is unreadable past about 40 m anyway.
+        if (band > 0) continue;
+        const debris = 1 + ((rng() * 3) | 0);
+        for (let k = 0; k < debris && n < cap; k++) {
+          const da = rng() * TAU, dr = sc * (0.7 + rng() * 1.5);
+          const bx = mx + Math.cos(da) * dr, bz = mz + Math.sin(da) * dr;
+          if (this._groundTiny(bx, bz) < 0.20) continue;
+          if (rng() < 0.45) {
+            n = this._emit(out, n, cap, 'leafScatter', bx, bz, rng, {
+              colA: PAL.litterWarm, colB: rng() < 0.4 ? PAL.litterRed : PAL.litterGold,
+              sink: 0.01, scale: 0.7 + rng() * 0.7, tone: 0.86 + rng() * 0.22, hue: 0.028,
+            });
+          } else {
+            n = this._emit(out, n, cap, 'deadTuft', bx, bz, rng, {
+              colA: PAL.strawDeep, colB: PAL.strawPale,
+              sink: 0.01, scale: 0.75 + rng() * 0.8, tone: 0.86 + rng() * 0.22, hue: 0.022,
+            });
+          }
         }
       }
     }

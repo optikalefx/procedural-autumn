@@ -20,7 +20,13 @@ import { dirname, resolve } from 'node:path';
 // frame a different place between runs and quietly invalidate a before/after
 // comparison. Anchors are resolved once into this file and reused; delete it or
 // pass --refresh-views after a deliberate terrain change.
-const VIEWS_CACHE = 'shots/_anchors.json';
+//
+// Deliberately NOT under shots/: that directory is gitignored scratch and is
+// pruned during long runs, so the pins vanished and every view silently
+// re-resolved to a different place — which destroys the whole point of the
+// review archive. review/ is tracked and never pruned.
+const VIEWS_CACHE = 'review/anchors.json';
+const LEGACY_VIEWS_CACHE = 'shots/_anchors.json';
 
 // Anchors that track a moving object must never be frozen — pinning the camper's
 // position from an earlier run just aims the camera at empty meadow.
@@ -130,9 +136,14 @@ await acquire('shot');
   // Frozen anchors keep --view framings identical across runs, so a before/after
   // comparison measures the change and not a different patch of the map.
   let frozen = null;
-  if (!has('refresh-views') && existsSync(VIEWS_CACHE)) {
-    try { frozen = JSON.parse(readFileSync(VIEWS_CACHE, 'utf8')); }
-    catch { frozen = null; }
+  if (!has('refresh-views')) {
+    for (const p of [VIEWS_CACHE, LEGACY_VIEWS_CACHE]) {
+      if (!existsSync(p)) continue;
+      try {
+        const j = JSON.parse(readFileSync(p, 'utf8'));
+        frozen = { ...(j ?? {}), ...(frozen ?? {}) };   // new location wins
+      } catch { /* ignore a corrupt cache */ }
+    }
   }
   const resolvedAll = { ...(frozen ?? {}) };
 
@@ -330,6 +341,13 @@ await acquire('shot');
     let onDisk = {};
     if (existsSync(VIEWS_CACHE)) {
       try { onDisk = JSON.parse(readFileSync(VIEWS_CACHE, 'utf8')); } catch { onDisk = {}; }
+    }
+    // Carry over anything still pinned only in the old scratch location.
+    if (existsSync(LEGACY_VIEWS_CACHE)) {
+      try {
+        const legacy = JSON.parse(readFileSync(LEGACY_VIEWS_CACHE, 'utf8'));
+        for (const [k, v] of Object.entries(legacy)) if (onDisk[k] === undefined) onDisk[k] = v;
+      } catch { /* ignore */ }
     }
     const merged = has('refresh-views') ? {} : { ...onDisk };
     for (const [k, v] of Object.entries(resolvedAll)) {

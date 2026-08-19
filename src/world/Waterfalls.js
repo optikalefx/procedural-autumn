@@ -502,7 +502,11 @@ void main() {
   // slow radial pulse an order of magnitude broader than the old ring train —
   // enough to say that foam is thrown outward in surges, not enough to draw
   // rings on the water.
-  vec2 sp = vLocal * 0.55 - normalize(vLocal + 1e-4) * (uTime * 1.4);
+  // Radial advection, but slowly. normalize(vLocal) makes the sample offset a
+  // function of angle, which shears the noise field along every radius — so
+  // the faster this scrolls the more the churn smears into long spokes. At 1.4
+  // the pool was drawn as a starburst of thirty-metre streaks.
+  vec2 sp = vLocal * 0.55 - normalize(vLocal + 1e-4) * (uTime * 0.42);
   float n = wFbm3(sp) * 0.5 + 0.5;
   float n2 = wFbm2(vLocal * 1.55 + vec2(uTime * 0.35, -uTime * 0.22) + 8.7) * 0.5 + 0.5;
   float surge = sin(r * 2.6 - uTime * 1.5) * 0.5 + 0.5;
@@ -935,11 +939,15 @@ export class Waterfalls extends System {
 
     for (const fl of this.falls) {
       const b = fl.pts[fl.pts.length - 1];
-      // Bigger. A 78 m fall was landing in a 13 m pool of foam; the reference
-      // plate throws white water a good three or four channel widths clear of
-      // the impact, and the churn is the thing that says how much energy just
-      // arrived.
-      const radius = clamp(3.0 + Math.sqrt(fl.disc * fl.height) * 2.9, 3.5, 20);
+      // ...but not this big. At 2.9 the largest fall in the map got a twenty
+      // metre radius — a forty metre disc of foam round an eight metre
+      // curtain, five channel widths in every direction including *upstream*.
+      // Seen from the bank at a grazing angle that is not a plunge pool, it is
+      // a flat white fan lying on the valley floor, and with the churn advected
+      // radially through it the whole thing reads as a splash decal with motion
+      // blur. Three channel widths is already generous; the reference throws
+      // its white water *downstream*, not in a circle.
+      const radius = clamp(2.2 + Math.sqrt(fl.disc * fl.height) * 1.45, 3.0, 11);
       const power = clamp01(0.45 + fl.disc * 0.7);
 
       pos.push(b.x, drapeY(b.x, b.z), b.z); local.push(0, 0); rad.push(radius); pow.push(power);

@@ -35,7 +35,7 @@ const CELL = 48;                 // metres per scatter cell
 // cell is created and pops rather than fading in.
 const STREAM_RADIUS = 300;
 const REPACK_MOVE = 12;          // metres of camera travel before a repack
-const MAX_PER_CELL = 900;        // scratch capacity for one cell's generation
+const MAX_PER_CELL = 1100;       // scratch capacity for one cell's generation
 
 // One prevailing wind for the whole valley, matching the leaf-drift direction
 // in cover_scatter.js. Held constant so each instance's local sway axis can be
@@ -44,6 +44,12 @@ const WIND_ANGLE = 0.7;
 const WIND_X = Math.cos(WIND_ANGLE), WIND_Z = Math.sin(WIND_ANGLE);
 
 const UP = new THREE.Vector3(0, 1, 0);
+
+/** Upload only the first `count` instances of an instance attribute. */
+function upload(attr, count) {
+  attr.addUpdateRange(0, count * attr.itemSize);
+  attr.needsUpdate = true;
+}
 
 export class GroundCover extends System {
   constructor(ctx) {
@@ -289,11 +295,15 @@ export class GroundCover extends System {
       slot.mesh.count = n;
       slot.mesh.visible = n > 0;
       if (n > 0) {
-        slot.mesh.instanceMatrix.needsUpdate = true;
-        slot.geo.getAttribute('aColA').needsUpdate = true;
-        slot.geo.getAttribute('aColB').needsUpdate = true;
-        slot.geo.getAttribute('aCov').needsUpdate = true;
-        slot.geo.getAttribute('aWindDir').needsUpdate = true;
+        // Range, not the whole buffer. These blocks are sized for the worst
+        // case and a repack typically fills a fraction of one; without a range
+        // `needsUpdate` re-uploads the unused tail as well, which measured
+        // 15.6 MB of pointless bus traffic over a 30 s drive.
+        upload(slot.mesh.instanceMatrix, n);
+        upload(slot.geo.getAttribute('aColA'), n);
+        upload(slot.geo.getAttribute('aColB'), n);
+        upload(slot.geo.getAttribute('aCov'), n);
+        upload(slot.geo.getAttribute('aWindDir'), n);
       }
     }
 

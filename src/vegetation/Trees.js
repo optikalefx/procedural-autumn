@@ -869,13 +869,31 @@ export class Trees extends System {
     w[k * 2] = T.pphase[t]; w[k * 2 + 1] = T.pstiff[t];
   }
 
+  /**
+   * Upload only the instances this rebuild actually wrote.
+   *
+   * `attr.needsUpdate = true` re-uploads the entire buffer, and these buffers
+   * are sized for the worst case: 25 near slots of 700, 25 mid slots of 1500,
+   * and a 30 000-instance far block. Measured on a drive, one re-bin pushed
+   * 7.1 MB across the bus in a single frame — most of it the unused tail of a
+   * half-full slot, and about a third of it slots holding nothing at all. An
+   * update range turns that into the prefix that was just written; an empty
+   * slot is not uploaded at all, because its mesh is hidden and the stale tail
+   * can never be drawn.
+   */
+  _upload(attr, count) {
+    if (count <= 0) return;
+    attr.addUpdateRange(0, count * attr.itemSize);
+    attr.needsUpdate = true;
+  }
+
   _commit(slots) {
     for (const s of slots) {
       if (!s) continue;
       const c = s.count;
-      s.matrix.needsUpdate = true;
-      s.colA.needsUpdate = true; s.colB.needsUpdate = true;
-      s.barkCol.needsUpdate = true; s.wind.needsUpdate = true;
+      this._upload(s.matrix, c);
+      this._upload(s.colA, c); this._upload(s.colB, c);
+      this._upload(s.barkCol, c); this._upload(s.wind, c);
       for (const m of s.meshes) {
         m.count = c;
         m.visible = c > 0;
@@ -893,9 +911,10 @@ export class Trees extends System {
   }
 
   _commitFar(s) {
-    s.matrix.needsUpdate = true;
-    s.colA.needsUpdate = true; s.colB.needsUpdate = true; s.colC.needsUpdate = true;
-    s.imp.needsUpdate = true; s.wind.needsUpdate = true;
+    const c = s.count;
+    this._upload(s.matrix, c);
+    this._upload(s.colA, c); this._upload(s.colB, c); this._upload(s.colC, c);
+    this._upload(s.imp, c); this._upload(s.wind, c);
     this.farMesh.count = s.count;
     this.farMesh.visible = s.count > 0;
   }

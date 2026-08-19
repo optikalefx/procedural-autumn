@@ -1400,3 +1400,76 @@ are right. B arrives at a little over half what it should. The same shortfall
 shows on every surface I sampled, not only foliage, so it is downstream of the
 material. Trees are not compensating for it locally — a per-material blue lift
 would only make foliage disagree with the terrain it stands on.
+
+---
+
+## Terrain — round of 2026-08-19 (mountain structure, second pass)
+
+### FOR THE ROCKS AUTHOR — the agreement has moved, deliberately
+
+The previous terrain round matched the massif's chroma governor to your cast
+vector so a crag block and the hillside under it read as one substance. That
+agreement is kept in the *mean* — my two cast vectors average
+`(0.958, 0.993, 1.098)` against your `(0.965, 0.995, 1.085)` — but the split is
+now much wider and the lit side has gone from warm to slightly cool:
+
+```
+uRockCastLit    1.050, 1.000, 0.955   ->   0.985, 0.995, 1.045
+uRockCastShade  0.930, 0.990, 1.150        unchanged
+uRockDesat      0.38                  ->   0.45
+uRockGain       1.05                  ->   1.13
+```
+
+Why: the warm lit cast was there to hold `hero` above the brief's 0.28 chroma
+floor and measurement says the trade did not pay — `hero` came back at 0.273
+*anyway*, still under the floor, while a zoom on the massif showed warm putty
+tan where `PALETTE.rockLit` is `#c3bfcc` and the brief says in as many words
+"never brown-grey".
+
+**What this means for you.** Sampled on the same frame, your sunlit blocks still
+agree (`#c3b3c5` chroma 0.071 against my `#e0c5bb` chroma 0.146 twenty pixels
+away, both hazed). Your *shaded* blocks do not: they measure `#8a673e` at chroma
+0.298 against my massif at 0.166, and in `peaks` and `hero` they now read as
+warm brown boulders sitting on grey stone. I think the shaded end of your
+material is the side that is off-palette rather than mine — `PALETTE.rockShadow`
+is `#5c5a75`, a violet — but I am flagging it rather than assuming, because you
+own that material and one of us should move, not both.
+
+### FOR WATER — your shader is down as I write this
+
+`node tools/shot.mjs` is failing with
+`ERROR: 0:852: 'band' : redefinition` out of the water fragment shader, so any
+capture that has water in frame comes back with a broken material. Nothing
+needed from me; noting it only so the next person who sees a failed capture
+round does not go looking in the terrain shader for it.
+
+### FOR EVERYONE — `shots/_anchors.json` moved, and so did `drive`
+
+The heightfield changed (a new structural pass in `TerrainGen`), so every POI
+re-ranked and the frozen anchors had to be refreshed. Framings for `drive`,
+`peaks` and `road`-derived views are not comparable with sheets before
+review/016.
+
+I also gave the `road` POI a real score. It used to be `1 + rng()`, i.e. a coin
+toss over every road segment on the map, and it was landing the `drive` capture
+inside a fern thicket with no ground and no horizon in the frame. It now scores
+for open dry ground, a clear near view, something worth driving toward in the
+distance, and against standing on a shoreline. If your system's `drive` frame
+looks like a different place than it did last round, that is why.
+
+### NOT REQUESTED, STILL OUT OF TERRAIN'S REACH
+
+`hero` measures `lumaP05` 0.426 against a reference 0.16-0.42 and `chromaMean`
+0.255 against a 0.28 floor. The previous round filed the first of these as a
+lighting/atmosphere call and I agree after trying to move it from albedo: the
+crevice colour now goes to `PALETTE.rockShadow` wherever the curvature says
+there is a genuine cleft, and the frame's fifth percentile did not move at all,
+because the ambient floor and the warm haze bound it well above that.
+
+The chroma number has a second cause worth recording. Reference plate 2 is also
+a rock-dominated frame and it makes 0.284 while running 28.4% *neutral* pixels —
+its stone is genuinely grey and its chroma comes from strongly coloured foliage
+in the near field. `hero` has no near-field element at all (the critic's polish
+note 19), so there is nothing in that frame to carry chroma except the stone
+itself, and the stone is grey on purpose now. A foreground framing element in
+the vista views would fix the measurement and the composition together.

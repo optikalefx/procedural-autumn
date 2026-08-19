@@ -361,3 +361,21 @@ correlated with what the renderer was doing.
 **Run it after any change that builds, streams, or disposes geometry**, and
 before declaring a system done. Exit code 0 means within budget. A system that
 looks perfect in stills and stutters while driving is not done.
+
+---
+
+## Appendix: pinned camera anchors
+
+`review/anchors.json` pins where each canonical view is photographed. It is
+**tracked in git and never pruned**, deliberately: it previously lived in
+`shots/`, which is gitignored scratch that gets pruned during long runs, and
+when it vanished every view silently re-resolved to a different place. That
+destroys the point of the `review/` archive, because two sheets are then
+pictures of different scenery rather than a before and after.
+
+- Do **not** delete it or pass `--refresh-views` casually.
+- If you change `PointsOfInterest.js` scoring, the pins stay put — that is
+  intended. Re-pin deliberately, in its own step, and say so in `review/INDEX.md`
+  so everyone knows sheets either side are not comparable.
+- The `vehicle` anchor is excluded on purpose: it tracks a moving subject, and
+  pinning a moving thing just aims the camera at empty meadow.

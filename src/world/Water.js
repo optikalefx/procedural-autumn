@@ -117,6 +117,7 @@ uniform float uAbsorb;
 uniform float uAbsorbPow;
 uniform float uEnvTint;
 uniform vec3  uCoolTint;
+uniform float uCoolGain;
 uniform float uPixelScale;
 
 varying vec3  vWPos;
@@ -142,7 +143,21 @@ void main() {
   // widens with the pixel footprint, so the bank is one soft pixel at every
   // range instead of a stairstep at distance. See the lake for the argument.
   float foot = wFootprint(vWPos, cameraPosition, uPixelScale);
-  float shoreFade = smoothstep(0.0, 0.62 + foot * 0.55, depth);
+  // The band widens with the pixel so the bank is one soft pixel at any range
+  // — but the widening has to be capped, and it was not. At four hundred
+  // metres and a grazing angle a pixel spans eight metres of water, so the
+  // fade ran over an eight-metre *depth* range and a metre-deep creek came
+  // out at a tenth of an alpha. Every river in the valley then read as a pale
+  // grey scar on the ground rather than as water, which is measurable in the
+  // peaks view (water #8f7355 against #c57c40 for the land it lies on) and is
+  // most of what makes distant water look like wet dirt.
+  float band = 0.62 + min(foot, 3.0) * 0.55;
+  // ...and the channel core does not take part in the shoreline fade at all.
+  // Whether there is water in the middle of a river is not a question the
+  // antialias band gets to answer.
+  float core = 1.0 - smoothstep(0.35, 1.05, abs(vSide));
+  float shoreFade = max(smoothstep(0.0, band, depth),
+                        core * smoothstep(0.0, 0.14, depth));
   // Taper across the profile as well. The outer columns exist to give the
   // shoreline fade somewhere to finish, not to be water: on an incised channel
   // the terrain cuts them off first, but on a flat flood plain nothing does,
@@ -250,6 +265,11 @@ void main() {
   float laceD = smoothstep(0.02, 0.14, depth) * (1.0 - smoothstep(0.12, 0.50, depth));
   float laceW = 1.0 - smoothstep(shoreBand * 0.8, shoreBand * 3.0, distShore);
   float lace = laceD * mix(0.35, 1.0, laceW) * smoothstep(0.18, 0.62, abs(vSide));
+  // Scaled by the channel. On a 1.5 m brook the depth window the waterline
+  // lives in is the whole creek, so the line on each bank meets in the middle
+  // and the stream reads as a white cord lying on dry ground rather than as
+  // water. A trickle gets a hint of a waterline; a river gets the full mark.
+  lace *= 0.42 + 0.58 * smoothstep(1.5, 5.5, vWidth);
   // Broken by a noise that rides downstream, so the line reads as painted marks
   // travelling with the current rather than a stencilled outline.
   float laceN = wFbm3(fp * vec2(0.9, 0.22) - vec2(0.0, uTime * speed * 0.26)) * 0.5 + 0.5;
@@ -329,6 +349,8 @@ void main() {
   // Foam is lit almost flat — it is a diffuse mass of bubbles, and flattening
   // it is what makes it read as a painted shape. Through wFoamLight so a rapid
   // under a golden key is white water and not a ribbon of cream.
+  // Before the foam, for the reason given in the lake shader.
+  col = wCoolGovern(col, absorb, uCoolGain);
   vec3 foamCol = uFoam * wFoamLight(shadow) * 0.86;
   col = mix(col, foamCol, foam * 0.94);
 
@@ -409,6 +431,7 @@ uniform float uAbsorb;
 uniform float uAbsorbPow;
 uniform float uEnvTint;
 uniform vec3  uCoolTint;
+uniform float uCoolGain;
 uniform float uPixelScale;
 
 varying vec3  vWPos;
@@ -437,7 +460,9 @@ void main() {
   // shoreline in the peaks view. Scaling the band by the footprint is a
   // genuine analytic antialias rather than a fudge: the transition is always
   // exactly one pixel wide wherever you stand.
-  float shoreFade = smoothstep(0.0, 0.62 + foot * 0.55, depth);
+  // Capped, for the reason given in the river shader: an uncapped band turns
+  // the whole shallow rim of a distant lake into a fade instead of into water.
+  float shoreFade = smoothstep(0.0, 0.62 + min(foot, 3.0) * 0.55, depth);
   // The mesh is dilated one ring beyond the baked water so the fade has room to
   // finish inside geometry. That ring is the only place this gate does anything
   // — it stops a perched lake from painting itself down a cliff face.
@@ -525,7 +550,12 @@ void main() {
   // Ankle-deep water over gold meadow is warm, not cyan. Letting the bed colour
   // through the shallows is what stops a flooded flat reading as a plastic
   // sheet laid over the ground.
-  body = mix(body, uSubsurface, (1.0 - deepT) * 0.34);
+  // Trimmed from 0.34. uSubsurface is a saturated teal, and a third of it in
+  // the shallows is what made every lake read as a Caribbean swimming pool at
+  // noon — measured at chroma 0.46 against the palette's own shallow tone at
+  // 0.24. The warm bed bounce is a real effect and worth keeping; it is not
+  // worth a turquoise lake.
+  body = mix(body, uSubsurface, (1.0 - deepT) * 0.22);
 
   float shadow = min(getShadowMask(), wSunShadow(vWPos + vec3(0.0, 0.4, 0.0)));
   float ndl = max(dot(N, uSunDir), 0.0);
@@ -552,7 +582,16 @@ void main() {
   // from a low sun that mostly reflects off it. Deepening the absorption is the
   // cheap way to say that: it restores the chroma the key cancels and leaves
   // the value, and therefore the whole time-of-day response, untouched.
-  vec3 lit = wTint(irr * bodyY, pow(absorb, vec3(uAbsorbPow)), uAbsorb) * uBodyGain;
+  //
+  // Deepened further with distance. Four hundred metres of the shared haze is
+  // a hard lerp toward a warm, bright horizon colour, and it eats chroma from
+  // whatever it is given: a basin measured at chroma 0.078 against 0.48 for
+  // the land it sits in, which is a neutral slab, not water. Handing the haze
+  // a more saturated surface to work on is the only lever this material has
+  // that does not amount to writing its own fog — the brief reserves that for
+  // Atmosphere, and rightly.
+  float absorbPow = uAbsorbPow * (1.0 + 0.42 * far);
+  vec3 lit = wTint(irr * bodyY, pow(absorb, vec3(absorbPow)), uAbsorb) * uBodyGain;
 
   // Near-mirror at grazing angles: this is the whole point of a lake.
   float fres = 0.020 + 0.980 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
@@ -591,6 +630,13 @@ void main() {
   // cutoff only has to stay ahead of the point where the *heightfield itself*
   // is coarser than the pixel.
   float marchOn = 1.0 - smoothstep(3.0, 9.0, foot);
+  // ...and the marched *landscape* is a near-field read on top of that. Half a
+  // kilometre out the hit point wanders by tens of metres between neighbouring
+  // pixels, and what it draws on the water is a set of warm diagonal smears
+  // that read as an oil slick rather than as a reflected bank. Past that range
+  // the honest answer is the sky, which is also the one that keeps a distant
+  // basin the cool note in a hot valley.
+  marchOn *= 1.0 - far * 0.78;
   vec3 envRaw = wSkyTilt(R);
   if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
   // A reflection off the air/water interface is spectrally neutral: it is the
@@ -671,6 +717,10 @@ void main() {
   float foam = lace * marks * mix(1.0, 0.45, smoothstep(140.0, 520.0, dist));
   // Foam is a diffuse mass of bubbles: lit nearly flat, and never allowed to
   // sink to the ambient's blue — white water that is not white is haze.
+  // The governor runs on the *body*, before the foam is laid over it. Foam is
+  // near-neutral by construction, so a governor that treats neutral as a miss
+  // would tint every whitecap in the game blue.
+  col = wCoolGovern(col, absorb, uCoolGain);
   vec3 foamCol = uFoam * wFoamLight(shadow) * 0.86;
   col = mix(col, foamCol, foam);
 
@@ -756,6 +806,11 @@ export class Water extends System {
       // dawn sky still lands on it.
       uEnvTint:      { value: 0.34 },
       uCoolTint:     { value: new THREE.Vector3(0.96, 1.00, 1.03) },
+      // Strength of the cool governor (see wCoolGovern). 0 disables it and
+      // water goes the colour of the light; 1 holds it hard against any warm
+      // key at all. Half is enough to keep a river blue-violet through a
+      // golden hour without it looking painted on at noon.
+      uCoolGain:     { value: 0.55 },
       // Radians of view angle per output pixel. Everything that has to be
       // band-limited — ripple scales, the specular lobe, the reflection march —
       // is measured against the footprint this implies.

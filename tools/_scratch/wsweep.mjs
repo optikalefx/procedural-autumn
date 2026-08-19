@@ -79,6 +79,7 @@ for (const variant of variants) {
 for (const name of views) {
   const v = VIEWS[name];
   if (!v) { console.error(`unknown view ${name}`); continue; }
+  if (process.argv.includes('--live')) v.live = true;
   for (const hour of hours) {
    for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -101,7 +102,7 @@ for (const name of views) {
         if (window.__settle) await window.__settle(50);
         return;
       }
-      const anchor = frozen[v.anchor] ?? (api[v.anchor] || api.vista)();
+      const anchor = (v.live ? null : frozen[v.anchor]) ?? (api[v.anchor] || api.vista)();
       let yaw = (anchor.yaw ?? 0) + (v.yawOffset ?? 0);
       if (v.faceSun) { const sd = window.__lighting.sunDir; yaw = Math.atan2(sd.x, sd.z); }
       const back = v.standOff ?? 0;

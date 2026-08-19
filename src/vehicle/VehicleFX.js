@@ -142,6 +142,12 @@ export class ParticleField {
     this.points.renderOrder = 6;
     this.points.name = 'vehicleParticles';
     scene.add(this.points);
+    // Spawns land at consecutive ring slots, so a frame's writes are one run
+    // (or two, across the wrap). Uploading the run instead of the whole pool
+    // is the difference between 8 x 1100 slots a frame and 8 x however many
+    // actually spawned, which on a drive is usually two or three.
+    this._lo = -1;
+    this._hi = -1;
     this._dirty = false;
   }
 
@@ -149,6 +155,9 @@ export class ParticleField {
   spawn(x, y, z, vx, vy, vz, life, size, kind, color) {
     const i = this.head;
     this.head = (this.head + 1) % this.max;
+    if (this._lo < 0) { this._lo = i; this._hi = i; }
+    else if (i === (this._hi + 1) % this.max) { this._hi = i; }
+    else { this._lo = 0; this._hi = this.max - 1; }   // non-contiguous: give up, take the lot
     const p3 = i * 3;
     this.pos.array[p3] = x; this.pos.array[p3 + 1] = y; this.pos.array[p3 + 2] = z;
     this.vel.array[p3] = vx; this.vel.array[p3 + 1] = vy; this.vel.array[p3 + 2] = vz;
@@ -166,9 +175,16 @@ export class ParticleField {
     this.material.uniforms.uTime.value = this.time;
     this.material.uniforms.uScale.value = pixelHeight * 0.9;
     if (this._dirty) {
-      this.pos.needsUpdate = this.vel.needsUpdate = this.col.needsUpdate = true;
-      this.birth.needsUpdate = this.life.needsUpdate = this.size.needsUpdate = true;
-      this.kind.needsUpdate = this.seed.needsUpdate = true;
+      const attrs = [this.pos, this.vel, this.col, this.birth, this.life, this.size, this.kind, this.seed];
+      // One run, or two if the writes crossed the end of the ring.
+      const runs = this._lo <= this._hi
+        ? [[this._lo, this._hi - this._lo + 1]]
+        : [[this._lo, this.max - this._lo], [0, this._hi + 1]];
+      for (const a of attrs) {
+        for (const [start, count] of runs) a.addUpdateRange(start * a.itemSize, count * a.itemSize);
+        a.needsUpdate = true;
+      }
+      this._lo = this._hi = -1;
       this._dirty = false;
     }
   }

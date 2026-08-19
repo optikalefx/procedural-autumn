@@ -46,6 +46,12 @@ const CAPS = {
   prow:     { cap: 220, shadow: true },
 };
 
+/** Upload only the first `count` instances of an instance attribute. */
+function upload(attr, count) {
+  attr.addUpdateRange(0, count * attr.itemSize);
+  attr.needsUpdate = true;
+}
+
 export class Rocks extends System {
   constructor(ctx) {
     super(ctx);
@@ -270,10 +276,13 @@ export class Rocks extends System {
       mesh.count = n;
       mesh.visible = n > 0;
       if (n > 0) {
-        mesh.instanceMatrix.needsUpdate = true;
-        mesh.geometry.attributes.aRockA.needsUpdate = true;
-        mesh.geometry.attributes.aRockB.needsUpdate = true;
-        mesh.geometry.attributes.aRockC.needsUpdate = true;
+        // Range, not the whole buffer — see GroundCover for the measurement.
+        // Every archetype block is sized for its worst case and a repack fills
+        // a fraction of it; the tail was being re-uploaded every time.
+        upload(mesh.instanceMatrix, n);
+        upload(mesh.geometry.attributes.aRockA, n);
+        upload(mesh.geometry.attributes.aRockB, n);
+        upload(mesh.geometry.attributes.aRockC, n);
       }
     }
 

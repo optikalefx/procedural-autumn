@@ -192,13 +192,27 @@ export class PointsOfInterest {
         for (let d = 220; d <= 820; d += 120) {
           ahead += Math.max(0, W.getHeight(p.x + sx * d, p.z + sz * d) - p.y);
         }
+        // The harness pulls the camera back along -yaw before it shoots, so a
+        // point on a shoreline puts the lens in the lake and the bottom half of
+        // the frame becomes water. Check the ground the camera will actually
+        // stand on, not the ground the anchor sits on.
+        const wet = W.getWaterDepth(p.x - sx * 22, p.z - sz * 22) > 0.05 ||
+                    W.getWaterDepth(p.x - sx * 34, p.z - sz * 34) > 0.05 ||
+                    W.getWaterDepth(p.x, p.z) > 0.05;
+        const moistHere = W.getMoisture(p.x, p.z);
         this.list.road.push({
           x: p.x, z: p.z, y: p.y, yaw,
           // The jitter is kept so that road[1], road[2] … are not all the same
           // stretch of the same track, but it is now small enough that it only
           // ever breaks ties.
-          score: ahead * 0.06 - blocked * 0.40 - damp * 16 - W.getSlope(p.x, p.z) * 30
-                 + this.rng() * 3,
+          // Moisture is weighted hard, and at the anchor as well as along the
+          // view. Tree, scrub and fern scatter all key off it, so it is the
+          // only proxy this class has for "will the camera be inside a bush",
+          // and the first attempt weighted it too lightly to matter: the pick
+          // came back standing in a conifer thicket with no ground and no
+          // horizon in the frame.
+          score: ahead * 0.06 - blocked * 0.40 - damp * 26 - moistHere * 90
+                 - W.getSlope(p.x, p.z) * 30 - (wet ? 400 : 0) + this.rng() * 3,
         });
       }
     }

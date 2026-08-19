@@ -296,7 +296,11 @@ export class TerrainGen {
         // clean iso-height line reads as a contour map, and that artefact has
         // already been removed from this game twice.
         const benchStep = thickness * 0.42;
-        const wander = n.fbm(u * 9.3 + 7.7, v * 9.3 - 31.4, 2, 2.1, 0.5, 1) * benchStep * 0.55;
+        // Wander worth most of a whole step, at ~110 m. Below that the traces
+        // are still recognisably a family of parallel lines however irregular
+        // their spacing is; at this amplitude a bench visibly climbs and falls
+        // across a face, which is the difference between a ledge and a contour.
+        const wander = n.fbm(u * 14.1 + 7.7, v * 14.1 - 31.4, 2, 2.1, 0.5, 1) * benchStep * 0.85;
         this.benchStep[i] = benchStep;
         this.benchPhase[i] = -bedRise + wander;
         // Alpine gets far more weight here than it does in strataW. Jointed
@@ -674,9 +678,13 @@ export class TerrainGen {
         slopeBuf[i] = sl;
         const gate = smoothstep(0.24, 0.60, sl) * smoothstep(0.08, 0.40, mw[i]);
         if (gate < 0.02) continue;
-        // Clamped below at -0.72: at -1 the flank is planed perfectly flat and
-        // a perfectly flat natural slope is its own artefact.
-        const g = clamp(sg[i], -0.72, 0.95) * gate;
+        // Clamped below at -0.40, not at -1. Variation is the point of this
+        // term, but a gain near -1 planes a flank perfectly flat, and a
+        // perfectly flat natural slope is its own artefact: at -0.72 the most
+        // prominent face in the hero frame came back as a smooth waxy sheet
+        // with nothing on it, which is the note this whole pass exists to
+        // answer. A quiet face should be quiet, not blank.
+        const g = clamp(sg[i], -0.40, 1.05) * gate;
         src[i] = h[i] + (h[i] - lowPass[i]) * g;
       }
     }
@@ -716,8 +724,17 @@ export class TerrainGen {
         // an evenly ruled staircase is the exact artefact that gets this kind of
         // pass reverted. Hashed on the band index, so a band keeps the same
         // prominence along its whole outcrop and neighbouring cells agree.
+        //
+        // SPARSE, not merely uneven. A spread of 0.24-1.0 still steps every
+        // band to some degree, and on a mesa flank that came back as a dozen
+        // parallel gold stripes on grey — grass catching every tread and bare
+        // rock on every riser. Geometric or not, that is the wood-grain
+        // artefact, and it is the third time this file has produced it. Roughly
+        // two bands in five step at all; the rest are a whisper. Three real
+        // ledges on a massif is what the canyon plate shows.
         const bh = Math.sin(uf * 12.9898 + 4.13) * 43758.5453;
-        w *= 0.24 + 0.76 * (bh - Math.floor(bh));
+        const bf = bh - Math.floor(bh);
+        w *= bf < 0.62 ? 0.10 : 0.45 + 1.15 * ((bf - 0.62) / 0.38);
         // Tread over the low 44%, riser through the rest. Not a hard step: a
         // hard step is a vertical wall one texel wide, which aliases into a
         // stair-tread pattern the moment the mesh LOD samples it at 6 m.
