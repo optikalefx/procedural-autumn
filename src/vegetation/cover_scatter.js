@@ -188,6 +188,7 @@ export class CoverScatter {
     this.trees = null;
 
     this._w = {};                    // surface-weight scratch
+    this._n2 = { nx: 0, nz: 0 };     // per-clump terrain normal scratch
     this._c = new THREE.Color();
     this._c2 = new THREE.Color();
     this._hsl = {};
@@ -369,6 +370,26 @@ export class CoverScatter {
     return 1 - this.roads.sample(x, z) * 0.30;
   }
 
+  /**
+   * Terrain normal at a clump site, as the two horizontal components of the
+   * unit normal — the form `_emit` stores and `GroundCover._repack` expects.
+   *
+   * Four height lookups, taken ONCE for a whole clump. Everything in the
+   * substrate tier used to skip this entirely (`flat: true`) on the grounds
+   * that a pebble leaning half a degree is invisible, which is true of a pebble
+   * and false of the metre-wide thatch mats and leaf patches that share the
+   * layer. See the long note in `_emit`.
+   */
+  _clumpNormal(x, z, out) {
+    const W = this.world, e = 0.9;
+    const gx = (W.getHeight(x + e, z) - W.getHeight(x - e, z)) / (2 * e);
+    const gz = (W.getHeight(x, z + e) - W.getHeight(x, z - e)) / (2 * e);
+    const inv = 1 / Math.sqrt(gx * gx + gz * gz + 1);
+    out.nx = -gx * inv;
+    out.nz = -gz * inv;
+    return out;
+  }
+
   /** Is there water within ~1.5 m of here? Four lookups, per clump site. */
   _nearWater(x, z) {
     const W = this.world, s = 1.5;
@@ -399,8 +420,28 @@ export class CoverScatter {
     // several-thousand-instance ground layer affordable inside the per-frame
     // cell budget; without it the density this layer needs was a measurable
     // hitch on every new cell.
+    //
+    // …and that reasoning is right about a pebble and WRONG about everything
+    // else in the substrate tier, which is where the near half of the `river`
+    // frame went. A `deadTuft` mat is 0.7-1.2 m across and a `leafScatter`
+    // patch 0.3-0.7 m; laid flat in WORLD space on the 49-degree bank that
+    // fills that frame, a metre-wide mat's uphill edge is a quarter of a metre
+    // underground and its downhill edge the same distance in the air. The
+    // ground eats most of it and what survives hangs off the hill. Generation
+    // was never the problem — probed at the bare pixels, one 6 m box holds 133
+    // tufts, 26 leaf patches and 19 stones, and the frame shows almost none of
+    // them. The meadow is flat, so none of this is visible there; it is visible
+    // exactly where the hillside is steep, which is where it was reported.
+    //
+    // So a caller may now hand in a normal it computed ONCE PER CLUMP. A clump
+    // is a metre or two across and the terrain normal does not turn meaningfully
+    // inside it, so ten to twenty members share one four-lookup central
+    // difference instead of paying for their own — which is cheaper than the
+    // per-instance version this flag was introduced to avoid, not dearer.
+    // `o.nx` / `o.nz` are the horizontal components of the unit normal, already
+    // normalised by the caller; they are written straight through at the tail.
     let gx = 0, gz = 0, inv = 1;
-    if (!o.flat) {
+    if (o.nx !== undefined) { /* supplied */ } else if (!o.flat) {
       const e = 0.9;
       gx = (W.getHeight(x + e, z) - W.getHeight(x - e, z)) / (2 * e);
       gz = (W.getHeight(x, z + e) - W.getHeight(x, z - e)) / (2 * e);
@@ -469,8 +510,13 @@ export class CoverScatter {
     // each is the uniform grade the brief forbids.
     out[i + 18] = Math.min(arch.variants - 1,
       o.variant !== undefined ? o.variant : (rng() * arch.variants) | 0);
-    out[i + 19] = -gx * inv;
-    out[i + 20] = -gz * inv;
+    if (o.nx === undefined) {
+      out[i + 19] = -gx * inv;
+      out[i + 20] = -gz * inv;
+    } else {
+      out[i + 19] = o.nx;
+      out[i + 20] = o.nz;
+    }
     return n + 1;
   }
 
@@ -722,6 +768,11 @@ export class CoverScatter {
       // group the small ones around.
       let bigStone = false;
       const wet = this._nearWater(x, z);
+      // One normal for the whole clump. The members below are all within a
+      // couple of metres of here, and on this bank the difference between a
+      // mat that knows which way the hill faces and one that does not is the
+      // difference between a dressed slope and a bare one.
+      const cn = this._clumpNormal(x, z, this._n2);
       for (let m = 0; m < members && n < cap; m++) {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
         const mx = m === 0 ? x : x + Math.cos(ang) * r;
@@ -751,7 +802,7 @@ export class CoverScatter {
             // range and only a few reach the top. A flat scale range is what
             // produced the measured "every stone within ±30% of the same size".
             scale: (anchor ? 0.85 + rng() * 0.75 : 0.50 + rng() * rng() * 0.95),
-            tone: 0.86 + rng() * 0.28, hue: 0.020, flat: true,
+            tone: 0.86 + rng() * 0.28, hue: 0.020, flat: true, nx: cn.nx, nz: cn.nz,
           });
         } else if (kind === 1) {
           // Weighted to the rust and crimson end rather than the gold. A
@@ -763,7 +814,7 @@ export class CoverScatter {
             colA: warm < 0.82 ? PAL.litterWarm : PAL.litterRed,
             colB: warm < 0.22 ? PAL.litterRed : PAL.litterGold,
             sink: 0.01, scale: 0.65 + rng() * rng() * 1.10,
-            tone: 0.90 + rng() * 0.24, hue: 0.028, flat: true,
+            tone: 0.90 + rng() * 0.24, hue: 0.028, flat: true, nx: cn.nx, nz: cn.nz,
           });
         } else if (kind === 2) {
           // Variant 1 is the thatch mound, variant 0 the flat strand mat, and
@@ -783,13 +834,13 @@ export class CoverScatter {
             scale: mound ? 0.72 + rng() * rng() * 0.62
                          : 0.70 + rng() * rng() * 0.80,
             tone: 0.90 + rng() * 0.24,
-            hue: 0.022, flat: true,
+            hue: 0.022, flat: true, nx: cn.nx, nz: cn.nz,
           });
         } else if (kind === 3) {
           n = this._emit(out, n, cap, 'moss', mx, mz, rng, {
             colA: PAL.mossDeep, colB: PAL.moss, sink: 0.01,
             scale: 0.7 + rng() * 0.8, tone: 0.88 + rng() * 0.22, hue: 0.03,
-            flat: true,
+            flat: true, nx: cn.nx, nz: cn.nz,
           });
         } else if (sticks === 0) {
           sticks++;
@@ -803,7 +854,7 @@ export class CoverScatter {
             // the deadfall layer supplies them properly.
             variant: rng() < 0.78 ? 0 : 1,
             scale: 0.55 + rng() * rng() * 0.85, sink: 0.0,
-            tone: 0.86 + rng() * 0.26, hue: 0.015, flat: true,
+            tone: 0.86 + rng() * 0.26, hue: 0.015, flat: true, nx: cn.nx, nz: cn.nz,
             visMul: 0.75,
           });
         }
@@ -1070,6 +1121,7 @@ export class CoverScatter {
       // anchor's own scale is drawn over a much wider power-law range, so the
       // stones that *do* survive to 60 m are themselves a hierarchy instead of
       // a repeated prop.
+      const cn = this._clumpNormal(x, z, this._n2);
       const members = 2 + ((rng() * 5) | 0);
       const spread = 0.55 + rng() * 1.85;
       // Squared and wide: most groups are ankle-height, one in ten is a
@@ -1090,6 +1142,7 @@ export class CoverScatter {
           // way out instead of dissolving into its biggest stone.
           visMul: lead ? 1 : 0.46 + anchor * 0.14,
           tone: 0.86 + rng() * 0.28, hue: 0.018, flat: true,
+          nx: cn.nx, nz: cn.nz,
         });
       }
     }

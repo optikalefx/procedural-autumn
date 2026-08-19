@@ -2004,11 +2004,11 @@ export const COVER_ARCHETYPES = [
   { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: false, wind: 0.055, shadow: true,  build: buildThicket },
   { key: 'fern',        variants: 2, card: true,  cap: 950, vis: 44,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
   { key: 'broadleaf',   variants: 2, card: true,  cap: 640, vis: 32,  band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
-  { key: 'moss',        variants: 2, card: true,  cap: 440, vis: 26,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss },
+  { key: 'moss',        variants: 2, card: true,  cap: 440, vis: 26,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss, conform: 0.95 },
   { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 42,  band: 0, recv: false, wind: 0.055, shadow: false, build: buildFlowerAster },
   { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 44,  band: 0, recv: false, wind: 0.065, shadow: false, build: buildGoldenrod },
   { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 44,  band: 0, recv: false, wind: 0.085, shadow: false, build: buildSeedHead },
-  { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, recv: false, wind: 0.006, shadow: false, build: buildLeafDrift },
+  { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, recv: false, wind: 0.006, shadow: false, build: buildLeafDrift, conform: 0.95 },
   { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildLog },
   { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildStump },
   { key: 'branch',      variants: 2, card: false, cap: 300, vis: 50,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
@@ -2032,10 +2032,19 @@ export const COVER_ARCHETYPES = [
   // What it costs is reach: the mat now finishes fading at 23 m instead of 26.
   // That is the right thing to spend, because past about 20 m the terrain's own
   // albedo is carrying the ground anyway and a 30 cm prop is three pixels.
+  //
+  // `conform` on the three MAT-shaped entries below (and on `leafDrift`).
+  // These are 0.3-1.2 m things that lie ON the ground rather than standing on
+  // it, and at the default 0.55 a metre-wide thatch mat on the 49-degree bank
+  // in `river` buries one edge a quarter of a metre and flies the other by the
+  // same — the same geometry failure `buildGroundMat` documents, one tier down.
+  // Stones keep the default: a pebble is a lump that intersects the surface
+  // whatever it does, and one lying exactly parallel to a steep slope looks
+  // stuck to it.
   { key: 'pebble',      variants: 2, card: false, cap: 2150, vis: 24, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
   { key: 'cobble',      variants: 2, card: false, cap: 1050, vis: 74, band: 2, recv: false, wind: 0.000, shadow: false, build: buildCobble },
-  { key: 'leafScatter', variants: 2, card: true,  cap: 1450, vis: 22, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
-  { key: 'deadTuft',    variants: 2, card: true,  cap: 2900, vis: 23, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 1450, vis: 22, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter, conform: 0.95 },
+  { key: 'deadTuft',    variants: 2, card: true,  cap: 2900, vis: 23, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft, conform: 0.95 },
   // The mid-range ground dressing. `conform: 1` takes it to the full terrain
   // tilt (every other archetype leans only 55% with the ground, which is right
   // for a plant standing on a slope and wrong for a three-metre mat lying on
