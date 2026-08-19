@@ -383,6 +383,32 @@ export function createTerrainMaterial(world, opts = {}) {
         float loose   = aux.b;          // talus / alluvium deposited by the sim
         float logFlow = aux.a;          // log(1 + upstream cells) / 14
         float river   = data.b;
+        // ── a channel stops at the lip, because that is what a lip is ───────
+        // Filed as X3 by the water author with a transect of the bake, and the
+        // measurement is theirs: down the 96 m fall at [-720, 120.6, -30] the
+        // river mask is EXACTLY ONE 2 m texel wide the whole way, it wanders
+        // sideways from texel to texel, in places it drops out, and the slope
+        // under it runs 1.46 to 2.02 — 56 to 64 degrees. A channel cannot exist
+        // on a 62 degree face; a waterfall is precisely where the river stops
+        // being a channel.
+        //
+        // Reproduced here before touching it, with every other system hidden
+        // (shots/terrain/r49/wf/band-before.png): terrain alone still draws it,
+        // and magnified it is not a band at all but a chain of overlapping tan
+        // discs — one isolated texel per row, bilinearly filtered and magnified
+        // onto a near-vertical face, which is a string of beads by arithmetic.
+        // Critic pass 4 called it the single most obviously broken object in
+        // any frame in the round.
+        //
+        // Gated at the declaration and not at the one albedo line, so the damp
+        // band and the sand shore stop at the lip too — a 62 degree face has no
+        // more business carrying a wet fringe or a gravel bar than a bed. Valley
+        // channels sit well under 0.85 (40 degrees) and are untouched.
+        //
+        // NOT fixed by darkening riverBed, and the reason is in the filing:
+        // every earlier attempt on this project to shade away a structural
+        // defect made the structure harder to find.
+        river *= 1.0 - smoothstep(0.85, 1.40, slope);
         float moist   = data.a;
         float waterH  = data.g;
         float depth   = max(0.0, waterH - vWorldPos.y);
