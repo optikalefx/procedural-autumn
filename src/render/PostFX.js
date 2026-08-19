@@ -21,6 +21,7 @@ uniform float uContrast;
 uniform float uLift;
 uniform vec3  uLiftTint;
 uniform float uVibrance;
+uniform float uRedToGold;
 uniform float uGrain;
 uniform float uTime;
 
@@ -91,6 +92,20 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   c = mix(vec3(luma(c)), c, 1.0 + uVibrance * (1.0 - sat));
   c = mix(vec3(luma(c)), c, uSaturation);
 
+  // Hue-vs-hue: push the red band toward gold.
+  //
+  // Measured against the plates, our chromatic pixels were 78% red / 6% orange
+  // where the reference is 52% red / 38% orange. Autumn foliage and dry grass
+  // both sit in the orange-gold band, and our albedos land a little too far
+  // round toward red; global desaturation cannot fix that — it only drains the
+  // colour toward grey, and the red-ward lift and highlight tints then turn
+  // that grey salmon-pink. Lifting green where red leads walks the hue back
+  // round to gold while leaving genuinely crimson foliage crimson.
+  {
+    float redLead = clamp((c.r - max(c.g, c.b)) / max(c.r, 1e-4), 0.0, 1.0);
+    c.g += c.r * redLead * redLead * uRedToGold;
+  }
+
   // Fine grain, luminance-weighted so it stays out of the highlights.
   float n = fract(sin(dot(uv * (1.0 + uTime * 0.0001), vec2(12.9898, 78.233))) * 43758.5453);
   c += (n - 0.5) * uGrain * (1.0 - smoothstep(0.5, 1.0, luma(c)));
@@ -145,13 +160,14 @@ class GradeEffect extends Effect {
       blendFunction: BlendFunction.NORMAL,
       uniforms: new Map([
         ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.93, 0.94, 1.12))],
-        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.14, 1.02, 0.83))],
+        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.08, 1.03, 0.88))],
         ['uSplitStrength', new THREE.Uniform(0.21)],
-        ['uSaturation',    new THREE.Uniform(0.74)],
-        ['uContrast',      new THREE.Uniform(1.26)],
-        ['uLift',          new THREE.Uniform(0.034)],
-        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.14, 1.00, 0.88))],
-        ['uVibrance',      new THREE.Uniform(0.90)],
+        ['uSaturation',    new THREE.Uniform(0.86)],
+        ['uContrast',      new THREE.Uniform(1.30)],
+        ['uLift',          new THREE.Uniform(0.004)],
+        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.06, 1.01, 0.92))],
+        ['uVibrance',      new THREE.Uniform(0.10)],
+        ['uRedToGold',     new THREE.Uniform(0.125)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
       ]),
@@ -180,7 +196,17 @@ class GradeEffect extends Effect {
 // the whole reason `peaks` and `hero` read as pale tan with no form — it is the
 // shoulder eating the highlights, not the lighting failing to make them. The
 // bright end has to sit *under* the shoulder for form to survive it.
-const EXPOSURE = 0.86;
+// Measured against the reference plates rather than judged by eye. At 0.86 with
+// vibrance 0.90 the frame came out simultaneously too dark and too saturated —
+// lumaMean 0.34 against a reference band of 0.37-0.68, P95 0.60 against 0.87,
+// and chromaMean 0.39-0.49 against 0.28-0.42. Those two dials fight each other:
+// vibrance was compensating for the missing brightness by pushing chroma.
+// PBR Neutral desaturates as values approach white (its own `desaturation`
+// term). Pushing exposure until the *mean* luminance matched the plates drove
+// most of the meadow into that shoulder and bleached the gold out of it — the
+// frame measured correctly and looked like beige sand. Lower exposure with
+// higher saturation puts the gold back and keeps a real dark end.
+const EXPOSURE = 1.12;
 
 export class PostFX {
   constructor(engine, quality = 'ultra') {

@@ -31,17 +31,17 @@ const RINGS = [
   // rather than with more instances. 3 segments still reads as a curve at 2 m.
   {
     tileSize: 16, segments: 3, maxBlades: 19000, perClump: 26, clumpRadius: 0.48,
-    width: 0.055, height: 0.84, salt: 0x1111, floor: 0.46,
+    width: 0.055, height: 0.38, salt: 0x1111, floor: 0.46,
     fadeIn: [-20, -10], fadeOut: [20, 30], widthGain: 0.0, aoScale: 1.0,
   },
   {
     tileSize: 40, segments: 2, maxBlades: 18500, perClump: 30, clumpRadius: 1.20,
-    width: 0.125, height: 0.86, salt: 0x2222, floor: 0.40,
+    width: 0.125, height: 0.40, salt: 0x2222, floor: 0.40,
     fadeIn: [18, 28], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
   },
   {
     tileSize: 96, segments: 1, maxBlades: 16000, perClump: 34, clumpRadius: 3.2,
-    width: 0.320, height: 1.05, salt: 0x3333, floor: 0.34,
+    width: 0.320, height: 0.48, salt: 0x3333, floor: 0.34,
     fadeIn: [54, 72], fadeOut: [150, 182], widthGain: 1.2, aoScale: 0.30,
   },
 ];

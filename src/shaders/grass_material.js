@@ -72,7 +72,11 @@ export function makeGrassUniforms() {
     // the field's value range, and a saturated tip drives chromaMean well past
     // the 0.28–0.42 the reference plates measure — the reference's brightest
     // grass is nearly cream, not nearly orange.
-    uTipCol:      { value: new THREE.Color().setHex(0xf9cd82, THREE.SRGBColorSpace) },
+    // Reference meadow gold measures #f0ad46. The previous straw (#f9cd82) is a
+    // full step paler and less saturated, and with uTipBias below 1 it carried
+    // most of the way down every blade — which is why the field read as beige
+    // sand rather than amber however the grade was tuned.
+    uTipCol:      { value: new THREE.Color().setHex(0xf2b455, THREE.SRGBColorSpace) },
     // Transmission has its own pigment. It used to be derived from uTipCol,
     // which meant that paling the tip to fix chroma also drained the colour out
     // of the backlit glow — and backlit grass at golden hour is the defining
@@ -90,8 +94,8 @@ export function makeGrassUniforms() {
 
     uOliveMax:    { value: 0.78 },    // olive is an accent; gold always shows through
     uRootMix:     { value: 0.30 },    // how far the base drifts to uRootCol
-    uTipMix:      { value: 0.56 },
-    uTipBias:     { value: 0.62 },    // <1 pushes the warm tip colour further down
+    uTipMix:      { value: 0.46 },
+    uTipBias:     { value: 0.88 },    // <1 pushes the warm tip colour further down
     uBaseAO:      { value: 0.86 },    // occlusion at the blade root
     uAOHeight:    { value: 0.24 },    // how far up the blade that occlusion reaches
     // How far the shading normal is pulled from the blade's own face toward

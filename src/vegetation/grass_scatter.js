@@ -162,12 +162,17 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
 
     // ── height ──────────────────────────────────────────────────────────────
     // Tall stands in damp hollows, cropped on dry exposed ground.
-    const stand = ring.height * (0.46 + moist * 0.72 + stature * 0.58 + patch * 0.16
-                                 - smoothstep(0.25, 0.85, slope) * 0.30);
+    // Scale note: the vehicle is ~2 m tall and the reference plates put meadow
+    // grass at roughly knee height on a bear. An earlier tuning produced 1.3-1.5 m
+    // typical and ~2 m at the waterline, which visually swallowed the camper.
+    // Keep the *relative* structure (damp hollows tall, dry slopes cropped) and
+    // narrow the spread so the field reads as ground cover, not as a wheat crop.
+    const stand = ring.height * (0.62 + moist * 0.54 + stature * 0.44 + patch * 0.12
+                                 - smoothstep(0.25, 0.85, slope) * 0.28);
     // Reeds at the waterline: taller than the meadow behind them, and greener.
     // Blades *at* the water sell a shoreline; blades standing in two metres of
     // it read as a bug, which is what the per-blade test below prevents.
-    const clumpH = Math.max(0.16, stand * (0.82 + rng() * 0.36) * (nearWater ? 1.30 : 1.0));
+    const clumpH = Math.max(0.12, stand * (0.84 + rng() * 0.32) * (nearWater ? 1.34 : 1.0));
     const clumpBend = 0.11 + rng() * 0.38;   // a tuft has a lay, not a haircut
     const clumpYaw = rng() * TAU;
     let radius = ring.clumpRadius * (0.55 + rng() * 0.75) * (1 - river * 0.75);
