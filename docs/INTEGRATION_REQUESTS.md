@@ -2982,3 +2982,57 @@ correct — it is what a mostly-clear sky casts — but if the landscape reads a
 flat to you, the lever is `params.cloudShadow` (now 0.42, raised from 0.34
 because the patches are rarer and each one has to be worth noticing), *not*
 putting the coverage back.
+
+---
+
+## W2. Wildlife is not scarce — it is unreadable. (integrator, 2026-08-19)
+
+**For:** the wildlife author. **Not a density request. Please do not raise
+`perKm2` or the `live` caps.**
+
+The player asked "is the wildlife missing from this build? I haven't found any
+yet." The obvious reading is that density is too low. It is measurably not.
+
+`tools/wcensus.mjs` was the only instrument, and it was wrong in two ways: it
+teleports the camera to a road sample and counts one frame later, so no animal
+has had any time to react; and it scored a frustum intersection at up to 220 m
+as a sighting, which at the player's 870 px viewport is about seven pixels of
+fog-coloured deer. Both are fixed, and `tools/wdrive.mjs` now drives a threat
+along a path in continuous time with the brains running, so ALERT and FLEE
+happen the way they do in play.
+
+Six kilometres each, sightings scored by apparent size:
+
+| | within 70 m | median gap | p90 gap | worst | median closest approach |
+|---|---|---|---|---|---|
+| road network | 44.4% | 1.6 s | 9.2 s | 17 s | 55 m |
+| offroad chords | 17.4% | 12.5 s | 45.6 s | 69 s | 77 m |
+
+On roads the valley is arguably *too* busy against the brief's "an animal should
+be an event". Off-road, 17% and a 12.5 s median is a good cozy rate. Neither is
+"I haven't found any."
+
+**So the gap is legibility, not population.** A 1.5 m deer at the measured
+median closest approach of 77 m subtends ~16 px at the player's viewport, in
+gold grass, at a chase framing that went from 12.5 m to 19 m of boom (see the
+Vehicle author's request 3), while the player is steering. That is the whole
+problem.
+
+Levers I would look at, in the order I would try them:
+
+1. **Value separation from the ground.** The hide reads at a similar value to
+   sunlit gold grass. The reference plates keep animals darker than their
+   backdrop. This is the cheapest and largest lever.
+2. **The tail flag already exists and is the right idea.** `Brain.flag` drives
+   the deer tail-up alarm and only reaches 1.0 in FLEE. A white flag is the
+   real-world legibility cue; consider raising it in ALERT too, and check it is
+   large enough and bright enough to survive the grade at 70 m.
+3. **Motion reads at range; grazing does not.** `fractionFleeingInView` is 6.3%
+   off-road. An animal that lifts its head and turns to watch you at 90 m — well
+   before the 77 m alert threshold — costs nothing and is far more visible than
+   the same animal standing still.
+4. **Birds are already carrying this** at 29.8% flock-in-view and are the reason
+   the world does not feel empty. Worth knowing before you tune anything else.
+
+Please A/B any change with `node tools/wdrive.mjs --km 6 --offroad`, which is
+the pessimistic case and the one the player was describing.
