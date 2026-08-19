@@ -71,6 +71,13 @@ const CFG = {
   impVariants: 2,
 };
 
+// Instances of the far impostor block uploaded per frame. At 120 bytes an
+// instance (mat4 + three colours + impostor params + wind) this is ~490 kB a
+// frame against the 1.9 MB the whole block used to cost on a single re-bin
+// frame; a typical block of ~15 000 instances therefore lands over four frames.
+// See _commitFar for why that is invisible.
+const FAR_UPLOAD_CHUNK = 4096;
+
 
 // VEG.treeDensity is the per-hectare figure the whole game shares; trees want a
 // closed canopy in the groves, so they scale it up rather than redefining it.
@@ -113,6 +120,11 @@ export class Trees extends System {
     this.shared = makeSharedUniforms();
 
     this._lastRebuildPos = new THREE.Vector3(1e9, 0, 1e9);
+    // Far-block upload cursor — see _commitFar.
+    this._farTarget = 0;
+    this._farCursor = 0;
+    this._farFilled = 0;
+    this._farFirst = true;
     this._windAngle = 0.7;
     this._tmpSphere = new THREE.Sphere();
     this.stats = { near: 0, mid: 0, far: 0, buildMs: 0 };
@@ -933,13 +945,65 @@ export class Trees extends System {
     }
   }
 
+  /**
+   * Hand the far block to the GPU a few thousand instances at a time.
+   *
+   * The far slot holds ~15 000 impostors, and one re-bin used to push all of it
+   * in a single frame: 960 kB of instanceMatrix plus 720 kB of colour and
+   * impostor attributes, 1.9 MB, measured with tools/_scratch/uploads.mjs. It
+   * is the largest single upload in the game and it lands on ONE frame every
+   * ~11 m of travel — those frames measured 18-40 ms against a 17 ms median, so
+   * it is a periodic spike that exists only while the camera is moving. That is
+   * the shape of the player's report that driving is worse than standing still.
+   *
+   * Spreading it costs nothing visually because far instances DO NOT MOVE. A
+   * tree's position is fixed for the whole session; what a re-bin changes is
+   * only *which* trees are in the block and in what order, and consecutive bins
+   * 11 m apart differ in about one instance in a hundred. So an instance whose
+   * new data has not been uploaded yet still draws a real tree at a real
+   * position — the previous bin's occupant of that slot — for at most three
+   * frames, i.e. about a metre of camera travel at driving speed.
+   *
+   * The one case that would *not* be safe is growing `count` past what has been
+   * uploaded: those instances hold data from an older, shorter bin, or zeroes on
+   * the very first fill, and would draw trees at the origin. So the count only
+   * grows as fast as the cursor, and shrinks immediately — shrinking can never
+   * expose stale data.
+   */
   _commitFar(s) {
-    const c = s.count;
-    this._upload(s.matrix, c);
-    this._upload(s.colA, c); this._upload(s.colB, c); this._upload(s.colC, c);
-    this._upload(s.imp, c); this._upload(s.wind, c);
-    this.farMesh.count = s.count;
-    this.farMesh.visible = s.count > 0;
+    this._farTarget = s.count;
+    this._farCursor = 0;
+    // The first fill has nothing valid behind it, so it goes in one piece; it
+    // happens under the loading screen where a long frame costs nothing.
+    if (this._farFirst) {
+      this._farFirst = false;
+      this._upload(s.matrix, s.count);
+      this._upload(s.colA, s.count); this._upload(s.colB, s.count); this._upload(s.colC, s.count);
+      this._upload(s.imp, s.count); this._upload(s.wind, s.count);
+      this._farCursor = s.count;
+      this._farFilled = s.count;
+    }
+    this._drainFar();
+  }
+
+  /** Upload the next chunk of the far block. Called once per frame. */
+  _drainFar() {
+    const s = this.farSlot;
+    if (!s || !this.farMesh) return;
+    if (this._farCursor < this._farTarget) {
+      const from = this._farCursor;
+      const n = Math.min(FAR_UPLOAD_CHUNK, this._farTarget - from);
+      for (const attr of [s.matrix, s.colA, s.colB, s.colC, s.imp, s.wind]) {
+        attr.addUpdateRange(from * attr.itemSize, n * attr.itemSize);
+        attr.needsUpdate = true;
+      }
+      this._farCursor = from + n;
+      if (this._farCursor > this._farFilled) this._farFilled = this._farCursor;
+    }
+    // Never draw past the high-water mark of validly uploaded instances.
+    const c = Math.min(this._farTarget, this._farFilled);
+    this.farMesh.count = c;
+    this.farMesh.visible = c > 0;
   }
 
   // ── frame ──────────────────────────────────────────────────────────────────
@@ -983,6 +1047,10 @@ export class Trees extends System {
     if (p.distanceToSquared(this._lastRebuildPos) > CFG.rebuildMove * CFG.rebuildMove) {
       this._lastRebuildPos.copy(p);
       this._rebuild(p);
+    } else {
+      // Keep feeding the far block on the frames between re-bins; _rebuild
+      // starts the transfer, this finishes it.
+      this._drainFar();
     }
   }
 

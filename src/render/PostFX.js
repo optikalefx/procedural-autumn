@@ -599,6 +599,54 @@ void main() {
 }
 `;
 
+// ── WHAT THE POST CHAIN ACTUALLY COSTS ───────────────────────────────────────
+//
+// "Post processing is 56-59% of frame time" was true, and it is no longer the
+// number to plan against, because it was measured before the pixel-ratio fix
+// and before adaptive resolution. The post chain is fixed cost per pixel, so
+// when the pixel count fell the whole term fell with it. The reporting player
+// renders 1.02 MP (a ~1170x870 window at an effective ratio of 1.0, which is
+// the hard floor — anything below native reads as "blurry", so the scaler may
+// not go there).
+//
+// Measured at exactly that: 1.02 MP, driving, one effect removed at a time,
+// arms alternated every ~34 frames inside one page load so that this shared
+// machine's 2-3x throughput drift cancels instead of being mistaken for a
+// result (tools/_scratch/postab.mjs explains why the two obvious methods —
+// per-pass timer queries, and one timer query per frame — both fail here).
+// Baseline 13.02 ms/frame, IQR on every ratio below 0.12:
+//
+//     removed                   d_ms      share
+//     depth of field           -1.07      -8.2%
+//     SSAO (N8AO, whole pass)  -0.94      -7.2%
+//     bloom                    -0.15      -1.2%
+//     SMAA                     +0.10       noise
+//     HDR guard pass           +0.13       noise
+//     grade + vignette         -0.01       noise
+//     ENTIRE CHAIN             -3.25     -24.9%
+//
+// Three separate runs put the whole chain at 23%, 25% and 32%. So: post is
+// about a quarter of the frame, no single effect is worth more than 8%, and
+// deleting every effect this project's look is made of — grade, tone curve,
+// AO, all of it — buys ~4 fps at the rate the player is seeing. That is why
+// nothing in the ultra chain was cut. The remaining ~1.1 ms of the 3.25 that
+// the individual rows do not account for is the merged fullscreen shader plus
+// the composer buffer swaps that disappear when only one effect is left.
+//
+// Two things that were checked and are NOT problems:
+//   * Effect merging really happens. All six effects compile into ONE
+//     EffectPass fragment shader; the composer holds exactly four passes
+//     (scene, SSAO, guard, merged). Nothing forces a pass of its own.
+//   * The HDR guard pass is free — 0.13 ms, inside the noise. gputime.mjs
+//     reports 13 ms for it, which is that harness's fixed per-span cost, not
+//     the pass.
+//
+// One thing that is worth a look author's attention, unchanged here because it
+// is what shipped and a blind A/B cannot separate it: EffectPass sorts its
+// effects by attribute, and SMAA declares CONVOLUTION|DEPTH. It therefore runs
+// FIRST in the merged shader, not last as the header comment above describes —
+// i.e. edges are detected and blended in linear HDR, before the tone curve.
+//
 // ── Per-tier post chain ──────────────────────────────────────────────────────
 //
 // QUALITY_PRESETS owns whether SSAO and DOF exist at all; it has no vocabulary
@@ -661,14 +709,9 @@ export class PostFX {
     // tilt-shift miniature rather than cozy, which the camera author also
     // logged. A smaller circle of confusion still separates the camper from the
     // valley without turning specular into confetti.
-    this.dof = this.preset.dof
-      ? new DepthOfFieldEffect(camera, {
-          focusDistance: 55 / camera.far,
-          focalLength: 0.26,
-          bokehScale: 0.60,
-          height: 720,
-        })
-      : null;
+    //
+    // Built lazily by _setDOF() so the constructor and a later tier change go
+    // through one code path. A tier that has no DOF never builds it.
 
     // A cozy frame wants its corners to fall away. It also buys real measured
     // contrast in the vista views, which are otherwise a single 0.60–0.70 value
@@ -722,19 +765,149 @@ export class PostFX {
     }), 'inputBuffer');
     this.composer.addPass(this.sanity);
 
-    const effects = [];
-    if (this.dof) effects.push(this.dof);
-    effects.push(this.bloom, this.tone, this.vignette, this.grade, this.smaa);
-    this.mainPass = new EffectPass(camera, ...effects);
-    this.composer.addPass(this.mainPass);
-
-    this._capBloomMips();
+    // Builds the SSAO pass and the merged main pass for this tier.
+    this._applyTier(this.preset, this.tier);
 
     engine.onResize((w, h) => {
       this.composer.setSize(w, h);
       this.ao?.setSize(w, h);
       this._capBloomMips();
     });
+  }
+
+  /**
+   * Change the post chain's quality tier. Called by main when Engine's
+   * `setQuality()` fires.
+   *
+   * Before this existed the settings panel could move a struggling machine to
+   * `medium` or `low` and the post chain would not notice: SSAO and depth of
+   * field were decided once, in the constructor, so the only thing a tier drop
+   * actually changed here was the pixel ratio. That left a player with no
+   * working escape hatch, which matters more now than any single cut — the
+   * adaptive scaler is pinned at its floor on the reporting player's machine
+   * (effective ratio 1.0, which is a hard minimum because anything below native
+   * reads as "blurry"), so the tier is the *only* lever left.
+   */
+  onQuality(preset, name) {
+    if (!preset) return;
+    this.preset = preset;
+    this.tier = QUALITY_PRESETS[name] ? name : this.tier;
+    this._applyTier(preset, this.tier);
+  }
+
+  /**
+   * Build the chain for a tier. The constructor calls this too, so there is
+   * exactly one description of what a tier means and construction cannot drift
+   * away from a runtime change.
+   */
+  _applyTier(preset, name) {
+    const tier = POST_TIERS[name] ?? POST_TIERS.high;
+    this._minBloomMip = tier.bloomMip;
+    this._setSSAO(!!preset.ssao, tier);
+    this._setDOF(!!preset.dof);
+    this._capBloomMips();
+  }
+
+  /** Add, retune or remove the SSAO pass. */
+  _setSSAO(on, tier) {
+    if (!on) {
+      if (this.ao) {
+        this.composer.removePass(this.ao);
+        this.ao.dispose?.();
+        this.ao = null;
+      }
+      return;
+    }
+    if (!this.ao) {
+      const { scene, camera, width, height } = this.engine;
+      this.ao = new N8AOPostPass(scene, camera, width, height);
+      const c = this.ao.configuration;
+      // A grass field is hundreds of thousands of mutually-occluding sheets, so
+      // a metres-wide AO radius finds a contact between every pair of adjacent
+      // blades and fills the canopy interior with salt-and-pepper — the exact
+      // high-frequency noise the brief rules out, and the grass author's logged
+      // request. Pulling the radius in to roughly a blade-height keeps the cue
+      // that actually reads (a rock or a trunk meeting the ground) and drops
+      // the one that only adds noise.
+      c.aoRadius = 1.1;
+      c.distanceFalloff = 1.0;
+      // Weaker and less blue than it was. Ambient occlusion is a contact cue,
+      // not a grade: at 2.6 with a near-navy tint it was stamping a cold violet
+      // into every crease of a gold meadow, which is the exact failure the
+      // brief calls out — the cool note belongs to distant rock and haze, not
+      // to shaded ground. Blue/violet/magenta together are about 1% of the
+      // reference's chromatic pixels.
+      c.intensity = 1.15;
+      c.color = new THREE.Color(0x40303f);
+      c.halfRes = true;
+      c.denoiseRadius = 12;
+      // Directly after the scene render and before the guard pass, so the
+      // guard still sits between the scene and everything that blurs.
+      this.composer.addPass(this.ao, 1);
+      this.ao.setSize(this.engine.width, this.engine.height);
+    }
+    // Sampling rate, set explicitly rather than through setQualityMode().
+    //
+    // Two things were wrong with the preset call. It came *after* the two
+    // denoise lines and silently overwrote them (its 'High' preset is
+    // denoiseSamples 8 / denoiseRadius 6, not the 8 / 12 written here), and
+    // its 'High' means 64 AO samples per pixel — which, at half res over a
+    // 1600x900 frame, is 23 M depth taps every frame and was the single most
+    // expensive thing in the whole render. A/B'd inside one page load with
+    // 4 s blocks so machine load hits both arms equally, 64 -> 16 samples is
+    // p50 -1.4 ms and p95 -23.4 ms. Nothing else in the frame is worth that
+    // much.
+    //
+    // This is a sampling *rate*, not a look control: radius, intensity and
+    // colour above are what shape the AO, and they are untouched. At half res
+    // with two poisson denoise iterations the difference 16 samples makes is
+    // noise, and the denoiser is what removes it — which is why the still
+    // frames measure the same either way (docs/INTEGRATION_REQUESTS.md).
+    const c = this.ao.configuration;
+    if (c.aoSamples !== tier.aoSamples) c.aoSamples = tier.aoSamples;
+    if (c.denoiseSamples !== tier.denoiseSamples) c.denoiseSamples = tier.denoiseSamples;
+    if (c.denoiseIterations !== tier.denoiseIterations) c.denoiseIterations = tier.denoiseIterations;
+  }
+
+  /** Add or remove depth of field, rebuilding the merged pass around it. */
+  _setDOF(on) {
+    const want = on
+      ? (this._dofEffect ??= new DepthOfFieldEffect(this.engine.camera, {
+          focusDistance: 55 / this.engine.camera.far,
+          focalLength: 0.26,
+          bokehScale: 0.60,
+          height: 720,
+        }))
+      : null;
+    if (this.mainPass && want === this.dof) return;
+    this.dof = want;
+    this._rebuildMainPass();
+  }
+
+  /**
+   * Rebuild the single merged EffectPass.
+   *
+   * `postprocessing` compiles every effect handed to one EffectPass into one
+   * fragment shader — verified, not assumed: with all six effects the composer
+   * holds exactly four passes (scene, SSAO, guard, merged), so nothing here is
+   * forcing a pass of its own.
+   *
+   * The old pass is stripped of its effects *before* it is disposed:
+   * `EffectPass.dispose()` disposes the effects it holds, and those objects are
+   * shared with this class, so disposing the pass directly would take the bloom
+   * and the grade down with it.
+   */
+  _rebuildMainPass() {
+    const effects = [];
+    if (this.dof) effects.push(this.dof);
+    effects.push(this.bloom, this.tone, this.vignette, this.grade, this.smaa);
+    if (this.mainPass) {
+      this.composer.removePass(this.mainPass);
+      this.mainPass.setEffects([]);
+      this.mainPass.dispose();
+    }
+    this.mainPass = new EffectPass(this.engine.camera, ...effects);
+    this.composer.addPass(this.mainPass);
   }
 
   /**
@@ -776,7 +949,9 @@ export class PostFX {
     const r = pass.resolution;
     const short = Math.min(r.width || 0, r.height || 0);
     if (short < 2) return;
-    const levels = Math.max(1, Math.min(8, Math.floor(Math.log2(short / MIN_BLOOM_MIP))));
+    // Per-tier floor (POST_TIERS), falling back to the ultra/high value.
+    const floor = this._minBloomMip || MIN_BLOOM_MIP;
+    const levels = Math.max(1, Math.min(8, Math.floor(Math.log2(short / floor))));
     if (pass.levels !== levels) pass.levels = levels;
   }
 
@@ -800,5 +975,11 @@ export class PostFX {
       distance / this.engine.camera.far;
   }
 
-  dispose() { this.composer.dispose(); }
+  dispose() {
+    this.composer.dispose();
+    // The composer disposes its passes, and an EffectPass disposes the effects
+    // it holds — but a tier without depth of field keeps the effect detached,
+    // so nothing would ever reach it.
+    if (!this.dof) this._dofEffect?.dispose();
+  }
 }
