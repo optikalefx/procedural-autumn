@@ -2205,3 +2205,32 @@ not better. Peak load stays inside both hard budgets (4.26 M of 4.5 M triangles,
 597 of 900 draw calls). Whatever regressed frame time this afternoon is upstream
 of the vegetation layers and probably shares a cause with the shadow colour
 above.
+
+---
+
+## Terrain — world-edge apron (2026-08-19)
+
+**What changed.** `Terrain.js` now builds a static square annulus of ground
+beyond the world boundary (`buildApron`, 16 meshes, 53,760 triangles, 16 draw
+calls, built once on the first `update`). Its inner band is the interior
+heightfield reflected across the boundary; its outer band rises into a distant
+range whose minimum crest (~490 m) is above every camera in the game, so the
+apron's own outer edge is never in any sightline. `TerrainMaterial` mirrors its
+data-texture lookup to match, and hands over to a geometry-driven treatment past
+1.4 km out.
+
+This exists because several canonical cameras stand *outside* the map — the
+`peaks` framing resolves to 341 m beyond the -Z boundary — and the world was
+ending in a dead-straight vertical cliff against empty sky.
+
+**Consequence for scatter authors (no action required to ship).** Trees, grass,
+rocks, ground cover and wildlife all place inside `[-half, half]`, so the apron
+is bare. In practice this reads fine: the world's own rim is high rocky ground
+that is nearly treeless anyway, and everything past ~300 m out is in heavy haze.
+If a future seed puts forest hard against a boundary it would show as a tree
+line stopping on a straight edge. The cheapest fix if that ever appears is for
+the scatter systems to sample `world.getHeight` with the same one-fold
+reflection Terrain uses (`Terrain.prototype._mirror`) and place a thinned band
+200-400 m outside the boundary. Not requested now.
+
+**No shared file was changed for this.**

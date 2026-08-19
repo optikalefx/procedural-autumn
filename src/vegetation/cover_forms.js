@@ -592,14 +592,27 @@ function buildThicket(rng) {
 function buildFern(rng) {
   const b = new Builder();
   const h = 0.30 + rng() * 0.28;
-  const n = 5 + ((rng() * 3) | 0);
+  const n = 6 + ((rng() * 3) | 0);
+  // Two or three crowns a hand's width apart, not one hub. Every frond leaving
+  // a single point at one height and one length is the starburst again — from
+  // the near-top-down angle the player gets while driving, a fern built that way
+  // resolves to eight strips radiating from a dot, which is the shape the critic
+  // called a scratch on the lens. Real ferns clump, and no two fronds in a clump
+  // are the same length.
+  const crowns = 2 + ((rng() * 2) | 0);
+  const cx = [], cz = [];
+  for (let c = 0; c < crowns; c++) {
+    const ca = rng() * TAU, cr = h * (0.10 + rng() * 0.38);
+    cx.push(Math.cos(ca) * cr); cz.push(Math.sin(ca) * cr);
+  }
   for (let i = 0; i < n; i++) {
-    const a = (i / n) * TAU + rng() * 0.7;
+    const c = i % crowns;
+    const a = i * 2.39996 + rng() * 0.9;
     frond(b, {
-      x: 0, y: h * 0.06, z: 0,
-      yaw: a, tilt: 0.50 + rng() * 0.45,
-      len: h * (1.15 + rng() * 0.55), w: h * (0.16 + rng() * 0.07),
-      segs: 4, droop: 0.26 + rng() * 0.14, taper: 0.92,
+      x: cx[c], y: h * (0.03 + rng() * 0.09), z: cz[c],
+      yaw: a, tilt: 0.42 + rng() * 0.60,
+      len: h * (0.70 + 1.05 * rng() * rng()), w: h * (0.13 + rng() * 0.09),
+      segs: 4, droop: 0.22 + rng() * 0.20, taper: 0.92,
       chanA: 0.0, chanB: 0.95, aoA: 0.44, aoB: 1.0, swayA: 0.25, trans: 1.0,
     });
   }
