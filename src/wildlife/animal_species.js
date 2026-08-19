@@ -741,6 +741,12 @@ export const SPECIES = {
       // 172 m spawn radius: a valley where every deer is already standing to
       // attention when it streams in has no grazing in it, and the head-down
       // pose is half the gift.
+      // How far the stand point is walked toward the open side of an edge
+      // site. Enough to clear the canopy and put meadow behind the animal
+      // instead of shadow; not enough to strand a deer alone in the middle of
+      // open ground, which reads as a spawner and throws away the edge
+      // habitat the site was chosen for.
+      standoff: 6.5,
       alertDist: 62, fleeDist: 28, calmDist: 95, noticeDist: 108,
       freezeTime: [1.0, 2.6], fleeTime: [3.5, 7.0],
       grazeTime: [6, 20], idleTime: [2.5, 7], walkTime: [4, 12],
@@ -772,6 +778,9 @@ export const SPECIES = {
       // close, and only leaves if you get closer than that.
       // A bear does not spook, but it does stop and look, and a bear that has
       // stopped and turned side-on is the most legible animal in the game.
+      // A bear is big enough to read anyway, and it patrols a river line where
+      // the far bank is already the backdrop, so it needs less of a nudge.
+      standoff: 4.0,
       alertDist: 24, fleeDist: 11, calmDist: 44, noticeDist: 66,
       freezeTime: [1.4, 3.0], fleeTime: [2.5, 5.0],
       grazeTime: [10, 26], idleTime: [3, 9], walkTime: [10, 30],
@@ -806,6 +815,9 @@ export const SPECIES = {
       // No `noticeDist`: a 0.25 m animal at 50 m is under three pixels, so the
       // wary-watch beat would cost animation and buy the player nothing. A
       // rabbit's whole legibility is the bolt, and that happens at 26 m.
+      // No stand-off: at 0.25 m a rabbit is under three pixels at any range
+      // where this would matter, and cover is the whole point of a rabbit.
+      standoff: 0,
       alertDist: 36, fleeDist: 26, calmDist: 45,
       freezeTime: [0.15, 0.65], fleeTime: [1.6, 3.4],
       grazeTime: [4, 12], idleTime: [1.5, 5], walkTime: [1.5, 5],
