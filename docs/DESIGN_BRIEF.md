@@ -469,3 +469,40 @@ than skipping past it. If you concatenate shared GLSL (`STYLIZE_PARS`,
 `fogUniforms()`, `<common>`), **guard your declarations** with `#ifndef` — two
 paths can legitimately include the same block, and there is no way for a shader
 author to tell from inside which path they are on.
+
+---
+
+## Appendix: the performance gate (read before adding cost)
+
+The player ran at **4 fps for a day** while every harness in this project
+reported 45–50. None of them measured a Retina display: captures use
+`deviceScaleFactor: 1`, where `pixelRatioCap` does nothing at all. On the
+player's machine it was four times the pixels.
+
+**The configuration that matters is `dpr 2`.** Before and after any change that
+adds geometry, draw calls, per-frame work or post-processing:
+
+```bash
+node tools/dprtest.mjs --dpr 2 --w 1170 --h 870  --seconds 26 --gate   # player's window
+node tools/dprtest.mjs --dpr 2 --w 2560 --h 1400 --seconds 26 --gate   # large window
+```
+
+It reports the **settled** frame rate — after adaptive resolution has stabilised
+— plus the resolution actually reached, and exits non-zero outside budget:
+settled ≥ 50 fps, p95 ≤ 45 ms, effective pixel ratio ≥ 1.0.
+
+Three things learned the hard way here:
+
+- **Never buy frame rate with sharpness.** The first adaptive-resolution attempt
+  let the effective ratio reach 0.825 and the player's reaction was "very blurry
+  / fuzzy looking, even on ultra". Below native, drop effects instead.
+- **p95 matters more than the average.** A p95 of 232 ms against a p50 of 42 ms
+  is what a player calls "it drops to 15 fps", however good the mean looks.
+- **This machine's throughput drifts 2–3× over minutes.** Multi-second A/B blocks
+  measure the drift, not your change. Alternate arms every ~34 frames inside one
+  page load and normalise each arm to a baseline measured in its own cycle — see
+  `tools/_scratch/postab.mjs`.
+
+Press **F3** in the running game for an on-screen readout: fps, p95, effective
+pixel ratio (flagged red below native), megapixels, tier, audio state, and draw
+calls and triangles at higher detail.

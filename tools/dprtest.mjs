@@ -102,4 +102,27 @@ const stats = await page.evaluate(() => {
 });
 await browser.close();
 
-console.log(JSON.stringify({ viewport: [W, H], requestedDPR: DPR, ...info, ...stats }, null, 1));
+const report = { viewport: [W, H], requestedDPR: DPR, ...info, ...stats };
+console.log(JSON.stringify(report, null, 1));
+
+// ── budget gate ────────────────────────────────────────────────────────────
+// The player ran at 4 fps for a day while every harness here reported 45+,
+// because none of them measured a Retina display. This is the configuration
+// that matters, so it is the one with a pass/fail.
+const BUDGET = { settledFps: 50, p95Ms: 45, minEffectiveRatio: 1.0 };
+const fails = [];
+if (stats.settled_fps < BUDGET.settledFps)
+  fails.push(`settled ${stats.settled_fps} fps < ${BUDGET.settledFps}`);
+if (stats.p95 > BUDGET.p95Ms)
+  fails.push(`p95 ${stats.p95} ms > ${BUDGET.p95Ms} — hitching is what a player feels`);
+if (stats.resolution && stats.resolution.effective < BUDGET.minEffectiveRatio - 1e-6)
+  fails.push(`effective pixel ratio ${stats.resolution.effective} is BELOW NATIVE — that reads as a blurry game, not a fast one`);
+
+if (process.argv.includes('--gate')) {
+  if (fails.length) {
+    console.error('\nFAIL');
+    for (const f of fails) console.error('  ✗ ' + f);
+    process.exit(1);
+  }
+  console.log('\nPASS — within the player-configuration budget');
+}

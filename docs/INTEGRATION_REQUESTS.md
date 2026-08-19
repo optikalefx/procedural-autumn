@@ -2730,3 +2730,134 @@ forest    2 blobs, 24 px and 7 px
 A hazed warm-grey mark about a quarter below its background, which is what the
 brief asks for, against the "~25 pure-black identical glyphs" the critic
 counted. Every remaining dark speck in `backlit` and `vehicle` is a leaf.
+
+## Scene performance author — 2026-08-19 (perf round)
+
+Everything below is measured with the machine otherwise idle, at the player's
+own pixel count (1280x800 CSS at dpr 2, ~1.0-1.2 MP drawing buffer). The
+harness numbers in this file taken at 1600x900 dpr1 are a different regime and
+should not be compared against these.
+
+### P1. `Engine._applyResolution()` is the p95. One resize costs 0.45-2.5 s.
+
+**This is the whole of the player's `p95 232.6 ms`.** `tools/_scratch/adapthitch.mjs`
+wraps `Engine._applyResolution` and times its parts:
+
+```
+2560x1400 dpr2, adaptive on, 26 s drive
+  resize at  1542 ms -> 0.900   1408.5 ms  [setPixelRatio 1408 -> setSize 1408, PostFX onResize 1]
+  resize at  4089 ms -> 0.810   1162.2 ms
+  resize at  6350 ms -> 0.729   1024.1 ms
+  resize at  8220 ms -> 0.656    873.3 ms
+  resize at  9792 ms -> 0.590    711.8 ms
+  resize at 11177 ms -> 0.550    653.8 ms
+
+1280x800 dpr2, adaptive on, 55 s drive
+  frames 3124   p50 16.8   p95 34.8   max 475   >100 ms: 1
+  resize at  3017 ms -> 0.729    453.7 ms
+```
+
+Two things to read off this:
+
+* **The entire cost is inside `renderer.setPixelRatio` -> `renderer.setSize`,
+  i.e. reallocating the drawing buffer.** PostFX's `onResize` (composer.setSize
+  + ao.setSize) measures **0-1 ms**. This is not the post chain's fault.
+* **The cost scales with the new buffer size**, 1408 ms at 6.5 MP down to 654 ms
+  at 2.4 MP. Extrapolated to the player's ~1.0 MP that is ~230 ms — which is
+  their reported p95 to within noise.
+
+At 1280x800 dpr2 on a quiet machine there was **exactly one frame over 100 ms in
+55 seconds and it was this**. Every other >60 ms frame I could find in a whole
+day of captures was either this or the boot-time recompile in P2.
+
+Requests, in order of value:
+
+1. **Do not resize the canvas to scale resolution.** Render the scene into a
+   fixed-size render target the post chain already owns and vary the *viewport*,
+   or vary an internal buffer, so the drawing buffer is allocated once. This is
+   what removes the stall rather than reducing its frequency.
+2. Failing that, **converge in one step, not six.** `_adapt` moves by 0.90x with
+   a 900 ms cooldown, so reaching the 0.55 floor from 1.0 costs six full
+   reallocations in the first eleven seconds of play. Solving directly for the
+   scale that hits `targetFrameMs` (`next = scale * sqrt(target / p80)`, clamped)
+   lands in one or two.
+3. **Add a deadband that latches.** Once settled, `_adapt` still steps +/-4%
+   whenever p80 wanders out of the 0.80-1.25 band, and every one of those steps
+   is a full reallocation. On a contended machine I logged those recurring every
+   1-5 s indefinitely.
+
+Not my file — `src/core/Engine.js`. I have not touched it.
+
+### P2. `Engine` sets `VSMShadowMap`, then Lighting flips it to `PCFSoftShadowMap` on frame 1.
+
+`Engine.js:46` sets `THREE.VSMShadowMap`. `Lighting._configureShadows()` (which
+already documents this, and asks for the same fix) switches it to
+`PCFSoftShadowMap` on the first `update()`, invalidates every material in the
+scene and re-runs `renderer.compile()`. So **every shader in the game is
+compiled twice at boot**, and the second compile lands after `window.__ready`.
+
+Measured with `tools/_scratch/progwatch.mjs` (a passive watcher — see P4):
+
+```
+programs at ready 109 -> 114 after 60 s
+gl.linkProgram calls after ready: 5   at 62, 212, 294, 463, 702 ms
+new programs:  0.11s (48 ms frame), 0.32s (108 ms), 0.32s hide:deer:stag,
+               0.70s (238 ms), 0.75s (50 ms)
+zero further links for the remaining 59 seconds
+```
+
+**Request: set `this.renderer.shadowMap.type = THREE.PCFSoftShadowMap` in the
+`Engine` constructor.** Lighting's method then becomes a no-op, `main.js`'s
+warm-up `renderer.compile()` produces programs that are actually kept, and the
+five late links and their 48-238 ms frames disappear. One line.
+
+### P3. `pickQuality()` picks a GPU tier from CPU cores and RAM.
+
+`main.js` chooses `ultra` for `deviceMemory >= 8 && hardwareConcurrency >= 8`.
+Neither says anything about the GPU, and the player's report — `ultra`,
+1.02 MP, 15 fps driving — is a machine that passes the CPU test and cannot
+render the ultra scene at any resolution. The adaptive scaler is the only
+feedback in the system and it can only reach the 0.55 floor and stop.
+
+Two requests:
+
+1. **Let the quality tier fall back the way the resolution does.** `Engine`
+   already owns `setQuality()` and a rolling frame-time window; when the
+   resolution scale has sat at `minResolutionScale` for, say, five seconds and
+   the frame time is still over target, step the tier down (ultra -> high ->
+   medium -> low) and reset the scale. Today a player on a weak GPU has no
+   escape hatch that the game will ever take for them.
+2. **Pass the preset to `new Terrain(world, scene)`.** Terrain is the largest
+   single item in the frame (below) and it is the one system that cannot see
+   the quality tier at construction — `main.js` builds it with no `opts`, so it
+   always uses the ultra LOD schedule. It is wired for `onQuality` at runtime
+   but that only fires on a *change*. `new Terrain(world, scene, { preset })`
+   would let it pick its LOD distances and view distance at boot.
+
+### P4. `tools/_scratch/hitchwhy.mjs` reports recompiles that it causes itself.
+
+Recording this so nobody re-derives it. `hitchwhy` wraps every material's
+`onBeforeCompile` and re-wraps every 500 ms. three puts
+`material.onBeforeCompile.toString()` into the program cache key — you can see it
+in hitchwhy's own output, cache keys ending in `onBeforeCompile() { }` and
+`function(sh,rr)` — so replacing the function invalidates the cache and forces
+the recompiles it then reports. Its list of materials "recompiling mid-drive" at
+5 s, 7 s, 33 s is an artifact.
+
+`tools/_scratch/progwatch.mjs` watches `renderer.info.programs` and `linkProgram`
+instead and never touches a material. Use that one. Its verdict on the critic's
+"five shader programs compile mid-drive": true count, wrong timing — all five are
+inside the first 750 ms, cause is P2, and there are none after.
+
+### P5. Measurement protocol — 20 s runs on this box measure the machine, not the build.
+
+Two `tools/dprtest.mjs` runs of the *same* build, back to back, at 2560x1400
+dpr2: `settled_fps 82.6` then `settled_fps 14.6`. The box drifts by several
+times over a couple of minutes and `dprtest`/`perf` block-average over a window
+long enough to sit entirely inside one drift.
+
+`tools/_scratch/sceneab.mjs` (scene-side twin of the post author's `postab.mjs`)
+pins the resolution, alternates arms every ~24 frames and compares each arm to
+the baseline measured in its own cycle. Ablations that read as +/-30% noise under
+block averaging come out with an IQR of 0.03 there. Anything quoting a frame-time
+delta on this machine should use one of those two tools.
