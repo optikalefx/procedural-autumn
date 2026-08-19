@@ -207,7 +207,42 @@ const DEFAULTS = {
   // At 300 it finished at 1.5 km, and everything beyond that was one colour at
   // one density — the flat pale band that filled the middle third of `hero`.
   farStart: 400.0,
-  onset: 130.0,
+  // ── THE CLEAR NEAR ZONE IS THE VISTA BLACK POINT, NOT THE DENSITY ────────
+  //
+  // 260, up from 130, and this is critic blocker 10 ("the vistas are washed").
+  // A predecessor established that the grade's toe and lift move `hero` P05 by
+  // 0.004 across a 3.5x sweep and correctly concluded that the haze owns the
+  // vista darks — but then reached for `FOG_DENSITY_SCALE`, which is a *global*
+  // multiplier: it buys the black point by taking the far-field dissolve away
+  // with it, which is why that sweep stopped at 0.42 with the frames still
+  // washed. This knob buys the same thing selectively, because it subtracts a
+  // constant from the path length: at 300 m it cuts the optical depth by 3.4x
+  // and at 2.5 km by 5%.
+  //
+  // Swept in one boot against onset alone and onset with `desat`, cloud shadow
+  // frozen (shots/look/haze/):
+  //
+  //            hero P05  range  std    peaks P05  range  std    drive P05 chroma
+  //   130       0.377    0.447  0.145   0.423     0.419  0.132   0.287    0.364
+  //   260       0.345    0.479  0.156   0.376     0.467  0.148   0.284    0.364
+  //   380       0.313    0.511  0.167   0.336     0.506  0.161   0.286    0.366
+  //   plate 1   0.157    0.710  0.219   (vistas are judged against plate 1)
+  //
+  // and the eye-level column is the reason this is the right knob rather than
+  // density: `drive` does not move at all, because its whole subject is inside
+  // the clear zone either way. Nothing else in the chain separates the two
+  // framings like that.
+  //
+  // Taken to 260 and not to 380, on a blind A/B that went 1-1 rather than 2-0:
+  // at 380 with a strong chroma falloff `hero` won and `peaks` lost, because
+  // `peaks` is mostly middle distance and stripping both the haze and the
+  // chroma there leaves its far ridges as pale grey cut-outs with no hue of
+  // their own. At 260 the same blind pairing picked the new frame on every
+  // view. The remaining distance to plate 1's 0.157 is partly composition —
+  // plate 1 has a wall of near-black conifer across its foreground and our
+  // vista anchors do not — and chasing the rest of it here would cost the
+  // aerial perspective the brief names as the depth cue.
+  onset: 260.0,
   // Never a perfect wash, and the exact number decides how many planes the far
   // field can show. Anything that reaches the cap renders identically to
   // everything else at the cap, so a high cap collapses every distant ridge
@@ -219,7 +254,28 @@ const DEFAULTS = {
   // toward grey it cannot neutralise the frame, and the reference wants it
   // strong: its distant ridges measure chroma 0.13–0.26 against a foreground
   // meadow at 0.60. Chroma is the depth cue; value barely moves.
-  desat: 0.85,
+  // 1.35, up from 0.85, and it is the *rose* half of critic blocker 4 rather
+  // than a depth change. The distance ramp crossfades a warm haze (hue ~28 deg)
+  // over lavender-grey rock (hue ~250 deg), and the straight line between those
+  // two hues passes through magenta — so at intermediate fog factors the middle
+  // distance arrives pink, which is exactly "the cool half is arriving as candy
+  // pink in the distance". Raising this makes the pixel adopt the haze hue
+  // *earlier* in the ramp, so it spends less of the frame inside the crossing.
+  // Measured on the same boot as `onset` above, as a share of chromatic pixels:
+  //
+  //                      hero rose+mgnt   peaks   dawn    hero chroma
+  //   onset 260, 0.85        7.1%          4.3%    6.8%      0.253
+  //   onset 260, 1.35        3.9%          1.2%    3.2%      0.255
+  //   onset 380, 1.35        7.7%          6.9%    7.3%      0.249
+  //   onset 380, 1.80        5.5%          2.3%    4.7%      0.251
+  //   plate 1                0.1%
+  //
+  // It costs nothing measurable in chroma or in the black point — it is a
+  // re-tint at the pixel's own luminance, not a desaturation, which is what the
+  // note above this one is about. Held at 1.35 rather than 1.80 for the reason
+  // recorded beside `onset`: past this the far ridges stop having a hue of
+  // their own and `peaks` loses a blind A/B on it.
+  desat: 1.35,
   cloudShadow: 0.0,
   cloudScale: 1 / 2600,
   cloudAltitude: 900.0,

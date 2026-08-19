@@ -197,7 +197,10 @@ void main() {
 
   float alpha = body * edge * (0.84 + 0.16 * vDisc);
   // Let go just before the pool so the sheet never clips through the foam.
-  alpha *= 1.0 - smoothstep(0.93, 1.0, vU);
+  // Hand the last stretch over to the churn rather than cutting it. Over 7% of
+  // the path this was an abrupt stop; the sheet has to dissolve into the boil
+  // it is feeding, and the boil has to be visible underneath it while it does.
+  alpha *= 1.0 - smoothstep(0.86, 1.0, vU);
   // Pay back a little of the width the LOD borrowed. Not all of it: a fall on
   // a far ridge is a *bright* thread in the reference, not a grey one, so the
   // exponent is well under the 1.0 that would conserve energy exactly.
@@ -241,7 +244,24 @@ void main() {
   // fit *under* white — the previous gain drove the red channel past 1.0 across
   // most of the sheet, so every lane clipped to the same cream and the fall
   // rendered as a strip of paper with correct silhouette and no water in it.
-  float lanes = 0.62 + 0.46 * c1 + 0.22 * s1 + 0.11 * h1;
+  //
+  // The band has to peak *under* unity, not straddle it. At 0.62 + 0.46 + 0.22
+  // + 0.11 the brightest lanes left here at 1.41x the foam illuminant, and the
+  // illuminant is already near 1.0 in open sun — so the curtain clipped
+  // wherever a cloud was not covering it. Measured on the same 77 m fall: p50
+  // luma 0.818 under a cloud shadow (right, and the number this was tuned on)
+  // but 0.960 with the shadow frozen off, p95 0.987. Every lane painted into
+  // the sheet survives only while it happens to be overcast, which is not a
+  // level, it is a coincidence. Same total contrast, moved below the ceiling.
+  //
+  // Painted, not airbrushed, for the reason given at wSteps: the plate's
+  // curtain is flat marks with edges, ours was a smooth gradient over every
+  // lump. The step width is driven off the same distance fade the octaves
+  // already use, so a far fall dissolves back to a smooth thread rather than
+  // stepping and crawling.
+  float lanesWide = mix(0.17, 0.5, smoothstep(60.0, 200.0, sheetDist));
+  float lanes = 0.55 + 0.30 * wSteps(c1, 3.0, lanesWide)
+                     + 0.14 * wSteps(s1, 2.0, lanesWide) + 0.07 * h1;
   // Level set against the plate: whitewater there has a median luma of 0.80 and
   // never clips. Anything brighter loses every lane painted into it.
   //
@@ -251,7 +271,7 @@ void main() {
   // rock behind it is nearly black. Driving it off the surface normal put the
   // whole sheet at 0.58 whenever the fall faced away from the sun, which in a
   // north-south gorge is most of the day.
-  vec3 col = tint * lanes * wFoamLight(mix(shadow, 1.0, 0.55)) * (0.86 + 0.24 * ndl);
+  vec3 col = tint * lanes * wFoamLight(mix(shadow, 1.0, 0.55)) * (0.86 + 0.14 * ndl);
 
   // Backlight: a curtain of white water in front of a low sun glows. Through
   // the same desaturated illuminant, or a backlit fall turns into orange neon.
@@ -510,12 +530,15 @@ attribute float aSeed;
 
 uniform float uTime;
 uniform float uCullDist;
+uniform float uPixelScale;
+uniform float uMinPx;
 
 varying vec2  vUv;
 varying float vFade;
 varying float vSeed;
 varying float vDist;
 varying float vAge;
+varying float vGrow;
 
 void main() {
   float f = fract(aPhase + uTime / aLife);
@@ -525,16 +548,28 @@ void main() {
   vec3 p = aOrigin + aVel * t - vec3(0.0, 4.905, 0.0) * t * t;
   // A droplet cluster shatters and spreads as it flies.
   float size = aSize * (0.5 + 1.35 * f);
+  // ...and it is never allowed to fall under a couple of pixels. A clot of
+  // water 0.37 m across — which is what the biggest fall in the map throws — is
+  // half a pixel at a hundred metres, so the entire burst was rasterising to
+  // nothing and the plunge had no spray in it from any distance worth framing.
+  // Same line-primitive fix the curtain uses: hold the mark at a readable size
+  // and pay the width back out of the alpha, so the cloud gains no weight as it
+  // recedes. Without this the burst is 258 invisible sprites per fall.
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  if (-mv.z > uCullDist) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  float bMin = uMinPx * max(-mv.z, 0.1) * uPixelScale;
+  vGrow = clamp(bMin / max(size, 1e-3), 1.0, 6.0);
+  size *= vGrow;
   vFade = smoothstep(0.0, 0.07, f) * (1.0 - smoothstep(0.48, 1.0, f));
   vSeed = aSeed;
   vAge = f;
   vUv = uv;
 
-  vec4 mv = modelViewMatrix * vec4(p, 1.0);
-  if (-mv.z > uCullDist) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
-  // Individual droplets are a near-field read; past a couple of hundred metres
-  // the mist volume is what a plume does to a frame.
-  vDist = 1.0 - smoothstep(110.0, 300.0, -mv.z);
+  // Individual droplets are a near-field read, but a *plume* is not — and the
+  // old 110-300 m fade was switching the burst off exactly where the reference
+  // still draws white water at the foot of a fall. It now reaches as far as the
+  // curtain it belongs to; the pixel floor above is what keeps it readable.
+  vDist = 1.0 - smoothstep(420.0, 1100.0, -mv.z);
   // Taller than wide. A thrown clot of water is a streak in the direction it is
   // travelling, and a round sprite is a bubble — which is exactly how the first
   // pass at this read: a scatter of soft white balls hanging in the gorge.
@@ -556,6 +591,7 @@ varying float vFade;
 varying float vSeed;
 varying float vDist;
 varying float vAge;
+varying float vGrow;
 
 ${WATER_NOISE}
 ${WATER_FOAM_LIGHT}
@@ -575,6 +611,10 @@ void main() {
   if (!(a >= 0.012)) discard;
   // Freshly thrown water is denser and whiter than the tail of the arc.
   vec3 col = uFoam * wFoamLight(1.0) * (0.80 + 0.26 * (1.0 - vAge));
+  // Pay back most of the area the pixel floor borrowed, so a burst seen from
+  // far away is a faint haze of spray rather than a cloud that grows as it
+  // recedes. Not all of it: the reference keeps a distant plunge bright.
+  a *= pow(1.0 / vGrow, 1.45);
   gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.46 * vDist);
   #include <fog_fragment>
   #include <tonemapping_fragment>
@@ -587,13 +627,16 @@ const POOL_VERT = /* glsl */`
 attribute vec2  aLocal;    // metres from the impact point
 attribute float aRadius;
 attribute float aPower;
+attribute float aBaseY;    // world height of the impact point itself
 varying vec3  vWPos;
 varying vec2  vLocal;
 varying float vRadius;
 varying float vPower;
+varying float vBaseY;
 void main() {
   vec3 transformed = position;
   vWPos = transformed; vLocal = aLocal; vRadius = aRadius; vPower = aPower;
+  vBaseY = aBaseY;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
   #include <fog_vertex>
 }`;
@@ -602,6 +645,7 @@ const POOL_FRAG = /* glsl */`
 #include <fog_pars_fragment>
 precision highp float;
 uniform float uTime;
+uniform float uPixelScale;  // radians of view angle per output pixel
 uniform vec3  uSunLight;
 uniform vec3  uFoam;
 uniform vec3  uShallow;
@@ -609,6 +653,7 @@ varying vec3  vWPos;
 varying vec2  vLocal;
 varying float vRadius;
 varying float vPower;
+varying float vBaseY;
 
 ${WATER_NOISE}
 ${WATER_ENV}
@@ -617,15 +662,30 @@ ${WATER_FOAM_LIGHT}
 void main() {
   // The pool is draped on the surface it lands on, so it is always in contact.
   // What it must not do is climb a cliff: churn collects on something flat.
-  vec2 e = vec2(1.6, 0.0);
+  //
+  // Stated as a local slope this kept killing the pool outright. A plunge basin
+  // sits at the *foot of a cliff* by definition, so a gradient sampled over
+  // 3.2 m there straddles the cliff base and comes back near-vertical — and at
+  // a cutoff of 2.30 the whole apron went to zero. Hiding the sheet on the
+  // 77 m fall showed the result: no pool, no burst and no mist under it, only a
+  // few sub-pixel droplets. The gate was rejecting the one place it exists.
+  //
+  // Height above the impact point is the honest test, and it is the thing the
+  // gate was always trying to express: foam that has been draped four metres
+  // up the wall behind the fall is climbing, foam at the waterline is not.
+  // It needs no gradient, and it cannot be fooled by a cliff underfoot.
+  // 2.5 to 7.0, not 1.4 to 4.5: the drape adds 0.55 m of its own on top of a
+  // heightfield with half a metre of micro-detail, and a plunge apron is never
+  // level, so the tighter window was costing 40% of the mask everywhere before
+  // any of the churn had been evaluated. Measured on the 77 m fall it left the
+  // gate at 0.6 across the whole pool.
+  float climb = 1.0 - smoothstep(2.5, 7.0, vWPos.y - vBaseY);
+  // The slope test is kept, well relaxed, only to stop an apron painting itself
+  // up a genuinely vertical face that happens to sit at the impact height.
+  vec2 e = vec2(2.6, 0.0);
   float bx = wBed(vWPos.xz + e.xy) - wBed(vWPos.xz - e.xy);
   float bz = wBed(vWPos.xz + e.yx) - wBed(vWPos.xz - e.yx);
-  // Gorges. At a cutoff of 0.55 the apron under any fall steep enough to be
-  // worth looking at was already half gone, and the plunge pool — the loudest
-  // white shape in the reference plate — faded out exactly where the water
-  // hits hardest. Water landing on a 40 degree ramp still throws foam; what it
-  // cannot do is climb a wall, so the cutoff belongs much further up.
-  float bench = 1.0 - smoothstep(1.15, 2.30, length(vec2(bx, bz)) / 3.2);
+  float bench = climb * (1.0 - smoothstep(2.6, 4.2, length(vec2(bx, bz)) / 5.2));
 
   float R = max(vRadius, 0.5);
   // Pool space: x runs downstream, y across. The mesh is built as a disc here
@@ -682,13 +742,37 @@ void main() {
   // torn foam instead of as a flower.
   float lobes  = wFbm2(outw * 2.4 + vec2(uTime * 0.09, 0.0)) * 0.5 + 0.5;
   float lobes2 = wFbm2(vLocal * 0.30 + vec2(uTime * 0.05, 3.1)) * 0.5 + 0.5;
-  float rEff = r / mix(0.56, 1.12, lobes * 0.45 + lobes2 * 0.55);
+  // Both of those are low-frequency — a couple of cycles round the whole pool —
+  // so between them they can only push the boundary into a smooth four- or
+  // five-lobed blob, which from any distance is still an ellipse. That is what
+  // the plunge kept reading as. Torn foam needs a mark the size of the tearing,
+  // not the size of the pool: this third octave runs at about a metre and is
+  // what actually puts a ragged edge on the shape.
+  float lobes3 = wFbm3(vLocal * 1.05 + vec2(-uTime * 0.35, uTime * 0.12) + 5.3) * 0.5 + 0.5;
+  float rEff = r / mix(0.56, 1.12, lobes * 0.34 + lobes2 * 0.40 + lobes3 * 0.26);
 
-  float cut = 0.72 - density * 0.62;
-  float foam = smoothstep(cut, cut + 0.15, churn) * smoothstep(1.06, 0.52, rEff);
+  // Threshold, and it has to stay *inside* the range the noise occupies.
+  // churn is a sum of fbm bells: it lives between about 0.25 and 0.75 and
+  // almost never leaves that. The old cut ran from 0.72 down to -0.12, so
+  // anywhere the density was over roughly 0.75 — which is the whole boil and
+  // most of the tail — the threshold had fallen clean out of the noise's range
+  // and *every* pixel passed it. That is why the plunge stayed a smooth white
+  // egg through three rounds of work on its outline: the churn was being
+  // computed, thresholded against nothing, and discarded. Measured on the
+  // 77 m fall, the pool came back p50 luma 0.96 against plate 5's 0.80 with no
+  // internal range at all.
+  //
+  // Density now *biases* the cut within the band the noise actually occupies
+  // and can never leave it, so the boil is where foam wins most often, not
+  // where the test stops being a test.
+  float cut = mix(0.62, 0.28, clamp(density / 1.35, 0.0, 1.0));
+  float foam = smoothstep(cut, cut + 0.13, churn) * smoothstep(1.06, 0.52, rEff);
   // The white core under the impact, chewed by the same churn so it is a
-  // painted shape rather than a printed disc.
-  foam = max(foam, (1.0 - smoothstep(0.02, 0.44, rImp)) * (0.58 + 0.42 * churn));
+  // painted shape rather than a printed disc — and it is a *high* threshold on
+  // the churn, not a floor under it. Forcing 0.58 across the core was the
+  // second half of the same mistake: it printed a solid disc on top of the
+  // structure that the cut had already stopped modulating.
+  foam = max(foam, (1.0 - smoothstep(0.02, 0.74, rImp)) * smoothstep(0.28, 0.46, churn));
   // Streaks pulled downstream off the boil. Long across the flow direction and
   // narrow against it — the marks a current leaves, and the thing that says
   // which way the water is going once it has landed.
@@ -703,12 +787,35 @@ void main() {
   // outline was never the problem — the inside of it had no tone in it. Real
   // churn is white crests over blue-grey troughs, and it is the troughs that
   // make the crests read as water rather than as paint.
-  float trough = 0.60 + 0.52 * smoothstep(0.28, 0.80, churn)
-                      + 0.22 * (n2 - 0.5);
+  //
+  // ...and the whole ramp has to sit *under* white, which is where the second
+  // half of this bug lived. At 0.60 + 0.52 + 0.22 the crests left this function
+  // at 1.23x the foam illuminant, and the illuminant alone is already near
+  // unity in full sun — so every crest clipped, the troughs went with them, and
+  // the tone curve handed back one flat card. Measured under a frozen cloud
+  // shadow the pool ran p50 0.96 / p95 0.987 against plate 5's 0.80 / 0.91.
+  // The band below peaks just under 1.0 with the plate's range beneath it.
+  // ...and it has to be painted, not airbrushed. Run through a smooth ramp the
+  // churn came back as soft grey mottle with a gradient round every blob; the
+  // plate draws three flat values with edges between them. See wSteps. The
+  // steps dissolve back to the smooth ramp once a level is smaller than a
+  // pixel, so nothing here can crawl at range.
+  float poolFoot = wFootprint(vWPos, cameraPosition, uPixelScale);
+  float poolWide = mix(0.16, 0.5, smoothstep(0.35, 1.6, poolFoot));
+  float trough = 0.50 + 0.38 * wSteps(smoothstep(0.20, 0.84, churn), 3.0, poolWide)
+                      + 0.15 * (n2 - 0.5);
   vec3 col = mix(uShallow, uFoam, foam) * trough
            * wFoamLight(mix(wSunShadow(vWPos), 1.0, 0.5)) * 0.92;
 
-  float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.12, 0.52, rEff);
+  // The outline was a 0.6-wide radial airbrush — more than half the pool's
+  // radius spent on a smooth gradient, which draws an ellipse whatever the
+  // noise inside it is doing, and is the rest of why this read as an egg. The
+  // band is now narrow enough that the lobe noise chewing rEff is what
+  // decides the boundary, which is what makes it read as torn foam.
+  // The plunge is the loudest white shape in plate 5. Measured, this material
+  // was reaching an alpha of about 0.2 at its strongest — a wash that fog then
+  // finished off, which is why hiding the sheet left no pool visible at all.
+  float alpha = clamp(foam * 1.45, 0.0, 1.0) * smoothstep(1.05, 0.86, rEff);
   if (!(alpha >= 0.02)) discard;
 
   gl_FragColor = vec4(col, alpha);
@@ -829,7 +936,20 @@ export class Waterfalls extends System {
         // Never let the path finish above the recorded plunge point.
         if (i === PATH_STEPS - 1) y = Math.min(y, bot[1] + 0.4);
 
-        const w = wf.width * (0.8 + 1.5 * u);
+        // A curtain spreads as it falls, but nowhere near this much. At
+        // 0.8 + 1.5u the sheet reached 2.3x its nominal width at the foot, and
+        // the mesh runs out to +/-1.25 half-widths on top of that — so the
+        // 8 m fall was 23 m across where it landed. Rendered opaque and white,
+        // that is a lens: captured at 110 m the "plunge" on the biggest fall in
+        // the map was a smooth faceted egg hanging on a vertical cliff, which
+        // is what every pass since has been trying to fix inside the *pool*
+        // shader. Hiding the pool entirely left the egg untouched — it was
+        // always the sheet, and it was also covering the pool, the burst and
+        // the mist, which is why none of them ever showed.
+        //
+        // The white mass at the bottom of a fall belongs on the ground, where
+        // the water hits something. The sheet's job is to arrive.
+        const w = wf.width * (0.85 + 0.55 * u);
         pts.push({ x, y, z, w, u, flight });
       }
 
@@ -1095,7 +1215,11 @@ export class Waterfalls extends System {
 
     const mat = new THREE.ShaderMaterial({
       uniforms: Object.assign(fogUniforms(), this.shared, {
-        uCullDist: { value: 420 },
+        // Reaches as far as the curtain does now that the sprites hold a
+        // minimum pixel size — a fall with no spray at its foot reads as a
+        // painted strip, which is what every distant fall in peaks looked like.
+        uCullDist: { value: 1400 },
+        uMinPx:    { value: 2.4 },
       }),
       vertexShader: BURST_VERT,
       fragmentShader: BURST_FRAG,
@@ -1188,7 +1312,7 @@ export class Waterfalls extends System {
   // ── plunge pools ───────────────────────────────────────────────────────────
   _buildPools() {
     const world = this.ctx.world;
-    const pos = [], local = [], rad = [], pow = [], idx = [];
+    const pos = [], local = [], rad = [], pow = [], baseY = [], idx = [];
     let base = 0;
     const RINGS = 5, SEG = 32;
 
@@ -1218,7 +1342,13 @@ export class Waterfalls extends System {
       // blur. Three channel widths is already generous; the reference throws
       // its white water *downstream*, not in a circle.
       const radius = clamp(2.2 + Math.sqrt(fl.disc * fl.height) * 1.45, 3.0, 11);
-      const power = clamp01(0.45 + fl.disc * 0.7);
+      const power = clamp01(0.62 + fl.disc * 0.55);
+      // The waterline at the landing point. Everything the shader says about
+      // whether a bit of apron is lying flat or climbing the wall behind the
+      // fall is measured against this one height — see the climb gate in
+      // POOL_FRAG. Taken from the same drape the vertices use, so the two can
+      // never disagree about where the ground is.
+      const impactY = drapeY(b.x, b.z);
 
       // ── downstream bias ───────────────────────────────────────────────────
       // The pool is still built as a disc in its own space — the shader shapes
@@ -1238,6 +1368,7 @@ export class Waterfalls extends System {
       {
         const [wx, wz] = place(0, 0);
         pos.push(wx, drapeY(wx, wz), wz); local.push(0, 0); rad.push(radius); pow.push(power);
+        baseY.push(impactY);
       }
       for (let r = 1; r <= RINGS; r++) {
         const rr = radius * (r / RINGS);
@@ -1247,6 +1378,7 @@ export class Waterfalls extends System {
           const [wx, wz] = place(lx, lz);
           pos.push(wx, drapeY(wx, wz), wz);
           local.push(lx, lz); rad.push(radius); pow.push(power);
+          baseY.push(impactY);
         }
       }
       for (let s = 0; s < SEG; s++) {
@@ -1269,6 +1401,7 @@ export class Waterfalls extends System {
     geo.setAttribute('aLocal', new THREE.Float32BufferAttribute(local, 2));
     geo.setAttribute('aRadius', new THREE.Float32BufferAttribute(rad, 1));
     geo.setAttribute('aPower', new THREE.Float32BufferAttribute(pow, 1));
+    geo.setAttribute('aBaseY', new THREE.Float32BufferAttribute(baseY, 1));
     geo.setIndex(idx);
     geo.computeBoundingSphere();
     this._geoms.push(geo);

@@ -180,6 +180,32 @@ const KEYS = [
     cloudLit: 0x3a4468, cloudDark: 0x131a2e, cover: 0.35 },
 ];
 
+// ── THE MIDDAY GROUND IS BLEACHED BY GEOMETRY, NOT BY THE KEY ───────────────
+//
+// The other half of critic blocker 3. Measured on a `#f0ad46` card in full sun
+// through the whole chain (tools/_scratch/look/neutral.mjs), against the
+// anchor's own 1 : 0.721 : 0.292:
+//
+//   h  7.4   1 : 0.748 : 0.330   luma 0.513   the anchor
+//   h 16.7   1 : 0.718 : 0.326   luma 0.464   the anchor
+//   h 12     1 : 0.819 : 0.367   luma 0.730   washed cream
+//
+// The noon row is not a hue error, and this is worth stating precisely because
+// the obvious fix does not work: at luma 0.73 the card is past PBR Neutral's
+// compression knee, and that curve's own desaturation term is what raises the
+// two low channels. Cutting the midday keys (tried, 3.40 -> 2.95 at 12.5) moved
+// the card from luma 0.730 to 0.718 and the ratio the *wrong* way, because the
+// shoulder compresses hard enough that a 13% cut in scene radiance is a 1.6%
+// change on screen. It was reverted; the keys here are the authored ones.
+//
+// The cause is geometry. A flat, up-facing ground plane at a 53-degree noon sun
+// receives about four times the irradiance it does at a 14-degree golden hour,
+// which is a real property of the world and not something the keyframe table
+// should be lying about. The right place to absorb four stops of daylight
+// variation is the exposure, and that is what PostFX now does — see
+// EXPOSURE_ELEV there. Do not re-cut these keys to chase the same thing; it
+// would dim the ground while leaving the sky dome, which is lit independently,
+// exactly where it was.
 const COLOR_FIELDS = ['sun', 'hemiSky', 'hemiGnd', 'zen', 'hor', 'sunHor', 'glow',
                       'fogNear', 'fogFar', 'fogSun', 'cloudLit', 'cloudDark'];
 const SCALAR_FIELDS = ['sunI', 'hemiI', 'glowI', 'fogD', 'cover'];
@@ -291,13 +317,99 @@ const FOG_DENSITY_SCALE = 0.42;
 // surface's hue was always mostly its own albedo. The grey column is the whole
 // defect, and it is 0.41 -> 0.81 of blue at one number.
 //
-// 0.30, not 0.0. At 0.0 the grass reads acid yellow-green rather than gold and
+// ── 0.22, RE-SWEPT WITH THE PLATE ANCHORS AS THE TARGET ─────────────────────
+//
+// The sweep above compared the grey card against "1 : 0.89 : 0.87 … 1:0.97:1.05"
+// as a band. Re-run on the shipping build with a `#c3bfcc` card in the chart —
+// which is the brief's *lit rock* anchor, sRGB 1 : 0.979 : 1.046, and the exact
+// thing the rocks author said is unreachable — the sweep reads:
+//
+//   tint   grey card h16.7    #c3bfcc card h16.7   #f0ad46 card h16.7
+//   0.30   1 : 0.928 : 0.817  1 : 0.831 : 0.975    1 : 0.718 : 0.326
+//   0.22   1 : 0.949 : 0.859  1 : 0.851 : 1.024    1 : 0.723 : 0.325
+//   0.15   1 : 0.971 : 0.899  1 : 0.871 : 1.072    1 : 0.730 : 0.324
+//   want   1 : 0.93  : 0.92   1 : 0.979 : 1.046    1 : 0.721 : 0.292
+//
+// 0.22 lands the rock card's blue within 2% of the anchor, where 0.30 was 7%
+// short and 0.15 is 2.5% over — and the gold column moves by half a percent
+// across the whole sweep, which is the whole reason this is safe to do. The
+// predecessor's warning about 0.0 (acid grass, lilac rock) still stands and
+// this stays well clear of it.
+//
+// The green channel is still short on the rock card at every setting, and that
+// residual is *not* the key: the grade is neutral to within a level, and the
+// hemisphere fill is itself green-short (hemiSky 0xbeb6d4 is 1 : 0.95 : 1.11).
+// Left as it is this round rather than moved blind — a hemi hue change reaches
+// every shaded surface in the game and wants its own measurement.
+// 0.22, not 0.0. At 0.0 the grass reads acid yellow-green rather than gold and
 // the rock goes lilac — the frame stops being golden hour and starts being an
 // overcast noon with a warm sky. At 0.30 the birch trunks come back near-white
 // (the brief calls them a signature and they were rendering tan), the conifers
 // are green instead of olive, the rock is lavender-grey instead of brown-grey,
 // and the gold ground is unchanged to the eye. Judged on `drive` at full res.
-const KEY_TINT = 0.30;
+const KEY_TINT = 0.22;
+
+// ── AND A CEILING ON THE KEY'S CHROMA, WHICH IS THE OTHER HALF ──────────────
+//
+// KEY_TINT is a *fraction*, so it hands every hour the same proportion of an
+// authored hue that is not the same size at every hour. Measured on the grey
+// card with the tint shipping at 0.30:
+//
+//            grey card in full sun        gold #f0ad46 card in full sun
+//   h 7.4    1 : 0.970 : 0.859            1 : 0.748 : 0.330
+//   h 12     1 : 1.029 : 0.934            1 : 0.819 : 0.367
+//   h 16.7   1 : 0.928 : 0.817            1 : 0.718 : 0.326
+//   h 18.6   1 : 0.757 : 0.669            1 : 0.603 : 0.318
+//
+// The gold column is critic blocker 3 in one line: the ground is the anchor's
+// colour at 7.4 and 16.7 and neither at 12 (washed) nor 18.6 (brick). And the
+// grey column says why — it is not the ground, it is the light. The authored
+// key runs from linear 1 : 0.84 : 0.58 at noon to 1 : 0.32 : 0.15 at 19.0, a
+// factor of four in chroma, and a constant fractional tint passes that factor
+// straight through. Dusk is not "golden hour but more so"; it is the same
+// multiply at a ratio no albedo survives.
+//
+// So cap the *result* instead. Tinting toward luminance is a lerp, so the
+// linear saturation it lands on has a closed form and can be inverted: with
+// c(a) = l + (c0 - l) a, sat(a) = a (mx0 - mn0) / (l + a (mx0 - l)), which is
+// monotonic in a, so the amount that lands exactly on a ceiling S is
+//
+//     a = S l / ( (mx0 - mn0) - S (mx0 - l) )
+//
+// and the key is tinted at min(KEY_TINT, that). Luminance is untouched at any
+// amount, so no intensity, exposure or value calibration anywhere in this file
+// or in PostFX is affected — this moves hue and only hue.
+//
+// 0.25 is chosen so it is a *no-op at 17.1*, the money hour: the shipping tint
+// of 0.30 already lands the key there at saturation 0.2506, so the ceiling
+// binds at 0.299 and golden hour is bit-for-bit what it was. It binds hard
+// where the defect is — 0.203 at 18.3, 0.158 at 19.0, 0.286 at 7.4 — and not
+// at all at noon, whose key is pale enough to sit under it at any amount. The
+// day still reads as a day: the sun *disc* and the sky glow are published from
+// the untinted key (see update()), so a low sun is still orange in the sky.
+// What stops changing is how much of that orange is multiplied into rock,
+// birch, conifer and the camper.
+// 0.22. Verified free at every framing this project judges: the amount that
+// lands the 17.1 key on this ceiling is 0.259, above KEY_TINT, so `min()` picks
+// KEY_TINT and golden hour is bit-identical. It binds only past 18.0, where the
+// authored key runs away — 0.175 at 18.3 and 0.136 at 19.0 — which is the hour
+// the gold ground was measuring brick at.
+const KEY_SAT_MAX = 0.22;
+
+/**
+ * Tint amount for this key: the smaller of the base amount and the amount that
+ * lands the key exactly on the chroma ceiling. Returns `base` when the key is
+ * already under the ceiling untinted (the denominator goes non-positive), so a
+ * pale midday key is never *pushed* toward its authored hue.
+ */
+function keyTintAmount(c, base, satMax) {
+  const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  const mx = Math.max(c.r, c.g, c.b);
+  const mn = Math.min(c.r, c.g, c.b);
+  const denom = (mx - mn) - satMax * (mx - l);
+  if (denom <= 1e-6) return base;
+  return Math.min(base, (satMax * l) / denom);
+}
 
 /** Lerp a light colour toward its own luminance. Preserves luminance exactly. */
 function tintKey(c, amt) {
@@ -384,6 +496,8 @@ export class Lighting {
     // Null means "use KEY_TINT". Set to a number to sweep the key's hue width
     // in one browser boot — see the note beside KEY_TINT.
     this.keyTint = null;
+    // Same, for the chroma ceiling. Null means "use KEY_SAT_MAX".
+    this.keySatMax = null;
 
     // Sunrise / sunset in hours. The elevation curve is shaped so that the
     // canonical golden-hour views (16.4 … 17.9) sit between 5° and 18° — a
@@ -658,7 +772,8 @@ export class Lighting {
     // authored colour — a low sun looks orange because the disc is orange, not
     // because everything it touches is.
     this.sun.color.copy(k.sun);
-    tintKey(this.sun.color, this.keyTint ?? KEY_TINT);
+    tintKey(this.sun.color,
+      keyTintAmount(k.sun, this.keyTint ?? KEY_TINT, this.keySatMax ?? KEY_SAT_MAX));
     this.sun.intensity = k.sunI;
     this.sun.castShadow = k.sunI > 0.35;
 
@@ -740,8 +855,51 @@ export class Lighting {
       // it rendered as one flat cream mass (contrastStd 0.115 against a
       // reference band of 0.13–0.22). A steeper ramp reaches those casters and
       // leaves eye-level driving frames, where every texel counts, untouched.
-      const ground = focus.y - 6;
-      this._setShadowExtent(clamp(150 + Math.max(ground, 0) * 4.0, 150, 900));
+      // ── AND IT HAS TO BE HEIGHT ABOVE THE *TERRAIN*, NOT ABOVE SEA LEVEL ──
+      //
+      // `focus` is the camera position, so `focus.y` is altitude. The wildlife
+      // + vehicle author traced critic blocker 14 ("the camper casts no
+      // shadow") to this line and their measurement is conclusive
+      // (docs/INTEGRATION_REQUESTS.md, W1): the `vehicle` anchor sits on a
+      // mountainside at y = 194 m with the camera 2.6 m above the ground, and
+      // this formula read that as a 200 m aerial vista and clamped the extent
+      // to the 900 m cap. Both biases are derived from the extent, so at the
+      // cap the shadow test carries 0.75 m of normal offset and ~1.4 m of depth
+      // slack — which skips every occluder whose standoff from its receiver is
+      // under about a metre and a half. A 2.5 m camper is 13.5 texels across
+      // the whole 4096 map there; it and every contact shadow in the frame
+      // vanish, while ridge-scale casters survive, so the frame does not look
+      // obviously broken until you go looking. They proved it by clamping the
+      // extent to 170 m with nothing else changed and the camper's shadow came
+      // straight back.
+      //
+      // Height above ground is what the reasoning above always meant by "when
+      // the camera climbs", and it leaves the two frames that reasoning was for
+      // exactly where they are: `hero` is 62 m over the vista and `peaks` 120 m
+      // over a summit either way. What changes is that an eye-level frame is
+      // now 150-170 m of extent wherever in the valley it happens to be, rather
+      // than depending on the altitude of the ground under it.
+      //
+      // Read off the debug global defensively, same as _configureShadows does
+      // for the renderer: Lighting is constructed before the world exists and
+      // main.js is not ours to add a setter to. With no world this falls back
+      // to the old behaviour rather than to a broken one.
+      // The slope goes 4.0 -> 12.0 in the same move, and it has to: the two
+      // readings are not on the same scale. W1's suggested patch keeps 4.0 and
+      // states that `hero` and `peaks` land where they were, which is true only
+      // if the valley floor is near sea level — it is not. `hero` sits 62 m over
+      // ground at an absolute y of ~370 m, so the old formula gave it the 900 m
+      // cap and the new one at 4.0 would give it 398, taking the distant ridge
+      // casters straight back out of the frustum and undoing the reasoning
+      // above. At 12.0 the mapping preserves both ends: `peaks` (120 m up) and
+      // `hero` (62 m) are still at or within a few metres of the cap, `dawn`
+      // (48 m) sits at 726, and every eye-level frame lands between 150 and
+      // 200 m — `vehicle` at 2.6 m above the ground gets 181 m regardless of
+      // which mountainside it is parked on, which is the whole point.
+      const wd = globalThis.__world;
+      const terrainY = wd?.getHeight ? wd.getHeight(focus.x, focus.z) : null;
+      const above = Number.isFinite(terrainY) ? focus.y - terrainY : focus.y - 6;
+      this._setShadowExtent(clamp(150 + Math.max(above, 0) * 12.0, 150, 900));
 
       const texelWorld = (this.shadowExtent * 2) / this.preset.shadowMapSize;
       const sx = Math.round(focus.x / texelWorld) * texelWorld;

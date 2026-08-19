@@ -116,8 +116,18 @@ const PAL = {
   // `#5c5a75`, because the key light is strongly gold: a stone authored at
   // neutral lavender arrives on screen as salmon, and the only cool note
   // this layer is allowed at ground level then does not exist.
-  stoneLit:    C(0xd3d0e6), stoneDeep:   C(0x9695b4),
-  strawPale:   C(0xdcb264), strawDeep:   C(0xa88146),
+  //
+  // PULLED BACK HALF WAY, and the frame that decides it is `river`. On the big
+  // shaded slope that fills the left of that view the ground is a desaturated
+  // blue-teal, so the gold key is not there to warm these back toward neutral —
+  // and forty stones authored at (211,208,230) come out as the highest-chroma
+  // marks anywhere in the picture, hot pink on cold teal. That is the critic's
+  // blocker 4 ("the cool half is arriving as candy pink") with this layer's
+  // fingerprints on it. The compensation is only correct in *sunlight*, so it
+  // has to be small enough to survive being wrong in shade: half the violet
+  // push, and both ends down toward the brief's own `#c3bfcc` / `#5c5a75`.
+  stoneLit:    C(0xc6c3d7), stoneDeep:   C(0x82819e),
+  strawPale:   C(0xecc47c), strawDeep:   C(0xc69a58),
 };
 
 // Fixed leaf-drift direction. Litter piles downwind of a crown, and the whole
@@ -251,12 +261,33 @@ export class CoverScatter {
    * painted stripe, and the 2 m close-up the critic measured is taken standing
    * on one.
    */
-  _groundTiny(x, z) {
+  _groundTiny(x, z, wet = false) {
     const W = this.world;
     if (!W.isInBounds(x, z)) return 0;
     if (W.getWaterDepth(x, z) > 0.08) return 0;
+    // Near a shoreline the single centre sample is not enough: a leaf patch is
+    // 30-70 cm across and a straw mound close to a metre, so a centre that
+    // tests dry puts half the prop out over open water. `close-grass-2m` shows
+    // exactly that — gold straw and orange leaf chips lying on the river
+    // surface a metre from the bank, which is the same defect the eight-point
+    // probe in `_ground` exists to prevent, on the layer that skipped it for
+    // cost. The probe is only run where the site's own coarse test said there
+    // was water within a metre and a half, so open meadow still pays one
+    // lookup.
+    if (wet) {
+      const s = 0.42;
+      if (W.getWaterDepth(x + s, z) > 0.08 || W.getWaterDepth(x - s, z) > 0.08 ||
+          W.getWaterDepth(x, z + s) > 0.08 || W.getWaterDepth(x, z - s) > 0.08) return 0;
+    }
     if (W.getSlope(x, z) > 1.35) return 0;
     return 1 - this.roads.sample(x, z) * 0.30;
+  }
+
+  /** Is there water within ~1.5 m of here? Four lookups, per clump site. */
+  _nearWater(x, z) {
+    const W = this.world, s = 1.5;
+    return W.getWaterDepth(x + s, z) > 0.02 || W.getWaterDepth(x - s, z) > 0.02 ||
+           W.getWaterDepth(x, z + s) > 0.02 || W.getWaterDepth(x, z - s) > 0.02;
   }
 
   // ── instance emission ──────────────────────────────────────────────────────
@@ -387,7 +418,7 @@ export class CoverScatter {
     // and after the visibility radius took its share the 2 m close-up still
     // measured as a bare slab with a handful of objects on it. What reads as
     // "the ground has stuff on it" is closer to one clump every 3 m².
-    const sites = Math.round(620 * this.mul);
+    const sites = Math.round(820 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_GROUND, key) * 4294967296) >>> 0);
@@ -420,21 +451,42 @@ export class CoverScatter {
 
       // Unnormalised weights; the roll below divides through by the total, so
       // these read as "how much more stone than straw", not as probabilities.
+      // The road term came down from 1.8 and the straw term went up, and the
+      // reason is a coverage argument rather than an ecological one. On a dirt
+      // track the old weights had stone leading about twice as often as straw —
+      // which is *true of a track* and useless here, because a stone clump is
+      // twenty pieces of 3-8 cm grit covering four hundredths of a square metre
+      // while a thatch mound covers a third of one. The 2 m road anchor is the
+      // frame the critic keeps naming, and it was being handed the one mix in
+      // the table that cannot put anything on it. Gravel still wins on actual
+      // rock and gravel bars, where the surface weights say so directly.
       const wStone = 0.55 + w.rock * 2.2 + w.dirt * 0.6 + slope * 0.9
-                   + road * 1.8 - moist * 0.35;
+                   + road * 1.0 - moist * 0.35;
       const wLeaf  = 0.35 + lit * 2.4 + can * 0.55;
       // Straw was carrying two thirds of the mix and hitting its instance cap
       // while stone and leaf sat at a quarter of theirs. It is also the weakest
       // of the three: it sits inside the meadow's own gold, so it adds texture
       // but no value or hue break, and the slab it is covering is gold too.
-      const wStraw = (0.34 + (1 - moist) * 0.55 + bare * 0.55) * (1 - clamp01(can * 0.75));
+      // …and this is the other half of the same rebalance. The note above was
+      // written when straw was one flat strand mat and genuinely the weakest of
+      // the three; with the thatch mound behind it, straw is now the only entry
+      // in the mix that covers ground, so on bare ground it should lead.
+      const wStraw = (0.34 + (1 - moist) * 0.55 + bare * 1.25) * (1 - clamp01(can * 0.75));
       // Moss needs shade *and* damp, not either. On its own the moisture term
       // was putting green cushions all over the open river clay, where they had
       // nothing to grow on and read as loose green cards lying on bare dirt —
       // half the "orphaned quads" in `river`. Moss in the plates is always
       // against something: a trunk, a log, the shaded side of a stone.
-      const wMoss  = Math.max(0, moist - 0.55) * 2.2 * clamp01(can * 1.6 + 0.10)
-                   + can * 0.35 - road * 1.0;
+      // The `+ 0.10` floor in the canopy term was letting moss lead a clump on
+      // open ground after all: small, but a lead is winner-take-all and three
+      // quarters of a twenty-member clump then follow it. In `river` that is
+      // the flat olive-green quad lying by itself on a bare shaded slope — the
+      // last of the "loose green cards", arrived at through the clump lead
+      // rather than through the weight. Moss needs something to grow *on*, so
+      // the canopy term is now a hard gate rather than a bias.
+      const wMoss  = can < 0.14 ? 0
+                   : Math.max(0, moist - 0.55) * 2.2 * clamp01(can * 1.6)
+                     + can * 0.35 - road * 1.0;
       // Halved on open ground. Twigs are the only thing in this layer that
       // renders as a *line*, and a line on a flat gold slab is read as a
       // scratch on the picture long before it is read as wood. Under a canopy
@@ -447,7 +499,7 @@ export class CoverScatter {
       // narrow band, so a swept ridge gets three or four scattered pieces and a
       // hollow gets a proper drift of twenty. Even spacing at a fixed count is
       // the anti-pattern; the variance is the point.
-      const members = 3 + ((rng() * (5 + acc * 13 + bare * 9)) | 0);
+      const members = 4 + ((rng() * (6 + acc * 13 + bare * 14)) | 0);
       // Tightened by roughly half. A twenty-member clump spread over a 3.7 m
       // radius is not a clump, it is a dusting with a soft edge — which is
       // exactly what the river bank measured as: "~70 identical pebbles with no
@@ -492,11 +544,12 @@ export class CoverScatter {
       // varied and reads as uniform, because there is nothing for the eye to
       // group the small ones around.
       let bigStone = false;
+      const wet = this._nearWater(x, z);
       for (let m = 0; m < members && n < cap; m++) {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
         const mx = m === 0 ? x : x + Math.cos(ang) * r;
         const mz = m === 0 ? z : z + Math.sin(ang) * r;
-        if (this._groundTiny(mx, mz) < 0.20) continue;
+        if (this._groundTiny(mx, mz, wet) < 0.20) continue;
 
         const kind = rng() < 0.76 ? lead : pickKind();
         if (kind === 0) {
@@ -536,9 +589,23 @@ export class CoverScatter {
             tone: 0.90 + rng() * 0.24, hue: 0.028, flat: true,
           });
         } else if (kind === 2) {
+          // Variant 1 is the thatch mound, variant 0 the flat strand mat, and
+          // the split is weighted by how bare the ground is rather than rolled
+          // evenly. That is the whole point of the mound: loose strands are a
+          // fine texture *on top of* a grass carpet, and useless as the only
+          // thing on an open clay slab, where what is missing is relief. Where
+          // the grass weight is high the flat mat still wins, so the meadow
+          // does not turn lumpy.
+          const mound = rng() < 0.42 + bare * 0.46;
           n = this._emit(out, n, cap, 'deadTuft', mx, mz, rng, {
-            colA: PAL.strawDeep, colB: PAL.strawPale, sink: 0.01,
-            scale: 0.70 + rng() * rng() * 0.80, tone: 0.90 + rng() * 0.24,
+            colA: PAL.strawDeep, colB: PAL.strawPale,
+            // Mounds sit *into* the ground. A swell whose rim is proud of the
+            // surface has a visible under-edge and reads as an object lying on
+            // the ground rather than as the ground itself.
+            sink: mound ? 0.035 : 0.01, variant: mound ? 1 : 0,
+            scale: mound ? 0.72 + rng() * rng() * 0.62
+                         : 0.70 + rng() * rng() * 0.80,
+            tone: 0.90 + rng() * 0.24,
             hue: 0.022, flat: true,
           });
         } else if (kind === 3) {
@@ -602,32 +669,62 @@ export class CoverScatter {
 
       const w = W.getSurfaceWeights(x, z, this._w);
       const river = W.getRiver(x, z);
+      // The slope term was doing too much and the grass penalty too little, so
+      // "stony" was true of any hillside — and a hillside is most of the map.
+      // In `river` that is forty mauve chips spread evenly across a single
+      // enormous shaded slope, which is the reading the critic filed under
+      // uniform scatter. A stone belongs where the ground is actually stone:
+      // rock, dirt, gravel bar, eroding bank. Slope is a hint, not a licence.
       const stony = clamp01(w.rock * 1.5 + w.dirt * 1.0 + w.sand * 0.7
-                            + smoothstep(0.20, 0.75, slope) * 0.8
+                            + smoothstep(0.20, 0.75, slope) * 0.45
                             + smoothstep(0.06, 0.32, river) * 0.9
-                            - w.grass * 0.55 - w.snow * 2.0);
-      if (stony < 0.08) continue;
+                            - w.grass * 1.10 - w.snow * 2.0);
+      if (stony < 0.10) continue;
       // Stones come in bars and scree runs, not in an even grade over a
       // hillside. The field is what leaves clean stretches between them.
       const field = smoothstep(-0.40, 0.45,
         N.fbm(x * 0.021 + 55.1, z * 0.021 - 33.7, 2, 2.2, 0.5, 1));
-      if (rng() > clamp01(stony * (0.30 + field * 1.05))) continue;
+      // Squared in `stony`: marginal ground now gets a handful of groups rather
+      // than a thinned-out version of a gravel bar's density, which is the
+      // difference between "there are stones over there" and "there are stones
+      // everywhere, sparsely".
+      if (rng() > clamp01(stony * stony * (0.45 + field * 1.35))) continue;
 
       // One big stone at the centre with a handful of smaller ones around it.
       // The size step between member 0 and the rest is deliberately large: a
       // hierarchy is what lets the eye group a scatter into objects, and a
       // narrow range is what stopped it doing so before.
+      //
+      // …which was true and still measured as uniform, because the hierarchy
+      // was being *erased by distance*. The chips carry the same 74 m radius as
+      // the anchor they sit around, so past about 35 m the small ones are two
+      // pixels and gone while every anchor is still drawn at full size — and
+      // what is left is one size of stone, evenly spread, which is exactly the
+      // reading of `river`'s slope. Two changes, and they work together: the
+      // chips get a shorter radius so they and their anchor fade out together
+      // rather than the group dissolving into its largest member; and the
+      // anchor's own scale is drawn over a much wider power-law range, so the
+      // stones that *do* survive to 60 m are themselves a hierarchy instead of
+      // a repeated prop.
       const members = 2 + ((rng() * 5) | 0);
       const spread = 0.55 + rng() * 1.85;
+      // Squared and wide: most groups are ankle-height, one in ten is a
+      // knee-height block that gives the bank its scale from across the river.
+      const anchor = 0.62 + rng() * rng() * 1.75;
       for (let m = 0; m < members && n < cap; m++) {
         const ang = rng() * TAU, r = m === 0 ? 0 : spread * Math.sqrt(rng());
         const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;
         if (!W.isInBounds(mx, mz)) continue;
         if (W.getWaterDepth(mx, mz) > 0.10) continue;
+        const lead = m === 0;
         n = this._emit(out, n, cap, 'cobble', mx, mz, rng, {
           colA: PAL.stoneDeep, colB: PAL.stoneLit, sink: 0.05,
-          variant: m === 0 ? 1 : 0,
-          scale: m === 0 ? 0.90 + rng() * 0.80 : 0.42 + rng() * rng() * 0.80,
+          variant: lead ? 1 : 0,
+          scale: lead ? anchor : anchor * (0.22 + rng() * rng() * 0.46),
+          // The chips fade with their anchor rather than surviving it. Scaled
+          // off the anchor too, so a small group stays a small group all the
+          // way out instead of dissolving into its biggest stone.
+          visMul: lead ? 1 : 0.46 + anchor * 0.14,
           tone: 0.86 + rng() * 0.28, hue: 0.018, flat: true,
         });
       }

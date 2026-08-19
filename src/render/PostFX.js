@@ -10,6 +10,7 @@ import {
 } from 'postprocessing';
 import { N8AOPostPass } from 'n8ao';
 import { QUALITY_PRESETS } from '../world/WorldConfig.js';
+import { SKY_STATE } from './Lighting.js';
 
 // ── Custom grade: aerial perspective, warm/cool split-tone, film curve ───────
 const GRADE_FRAG = /* glsl */`
@@ -522,6 +523,39 @@ const MIN_BLOOM_MIP = 12;
 // here rather than by re-darkening the haze, which would undo the hue work.
 const EXPOSURE = 0.88;
 
+// ── Exposure follows the sun's elevation ────────────────────────────────────
+//
+// Critic blocker 3 says the ground is the `#f0ad46` anchor's colour at one hour
+// in four, and the failing hours are the *bright* one and the *dim* one. The
+// bright one is measured on a gold card in full sun through the whole chain:
+//
+//   h  7.4   1 : 0.748 : 0.330   luma 0.513
+//   h 16.7   1 : 0.718 : 0.326   luma 0.464     anchor is 1 : 0.721 : 0.292
+//   h 12     1 : 0.819 : 0.367   luma 0.730     washed cream
+//
+// At luma 0.73 the card is past PBR Neutral's compression knee, and that curve
+// desaturates as it compresses — so noon's gold is bleached by the *tone
+// curve*, and no grade downstream can put it back because the information is
+// gone by then. It is also not a lighting-authoring error: a flat, up-facing
+// ground plane at a 53 deg noon sun genuinely receives about four times the
+// irradiance it does at a 14 deg golden hour. Cutting the midday keyframes to
+// hide that was tried and reverted — a 13% cut in scene radiance moved the card
+// by 1.6% on screen, because the shoulder is exactly where changes stop showing
+// — and it would have dimmed the ground while leaving the independently-lit sky
+// dome where it was.
+//
+// So absorb it here, where a photographer would: hold the whole frame under the
+// knee by stopping down as the sun climbs. `sunElev` is sin(elevation) off
+// SKY_STATE and runs 0 at the horizon to 0.92 at noon; the canonical views all
+// sit between 0.12 (h7.4) and 0.34 (h17.9), so the ramp starts *above* every
+// framing this project judges and the whole shipping sheet is bit-identical.
+// It is a smooth function of a smooth quantity, so it cannot flicker, and it is
+// a multiplier on the base rather than a write to it, so photo mode's exposure
+// slider still works.
+const EXPOSURE_ELEV_START = 0.40;   // sin(elev) at which stopping down begins
+const EXPOSURE_ELEV_END   = 0.92;   // …and reaches full
+const EXPOSURE_ELEV_MIN   = 0.66;   // multiplier at the top of the arc
+
 // ── HDR sanity gate ──────────────────────────────────────────────────────────
 //
 // A structural backstop, not a fix for any particular bug. One non-finite
@@ -673,6 +707,9 @@ export class PostFX {
     // Neutral holds hue and saturation up into the highlights, which is what
     // lets a bright gold meadow stay gold.
     this.tone = new ToneMapEffect(EXPOSURE ?? engine.exposure ?? 1.0);
+    // The *base* the elevation ramp multiplies. setExposure() writes this, not
+    // the uniform, so photo mode and the ramp compose instead of fighting.
+    this._baseExposure = this.tone.exposure;
     this.smaa = new SMAAEffect();
 
     // Order matters. Bloom and depth of field belong in linear HDR, tone
@@ -761,12 +798,18 @@ export class PostFX {
   }
 
   render(dt) {
+    // Stop down as the sun climbs. See EXPOSURE_ELEV_*.
+    const e = SKY_STATE.sunElev;
+    let t = (e - EXPOSURE_ELEV_START) / (EXPOSURE_ELEV_END - EXPOSURE_ELEV_START);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    t = t * t * (3 - 2 * t);
+    this.tone.exposure = this._baseExposure * (1 + (EXPOSURE_ELEV_MIN - 1) * t);
     this.composer.render(dt);
   }
 
   /** Scene exposure applied immediately before the tone curve. */
-  setExposure(v) { this.tone.exposure = v; }
-  getExposure() { return this.tone.exposure; }
+  setExposure(v) { this._baseExposure = v; this.tone.exposure = v; }
+  getExposure() { return this._baseExposure; }
 
   setFocus(distance) {
     if (!this.dof) return;

@@ -239,6 +239,9 @@ export class Birds {
           // Size. A wide spread inside the species is what stops fourteen
           // identical stamps, and it is free.
           sc: lerp(S.scale[0], S.scale[1], this.rnd() ** 1.6),
+          // Per-bird ground clearance floor. Shared across a flock it becomes
+          // a second, terrain-shaped altitude band — see `_flock`.
+          minY: 12 + this.rnd() * 14,
         });
         // A value spread inside the plumage as well as a hue spread — two birds
         // of the same species at the same distance are still not the same mark.
@@ -371,8 +374,23 @@ export class Birds {
       // be fifty metres out from it and over ground eighty metres higher — on
       // a valley wall that put birds at, and under, ground level. Keep every
       // bird clear of the ground it is actually over.
+      //
+      // A hard `max(y, gy + 14)` does that, and reintroduces exactly the fault
+      // it was added alongside: over rising ground it pins every bird it
+      // catches to one constant offset, so a wheeling flock flattens onto a
+      // surface parallel to the hillside. Measured on the low flock, three of
+      // six birds sat at precisely 14 m — the "clustered at one altitude" the
+      // critic named, now driven by the floor instead of by the band.
+      //
+      // So the floor is per bird (`minY`, 12–26 m) and it is a soft-min: the
+      // bird eases up to its own clearance over the last few metres instead of
+      // being clamped flat against a shared one.
       const gy = W.isInBounds(x, z) ? W.getHeight(x, z) : ground;
-      D.position.set(x, Math.max(y, gy + 14), z);
+      const floor = gy + b.minY;
+      // softplus-ish: equals y well above the floor, tends to `floor` below it,
+      // and never crosses it. The 4 m knee is what stops the pin.
+      const over = y - floor;
+      D.position.set(x, floor + (over > 8 ? over : 4 * Math.log(1 + Math.exp(over / 4))), z);
       // Heading is the tangent; bank into the turn, which is what makes a
       // wheeling flock flash light and dark as it comes round.
       const yaw = b.a + (b.w > 0 ? Math.PI * 0.5 : -Math.PI * 0.5);

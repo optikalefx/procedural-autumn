@@ -62,7 +62,7 @@ const NEAR_VIS = 60;
 // it, in the 50 m ring the player is actually looking at. The layer order below
 // now puts the structural skirt ahead of the substrate as well, so that if this
 // ever binds again it drops grit rather than the clumps at the foot of a tree.
-const MAX_PER_CELL = 8200;
+const MAX_PER_CELL = 12200;
 
 // One prevailing wind for the whole valley, matching the leaf-drift direction
 // in cover_scatter.js. Held constant so each instance's local sway axis can be

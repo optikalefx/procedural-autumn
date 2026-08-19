@@ -89,6 +89,26 @@ float wFbm2(vec2 p){ return wNoise(p) * 0.62 + wNoise(p * 2.13) * 0.38; }
 float wFbm3(vec2 p){
   return wNoise(p) * 0.53 + wNoise(p * 2.07) * 0.30 + wNoise(p * 4.23) * 0.17;
 }
+// Flat masses separated by soft edges — which is the brief's definition of the
+// style, and is literally what the reference draws whitewater as. Plate 5's
+// falling curtain is near-white, a mid blue-grey and a dark teal, with *edges*
+// between them; measured, it spans luma 0.41 to 0.91. Our foam ran the same
+// noise through a smooth ramp and came back as soft grey mottle on white —
+// airbrushed, and reading as dirty snow rather than as broken water.
+//
+// Quantising into n levels with a narrow transition is the whole difference.
+// 'wide' is the half-width of each step in units of a level: small values give
+// painted marks, and 0.5 degenerates back to the linear ramp — which is what
+// makes this safe to band-limit. Steps of a noise whose features are smaller
+// than a pixel are just aliasing, so callers fade 'wide' to 0.5 as the pixel
+// footprint grows and the marks dissolve back into a smooth tone at range.
+float wSteps(float x, float n, float wide){
+  float s = clamp(x, 0.0, 1.0) * n;
+  float i = floor(s);
+  float f = s - i;
+  return (i + smoothstep(0.5 - wide, 0.5 + wide, f)) / n;
+}
+
 // Analytic gradient of a single travelling wave — used instead of sampling a
 // noise field four times, so ripples stay smooth and never alias into crawl.
 vec2 wWaveGrad(vec2 p, vec2 dir, float k, float speed, float t, float amp){

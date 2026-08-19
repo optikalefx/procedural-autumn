@@ -24,73 +24,107 @@
 //  normal floats at the corners on anything but a billiard table, and the whole
 //  point of this thing is not to float.
 //
-//  Colour: a *tint*, not a neutral. Brief §2, CORRECTED AGAIN — an occluded
-//  patch of gold meadow goes high-value violet, not darker gold. The multiply
-//  target attenuates red hardest and blue least, so the darkened ground rotates
-//  toward periwinkle as it drops in value instead of going to mud.
+//  Colour: NEARLY NEUTRAL, and this is the correction that matters.
+//
+//  It was authored as a violet tint on the reasoning from brief §2 (CORRECTED
+//  AGAIN) that an occluded patch of gold meadow goes high-value violet rather
+//  than darker gold. That reasoning is right about the *frame* and wrong about
+//  *this term*, because it was written while the sun's cast shadow was missing
+//  from every eye-level view — the frustum bug now fixed in Lighting.js — so
+//  this patch was the only shading under the camper and it was being asked to
+//  do the cast shadow's job as well as its own.
+//
+//  With the cast shadow back, the ground under the camper is already rotated
+//  cool by `stylizeShadowCool()`, and a second violet multiply on top of it
+//  compounded: measured at hour 12 on gold meadow the patch came out a
+//  saturated cobalt while every other cast shadow in the same frame — the
+//  scrub, the rocks, the ridge conifers — sat at a warm olive-brown. It read
+//  as a puddle of water under the vehicle, which is the exact failure the
+//  brief names ("a shadow that has become saturated blue is a bug", and the
+//  Lighting note about a dark shadow reading as water).
+//
+//  So this term now only *darkens*, with a lean so slight it cannot fight the
+//  grade, and it is weak enough to layer under a real cast shadow without
+//  doubling it. The hue belongs to the look system; the bite under the tyres
+//  belongs here.
+//
+//  Fog: deliberately NOT `#include <fog_fragment>`. The shared chunk mixes the
+//  fragment toward the haze *colour*, which for a multiply mask means mixing
+//  toward a value well above 1.0 — i.e. at distance it would start *brightening*
+//  the ground it lies on. What aerial perspective should do to a multiply is
+//  fade it toward white (no darkening), so it does that explicitly.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { fogUniforms } from '../render/Atmosphere.js';
 import { clamp01 } from '../core/MathUtils.js';
 import { DIM } from './CamperModel.js';
 
 // Grid resolution and footprint. 15×15 is 225 height samples a frame, which is
 // under a tenth of what the tyre ribbons already cost, and it is fine enough
-// that a 4 m patch follows the micro-detail of the meadow without faceting.
+// that the patch follows the micro-detail of the meadow without faceting.
+// (The occlusion itself is evaluated per fragment from an interpolated local
+// coordinate, so the grid only has to resolve the *ground*, not the shape.)
+//
+// The footprint used to be 5 × 8 m for a vehicle that is 1.9 × 4.66 m, and the
+// body lobe's feather pushed real darkening out to 2.0 m either side of a
+// centreline 0.95 m from the flank. Half the visible patch was outside the
+// vehicle. It is now sized to the camper.
 const N = 15;
-const HALF_X = 2.5;    // metres either side of the camper's centreline
-const HALF_Z = 4.0;    // metres fore and aft
+const HALF_X = 1.7;    // metres either side of the camper's centreline
+const HALF_Z = 3.1;    // metres fore and aft
 const LIFT = 0.055;    // above the sampled surface, same as the tyre ruts
 
+// Where the multiply has faded to nothing. A contact patch is a near-field
+// read; past this it is a couple of pixels and only costs the haze contrast.
+const FADE_NEAR = 55.0;
+const FADE_FAR = 110.0;
+
 const SHADOW_VERT = /* glsl */`
-  #include <common>
-  #include <fog_pars_vertex>
   attribute vec2 aLocal;      // metres in the camper's own frame
   varying vec2 vLocal;
+  varying float vDist;
   void main() {
     vLocal = aLocal;
-    vec3 transformed = position;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
-    #include <fog_vertex>
+    vec4 world = modelMatrix * vec4( position, 1.0 );
+    vDist = length( world.xyz - cameraPosition );
+    gl_Position = projectionMatrix * viewMatrix * world;
   }`;
 
 const SHADOW_FRAG = /* glsl */`
-  #include <common>
-  #include <fog_pars_fragment>
-  uniform vec4 uWheels;       // xz half-spacing: wheelX, wheelZ, radius, feather
+  uniform vec4 uWheels;       // wheelX, wheelZ, radius, feather
   uniform vec2 uBody;         // body half-extent in x, z
+  uniform vec2 uFade;         // metres: full strength, gone
   uniform float uStrength;
   uniform float uWheelLoad;
   uniform vec3 uTint;
   varying vec2 vLocal;
+  varying float vDist;
 
-  // Squared-distance falloff of an axis-aligned ellipse, 1 at the centre.
+  // Falloff of an axis-aligned ellipse, 1 at the centre, 0 at the rim.
   float lobe( vec2 p, vec2 halfExtent, float feather ) {
     vec2 q = p / max( halfExtent + feather, vec2( 1e-3 ) );
     return 1.0 - smoothstep( 0.08, 1.0, length( q ) );
   }
 
   void main() {
-    // Body: the underside of the shell, wide and soft.
-    float a = lobe( vLocal, uBody, 1.15 ) * 0.38;
+    // Body: the underside of the shell, wide and soft — and weak. It is the
+    // ambient term of an ambient term; all it has to do is stop the tyre lobes
+    // reading as four separate smudges.
+    float a = lobe( vLocal, uBody, 0.45 ) * 0.30;
 
     // Wheels: four tighter, darker lobes. This is the part that actually reads
     // as contact — the eye places an object by where its feet meet the ground,
     // and a uniform blob under the whole vehicle does not tell it that.
     vec2 w = abs( vLocal ) - vec2( uWheels.x, uWheels.y );
     float wl = 1.0 - smoothstep( 0.0, uWheels.z + uWheels.w, length( w ) );
-    a = max( a, wl * wl * 0.70 * uWheelLoad );
+    a = max( a, wl * wl * 0.62 * uWheelLoad );
 
-    a *= uStrength;
+    a *= uStrength * ( 1.0 - smoothstep( uFade.x, uFade.y, vDist ) );
     if ( a < 0.004 ) discard;
 
     // Multiply. An opaque patch laid over the ground glows once the ground
     // itself falls into shadow, which is the mistake the tyre ruts already
     // documented; a multiply cannot ever be brighter than what it lies on.
     gl_FragColor = vec4( mix( vec3( 1.0 ), uTint, a ), 1.0 );
-    // Distance fades a multiply toward the haze, i.e. toward no darkening —
-    // which is what aerial perspective should do to a contact shadow anyway.
-    #include <fog_fragment>
   }`;
 
 export class VehicleShadow {
@@ -127,17 +161,31 @@ export class VehicleShadow {
     this.geometry = g;
 
     this.material = new THREE.ShaderMaterial({
-      uniforms: THREE.UniformsUtils.merge([fogUniforms(), {
-        uWheels: { value: new THREE.Vector4(DIM.wheelX, DIM.wheelZ, DIM.wheelR * 0.92, 0.78) },
-        uBody: { value: new THREE.Vector2(DIM.halfWidth * 0.92, (DIM.front - DIM.rear) * 0.44) },
+      uniforms: {
+        // Radius and feather now reach 0.76 m around a 0.44 m tyre rather than
+        // 1.18 m — a halo nearly three tyre-widths across was most of what made
+        // the patch read as standing water.
+        uWheels: { value: new THREE.Vector4(DIM.wheelX, DIM.wheelZ, DIM.wheelR * 0.78, 0.42) },
+        uBody: { value: new THREE.Vector2(DIM.halfWidth * 0.85, (DIM.front - DIM.rear) * 0.40) },
+        uFade: { value: new THREE.Vector2(FADE_NEAR, FADE_FAR) },
         uStrength: { value: 1 },
         uWheelLoad: { value: 1 },
-        // Attenuates red hardest, blue least: gold meadow rotates toward
-        // periwinkle as it darkens. Never below ~0.4 — a contact shadow in the
-        // reference is a high-value mass, and the brief is explicit that a
-        // shadow which has gone to black (or to saturated blue) is a bug.
-        uTint: { value: new THREE.Color(0.56, 0.55, 0.67) },
-      }]),
+        // Very nearly neutral, a hair cool. At the deepest point of the wheel
+        // lobe this multiplies the ground by (0.67, 0.67, 0.71) — a third of a
+        // stop of darkening with a lean too small to move the hue. See the
+        // header: the violet belongs to the cast shadow, which exists again.
+        //
+        // The first pass of this correction went too far the other way and the
+        // term stopped existing: an on/off A/B at hour 12 was indistinguishable
+        // (mean abs difference 1.6/255, and all of that on sub-pixel edges from
+        // the camper drifting between frames, with no coherent blob anywhere
+        // under the vehicle). A multiply laid over ground that is *already* in
+        // the camper's own cast shadow has very little absolute room, so it has
+        // to be worth drawing in the case that actually needs it — dawn and
+        // overcast, where `sun.castShadow` is switched off below 0.35 intensity
+        // and this patch is the only thing under the vehicle at all.
+        uTint: { value: new THREE.Color(0.46, 0.47, 0.54) },
+      },
       vertexShader: SHADOW_VERT,
       fragmentShader: SHADOW_FRAG,
       transparent: true,
@@ -150,7 +198,7 @@ export class VehicleShadow {
       polygonOffsetFactor: -4,
       polygonOffsetUnits: -8,
       side: THREE.DoubleSide,
-      fog: true,
+      fog: false,
     });
 
     this.mesh = new THREE.Mesh(g, this.material);
@@ -191,7 +239,7 @@ export class VehicleShadow {
     // Off the ground, the occlusion goes with it — a jumping camper that keeps
     // a hard contact patch nailed under it is worse than no patch at all.
     const g = clamp01(grounded);
-    this.material.uniforms.uStrength.value = 0.35 + 0.65 * g;
+    this.material.uniforms.uStrength.value = 0.30 + 0.70 * g;
     this.material.uniforms.uWheelLoad.value = g;
     this.mesh.visible = g > 0.02;
   }

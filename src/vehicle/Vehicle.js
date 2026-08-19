@@ -20,6 +20,12 @@ import { VehicleShadow } from './VehicleShadow.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
+// The most the visual rig may be dropped to meet the rendered ground. See
+// `_groundSettle`. One physics cell (1.375 m) across a 0.3 gradient sags about
+// 0.10 m, so this has headroom over the worst case and is still far short of
+// anything that could read as the body sitting on its bump stops.
+const MAX_SETTLE = 0.14;
+
 export class Vehicle extends System {
   constructor(ctx) {
     super(ctx);
@@ -49,6 +55,8 @@ export class Vehicle extends System {
     this._lastSpeed = 0;
     this._accelSmooth = 0;
     this._lateralSmooth = 0;
+    this._settle = 0;
+    this._invQuat = new THREE.Quaternion();
   }
 
   async init() {
@@ -155,6 +163,7 @@ export class Vehicle extends System {
     });
 
     this._syncTransform();
+    this._groundSettle(dt);
     this._syncWheels(dt);
     this._body(dt);
     this._effects(dt);
@@ -175,6 +184,7 @@ export class Vehicle extends System {
     const r = this.phys.body.rotation();
     this.position.set(t.x, t.y, t.z);
     this.quaternion.set(r.x, r.y, r.z, r.w);
+    this._invQuat.copy(this.quaternion).invert();
     this.rig.position.copy(this.position);
     this.rig.quaternion.copy(this.quaternion);
     this.forward.copy(this.phys._fwd);
@@ -186,14 +196,62 @@ export class Vehicle extends System {
     this.waterDepth = this.phys.waterDepth;
   }
 
+  /**
+   * Plant the camper on the ground you can actually see.
+   *
+   * The suspension rays run against a **streamed Rapier heightfield sampled at
+   * 1.375 m per cell** (`PATCH_DIV` in VehiclePhysics), while the terrain you
+   * look at carries `world.getHeight`'s micro-detail on top of that. Over a
+   * concave cell the collider's linear interpolation is a chord across the dip,
+   * so the tyre rests on a surface that is genuinely above the rendered meadow.
+   * Measured on the `vehicle` anchor, the four wheels sat at +0.041, +0.031,
+   * -0.020 and **+0.119 m** clear of `world.getHeight` — and 0.119 m at the
+   * 9 m the hero framing shoots from is a 15 px band of daylight under a tyre.
+   * That is the "camper floats" read; the physics is not wrong, the two
+   * surfaces just are not the same surface.
+   *
+   * Fixing it in the collider means a finer patch, which is real CPU on a
+   * budget that is already tight, for a difference no one can feel. So this is
+   * a *visual* settle: drop the whole rig — body and wheels together — by the
+   * SMALLEST clearance any grounded wheel has. The smallest, because that wheel
+   * is the one that must not end up underground; every other wheel is on higher
+   * ground and only gets closer. It can therefore never sink a tyre into the
+   * meadow, only close a gap.
+   *
+   * Damped, because the offset is recomputed from a moving 1.375 m grid and a
+   * hard per-frame value would jitter the model at rest.
+   */
+  _groundSettle(dt) {
+    const W = this.ctx.world;
+    let minClear = Infinity;
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i];
+      if (!w.grounded) continue;
+      const g = W.getHeight(w.pos.x, w.pos.z);
+      if (!Number.isFinite(g)) continue;
+      // The lowest point of a tyre in world Y. Using the full radius rather
+      // than the radius projected on the chassis' up axis under-reads the
+      // clearance on a side slope, which errs toward settling less — the safe
+      // direction, since over-settling is the one failure that would look worse
+      // than the gap.
+      const clear = w.pos.y - VEHICLE.wheelRadius - g;
+      if (clear < minClear) minClear = clear;
+    }
+    const want = Number.isFinite(minClear) ? clamp(minClear, 0, MAX_SETTLE) : 0;
+    this._settle = damp(this._settle, want, 10, dt);
+    this.rig.position.y -= this._settle;
+  }
+
   _syncWheels(dt) {
     for (let i = 0; i < 4; i++) {
       const w = this.wheels[i];
       const n = this.wheelNodes[i];
-      // Physics reports wheel centres in world space; the rig carries the
-      // chassis transform, so convert once through the rig's inverse.
-      this._tmp.copy(w.pos);
-      this.rig.worldToLocal(this._tmp);
+      // Physics reports wheel centres in world space. Convert through the
+      // *physics* transform, not `rig.worldToLocal` — the rig carries the
+      // ground settle above, and going through its matrix would cancel the
+      // settle out for the wheels and drop the body onto them instead of
+      // moving the whole vehicle down.
+      this._tmp.copy(w.pos).sub(this.position).applyQuaternion(this._invQuat);
       n.hub.position.copy(this._tmp);
       n.hub.rotation.y = w.steer;
       n.spin.rotation.x = -w.spin;

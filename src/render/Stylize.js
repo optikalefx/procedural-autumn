@@ -330,6 +330,34 @@ const DEFAULTS = {
   // mass is only half painted, and the more saturated the half is, the more it
   // reads as a puddle with grass growing out of it. stylizeShadowCool() below
   // is the opt-in; see docs/INTEGRATION_REQUESTS.md.
+  // ── HELD AT (0.62, 1.08, 1.40) AFTER MEASURING DEAD-ON AND LOSING BLIND ──
+  //
+  // With the mass finally reaching grass and foliage (see the guard note) and
+  // the lift below 1.0, this was re-swept against plate 3's own mass, measured
+  // over every blue-led pixel (tools/_scratch/coolstat.mjs):
+  //
+  //   target                keep   meadow mass          chroma   drive mass
+  //   0.62 1.08 1.40 (ship) 0.16   srgb(44, 54, 68)     0.094    srgb(95,103,120)
+  //   0.55 1.09 1.47        0.16   srgb(42, 54, 70)     0.108
+  //   0.48 1.10 1.54        0.16   srgb(41, 55, 72)     0.122
+  //   0.48 1.10 1.54        0.08   srgb(39, 57, 77)     0.147    srgb(77,100,120)
+  //   plate 3 mass                 srgb(41, 63, 77)     0.135-0.18
+  //
+  // The last row is the plate to within two levels on every channel, and it
+  // lost a blind A/B on `drive` and on `forest` — the same failure mode this
+  // project keeps hitting, in the same direction, so it is worth naming the
+  // *reason* rather than logging it again as taste.
+  //
+  // Plate 3's mass is one large connected area of ground under a canopy, with
+  // gold grass drawn on top of it in strokes. Ours is the gaps between standing
+  // blades on an open meadow, so the identical pigment arrives as a stipple
+  // pattern with a hard boundary rather than as a field. A stipple of saturated
+  // blue on gold reads as standing water at any chroma the plate can justify,
+  // and at plate chroma the `forest` understorey reads as a flooded floor.
+  // The colour is right and the *shape* is not, and the shape is not reachable
+  // from this file — it needs grass and ground cover to stop drawing their own
+  // warm shadow tint over it (docs/INTEGRATION_REQUESTS.md L1/L2). Until then
+  // the honest setting is the one that survives being looked at.
   shadowCool: new THREE.Color(0.62, 1.08, 1.40),
   // How far a fully shadowed pixel goes.
   //
@@ -410,13 +438,61 @@ const DEFAULTS = {
   // purest form. The frame is trusted: at 1.45/30% the cast shadows on `drive`
   // are blue-violet ribbons across gold ground and read as light, and that is
   // what the brief is describing.
-  shadowCoolLift: 1.45,
+  //
+  // ── 0.90, AND A GAIN ABOVE 1.0 WAS THE WHOLE OF WHY IT READ AS PAINT ─────
+  //
+  // Every sweep above was run while this chunk was not compiling on grass, tree
+  // bark or the canopy (see the guard note in patchStylizedLighting) — so the
+  // mass only ever existed on terrain and rock, and every judgement of "how
+  // blue is too blue" was made on half a frame. With all three back on the air
+  // the value term is the thing that is wrong, and it is wrong in the one
+  // direction a shadow cannot afford:
+  //
+  //   grey card, full sun vs the same card inside a cast shadow, h16.7
+  //     lift 1.45   sun luma 0.320   shade luma 0.277   ratio 0.87
+  //     plate 3     sunlit grass     0.417  shadow mass 0.239   ratio 0.57
+  //
+  // A pixel handed back at 145% of the luminance it arrived with is not a
+  // shadow at any hue; it is pigment lying on top of the ground, which is
+  // exactly what two predecessors saw and then tried to fix by desaturating the
+  // target. Below 1.0 the same rotation reads as shade. It also pays for itself
+  // twice: the vista black point (critic blocker 10) is partly this term
+  // brightening every mid-field cast shadow in the frame.
+  //
+  // Swept 1.45 / 0.90 / 0.70 in one boot on `drive` and `meadow` with cloud
+  // shadow frozen, judged blind through tools/ab.mjs before reveal:
+  //
+  //          drive P05  range   meadow P05  chroma  neut   picked
+  //   1.45     0.299    0.476     0.181     0.215   4.4
+  //   0.90     0.284    0.490     0.175     0.223   4.6     both views
+  //   0.70     0.276    0.500     0.170     0.218   7.2
+  //
+  // 0.90 won both views blind — on `drive` because the shadow finally reads as
+  // shade rather than as a wash lying on the grass, on `meadow` because the
+  // ground between the blades stops competing with the blades for attention.
+  // 0.70 is not taken: meadow's near-neutral share jumps 4.6% -> 7.2% and its
+  // chroma falls, which is the mass walking down toward grey again — the same
+  // dead zone the amount parameter used to sit in, reached from the other side.
+  shadowCoolLift: 0.90,
   // How much of the surface's own colour survives the rotation. Small on
   // purpose: plate 3's mass really is close to one flat slate with darker tufts
   // drawn over it, and at 0.35 the gold came back through strongly enough to
   // land the mass on grey again. It exists so a shadowed crimson maple, a
   // shadowed conifer and shadowed grass are not bit-identical.
   shadowCoolKeep: 0.16,
+  // Held at 110 / 520 after testing 90 / 300, which is recorded because the
+  // hypothesis behind it was wrong and the next author will have the same one.
+  //
+  // `hero` shows violet patches on the hillside at 300-600 m and its
+  // rose+magenta share rose from 4.8% to 6.2% over the round that fixed the
+  // shadow frustum, so those patches looked like this term reaching into the
+  // mid field where plate 1 wants warm cast shadows. Swept in one boot,
+  // 110/520 against 90/300 on hero, dawn, peaks and drive: hero and dawn came
+  // back **bit-identical**, drive moved 0.002, and peaks got very slightly
+  // worse (P05 0.369 -> 0.377). The mass is not there at all; those patches are
+  // the terrain's own rock shading seen through partial haze, which is not this
+  // file's to move. A parameter change that does nothing but cost one view a
+  // little black point is not worth shipping, so the shipping values stand.
   shadowCoolNear: 110.0,
   shadowCoolFar: 520.0,
   // NOT A KNOB, DELIBERATELY. A shaped floor — one that fades across the back
@@ -505,8 +581,28 @@ export function patchStylizedLighting() {
   // constant initialiser, so a material whose shadows are off reads 1.0 rather
   // than an undefined value. Unused declarations in the vertex and depth
   // programs cost nothing; the compiler drops them.
+  //
+  // ── EVERY BLOCK HERE IS GUARDED, AND THAT IS NOT DEFENSIVE PROGRAMMING ────
+  //
+  // This prefix was unguarded when the cool-shadow block was added to
+  // STYLIZE_PARS below, and it took three materials off the air: grass, tree
+  // bark and the tree canopy. All three concatenate STYLIZE_PARS and then
+  // include <common>, so the uniforms were declared twice in one translation
+  // unit — `'uShadowCool' : redefinition`, program link fails, nothing draws.
+  // The meadow rendered as bare litter-strewn ground and every tree in the game
+  // was a canopy floating with no trunk under it. Nothing in the JS lint or the
+  // winding audit can see this; it is a page error and a missing object.
+  //
+  // Guard names are shared with the STYLIZE_PARS block so whichever of the two
+  // the preprocessor reaches first wins and the other is skipped, in either
+  // order. The three concerns are separated because they are not always
+  // declared together: a material that pulls STYLIZE_PARS in ahead of <common>
+  // satisfies the uniform guard but still needs gSunShadow, which only exists
+  // here.
   THREE.ShaderChunk.common =
-    '#define STYLIZE_COOL_DECLARED\nuniform vec3 uShadowCool;\nuniform float uShadowCoolAmt;\nuniform float uShadowCoolReach;\nuniform float uShadowCoolUp;\nuniform float uShadowCoolLift;\nuniform float uShadowCoolKeep;\nuniform float uShadowCoolNear;\nuniform float uShadowCoolFar;\nfloat gSunShadow = 1.0;\n'
+    '#ifndef STYLIZE_COOL_UNIFORMS\n#define STYLIZE_COOL_UNIFORMS\n'
+    + 'uniform vec3 uShadowCool;\nuniform float uShadowCoolAmt;\nuniform float uShadowCoolReach;\nuniform float uShadowCoolUp;\nuniform float uShadowCoolLift;\nuniform float uShadowCoolKeep;\nuniform float uShadowCoolNear;\nuniform float uShadowCoolFar;\n#endif\n'
+    + '#ifndef STYLIZE_SUN_SHADOW\n#define STYLIZE_SUN_SHADOW\nfloat gSunShadow = 1.0;\n#endif\n'
     + THREE.ShaderChunk.common;
 
   injectUniforms('lights', {
@@ -588,8 +684,8 @@ float stylizeRim( float rawNV, float rawVL ) {
 // occluded — getShadowMask() is exactly this); wnY is the world-space normal's
 // Y; dist is the distance from the camera in metres. Returns the colour with
 // the mass applied. Merge stylizeCoolUniforms() to get the uniforms.
-#ifndef STYLIZE_COOL_DECLARED
-#define STYLIZE_COOL_DECLARED
+#ifndef STYLIZE_COOL_UNIFORMS
+#define STYLIZE_COOL_UNIFORMS
 uniform vec3 uShadowCool;
 uniform float uShadowCoolAmt;
 uniform float uShadowCoolReach;
@@ -600,6 +696,15 @@ uniform float uShadowCoolNear;
 uniform float uShadowCoolFar;
 #endif
 
+// Guarded separately from the uniforms above, and separately again from
+// STYLIZE_DECLARED at the top of this string. A MeshStandardMaterial whose
+// author prepends STYLIZE_PARS (grass does) ends up with this whole string
+// twice: once at the head of the fragment shader and once inside the patched
+// lights_physical_pars_fragment. Unguarded, that is the compiler saying
+// "stylizeShadowCool : function already has a body" and the material never
+// links. (No backticks in this string, ever — it is a template literal.)
+#ifndef STYLIZE_COOL_FN
+#define STYLIZE_COOL_FN
 vec3 stylizeShadowCool( vec3 lit, float sh, float wnY, float dist ) {
   float m = clamp( ( 1.0 - sh ) / max( uShadowCoolReach, 1e-4 ), 0.0, 1.0 );
   m = m * m * ( 3.0 - 2.0 * m ) * uShadowCoolAmt;
@@ -609,7 +714,8 @@ vec3 stylizeShadowCool( vec3 lit, float sh, float wnY, float dist ) {
   vec3 t = uShadowCool * ( l * uShadowCoolLift );
   t = mix( t, lit * uShadowCoolLift, uShadowCoolKeep );
   return mix( lit, t, m );
-}`;
+}
+#endif`;
 
 /**
  * Uniform block a custom ShaderMaterial merges in to use `stylizeShadowCool`.

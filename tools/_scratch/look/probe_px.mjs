@@ -24,7 +24,8 @@ const out = await p.evaluate(async ({ b64, ext, regions }) => {
     const hex = '#'+[r,gg,bb].map(v=>v.toString(16).padStart(2,'0')).join('');
     const lum = (0.2126*r+0.7152*gg+0.0722*bb)/255;
     const chroma = (Math.max(r,gg,bb)-Math.min(r,gg,bb))/255;
-    return `${n.padEnd(16)} ${hex}  luma ${lum.toFixed(3)}  chroma ${chroma.toFixed(3)}`;
+    const ratio = `1:${(gg/Math.max(r,1e-6)).toFixed(3)}:${(bb/Math.max(r,1e-6)).toFixed(3)}`;
+    return `${n.padEnd(16)} ${hex}  srgb(${r},${gg},${bb})  ${ratio}  luma ${lum.toFixed(3)}  chroma ${chroma.toFixed(3)}`;
   });
 }, { b64, ext, regions });
 console.log(out.join('\n'));

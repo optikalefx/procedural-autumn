@@ -2581,3 +2581,88 @@ Two notes so this does not fight anything you already do:
 If grass's warm `uShadowTint` is removed in the same pass, please say so — I can
 then take `shadowCool` back toward plate 3's measured `(0.48, 1.10, 1.54)` and
 the mass gets the other 30% of its chroma back.
+
+---
+
+## L2. Read this if you own grass, trees or ground cover — your material was not compiling
+
+*Filed by the look author, 2026-08-19. Already fixed in `src/render/Stylize.js`;
+this is here so nobody re-derives it and so the numbers in L1 above are read in
+the right light.*
+
+The cool cast-shadow block added to `STYLIZE_PARS` at the end of the last round
+declared its uniforms and its `stylizeShadowCool()` function **unguarded**, and
+the matching prefix on `THREE.ShaderChunk.common` was unguarded too. Any
+material that concatenates `STYLIZE_PARS` *and* pulls in `<common>` therefore
+declared the same eight uniforms twice in one translation unit:
+
+```
+ERROR: 0:140: 'uShadowCool' : redefinition
+ERROR: 0:924: 'stylizeShadowCool' : function already has a body
+```
+
+Three materials were affected and all three failed to link, so they drew
+nothing at all:
+
+  * `src/shaders/grass_material.js` — `FRAG_HEAD = STYLIZE_PARS + …` on a
+    `MeshStandardMaterial`, so it gets the string a second time inside the
+    patched `lights_physical_pars_fragment`.
+  * `src/vegetation/tree_material.js` — `BARK_FRAG` and `CANOPY_LIGHT`, both
+    `STYLIZE_PARS + … #include <common>`.
+
+The visible result, in `shots/look/take/` (kept): **no grass anywhere in the
+game** — the meadow was bare litter-strewn ground — and **no trunks on any
+tree**, canopies floating unsupported. `node tools/lint.mjs` is clean through
+all of it and so is `tools/winding.mjs`; it is a page error and an absent
+object, and nothing in the still-frame harness asserts on either. `shot.mjs`
+prints `page-errors` at the end of a run — it is worth reading that block even
+when the frames look plausible.
+
+Fixed by guarding all three blocks (`STYLIZE_COOL_UNIFORMS`,
+`STYLIZE_COOL_FN`, `STYLIZE_SUN_SHADOW`) with names shared between
+`STYLIZE_PARS` and the `common` prefix, so whichever the preprocessor reaches
+first wins and the other is skipped. Nothing on your side needs to change.
+
+### Correction to L1: grass and ground cover *do* already get the cool mass
+
+L1 above says the cast-shadow mass reaches "none of the raw `ShaderMaterial`s"
+and names grass as one of them. That was true when it was written and is not
+true now: `createGrassMaterial()` builds a **`MeshStandardMaterial`**, so it is
+on three's physical lighting path and `lights_fragment_end` — where the mass is
+applied — runs for it. With the shader collision fixed you can see it in
+`shots/look/r1/drive.png`: the grass standing inside a cast shadow is rotated
+cool along with the terrain under it.
+
+So the request that still stands is the smaller one: grass's own
+`uShadowTint {1.06, 0.97, 0.88}` is a **warm** multiplier applied *after* the
+mass has cooled the pixel, and the two partly cancel — shadowed grass arrives
+as a pale lilac-grey rather than as either a warm gold or the plate's
+blue-violet. If that tint goes (or goes neutral), shadowed grass and shadowed
+terrain will agree, and the mass can carry its colour at a lower saturation
+than it needs today. The tree canopy is a genuine `ShaderMaterial` and the
+opt-in in L1 still applies to it.
+
+## G7 — water surface renders over ground that `getWaterDepth` calls dry
+
+From: ground cover. Affects: water, and (visibly) grass as well.
+
+`close-grass-2m.png` puts leaf litter, straw and one pebble cluster on top of
+the *rendered river surface*, a metre out from the bank — and the same frame
+shows standing grass blades doing it too, so it is not one layer's placement
+bug. Every one of those instances was placed through a `getWaterDepth` test:
+this layer refuses anything over 0.08 m, and since this round the sites near a
+shoreline also run a four-point probe at 42 cm before emitting a member. They
+still land in the water, which means the world data at those points is dry and
+the surface that gets drawn there is not.
+
+So the mismatch is between `WorldData.getWaterDepth` and whatever the water
+system uses to decide where to put its mesh — most likely a shoreline that is
+widened or smoothed on the render side, or a surface level that sits above the
+sampled bed by more than the 8 cm threshold. Either the two should agree, or
+the water system could publish the level it actually renders at (an accessor
+taking world x/z and returning the drawn surface Y, or null) and every scatter
+layer could test against that instead. The scatter side is cheap to change once
+there is something correct to ask.
+
+Worked around for now by tightening the near-shore probe, which removes the
+cases where the world data *does* say wet; the remainder needs the above.
