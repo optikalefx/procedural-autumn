@@ -1,0 +1,547 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   HUD — warm, analogue, and mostly absent.
+
+   The rules this sheet follows:
+
+   · Nothing is a rectangle of chrome. The reference plates put a single small
+     cream chip on a gold hillside and nothing else, so panels are rounded,
+     translucent and small, and there is never more than one open at a time.
+   · Cream ink (#fff6ea) on a plum scrim (#2b1c33), lit with the game's own
+     amber. No pure white, no pure black, no saturated blue anywhere — the
+     brief measures blue at ~1% of the reference's chromatic pixels.
+   · The canvas is never blocked: the root is pointer-events:none and only
+     genuinely interactive controls turn it back on.
+   · Everything animates on the same easing as the load screen, so the HUD
+     feels like it came from the same hand.
+   ────────────────────────────────────────────────────────────────────────── */
+
+#pa-hud {
+  --ink: #fff6ea;
+  --ink-dim: rgba(255, 246, 234, 0.62);
+  --ink-faint: rgba(255, 246, 234, 0.34);
+  --plum: 43, 28, 51;
+  --amber: #f0ad46;
+  --ember: #e8622a;
+  --gold: #f3cf45;
+  --scrim: rgba(43, 28, 51, 0.55);
+  --scrim-solid: rgba(43, 28, 51, 0.76);
+  --edge: rgba(255, 246, 234, 0.16);
+  --drop: 0 14px 44px rgba(46, 18, 28, 0.34);
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  color: var(--ink);
+  font-family: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: clamp(12px, 0.72vw + 6px, 16px);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  transition: opacity 0.45s var(--ease);
+}
+
+/* The capture harness poses the camera for every author's art review. Sitting
+   a HUD on top of their frames would be rude and would also make my own
+   before/after comparisons unreadable — so the HUD stands down whenever the
+   harness is driving, unless it was explicitly asked for. */
+#pa-hud.pa-capture-hidden { opacity: 0; }
+#pa-hud.pa-hidden { opacity: 0; }
+#pa-hud.pa-photo .pa-game-only { opacity: 0; transform: translateY(10px); pointer-events: none; }
+
+#pa-hud * { box-sizing: border-box; margin: 0; }
+
+/* Small-caps label, used everywhere a word appears next to a number. */
+.pa-label {
+  font-size: 0.58em;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.pa-panel {
+  background: var(--scrim);
+  backdrop-filter: blur(16px) saturate(1.15);
+  -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  border: 1px solid var(--edge);
+  border-radius: 20px;
+  box-shadow: var(--drop), inset 0 1px 0 rgba(255, 246, 234, 0.09);
+}
+
+/* ── compass ──────────────────────────────────────────────────────────────
+   A strip, not a dial: the player is looking at the horizon, and a heading
+   strip lives at the same place on screen as the thing it describes. */
+.pa-compass {
+  position: absolute;
+  top: 2.1vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(620px, 46vw);
+  height: 4.6em;
+  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+  /* No panel behind it. A box up here would cut the sky in half. */
+}
+
+.pa-compass-track {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 14%, #000 86%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 14%, #000 86%, transparent 100%);
+}
+
+.pa-tick {
+  position: absolute;
+  top: 1.55em;
+  left: 0;
+  width: 1px;
+  height: 0.5em;
+  background: rgba(255, 246, 234, 0.45);
+  will-change: transform;
+}
+.pa-tick.pa-major { height: 0.85em; top: 1.35em; background: rgba(255, 246, 234, 0.7); }
+
+.pa-card {
+  position: absolute;
+  top: 0.1em;
+  left: 0;
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+  text-shadow: 0 1px 8px rgba(46, 18, 28, 0.6), 0 0 2px rgba(46, 18, 28, 0.5);
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+/* A landmark. The whole idea comes straight off reference plate 5: a small
+   cream disc with a thin ring, and nothing else. */
+.pa-poi {
+  position: absolute;
+  top: 2.35em;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15em;
+  will-change: transform, opacity;
+  transition: opacity 0.3s var(--ease);
+}
+.pa-poi-disc {
+  width: 1.55em;
+  height: 1.55em;
+  border-radius: 50%;
+  background: rgba(43, 28, 51, 0.5);
+  border: 1px solid rgba(255, 246, 234, 0.4);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 14px rgba(46, 18, 28, 0.35);
+  transition: transform 0.3s var(--ease), border-color 0.3s var(--ease), background 0.3s var(--ease);
+}
+.pa-poi-disc svg { width: 0.85em; height: 0.85em; display: block; }
+.pa-poi-dist {
+  font-size: 0.52em;
+  letter-spacing: 0.13em;
+  color: var(--ink-dim);
+  text-shadow: 0 1px 6px rgba(46, 18, 28, 0.7);
+  white-space: nowrap;
+}
+/* Centred landmark: warms up rather than lighting up. */
+.pa-poi.pa-near .pa-poi-disc {
+  transform: scale(1.16);
+  border-color: var(--amber);
+  background: rgba(240, 173, 70, 0.26);
+}
+.pa-poi.pa-near .pa-poi-dist { color: var(--ink); }
+.pa-poi.pa-found .pa-poi-disc { border-color: rgba(243, 207, 69, 0.75); }
+
+/* The heading caret. */
+.pa-compass-caret {
+  position: absolute;
+  top: 0.95em;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 0.34em solid transparent;
+  border-right: 0.34em solid transparent;
+  border-top: 0.4em solid var(--ink);
+  opacity: 0.85;
+  filter: drop-shadow(0 1px 4px rgba(46, 18, 28, 0.6));
+}
+
+/* ── dash ─────────────────────────────────────────────────────────────────
+   Bottom left, out of the way of both the camper (centre) and the compass. */
+.pa-dash {
+  position: absolute;
+  left: 2.2vw;
+  bottom: 2.6vh;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.9em;
+  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+}
+
+.pa-speedo { position: relative; width: 8.4em; height: 8.4em; }
+.pa-speedo svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.pa-speedo-read {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-top: 0.5em;
+}
+.pa-speed-num {
+  font-size: 2.1em;
+  font-weight: 700;
+  line-height: 0.92;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 12px rgba(46, 18, 28, 0.55);
+}
+.pa-speed-unit { font-size: 0.52em; letter-spacing: 0.26em; color: var(--ink-faint); margin-top: 0.45em; }
+
+.pa-readouts { display: flex; flex-direction: column; gap: 0.5em; padding-bottom: 1.1em; }
+.pa-readout { display: flex; flex-direction: column; gap: 0.12em; }
+.pa-readout-value {
+  font-size: 0.95em;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 8px rgba(46, 18, 28, 0.55);
+}
+.pa-readout-value .pa-unit { font-size: 0.66em; color: var(--ink-dim); margin-left: 0.25em; letter-spacing: 0.1em; }
+.pa-readout-value .pa-leaf { color: var(--gold); margin-right: 0.3em; }
+
+/* ── corner chips (settings, mute) ────────────────────────────────────── */
+.pa-corner {
+  position: absolute;
+  top: 2.1vh;
+  right: 2.2vw;
+  display: flex;
+  gap: 0.45em;
+  pointer-events: auto;
+}
+.pa-chip {
+  width: 2.3em;
+  height: 2.3em;
+  border-radius: 50%;
+  background: rgba(43, 28, 51, 0.42);
+  border: 1px solid rgba(255, 246, 234, 0.16);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--ink-dim);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: all 0.25s var(--ease);
+  padding: 0;
+}
+.pa-chip svg { width: 1.05em; height: 1.05em; display: block; }
+.pa-chip:hover, .pa-chip:focus-visible {
+  color: var(--ink);
+  border-color: rgba(240, 173, 70, 0.6);
+  background: rgba(43, 28, 51, 0.68);
+  transform: translateY(-1px);
+  outline: none;
+}
+.pa-chip.pa-on { color: var(--amber); border-color: rgba(240, 173, 70, 0.45); }
+
+/* ── first-run hint ──────────────────────────────────────────────────── */
+.pa-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 3.4vh;
+  transform: translateX(-50%);
+  padding: 0.75em 1.35em;
+  display: flex;
+  align-items: center;
+  gap: 1.1em;
+  font-size: 0.82em;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  transition: opacity 0.9s var(--ease), transform 0.9s var(--ease);
+}
+.pa-hint.pa-gone { opacity: 0; transform: translateX(-50%) translateY(12px); }
+.pa-hint kbd {
+  font: inherit;
+  font-weight: 700;
+  color: var(--ink);
+  background: rgba(255, 246, 234, 0.12);
+  border: 1px solid rgba(255, 246, 234, 0.18);
+  border-radius: 0.45em;
+  padding: 0.1em 0.42em;
+  margin-right: 0.4em;
+}
+
+/* ── toast ───────────────────────────────────────────────────────────── */
+.pa-toast {
+  position: absolute;
+  left: 50%;
+  top: 12vh;
+  transform: translate(-50%, -8px);
+  padding: 0.6em 1.2em;
+  border-radius: 999px;
+  font-size: 0.82em;
+  letter-spacing: 0.1em;
+  opacity: 0;
+  transition: opacity 0.3s var(--ease), transform 0.3s var(--ease);
+}
+.pa-toast.pa-show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ── panels (settings / photo rail) ──────────────────────────────────── */
+.pa-sheet {
+  position: absolute;
+  top: 50%;
+  right: 2.2vw;
+  transform: translateY(-50%) translateX(12px);
+  width: min(23em, 88vw);
+  padding: 1.35em 1.35em 1.15em;
+  pointer-events: auto;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.32s var(--ease), transform 0.32s var(--ease), visibility 0.32s;
+  max-height: 92vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.pa-sheet.pa-open { opacity: 1; visibility: visible; transform: translateY(-50%) translateX(0); }
+
+.pa-sheet h2 {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 0.9em;
+}
+.pa-group { margin-bottom: 1.15em; }
+.pa-group:last-of-type { margin-bottom: 0.5em; }
+.pa-group > .pa-label { display: block; margin-bottom: 0.55em; }
+
+.pa-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8em;
+  padding: 0.34em 0;
+  font-size: 0.86em;
+}
+.pa-row-name { color: var(--ink-dim); letter-spacing: 0.04em; }
+.pa-row-val {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
+  min-width: 3.6em;
+  text-align: right;
+  letter-spacing: 0.06em;
+}
+
+/* Range: a thin warm track with a cream bead. Native, so it is keyboard and
+   screen-reader reachable for free. */
+.pa-sheet input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 1.5em;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+}
+.pa-sheet input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--amber) var(--fill, 50%), rgba(255, 246, 234, 0.18) var(--fill, 50%));
+}
+.pa-sheet input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 0.85em;
+  height: 0.85em;
+  border-radius: 50%;
+  background: var(--ink);
+  margin-top: calc(-0.425em + 1.5px);
+  box-shadow: 0 2px 8px rgba(46, 18, 28, 0.5);
+  transition: transform 0.18s var(--ease);
+}
+.pa-sheet input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.18); }
+.pa-sheet input[type="range"]:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.24);
+  box-shadow: 0 0 0 3px rgba(240, 173, 70, 0.4);
+}
+.pa-sheet input[type="range"]:focus { outline: none; }
+
+/* Segmented control — used for anything with three or four choices. */
+.pa-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(255, 246, 234, 0.08);
+  border-radius: 99px;
+  width: 100%;
+}
+.pa-seg button {
+  flex: 1;
+  font: inherit;
+  font-size: 0.76em;
+  letter-spacing: 0.08em;
+  padding: 0.4em 0.2em;
+  border: none;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  white-space: nowrap;
+}
+.pa-seg button:hover { color: var(--ink); }
+.pa-seg button.pa-on { background: rgba(240, 173, 70, 0.9); color: #3a1f17; font-weight: 700; }
+.pa-seg button:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.7); outline-offset: 1px; }
+
+/* Toggle. */
+.pa-toggle {
+  width: 2.6em;
+  height: 1.4em;
+  border-radius: 99px;
+  background: rgba(255, 246, 234, 0.14);
+  border: 1px solid transparent;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.22s var(--ease);
+  flex: none;
+  padding: 0;
+}
+.pa-toggle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0.18em;
+  width: 1em;
+  height: 1em;
+  border-radius: 50%;
+  background: var(--ink);
+  transform: translateY(-50%);
+  transition: transform 0.22s var(--ease);
+}
+.pa-toggle.pa-on { background: rgba(240, 173, 70, 0.85); }
+.pa-toggle.pa-on::after { transform: translateY(-50%) translateX(1.2em); }
+.pa-toggle:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.7); outline-offset: 2px; }
+
+.pa-foot {
+  margin-top: 1em;
+  padding-top: 0.85em;
+  border-top: 1px solid rgba(255, 246, 234, 0.1);
+  font-size: 0.7em;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  line-height: 1.75;
+}
+.pa-foot b { color: var(--ink-dim); font-weight: 700; }
+
+/* ── photo mode ──────────────────────────────────────────────────────── */
+.pa-photo-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.4s var(--ease), visibility 0.4s;
+}
+.pa-photo-frame.pa-open { opacity: 1; visibility: visible; }
+
+.pa-bracket {
+  position: absolute;
+  width: 2.6em;
+  height: 2.6em;
+  border: 2px solid rgba(255, 246, 234, 0.72);
+  filter: drop-shadow(0 1px 6px rgba(46, 18, 28, 0.5));
+}
+.pa-bracket.tl { top: 3.4vh; left: 3vw; border-right: none; border-bottom: none; border-radius: 6px 0 0 0; }
+.pa-bracket.tr { top: 3.4vh; right: 3vw; border-left: none; border-bottom: none; border-radius: 0 6px 0 0; }
+.pa-bracket.bl { bottom: 3.4vh; left: 3vw; border-right: none; border-top: none; border-radius: 0 0 0 6px; }
+.pa-bracket.br { bottom: 3.4vh; right: 3vw; border-left: none; border-top: none; border-radius: 0 0 6px 0; }
+
+.pa-grid {
+  position: absolute;
+  top: 3.4vh; bottom: 3.4vh; left: 3vw; right: 3vw;
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+  background-image:
+    linear-gradient(90deg, rgba(255, 246, 234, 0.22) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255, 246, 234, 0.22) 1px, transparent 1px);
+  background-size: 33.333% 33.333%;
+  background-position: 33.333% 33.333%;
+}
+.pa-grid.pa-on { opacity: 1; }
+
+.pa-rail {
+  position: absolute;
+  left: 50%;
+  bottom: 3.2vh;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1.15em;
+  padding: 0.85em 1.1em;
+  pointer-events: auto;
+}
+.pa-rail-item { display: flex; flex-direction: column; gap: 0.15em; width: 7.4em; }
+.pa-rail-item .pa-label { display: flex; justify-content: space-between; gap: 0.5em; }
+.pa-rail-item .pa-label span:last-child { color: var(--ink-dim); letter-spacing: 0.08em; }
+.pa-rail input[type="range"] { width: 100%; height: 1.2em; }
+
+.pa-shutter {
+  width: 3.1em;
+  height: 3.1em;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 246, 234, 0.55);
+  background: rgba(255, 246, 234, 0.14);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.2s var(--ease);
+  padding: 0;
+  flex: none;
+}
+.pa-shutter::after {
+  content: "";
+  width: 1.9em;
+  height: 1.9em;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 0.12s var(--ease);
+}
+.pa-shutter:hover { border-color: var(--amber); }
+.pa-shutter:active::after { transform: scale(0.84); }
+.pa-shutter:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.8); outline-offset: 3px; }
+
+.pa-rail-hint {
+  font-size: 0.66em;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  white-space: nowrap;
+  line-height: 1.8;
+}
+
+/* The shutter flash: a single cream wash, gone in 220 ms. */
+.pa-flash {
+  position: absolute;
+  inset: 0;
+  background: #fff6ea;
+  opacity: 0;
+  pointer-events: none;
+}
+.pa-flash.pa-fire { animation: pa-flash 0.24s var(--ease); }
+@keyframes pa-flash {
+  0% { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #pa-hud *, #pa-hud { transition-duration: 0.01ms !important; animation: none !important; }
+}

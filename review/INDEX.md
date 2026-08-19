@@ -13,3 +13,4 @@ same places are photographed every round and the sheets are directly comparable.
 | 005 | 2026-08-18 | debug marker stripped, black frames fixed | [005](005-2026-08-18-debug-marker-stripped-black-frames-fixed.png) |
 | 006 | 2026-08-18 | grass rescaled, grade recalibrated to plates | [006](006-2026-08-18-grass-rescaled-grade-recalibrated-to-plates.png) |
 | 007 | 2026-08-18 | clouds, weather, wildlife, foliage light floor | [007](007-2026-08-18-clouds-weather-wildlife-foliage-light-floor.png) |
+| 008 | 2026-08-18 | pre-fog-fix reference | [008](008-2026-08-18-pre-fog-fix-reference.png) |

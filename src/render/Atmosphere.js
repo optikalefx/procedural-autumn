@@ -87,20 +87,6 @@ const FOG_FRAG = /* glsl */`
   float dist = length(toFrag);
   vec3 dir = dist > 1e-4 ? toFrag / dist : vec3(0.0, 1.0, 0.0);
 
-  // ── cloud shadow ────────────────────────────────────────────────────────
-  // Walk from the surface up the sun ray to cloud altitude and sample the
-  // same coverage field the cloud dome marches. One tap, no extra passes.
-  if (uCloudShadow > 0.001) {
-    float sy = max(uFogSunDir.y, 0.16);
-    float climb = clamp((uCloudAltitude - vFogWorldPos.y) / sy, 0.0, 4200.0);
-    vec2 cuv = (vFogWorldPos.xz + uFogSunDir.xz * climb) * uCloudScale + uCloudOffset;
-    float cov = texture2D(uCloudMap, cuv).r;
-    // Soft, wide edges: a hard-edged cloud shadow at this scale reads as a
-    // texture crawling over the ground rather than as weather.
-    float shade = 1.0 - uCloudShadow * smoothstep(0.42, 0.78, cov);
-    gl_FragColor.rgb *= shade;
-  }
-
   // ── analytic height-fog optical depth ───────────────────────────────────
   // rho(y) = D * exp(-k * (y - baseY));  integrate along the ray.
   float k  = uFogHeightFalloff;
@@ -121,6 +107,31 @@ const FOG_FRAG = /* glsl */`
   }
   integral = max(integral, 0.0);
   float fogFactor = 1.0 - exp(-integral);
+
+  // ── cloud shadow ────────────────────────────────────────────────────────
+  // Walk from the surface up the sun ray to cloud altitude and sample the
+  // same coverage field the cloud dome marches. One tap, no extra passes.
+  //
+  // Applied *after* the optical depth is known, and faded out by it. A cloud
+  // shadow two kilometres away is behind two kilometres of haze and cannot be
+  // seen through it; drawing it there anyway is how the coverage map ended up
+  // stencilled across the far massif in the drive frame as a repeating
+  // lozenge hatch. The projection is a vertical column walk, so on a
+  // near-vertical mountain face it smears the tile into stripes and the
+  // repeat becomes legible as a texture — the one thing this term must never
+  // read as. Near ground, where the shadow belongs and where the projection
+  // is nearly flat, fogFactor is ~0 and the term is untouched.
+  float cloudFade = clamp(1.0 - fogFactor * 1.6, 0.0, 1.0);
+  if (uCloudShadow * cloudFade > 0.001) {
+    float sy = max(uFogSunDir.y, 0.16);
+    float climb = clamp((uCloudAltitude - vFogWorldPos.y) / sy, 0.0, 4200.0);
+    vec2 cuv = (vFogWorldPos.xz + uFogSunDir.xz * climb) * uCloudScale + uCloudOffset;
+    float cov = texture2D(uCloudMap, cuv).r;
+    // Soft, wide edges: a hard-edged cloud shadow at this scale reads as a
+    // texture crawling over the ground rather than as weather.
+    float shade = 1.0 - uCloudShadow * cloudFade * smoothstep(0.38, 0.90, cov);
+    gl_FragColor.rgb *= shade;
+  }
 
   // ── Mie inscattering: the haze glows around the sun ─────────────────────
   float cosT = dot(dir, uFogSunDir);

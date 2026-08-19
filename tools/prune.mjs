@@ -15,8 +15,15 @@ import { join } from 'node:path';
 const argv = process.argv.slice(2);
 const KEEP = parseInt((argv[argv.indexOf('--keep') + 1] ?? '3'), 10);
 const ROOT = 'shots';
-// Never prune these: pinned anchors and anything an author is mid-comparison on.
+// Never prune these. `critic` in particular: the pruner deleted a critic's
+// evidence directory out from under an in-progress review, which is exactly the
+// work that must be reproducible. Anything an author may be mid-comparison on
+// belongs here.
+const PROTECT_DIRS = new Set(['critic', 'perf', '_scratch']);
 const PROTECT = new Set(['_anchors.json']);
+
+// Skip anything modified in the last two hours: an author is probably using it.
+const RECENT_MS = 2 * 60 * 60 * 1000;
 
 if (!existsSync(ROOT)) process.exit(0);
 
@@ -32,6 +39,7 @@ const du = (p) => {
 
 for (const author of readdirSync(ROOT, { withFileTypes: true })) {
   if (!author.isDirectory()) continue;
+  if (PROTECT_DIRS.has(author.name)) continue;
   const dir = join(ROOT, author.name);
   const rounds = readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isDirectory() && !PROTECT.has(e.name))
@@ -39,6 +47,7 @@ for (const author of readdirSync(ROOT, { withFileTypes: true })) {
     .sort((a, b) => b.t - a.t);
 
   for (const old of rounds.slice(KEEP)) {
+    if (Date.now() - old.t < RECENT_MS) continue;
     freed += du(old.path);
     rmSync(old.path, { recursive: true, force: true });
   }
@@ -50,6 +59,7 @@ const loose = readdirSync(ROOT, { withFileTypes: true })
   .map((e) => ({ path: join(ROOT, e.name), t: statSync(join(ROOT, e.name)).mtimeMs }))
   .sort((a, b) => b.t - a.t);
 for (const old of loose.slice(4)) {
+  if (Date.now() - old.t < RECENT_MS) continue;
   freed += du(old.path);
   rmSync(old.path, { recursive: true, force: true });
 }
