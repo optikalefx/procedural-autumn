@@ -1374,8 +1374,19 @@ export function createTerrainMaterial(world, opts = {}) {
         // finer, because at 2-4 km through the haze nothing finer survives.
         if (uFarApron > 0.001) {
           float slopeGeo = length(N.xz) / max(N.y, 1e-3);
+          // THE ALTITUDE TERM IS THE WARPED ONE, and it was not, which is the
+          // fifth time on this project that a terrain defect read as a light or
+          // a grade problem and turned out to be a level curve. An untouched
+          // smoothstep on world height is a contour by construction — the near
+          // field says so in its own comment sixty lines up and uses altWarp for
+          // exactly this reason — and on the apron it drew a single gold band
+          // running level across the whole left range in hero, top edge
+          // horizontal, over three hundred pixels of it. Confirmed off debug
+          // mask 6: the band is in the albedo, not in the light. altWarp is
+          // already computed, so this costs nothing and the band now climbs a
+          // shoulder and gives out on a spur the way the near-field line does.
           float soft = (1.0 - smoothstep(0.42, 0.96, slopeGeo))
-                     * (1.0 - smoothstep(190.0, 330.0, vWorldPos.y));
+                     * (1.0 - smoothstep(190.0, 330.0, altWarp));
           // Deliberately a stop darker than the near rock. A distant plane is
           // read by its VALUE relative to the sky as much as by its hue, and
           // painted at the near rock's albedo the range came back brighter than
