@@ -13,6 +13,36 @@
 //  constant along a parcel's trajectory. Scrolling that coordinate gives flow
 //  that accelerates and stretches exactly like falling water, with no
 //  hand-tuned per-fall speeds.
+//
+//  ── on `frustumCulled = false`, which every mesh here sets ──────────────────
+//
+//  Spray, burst and mist are one instanced draw each, covering all 28 falls at
+//  once: 11,889 + 14,504 + 2,263 instanced quads, plus the sheet's 12,096
+//  vertices, so ~127k vertex invocations every frame whether or not a fall is
+//  on screen. The particle meshes have no CPU-side positions at all — every
+//  instance is placed in the vertex shader from the baked path texture — so a
+//  real bounding volume does not exist to cull against, hence the 1e6 sphere
+//  and the flag.
+//
+//  Per-fall frustum culling was considered and rejected, for three reasons in
+//  descending order of how much they matter:
+//
+//  1. It is not a cost. Interleaved sceneab, 18 cycles x 20 frames, driving:
+//     hiding the *entire* Waterfalls group is -0.7% (iqr 3.2%); hiding all
+//     three particle layers is -1.6% (iqr 3.3%). Per-fall culling could
+//     recover some fraction of that, i.e. nothing. This frame is not vertex
+//     bound. (Independently reproduces the previous author's -0.4% at iqr 12%.)
+//  2. There is nothing to cull *to*. The 28 falls span 2946 x 2766 m of a
+//     3072 m map, so a group-level bounding sphere covers the whole world and
+//     never rejects. Culling would have to be per fall, and instances are
+//     interleaved into one draw per layer — splitting them means 28 draws per
+//     layer, 84 extra draw calls, to save under 0.7% of a frame whose draw
+//     call count is already a critic budget line.
+//  3. The distance half of the job is already done, in the place that actually
+//     pays: `uCullDist` in each vertex shader collapses a far instance to a
+//     degenerate clip position, so it costs no fill. Note the burst's 2600 is
+//     deliberate and measured — see the comment on that uniform — not an
+//     oversight; a fall with no spray at its foot reads as a painted strip.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';

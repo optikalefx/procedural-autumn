@@ -3211,10 +3211,25 @@ messages said it was.
 The water author found this, not me, and found it while stopped and under
 suspicion.
 
-## X2. TERRAIN — the "shadow" beside the waterfall is a one-texel river channel painted down a 62° cliff (water, 2026-08-19)
+## X3. TERRAIN — the "shadow" beside the waterfall is a one-texel river channel painted down a 62° cliff (water, 2026-08-19)
 
 **Owner: whoever holds `src/world/TerrainMaterial.js` / `src/world/TerrainGen.js`.
 Not mine to fix — filing rather than editing.**
+
+*Numbered X3, not X2, and it sits above X2 in the file for a reason worth one
+line: this section was sitting un-staged in the working tree when `d946124` ran
+`git add` without a pathspec and committed it under its own message. Nothing was
+lost — docs only, and the text is intact — but that is the third occurrence of
+the X1 error, this time in the document that describes it. `git status --short`
+before committing would have shown it.*
+
+**Critic pass 4 landed while this was being written and made it a BLOCKER:** "a
+khaki chain of overlapping spheres running the full height of the cliff... a rope
+of sausages glued to the rock... the single most obviously broken object in any
+frame in this round. It is warm where the rock is cool, so it is not the rock
+material." Their numbers and mine agree to within sampling: band `srgb(142,128,126)`
+vs my `srgb(147,133,129)`, cliff `srgb(159,148,159)` vs my `srgb(162,150,159)`.
+They were right that it is not the rock material. It is the river mask.
 
 In `shots/round48/waterfall.png` there is a dark vertical band immediately to the
 right of the falling water, running most of its height. It was read as a seam or
@@ -3287,13 +3302,21 @@ Please do not fix this by darkening or desaturating `riverBed` — the band is o
 texel of a mask that should not be there, and every earlier attempt on this
 project to shade away a structural defect made the structure harder to find.
 
-**Verification captures, all at the canonical `waterfall` framing:**
+**Reproduce the elimination in one command** (`shots/` is regenerable and not
+tracked, so here is the recipe rather than a file list). The band is present in
+every one of these:
 
-- `shots/water-diag/waterfall.png` — baseline, everything on
-- `shots/water-diag/wf-nowater.png` — Water hidden, band present
-- `shots/water-diag/wf-nofalls.png` — Waterfalls hidden, band present and unobstructed
-- `shots/water-diag/wf-nocover.png` — ground cover hidden, band present
-- `shots/water-diag/wf-terrainonly.png` — **every** system hidden, band present
+```bash
+node tools/shot.mjs --view waterfall --dir shots/water-diag            # baseline
+node tools/shot.mjs --view waterfall --dir shots/water-diag \
+  --eval "for(const n of ['rocks','water','waterfalls','trees','groundCover','grass','wildlife','clouds']){const s=window.__systems[n];if(s&&s.group)s.group.visible=false;}"
+node tools/_scratch/crop.mjs shots/water-diag/waterfall.png \
+  --rect 0.06,0.0,0.16,0.55 --out shots/water-diag/band.png --wide 420
+```
+
+The second capture is terrain and *nothing else*, and the chain is still there at
+full strength — which is the whole finding. Hiding `water`, `waterfalls` and
+`groundCover` individually each leave it untouched as well.
 
 
 ---

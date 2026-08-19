@@ -550,6 +550,25 @@ void main() {
   // construction and cannot pick this up.
   wetT *= smoothstep(-0.45, 0.10, vWet);
   alpha = max(alpha, wetT * 0.66);
+  // MEASURED — this widening was the one un-isolated perf suspect left in the
+  // system, on the reasoning that the ring's fragments now clear the discard
+  // below and run the full lake shader including a 24-step wEnvReflect. It is
+  // not a cost. Interleaved sceneab, 16 cycles x 20 frames, camera parked on
+  // the bank of the deepest lake in the map looking across it so the frame is
+  // as much shoreline as this map can make:
+  //
+  //   uWetBand  0.001   +0.4%   (iqr 2.0%)
+  //   uWetBand  3.1      base
+  //   uWetBand  12.0    +0.3%   (iqr 2.6%)
+  //   uWetBand  40.0    -0.3%   (iqr 1.4%)
+  //
+  // 40 m is 13x the shipped band and pushes the *entire* dilation ring past
+  // the discard, so that arm is the ceiling on what this can ever cost, and it
+  // is zero. The stronger result from the same run: uReflectSteps 24 -> 0 in
+  // that framing is -0.6% (iqr 2.9%). The march does not measure even when it
+  // runs on every lake pixel in a lake-filling frame, so it cannot measure on
+  // an 8 m ring. Water fill is not what this frame is bound by. Do not spend a
+  // round making this cheaper.
   if (alpha < 0.012) discard;
 
   // ── wind ripple ───────────────────────────────────────────────────────────
