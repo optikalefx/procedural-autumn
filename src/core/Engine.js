@@ -25,7 +25,13 @@ export class Engine {
     this.basePixelRatio = Math.min(window.devicePixelRatio, this.preset.pixelRatioCap);
     this.resolutionScale = 1;
     this.targetFrameMs = 1000 / 60;
-    this.minResolutionScale = 0.55;   // below this it reads as soft, not fast
+    // Never render below one device pixel per CSS pixel. A scale that takes the
+    // effective ratio under 1.0 is drawing fewer pixels than the display has and
+    // upscaling them, which reads as a blurry game rather than a fast one — the
+    // first version of this shipped at 1.5 x 0.55 = 0.825 and the player's
+    // immediate reaction was "very blurry / fuzzy looking, even on ultra".
+    // Below native, the honest move is to drop effects, not sharpness.
+    this.minEffectivePixelRatio = 1.0;
     this.adaptive = true;
     this._frameTimes = [];
     this._lastAdapt = 0;
@@ -128,7 +134,8 @@ export class Engine {
     else if (p80 < target * 0.80) next = this.resolutionScale * 1.04;
     else return;
 
-    next = Math.max(this.minResolutionScale, Math.min(1, next));
+    const floor = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
+    next = Math.max(floor, Math.min(1, next));
     if (Math.abs(next - this.resolutionScale) < 0.005) return;
 
     this.resolutionScale = next;

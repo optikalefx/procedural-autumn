@@ -23,6 +23,7 @@ import { Stylize } from './render/Stylize.js';
 import { Lighting } from './render/Lighting.js';
 import { PostFX } from './render/PostFX.js';
 import { Sky } from './sky/Sky.js';
+import { PerfOverlay } from './ui/PerfOverlay.js';
 
 // ── world systems, in construction order ─────────────────────────────────────
 import { Clouds }      from './sky/Clouds.js';
@@ -321,6 +322,13 @@ async function boot() {
     const tick = () => { if (++n >= frames) res(); else requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   });
+
+  // Always-on perf readout (F3 toggles, Shift+F3 cycles detail). Kept out of
+  // the HUD deliberately — the HUD hides itself during captures, and this needs
+  // to be visible precisely when the player is judging how the game feels.
+  const perfOverlay = new PerfOverlay(engine);
+  engine.onLateUpdate(() => perfOverlay.update());
+  window.__perfOverlay = perfOverlay;
 
   let fpsAcc = 0, fpsN = 0;
   engine.onLateUpdate((dt) => {
