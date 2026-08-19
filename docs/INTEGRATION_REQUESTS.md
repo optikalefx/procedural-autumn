@@ -3084,6 +3084,27 @@ integrator call before I spend it. It is the largest lever left.
 > naturally-streamed encounters (not `debugSpawn`, which is exempt from the
 > stand-off precisely so capture harnesses keep framing where they are told).
 
+### Postscript: the gate is failing on the merged tree, and it is not wildlife.
+
+At `2152eef` the gate passed cleanly at p95 39.4 / 59.2 fps settled. After
+`7503d75` (terrain plane breaks), `4d6e643` (scrub shadow side) and `cd4f9d9`
+(waterfall curtain lip) landed, the same command on the same machine gives
+**p95 61.8 / 33.4 fps settled, FAIL on both counts**.
+
+I re-ran the back-to-back isolation that the integrator accepted earlier,
+changing only the four `src/wildlife/` files on the current tree:
+
+| tree | p95 | settled |
+|---|---|---|
+| HEAD, wildlife reverted to `3003973` | 63.5 ms | 39.5 fps |
+| HEAD, wildlife as shipped | 55.8 ms | 44.4 fps |
+
+Both fail, and removing the wildlife work makes it *worse*, so the regression is
+not in this system. Ambient load is genuinely high (15-minute load average 16.2),
+so some of this is contention — but the 59.2 -> 33.4 drop is far larger than the
+contention swing I have seen all day, and it appeared with those three commits.
+Worth a bisect by whoever owns them.
+
 ### 2. Stray files in `src/wildlife/` that are not mine.
 
 `src/wildlife/GroundCover.js`, `cover_forms.js`, `cover_material.js` and
