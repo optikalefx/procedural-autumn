@@ -194,8 +194,13 @@ void main() {
   // the lip and where it enters the boil turns the strip into a brush stroke.
   // Both tapers are a few metres on a seventy metre drop, so the near view is
   // unchanged apart from a lip that now looks like water accelerating.
-  float endTaper = min(smoothstep(0.0, 0.055, vU), 1.0 - smoothstep(0.90, 1.0, vU));
-  sideN += (1.0 - endTaper) * 0.60;
+  // 0.16, not 0.055. The path is integrated in uniform *horizontal* steps, so
+  // on a steep fall the index bunches hard at the lip: 5.5% of it is a couple
+  // of metres of drop, the taper finishes inside a few pixels, and the curtain
+  // begins on a dead-flat horizontal edge — the exact painted-rectangle top the
+  // taper exists to prevent. Widened until the neck is a neck.
+  float endTaper = min(smoothstep(0.0, 0.16, vU), 1.0 - smoothstep(0.90, 1.0, vU));
+  sideN += (1.0 - endTaper) * 0.72;
   // Widened from 0.72-1.06. The brief asks for a *soft* white ribbon and the
   // plates draw one: plate 5's curtain has no hard boundary anywhere along it,
   // it fades into the rock over several pixels. A 0.34-wide alpha ramp on a
@@ -362,7 +367,7 @@ void main() {
   // butterfly hanging in the gorge with no visible source — which is precisely
   // the floating X a critic pass logged here. Spray is a cloud of small things;
   // if a single sprite is readable as a shape, it is too big.
-  float size = aSize * (0.55 + 1.25 * u * u);
+  float size = aSize * (0.55 + 0.70 * u * u);
   vFade = smoothstep(0.0, 0.10, f) * (1.0 - smoothstep(0.72, 1.0, f));
   vSeed = aSeed;
   vUv = uv;
@@ -375,7 +380,7 @@ void main() {
   // painted large flat translucent shapes across a distant gorge.
   vDist = 1.0 - smoothstep(90.0, 260.0, -mv.z);
   // Streaks are taller than wide — falling water is a line, not a dot.
-  mv.xy += vec2(position.x * size * 0.62, position.y * size * (1.0 + u * 0.7));
+  mv.xy += vec2(position.x * size * 0.62, position.y * size * (1.0 + u * 0.45));
 
   vec3 transformed = p;
   gl_Position = projectionMatrix * mv;
@@ -409,7 +414,10 @@ void main() {
   float a = pow(1.0 - smoothstep(0.0, 1.0, r), 1.7) * vFade;
   if (a < 0.01) discard;
   vec3 col = uFoam * wFoamLight(1.0) * 0.86;
-  gl_FragColor = vec4(col, a * 0.44 * vDist);
+  // See the note on the burst's alpha: a streak that is legible on its own is
+  // a white lozenge hanging in the air, and there is no count at which those
+  // become water.
+  gl_FragColor = vec4(col, a * 0.26 * vDist);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -591,7 +599,7 @@ void main() {
   // and the arc is the whole read.
   vec3 p = aOrigin + aVel * t - vec3(0.0, 4.905, 0.0) * t * t;
   // A droplet cluster shatters and spreads as it flies.
-  float size = aSize * (0.5 + 1.35 * f);
+  float size = aSize * (0.5 + 0.95 * f);
   // ...and it is never allowed to fall under a couple of pixels. A clot of
   // water 0.37 m across — which is what the biggest fall in the map throws — is
   // half a pixel at a hundred metres, so the entire burst was rasterising to
@@ -617,7 +625,12 @@ void main() {
   // Taller than wide. A thrown clot of water is a streak in the direction it is
   // travelling, and a round sprite is a bubble — which is exactly how the first
   // pass at this read: a scatter of soft white balls hanging in the gorge.
-  mv.xy += vec2(position.x * size * 0.66, position.y * size * 1.45);
+  // Stretched, but not into a capsule. At 1.45 the sprite was 26 px tall at
+  // thirty metres with a near-opaque core, and a hundred of those is not a
+  // plume — it is a scatter of white sausages over the hillside, which is
+  // exactly what isolating this mesh showed. The streak read has to come from
+  // the *cloud's* shape, not from each member of it being a legible streak.
+  mv.xy += vec2(position.x * size * 0.72, position.y * size * 1.16);
 
   vec3 transformed = p;
   gl_Position = projectionMatrix * mv;
@@ -659,7 +672,12 @@ void main() {
   // far away is a faint haze of spray rather than a cloud that grows as it
   // recedes. Not all of it: the reference keeps a distant plunge bright.
   a *= pow(1.0 / vGrow, 1.45);
-  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.62 * vDist);
+  // 0.62 was an opacity you can see a single sprite through nothing of. A
+  // cloud of water droplets is *individually* almost transparent and reads only
+  // where several overlap; that overlap is what makes the mass look like it has
+  // volume, and a per-sprite alpha high enough to read alone destroys it by
+  // painting the first sprite the ray meets and nothing behind it.
+  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.34 * vDist);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -723,13 +741,27 @@ void main() {
   // level, so the tighter window was costing 40% of the mask everywhere before
   // any of the churn had been evaluated. Measured on the 77 m fall it left the
   // gate at 0.6 across the whole pool.
-  float climb = 1.0 - smoothstep(2.5, 7.0, vWPos.y - vBaseY);
+  // ...but stated as a bare smoothstep over height it is still a *smooth
+  // function of the heightfield*, which is a contour generator — the same class
+  // of artifact as the gold isolines on land. At the foot of a cliff the ground
+  // climbs those 4.5 m inside a couple of pixels, so the gate drew a hard,
+  // dead-straight boundary across the apron wherever the wall began. Isolating
+  // this mesh showed the pool as a pale polygon with three straight sides.
+  // Widening the ramp alone cannot fix that (the wall is vertical at any ramp
+  // width); breaking the *threshold* with a metre-scale noise is what turns the
+  // contour into a torn edge.
+  float climbN = wFbm2(vWPos.xz * 0.55 + 17.3) * 0.5 + 0.5;
+  float climb = 1.0 - smoothstep(2.0 + climbN * 3.0, 8.5 + climbN * 3.0,
+                                 vWPos.y - vBaseY);
   // The slope test is kept, well relaxed, only to stop an apron painting itself
   // up a genuinely vertical face that happens to sit at the impact height.
   vec2 e = vec2(2.6, 0.0);
   float bx = wBed(vWPos.xz + e.xy) - wBed(vWPos.xz - e.xy);
   float bz = wBed(vWPos.xz + e.yx) - wBed(vWPos.xz - e.yx);
-  float bench = climb * (1.0 - smoothstep(2.6, 4.2, length(vec2(bx, bz)) / 5.2));
+  // Same treatment, same reason: a slope test on a cliff base is a step
+  // function of position however wide its ramp is written.
+  float bench = climb * (1.0 - smoothstep(2.4 + climbN * 1.2, 5.0 + climbN * 1.2,
+                                          length(vec2(bx, bz)) / 5.2));
 
   float R = max(vRadius, 0.5);
   // Pool space: x runs downstream, y across. The mesh is built as a disc here
@@ -969,7 +1001,16 @@ export class Waterfalls extends System {
             dt = dsH / v0;
             vy -= G * dt;
             let yNext = y + vy * dt;
-            const ground = world.getHeight(x, z) + 0.35;
+            // 0.9, not 0.35. This samples the *baked* heightfield, and the
+            // terrain mesh adds up to half a metre of micro-detail on top of
+            // it — so at 0.35 the rock pokes through the curtain wherever the
+            // detail happens to rise, and because that rock is faceted the
+            // intersection is a set of dead-straight vertical lines cut into
+            // the sheet's silhouette. That is the hard-edged left boundary and
+            // the notch beside it in the waterfall view, and it is why the
+            // curtain reads hard on one side and feathered on the other: only
+            // one side is against the wall.
+            const ground = world.getHeight(x, z) + 0.9;
             if (yNext < ground) {
               yNext = ground;
               // Landed on rock: the water now slides, so its vertical speed is
@@ -1068,9 +1109,27 @@ export class Waterfalls extends System {
         // anyway, so it is continuous with the non-degenerate case.
         if (nl > 1e-5) { nx /= nl; ny /= nl; nz /= nl; }
         else { nx = -f.dirX; ny = 0; nz = -f.dirZ; }
+        // ...and it has to point *away from the wall*, which cross(t, side)
+        // does not guarantee — its sign depends on which way round the width
+        // axis was built. For a vertical drop it resolves to -dir, i.e. back up
+        // the channel, which is straight into the cliff: standing the sheet off
+        // along it buried the curtain in the rock and the fall came back a
+        // third narrower. Downstream is the honest outward direction, because
+        // the rock a fall hangs in front of is by construction the thing it
+        // just left.
+        if (nx * f.dirX + nz * f.dirZ < 0.0) { nx = -nx; ny = -ny; nz = -nz; }
+        // Stand the sheet off the rock along its own normal. A curtain of
+        // water is a *volume* — a metre or so of it on a fall this size — and
+        // it hangs in front of the wall rather than being painted on it. The
+        // path clamp above keeps the sheet's centreline off the baked ground;
+        // this keeps the near face of the curtain off the faceted mesh, which
+        // is what the eye actually sees intersecting.
+        const stand = Math.min(0.25 + p.w * 0.06, 0.9);
         for (let c = 0; c < C; c++) {
           const off = SHEET_COLS[c] * p.w * 0.5;
-          pos.push(p.x + f.sideX * off, p.y, p.z + f.sideZ * off);
+          pos.push(p.x + f.sideX * off + nx * stand,
+                   p.y + ny * stand,
+                   p.z + f.sideZ * off + nz * stand);
           u.push(p.u); side.push(SHEET_COLS[c]); flight.push(p.flight);
           wid.push(p.w); disc.push(f.disc);
           nrm.push(nx, ny, nz);
@@ -1129,7 +1188,10 @@ export class Waterfalls extends System {
 
     for (let f = 0; f < N; f++) {
       const fl = this.falls[f];
-      const count = Math.round(clamp(30 + fl.disc * 240 + fl.height * 2.2, 26, 300));
+      // Doubled, to pay for the size cut below. Same trade as the burst: fill
+      // rate goes as area, so 2x the count at 0.6x the linear size is cheaper
+      // than what it replaces.
+      const count = Math.round(clamp(60 + fl.disc * 460 + fl.height * 4.4, 52, 580));
       const row = (f + 0.5) / N;
       // Time of flight sets the loop rate: a 60 m fall must take much longer
       // to traverse than a 6 m one or the scale reads wrong.
@@ -1144,7 +1206,12 @@ export class Waterfalls extends System {
         // Same correction as the burst clots: at 0.22-0.62 m scaled by width
         // these read as separate white teardrops hanging beside the curtain
         // from any near framing. Spray is a mist of small things.
-        size.push((0.13 + rng() * 0.24) * (0.6 + fl.width * 0.10) * (burst ? 1.6 : 1.0));
+        // ...and once more. In the canonical waterfall frame these were still
+        // 20 px tall at sixty metres and *isolated* — a loose scatter of white
+        // dots either side of the curtain, which reads as sleet falling past a
+        // waterfall rather than as spray coming off one. A droplet that can be
+        // counted is too big, whatever it is made of.
+        size.push((0.08 + rng() * 0.14) * (0.6 + fl.width * 0.10) * (burst ? 1.6 : 1.0));
         spread.push((0.35 + rng() * 1.0) * (0.5 + fl.disc * 1.6));
         seed.push(rng());
         sideDir.push(fl.sideX, 0, fl.sideZ);
@@ -1215,7 +1282,10 @@ export class Waterfalls extends System {
       // Denser, to pay for the smaller sprites below. A cloud reads by count,
       // not by clot size, and the two have to move together or halving one
       // just thins the plume out.
-      const count = Math.round(clamp(96 + energy * 430, 88, 520));
+      // Raised with the size cut, not beyond it: the fill rate a sprite costs
+      // goes as its area, so 1.35x the count at 0.72x the linear size is
+      // cheaper than what it replaces.
+      const count = Math.round(clamp(130 + energy * 560, 120, 660));
       for (let i = 0; i < count; i++) {
         // Spread the launch points across the foot of the curtain, not from one
         // node: a burst radiating from a single point is a firework.
@@ -1232,9 +1302,15 @@ export class Waterfalls extends System {
         // air, and a sprite that far from anything reads as snow rather than as
         // spray. A plunge throws water a *couple* of metres; what makes it read
         // is the density of the cloud, not the size of the arc.
-        const vUp = (1.9 + rng() * 3.8) * (0.5 + energy);
+        const vUp = (1.7 + rng() * 3.2) * (0.5 + energy);
         const a = rng() * Math.PI * 2;
-        const vH = (1.0 + rng() * 3.1) * (0.5 + energy);
+        // Halved. At up to 6 m/s over a 1.3 s life a clot travelled eight
+        // metres from the fall, and eight metres from a 7 m curtain is open
+        // hillside — isolating this mesh showed white sprites scattered across
+        // dry ground with no water anywhere near them. The plunge is dense and
+        // local or it is not a plunge; horizontal throw is the one number that
+        // decides which.
+        const vH = (0.6 + rng() * 1.7) * (0.5 + energy);
         // Two thirds of the horizontal throw is downstream, a third is random —
         // enough scatter that the plume is not a fan, enough bias that it has
         // a direction.
@@ -1258,7 +1334,7 @@ export class Waterfalls extends System {
         // must not be readable as shapes; the *cloud* is the read. The pixel
         // floor in BURST_VERT still holds the far view on its own, so this
         // costs nothing there.
-        size.push((0.15 + rng() * 0.27) * (0.65 + fl.width * 0.07));
+        size.push((0.12 + rng() * 0.21) * (0.65 + fl.width * 0.07));
         seed.push(rng());
       }
     }
