@@ -58,9 +58,22 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(String(e.message).slice(0, 200)));
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text().slice(0, 200)); });
 
+// Eleven authors share one dev server. Any of them saving a file makes Vite
+// push a hot reload, which throws away the recorder and the whole measurement
+// half way through a 45 s drive. A capture is a one-shot page load and never
+// wants hot reload, so the HMR socket is stubbed out; the module graph still
+// loads exactly as it normally does.
+await page.routeWebSocket(/^wss?:\/\/(localhost|127\.0\.0\.1):5178\//, () => { /* swallowed */ });
+
+// A reload that gets through anyway would silently produce a bogus report, so
+// say so rather than crash with a confusing "__perf is undefined".
+let navigations = 0;
+page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; });
+
 const params = new URLSearchParams({ res: RES });
 if (QUALITY) params.set('quality', QUALITY);
 await page.goto(`http://localhost:5178/?${params}`, { waitUntil: 'domcontentloaded' });
+const navAtStart = navigations;
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
 
 // ── install the recorder ────────────────────────────────────────────────────
@@ -108,12 +121,24 @@ await page.evaluate(() => {
 });
 
 // ── sample frames DURING motion, looking for black / partial renders ────────
+//
+// The decode and the pixel scan run in a SEPARATE blank page, not in the page
+// under test. They used to run in the game page, and decoding a 1600x900 PNG
+// data URL plus a getImageData on the same main thread that owns the render
+// loop stalled it for 300-700 ms — every single time. The tool then counted its
+// own stalls as game hitches: a clean run reported 12 frames over 100 ms, of
+// which 8 were exactly the eight samples. Same measurement, same thresholds,
+// just performed somewhere that cannot perturb the subject.
+const analyst = await browser.newPage();
+await analyst.goto('about:blank');
+
 const SAMPLES = Math.max(6, Math.round(SECONDS / 4));
 const blackSamples = [];
 for (let i = 0; i < SAMPLES; i++) {
   await page.waitForTimeout((SECONDS * 1000) / SAMPLES);
   const buf = await page.screenshot();
-  const q = await page.evaluate(async (b64) => {
+  const at = await page.evaluate(() => performance.now() - window.__perf.started);
+  const q = await analyst.evaluate(async (b64) => {
     const img = new Image();
     img.src = 'data:image/png;base64,' + b64;
     await img.decode();
@@ -135,12 +160,18 @@ for (let i = 0; i < SAMPLES; i++) {
       darkFrac: dark / (w * h),
       deadCols: colDark.filter((c) => c >= h * 0.97).length / w,
       deadRows: rowDark.filter((c) => c >= w * 0.97).length / h,
-      t: performance.now() - window.__perf.started,
     };
   }, buf.toString('base64'));
+  q.t = at;
   // A tile-shaped hole shows up as dead columns or rows; a whole-frame drop as
   // a high dark fraction. Either is a visual failure the still harness misses.
   if (q.darkFrac > 0.5 || q.deadCols > 0.2 || q.deadRows > 0.2) blackSamples.push(q);
+}
+
+if (navigations !== navAtStart) {
+  await browser.close();
+  console.error('\nABORTED — the page reloaded mid-run (a concurrent edit, most likely). Re-run.');
+  process.exit(2);
 }
 
 await page.evaluate(() => { window.__perfDrive = false; });

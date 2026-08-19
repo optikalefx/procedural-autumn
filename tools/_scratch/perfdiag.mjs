@@ -13,9 +13,10 @@ const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, dev
 page.on('pageerror', e => console.log('PAGEERROR', String(e.message).slice(0,200)));
 page.on('console', m => { if (m.type()==='error') console.log('CONSOLE-ERR', m.text().slice(0,200)); });
 const params = new URLSearchParams({ res: RES }); if (QUALITY) params.set('quality', QUALITY);
+await page.routeWebSocket(/^wss?:\/\/(localhost|127\.0\.0\.1):5178\//, () => {});
 await page.goto(`http://localhost:5178/?${params}`, { waitUntil:'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
-await page.waitForTimeout(1500);
+await page.waitForTimeout(parseInt(arg('warm','1500'),10));
 
 await page.evaluate(() => {
   const e = window.__engine, ctx = window.__ctx, r = e.renderer;
@@ -37,7 +38,7 @@ await page.evaluate(() => {
   let last = performance.now();
   e.onLateUpdate(() => {
     const now = performance.now();
-    const rec = { t: now - P.started, ms: now - last, calls: r.info.render.calls, tris: r.info.render.triangles, geo: r.info.memory.geometries, tex: r.info.memory.textures, s: {} };
+    const rec = { t: now - P.started, ms: now - last, calls: r.info.render.calls, tris: r.info.render.triangles, geo: r.info.memory.geometries, tex: r.info.memory.textures, prog: r.info.programs.length, s: {} };
     for (const k in cur) { if (cur[k] > 0.6) rec.s[k] = +cur[k].toFixed(1); cur[k] = 0; }
     P.frames.push(rec); last = now;
   });
@@ -70,5 +71,7 @@ console.log(`p50 ${data.p50}  p95 ${data.p95}  p99 ${data.p99}   >33 ${data.h33}
 console.log(`peak ${data.maxCalls} calls  ${(data.maxTris/1e6).toFixed(2)}M tris   growth geo +${data.growth.geo} tex +${data.growth.tex}`);
 console.log('\nmean ms/frame by system (ms, % of wall):');
 for (const [k,v,p] of data.acc) if (v >= 0.05) console.log(`  ${k.padEnd(16)} ${String(v).padStart(7)}  ${p}%`);
+console.log('\nprogram compiles:', JSON.stringify(data.progJumps));
+console.log('hitch bands:', data.band.join('  '));
 console.log('\nworst frames:');
-for (const w of data.worst) console.log(`  ${String(w.t).padStart(6)}s ${String(w.ms).padStart(7)}ms ${String(w.calls).padStart(5)}c  ${JSON.stringify(w.s)}`);
+for (const w of data.worst) console.log(`  ${String(w.t).padStart(6)}s ${String(w.ms).padStart(7)}ms ${String(w.calls).padStart(5)}c prog=${w.prog} ${JSON.stringify(w.s)}`);

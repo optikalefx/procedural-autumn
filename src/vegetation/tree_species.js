@@ -49,12 +49,12 @@ export const SPECIES = [
     subLen: 0.52, subCount: [2, 3], subAngle: [0.5, 0.9],
     bark: BARK.BIRCH,
     barkColor: PALETTE.barkBirch,
-    clusterCount: 320,
+    clusterCount: 280,
     clusterAspect: 1.15,
     tipBlob: 0.090,
-    lobes: [10, 15],            // birch is airy: many small masses
+    lobes: [13, 18],            // birch is airy: many small masses
     lobeR: [0.038, 0.125],      // fraction of H
-    lobeSep: 0.075,
+    lobeSep: 0.060,
     tile: TILE.FINE,
     crownLift: 0.06,
     palettes: [
@@ -81,12 +81,12 @@ export const SPECIES = [
     subLen: 0.5, subCount: [1, 2], subAngle: [0.4, 0.7],
     bark: BARK.BIRCH,
     barkColor: PALETTE.barkAspen,
-    clusterCount: 300,
+    clusterCount: 305,
     clusterAspect: 1.0,
     tipBlob: 0.078,
-    lobes: [9, 14],
+    lobes: [12, 17],
     lobeR: [0.036, 0.110],
-    lobeSep: 0.068,
+    lobeSep: 0.055,
     tile: TILE.FINE,
     crownLift: 0.10,
     crownSquash: 1.35,          // taller than wide
@@ -109,27 +109,33 @@ export const SPECIES = [
     branchStart: 0.54, branchEnd: 1.0,
     branchCount: [4, 6],
     branchAngle: [0.75, 1.25],
-    branchLen: [0.42, 0.62],
+    branchLen: [0.28, 0.44],
     branchUp: 0.35,             // broad spreading crown
     branchSegs: 4,
     subLen: 0.55, subCount: [2, 4], subAngle: [0.6, 1.05],
     bark: BARK.ROUGH,
     barkColor: c(0x8a6853),   // lighter than the palette's shadow value: a
     // trunk that reads black at 30 m loses the branch structure entirely
-    clusterCount: 370,
+    clusterCount: 295,
     clusterAspect: 1.25,
     tipBlob: 0.125,
-    lobes: [6, 10],             // fewer, heavier masses
+    lobes: [10, 15],            // fewer, heavier masses
     lobeR: [0.058, 0.215],
-    lobeSep: 0.115,
+    lobeSep: 0.082,
     tile: TILE.BROAD,
     crownLift: 0.04,
     crownSquash: 0.80,          // wider than tall
+    // Six pairs, spanning crimson through amber to gold. Plate 1 puts crimson,
+    // gold, amber and orange next to each other and that adjacency is most of
+    // its rhythm; four pairs that all sat in the red-orange sixth of the wheel
+    // gave a stand where every crown was the same salmon.
     palettes: [
       [PALETTE.leafCrimson, PALETTE.leafOrange],
       [PALETTE.leafOrange, PALETTE.leafAmber],
       [PALETTE.leafCrimson, PALETTE.leafRust],
       [PALETTE.leafOlive, PALETTE.leafAmber],     // still turning
+      [PALETTE.leafGold, PALETTE.leafOrange],
+      [PALETTE.leafCrimson, PALETTE.leafGold],
     ],
   },
   {
@@ -143,19 +149,28 @@ export const SPECIES = [
     levels: 2,
     branchStart: 0.48, branchEnd: 1.0,
     branchCount: [4, 6],
+    // Crown spread was the quiet cause of the worst artifact in the backlit
+    // frame. At 0.45-0.70 of H, times the 1.25 low-branch bonus, times a
+    // sideBoost that reached 1.6, an oak grew limbs 1.4x its own height and
+    // measured 17 m of crown half-width on a 15 m tree. Real oak spread is
+    // about one to one and a half times the height *in total*, and the outlying
+    // lobes of a crown that wide detach visually from their own tree — they
+    // read as leaf clumps hanging unsupported in the sky. It also forced the
+    // scatter to space oaks 35 m apart, which is a lot of why stands looked
+    // like a polka dot.
     branchAngle: [0.85, 1.45],
-    branchLen: [0.45, 0.70],
+    branchLen: [0.30, 0.46],
     branchUp: 0.18,
     branchSegs: 5,
     subLen: 0.5, subCount: [2, 4], subAngle: [0.7, 1.2],
     bark: BARK.ROUGH,
     barkColor: c(0x7a604b),
-    clusterCount: 380,
+    clusterCount: 265,
     clusterAspect: 1.3,
     tipBlob: 0.135,
-    lobes: [5, 9],              // the chunkiest crown in the set
+    lobes: [9, 14],             // the chunkiest crown in the set
     lobeR: [0.068, 0.245],
-    lobeSep: 0.130,
+    lobeSep: 0.092,
     tile: TILE.BROAD,
     crownLift: 0.02,
     crownSquash: 0.70,
@@ -164,6 +179,7 @@ export const SPECIES = [
       [PALETTE.leafRust, PALETTE.leafAmber],
       [c(0xa8552a), c(0x7a5a33)],
       [c(0x9a8c40), c(0xb8802f)],            // late olive-bronze
+      [c(0xd8a03a), c(0x9c6a2c)],            // bronze-gold
     ],
   },
   {
@@ -274,7 +290,7 @@ function growDeciduous(P, rng) {
     dir.z += (rng() - 0.5) * P.gnarl * 0.055 + Math.sin(leanAz) * P.curve * 0.014;
     dir.normalize();
   }
-  strands.push({ pts: trunkPts, level: 0 });
+  strands.push({ pts: trunkPts, level: 0, parent: -1 });
   tips.push({ p: trunkPts[trunkPts.length - 1].p.clone(), w: 0.7 });
 
   // ── limbs ─────────────────────────────────────────────────────────────────
@@ -283,7 +299,7 @@ function growDeciduous(P, rng) {
   // A crown that is even all the way round reads as a lollipop, so bias one
   // side: pick a "light direction" the tree grew toward and lengthen that half.
   const asymAz = rng() * TAU;
-  const asym = 0.18 + 0.42 * rng();
+  const asym = 0.12 + 0.26 * rng();
 
   for (let k = 0; k < nb; k++) {
     const f = nb === 1 ? 0.7 : k / (nb - 1);
@@ -298,14 +314,14 @@ function growDeciduous(P, rng) {
     const sideBoost = 1 + asym * Math.cos(az - asymAz);
     // Low branches are long, high ones short: that is what makes a crown.
     const lenF = randRange(rng, P.branchLen) * (1.25 - 0.55 * t) * sideBoost;
-    growLimb(P, rng, strands, tips, base, dir, az, H, lenF * H, baseR * 0.62, 1);
+    growLimb(P, rng, strands, tips, base, dir, az, H, lenF * H, baseR * 0.62, 1, 0, i0);
   }
 
   return finishDeciduous(P, rng, H, strands, tips);
 }
 
 /** One limb, recursing into sub-limbs until `level` exceeds the species depth. */
-function growLimb(P, rng, strands, tips, base, parentDir, az, H, length, radius, level) {
+function growLimb(P, rng, strands, tips, base, parentDir, az, H, length, radius, level, parent, attach = 0) {
   const elev = randRange(rng, level === 1 ? P.branchAngle : P.subAngle);
   const d = offAxis(parentDir.clone().normalize(), elev, az).normalize();
   const segs = Math.max(2, P.branchSegs - (level - 1));
@@ -323,7 +339,8 @@ function growLimb(P, rng, strands, tips, base, parentDir, az, H, length, radius,
     d.z += (rng() - 0.5) * P.gnarl * 0.16;
     d.normalize();
   }
-  strands.push({ pts, level });
+  const self = strands.length;
+  strands.push({ pts, level, parent, attach });
 
   if (level >= P.levels) {
     tips.push({ p: pts[pts.length - 1].p.clone(), w: 1 });
@@ -341,7 +358,7 @@ function growLimb(P, rng, strands, tips, base, parentDir, az, H, length, radius,
     const i0 = Math.min(segs - 1, Math.floor(fi));
     const bp = pts[i0].p.clone().lerp(pts[i0 + 1].p, fi - i0);
     growLimb(P, rng, strands, tips, bp, d, saz, H,
-      length * P.subLen * (0.75 + 0.5 * rng()), radius * 0.5, level + 1);
+      length * P.subLen * (0.75 + 0.5 * rng()), radius * 0.5, level + 1, self, i0);
   }
 }
 
@@ -446,7 +463,9 @@ function finishDeciduous(P, rng, H, strands, tips) {
       sy: size * 0.5 * ay,
       nx, ny, nz,
       ao: sprig ? Math.min(1.15, ao * 1.18) : ao,
-      tone: clamp01(vnoise3(px * 0.42 + 11.3, py * 0.30, pz * 0.42) * 1.5 - 0.25),
+      // Higher frequency than the crown radius, so one canopy carries visible
+      // patches of both palette colours instead of a single averaged hue.
+      tone: clamp01(vnoise3(px * 0.78 + 11.3, py * 0.54, pz * 0.78) * 1.7 - 0.35),
       // Sprigs and rim dabs use the airy tile so the silhouette fizzes out
       // instead of ending on a clean arc.
       tile: sprig || (d > 0.80 && rng() < 0.6) ? TILE.SPARSE : P.tile,
@@ -463,7 +482,7 @@ function finishDeciduous(P, rng, H, strands, tips) {
       // filling the volume solid is what buries the branches and closes the
       // sky holes the reference plates are full of.
       const a = rng() * TAU, b = Math.acos(2 * rng() - 1);
-      const sh = lerp(0.50, 1.0, Math.pow(rng(), 0.45));
+      const sh = lerp(0.62, 1.0, Math.pow(rng(), 0.34));
       const dx = Math.sin(b) * Math.cos(a), dy = Math.cos(b), dz = Math.sin(b) * Math.sin(a);
       const px = L.c.x + dx * L.ax * sh;
       const py = L.c.y + dy * L.ay * sh;
@@ -475,7 +494,11 @@ function finishDeciduous(P, rng, H, strands, tips) {
       // that one dab could span a seventh of the tree, and a card that big
       // shows the atlas at 1:1 — the crown then reads as a flat painted plate
       // with leaf-shaped holes in it rather than as a mass of marks.
-      const dab = Math.min(L.r * lerp(0.30, 1.02, Math.pow(rng(), 1.7)), H * 0.135);
+      // Hard ceiling relative to the tree, not just to the lobe. At 2 m a
+      // single dab any larger than this fills a third of the screen with one
+      // magnified atlas tile, and a crown built from four of those reads as
+      // cauliflower however good the tile is.
+      const dab = Math.min(L.r * lerp(0.26, 0.70, Math.pow(rng(), 1.6)), H * 0.082);
       push(px, py, pz, dab, dx, dy, dz, false);
     }
 
@@ -485,7 +508,11 @@ function finishDeciduous(P, rng, H, strands, tips) {
       const ns = 1 + ((rng() * 3) | 0);
       for (let i = 0; i < ns; i++) {
         const a = rng() * TAU, b = Math.acos(2 * rng() - 1);
-        const sh = 1.15 + 0.55 * rng();
+        // Just clear of the mass, not adrift from it. At 1.15-1.70 lobe radii a
+        // sprig regularly detached altogether once the dabs got smaller, and a
+        // lone leaf-clump hanging in the sky next to a tree is worse than a
+        // smooth silhouette.
+        const sh = 1.02 + 0.30 * rng();
         const dx = Math.sin(b) * Math.cos(a), dy = Math.cos(b), dz = Math.sin(b) * Math.sin(a);
         push(L.c.x + dx * L.ax * sh, L.c.y + dy * L.ay * sh * 0.9, L.c.z + dz * L.az * sh,
              L.r * (0.30 + 0.32 * rng()), dx, dy, dz, true);
@@ -516,7 +543,7 @@ function growConifer(P, rng) {
     dir.z += (rng() - 0.5) * P.gnarl * 0.03 + Math.sin(leanAz) * P.curve * 0.01;
     dir.normalize();
   }
-  strands.push({ pts: trunkPts, level: 0 });
+  strands.push({ pts: trunkPts, level: 0, parent: -1 });
 
   const nW = randInt(rng, P.whorls);
   const crownR = H * P.crownR * (0.82 + 0.4 * rng());
@@ -559,6 +586,8 @@ function growConifer(P, rng) {
             { p: V(o.x + dx * len, oy - len * droop, o.z + dz * len), r: 0.006 },
           ],
           level: 1,
+          parent: 0,
+          attach: Math.min(P.trunkSegs - 1, Math.floor(clamp01(t) * P.trunkSegs)),
         });
       }
 
@@ -595,19 +624,23 @@ function growConifer(P, rng) {
     }
   }
 
-  // A tight spike of foliage at the very top so the spire does not end in a stick.
+  // A tapering spike of foliage at the very top so the spire does not end in a
+  // stick. Five overlapping cards stepping down and widening, not three sitting
+  // at the same height: the old version drew one detached blob hovering above
+  // the last whorl, which at any distance read as a hat balanced on the tree.
   const topP = trunkPts[trunkPts.length - 1].p;
-  for (let i = 0; i < 3; i++) {
-    const size = H * P.clusterSize[0] * (0.7 + 0.3 * rng());
+  for (let i = 0; i < 5; i++) {
+    const f = i / 4;
+    const size = H * P.clusterSize[0] * lerp(0.62, 1.15, f) * (0.85 + 0.3 * rng());
     clusters.push({
-      x: topP.x + (rng() - 0.5) * size * 0.2,
-      y: topP.y - H * 0.012 * i,
-      z: topP.z + (rng() - 0.5) * size * 0.2,
-      sx: size * 0.55, sy: size * 0.75,
+      x: topP.x + (rng() - 0.5) * size * 0.16,
+      y: topP.y - H * 0.006 - f * H * 0.030,
+      z: topP.z + (rng() - 0.5) * size * 0.16,
+      sx: size * lerp(0.5, 0.9, f), sy: size * 0.72,
       nx: 0, ny: 1, nz: 0,
-      ao: 1.0,
+      ao: lerp(1.06, 0.86, f),
       tone: rng(),
-      tile: TILE.NEEDLE, rot: 0, flip: rng() < 0.5, flex: 1.0,
+      tile: TILE.NEEDLE, rot: 0, flip: rng() < 0.5, flex: lerp(1.0, 0.8, f),
     });
   }
 

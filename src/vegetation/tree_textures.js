@@ -75,12 +75,17 @@ function drawClump(g, ox, oy, size, rng, opts) {
     // pow < 0.5 concentrates toward the centre; the rim gets the leftovers.
     const t = Math.pow(rng(), opts.corePull);
     const a = rng() * TAU;
-    const RR = R * env(a);
+    const shrink = 1 - opts.rimShrink * t;
+    const r = size * opts.markSize * shrink * (0.72 + 0.62 * rng());
+    // Keep the whole mark inside its tile. Marks that overhang are sliced off
+    // square by the tile boundary, and because every clump on a tree draws the
+    // same tile that slice repeats as a dead-straight edge across the top of
+    // every crown in the frame — which is not a subtle artifact once the marks
+    // are big enough to read individually.
+    const RR = Math.max(0, Math.min(R * env(a), size * 0.478 - r * (1.0 + opts.elong) * 0.5));
     // Slightly squashed vertically so a clump is wider than tall, like a spray.
     const px = cx + Math.cos(a) * t * RR;
     const py = cy + Math.sin(a) * t * RR * 0.86;
-    const shrink = 1 - opts.rimShrink * t;
-    const r = size * opts.markSize * shrink * (0.72 + 0.62 * rng());
     // Marks near the rim are dimmer only in *jitter*, not alpha — a soft alpha
     // rim would defeat alphaTest and make the tree fizz at distance.
     mark(g, px, py, r, 1.0 + rng() * opts.elong, rng() * TAU,
@@ -173,27 +178,27 @@ export function buildClusterAtlas(seed = 7, px = 256) {
   // fine pass then sprays well past them. Between the two, the tile has a
   // definite mass with a torn edge and marks you can still count at 5 m.
   drawClump(g, 0, 0, px, mulberry32(seed + 11), {
-    count: 26, corePull: 0.50, markSize: 0.098, rimShrink: 0.16, elong: 1.3, spread: 0.82, tear: 1.15,
+    count: 40, corePull: 0.50, markSize: 0.062, rimShrink: 0.18, elong: 1.3, spread: 0.86, tear: 1.15,
   });
   drawClump(g, 0, 0, px, mulberry32(seed + 12), {
-    count: 78, corePull: 0.78, markSize: 0.050, rimShrink: 0.10, elong: 1.5, spread: 1.14, tear: 1.3,
+    count: 140, corePull: 0.78, markSize: 0.034, rimShrink: 0.12, elong: 1.5, spread: 1.12, tear: 1.3,
   });
   drawClump(g, px, 0, px, mulberry32(seed + 23), {
-    count: 22, corePull: 0.48, markSize: 0.112, rimShrink: 0.14, elong: 0.8, spread: 0.82, tear: 1.1,
+    count: 34, corePull: 0.48, markSize: 0.072, rimShrink: 0.16, elong: 0.8, spread: 0.86, tear: 1.1,
   });
   drawClump(g, px, 0, px, mulberry32(seed + 24), {
-    count: 62, corePull: 0.82, markSize: 0.058, rimShrink: 0.08, elong: 1.0, spread: 1.12, tear: 1.25,
+    count: 120, corePull: 0.82, markSize: 0.038, rimShrink: 0.10, elong: 1.0, spread: 1.10, tear: 1.25,
   });
   drawNeedleFan(g, 0, px, px, mulberry32(seed + 37));
-  // The rim tile is what draws every silhouette edge in the game, so it is the
-  // one that must never fizz: a handful of large, well-separated dabs and no
-  // fine pass at all. It reads as a torn edge because the dabs are far apart,
-  // not because they are small.
+  // The rim tile draws every silhouette edge in the game, so it is the one that
+  // must never fizz: a handful of large, well-separated dabs and only a light
+  // second pass. It reads as a torn edge because the dabs are far apart, not
+  // because they are small.
   drawClump(g, px, px, px, mulberry32(seed + 53), {
-    count: 15, corePull: 0.92, markSize: 0.108, rimShrink: 0.02, elong: 1.4, spread: 0.96, tear: 1.5,
+    count: 18, corePull: 0.92, markSize: 0.076, rimShrink: 0.04, elong: 1.4, spread: 0.98, tear: 1.5,
   });
   drawClump(g, px, px, px, mulberry32(seed + 54), {
-    count: 26, corePull: 1.00, markSize: 0.060, rimShrink: 0.0, elong: 1.6, spread: 1.16, tear: 1.6,
+    count: 34, corePull: 1.00, markSize: 0.044, rimShrink: 0.0, elong: 1.6, spread: 1.14, tear: 1.6,
   });
 
   // Second pass in JS: write the radial core mask into G. Doing it here rather

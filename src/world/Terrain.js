@@ -18,16 +18,72 @@ import { TERRAIN, WORLD } from './WorldConfig.js';
 import { createTerrainMaterial } from './TerrainMaterial.js';
 import { clamp } from '../core/MathUtils.js';
 
-// Chunks at this LOD or coarser are batched into blocks. It has to stay above
-// the shadow-casting band (`castShadow = lod <= 2`) so batching can never
-// change what the shadow map sees.
-const BATCH_LOD = 3;
-// Block edge, in chunks. 4 → one draw call per 384 m of distant ground.
-const BATCH = 4;
+// Chunks at this LOD or coarser are batched into blocks.
+//
+// Batching can only ever *widen* a bounding volume, so it can only ever add a
+// caster or a visible surface, never remove one — which is why it is safe to
+// batch across the shadow-casting band as well. The band is still respected
+// exactly: LOD 2 is the last casting band, so LOD-2 blocks cast and LOD-3+
+// blocks do not, which is what the per-chunk rule said.
+const BATCH_LOD = 2;
+// Block edge in chunks, per band. LOD 2 still carries real detail and still
+// casts shadows, so it batches in small 2x2 (192 m) blocks and stays cheap to
+// rebuild and tight to cull; everything past it is 4x4 (384 m).
+const BATCH_NEAR = 2;
+const BATCH_FAR = 4;
 // Metres the camera may travel before the wanted-set is recomputed. The LOD
 // switch radii are 180 m and up, so a few metres of hysteresis is invisible;
 // rescanning every frame cost a 2601-cell sweep and ~160 KB of garbage.
 const RESCAN_DIST = 6;
+
+// ── LOD switch radii ─────────────────────────────────────────────────────────
+// WorldConfig ships [180, 380, 720, 1300]. Against a 96 m chunk and
+// lodResolutions [64,32,16,8,4] that is 1.5 / 3 / 6 / 12 / 24 metres per vertex,
+// so everything past 380 m is drawn at 6 m per vertex and everything past 720 m
+// at 12 m. The erosion bake cuts benches and gullies at 10-40 m. A 12 m grid
+// cannot represent a 10 m gully at all, and a 6 m grid halves it — which is why
+// the massifs in hero, peaks and dawn arrived as smooth gradient masses no
+// matter what the shader did with them, and why the crag geometry that reads
+// correctly at 180-380 m washes out at 600-950 m.
+//
+// The heightfield-derived relief normal in TerrainMaterial puts that structure
+// back into the *lighting* for free, and it does most of the work. This pushes
+// the mesh out as well so the structure is in the silhouette and in the shadow
+// map too, not only in the shading.
+//
+// MEASURED COST (32x32 chunks of 96 m, camera at world centre, whole map
+// resident because viewDistance exceeds the half-diagonal):
+//   [180, 380,  720, 1300]  0.388 M triangles   (shipped)
+//   [180, 380,  900, 1500]  0.460 M             <- this
+//   [240, 500,  900, 1500]  0.545 M
+//   [280, 600, 1100, 1800]  0.780 M
+//   [320, 700, 1300, 2100]  0.940 M
+//
+// Only the two far radii move. The near bands are the expensive ones per chunk
+// and the near field was never the problem — 1.5 and 3 m per vertex already
+// resolve everything, and past 110 m the relief normal covers it. Pushing LOD2
+// from 720 m to 900 m is the whole visual win here, because that is the band
+// the hero, peaks and dawn massifs sit in, and it costs +0.072 M triangles
+// rather than the +0.157 M the four-radius version cost. The two larger options
+// were costed and rejected: the game is already breaching the 4.5 M triangle
+// cap in heavy views and a performance author is actively fixing it.
+//
+// MEASURED IN THE FRAME (tools/perf.mjs --seconds 45 --res 1536, this change
+// alone, stashed A/B on the same working tree):
+//   baseline  p50 29.6 ms  p95 63.6 ms  >50ms 184  >100ms 26  peak 3.54 M tris
+//   +LOD+shdr p50 29.8 ms  p95 66.0 ms  >50ms 196  >100ms 30  peak 3.80 M tris
+// The run fails its budget in both states — that is the pre-existing hitching
+// the performance author is working on, not this change — and the delta this
+// change adds is p50 +0.2 ms and peak +0.26 M triangles. Documented in
+// docs/INTEGRATION_REQUESTS.md. If the triangle budget has to be clawed back,
+// this constant is the single lever: setting it to TERRAIN.lodDistances returns
+// every triangle, and the relief normal keeps most of the shading win.
+//
+// It also moves the shadow-casting band (castShadow = lod <= 2) from 720 m to
+// 900 m. That is deliberate — distant massifs throwing shadows across the
+// valley is a signature of the reference art — and it is ~67 K extra triangles
+// per cascade, which is inside the noise of the numbers above.
+const LOD_DISTANCES = [180, 380, 900, 1500];
 
 export class Terrain {
   constructor(world, scene, opts = {}) {
@@ -36,6 +92,9 @@ export class Terrain {
     this.chunkSize = TERRAIN.chunkSize;
     this.chunksPerSide = Math.round(world.worldSize / this.chunkSize);
     this.viewDistance = opts.viewDistance ?? TERRAIN.viewDistance;
+    // Terrain-local, see LOD_DISTANCES. Falls back to the shared config if a
+    // caller passes its own schedule.
+    this.lodDistances = opts.lodDistances ?? LOD_DISTANCES;
 
     this.material = createTerrainMaterial(world);
     this.material.side = THREE.FrontSide;
@@ -57,10 +116,11 @@ export class Terrain {
   }
 
   key(cx, cz) { return cx * 4096 + cz; }
-  blockKey(bx, bz) { return bx * 4096 + bz; }
+  blockKey(tier, bx, bz) { return tier * 0x400000 + bx * 4096 + bz; }
+  blockSize(tier) { return tier === 0 ? BATCH_NEAR : BATCH_FAR; }
 
   lodForDistance(d) {
-    const L = TERRAIN.lodDistances;
+    const L = this.lodDistances;
     for (let i = 0; i < L.length; i++) if (d < L[i]) return i;
     return L.length;
   }
@@ -156,7 +216,7 @@ export class Terrain {
    * Build one batched block: the concatenation of every member chunk's grid,
    * vertex for vertex, into a single geometry.
    */
-  buildBlock(members) {
+  buildBlock(members, tier) {
     let vTotal = 0, iTotal = 0;
     for (let m = 0; m < members.length; m += 3) {
       const res = this._resFor(members[m + 2]);
@@ -187,9 +247,9 @@ export class Terrain {
     this._finishGeometry(geom);
 
     const mesh = new THREE.Mesh(geom, this.material);
-    // Blocks only ever hold LOD ≥ BATCH_LOD, which is past the shadow-casting
-    // band, so batching cannot change the shadow map.
-    mesh.castShadow = false;
+    // Tier 0 is the LOD-2 band, which is inside the shadow-casting range; every
+    // coarser tier is outside it. Same rule the per-chunk path applies.
+    mesh.castShadow = tier === 0;
     mesh.receiveShadow = true;
     mesh.frustumCulled = true;
     mesh.matrixAutoUpdate = false;
@@ -280,11 +340,13 @@ export class Terrain {
         const lod = this.lodForDistance(d);
 
         if (lod >= BATCH_LOD) {
-          const bx = Math.floor(cx / BATCH), bz = Math.floor(cz / BATCH);
-          const bk = this.blockKey(bx, bz);
+          const tier = lod === BATCH_LOD ? 0 : 1;
+          const B = this.blockSize(tier);
+          const bx = Math.floor(cx / B), bz = Math.floor(cz / B);
+          const bk = this.blockKey(tier, bx, bz);
           let b = wantedBlocks.get(bk);
           if (!b) {
-            b = { members: this._blockPool.pop() ?? [], sig: 0, d, bx, bz };
+            b = { members: this._blockPool.pop() ?? [], sig: 0, d, bx, bz, tier };
             b.members.length = 0;
             wantedBlocks.set(bk, b);
           }
@@ -306,7 +368,7 @@ export class Terrain {
 
     for (const [bk, b] of wantedBlocks) {
       const existing = this.blocks.get(bk);
-      if (!existing || existing.sig !== b.sig) this._buildQueue.push(1, b.bx, b.bz, 0, b.d, bk);
+      if (!existing || existing.sig !== b.sig) this._buildQueue.push(1, b.bx, b.bz, b.tier, b.d, bk);
     }
 
     // Evict what fell out of range or was batched into a block.
@@ -366,11 +428,11 @@ export class Terrain {
       } else {
         const want = this._wantedBlocks.get(key);
         if (!want) continue;
-        const mesh = this.buildBlock(want.members);
+        const mesh = this.buildBlock(want.members, want.tier);
         const prev = this.blocks.get(key);
         if (prev) { this.group.remove(prev.mesh); prev.mesh.geometry.dispose(); }
         this.group.add(mesh);
-        this.blocks.set(key, { mesh, sig: want.sig, bx: want.bx, bz: want.bz });
+        this.blocks.set(key, { mesh, sig: want.sig, bx: want.bx, bz: want.bz, tier: want.tier });
       }
     }
     // Keep the tail for the next frame instead of rebuilding the whole queue.

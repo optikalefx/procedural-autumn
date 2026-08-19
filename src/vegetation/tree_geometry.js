@@ -11,24 +11,27 @@ import { tileUV } from './tree_textures.js';
 import { clamp01 } from '../core/MathUtils.js';
 
 /**
- * Drop trailing points of a limb that lie outside every leaf clump, so no twig
- * protrudes past the canopy. Never trims below two points — a limb still has to
- * connect to its parent.
+ * Index of the last point of a limb that lies within `k` clump radii of some
+ * leaf clump, or -1. Two different radii are needed and conflating them was a
+ * real bug: a generous one to decide whether a limb *has* foliage at all (its
+ * lobe sits on its tip, and the dabs of that lobe are distributed on a shell
+ * *around* the tip, so the tip itself is often in the hole in the middle), and
+ * a tight one to decide where to cut, because the retained tip has to end up
+ * buried in the mass rather than merely touching its rim. Using the tight
+ * radius for both dropped whole limbs whose lobes were right there, and left
+ * crowns hanging in the sky with no tree under them.
  */
-function trimToFoliage(pts, clusters) {
-  let last = pts.length - 1;
-  for (; last >= 1; last--) {
+function lastPointNear(pts, clusters, k) {
+  for (let last = pts.length - 1; last >= 0; last--) {
     const p = pts[last].p;
-    let inside = false;
     for (let i = 0; i < clusters.length; i++) {
       const c = clusters[i];
-      const r = Math.max(c.sx, c.sy) * 1.05 + 0.25;
+      const r = Math.max(c.sx, c.sy) * k;
       const dx = c.x - p.x, dy = c.y - p.y, dz = c.z - p.z;
-      if (dx * dx + dy * dy + dz * dz < r * r) { inside = true; break; }
+      if (dx * dx + dy * dy + dz * dz < r * r) return last;
     }
-    if (inside) break;
   }
-  return last >= 1 ? pts.slice(0, last + 1) : pts.slice(0, 2);
+  return -1;
 }
 
 /**
@@ -43,21 +46,52 @@ export function buildBarkGeometry(tree, species, opts = {}) {
   const maxLevel = opts.maxLevel ?? 9;
   const H = tree.height;
 
-  // Limbs stop one segment short of their real tip. The last segment is a bare
-  // dark wire poking out past the foliage, which reads as an antenna rather
-  // than as a branch; the clumps are placed on the true tip regardless.
+  // Pruning the skeleton to what the foliage actually covers.
   //
-  // That is not enough on its own now that the crown is built from a handful of
-  // lobes: most branch tips deliberately carry no foliage, so any limb that ran
-  // past the last lobe left a bare twig protruding through the silhouette. Trim
-  // each limb back to the last point that is actually inside some leaf clump —
-  // which keeps the branch structure you see *through* the canopy (that is a
-  // feature of the reference) while removing the ones that stick out of it.
-  const strands = tree.strands
-    .filter((s) => s.level <= maxLevel)
-    .map((s) => (s.level > 0 && s.pts.length > 2 ? { ...s, pts: s.pts.slice(0, -1) } : s))
-    .map((s) => (s.level > 0 ? { ...s, pts: trimToFoliage(s.pts, tree.clusters) } : s))
-    .filter((s) => s.pts.length > 1);
+  // A crown is a handful of lobes, so most branch tips deliberately carry no
+  // leaves — and every limb that ran past the last lobe left a bare dark wire
+  // sticking out through the silhouette, or worse, a whole limb hanging in mid
+  // air with nothing on the end of it. Three rules together fix that:
+  //   · a limb survives only if it, or something growing out of it, has
+  //     foliage on it (bottom-up over the parent links);
+  //   · a limb with no leafy children is cut back to its last point *buried*
+  //     inside a clump, not merely touching one;
+  //   · a limb that only exists to reach a leafy sub-limb is cut at that
+  //     sub-limb's attachment point.
+  // What survives is the branch structure you see *through* a canopy, which is
+  // a feature of the reference plates, and nothing that pokes out of one.
+  const src = tree.strands.filter((s) => s.level <= maxLevel);
+  const index = new Map(tree.strands.map((s, i) => [s, i]));
+  const slot = new Map(src.map((s, i) => [index.get(s), i]));
+  const reach = src.map((s) => lastPointNear(s.pts, tree.clusters, 1.30));
+  const snug = src.map((s) => lastPointNear(s.pts, tree.clusters, 0.60));
+  const keep = reach.map((b) => b >= 0);
+  // Last point index a *kept* child hangs off, so a limb that only exists to
+  // feed a leafy sub-limb is drawn exactly as far as it has to reach and no
+  // further. Children are always pushed after their parent, so one backward
+  // sweep resolves the whole tree.
+  const childAt = src.map(() => -1);
+  for (let i = src.length - 1; i >= 0; i--) {
+    const pi = slot.get(src[i].parent);
+    if (pi === undefined || !keep[i]) continue;
+    keep[pi] = true;
+    childAt[pi] = Math.max(childAt[pi], src[i].attach ?? 0);
+  }
+  const strands = [];
+  for (let i = 0; i < src.length; i++) {
+    const s = src[i];
+    if (s.level > 0 && !keep[i]) continue;        // no foliage on it or below it
+    // The leader gets the same treatment, with a floor so the tree keeps its
+    // bole. A birch's trunkFrac is 0.96, so its leader ran a metre or two past
+    // the top of its own crown and left a clean grey needle standing above
+    // every birch on a hillside — the single most CG-looking thing left in the
+    // silhouette once the limbs were fixed.
+    const floor = s.level === 0 ? Math.ceil(s.pts.length * 0.45) : 1;
+    const trim = snug[i] >= 0 ? snug[i] : Math.max(reach[i] - 1, 0);
+    const last = Math.max(trim, childAt[i] + 1, floor);
+    const pts = s.pts.slice(0, Math.min(s.pts.length, last + 1));
+    if (pts.length > 1) strands.push({ ...s, pts });
+  }
   let vCount = 0, iCount = 0;
   for (const s of strands) {
     vCount += s.pts.length * (radialSegs + 1);

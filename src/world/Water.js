@@ -108,6 +108,9 @@ uniform vec3  uFoam;
 uniform vec3  uSubsurface;
 uniform float uFoamCut;
 uniform float uBodyGain;
+uniform float uAbsorb;
+uniform float uAbsorbPow;
+uniform float uEnvTint;
 uniform vec3  uCoolTint;
 uniform float uPixelScale;
 
@@ -130,15 +133,29 @@ void main() {
 
   // Shoreline: a depth fade, not a polygon edge. The band is wide enough to
   // swallow the ±0.4 m of micro-detail the terrain mesh adds on top of the
-  // baked heightfield, so the water never shows a hairline of z-fight.
-  float shoreFade = smoothstep(0.0, 0.62, depth);
+  // baked heightfield, so the water never shows a hairline of z-fight — and it
+  // widens with the pixel footprint, so the bank is one soft pixel at every
+  // range instead of a stairstep at distance. See the lake for the argument.
+  float foot = wFootprint(vWPos, cameraPosition, uPixelScale);
+  float shoreFade = smoothstep(0.0, 0.62 + foot * 0.55, depth);
   // Taper across the profile as well. The outer columns exist to give the
   // shoreline fade somewhere to finish, not to be water: on an incised channel
   // the terrain cuts them off first, but on a flat flood plain nothing does,
   // and a 12 m river then paints itself 32 m wide as a flat blue film over the
   // meadow. The channel is as wide as the channel.
   float profile = smoothstep(1.38, 0.98, abs(vSide));
-  float alpha = shoreFade * profile;
+  // ...and a ceiling as well as a floor. The ribbon's height comes from the
+  // baked polyline, which follows the *channel*; where a river runs off a lip
+  // the polyline keeps going while the bed drops out from under it, and the
+  // shoreline fade — which only ever asked whether there was ground *below* —
+  // then paints a solid blue ribbon straight out across the void. Two of them
+  // crossing over one gorge is the floating pale-blue X a critic pass logged in
+  // the waterfall view, with no source and no ground contact, and it is a
+  // ribbon that had left its bed. A channel is at most a few metres deep; past
+  // that the water is not in a channel any more, it is a waterfall, and the
+  // falls system draws it.
+  float airborne = 1.0 - smoothstep(5.0, 11.0, depth);
+  float alpha = shoreFade * profile * airborne;
   if (alpha < 0.012) discard;
 
   // ── flow space: u across the channel, v downstream, both in metres ────────
@@ -147,8 +164,6 @@ void main() {
 
   // Two scales of travelling ripple, analytic gradients so nothing aliases.
   float rough = 0.35 + 0.65 * vTurb;
-  // Band-limited against the pixel footprint (flow space is metres too).
-  float foot = wFootprint(vWPos, cameraPosition, uPixelScale);
   vec2 g = vec2(0.0);
   g += wWaveGrad(fp, normalize(vec2( 0.16, 1.0)), 2.10, speed,        uTime, 0.030 * rough * wRippleFade(foot, 2.10));
   g += wWaveGrad(fp, normalize(vec2(-0.28, 1.0)), 3.40, speed * 0.86, uTime, 0.018 * rough * wRippleFade(foot, 3.40));
@@ -251,13 +266,22 @@ void main() {
 
   float shadow = min(getShadowMask(), wSunShadow(vWPos + vec3(0.0, 0.4, 0.0)));
   float ndl = max(dot(N, uSunDir), 0.0);
-  // What leaves the surface is light that went *through* water, bounced off the
-  // bed and came back through it, so it is filtered twice. Squaring part of the
-  // body colour is what keeps a channel blue under a hard amber key instead of
-  // turning it into a ribbon of pink. The gain then puts the value back: dark
-  // water is the fastest way to lose the reference's pale, airy channels.
-  vec3 medium = body * mix(vec3(1.0), body * 1.7, 0.55);
-  vec3 lit = medium * (uSunLight * ndl * shadow + uAmbient) / PI * uBodyGain;
+  // Same split as the lake: value from the illuminant, hue from the water. The
+  // old form multiplied the light by the body colour twice over, which held the
+  // channel blue under any key at all — including a dawn key that had turned
+  // every other surface in the frame sepia.
+  float bodyY = max(wLuma(body), 1e-4);
+  vec3  absorb = body / bodyY;
+  vec3 irr = (uSunLight * ndl * shadow + uAmbient) / PI;
+  // Raised to a power before it is used as a tint. Straight absorption plus a
+  // warm key cancels out: the illuminant runs 1 : 0.64 : 0.53 and the water
+  // 0.29 : 0.63 : 1.0, and their product is a grey-blue at chroma 0.22 against
+  // reference water measured at 0.48-0.78. The physics is right and the picture
+  // is wrong, because a real lake gets most of its diffuse glow from *sky*, not
+  // from a low sun that mostly reflects off it. Deepening the absorption is the
+  // cheap way to say that: it restores the chroma the key cancels and leaves
+  // the value, and therefore the whole time-of-day response, untouched.
+  vec3 lit = wTint(irr * bodyY, pow(absorb, vec3(uAbsorbPow)), uAbsorb) * uBodyGain;
 
   // Fresnel-weighted environment. Rivers are broken up and half-aerated, so
   // they never mirror as hard as a lake does — and letting them try buries the
@@ -271,10 +295,10 @@ void main() {
   float marchOn = 1.0 - smoothstep(0.03, 0.11, foot);
   vec3 envRaw = wSkyTilt(R);
   if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
-  // Tinted by the medium for the same reason the body is: an untinted mirror
-  // of a cream horizon turns every grazing view of a river into a pink ribbon.
-  vec3 env = envRaw * mix(vec3(1.0), medium * 2.4, 0.45) * 0.92;
-  vec3 col = mix(lit, env, clamp(fres, 0.0, 0.30));
+  // Rotated a fraction toward the channel's own hue, never multiplied by it: a
+  // river has to pick up a dawn sky the same way the bank beside it does.
+  vec3 env = wTint(envRaw, absorb, uEnvTint + 0.10);
+  vec3 col = mix(lit, env, clamp(fres, 0.0, 0.34));
 
   // Specular glints — tight, and killed inside foam so nothing sparkles on
   // what is meant to read as aerated white water. Band-limited against the
@@ -359,6 +383,9 @@ uniform vec3  uFoam;
 uniform vec3  uSubsurface;
 uniform vec2  uWind;
 uniform float uBodyGain;
+uniform float uAbsorb;
+uniform float uAbsorbPow;
+uniform float uEnvTint;
 uniform vec3  uCoolTint;
 uniform float uPixelScale;
 
@@ -373,65 +400,94 @@ ${WATER_FOAM_LIGHT}
 void main() {
   vec4 D = wWorldData(vWPos.xz);
   float depth = vWPos.y - D.r;
+  // Pixel footprint first: the shoreline width depends on it.
+  float foot = wFootprint(vWPos, cameraPosition, uPixelScale);
   // The whole shoreline, in one line: water exists exactly where the surface is
   // above the ground. Not where the polygon ends, not where the baked wet/dry
   // flag flips — both of those are quantised to the grid and read as a cut
   // edge. The band is wide enough to swallow the ±0.5 m of micro-detail the
   // terrain mesh adds on top of the baked heightfield.
-  float shoreFade = smoothstep(0.0, 0.62, depth);
+  //
+  // ...and it widens with the pixel. At four hundred metres and a grazing
+  // angle a pixel spans ten metres of bank, so a fixed 0.62 m band crosses
+  // from nothing to solid water inside a fraction of one — which is a hard
+  // stairstepped polygon edge, and is what a critic measured along every
+  // shoreline in the peaks view. Scaling the band by the footprint is a
+  // genuine analytic antialias rather than a fudge: the transition is always
+  // exactly one pixel wide wherever you stand.
+  float shoreFade = smoothstep(0.0, 0.62 + foot * 0.55, depth);
   // The mesh is dilated one ring beyond the baked water so the fade has room to
   // finish inside geometry. That ring is the only place this gate does anything
   // — it stops a perched lake from painting itself down a cliff face.
   float alpha = shoreFade * smoothstep(0.05, 0.55, vWet);
   if (alpha < 0.012) discard;
 
-  // ── wind ripple: crossed scales, very low amplitude ───────────────────────
+  // ── wind ripple ───────────────────────────────────────────────────────────
+  // Not sinusoids. Four travelling waves with a shared phase origin comb a
+  // lake into corduroy no matter how they are weighted or domain-warped: the
+  // previous pass warped them by two scales at once and the surface still
+  // resolved, under magnification, into two families of perfectly regular
+  // crests crossing at forty degrees. A sine is a sine.
+  //
+  // So the surface gradient comes from a noise field instead, by central
+  // difference. Two properties fall out of that which the wave stack could not
+  // have: the field is aperiodic in every direction, and the difference
+  // baseline can be tied to the pixel footprint — which band-limits it for
+  // free, because once a pixel spans more than a feature the difference
+  // averages that feature away instead of aliasing it.
   vec2 p = vWPos.xz;
   vec2 wdir = normalize(uWind + vec2(1e-4));
   float wmag = length(uWind);
-  // Domain warp. Every one of these waves shares a phase origin at the world
-  // centre, so however they are weighted their crests stay in step and a big
-  // lake ends up combed into parallel corduroy marching across it — the single
-  // most artificial thing a water surface can do. Displacing the sample point
-  // by a slow noise destroys the phase coherence and costs two fbm taps.
-  vec2 pw = p + vec2(wFbm2(p * 0.035), wFbm2(p * 0.035 + 17.3)) * 7.0;
-  // Every scale is band-limited against the pixel footprint — see wRippleFade.
-  float foot = wFootprint(vWPos, cameraPosition, uPixelScale);
-  vec2 g = vec2(0.0);
-  g += wWaveGrad(pw, wdir,                                 0.30, 1.45, uTime, 0.34 * wmag * wRippleFade(foot, 0.30));
-  g += wWaveGrad(pw, normalize(wdir + vec2( 0.55, -0.35)), 0.72, 1.05, uTime, 0.17 * wmag * wRippleFade(foot, 0.72));
-  g += wWaveGrad(pw, normalize(wdir + vec2(-0.62,  0.30)), 1.55, 0.72, uTime, 0.065 * wmag * wRippleFade(foot, 1.55));
-  g += wWaveGrad(pw, normalize(wdir + vec2( 0.20,  0.90)), 3.40, 0.48, uTime, 0.024 * wmag * wRippleFade(foot, 3.40));
-  // Fetch is a *distance* thing, not a depth thing: a puddle is glass however
-  // deep it is, and the middle of a lake is textured however shallow it is.
-  float fetch = 0.42 + 0.58 * smoothstep(4.0, 55.0, vShore);
-  // Fade the fine scales out with distance or they turn into aliasing crawl at
-  // the far end of a kilometre of lake.
   float dist = length(cameraPosition - vWPos);
   // How far into the aerial perspective this pixel sits. Several decisions
   // below depend on it: a lake a kilometre off is a flat mass at a grazing
   // angle, and almost everything that gives near water its life is noise there.
   float far = smoothstep(80.0, 420.0, dist);
-  g *= fetch * (0.35 + 0.65 * exp(-dist * 0.006));
-  // A fine chop that survives close up. The scales above are metres wide, so at
-  // two metres from the camera they are off-screen gradients and the surface has
-  // nothing in it — this is the scale you actually see from a car window.
+  // Fetch is a *distance* thing, not a depth thing: a puddle is glass however
+  // deep it is, and the middle of a lake is textured however shallow it is.
+  float fetch = 0.42 + 0.58 * smoothstep(4.0, 55.0, vShore);
   float near = 1.0 - smoothstep(3.0, 34.0, dist);
-  g += wWaveGrad(pw, normalize(wdir + vec2(0.9, 0.1)),  6.5, 0.55, uTime, 0.012 * near * wRippleFade(foot, 6.5));
-  g += wWaveGrad(pw, normalize(wdir + vec2(-0.7, 0.6)), 11.0, 0.42, uTime, 0.006 * near * wRippleFade(foot, 11.0));
 
-  // Wind on water is patchy: cat's-paws of ripple with glassy lanes between
-  // them. Four pure sinusoids without this read as corduroy — regular parallel
-  // dashes marching across the surface, which is the single most artificial
-  // thing a lake can do.
+  vec2 g = vec2(0.0);
+  {
+    // Broad swell, ~9 m features, drifting downwind.
+    float k = 0.11;
+    float e = max(0.9, foot * 0.85);
+    vec2 q = p * k - wdir * (uTime * 0.55 * k);
+    float hC = wFbm2(q);
+    vec2 d = vec2(wFbm2(q + vec2(e * k, 0.0)) - hC, wFbm2(q + vec2(0.0, e * k)) - hC) / e;
+    g += d * (2.6 * wmag * fetch);
+  }
+  {
+    // Close chop, ~1.2 m features. This is the scale you actually see from a
+    // car window; at forty metres it is already inside the footprint and the
+    // difference has averaged it out on its own.
+    float k = 0.85;
+    float e = max(0.16, foot * 0.85);
+    vec2 q = p * k - wdir * (uTime * 1.30 * k);
+    float hC = wFbm2(q + 31.0);
+    vec2 d = vec2(wFbm2(q + vec2(e * k, 0.0) + 31.0) - hC, wFbm2(q + vec2(0.0, e * k) + 31.0) - hC) / e;
+    g += d * (0.22 * wmag * near);
+  }
+  // Wind on water is patchy: cat's-paws of ripple with glassy lanes between.
   float gust = 0.30 + 1.05 * (wFbm2(p * 0.045 - vec2(uTime * 0.05, 0.0)) * 0.5 + 0.5);
-  g *= gust;
+  g *= gust * (0.35 + 0.65 * exp(-dist * 0.006));
+  // Soft ceiling on the surface slope. Fresnel at a grazing angle is the
+  // steepest function in this shader — a tenth of a radian of normal swings it
+  // from body colour to mirror — so an unbounded gradient bands. Soft, because
+  // a hard clamp draws its own level set across the water as a visible contour.
+  g *= 0.075 / (0.075 + length(g));
 
   vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
   vec3 V = normalize(cameraPosition - vWPos);
   if (!gl_FrontFacing) N = -N;
 
-  float deepT = smoothstep(0.25, 4.0, depth);
+  // The ramp reaches further than it did. A shelf that darkens to full depth
+  // colour inside four metres gives a lake two states — rim and body — and the
+  // reference reads its water as a continuous gradient from a pale, almost
+  // sandy edge into the deep. Six metres is roughly the depth at which the bed
+  // stops contributing anything.
+  float deepT = smoothstep(0.12, 6.0, depth);
   vec3 body = mix(uShallow, uDeep, deepT);
   // Painterly value structure: broad, slow, low-frequency masses rather than a
   // single flat tint. Large areas of near-uniform colour with soft boundaries
@@ -451,8 +507,30 @@ void main() {
 
   float shadow = min(getShadowMask(), wSunShadow(vWPos + vec3(0.0, 0.4, 0.0)));
   float ndl = max(dot(N, uSunDir), 0.0);
-  vec3 medium = body * mix(vec3(1.0), body * 1.7, 0.55);
-  vec3 lit = medium * (uSunLight * ndl * shadow + uAmbient) / PI * uBodyGain;
+
+  // Split the water's own colour into a value and a hue. Everything below
+  // *tints* with absorb (unit luminance) instead of multiplying by the body,
+  // because multiplying by a colour whose red channel is 0.10 is what took the
+  // sun out of the lake: the surface could not show an amber key however bright
+  // the key was, and stayed cyan at dawn while the whole valley went sepia.
+  float bodyY = max(wLuma(body), 1e-4);
+  vec3  absorb = body / bodyY;
+
+  // The irradiance the water is standing in — the same key and the same
+  // hemisphere fill as the terrain around it, with the key's hue intact.
+  vec3 irr = (uSunLight * ndl * shadow + uAmbient) / PI;
+  // Light that went into the volume, scattered, and came back out: the
+  // illuminant, valued by how much the water lets back out and tinted by what
+  // it absorbed on the way.
+  // Raised to a power before it is used as a tint. Straight absorption plus a
+  // warm key cancels out: the illuminant runs 1 : 0.64 : 0.53 and the water
+  // 0.29 : 0.63 : 1.0, and their product is a grey-blue at chroma 0.22 against
+  // reference water measured at 0.48-0.78. The physics is right and the picture
+  // is wrong, because a real lake gets most of its diffuse glow from *sky*, not
+  // from a low sun that mostly reflects off it. Deepening the absorption is the
+  // cheap way to say that: it restores the chroma the key cancels and leaves
+  // the value, and therefore the whole time-of-day response, untouched.
+  vec3 lit = wTint(irr * bodyY, pow(absorb, vec3(uAbsorbPow)), uAbsorb) * uBodyGain;
 
   // Near-mirror at grazing angles: this is the whole point of a lake.
   float fres = 0.020 + 0.980 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
@@ -470,22 +548,35 @@ void main() {
   // Past that point the landscape reflection is not information, so it is
   // dropped for the smooth sky term — which also makes the far half of every
   // lake in the frame cost nothing to shade.
-  float marchOn = 1.0 - smoothstep(0.03, 0.11, foot);
+  // Reach: the march used to stop at a footprint of 0.11 m, which on a lake
+  // seen from its own bank is about eight metres out — so in practice no lake
+  // in the game ever reflected anything but sky, and a critic pass recorded
+  // exactly that. The halftone that forced the old cutoff came from the ray
+  // direction wobbling with the ripple, not from the march: with Nr fully
+  // flattened by a footprint of 0.31 m the reflected direction is a smooth
+  // function of position again and the hit/miss test stops dithering. So the
+  // cutoff belongs *past* the point where Nr goes flat, not before it.
+  float marchOn = 1.0 - smoothstep(0.40, 1.25, foot);
   vec3 envRaw = wSkyTilt(R);
   if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
-  // A real lake at a grazing angle is very nearly a mirror, and rendering that
-  // faithfully gives a hole full of cream sky. Water is a coloured medium:
-  // tinting the reflection with the body keeps the surface reading as water
-  // even when it is mostly showing the sky back at you.
-  // ...and the further away it is, the more of it the medium has to hold: at a
-  // kilometre every lake is at a grazing angle, so a faithful mirror returns
-  // the cream horizon band and the valley floor fills up with beige slabs that
-  // do not read as water at all. Measured in the peaks view, the lake came
-  // back RGB 0.67/0.58/0.46 — warmer than neutral. Water is the cool note.
-  vec3 env = envRaw * mix(vec3(1.0), medium * 2.6, mix(0.55, 0.84, far));
+  // A reflection off the air/water interface is spectrally neutral: it is the
+  // sky, not the water. Multiplying it by the body colour is what stopped every
+  // lake in the game turning sepia at dawn with the rest of the world. Water
+  // stays the cool note by *rotating* the reflection a fraction toward its own
+  // hue — which moves colour and leaves value, and therefore the illuminant,
+  // alone. A little more of the rotation at distance, where a grazing mirror
+  // would otherwise hand back the cream horizon band as a beige slab.
+  vec3 env = wTint(envRaw, absorb, mix(uEnvTint, uEnvTint + 0.20, far));
   // Shallow water has almost no path length to reflect out of — the shelf at
   // the shore should show its bed, not the sky.
-  float mirror = clamp(fres * mix(0.70, 0.40, far), 0.0, 0.50) * smoothstep(0.10, 1.2, depth);
+  // The mirror is pulled right down at distance. At a kilometre every lake in
+  // the map is at a grazing angle, so a strong fresnel there hands back the
+  // bright horizon band, and after the shared haze has finished with it the
+  // basin reads as a pale neutral slab — a critic measured exactly that at the
+  // peaks anchor. Past a few hundred metres the only thing that still says
+  // "water" through that much haze is *value*, and value is what the body
+  // colour has and the reflected sky does not.
+  float mirror = clamp(fres * mix(0.86, 0.22, far), 0.0, 0.62) * smoothstep(0.10, 1.2, depth);
   vec3 col = mix(lit, env, mirror);
 
   // Sun path. Broad and graded, never a hard hotspot — and band-limited, which
@@ -517,13 +608,18 @@ void main() {
   // Depth places the line; slope is only allowed to limit how far it spreads,
   // because a continuous three-metre white fringe around every lake in the map
   // reads as pack ice rather than water lapping at a bank.
-  float laceD = smoothstep(0.02, 0.12, depth) * (1.0 - smoothstep(0.10, 0.42, depth));
+  float laceD = smoothstep(0.015, 0.10, depth) * (1.0 - smoothstep(0.09, 0.36, depth));
   float laceW = 1.0 - smoothstep(0.8, 3.6, distShore);
-  float lace = laceD * mix(0.30, 1.0, laceW);
+  float lace = laceD * mix(0.26, 1.0, laceW);
+  // Broken twice, at two scales. One noise threshold turns the band into a
+  // long soft smear with a couple of gaps in it; the reference draws its
+  // waterline as a row of separate bright marks, and it takes a coarse noise
+  // to place the marks and a finer one to give each of them an edge.
+  float fn2 = wFbm2(p * 2.9 + vec2(uTime * 0.09, uTime * 0.04)) * 0.5 + 0.5;
+  float marks = smoothstep(0.36, 0.50, fn) * smoothstep(0.30, 0.46, fn2);
   // Far shorelines get a pale edge, not a white rope: the lace noise is
   // sub-pixel past a couple of hundred metres and averages to a solid band.
-  float foam = lace * smoothstep(0.38, 0.56, fn)
-             * mix(1.0, 0.45, smoothstep(140.0, 520.0, dist));
+  float foam = lace * marks * mix(1.0, 0.45, smoothstep(140.0, 520.0, dist));
   // Foam is a diffuse mass of bubbles: lit nearly flat, and never allowed to
   // sink to the ambient's blue — white water that is not white is haze.
   vec3 foamCol = uFoam * wFoamLight(shadow) * 0.86;
@@ -532,7 +628,12 @@ void main() {
   col *= uCoolTint;
 
   // Shallows are see-through; the body closes up as it deepens.
-  alpha *= mix(0.62, 1.0, smoothstep(0.12, 1.5, depth));
+  // Shallows are see-through, but only a little. At 0.62 the gold bank read
+  // straight through the shelf and every lake margin in the game came out
+  // khaki — mud, which the brief names as an anti-pattern. Shallowness belongs
+  // in the water's *colour*, which the depth ramp already handles, not in how
+  // much of the bank is allowed to show through it.
+  alpha *= mix(0.84, 1.0, smoothstep(0.12, 1.5, depth));
   alpha = max(alpha, foam * 0.92);
 
   gl_FragColor = vec4(col, alpha);
@@ -586,8 +687,26 @@ export class Water extends System {
       // Shallow water at 3.1 clipped every channel past 1.0 — the surface then
       // has no structure left to see, which is how a pond two metres from the
       // camera ends up reading as flat turquoise vinyl.
-      uBodyGain:     { value: 2.1 },
-      uCoolTint:     { value: new THREE.Vector3(0.94, 1.00, 1.05) },
+      //
+      // Re-measured against the current grade (the flat-shadow clamp is gone,
+      // AMBIENT_SCALE is 0.72) and against the new tint model, which no longer
+      // multiplies the light by the body colour and so no longer needs a gain
+      // to put back the value that the double filter took out.
+      uBodyGain:     { value: 1.30 },
+      // How much of the water's own hue is imposed on the light coming back out
+      // of it. 1.0 is a literal multiply by the body colour; below that the
+      // illuminant shows through, which is the whole point.
+      uAbsorb:       { value: 1.0 },
+      // Chroma of the absorption tint. See the shader: 1.0 is literal, above
+      // that the water holds its blue against a hard amber key the way the
+      // reference plates do.
+      uAbsorbPow:    { value: 1.60 },
+      // How far the surface reflection is rotated toward the water's hue. The
+      // reflection is physically neutral, so this is pure art direction: enough
+      // that a lake stays the cool note in a hot frame, little enough that a
+      // dawn sky still lands on it.
+      uEnvTint:      { value: 0.34 },
+      uCoolTint:     { value: new THREE.Vector3(0.96, 1.00, 1.03) },
       // Radians of view angle per output pixel. Everything that has to be
       // band-limited — ripple scales, the specular lobe, the reflection march —
       // is measured against the footprint this implies.
@@ -847,6 +966,38 @@ export class Water extends System {
         if (!n) continue;
         wet[cz * G + cx] = 1;
         level[cz * G + cx] = sum / n;
+      }
+    }
+
+    // ── drop stray specks ───────────────────────────────────────────────────
+    // The baked water grid leaves isolated single cells scattered across the
+    // valley wherever the fill algorithm caught a local pit. Each one becomes
+    // an 8 m slab of water sitting in the middle of dry meadow, and a critic
+    // pass logged three of them in one frame as evidence of a broken mask.
+    // A body of water this small has no shoreline, no depth and no reflection
+    // to speak of — it is a puddle-shaped bug. Flood-fill and discard anything
+    // under three quads.
+    {
+      const MIN_CELLS = 3;
+      const seen = new Uint8Array(G * G);
+      const stack = new Int32Array(G * G);
+      const comp = new Int32Array(G * G);
+      for (let k0 = 0; k0 < G * G; k0++) {
+        if (!wet[k0] || seen[k0]) continue;
+        let sp = 0, n = 0;
+        stack[sp++] = k0; seen[k0] = 1;
+        while (sp > 0) {
+          const k = stack[--sp];
+          comp[n++] = k;
+          const cx = k % G, cz = (k / G) | 0;
+          if (cx > 0 && wet[k - 1] && !seen[k - 1]) { seen[k - 1] = 1; stack[sp++] = k - 1; }
+          if (cx < G - 1 && wet[k + 1] && !seen[k + 1]) { seen[k + 1] = 1; stack[sp++] = k + 1; }
+          if (cz > 0 && wet[k - G] && !seen[k - G]) { seen[k - G] = 1; stack[sp++] = k - G; }
+          if (cz < G - 1 && wet[k + G] && !seen[k + G]) { seen[k + G] = 1; stack[sp++] = k + G; }
+        }
+        if (n < MIN_CELLS) {
+          for (let i = 0; i < n; i++) { wet[comp[i]] = 0; level[comp[i]] = DRY; }
+        }
       }
     }
 

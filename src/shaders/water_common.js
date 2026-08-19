@@ -8,8 +8,40 @@
 //  way to get an edge that follows the carved bank instead of a mesh silhouette.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Colour helpers shared by every water surface.
+ *
+ * The single worst bug this system has had was that water was multiplied by its
+ * own body colour — twice, in places. A body colour whose red channel is 0.10
+ * cannot show an amber key however bright the key is, so at dawn the lakes
+ * stayed cyan while the entire valley went sepia, and at dusk they went indigo
+ * in a hot orange frame. Water read as pasted on, and no amount of surface
+ * detail fixes that.
+ *
+ * So nothing here ever multiplies a colour by a colour. Tinting goes through
+ * `wTint`, which normalises the tint to unit luminance first: the operation
+ * moves *hue* and leaves *value* to the illuminant. Water keeps its material
+ * identity, and every water surface in the game brightens, warms and cools with
+ * the same sun as the ground it sits in.
+ */
+const WATER_COLOUR_UTILS = /* glsl */`
+float wLuma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+vec3 wTint(vec3 c, vec3 tint, float amount){
+  vec3 t = tint / max(wLuma(tint), 1e-4);
+  return c * mix(vec3(1.0), t, amount);
+}
+
+// Desaturate toward own luminance. Used where a surface has to stay legible as
+// water under a hard amber key without being repainted by it.
+vec3 wDesat(vec3 c, float amount){
+  return mix(c, vec3(wLuma(c)), amount);
+}
+`;
+
 /** Cheap value noise + fbm. Deliberately low-octave: this is painterly water. */
 export const WATER_NOISE = /* glsl */`
+${WATER_COLOUR_UTILS}
 vec2 wHash22(vec2 p){
   p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
   return fract(sin(p) * 43758.5453123) * 2.0 - 1.0;
@@ -169,7 +201,13 @@ vec3 wEnvReflect(vec3 P, vec3 R){
       // Toward the *cool* end of the sky, not the cream horizon band: hazing a
       // gold hillside toward cream leaves khaki, and khaki water is mud.
       vec3 haze = mix(uSkyHorizon, uSkyZenith, 0.62);
-      col = mix(col, haze, clamp(0.34 + t / 260.0, 0.0, 0.88));
+      // Desaturated hard before it is hazed. A reflected gold hillside carries
+      // enough chroma that even a heavy haze leaves it khaki, and once the
+      // surface then rotates it toward the water hue the lake fills with olive
+      // patches that read as scum. In the plates a reflected bank is a darker,
+      // near-monochrome smear — value, not colour.
+      col = wDesat(col, 0.62);
+      col = mix(col, haze, clamp(0.46 + t / 260.0, 0.0, 0.90));
       return col;
     }
     t += dt; dt *= 1.24;

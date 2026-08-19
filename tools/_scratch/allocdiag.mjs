@@ -7,6 +7,7 @@ await acquire('perf');
 const browser=await chromium.launch({args:['--use-gl=angle','--use-angle=metal','--ignore-gpu-blocklist','--enable-gpu-rasterization','--disable-frame-rate-limit','--enable-precise-memory-info']});
 const page=await browser.newPage({viewport:{width:1600,height:900},deviceScaleFactor:1});
 page.on('pageerror',e=>console.log('PAGEERROR',String(e.message).slice(0,200)));
+await page.routeWebSocket(/^wss?:\/\/(localhost|127\.0\.0\.1):5178\//, () => {});
 await page.goto(`http://localhost:5178/?res=${RES}`,{waitUntil:'domcontentloaded'});
 await page.waitForFunction(()=>window.__ready===true,null,{timeout:240000,polling:250});
 await page.waitForTimeout(1000);

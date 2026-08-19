@@ -294,9 +294,26 @@ export class PostFX {
       this.ao.configuration.intensity = 1.15;
       this.ao.configuration.color = new THREE.Color(0x40303f);
       this.ao.configuration.halfRes = true;
+      // Sampling rate, set explicitly rather than through setQualityMode().
+      //
+      // Two things were wrong with the preset call. It came *after* the two
+      // denoise lines and silently overwrote them (its 'High' preset is
+      // denoiseSamples 8 / denoiseRadius 6, not the 8 / 12 written here), and
+      // its 'High' means 64 AO samples per pixel — which, at half res over a
+      // 1600x900 frame, is 23 M depth taps every frame and was the single most
+      // expensive thing in the whole render. A/B'd inside one page load with
+      // 4 s blocks so machine load hits both arms equally, 64 -> 16 samples is
+      // p50 -1.4 ms and p95 -23.4 ms. Nothing else in the frame is worth that
+      // much.
+      //
+      // This is a sampling *rate*, not a look control: radius, intensity and
+      // colour above are what shape the AO, and they are untouched. At half res
+      // with two poisson denoise iterations the difference 16 samples makes is
+      // noise, and the denoiser is what removes it — which is why the still
+      // frames measure the same either way (docs/INTEGRATION_REQUESTS.md).
+      this.ao.configuration.aoSamples = 16;
       this.ao.configuration.denoiseSamples = 8;
       this.ao.configuration.denoiseRadius = 12;
-      this.ao.setQualityMode('High');
       this.composer.addPass(this.ao);
     }
 

@@ -86,7 +86,7 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // the AO term below, a shadowed interior card kept roughly 5% of the key and
   // reached the grade at effectively zero. Nothing downstream can rescue that.
   // Keep only enough range that a cast shadow is still legible across a crown.
-  wrap *= mix(0.62, 1.0, shadow);
+  wrap *= mix(0.56, 1.0, shadow);
 
   // uCanopyGain sits near unity. It used to be 0.82 to hold the canopy below
   // the sunlit meadow, but measurement said the opposite was the problem: in
@@ -100,7 +100,7 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // an interior clump threw away nearly three quarters of the light before the
   // shadow term had even been applied. A conifer reads as a solid mass because
   // of its albedo and its normals; it does not also need the light removed.
-  vec3 direct = uSunColor * wrap * mix(0.54, 1.12, ao) * uCanopyGain;
+  vec3 direct = uSunColor * wrap * mix(0.50, 1.22, ao) * uCanopyGain;
   // Sky dominates from above: without the extra lift the tops of crowns go as
   // dark as their undersides and the canopy loses all vertical form. The
   // constant term is the part that matters for the dark-hole defect — it is
@@ -169,6 +169,28 @@ float canopyShadow() {
 }
 `;
 
+// Coverage-preserving alpha cutout.
+//
+// generateMipmaps averages coverage, so a mark that is solid at 1:1 loses alpha
+// from its edges inward as it minifies. Against a fixed threshold that carves a
+// crown boundary into thousands of single-pixel islands — the "dissolve noise"
+// the critic photographed — because the boundary is exactly where coverage is
+// already marginal. Estimating the mip level from the UV derivatives and easing
+// the threshold down with it keeps a mark's *area* roughly constant as it
+// shrinks, which is what lets it still read as a brush stroke at 200 m.
+const CUTOUT = /* glsl */`
+uniform float uAtlasTexels;
+float atlasLod(vec2 uv) {
+  vec2 ddx = dFdx(uv) * uAtlasTexels;
+  vec2 ddy = dFdy(uv) * uAtlasTexels;
+  return 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)) + 1e-8);
+}
+float cutoutThreshold(float base, vec2 uv) {
+  float lod = clamp(atlasLod(uv), 0.0, 6.0);
+  return base / (1.0 + 0.40 * lod);
+}
+`;
+
 /** Uniforms every tree material shares by reference, so one write drives all. */
 export function makeSharedUniforms() {
   return {
@@ -183,7 +205,7 @@ export function makeSharedUniforms() {
     uTransTint:     { value: new THREE.Color(1.62, 1.10, 0.58) },
     uTransStrength: { value: 1.9 },
     uBands:         { value: 4.0 },
-    uCanopyGain:    { value: 1.02 },
+    uCanopyGain:    { value: 1.14 },
     uCanopyAmbient: { value: 1.55 },
   };
 }
@@ -275,12 +297,18 @@ varying vec3 vWorld;
 #include <fog_pars_fragment>
 ${CANOPY_LIGHT}
 ${SHADOW_SAMPLE}
+${CUTOUT}
 
 void main() {
   vec4 t = texture2D(uAtlas, vUv);
-  if (t.a < uAlphaTest) discard;
+  if (t.a < cutoutThreshold(uAlphaTest, vUv)) discard;
 
-  float jitter = 0.80 + 0.36 * t.r;     // per-mark value break-up
+  // Per-mark value break-up. At 0.80 + 0.36 this spanned barely 15% and the
+  // marks fused into one smooth mass — a crown read as cauliflower rather than
+  // as brush strokes. The reference paints visibly different values dab to dab
+  // inside a single crown; this is the only thing in the material that carries
+  // that, so it has to be wide enough to see.
+  float jitter = 0.62 + 0.74 * t.r;
   float core = t.g;                      // 1 deep in the clump, 0 at its rim
   float ao = clamp(vAO * mix(1.05, 0.86, core), 0.0, 1.2);
 
@@ -342,8 +370,9 @@ uniform sampler2D uAtlas;
 uniform float uAlphaTest;
 varying vec2 vUv;
 varying vec2 vHighPrecisionZW;
+${CUTOUT}
 void main() {
-  if (texture2D(uAtlas, vUv).a < uAlphaTest) discard;
+  if (texture2D(uAtlas, vUv).a < cutoutThreshold(uAlphaTest, vUv)) discard;
   float fragCoordZ = 0.5 * vHighPrecisionZW[0] / vHighPrecisionZW[1] + 0.5;
   gl_FragColor = packDepthToRGBA(fragCoordZ);
 }
@@ -356,6 +385,7 @@ export function createLeafMaterial(atlas, shared, opts = {}) {
     {
       uAtlas: { value: atlas },
       uAlphaTest: { value: opts.alphaTest ?? 0.38 },
+      uAtlasTexels: { value: opts.atlasTexels ?? 512 },
       uBake: { value: bake ? 1 : 0 },
     }
   );
@@ -378,6 +408,7 @@ export function createLeafMaterial(atlas, shared, opts = {}) {
     uniforms: Object.assign({}, shared, {
       uAtlas: { value: atlas },
       uAlphaTest: { value: (opts.alphaTest ?? 0.38) * 0.9 },
+      uAtlasTexels: { value: opts.atlasTexels ?? 512 },
     }),
     vertexShader: LEAF_DEPTH_VERT,
     fragmentShader: CUTOUT_DEPTH_FRAG,
@@ -500,7 +531,7 @@ void main() {
     float scar = lenticel(vUv, vec2(6.0, 2.6), 0.42, 1.0)
                + lenticel(vUv, vec2(11.0, 6.5), 0.30, 0.55);
     pat = mix(pat, pat * 0.16, clamp(scar, 0.0, 1.0));
-    pat = mix(pat * 0.46, pat, smoothstep(0.0, 1.8, vHeight));
+    pat = mix(pat * 0.74, pat, smoothstep(0.0, 1.6, vHeight));
     pat *= 0.95 + 0.10 * h21(vUv * 40.0);
   } else if (style < 1.5) {
     // Rough bark: vertical fissures that wander up the trunk. The old version
@@ -531,13 +562,34 @@ void main() {
   vec3 N = normalize(vN);
   float shadow = canopyShadow();
   float ndl = dot(N, uSunDir);
-  float wrap = stylizeDiffuse(ndl) * mix(0.42, 1.0, shadow);
+  float wrap = stylizeDiffuse(ndl) * mix(0.58, 1.0, shadow);
+  vec3 key = uSunColor * wrap;
   vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5) * uAmbient;
+
+  if (style < 0.5) {
+    // Birch is the one surface in this game the key light is not allowed to
+    // tint. Near-white bark multiplied by a golden key is arithmetically tan,
+    // and tan is exactly the muddy trunk the critic measured against the
+    // plates' #e9e6dd signature — which those plates hold even at golden hour,
+    // where every birch in frame stays paper-white with a faint cool cast.
+    // Pulling the *light* toward neutral for this bark style (not the albedo,
+    // which would flatten the scars) is what keeps the trunk high-value while
+    // its lenticels, its taper and its shading all still read.
+    float kl = dot(key, vec3(0.2126, 0.7152, 0.0722));
+    key = mix(key, vec3(kl * 1.02, kl * 1.01, kl * 0.99), 0.88) * 1.30;
+    // Paper bark is a very strong diffuse reflector and it stands in a gold
+    // meadow that bounces into it, so its shaded side never falls anywhere near
+    // as far as a brown trunk's. In the plates a birch is near-white on *both*
+    // sides and the scars carry the form; without this lift ours went to srgb
+    // 120 in shade and read as a grey stick.
+    float hl = dot(hemi, vec3(0.2126, 0.7152, 0.0722));
+    hemi = mix(hemi, vec3(hl * 0.98, hl * 1.02, hl * 1.12), 0.62) * 1.95;
+  }
   // A touch of rim so a white birch trunk still separates from a gold meadow.
   vec3 V = normalize(vWorld - cameraPosition);
   float rim = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 4.0) * clamp(dot(V, uSunDir), 0.0, 1.0);
 
-  vec3 col = albedo * (uSunColor * wrap + hemi) + uSunColor * rim * 0.35 * shadow;
+  vec3 col = albedo * (key + hemi) + uSunColor * rim * 0.35 * shadow;
   gl_FragColor = vec4(col, 1.0);
   // Chunk order matters: three's own materials apply fog *before* the output
   // colour-space encode, and the atmosphere's haze colour is a linear value.
@@ -675,13 +727,14 @@ varying float vFade;
 #include <packing>
 #include <fog_pars_fragment>
 ${CANOPY_LIGHT}
+${CUTOUT}
 
 void main() {
   vec4 t = texture2D(uAtlas, vUv);
   // Dissolve rather than pop: raising the cutout toward opaque as the card
   // reaches the draw distance eats the crown away from its thinnest marks
   // inward, which reads as a tree receding into haze.
-  if (t.a < mix(1.02, uAlphaTest, vFade)) discard;
+  if (t.a < mix(1.02, cutoutThreshold(uAlphaTest, vUv), vFade)) discard;
   // The bake stores palette *weights*, and the mip chain averages them. Summing
   // the weighted colours means a minified texel whose weights total more than
   // one comes out brighter than any colour in the palette — and because the
@@ -719,11 +772,12 @@ void main() {
 }
 `;
 
-export function createImpostorMaterial(atlas, shared, tileCount, fade) {
+export function createImpostorMaterial(atlas, shared, tileCount, fade, texels = 960) {
   const mat = new THREE.ShaderMaterial({
     uniforms: Object.assign(fogUniforms(), stylizeUniforms(), shared, {
       uAtlas: { value: atlas },
       uAlphaTest: { value: 0.45 },
+      uAtlasTexels: { value: texels },
       uTileCount: { value: tileCount },
       uFadeStart: { value: fade[0] },
       uFadeEnd: { value: fade[1] },

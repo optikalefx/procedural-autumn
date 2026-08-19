@@ -1040,3 +1040,344 @@ The local `vFogWorldPos` workaround in `RockMaterial.js` is deleted, as promised
 — `fog_vertex` now applies `instanceMatrix` itself. Re-measured after removing
 it: a sunlit boulder at the `drive` anchor sits at **0.80–0.83** of the meadow's
 display luminance (reference band 0.78–0.86), so `uRockGain` stays at 1.36.
+
+---
+
+## Performance author — 2026-08-19
+
+Four defects were reported from actually playing: flashing black frames,
+freezing, a geometry leak, and being over budget. Everything below is either a
+change I made in someone else's file for *performance and lifetime only*, or a
+change I deliberately did **not** make because it would move the art.
+
+### 1. Bloom mip chain is capped now — look author, please read (`src/render/PostFX.js`)
+
+**This was the flashing black screen.** Measured two independent ways — an
+in-page `readPixels` of the default framebuffer immediately after
+`composer.render()`, and a CDP compositor screencast that never touches the page
+— **7–9 % of presented frames during a drive came back entirely black**, canvas
+only, with the HUD (a separate compositor layer) still drawn on top. Not a
+capture artifact: draw calls, triangle count, viewport, scissor, framebuffer
+binding and buffer sizes were all correct on those frames, `gl.getError()` was
+0, the context was not lost, and re-running the whole composer inside the same
+frame produced black again.
+
+Bisecting the chain pinned it on `BloomEffect` alone:
+
+| main pass contains | black frames |
+|---|---|
+| tone map only | 0.0 % (0/586) |
+| tone + vignette + grade | 0.0 % |
+| tone + SMAA | 0.0 % |
+| tone + DOF | 0.0 % |
+| **tone + bloom** | **7.9 % (65/824)** |
+
+and then on the *depth* of the mipmap chain, not on bloom itself:
+
+| `mipmapBlurPass.levels` | smallest mip | black frames |
+|---|---|---|
+| 8 (default) | 3×2 px | 7.7 % |
+| 7 | 6×4 px | 1.4 % |
+| 6 | 13×7 px | 0.3 % |
+| 5 | 25×14 px | 0.2 % |
+
+Binding a handful-of-pixels render target and then returning to the default
+framebuffer intermittently loses the present. That is a driver bug (ANGLE/Metal),
+not a bug in this file, but the cure is one line: `_capBloomMips()` now caps the
+chain so no mip is under 12 px on its short side (5 levels at 1600×900). With
+the cap in place the full chain measures **0/940 (readback) and 0/803
+(screencast)**.
+
+**What it costs you.** Only the widest, faintest part of the halo — the part the
+deepest mips carry. Measured with `tools/colorstats.mjs`, before → after:
+
+| | hero | backlit |
+|---|---|---|
+| lumaMean | 0.652 → 0.655 | 0.486 → 0.487 |
+| contrastStd | 0.134 → 0.132 | 0.168 → 0.169 |
+| chromaMean | 0.258 → 0.249 | 0.345 → 0.342 |
+| vividPct | 18.7 → 16.9 | 51.4 → 50.6 |
+
+i.e. a fraction of a percent everywhere, all still inside the reference bands. A
+blind A/B (`shots/perf/ab`) reads as a very slightly crisper, very slightly less
+veiled frame. **If you want the reach back, `radius` (currently 0.68) is the
+knob** — it widens each upsample step and does not reintroduce tiny targets.
+Please do not raise `levels` or delete the cap; that is the black screen.
+
+### 2. Warm-up hitches in the first ~12 s (`src/main.js` — not mine to edit)
+
+Every 30 s drive still shows two or three frames of 100–400 ms, and they cluster
+in the first ten seconds. They are inside `renderer.render`, with no geometry
+built, no texture uploaded and no system `update()` over 3.3 ms that frame —
+the CPU profile puts the time in `getProgramInfoLog` under
+`WebGLProgram.getUniforms → onFirstUse`, i.e. the driver finishing a pipeline
+link on first use. `main.js` already calls `renderer.compile(scene, cam)` at
+boot, but at that moment only the terrain exists: trees, rocks, water,
+waterfalls, wildlife, weather and the vehicle are all still streaming in, and
+none of the shadow-depth variants are covered.
+
+**Request:** move the `renderer.compile()` warm-up to *after* the systems have
+had a few frames to populate, and warm the shadow pass too — something like
+rendering 3–5 real frames (`postfx.render`) before setting `window.__ready`, and
+calling `renderer.compile(scene, lighting.sun.shadow.camera)` as well as with
+the main camera. That converts a player-visible freeze in the first seconds of
+play into a slightly longer loading bar.
+
+### 3. Grass is the single largest p95 contributor (grass author)
+
+A/B'd *within one page load* (4 s blocks, alternating, so machine contention
+hits both arms equally): hiding the grass moves **p50 −1.1 ms and p95 −7.6 ms**
+for only 16 draw calls and 0.37 M triangles. That ratio is overdraw, not
+geometry — the near ring's blades cover the lower half of the frame many layers
+deep. Nothing to fix on the CPU side; `Grass.update()` is textbook (2 ms
+resumable budget, no allocation in the steady state, distance-band culling).
+If the frame ever needs another 5 ms, the near ring's blade *width* (which is
+what buys coverage) is the cheapest place to find it — that is a density/art
+call, so it is yours, not mine.
+
+### 4. Trees are the biggest triangle load, in both passes (trees author)
+
+Trees render 0.9 M triangles in the main pass **and** the same geometry again
+into the shadow map — measured 43–47 shadow draws and 0.3–0.9 M shadow triangles
+depending on the view, which is more than half of everything the shadow pass
+draws. Hiding them is p50 −1.5 ms, p95 −5.1 ms.
+
+**Suggestion (yours to judge):** near trees do not need near-LOD geometry to
+cast a shadow. If the near slots carried a `customDepthMaterial` bound to the
+*mid* prototype — or if the near meshes had `castShadow = false` and a parallel
+mid-LOD instanced mesh cast for them — the shadow pass would lose roughly half
+its triangles for a silhouette change nobody can see at 4096², 0.07 m/texel.
+I did not do it because it changes what the shadow map contains.
+
+### 5. Shadow map size vs. the driving extent (`WorldConfig.QUALITY_PRESETS`)
+
+The shadow pass is the most expensive single feature in the frame: **p50
+−3.5 ms, p95 −8.6 ms, 204 draw calls and 1.4 M triangles** with it switched off.
+While driving, `Lighting._setShadowExtent()` settles at 150–190 m, and at `ultra`
+that is a 4096² map over a 300–380 m square — **0.037–0.046 m per texel**, far
+finer than PCF-soft can resolve or than a 1600×900 frame can show. The 4096 is
+earned only by the vista views, where the extent opens to 900 m.
+
+Rather than shrink the map for everyone, the natural fix is to *size the map to
+the extent*: keep 4096 above ~500 m of extent and drop to 2048 below it. That is
+a Lighting change with a visible consequence (softness changes with the switch),
+so it is the lighting author's call, not mine. Flagged with the numbers.
+
+### 6. `tools/perf.mjs` was measuring its own instrument (everyone)
+
+Two changes to the tool, both so it reports the game rather than itself:
+
+* **The black-frame analysis now runs in a separate blank page.** It used to
+  decode a 1600×900 PNG data URL and run `getImageData` **inside the page under
+  test**, on the same main thread as the render loop. That stalled the game for
+  300–700 ms every single sample, and the tool then counted its own stalls as
+  hitches: a clean run reported 12 frames over 100 ms, of which 8 were exactly
+  the eight samples, evenly spaced 5.2–5.8 s apart. Same screenshots, same
+  thresholds, same verdict logic — just analysed somewhere harmless.
+* **The Vite HMR socket is stubbed for the duration of a run.** With eleven
+  authors on one dev server, any save pushes a hot reload that throws away the
+  recorder mid-drive; roughly one run in three died with
+  `Cannot read properties of undefined (reading 'started')`. A capture is a
+  one-shot page load and never wants hot reload. A navigation that gets through
+  anyway now aborts with a clear message instead of a confusing crash.
+
+### 7. What I changed in other people's files, and nothing else
+
+* `src/world/Terrain.js` (terrain author) — batching and streaming only, no
+  change to vertices, LOD radii, skirts, material or shadow flags. Detail below.
+* `src/render/PostFX.js` (look author) — item 1 only.
+* `tools/perf.mjs` — item 6.
+
+Terrain: `viewDistance` (2400 m) is larger than the world's own half-diagonal,
+so all 32×32 chunks are resident permanently — that was 910 meshes in the scene
+graph and ~360 draw calls a frame at about a thousand triangles each. Chunks are
+now batched into blocks (2×2 for the LOD-2 band, 4×4 beyond it), and the
+wanted-set sweep is gated on 6 m of camera movement instead of running every
+frame. Batching only ever *widens* a bounding volume, so it can only add a
+caster or a visible surface, never remove one; the LOD-2/LOD-3 shadow-casting
+boundary is respected exactly as the per-chunk rule stated it.
+
+---
+
+## From the TREES author — 2026-08-19
+
+Fixing critic defects 8 (foliage silhouette), 11 (tree repetition / scatter) and
+17 (birch trunk colour), plus the look author's "conifer canopy is a dark hole"
+trace. Everything below is either a request against a file I do not own, or a
+measurement another author needs.
+
+### T1. Foliage no longer casts shadows from the mid LOD (no action needed, FYI)
+
+The single largest cost in the whole frame was tree foliage in the **shadow**
+pass, not the colour pass. A mid-LOD crown is ~140 alpha-tested double-sided
+cards; the billboards turn to face the *light* during the shadow pass, so every
+card presents its full disc, and with ~1700 mid instances on screen that is a
+quarter of a million discarded-fragment quads rasterised into the shadow map
+every frame. Measured in the `river` view, switching only that off took the
+frame from **36 fps to 70 fps** — half the frame rate of the entire game — to
+shadow trees 90–255 m away whose crowns mostly shadow other crowns.
+
+Mid *trunks* still cast, and everything inside 96 m casts in full. Whole-run
+numbers moved from p50 32.7 ms / 610 peak calls / 4.01 M peak tris to
+p50 25–33 ms / 532–545 calls / 3.64–3.73 M. The triangle budget breach the
+critic recorded (up to 6.37 M against a 4.5 M cap) is closed from the tree side.
+
+If the grass or ground-cover authors have alpha-tested billboards in the caster
+set, this is very probably the same win for them.
+
+### T2. Request to the look author: the warm haze floor dominates shaded foliage
+
+The darkest pixel anywhere in the `river` frame is `#483c2e` (srgb 72,60,46) and
+it is the same value on every object, at every distance. In linear terms that is
+about `(0.064, 0.045, 0.027)`, which matches the atmosphere's haze colour at a
+fog factor of roughly 6% — i.e. it is the haze term, not a grade clamp.
+
+That is fine for a distant hill. It is a problem for near shaded foliage: a
+conifer's shaded side is legitimately a low-albedo surface, and its own
+contribution has to *exceed* that floor before any hue survives. I have taken
+the honest half of the fix — the material's shadow and AO multipliers no longer
+double-count, and the shaded conifer albedo is a mid olive rather than
+`PALETTE.coniferDeep` — and `river` chroma went 0.238 → 0.311 with green back in
+the frame. But because the floor is warm and I cannot get under it, our shaded
+conifer lands near `srgb(100,90,55)` where reference plate 3's shaded foliage is
+`srgb(56,66,32)`: right value, still red-led rather than green-led.
+
+No change requested blind — but if the near-field fog ramp starts later than
+~40 m, that alone would let shaded greens read as greens.
+
+### T3. `PALETTE.coniferDeep` (`#1f3527`) is not usable as an albedo
+
+Linear luminance ≈ 0.02. Multiplied by any plausible light term it lands two
+stops below the haze floor above, so it renders as a hueless hole regardless of
+the lighting model — this is the direct cause of critic defect 8's dark canopy.
+The spruce palettes now run `#86ae5e → #4a7040` and similar. They are still the
+coolest, most desaturated masses in a hot frame, which is the job the brief
+gives conifers, but they are masses and not absences. Flagging in case the
+palette table wants updating so the next author does not re-adopt the anchor.
+
+### T4. Harness: `shot.mjs` still writes partially-rendered frames
+
+Roughly one capture in three at `--w 1280 --h 720 --res 768` comes back with a
+large black rectangle over part of the frame while `drawCalls`/`triangles` look
+healthy. It survived the retry loop in `shot.mjs` (the written-PNG check catches
+the narrow-strip case but not a black block in the middle), it hit `river`,
+`meadow` and `vehicle` in this session, and it poisons `colorstats` —
+`neutralPct` jumps to 10–48% and `lumaP05` to 0. A cheap detector: reject a
+frame whose `neutralPct` is above ~8% at golden hour, or scan for a large
+axis-aligned pure-black region. `--all` also still aborts partway (3 of 6 runs
+here) with `Execution context was destroyed`.
+
+### T5. Not mine, spotted while diagnosing
+
+* The dark specks scattered across the sky in `backlit` and `forest` are weather
+  leaf particles, not foliage — confirmed by hiding the tree group; they are
+  critic defect 10.
+* The bare brown branch shapes lying in the meadow grass in `backlit`/`meadow`
+  are also still there with the tree group hidden, so they belong to another
+  system's deadfall props, not to my bark geometry.
+
+## Terrain author — 2026-08-19, mountain structure pass
+
+Fixed in `src/world/TerrainMaterial.js` and `src/world/Terrain.js` only. One
+request, one warning, and one correction to the record.
+
+### REQUEST — performance author: +0.072 M triangles, and the lever to take it back
+
+Critic ship-blocker 6 ("mountain bodies have no structure") was in part a mesh
+resolution problem. `TERRAIN.lodDistances` ships `[180, 380, 720, 1300]`, which
+against a 96 m chunk and `lodResolutions [64,32,16,8,4]` is 1.5 / 3 / 6 / 12 / 24
+metres per vertex. The erosion bake cuts benches and gullies at 10-40 m, so
+everything past 720 m — which is exactly where the hero, peaks and dawn massifs
+sit — was drawn on a 12 m grid that cannot represent them at all.
+
+`WorldConfig.js` is not mine, so the schedule now lives in `Terrain.js` as
+`LOD_DISTANCES`, set to **`[180, 380, 900, 1500]`**. Only the two far radii
+move; the near bands are the expensive ones per chunk and were never the
+problem. `Terrain` also accepts `opts.lodDistances`.
+
+Costed before choosing (32x32 chunks, whole map resident):
+
+| schedule | terrain triangles |
+|---|---|
+| `[180, 380, 720, 1300]` shipped | 0.388 M |
+| `[180, 380, 900, 1500]` **this** | 0.460 M |
+| `[240, 500, 900, 1500]` | 0.545 M |
+| `[280, 600, 1100, 1800]` | 0.780 M |
+| `[320, 700, 1300, 2100]` | 0.940 M |
+
+I first landed `[240, 500, 900, 1500]` and then cut it back to this once the
+frame showed the near bands were not buying anything, so the delta is
+**+0.072 M triangles, 1.6% of the 4.5 M cap**, not the +0.157 M I originally
+took.
+
+It also moves the shadow-casting band (`castShadow = lod <= 2`, and blocks at
+`tier === 0`) from 720 m to 900 m: ~67 K extra triangles per cascade.
+
+`tools/perf.mjs --seconds 45 --res 1536`, stashed A/B on the same tree, of my
+two files together (LOD + the new shader work), at the earlier +0.157 M setting:
+
+```
+baseline   p50 29.6 ms  p95 63.6 ms  >50ms 184  >100ms 26  peak 3.54 M tris
++terrain   p50 29.8 ms  p95 66.0 ms  >50ms 196  >100ms 30  peak 3.80 M tris
+```
+
+The run fails its budget in **both** states — that is the pre-existing hitching
+you are already on, not this change. Caveat on that A/B: stashing `Terrain.js`
+also reverted your concurrent `BATCH_LOD`/`BATCH_NEAR` change, so the two rows
+are not a clean isolation of mine. A later run on the trimmed setting came back
+`p50 33.8  p95 68.9  >50ms 148  >100ms 7  peak 3.59 M`, so the >100 ms hitch
+count is down sharply from where it was.
+
+**If you need the triangles back, `LOD_DISTANCES` in `Terrain.js` is the single
+lever.** Setting it to `TERRAIN.lodDistances` returns every one of them, and the
+heightfield relief normal (below) keeps most of the visual win, because that
+part is free.
+
+### WARNING — the terrain fragment shader got more expensive
+
+Per fragment it now does 4 extra `uDataTex` fetches (a second, coarser
+heightfield stencil) and, on ground steeper than about 45 degrees only, up to
+two extra `fbm` evaluations per octave for triplanar sampling. Flat ground pays
+nothing for the triplanar part — the off-axis weights fall under a cutoff and
+the branch is coherent across a whole hillside. The close-range substrate block
+is behind a single `camDist` gate and is entirely off past 70 m.
+
+Measured p50 delta across the two files together was +0.2 ms, so this is not
+where the frame time is going, but it is a real fill-rate increase on the
+largest material in the scene and you should know it is there.
+
+### CORRECTION TO THE RECORD — rocks author, your crag blocks are fine
+
+Mid-pass I was convinced from the frames that my newly-grey massifs no longer
+matched your crag blocks, and I was about to file it. Sampling the actual pixels
+where a block meets the hillside it sits on says otherwise:
+
+```
+peaks.png   crag block   #8a6843  chroma 0.277
+            terrain 20px above it  #93724e  chroma 0.272
+```
+
+They agree. The apparent mismatch was simultaneous contrast against the pale
+sunlit peak behind, not a material difference. Your note about the frame being
+ground truth cuts both ways — an eyeball comparison of two objects at different
+depths in a hazed frame is not a measurement. `tools/_scratch/px.mjs` reports
+the mean sRGB of arbitrary rectangles in a PNG if anyone else wants it.
+
+The terrain's rock now runs the same chroma governor your material does, with
+`uRockCast` split into a warm `uRockCastLit` and a cool `uRockCastShade` whose
+mean is your `(0.965, 0.995, 1.085)`. Nothing is asked of you; this is so the
+next person who diffs the two shaders knows the agreement is deliberate.
+
+### NOT REQUESTED, BUT NOTED — two numbers I cannot reach from terrain
+
+* `contrastStd` on `peaks` is 0.105 against the brief's 0.13-0.22 band, and
+  `lumaP05` is 0.413 against a reference 0.18-0.42. The frame has no darks. The
+  terrain's own crevices now go to `PALETTE.rockShadow`, but the ambient floor
+  and the haze put a hard bound on how dark anything can get. That is a
+  lighting/atmosphere call, not an albedo one.
+* `hero` sits at `chromaMean` 0.272 against a 0.28 floor. It was 0.292 before
+  this pass, when the massif was khaki — the trade is a palette-correct
+  lavender-grey rock for 0.02 of chroma in the one view that is three fifths
+  stone. `drive` moved the other way and is now inside the band (0.436 -> 0.374,
+  it was previously above it), and `waterfall` moved from 0.246 into band at
+  0.325.

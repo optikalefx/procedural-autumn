@@ -93,7 +93,14 @@ void main() {
   // combed paper. Lump size is a physical quantity — it belongs in metres.
   float xm = vSide * vWidth * 0.5;
 
-  float streak = wFbm3(vec2(xm * 0.35, ph * 0.55)) * 0.5 + 0.5;
+  // Aspect ratio, and it was inverted. A falling curtain is streaked *along*
+  // the fall: the marks are long in the direction of travel and narrow across
+  // it. Sampled at 0.35 cycles per metre across a 12 m sheet and 0.55 per unit
+  // of advection down it, the noise varied faster down the fall than across it
+  // and the sheet came back combed with horizontal pencil lines — brushed
+  // steel, which is exactly what a critic pass called it. High frequency
+  // across, low frequency down.
+  float streak = wFbm3(vec2(xm * 1.70, ph * 0.22)) * 0.5 + 0.5;
   // Chunks. A fall is a stream of *parcels* — lumps of half-aerated water with
   // gaps between them — and the near-square aspect of this octave is what makes
   // them read as lumps rather than as combed pinstripes. Without it the sheet
@@ -105,10 +112,10 @@ void main() {
   // reaches the pool. Winding the frequency up with vU keeps parcels the same
   // physical size all the way down — and, as a free consequence, makes them
   // travel visibly faster the further they have fallen.
-  vec2 cp = vec2(xm * 0.55, ph * (1.20 + 3.00 * vU));
+  vec2 cp = vec2(xm * 0.95, ph * (0.55 + 1.30 * vU));
   float chunk  = wFbm3(cp + 23.0) * 0.5 + 0.5;
-  float fine   = wFbm2(vec2(xm * 1.50, ph * 1.70) + 11.0) * 0.5 + 0.5;
-  float hair   = wFbm2(vec2(xm * 3.20, ph * 3.20) + 41.0) * 0.5 + 0.5;
+  float fine   = wFbm2(vec2(xm * 3.10, ph * 0.70) + 11.0) * 0.5 + 0.5;
+  float hair   = wFbm2(vec2(xm * 6.40, ph * 1.30) + 41.0) * 0.5 + 0.5;
 
   // fbm returns a bell centred on 0.5 and hardly ever reaches either end, so
   // used raw it modulates the sheet by about +/-14% — under the tone curve that
@@ -117,6 +124,15 @@ void main() {
   float c1 = smoothstep(0.34, 0.66, chunk);
   float s1 = smoothstep(0.32, 0.68, streak);
   float h1 = smoothstep(0.35, 0.65, hair);
+  // Band limit. The two fine octaves run at 3 and 6 cycles per metre across
+  // the sheet; on a 4 m curtain seen from two hundred metres that is thirty
+  // cycles inside fifteen pixels, and the curtain came back cross-hatched with
+  // a regular moire grid. Fade them out once they are smaller than the pixel.
+  float sheetDist = distance(cameraPosition, vWPos);
+  float fineFade = 1.0 - smoothstep(45.0, 130.0, sheetDist);
+  float hairFade = 1.0 - smoothstep(22.0, 70.0, sheetDist);
+  fine = mix(0.5, fine, fineFade);
+  h1   = mix(0.5, h1, hairFade);
 
   // The sheet is coherent at the lip and shreds into ribbons as it falls — but
   // it stays a *curtain* the whole way down. Shredding it to translucent
@@ -155,9 +171,17 @@ void main() {
   // it is per *parcel*, so the lumps go white while the ribbons between them
   // stay glassy and keep the channel's blue. That contrast is the whole
   // difference between broken water and a printed sheet.
-  float aer = clamp(0.10 + 0.55 * smoothstep(0.0, 0.35, vU)
-                         + 0.55 * (c1 - 0.5) + 0.25 * (s1 - 0.5), 0.0, 1.0);
-  vec3 tint = mix(uShallow, uFoam, aer);
+  // Measured against plate 5: the curtain there runs RGB 0.86-0.96 at a chroma
+  // of 0.04-0.11, sitting right next to orange grass. Ours measured 0.34-0.56
+  // at chroma 0.32 — half the value and three times the colour, which is how a
+  // 70 m fall ended up reading as a pale blue rectangle. A fall is white water
+  // within a couple of metres of the lip; only the unbroken glassy tongue at
+  // the very top keeps any of the channel's blue at all.
+  float aer = clamp(0.42 + 0.50 * smoothstep(0.0, 0.22, vU)
+                         + 0.45 * (c1 - 0.5) + 0.22 * (s1 - 0.5), 0.0, 1.0);
+  // The glassy end of the ramp is the shallow tone taken most of the way to
+  // white, not the shallow tone itself: even the lip of a fall is aerated.
+  vec3 tint = mix(mix(uShallow, uFoam, 0.55), uFoam, aer);
   // The torn edges of a curtain are the most aerated part of it.
   tint = mix(tint, uFoam, smoothstep(0.55, 1.0, abs(vSide)) * 0.5 * shred);
 
@@ -166,10 +190,17 @@ void main() {
   // fit *under* white — the previous gain drove the red channel past 1.0 across
   // most of the sheet, so every lane clipped to the same cream and the fall
   // rendered as a strip of paper with correct silhouette and no water in it.
-  float lanes = 0.42 + 0.62 * c1 + 0.30 * s1 + 0.14 * h1;
+  float lanes = 0.62 + 0.46 * c1 + 0.22 * s1 + 0.11 * h1;
   // Level set against the plate: whitewater there has a median luma of 0.80 and
   // never clips. Anything brighter loses every lane painted into it.
-  vec3 col = tint * lanes * wFoamLight(shadow) * (0.58 + 0.40 * ndl);
+  //
+  // The ndl term is nearly flat now. A curtain is a volume of scattering
+  // droplets, not a lambertian wall — it is bright from every side, which is
+  // why a fall in a shaded gorge still reads white in the reference while the
+  // rock behind it is nearly black. Driving it off the surface normal put the
+  // whole sheet at 0.58 whenever the fall faced away from the sun, which in a
+  // north-south gorge is most of the day.
+  vec3 col = tint * lanes * wFoamLight(mix(shadow, 1.0, 0.55)) * (0.86 + 0.24 * ndl);
 
   // Backlight: a curtain of white water in front of a low sun glows. Through
   // the same desaturated illuminant, or a backlit fall turns into orange neon.
@@ -209,6 +240,7 @@ uniform float uPathStep;   // 1 / PATH_STEPS
 varying vec2  vUv;
 varying float vFade;
 varying float vSeed;
+varying float vDist;
 
 void main() {
   float f = fract(aPhase + uTime * aRate);
@@ -224,16 +256,27 @@ void main() {
 
   // The last quarter is the burst off the plunge pool: outward and up.
   float b = smoothstep(0.70, 1.0, u);
-  p += aOutward * b * b * aSpread * 0.9;
+  p += aOutward * b * b * aSpread * 0.55;
   p.y += b * (1.0 - b) * 2.2 * aSpread;
 
-  float size = aSize * (0.35 + 1.5 * u);
+  // Grows as the parcel falls and shatters, but nothing like as fast as the
+  // first attempt at this. At 3.4 u^2 the biggest fall in the map was throwing
+  // ten-metre sprites, and from the far bank they merged into a pale blue-grey
+  // butterfly hanging in the gorge with no visible source — which is precisely
+  // the floating X a critic pass logged here. Spray is a cloud of small things;
+  // if a single sprite is readable as a shape, it is too big.
+  float size = aSize * (0.55 + 1.25 * u * u);
   vFade = smoothstep(0.0, 0.10, f) * (1.0 - smoothstep(0.72, 1.0, f));
   vSeed = aSeed;
   vUv = uv;
 
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   if (-mv.z > uCullDist) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // Distance fade. Individual droplets are a near-field read; past a hundred
+  // metres what a plume actually does to a frame is soften the air, and the
+  // mist volume already does that. Left at full strength the sprites instead
+  // painted large flat translucent shapes across a distant gorge.
+  vDist = 1.0 - smoothstep(90.0, 260.0, -mv.z);
   // Streaks are taller than wide — falling water is a line, not a dot.
   mv.xy += vec2(position.x * size * 0.62, position.y * size * (1.0 + u * 0.7));
 
@@ -252,16 +295,24 @@ uniform vec3  uAmbient;
 varying vec2  vUv;
 varying float vFade;
 varying float vSeed;
+varying float vDist;
 
 ${WATER_FOAM_LIGHT}
 
 void main() {
   vec2 d = vUv * 2.0 - 1.0;
-  float r = length(vec2(d.x, d.y * 0.55));
-  float a = pow(1.0 - smoothstep(0.0, 1.0, r), 1.8) * vFade;
+  // Radial, not squashed. Scaling d.y down inside the falloff meant the alpha
+  // was still a third of its peak at the top and bottom edges of the quad, so
+  // every spray sprite ended in a dead-straight horizontal cut — at the foot of
+  // a fall that reads as a heap of white rectangles, which is worse than no
+  // spray at all. The streak shape belongs in the billboard's screen-space
+  // aspect (it is already stretched there), not in a falloff that then has to
+  // be clipped by the polygon.
+  float r = length(d);
+  float a = pow(1.0 - smoothstep(0.0, 1.0, r), 1.7) * vFade;
   if (a < 0.01) discard;
-  vec3 col = uFoam * wFoamLight(1.0) * 0.78;
-  gl_FragColor = vec4(col, a * 0.38);
+  vec3 col = uFoam * wFoamLight(1.0) * 0.86;
+  gl_FragColor = vec4(col, a * 0.44 * vDist);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -358,7 +409,12 @@ void main() {
   // came out as a cream disc, and over the dark rock of a gorge the cool half
   // of it stained the whole cliff violet.
   float fwd = max(dot(V, uSunDir), 0.0);
-  float glow = pow(fwd, 3.0) * 0.50 + pow(fwd, 12.0) * 0.85;
+  // Capped. The tight lobe used to reach 0.85 on top of the broad one, and on
+  // a 19 m puff that is a disc of near-clipped white the bloom then blows into
+  // a perfect circle — a critic pass read two of them as dirt on the lens.
+  // Forward scatter is real, but it belongs to a plume with structure, not to
+  // a sprite bright enough to become its own light source.
+  float glow = min(pow(fwd, 3.0) * 0.34 + pow(fwd, 12.0) * 0.30, 0.52);
   // Denser cores are brighter: light gets scattered out of a fat parcel, not a
   // thin one, and it is the density variation that gives the plume its volume.
   vec3 col = uFoam * wFoamLight(1.0) * (0.34 + glow) * (0.70 + 0.50 * lump);
@@ -418,22 +474,45 @@ void main() {
   vec2 e = vec2(1.6, 0.0);
   float bx = wBed(vWPos.xz + e.xy) - wBed(vWPos.xz - e.xy);
   float bz = wBed(vWPos.xz + e.yx) - wBed(vWPos.xz - e.yx);
-  float bench = 1.0 - smoothstep(0.55, 1.35, length(vec2(bx, bz)) / 3.2);
+  // Gorges. At a cutoff of 0.55 the apron under any fall steep enough to be
+  // worth looking at was already half gone, and the plunge pool — the loudest
+  // white shape in the reference plate — faded out exactly where the water
+  // hits hardest. Water landing on a 40 degree ramp still throws foam; what it
+  // cannot do is climb a wall, so the cutoff belongs much further up.
+  float bench = 1.0 - smoothstep(1.15, 2.30, length(vec2(bx, bz)) / 3.2);
 
   float r = length(vLocal) / max(vRadius, 0.5);
   if (r > 1.0) discard;
 
-  // Foam rides outward from the impact on expanding rings, breaking up as it
-  // goes — the churn is strongest where the water lands and dies at the rim.
-  float ring = sin(r * 14.0 - uTime * 2.1) * 0.5 + 0.5;
-  vec2 sp = vLocal * 0.55 - normalize(vLocal + 1e-4) * uTime * 1.4;
+  // Churn, not a whirlpool. The previous form added a sin(r * 14) ring train to
+  // a noise sampled in a radially-advected frame, and the two together drew a
+  // fourteen-armed spiral: from any distance the plunge read as a hurricane
+  // symbol rather than as water landing hard on rock. Both of its ingredients
+  // were polar functions of the same origin, which is a rosette generator.
+  //
+  // So: two octaves in the pool's own flat frame, drifting outward, plus one
+  // slow radial pulse an order of magnitude broader than the old ring train —
+  // enough to say that foam is thrown outward in surges, not enough to draw
+  // rings on the water.
+  vec2 sp = vLocal * 0.55 - normalize(vLocal + 1e-4) * (uTime * 1.4);
   float n = wFbm3(sp) * 0.5 + 0.5;
-  float churn = n * 0.7 + ring * 0.3;
+  float n2 = wFbm2(vLocal * 1.55 + vec2(uTime * 0.35, -uTime * 0.22) + 8.7) * 0.5 + 0.5;
+  float surge = sin(r * 2.6 - uTime * 1.5) * 0.5 + 0.5;
+  float churn = n * 0.56 + n2 * 0.30 + surge * 0.14;
 
   // Chew the outline with low-frequency noise so the pool never reads as the
   // disc it is actually built from.
-  float lobes = wFbm2(normalize(vLocal + 1e-4) * 2.4 + vec2(uTime * 0.09, 0.0)) * 0.5 + 0.5;
-  float rEff = r / mix(0.62, 1.05, lobes);
+  // Two scales of lobe, not one. A single octave chews the disc into a smooth
+  // four-lobed clover that still reads as a disc; the second, finer scale is
+  // what turns the outline into torn foam.
+  // Half polar, half cartesian. A shape whose outline is a function of angle
+  // alone is a rosette however many octaves it has; mixing in a noise sampled
+  // in the plane breaks the radial symmetry and the boundary starts reading as
+  // torn foam instead of as a flower.
+  vec2 dirL = normalize(vLocal + 1e-4);
+  float lobes = wFbm2(dirL * 2.4 + vec2(uTime * 0.09, 0.0)) * 0.5 + 0.5;
+  float lobes2 = wFbm2(vLocal * 0.30 + vec2(uTime * 0.05, 3.1)) * 0.5 + 0.5;
+  float rEff = r / mix(0.56, 1.12, lobes * 0.45 + lobes2 * 0.55);
 
   float density = (1.0 - smoothstep(0.0, 1.0, rEff)) * vPower;
   float cut = 0.70 - density * 0.58;
@@ -443,7 +522,16 @@ void main() {
   foam = max(foam, (1.0 - smoothstep(0.0, 0.46, rEff)) * (0.55 + 0.45 * churn));
   foam *= bench;
 
-  vec3 col = mix(uShallow, uFoam, foam) * wFoamLight(wSunShadow(vWPos)) * 0.92;
+  // Value structure inside the mass. Alpha alone gives a smooth white potato:
+  // the previous author's note that the plunge was "a soft white burst rather
+  // than churn with shape" survived every change to its outline, because the
+  // outline was never the problem — the inside of it had no tone in it. Real
+  // churn is white crests over blue-grey troughs, and it is the troughs that
+  // make the crests read as water rather than as paint.
+  float trough = 0.68 + 0.44 * smoothstep(0.30, 0.78, churn)
+                      + 0.18 * (n2 - 0.5);
+  vec3 col = mix(uShallow, uFoam, foam) * trough
+           * wFoamLight(mix(wSunShadow(vWPos), 1.0, 0.5)) * 0.92;
 
   float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.15, 0.55, rEff);
   if (alpha < 0.02) discard;
@@ -691,7 +779,7 @@ export class Waterfalls extends System {
         rate.push((1 / tof) * (burst ? 1.9 : 1.0) * (0.85 + rng() * 0.3));
         u0.push(burst ? 0.55 + rng() * 0.25 : rng() * 0.30);
         sideOff.push((rng() * 2 - 1) * 0.55);
-        size.push((0.10 + rng() * 0.26) * (0.6 + fl.width * 0.10) * (burst ? 1.7 : 1.0));
+        size.push((0.22 + rng() * 0.40) * (0.6 + fl.width * 0.10) * (burst ? 1.6 : 1.0));
         spread.push((0.35 + rng() * 1.0) * (0.5 + fl.disc * 1.6));
         seed.push(rng());
         sideDir.push(fl.sideX, 0, fl.sideZ);
@@ -750,7 +838,11 @@ export class Waterfalls extends System {
     for (const fl of this.falls) {
       const b = fl.pts[fl.pts.length - 1];
       const energy = clamp01(fl.disc * 0.7 + fl.height / 70);
-      const count = Math.round(clamp(6 + energy * 28, 6, 34));
+      // Many small puffs rather than a handful of big ones: a plume is a
+      // density field, and a dozen 19 m discs is a density field with three
+      // samples in it. Raising the count and halving the size costs about the
+      // same fill rate and reads as vapour instead of as sprites.
+      const count = Math.round(clamp(18 + energy * 76, 18, 96));
       const spread = 3 + energy * 16;
       for (let i = 0; i < count; i++) {
         // Most of the mist boils off the plunge point; a little climbs the
@@ -765,7 +857,7 @@ export class Waterfalls extends System {
         );
         phase.push(rng());
         rate.push(0.045 + rng() * 0.055);
-        size.push((3.0 + rng() * 6.5) * (0.5 + energy * 1.0));
+        size.push((1.7 + rng() * 3.4) * (0.5 + energy * 1.0));
         rise.push((3 + rng() * 9) * (0.5 + energy));
         const a = rng() * Math.PI * 2;
         drift.push(Math.cos(a) * spread * 0.5, 0, Math.sin(a) * spread * 0.5);
@@ -825,12 +917,21 @@ export class Waterfalls extends System {
     const drapeY = (x, z) => {
       const surf = world.getWaterHeight(x, z);
       const g = world.getHeight(x, z);
-      return (surf !== null && surf > g ? surf : g) + 0.12;
+      // 0.55 m, not 0.12. The terrain mesh adds up to half a metre of micro-
+      // detail on top of the baked heightfield this drape samples, so at 12 cm
+      // the ground punched through the foam in hard-edged triangular wedges all
+      // round the impact — visible in a zoom as straight-sided orange shards
+      // lying on top of the whitewater.
+      return (surf !== null && surf > g ? surf : g) + 0.55;
     };
 
     for (const fl of this.falls) {
       const b = fl.pts[fl.pts.length - 1];
-      const radius = clamp(2.2 + Math.sqrt(fl.disc * fl.height) * 2.4, 2.5, 16);
+      // Bigger. A 78 m fall was landing in a 13 m pool of foam; the reference
+      // plate throws white water a good three or four channel widths clear of
+      // the impact, and the churn is the thing that says how much energy just
+      // arrived.
+      const radius = clamp(3.0 + Math.sqrt(fl.disc * fl.height) * 2.9, 3.5, 20);
       const power = clamp01(0.45 + fl.disc * 0.7);
 
       pos.push(b.x, drapeY(b.x, b.z), b.z); local.push(0, 0); rad.push(radius); pow.push(power);

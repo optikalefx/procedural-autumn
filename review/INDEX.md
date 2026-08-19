@@ -18,3 +18,7 @@ same places are photographed every round and the sheets are directly comparable.
 | 010 | 2026-08-19 | grade clamp fixed blue restored | [010](010-2026-08-19-grade-clamp-fixed-blue-restored.png) |
 | 011 | 2026-08-19 | crag floating fixed | [011](011-2026-08-19-crag-floating-fixed.png) |
 | 012 | 2026-08-19 | crag floating fixed | [012](012-2026-08-19-crag-floating-fixed.png) |
+| 013 | 2026-08-19 | conifer canopy and silhouette | [013](013-2026-08-19-conifer-canopy-and-silhouette.png) |
+| 014 | 2026-08-19 | conifer canopy and silhouette | [014](014-2026-08-19-conifer-canopy-and-silhouette.png) |
+| 015 | 2026-08-19 | conifer canopy, silhouette, birch bark, stand variety | [015](015-2026-08-19-conifer-canopy-silhouette-birch-bark-stand-varie.png) |
+| 016 | 2026-08-19 | terrain: mountain structure, triplanar fix, ground substrate | [016](016-2026-08-19-terrain-mountain-structure-triplanar-fix-ground-.png) |

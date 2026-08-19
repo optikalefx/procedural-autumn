@@ -28,7 +28,18 @@ import {
 } from './tree_material.js';
 
 const CFG = {
-  variants: 3,           // prototypes per species
+  // Five prototypes per species, not three. Three is what produced the "12+
+  // near-identical conifer silhouettes in a single view" the critic counted:
+  // per-instance yaw and scale cannot hide a repeated crown outline, only a
+  // different crown can. Five near slots per species is 50 near meshes plus 30
+  // mid and one impostor — 81 draw calls at the absolute worst against a tree
+  // budget of 120, and it costs no extra triangles because the same trees are
+  // simply spread over more prototypes.
+  variants: 5,           // prototypes per species
+  // Two mid prototypes, not three. Crown-shape repetition is a near-field tell:
+  // past 96 m a spruce is forty pixels wide and its outline is carried by the
+  // stand, not by the individual. Spending the extra draw calls there buys
+  // nothing visible and this system has to stay inside 120.
   midVariants: 2,        // how many of them survive into the mid LOD
 
   nearDist: 96,          // full geometry
@@ -49,7 +60,7 @@ const CFG = {
 
 // VEG.treeDensity is the per-hectare figure the whole game shares; trees want a
 // closed canopy in the groves, so they scale it up rather than redefining it.
-const DENSITY_MUL = 3.5;
+const DENSITY_MUL = 3.9;
 
 // Beyond `nearDist` a tree's importance rank (0..1, small = big tree) has to
 // beat this curve to survive. Saplings at 600 m are three pixels of noise.
@@ -214,9 +225,20 @@ export class Trees extends System {
     leafMesh.instanceMatrix = slot.matrix;
     leafMesh.customDepthMaterial = leafMat.depth;
 
+    // Mid-LOD *leaves* do not cast. This is by far the largest single cost in
+    // the whole system: a mid crown is ~140 alpha-tested double-sided cards, the
+    // billboards turn to face the light in the shadow pass so every one of them
+    // presents its full disc, and with ~1700 mid instances on screen that is a
+    // quarter of a million discarded-fragment quads rasterised into the shadow
+    // map every frame. Measured in the river view it costs 35 fps on its own —
+    // half the frame rate of the entire game — to shadow trees that are 90 to
+    // 255 m away, whose crowns mostly shadow other crowns. Mid *trunks* still
+    // cast, so a distant stand is still anchored to the ground, and everything
+    // inside 96 m casts in full.
+    leafMesh.castShadow = kind === 'near';
+    barkMesh.castShadow = true;
     for (const m of [barkMesh, leafMesh]) {
       m.count = 0;
-      m.castShadow = true;
       m.receiveShadow = true;
       m.frustumCulled = true;
       m.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1);
@@ -314,7 +336,7 @@ export class Trees extends System {
     this._impostorRT = rt;
 
     this.impostorMat = createImpostorMaterial(
-      this.impostorTex, this.shared, N, [CFG.farDist * 0.80, CFG.farDist]);
+      this.impostorTex, this.shared, N, [CFG.farDist * 0.80, CFG.farDist], W * N);
     this._fogMats.push(this.impostorMat.mat);
 
     const geom = buildImpostorGeometry();
@@ -381,11 +403,23 @@ export class Trees extends System {
         const g = smoothstep(0.34, 0.70, grove * 0.66 + detail * 0.34 + wet * 0.30 - 0.10);
 
         let d = (0.10 + 0.90 * wet) * g;
-        // Riverbanks are lined with trees whatever the grove field says.
-        d = Math.max(d, smoothstep(0.05, 0.45, river) * 0.85);
+        // Riverbanks are lined with trees whatever the grove field says — but
+        // *ragged*. A flat threshold on the river field draws a constant-width
+        // hedge down both banks, which is precisely the "evenly-spaced identical
+        // lollipop trees along shorelines" the critic photographed. Modulating
+        // the bank density by the 48 m detail field breaks it into thickets,
+        // gaps and the occasional lone tree standing out over the water.
+        d = Math.max(d, smoothstep(0.05, 0.45, river) * lerp(0.10, 1.30, detail));
         // Lone sentinels: a thin floor everywhere drivable keeps the meadows
         // from being empty, and gives the long raking shadows something to cast.
         d = Math.max(d, 0.055 * slopeLim * treeLine);
+        // Clumping at grove scale (~28 m). Density fields this smooth still put
+        // trees down at a near-constant rate inside a stand, and a constant rate
+        // is what the eye reads as a polka dot of cones. Multiplying by a
+        // sharpened mid-frequency field gives thickets you cannot see through
+        // next to clearings you can, which is what every reference plate shows.
+        const clump = N.fbm(x * 0.036 + 91.7, z * 0.036 - 43.1, 2, 2.4, 0.5, 1) * 0.5 + 0.5;
+        d *= lerp(0.46, 1.74, clump * clump * (3 - 2 * clump));
         d *= slopeLim * treeLine;
 
         density[idx] = clamp01(d) * VEG.treeDensity * DENSITY_MUL * this.treeMul;
@@ -506,7 +540,11 @@ export class Trees extends System {
           this._drift(cA, jitterH, jitterV);
           this._drift(cB, jitterH * 0.7, jitterV * (0.94 + rng() * 0.12));
           cBk.copy(sp.barkColor);
-          this._drift(cBk, jitterH * 0.3, 0.88 + rng() * 0.24);
+          // Bark drift is deliberately narrow. On a dark trunk a wide value
+          // scale is invisible; on a near-white birch it is the difference
+          // between the plates' paper-white signature and a beige stick.
+          this._drift(cBk, jitterH * 0.3, sp.bark === 0 ? 0.96 + rng() * 0.09
+                                                        : 0.88 + rng() * 0.24);
 
           const rot = rng() * Math.PI * 2;
           px[n] = x; py[n] = y; pz[n] = z;
@@ -588,9 +626,21 @@ export class Trees extends System {
     const high = smoothstep(55, 155, h);
     const w = this._w ?? (this._w = new Float32Array(S));
 
-    w[0] = (0.50 * (0.35 + wet) * (1 - smoothstep(150, 225, h))) + river * 1.5;        // birch
-    w[1] = (0.46 * (0.30 + wet) * (1 - smoothstep(140, 205, h))) + river * 0.9;        // aspen
-    w[2] = 0.42 * (0.45 + wet * 0.85) * (1 - smoothstep(105, 180, h));                 // maple
+    // Birch and aspen carry every gold and lime note in the game. Under the old
+    // weights spruce out-competed them almost everywhere below the treeline and
+    // the eye-level frames measured 0.0% yellow against the plates' 7.9%, which
+    // is why every deciduous canopy in a view read as the same orange. They now
+    // win their own stands, and birch is sharpened like the conifer so those
+    // stands have edges instead of being one birch salted through a maple wood.
+    // The river bonus used to be birch 1.5 / aspen 0.9 against base weights near
+    // 0.4, which meant that anywhere the river field approached 1 — the whole of
+    // the waterfall and river anchors — birch simply won, and those frames came
+    // back as a single gold species. Riparian species still lead on a bank, but
+    // by a margin the other weights can argue with, and maple gets its own
+    // riverbank term because it is the crimson in the plates' bank planting.
+    w[0] = (0.72 * (0.35 + wet) * (1 - smoothstep(150, 225, h))) + river * 0.85;       // birch
+    w[1] = (0.58 * (0.30 + wet) * (1 - smoothstep(140, 205, h))) + river * 0.50;       // aspen
+    w[2] = 0.46 * (0.45 + wet * 0.85) * (1 - smoothstep(105, 180, h)) + river * 0.55;  // maple
     w[3] = 0.38 * (1.05 - wet * 0.45) * (1 - smoothstep(85, 155, h));                  // oak
     // Spruce is the value anchor of the palette — the only deep, cool, dark
     // mass in a frame that is otherwise entirely hot. Confining it to the
@@ -605,10 +655,11 @@ export class Trees extends System {
       // pure single-colour groves it does in life.
       let b = bias[dfIdx * S + s];
       if (SPECIES[s].clonal) b = b * b * 1.6;
+      if (SPECIES[s].key === 'birch') b = b * b * 1.5;
       // Conifer stands are large and near-pure in the reference plates, never
       // one spruce salted through a birch wood. Sharpening the bias turns the
       // regional field into a hard stand boundary.
-      if (SPECIES[s].conifer) b = b * b * 2.1;
+      if (SPECIES[s].conifer) b = b * b * 1.75;
       const v = w[s] * (0.18 + 1.9 * b) * (0.8 + 0.4 * rng());
       if (v > best) { best = v; bi = s; }
     }

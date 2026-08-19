@@ -66,6 +66,31 @@ export function createTerrainMaterial(world, opts = {}) {
     // it shifts hue without crushing value.
     uShadowTint:  { value: new THREE.Vector3(1.18, 1.07, 0.92) },
 
+    // Rock chroma governor — see the block at the end of the fragment shader.
+    // uRockCast is deliberately the same vector the rocks system uses, so a
+    // crag block and the massif it sits on read as the same substance.
+    // Split warm/cool by sun-facing. The mean of the two is the rocks system's
+    // single cast vector (0.965, 0.995, 1.085), so a crag block and the massif
+    // it stands on still agree; what this adds is the palette's own lit/shadow
+    // rock split, which a flat cast was averaging away.
+    uRockCastLit:   { value: new THREE.Vector3(1.050, 1.000, 0.955) },
+    uRockCastShade: { value: new THREE.Vector3(0.930, 0.990, 1.150) },
+    uRockDesat:   { value: 0.38 },
+    // Pulling a colour to its own luminance loses the brightest channel, so
+    // the governed result needs a gain or the massifs go a stop darker than
+    // the boulders standing on them.
+    uRockGain:    { value: 1.05 },
+    // Counterweight to the governor. See the block at the end of the fragment
+    // shader: the plates are bimodal — near-neutral stone against strongly
+    // coloured ground — and greying the rock without lifting the ground gives
+    // a frame that is uniformly mid-chroma instead.
+    // Kept small on purpose. At 0.24 the measured chroma moved into band and the
+    // frame got worse, not better: the grade already renders our gold nearer red
+    // than the palette's #f0ad46, so a plain saturation gain amplifies the red
+    // bias and the vehicle frame's bare slope came back a flat scarlet ramp. The
+    // slope's real defect is that it has no marks on it, not that it is pale.
+    uGrassSat:    { value: 0.10 },
+
     uSnowLine:    { value: 268.0 },
 
     // Dev only, always 0 in the shipped frame. Set from the console or the
@@ -107,12 +132,28 @@ export function createTerrainMaterial(world, opts = {}) {
       uniform vec3 uDirt, uRockLit, uRockMid, uRockShadow, uRockWarm, uScree;
       uniform vec3 uSnow, uSand, uLitter;
       uniform vec3 uShadowTint;
+      uniform vec3 uRockCastLit, uRockCastShade;
+      uniform float uRockDesat, uRockGain, uGrassSat;
       uniform float uSnowLine;
       uniform float uDebugMask;
 
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
       varying float vHeight;
+
+      // Relief normal handed forward from the albedo block to the lighting
+      // block. Declared at file scope because three's chunk order puts
+      // <color_fragment> (where the heightfield is already being sampled)
+      // well before <normal_fragment_maps> (where the shading normal exists),
+      // and re-reading four height texels there would be pure waste.
+      vec3  gReliefN = vec3(0.0, 1.0, 0.0);
+      float gReliefW = 0.0;
+      // Sun-facing, computed once in the shade block and reused by the rock
+      // chroma governor below it.
+      float gShade = 0.0;
+      // How much of this fragment is bare rock. Needed after the lighting for
+      // the chroma governor — see the uRockDesat block below.
+      float gRockM = 0.0;
 
       // ── cheap value-noise stack ──────────────────────────────────────────
       vec2 hash22(vec2 p){
@@ -134,6 +175,36 @@ export function createTerrainMaterial(world, opts = {}) {
           s += a * vnoise(p); n += a; a *= 0.5; p *= 2.07;
         }
         return s / n;
+      }
+
+      // ── triplanar projection ─────────────────────────────────────────────
+      // Every procedural octave in this shader used to be indexed by world XZ
+      // alone. That is a *planar* projection, and on a face steeper than about
+      // 60 degrees a metre of surface travels only centimetres in XZ — so every
+      // octave stretches into a vertical streak running the full height of the
+      // face. That is the smear the critic measured across the whole drive
+      // cliff and down the right of hero, and it is not a texture bug: there is
+      // no texture, it is the noise itself being sampled through a projection
+      // that collapses on vertical ground.
+      //
+      // Blending three planar samples weighted by the surface normal removes
+      // it. It costs nothing on flat ground — the off-axis weights fall under
+      // the cutoff and the branch is coherent across a whole hillside — and at
+      // most two extra fbm evaluations on a genuinely diagonal face.
+      vec3 tpWeights(vec3 n){
+        vec3 w = max(abs(n) - 0.20, 0.0);
+        w *= w; w *= w;                       // ^4: one axis dominates hard
+        return w / max(w.x + w.y + w.z, 1e-4);
+      }
+      // Weights sum to 1 and anything under the cutoff contributes < 1% of a
+      // signal that is itself only worth a few percent of value, so the dropped
+      // terms are not renormalised.
+      float fbmTP(vec3 p, int oct, vec3 w){
+        float s = 0.0;
+        if (w.y > 0.006) s += w.y * fbm(p.xz, oct);
+        if (w.x > 0.006) s += w.x * fbm(p.zy + 61.7, oct);
+        if (w.z > 0.006) s += w.z * fbm(p.xy - 24.3, oct);
+        return s;
       }
 
       // The reference art reads as broad colour *masses* with definite edges,
@@ -172,29 +243,90 @@ export function createTerrainMaterial(world, opts = {}) {
         float camDist = length(vWorldPos - cameraPosition);
 
         // ── macro form, read from the heightfield at a screen-sized stencil ──
-        // Two things come out of this and both matter.
+        // Read from the texture rather than from vWorldNormal: the mesh normal
+        // is sampled with an epsilon that scales with the LOD grid step, so it
+        // changes when a chunk swaps LOD and anything keyed on it visibly pops
+        // on the LOD ring. This does not.
         //
-        // First, the stencil GROWS WITH DISTANCE. Sampling the heightfield at a
-        // fixed 8 m always aliases somewhere: by 800 m that is well under a
-        // pixel and it crawls. Widening it to 60 m keeps the feature roughly
-        // constant in screen space, so it cannot alias at any range — and as a
-        // bonus a far massif gets its form from its big shapes rather than from
-        // texel noise, which is what the reference does too.
+        // THE STENCIL WIDTH IS THE WHOLE DEFECT. It used to open from 8 m to
+        // 60 m by 900 m, on the reasoning that a stencil should stay constant
+        // in screen space. The arithmetic does not support 60 m. At the capture
+        // framing one screen pixel covers about camDist * 0.0012 metres, so at
+        // 900 m a 60 m stencil is *fifty pixels wide* — it blurs away every
+        // bench and gully the erosion bake cut and leaves one smooth ramp, and
+        // that is exactly why raking dawn light on the massifs revealed
+        // nothing: there was nothing left in the signal to reveal.
         //
-        // Second, it is read from the texture rather than from vWorldNormal.
-        // The mesh normal is sampled with an epsilon that scales with the LOD
-        // grid step, so it changes when a chunk swaps LOD; anything keyed on it
-        // visibly pops on the LOD ring. This does not.
-        float stencilM = mix(8.0, 60.0, smoothstep(90.0, 900.0, camDist));
+        // Sized at roughly six pixels instead, it resolves the 10-40 m relief
+        // that is genuinely there while still being a wide enough low-pass that
+        // 2 m texel noise cannot crawl through it.
+        //
+        // Distance alone is not enough, though. A face seen almost edge-on —
+        // the whole upper half of the drive frame — has a screen footprint tens
+        // of times its distance would suggest, and a stencil narrower than that
+        // footprint aliases into a regular hatch of dashes. fwidth gives the
+        // real world-space size of a pixel on *this* surface at *this* angle,
+        // so taking the wider of the two makes the low-pass correct on a
+        // grazing wall and on a face square to camera alike.
+        vec2 fp = fwidth(vWorldPos.xz);
+        float footM = length(fp);
+        float stencilM = clamp(max(camDist * 0.009, footM * 2.2), 7.0, 64.0);
         vec2 e2 = vec2(stencilM / uWorldSize, 0.0);
         float hL = texture2D(uDataTex, uvw - e2.xy).r;
         float hR = texture2D(uDataTex, uvw + e2.xy).r;
         float hD = texture2D(uDataTex, uvw - e2.yx).r;
         float hU = texture2D(uDataTex, uvw + e2.yx).r;
         vec3 Nm = normalize(vec3(hL - hR, stencilM * 2.0, hD - hU));
+
+        // A second, deliberately coarse read of the same field. The aspect
+        // faceting below quantises tone into three bands, and a three-step
+        // staircase driven by a *fine* normal is not faceting — it is a
+        // regular hatch of dashes, which is exactly what appeared across the
+        // oblique cliff the moment the relief stencil was narrowed. Aspect is
+        // a property of the massif's big planes, so it gets a stencil four
+        // times wider and the fine relief is left to the lighting.
+        float coarseM = stencilM * 3.2;
+        vec2 e4 = vec2(coarseM / uWorldSize, 0.0);
+        float cL = texture2D(uDataTex, uvw - e4.xy).r;
+        float cR = texture2D(uDataTex, uvw + e4.xy).r;
+        float cD = texture2D(uDataTex, uvw - e4.yx).r;
+        float cU = texture2D(uDataTex, uvw + e4.yx).r;
+        vec3 Nc = normalize(vec3(cL - cR, coarseM * 2.0, cD - cU));
+
         // Positive in hollows, negative on ridge lips. Normalised by the
         // stencil so its magnitude means the same thing at every distance.
-        float curv = ((hL + hR + hD + hU) * 0.25 - data.r) / (stencilM * 0.28);
+        // Exactly zero on a plane at any steepness, so a flat cliff face is
+        // untouched however severe it is — only real curvature registers.
+        //
+        // Read at TWO scales and blended. A Laplacian is a second derivative,
+        // and a second derivative taken at one narrow radius over an eroded
+        // face is dominated by the metre-scale rills the droplet sim cut: the
+        // debug mask showed it flipping sign every few pixels across the whole
+        // drive cliff, which is what put a regular lattice of dark dashes on it.
+        // The wide read (the same taps the aspect facet uses, so it is free)
+        // carries the benches and gullies that actually matter; the narrow one
+        // is kept at minority weight for crispness at the lip.
+        float curvF = ((hL + hR + hD + hU) * 0.25 - data.r) / (stencilM * 0.42);
+        float curvC = ((cL + cR + cD + cU) * 0.25 - data.r) / (coarseM * 0.42);
+        // Soft-clipped rather than weighted down to nothing. Weighting the fine
+        // read to a third did stop the lattice, but it also took the gullies
+        // with it and left the drive cliff a smooth grey curtain — trading one
+        // "no structure" note for another. The lattice came from *outliers*:
+        // isolated metre-scale rills whose Laplacian saturated the transfer and
+        // flipped sign pixel to pixel. Compressing the tail keeps the ordinary
+        // gully signal at full strength and stops only the spikes.
+        curvF = curvF / (1.0 + abs(curvF) * 0.55);
+        float curv = curvC * 0.52 + curvF * 0.48;
+
+        // Hand the heightfield normal to the lighting block. Past ~200 m the
+        // drawn mesh is 6-24 m per vertex, which is coarser than the relief it
+        // is supposed to be carrying, so the massif is lit as a single smooth
+        // mass no matter what the sun does. This is the only way to get that
+        // relief back into the light without paying for the triangles, and
+        // because it comes from the data texture it is identical across every
+        // LOD — the shading does not change when a chunk swaps resolution.
+        gReliefN = Nm;
+        gReliefW = 0.88 * smoothstep(110.0, 300.0, camDist);
 
         // ── frequency budget ───────────────────────────────────────────────
         // Each band fades to its own mean once a cycle is worth about two
@@ -203,10 +335,18 @@ export function createTerrainMaterial(world, opts = {}) {
         float fMeso = 1.0 - smoothstep(150.0, 520.0, camDist);
         float fMacro= 1.0 - smoothstep(900.0, 2000.0, camDist);
 
-        float macro  = fbm(vWorldPos.xz * 0.0042, 4) * 0.5 + 0.5;       // ~240 m
-        float macro2 = fbm(vWorldPos.xz * 0.0155 + 31.4, 3) * 0.5 + 0.5; // ~65 m
-        float meso   = mix(0.5, fbm(vWorldPos.xz * 0.062 + 7.7, 3) * 0.5 + 0.5, fMeso);
-        float fine   = mix(0.5, fbm(vWorldPos.xz * 0.47, 3) * 0.5 + 0.5, fFine);
+        // Triplanar weights come from the geometric normal, so they follow the
+        // real face rather than the relief normal derived below.
+        vec3 tpw = tpWeights(N);
+
+        // The 240 m octave stays planar: it is a regional selector (which side
+        // of the valley you are on) and it has to agree between a cliff and the
+        // meadow at its foot. At that wavelength the projection cannot streak
+        // anything — 240 m across a 300 m face is a single soft gradient.
+        float macro  = fbm(vWorldPos.xz * 0.0042, 4) * 0.5 + 0.5;        // ~240 m
+        float macro2 = fbmTP(vWorldPos * 0.0155 + 31.4, 3, tpw) * 0.5 + 0.5; // ~65 m
+        float meso   = mix(0.5, fbmTP(vWorldPos * 0.062 + 7.7, 3, tpw) * 0.5 + 0.5, fMeso);
+        float fine   = mix(0.5, fbmTP(vWorldPos * 0.47, 3, tpw) * 0.5 + 0.5, fFine);
 
         // ── bedded hardness, sampled defensively ───────────────────────────
         // The bake dips its bedding planes, so outcrop traces already cut
@@ -234,7 +374,14 @@ export function createTerrainMaterial(world, opts = {}) {
         // chromaMean 0.13 against a reference range of 0.28-0.42. In all five
         // reference plates gold climbs a long way up the hills and rock is
         // reserved for genuine faces and summits.
-        float steep = smoothstep(0.72, 1.30, slope);
+        // Raised from 0.72-1.30. Measured: with rock finally rendering as the
+        // lavender-grey the palette asks for instead of as khaki, the same
+        // coverage that used to look like a tan hillside now looks like a bare
+        // one, and hero/peaks chromaMean fell to 0.241/0.246 against a
+        // reference floor of 0.28. In plates 2 and 3 gold climbs a long way up
+        // the flanks in big definite blobs and rock is reserved for genuine
+        // faces; this holds grass to about 39 degrees to match.
+        float steep = smoothstep(0.80, 1.42, slope);
         float bench = 1.0 - smoothstep(0.10, 0.34, slope);   // flat shelf / meadow
 
         // ── ground cover: gold meadow, olive damp grass, pale dry straw ─────
@@ -265,6 +412,27 @@ export function createTerrainMaterial(world, opts = {}) {
         // only that the meadow came out as a single unmodulated orange sheet
         // that read as flat vector art rather than as ground.
         grass *= 0.90 + meso * 0.13 + fine * 0.14;
+
+        // Mid-range mass break, 4-8 m. Between about 15 m and 120 m the ground
+        // had nothing but smooth gradients on it: every octave in this shader
+        // is either finer than 2 m (and faded out by 38 m) or coarser than
+        // 65 m (and therefore a constant across a whole hillside), which is
+        // precisely the band the driver spends the most time looking at, and
+        // it is why the mid-ground read as poured clay.
+        //
+        // Resolved as a mass edge rather than mixed as a gradient, because the
+        // reference meadow is not a gradient: it is gold and straw in defined
+        // patches with soft but definite boundaries between them, and the
+        // patches are what give the ground its sense of surface. Fades to its
+        // own mean by 170 m, where a 6 m patch is down to a couple of pixels.
+        float fPatch = 1.0 - smoothstep(70.0, 170.0, camDist);
+        if (fPatch > 0.004) {
+          float pf = fbmTP(vWorldPos * 0.16 + 51.2, 2, tpw) * 0.5 + 0.5;
+          float patchDry  = massEdge(pf + (macro2 - 0.5) * 0.30, 0.58);
+          float patchDeep = massEdge(0.5 - (pf - 0.5) + (meso - 0.5) * 0.24, 0.62);
+          grass = mix(grass, mix(grass, uGrassDry,  0.42), patchDry  * fPatch);
+          grass = mix(grass, mix(grass, uGrassDeep, 0.28), patchDeep * fPatch);
+        }
 
         // Leaf litter accumulates on damp, sheltered, gently sloping ground —
         // which is where the forest will be. Patchy, because it drifts, and
@@ -297,7 +465,7 @@ export function createTerrainMaterial(world, opts = {}) {
         rock = mix(rock, uRockWarm, 0.14);
         rock = mix(rock, uRockShadow, smoothstep(0.58, 0.16, macro2) * 0.22);
         float bedStep = (hardRock - 0.5) * 2.0;                  // -1 .. 1
-        rock *= 1.0 + bedStep * 0.11 * smoothstep(0.60, 1.05, slope);
+        rock *= 1.0 + bedStep * 0.15 * smoothstep(0.60, 1.05, slope);
         // Jointing, as broad BLOCKS and not as drawn lines.
         //
         // A fracture-trace version of this lived here and was removed on the
@@ -309,10 +477,16 @@ export function createTerrainMaterial(world, opts = {}) {
         // genuinely breaks a face into plates is geometry (the crag pass), not
         // albedo. Two decorrelated fields at different angles giving a couple of
         // percent of value difference between blocks is all albedo should do.
-        vec2 jr = vec2(vWorldPos.x * 0.94 - vWorldPos.z * 0.34,
+        // Rotated about Y, then triplanar — jointing is the one field that
+        // lives almost entirely on steep faces, so it was the worst offender in
+        // the smear: two decorrelated 12-20 m blocks became two decorrelated
+        // sets of vertical stripes.
+        vec3 jr = vec3(vWorldPos.x * 0.94 - vWorldPos.z * 0.34,
+                       vWorldPos.y,
                        vWorldPos.x * 0.34 + vWorldPos.z * 0.94);
-        float j1 = fbm(jr * 0.085, 2);
-        float j2 = fbm(jr.yx * 0.052 + 19.3, 2);
+        vec3 jw = tpWeights(vec3(N.x * 0.94 - N.z * 0.34, N.y, N.x * 0.34 + N.z * 0.94));
+        float j1 = fbmTP(jr * 0.085, 2, jw);
+        float j2 = fbmTP(jr.zyx * 0.052 + 19.3, 2, jw.zyx);
         rock *= 0.93 + smoothstep(-0.02, 0.02, j1) * 0.07 * fMeso
                      + smoothstep(-0.02, 0.02, j2) * 0.06 * fFine;
 
@@ -322,17 +496,18 @@ export function createTerrainMaterial(world, opts = {}) {
         // than left as a sine, because a sine is a gradient and the whole point
         // of the reference look is broad flat masses with definite edges
         // between them. Soft, not hard: a hard step would alias at range.
-        float aspect = atan(Nm.z, Nm.x);
+        float aspect = atan(Nc.z, Nc.x);
         float faceRaw = 0.5 + 0.5 * sin(aspect * 3.0 + macro * 5.0);
         float fq = faceRaw * 3.0;
         float faceTone = (floor(fq) + smoothstep(0.30, 0.70, fract(fq))) / 3.0;
-        // Amplitude tapers in as the camera pulls back. Close up the real
-        // geometry supplies the form and a strong aspect step just looks like
-        // paint; at 500 m the form is gone and this is the only thing keeping a
-        // massif from being one value. Floored well above zero so rock stays
-        // the high-value material the reference makes it — it should read
-        // lighter than the gold beside it, not darker.
-        rock *= 0.88 + faceTone * (0.16 + 0.26 * (1.0 - fMeso));
+        // Amplitude is much smaller than it was. This term existed as a stand-in
+        // for form the far massif did not have: the mesh was 6-24 m per vertex
+        // and the shading stencil was 60 m, so nothing but painted tone could
+        // break a face up. The relief normal now puts the real form back into
+        // the *light*, which is both more convincing and free of the artefacts
+        // painted tone brings, so this drops to a hint of plane-to-plane
+        // difference on top of it rather than carrying the whole load.
+        rock *= 0.87 + faceTone * (0.15 + 0.20 * (1.0 - fMeso));
         // Broad tonal drift so a big face is never one flat value.
         rock *= 0.92 + macro * 0.11 + macro2 * 0.08;
         // Crease and lip. This is the cue the close reference plates lean on
@@ -340,8 +515,19 @@ export function createTerrainMaterial(world, opts = {}) {
         // dark line where two planes meet and a bright edge where one turns
         // over. It is a cheap ambient-occlusion proxy off the same heightfield,
         // and because the stencil tracks screen size it never crawls.
-        rock *= 1.0 - smoothstep(0.15, 1.10, curv) * 0.30;
-        rock *= 1.0 + smoothstep(-0.20, -1.10, curv) * 0.16;
+        // Stronger than it was, because it is now reading a curvature field
+        // that survives an oblique view: this is the "distinct planes with dark
+        // crevice lines between them" of the close reference plate, and it is
+        // earned from real geometry rather than painted as a line.
+        rock *= 1.0 - smoothstep(0.10, 0.95, curv) * 0.44;
+        rock *= 1.0 + smoothstep(-0.15, -0.95, curv) * 0.20;
+        // The deepest hollows go to the crevice colour outright. Reference
+        // plate 2's cliff gets its read from the near-black lines between
+        // planes, and our massifs had no darks at all: measured lumaP05 0.42
+        // against the plate's 0.18. rockShadow is a dark violet and would be
+        // wrong over a whole face — used only where the curvature says a
+        // genuine cleft is, it is exactly the crevice line the plate shows.
+        rock = mix(rock, uRockShadow, smoothstep(0.40, 1.05, curv) * 0.34);
         // Close-range weathering grain. Both terms are already distance-faded
         // to their own mean, so this buys texture on the face you are standing
         // under without putting anything on the ridge two kilometres away —
@@ -399,19 +585,21 @@ export function createTerrainMaterial(world, opts = {}) {
         // from the art review. Scaling the breakers by how close the slope
         // already is to rock keeps them working on the edge and nowhere else.
         float edgeBreak = smoothstep(0.06, 0.55, steep);
-        float rockM = clamp(steep * 1.30 - 0.16
-                          + ((macro - 0.5) * 0.62 + (macro2 - 0.5) * 0.20) * fMacro * edgeBreak
-                          + (meso - 0.5) * 0.20 * fMeso * edgeBreak
-                          + smoothstep(198.0, 300.0, vWorldPos.y) * 0.42, 0.0, 1.0);
-        albedo = mix(albedo, rock, massEdge(rockM, 0.44));
+        float rockM = clamp(steep * 1.26 - 0.20
+                          + ((macro - 0.5) * 0.78 + (macro2 - 0.5) * 0.22) * fMacro * edgeBreak
+                          + (meso - 0.5) * 0.22 * fMeso * edgeBreak
+                          + smoothstep(232.0, 330.0, vWorldPos.y) * 0.34, 0.0, 1.0);
+        float rockCover = massEdge(rockM, 0.44);
+        albedo = mix(albedo, rock, rockCover);
+        gRockM = max(rockCover, max(ribM, scourM) * 0.72);
 
         // Hollows and lips, applied to whatever ended up on the surface. On
         // rock this is the crease between two planes; on a grassy flank it is
         // the shading in the gullies, and it is the thing that stops a big
         // slope reading as one smooth painted ramp. Geometric, so it tracks the
         // real drainage the bake cut rather than inventing texture.
-        albedo *= 1.0 - smoothstep(0.20, 1.15, curv) * 0.20;
-        albedo *= 1.0 + smoothstep(-0.25, -1.15, curv) * 0.11;
+        albedo *= 1.0 - smoothstep(0.14, 1.00, curv) * 0.23;
+        albedo *= 1.0 + smoothstep(-0.20, -1.00, curv) * 0.13;
 
         // Scree: the sim records where talus and alluvium came to rest. It
         // piles at cliff bases, which is exactly where the reference puts it.
@@ -428,6 +616,7 @@ export function createTerrainMaterial(world, opts = {}) {
                      * (1.0 - smoothstep(0.62, 0.95, slope));
         vec3 screeCol = mix(uScree, uRockMid, meso * 0.45);
         albedo = mix(albedo, screeCol, screeM * 0.66);
+        gRockM = max(gRockM, screeM * 0.66);
 
         // Shelves. A terrace cut into a massif is nearly flat, so it misses
         // every slope-driven rule above and comes out as a bare grey plate —
@@ -436,6 +625,66 @@ export function createTerrainMaterial(world, opts = {}) {
         // enough tough grass to break the plane up.
         float shelfM = bench * smoothstep(0.30, 0.70, rockM) * (1.0 - screeM);
         albedo = mix(albedo, mix(screeCol, uGrassDry, 0.30 + macro2 * 0.34), shelfM * 0.62);
+
+        // ── close-range substrate ──────────────────────────────────────────
+        // At 2 m the ground between the grass blades was one untextured slab —
+        // the critic measured it at 65% of the road close-up and 40% of the
+        // vehicle frame — because the finest thing in this whole shader was a
+        // single ~2 m octave worth about ±7% of value. Ground at arm's length
+        // is pebbles, clods, scuffed dirt and damp shade, and none of that is a
+        // gradient: it is a scatter of small marks with definite edges, which
+        // is also how the close reference plate paints it.
+        //
+        // The entire band sits behind one distance gate and is gone by 34 m.
+        // That is the trap this defect sets: albedo detail this fine crawls the
+        // moment the camera moves unless it dies before its features drop under
+        // a couple of pixels. 34 m at this framing is about 3 cm per pixel, so
+        // the 12 cm pebbles are still four pixels across when they fade out.
+        // The branch is coherent — every fragment in a screen region is at
+        // roughly the same range — so the cost is real only in the near field.
+        // THRESHOLDS ARE CALIBRATED TO THE FIELD'S ACTUAL DISTRIBUTION. A two
+        // octave fbm mapped to 0..1 this way clusters hard around 0.5 with a
+        // spread of roughly ±0.12, so a cut at 0.60 fires on a few percent of
+        // the ground and a cut at 0.69 on almost none. The first version of
+        // this block used exactly those numbers and produced a scatter of
+        // isolated specks on a slab that still read as a slab — which is the
+        // same "bare clay" note, not a fix for it.
+        float fGrit = 1.0 - smoothstep(20.0, 70.0, camDist);
+        if (fGrit > 0.004) {
+          // Three scales, because ground at arm's length has three: grit,
+          // clods, and larger patches worn through to bare dirt. One scale
+          // however strong just looks like a noise texture.
+          float pk = fbmTP(vWorldPos * 4.6, 2, tpw) * 0.5 + 0.5;         // ~22 cm
+          float ck = fbmTP(vWorldPos * 1.25 + 4.1, 2, tpw) * 0.5 + 0.5;  // ~80 cm
+          float sk = fbmTP(vWorldPos * 0.42 + 77.0, 2, tpw) * 0.5 + 0.5; // ~2.4 m
+
+          // The finest band dies first — 22 cm is under two pixels by 38 m and
+          // that is the frequency that crawls.
+          float fPeb = 1.0 - smoothstep(14.0, 38.0, camDist);
+          float peb  = smoothstep(0.55, 0.62, pk) * fPeb;
+          float clod = smoothstep(0.47, 0.61, ck) - smoothstep(0.28, 0.42, ck) * 0.55;
+          float bare = smoothstep(0.52, 0.66, sk);
+          // Damp ground. Keyed on the real moisture field so it lands in the
+          // hollows the bake says hold water, not at random, and broken up by
+          // a metre-scale octave so its edge is not a contour.
+          float dk   = moist * 0.66 + (fbmTP(vWorldPos * 0.30 + 19.0, 2, tpw) * 0.5 + 0.5) * 0.44;
+          float damp2 = smoothstep(0.56, 0.82, dk) * bench;
+
+          vec3 sub = albedo;
+          sub *= 1.0 - clod * 0.26;
+          // Worn through to dirt. This is the term that actually breaks a bare
+          // slope up, because it is the only one whose features are big enough
+          // to read as places rather than as texture.
+          sub  = mix(sub, uDirt * 0.84, bare * 0.32 * (1.0 - damp2));
+          sub  = mix(sub, mix(uScree, uDirt, 0.52) * 1.08, peb * 0.60);
+          // Bleached straw on the dry, proud ground between them. Hue variety,
+          // not just value: a slope carrying one hue reads as poured material
+          // however much value noise is on it.
+          sub  = mix(sub, uGrassDry, smoothstep(0.54, 0.68, pk) * fPeb * 0.32
+                                     * (1.0 - damp2) * (1.0 - bare));
+          sub  = mix(sub, sub * vec3(0.76, 0.73, 0.74), damp2 * 0.30);
+          albedo = mix(albedo, sub, fGrit);
+        }
 
         // ── water margins ──────────────────────────────────────────────────
         float shore = smoothstep(1.6, 0.0, depth);
@@ -472,6 +721,27 @@ export function createTerrainMaterial(world, opts = {}) {
         diffuseColor.rgb *= albedo;
       }`
     ).replace(
+      '#include <normal_fragment_maps>',
+      /* glsl */`
+      #include <normal_fragment_maps>
+      // Put the heightfield's own relief back into the lighting.
+      //
+      // Past ~200 m the drawn mesh is 6 m per vertex and past 720 m it is 12 m,
+      // both coarser than the 10-40 m benches and gullies the erosion bake
+      // actually cut — so the massifs were lit as one smooth gradient mass and
+      // the critic was right that raking dawn light revealed nothing, because
+      // by the time the light reached them there was nothing left to reveal.
+      // gReliefN is the true surface normal of the heightfield at a stencil
+      // sized in screen space, so a distant face breaks into planes that catch
+      // and lose the sun with real value difference between them. It is
+      // LOD-independent, so unlike anything keyed on the mesh normal it cannot
+      // pop on an LOD ring.
+      //
+      // vNormal is view space; gReliefN is world space.
+      if (gReliefW > 0.001) {
+        normal = normalize(mix(normal, normalize(mat3(viewMatrix) * gReliefN), gReliefW));
+      }`
+    ).replace(
       '#include <dithering_fragment>',
       /* glsl */`
       // Shade rebalance. The sky ambient is a cool blue, so anything turned
@@ -480,17 +750,75 @@ export function createTerrainMaterial(world, opts = {}) {
       // replacement — a shaded meadow should read as a deeper gold, and a
       // shaded cliff as lavender-grey, never as saturated blue.
       {
-        float ndl = clamp(dot(normalize(vWorldNormal), normalize(uSunDir)), 0.0, 1.0);
+        // Keyed on the relief normal, not the mesh normal, so the warm shade
+        // note lands on the same planes the lighting now breaks the face into.
+        vec3 shadeN = normalize(mix(normalize(vWorldNormal), gReliefN, gReliefW));
+        float ndl = clamp(dot(shadeN, normalize(uSunDir)), 0.0, 1.0);
         float shade = 1.0 - smoothstep(0.0, 0.38, ndl);
         gl_FragColor.rgb = mix(gl_FragColor.rgb,
                                gl_FragColor.rgb * uShadowTint,
                                shade * 0.34);
+        gShade = shade;
+      }
+
+      // ── chroma governor on bare rock ───────────────────────────────────────
+      // The palette is explicit that rock is lavender-grey and "never
+      // brown-grey", and the terrain was breaking that rule everywhere: a
+      // lavender albedo under a strongly warm key and a warm haze renders as
+      // khaki. The proof was in our own frames — the rocks system's boulders
+      // sat grey-lavender against terrain massifs that were tan, so the two
+      // rock materials in the same shot did not look like the same substance,
+      // and a crag block read as debris dumped on a sand dune.
+      //
+      // Cancelling a warm light with an inverse-tinted albedo does not work
+      // (it goes green the moment the sun moves). The rocks system solves it
+      // downstream of the lighting instead, by pulling the lit colour toward
+      // its own luminance with a slightly cool cast, and this is deliberately
+      // the same operator with the same cast vector so the two agree. It is
+      // gated on the rock mask, so gold meadow keeps every bit of its chroma.
+      //
+      // Measured support: reference plate 2 is 28.4% neutral pixels and our
+      // peaks frame was 2.7%; our drive frame ran chromaMean 0.435 against a
+      // reference band of 0.28-0.42. Greying the rock moves both toward the
+      // plates rather than away.
+      // The cast is SPLIT by sun-facing rather than applied flat, and that is
+      // not decoration: a flat cast pulls the whole massif to one neutral, and
+      // hero's chromaMean fell to 0.262 against the brief's 0.28 floor because
+      // three fifths of that frame is stone. The palette already specifies the
+      // split — rock #c3bfcc lavender-grey lit, #5c5a75 violet in shadow — so
+      // warming the governed colour on sunlit planes and cooling it on shaded
+      // ones puts the chroma back where the plates put it, and it turns the
+      // plane-to-plane value break the relief normal creates into a hue break
+      // as well, which is the single strongest cue in the reference cliffs.
+      if (gRockM > 0.002) {
+        float rl = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+        vec3 governed = vec3(rl) * mix(uRockCastLit, uRockCastShade, gShade) * uRockGain;
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, governed, gRockM * uRockDesat);
+      }
+      // ── ground chroma ─────────────────────────────────────────────────────
+      // The rock governor above is a deliberate, measured desaturation, and it
+      // cost the vista views real chroma: hero and peaks fell from 0.292/0.317
+      // to 0.249/0.259 against the brief's 0.28 floor. The plates say the
+      // answer is not less grey rock — plate 2 runs 28.4% neutral pixels and
+      // still averages 0.284 chroma — but more saturated gold beside it. The
+      // reference is bimodal: near-neutral stone against strongly coloured
+      // ground, where ours had become a mush of mid-chroma everywhere.
+      //
+      // Gated by the same rock mask, so this lifts meadow and flank and leaves
+      // the stone exactly where the governor put it.
+      {
+        float gsat = (1.0 - gRockM) * uGrassSat;
+        if (gsat > 0.002) {
+          float gl = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+          gl_FragColor.rgb = max(vec3(0.0),
+                                 mix(vec3(gl), gl_FragColor.rgb, 1.0 + gsat));
+        }
       }
       #include <dithering_fragment>`
     );
   };
 
-  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v2';
+  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v3';
   void opts;
   return mat;
 }
