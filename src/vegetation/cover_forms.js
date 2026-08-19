@@ -1635,160 +1635,235 @@ function buildThatchMound(rng) {
  * two pixels; ten thousand of them would cost 400,000 triangles and still read
  * as noise. What covers ground at 80 m is something the size of a car.
  *
- * Area per triangle is therefore the only number that matters here, and this
- * form is built to win it: a swathe is sixteen squashed lobes over three metres
- * — 176 triangles for roughly 15 m2 of painted ground, about 0.09 m2 per
- * triangle, against the thatch mound's 0.003 and a straw strand's 0.0005. Two
- * orders of magnitude.
+ * Area per triangle is the number this form spends on — but it is bounded, and
+ * five rounds of this file were spent discovering the bound the hard way by
+ * buying footprint the terrain would not let it place. See the deviation table
+ * inside `buildGroundMat`. A mat is planar; the ground is not; past about a
+ * metre of radius the ground moves further through the mat than the mat is
+ * thick, and what renders is not a swathe, it is the handful of fragments that
+ * happened to surface.
  *
  * Three things keep it from being the flat decal every previous attempt at
  * broad ground cover collapsed into:
  *
  *  · it CONFORMS. `COVER_ARCHETYPES.conform` takes the instance to the full
- *    terrain tilt rather than the 55% every other archetype uses, so a three
- *    metre mat lies *on* a slope instead of burying one edge and flying the
- *    other. Nothing else in this layer is big enough to have needed that.
- *  · its normals are organised by the mass (see `lobe`'s `bias`), so the mat
- *    turns through the key light as one low swell with a lit flank and a shaded
- *    one, rather than as sixteen unrelated plates.
- *  · it is fringed. A combed rim of short blades is what says "this is growing"
- *    rather than "this is a stain", and it is what breaks the outline where the
- *    mat meets bare ground.
+ *    terrain tilt rather than the 55% every other archetype uses, so a mat lies
+ *    *on* a slope instead of burying one edge and flying the other. That fixes
+ *    the tilt; it does nothing about the curvature, which is what the radius
+ *    and the buried rim are for.
+ *  · it has VERTICAL TOLERANCE. The pad's rim and the strands' bases both sit
+ *    well below the plane the instance is placed on, so terrain that rises
+ *    through the mat buries part of it — invisible — instead of leaving the
+ *    rest of it hanging in the air, which is what a viewer reads as a
+ *    rendering error rather than as ground.
+ *  · every mark in it is under the legibility threshold at the range it is
+ *    drawn at. The reference plates never show a single identifiable leaf on
+ *    the ground at 40 m; they show a mass. Individually legible is the enemy,
+ *    and it is a property of contrast and size together, not of size alone.
  *
  * And it fades *in* with distance as well as out — see `nearFade` in
  * `shaders/cover_material.js`. Up close the fine substrate is the right answer
- * and a 1.5 m lobe is a slab; this form exists for the 15-90 m band where
+ * and a metre-wide pad is a slab; this form exists for the 15-90 m band where
  * nothing else in the game is doing anything at all.
  */
+/**
+ * A ragged ground pad: a very low dome whose rim is driven under the surface.
+ *
+ * This is what replaced the disc of squashed lobes, and the reason is measured
+ * rather than felt — see the note on `buildGroundMat`.
+ *
+ * The rim ring sits at a large NEGATIVE y, a quarter to a half a metre below
+ * the pad's own plane, and that tolerance is the whole point of the form.
+ * Where the ground inside the footprint rises above the plane the pad simply
+ * intersects it and what shows is a soft closed blob; where it falls away, the
+ * rim is still under the surface, so there is never an under-edge to read as
+ * an object lying on the hill. A flat disc has no such tolerance: on this
+ * terrain it is either buried or floating, and it is floating half the time.
+ *
+ * Normals are held within 9 degrees of vertical on the top rings, so every
+ * facet answers the key light the way the ground beside it does. That is what
+ * lets the pad be built out of a few large triangles without reading as
+ * plates: the facets are big, but they all shade alike, so the eye reads one
+ * mass. Variation comes from the colour channel instead, which costs nothing.
+ */
+function groundPad(b, R, rng, o = {}) {
+  const sect = o.sect ?? 8;
+  const crest = o.crest ?? 0.05;
+  const cx = o.x ?? 0, cy = o.y ?? 0, cz = o.z ?? 0;
+  // Ring radius as a fraction of R, and the ring's height above the plane. The
+  // last ring is the buried rim; its drop grows with the footprint, because so
+  // does the amount of terrain the pad has to span.
+  const rings = o.rings === 3
+    ? [{ f: 0.46, y: crest * 0.72 }, { f: 0.86, y: crest * 0.04 },
+       { f: 1.00, y: -(0.11 + R * 0.34) }]
+    : [{ f: 0.62, y: crest * 0.40 }, { f: 1.00, y: -(0.11 + R * 0.34) }];
+  const chan = o.chan ?? 0.12, chanVar = o.chanVar ?? 0.30;
+  const aoTop = o.ao ?? 0.94;
+  const a0 = rng() * TAU;
+  const c = b.vert(cx, cy + crest, cz, 0, 1, 0, chan + rng() * chanVar, aoTop, 0.02, 0.5);
+  const ring = [];
+  for (let j = 0; j < rings.length; j++) {
+    const last = j === rings.length - 1;
+    const row = [];
+    for (let i = 0; i < sect; i++) {
+      const a = a0 + (i / sect) * TAU + (rng() - 0.5) * 0.30;
+      // Ragged outline. At 40 m the silhouette is the only part of a pad the
+      // eye can read, so the jitter goes on the radius and not on the height —
+      // a rippled height profile just breaks the flat mass into facets again.
+      const rr = R * rings[j].f * (0.70 + rng() * 0.56);
+      const y = cy + rings[j].y + (last ? 0 : (rng() - 0.5) * 0.026);
+      const ux = Math.cos(a), uz = Math.sin(a);
+      const out = last ? 0.42 : 0.15;
+      const nl = Math.hypot(ux * out, 1, uz * out);
+      row.push(b.vert(cx + ux * rr, y, cz + uz * rr,
+                      ux * out / nl, 1 / nl, uz * out / nl,
+                      chan + rng() * chanVar,
+                      last ? 0.56 : aoTop - j * 0.06,
+                      0.02 + j * 0.02, 0.5));
+    }
+    ring.push(row);
+  }
+  // Wound so the geometric normal comes out +Y. In a right-handed frame with Y
+  // up, a fan that advances with DECREASING angle faces the sky; advancing the
+  // other way stores an up normal on a down-facing triangle, which is the
+  // unlit-from-both-sides defect this file has now hit five times.
+  // `tools/winding.mjs` is the check that this is right.
+  for (let i = 0; i < sect; i++) {
+    const n = (i + 1) % sect;
+    b.tri(c, ring[0][n], ring[0][i]);
+    for (let j = 1; j < ring.length; j++) {
+      b.quad(ring[j - 1][n], ring[j][n], ring[j][i], ring[j - 1][i]);
+    }
+  }
+}
+
 function buildGroundMat(rng, variant) {
   const b = new Builder();
   const broad = variant === 1;
-  // SIZED DOWN from 2.9-4.6 m, and the reason is the oldest lesson in this
-  // file: the facet has to be the size of the mark. At that radius a lobe was
-  // 2.8 m across and a fifth of a metre tall — a squashed octahedron whose four
-  // top faces are each a metre-wide flat triangle with a dead straight edge.
-  // Rendered with everything else in the layer hidden
-  // (`tools/_scratch/cover/matonly.mjs`) they were unmistakably giant gold
-  // playing cards lying on the hill. Area per triangle is still the number that
-  // matters, but it is bounded above by the largest facet the frame can show.
+  // FOOTPRINT, and this is the number the previous five rounds got wrong.
   //
-  // …and then WIDENED again, without undoing any of that, by decoupling the two
-  // numbers the previous round moved together. What made a 4.6 m mat read as a
-  // playing card was not its footprint, it was `s = R * (0.19 … 0.31)` — the
-  // lobe size scaled off the radius, so a wide mat got metre-wide facets. The
-  // radius itself is the only thing that buys painted ground per triangle, and
-  // it is the number the frame needs: with the cap binding at 700 instances,
-  // coverage is `cap * pi * R^2`, so this is the cheapest lever there is.
+  // A mat is a planar object: the instance is placed on one tangent plane
+  // sampled at its centre, and every vertex in it is fixed relative to that
+  // plane. So the honest maximum radius is set by how far the ground departs
+  // from that plane, and on the hillside this form exists for that was never
+  // measured. It is now (400 sites, slope > 0.5, deviation of `getHeight` from
+  // the centre tangent plane, worst of 8 directions):
   //
-  // So: radius up ~40%, lobe count up with it, and `s` re-expressed below in
-  // ABSOLUTE metres so a wider mat gets *more* marks of the same size rather
-  // than bigger ones. Largest facet is unchanged; area per instance is 1.9x.
-  const R = broad ? 2.00 + rng() * 1.05 : 0.90 + rng() * 0.50;
-  // Ankle deep whatever the footprint. The relief is nearly absolute and only
-  // creeps with the radius: an early version scaled it as 0.15-0.24 R, which on
-  // a three-metre swathe is a lobe standing a metre and a half off the ground,
-  // and `meadow` came back with pale olive tents pitched across it.
-  const H = 0.065 + R * 0.026;
+  //     r = 0.5 m   p50 0.05   p90 0.09
+  //     r = 1.0 m   p50 0.11   p90 0.21
+  //     r = 1.5 m   p50 0.24   p90 0.46
+  //     r = 2.5 m   p50 0.57   p90 1.18
+  //
+  // The form's entire relief was 0.13 m. At the old 2.0-3.05 m radius the
+  // ground moved half a metre to a metre and a half through the mat, so most
+  // of every mat was underground and the fragments that surfaced were whatever
+  // happened to poke out — isolated, hard-edged, at arbitrary angles. Verified
+  // directly: `tools/_scratch/cover/matwhy2.mjs` renders the mats raised 0.6 m
+  // clear of the ground, and the same hillside goes from a scatter of loose
+  // chips to a dense field. Nothing was wrong with the density. The layer was
+  // being eaten.
+  //
+  // So the radius comes back to where the plane approximation survives, and
+  // the reach that costs is bought back in `_layerMat`'s drift count, which is
+  // nearly free because it only runs on sites that already passed `_ground`.
+  //
+  // The pads inside it carry a buried rim whose drop scales with their own
+  // radius (`0.11 + 0.34 R`), so a 0.9 m pad tolerates 0.4 m of terrain
+  // deviation against a measured p90 of 0.18 m at that radius — comfortably
+  // inside. That tolerance is what lets the footprint come back up from the
+  // first pass at this: the constraint is not the mat's overall size, it is the
+  // size of any single planar mark inside it.
+  const R = broad ? 1.55 + rng() * 0.60 : 0.56 + rng() * 0.28;
 
-  // ── WHAT THIS FORM IS MADE OF, AND WHY IT IS NOT MADE OF LOBES ───────────
+  // The pads: SEVERAL SMALL ONES, OVERLAPPING, not one big one.
   //
-  // Four rounds built this as a disc of squashed octahedra, tuned their size
-  // down twice, and got the same picture every time — see
-  // shots/cover/a4-river.png and a6-river.png, both taken on the critic's own
-  // hillside: hard-edged pale quads lying loose on brown, at 6 m and at 40 m
-  // alike. Shrinking them made them smaller quads. The mark was wrong, not its
-  // scale.
+  // A single pad the size of the mat was the first thing tried here and the
+  // capture is `shots/cover/b1-river.png`: pale hexagons lying on the hill,
+  // legible one at a time from thirty metres. A polygon reads as a polygon
+  // however ragged its radius jitter is, because at eight or ten sectors the
+  // straight chords between the jittered points are longer than the jitter.
   //
-  // A lobe is a closed convex solid. Seen at the grazing angle you get looking
-  // along a hillside, it presents one or two of its facets flat to camera, with
-  // a hard straight silhouette and no interior structure — a chip. Nothing
-  // about its size changes that.
-  //
-  // What already reads correctly on this ground is `buildDeadTuft`: laid-down
-  // strands, all leaning one way in overlapping courses, which is how weather
-  // actually lays dead grass. Those are 2-triangle tapered strips on the
-  // double-sided material, so at a grazing angle they present an EDGE, they
-  // catch the backlit rim along their length, and twenty of them overlapping
-  // read as a surface rather than as twenty objects. They are also a third the
-  // cost of a lobe per mark.
-  //
-  // So this is a deadTuft an order of magnitude bigger: two or three courses of
-  // laid strands over a two-to-three-metre swathe, with a handful of sunk lobes
-  // underneath doing nothing but putting the mat's colour on the ground where
-  // the strands leave gaps. The triangle bill per instance drops by about 45%
-  // against the lobe version it replaces, which is what pays for the cap.
-  const courses = broad ? (rng() < 0.32 ? 3 : 2) : 2;
-  const lay0 = rng() * TAU;
-
-  // The body. Few, wide, and pressed most of the way into the ground: these are
-  // a colour wash under the strands, not objects in their own right, so they
-  // are deliberately the flattest thing in the file. `lift` is high and `bias`
-  // low so their normals sit near vertical and they take the light the way the
-  // ground beside them does — a mat that answers the key differently from the
-  // hill it lies on reads as a sticker on it.
-  // Size and raggedness of a body lobe are the two numbers that decide whether
-  // this form reads as ground or as litter, and both were still too big at the
-  // first pass — shots/cover/a11/river.png shows metre-wide pale plates lying
-  // at angles across the hill at 20-30 m. The arithmetic that produced them:
-  // s up to 0.56, plus `ragged` 0.52 displacing vertices by half the radius
-  // again, times an instance scale of up to 1.20, is a 1.0 m facet. Every
-  // round that has tuned this form has been beaten by that same product, so it
-  // is now written out: MAX FACET = s_max * (1 + ragged) * scale_max, and it
-  // must stay under about 0.45 m or the mat is a playing card.
-  //   0.24 * 1.35 * 1.20 = 0.39 m.
-  const body = broad ? Math.max(6, Math.min(11, Math.round(R * R * 1.25))) : 5;
-  for (let i = 0; i < body; i++) {
-    const a = i * 2.39996 + rng() * 0.8;
-    const r = R * 0.70 * Math.sqrt(0.05 + rng() * 0.95);
-    const s = 0.15 + rng() * 0.09;
-    const y = H * (0.10 + rng() * 0.30);
-    const x = Math.cos(a) * r, z = Math.sin(a) * r;
-    const md = massDir(x, y, z, -H * 1.2, R * 0.70, H * 2.4);
-    lobe(b, x, y, z,
-         s, H * (0.42 + rng() * 0.34), s * (0.74 + rng() * 0.46), 0, rng,
-         { chan: 0.05 + rng() * 0.45, trans: 0.34,
-           ragged: 0.35,
-           bias: 0.22, bx: md.bx, by: md.by, bz: md.bz,
-           lift: 0.70,
-           // Near the top of the range: a mat is open ground, not the buried
-           // interior of a clump, and darkening it is how the previous broad
-           // forms turned into stains.
-           ao: 0.84 + rng() * 0.16, sway: 0.02 + rng() * 0.05 });
+  // Three or four discs of a third the radius, overlapping each other, have a
+  // union outline that is not a polygon at all — it is a lobed blob with
+  // re-entrant corners, which is what a patch of matted growth looks like from
+  // any distance. It is also the cheaper shape: two rings each instead of
+  // three, so four small pads cost less than one big one did.
+  const pads = broad ? 3 + ((rng() * 2) | 0) : 2;
+  for (let pI = 0; pI < pads; pI++) {
+    const pa = rng() * TAU, pr = pI === 0 ? 0 : R * 0.52 * Math.sqrt(rng());
+    groundPad(b, R * (broad ? 0.40 + rng() * 0.22 : 0.46 + rng() * 0.20), rng, {
+      x: Math.cos(pa) * pr, z: Math.sin(pa) * pr,
+      // Staggered vertically as well as laterally, so the group is a rumpled
+      // drift rather than a plateau with a lobed edge.
+      y: (rng() - 0.5) * 0.05,
+      sect: broad ? 8 : 7,
+      crest: 0.04 + rng() * 0.03,
+      // DEEP half of the palette pair. The pad is ground colour — it is there
+      // to lift the substrate's value and hue, not to be seen. Everything the
+      // eye is meant to catch is in the strands over it, whose silhouettes are
+      // thin and overlapping and therefore cannot read as objects. At the pale
+      // end of the pair a pad is a decal on the hillside, which is the whole
+      // complaint against this layer.
+      chan: 0.02 + rng() * 0.16, chanVar: 0.22 + rng() * 0.16,
+      // Near the top of the range — a mat is open ground, not the buried
+      // interior of a clump, and darkening it is how the previous broad forms
+      // turned into stains.
+      ao: 0.88 + rng() * 0.12,
+    });
   }
 
-  // The strands. Length is drawn off a squared curve so most are stubs and one
-  // or two in a course run right across — the size hierarchy the brief asks for,
-  // inside one prop. Tilt past vertical (1.30+) lies them over so the far end
-  // settles into the ground rather than standing off it.
-  // Short and many, not long and few. shots/cover/a12-river.png is what the
-  // other choice looks like: at 0.20-0.60 m before an instance scale of up to
-  // 1.20, the strands come out as 0.7 m laths lying loose on the hill — the
-  // same defect `buildDeadTuft` records against its own first version. Twenty
-  // short strands are a surface; one long one is an object. Strands are two
-  // triangles each, so the count is nearly free and the length is not.
-  const perCourse = broad ? Math.max(14, Math.min(26, Math.round(R * R * 2.6))) : 10;
+  // The strands, and they START BELOW THE SURFACE.
+  //
+  // `y0` is drawn from a band running from 23 cm under the pad's plane to two
+  // centimetres over it, weighted toward the bottom, and that band is what
+  // makes the form tolerant of the deviation table above. Wherever the ground
+  // sits inside the footprint, some course of strands is emerging from it and
+  // the rest are buried — and burial is invisible, where floating is the
+  // defect. A population spread through a vertical band degrades into less
+  // cover; a population at one height degrades into cards hanging in the air.
+  //
+  // They are also wider and shorter than the strands they replace. Coverage
+  // per triangle is the only thing this form is spending on, a strand is two
+  // triangles whatever its size, and a 9 cm blade at 40 m is three pixels —
+  // under the legibility threshold, which is where every mark in this layer
+  // needs to be. What the reference plates never show at this range is a
+  // single identifiable leaf.
+  const courses = broad ? 3 : 2;
+  const perCourse = broad ? 24 : 12;
+  const lay0 = rng() * TAU;
   for (let c = 0; c < courses; c++) {
     const lay = lay0 + c * (1.9 + rng() * 0.9);
     const cl = Math.cos(lay), sl = Math.sin(lay);
     for (let i = 0; i < perCourse; i++) {
       // Elongated along the lay direction, so a course is a swept band rather
-      // than a disc of strands that happen to point the same way.
-      const u = (rng() - 0.5) * R * 1.70, v = (rng() - 0.5) * R * 1.05;
+      // than a disc of strands that happen to point the same way. Kept inside
+      // the pad group rather than spread over the whole footprint: strands
+      // scattered wider than the mass they belong to are just isolated marks
+      // on bare ground, which is the defect, and strands ON the pads are what
+      // breaks their outline.
+      const u = (rng() - 0.5) * R * 1.20, v = (rng() - 0.5) * R * 0.86;
       const t = rng();
       frond(b, {
-        x: cl * u - sl * v, y: 0.010 + rng() * H * 0.55, z: sl * u + cl * v,
+        x: cl * u - sl * v, y: 0.03 - 0.26 * Math.sqrt(rng()), z: sl * u + cl * v,
         yaw: lay + (rng() - 0.5) * 1.15,
-        tilt: 1.30 + rng() * 0.30,
-        len: 0.13 + t * t * 0.25, w: 0.030 + rng() * 0.030,
+        // Under a right angle, so the strand climbs out of the ground rather
+        // than running parallel to it. Past vertical it would lie flat at
+        // whatever height it started, which is the floating case again.
+        tilt: 0.95 + rng() * 0.42,
+        len: 0.17 + t * t * 0.30, w: 0.050 + rng() * 0.056,
         segs: 1, droop: 0.20, taper: 0.70,
-        // Base in the deep half of the pair, tip in the lit half: a strand that
-        // is one flat colour end to end is a painted stripe.
-        chanA: 0.10 + rng() * 0.25, chanB: 0.80 + rng() * 0.20,
-        aoA: 0.78, aoB: 1.0, swayA: 0.25, trans: 0.85,
+        // Base in the deep half of the pair, tip in the lit half: a strand
+        // that is one flat colour end to end is a painted stripe. The tip stops
+        // short of the pale end of the pair now — at chanB 0.80-1.00 the tips
+        // rendered within a few percent of `matDryLit`, which is a near-white
+        // against ground that measures srgb(97,73,29) on this hillside, and a
+        // near-white mark on dark brown is legible however small it is.
+        chanA: 0.08 + rng() * 0.22, chanB: 0.50 + rng() * 0.34,
+        aoA: 0.74, aoB: 0.98, swayA: 0.25, trans: 0.85,
       });
     }
   }
-  return b.finish(H * 1.8);
+  return b.finish(0.30);
 }
 
 /**

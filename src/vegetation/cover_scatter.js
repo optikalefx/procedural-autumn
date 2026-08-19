@@ -610,9 +610,36 @@ export class CoverScatter {
       // frame the critic keeps naming, and it was being handed the one mix in
       // the table that cannot put anything on it. Gravel still wins on actual
       // rock and gravel bars, where the surface weights say so directly.
-      const wStone = 0.55 + w.rock * 2.2 + w.dirt * 0.6 + slope * 0.9
+      //
+      // `w.rock` IS NOT ROCK, and keying grit on it was the single reason the
+      // near half of the `river` frame was bare. Below the alpine line the
+      // terrain's rock weight is a restatement of slope — commit 87cd828 found
+      // exactly this gating the mats, and the same misreading was still here.
+      // Probed at the pixels that look bare (7-15 m from the camera, not the
+      // distant hillside everyone including me assumed it was):
+      //
+      //     slope 1.08-1.20   grass 0.00   rock 0.97-1.00   dirt 0.70
+      //
+      // which put `wStone` at 3.90 against `wStraw` 1.77 — stone leading 64% of
+      // clumps on a surface filling half the frame. Grit is the one entry in
+      // this mix that covers no ground at all: a twenty-piece clump of 3-8 cm
+      // chips covers four hundredths of a square metre, where a thatch mound
+      // covers a third of one. So the layer was running at full density on that
+      // bank and spending nearly two thirds of it on something invisible.
+      //
+      // Genuine stone ground reads on `sand`, on a road, and on rock that is
+      // NOT also dirt — a scree slope is rock without soil on it. A 48° dirt
+      // bank in a wooded valley is thatch and fallen leaf.
+      const scree = clamp01(w.rock - w.dirt * 0.85) * 2.0 + clamp01(w.sand) * 1.4;
+      const wStone = 0.45 + scree + clamp01(w.dirt) * 0.35
+                   + smoothstep(0.60, 1.60, slope) * 0.45
                    + road * 1.0 - moist * 0.35;
-      const wLeaf  = 0.35 + lit * 2.4 + can * 0.55;
+      // A bare open slope in autumn is not swept clean of leaf. `lit` is the
+      // tree system's deciduous-litter field and it is zero the moment there is
+      // no crown overhead, which left open ground with the mix's floor value
+      // and nothing else — so the one entry in the table that carries the
+      // reference's rust and crimson never led a clump out in the open.
+      const wLeaf  = 0.35 + lit * 2.4 + can * 0.55 + bare * 0.50;
       // Straw was carrying two thirds of the mix and hitting its instance cap
       // while stone and leaf sat at a quarter of theirs. It is also the weakest
       // of the three: it sits inside the meadow's own gold, so it adds texture
@@ -621,7 +648,7 @@ export class CoverScatter {
       // written when straw was one flat strand mat and genuinely the weakest of
       // the three; with the thatch mound behind it, straw is now the only entry
       // in the mix that covers ground, so on bare ground it should lead.
-      const wStraw = (0.34 + (1 - moist) * 0.55 + bare * 1.25) * (1 - clamp01(can * 0.75));
+      const wStraw = (0.34 + (1 - moist) * 0.55 + bare * 1.60) * (1 - clamp01(can * 0.75));
       // Moss needs shade *and* damp, not either. On its own the moisture term
       // was putting green cushions all over the open river clay, where they had
       // nothing to grow on and read as loose green cards lying on bare dirt —
@@ -927,11 +954,23 @@ export class CoverScatter {
       // file; the members are free by comparison because they only run on sites
       // that already passed it, and on the meadow — most of the map — the
       // bareness term keeps the count at one so nothing changes there at all.
-      const drift = 1 + ((rng() * (0.7 + bare * 3.4)) | 0);
+      //
+      // RAISED with the drop in `buildGroundMat`'s radius. A broad pad now
+      // covers about a third of the ground a swathe nominally did, because the
+      // old radius was placing geometry the terrain immediately ate — see the
+      // deviation table in that function. The reach has to come back as more
+      // patches rather than bigger ones, and this is where it is cheapest: a
+      // member only runs on a site that already passed `_ground`, which on the
+      // meadow is one candidate in eight, so the meadow pays almost nothing for
+      // it and the bald slope the layer exists for gets all of it.
+      const drift = 1 + ((rng() * (0.9 + bare * 6.2)) | 0);
       for (let mI = 0; mI < drift && n < cap; mI++) {
         let mx = x, mz = z;
         if (mI > 0) {
-          const ma = rng() * TAU, mr = 1.6 + rng() * 3.4;
+          // Tightened with the radius: patches want to overlap into a drift,
+          // and at the old spacing a smaller pad just leaves bare ground
+          // between every pair of them.
+          const ma = rng() * TAU, mr = 0.9 + rng() * 2.6;
           mx = x + Math.cos(ma) * mr; mz = z + Math.sin(ma) * mr;
           // A member is a two-to-three metre object like its site, so it gets
           // the same spill probe. Anything cheaper puts half a swathe over the
