@@ -79,7 +79,11 @@ const PAL = {
   // pair, once the mass-normal fix in `cover_forms.js` gave the sunward flank a
   // real value, the lit end came out a warm olive within a hair of the meadow's
   // own hue, and a bush that shares the ground's hue is a smudge on it.
-  shrubDeep:   C(0x4a7d51), shrubLit:    C(0x9dc267),
+  // Deep end lifted with `uAoDepth` and for the same measured reason: the
+  // reference's shaded bush foliage is a saturated mid green at luma ~0.31, and
+  // the pair's deep end has to start high enough that the game's stylised
+  // shadow floor lands there rather than three stops under it.
+  shrubDeep:   C(0x58895a), shrubLit:    C(0x9dc267),
   shrubMaroon: C(0xa8613f), shrubMarLit: C(0xd08a48),
   berryLeaf:   C(0x9c5236), berryLit:    C(0xd4652c), berry: C(0xbe4038),
   // A step darker and a step more saturated than the terrain's sunlit gold

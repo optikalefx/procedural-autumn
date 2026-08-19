@@ -276,6 +276,43 @@ function frond(b, o) {
     let nx = dirx * ca * FROND_OUT, ny = -sa * FROND_OUT + FROND_UP, nz = dirz * ca * FROND_OUT;
     const nl = Math.hypot(nx, ny, nz) || 1;
     nx /= nl; ny /= nl; nz /= nl;
+    // MASS NORMAL, the same idea as `lobe`'s `bias` and for the same reason —
+    // and this is the half of critic blocker 15 that the lobe fix missed.
+    //
+    // A shrub's visible surface is not its florets, it is the forty-odd blades
+    // of `leafShell` sitting on top of them, and every one of those takes its
+    // normal from its OWN yaw, which is random. So the lobes underneath now
+    // resolve into three broad masses and the blades over them still paint
+    // forty unrelated values inside one silhouette — which is what
+    // shots/cover/close1/close-grass-2m.png shows: a pile of mid-green,
+    // near-black and chalky pale plates with no light direction in it at all.
+    //
+    // Blending toward the direction from the plant's centre out through this
+    // blade gives the sunward side of the canopy one value and the far side
+    // another, while the blade keeps enough of its own facing to stay a blade.
+    //
+    // GUARDED, because `frond` is the one function in this file where the
+    // stored normal and the triangle winding have to agree — see the long note
+    // below, and commit 3003973. A blend that carried the normal past 90 deg
+    // from the geometric one would reproduce the unlit-from-both-sides defect
+    // exactly. So the blend is backed off until it keeps a solid positive dot
+    // with the original, and `tools/winding.mjs` is the check that it worked.
+    if (o.bias) {
+      const bx = o.bx ?? 0, by = o.by ?? 1, bz = o.bz ?? 0;
+      let k = Math.min(0.72, o.bias);
+      const dot = nx * bx + ny * by + nz * bz;
+      // At dot <= 0 the two vectors disagree by more than a right angle; the
+      // largest blend that still keeps the result on the original's side is
+      // then bounded by 1/(1-dot). Half of that is the safety margin.
+      if (dot < 0.25) k = Math.min(k, 0.5 / (1 - dot));
+      let mx2 = nx * (1 - k) + bx * k;
+      let my2 = ny * (1 - k) + by * k;
+      let mz2 = nz * (1 - k) + bz * k;
+      const ml = Math.hypot(mx2, my2, mz2);
+      if (ml > 1e-4 && (mx2 * nx + my2 * ny + mz2 * nz) / ml > 0.20) {
+        nx = mx2 / ml; ny = my2 / ml; nz = mz2 / ml;
+      }
+    }
     const l = b.vert(px + sx, py, pz + sz, nx, ny, nz, chan, ao, sway, o.trans ?? 0.9);
     const r = b.vert(px - sx, py, pz - sz, nx, ny, nz, chan, ao, sway, o.trans ?? 0.9);
     // Wound to agree with the normals above, and this is the largest single
@@ -456,8 +493,21 @@ function leafShell(b, h, w, count, rng, chanBase, o = {}) {
     // inside the mass are not wasted: they are what the outer ones overlap, and
     // overlap is where a canopy of strokes gets its interior depth from.
     const r = w * inset * (0.24 + 0.20 * Math.sin(t * Math.PI)) * (0.34 + rng() * 0.92);
+    const bx2 = Math.cos(a) * r, by2 = h * (0.12 + t * 0.80), bz2 = Math.sin(a) * r;
+    // Same mass centre as the crowns use, so the blades and the florets under
+    // them agree about which way the plant's sunward flank faces — but with the
+    // vertical scale doubled, which flattens the direction toward the horizontal.
+    //
+    // That is not cosmetic. `frond`'s own note is explicit that a blade whose
+    // normal points UP is lit by the cool sky dome and renders as a pale grey
+    // rag, and the blades on top of a bush are exactly the ones whose mass
+    // direction is near +Y. Biasing them there is how you turn the crown of
+    // every shrub into the chalky mint facets visible in
+    // shots/cover/b1/meadow.png. A bush's sunward flank is a horizontal
+    // direction; the bias should point along it.
+    const md = o.bias ? massDir(bx2, by2, bz2, h * 0.20, w * 0.34, h * 1.05) : null;
     frond(b, {
-      x: Math.cos(a) * r, y: h * (0.12 + t * 0.80), z: Math.sin(a) * r,
+      x: bx2, y: by2, z: bz2,
       yaw: a + (rng() - 0.5) * 1.1,
       // Capped short of horizontal: a blade lying flat reads as a plank.
       tilt: (o.tilt ?? 0.30) + rng() * 0.62,
@@ -466,6 +516,7 @@ function leafShell(b, h, w, count, rng, chanBase, o = {}) {
       segs: 1, droop: 0.30, taper,
       chanA: chanBase, chanB: chanBase + span,
       aoA: 0.60 + t * 0.30, aoB: 1.0, swayA: 0.45, trans: o.trans ?? 1.0,
+      bias: o.bias ?? 0, bx: md?.bx, by: md?.by, bz: md?.bz,
     });
   }
 }
@@ -720,7 +771,7 @@ function buildShrubDark(rng) {
     lobe(b, fx, fy, fz,
          sz, sz * (0.74 + rng() * 0.34) * (h / w), sz * (0.86 + rng() * 0.32),
          0, rng,
-         { chan: 0.02 + rise * 0.50 + rng() * 0.44,
+         { chan: 0.16 + rise * 0.40 + rng() * 0.22,
            trans: 0.32 + rise * 0.34,
            // Ragged down from 0.44. At half the lobe radius the worst vertices
            // ran a spike out past the silhouette, and thirty-one spikes on a
@@ -773,8 +824,17 @@ function buildShrubDark(rng) {
   // a halo of loose marks on gold, not a ragged edge. At 0.78 the bases are
   // buried and only the tips break the outline. Shorter with it, so a tip
   // clears the mass by a couple of centimetres rather than by a blade length.
-  leafShell(b, h, w, 42, rng, 0.14,
-            { len: 0.074, wide: 0.038, inset: 0.78, tilt: 0.24, span: 0.30,
+  // Count up and size down together. Crops of reference plate 2 put the fringe
+  // on a bush at roughly 2% of its own width; at len 0.074 ours was at 8%, and
+  // a mark that big does not fringe a silhouette, it is one of the shapes the
+  // silhouette is made of. Blades are two triangles, so trading size for count
+  // at constant painted area is close to free.
+  leafShell(b, h, w, 76, rng, 0.14,
+            { len: 0.044, wide: 0.024, inset: 0.78, tilt: 0.24, span: 0.30,
+              // See the note beside `bias` in `frond`. Without it the crowns
+              // resolve into three masses and the forty blades over them go on
+              // painting forty unrelated values.
+              bias: 0.55,
               // Held back off the default 1.0. A blade is the thinnest thing on
               // the plant, so the backlit rim finds it first and finds all of
               // it; at full translucency the `backlit` frame came back with
@@ -819,7 +879,7 @@ function buildShrubBerry(rng) {
     lobe(b, fx, fy, fz,
          sz, sz * (0.74 + rng() * 0.32) * (h / w), sz * (0.84 + rng() * 0.34),
          0, rng,
-         { chan: rng() < 0.34 ? 0.55 + rng() * 0.30 : 0.03 + rise * 0.40,
+         { chan: rng() < 0.34 ? 0.58 + rng() * 0.26 : 0.18 + rise * 0.34,
            trans: 0.55 + rise * 0.35, ragged: 0.32,
            // Mass-biased with `shrubDark`, and it matters more here: the maroon
            // pair has the widest value range in the layer, so unorganised
@@ -828,12 +888,12 @@ function buildShrubBerry(rng) {
            bias: 0.62, bx: md.bx, by: md.by, bz: md.bz,
            lift: 0.16 + rise * 0.20 });
   }
-  leafShell(b, h, w, 32, rng, 0.10,
-            { len: 0.074, wide: 0.036, inset: 0.80, tilt: 0.24, span: 0.30,
-              trans: 0.70 });
-  leafShell(b, h, w, 13, rng, 0.54,
-            { len: 0.068, wide: 0.034, inset: 0.84, tilt: 0.24, span: 0.26,
-              trans: 0.70 });
+  leafShell(b, h, w, 58, rng, 0.10,
+            { len: 0.044, wide: 0.023, inset: 0.80, tilt: 0.24, span: 0.30,
+              bias: 0.55, trans: 0.70 });
+  leafShell(b, h, w, 22, rng, 0.54,
+            { len: 0.042, wide: 0.022, inset: 0.84, tilt: 0.24, span: 0.26,
+              bias: 0.55, trans: 0.70 });
   // Berry knots, fully accent, and small enough to read as a fleck rather than
   // as a facet. Tucked *into* the crowns, not perched on the outside.
   for (let i = 0; i < 5; i++) {
@@ -894,7 +954,8 @@ function buildScrubDry(rng) {
   // of them, and the tip held a third of the way up the pair instead of nine
   // tenths.
   leafShell(b, h, w, 46, rng, 0.26,
-            { wide: 0.050, len: 0.105, tilt: 0.42, inset: 0.70, span: 0.24 });
+            { wide: 0.050, len: 0.105, tilt: 0.42, inset: 0.70, span: 0.24,
+              bias: 0.48 });
   skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
@@ -950,7 +1011,7 @@ function buildThicket(rng) {
     const md = massDir(fx, fy, fz, h * 0.26, w * 0.42, h * 0.60);
     lobe(b, fx, fy, fz,
          sz, sz * (0.80 + rng() * 0.36), sz * (0.84 + rng() * 0.34), 0, rng,
-         { chan: 0.05 + rise * 0.55 + rng() * 0.24, trans: 0.70 + rise * 0.30,
+         { chan: 0.18 + rise * 0.44 + rng() * 0.16, trans: 0.70 + rise * 0.30,
            ragged: 0.34,
            bias: 0.58, bx: md.bx, by: md.by, bz: md.bz,
            lift: 0.16 + rise * 0.20 });
@@ -959,7 +1020,8 @@ function buildThicket(rng) {
   // as a fraction of *its* width was a 40 cm plate — the widest flat facet in
   // the layer, on the archetype with the longest visibility radius.
   leafShell(b, h, w, 118, rng, 0.30,
-            { wide: 0.034, len: 0.078, inset: 0.80, tilt: 0.26, span: 0.36 });
+            { wide: 0.034, len: 0.078, inset: 0.80, tilt: 0.26, span: 0.36,
+              bias: 0.52 });
   skirt(b, w, rng, 5, 0.10);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {

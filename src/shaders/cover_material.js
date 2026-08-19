@@ -79,7 +79,24 @@ export function makeCoverUniforms() {
     uRimTint:      { value: new THREE.Color(1.0, 0.82, 0.52) },
     // How dark the buried interior of a clump goes. Not zero — the brief is
     // explicit that shaded areas stay as tinted colour, never as holes.
-    uAoDepth:      { value: 0.72 },
+    //
+    // Raised 0.72 -> 0.84 against a measurement rather than a feeling. Critic
+    // blocker 15 is "scrub reads as a black faceted scribble with no internal
+    // value range", and matched crops of a bush in `meadow` against the same
+    // subject in reference plate 2 say the bright end is already right and the
+    // DARK end is the whole error:
+    //
+    //   ref bush lit  luma 0.267   body 0.426   shaded 0.307   chroma 0.155
+    //   ours     lit  luma 0.274   body 0.307   shaded 0.190   chroma 0.091
+    //
+    // The reference's shaded side stays a saturated mid green; ours crushes to
+    // a desaturated olive-brown — its green channel actually falls BELOW its
+    // red (ratio 1:0.94:0.56), so it is not a dark green at all, it is a dark
+    // neutral. That is the "no internal value range" reading: a bush whose
+    // shadow side is a hole has one value and a silhouette, not three masses.
+    // 0.16 of albedo was too much to take out of a surface the game then lights
+    // at its stylised floor.
+    uAoDepth:      { value: 0.84 },
   };
 }
 
