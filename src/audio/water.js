@@ -170,7 +170,7 @@ export class WaterAudio {
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (d < nearest) nearest = d;
       const ref = this.wfRef[i];
-      const s = this.wfSize[i] * Math.pow(ref / (ref + d), 1.42);
+      const s = this.wfSize[i] * Math.pow(ref / (ref + d), 2.4);
       if (s > s0) { s2 = s1; b2 = b1; s1 = s0; b1 = b0; s0 = s; b0 = i; }
       else if (s > s1) { s2 = s1; b2 = b1; s1 = s; b1 = i; }
       else if (s > s2) { s2 = s; b2 = i; }
@@ -228,7 +228,20 @@ export class WaterAudio {
       // -42 dBFS under a -31 dB ambience bed, i.e. inaudible — which loses the
       // whole point of hearing the valley before you see it. The near field is
       // barely affected; the far field comes up about a quarter.
-      const g = 0.62 * size * Math.pow(ref / (ref + d), 1.42);
+      // Exponent 2.4, not 1.42, and a lower base.
+      //
+      // The previous curve was raised on purpose so a fall could be heard
+      // across the valley — "you can tell what is over the ridge before you
+      // crest it". It is a lovely idea and it is wrong for this game. The
+      // player's report: "the water or wind sound is very loud. Not calming at
+      // all. It should only sound the way it does now if I'm literally under a
+      // waterfall. But if I'm just near a lake, it shouldn't be blaring."
+      //
+      // This is a cozy driving game. Calm is the product. A steeper curve keeps
+      // the near field intact — stand under a fall and it still roars — while
+      // the mid field drops away fast enough that water is somewhere you arrive
+      // at rather than something you are subjected to.
+      const g = 0.44 * size * Math.pow(ref / (ref + d), 2.4);
 
       v.level = g;
       fallSum += g;
@@ -254,7 +267,7 @@ export class WaterAudio {
       const d = Math.sqrt(dx * dx + dz * dz);
       const flow = this.rvF[i];
       const ref = 16 + flow * 34;
-      const g = 0.30 * (0.25 + flow) * Math.pow(ref / (ref + d), 1.9);
+      const g = 0.20 * (0.25 + flow) * Math.pow(ref / (ref + d), 2.6);
       v.level = g;
       riverSum += g;
       if (g > 0.004) active++;

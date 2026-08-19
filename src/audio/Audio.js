@@ -120,9 +120,13 @@ export class Audio extends System {
       this.reverb.connect(this.reverbOut).connect(this.master);
 
       // ── buses ───────────────────────────────────────────────────────────
+      // Water and the wind bed were the two things the player singled out as
+      // "very loud. Not calming at all." In a game whose whole proposition is a
+      // quiet drive, ambience is a floor you notice when it stops, not a
+      // presence you have to talk over.
       this.buses = {
-        ambience: gain(actx, 0.9),
-        water: gain(actx, 1.0),
+        ambience: gain(actx, 0.55),
+        water: gain(actx, 0.55),
         vehicle: gain(actx, 0.75),
         wildlife: gain(actx, 0.9),
         music: gain(actx, 0.8),

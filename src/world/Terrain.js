@@ -129,6 +129,28 @@ const RESCAN_DIST = 6;
 // per cascade, which is inside the noise of the numbers above.
 const LOD_DISTANCES = [180, 380, 900, 1500];
 
+// Per-tier scale on the LOD switch radii.
+//
+// Engine now steps the quality tier down on its own when the resolution scaler
+// has been pinned at its floor and is still missing the frame target, so a tier
+// has to actually shed work — and until now nothing in Terrain moved at all
+// when it fired. Terrain is the largest single item in the frame: hiding it
+// entirely was measured at -28% of frame time at the player's 1.06 MP
+// (tools/_scratch/sceneab.mjs, 18 interleaved cycles), more than trees, the
+// camper, grass, cover, rocks and water put together.
+//
+// The lever is the switch radii and not `viewDistance`. Shrinking the view
+// distance takes distant massifs out of the world altogether and leaves a hole
+// on the horizon that neither the apron nor the fog covers; pulling the radii in
+// keeps every silhouette exactly where it is and simply draws it at fewer
+// vertices, which also pushes more of the world past BATCH_LOD where it batches
+// into blocks and costs draw calls as well as triangles. The terrain author's
+// own note beside LOD_DISTANCES names this as the single lever for reclaiming
+// triangles.
+//
+// ultra and high are 1.0 — the shipped look at those tiers is untouched.
+const LOD_TIER_SCALE = { ultra: 1, high: 1, medium: 0.78, low: 0.60 };
+
 export class Terrain {
   constructor(world, scene, opts = {}) {
     this.world = world;
@@ -157,6 +179,28 @@ export class Terrain {
     this._blockPool = [];             // reusable member arrays
     this._scanAt = new THREE.Vector3(Infinity, Infinity, Infinity);
     this._n = new THREE.Vector3();
+    this._baseLod = this.lodDistances;
+    this._lodScale = 1;
+  }
+
+  /**
+   * Quality tier changed — re-scale the LOD switch radii. See LOD_TIER_SCALE.
+   *
+   * `main.js` wires this to `Engine.setQuality`, which now fires on its own when
+   * the resolution scaler has run out of room. A no-op at ultra and high.
+   *
+   * The rescan is forced rather than applied directly: every chunk's wanted LOD
+   * has changed, so the whole set has to be re-derived. It goes through the same
+   * `_drain(budgetMs)` path as ordinary streaming, so the rebuild is spread over
+   * frames at 3 ms each and a tier change does not itself become a hitch.
+   */
+  onQuality(preset, name) {
+    const s = LOD_TIER_SCALE[name] ?? 1;
+    if (s === this._lodScale) return;
+    this._lodScale = s;
+    this.lodDistances = s === 1 ? this._baseLod : this._baseLod.map((d) => d * s);
+    this._scanAt.set(Infinity, Infinity, Infinity);
+    void preset;
   }
 
   key(cx, cz) { return cx * 4096 + cz; }

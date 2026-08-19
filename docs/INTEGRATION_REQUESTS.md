@@ -2861,3 +2861,23 @@ pins the resolution, alternates arms every ~24 frames and compares each arm to
 the baseline measured in its own cycle. Ablations that read as +/-30% noise under
 block averaging come out with an IQR of 0.03 there. Anything quoting a frame-time
 delta on this machine should use one of those two tools.
+
+### P6. Captures are not pixel-deterministic — do not pixel-diff a before/after.
+
+I tried to verify a change by differencing `shots/` PNGs and got 3.5 M differing
+subpixels out of 4.3 M. Then I ran the null test — **the same build, shot twice,
+back to back**:
+
+```
+forest   differing subpixels  3328113 / 4320000   max delta 230
+```
+
+Against my actual before/after on the same view, 3481533 / 4320000, max 205.
+The change is indistinguishable from shooting the same build twice. Wind phase,
+weather leaves, wildlife and the post chain's history buffers all carry state
+that `__settle` does not converge, so a pixel diff of two `shot.mjs` runs
+measures none of them. This is presumably why `tools/ab.mjs` is a *blind human*
+comparison and not a metric, and it is worth saying out loud: any author
+reaching for `cmp`/imagemagick to "prove" a change is art-neutral will get a
+number that means nothing. Use `ab.mjs`, or prove the invariant directly in the
+page the way `tools/_scratch/farcheck.mjs` does.

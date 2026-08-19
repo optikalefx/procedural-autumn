@@ -358,7 +358,7 @@ const DEFAULTS = {
   // from this file — it needs grass and ground cover to stop drawing their own
   // warm shadow tint over it (docs/INTEGRATION_REQUESTS.md L1/L2). Until then
   // the honest setting is the one that survives being looked at.
-  shadowCool: new THREE.Color(0.62, 1.08, 1.40),
+  shadowCool: new THREE.Color(0.86, 1.02, 1.16),
   // How far a fully shadowed pixel goes.
   //
   // 0.42 was picked on the reasoning that 1.0 would put a cast shadow exactly on
@@ -390,7 +390,21 @@ const DEFAULTS = {
   // crossing point between gold and blue, and 0.55 sat exactly there. What used
   // to be bought with this knob is now bought with shadowCoolLift (value) and
   // shadowCoolKeep (material identity), neither of which passes through grey.
-  shadowCoolAmt: 1.0,
+  // Cut hard from 1.0 on direct player feedback. The push toward a cool cast
+  // shadow came from measuring reference plate 3, which genuinely puts ~35% of
+  // its chromatic pixels in the cool half — but plate 3 is a mid-range riverbank
+  // in flat light, and applying that to a low golden-hour sun turned the ground
+  // between the grass blades slate blue. The player's words:
+  //
+  //   "adjust the colour of the grey ground ... that's creating too much
+  //    contrast for me. It would be more cozy if that was a soft yellow or a
+  //    light brown. If you look back at the reference photos, that ground
+  //    colour is never used."
+  //
+  // They are right, and it is checkable: no reference plate contains a
+  // desaturated blue-grey ground. The cool note belongs in the *distance* and
+  // in large soft shadow masses, not in the substrate under the player's wheels.
+  shadowCoolAmt: 0.30,
   // Where the shadow mask saturates. 1.0 is the old linear behaviour; lower
   // values pull partially-occluded pixels into the mass at full strength, which
   // is what turns speckle into a shape. Swept — see the note in SHADOW_COOL.

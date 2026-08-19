@@ -78,6 +78,24 @@ const CFG = {
 // See _commitFar for why that is invisible.
 const FAR_UPLOAD_CHUNK = 4096;
 
+// Per-tier scale on the near and mid LOD radii.
+//
+// Engine now drops the quality tier by itself once the resolution scaler is
+// pinned at its floor and still missing the frame target, so a tier has to shed
+// real work. Trees measured at -8.2% of frame time at the player's 1.06 MP when
+// hidden entirely (tools/_scratch/sceneab.mjs), and almost all of that is the
+// near band: a near crown carries three times the leaf cards of a mid one and it
+// is the only foliage that casts, so every near instance is paid for twice.
+// Pulling the two inner radii in moves instances down a band; it does not remove
+// a single tree from the world.
+//
+// `farDist` is deliberately NOT scaled. The impostor material bakes its fade
+// range from CFG.farDist at build time, so shrinking it at runtime would make
+// the far field end at a hard edge instead of fading into the haze.
+//
+// ultra and high are 1.0 — the shipped look at those tiers is untouched.
+const LOD_TIER_SCALE = { ultra: 1, high: 1, medium: 0.76, low: 0.55 };
+
 
 // VEG.treeDensity is the per-hectare figure the whole game shares; trees want a
 // closed canopy in the groves, so they scale it up rather than redefining it.
@@ -124,7 +142,7 @@ export class Trees extends System {
     this._farTarget = 0;
     this._farCursor = 0;
     this._farFilled = 0;
-    this._farFirst = true;
+    this._lodScale = 1;
     this._windAngle = 0.7;
     this._tmpSphere = new THREE.Sphere();
     this.stats = { near: 0, mid: 0, far: 0, buildMs: 0 };
@@ -800,8 +818,10 @@ export class Trees extends System {
     const rad = Math.ceil(CFG.farDist / BS) + 1;
     const bcx = clamp(((cx + half) / BS) | 0, 0, BW - 1);
     const bcz = clamp(((cz + half) / BS) | 0, 0, BW - 1);
-    const nearD2 = CFG.nearDist * CFG.nearDist;
-    const midD2 = CFG.midDist * CFG.midDist;
+    const lodMul = this._lodScale;
+    const nearD = CFG.nearDist * lodMul, midD = CFG.midDist * lodMul;
+    const nearD2 = nearD * nearD;
+    const midD2 = midD * midD;
     const farD2 = CFG.farDist * CFG.farDist;
     const V = CFG.variants;
 
@@ -964,26 +984,39 @@ export class Trees extends System {
    * position — the previous bin's occupant of that slot — for at most three
    * frames, i.e. about a metre of camera travel at driving speed.
    *
-   * The one case that would *not* be safe is growing `count` past what has been
-   * uploaded: those instances hold data from an older, shorter bin, or zeroes on
-   * the very first fill, and would draw trees at the origin. So the count only
-   * grows as fast as the cursor, and shrinks immediately — shrinking can never
-   * expose stale data.
+   * The one case that would *not* be safe is drawing past the high-water mark
+   * of what has ever been uploaded: those instances are still zeroed and would
+   * put trees at the origin. That tail is therefore uploaded in full, on the
+   * spot, and only the refresh of already-valid instances is spread.
    */
   _commitFar(s) {
     this._farTarget = s.count;
-    this._farCursor = 0;
-    // The first fill has nothing valid behind it, so it goes in one piece; it
-    // happens under the loading screen where a long frame costs nothing.
-    if (this._farFirst) {
-      this._farFirst = false;
-      this._upload(s.matrix, s.count);
-      this._upload(s.colA, s.count); this._upload(s.colB, s.count); this._upload(s.colC, s.count);
-      this._upload(s.imp, s.count); this._upload(s.wind, s.count);
-      this._farCursor = s.count;
+    // Anything past the high-water mark has never been uploaded — it holds
+    // zeroes, and drawing it would put trees at the origin. That tail goes up
+    // immediately, whatever it costs, and it is small: the far count moves by a
+    // few hundred instances between bins, against a block of ~13 000. Spreading
+    // it instead was measured to leave up to 1867 impostors undrawn for a frame,
+    // which is a visible flicker on a distant hillside and not worth the bytes.
+    if (s.count > this._farFilled) {
+      const from = this._farFilled, n = s.count - from;
+      this._uploadFarRange(s, from, n);
       this._farFilled = s.count;
     }
+    // Everything below the mark already holds a real tree at a real position —
+    // the previous bin's occupant — so refreshing it can take as many frames as
+    // it likes. Far instances never move; only which tree sits in which slot
+    // changes, and consecutive bins 11 m apart differ in about one slot in a
+    // hundred.
+    this._farCursor = 0;
     this._drainFar();
+  }
+
+  _uploadFarRange(s, from, n) {
+    if (n <= 0) return;
+    for (const attr of [s.matrix, s.colA, s.colB, s.colC, s.imp, s.wind]) {
+      attr.addUpdateRange(from * attr.itemSize, n * attr.itemSize);
+      attr.needsUpdate = true;
+    }
   }
 
   /** Upload the next chunk of the far block. Called once per frame. */
@@ -993,17 +1026,11 @@ export class Trees extends System {
     if (this._farCursor < this._farTarget) {
       const from = this._farCursor;
       const n = Math.min(FAR_UPLOAD_CHUNK, this._farTarget - from);
-      for (const attr of [s.matrix, s.colA, s.colB, s.colC, s.imp, s.wind]) {
-        attr.addUpdateRange(from * attr.itemSize, n * attr.itemSize);
-        attr.needsUpdate = true;
-      }
+      this._uploadFarRange(s, from, n);
       this._farCursor = from + n;
-      if (this._farCursor > this._farFilled) this._farFilled = this._farCursor;
     }
-    // Never draw past the high-water mark of validly uploaded instances.
-    const c = Math.min(this._farTarget, this._farFilled);
-    this.farMesh.count = c;
-    this.farMesh.visible = c > 0;
+    this.farMesh.count = this._farTarget;
+    this.farMesh.visible = this._farTarget > 0;
   }
 
   // ── frame ──────────────────────────────────────────────────────────────────
@@ -1056,6 +1083,24 @@ export class Trees extends System {
 
   lateUpdate() {
     // After Atmosphere has had its say for this frame.
+  }
+
+  /**
+   * Quality tier changed — re-scale the near and mid LOD radii. See
+   * LOD_TIER_SCALE. A no-op at ultra and high.
+   *
+   * Only the binning changes; no geometry is rebuilt and no instance buffer is
+   * reallocated, because the slot caps were sized from `treeMul` at load and a
+   * smaller radius can only ever fill them less. The re-bin is forced by
+   * invalidating the last rebuild position, so it happens on the next frame
+   * through the ordinary path.
+   */
+  onQuality(preset, name) {
+    const s = LOD_TIER_SCALE[name] ?? 1;
+    if (s === this._lodScale) return;
+    this._lodScale = s;
+    this._lastRebuildPos.set(1e9, 0, 1e9);
+    void preset;
   }
 
   dispose() {

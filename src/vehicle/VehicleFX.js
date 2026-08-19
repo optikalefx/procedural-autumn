@@ -273,7 +273,17 @@ class Ribbon {
     this.geometry = g;
   }
 
-  reset(lane) { this.head[lane] = 0; }
+  reset(lane) {
+    this.head[lane] = 0;
+    // Age out every vertex in the lane. Leaving stale birth times behind means
+    // the quads past the write cursor can still be young enough to draw.
+    const base = lane * this.segs * 2;
+    for (let i = 0; i < this.segs * 2; i++) {
+      this.birth.array[base + i] = -1e6;
+      this.fade.array[base + i] = 0;
+    }
+    this._dirty = true;
+  }
 
   /** Returns false when the lane is full. */
   push(lane, ax, ay, az, bx, by, bz, r, gg, b, fade, time) {
@@ -290,6 +300,27 @@ class Ribbon {
     // A fresh lane's first segment has no predecessor: collapse the quad that
     // would otherwise stretch from the previous (stale) vertex pair.
     if (s === 0) { this.fade.array[v] = this.fade.array[v + 1] = 0; }
+
+    // ── collapse the LEADING quad ──────────────────────────────────────────
+    // The index buffer joins every segment to the next one, for the whole lane,
+    // built once at construction. So the quad between the segment just written
+    // and the one after it — which has never been written — stretched from the
+    // wheel to the vertex's initial value at the WORLD ORIGIN. Its far end had
+    // fade 0, but alpha is interpolated across the quad, and the fragment only
+    // discards below 0.005, so most of that span drew: a long straight dark
+    // ribbon running from the camper off into the distance, at an angle that
+    // had nothing to do with where it had driven. The player reported exactly
+    // that. Writing the next segment as a copy of this one makes the quad
+    // zero-area until real data replaces it.
+    const n = s + 1;
+    if (n < this.segs) {
+      const w = (lane * this.segs + n) * 2;
+      p[w * 3] = ax; p[w * 3 + 1] = ay; p[w * 3 + 2] = az;
+      p[w * 3 + 3] = bx; p[w * 3 + 4] = by; p[w * 3 + 5] = bz;
+      this.birth.array[w] = this.birth.array[w + 1] = -1e6;
+      this.fade.array[w] = this.fade.array[w + 1] = 0;
+    }
+
     this.head[lane] = s + 1;
     return true;
   }
