@@ -310,6 +310,44 @@ export function createTerrainMaterial(world, opts = {}) {
         return vec2(q, dq - 1.0);
       }
 
+      // ── a broad field, resolved as n flat zones instead of as a wash ──────
+      // TWO things are wrong with a plain smoothstep on one of this file's
+      // macro fields, and the second is the one that mattered.
+      //
+      // 1. A smoothstep is a gradient, and the brief's one sentence about what
+      //    makes the reference read as cel-shaded is "broad flat masses of
+      //    saturated colour separated by soft edges". Plate 2's cliff is three
+      //    or four values with definite boundaries; ours was one continuous
+      //    ramp down a flank.
+      //
+      // 2. THE FIELD DOES NOT SPAN 0..1, AND EVERY CALL SITE WAS WRITTEN AS IF
+      //    IT DID. Measured against this exact fbm: the 4-octave macro field
+      //    runs p5 0.410 to p95 0.590 — a total spread of 0.18 either side of
+      //    0.5 — and the 2-octave apron field is barely wider at 0.392-0.605.
+      //    Fed through smoothstep(0.14, 0.72, macro) a whole massif's worth of
+      //    variation comes out inside 0.30..0.93 of a mix, and past the mix
+      //    endpoints that is five hundredths of luminance across an entire
+      //    flank. So the massif was not undifferentiated because the term was a
+      //    gradient. It was undifferentiated because it was a gradient across
+      //    almost nothing, and quantising it without fixing the range first
+      //    changes nothing at all — measured, that version was invisible in the
+      //    capture.
+      //
+      // The remap is to the field's own measured spread, so the zones are
+      // populated rather than pinned. The 0.30-0.70 knee leaves 60% of each
+      // zone flat and spends 40% on the edge; on macro that edge is about 13 m
+      // of ground, which is seven pixels at two kilometres — soft at every
+      // distance this is used at, and still an edge rather than a ramp.
+      //
+      // Safe from the contour class by the same argument the plane breaks are:
+      // both fields are functions of vWorldPos.xz with no y term, so no level
+      // set of either can be a level curve of height. A zone boundary crosses a
+      // ridge and runs down a flank; it cannot trace one.
+      float valueZones(float field, float n){
+        float q = smoothstep(0.40, 0.60, field) * n;
+        return (floor(q) + smoothstep(0.30, 0.70, fract(q))) / n;
+      }
+
     ` + shader.fragmentShader.replace(
       '#include <color_fragment>',
       /* glsl */`
@@ -911,7 +949,18 @@ export function createTerrainMaterial(world, opts = {}) {
         // lavender-grey and ours measured luma 0.55 in the hero vista where
         // reference plate 2's cliff sits at 0.60-0.75 — the massif was reading
         // as a dark substance under haze rather than as pale stone in it.
-        vec3 rock = mix(uRockMid, uRockLit, smoothstep(0.14, 0.72, macro));
+        // Zones, not a wash — see valueZones. This is the term that carries the
+        // massif's large-scale value, so it is the one that decides whether a
+        // face reads as a few masses or as a single mid-grey.
+        //
+        // Deliberately the same MEAN as the ramp it replaces, and very nearly
+        // the same endpoints: 0.34 + 0.66 z averages 0.67 against the old
+        // smoothstep's 0.64, and spans 0.34..1.00 against its 0.30..0.93. So
+        // none of the value-range arguments settled above are re-opened — the
+        // massif does not get brighter or darker on average, and the shade end
+        // does not get deeper. What changes is that the variation is now spent
+        // as three flat plateaus instead of smeared over the whole flank.
+        vec3 rock = mix(uRockMid, uRockLit, 0.34 + 0.66 * valueZones(macro, 3.0));
         // Only a whisper of warm. At 0.30 the massifs came out peach and read
         // as sand dunes rather than rock, which the palette forbids outright.
         // The lavender has to survive a warm key light, so the albedo stays
@@ -1393,7 +1442,7 @@ export function createTerrainMaterial(world, opts = {}) {
           // the foreground once inscatter was added — an aerial perspective
           // that runs the wrong way and reads as snow.
           vec3 farRock = mix(uRockMid, uRockShadow, 0.40);
-          farRock = mix(farRock, uRockLit, smoothstep(0.24, 0.78, macro) * 0.40);
+          farRock = mix(farRock, uRockLit, valueZones(macro, 3.0) * 0.40);
           farRock = mix(farRock, uRockWarm, 0.10);
           // Relief comes from a noise field rather than from the mesh out here,
           // and it has to. The apron ring spends its vertex budget over 4.2 km,
@@ -1416,7 +1465,16 @@ export function createTerrainMaterial(world, opts = {}) {
           float gK = 96.0 / e;
           vec3 Nfar = normalize(vec3(N.x + (d0 - dX) * gK, N.y, N.z + (d0 - dZ) * gK));
           vec3 farCol = mix(farRock, mix(uGrassGold, uGrassDeep, 0.46), soft * 0.62);
-          farCol *= 0.90 + (d0 * 0.5 + 0.5) * 0.20;
+          // The apron's own value break, and the one that does most of the work
+          // out here: farRock's zones are scaled by 0.40 and the haze eats most
+          // of what is left, so this swing off the 133 m field is what actually
+          // separates one distant plane from the next. Written as a plain ramp
+          // it delivered 0.978..1.021 — four hundredths of value across the
+          // whole range, which is the flat white the art review called out on
+          // this exact left-hand massif in hero. Same mean, same 0.90..1.10
+          // nominal span, now populated: p5 lands in the bottom zone and p95 in
+          // the top instead of both sitting a percent either side of one.
+          farCol *= 0.90 + valueZones(d0 * 0.5 + 0.5, 3.0) * 0.20;
           albedo = mix(albedo, farCol, uFarApron);
           gRockM = mix(gRockM, 1.0 - soft * 0.86, uFarApron);
           // Only at range. The synthetic normal stands in for flank structure
