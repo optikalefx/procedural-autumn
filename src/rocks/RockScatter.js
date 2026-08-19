@@ -30,11 +30,39 @@ const UP = new THREE.Vector3(0, 1, 0);
  * This number is an *art* control, not a perf one. At 190 a 1.5 m cobble was
  * still drawn 280 m away, where it is four pixels of near-white on a hazed
  * hillside — the reference has nothing like that, and en masse it read as
- * popcorn sprinkled on the mountain. 95 puts the cutoff at roughly "you can
- * still tell it is a rock", and the far field is then composed of the big
- * masses only, which is what the plates actually show.
+ * popcorn sprinkled on the mountain.
+ *
+ * 88 rather than 95 because the crag work raised the *count* of mid-sized rock
+ * in the mountains: at 95 a 12 m crag block still drew at 1.1 km, and the
+ * massif behind the `meadow` anchor came back covered in an even rash of pale
+ * rectangles — a chain only reads as a cliff while its blocks are bigger than a
+ * few pixels, and past that it reads as noise. 78 was tried and cost `peaks`
+ * its bands, which sit 600-900 m out; 88 keeps those and still drops anything
+ * under ~15 m past a kilometre.
  */
-export const VIS_PER_METRE = 95;
+export const VIS_PER_METRE = 88;
+
+/**
+ * Crag siting grid, as a power of two in scatter cells. At CELL = 64 m,
+ * CRAG_SHIFT 1 means one crag landform per 128 m square at most.
+ *
+ * 256 m was tried and leaves the `hero` and `peaks` massifs bare: a mountain
+ * flank 600 m across then gets two crag systems or none depending on a hash.
+ * The rash that 128 m appeared to cause turned out to be a *distance* problem
+ * rather than a density one — it was the far massif behind the `meadow` anchor
+ * at 1.3 km, where a chain is a row of five-pixel dots. That is now handled
+ * where it belongs, by the visibility cutoff (see VIS_PER_METRE and the vis
+ * clamp in `_place`), which leaves this free to give the mountains you can
+ * actually see a continuous banded face.
+ */
+const CRAG_SHIFT = 1;
+const CRAG_BLOCK = 1 << CRAG_SHIFT;
+
+/**
+ * How exposed the bedrock has to be before a site becomes a crag. See
+ * `classify` for what feeds `s` — bedding band, hardness, steepness, altitude.
+ */
+const CRAG_MIN_STRENGTH = 0.30;
 
 /** Power-law size pick: many small, few large. `k` > 1 biases small. */
 const powSize = (rng, lo, hi, k) => lo + (hi - lo) * Math.pow(rng(), k);
@@ -123,7 +151,12 @@ export class RockScatter {
     // few horizontal courses with bare slope between them, the way a resistant
     // bed weathers out. `strength` then ties the amount of rock to bedrock
     // hardness, so the bands sit where the terrain author's geology put them.
-    if (slope > 0.55 && h > 60) {
+    // 95 m, not 60. At 60 the near hills either side of the valley qualified,
+    // and a hillside 200 m from the road covered in house-sized blocks is not
+    // cliff relief, it is a rockfall — it read as an avalanche of pale crates
+    // across the foreground of `hero`. Crag is the *mountain's* form; below the
+    // treeline the erratic and rib clusters are the right vocabulary.
+    if (slope > 0.62 && h > 95) {
       const conv = this.convexity(x, z, 34);
       // Ridges and spurs: rock in the sky. Weighted hard because this is the
       // only placement that can change the mountain's silhouette.
@@ -135,7 +168,7 @@ export class RockScatter {
 
       const hardM = smoothstep(0.34, 0.80, hard);
       const steep = smoothstep(0.55, 1.35, slope);
-      const alt = smoothstep(60, 150, h);
+      const alt = smoothstep(95, 200, h);
 
       // A ridge crest is allowed to carry rock regardless of the bedding band —
       // the crest is where a bed is cut through, so it is always exposed.
@@ -179,15 +212,22 @@ export class RockScatter {
     const ox = cx * cellSize, oz = cz * cellSize;
     const up = { x: 0, z: 0 };
 
+    // ── crag siting ──────────────────────────────────────────────────────────
+    //
+    // One crag site per CRAG_BLOCK cells, picked deterministically rather than
+    // by a per-cell dice roll. A dice roll produces a Poisson field: some 256 m
+    // squares get three groups 60 m apart and some get none, and three groups
+    // 60 m apart is precisely the "even sprinkle of chips" read that defeated
+    // the previous two passes. Choosing exactly one cell per square guarantees
+    // both the spacing between landforms and the bare mountain between them.
+    const bx = cx >> CRAG_SHIFT, bz = cz >> CRAG_SHIFT;
+    const cragCell =
+         ((bx << CRAG_SHIFT) + ((hash2i(bx, bz, this.seed ^ 0x27a1) * CRAG_BLOCK) | 0)) === cx
+      && ((bz << CRAG_SHIFT) + ((hash2i(bx, bz, this.seed ^ 0x9f13) * CRAG_BLOCK) | 0)) === cz;
+
     // Five candidate sites per cell; each that lands on an active process
     // becomes a cluster. Cells that land on nothing stay genuinely empty —
     // negative space is what makes the populated ground read as deliberate.
-    //
-    // Crags get a hard rate limit on top of that: at most one group per 64 m
-    // cell, and only in a minority of eligible cells. A crag is a landmark and
-    // has to be surrounded by bare hillside to read as one; letting every
-    // eligible site fire covered the massif in a rash of blocks that looked
-    // like dragon's teeth rather than like broken bedrock.
     let cragDone = false;
     for (let i = 0; i < 5; i++) {
       const x = ox + rng() * cellSize;
@@ -196,15 +236,15 @@ export class RockScatter {
       const c = this.classify(x, z, up);
       if (!c) continue;
       if (c.kind === 'crag') {
-        if (cragDone) continue;
-        // Ridge sites are strongly favoured: those are the ones that can put
-        // rock against the sky, which is the only reason this exists.
-        // Rare. A mountain face shows a handful of crags, not fifty. The mass
-        // that reads at distance comes from each *group* being big, not from
-        // there being many groups or from any single block being huge — a
-        // block bigger than the conifers beside it turns the massif into a
-        // pile of cardboard boxes, and that is a much worse failure.
-        if (rng() > 0.045 + c.ridge * 0.20) continue;
+        if (cragDone || !cragCell) continue;
+        // A second, *geological* filter on top of the siting grid. The grid
+        // controls spacing; this controls which of those sites are actually
+        // bedrock exposures worth building. Thinning by hardness and bedding
+        // rather than by another dice roll is what makes the surviving bands
+        // line up with the terrain author's hard-rock geology instead of
+        // wandering across the mountain at random — and it is the difference
+        // between a banded face at 800 m and a boulder field at 300 m.
+        if (c.s < CRAG_MIN_STRENGTH) continue;
         cragDone = true;
       } else if (rng() > Math.sqrt(c.s)) continue;
       this._cluster(x, z, c, up, rng, minSize, out);
@@ -399,178 +439,268 @@ export class RockScatter {
    * 40-degree massif as one smooth ramp, and a smooth ramp is what makes the
    * `peaks` and `hero` views look like dunes.
    *
-   * Two forms, because a mountain shows two:
+   * The previous pass got the diagnosis right and the prescription wrong. It
+   * kept raising and lowering crag *density* and every setting looked like an
+   * even sprinkle of chips, so it concluded the massif could not carry rock.
+   * The problem was never the count, it was that the unit being scattered was a
+   * boulder. A mountain face is not made of boulders; it is made of two things
+   * and both of them are hundreds of metres long:
    *
-   *   crest   towers and blades ON the ridge line, tall enough to punch a
-   *           notch in the horizon. Silhouette is the entire point — a crag
-   *           you can only see against more hillside does nothing.
-   *   band    a stepped course of bench blocks running along the strike, each
-   *           overlapping its neighbour so the chain reads as one continuous
-   *           broken rock face rather than as a row of separate boulders.
+   *   band    a resistant bed weathering out as a continuous wall that follows
+   *           a *contour*, stepping down the face in courses. This is the form
+   *           that gives a flank shadowed recesses and horizontal structure.
+   *   crest   towers and blades standing ON the ridge line, tall enough to
+   *           notch the horizon. Silhouette is the entire point — a crag you
+   *           can only see against more hillside does nothing for the frame.
    *
-   * Both are sized in *tens* of metres. The previous pass used 2-4 m blocks
-   * here and from 300 m they were four white pixels each — popcorn.
+   * So: very few sites (one per 256 m, chosen deterministically in
+   * `generateCell`), each building a landform tens of blocks long, with wholly
+   * bare mountain in between. That is the shape of the reference plates.
    */
   _clusterCrag(x, z, c, up, rng, minSize, out) {
-    // Strike runs across the slope. On a crest the gradient points down the
-    // flank, so the same vector conveniently runs along the ridge.
-    let sx = -up.z, sz = up.x;
-    if (Math.abs(sx) + Math.abs(sz) < 0.1) { sx = 1; sz = 0; }
-
-    // Harder bedrock, bigger crag: this is what ties the outcrops to the
-    // terrain author's geology instead of scattering them at random.
-    //
-    // Scale is bounded at both ends and both bounds are load-bearing. Below
-    // ~5 m a block is a chip of gravel on an 800 m mountain and reads as
-    // litter; above ~20 m it dwarfs the conifers standing next to it and the
-    // whole massif turns into a pile of cardboard boxes. Crag blocks are
-    // house-to-barn sized, and the *group* is what carries the landform.
-    const scale = clamp((3.6 + c.hard * 4.2 + c.s * 3.0) * (0.82 + rng() * 0.46), 3.0, 9.5);
-
-    // Crests are strongly preferred. Rock on a flank is decoration; rock on a
-    // crest is the mountain's outline, and the outline is what the peaks and
-    // hero views are actually judged on.
-    if (c.ridge > 0.22 && rng() < 0.55 + c.ridge * 0.45) {
-      this._cragCrest(x, z, c, sx, sz, scale, rng, minSize, out);
-    } else if (c.slope > 1.00) {
-      this._cragBand(x, z, c, up, sx, sz, scale * 0.75, rng, minSize, out);
+    if (c.ridge > 0.30) {
+      this._cragCrest(x, z, c, up, rng, minSize, out);
+      // A crest with nothing below it is a row of teeth on a smooth cone. The
+      // band under it is what makes the summit read as the top of a cliff.
+      if (c.slope > 0.70 && rng() < 0.75) this._cragBands(x, z, c, up, rng, minSize, out);
+    } else if (c.slope > 0.62) {
+      this._cragBands(x, z, c, up, rng, minSize, out);
     }
   }
 
   /**
-   * A crag massif on a ridge crest.
+   * A stack of cliff courses on a face.
    *
-   * The unit that has to read from 500 m is the *group*, not the block. Six to
-   * ten blocks of eight-to-twenty metres, packed at less than one body-width
-   * apart so they interpenetrate, make one continuous outcrop forty to eighty
-   * metres long with a broken top edge. Spread the same blocks out and you get
-   * a picket fence; make one block that size and it dwarfs the trees.
+   * Each course is a chain of overlapping blocks laid along a contour, and the
+   * courses step down the fall line, so the face reads wall / ledge / wall.
    */
-  _cragCrest(x, z, c, sx, sz, scale, rng, minSize, out) {
+  _cragBands(x0, z0, c, up, rng, minSize, out) {
     const W = this.world;
-    const n = 5 + ((rng() * 5) | 0);
-    const step = scale * (0.62 + rng() * 0.30);
-    // Start behind the site so the group straddles it rather than trailing off.
-    let px = x - sx * step * n * 0.45, pz = z - sz * step * n * 0.45;
+    // Sized in tens of metres, deliberately. The massif in `peaks` is roughly
+    // 400 m tall and 800 m across and fills half the frame; a 6 m block on it
+    // is two pixels. What stops this reading as cardboard boxes on a mountain
+    // is that the blocks interpenetrate — the eye reads the union of the chain
+    // as one cliff, never any single block.
+    // Bigger than it looks: a block of `base` is 2*base metres along the strike,
+    // so 9-19 here is an 18-38 m wall segment. It has to clear the visibility
+    // cutoff at the range the massif is actually seen from (600-900 m in
+    // `peaks`) or the band exists in the scatter and never renders.
+    const base = clamp((9 + c.hard * 11 + c.s * 7) * (0.85 + rng() * 0.40), 9, 19);
+    const courses = 1 + ((rng() * 2) | 0);
+    let cx = x0, cz = z0;
+    let targetY = W.getHeight(cx, cz);
 
-    for (let i = 0; i < n; i++) {
-      px += sx * step + (rng() * 2 - 1) * scale * 0.35;
-      pz += sz * step + (rng() * 2 - 1) * scale * 0.35;
-      if (!W.isInBounds(px, pz)) break;
-      // Follow the crest: if we have wandered off it, the group ends. That is
-      // what keeps a tower line reading as one landform.
-      if (this.convexity(px, pz, 30) < 0.012) break;
-      if (W.getWaterDepth(px, pz) > 0.3) break;
+    for (let k = 0; k < courses; k++) {
+      const scale = base * (1 - k * 0.13);
+      this._contourCourse(cx, cz, targetY, scale, c, up, rng, minSize, out);
 
-      // A tapering profile — tallest near the middle — so the group has a peak
-      // instead of being a picket fence.
-      const t = 1 - Math.abs((i + 0.5) / n - 0.5) * 1.7;
-      const size = Math.min(scale * (0.55 + t * 0.75) * (0.8 + rng() * 0.5), 10.0);
-      if (size * 2 < minSize) continue;
-
-      // Mostly bench mass with the occasional tower on top of it. A crest of
-      // pure towers is a graveyard; the bench is the rock the towers stand on.
-      const roll = rng();
-      const arch = roll < 0.30 ? 'tower' : 'bench';
-      // align 0 keeps towers vertical: a tower tipped to the slope normal is a
-      // leaning slab, and a whole crest of them looks like a landslide.
-      // 'min' samples the lowest ground under the footprint. On a crest that
-      // is the only thing that stops a block hovering: the rendered terrain
-      // LOD sags below the true height exactly at a ridge, so a centre sample
-      // leaves the block standing on air from a few hundred metres away.
-      // Tumble: a bench sitting dead level shows the camera one broad flat
-      // top, and from above a broad flat sunlit plane reads as a paving slab
-      // or a patch of snow. Tipping it puts a vertical face in view.
-      this._place(px, pz, arch, size, rng, arch === 'tower' ? 0.05 : 0.14,
-        arch === 'tower' ? 0.10 : 0.34, out, arch === 'tower' ? 0.16 : 0.10, 'min', 0.0);
-
-      // A second block set back off the crest line. Without it the group is a
-      // single-file wall and the outcrop has no shoulder.
-      if (rng() < 0.55) {
-        const off = scale * (0.6 + rng() * 0.7) * (rng() < 0.5 ? 1 : -1);
-        const bx = px - sz * off, bz = pz + sx * off;
-        const bs = size * (0.55 + rng() * 0.45);
-        if (W.isInBounds(bx, bz) && bs * 2 >= minSize) {
-          this._place(bx, bz, rng() < 0.25 ? 'tower' : 'bench', bs, rng,
-            0.14, 0.30, out, 0.12, 'min', 0.0);
-        }
-      }
-
-      // Blocks calved off the tower, resting against its foot.
-      if (rng() < 0.35) {
-        const a = rng() * Math.PI * 2, r = size * (1.1 + rng() * 1.1);
-        const dx = px + Math.cos(a) * r, dz = pz + Math.sin(a) * r;
-        const ds = size * (0.30 + rng() * 0.34);
-        if (W.isInBounds(dx, dz) && ds * 2 >= minSize) {
-          this._place(dx, dz, rng() < 0.5 ? 'talus' : 'bench', ds, rng, 0.5, 0.5, out, 0.30);
-        }
-      }
-    }
-  }
-
-  /**
-   * A course of bench blocks along the strike. Spacing is deliberately less
-   * than the block width so neighbours interpenetrate — the union of the chain
-   * is the shape we want, and gaps between blocks are what made the first pass
-   * read as scattered boulders rather than as a cliff.
-   */
-  _cragBand(x, z, c, up, sx, sz, scale, rng, minSize, out) {
-    const W = this.world;
-    const courses = 1 + ((rng() * 3) | 0);
-    // Each course sits below the last by roughly its own height, so the face
-    // steps: bench, drop, bench. That stepping is the silhouette.
-    let ox = x, oz = z;
-
-    for (let cIdx = 0; cIdx < courses; cIdx++) {
-      const cScale = scale * (1 - cIdx * 0.16);
-      const n = 3 + ((rng() * 5) | 0);
-      const step = cScale * (1.05 + rng() * 0.45);
-      let px = ox - sx * step * n * 0.4 + (rng() * 2 - 1) * cScale;
-      let pz = oz - sz * step * n * 0.4 + (rng() * 2 - 1) * cScale;
-
-      for (let i = 0; i < n; i++) {
-        px += sx * step;
-        pz += sz * step;
-        // Wander a little up and down the face or the course reads as a drawn
-        // line, which is the exact failure the terrain author hit with painted
-        // fracture seams.
-        const drift = (rng() * 2 - 1) * cScale * 0.55;
-        px += up.x * drift; pz += up.z * drift;
-        if (!W.isInBounds(px, pz)) break;
-        const slope = W.getSlope(px, pz);
-        if (slope < 0.80) break;                    // the band dies on the bench
-        if (W.getWaterDepth(px, pz) > 0.5) break;
-
-        const size = Math.min(cScale * (0.62 + rng() * 0.62), 9.0);
-        if (size * 2 < minSize) continue;
-        const roll = rng();
-        const arch = roll < 0.58 ? 'bench' : (roll < 0.80 ? 'ledge' : (roll < 0.93 ? 'slab' : 'tower'));
-        // Near-horizontal, anchored at the centre sample and pushed slightly
-        // into the hill. On a steep face that buries the uphill half and
-        // leaves the downhill half standing out over air — an overhang.
-        this._place(px, pz, arch, size, rng,
-          arch === 'tower' ? 0.06 : 0.16 + rng() * 0.18, 0.13, out, 0.10, 'centre', 0.22);
-      }
-
-      // Drop to the next course, down the fall line.
-      const drop = scale * (1.6 + rng() * 1.6);
-      ox -= up.x * drop; oz -= up.z * drop;
-      if (!W.isInBounds(ox, oz) || W.getSlope(ox, oz) < 0.5) break;
+      // Down the fall line to the next bed, by about two block heights, so
+      // there is bare slope between the courses. Converting a vertical drop
+      // into a horizontal step needs the slope, or the courses bunch up on a
+      // cliff and spread out on a bench — the opposite of what rock does.
+      this._uphill(cx, cz, up);
+      const drop = scale * (1.7 + rng() * 1.5);
+      const slope = clamp(W.getSlope(cx, cz), 0.45, 2.6);
+      cx -= up.x * (drop / slope);
+      cz -= up.z * (drop / slope);
+      if (!W.isInBounds(cx, cz)) break;
+      if (W.getSlope(cx, cz) < 0.42) break;
+      targetY = W.getHeight(cx, cz);
     }
 
-    // Debris apron on the ground below the band. Sized off the band, so a big
-    // crag sheds big blocks — the size hierarchy has to survive downhill.
-    const nd = 3 + ((rng() * 6) | 0);
+    // Debris apron below the whole face. Sized off the band, so a big crag
+    // sheds big blocks — the size hierarchy has to survive downhill.
+    const nd = 1 + ((rng() * 3) | 0);
     for (let i = 0; i < nd; i++) {
-      const along = scale * (2.0 + rng() * 5.0);
-      const across = (rng() * 2 - 1) * scale * 2.6;
-      const dx = x - up.x * along - up.z * across;
-      const dz = z - up.z * along + up.x * across;
+      this._uphill(cx, cz, up);
+      const along = base * (1.5 + rng() * 4.5);
+      const across = (rng() * 2 - 1) * base * 3.0;
+      const dx = cx - up.x * along - up.z * across;
+      const dz = cz - up.z * along + up.x * across;
       if (!W.isInBounds(dx, dz)) continue;
       if (W.getWaterDepth(dx, dz) > 0.4) continue;
-      const ds = scale * powSize(rng, 0.10, 0.52, 1.7);
+      const ds = base * powSize(rng, 0.07, 0.24, 1.7);
       if (ds * 2 < minSize) continue;
-      this._place(dx, dz, rng() < 0.55 ? 'talus' : 'rubble', ds, rng, 0.6, 0.7, out, 0.26);
+      this._place(dx, dz, rng() < 0.55 ? 'talus' : 'bench', ds, rng, 0.55, 0.55, out, 0.26);
+    }
+  }
+
+  /**
+   * One course: walk the contour out from the site in both directions, laying
+   * blocks closer together than they are wide.
+   *
+   * Following the *contour* rather than the ground is the whole trick. A chain
+   * that simply walks across the slope drifts up or down with every wobble in
+   * the terrain and reads as a row of boulders someone rolled onto a hillside;
+   * a chain held at one altitude reads as a bed of harder rock, which is what
+   * it is meant to be and what the eye recognises on a real mountain.
+   */
+  _contourCourse(x0, z0, targetY, scale, c, up, rng, minSize, out) {
+    const W = this.world;
+    // Blocks are about two scales wide and land two thirds of a scale apart, so
+    // each overlaps its neighbours by most of its length. The union is the
+    // cliff; no single block is ever meant to read on its own, and any block
+    // that ends up isolated on a smooth slope reads as a crate dropped on it —
+    // that, and not any actual hovering, is what "the crags look like they are
+    // floating" turned out to mean when measured.
+    const step = scale * (0.58 + rng() * 0.24);
+
+    for (let dir = -1; dir <= 1; dir += 2) {
+      let px = x0, pz = z0;
+      // Long. The unit that has to read from 800 m is not the block and not even
+      // the course — it is the whole band crossing the face, so a chain runs up
+      // to eleven blocks in each direction, 300 m a side.
+      const n = 4 + ((rng() * 6) | 0);
+      for (let i = 0; i < n; i++) {
+        this._uphill(px, pz, up);
+        if (Math.abs(up.x) + Math.abs(up.z) < 0.05) break;
+        px += -up.z * dir * step;
+        pz += up.x * dir * step;
+        if (!W.isInBounds(px, pz)) break;
+
+        // Correct back to the bed's altitude along the fall line. Note the
+        // sign: `up` points uphill, and a positive error means we have drifted
+        // *above* the bed, so the correction walks down. Getting this backwards
+        // is a positive feedback — the chain climbs the fall line and comes out
+        // as a vertical clump of boulders instead of a horizontal course.
+        this._uphill(px, pz, up);
+        const slope = clamp(W.getSlope(px, pz), 0.35, 3.0);
+        const err = W.getHeight(px, pz) - targetY;
+        const corr = clamp(err / slope, -step * 1.3, step * 1.3);
+        px -= up.x * corr; pz -= up.z * corr;
+        if (!W.isInBounds(px, pz)) break;
+        if (W.getSlope(px, pz) < 0.44) break;        // the bed dies on the bench
+        if (this.hardness(px, pz) < 0.22) break;     // and where the rock softens
+        if (W.getWaterDepth(px, pz) > 0.5) break;
+
+        const size = scale * (0.90 + rng() * 0.50);
+        if (size * 2 < minSize) continue;
+
+        // Local +Z faces downhill, local +X runs along the strike, so the
+        // block's long axis merges with its neighbours and its stepped shoulder
+        // sits back into the hill.
+        this._uphill(px, pz, up);
+        const yaw = Math.atan2(-up.x, -up.z);
+        const roll = rng();
+        // Mostly wall. A prow every so often projects out of the face and
+        // throws a shadow into the recess beside it — additive geometry cannot
+        // cut a gully, but it can make one out of the shadow between two spurs.
+        const arch = roll < 0.78 ? 'cliff' : (roll < 0.94 ? 'prow' : 'tower');
+        // `align` is the bed's dip, and it is what stops a cliff block hanging
+        // in the air. A block laid dead level on a 40-degree face is as deep as
+        // it is wide, so its downhill edge stands half a block-width clear of
+        // the ground and reads as a floating slab. Tipping it to roughly half
+        // the slope angle both kills that and is what a dipping bed does.
+        // Burial is the difference between a cliff band and a rockfall. Only
+        // the top third of a block is meant to be out of the hill: the eye
+        // reads the protruding step as a change in the *terrain*, which is what
+        // a resistant bed is, rather than as a crate someone left on a slope.
+        // Burial is a balance, not a maximum. Too little and the block's
+        // downhill half hangs over air; too much and only its cap shows, so a
+        // chain of them reads as separate boulders lying on the slope instead
+        // of as one wall. With a thin plank on a ~1.3 slope, sinking about a
+        // tenth of the block and shoving it a seventh of its width into the
+        // hill puts the base flush at the downhill edge, which leaves the whole
+        // vertical face out where neighbours can merge with it.
+        this._place(px, pz, arch, size * (arch === 'tower' ? 0.66 : 1.0), rng,
+          arch === 'cliff' ? 0.10 : 0.42, 0.0, out,
+          arch === 'cliff' ? 0.12 : 0.22, 'sag',
+          arch === 'cliff' ? 0.14 : 0.20, yaw);
+      }
+    }
+  }
+
+  /**
+   * A crag massif on a ridge crest — the thing that gives the skyline notches.
+   *
+   * Two rules, both learned the hard way:
+   *
+   *   the walk has to *stay on the arete*. Stepping perpendicular to the local
+   *   gradient sounds like it follows a ridge, and on a knife edge it does, but
+   *   on a summit the gradient rotates through 360 degrees and the chain simply
+   *   circles the peak and fills it in. So the direction is carried between
+   *   steps and only allowed to turn slowly, and after each step the position is
+   *   nudged sideways toward whichever neighbour is higher.
+   *
+   *   the blocks have to stay smaller than the landform. A 50 m block on a
+   *   400 m peak is a cardboard box; the mass has to come from many 20 m blocks
+   *   overlapping, which reads as broken bedrock.
+   */
+  _cragCrest(x0, z0, c, up, rng, minSize, out) {
+    const W = this.world;
+    const scale = clamp((8 + c.hard * 8 + c.s * 5) * (0.80 + rng() * 0.45), 7, 15);
+    const n = 4 + ((rng() * 5) | 0);
+    const step = scale * (0.62 + rng() * 0.26);
+
+    for (let dir = -1; dir <= 1; dir += 2) {
+      let px = x0, pz = z0;
+      // Seed the heading from the strike at the site, then carry it.
+      this._uphill(px, pz, up);
+      let hx = -up.z * dir, hz = up.x * dir;
+      const L0 = Math.hypot(hx, hz) || 1;
+      hx /= L0; hz /= L0;
+
+      for (let i = 0; i < n; i++) {
+        this._uphill(px, pz, up);
+        // Blend the carried heading with the local strike: enough to follow a
+        // curving ridge, not enough to let the chain turn back on itself.
+        const tx = -up.z * dir, tz = up.x * dir;
+        if (tx * hx + tz * hz > 0.2) {
+          hx = hx * 0.62 + tx * 0.38; hz = hz * 0.62 + tz * 0.38;
+          const L = Math.hypot(hx, hz) || 1; hx /= L; hz /= L;
+        }
+        px += hx * step + (rng() * 2 - 1) * scale * 0.10;
+        pz += hz * step + (rng() * 2 - 1) * scale * 0.10;
+        if (!W.isInBounds(px, pz)) break;
+
+        // Re-centre onto the crest line: sample either side of the heading and
+        // slide toward the higher one. Without this the chain slowly slides off
+        // the arete onto a flank and the group stops breaking the skyline.
+        const ox = -hz * step * 0.75, oz = hx * step * 0.75;
+        const hl = W.getHeight(px - ox, pz - oz), hr = W.getHeight(px + ox, pz + oz);
+        const cH = W.getHeight(px, pz);
+        if (hr > cH) { px += ox * 0.7; pz += oz * 0.7; }
+        else if (hl > cH) { px -= ox * 0.7; pz -= oz * 0.7; }
+        if (!W.isInBounds(px, pz)) break;
+        if (this.convexity(px, pz, 30) < 0.010) break;
+        if (W.getWaterDepth(px, pz) > 0.3) break;
+
+        // Tapering profile, so the group has a summit rather than a flat top.
+        const t = 1 - (i / n) * 0.75;
+        const size = Math.min(scale * (0.62 + t * 0.62) * (0.84 + rng() * 0.36), 12);
+        if (size * 2 < minSize) continue;
+
+        // Yaw from the carried heading, not from the local gradient. On an
+        // arete the gradient is nearly degenerate and the 2 m normal sample
+        // that feeds `_uphill` can point *along* the ridge instead of across
+        // it, which rotates a block ninety degrees and breaks the chain into
+        // separated uprights — the "rockslide down the front of the peak" read
+        // in `hero`. The heading is exactly the direction the blocks have to
+        // merge along, so it is the thing to align them to.
+        const yaw = Math.atan2(-hz, hx);
+        const roll = rng();
+        // Wall first: the mass a crest is made of. Towers are the minority that
+        // punch the actual notches, and at 40% of the group they stopped
+        // reading as pinnacles and started reading as a graveyard on a dune.
+        const arch = roll < 0.72 ? 'cliff' : (roll < 0.92 ? 'bench' : 'tower');
+        this._place(px, pz, arch, size * (arch === 'tower' ? 0.56 : 1.0), rng,
+          arch === 'cliff' ? 0.12 : 0.10, arch === 'bench' ? 0.16 : 0.0, out,
+          arch === 'tower' ? 0.12 : 0.14, 'sag',
+          arch === 'cliff' ? 0.14 : 0.08, arch === 'bench' ? null : yaw);
+
+        // A block set back off the crest line, so the outcrop has a shoulder
+        // instead of being a single-file wall.
+        if (rng() < 0.32) {
+          const off = scale * (0.34 + rng() * 0.34) * (rng() < 0.5 ? 1 : -1);
+          const bx = px + up.x * off, bz = pz + up.z * off;
+          const bs = size * (0.55 + rng() * 0.40);
+          if (W.isInBounds(bx, bz) && bs * 2 >= minSize) {
+            this._place(bx, bz, rng() < 0.14 ? 'tower' : 'cliff', bs, rng,
+              0.12, 0.0, out, 0.14, 'sag', 0.16, yaw);
+          }
+        }
+
+      }
     }
   }
 
@@ -583,7 +713,8 @@ export class RockScatter {
    *               ground sample under its footprint. The min-of-samples is what
    *               guarantees nothing ever hovers on a convex ridge.
    */
-  _place(x, z, arch, size, rng, align, tumble, out, sink = 0.14, mode = 'min', shove = 0) {
+  _place(x, z, arch, size, rng, align, tumble, out, sink = 0.14, mode = 'min', shove = 0,
+    yaw = null) {
     const W = this.world;
     const n = this._n;
     W.getNormal(x, z, n, Math.max(1.0, size * 0.8));
@@ -615,30 +746,57 @@ export class RockScatter {
     // below the heightfield. Two rings, because one at a single radius can sit
     // neatly on the quad's diagonal and miss it again.
     const wide = arch === 'bench' || arch === 'tower' || arch === 'ledge';
-    const fr = Math.max(size * 0.85, wide ? 12 : (mode === 'centre' ? 9 : 3));
+    const huge = mode === 'sag';
+    const fr = huge ? Math.max(size * 1.0, 26)
+                    : Math.max(size * 0.85, wide ? 12 : (mode === 'centre' ? 9 : 3));
     let ringMin = centreH;
     for (let k = 0; k < 6; k++) {
       const a = (k / 6) * Math.PI * 2 + 0.4;
       const hh = W.getHeight(x + Math.cos(a) * fr, z + Math.sin(a) * fr);
       if (hh < ringMin) ringMin = hh;
     }
-    if (wide) {
+    if (wide || huge) {
       for (let k = 0; k < 4; k++) {
         const a = (k / 4) * Math.PI * 2 + 1.1;
         const hh = W.getHeight(x + Math.cos(a) * fr * 1.7, z + Math.sin(a) * fr * 1.7);
         if (hh < ringMin) ringMin = hh;
       }
     }
-    // On a cliff the ring minimum is tens of metres down; following it all the
-    // way would bury the block entirely and there would be no relief at all.
-    // Clamping the drop keeps the uphill half deeply embedded (which is what
-    // stops the float) while the downhill half projects — an overhang.
-    const maxDrop = mode === 'centre' ? size * 0.85 : size * 3.0;
-    const minH = Math.max(ringMin, centreH - maxDrop);
+
+    let minH;
+    if (huge) {
+      // ── curvature-corrected anchor, for the crag forms ─────────────────────
+      //
+      // The previous rule — "sit on the minimum of a wide ring" — stops a block
+      // floating but is far too pessimistic on a slope: on a 40-degree face the
+      // minimum of a 26 m ring is 20 m below the site, so a cliff band anchored
+      // to it vanishes into the hill and the face stays a smooth ramp.
+      //
+      // The error being corrected is not the slope, it is the *curvature*: the
+      // drawn terrain is a chord across an LOD quad, so it sags below the
+      // heightfield exactly in proportion to how convex the ground is, and not
+      // at all on a planar slope however steep. Subtracting the drop a plane of
+      // this slope would have produced across the same ring isolates that term.
+      // Ridge crests — where every floating block in `peaks` was — measure a
+      // large sag and get dropped; a steep planar face measures ~0 and keeps
+      // its relief.
+      const planar = W.getSlope(x, z) * fr;
+      const sag = Math.max(0, (centreH - ringMin) - planar);
+      minH = centreH - Math.min(sag * 1.35, size * 1.6);
+    } else {
+      // On a cliff the ring minimum is tens of metres down; following it all the
+      // way would bury the block entirely and there would be no relief at all.
+      // Clamping the drop keeps the uphill half deeply embedded (which is what
+      // stops the float) while the downhill half projects — an overhang.
+      const maxDrop = mode === 'centre' ? size * 0.85 : size * 3.0;
+      minH = Math.max(ringMin, centreH - maxDrop);
+    }
 
     const up = this._up.set(0, 1, 0).lerp(n, align).normalize();
     const q = this._q.setFromUnitVectors(UP, up);
-    this._qy.setFromAxisAngle(UP, rng() * Math.PI * 2);
+    // A crag form is oriented, not tumbled: local +X runs along the strike so a
+    // chain of them overlaps into one wall, and local +Z faces downhill.
+    this._qy.setFromAxisAngle(UP, yaw === null ? rng() * Math.PI * 2 : yaw);
     q.multiply(this._qy);
     if (tumble > 0) {
       const a = rng() * Math.PI * 2;
@@ -674,7 +832,11 @@ export class RockScatter {
       // Visible radius. Paired with Rocks._minSizeFor: a cell far away is only
       // asked for rocks big enough that this radius still reaches the camera,
       // so nothing is ever generated that cannot be seen.
-      vis: clamp(size * VIS_PER_METRE, 80, 900),
+      // The far cap is an art call, not a perf one: past about a kilometre a
+      // crag chain is a row of five-pixel dots on a hazed hillside, which is
+      // the "sprinkle of chips" read. Beyond this the mountains are pure
+      // terrain and aerial perspective, which is what the plates show.
+      vis: clamp(size * VIS_PER_METRE, 80, 950),
       rnd: rng(),
     });
   }

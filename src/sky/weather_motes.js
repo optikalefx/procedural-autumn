@@ -63,20 +63,28 @@ void main() {
   float dist = max(-mv.z, 0.1);
   // Minimum of ~1.3 px: below that a mote flickers on and off as it crosses
   // pixel centres, which is far more noticeable than the mote itself.
-  gl_PointSize = clamp(aRand.x * uPixelScale / dist, 1.3, 7.0);
+  gl_PointSize = clamp(aRand.x * uPixelScale / dist, 1.2, 3.4);
 
   // Fade at the wrap boundary so nothing ever pops in or out, and fade the
   // very near ones so a mote never smears across the whole screen.
   vec3 e = abs(rel) / uBox;
   float edge = 1.0 - smoothstep(0.72, 0.99, max(e.x, max(e.y, e.z)));
-  vAlpha = uOpacity * edge * smoothstep(1.2, 4.0, dist);
+  // The near fade has to clear the depth-of-field near limit, not just avoid a
+  // mote filling the screen: anything inside it is rendered as a bokeh disc.
+  vAlpha = uOpacity * edge * smoothstep(3.0, 9.0, dist);
 
   // Forward scattering: a mote is only really visible when it is between you
   // and the sun. This is the entire reason they read as "catching the light"
   // instead of as white dots.
   vec3 vdir = normalize(world - uCamPos);
   float fs = max(dot(vdir, uSunDir), 0.0);
-  vGlow = 0.30 + 1.70 * pow(fs, 5.0);
+  // The ceiling here is a *bloom* budget, not a brightness preference. The post
+  // chain blooms anything over ~0.62 display-referred, and a 4 px point pushed
+  // to 1.3 comes back as a 20 px soft white oval — which is what the drift in
+  // every wooded frame actually was: not leaves, not dust, just bloom halos
+  // around over-bright points. Peaking a shade under the threshold keeps the
+  // catch-the-light sparkle and loses the blobs.
+  vGlow = 0.18 + 0.42 * pow(fs, 5.0);
 
   vec3 transformed = world;
   #include <fog_vertex>
@@ -101,7 +109,7 @@ void main() {
 
 // Half-extents of the wrap box, metres. Tall enough that motes read against
 // the sky over a ridge, shallow enough that the density stays believable.
-const BOX = [34, 17, 34];
+const BOX = [36, 18, 36];
 
 export class Motes {
   constructor(ctx, wind, count) {
@@ -146,7 +154,7 @@ export class Motes {
         uTime:       { value: 0 },
         uPixelScale: { value: 600 },
         uSunDir:     { value: new THREE.Vector3(0, 1, 0) },
-        uTint:       { value: new THREE.Color(0xfff0d8) },
+        uTint:       { value: new THREE.Color(0xffeed2) },
         uOpacity:    { value: 0.0 },
       },
     ]);

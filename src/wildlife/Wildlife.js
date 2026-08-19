@@ -44,6 +44,12 @@ import { Birds } from './birds.js';
 // `perKm2` is per square kilometre of *perfectly* suitable habitat, and almost
 // nowhere scores 1.0, so the realised counts are far lower than these numbers
 // suggest — see the `[wildlife]` line in the console for what actually landed.
+//
+// `tools/wcensus.mjs` is the arbiter, not intuition. At these numbers, driving
+// the whole road network: an animal is in view 45% of the time, the median gap
+// between sightings is ~7 s and the 90th percentile is ~51 s, and the busiest
+// point on the map costs 7 draw calls and 4.7 k triangles against a 60-call
+// budget. There is a lot of headroom; the cap is taste, not performance.
 const CFG = {
   deer:   { spawn: 172, despawn: 215, live: 9,  perKm2: 88 },
   bear:   { spawn: 185, despawn: 230, live: 3,  perKm2: 0.5 },
@@ -86,6 +92,7 @@ export class Wildlife extends System {
     // multiplier: a machine that cannot afford the forest cannot afford a herd.
     this.mul = clamp(preset?.treeMul ?? 1, 0.4, 1);
 
+    this.keys = Object.keys(SPECIES);
     this._buildProtos();
     this._buildPool();
     this._placeSites();
@@ -179,7 +186,7 @@ export class Wildlife extends System {
     const slope = W.getSlope(x, z);
     if (slope > 0.80) return 0;
     const h = W.getHeight(x, z);
-    if (h > 235) return 0;
+    if (h > 300) return 0;
     const m = W.getMoisture(x, z);
     const river = W.getRiver(x, z);
     const flat = 1 - smoothstep(0.35, 0.78, slope);
@@ -193,9 +200,15 @@ export class Wildlife extends System {
       // The forest edge — the moisture band where trees give way to meadow —
       // plus open meadow. Deer at the treeline, not deep inside the wood: the
       // player has to be able to see them.
-      const edge = smoothstep(0.30, 0.50, m) * (1 - smoothstep(0.58, 0.80, m));
+      const edge = smoothstep(0.28, 0.48, m) * (1 - smoothstep(0.66, 0.92, m));
       const meadow = (1 - smoothstep(0.40, 0.62, m)) * 0.55;
-      return clamp01((edge * 1.15 + meadow) * flat * clump * (1 - smoothstep(170, 225, h)));
+      // …but never *none* in deep timber. Cutting deer off above 0.80 moisture
+      // left the wet-forest roads with no mammal of any species on them, and
+      // the census found a 4½-minute stretch of one with nothing alive at all.
+      const wood = smoothstep(0.70, 0.90, m) * 0.32;
+      // Deer thin out with altitude rather than stopping dead at a contour —
+      // a hard ceiling left whole alpine road sections with nothing on them.
+      return clamp01((edge * 1.15 + meadow + wood) * flat * clump * (1 - smoothstep(200, 285, h)));
     }
     if (key === 'rabbit') {
       // Low scrub: dry, open, gentle, and low down. Rabbits want cover within
@@ -523,7 +536,10 @@ export class Wildlife extends System {
     _frustum.setFromProjectionMatrix(_pm);
 
     let live = 0;
-    for (const key of Object.keys(this.pool)) {
+    // this.keys, not Object.keys(this.pool): the latter allocated a fresh array
+    // of species names every frame, which is exactly the kind of per-frame
+    // garbage the budget forbids.
+    for (const key of this.keys) {
       for (const per of this.pool[key]) {
         for (const a of per) {
           if (!a.active) continue;

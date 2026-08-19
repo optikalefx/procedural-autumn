@@ -17,6 +17,7 @@
 //      hand over to each other without a pop
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 import { PALETTE } from '../world/WorldConfig.js';
 
 /**
@@ -113,6 +114,7 @@ export function makeGrassUniforms() {
     // field brighter so much as clip the red channel — which is what took
     // chromaMean past 0.47 against a reference that measures 0.31.
     uLift:        { value: 1.06 },
+    ...stylizeUniforms(),
     uWrap:        { value: 0.78 },    // wrapped diffuse: a blade scatters light
 
     // getShadowMask() is the *raw* 0/1 mask — it knows nothing about the
@@ -260,7 +262,7 @@ const VERT_BODY = /* glsl */`
   vec3 objectNormal = normalize( mix( faceN, upN, uNormalUp ) );
 `;
 
-const FRAG_HEAD = /* glsl */`
+const FRAG_HEAD = STYLIZE_PARS + /* glsl */`
 uniform vec3  uGold;
 uniform vec3  uOlive;
 uniform vec3  uDry;
@@ -410,7 +412,11 @@ export function createGrassMaterial(shared, ring) {
           // A blade is a thin scatterer, not a Lambertian chip. Without this
           // the field goes to mud the moment the sun drops toward the horizon
           // — exactly the hour this game is set at.
-          float wrapN = clamp( ( dot( normalize( vUpN ), L ) + 0.45 ) / 1.45, 0.0, 1.0 );
+          // Shared stylised response, so the field carries the same diffuse
+          // floor and banding as everything else. A local wrap with no floor
+          // let shaded grass fall to a hole that the global grade then had to
+          // lift the whole image to rescue.
+          float wrapN = stylizeDiffuse( dot( normalize( vUpN ), L ) );
           gl_FragColor.rgb += diffuseColor.rgb * uSunColor * ( wrapN * uWrap * sh );
 
           // ── sheen: raking light picks the field out in bands ─────────────

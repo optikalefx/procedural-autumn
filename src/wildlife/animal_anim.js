@@ -33,12 +33,15 @@ import { clamp, clamp01, lerp, damp, wrapAngle } from '../core/MathUtils.js';
 //   gallop  transverse gallop, short gathered suspension
 //   bound   hind pair then fore pair, long float — a deer running for its life
 //   hop     fore pair first, hinds swing past — the rabbit half-bound
+// `pitch` scales how much the barrel rocks nose-up / nose-down over the cycle.
+// A walking quadruped is almost level; a bounding one rotates through most of a
+// radian, and without that a bound is just a body sliding along on bent legs.
 const GAITS = {
-  walk:   { off: [0.00, 0.50, 0.25, 0.75], duty: 0.64, lift: 0.055, bobHz: 2, flight: 0.00, flightAt: 1.00 },
-  trot:   { off: [0.50, 0.00, 0.00, 0.50], duty: 0.52, lift: 0.095, bobHz: 2, flight: 0.00, flightAt: 1.00 },
-  gallop: { off: [0.00, 0.08, 0.42, 0.50], duty: 0.34, lift: 0.135, bobHz: 1, flight: 0.14, flightAt: 0.86 },
-  bound:  { off: [0.00, 0.06, 0.34, 0.40], duty: 0.30, lift: 0.150, bobHz: 1, flight: 0.30, flightAt: 0.70 },
-  hop:    { off: [0.20, 0.26, 0.00, 0.06], duty: 0.26, lift: 0.120, bobHz: 1, flight: 0.48, flightAt: 0.52 },
+  walk:   { off: [0.00, 0.50, 0.25, 0.75], duty: 0.64, lift: 0.055, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 1.0 },
+  trot:   { off: [0.50, 0.00, 0.00, 0.50], duty: 0.52, lift: 0.095, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 1.3 },
+  gallop: { off: [0.00, 0.08, 0.42, 0.50], duty: 0.34, lift: 0.135, bobHz: 1, flight: 0.14, flightAt: 0.86, pitch: 2.0 },
+  bound:  { off: [0.00, 0.06, 0.34, 0.40], duty: 0.30, lift: 0.150, bobHz: 1, flight: 0.30, flightAt: 0.70, pitch: 2.4 },
+  hop:    { off: [0.20, 0.26, 0.00, 0.06], duty: 0.26, lift: 0.120, bobHz: 1, flight: 0.48, flightAt: 0.52, pitch: 1.6 },
 };
 
 // Which gait a species uses at which of its three speed tiers.
@@ -123,7 +126,6 @@ export class AnimRig {
         bindCannon: bindAngle(L.footDY, L.footDZ),
         // hock -> foot in world units, for building the hock target
         footWY: L.footDY * scale, footWZ: L.footDZ * scale,
-        groundY: 0,
       };
     });
 
@@ -147,7 +149,28 @@ export class AnimRig {
     const hb = proto.skel.bones[proto.skel.idx('head')];
     this.neckRest = new THREE.Vector3(0, hb.y, hb.z);   // mesh-local, unscaled
     this.headTarget = this.neckRest.clone();
-    this.grazeZ = this.info.legs[2].restZ + 0.22;
+
+    // Where the poll goes when the animal crops, in the same mesh-local frame.
+    //
+    // It is built as a point the chain can *reach*, on a fixed forward-and-down
+    // line, rather than as a point on the ground. A quadruped's neck is far too
+    // short to put the poll at grass height — a deer's muzzle sits a metre
+    // below its withers and the chain spans less than half of that — so a
+    // ground target clamps to "straight down", folds the head back under the
+    // chest, and reads as a decapitated animal. The rest of the distance comes
+    // from the crouch and the nose-down body pitch in update().
+    this.grazePoint = this.neckRest.clone();
+    if (this.neck) {
+      const na = proto.skel.bones[this.info.neck[0]];
+      const ang = gaitCfg.grazeAng ?? 1.20;              // below horizontal
+      const reach = (this.neck.l1 + this.neck.l2) * 0.985;
+      this.grazePoint.set(0, na.y - reach * Math.sin(ang), na.z + reach * Math.cos(ang));
+    }
+    // How far the withers drop as the forelegs flex to let the head down.
+    this.crouch = this.info.legs[0].hipY * scale * 0.17;
+    // Standing footprint, in world metres — the ground-plane probe uses it.
+    this.bodyLen = Math.abs(this.info.legs[0].restZ - this.info.legs[2].restZ) * scale;
+    this.bodyW = Math.abs(this.info.legs[0].restX) * 2 * scale;
 
     this.earFlick = [0, 0];
     this.earNext = [1.3, 2.7];
@@ -227,21 +250,35 @@ export class AnimRig {
     // run away at a gallop. Cadence is *derived* from speed and never authored;
     // the entire no-skating guarantee is this one division.
     const sn = clamp01(speed / (this.cfg.run * S));
-    this.strideLen = this.cfg.strideBase * S * (0.72 + 0.62 * sn);
+    // Stride grows steeply with speed, the way a real animal's does: a walking
+    // deer takes a 1.2 m step and a bounding one covers three and a half metres
+    // in a single cycle. The first pass grew it by only 23% across the entire
+    // speed range, so a deer fleeing at 9.5 m/s ran at six and a half strides a
+    // second — its legs read as a vibration rather than as a gait, and the
+    // suspension window was too short to see at all.
+    this.strideLen = this.cfg.strideBase * S * (0.70 + (this.cfg.strideGain ?? 2.6) * sn);
     const cadence = speed > 0.04 ? speed / this.strideLen : 0;
     this.phase = (this.phase + cadence * dt) % 1;
 
+    const sh = Math.sin(heading), ch = Math.cos(heading);
+
     // ── the ground plane under the body ─────────────────────────────────────
-    let gF = 0, gR = 0, gL = 0, gRt = 0;
+    //
+    // Measured over a *fixed* span, not over the animal's own wheelbase. A
+    // rabbit's feet are sixteen centimetres apart, and dividing the height
+    // difference between two heightfield samples that close together by
+    // sixteen centimetres turned every clod of micro-detail into a 25° dive.
+    // Four samples either way; the same cost as sampling under each foot.
+    const spanZ = Math.max(this.bodyLen, 0.90) * 0.5;
+    const spanX = Math.max(this.bodyW, 0.45) * 0.5;
+    let gF, gR, gL, gRt;
     if (cheap) {
       gF = gR = gL = gRt = world.getHeight(pos.x, pos.z);
     } else {
-      for (const lg of this.legs) {
-        this._neutral(lg, pos, heading, _a);
-        lg.groundY = world.getHeight(_a.x, _a.z);
-        if (lg.L.front) gF += lg.groundY * 0.5; else gR += lg.groundY * 0.5;
-        if (lg.L.side < 0) gL += lg.groundY * 0.5; else gRt += lg.groundY * 0.5;
-      }
+      gF = world.getHeight(pos.x + sh * spanZ, pos.z + ch * spanZ);
+      gR = world.getHeight(pos.x - sh * spanZ, pos.z - ch * spanZ);
+      gL = world.getHeight(pos.x - ch * spanX, pos.z + sh * spanX);
+      gRt = world.getHeight(pos.x + ch * spanX, pos.z - sh * spanX);
     }
 
     // ── feet ────────────────────────────────────────────────────────────────
@@ -265,9 +302,15 @@ export class AnimRig {
     // How far ahead of neutral the foot lands. Falls straight out of "the foot
     // is planted for `duty` of the cycle while the body travels one stride".
     const reach = this.strideLen * (1 - duty * 0.5);
-    const sh = Math.sin(heading), ch = Math.cos(heading);
 
     let stanceN = 0, stanceY = 0;
+    // One foot shuffles at a time. Tracked as a plain flag rather than by an
+    // Array.some() with a closure, which allocated once per leg per frame.
+    let anyStepping = false;
+    for (let i = 0; i < this.legs.length; i++) {
+      const lg = this.legs[i];
+      if (lg.stepping) anyStepping = true;
+    }
     for (const lg of this.legs) {
       if (cadence > 0) {
         lg.p = (lg.p + cadence * dt) % 1;
@@ -294,11 +337,10 @@ export class AnimRig {
         stanceN++; stanceY += lg.anchor.y;
         // Standing still through a turn eventually leaves a foot out of place.
         // Shuffle it back, one leg at a time, which reads as a real weight shift.
-        if (cadence === 0 && !lg.stepping) {
+        if (cadence === 0 && !lg.stepping && !anyStepping) {
           this._neutral(lg, pos, heading, _a);
-          if (Math.hypot(lg.foot.x - _a.x, lg.foot.z - _a.z) > 0.17 * S &&
-              !this.legs.some((o) => o.stepping)) {
-            lg.stepping = true; lg.p = duty + 1e-4;
+          if (Math.hypot(lg.foot.x - _a.x, lg.foot.z - _a.z) > 0.17 * S) {
+            lg.stepping = true; lg.p = duty + 1e-4; anyStepping = true;
           }
         }
       } else {
@@ -316,10 +358,10 @@ export class AnimRig {
     }
 
     // ── body ────────────────────────────────────────────────────────────────
-    const bodyLen = Math.abs(this.info.legs[0].restZ - this.info.legs[2].restZ) * S;
-    const bodyW = Math.abs(this.info.legs[0].restX) * 2 * S;
-    const pitchGround = -Math.atan2(gF - gR, Math.max(0.25, bodyLen));
-    const rollGround = Math.atan2(gRt - gL, Math.max(0.25, bodyW));
+    // Divided by the same span the samples were taken over, so the body sits at
+    // the true local slope rather than at an amplified one.
+    const pitchGround = clamp(-Math.atan2(gF - gR, spanZ * 2), -0.60, 0.60);
+    const rollGround = clamp(Math.atan2(gRt - gL, spanX * 2), -0.45, 0.45);
 
     const bob = -Math.cos(this.phase * Math.PI * 2 * G.bobHz) *
       this.cfg.bobAmp * (0.35 + 0.95 * sn);
@@ -334,7 +376,11 @@ export class AnimRig {
     // Sit on the mean of the planted feet, biased toward the local ground
     // plane, then damp — an animal's mass does not teleport up a step.
     const groundMid = stanceN > 0 ? stanceY / stanceN : (gF + gR) * 0.5;
-    const targetY = lerp((gF + gR) * 0.5, groundMid, 0.65);
+    // Cropping settles the animal onto flexed forelegs. The neck alone leaves
+    // the muzzle a hand's breadth above the grass; this and the nose-down pitch
+    // below are the rest of the distance, and they are what a real grazing
+    // quadruped does anyway.
+    const targetY = lerp((gF + gR) * 0.5, groundMid, 0.65) - drive.graze * this.crouch;
     this.bodyY = damp(this.bodyY, targetY, 20, dt);
 
     this.mesh.position.set(pos.x, this.bodyY, pos.z);
@@ -344,14 +390,14 @@ export class AnimRig {
     this.bodyRoll = damp(this.bodyRoll, rollGround, 9, dt);
 
     this.root.position.y = bob + flightY;
-    this.root.rotation.x = this.bodyPitch + this.surge +
-      Math.sin(this.phase * Math.PI * 2) * this.cfg.pitchAmp * sn;
+    this.root.rotation.x = this.bodyPitch + this.surge + drive.graze * 0.20 +
+      Math.sin(this.phase * Math.PI * 2 - 0.55) * this.cfg.pitchAmp * (G.pitch ?? 1) * sn;
     this.root.rotation.z = this.bodyRoll;
 
     // Spine flex: the back gathers and extends through a bound, and breathes at
     // rest. Small numbers — a quadruped's back barely moves, and overdoing it
     // reads as a cat rather than a deer.
-    const flex = (G.flight > 0 ? Math.sin(this.phase * Math.PI * 2 - 1.2) * 0.16 * sn : 0) + breathe;
+    const flex = (G.flight > 0 ? Math.sin(this.phase * Math.PI * 2 - 1.2) * 0.125 * sn : 0) + breathe;
     for (let i = 0; i < this.spineB.length; i++) {
       const last = i === this.spineB.length - 1;
       this.spineB[i].rotation.x = flex * (last ? 0.65 : 1);
@@ -362,13 +408,13 @@ export class AnimRig {
     // the neck solve (needs the chest) and the leg IK (needs pelvis / chest).
     this.mesh.updateWorldMatrix(false, true);
 
-    this._poseHead(dt, drive, world, sn);
+    this._poseHead(dt, drive, sn);
     this._poseEars(dt, drive, sn);
     this._poseTail(dt, drive, sn);
     this._solveLegs(sh, ch);
   }
 
-  _poseHead(dt, drive, world, sn) {
+  _poseHead(dt, drive, sn) {
     if (!this.neck) return;
     const S = this.scale;
     const graze = drive.graze, alert = drive.alert;
@@ -380,20 +426,24 @@ export class AnimRig {
     _c.copy(this.neckRest);
 
     if (graze > 0.001) {
-      const gz = this.grazeZ * S;
-      const wx = this.mesh.position.x + Math.sin(this.mesh.rotation.y) * gz;
-      const wz = this.mesh.position.z + Math.cos(this.mesh.rotation.y) * gz;
-      _b.set(wx, world.getHeight(wx, wz) + 0.15 * S, wz);
-      this.mesh.worldToLocal(_b);
+      _b.copy(this.grazePoint);
       // A nibbling drift so a grazing animal is never a statue.
-      _b.z += Math.sin(this.breath * 0.55) * 0.06;
-      _b.y += Math.sin(this.breath * 1.9) * 0.025;
+      _b.z += Math.sin(this.breath * 0.55) * 0.05;
+      _b.y += Math.sin(this.breath * 1.9) * 0.022;
       _c.lerp(_b, graze);
     }
     if (alert > 0.001) {
       _b.copy(this.neckRest);
       _b.y += 0.16; _b.z -= 0.06;
       _c.lerp(_b, alert);
+    }
+    // At speed the neck stretches out along the body. A running quadruped
+    // reaches with its head; carrying it bolt upright is a carousel horse, and
+    // that is exactly what the first bound strip looked like.
+    if (sn > 0.01 && graze < 0.999) {
+      const reach = (this.neck.l1 + this.neck.l2) * sn * (1 - graze);
+      _c.z += reach * 0.60;
+      _c.y -= reach * 0.34;
     }
     _c.y += this.root.position.y * 0.28;
 
@@ -442,7 +492,14 @@ export class AnimRig {
     nb.b.rotation.y = this.headYaw * 0.34;
     this.head.rotation.y = this.headYaw * 0.36;
 
-    this.headPitch = damp(this.headPitch, -wantPitch * (1 - graze) + graze * 0.60, 6, dt);
+    // A neck is a hinge, so swinging it down to crop carries the skull over
+    // with it and ends up pointing the muzzle backwards and up. Real animals
+    // counter-rotate at the atlas. `chain` is exactly how far the neck went, so
+    // cancelling it and adding `grazeRake` aims the muzzle at an absolute angle
+    // below horizontal, whatever the neck geometry underneath happens to be.
+    const chain = rA + nb.b.rotation.x;
+    const grazePitch = (this.cfg.grazeRake ?? 1.40) - chain;
+    this.headPitch = damp(this.headPitch, lerp(-wantPitch, grazePitch, graze), 6, dt);
     this.head.rotation.x = this.headPitch;
     this.headRoll = damp(this.headRoll, -this.headYaw * 0.13, 5, dt);
     this.head.rotation.z = this.headRoll;
@@ -462,8 +519,10 @@ export class AnimRig {
       const f = this.earFlick[i];
       const flick = Math.sin(f * 24) * f * f * 0.6;
       const idle = Math.sin(this.breath * 0.7 + i * 3.0) * 0.07 * (1 - drive.alert);
-      // Alert swivels forward; a hard run lays them back.
-      e.rotation.x = -drive.alert * 0.45 + idle + flick * 0.5 + sn * 0.55;
+      // Alert swivels forward; a hard run lays them back. Both signs were
+      // inverted, which pinned a bolting hare's ears flat over its own nose —
+      // the single most legible thing a frightened animal does, backwards.
+      e.rotation.x = drive.alert * 0.42 + idle + flick * 0.5 - sn * 0.62;
       e.rotation.z = (i === 0 ? 1 : -1) * (0.12 - drive.alert * 0.18 + flick);
     }
   }
@@ -483,9 +542,11 @@ export class AnimRig {
       const t = this.tailB[i];
       // Positive X lifts: the tail chain runs down and back from the pelvis, so
       // a negative rotation tucked it under the animal instead of flagging it.
-      // The white scut never showed, which is the one signal that makes a
-      // fleeing deer readable at two hundred metres.
-      t.rotation.x = this.tailLift * (i === 0 ? 1.30 : 0.34) + Math.sin(this.breath * 0.8 + i) * 0.035;
+      // 1.30 rad only swung it from hanging to *horizontal*, which from behind
+      // is a tail hidden against the rump — the flag has to go past vertical
+      // before any of the white shows, and that flash is the one signal that
+      // makes a fleeing deer readable at two hundred metres.
+      t.rotation.x = this.tailLift * (i === 0 ? 2.30 : 0.45) + Math.sin(this.breath * 0.8 + i) * 0.035;
       t.rotation.y = this.tailSway * (1 - i * 0.25) * (i === 0 ? 1 : 0.8);
     }
   }

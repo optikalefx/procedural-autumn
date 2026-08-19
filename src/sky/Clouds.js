@@ -1,21 +1,45 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Clouds — raymarched cumulus over a sky dome, plus a high cirrus veil.
+//  Clouds — a parallax-sliced cumulus deck over the sky dome, plus a cirrus veil.
 //
-//  Why a march and not billboards: the reference plates want cumulus with real
-//  form — a warm lit crown, a violet underside, and a silhouette that changes
-//  as you drive under it. Billboards give you the first two by painting them
-//  in, and never give you the third. A fixed-step slab march is cheap enough
-//  here because the camera never enters the cloud deck: the ray/slab interval
-//  is analytic, the density is two texture taps, and the self-shadow is one
-//  more tap offset along the sun instead of a second nested march.
+//  WHY THIS IS NOT A RAYMARCH ANY MORE
+//  -----------------------------------
+//  The previous pass marched a density slab. A march needs a per-pixel jitter or
+//  it bands, and a jitter needs a temporal filter or it stipples. There is no
+//  TAA and no blur in this project's post chain — the grade and the bloom belong
+//  to another author and neither of them cleans up noise. So every cloud in the
+//  game carried a woven cross-hatch, and at the grazing angles the canonical
+//  cameras actually use (they never look higher than ~30°) a 26 km slab traverse
+//  tore that hatch into horizontal ribbons. That is unfixable inside a march
+//  without a filter to hide the sampling.
+//
+//  So the deck is now a *heightfield*, evaluated analytically:
+//
+//    · one smooth field  H(uv)  gives the cloud-top altitude over the deck base
+//    · the ray is sampled at a handful of FIXED altitudes between base and top,
+//      each offset by the true horizontal parallax of the view ray
+//    · every sample position varies smoothly across the screen, so there is no
+//      per-pixel noise anywhere — the only edges are the silhouette edges, and
+//      those are antialiased analytically with fwidth
+//
+//  The parallax is what keeps this from being a painted backdrop: the crown
+//  slices sit further from the camera than the base slices, so a cloud shows its
+//  flat lit base on the near side and its billowing crown on the far side, and
+//  the silhouette genuinely changes as you drive under it. The parallax is
+//  *clamped*, though — an unclamped one smears the deck into ribbons at the
+//  horizon, which is the ribbon artifact we started with.
+//
+//  It also happens to be the right look. The reference plates have no crisply
+//  modelled cumulus in them at all: they have broad flat masses of colour with
+//  soft edges, which is exactly what a shaded heightfield gives and exactly what
+//  a volumetric march fights against.
 //
 //  Everything is driven from one tiling 4-channel noise tile:
 //      R  low-frequency coverage      (also the cloud-shadow map on the ground)
-//      G  mid-frequency erosion
-//      B  high-frequency erosion
+//      G  mid-frequency billow
+//      B  high-frequency fray
 //      A  stretched cirrus
-//  Using the *same* R channel for the ground shadow is what makes the shadow
-//  on the meadow line up with the cloud you can see overhead.
+//  Using the *same* R channel for the ground shadow is what makes the shadow on
+//  the meadow line up with the cloud you can see overhead.
 //
 //  Ordering note: the dome is `transparent: false` with CustomBlending, which
 //  keeps it in three's opaque queue (so renderOrder actually applies and the
@@ -29,19 +53,17 @@ import { SKY_STATE } from '../render/Lighting.js';
 
 // Cloud deck geometry, in metres. The valley tops out at ~340 m.
 //
-// These three numbers between them decide whether the sky reads as cumulus or
-// as flying saucers, and the first pass had them wrong in a way that is only
-// obvious once you write down the aspect ratio: a 900 m slab carrying features
-// two kilometres across is a *lens*, and no amount of erosion noise rescues a
-// shape whose bounding box is 1:2.5. A cumulus is roughly as tall as it is
-// wide. So: a thicker deck (1500 m) carrying narrower cells (TILE down from
-// 8200 to 5400), lifted to a base of 1400 m so the nearest one no longer fills
-// a third of the frame.
-const BASE = 1400;
-const TOP = 2900;
-const TILE = 5400;          // world size of one wrap of the noise tile
+// The numbers are chosen from the angular size they produce, not from
+// meteorology. The canonical cameras see roughly 0…30° of sky. A cell of the
+// coverage field is about TILE/3 across; at 20° elevation the deck base is
+// ~2.9 km away, so that cell subtends ~27° — three or four cloud masses across
+// a 52° frame, which is the composition the reference plates use. Push TILE up
+// and one cloud fills the sky; push it down and the deck turns to popcorn.
+const BASE = 1500;
+const TOP = 2700;
+const TILE = 7000;          // world size of one wrap of the noise tile
 const CIRRUS_ALT = 6200;
-const CIRRUS_TILE = 34000;
+const CIRRUS_TILE = 30000;
 
 const VERT = /* glsl */`
 varying vec3 vDir;
@@ -65,66 +87,35 @@ uniform vec3  uAmbient;     // sky bounce into the shadow side
 uniform vec3  uHorizon;     // what a cloud fades into at the skyline
 uniform vec2  uWind;
 uniform float uCover;       // 0..1, from the time-of-day table
-uniform float uDensity;
 uniform float uInvTile;
 uniform float uCirrus;      // cirrus opacity
 uniform float uOpacity;     // global fade (kills clouds at night gracefully)
+uniform float uSoft;        // extra silhouette softness
 
 const float BASE_Y = ${BASE.toFixed(1)};
-const float TOP_Y  = ${TOP.toFixed(1)};
 const float THICK  = ${(TOP - BASE).toFixed(1)};
-const float MAXT   = 60000.0;
+// Vertical span, in field units, over which a cloud goes from nothing to its
+// full height. Narrow = cliff-edged cartoon cloud, wide = mush.
+const float RAMP   = 0.155;
 
-float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-
-// Low-frequency coverage, remapped by the cover control. 1 tap.
-// A smoothstep rather than a clamp: a hard threshold on a bilinearly filtered
-// tile produces visible polygonal edges where the interpolation triangles meet.
-float coverageAt(vec2 xz) {
-  float n = texture2D(uNoise, xz * uInvTile + uWind).r;
-  float t = 1.0 - uCover;
-  // Narrow ramp = defined cloud with real gaps; wide ramp = wispy stratus.
-  return smoothstep(t - 0.03, t + 0.19, n);
+// The coarse coverage field — the only thing sampled per slice, and therefore
+// the only thing whose feature size has to stay above the slice spacing. Its
+// finest octave is 8 cycles across the tile, i.e. 700 m, against a worst-case
+// slice spacing of ~385 m. Break that inequality and the deck stratifies into
+// horizontal mackerel rows, which is exactly what the old march did.
+float coarse(vec2 uv) {
+  return texture2D(uNoise, uv).r;
 }
 
-// The vertical profile alone — used by the light march, which cannot afford
-// the erosion taps.
-float profileAt(float y, float cov) {
-  float hf = clamp((y - BASE_Y) / THICK, 0.0, 1.0);
-  float top = 0.24 + 0.70 * cov;
-  return cov * smoothstep(0.0, 0.13, hf) * (1.0 - smoothstep(top, top + 0.36, hf));
+// Cloud-top altitude at uv, as a fraction of the deck thickness. 0 = no cloud.
+// det is the fine detail, sampled ONCE per pixel and added to every slice
+// alike: a constant offset along the ray cannot stratify the deck, but it still
+// varies across the screen, so the silhouette gets its fray back for free.
+float topRaw(vec2 uv, float lo, float det) {
+  return (coarse(uv) + det - lo) / RAMP;
 }
-
-// Full density at a point inside the slab. 2 taps.
-float densityAt(vec3 p, float cov) {
-  float hf = clamp((p.y - BASE_Y) / THICK, 0.0, 1.0);
-  vec2 uv = p.xz * uInvTile + uWind;
-
-  // The erosion octaves are skewed hard with height. Without that shear the
-  // density is a 2D shape extruded straight up, and from the side the deck
-  // reads as stacked flat plates instead of billowing cloud.
-  float e1 = texture2D(uNoise, uv * 1.9 + vec2(0.30, -0.20) * hf + uWind * 1.6).g;
-  float e2 = texture2D(uNoise, uv * 2.4 + vec2(0.34, 0.22) * hf - uWind * 2.4).b;
-
-  // Flat base, cauliflower crown. Two things carry the cumulus read here and
-  // both matter: the base is *hard* (a cumulus has a visible flat underside
-  // where the condensation level cuts it off) and the crown height swings by
-  // more than a factor of two across one cloud, which is what turns a lid into
-  // a row of billows.
-  float top = 0.16 + 0.92 * cov * (0.36 + 1.28 * e1);
-  float prof = smoothstep(0.0, 0.045, hf) * (1.0 - smoothstep(top, top + 0.30, hf));
-  float d = cov * prof;
-  // Erosion carves the silhouette; too much of it and the low-frequency core
-  // is all that survives, which reads as fog rather than as cumulus.
-  // Amplitude matters more than frequency here: at 0.24 the erosion barely
-  // dented a base shape that peaks at 1.0, and every cloud came out as a
-  // smooth lens. It has to be able to cut the silhouette open.
-  // Erosion is weighted toward the *sides* rather than the top: subtracting
-  // hardest at altitude shaves the crown flat, which is precisely the lens
-  // silhouette this was supposed to break up. Weighting it by (1 - cov) eats
-  // the thin margins of a cell and leaves the core standing.
-  d -= (e1 * 0.50 + e2 * 0.30) * (0.55 + 0.45 * hf) * (0.55 + 0.75 * (1.0 - cov));
-  return max(d, 0.0) * 2.4;
+float topAt(vec2 uv, float lo, float det) {
+  return clamp(topRaw(uv, lo, det), 0.0, 1.0);
 }
 
 float hg(float c, float g) {
@@ -134,140 +125,148 @@ float hg(float c, float g) {
 
 void main() {
   vec3 d = normalize(vDir);
-  if (d.y <= 0.018) discard;
+  // Never branch on d.y before the derivatives below — a discard here poisons
+  // fwidth for the whole 2x2 quad and puts a dotted line along the skyline.
+  float dy = max(d.y, 0.012);
 
-  float t0 = max((BASE_Y - uCamPos.y) / d.y, 0.0);
-  float t1 = (TOP_Y - uCamPos.y) / d.y;
-  float tEntry = max(t0, 1.0);
-  vec3 acc = vec3(0.0);
+  // Where the view ray crosses the cloud base, and the uv there. Capped: an
+  // uncapped 1/dy at the skyline blows the uv derivative up past anything a
+  // 512² tile can represent, which is where the venetian-blind moire came from.
+  float tBase = min((BASE_Y - uCamPos.y) / dy, 46000.0);
+  vec2 uv0 = (uCamPos.xz + d.xz * tBase) * uInvTile + uWind;
+
+  // Horizontal uv travel of the view ray across the full deck thickness. This
+  // is the parallax that gives the deck its volume: the crown slices land
+  // further from the camera than the base slices, so a cloud shows its flat
+  // base on the near side and its billowing crown on the far side.
+  //
+  // It has to be clamped. The true value at 5° of elevation is two whole tiles,
+  // which spreads the slices further apart than the cloud features themselves
+  // and stratifies the deck into the horizontal ribbons this shader exists to
+  // get rid of. The clamp is set to just under one slice-spacing per feature:
+  // past it the deck stops gaining apparent height and flattens toward the
+  // skyline, which is what distant cumulus do anyway.
+  vec2 par = d.xz / dy * (THICK * uInvTile);
+  float pl = length(par);
+  par *= min(pl, 0.75) / max(pl, 1e-4);
+
+  // Coverage threshold. Higher cover = lower threshold = more sky filled.
+  float lo = 0.745 - 0.44 * uCover;
+
+  // Fine detail: two taps, once, at the middle of the slab. See topAt().
+  vec2  uvM = uv0 + par * 0.5;
+  // Kept well under RAMP: detail this field can outweigh the coarse coverage
+  // turns organised cloud masses into an even mottle, which is the other way
+  // for a sky to look broken.
+  float det = (texture2D(uNoise, uvM * 1.5 + vec2(0.31, -0.17)).g - 0.5) * 0.13
+            + (texture2D(uNoise, uvM * 2.6 + vec2(-0.23, 0.41)).b - 0.5) * 0.055;
+
+  // Column height at the middle of the slab: the one value that drives the
+  // lighting, so shading costs a few extra taps for the whole pixel rather
+  // than a few per slice.
+  float ht  = topAt(uvM, lo, det);
+
+  // Analytic antialiasing. fwidth of the height field is exactly the pixel
+  // footprint in the units the silhouette threshold uses, so the same number
+  // both antialiases nearby cloud edges and melts distant ones into a wash
+  // instead of letting them alias.
+  float sw = max(fwidth(ht) * 1.4, 0.085 + uSoft);
+
+  // ── shading ──────────────────────────────────────────────────────────────
+  // The deck is a heightfield, so it has a real normal, and at golden hour the
+  // normal is what matters: a 6° sun lights the *flanks* of a cumulus, not its
+  // crown. Shading on altitude alone (which is what the first version of this
+  // did) leaves every cloud the colour of its own underside — a violet-grey
+  // sheet — no matter where the sun is.
+  // Differences on the UNCLAMPED height. Clamping first flattens the interior
+  // of every cloud to a plateau with a dead-vertical normal, and a plateau lit
+  // by a 9° sun comes out the colour of its own shadow — the whole deck went
+  // violet-grey at exactly the hour it should be glowing.
+  const float EPS = 0.055;
+  float raw = topRaw(uvM, lo, det);
+  float hx = topRaw(uvM + vec2(EPS, 0.0), lo, det) - raw;
+  float hz = topRaw(uvM + vec2(0.0, EPS), lo, det) - raw;
+  // dz/dx in world units: a height fraction over a uv distance.
+  float k = THICK / (EPS / uInvTile);
+  vec3 nrm = normalize(vec3(-hx * k, 1.0, -hz * k));
+  // A very wide terminator, to sit with the global stylised diffuse the rest
+  // of the game uses. A hard lambert here reads as a plastic ball, and at a 9°
+  // sun it also leaves nine tenths of the deck unlit.
+  float lam = smoothstep(-0.85, 0.55, dot(nrm, uSunDir));
+
+  // Self-shadow: is the column one sun-step toward the sun taller than this
+  // one? That single comparison is what puts a cloud in the shadow of its
+  // neighbour, and unlike an optical-depth march it cannot stipple.
+  vec2 sunStep = uSunDir.xz / max(uSunDir.y, 0.20) * (THICK * uInvTile);
+  float pls = length(sunStep);
+  sunStep *= min(pls, 0.60) / max(pls, 1e-4);
+  float hs = topAt(uvM + sunStep * 0.7, lo, det);
+  float shadow = clamp((hs - ht) * 1.7, 0.0, 1.0);
+
+  // Forward scatter: the silver lining you get looking toward the sun. Thin
+  // margins scatter hardest, hence the (1 - ht) weight.
+  float silver = clamp(hg(dot(d, uSunDir), 0.74) * 0.042, 0.0, 0.9) * (1.0 - ht * 0.70);
+
+  vec3  acc = vec3(0.0);
   float alpha = 0.0;
+  float trans = 1.0;
 
-  // ── cirrus veil, behind everything ───────────────────────────────────────
-  if (uCirrus > 0.004) {
-    // Clamp the slant range and fade hard near the skyline. An unclamped
-    // 1/d.y blows the uv derivative up at grazing angles, and with no mipmaps
-    // the veil aliases into a hatched venetian-blind pattern across the
-    // entire horizon band.
-    float tc = min((${CIRRUS_ALT.toFixed(1)} - uCamPos.y) / d.y, 42000.0);
+  // Front to back: slice 0 is the deck base, which is the nearest point on the
+  // ray, so it occludes the crown behind it.
+  for (int i = 0; i < SLICES; i++) {
+    float f = float(i) / float(SLICES - 1);
+    float h = topAt(uv0 + par * f, lo, det);
+    float inside = smoothstep(f - sw, f + sw, h);
+    if (inside <= 0.002) continue;
+
+    // Altitude only *biases* the lit fraction — the base of a cloud is never
+    // as bright as its shoulder — but the normal decides it.
+    float lit = lam * (0.50 + 0.50 * f);
+    float energy = (0.18 + 0.82 * lit) * (1.0 - 0.50 * shadow);
+    vec3 col = mix(uDark, uLit, energy);
+    col = mix(col, uAmbient, (1.0 - f) * 0.22);
+    col += uLit * silver;
+
+    float a = inside * 0.64;
+    acc   += trans * a * col;
+    alpha += trans * a;
+    trans *= (1.0 - a);
+  }
+
+  // ── cirrus veil, behind the cumulus ──────────────────────────────────────
+  if (uCirrus > 0.004 && trans > 0.02) {
+    float tc = min((${CIRRUS_ALT.toFixed(1)} - uCamPos.y) / dy, 40000.0);
     vec2 cu = (uCamPos.xz + d.xz * tc) / ${CIRRUS_TILE.toFixed(1)} + uWind * 0.30;
     // Anisotropic lookup: squashing one axis turns fbm blobs into wind streaks.
     float ci = texture2D(uNoise, vec2(cu.x * 0.34, cu.y)).a;
-    float ca = smoothstep(0.42, 0.92, ci) * uCirrus * smoothstep(0.10, 0.42, d.y);
-    float lit = 0.55 + 0.45 * hg(dot(d, uSunDir), 0.55) * 0.25;
-    acc = mix(uAmbient, uLit, clamp(lit, 0.0, 1.0)) * ca;
-    alpha = ca;
+    float cw = max(fwidth(ci) * 1.5, 0.05);
+    float ca = smoothstep(0.52 - cw, 0.52 + cw + 0.30, ci)
+             * uCirrus * smoothstep(0.10, 0.38, d.y);
+    vec3 ccol = mix(uAmbient, uLit, 0.62 + 0.38 * clamp(hg(dot(d, uSunDir), 0.5) * 0.2, 0.0, 1.0));
+    acc   += trans * ca * ccol;
+    alpha += trans * ca;
   }
 
-  if (t1 > t0 && t0 < MAXT) {
-    t1 = min(t1, MAXT);
-
-    // Cheap rejection: three coverage taps along the slab. An empty ray costs
-    // 3 samples instead of the full march, which is most of the sky most of
-    // the time.
-    vec3 pa = uCamPos + d * t0;
-    vec3 pb = uCamPos + d * mix(t0, t1, 0.5);
-    vec3 pc = uCamPos + d * t1;
-    float ca_ = coverageAt(pa.xz), cb_ = coverageAt(pb.xz), cc_ = coverageAt(pc.xz);
-
-    if (max(ca_, max(cb_, cc_)) > 0.01) {
-      // Geometric stepping. A uniform step sized for a 20 km grazing traverse
-      // is ~800 m, which slices nearby cloud into visible horizontal plates;
-      // sized for nearby cloud it never reaches the horizon. Growing the step
-      // gives ~70 m resolution on the cumulus you are actually looking at and
-      // lets the tail of the ray run cheap and coarse, where the distance fade
-      // is about to swallow it anyway.
-      float span = min(t1 - t0, 26000.0);
-      t1 = t0 + span;
-      // Growth and the step ceiling together bound the jitter amplitude. The
-      // per-pixel dither is worth one *step*, so a 300 m step on a cloud whose
-      // features are 150 m across shows up as the woven stipple the first pass
-      // had all over every cloud face. Capping the step is what removes it.
-      const float GROW = 1.045;
-      const float MAXSTEP = 210.0;
-      float s0 = span * (GROW - 1.0) / (pow(GROW, float(STEPS)) - 1.0);
-      // Stable per-pixel jitter (no temporal term) breaks the slab banding
-      // without introducing crawl — there is no TAA in the chain to clean up
-      // an animated dither.
-      // Interleaved gradient noise, not a sin-hash: the sin-hash aliases into
-      // visible rectangular moiré at 1600×900, which on a slab crossed at a
-      // grazing angle turns into torn-paper edges on every cloud.
-      float ign = fract(52.9829189 * fract(0.06711056 * gl_FragCoord.x
-                                         + 0.00583715 * gl_FragCoord.y));
-      float jit = ign * s0;
-
-      float trans = 1.0 - alpha;
-      vec3 cum = vec3(0.0);
-      float cumA = 0.0;
-      // Forward scatter: the silver lining you get looking toward the sun.
-      // Additive only — multiplying the whole cloud by a phase function is
-      // what turned the deck into brown smog in the previous pass.
-      float silver = clamp(hg(dot(d, uSunDir), 0.68) * 0.055, 0.0, 1.1);
-
-      float t = t0 + jit;
-      float stepLen = s0;
-      for (int i = 0; i < STEPS; i++) {
-        if (trans < 0.02) break;
-        if (t > t1) break;
-        // Jitter proportionally to the *current* step. A fixed offset only
-        // dithers the first sample, and because every pixel on a screen row
-        // shares the same step positions, the residual shows up as horizontal
-        // venetian-blind ribbons across the whole sky.
-        vec3 p = uCamPos + d * (t + ign * stepLen);
-        float cov = coverageAt(p.xz);
-        float dens = cov <= 0.001 ? 0.0 : densityAt(p, cov);
-        if (dens <= 0.001) { t += stepLen; stepLen = min(stepLen * GROW, MAXSTEP); continue; }
-
-        float hf = clamp((p.y - BASE_Y) / THICK, 0.0, 1.0);
-
-        // Self-shadow: a two-sample optical depth along the actual sun ray.
-        // Coverage-only (no erosion taps) — at 260 m and 760 m the shape of
-        // the cloud, not its fuzz, is what decides whether this sample sees
-        // the sun. This is the whole warm-crown / violet-base split.
-        vec3 l1 = p + uSunDir * 260.0;
-        vec3 l2 = p + uSunDir * 760.0;
-        float od = profileAt(l1.y, coverageAt(l1.xz)) * 300.0
-                 + profileAt(l2.y, coverageAt(l2.xz)) * 620.0;
-        float energy = exp(-od * uDensity * 1.9);
-        // Never fully black: multiple scattering keeps real cloud shadow open.
-        energy = 0.14 + 0.86 * energy;
-
-        vec3 col = mix(uDark, uLit, energy);
-        // Sky bounce fills the base; the crown already has the sun.
-        col = mix(col, uAmbient, (1.0 - hf) * 0.22);
-        // Powder: thin edges scatter forward hardest, which is what draws the
-        // bright rim around a backlit cloud.
-        col += uLit * silver * (1.0 - dens * 1.6) * energy;
-
-        float a = 1.0 - exp(-dens * uDensity * stepLen);
-        cum += trans * a * col;
-        cumA += trans * a;
-        trans *= (1.0 - a);
-        t += stepLen;
-        stepLen = min(stepLen * GROW, MAXSTEP);
-      }
-      acc += cum;
-      alpha += cumA;
-    }
-  }
-
-  if (alpha <= 0.002) discard;
+  if (alpha <= 0.003) discard;
 
   // Aerial perspective on the deck itself: distant cloud melts into the haze
   // band, which is what stops the horizon reading as a hard cut-off line.
   // Undo the pre-multiply first so the fade is a colour blend, not a dim.
   vec3 col = acc / max(alpha, 1e-4);
-  // Fade on *distance*, not view elevation. The canonical cameras never look
-  // higher than ~15°, so an elevation-based fade erases the entire deck; a
-  // distance fade keeps the cumulus that sit 3–8 km out, which is where they
-  // actually read as clouds with size.
-  // Two fades: distance, and a floor near the skyline. The elevation term is
-  // what keeps the deck from ending in a dead-straight horizontal line across
-  // the frame where the distance fade happens to finish.
-  float far = max(smoothstep(9000.0, 34000.0, tEntry),
-                  1.0 - smoothstep(0.028, 0.085, d.y));
-  col = mix(col, uHorizon, far * 0.85);
+  // Aerial fade, on view elevation alone.
+  //
+  // It is tempting to fade on distance instead, but on a flat deck the distance
+  // to the base plane is purely a function of elevation, so a distance fade IS
+  // an elevation fade — just a much steeper one, and a steep fade on a
+  // horizontal band draws a dead-straight line across the frame. Hence one
+  // wide, gentle ramp: full cloud above ~11°, dissolved into the haze band by
+  // ~1°, which is what the reference plates do with their skylines.
+  float far = 1.0 - smoothstep(0.022, 0.19, d.y);
+  col = mix(col, uHorizon, far * 0.90);
 
-  float a = clamp(alpha, 0.0, 1.0) * (1.0 - far * 0.75) * uOpacity;
+  float a = clamp(alpha, 0.0, 1.0) * (1.0 - far * 0.78) * uOpacity;
+  a *= smoothstep(0.004, 0.030, d.y);   // nothing below the skyline
+  if (a <= 0.003) discard;
   gl_FragColor = vec4(col * a, a);   // pre-multiplied; see the blend setup
 }`;
 
@@ -297,6 +296,25 @@ function latticeNoise(size, freq, rand) {
   return out;
 }
 
+/**
+ * Stretch a field to fill 0..1.
+ *
+ * This matters more than it looks. An fbm of uniform lattice noise is a sum of
+ * random variables, so it piles up around 0.5 with a standard deviation of
+ * barely 0.1 — and the deck's cloud-top height is a *threshold* on that field.
+ * Un-normalised, no column ever got more than a fifth of the way up the slab,
+ * so the whole deck rendered as one flat translucent sheet with no crown, no
+ * shadowed base and nothing for the parallax to show. Normalising is what turns
+ * the field back into cloud with a top.
+ */
+function normalize01(a) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < a.length; i++) { if (a[i] < lo) lo = a[i]; if (a[i] > hi) hi = a[i]; }
+  const k = hi > lo ? 1 / (hi - lo) : 1;
+  for (let i = 0; i < a.length; i++) a[i] = (a[i] - lo) * k;
+  return a;
+}
+
 /** Sum of octaves; `billow` folds the noise for cauliflower edges. */
 function fbm(size, freqs, rand, billow = false) {
   const out = new Float32Array(size * size);
@@ -314,18 +332,20 @@ function fbm(size, freqs, rand, billow = false) {
   return out;
 }
 
-// Nyquist note: a channel whose top lattice frequency is F, sampled in the
-// shader at `uv * S`, needs F * S <= size / 2 or it aliases into hard blocks.
-// The B channel used to be [16,32,64] read at uv*10.5 — 672 cycles across a
-// 512-texel tile — and every cloud picked up stair-stepped edges.
+// Nyquist note: a channel whose top lattice frequency is F, read in the shader
+// at `uv * S`, needs F * S <= size / 4 or it aliases into hard blocks — /4
+// rather than /2 because bilinear filtering of a value-noise lattice is only
+// C1, and the kink shows before the true Nyquist limit does. The highest
+// combination here is B at 40 * 1.60 = 64 cycles over a 256-texel tile, which
+// is the low tier's budget exactly.
 function buildNoiseTexture(size, seed) {
   const rand = mulberry32(seed);
-  // R is deliberately the *softest* field: it doubles as the ground shadow,
-  // and high-frequency detail there just reads as dirt on the meadow.
-  const r = fbm(size, [4, 8, 15], rand);
-  const g = fbm(size, [8, 16, 32], rand, true);
-  const b = fbm(size, [8, 16, 28], rand, true);
-  const a = fbm(size, [4, 9, 18], rand);
+  // R is deliberately the *softest* field: it doubles as the ground shadow, and
+  // high-frequency detail there just reads as dirt on the meadow.
+  const r = normalize01(fbm(size, [2, 4, 8], rand));
+  const g = normalize01(fbm(size, [5, 10, 20], rand, true));
+  const b = normalize01(fbm(size, [8, 16, 32], rand, true));
+  const a = normalize01(fbm(size, [3, 7, 14], rand));
 
   const data = new Uint8Array(size * size * 4);
   for (let i = 0; i < size * size; i++) {
@@ -336,9 +356,9 @@ function buildNoiseTexture(size, seed) {
   }
   const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  // No mipmaps on purpose: the march samples this inside divergent control
-  // flow, where implicit-LOD derivatives are undefined in GLSL ES. The R
-  // channel is low-frequency enough that the ground shadow does not alias.
+  // No mipmaps: the deck relies on fwidth for its level of detail, and a mip
+  // chain on a 4-channel field whose channels are read at different scales
+  // would blur the coverage long before it blurred the fray.
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
@@ -347,14 +367,15 @@ function buildNoiseTexture(size, seed) {
   return tex;
 }
 
-// The density field is deliberately band-limited to roughly the step size:
-// features finer than one march step alias into a visible woven cross-hatch
-// on every cloud face, and there is no TAA in the chain to hide it.
+// Slices trade silhouette accuracy for taps, not for noise: dropping to four
+// still gives a lit crown and a shadowed base, it just resolves the shoulder
+// between them more coarsely. The tile size cannot drop below 256 without the
+// B channel aliasing (see the Nyquist note above).
 const TIERS = {
-  ultra:  { steps: 38, size: 512 },
-  high:   { steps: 30, size: 384 },
-  medium: { steps: 19, size: 256 },
-  low:    { steps: 12, size: 192 },
+  ultra:  { slices: 9, size: 512 },
+  high:   { slices: 8, size: 512 },
+  medium: { slices: 6, size: 384 },
+  low:    { slices: 4, size: 256 },
 };
 
 export class Clouds extends System {
@@ -371,9 +392,9 @@ export class Clouds extends System {
   async init() {
     const { scene, quality, preset } = this.ctx;
     const tier = TIERS[quality] ?? TIERS.high;
-    // `volumetric: false` tiers still get clouds — just a coarser march. A
-    // deck of cumulus is load-bearing for the composition, not an effect.
-    const steps = preset?.volumetric ? tier.steps : Math.max(8, Math.round(tier.steps * 0.55));
+    // `volumetric: false` tiers still get clouds — just fewer slices. A deck of
+    // cumulus is load-bearing for the composition, not an effect.
+    const slices = preset?.volumetric ? tier.slices : Math.max(4, tier.slices - 3);
 
     this.noise = buildNoiseTexture(tier.size, SEED ^ 0x51ed5);
 
@@ -387,15 +408,17 @@ export class Clouds extends System {
       uHorizon:  { value: new THREE.Color(0xf0d6b4) },
       uWind:     { value: new THREE.Vector2() },
       uCover:    { value: 0.5 },
-      uDensity:  { value: 0.030 },
       uInvTile:  { value: 1 / TILE },
       uCirrus:   { value: 0.5 },
       uOpacity:  { value: 1.0 },
+      // Fewer slices resolve the silhouette shoulder more coarsely, so the low
+      // tiers buy the difference back as softness rather than showing steps.
+      uSoft:     { value: Math.max(0, (9 - slices)) * 0.010 },
     };
 
     const mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
-      defines: { STEPS: steps },
+      defines: { SLICES: slices },
       vertexShader: VERT,
       fragmentShader: FRAG,
       side: THREE.BackSide,
@@ -418,8 +441,8 @@ export class Clouds extends System {
     this.mesh.name = 'Clouds';
     scene.add(this.mesh);
 
-    // Hand the same coverage field to the shared atmosphere so the meadow
-    // gets the shadow of the cloud that is actually overhead.
+    // Hand the same coverage field to the shared atmosphere so the meadow gets
+    // the shadow of the cloud that is actually overhead.
     this.ctx.atmosphere?.setCloudShadow({
       map: this.noise,
       scale: 1 / TILE,
@@ -443,7 +466,7 @@ export class Clouds extends System {
     u.uAmbient.value.copy(s.cloudAmbient);
     u.uHorizon.value.copy(s.fogFar).lerp(s.horizon, 0.5);
     u.uCover.value = s.cloudCover;
-    u.uCirrus.value = 0.42 * (0.35 + 0.65 * s.dayFactor);
+    u.uCirrus.value = 0.22 * (0.35 + 0.65 * s.dayFactor);
     u.uOpacity.value = 0.35 + 0.65 * s.dayFactor;
 
     this.mesh.position.copy(this.ctx.camera.position);

@@ -22,7 +22,11 @@ import { createRockMaterial } from './RockMaterial.js';
 import { RockScatter, VIS_PER_METRE } from './RockScatter.js';
 
 const CELL = 64;              // metres per scatter cell
-const STREAM_RADIUS = 920;    // metres; matches the largest instance vis radius
+// Metres. Matches the largest instance vis radius in RockScatter, which caps
+// crag mass at ~950 m: past a kilometre a chain of blocks is a row of
+// five-pixel dots on a hazed hillside, and the mountains are better served by
+// terrain and aerial perspective alone.
+const STREAM_RADIUS = 1000;
 const REPACK_MOVE = 14;       // metres of camera travel before we repack
 
 // Per-variant instance capacity, and whether the archetype casts shadows.
@@ -37,7 +41,9 @@ const CAPS = {
   hero:     { cap: 70,  shadow: true },
   ledge:    { cap: 220, shadow: true },
   bench:    { cap: 420, shadow: true },
-  tower:    { cap: 200, shadow: true },
+  tower:    { cap: 260, shadow: true },
+  cliff:    { cap: 620, shadow: true },
+  prow:     { cap: 220, shadow: true },
 };
 
 export class Rocks extends System {
@@ -143,7 +149,9 @@ export class Rocks extends System {
     // show.
     if (need < 10.0) return 6.2;
     if (need < 15.0) return 9.6;
-    return 14.5;
+    if (need < 22.0) return 14.5;
+    if (need < 30.0) return 21.0;
+    return 29.0;
   }
 
   _refreshQueue(cam) {

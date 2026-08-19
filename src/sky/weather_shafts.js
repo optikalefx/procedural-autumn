@@ -61,8 +61,11 @@ void main() {
 
   // Forward scattering: a shaft is only visible when it sits between you and
   // the sun. Without this the wood is full of glowing bars from every angle.
+  // Tightened from ^4 to ^7: at ^4 a beam was still a third as bright at 45°
+  // off-axis, which is where it stops reading as lit air and starts reading as
+  // a white scratch ruled across the sky.
   float fs = max(dot(view * -1.0, uSunDir), 0.0);
-  float phase = pow(fs, 4.0);
+  float phase = pow(fs, 7.0);
 
   // Explicit distance attenuation (see the header: no fog chunk here).
   float far = 1.0 - smoothstep(uFar * 0.45, uFar, dist);
@@ -176,7 +179,7 @@ export class LightShafts {
       const x = T.px[t], y = T.py[t], z = T.pz[t];
       const dx = x - cam.x, dz = z - cam.z;
       const d = Math.hypot(dx, dz);
-      if (d < 6 || d > FAR * 0.8) continue;
+      if (d < 12 || d > FAR * 0.8) continue;
       // Sun-ward test in plan: the crown must be roughly between the camera
       // and the sun's azimuth.
       if ((dx * sunDir.x + dz * sunDir.z) / d < 0.15) continue;
@@ -184,13 +187,21 @@ export class LightShafts {
       if (rand() > 0.42) continue;
 
       const h = T.pImpH[t], w = T.pImpW[t];
+      // Seat the beam *under* the crown, not on top of it. A shaft is only a
+      // shaft while it has something dark behind it: one anchored at 0.9 of
+      // crown height on a 15 m tree twenty metres away sits 30° up the frame,
+      // where its background is open sky and it reads as a scratch on the lens.
+      // Down at a third of the crown it crosses trunks and hillside instead.
+      const alt = h * (0.22 + 0.26 * rand());
       oa[n * 3] = x + (rand() - 0.5) * w * 0.9;
-      oa[n * 3 + 1] = y + h * (0.55 + 0.4 * rand());
+      oa[n * 3 + 1] = y + alt;
       oa[n * 3 + 2] = z + (rand() - 0.5) * w * 0.9;
       // Narrow beams from a small gap; wide ones from a break in the stand.
-      pa[n * 4] = w * (0.10 + 0.22 * rand());
-      pa[n * 4 + 1] = 34 + rand() * 46;
-      pa[n * 4 + 2] = 0.45 + 0.55 * rand();
+      pa[n * 4] = w * (0.09 + 0.18 * rand());
+      // Long enough to reach the ground at this sun elevation, and no longer:
+      // a beam that outruns its own landing point is a bar floating in the air.
+      pa[n * 4 + 1] = Math.min(62, Math.max(16, alt / Math.max(sunDir.y, 0.16)));
+      pa[n * 4 + 2] = 0.34 + 0.42 * rand();
       pa[n * 4 + 3] = rand();
       n++;
     }

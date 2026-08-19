@@ -34,7 +34,7 @@ export function createHideMaterial(c) {
     uPale: { value: new THREE.Color(c.pale) },
     uDark: { value: new THREE.Color(c.dark) },
     uHorn: { value: new THREE.Color(c.horn ?? 0x9d8a6a) },
-    uShadeLo: { value: c.shadeLo ?? 0.60 },
+    uShadeLo: { value: c.shadeLo ?? 0.68 },
   };
 
   const mat = new THREE.MeshStandardMaterial({
@@ -189,7 +189,7 @@ function buildAntler(B, skel, P, side, D, rnd) {
 
 const DETAIL = [
   // near
-  { radialBody: 7, radialLimb: 5, antlerRadial: 4, antlerLevels: 1, antlerSegs: 5, barrelStep: 1, ears: true },
+  { radialBody: 7, radialLimb: 5, antlerRadial: 5, antlerLevels: 1, antlerSegs: 5, barrelStep: 1, ears: true },
   // mid — half the rings, four-sided limbs, one antler fork
   { radialBody: 5, radialLimb: 4, antlerRadial: 3, antlerLevels: 1, antlerSegs: 3, barrelStep: 2, ears: true },
 ];
@@ -258,7 +258,10 @@ function buildQuadruped(P, detailLevel, seed) {
       mix: s.mix ?? MIX.coat, shade: s.shade ?? 1,
     });
   }
-  tube(B, bar, { radial: D.radialBody, ao: 0.55, tipStart: true, tipEnd: false });
+  // `rumpTip` collapses the rear ring to a point. That is right for a bear or a
+  // rabbit, whose backside really does taper away, and wrong for a deer, where
+  // it hung a cone off the back of the animal.
+  tube(B, bar, { radial: D.radialBody, ao: 0.55, tipStart: P.rumpTip !== false, tipEnd: false });
 
   // Underside: a pale belly panel painted straight onto the barrel would need a
   // texture, so instead the barrel stations carry their own mix and the belly
@@ -270,30 +273,68 @@ function buildQuadruped(P, detailLevel, seed) {
       const w = chainWeight(S, spineNames, s.z);
       bl.push({
         x: 0, y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: 0.75,
-        bone: w.bone, bone2: w.bone2, w2: w.w2, mix: MIX.pale, shade: 0.72,
+        // Not full pale. A belly panel at the top of the palette catches the
+        // key light where the body pitches nose-down to graze and reads as a
+        // lamp slung under the animal.
+        bone: w.bone, bone2: w.bone2, w2: w.w2,
+        mix: mixLerp(MIX.coat, MIX.pale, 0.55), shade: 0.62,
       });
     }
     tube(B, bl, { radial: Math.max(4, D.radialBody - 2), ao: 0.4, tipStart: true, tipEnd: true });
   }
 
-  // Neck: from the chest up to the skull.
+  // Rump patch. Same trick as the belly: a small inset tube carrying its own
+  // colour, so the marking has a soft edge and costs no texture. It lives on
+  // the rear *underside*, where a whitetail's actually is — high on the rump it
+  // blows out under bloom and reads as a hole rather than as markings.
+  if (P.rump) {
+    const rp = [];
+    for (const s of P.rump) {
+      const w = chainWeight(S, spineNames, s.z);
+      rp.push({
+        x: 0, y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: 0.8,
+        bone: w.bone, bone2: w.bone2, w2: w.w2,
+        mix: mixLerp(MIX.coat, MIX.pale, 0.72), shade: 0.80,
+      });
+    }
+    tube(B, rp, { radial: Math.max(4, D.radialBody - 2), ao: 0.35, tipStart: true, tipEnd: true });
+  }
+
+  // Neck: the chest → head chain, resampled as a smooth loft.
+  //
+  // Weighting matters more here than anywhere else on the animal. A grazing
+  // quadruped swings its neck through about 120° — several times any other
+  // joint — and the rigid-with-a-narrow-seam binding that keeps the barrel
+  // crisp tears the throat wide open at that angle. The neck therefore gets a
+  // genuinely blended weight across each segment, and enough rings to bend
+  // through rather than snap at four hinges.
   const neckIdx = neckNames.map((n) => S.idx(n));
-  const nk = [];
   const nPts = [S.at('chest', new THREE.Vector3()), ...neckNames.map((n) => S.at(n, new THREE.Vector3())), S.at('head', new THREE.Vector3())];
-  for (let i = 0; i < P.neckProfile.length; i++) {
-    const t = i / (P.neckProfile.length - 1);
+  // Bone owning each path point. The last one is the skull's socket, so the
+  // final ring rides with the head and the throat cannot shear off the jaw.
+  const nBone = [S.idx('chest'), ...neckIdx, S.idx('head')];
+  const nk = [];
+  const NR = detailLevel > 0 ? 5 : 7;
+  for (let i = 0; i < NR; i++) {
+    const t = i / (NR - 1);
     const f = t * (nPts.length - 1);
-    const i0 = Math.min(nPts.length - 2, Math.floor(f)), ft = f - i0;
-    const a = nPts[i0], b = nPts[i0 + 1];
-    const bi = Math.max(0, Math.min(neckIdx.length - 1, i0 - 1 + (ft > 0.5 ? 1 : 0)));
-    const bi2 = Math.min(neckIdx.length - 1, bi + 1);
-    const pr = P.neckProfile[i];
+    const seg = Math.min(nPts.length - 2, Math.floor(f));
+    const ft = f - seg;
+    const a = nPts[seg], b = nPts[seg + 1];
+    // The profile is authored as a handful of key stations; resample it onto
+    // however many rings this LOD wants.
+    const pf = t * (P.neckProfile.length - 1);
+    const pi = Math.min(P.neckProfile.length - 2, Math.floor(pf));
+    const pt = pf - pi;
+    const p0 = P.neckProfile[pi], p1 = P.neckProfile[pi + 1];
     nk.push({
-      x: 0, y: lerp(a.y, b.y, ft) + (pr.dy ?? 0), z: lerp(a.z, b.z, ft) + (pr.dz ?? 0),
-      rx: pr.rx, ry: pr.ry, k: 0.92,
-      bone: i0 === 0 ? S.idx('chest') : neckIdx[bi], bone2: neckIdx[bi2],
-      w2: i0 === 0 ? 0 : (ft > 0.35 && ft < 0.65 ? 0.5 : 0),
-      mix: pr.mix ?? MIX.coat, shade: pr.shade ?? 0.97,
+      x: 0,
+      y: lerp(a.y, b.y, ft) + lerp(p0.dy ?? 0, p1.dy ?? 0, pt),
+      z: lerp(a.z, b.z, ft) + lerp(p0.dz ?? 0, p1.dz ?? 0, pt),
+      rx: lerp(p0.rx, p1.rx, pt), ry: lerp(p0.ry, p1.ry, pt), k: 0.92,
+      bone: nBone[seg], bone2: nBone[seg + 1],
+      w2: clamp01((ft - 0.20) / 0.60),
+      mix: p0.mix ?? MIX.coat, shade: p0.shade ?? 0.97,
     });
   }
   tube(B, nk, { radial: D.radialBody, ao: 0.5, capStart: false, capEnd: false });
@@ -403,14 +444,18 @@ const DEER = () => ({
   pelvis: [0, 1.02, -0.42],
   spine: [[0, 1.05, -0.16], [0, 1.06, 0.10]],
   chest: [0, 1.07, 0.34],
-  neck: [[0, 1.19, 0.45], [0, 1.37, 0.57]],
-  head: [0, 1.47, 0.63],
+  // The neck is long, and that length is load-bearing: the muzzle has to reach
+  // the grass. The first pass spanned 0.33 m between the withers and the poll,
+  // so a "grazing" deer could only lower its head a third of the way and stood
+  // with its chin folded into its own chest, reading as decapitated.
+  neck: [[0, 1.21, 0.44], [0, 1.47, 0.58]],
+  head: [0, 1.61, 0.65],
+  rumpTip: false,
   barrel: [
-    { z: -0.68, y: 1.00, rx: 0.085, ry: 0.105, mix: MIX.pale, shade: 1.06 },
-    // A white rump *patch*, not a white rump. At golden hour with bloom on top,
-    // a strongly pale station here blows out into a bright yellow blob that
-    // reads as a hole in the animal rather than as markings.
-    { z: -0.58, y: 1.02, rx: 0.158, ry: 0.178, mix: mixLerp(MIX.coat, MIX.pale, 0.26), key: 1 },
+    // Rounded off, not tipped. Collapsing this ring to a point and painting it
+    // pale hung a bright cone off the back of every deer.
+    { z: -0.62, y: 1.00, rx: 0.118, ry: 0.140 },
+    { z: -0.55, y: 1.02, rx: 0.170, ry: 0.190, key: 1 },
     // The haunch and the shoulder are the two places a deer is widest. Without
     // them the barrel is a tube on four sticks, which is what the first pass
     // read as — an alpaca rather than a deer.
@@ -425,28 +470,47 @@ const DEER = () => ({
     { z: -0.02, y: 0.870, rx: 0.118, ry: 0.050 },
     { z: 0.26, y: 0.885, rx: 0.108, ry: 0.045 },
   ],
+  // The whitetail scut patch, low and small.
+  rump: [
+    { z: -0.48, y: 0.955, rx: 0.088, ry: 0.062 },
+    { z: -0.60, y: 0.985, rx: 0.072, ry: 0.052 },
+  ],
   // A deer's neck is a wedge, thick where it leaves the chest and only
   // slightly narrower at the skull. Tapering it to a stalk is what turned the
-  // first pass into a camelid.
+  // first pass into a camelid — but so does making it a column, which is what
+  // the over-thick version read as at three metres.
   neckProfile: [
-    { rx: 0.142, ry: 0.166 },
-    { rx: 0.118, ry: 0.142 },
-    { rx: 0.098, ry: 0.114 },
-    { rx: 0.085, ry: 0.096 },
+    { rx: 0.126, ry: 0.158 },
+    { rx: 0.104, ry: 0.126 },
+    { rx: 0.082, ry: 0.096 },
+    { rx: 0.070, ry: 0.080 },
   ],
+  // The skull has to be a mass of its own — narrower than the neck it sits on
+  // and the animal reads as a llama however good the body is.
   headProfile: [
-    { dy: -0.005, dz: -0.060, rx: 0.078, ry: 0.084 },
-    { dy: 0.006, dz: 0.012, rx: 0.084, ry: 0.092 },
-    { dy: -0.012, dz: 0.082, rx: 0.056, ry: 0.060 },
-    { dy: -0.034, dz: 0.158, rx: 0.044, ry: 0.045, mix: mixLerp(MIX.coat, MIX.pale, 0.55) },
-    { dy: -0.048, dz: 0.196, rx: 0.037, ry: 0.035, mix: MIX.dark },
+    { dy: -0.008, dz: -0.098, rx: 0.074, ry: 0.080 },
+    { dy: 0.002, dz: -0.016, rx: 0.090, ry: 0.100 },
+    { dy: -0.010, dz: 0.070, rx: 0.062, ry: 0.066 },
+    { dy: -0.034, dz: 0.152, rx: 0.046, ry: 0.047, mix: mixLerp(MIX.coat, MIX.pale, 0.55) },
+    { dy: -0.052, dz: 0.198, rx: 0.038, ry: 0.036, mix: MIX.dark },
   ],
-  ear: { at: [0.066, 0.050, -0.022], dir: [0.60, 0.76, -0.26], len: 0.165, w: 0.056, h: 0.016 },
+  // A wafer-thin ear vanishes from every angle except dead side-on, which is
+  // the one angle the player is least often at. Cupped, so it survives being
+  // eight pixels of silhouette on top of the skull.
+  ear: { at: [0.070, 0.054, -0.030], dir: [0.60, 0.75, -0.28], len: 0.185, w: 0.062, h: 0.040 },
   // The white scut is a deer's signature at any distance, so it is a broad flat
   // paddle rather than a thin rope — it has to catch light when it lifts.
-  tail: [[0, 1.00, -0.62], [0, 0.95, -0.70], [0, 0.89, -0.75]],
-  tailR: [0.050, 0.032], tailFlat: 0.52,
-  tailMix: mixLerp(MIX.coat, MIX.pale, 0.15), tailTipMix: MIX.pale,
+  // Hangs, rather than sticking out behind. A level tail on a calm animal reads
+  // as a spike welded to the rump; the whole point of the scut is that it is
+  // *down* until the animal is frightened, and then suddenly up.
+  // Long enough that raising it clears the rump. At 0.21 m the flag stood up
+  // and stayed hidden behind the animal's own backside, which is worse than
+  // not flagging at all — the motion is there and the signal is not.
+  tail: [[0, 1.00, -0.66], [0, 0.88, -0.72], [0, 0.72, -0.78]],
+  // Broad enough to read as a flag at a hundred metres. A thin rope of a tail
+  // flashes nothing, and the flash is the only signal a fleeing deer gives.
+  tailR: [0.052, 0.082], tailFlat: 0.38,
+  tailMix: mixLerp(MIX.coat, MIX.pale, 0.28), tailTipMix: MIX.pale,
   hind: {
     tag: 'hind', front: false, bend: 1,
     hip: [0.148, 0.98, -0.42], knee: [0, -0.36, 0.12], hock: [0, -0.26, -0.16], foot: [0, -0.36, 0.04],
@@ -472,8 +536,12 @@ const BEAR = () => ({
   pelvis: [0, 0.74, -0.52],
   spine: [[0, 0.78, -0.20], [0, 0.82, 0.12]],
   chest: [0, 0.86, 0.40],
-  neck: [[0, 0.85, 0.62]],
-  head: [0, 0.71, 0.92],
+  // Two neck bones, not one. The animator solves the neck as a two-link chain
+  // and silently disables the whole head — graze, look, alert, the lot — when a
+  // species has fewer, which is why the bear and the rabbit shipped with skulls
+  // welded to their shoulders.
+  neck: [[0, 0.875, 0.60], [0, 0.825, 0.78]],
+  head: [0, 0.735, 0.95],
   barrel: [
     { z: -0.80, y: 0.68, rx: 0.196, ry: 0.196 },
     { z: -0.66, y: 0.72, rx: 0.245, ry: 0.242, key: 1 },
@@ -487,18 +555,22 @@ const BEAR = () => ({
   belly: null,
   // Waisted at the throat so the skull is a separate mass from the hump.
   neckProfile: [
-    { rx: 0.205, ry: 0.220 },
-    { rx: 0.162, ry: 0.166 },
-    { rx: 0.118, ry: 0.116 },
+    { rx: 0.212, ry: 0.230 },
+    { rx: 0.184, ry: 0.192 },
+    { rx: 0.148, ry: 0.148 },
+    { rx: 0.118, ry: 0.114 },
   ],
   headProfile: [
-    { dy: 0.014, dz: -0.070, rx: 0.108, ry: 0.112 },
+    { dy: 0.014, dz: -0.096, rx: 0.100, ry: 0.104 },
     { dy: 0.006, dz: 0.014, rx: 0.122, ry: 0.118 },
     { dy: -0.020, dz: 0.090, rx: 0.083, ry: 0.078, mix: mixLerp(MIX.coat, MIX.pale, 0.40) },
     { dy: -0.036, dz: 0.170, rx: 0.062, ry: 0.058, mix: mixLerp(MIX.coat, MIX.pale, 0.55) },
     { dy: -0.046, dz: 0.210, rx: 0.050, ry: 0.044, mix: MIX.dark },
   ],
-  ear: { at: [0.096, 0.100, -0.066], dir: [0.44, 0.86, -0.26], len: 0.100, w: 0.066, h: 0.030 },
+  // A bear's ears are its second silhouette cue after the hump: round, set wide
+  // and well back on a low skull. Read as a black shape they are the difference
+  // between a bear and a boar.
+  ear: { at: [0.100, 0.104, -0.078], dir: [0.42, 0.86, -0.28], len: 0.108, w: 0.074, h: 0.052 },
   tail: [[0, 0.74, -0.86], [0, 0.70, -0.92]],
   tailR: [0.045, 0.018], tailFlat: 1,
   hind: {
@@ -522,8 +594,10 @@ const RABBIT = () => ({
   pelvis: [0, 0.175, -0.095],
   spine: [[0, 0.180, -0.025]],
   chest: [0, 0.165, 0.055],
-  neck: [[0, 0.178, 0.092]],
-  head: [0, 0.196, 0.126],
+  // Two bones, even though a rabbit has barely any neck at all — see the note
+  // on the bear. Without the second one nothing on the head ever moves.
+  neck: [[0, 0.180, 0.086], [0, 0.190, 0.108]],
+  head: [0, 0.198, 0.132],
   barrel: [
     { z: -0.185, y: 0.150, rx: 0.048, ry: 0.052, mix: MIX.pale },
     { z: -0.135, y: 0.170, rx: 0.075, ry: 0.082, key: 1 },
@@ -543,15 +617,15 @@ const RABBIT = () => ({
     { rx: 0.054, ry: 0.055 },
   ],
   headProfile: [
-    { dy: 0.000, dz: -0.034, rx: 0.050, ry: 0.052 },
-    { dy: 0.003, dz: 0.008, rx: 0.052, ry: 0.053 },
-    { dy: -0.012, dz: 0.044, rx: 0.037, ry: 0.036 },
-    { dy: -0.024, dz: 0.072, rx: 0.026, ry: 0.024, mix: MIX.dark },
+    { dy: 0.000, dz: -0.048, rx: 0.046, ry: 0.048 },
+    { dy: 0.003, dz: 0.004, rx: 0.052, ry: 0.053 },
+    { dy: -0.012, dz: 0.042, rx: 0.037, ry: 0.036 },
+    { dy: -0.026, dz: 0.072, rx: 0.026, ry: 0.024, mix: MIX.dark },
   ],
   // Ears are the whole identity at fifteen metres, so they are generous.
   // Spread into a clear V — from most angles two overlapping vertical ears
   // read as one, and the V is the whole silhouette cue at fifteen metres.
-  ear: { at: [0.034, 0.032, -0.012], dir: [0.30, 0.945, -0.14], len: 0.175, w: 0.038, h: 0.012 },
+  ear: { at: [0.036, 0.034, -0.014], dir: [0.28, 0.950, -0.13], len: 0.195, w: 0.044, h: 0.028 },
   tail: [[0, 0.163, -0.190], [0, 0.166, -0.214]],
   tailR: [0.036, 0.033], tailFlat: 1, tailMix: MIX.pale,
   hind: {
@@ -570,10 +644,14 @@ const RABBIT = () => ({
 
 // Antlers only exist on the stag variant, so they are grafted on rather than
 // living in the base blueprint.
+// Heavier than life. A real beam is 4 cm across at the burr, which at the size
+// a stag occupies on screen is a scratch; the rack has to survive being eight
+// pixels of silhouette, so it is thickened and shortened until it reads as a
+// mass rather than as a pair of twigs.
 const STAG_ANTLER = {
-  base: [0.050, 0.055, -0.035],
-  out: 0.44, up: 0.84, back: -0.30,
-  len: 0.42, r0: 0.020, r1: 0.008, tineEvery: 2,
+  base: [0.052, 0.058, -0.038],
+  out: 0.46, up: 0.82, back: -0.32,
+  len: 0.40, r0: 0.028, r1: 0.012, tineEvery: 2,
 };
 
 // ── variants ─────────────────────────────────────────────────────────────────
@@ -587,24 +665,27 @@ export const SPECIES = {
     key: 'deer',
     variants: [
       { name: 'doe', scale: 0.94, antler: false, weight: 0.46,
-        col: { coat: 0x6a4830, pale: 0xb9a686, dark: 0x38251a, horn: 0x9c8763 } },
+        col: { coat: 0x734e34, pale: 0xb5a184, dark: 0x3c2820, horn: 0x9c8763 } },
       { name: 'yearling', scale: 0.80, antler: false, weight: 0.26,
-        col: { coat: 0x7a5537, pale: 0xc0ad8b, dark: 0x3d2a1d, horn: 0x9c8763 } },
+        col: { coat: 0x845c3b, pale: 0xbdaa88, dark: 0x422d1f, horn: 0x9c8763 } },
       { name: 'stag', scale: 1.10, antler: true, weight: 0.20,
-        col: { coat: 0x54381f, pale: 0xa89478, dark: 0x2d1d13, horn: 0xa08c68 } },
+        col: { coat: 0x5b3c22, pale: 0xa39077, dark: 0x30201a, horn: 0xa08c68 } },
       { name: 'dark doe', scale: 0.97, antler: false, weight: 0.08,
-        col: { coat: 0x4e3626, pale: 0xa89478, dark: 0x2a1c14, horn: 0x9c8763 } },
+        col: { coat: 0x543a29, pale: 0xa39077, dark: 0x2d1f18, horn: 0x9c8763 } },
     ],
     blueprint: DEER,
     // Behaviour numbers live with the species so a tweak is one edit.
     gait: {
       walk: 1.25, trot: 3.4, run: 10.5,
-      strideBase: 1.05, dutyWalk: 0.63, dutyTrot: 0.50, dutyRun: 0.30,
+      strideBase: 1.05, strideGain: 2.7, dutyWalk: 0.63, dutyTrot: 0.50, dutyRun: 0.30,
       bobAmp: 0.038, pitchAmp: 0.055, liftScale: 1.0,
+      grazeAng: 1.20, grazeRake: 1.25,
     },
     brain: {
-      alertDist: 62, fleeDist: 30, calmDist: 95,
-      freezeTime: [0.7, 2.0], fleeTime: [3.5, 7.0],
+      // The freeze is the whole sighting: a deer notices you a long way off,
+      // stands and stares for a beat or two, and only then leaves.
+      alertDist: 62, fleeDist: 28, calmDist: 95,
+      freezeTime: [1.0, 2.6], fleeTime: [3.5, 7.0],
       grazeTime: [6, 20], idleTime: [2.5, 7], walkTime: [4, 12],
       herd: [1, 4], herdRadius: 9, wanderRadius: 34,
       grazeChance: 0.55,
@@ -615,21 +696,25 @@ export const SPECIES = {
     key: 'bear',
     variants: [
       { name: 'boar', scale: 1.08, weight: 0.45,
-        col: { coat: 0x2b1c15, pale: 0x6b5340, dark: 0x1a100c, horn: 0xa89a86 } },
+        col: { coat: 0x2c1d16, pale: 0x6b5340, dark: 0x1a100c, horn: 0xa89a86 } },
       { name: 'sow', scale: 0.96, weight: 0.40,
-        col: { coat: 0x33231a, pale: 0x77604a, dark: 0x1d130e, horn: 0xa89a86 } },
+        col: { coat: 0x34241b, pale: 0x77604a, dark: 0x1d130e, horn: 0xa89a86 } },
       { name: 'cinnamon', scale: 1.00, weight: 0.15,
-        col: { coat: 0x4a2d1c, pale: 0x8a6b46, dark: 0x2a1810, horn: 0xa89a86 } },
+        col: { coat: 0x4c2e1d, pale: 0x8a6b46, dark: 0x2a1810, horn: 0xa89a86 } },
     ],
     blueprint: BEAR,
     gait: {
       walk: 1.05, trot: 2.6, run: 6.2,
-      strideBase: 1.05, dutyWalk: 0.68, dutyTrot: 0.56, dutyRun: 0.38,
-      bobAmp: 0.035, pitchAmp: 0.022, liftScale: 0.72,
+      strideBase: 1.05, strideGain: 2.3, dutyWalk: 0.68, dutyTrot: 0.56, dutyRun: 0.38,
+      bobAmp: 0.035, pitchAmp: 0.030, liftScale: 0.72,
+      // A bear's nose is already low; it barely has to reach to crop.
+      grazeAng: 1.30, grazeRake: 1.45,
     },
     brain: {
-      alertDist: 32, fleeDist: 15, calmDist: 55,
-      freezeTime: [1.2, 2.6], fleeTime: [2.5, 5.0],
+      // A bear mostly does not care that you exist. It looks up when you get
+      // close, and only leaves if you get closer than that.
+      alertDist: 24, fleeDist: 11, calmDist: 44,
+      freezeTime: [1.4, 3.0], fleeTime: [2.5, 5.0],
       grazeTime: [10, 26], idleTime: [3, 9], walkTime: [10, 30],
       herd: [1, 1], herdRadius: 0, wanderRadius: 60,
       grazeChance: 0.5, patrol: true,
@@ -652,12 +737,15 @@ export const SPECIES = {
     blueprint: RABBIT,
     gait: {
       walk: 0.9, trot: 2.0, run: 7.0,
-      strideBase: 0.34, dutyWalk: 0.55, dutyTrot: 0.45, dutyRun: 0.22,
+      strideBase: 0.48, strideGain: 2.5, dutyWalk: 0.55, dutyTrot: 0.45, dutyRun: 0.22,
       bobAmp: 0.014, pitchAmp: 0.05, liftScale: 1.5,
+      grazeAng: 1.05, grazeRake: 1.15,
     },
     brain: {
-      alertDist: 34, fleeDist: 22, calmDist: 45,
-      freezeTime: [0.6, 2.2], fleeTime: [1.6, 3.4],
+      // A rabbit barely freezes at all — it is gone before you have registered
+      // that it was there, which is the opposite beat to the deer's.
+      alertDist: 36, fleeDist: 26, calmDist: 45,
+      freezeTime: [0.15, 0.65], fleeTime: [1.6, 3.4],
       grazeTime: [4, 12], idleTime: [1.5, 5], walkTime: [1.5, 5],
       herd: [1, 2], herdRadius: 4, wanderRadius: 14,
       grazeChance: 0.6,

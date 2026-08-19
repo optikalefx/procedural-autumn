@@ -42,21 +42,36 @@ const FALL = 2.55;       // m/s², effective gravity after buoyancy/lift
 const SPAWN_R = 34;
 const KILL_R = 46;
 
-/** Folded-leaf geometry: two panels meeting along a raised midrib. */
+/** Folded-leaf geometry: an ovate blade creased along a raised midrib. */
 function leafGeometry() {
   // A flat quad is invisible edge-on, which makes a tumbling leaf strobe. The
-  // fold guarantees one panel always faces the light, and — with flat shading
+  // crease guarantees one panel always faces the light, and — with flat shading
   // — the two panels read as different values, which is what gives a drifting
   // leaf its glitter.
-  const tip = [0, 0.54, 0.10];
-  const base = [0, -0.46, 0.10];
-  const mid = [0, 0.05, 0.13];
-  const left = [-0.33, 0.05, -0.10];
-  const right = [0.33, 0.05, -0.10];
-  const tris = [
-    [base, left, mid], [base, mid, right],
-    [mid, left, tip], [mid, tip, right],
-  ];
+  //
+  // The outline matters more than it sounds. The first version was a five-point
+  // diamond, and at the sizes a leaf actually occupies on screen (a handful of
+  // pixels near the camera, a couple far away) a diamond reads as an angular
+  // shard, not as a leaf — you see the two straight edges and the point. Four
+  // stations down the rib with a rounded width profile costs eight more
+  // triangles and buys a silhouette that survives being three pixels wide.
+  const N = 5;                       // stations from base to tip
+  const rib = [], lf = [], rt = [];
+  for (let i = 0; i < N; i++) {
+    const u = i / (N - 1);
+    const y = -0.44 + u * 0.96;
+    // Widest a third of the way up, tapering to a point: an aspen, not a lozenge.
+    const w = 0.36 * Math.pow(Math.sin(Math.PI * Math.min(u * 0.86 + 0.07, 1)), 0.72);
+    const fold = 0.13 * Math.sin(Math.PI * u);
+    rib.push([0, y, fold]);
+    lf.push([-w, y, fold - 0.11 * w / 0.36]);
+    rt.push([w, y, fold - 0.11 * w / 0.36]);
+  }
+  const tris = [];
+  for (let i = 0; i < N - 1; i++) {
+    tris.push([rib[i], lf[i], lf[i + 1]], [rib[i], lf[i + 1], rib[i + 1]]);
+    tris.push([rib[i], rib[i + 1], rt[i + 1]], [rib[i], rt[i + 1], rt[i]]);
+  }
   const pos = new Float32Array(tris.length * 9);
   let o = 0;
   for (const t of tris) for (const v of t) { pos[o++] = v[0]; pos[o++] = v[1]; pos[o++] = v[2]; }
@@ -116,7 +131,7 @@ export class LeafDrift {
       // Leaves are thin and backlit half the time. A little self-emission is
       // the cheapest stand-in for transmission and stops leaves in shadow
       // reading as black grit against a bright meadow.
-      emissive: new THREE.Color(0x2a1105),
+      emissive: new THREE.Color(0x150804),
       emissiveIntensity: 1.0,
       fog: true,
     });
@@ -207,13 +222,34 @@ export class LeafDrift {
 
     this.spin[i] = (1.6 + rand() * 3.4) * (rand() < 0.5 ? -1 : 1);
     this.phase[i] = rand() * Math.PI * 2;
-    this.size[i] = 0.15 + rand() * 0.15;
+    // Small and strongly varied. At 0.15–0.30 m every leaf in the near field
+    // was a readable flat facet — the drift looked like torn paper. A cubed
+    // random puts most of the population at the bottom of the range and leaves
+    // a few big ones for scale, which is the size hierarchy the brief asks for.
+    const sr = rand();
+    this.size[i] = 0.075 + 0.155 * sr * sr * sr;
     this.age[i] = 0;
     this.life[i] = 22 + rand() * 20;
     this.grow[i] = 0;
     this.alive[i] = 1;
 
-    this._col.setRGB(cr, cg, cb);
+    // Per-leaf value and hue jitter. Two crown colours per tree is variety at
+    // tree scale but not at leaf scale: a hundred leaves all the exact same
+    // orange in one frame is what makes a drift read as a decal sheet.
+    //
+    // Around 0.4x the crown's own value, which looks wrong written down and is
+    // right on screen. A leaf is a free-flying flat panel: at golden hour its
+    // normal points straight at a sun that the ground only meets at 9°, so it
+    // takes roughly six times the direct light anything else in frame does. At
+    // crown albedo that lands the near leaves over the post chain's 0.62 bloom
+    // threshold, and bloom is achromatic — the drift came out as soft cream
+    // ovals with no autumn left in them.
+    const vj = 0.30 + 0.26 * rand();
+    const hj = (rand() - 0.5) * 0.14;
+    this._col.setRGB(
+      clamp01(cr * vj + hj),
+      clamp01(cg * vj + hj * 0.35),
+      clamp01(cb * vj));
     this.mesh.setColorAt(i, this._col);
     this._colorDirty = true;
   }
@@ -230,7 +266,7 @@ export class LeafDrift {
     // How many leaves the air should hold here. Open meadow gets a thin drift
     // (leaves travel a long way), forest gets a thick one.
     const treeFill = clamp01(this.near.decidN / 34);
-    const target = Math.min(this.n, Math.round(this.n * density * (0.38 + 0.62 * treeFill)));
+    const target = Math.min(this.n, Math.round(this.n * density * (0.16 + 0.84 * treeFill)));
 
     const p = this.p, v = this.v, q = this.q, axis = this.axis;
     const KILL2 = KILL_R * KILL_R;

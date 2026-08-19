@@ -32,6 +32,61 @@ vec2 wWaveGrad(vec2 p, vec2 dir, float k, float speed, float t, float amp){
   float ph = dot(p, dir) * k - speed * k * t;
   return dir * (cos(ph) * amp * k);
 }
+// How much of a wave of wavenumber k survives at a pixel whose footprint on the
+// water is foot metres across. Nyquist, essentially: once a wavelength is down
+// to a fraction of a pixel the wave is not detail any more, it is noise, and it
+// beats against the pixel grid into a dotted moire. A *distance* fade cannot do
+// this job — at a grazing angle the footprint along the view direction blows up
+// while the distance barely changes, which is exactly where a lake seen from its
+// own bank turns into a sheet of dots.
+float wRippleFade(float foot, float k){
+  return 1.0 - smoothstep(0.18, 0.50, foot * k * 0.1591549);
+}
+// Metres of water covered by one pixel, computed analytically rather than from
+// screen-space derivatives: dFdx/dFdy on the interpolated world position came
+// back as zero here (measured — a debug pass showed the whole lake at footprint
+// 0), which silently disabled every band-limit that depended on it.
+// uPixelScale is 2*tan(fovY/2) / drawingBufferHeight, i.e. radians per pixel.
+float wFootprint(vec3 P, vec3 camPos, float pixelScale){
+  vec3 d = P - camPos;
+  float dist = length(d);
+  // Foreshortening. A pixel's footprint on a near-horizontal surface grows as
+  // 1/cos(incidence), which is exactly why the far half of a lake aliases while
+  // the same water two metres in front of the camera is perfectly stable.
+  float cosI = max(abs(d.y) / max(dist, 1e-4), 0.035);
+  return dist * pixelScale / cosI;
+}
+`;
+
+/**
+ * The illuminant for aerated water — foam, spray, mist and the falling sheet.
+ *
+ * Requires `uSunLight`, `uAmbient` and `uFoamGain` in scope.
+ *
+ * Whitewater is the one surface in this game that has to stay *white* under a
+ * hard amber key. Lit literally, the golden-hour sun (RGB 3.0/1.7/0.7 here)
+ * turns every fall, every rapid and every lapping shoreline into cream, and
+ * because the red channel then clips first, all the structure painted into the
+ * water survives only in blue — which is exactly how a waterfall ends up
+ * reading as a strip of paper. Reference plate 5 has white water sitting next
+ * to orange grass; plate 3 keeps its river blue-white under a low gold sun.
+ *
+ * So the illuminant is desaturated toward its own luminance before it touches
+ * foam, and tipped a hair cool. It is a *lighting* stylisation, not a per-pixel
+ * colour hack: the shadow term still moves it, so foam in shade is grey and
+ * foam in sun is white, and nothing clips.
+ */
+export const WATER_FOAM_LIGHT = /* glsl */`
+uniform float uFoamGain;
+const float W_PI = 3.14159265;
+vec3 wFoamLight(float shadow){
+  vec3 L = (uSunLight * (0.30 + 0.55 * shadow) + uAmbient * 0.75) / W_PI;
+  float y = dot(L, vec3(0.2126, 0.7152, 0.0722));
+  // Measured off reference plate 5: the falling curtain there is RGB
+  // 0.67/0.75/0.81 — not white but distinctly *blue*-white, and 0% of it is
+  // clipped. So the desaturation is heavy and the residual tilt is cool.
+  return mix(L, vec3(y), 0.86) * vec3(0.88, 0.97, 1.12) * uFoamGain;
+}
 `;
 
 /**
@@ -80,13 +135,20 @@ vec3 wSky(vec3 d){
  * ~150 draw calls); marching the height texture costs nothing but ALU and is
  * more than enough for a stylised near-mirror at grazing angles.
  */
+// The sky a rippled surface actually shows: a rippled surface reflects a cone,
+// and at grazing angles half that cone points at higher, bluer sky. Sampling
+// the mirror direction literally returns the cream horizon band and turns every
+// lake into a sheet of silver.
+vec3 wSkyTilt(vec3 R){
+  return wSky(normalize(vec3(R.x, R.y + 0.42, R.z)));
+}
 vec3 wEnvReflect(vec3 P, vec3 R){
   // A rippled surface reflects a *cone*, not a ray, and at grazing angles half
   // that cone is pointed at higher, bluer sky. Sampling the mirror direction
   // literally returns the cream horizon band and turns every lake into a sheet
   // of silver — lifting the sample is both closer to the truth and the reason
   // water stays the cool note in a hot frame.
-  vec3 sky = wSky(normalize(vec3(R.x, R.y + 0.42, R.z)));
+  vec3 sky = wSkyTilt(R);
   if (uReflectSteps < 1.0 || R.y <= 0.004) return sky;
   float t = 2.5, dt = 3.5;
   int N = int(uReflectSteps);

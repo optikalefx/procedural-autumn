@@ -18,11 +18,18 @@ import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { PALETTE } from './WorldConfig.js';
 import { fogUniforms } from '../render/Atmosphere.js';
-import { WATER_NOISE, WATER_ENV } from '../shaders/water_common.js';
+import { WATER_NOISE, WATER_ENV, WATER_FOAM_LIGHT } from '../shaders/water_common.js';
 import { clamp, clamp01, mulberry32 } from '../core/MathUtils.js';
 
-const PATH_STEPS = 32;                       // texels along each fall
-const SHEET_COLS = [-1, -0.7, -0.38, 0, 0.38, 0.7, 1];
+// 32 steps over a 70 m fall is a 2 m polygon, and the sheet's silhouette shows
+// every one of them as a visible corner from the bank. 48 is still a rounding
+// error against the frame budget (28 falls x 48 x 7 verts) and the outline
+// reads as a curve.
+const PATH_STEPS = 48;                       // texels along each fall
+// Out to +/-1.25 rather than +/-1: the alpha falloff and the noise erosion that
+// chews the silhouette both finish around 1.27 half-widths, and they need mesh
+// to finish *inside* or the curtain ends on a dead-straight polygon edge.
+const SHEET_COLS = [-1.25, -0.95, -0.68, -0.36, 0, 0.36, 0.68, 0.95, 1.25];
 
 // ── falling sheet ────────────────────────────────────────────────────────────
 const SHEET_VERT = /* glsl */`
@@ -72,19 +79,44 @@ varying float vDisc;
 
 ${WATER_NOISE}
 ${WATER_ENV}
-
-const float PI = 3.14159265;
+${WATER_FOAM_LIGHT}
 
 void main() {
   // Advection coordinate: constant along a falling parcel. Because flight time
   // compresses near the lip and spreads out below, the streaks automatically
   // stretch as the water accelerates.
   float ph = (vFlight - uTime) * 3.4;
-  vec2 sp = vec2(vSide * vWidth * 1.15, ph);
+  // Everything below is sampled in *metres across the sheet*. The old
+  // coordinate multiplied the side coordinate by the full width and then by
+  // another 1.15, so a 12 m curtain was sampled at thirty-odd cycles across:
+  // every octave degenerated into sub-metre pinstripes and the sheet read as
+  // combed paper. Lump size is a physical quantity — it belongs in metres.
+  float xm = vSide * vWidth * 0.5;
 
-  float streak = wFbm3(sp * vec2(1.5, 0.55)) * 0.5 + 0.5;
-  float fine   = wFbm2(sp * vec2(4.5, 1.7) + 11.0) * 0.5 + 0.5;
-  float hair   = wFbm2(sp * vec2(11.0, 3.2) + 41.0) * 0.5 + 0.5;
+  float streak = wFbm3(vec2(xm * 0.35, ph * 0.55)) * 0.5 + 0.5;
+  // Chunks. A fall is a stream of *parcels* — lumps of half-aerated water with
+  // gaps between them — and the near-square aspect of this octave is what makes
+  // them read as lumps rather than as combed pinstripes. Without it the sheet
+  // is a printed gradient and there is nothing for the eye to hold on to at
+  // two metres, which is the range the reference plate shows it at.
+  // Its coordinate compensates for the advection stretch: flight time spreads
+  // out as the water accelerates, so a noise sampled in flight time alone is
+  // lumpy at the lip and drawn out into infinite pinstripes by the time it
+  // reaches the pool. Winding the frequency up with vU keeps parcels the same
+  // physical size all the way down — and, as a free consequence, makes them
+  // travel visibly faster the further they have fallen.
+  vec2 cp = vec2(xm * 0.55, ph * (1.20 + 3.00 * vU));
+  float chunk  = wFbm3(cp + 23.0) * 0.5 + 0.5;
+  float fine   = wFbm2(vec2(xm * 1.50, ph * 1.70) + 11.0) * 0.5 + 0.5;
+  float hair   = wFbm2(vec2(xm * 3.20, ph * 3.20) + 41.0) * 0.5 + 0.5;
+
+  // fbm returns a bell centred on 0.5 and hardly ever reaches either end, so
+  // used raw it modulates the sheet by about +/-14% — under the tone curve that
+  // is no structure at all, which is why the curtain still read as airbrushed
+  // after its colour was fixed. Stretch each octave to a real 0..1 first.
+  float c1 = smoothstep(0.34, 0.66, chunk);
+  float s1 = smoothstep(0.32, 0.68, streak);
+  float h1 = smoothstep(0.35, 0.65, hair);
 
   // The sheet is coherent at the lip and shreds into ribbons as it falls — but
   // it stays a *curtain* the whole way down. Shredding it to translucent
@@ -96,8 +128,12 @@ void main() {
   float body = mix(1.0, 0.46 + 0.54 * smoothstep(0.30, 0.62, streak), shred);
   body = max(body, smoothstep(0.55, 0.72, fine) * shred * 0.55);
 
-  // Edges tear before the middle does, and only the edges.
-  float edge = 1.0 - smoothstep(0.72, 1.06, abs(vSide));
+  // Edges tear before the middle does, and only the edges. Eroding the side
+  // coordinate with the parcel noise (rather than fading the alpha) chews the
+  // *silhouette*: a curtain cut off at a constant half-width shows the mesh's
+  // own polygon outline, which at close range is the loudest tell in the frame.
+  float sideN = abs(vSide) + (c1 - 0.5) * 0.40 * (0.35 + 0.65 * shred);
+  float edge = 1.0 - smoothstep(0.72, 1.06, sideN);
   float rim = smoothstep(0.40, 1.0, abs(vSide));
   edge = mix(edge, edge * (0.30 + 0.70 * smoothstep(0.24, 0.60, streak)), shred * rim);
 
@@ -115,30 +151,35 @@ void main() {
   float ndl = max(dot(N, uSunDir), 0.0);
 
   // Glassy and blue at the lip where the sheet is unbroken, white where the
-  // water has aerated. Aeration is what turns water into foam, not speed.
-  vec3 tint = mix(uShallow, uFoam, smoothstep(0.0, 0.35, vU) * 0.85 + 0.15);
-
-  // Value structure *inside* the sheet. Without it a fall is a strip of white
-  // paper: correct silhouette, no water. The dark lanes are the unaerated
-  // ribbons still carrying the channel's colour, so they go blue, not grey.
-  // Value structure has to live in the *colour*, not in the alpha: shredding
-  // the alpha gives a bootlace, and pushing the brightness until the sheet
-  // clips gives a strip of white paper. So the sheet stays opaque and bright
-  // and carries its ribbons as darker, bluer lanes inside itself — with enough
-  // contrast, and enough headroom under white, that they can actually be seen.
-  float lanes = 0.52 + 0.62 * streak + 0.26 * hair;
-  tint = mix(uShallow * 1.05, tint, clamp(lanes - 0.10, 0.0, 1.0));
+  // water has aerated. Aeration is what turns water into foam, not speed — and
+  // it is per *parcel*, so the lumps go white while the ribbons between them
+  // stay glassy and keep the channel's blue. That contrast is the whole
+  // difference between broken water and a printed sheet.
+  float aer = clamp(0.10 + 0.55 * smoothstep(0.0, 0.35, vU)
+                         + 0.55 * (c1 - 0.5) + 0.25 * (s1 - 0.5), 0.0, 1.0);
+  vec3 tint = mix(uShallow, uFoam, aer);
   // The torn edges of a curtain are the most aerated part of it.
   tint = mix(tint, uFoam, smoothstep(0.55, 1.0, abs(vSide)) * 0.5 * shred);
-  vec3 col = tint * lanes * (uSunLight * (0.40 + 0.52 * ndl) * shadow + uAmbient * 1.05) / PI * 1.85;
 
-  // Backlight: a curtain of white water in front of a low sun glows.
+  // Value structure *inside* the sheet, and it has to live in the colour rather
+  // than the alpha: shredding the alpha gives a bootlace. Equally, it has to
+  // fit *under* white — the previous gain drove the red channel past 1.0 across
+  // most of the sheet, so every lane clipped to the same cream and the fall
+  // rendered as a strip of paper with correct silhouette and no water in it.
+  float lanes = 0.42 + 0.62 * c1 + 0.30 * s1 + 0.14 * h1;
+  // Level set against the plate: whitewater there has a median luma of 0.80 and
+  // never clips. Anything brighter loses every lane painted into it.
+  vec3 col = tint * lanes * wFoamLight(shadow) * (0.58 + 0.40 * ndl);
+
+  // Backlight: a curtain of white water in front of a low sun glows. Through
+  // the same desaturated illuminant, or a backlit fall turns into orange neon.
   float back = pow(max(dot(-V, uSunDir), 0.0), 2.0);
-  col += uFoam * uSunLight * back * 0.34 * shadow * (0.4 + 0.6 * vU);
+  col += uFoam * wFoamLight(1.0) * back * 0.42 * shadow * (0.4 + 0.6 * vU);
 
-  // A hard specular sliver on the unbroken lip reads as glass.
+  // A specular sliver on the unbroken lip reads as glass. Kept small: a hard
+  // ungraded hotspot is on the brief's list of things that get work rejected.
   vec3 H = normalize(uSunDir + V);
-  col += uSunLight * pow(max(dot(N, H), 0.0), 60.0) * (1.0 - shred) * 0.5 * shadow;
+  col += uSunLight * pow(max(dot(N, H), 0.0), 60.0) * (1.0 - shred) * 0.22 * shadow;
 
   gl_FragColor = vec4(col, alpha);
   #include <fog_fragment>
@@ -212,15 +253,15 @@ varying vec2  vUv;
 varying float vFade;
 varying float vSeed;
 
-const float PI = 3.14159265;
+${WATER_FOAM_LIGHT}
 
 void main() {
   vec2 d = vUv * 2.0 - 1.0;
   float r = length(vec2(d.x, d.y * 0.55));
   float a = pow(1.0 - smoothstep(0.0, 1.0, r), 1.8) * vFade;
   if (a < 0.01) discard;
-  vec3 col = uFoam * (uSunLight * 0.55 + uAmbient * 0.8) / PI * 2.4;
-  gl_FragColor = vec4(col, a * 0.52);
+  vec3 col = uFoam * wFoamLight(1.0) * 0.78;
+  gl_FragColor = vec4(col, a * 0.38);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -284,31 +325,43 @@ varying float vFade;
 varying float vSeed;
 varying vec3  vWPos;
 
-const float PI = 3.14159265;
+${WATER_NOISE}
+${WATER_FOAM_LIGHT}
 
 // Cheap spectral ramp: 0 = violet, 1 = red.
 vec3 spectrum(float t){
   t = clamp(t, 0.0, 1.0);
   return clamp(vec3(
     smoothstep(0.42, 0.86, t),
-    sin(clamp(t, 0.0, 1.0) * PI) * 0.95,
+    sin(clamp(t, 0.0, 1.0) * W_PI) * 0.95,
     1.0 - smoothstep(0.16, 0.58, t)), 0.0, 1.0);
 }
 
 void main() {
   vec2 d = vUv * 2.0 - 1.0;
-  float r = length(d);
+  // Internal shape. A radial falloff alone is a gaussian dot, and a dozen
+  // gaussian dots stacked on each other is a featureless white disc — which is
+  // exactly what the near field of the waterfall view was full of. The noise is
+  // keyed to the sprite's own uv and seed, so it turns with the billboard and
+  // never swims across it.
+  float lump = wFbm3(d * 1.7 + vSeed * 37.0) * 0.5 + 0.5;
+  float r = length(d) * (1.22 - 0.44 * lump);
   // Soft, fat falloff — a mist puff with a visible rim is a sprite, not fog.
-  float a = pow(1.0 - smoothstep(0.0, 1.0, r), 2.2) * vFade;
+  float a = pow(1.0 - smoothstep(0.0, 1.0, r), 2.2) * vFade * (0.52 + 0.72 * lump);
   if (a < 0.004) discard;
 
   vec3 V = normalize(vWPos - cameraPosition);
 
   // Backlit mist is the whole reason this exists: forward scattering makes a
-  // plume in front of a low sun glow far brighter than its albedo.
+  // plume in front of a low sun glow far brighter than its albedo. Lit through
+  // the foam illuminant so a plume stays white — under the raw amber key it
+  // came out as a cream disc, and over the dark rock of a gorge the cool half
+  // of it stained the whole cliff violet.
   float fwd = max(dot(V, uSunDir), 0.0);
-  float glow = pow(fwd, 3.5) * 1.5 + pow(fwd, 12.0) * 2.4;
-  vec3 col = uFoam * (uAmbient * 0.9 + uSunLight * (0.22 + glow)) / PI * 2.0;
+  float glow = pow(fwd, 3.0) * 0.50 + pow(fwd, 12.0) * 0.85;
+  // Denser cores are brighter: light gets scattered out of a fat parcel, not a
+  // thin one, and it is the density variation that gives the plume its volume.
+  vec3 col = uFoam * wFoamLight(1.0) * (0.34 + glow) * (0.70 + 0.50 * lump);
 
   // Primary bow, 42° off the antisolar point. It shows up when the sun is
   // behind the camera, which is exactly when a real one would.
@@ -317,10 +370,10 @@ void main() {
   float band = smoothstep(0.0, 0.18, t) * (1.0 - smoothstep(0.80, 1.0, t));
   // Only where there is enough spray to disperse in, and only while the sun is
   // actually up — a bow floating over thin air is worse than no bow at all.
-  col += spectrum(t) * band * uRainbow * uSunLight * 0.45
+  col += spectrum(t) * band * uRainbow * uSunLight * 0.30
        * smoothstep(0.25, 0.7, a) * smoothstep(0.02, 0.16, uSunDir.y);
 
-  gl_FragColor = vec4(col, a * 0.34);
+  gl_FragColor = vec4(col, a * 0.26);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -357,8 +410,7 @@ varying float vPower;
 
 ${WATER_NOISE}
 ${WATER_ENV}
-
-const float PI = 3.14159265;
+${WATER_FOAM_LIGHT}
 
 void main() {
   // The pool is draped on the surface it lands on, so it is always in contact.
@@ -391,8 +443,7 @@ void main() {
   foam = max(foam, (1.0 - smoothstep(0.0, 0.46, rEff)) * (0.55 + 0.45 * churn));
   foam *= bench;
 
-  vec3 col = mix(uShallow, uFoam, foam);
-  col *= (uSunLight * 0.48 * wSunShadow(vWPos) + uAmbient * 0.75) / PI * 2.6;
+  vec3 col = mix(uShallow, uFoam, foam) * wFoamLight(wSunShadow(vWPos)) * 0.92;
 
   float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.15, 0.55, rEff);
   if (alpha < 0.02) discard;
@@ -437,6 +488,11 @@ export class Waterfalls extends System {
       uReflectSteps: { value: preset?.reflections ? 8 : 0 },
       uFoam:         { value: PALETTE.waterFoam.clone() },
       uShallow:      { value: PALETTE.waterShallow.clone() },
+      // One dial for every aerated surface in the game — see wFoamLight. Set so
+      // sunlit foam lands just under 1.0 before exposure: high enough to read as
+      // white water, low enough that the structure inside it survives the tone
+      // curve instead of clipping to a flat card.
+      uFoamGain:     { value: 1.55 },
     };
 
     this._buildPaths();
@@ -508,6 +564,19 @@ export class Waterfalls extends System {
 
         const w = wf.width * (0.8 + 1.5 * u);
         pts.push({ x, y, z, w, u, flight });
+      }
+
+      // Take the kinks out. Clamping to the rock is a per-step decision, so the
+      // integrated path picks up corners wherever the ground catches it; a 1-2-1
+      // pass over the interior leaves the endpoints (lip and plunge point) exact
+      // and turns the corners into a curve. Water does not turn sharply.
+      for (let pass = 0; pass < 2; pass++) {
+        const sx = pts.map((p) => p.x), sy = pts.map((p) => p.y), sz = pts.map((p) => p.z);
+        for (let i = 1; i < pts.length - 1; i++) {
+          pts[i].x = (sx[i - 1] + sx[i] * 2 + sx[i + 1]) * 0.25;
+          pts[i].y = (sy[i - 1] + sy[i] * 2 + sy[i + 1]) * 0.25;
+          pts[i].z = (sz[i - 1] + sz[i] * 2 + sz[i + 1]) * 0.25;
+        }
       }
 
       this.falls.push({

@@ -50,6 +50,7 @@ const TRACK = arg('track', '1') !== '0';
 const HOUR = arg('hour', '16.7');
 const FOV = parseFloat(arg('fov', '34'));
 const COUNT = parseInt(arg('count', '0'), 10) || null;
+const WARM = parseInt(arg('warm', '0'), 10);   // sim frames run before capture
 const RES = arg('res', '640');
 const ANCHOR = arg('anchor', 'meadow');
 const OUT = resolve(arg('out', `shots/wildlife/strip-${SPECIES}-${MODE}.png`));
@@ -169,7 +170,10 @@ const result = await page.evaluate(async (P) => {
       return;
     }
     const p = P.TRACK ? A.brain.pos : anchorP;
-    const yaw = (P.TRACK ? A.brain.heading : A.brain.heading) + P.YAW;
+    // A fixed camera has to be *fixed*: both branches read the live heading, so
+    // the camera swung round with the animal and hid exactly the skating the
+    // untracked mode exists to expose.
+    const yaw = (P.TRACK ? A.brain.heading : anchorP.h) + P.YAW;
     const h = A.rig.proto.height * A.scale;
     const ce = Math.cos(P.ELEV), se = Math.sin(P.ELEV);
     e.camera.position.set(
@@ -218,6 +222,11 @@ const result = await page.evaluate(async (P) => {
     anchorP.z = A.brain.pos.z + Math.cos(h0) * travel;
     place();
   }
+
+  // Extra un-captured simulation before the strip starts. A flee has to get
+  // through the freeze (up to 2.2 s) before there is anything to look at, and
+  // without this the whole strip is eight tiles of a deer standing still.
+  for (let i = 0; i < P.WARM; i++) { place(); e._loop(); }
 
   const notes = [];
   for (let f = 0; f < P.FRAMES; f++) {
@@ -268,7 +277,7 @@ const result = await page.evaluate(async (P) => {
     calls: e.renderer.info.render.calls,
     tris: e.renderer.info.render.triangles,
   };
-}, { SPECIES, MODE, FRAMES, STEP, DT, COLS, DIST, ELEV, YAW, TRACK, HOUR, FOV, COUNT, ANCHOR });
+}, { SPECIES, MODE, FRAMES, STEP, DT, COLS, DIST, ELEV, YAW, TRACK, HOUR, FOV, COUNT, ANCHOR, WARM });
 
 if (result.error) {
   console.error('wstrip:', result.error);

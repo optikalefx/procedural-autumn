@@ -24,7 +24,7 @@ import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { PALETTE, WORLD } from './WorldConfig.js';
 import { fogUniforms } from '../render/Atmosphere.js';
-import { WATER_NOISE, WATER_ENV } from '../shaders/water_common.js';
+import { WATER_NOISE, WATER_ENV, WATER_FOAM_LIGHT } from '../shaders/water_common.js';
 import { clamp01, smoothstep } from '../core/MathUtils.js';
 
 // Cross-channel profile, in half-widths. Denser near the banks where the foam
@@ -109,6 +109,7 @@ uniform vec3  uSubsurface;
 uniform float uFoamCut;
 uniform float uBodyGain;
 uniform vec3  uCoolTint;
+uniform float uPixelScale;
 
 varying vec3  vWPos;
 varying float vSide;
@@ -120,6 +121,7 @@ varying vec2  vTan;
 
 ${WATER_NOISE}
 ${WATER_ENV}
+${WATER_FOAM_LIGHT}
 
 void main() {
   vec4 D = wWorldData(vWPos.xz);
@@ -145,14 +147,16 @@ void main() {
 
   // Two scales of travelling ripple, analytic gradients so nothing aliases.
   float rough = 0.35 + 0.65 * vTurb;
+  // Band-limited against the pixel footprint (flow space is metres too).
+  float foot = wFootprint(vWPos, cameraPosition, uPixelScale);
   vec2 g = vec2(0.0);
-  g += wWaveGrad(fp, normalize(vec2( 0.16, 1.0)), 2.10, speed,        uTime, 0.030 * rough);
-  g += wWaveGrad(fp, normalize(vec2(-0.28, 1.0)), 3.40, speed * 0.86, uTime, 0.018 * rough);
-  g += wWaveGrad(fp, normalize(vec2( 0.85, 0.6)), 6.30, speed * 0.45, uTime, 0.008 * rough);
-  g += wWaveGrad(fp, normalize(vec2(-0.90, 0.4)), 9.10, speed * 0.35, uTime, 0.005 * rough);
+  g += wWaveGrad(fp, normalize(vec2( 0.16, 1.0)), 2.10, speed,        uTime, 0.030 * rough * wRippleFade(foot, 2.10));
+  g += wWaveGrad(fp, normalize(vec2(-0.28, 1.0)), 3.40, speed * 0.86, uTime, 0.018 * rough * wRippleFade(foot, 3.40));
+  g += wWaveGrad(fp, normalize(vec2( 0.85, 0.6)), 6.30, speed * 0.45, uTime, 0.008 * rough * wRippleFade(foot, 6.30));
+  g += wWaveGrad(fp, normalize(vec2(-0.90, 0.4)), 9.10, speed * 0.35, uTime, 0.005 * rough * wRippleFade(foot, 9.10));
   // Cross-channel chop that builds against the banks, where the flow shears.
   float bankShear = smoothstep(0.35, 1.15, abs(vSide));
-  g += wWaveGrad(fp, vec2(1.0, 0.0), 5.2, 0.7, uTime, 0.012 * bankShear);
+  g += wWaveGrad(fp, vec2(1.0, 0.0), 5.2, 0.7, uTime, 0.012 * bankShear * wRippleFade(foot, 5.2));
 
   // Rotate the flow-space gradient back into world space.
   vec3 T = normalize(vec3(vTan.x, 0.0, vTan.y));
@@ -209,8 +213,14 @@ void main() {
   // meets the bank, and without it a river reads as a sheet of blue vinyl laid
   // in a ditch. So it is unconditional — turbulence changes how *much*, never
   // whether there is any at all.
-  float lace = (1.0 - smoothstep(shoreBand * 0.35, shoreBand * 1.9, distShore))
-             * shoreFade * smoothstep(0.22, 0.68, abs(vSide));
+  // Same lesson the lake taught: depth is what places the waterline, because
+  // depth is what places the alpha edge it has to sit on. Metres-from-shore
+  // decides only how far the line may spread — anchored to metres alone it
+  // ends up living inside five centimetres of depth on every gentle bank,
+  // which is to say nowhere.
+  float laceD = smoothstep(0.02, 0.14, depth) * (1.0 - smoothstep(0.12, 0.50, depth));
+  float laceW = 1.0 - smoothstep(shoreBand * 0.8, shoreBand * 3.0, distShore);
+  float lace = laceD * mix(0.35, 1.0, laceW) * smoothstep(0.18, 0.62, abs(vSide));
   // Broken by a noise that rides downstream, so the line reads as painted marks
   // travelling with the current rather than a stencilled outline.
   float laceN = wFbm3(fp * vec2(0.9, 0.22) - vec2(0.0, uTime * speed * 0.26)) * 0.5 + 0.5;
@@ -230,7 +240,11 @@ void main() {
   // different value drifting with the current.
   float band = wFbm2(fp * vec2(0.26, 0.05) - vec2(0.0, uTime * speed * 0.18)) * 0.5 + 0.5;
   float lanes = wFbm2(fp * vec2(1.30, 0.09) - vec2(0.0, uTime * speed * 0.30)) * 0.5 + 0.5;
-  body *= 0.74 + 0.30 * band + 0.30 * lanes;
+  // Stretched to a real 0..1 first. Raw fbm is a bell that rarely leaves the
+  // middle third, so used directly these lanes moved the surface by about a
+  // seventh of a stop — under the tone curve, a satin ribbon with no current
+  // in it. The same correction the falling sheet needed.
+  body *= 0.66 + 0.40 * smoothstep(0.34, 0.66, band) + 0.30 * smoothstep(0.34, 0.66, lanes);
   // Shallow water shows the bed through it; a warm bounce keeps the palette
   // from going cold and dead where the river is only ankle-deep.
   body = mix(body, uSubsurface * 1.05, (1.0 - deepT) * 0.35);
@@ -250,21 +264,32 @@ void main() {
   // body colour under a sheet of reflected sky at every grazing angle.
   float fres = 0.024 + 0.976 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
   fres *= 0.62 * (1.0 - foam * 0.9) * (1.0 - vTurb * 0.45);
-  vec3 R = reflect(-V, N);
+  // Same cone argument as the lake: past a fraction of a wavelength per pixel
+  // the marched reflection is noise, not detail.
+  vec3 Nr = normalize(mix(N, vec3(0.0, 1.0, 0.0), clamp(foot * 3.0, 0.0, 0.94)));
+  vec3 R = reflect(-V, Nr);
+  float marchOn = 1.0 - smoothstep(0.03, 0.11, foot);
+  vec3 envRaw = wSkyTilt(R);
+  if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
   // Tinted by the medium for the same reason the body is: an untinted mirror
   // of a cream horizon turns every grazing view of a river into a pink ribbon.
-  vec3 env = wEnvReflect(vWPos, R) * mix(vec3(1.0), medium * 2.4, 0.45) * 0.92;
+  vec3 env = envRaw * mix(vec3(1.0), medium * 2.4, 0.45) * 0.92;
   vec3 col = mix(lit, env, clamp(fres, 0.0, 0.30));
 
   // Specular glints — tight, and killed inside foam so nothing sparkles on
-  // what is meant to read as aerated white water.
+  // what is meant to read as aerated white water. Band-limited against the
+  // pixel footprint for the same reason the lake's is: a tight lobe on a
+  // rippled surface aliases into a crawling grid of dots long before the
+  // ripples themselves become visible as ripples.
   vec3 H = normalize(uSunDir + V);
-  float spec = pow(max(dot(N, H), 0.0), 220.0) * (1.0 - foam);
+  float sharp = exp(-foot * 8.0);
+  float spec = pow(max(dot(N, H), 0.0), mix(26.0, 220.0, sharp)) * (1.0 - foam) * sharp;
   col += uSunLight * spec * 0.85 * shadow;
 
   // Foam is lit almost flat — it is a diffuse mass of bubbles, and flattening
-  // it is what makes it read as a painted shape.
-  vec3 foamCol = uFoam * (uSunLight * (0.24 + 0.52 * shadow) + uAmbient * 0.60) / PI * 2.6;
+  // it is what makes it read as a painted shape. Through wFoamLight so a rapid
+  // under a golden key is white water and not a ribbon of cream.
+  vec3 foamCol = uFoam * wFoamLight(shadow) * 0.86;
   col = mix(col, foamCol, foam * 0.94);
 
   // A whisper of cool in the whole channel. Water in the reference is never
@@ -335,6 +360,7 @@ uniform vec3  uSubsurface;
 uniform vec2  uWind;
 uniform float uBodyGain;
 uniform vec3  uCoolTint;
+uniform float uPixelScale;
 
 varying vec3  vWPos;
 varying float vWet;
@@ -342,6 +368,7 @@ varying float vShore;
 
 ${WATER_NOISE}
 ${WATER_ENV}
+${WATER_FOAM_LIGHT}
 
 void main() {
   vec4 D = wWorldData(vWPos.xz);
@@ -362,24 +389,36 @@ void main() {
   vec2 p = vWPos.xz;
   vec2 wdir = normalize(uWind + vec2(1e-4));
   float wmag = length(uWind);
+  // Domain warp. Every one of these waves shares a phase origin at the world
+  // centre, so however they are weighted their crests stay in step and a big
+  // lake ends up combed into parallel corduroy marching across it — the single
+  // most artificial thing a water surface can do. Displacing the sample point
+  // by a slow noise destroys the phase coherence and costs two fbm taps.
+  vec2 pw = p + vec2(wFbm2(p * 0.035), wFbm2(p * 0.035 + 17.3)) * 7.0;
+  // Every scale is band-limited against the pixel footprint — see wRippleFade.
+  float foot = wFootprint(vWPos, cameraPosition, uPixelScale);
   vec2 g = vec2(0.0);
-  g += wWaveGrad(p, wdir,                                 0.30, 1.45, uTime, 0.34 * wmag);
-  g += wWaveGrad(p, normalize(wdir + vec2( 0.55, -0.35)), 0.72, 1.05, uTime, 0.17 * wmag);
-  g += wWaveGrad(p, normalize(wdir + vec2(-0.62,  0.30)), 1.55, 0.72, uTime, 0.065 * wmag);
-  g += wWaveGrad(p, normalize(wdir + vec2( 0.20,  0.90)), 3.40, 0.48, uTime, 0.024 * wmag);
+  g += wWaveGrad(pw, wdir,                                 0.30, 1.45, uTime, 0.34 * wmag * wRippleFade(foot, 0.30));
+  g += wWaveGrad(pw, normalize(wdir + vec2( 0.55, -0.35)), 0.72, 1.05, uTime, 0.17 * wmag * wRippleFade(foot, 0.72));
+  g += wWaveGrad(pw, normalize(wdir + vec2(-0.62,  0.30)), 1.55, 0.72, uTime, 0.065 * wmag * wRippleFade(foot, 1.55));
+  g += wWaveGrad(pw, normalize(wdir + vec2( 0.20,  0.90)), 3.40, 0.48, uTime, 0.024 * wmag * wRippleFade(foot, 3.40));
   // Fetch is a *distance* thing, not a depth thing: a puddle is glass however
   // deep it is, and the middle of a lake is textured however shallow it is.
   float fetch = 0.42 + 0.58 * smoothstep(4.0, 55.0, vShore);
   // Fade the fine scales out with distance or they turn into aliasing crawl at
   // the far end of a kilometre of lake.
   float dist = length(cameraPosition - vWPos);
+  // How far into the aerial perspective this pixel sits. Several decisions
+  // below depend on it: a lake a kilometre off is a flat mass at a grazing
+  // angle, and almost everything that gives near water its life is noise there.
+  float far = smoothstep(80.0, 420.0, dist);
   g *= fetch * (0.35 + 0.65 * exp(-dist * 0.006));
   // A fine chop that survives close up. The scales above are metres wide, so at
   // two metres from the camera they are off-screen gradients and the surface has
   // nothing in it — this is the scale you actually see from a car window.
   float near = 1.0 - smoothstep(3.0, 34.0, dist);
-  g += wWaveGrad(p, normalize(wdir + vec2(0.9, 0.1)),  6.5, 0.55, uTime, 0.012 * near);
-  g += wWaveGrad(p, normalize(wdir + vec2(-0.7, 0.6)), 11.0, 0.42, uTime, 0.006 * near);
+  g += wWaveGrad(pw, normalize(wdir + vec2(0.9, 0.1)),  6.5, 0.55, uTime, 0.012 * near * wRippleFade(foot, 6.5));
+  g += wWaveGrad(pw, normalize(wdir + vec2(-0.7, 0.6)), 11.0, 0.42, uTime, 0.006 * near * wRippleFade(foot, 11.0));
 
   // Wind on water is patchy: cat's-paws of ripple with glassy lanes between
   // them. Four pure sinusoids without this read as corduroy — regular parallel
@@ -400,7 +439,11 @@ void main() {
   float band = wFbm2(p * 0.012 + vec2(uTime * 0.006, 0.0)) * 0.5 + 0.5;
   // Same idea at arm's length: broad masses read at 300 m, these read at 3 m.
   float fine = wFbm2(p * 0.16 + vec2(uTime * 0.03, uTime * 0.012)) * 0.5 + 0.5;
-  body *= 0.86 + 0.28 * band + 0.16 * (fine - 0.5) * near;
+  // The broad masses are a near-field read. At a kilometre they are 80 m
+  // features seen through haze, and all they do there is mottle the surface
+  // into pale swirls that look like scum on it — a distant lake wants to be
+  // one flat mass of colour, which is what the reference plates do with it.
+  body *= 0.86 + 0.28 * band * (1.0 - 0.65 * far) + 0.16 * (fine - 0.5) * near;
   // Ankle-deep water over gold meadow is warm, not cyan. Letting the bed colour
   // through the shallows is what stops a flooded flat reading as a plastic
   // sheet laid over the ground.
@@ -413,21 +456,50 @@ void main() {
 
   // Near-mirror at grazing angles: this is the whole point of a lake.
   float fres = 0.020 + 0.980 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
-  vec3 R = reflect(-V, N);
+  // Reflect off a *smoothed* normal as the pixel footprint grows. A pixel that
+  // covers many wavelengths does not reflect a ray, it reflects a cone; marching
+  // a per-ripple mirror direction through a discrete heightfield instead flips
+  // between hit and miss from pixel to pixel and resolves into a dotted
+  // halftone grid — measured as the single worst artifact in this system, and
+  // confirmed by capturing the same frame with uReflectSteps forced to 0.
+  vec3 Nr = normalize(mix(N, vec3(0.0, 1.0, 0.0), clamp(foot * 3.0, 0.0, 0.94)));
+  vec3 R = reflect(-V, Nr);
+  // The march itself is a hit/miss test, so a smoothed normal is not enough:
+  // once a pixel spans more than a fraction of a wavelength the ray flips
+  // between hitting the far bank and missing it from one pixel to the next.
+  // Past that point the landscape reflection is not information, so it is
+  // dropped for the smooth sky term — which also makes the far half of every
+  // lake in the frame cost nothing to shade.
+  float marchOn = 1.0 - smoothstep(0.03, 0.11, foot);
+  vec3 envRaw = wSkyTilt(R);
+  if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
   // A real lake at a grazing angle is very nearly a mirror, and rendering that
   // faithfully gives a hole full of cream sky. Water is a coloured medium:
   // tinting the reflection with the body keeps the surface reading as water
   // even when it is mostly showing the sky back at you.
-  vec3 env = wEnvReflect(vWPos, R) * mix(vec3(1.0), medium * 2.6, 0.55);
+  // ...and the further away it is, the more of it the medium has to hold: at a
+  // kilometre every lake is at a grazing angle, so a faithful mirror returns
+  // the cream horizon band and the valley floor fills up with beige slabs that
+  // do not read as water at all. Measured in the peaks view, the lake came
+  // back RGB 0.67/0.58/0.46 — warmer than neutral. Water is the cool note.
+  vec3 env = envRaw * mix(vec3(1.0), medium * 2.6, mix(0.55, 0.84, far));
   // Shallow water has almost no path length to reflect out of — the shelf at
   // the shore should show its bed, not the sky.
-  float mirror = clamp(fres * 0.70, 0.0, 0.50) * smoothstep(0.10, 1.2, depth);
+  float mirror = clamp(fres * mix(0.70, 0.40, far), 0.0, 0.50) * smoothstep(0.10, 1.2, depth);
   vec3 col = mix(lit, env, mirror);
 
-  // Sun path. Broad and graded, never a hard hotspot.
+  // Sun path. Broad and graded, never a hard hotspot — and band-limited, which
+  // matters more here than anywhere else in the shader. A pow-260 lobe riding a
+  // ripple field resolves into hard rings the instant the ripples approach the
+  // size of a pixel, and from the bank of a lake at a grazing angle that is a
+  // grid of dots marching across the water: the worst artifact this system had.
+  // Widening the lobe with the footprint is the standard fix — the same energy,
+  // spread over the solid angle a pixel actually covers.
   vec3 H = normalize(uSunDir + V);
   float nh = max(dot(N, H), 0.0);
-  col += uSunLight * (pow(nh, 260.0) * 0.55 + pow(nh, 40.0) * 0.09) * shadow;
+  float sharp = exp(-foot * 8.0);
+  col += uSunLight * (pow(nh, mix(24.0, 260.0, sharp)) * 0.55 * sharp
+                    + pow(nh, mix(10.0,  40.0, sharp)) * 0.09) * shadow;
 
   // A thin lapping line where the water meets the ground. Measured in metres
   // from the shore, not in depth: a shallow shelf is not a beach.
@@ -436,16 +508,25 @@ void main() {
   float bz = wBed(p + vec2(0.0, 2.0)) - wBed(p - vec2(0.0, 2.0));
   float slope = length(vec2(bx, bz)) * 0.25;
   float distShore = depth / max(slope, 0.05);
-  // Narrow and broken. A continuous two-metre white band around every lake in
-  // the map reads as an ice fringe rather than water lapping at a bank.
-  float lace = (1.0 - smoothstep(0.35, 2.0, distShore)) * shoreFade;
+  // The waterline has to be placed by the same quantity that places the alpha
+  // edge, or it wanders off it. That quantity is depth. Metres-from-shore is
+  // the honest measure of how *wide* the band should be, but on the 1:20
+  // shelves this map is full of, a metre of shore is five centimetres of
+  // depth — thinner than the terrain's own micro-detail — so a band defined
+  // purely in metres either vanishes or sits somewhere the water does not end.
+  // Depth places the line; slope is only allowed to limit how far it spreads,
+  // because a continuous three-metre white fringe around every lake in the map
+  // reads as pack ice rather than water lapping at a bank.
+  float laceD = smoothstep(0.02, 0.12, depth) * (1.0 - smoothstep(0.10, 0.42, depth));
+  float laceW = 1.0 - smoothstep(0.8, 3.6, distShore);
+  float lace = laceD * mix(0.30, 1.0, laceW);
   // Far shorelines get a pale edge, not a white rope: the lace noise is
   // sub-pixel past a couple of hundred metres and averages to a solid band.
-  float foam = lace * smoothstep(0.42, 0.60, fn) * 0.74
+  float foam = lace * smoothstep(0.38, 0.56, fn)
              * mix(1.0, 0.45, smoothstep(140.0, 520.0, dist));
   // Foam is a diffuse mass of bubbles: lit nearly flat, and never allowed to
   // sink to the ambient's blue — white water that is not white is haze.
-  vec3 foamCol = uFoam * (uSunLight * (0.22 + 0.48 * shadow) + uAmbient * 0.60) / PI * 2.6;
+  vec3 foamCol = uFoam * wFoamLight(shadow) * 0.86;
   col = mix(col, foamCol, foam);
 
   col *= uCoolTint;
@@ -507,6 +588,13 @@ export class Water extends System {
       // camera ends up reading as flat turquoise vinyl.
       uBodyGain:     { value: 2.1 },
       uCoolTint:     { value: new THREE.Vector3(0.94, 1.00, 1.05) },
+      // Radians of view angle per output pixel. Everything that has to be
+      // band-limited — ripple scales, the specular lobe, the reflection march —
+      // is measured against the footprint this implies.
+      uPixelScale:   { value: 0.0016 },
+      // Shared with the falls: the one dial for every aerated surface. See
+      // wFoamLight in water_common.js for why foam gets its own illuminant.
+      uFoamGain:     { value: 1.55 },
     };
 
     this.riverMaterial = new THREE.ShaderMaterial({
@@ -899,6 +987,16 @@ export class Water extends System {
     if (!u) return;
     const { lighting, sky } = this.ctx;
     u.uTime.value = elapsed;
+
+    // Angular pixel size, for the band limits. Recomputed every frame because
+    // both the field of view and the drawing buffer can change under us.
+    const cam = this.ctx.camera, rend = this.ctx.renderer;
+    if (cam && rend) {
+      const h = rend.getDrawingBufferSize(this._tmpSize ??= new THREE.Vector2()).y;
+      if (h > 0) {
+        u.uPixelScale.value = 2 * Math.tan(cam.fov * Math.PI / 360) / h;
+      }
+    }
 
     const sun = lighting?.sun;
     if (sun) {

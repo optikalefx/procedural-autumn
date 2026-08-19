@@ -89,11 +89,23 @@ export function createRockMaterial() {
     // desaturated object reading as dead cardboard. Luma-normalised, so this
     // rotates hue without touching value.
     uRockCast:   { value: new THREE.Vector3(0.965, 0.995, 1.085) },
-    // Single exposure-match dial, applied to the lit colour before fog.
-    // 0.72 of it is the albedo mismatch the previous author measured; the rest
-    // is the shortfall they flagged and could not land. Retuned by capture:
-    // see the table in the round notes.
-    uRockGain:   { value: 0.62 },
+    // Single exposure-match dial, applied to the surface colour *before* fog,
+    // so the far field still resolves into the haze rather than glowing out of
+    // it. It is above 1 because the key light reaching rock in this build is
+    // dimmer than in the plates: at gain 1.0 a boulder measures 0.47 of the
+    // meadow's display luminance where the plates put it at 0.78-0.86.
+    //
+    // Every earlier value of this dial (0.72, then 0.62) was tuning against the
+    // instanced-fog bug fixed in the vertex shader below — the rock pixel was
+    // 96% haze, so the dial moved the frame by ~2% and each pass concluded it
+    // needed to go lower. Measured at the frozen `drive` anchor, with the fog
+    // corrected, the response is very nearly linear in this dial:
+    //
+    //     gain 0.62 -> boulder luma  38   (meadow 132, ratio 0.29)
+    //     gain 2.00 -> boulder luma 127   (meadow 126, ratio 1.01)
+    //     gain 1.65 -> boulder 0.88 of the meadow, just over the band
+    //     gain 1.45 -> 0.80, mid-band, and the distant crags stop reading pale
+    uRockGain:   { value: 1.45 },
   };
   mat.userData.uniforms = uniforms;
 
@@ -135,7 +147,24 @@ export function createRockMaterial() {
             rw = instanceMatrix * rw;
           #endif
           vWPos = ( modelMatrix * rw ).xyz;
-        }`);
+        }`)
+      // ── workaround: instanced fog ──────────────────────────────────────────
+      // Atmosphere's shared `fog_vertex` chunk computes
+      //     vFogWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+      // with no `instanceMatrix`, so for an InstancedMesh it is the *prototype*
+      // position — a metre or two from the world origin. Every rock in the game
+      // was therefore hazed as if it stood ~1 km from the camera and came back
+      // at the `uFogMax` cap: measured at the `drive` anchor a boulder 50 m away
+      // was 96% flat cream over its own albedo, which is why three previous
+      // passes of albedo and exposure tuning moved the rendered pixel by ~2%.
+      // The ground-cover author hit and documented the same bug; the real fix
+      // belongs in Atmosphere.js (see docs/INTEGRATION_REQUESTS.md).
+      .replace('#include <fog_vertex>', /* glsl */`
+        #include <fog_vertex>
+        #ifdef USE_FOG
+          vFogWorldPos = vWPos;
+        #endif
+      `);
 
     shader.fragmentShader = /* glsl */`
       uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;

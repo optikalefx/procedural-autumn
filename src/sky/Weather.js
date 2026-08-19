@@ -35,11 +35,15 @@ import { LightShafts } from './weather_shafts.js';
 
 // Pool sizes per tier. Leaves are the expensive one (CPU integration + a
 // matrix upload); motes are nearly free, so they scale down far less.
+// Mote counts look absurdly low next to the leaf counts, and that is the
+// point: the file header for Motes is right that plate 1 has about forty specks
+// in the whole frame. 1500 of them in a 36 m box put several hundred in view at
+// once, which read as dust on the lens rather than as lit air.
 const TIERS = {
-  ultra:  { leaves: 900, motes: 1500, shafts: 30 },
-  high:   { leaves: 700, motes: 1200, shafts: 24 },
-  medium: { leaves: 400, motes: 800,  shafts: 14 },
-  low:    { leaves: 180, motes: 400,  shafts: 0 },
+  ultra:  { leaves: 900, motes: 340, shafts: 26 },
+  high:   { leaves: 700, motes: 280, shafts: 20 },
+  medium: { leaves: 400, motes: 180, shafts: 12 },
+  low:    { leaves: 180, motes: 90,  shafts: 0 },
 };
 
 export class Weather extends System {

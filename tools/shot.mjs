@@ -12,7 +12,7 @@
  */
 import { chromium } from 'playwright';
 import { acquire } from './_lock.mjs';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 // POI ranking shifts whenever the terrain bake changes, so `--view meadow` can
@@ -295,9 +295,33 @@ await acquire('shot');
     console.log(`shot: ${out}`);
   }
 
-  if (Object.keys(resolvedAll).length) {
-    mkdirSync(dirname(resolve(VIEWS_CACHE)), { recursive: true });
-    writeFileSync(resolve(VIEWS_CACHE), JSON.stringify(resolvedAll, null, 1));
+  // Write monotonically: never overwrite an anchor that is already pinned.
+  //
+  // Several authors run captures concurrently. Each process read the cache at
+  // start and wrote its own resolved set at the end, so the last writer won and
+  // framings silently drifted between rounds — which quietly weakened every
+  // before/after comparison made that day. First resolution wins now, and
+  // --refresh-views is the only way to move a framing. Dynamic anchors are
+  // never persisted at all.
+  {
+    let onDisk = {};
+    if (existsSync(VIEWS_CACHE)) {
+      try { onDisk = JSON.parse(readFileSync(VIEWS_CACHE, 'utf8')); } catch { onDisk = {}; }
+    }
+    const merged = has('refresh-views') ? {} : { ...onDisk };
+    for (const [k, v] of Object.entries(resolvedAll)) {
+      if (DYNAMIC_ANCHORS.has(k)) continue;
+      if (merged[k] === undefined) merged[k] = v;
+    }
+    for (const k of [...DYNAMIC_ANCHORS]) delete merged[k];
+
+    if (Object.keys(merged).length) {
+      mkdirSync(dirname(resolve(VIEWS_CACHE)), { recursive: true });
+      // Write via a temp file so a concurrent reader never sees a partial JSON.
+      const tmp = resolve(VIEWS_CACHE) + `.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(merged, null, 1));
+      renameSync(tmp, resolve(VIEWS_CACHE));
+    }
   }
 
   const stats = await page.evaluate(() => ({

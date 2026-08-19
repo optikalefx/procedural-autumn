@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { fogUniforms } from '../render/Atmosphere.js';
+import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 import { PALETTE } from '../world/WorldConfig.js';
 
 // ── shared GLSL ──────────────────────────────────────────────────────────────
@@ -53,7 +54,7 @@ vec3 leafFlutter(float phase, float weight) {
 
 // The painterly lighting model, shared by leaves and impostors so the LOD
 // transition does not change how a tree is lit.
-const CANOPY_LIGHT = /* glsl */`
+const CANOPY_LIGHT = STYLIZE_PARS + /* glsl */`
 uniform vec3  uSunDir;        // world space, points toward the sun
 uniform vec3  uSunColor;
 uniform vec3  uSkyColor;
@@ -69,7 +70,13 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
 
   // Wrapped diffuse: a canopy is a translucent mass, so light bleeds well past
   // the terminator. A hard N·L makes it read as painted plastic.
-  float wrap = clamp((ndl + 0.32) / 1.32, 0.0, 1.0);
+  // Shared stylised response rather than a local wrap: this is where the
+  // diffuse *floor* comes from. Without it foliage — the largest, darkest mass
+  // in the river/forest/waterfall frames — was the only thing in the game with
+  // no floor, and those frames measured lumaP05 0.02 against a reference band
+  // of 0.16-0.42. The grade was then lifting the whole shadow end of the image
+  // just to catch this one hole.
+  float wrap = stylizeDiffuse(ndl);
   // Gentle posterisation — the reference art bands, it does not ramp.
   wrap = mix(wrap, floor(wrap * uBands + 0.5) / uBands, 0.38);
   wrap *= mix(0.18, 1.0, shadow);
@@ -321,7 +328,7 @@ void main() {
 export function createLeafMaterial(atlas, shared, opts = {}) {
   const bake = !!opts.bake;
   const uniforms = Object.assign(
-    bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), shared,
+    bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(), shared,
     {
       uAtlas: { value: atlas },
       uAlphaTest: { value: opts.alphaTest ?? 0.38 },
@@ -402,7 +409,7 @@ void main() {
 }
 `;
 
-const BARK_FRAG = /* glsl */`
+const BARK_FRAG = STYLIZE_PARS + /* glsl */`
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
 uniform vec3  uSkyColor;
@@ -500,7 +507,7 @@ void main() {
   vec3 N = normalize(vN);
   float shadow = canopyShadow();
   float ndl = dot(N, uSunDir);
-  float wrap = clamp((ndl + 0.22) / 1.22, 0.0, 1.0) * mix(0.15, 1.0, shadow);
+  float wrap = stylizeDiffuse(ndl) * mix(0.42, 1.0, shadow);
   vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5) * uAmbient;
   // A touch of rim so a white birch trunk still separates from a gold meadow.
   vec3 V = normalize(vWorld - cameraPosition);
@@ -548,7 +555,7 @@ export function createBarkMaterial(shared, opts = {}) {
   const bake = !!opts.bake;
   const mat = new THREE.ShaderMaterial({
     uniforms: Object.assign(
-      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), shared,
+      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(), shared,
       { uBake: { value: bake ? 1 : 0 } }),
     vertexShader: BARK_VERT,
     fragmentShader: BARK_FRAG,
@@ -690,7 +697,7 @@ void main() {
 
 export function createImpostorMaterial(atlas, shared, tileCount, fade) {
   const mat = new THREE.ShaderMaterial({
-    uniforms: Object.assign(fogUniforms(), shared, {
+    uniforms: Object.assign(fogUniforms(), stylizeUniforms(), shared, {
       uAtlas: { value: atlas },
       uAlphaTest: { value: 0.45 },
       uTileCount: { value: tileCount },

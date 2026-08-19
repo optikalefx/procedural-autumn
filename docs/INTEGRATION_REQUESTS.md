@@ -658,3 +658,119 @@ treeline in `backlit`.
   for the same reason (the camper parks on the road node it frames).
 - `DYNAMIC_ANCHORS` excludes the vehicle from the frozen-anchor cache. Freezing
   a moving subject's position just aims the camera at empty meadow.
+
+## Water author — second pass, 2026-08-18
+
+Two defects were assigned to me as water bugs. Both were measured with the
+system-hidden test before anything was tuned, and **neither is water**. Evidence
+first, because the temptation with a dark frame is to tune the nearest shader.
+
+### 1. The black pyramid in the lake in `forest` is a rock (rocks author)
+
+`node tools/shot.mjs --view forest --res 768 --eval "…traverse(o=>{if(/^rock|Rocks/i.test(o.name))o.visible=false})"`
+→ `shots/water/diag/norock.png`: the pyramid is gone and the lake behind it is
+continuous, unbroken water. It is a boulder instance sitting in ~2 m of open
+water, roughly 12 m across, and it renders at RGB 0.05-0.10 — a black silhouette
+with no facet separation, so it reads as a triangular slab rather than a rock.
+Measured whole-frame, it costs the view 0.045 of `lumaMean` (0.469 with it,
+0.514 without) and drops `lumaP05` from 0.064 to 0.044.
+
+Two separate asks:
+- **Placement.** `world.getWaterDepth(x, z) > 0.4` should veto a boulder, or at
+  least clamp it to the shallows. A rock breaking the surface at the shoreline
+  is good; one moored in open water reads as a bug. Same test the grass and tree
+  authors were asked for.
+- **Albedo.** This is the near-black rendering the rock author already flagged
+  as "mid-flight" — restating it because it is now the darkest object in a
+  canonical frame.
+
+I have not touched it; the water under and around it is drawn correctly.
+
+### 2. The `waterfall` view is dark because of foliage and rock, not water
+
+`--eval` hiding everything matching `/water|fall|river|lake|spray|mist|plunge/i`
+→ `shots/water/diag/nofall.png`. With every water surface in the game hidden the
+frame gets **darker**, not lighter: `lumaMean` 0.273 → 0.242, `lumaMedian`
+0.198 → 0.171. `lumaP05` is 0.046 with water and 0.044 without, i.e. the crushed
+blacks are entirely unaffected by my system. The falls are the brightest thing
+in that frame and are the only reason it is not worse.
+
+What is actually dark there: the two near conifer cards that fill the middle
+third of the frame, and the shadowed cliff walls either side of the gorge. That
+is the unadopted `stylizeDiffuse` problem the look author has now raised twice —
+foliage with no diffuse floor. **Trees author: this frame is the strongest case
+for it.** Reference plate 5 is the same subject and its darkest rock sits at
+luma 0.28; ours is at 0.02.
+
+Two things in that frame *were* mine and are fixed:
+- Near-camera mist puffs stacked into four blown-out white discs (bloom picked
+  them up at ~1.9 pre-exposure). Confirmed by hiding only `WaterfallMist` /
+  `WaterfallSpray` — `shots/water/diag/nomist.png`.
+- The violet cast over the cliff beside the fall: cool-lit mist over near-black
+  rock. Gone with the mist relit through `wFoamLight`.
+
+### 3. Foam now has its own illuminant (no action needed, worth knowing)
+
+`wFoamLight()` in `src/shaders/water_common.js` desaturates the key toward its
+own luminance before it touches any aerated surface. Under the amber golden-hour
+sun (RGB 3.02/1.72/0.69 at hour 16.6) foam lit literally comes out cream and
+clips red first, which is what made the falling sheet read as paper. Measured
+against reference plate 5, whose whitewater is RGB 0.67/0.75/0.81 with **zero**
+clipped pixels. If the global grade moves again, `uFoamGain` (1.55) is the one
+dial for every fall, rapid, plunge pool and shoreline in the game.
+
+### 4. `VIEWS.waterfall` is still half-blocked by a conifer (POI / trees)
+
+Restating my predecessor's request: the tallest fall is behind a tree that fills
+the middle of the frame, so every author is judged on a frame that is mostly
+foliage. A clearance test against tree instances, or a small offset on the
+anchor, would make it a usable review frame.
+
+---
+
+## Sky & Weather author — round 2
+
+### 1. Bloom threshold vs small bright particles (PostFX author)
+
+Small additive/emissive particles are the one class of object that reliably sits
+over the 0.62 bloom threshold, and bloom is achromatic, so they come back as
+soft cream ovals 4–5x their real size with none of their own colour left. The
+whole falling-leaf drift was reading as white confetti for exactly this reason —
+confirmed by hiding `WeatherLeaves` and `WeatherMotes` one at a time
+(`shots/sky/diag/noLeaves.png`, `noMotes.png`).
+
+Root cause is geometric rather than a tuning mistake: a leaf is a free-flying
+flat panel, so at golden hour its normal points straight at a sun the ground only
+meets at 9°, and it receives roughly six times the direct light of anything else
+in frame. Motes are worse, being emissive by design.
+
+Worked around by driving leaf albedo to ~0.4x the crown colour it was shed from
+and capping the mote glow term, both of which cost saturation I would rather
+keep. What would fix it properly, in preference order:
+
+1. A bloom **knee** rather than a hard threshold, so a value at 0.7 contributes a
+   little instead of a lot.
+2. A per-object bloom opt-out (a `userData.noBloom` the bright pass respects),
+   which would also let the leaves keep full crown albedo.
+
+No action needed if the current look is acceptable — this is a request, not a
+blocker.
+
+### 2. Cloud shadows are live on `Atmosphere` (no action needed)
+
+`Clouds.js` now drives `setCloudShadow`/`setCloudOffset` from a **new** noise
+tile: the coverage channel was re-baked at lower octaves and normalised to a
+full 0..1 range, which makes the ground shadows both larger and higher-contrast
+than before at the same `cloudShadow` strength. The deck tile is 7000 m, the base
+1500 m. If the meadow now reads too patchy, `params.cloudShadow` (currently
+peaking at 0.34) is the dial, and it is mine to move — say so rather than
+changing the Atmosphere default.
+
+### 3. `shots/_anchors.json` is not actually freezing the framings
+
+Across ten capture rounds today, `hero`, `peaks`, `backlit`, `dawn` and `vehicle`
+each silently re-resolved to a completely different subject at least twice
+(`shots/sky/s0` vs `s1` vs `s5` are three different `peaks`). It appears to
+happen on the retry path — a view that reports `not renderable yet` and re-runs
+comes back with a fresh anchor. It makes before/after comparison and `ab.mjs`
+much weaker than they should be for everyone. Harness owner: worth a look.

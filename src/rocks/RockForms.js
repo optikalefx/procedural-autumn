@@ -412,6 +412,81 @@ export const ARCHETYPES = {
     },
   },
 
+  // Cliff-band segment: the unit a mountain *face* is built from, as opposed to
+  // the blocks a boulder field is built from. Three properties matter and they
+  // are all about how a chain of these behaves rather than how one looks:
+  //
+  //   long in X   the scatter aligns local X to the strike, so a chain laid
+  //               along a contour overlaps into one continuous wall
+  //   thin in Z   local -Z is driven into the hillside, and the block is a
+  //               plank rather than a cube. A cube laid level on a 40-degree
+  //               face is as deep as it is wide, so its downhill half stands
+  //               clear of the ground; tipping it to fix that also destroys the
+  //               vertical face, and what is left reads as a boulder lying on a
+  //               slope. Thin plus shoved-in keeps the face vertical *and* the
+  //               base buried, which is what a resistant bed actually looks
+  //               like where it weathers out.
+  //   few planes  at 800 m the only thing that can read is one lit top plane,
+  //               one dark vertical face and a hard edge between them
+  //
+  // The stepped sub-blocks exist so a chain's top edge is broken. A course of
+  // identical blocks laid along a contour draws a horizontal line across the
+  // mountain, which is the painted-contour artifact the terrain author spent a
+  // session removing.
+  cliff: {
+    variants: 4, sink: 0.40,
+    build: (rng, noise) => {
+      const main = makeBody(rng, noise, {
+        axes: V3(1, 0.60 + rng() * 0.26, 0.30 + rng() * 0.16),
+        boxTilt: 0.11, fill: 5, dirJitter: 0.24, lump: 0.16, lumpFreq: 0.60, offJitter: 0.12,
+        erode: 0.07, erodeCount: 4, erodeEdges: false,
+      });
+      const out = [main];
+      const n = 1 + ((rng() * 2) | 0);
+      for (let i = 0; i < n; i++) {
+        const sub = makeBody(rng, noise, {
+          axes: V3(0.54 + rng() * 0.34, 0.32 + rng() * 0.30, 0.26 + rng() * 0.16),
+          boxTilt: 0.18, fill: 4, dirJitter: 0.28, lump: 0.15, lumpFreq: 0.70, offJitter: 0.13,
+          erode: 0.06, erodeCount: 3, erodeEdges: false,
+        });
+        const q = new THREE.Quaternion().setFromEuler(
+          new THREE.Euler((rng() - 0.5) * 0.18, (rng() - 0.5) * 0.45, (rng() - 0.5) * 0.18));
+        // Stepped along the strike, up, and set *back* into the hill (-Z).
+        out.push(transformBody(sub, q,
+          V3((rng() * 2 - 1) * 0.85, 0.32 + rng() * 0.50, -0.14 - rng() * 0.30),
+          0.52 + rng() * 0.32));
+      }
+      return out;
+    },
+  },
+
+  // Buttress / prow: the wedge that projects out of a face between two gullies.
+  // Tall, narrow across the strike and long *into* Z, so when the scatter turns
+  // its +Z downhill it stands proud of the slope and throws a shadow into the
+  // recess beside it. Recesses are the half of cliff relief that additive
+  // geometry cannot make directly — you get them by casting shadow across the
+  // gaps between prows.
+  prow: {
+    variants: 3, sink: 0.34,
+    build: (rng, noise) => {
+      const main = makeBody(rng, noise, {
+        axes: V3(0.46 + rng() * 0.16, 0.88 + rng() * 0.40, 1.0),
+        boxTilt: 0.16, fill: 5, dirJitter: 0.28, lump: 0.15, lumpFreq: 0.6, offJitter: 0.12,
+        erode: 0.07, erodeCount: 4, erodeEdges: false,
+      });
+      const sub = makeBody(rng, noise, {
+        axes: V3(0.52 + rng() * 0.2, 0.44 + rng() * 0.26, 0.66 + rng() * 0.26),
+        boxTilt: 0.24, fill: 4, dirJitter: 0.3, lump: 0.14, lumpFreq: 0.7, offJitter: 0.12,
+        erode: 0.06, erodeCount: 3, erodeEdges: false,
+      });
+      const q = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler((rng() - 0.5) * 0.3, rng() * 6.28, (rng() - 0.5) * 0.3));
+      return [main, transformBody(sub, q,
+        V3((rng() * 2 - 1) * 0.35, -0.55 - rng() * 0.35, 0.35 + rng() * 0.45),
+        0.60 + rng() * 0.30)];
+    },
+  },
+
   // Tower / blade: the thing that actually punches a notch in the skyline.
   // Tall, prismatic, capped by an oblique fracture so the top is never a
   // horizontal cut — a flat-topped tower reads as a chimney, not a crag.
