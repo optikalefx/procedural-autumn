@@ -367,7 +367,7 @@ void main() {
   // butterfly hanging in the gorge with no visible source — which is precisely
   // the floating X a critic pass logged here. Spray is a cloud of small things;
   // if a single sprite is readable as a shape, it is too big.
-  float size = aSize * (0.55 + 1.25 * u * u);
+  float size = aSize * (0.55 + 0.70 * u * u);
   vFade = smoothstep(0.0, 0.10, f) * (1.0 - smoothstep(0.72, 1.0, f));
   vSeed = aSeed;
   vUv = uv;
@@ -1188,7 +1188,10 @@ export class Waterfalls extends System {
 
     for (let f = 0; f < N; f++) {
       const fl = this.falls[f];
-      const count = Math.round(clamp(30 + fl.disc * 240 + fl.height * 2.2, 26, 300));
+      // Doubled, to pay for the size cut below. Same trade as the burst: fill
+      // rate goes as area, so 2x the count at 0.6x the linear size is cheaper
+      // than what it replaces.
+      const count = Math.round(clamp(60 + fl.disc * 460 + fl.height * 4.4, 52, 580));
       const row = (f + 0.5) / N;
       // Time of flight sets the loop rate: a 60 m fall must take much longer
       // to traverse than a 6 m one or the scale reads wrong.
@@ -1203,7 +1206,12 @@ export class Waterfalls extends System {
         // Same correction as the burst clots: at 0.22-0.62 m scaled by width
         // these read as separate white teardrops hanging beside the curtain
         // from any near framing. Spray is a mist of small things.
-        size.push((0.13 + rng() * 0.24) * (0.6 + fl.width * 0.10) * (burst ? 1.6 : 1.0));
+        // ...and once more. In the canonical waterfall frame these were still
+        // 20 px tall at sixty metres and *isolated* — a loose scatter of white
+        // dots either side of the curtain, which reads as sleet falling past a
+        // waterfall rather than as spray coming off one. A droplet that can be
+        // counted is too big, whatever it is made of.
+        size.push((0.08 + rng() * 0.14) * (0.6 + fl.width * 0.10) * (burst ? 1.6 : 1.0));
         spread.push((0.35 + rng() * 1.0) * (0.5 + fl.disc * 1.6));
         seed.push(rng());
         sideDir.push(fl.sideX, 0, fl.sideZ);
