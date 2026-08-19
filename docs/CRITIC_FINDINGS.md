@@ -1,89 +1,83 @@
-# Critic pass — 2026-08-18
+# Critic pass 3 — 2026-08-19
 
-`SHIP 0 · CLOSE 3 (meadow, dawn, forest) · REJECT 7`
+`SHIP 0 · CLOSE 3 (drive, meadow, peaks) · REJECT 7`
 
-Blind A/B of round 005 vs 007 picked 007 on **10/10 views** (verdicts recorded
-before reveal), so the direction is right — but three regressions came with it:
-a floating boulder field, `river` losing ~0.1 luma, and `waterfall` trading
-bloom artifacts for crushed blacks.
+Blind A/B round21 vs round39: **10/10 for the newer build, no regressions.**
+Every artifact the critic named pre-reveal landed on the old side, which
+independently confirms three fixes: the black square, the ground-cover winding
+bug, and the gold contour ribbons as such. The visible world edge did not appear
+in ~30 frames — fixed.
 
-## The two global findings that explain most of the ten views
+Improvement is real. The bar is still not met.
 
-**1. Shadowed surfaces clamp to a single flat hueless value `#39342F`.**
-Measured: 44.0% of the `waterfall` frame and 11.8% of `backlit` are *exactly*
-that hex. Point samples on completely different objects in different views all
-return `srgb(57,52,48)` — rock, cliff, bush, understory, terrain. Zero normal
-response, zero hue, zero form; a zoom shows the shaded rock as a filled polygon
-with a hard aliased edge. This is not crushed blacks — a crush still varies.
+## Ranked blockers
 
-Reference: darkest sample in plate 1 is `srgb(76,64,48)` (warm), shaded foliage
-in plate 3 is `srgb(56,66,32)` (olive), and the big cast shadow on grass there is
-a **high-value violet-blue mass**. Nowhere does a plate put 44% of a frame on one
-neutral.
+1. **rocks — every crag renders near-black warm brown, in isoline chains.**
+   Measured `srgb(66,49,43)`, ratio 1:0.746:0.656 — red-led brown at roughly a
+   quarter of the *shadow* anchor `#5c5a75` (1:0.98:1.27). The banned brown-grey,
+   three stops too dark, receiving no aerial perspective at any distance. Several
+   blocks visibly detached with sky beneath. Confirmed by hiding the system.
+2. **look+grade — the cool cast-shadow mass still does not exist in pixels.**
+   `drive` shadow `srgb(110,71,66)`; `meadow` shadow `srgb(135,78,52)` is
+   *warmer* than its own lit grass. Plate 3's shadow is `srgb(25,60,98)`,
+   1:2.4:3.9. Cool measures 0.2–0.6% against the plate's 22.3%.
+   **A constant-luminance hue mix cannot reach this** — plate 3 attenuates red
+   ~6× while lifting blue ~2.4× in absolute terms. `shadowCoolAmt = 0.55` sits
+   inside the neutral crossing point the file's own comment identifies.
+3. **look+grade — ground colour is right at one hour in four.** Same patch:
+   h17.2 `1:0.730:0.336` (matches the `#f0ad46` anchor), h7.4 salmon
+   `1:0.606:0.459`, h18.6 brick `1:0.495:0.379`, h12 washed cream.
+4. **look+grade / sky — rose/magenta overshoot.** `vehicle` 40.3% of chromatic
+   pixels rose+magenta, `dawn` 25.7%, `hero` 17.1%, against plate 1's 0.2%. The
+   cool half is arriving as candy pink in the distance instead of blue-violet in
+   the cast shadow — the same error, one hue family over.
+5. **groundcover + grass + terrain — bare substrate at 2 m**, unfixed from pass 2.
+6. **terrain — massif bodies have no structure at any scale** (with rocks hidden,
+   a smooth cone whose only incident is heightfield terracing), plus stretched-UV
+   smears down the slopes.
+7. **trees + grass + groundcover — no rim or translucency in the backlit frame.**
+   Also true with trees hidden, so it is not only a trees problem.
+8. **terrain — gold isoline caps on rock**, present with rocks hidden.
+9. **wildlife + sky — unlit, unfogged specks.** ~25 pure-black bird glyphs at
+   200 m with no attenuation while the trees beside them are hazed; leaf
+   particles a separate offender, one ~50 px and three stops too dark.
+10. **look+grade — the vistas are washed.** `hero` P05 0.359 / range 0.463 vs
+    plate 1's 0.161 / 0.705. The black-lift correction overshot.
+11. **trees — conifer value is a range, not a species.** `srgb(151,169,87)` in
+    `waterfall` (the *lightest* mass in frame) vs `srgb(69,78,43)` in `forest`.
+12–14. **water** — no plunge or spray; hard aliased shorelines; no reflections.
+15. **groundcover — scrub reads as a black faceted scribble** with no internal
+    value range. The winding fix restored directional response; form and value
+    did not follow.
+19. **perf — reproducible across two runs:** geometry grows +134/+146 over 40 s
+    without plateauing, five shader programs compile mid-drive, four frames over
+    100 ms (worst 252 ms) in bursts.
 
-**2. The blue channel is driven to ~0 across the dominant colour masses.**
-The two largest colour clusters in `backlit` are `#B05000` and `#C85504` —
-both with B ≤ 4/255. Reference meadow averages `srgb(91.1%, 62.1%, 32.7%)`
-(ratio 1 : 0.68 : 0.36); ours is `srgb(62.2%, 30.0%, 10.3%)` (1 : 0.48 : 0.17).
+Polish: birch trunks at 55–65% of the near-white anchor; uniform grass hue and
+blade form; uniform scatter with no size hierarchy; HUD speaks two visual
+languages (warm settings sheet vs cold navy dash); audio wildlife bus at -inf
+while 25 birds are on screen and rivers 22 dB under the engine.
 
-Consequence: **0.0% yellow and 0.0% green in all ten views**, against the
-reference's ~7.9% yellow-family, and red at 56–80% of chromatic pixels against
-37–52%. The `PALETTE` anchor `#f0ad46` is not reaching the screen — we render
-`#cb6200`. Everything previously described as "muddy", "beige" or "monochrome
-orange" is downstream of this.
+## Two things that finally landed
 
-**Fix 1 and 2 before touching any per-system asset**, or every author spends
-their round compensating for a grade bug inside their own material. The proof is
-the midday sweep: the *same* geometry, assets and scatter read dramatically
-better at hour 12, where the ambient floor behaves.
+**Motion verification works** — `--eval "window.__settle(900)"` advances the sim
+before capture. River surface 68.3% changed over 15 s, meadow grass 47.5%. The
+protocol's motion check had never had a working path before.
 
-## Other ship-blockers
+**`drive`'s lit ground hits the meadow anchor** at `1:0.707:0.342` against the
+reference's `1:0.68:0.36` — the first time this project has matched it.
 
-3. **Bare untextured ground substrate at every range** (groundcover + terrain) —
-   65% of the 2 m road close-up and 40% of `vehicle` are smooth clay slabs, with
-   grass terminating on hard straight mask edges.
-4. **No cast shadows at golden hour** (look+grade) — the vehicle casts none at
-   hour 17.0 but does at 7.4 and 18.6, so it is outside the caster set or the
-   cascade at the shipping hour. Plate 1 gets its entire sense of form from long
-   soft shadows crossing a third of the frame. This is the biggest reason our
-   meadows read flat despite correct chroma.
-5. **Floating, uniform, cuboid boulder field** (rocks) — regression in 007.
-6. **Mountain bodies have no structure** (terrain) + vertical texture smear on
-   steep faces (a triplanar / stretched-UV failure).
-7. **Water is off-palette, flat, and outside the lighting** — grey `#8a99a3`
-   against the `#9dc4d8`→`#2f5f86` spec, no depth ramp, no foam, no reflection
-   anywhere, and it ignores sun colour entirely (stays blue at dawn 7.4 while the
-   world goes sepia).
-8. **Foliage silhouettes are per-pixel dissolve noise** rather than brush marks —
-   the canopy edge resolves to thousands of single-pixel islands. Possibly new
-   from the stylised-diffuse adoption.
-9. **Waterfall is broken** — a detached floating X of crossed quads with no
-   source, a flat streaked sheet with no spray or plunge foam, two bloom orbs.
+## The black square
 
-## Polish (10–19)
+**`0/10` black frames sampled during motion across two 40 s runs. The NaN class
+is gone from the headless harness.** The player still sees the artifact roughly
+every 1–6 seconds while driving. Therefore it is *not* reproducible in the
+configuration every test here uses — which points at the HUD (hidden in every
+capture this project has ever taken, because it hides itself on the same flag
+the harness sets) or at something else browser-specific.
 
-Leaf particles wrong in colour/scale/form (white in `river`, **green** in
-`vehicle`); tree repetition and uniform scatter; uniform non-organic grass blade
-form; grade fails outside golden hour (violet skies at dusk, sepia veil at dawn);
-hard straight object/terrain intersections with no skirt, plus z-fighting;
-scrub reads as a pile of almonds; ~25 identical bird glyphs read as flies on the
-lens; birch trunks muddy tan instead of the near-white `#e9e6dd` signature;
-triangle budget breached in 4 of 6 measurements (up to 6.37 M against a 4.5 M
-cap) with 36–42 fps in heavy views; no near-field framing element in the vistas,
-so there is no depth ladder.
+## Do not trade these away
 
-## Two things that are genuinely good — do not trade them away
-
-The `dawn` sky and haze, and the camper asset itself.
-
-## Harness defects the critic hit
-
-- The pruner deleted the critic's evidence directory mid-review. Fixed:
-  `shots/critic`, `shots/perf` and `shots/_scratch` are now protected, and
-  nothing modified in the last two hours is pruned.
-- `shot.mjs --all` aborted partway in 2 of 5 runs.
-- The `forest` anchor puts the camera in a lake, so the forest system is never
-  actually judged.
-- **Motion cannot be verified at all**: two captures both start from page load at
-  the same elapsed time, so wind and water phase are identical every run. The
-  protocol's motion check has no working path through this harness.
+The camper asset and its framing; the settings sheet; `drive`'s ground colour;
+the water surface animation; the canopy hue variety in `meadow` and `drive`;
+draw calls and driving triangle counts now inside budget.
