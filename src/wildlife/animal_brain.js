@@ -193,7 +193,13 @@ export class Brain {
         // already paid that beat. It re-freezes only by getting genuinely
         // closer, which is the `dEff < fleeDist` branch above.
         this._enterAlert();
-        this.timer = lerp(c.freezeTime[0], c.freezeTime[1], this.rnd()) * 1.6;
+        // Was * 1.6, which at 1.0-2.6 s of base freeze ran to 4.2 s. A player
+        // closing at 13 m/s covers 55 m in that time, so the long freeze ate
+        // essentially the whole encounter and the deer was motionless for all
+        // of it. Held to roughly the honest freeze length, the stare still
+        // reads as a stare and then resolves into wary movement while the
+        // player is still in range to see it.
+        this.timer = lerp(c.freezeTime[0], c.freezeTime[1], this.rnd()) * 1.05;
       } else if (dEff < notice && this.state !== ST.ALERT && this.state !== ST.WATCH) {
         this._enterWatch();
       } else if (this.state === ST.WATCH && dEff > notice * 1.2) {
@@ -333,8 +339,14 @@ export class Brain {
       this.hasLook = true;
       const want = Math.atan2(threat.x - this.pos.x, threat.z - this.pos.z);
       // Rabbits and deer keep the threat off the shoulder rather than dead
-      // ahead — squared up but ready to turn and run.
-      this.wantHeading = want + (this.slot & 1 ? 0.75 : -0.75);
+      // ahead — squared up but ready to turn and run. That angle is now near
+      // enough side-on to matter: a deer seen head-on is about 0.5 m wide and
+      // seen across the flank about 1.9 m, so widening the shoulder from 43 to
+      // 69 degrees is most of a four-fold gain in silhouette area for nothing.
+      // Reference plate 3 is the argument — its bear is legible at a hundred
+      // metres because it is a flat dark shape presented broadside, and a deer
+      // angled toward you is a narrow smudge no matter what its hide does.
+      this.wantHeading = want + (this.slot & 1 ? 1.2 : -1.2);
     }
     if (this.timer < 0) {
       if (d < this.cfg.fleeDist * 1.25) {

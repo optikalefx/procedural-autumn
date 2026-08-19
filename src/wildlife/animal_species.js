@@ -53,8 +53,14 @@ export function createHideMaterial(c) {
     // the animal needs to keep.
     uSilNear: { value: c.silNear ?? 38.0 },
     uSilFar:  { value: c.silFar  ?? 145.0 },
-    uSilDark: { value: c.silDark ?? 0.58 },   // post-fog value multiplier at full range
-    uSilFlat: { value: c.silFlat ?? 0.62 },   // how far the regions collapse into uDark
+    // Pushed harder than the first cut (0.58 / 0.62) after looking at plate 3
+    // beside our own frames. The plate's bear is not 'somewhat darker than the
+    // grass', it is very nearly black, and it holds one flat value across its
+    // whole body. Half measures here produce a mid-brown blob that still sits
+    // in the same value band as the straw and litter in sunlit gold grass,
+    // which is the exact failure the whole silhouette treatment exists to fix.
+    uSilDark: { value: c.silDark ?? 0.44 },   // post-fog value multiplier at full range
+    uSilFlat: { value: c.silFlat ?? 0.85 },   // how far the regions collapse into uDark
   };
 
   const mat = new THREE.MeshStandardMaterial({
