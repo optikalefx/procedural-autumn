@@ -151,12 +151,12 @@ void main() {
   // grey scar on the ground rather than as water, which is measurable in the
   // peaks view (water #8f7355 against #c57c40 for the land it lies on) and is
   // most of what makes distant water look like wet dirt.
-  float band = 0.62 + min(foot, 3.0) * 0.55;
+  float shoreWide = 0.62 + min(foot, 3.0) * 0.55;
   // ...and the channel core does not take part in the shoreline fade at all.
   // Whether there is water in the middle of a river is not a question the
   // antialias band gets to answer.
   float core = 1.0 - smoothstep(0.35, 1.05, abs(vSide));
-  float shoreFade = max(smoothstep(0.0, band, depth),
+  float shoreFade = max(smoothstep(0.0, shoreWide, depth),
                         core * smoothstep(0.0, 0.14, depth));
   // Taper across the profile as well. The outer columns exist to give the
   // shoreline fade somewhere to finish, not to be water: on an incised channel
@@ -262,7 +262,10 @@ void main() {
   // decides only how far the line may spread — anchored to metres alone it
   // ends up living inside five centimetres of depth on every gentle bank,
   // which is to say nowhere.
-  float laceD = smoothstep(0.02, 0.14, depth) * (1.0 - smoothstep(0.12, 0.50, depth));
+  // Widened with the pixel footprint, for the reason given in the lake shader.
+  float laceScale = 1.0 + min(foot, 6.0) * 1.7;
+  float laceD = smoothstep(0.02, 0.14 * laceScale, depth)
+              * (1.0 - smoothstep(0.12 * laceScale, 0.50 * laceScale, depth));
   float laceW = 1.0 - smoothstep(shoreBand * 0.8, shoreBand * 3.0, distShore);
   float lace = laceD * mix(0.35, 1.0, laceW) * smoothstep(0.18, 0.62, abs(vSide));
   // Scaled by the channel. On a 1.5 m brook the depth window the waterline
@@ -462,7 +465,12 @@ void main() {
   // exactly one pixel wide wherever you stand.
   // Capped, for the reason given in the river shader: an uncapped band turns
   // the whole shallow rim of a distant lake into a fade instead of into water.
-  float shoreFade = smoothstep(0.0, 0.62 + min(foot, 3.0) * 0.55, depth);
+  // The interior of a lake is exempt from the fade entirely — how far from the
+  // bank a pixel is, not how wide a pixel is, decides whether it is water — so
+  // the band is free to stay wide enough to actually antialias the margin.
+  float lakeCore = smoothstep(2.0, 11.0, vShore);
+  float shoreFade = max(smoothstep(0.0, 0.62 + min(foot, 5.0) * 0.55, depth),
+                        lakeCore * smoothstep(0.0, 0.20, depth));
   // The mesh is dilated one ring beyond the baked water so the fade has room to
   // finish inside geometry. That ring is the only place this gate does anything
   // — it stops a perched lake from painting itself down a cliff face.
@@ -703,7 +711,15 @@ void main() {
   // Depth places the line; slope is only allowed to limit how far it spreads,
   // because a continuous three-metre white fringe around every lake in the map
   // reads as pack ice rather than water lapping at a bank.
-  float laceD = smoothstep(0.015, 0.10, depth) * (1.0 - smoothstep(0.09, 0.36, depth));
+  // The depth window the waterline lives in has to grow with the pixel. Fixed
+  // at 1.5-36 cm it is sub-pixel on any bank more than a few dozen metres off,
+  // so the lace vanishes exactly where it is most needed and the shoreline
+  // resolves into a bare stair-stepped polygon edge — visible at 3x on any
+  // mid-distance bank. A waterline is a couple of pixels wide at every range,
+  // which is a statement about the footprint, not about depth.
+  float laceScale = 1.0 + min(foot, 6.0) * 1.7;
+  float laceD = smoothstep(0.015, 0.10 * laceScale, depth)
+              * (1.0 - smoothstep(0.09 * laceScale, 0.36 * laceScale, depth));
   float laceW = 1.0 - smoothstep(0.8, 3.6, distShore);
   float lace = laceD * mix(0.26, 1.0, laceW);
   // Broken twice, at two scales. One noise threshold turns the band into a

@@ -119,6 +119,30 @@ await acquire('shot');
     deviceScaleFactor: 1,
   });
 
+  // Neuter Vite's HMR client before any page script runs.
+  //
+  // A dozen authors edit this tree concurrently, so a peer saving a file mid
+  // capture reloads the page and the run dies with "Execution context was
+  // destroyed". It has cost several authors an entire round, and worse, a
+  // partially-reloaded page can produce a frame that looks fine and is not what
+  // was asked for. A capture wants a frozen build, not a live one.
+  await page.addInitScript(() => {
+    const RealWS = window.WebSocket;
+    window.WebSocket = function (url, protocols) {
+      if (typeof url === 'string' && /[?&]token=|vite-hmr|__vite/.test(url)) {
+        // A silent stub: never connects, never errors, never reloads.
+        return {
+          readyState: 3, url, close() {}, send() {},
+          addEventListener() {}, removeEventListener() {},
+          set onopen(_) {}, set onclose(_) {}, set onerror(_) {}, set onmessage(_) {},
+        };
+      }
+      return new RealWS(url, protocols);
+    };
+    window.WebSocket.prototype = RealWS.prototype;
+    Object.assign(window.WebSocket, RealWS);
+  });
+
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));

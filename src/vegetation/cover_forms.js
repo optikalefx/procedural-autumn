@@ -741,15 +741,15 @@ function buildLeafScatter(rng, variant) {
  */
 function buildDeadTuft(rng, variant) {
   const b = new Builder();
-  const n = (variant === 1 ? 4 : 6) + ((rng() * 4) | 0);
-  const R = 0.20 + rng() * 0.24;
+  const n = (variant === 1 ? 6 : 8) + ((rng() * 5) | 0);
+  const R = 0.26 + rng() * 0.30;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * TAU + rng() * 1.2;
     frond(b, {
       x: Math.cos(a) * R * 0.16, y: 0.012, z: Math.sin(a) * R * 0.16,
       yaw: a,
       tilt: 1.12 + rng() * 0.36,                 // laid over, not standing
-      len: R * (0.85 + rng() * 0.95), w: 0.016 + rng() * 0.012,
+      len: R * (0.42 + rng() * 0.44), w: 0.026 + rng() * 0.020,
       segs: 1, droop: 0.10, taper: 0.75,
       chanA: 0.05, chanB: 1.0, aoA: 0.62, aoB: 0.95, swayA: 0.05, trans: 0.8,
     });
@@ -800,17 +800,17 @@ export const COVER_ARCHETYPES = [
   { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, wind: 0.055, shadow: true,  build: buildThicket },
   { key: 'fern',        variants: 2, card: true,  cap: 380, vis: 64,  band: 1, wind: 0.045, shadow: false, build: buildFern },
   { key: 'broadleaf',   variants: 2, card: true,  cap: 340, vis: 46,  band: 0, wind: 0.030, shadow: false, build: buildBroadleaf },
-  { key: 'moss',        variants: 2, card: false, cap: 420, vis: 40,  band: 0, wind: 0.000, shadow: false, build: buildMoss },
+  { key: 'moss',        variants: 2, card: false, cap: 420, vis: 40,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss },
   { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 48,  band: 0, wind: 0.055, shadow: false, build: buildFlowerAster },
   { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 58,  band: 0, wind: 0.065, shadow: false, build: buildGoldenrod },
   { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 52,  band: 0, wind: 0.085, shadow: false, build: buildSeedHead },
-  { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, wind: 0.006, shadow: false, build: buildLeafDrift },
+  { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, recv: false, wind: 0.006, shadow: false, build: buildLeafDrift },
   { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, wind: 0.000, shadow: true,  build: buildLog },
   { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, wind: 0.000, shadow: true,  build: buildStump },
-  { key: 'branch',      variants: 2, card: false, cap: 220, vis: 88,  band: 1, wind: 0.000, shadow: false, build: buildBranch },
-  { key: 'pebble',      variants: 2, card: false, cap: 560, vis: 58,  band: 0, wind: 0.000, shadow: false, build: buildPebble },
-  { key: 'leafScatter', variants: 2, card: true,  cap: 520, vis: 52,  band: 0, wind: 0.004, shadow: false, build: buildLeafScatter },
-  { key: 'deadTuft',    variants: 2, card: true,  cap: 480, vis: 46,  band: 0, wind: 0.020, shadow: false, build: buildDeadTuft },
+  { key: 'branch',      variants: 2, card: false, cap: 220, vis: 88,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
+  { key: 'pebble',      variants: 2, card: false, cap: 700, vis: 54,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 700, vis: 50,  band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
+  { key: 'deadTuft',    variants: 2, card: true,  cap: 760, vis: 48,  band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
 ];
 
 /** arch key -> index into COVER_ARCHETYPES, for the flat instance buffers. */

@@ -118,27 +118,7 @@ export function createCoverMaterial(uniforms, card = false) {
                   * aCov.z;
         vCoverTrans = cInfo.w;
       `)
-      // ── workaround: instanced fog ────────────────────────────────────────
-      // Atmosphere's shared `fog_vertex` chunk computes
-      //     vFogWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
-      // with no `instanceMatrix`. For an InstancedMesh that is the *geometry*
-      // position, i.e. a metre or two from the world origin, so every instance
-      // in this system was hazed as if it stood 1 km from the camera: measured
-      // at the meadow anchor the ground cover rendered at fogFactor ~0.76, the
-      // cap, which is 76% flat cream over whatever albedo it was given. It made
-      // dark shrubs invisible and turned ochre scrub into pale grey rags, and
-      // it survived three rounds of palette changes because the albedo was
-      // barely reaching the frame at all.
-      //
-      // Overwriting the varying after the chunk has run is the smallest local
-      // fix. Logged in docs/INTEGRATION_REQUESTS.md — it affects every
-      // instanced MeshStandardMaterial in the game, not just this one.
-      .replace('#include <fog_vertex>', /* glsl */`
-        #include <fog_vertex>
-        #ifdef USE_FOG
-          vFogWorldPos = vCoverWP;
-        #endif
-      `);
+      ;
 
     shader.fragmentShader = /* glsl */`
       uniform vec3 uSunDir;
@@ -153,7 +133,15 @@ export function createCoverMaterial(uniforms, card = false) {
         #include <color_fragment>
         diffuseColor.rgb *= vCoverCol;
       `)
-      .replace('#include <opaque_fragment>', /* glsl */`
+      // Anchored on `emissivemap_fragment`, not on `opaque_fragment`. In this
+      // three version `vec3 outgoingLight = totalDiffuse + totalSpecular +
+      // totalEmissiveRadiance;` sits *above* the opaque chunk, so adding to
+      // totalEmissiveRadiance there was writing to a value nothing read again
+      // and the backlight has silently not been rendering. This anchor runs
+      // before the lighting chunks, which is where three itself expects
+      // emissive to be accumulated.
+      .replace('#include <emissivemap_fragment>', /* glsl */`
+        #include <emissivemap_fragment>
         {
           // Transmission needs two things to line up: the camera has to be
           // looking toward the sun, and the surface has to be turned away from
@@ -165,7 +153,6 @@ export function createCoverMaterial(uniforms, card = false) {
           totalEmissiveRadiance += uSunColor * diffuseColor.rgb *
             ( uTransmit * vCoverTrans * coverThru * pow( coverToward, 2.4 ) );
         }
-        #include <opaque_fragment>
       `);
   };
 

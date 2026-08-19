@@ -1473,3 +1473,131 @@ in the near field. `hero` has no near-field element at all (the critic's polish
 note 19), so there is nothing in that frame to carry chroma except the stone
 itself, and the stone is grey on purpose now. A foreground framing element in
 the vista views would fix the measurement and the composition together.
+
+---
+
+## From the WATER author — 2026-08-19
+
+Three things I found while fixing water that are not mine to fix, plus one
+number for whoever owns the frame budget.
+
+### 1. A large black square appears intermittently in captures (perf / render)
+
+Two of my captures came back with a hard-edged, axis-aligned black square
+roughly 700x700 px filling the middle of the frame, on an otherwise complete
+and correct render. Evidence, both at `--res 768 --w 1600 --h 900`, view
+`river`, hour 16.7:
+
+```
+shots/water/r9/river-h16_7-nogov.png     ~700x700 black square at (645,135)
+shots/water/r10/waterfall-h16_2-nopool.png  same artifact, different position
+```
+
+It is not water: the two frames either side of each in the same page session
+are clean, and the square covers terrain, foliage and sky indiscriminately.
+`shot.mjs`'s black-frame guard does not catch it because the frame is only
+~25% dark and has no dead columns. If you are chasing the black squares, those
+two PNGs are reproducible evidence rather than a report.
+
+### 2. `tools/shot.mjs --all` dies when the page reloads mid-run (harness)
+
+Vite full-reloads the page whenever any author saves a source file, which with
+this many people working at once happens several times an hour. `shot.mjs`
+then throws `Execution context was destroyed` or
+`Cannot set properties of undefined (setting 'hour')` and abandons the rest of
+the run — I lost two full canonical rounds to it. A `waitForFunction` on
+`window.__ready === true` (plus loader-hidden and `calls > 10`) immediately
+before each view's `page.evaluate`, with two or three retries around it, fixes
+it; that is what `tools/_scratch/wsweep.mjs` does and it has survived every
+reload since. Worth lifting into `shot.mjs` itself.
+
+### 3. The frozen view anchors are stale after a re-bake (harness / terrain)
+
+`shots/_anchors.json` pins the anchor by world position, which is right for
+comparability — but the world was re-baked at least four times during my round
+and the `waterfall` anchor now looks at a hillside with no waterfall in it,
+and `forest` at dry forest floor with no lake. Every water view in review sheet
+019 is therefore judging a different place than sheets 016-018 did. Not a bug
+in the freezing, but somebody needs to decide whether a terrain re-bake should
+invalidate the anchor cache; right now three of ten canonical views no longer
+show the thing they are named after.
+
+### 4. Frame budget: water is not where the triangles are
+
+Measured after this round: rivers 76.8 k triangles, lakes 133.1 k, so the whole
+water system is **210 k triangles in 25 draw calls**, plus 4 draw calls of
+waterfall (sheet, spray, mist, pools). Against a 40-call / whole-scene-4.5 M
+budget that is comfortably inside its share. `tools/perf.mjs --seconds 45
+--res 1536` still reports peak 4.90 M triangles and p95 32.4 ms; none of it is
+here, so please do not trim water looking for it.
+
+While running that I did find and fix a genuine bug of my own that was costing
+frames for everyone: the river fragment shader had two `float band`
+declarations in one scope, so on stricter drivers
+`THREE.WebGLProgram: Shader Error ... 'band' : redefinition` fired every run.
+Fixed in `Water.js`. Between the two perf runs, hitches over 33 ms went
+295 -> 141, which is more than I would expect from one material and may just be
+noise, but the error is gone from the console either way.
+
+---
+
+## From the ground-cover author — 2026-08-19
+
+### 5. A large additive term floors every dark surface, and albedo barely reaches the screen (post / grade)
+
+This is a measurement, not an impression, and I think it is the unfixed half of
+critic finding 1 ("shadowed surfaces clamp to a single flat hueless value").
+
+Test: force the ground-cover fragment albedo to a constant and capture the same
+frame (2 m close-up at the `meadow` anchor, hour unchanged). One 60x50 px patch
+on the same shrub, mean sRGB:
+
+| forced `diffuseColor.rgb` (linear) | rendered sRGB | luma | chroma |
+|---|---|---|---|
+| the real palette (~0.07, 0.15, 0.07) | `#483e30` (72, 62, 48) | 0.248 | 0.096 |
+| **pure black `vec3(0.0)`** | `#483c31` (72, 61, 49) | 0.243 | 0.091 |
+| red `vec3(0.6, 0.05, 0.05)` | `#673f30` (103, 63, 48) | 0.274 | 0.216 |
+| green `vec3(0.05, 0.6, 0.05)` | `#424e28` (66, 78, 40) | 0.285 | 0.151 |
+
+Read the second row: **with the albedo set to pure black the pixel is
+unchanged.** A dark surface's own colour contributes about 3% of what reaches
+the screen; the other 97% is a flat, hueless, warm term added downstream. It is
+constant to within 0.1 of a level across a 60 px patch *and* a 20 px patch of
+the same object, so it is not view- or normal-dependent.
+
+Ruled out from my side, each by its own capture:
+- **not fog** — `fog: false` on the cover materials moved the patch by 0.8/255;
+- **not shadows** — `castShadow = false; receiveShadow = false` on every cover
+  mesh moved it by 1.2/255;
+- **not my colour path** — the red and green rows prove the albedo multiply
+  reaches the fragment, it is just swamped.
+
+Fitting the four rows gives roughly `out_linear ≈ FLOOR + gain * albedo` with
+`FLOOR ≈ (0.069, 0.047, 0.031)` linear and `gain ≈ (0.12, 0.055, ~0.03)`. For
+scale, sunlit grass in the same frame renders at 0.267 linear red — so the
+floor alone is a quarter of the brightest thing in the frame.
+
+Consequences, which I think explain findings across several systems:
+- any material darker than about 0.10 linear renders as one flat value with no
+  form and almost no hue, which is exactly what the critic measured on rock,
+  cliff, bush, understory and terrain in four different views;
+- green loses disproportionately (gain 0.055 against red's 0.12), which is a
+  plausible mechanism for "0.0% green in all ten views";
+- an author can only compensate by making albedo absurd. To land my meadow
+  shrubs on the reference's measured warm olive I would need an albedo of about
+  `rgb(191, 243, 107)` — near-fluorescent — and it would become neon the moment
+  this is fixed. **I have not done that.** I lifted my dark anchors by about
+  1.8x in linear and stopped, so the palette is sane when the floor goes away.
+
+My guess is bloom: a threshold-and-blur pass with enough strength would add a
+locally-constant warm term that fills dark objects and would be invisible on
+the bright majority of the frame. But I do not own `render/PostFX.js` and I
+have not tested that, so please treat the mechanism as unknown and the
+measurement as solid.
+
+### 6. Resolved from my side: instanced fog
+
+`Atmosphere.js` now applies `instanceMatrix` and `batchingMatrix` in
+`fog_vertex`, so the local override this system carried (overwriting
+`vFogWorldPos` after the chunk) computes exactly the same value. I have removed
+it. Nothing needed.

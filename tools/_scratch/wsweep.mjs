@@ -23,6 +23,12 @@ const VIEWS = {
   backlit:   { anchor: 'meadow',   height: 2.4, dist: 10,  pitch: 0.04,  fov: 52, faceSun: true },
   dawn:      { anchor: 'vista',    height: 48,  dist: 130, pitch: -0.13, fov: 46 },
   // Water-only framings: the canonical anchors never look at a fall close up.
+  // Frames whatever the biggest fall in the *current* bake is, resolved in the
+  // page. The frozen anchors point at a world that has since been re-baked.
+  fallauto: { auto: 'fall', fov: 50 },
+  // Stands on the bank of the largest open water in the current bake and looks
+  // across it: the 2 m and 40 m reads in one frame.
+  lakeauto: { auto: 'lake', fov: 55 },
   fallA:  { pos: [-600, 19, 662], look: [-645, 45, 618], fov: 55 },
   fallB:  { pos: [-585, 26, 640], look: [-648, 44, 618], fov: 50 },
   fallC:  { pos: [-600, 34, 690], look: [-650, 46, 617], fov: 45 },
@@ -92,6 +98,50 @@ for (const name of views) {
       const api = window.__cameraAnchors || {};
       window.__lighting.hour = hour;
       window.__lighting.cycleSpeed = 0;
+      if (v.auto === 'lake') {
+        // Coarse scan for the wettest neighbourhood, then walk to its shore.
+        const H = 1600, STEP = 40;
+        let best = null;
+        for (let z = -H; z <= H; z += STEP) {
+          for (let x = -H; x <= H; x += STEP) {
+            let n = 0;
+            for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+              if (wd.getWaterDepth(x + dx * STEP, z + dz * STEP) > 1.2) n++;
+            }
+            if (!best || n > best.n) best = { x, z, n };
+          }
+        }
+        const c = best;
+        let bx = c.x, bz = c.z;
+        for (let r = 0; r < 60; r++) {
+          const nx = c.x + r * 12, nz = c.z;
+          if (wd.getWaterHeight(nx, nz) === null) { bx = nx + 4; bz = nz; break; }
+        }
+        const gy = wd.getHeight(bx, bz);
+        v.pos = [bx, gy + 1.8, bz];
+        v.look = [c.x, gy + 1.0, c.z];
+      }
+      if (v.auto === 'fall') {
+        const list = [...wd.waterfalls].sort((a, b) => (b.height * b.discharge) - (a.height * a.discharge));
+        const f = list[0];
+        const mx = (f.top[0] + f.bottom[0]) * 0.5, mz = (f.top[2] + f.bottom[2]) * 0.5;
+        const my = (f.top[1] + f.bottom[1]) * 0.5;
+        // Stand off perpendicular to the fall's own run, at ~1.3x its height.
+        const dx = f.bottom[0] - f.top[0], dz = f.bottom[2] - f.top[2];
+        const hl = Math.hypot(dx, dz) || 1;
+        const px = -dz / hl, pz = dx / hl;
+        const D = Math.max(45, f.height * 1.3);
+        for (const sgn of [1, -1]) {
+          const cx = mx + px * D * sgn, cz = mz + pz * D * sgn;
+          const g = wd.getHeight(cx, cz);
+          if (g < my + f.height * 0.35) {
+            v.pos = [cx, Math.max(g + 4, f.bottom[1] + 6), cz];
+            v.look = [mx, my, mz];
+            break;
+          }
+        }
+        if (!v.pos) { v.pos = [mx + px * D, f.bottom[1] + 10, mz + pz * D]; v.look = [mx, my, mz]; }
+      }
       if (v.pos) {
         e.camera.fov = v.fov;
         e.camera.updateProjectionMatrix();

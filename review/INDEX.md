@@ -24,3 +24,6 @@ same places are photographed every round and the sheets are directly comparable.
 | 016 | 2026-08-19 | terrain: mountain structure, triplanar fix, ground substrate | [016](016-2026-08-19-terrain-mountain-structure-triplanar-fix-ground-.png) |
 | 017 | 2026-08-19 | conifer canopy value range, size hierarchy and far-field variety | [017](017-2026-08-19-conifer-canopy-value-range-size-hierarchy-and-fa.png) |
 | 018 | 2026-08-19 | terrain: heightfield structure, herringbone fix, palette rock | [018](018-2026-08-19-terrain-heightfield-structure-herringbone-fix-pa.png) |
+| 019 | 2026-08-19 | water lighting response, lake cliff-sheet fix, plunge scale | [019](019-2026-08-19-water-lighting-response-lake-cliff-sheet-fix-plu.png) |
+| 020 | 2026-08-19 | water: waterline antialias, shore fade core | [020](020-2026-08-19-water-waterline-antialias-shore-fade-core.png) |
+| 021 | 2026-08-19 | water lakes and falls, terrain structure, tree canopy | [021](021-2026-08-19-water-lakes-and-falls-terrain-structure-tree-can.png) |

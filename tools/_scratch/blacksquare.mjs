@@ -29,7 +29,7 @@ await page.waitForTimeout(1500);
 await page.evaluate(()=>{
   const e=window.__engine, ctx=window.__ctx, r=e.renderer;
   const gl=r.getContext(); const W=64,H=36; const px=new Uint8Array(W*H*4);
-  const P=window.__perf={started:performance.now(),n:0,hits:[],base:[],maxDark:0};
+  const P=window.__perf={started:performance.now(),n:0,hits:[],base:[],maxDark:0,reread:true,reread2:0};
   const orig=ctx.postfx.render.bind(ctx.postfx);
   ctx.postfx.render=function(dt){
     orig(dt); P.n++;
@@ -48,7 +48,16 @@ await page.evaluate(()=>{
     if(f>0.03){
       const cam=e.camera.position;
       P.hitN=(P.hitN||0)+1;
-      if(P.hits.length<12) P.hits.push({t:+(performance.now()-P.started).toFixed(0), frac:+f.toFixed(3),
+      // Render the identical frame again and read it back again. If the second
+      // read is fine, nothing was wrong with the scene and the first present
+      // was simply lost; if it is black too, the black is in the picture.
+      let again=-1;
+      if(P.reread){ orig(0.016);
+        gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+        gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);
+        let d2=0; for(let i=0;i<W*H;i++){ if((px[i*4]+px[i*4+1]+px[i*4+2])/3<14) d2++; }
+        again=+(d2/(W*H)).toFixed(2); P.reread2=(P.reread2||0)+(again>0.5?1:0); }
+      if(P.hits.length<12) P.hits.push({t:+(performance.now()-P.started).toFixed(0), frac:+f.toFixed(3), rerender:again,
         box:[x0,y0,x1-x0+1,y1-y0+1], fill:+(dark/Math.max(1,(x1-x0+1)*(y1-y0+1))).toFixed(2),
         cam:[+cam.x.toFixed(1),+cam.y.toFixed(1),+cam.z.toFixed(1)], calls:r.info.render.calls});
     }
@@ -63,7 +72,7 @@ for(const va of VARIANTS){
   await page.evaluate((src)=>eval(src)(), va.on);
   await page.evaluate(()=>{const P=window.__perf;P.n2=0;P.hitN=0;P.hits=[];});
   await page.waitForTimeout(SECONDS*1000);
-  const d=await page.evaluate(()=>{const P=window.__perf;return {n:P.n2,hitN:P.hitN||0,hits:P.hits};});
+  const d=await page.evaluate(()=>{const P=window.__perf;const r={n:P.n2,hitN:P.hitN||0,hits:P.hits,still:P.reread2||0};P.reread2=0;return r;});
   results.push([va.label,d]);
   process.stderr.write(`[black] ${va.label}: ${d.hitN}/${d.n}\n`);
 }
@@ -71,6 +80,6 @@ await page.evaluate(()=>{window.__perfDrive=false;});
 await browser.close();
 console.log('grid is 64x36; box is [x,y,w,h] in grid cells, fill = dark cells / box area\n');
 for(const [label,d] of results){
-  console.log(`${label.padEnd(34)} ${d.hitN} black frames of ${d.n} presented  (${(100*d.hitN/Math.max(1,d.n)).toFixed(2)}%)`);
+  console.log(`${label.padEnd(34)} ${d.hitN} black frames of ${d.n} presented  (${(100*d.hitN/Math.max(1,d.n)).toFixed(2)}%)   still black after an immediate re-render: ${d.still}`);
   for(const h of d.hits.slice(0,3)) console.log('     '+JSON.stringify(h));
 }

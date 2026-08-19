@@ -256,7 +256,20 @@ class GradeEffect extends Effect {
 // desaturation term bleaches the gold and the frame measures right but looks
 // like beige sand.
 // Smallest bloom mip, in pixels on its short side. See _capBloomMips().
-const MIN_BLOOM_MIP = 12;
+//
+// Raised from 12 after re-measuring: at 12 one presented frame in ~160 still
+// came out entirely black during a drive. Per-frame framebuffer readback over
+// a 40 s drive, same route, same session, only this number changed:
+//
+//   levels 6 (smallest mip ~25x14 px)   0.61% of presented frames black
+//   levels 5 (~50x28)                   0.10%
+//   levels 4 (~100x56)                  0.00%   (1281 frames, none)
+//
+// gl.flush() after the composer did not help (0.43%) and renderer.resetState()
+// only halved it (0.11%), which is consistent with the driver losing the
+// present rather than with anything in our own GL state. 48 puts the floor at
+// levels 4 at 1600x900 and scales with the window.
+const MIN_BLOOM_MIP = 48;
 
 const EXPOSURE = 0.86;
 
@@ -412,6 +425,11 @@ export class PostFX {
    *   levels 7 (6x4)                  1.4%
    *   levels 6 (13x7)                 0.3%
    *   levels 5 (25x14)                0.2%
+   *
+   * Re-measured later with a readback on EVERY presented frame rather than a
+   * sampled one, which is what it takes to see a sub-1% artefact at all: a
+   * floor of 12 px was still producing 0.61% black frames on a drive, and only
+   * a floor near 48 px (levels 4 at 1600x900) reached zero. See MIN_BLOOM_MIP.
    *
    * i.e. binding a handful-of-pixels render target and then coming back to the
    * default framebuffer intermittently loses the present. That is a driver bug,

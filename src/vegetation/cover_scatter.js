@@ -55,32 +55,40 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 // exists to supply; everything else is accent. Nothing here is at full
 // saturation, and nothing here is grey.
 const PAL = {
-  // Lifted off near-black: at the previous values these silhouetted to solid
-  // holes in the frame rather than reading as foliage with form.
-  shrubDeep:   C(0x4a6b47), shrubLit:    C(0x7a9c58),
-  shrubMaroon: C(0x8a4a32), shrubMarLit: C(0xb06a38),
-  berryLeaf:   C(0x7d3a27), berryLit:    C(0xb8471f), berry: C(0x9e2b28),
+  // Everything here was lifted by about 1.8x in linear over the previous
+  // values, and the reason is measured rather than aesthetic: see
+  // docs/INTEGRATION_REQUESTS.md item 5. A flat warm term downstream of every
+  // material floors any surface darker than ~0.10 linear at rendered
+  // sRGB (72, 61, 49), so at the old values this layer's entire palette was
+  // arriving at the screen indistinguishable from pure black — a capture with
+  // the albedo forced to `vec3(0.0)` measured the same pixel to within one
+  // level. These values are still dark against the meadow (the reference's own
+  // shrubs sit at 0.72 of its sunlit gold's luma, and ours land close to that);
+  // they are simply far enough above the floor for form and hue to survive it.
+  shrubDeep:   C(0x668f5f), shrubLit:    C(0x9cc072),
+  shrubMaroon: C(0xa8613f), shrubMarLit: C(0xd08a48),
+  berryLeaf:   C(0x9c5236), berryLit:    C(0xd4652c), berry: C(0xbe4038),
   // A step darker and a step more saturated than the terrain's sunlit gold
   // (#f0ad46). Dry scrub against gold meadow is a *tonal* accent — it has to
   // sit below the ground it stands on or it reads as a pale rag.
-  scrubBase:   C(0xb8813a), scrubTip:    C(0xe2b75c), scrubPale: C(0xcc9c48),
-  willow:      C(0x6f8a3c), willowTip:   C(0xc3cf5c),
-  alder:       C(0x4d6b37), alderTip:    C(0x8fa83c),
-  fernBase:    C(0x53682f), fernBronze:  C(0xb5713a), fernGold: C(0xd8a53c),
-  broadleaf:   C(0x4c6a34), broadTip:    C(0x93ab3f),
-  moss:        C(0x5c7c3d), mossDeep:    C(0x3d5a34),
-  stem:        C(0x7a8342), stemDry:     C(0xa79a52),
-  aster:       C(0x8f7ad6), asterPink:   C(0xc07ab8),
-  goldenrod:   C(0xeac342),
-  seedTip:     C(0xd6bb86),
-  litterWarm:  C(0xbb6524), litterGold:  C(0xd49a33), litterRed: C(0x8f2723),
-  barkGrey:    C(0x857a6c), barkWarm:    C(0x6a5341),
+  scrubBase:   C(0xc9954c), scrubTip:    C(0xefc972), scrubPale: C(0xdcaf5e),
+  willow:      C(0x8fa855), willowTip:   C(0xd8e078),
+  alder:       C(0x6b8a4e), alderTip:    C(0xaec258),
+  fernBase:    C(0x718646), fernBronze:  C(0xd08e4e), fernGold: C(0xecc05e),
+  broadleaf:   C(0x6a884b), broadTip:    C(0xb0c45c),
+  moss:        C(0x7a9a55), mossDeep:    C(0x58754a),
+  stem:        C(0x96a05a), stemDry:     C(0xc0b26a),
+  aster:       C(0xa993e4), asterPink:   C(0xd292c8),
+  goldenrod:   C(0xf3d060),
+  seedTip:     C(0xe3cd9e),
+  litterWarm:  C(0xd4823a), litterGold:  C(0xe6b34c), litterRed: C(0xac3f38),
+  barkGrey:    C(0xa1968a), barkWarm:    C(0x8a7057),
   // Ground substrate. Stone follows the brief's rock anchors exactly —
   // lavender-grey lit, violet-grey shaded, never brown-grey — and it is the
   // only cool note this layer puts at ground level. Straw sits just below the
   // sunlit meadow gold so a mat of it reads as texture, not as a bald patch.
-  stoneLit:    C(0xbdb8c8), stoneDeep:   C(0x6e6b84),
-  strawPale:   C(0xc59a4e), strawDeep:   C(0x8b6630),
+  stoneLit:    C(0xd0cbd9), stoneDeep:   C(0x8b88a0),
+  strawPale:   C(0xdcb264), strawDeep:   C(0xa88146),
 };
 
 // Fixed leaf-drift direction. Litter piles downwind of a crown, and the whole
@@ -325,7 +333,7 @@ export class CoverScatter {
     const N = this.noise, W = this.world;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_GROUND);
-    const sites = Math.round(70 * this.mul);
+    const sites = Math.round(130 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_GROUND, key) * 4294967296) >>> 0);
@@ -353,8 +361,8 @@ export class CoverScatter {
       const wTwig  = 0.10 + can * 0.80 + lit * 0.35;
       const total = Math.max(1e-4, wStone + wLeaf + wStraw + wMoss + wTwig);
 
-      const members = 2 + ((rng() * (3 + acc * 4)) | 0);
-      const spread = 0.5 + rng() * (1.2 + acc * 2.2);
+      const members = 3 + ((rng() * (4 + acc * 5)) | 0);
+      const spread = 0.5 + rng() * (1.2 + acc * 2.4);
       for (let m = 0; m < members && n < cap; m++) {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
         const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;

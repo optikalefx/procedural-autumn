@@ -35,7 +35,7 @@ const CELL = 48;                 // metres per scatter cell
 // cell is created and pops rather than fading in.
 const STREAM_RADIUS = 300;
 const REPACK_MOVE = 12;          // metres of camera travel before a repack
-const MAX_PER_CELL = 1100;       // scratch capacity for one cell's generation
+const MAX_PER_CELL = 1500;       // scratch capacity for one cell's generation
 
 // One prevailing wind for the whole valley, matching the leaf-drift direction
 // in cover_scatter.js. Held constant so each instance's local sway axis can be
@@ -117,7 +117,7 @@ export class GroundCover extends System {
         mesh.count = 0;
         mesh.visible = false;
         mesh.castShadow = arch.shadow;
-        mesh.receiveShadow = true;
+        mesh.receiveShadow = arch.recv !== false;
         // Instances are spread over hundreds of metres; the geometry's own
         // bounding sphere would cull the whole field the moment the prototype
         // at the origin left the frustum.
