@@ -26,7 +26,6 @@ uniform float uGoldRotate;
 uniform float uHuePivot;
 uniform float uHueSpread;
 uniform float uHueSpreadW;
-uniform float uWarmEnd;
 uniform float uWarmSat;
 uniform float uWarmSatSlope;
 uniform float uBlueFloor;
@@ -37,20 +36,6 @@ uniform float uTime;
 
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
-// Hue/saturation/value, used by the warm regrade below. Standard branchless
-// form; safe for v > 1, which the contrast step can produce.
-vec3 rgb2hsv(vec3 c) {
-  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
-  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
-  float d = q.x - min(q.w, q.y);
-  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
-}
-vec3 hsv2rgb(vec3 c) {
-  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
 
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec3 c = inputColor.rgb;
@@ -172,26 +157,52 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // Done in a gamma space, not the linear one this pass otherwise works in.
   // Hue angle and saturation are perceptual quantities and the histogram that
   // judges them is computed on display values; in linear the same gold measures
-  // sat 0.97, where a saturation ceiling has almost nothing to grip. pow() is
-  // an approximation of the sRGB curve and deliberately so — this is a look
-  // control, not a colour-management step.
+  // sat 0.97, where a saturation ceiling has almost nothing to grip. The curve
+  // used is sqrt (gamma 2.0), an approximation of sRGB and deliberately so —
+  // this is a look control, not a colour-management step, and the gold lands
+  // within a degree of where the exact curve puts it.
   //
   // It runs *after* the tone curve, not before. PBR Neutral's first move is to
   // subtract an offset derived from the minimum channel, which is precisely the
   // blue we are trying to put back; corrected upstream, the curve takes most of
   // it away again.
   {
-    vec3 g = pow(max(c, 0.0), vec3(1.0 / 2.2));
-    vec3 hsv = rgb2hsv(g);
-    float deg = hsv.x * 360.0;
-    // Wrap the rose/magenta side negative so the band is continuous through red.
-    deg -= 360.0 * step(300.0, deg);
-    // Full authority from red through amber, tapering out before anything
-    // genuinely green-led. The taper matters: forest and waterfall are
-    // majority conifer and put 32-48% of their chromatic pixels above 60 deg,
-    // and rotating those would march the conifer mass toward green — the exact
-    // thing uGreenTame exists to prevent.
-    float warm = smoothstep(-45.0, -8.0, deg) * (1.0 - smoothstep(uWarmEnd - 25.0, uWarmEnd, deg));
+    // Worked in place, in RGB, in a gamma-2.0 space. Two earlier shapes of this
+    // block were both far too expensive for what they do — measured over a 45 s
+    // drive at 1536, with the block compiled but branched around versus live:
+    //   rgb2hsv/hsv2rgb + pow(2.2)   p50 25.5 ms  p95 56.1
+    //   rgb2hsv/hsv2rgb + sqrt       p50 25.4 ms  p95 56.8
+    //   block skipped                p50 16.7-18.0 ms  p95 37.2-48.6
+    // The transcendentals were not the problem; swapping pow for sqrt bought
+    // nothing. The four vec4 temporaries inside the branchless HSV pair were.
+    // This effect is merged with bloom, tone map, vignette and SMAA into one
+    // fragment program, and pushing that program past the register budget
+    // spills it, which is why the cost shows up only when the branch is
+    // actually taken.
+    //
+    // So do the work directly. Inside the red-to-yellow sector the hue is just
+    // where the middle channel sits between the other two, which is one divide,
+    // and saturation is one more; there is no reason to build a full HSV triple
+    // to rotate inside a single sector. Gamma 2.0 (sqrt / square) because hue
+    // and saturation are perceptual quantities and the histogram that judges
+    // them is computed on display values — in linear the same gold measures
+    // saturation 0.97, where a ceiling has nothing to grip.
+    vec3 g = sqrt(max(c, 0.0));
+    float wmx = max(g.r, max(g.g, g.b));
+    float wmn = min(g.r, min(g.g, g.b));
+    float wch = wmx - wmn;
+    // Position of green between the other two channels: 0 at pure red, 1 where
+    // green catches red at 60 deg. This is only a hue when red leads and blue
+    // trails, which is exactly the band this operator is allowed to touch.
+    float t = (g.g - wmn) / max(wch, 1e-4);
+    // step() excludes the rose and blue side (green below blue); the taper on t
+    // hands off before green becomes the lead channel, so conifers, sky and
+    // water are all untouched and there is no seam where the ordering flips.
+    // forest and waterfall are majority conifer and put 32-48% of their
+    // chromatic pixels above 60 deg; rotating those would march the conifer
+    // mass toward green, the exact thing uGreenTame exists to prevent.
+    float warm = step(g.b, g.g) * (1.0 - smoothstep(0.80, 1.0, t)) * step(0.012, wch);
+    float deg = t * 60.0;
     // Hue *spread*, which is the operator this frame actually needed. A pure
     // rotation cannot fix a monochrome frame; it only moves the smear, and the
     // proof is in the archive — rotating by 11 deg took meadow from 68% red /
@@ -202,18 +213,23 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     // / 24.4 / 11.1 across 10-50 deg. Ours piled 58% into one bin. So push hues
     // away from wherever the pile is: a Gaussian-weighted expansion about the
     // pile centre, which separates the crimson maples below it from the gold
-    // canopy above it and leaves everything far from the pivot alone. Gain is
-    // the multiplier on the distance from the pivot, so 0.9 nearly doubles the
-    // local spread; the Gaussian is what keeps it local, and without it a gain
-    // this size throws the 50 deg tail into pure green.
-    float dh = deg - uHuePivot;
-    float spread = dh * uHueSpread * exp(-(dh * dh) / (uHueSpreadW * uHueSpreadW));
-    hsv.x = fract((deg + (uGoldRotate + spread) * warm) / 360.0);
-    // Ceiling with a soft knee, not a clamp: below uWarmSat nothing moves, above
-    // it the excess is compressed rather than flattened, so a crimson maple and
-    // a gold grass blade do not arrive at the same saturation.
-    hsv.y -= max(hsv.y - uWarmSat, 0.0) * uWarmSatSlope * warm;
-    c = pow(hsv2rgb(hsv), vec3(2.2));
+    // canopy above it and leaves everything far from the pivot alone. The
+    // Gaussian is what keeps it local; without it a gain this size throws the
+    // 50 deg tail into pure green.
+    float dh = (deg - uHuePivot) / uHueSpreadW;
+    deg += (uGoldRotate + (deg - uHuePivot) * uHueSpread * exp(-dh * dh)) * warm;
+    // Saturation ceiling with a soft knee, not a clamp: below uWarmSat nothing
+    // moves, above it the excess is compressed rather than flattened, so a
+    // crimson maple and a gold grass blade do not arrive at the same
+    // saturation. This is the half that restores blue rather than adding green
+    // — pulling saturation down raises the lowest channel, which on every
+    // red-led pixel in this game is blue.
+    float sat = wch / max(wmx, 1e-4);
+    sat -= max(sat - uWarmSat, 0.0) * uWarmSatSlope * warm;
+    float lo = wmx * (1.0 - sat);
+    vec3 gold = vec3(wmx, lo + clamp(deg / 60.0, 0.0, 1.0) * (wmx - lo), lo);
+    g = mix(g, gold, warm);
+    c = g * g;
   }
 
   // Blue floor. Nothing in the reference sits at zero blue: its meadow runs
@@ -337,15 +353,14 @@ class GradeEffect extends Effect {
         ['uToe',           new THREE.Uniform(0.032)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.30, 0.95, 0.68))],
         ['uVibrance',      new THREE.Uniform(0.90)],
-        ['uGoldRotate',    new THREE.Uniform(1.5)],
-        ['uHuePivot',      new THREE.Uniform(27.0)],
-        ['uHueSpread',     new THREE.Uniform(0.90)],
+        ['uGoldRotate',    new THREE.Uniform(1.75)],
+        ['uHuePivot',      new THREE.Uniform(28.5)],
+        ['uHueSpread',     new THREE.Uniform(0.85)],
         ['uHueSpreadW',    new THREE.Uniform(15.0)],
-        ['uWarmEnd',       new THREE.Uniform(66.0)],
         ['uWarmSat',       new THREE.Uniform(0.63)],
         ['uWarmSatSlope',  new THREE.Uniform(0.85)],
         ['uBlueFloor',     new THREE.Uniform(0.160)],
-        ['uGreenTame',     new THREE.Uniform(0.75)],
+        ['uGreenTame',     new THREE.Uniform(0.50)],
         ['uGreenTameMax',  new THREE.Uniform(0.45)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
@@ -428,7 +443,17 @@ const MIN_BLOOM_MIP = 12;
 // P95 goes 0.811 -> 0.847 (plate 1 is 0.866) and its chromaMean *rises*
 // 0.308 -> 0.313, so the bright end is still under PBR Neutral's desaturating
 // knee rather than bleaching through it.
-const EXPOSURE = 0.92;
+// Down from 0.92 with the golden-hour key desaturated (see Lighting KEYS). Two
+// things in that change add luminance: the sun's green channel goes 0.51 -> 0.66
+// linear and luma is 71% green, and the warm regrade's saturation ceiling raises
+// the lowest channel of every gold pixel. Measured on the two vista frames,
+// which are the ones with the least headroom:
+//   hero  P05 0.425 -> 0.477, range 0.460 -> 0.412
+//   dawn  P05 0.438 -> 0.496, range 0.425 -> 0.381
+// against a reference black point of 0.16-0.42. That is the brief's "do not
+// trade value structure for hue" being traded, so it is bought straight back
+// here rather than by re-darkening the haze, which would undo the hue work.
+const EXPOSURE = 0.88;
 
 export class PostFX {
   constructor(engine, quality = 'ultra') {

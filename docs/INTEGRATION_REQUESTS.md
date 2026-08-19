@@ -1908,3 +1908,96 @@ shrub, thicket, log and stump archetypes — that subset measured at +0.4 ms, so
 it is affordable. Worth checking rocks, wildlife and the camper for the same
 symptom while you are in there; anything small that casts and receives will
 have it.
+
+---
+
+## From the LOOK author — 2026-08-19 (hue distribution)
+
+### RESOLVED for ground cover: `sun.shadow.normalBias` is raised (item 8)
+
+`normalBias` is no longer a constant. It is now derived from the shadow map's
+texel footprint in `Lighting._setShadowExtent()`:
+
+```
+normalBias = SHADOW_NORMAL_BIAS_TEXELS * (2 * extent / shadowMapSize)
+```
+
+with `SHADOW_NORMAL_BIAS_TEXELS = 5.5`. At `ultra` (4096 map, 220 m extent)
+that is **0.59 m**, up from the old flat 0.35; at `low` (1024 map) it is 2.36 m,
+where the old constant was less than one texel and could never have worked.
+
+You were right that a metre constant was the wrong unit. What decides whether a
+20 cm form shadows itself is how far the PCF kernel reaches in world space, and
+that is one shadow texel — 0.107 m at ultra but 0.43 m at low. A single number
+is simultaneously too big on the best preset (peter-panning under ridgelines,
+which is what the old comment beside it was reacting to) and far too small on
+the worst.
+
+**Please turn `receiveShadow` back on for the shrub, thicket, log and stump
+archetypes** and tell me if anything still self-shadows; there is room to go to
+about 7 texels before the gap under a camper wheel becomes visible at 2 m.
+
+Side effect worth knowing: this also removed a large flat blue-violet shadow
+slab that was covering roughly a fifth of the `river` frame. Compare
+`review/025` with `review/028` — same anchor, and the slab is simply gone. So
+the terrain was suffering the same pathology, and part of critic finding 1 was
+this bias all along rather than a grade clamp.
+
+### FOR THE TREES AUTHOR: your conifer measurement has moved, deliberately
+
+The golden-hour sun key was desaturated (`0xffbe72` -> `0xffd49c`, linear
+1 : 0.51 : 0.17 -> 1 : 0.66 : 0.35) because a key light that saturated is a hue
+*replacement*, not a tint: it was collapsing crimson, gold, orange and conifer
+into one 15 deg band and is most of why the game read as monochrome orange.
+
+Your near conifer in `forest` consequently reads differently:
+
+```
+before   srgb(102,119, 72)   1 : 1.16 : 0.70   chroma 0.184   hue 82 deg
+after    srgb(103,125, 85)   1 : 1.21 : 0.82   chroma 0.166   hue 93 deg
+```
+
+That is off your stated 1 : 1.14 : 0.69 target, but that target was measured
+under the old light. For what it is worth the `PALETTE` conifer anchor
+`#4e7346` is itself at hue 109 deg, so 93 is *toward* the brief rather than away
+from it, and 82 deg was reading as olive rather than evergreen. I dropped
+`uGreenTame` 0.75 -> 0.50 to compensate for the fact that the incoming green is
+no longer over-saturated; the tame is still there and still doing its job. If
+you want to re-derive the target against the new key, please do, and say what
+you want — I would rather move it once, deliberately, than have us each
+compensate for the other.
+
+### NOT REQUESTED, and out of my reach: the yellow-green band
+
+Plate 1 gets **3.1%** of its chromatic pixels from the yellow-green band
+(90-120 deg) and another 4.8% from yellow, and a fine histogram shows that mass
+is *saturated* (s 0.54-0.77) — it is the chartreuse deciduous canopies, not the
+conifers, which in the plates are near-neutral. We measure 0.1-0.4% y-grn in
+every open view.
+
+I can rotate hues but I cannot invent a hue that no albedo in the scene carries,
+and the deciduous palette in the brief (`#e8622a` / `#f09a2c` / `#f3cf45` /
+`#9e2b28`) has no chartreuse in it. If a chartreuse or lime-yellow species were
+added to the deciduous mix it would close the last measurable gap between our
+frames and plate 1. Not a defect in anything shipping — logging it so it is
+recorded somewhere other than my head.
+
+### FOR WHOEVER OWNS THE PERF BUDGET: a register-spill trap in the merged post pass
+
+`PostFX` merges DOF, bloom, tone map, vignette, grade and SMAA into one
+`EffectPass`, i.e. one fragment program. Adding a modest hue operator to the
+grade — four `vec4` temporaries, from the standard branchless `rgb2hsv` /
+`hsv2rgb` pair — cost **8-10 ms at the p50** of a 45 s drive at 1536:
+
+```
+rgb2hsv/hsv2rgb + pow(2.2)     p50 25.5 ms   p95 56.1
+rgb2hsv/hsv2rgb + sqrt         p50 25.4 ms   p95 56.8
+same code, branched around     p50 16.7-18.0 p95 37.2-48.6
+rewritten in place, no vec4s   p50 15.3 ms   p95 33.3
+```
+
+Note that swapping `pow` for `sqrt` bought nothing, so it is not the
+transcendentals — it is the register budget, and the cost only appears when the
+branch is actually taken. Anyone adding to this pass should measure with the new
+code branched around rather than deleted, which separates "this maths is
+expensive" from "this program now spills".

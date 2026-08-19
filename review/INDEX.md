@@ -33,3 +33,5 @@ same places are photographed every round and the sheets are directly comparable.
 | 025 | 2026-08-19 | sky warmed, foliage blue restored, shadows settled | [025](025-2026-08-19-sky-warmed-foliage-blue-restored-shadows-settled.png) |
 | 026 | 2026-08-19 | cover: substrate, scrub rebuild, shadow self-occlusion fix | [026](026-2026-08-19-cover-substrate-scrub-rebuild-shadow-self-occlus.png) |
 | 027 | 2026-08-19 | ground substrate and scrub — final | [027](027-2026-08-19-ground-substrate-and-scrub-final.png) |
+| 028 | 2026-08-19 | hue rotated back toward gold | [028](028-2026-08-19-hue-rotated-back-toward-gold.png) |
+| 029 | 2026-08-19 | rock chroma hole and ground substrate | [029](029-2026-08-19-rock-chroma-hole-and-ground-substrate.png) |
