@@ -45,7 +45,7 @@ import { Birds } from './birds.js';
 // nowhere scores 1.0, so the realised counts are far lower than these numbers
 // suggest — see the `[wildlife]` line in the console for what actually landed.
 const CFG = {
-  deer:   { spawn: 172, despawn: 215, live: 11, perKm2: 88 },
+  deer:   { spawn: 172, despawn: 215, live: 9,  perKm2: 88 },
   bear:   { spawn: 185, despawn: 230, live: 3,  perKm2: 0.5 },
   rabbit: { spawn: 96,  despawn: 132, live: 8,  perKm2: 330 },
 };
@@ -262,9 +262,14 @@ export class Wildlife extends System {
           const z = -half + (j + 0.35 + rng() * 0.3) * step;
           if (!W.isInBounds(x, z)) continue;
           let s = this._suit(key, x, z, W);
-          if (s <= 0.02) continue;
           const gx = ((x + half) / RM) | 0, gz = ((z + half) / RM) | 0;
-          if (key !== 'bear' && nearRoad[gz * RW + gx]) s *= 1.55;
+          if (key !== 'bear' && nearRoad[gz * RW + gx] && s > 0) {
+            // Verges are edge habitat everywhere, and a long dead stretch of
+            // road is the one failure the player definitely notices. A floor
+            // plus a boost, only where the ground is habitable at all.
+            s = Math.max(s * 1.75, 0.10);
+          }
+          if (s <= 0.02) continue;
           if (rng() > s * dens * cellKm2) continue;
 
           sx[n] = x; sz[n] = z; spec[n] = ki;

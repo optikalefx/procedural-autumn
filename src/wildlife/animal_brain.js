@@ -86,6 +86,8 @@ export class Brain {
     this._patrolI = 0;
     this._stepT = 0;
     this._grazeStep = 0;
+    this._lookT = 2 + this.rnd() * 5;
+    this.headUp = false;
     this._avoid = 0;
     this._scale = 1;
   }
@@ -114,6 +116,8 @@ export class Brain {
     this.speed = this.wantSpeed = 0;
     this.state = this.rnd() < this.cfg.grazeChance ? ST.GRAZE : ST.IDLE;
     if (this.cfg.patrol && this.rnd() < 0.6) this.state = ST.PATROL;
+    this.headUp = false;
+    this._lookT = 1 + this.rnd() * 6;
     this.timer = 1 + this.rnd() * 4;
     this.graze = this.state === ST.GRAZE ? 1 : 0;
     this.alert = 0; this.flag = 0; this.spent = 0; this.done = false;
@@ -170,7 +174,7 @@ export class Brain {
     }
 
     // ── smoothed pose channels ──────────────────────────────────────────────
-    const wantGraze = this.state === ST.GRAZE ? 1 : 0;
+    const wantGraze = (this.state === ST.GRAZE && !this.headUp) ? 1 : 0;
     const wantAlert = this.state === ST.ALERT ? 1
       : this.state === ST.FLEE ? 0.55
       : this.group && herdAlarm > 0.5 ? 0.4 : 0;
@@ -199,7 +203,16 @@ export class Brain {
 
   _graze(dt, W) {
     this.wantSpeed = 0;
-    this.hasLook = false;
+    // Every few mouthfuls a grazing animal lifts its head and scans. It is the
+    // most recognisable thing deer do, and it is also the only moment a feeding
+    // animal is legible at forty metres — head down it is a low dark blob among
+    // the bushes, head up it is unmistakably a deer.
+    this._lookT -= dt;
+    if (this._lookT <= 0) {
+      if (this.headUp) { this.headUp = false; this._lookT = 3.5 + this.rnd() * 7.5; }
+      else { this.headUp = true; this._lookT = 1.3 + this.rnd() * 2.4; this._lookSomewhere(); }
+    }
+    if (!this.headUp) this.hasLook = false;
     // Grazing animals drift: a mouthful here, two steps, another mouthful. The
     // steps are what stop a meadow of deer looking like a diorama.
     if (this._stepT < 0) {
@@ -403,8 +416,13 @@ export class Brain {
    * animal somewhere it should not be passes through here.
    */
   _steer(dt, W, S) {
+    // A standing animal is not steering, so it does not probe. This is both a
+    // third of the wildlife CPU and a real bug fix: a frozen deer whose probe
+    // fan preferred a neighbouring direction used to rotate slowly on the spot
+    // forever, splaying its legs as the feet fell behind.
+    const moving = this.wantSpeed > 0.05 || this.speed > 0.05;
     this._probeT -= dt;
-    if (this._probeT <= 0) {
+    if (moving && this._probeT <= 0) {
       this._probeT = 0.14;
       const reach = clamp(1.6 + this.speed * 0.55, 2.0, 9.0) * S;
       let bestScore = -1e9, bestA = 0;
@@ -434,7 +452,7 @@ export class Brain {
       if (this._stuck > 6) { this.wantHeading += Math.PI; this._stuck = 0; }
     }
 
-    const goal = this.wantHeading + (this._avoid ?? 0);
+    const goal = this.wantHeading + (moving ? this._avoid : 0);
     // Turn rate falls with speed the way a real animal's does — a bounding deer
     // cannot pivot, which is what makes its flight path arc.
     const sn = clamp01(this.speed / (this.gait.run * S));

@@ -55,14 +55,13 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 // exists to supply; everything else is accent. Nothing here is at full
 // saturation, and nothing here is grey.
 const PAL = {
-  shrubDeep:   C(0x2c4831), shrubLit:    C(0x4f7040),
-  shrubMaroon: C(0x5b2a22), shrubMarLit: C(0x8c4a26),
+  shrubDeep:   C(0x35563a), shrubLit:    C(0x5e8449),
+  shrubMaroon: C(0x6a3226), shrubMarLit: C(0x99542a),
   berryLeaf:   C(0x7d3a27), berryLit:    C(0xb8471f), berry: C(0x9e2b28),
-  // Deliberately DARKER than the terrain's sunlit gold (#f0ad46). This layer's
-  // whole job is to supply values the ground does not have; a scrub tuft
-  // brighter than the meadow behind it blows straight through the tone curve
-  // and reads as a pale grey rag, which is exactly what the first round did.
-  scrubBase:   C(0x7f5224), scrubTip:    C(0xb07c33), scrubPale: C(0x986c30),
+  // A step darker and a step more saturated than the terrain's sunlit gold
+  // (#f0ad46). Dry scrub against gold meadow is a *tonal* accent — it has to
+  // sit below the ground it stands on or it reads as a pale rag.
+  scrubBase:   C(0xb8813a), scrubTip:    C(0xe2b75c), scrubPale: C(0xcc9c48),
   willow:      C(0x6f8a3c), willowTip:   C(0xc3cf5c),
   alder:       C(0x4d6b37), alderTip:    C(0x8fa83c),
   fernBase:    C(0x53682f), fernBronze:  C(0xb5713a), fernGold: C(0xd8a53c),
@@ -70,10 +69,10 @@ const PAL = {
   moss:        C(0x5c7c3d), mossDeep:    C(0x3d5a34),
   stem:        C(0x7a8342), stemDry:     C(0xa79a52),
   aster:       C(0x8f7ad6), asterPink:   C(0xc07ab8),
-  goldenrod:   C(0xd8b23a),
-  seedTip:     C(0xc2a874),
-  litterWarm:  C(0xa8571f), litterGold:  C(0xbf8a2d), litterRed: C(0x7e2320),
-  barkGrey:    C(0x796d61), barkWarm:    C(0x5e4a3a),
+  goldenrod:   C(0xeac342),
+  seedTip:     C(0xd6bb86),
+  litterWarm:  C(0xbb6524), litterGold:  C(0xd49a33), litterRed: C(0x8f2723),
+  barkGrey:    C(0x857a6c), barkWarm:    C(0x6a5341),
 };
 
 // Fixed leaf-drift direction. Litter piles downwind of a crown, and the whole
@@ -222,11 +221,11 @@ export class CoverScatter {
     c.getHSL(this._hsl);
     c.setHSL(this._hsl.h + (rng() - 0.5) * hue,
              clamp01(this._hsl.s * (0.90 + rng() * 0.22)),
-             clamp01(this._hsl.l * (0.76 + rng() * 0.30)));
+             clamp01(this._hsl.l * (0.82 + rng() * 0.30)));
     c2.getHSL(this._hsl);
     c2.setHSL(this._hsl.h + (rng() - 0.5) * hue,
               clamp01(this._hsl.s * (0.90 + rng() * 0.22)),
-              clamp01(this._hsl.l * (0.80 + rng() * 0.24)));
+              clamp01(this._hsl.l * (0.86 + rng() * 0.24)));
 
     const s = o.scale ?? 1;
     const i = n * COVER_STRIDE;
@@ -371,7 +370,7 @@ export class CoverScatter {
         if (this._ground(mx, mz, 0.8) < 0.08) continue;
         n = this._emit(out, n, cap, 'scrubDry', mx, mz, rng, {
           colA: rng() < 0.4 ? PAL.scrubPale : PAL.scrubBase, colB: PAL.scrubTip,
-          scale: 0.75 + rng() * 0.75, tone: 0.92 + rng() * 0.22, hue: 0.02,
+          scale: 0.80 + rng() * 0.60, tone: 0.92 + rng() * 0.22, hue: 0.02,
         });
       }
     }

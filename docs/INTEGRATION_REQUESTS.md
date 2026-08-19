@@ -475,3 +475,149 @@ override only proves that particular material path is not involved.
 `tools/shot.mjs --eval "<js>"` runs arbitrary page code before capture and
 `shots/_anchors.json` freezes view framings, so this kind of A/B is now cheap
 and controlled.
+
+## Ground-cover author — 2026-08-18
+
+**`fog_vertex` ignores `instanceMatrix`, so every instanced
+`MeshStandardMaterial` in the game is hazed as if it stood at the world
+origin.** `src/render/Atmosphere.js`:
+
+```glsl
+const FOG_VERT = `
+#ifdef USE_FOG
+  vFogWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+  vFogCamPos = cameraPosition;
+#endif`;
+```
+
+For a normal mesh `transformed` is geometry space and `modelMatrix` carries the
+object into the world, so this is right. For an `InstancedMesh` the instance
+transform lives in `instanceMatrix`, which three applies later in
+`<project_vertex>` — so `vFogWorldPos` is the *prototype* position, a metre or
+two from the origin, for every instance.
+
+Measured in the running game at the `meadow` anchor (camera ~(815, 6, 551)):
+ground-cover fragments 8–40 m from the camera computed `dist ≈ 990 m` and hit
+`fogFactor` at the `uFogMax` cap of 0.76, i.e. 76% flat cream over their own
+albedo, plus the 0.85 chroma bleed. Dark shrubs rendered as pale ground and
+ochre scrub as grey rags; three rounds of palette work moved the frame almost
+not at all, because the albedo was barely reaching it.
+
+Suggested fix, which keeps every existing caller correct:
+
+```glsl
+#ifdef USE_FOG
+  vec4 fogWP = vec4( transformed, 1.0 );
+  #ifdef USE_INSTANCING
+    fogWP = instanceMatrix * fogWP;
+  #endif
+  vFogWorldPos = ( modelMatrix * fogWP ).xyz;
+  vFogCamPos = cameraPosition;
+#endif
+```
+
+*Worked around locally* in `src/shaders/cover_material.js`, which overwrites
+`vFogWorldPos` after the chunk has run. Anyone else instancing a standard
+material (rocks, wildlife, props) is silently affected and should check.
+
+---
+
+## Look / render author — 2026-08-18, second pass
+
+Everything below is either a change I made inside my own files that other
+authors need to know about, or something I need from a file I do not own.
+
+### Answered: grass author's SSAO request — done
+
+`aoRadius` 3.2 m -> **1.1 m**, `intensity` 1.7 -> **1.15**, `distanceFalloff`
+1.4 -> 1.0. A metres-wide radius finds a contact between every pair of adjacent
+blades, which is what filled the canopy interior with salt-and-pepper. At
+roughly a blade-height the cue that reads — a rock or a trunk meeting the
+ground — survives and the noise does not. `uBaseAO` in
+`src/shaders/grass_material.js` can be re-judged against this; it was
+deliberately shallow to compensate for the old radius.
+
+### Grass author: the global grade *has* now been pulled toward the plates
+
+Whole-frame chroma was the one metric outside the band, and it has been brought
+down globally (`uSaturation` 0.96 -> 0.74 with `uVibrance` 0.16 -> 0.90; the
+pair is a chroma *compressor*, so the pale hazed vistas came up while the
+meadow came down). Nine of the ten canonical views now measure inside the
+reference band for chroma.
+
+`meadow` is the exception, at 0.41–0.51 against a band of 0.28–0.42, and it is
+a grass-filled frame. Per your note, `uDesat` / `uSkyFill` are the dials to
+raise with the global grade — this is that moment. The reason not to push the
+global saturation any further is that `river`, `forest` and `waterfall` are
+already at 0.25–0.28, i.e. at the *bottom* of the band; another global cut buys
+the meadow at their expense.
+
+### Terrain author: distant terrain needs to cast shadows further
+
+`Lighting` now grows the shadow frustum with camera height at 4.0x rather than
+2.4x, capped at 900 m, because at the old ramp the `peaks` camera (140 m)
+covered only 470 m while the massif filling that frame sits 500–1500 m out.
+
+The remaining half of that problem is yours: terrain casts to LOD 2 (~720 m).
+In `peaks` the massif therefore receives no cast shadow at all and renders as a
+single flat lit plane — measured `contrastStd` 0.12 against a reference band of
+0.13–0.22, and it is the one canonical view still outside the band. Reference
+plate 2 is a mountain valley whose entire read comes from ridge shadows falling
+across the massif. Extending casting to LOD 3 would fix it; the shadow frustum
+is already sized to receive them.
+
+### Rock author: rock albedo is a long way from the brief
+
+Measured off `meadow`, `backlit` and `river` over several rounds, boulders
+render at roughly RGB 0.90/0.88/0.93 — an almost-white lavender that blows past
+the tone curve's shoulder, so every facet lands within a few percent of every
+other and the rock reads as a flat paper cut-out. The brief specifies
+`#c3bfcc` lit (~0.77) and `#5c5a75` shaded (~0.36). At the correct albedo the
+existing Stylize banding would give them real form.
+
+In the most recent captures the same rocks render as near-black silhouettes
+instead, so something is mid-flight — flagging the target either way, not the
+current value. (The floating detached slabs on mountainsides are known; I
+judged around them.)
+
+### Trees / water / waterfall authors: `stylizeDiffuse` is still unadopted
+
+Restating the request from my first pass because it is now the largest single
+source of measured error in the eye-level frames. Nothing in the game currently
+imports `stylizeUniforms` / `STYLIZE_PARS`, so foliage — the darkest and
+largest mass in `river`, `forest` and `waterfall` — is the only thing in the
+frame with no diffuse floor. Those frames measured `lumaP05` **0.02** against a
+reference band of 0.16–0.42; they now measure 0.20, but only because the grade
+lifts the whole shadow end of the image to catch them, which is a blunter tool
+than not making the hole. Adopting it is a one-line change per material.
+
+Also worth knowing: because trees and grass roll their own lighting, they do
+not see `HemisphereLight` at all. Changing `AMBIENT_SCALE` in `Lighting.js`
+moved the vistas and left the foliage frames untouched, so the ambient half of
+the key/fill balance currently applies to about half the frame.
+
+### Everyone: post-chain order changed
+
+Now `render -> SSAO -> DOF -> bloom -> tone map -> vignette -> grade -> SMAA`.
+
+- **Vignette moved before the grade.** It was darkening the corners by up to
+  38% *after* the grade's black lift, which is why frames whose edges are dense
+  conifer measured crushed blacks despite a lift designed to prevent exactly
+  that.
+- **DOF moved before bloom.** Bloom was turning every specular sparkle on a
+  waterfall into a bright point and the DOF kernel then resolved each one as a
+  hard white disc several percent of frame width across.
+- `bokehScale` 1.6 -> **0.60**, `focalLength` 0.20 -> 0.26, and `focusDistance`
+  now defaults to `55 / camera.far` instead of a hard-coded 0.02 (which was a
+  fixed ~60 m plane and was also what every headless capture ran with, since
+  nothing calls `setFocus` outside gameplay). Camera author: `setFocus` is
+  unchanged and still yours; this only fixes the default and the vehicle-author
+  note about the lens reading as tilt-shift.
+
+### Correction to request 3 at the top of this file
+
+That entry describes bloom running after **AgX** with `luminanceThreshold`
+0.62. Both are stale: the curve is Khronos PBR Neutral and the threshold is
+0.80. Scene exposure is `EXPOSURE` in `PostFX.js`, now **0.86** — `Engine.exposure`
+is still only the fallback. Sky and cloud keyframes authored against the old
+ceiling may want a look.

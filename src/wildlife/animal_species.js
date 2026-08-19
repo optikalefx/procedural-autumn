@@ -307,17 +307,25 @@ function buildQuadruped(P, detailLevel, seed) {
   }));
   tube(B, hs, { radial: D.radialBody, ao: 0.45, tipEnd: P.muzzleTip !== false });
 
-  // Ears.
+  // Ears. Every other part of the animal is authored in absolute model space and
+  // these were authored relative to the ear bone, which put both ears on the
+  // ground between the animal's feet as a pair of spikes — the skin transform
+  // is bone * inverseBind, and inverseBind is a pure translation, so a vertex
+  // written at the origin stays at the origin. No animal in the game had ears.
   if (D.ears) {
     for (const side of [-1, 1]) {
-      const eb = S.idx(side < 0 ? 'earL' : 'earR');
+      const name = side < 0 ? 'earL' : 'earR';
+      const eb = S.idx(name);
+      const ep = S.at(name, new THREE.Vector3());
       const e = P.ear;
       const st = [];
       const n = 3;
       for (let i = 0; i <= n; i++) {
         const t = i / n;
         st.push({
-          x: side * e.dir[0] * e.len * t, y: e.dir[1] * e.len * t, z: e.dir[2] * e.len * t,
+          x: ep.x + side * e.dir[0] * e.len * t,
+          y: ep.y + e.dir[1] * e.len * t,
+          z: ep.z + e.dir[2] * e.len * t,
           rx: lerp(e.w, e.w * 0.45, t) * (1 - t * t * 0.5),
           ry: lerp(e.h, e.h * 0.7, t),
           bone: eb, mix: t > 0.6 ? MIX.dark : mixLerp(MIX.coat, MIX.pale, 0.25), shade: 0.92,
@@ -336,7 +344,11 @@ function buildQuadruped(P, detailLevel, seed) {
       x: 0, y: tPts[i].y, z: tPts[i].z,
       rx: lerp(P.tailR[0], P.tailR[1], t), ry: lerp(P.tailR[0], P.tailR[1], t) * (P.tailFlat ?? 1),
       bone: i === 0 ? S.idx('pelvis') : S.idx(tailNames[Math.min(tailNames.length - 1, i - 1)]),
-      mix: P.tailMix ?? MIX.coat, shade: 0.9,
+      // Dark at the root, pale at the tip. A deer's alarm flag is the white
+      // underside flashing as the tail comes up, and a uniformly pale tail is
+      // just a bright smudge on the rump the rest of the time.
+      mix: mixLerp(P.tailMix ?? MIX.coat, P.tailTipMix ?? P.tailMix ?? MIX.coat, t),
+      shade: 0.9,
     });
   }
   tube(B, tSt, { radial: 4, ao: 0.35, tipEnd: true, capStart: false });
@@ -395,7 +407,10 @@ const DEER = () => ({
   head: [0, 1.47, 0.63],
   barrel: [
     { z: -0.68, y: 1.00, rx: 0.085, ry: 0.105, mix: MIX.pale, shade: 1.06 },
-    { z: -0.58, y: 1.02, rx: 0.158, ry: 0.178, mix: mixLerp(MIX.coat, MIX.pale, 0.55), key: 1 },
+    // A white rump *patch*, not a white rump. At golden hour with bloom on top,
+    // a strongly pale station here blows out into a bright yellow blob that
+    // reads as a hole in the animal rather than as markings.
+    { z: -0.58, y: 1.02, rx: 0.158, ry: 0.178, mix: mixLerp(MIX.coat, MIX.pale, 0.26), key: 1 },
     // The haunch and the shoulder are the two places a deer is widest. Without
     // them the barrel is a tube on four sticks, which is what the first pass
     // read as — an alpaca rather than a deer.
@@ -430,7 +445,8 @@ const DEER = () => ({
   // The white scut is a deer's signature at any distance, so it is a broad flat
   // paddle rather than a thin rope — it has to catch light when it lifts.
   tail: [[0, 1.00, -0.62], [0, 0.95, -0.70], [0, 0.89, -0.75]],
-  tailR: [0.058, 0.034], tailFlat: 0.52, tailMix: MIX.pale,
+  tailR: [0.050, 0.032], tailFlat: 0.52,
+  tailMix: mixLerp(MIX.coat, MIX.pale, 0.15), tailTipMix: MIX.pale,
   hind: {
     tag: 'hind', front: false, bend: 1,
     hip: [0.148, 0.98, -0.42], knee: [0, -0.36, 0.12], hock: [0, -0.26, -0.16], foot: [0, -0.36, 0.04],
@@ -533,7 +549,9 @@ const RABBIT = () => ({
     { dy: -0.024, dz: 0.072, rx: 0.026, ry: 0.024, mix: MIX.dark },
   ],
   // Ears are the whole identity at fifteen metres, so they are generous.
-  ear: { at: [0.025, 0.032, -0.014], dir: [0.17, 0.96, -0.22], len: 0.145, w: 0.034, h: 0.011 },
+  // Spread into a clear V — from most angles two overlapping vertical ears
+  // read as one, and the V is the whole silhouette cue at fifteen metres.
+  ear: { at: [0.034, 0.032, -0.012], dir: [0.30, 0.945, -0.14], len: 0.175, w: 0.038, h: 0.012 },
   tail: [[0, 0.163, -0.190], [0, 0.166, -0.214]],
   tailR: [0.036, 0.033], tailFlat: 1, tailMix: MIX.pale,
   hind: {
@@ -569,20 +587,20 @@ export const SPECIES = {
     key: 'deer',
     variants: [
       { name: 'doe', scale: 0.94, antler: false, weight: 0.46,
-        col: { coat: 0x6a4830, pale: 0xd6c6a4, dark: 0x38251a, horn: 0x9c8763 } },
+        col: { coat: 0x6a4830, pale: 0xb9a686, dark: 0x38251a, horn: 0x9c8763 } },
       { name: 'yearling', scale: 0.80, antler: false, weight: 0.26,
-        col: { coat: 0x7a5537, pale: 0xdcccaa, dark: 0x3d2a1d, horn: 0x9c8763 } },
+        col: { coat: 0x7a5537, pale: 0xc0ad8b, dark: 0x3d2a1d, horn: 0x9c8763 } },
       { name: 'stag', scale: 1.10, antler: true, weight: 0.20,
-        col: { coat: 0x54381f, pale: 0xc7b48f, dark: 0x2d1d13, horn: 0xa08c68 } },
+        col: { coat: 0x54381f, pale: 0xa89478, dark: 0x2d1d13, horn: 0xa08c68 } },
       { name: 'dark doe', scale: 0.97, antler: false, weight: 0.08,
-        col: { coat: 0x4e3626, pale: 0xc4b28e, dark: 0x2a1c14, horn: 0x9c8763 } },
+        col: { coat: 0x4e3626, pale: 0xa89478, dark: 0x2a1c14, horn: 0x9c8763 } },
     ],
     blueprint: DEER,
     // Behaviour numbers live with the species so a tweak is one edit.
     gait: {
       walk: 1.25, trot: 3.4, run: 10.5,
       strideBase: 1.05, dutyWalk: 0.63, dutyTrot: 0.50, dutyRun: 0.30,
-      bobAmp: 0.030, pitchAmp: 0.030, liftScale: 1.0,
+      bobAmp: 0.038, pitchAmp: 0.055, liftScale: 1.0,
     },
     brain: {
       alertDist: 62, fleeDist: 30, calmDist: 95,
@@ -621,12 +639,15 @@ export const SPECIES = {
   rabbit: {
     key: 'rabbit',
     variants: [
-      { name: 'brown', scale: 1.00, weight: 0.55,
-        col: { coat: 0x7d6144, pale: 0xdfd6c2, dark: 0x3b2c1e, horn: 0x8a7a60 } },
-      { name: 'grey', scale: 0.92, weight: 0.30,
-        col: { coat: 0x6e6154, pale: 0xdcd6c8, dark: 0x342c22, horn: 0x8a7a60 } },
-      { name: 'sandy', scale: 1.06, weight: 0.15,
-        col: { coat: 0x8e6f4c, pale: 0xe6dcc4, dark: 0x40301f, horn: 0x8a7a60 } },
+      // Hare-scaled rather than rabbit-scaled, and a good deal darker than a
+      // real one: at 0.2 m in 0.6 m grass, a grass-coloured animal is invisible
+      // rather than shy. The whole point of the species is the moment it bolts.
+      { name: 'brown', scale: 1.18, weight: 0.55,
+        col: { coat: 0x5b452e, pale: 0xd9cdb4, dark: 0x2c2015, horn: 0x8a7a60 } },
+      { name: 'grey', scale: 1.09, weight: 0.30,
+        col: { coat: 0x4f463a, pale: 0xd4cbb9, dark: 0x272018, horn: 0x8a7a60 } },
+      { name: 'sandy', scale: 1.25, weight: 0.15,
+        col: { coat: 0x6b5133, pale: 0xe0d4b8, dark: 0x322415, horn: 0x8a7a60 } },
     ],
     blueprint: RABBIT,
     gait: {

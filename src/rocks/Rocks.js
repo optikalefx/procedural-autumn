@@ -133,7 +133,17 @@ export class Rocks extends System {
     if (need < 2.2) return 0.8;
     if (need < 4.0) return 2.0;
     if (need < 6.5) return 3.8;
-    return 6.2;
+    // The bands used to stop at 6.2 m, which meant every cell from 300 m to the
+    // 920 m stream radius still generated three-metre blocks. They are culled
+    // again at pack time by their own `vis`, so they cost only CPU — but the
+    // ones right on the edge of that cutoff *are* drawn, at four or five pixels
+    // each, and en masse that is the "white chips sprinkled on the massif" read
+    // in the peaks view. Carrying the bands out to the stream radius means the
+    // far field is composed of crag-scale mass only, which is what the plates
+    // show.
+    if (need < 10.0) return 6.2;
+    if (need < 15.0) return 9.6;
+    return 14.5;
   }
 
   _refreshQueue(cam) {

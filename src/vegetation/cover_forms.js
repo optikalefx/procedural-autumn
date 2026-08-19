@@ -33,9 +33,12 @@ import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 
 const TAU = Math.PI * 2;
 
-// A little upward bias on strip normals — the same stylistic lift the lobes
-// get, so a spray reads as a lit fan rather than as two flat-shaded faces.
-const FROND_LIFT = 0.34;
+// Strip normals are blended between the true face normal (which points
+// outward from an upright spray) and straight up. Pure face normals split a
+// tuft into a lit half and a near-black half and it reads as dead twigs; pure
+// up loses the form entirely. Two thirds of the way to vertical keeps the tuft
+// reading as one soft mass while still turning with the plant.
+const FROND_OUT = 0.55, FROND_UP = 0.85;
 
 // ── builder ──────────────────────────────────────────────────────────────────
 
@@ -166,7 +169,7 @@ function frond(b, o) {
     // no matter what colour you feed it. For an upright spray this comes out
     // horizontal, facing outward, exactly like a blade of grass.
     const ca = Math.cos(ang), sa = Math.sin(ang);
-    let nx = dirx * ca, ny = -sa + FROND_LIFT, nz = dirz * ca;
+    let nx = dirx * ca * FROND_OUT, ny = -sa * FROND_OUT + FROND_UP, nz = dirz * ca * FROND_OUT;
     const nl = Math.hypot(nx, ny, nz) || 1;
     nx /= nl; ny /= nl; nz /= nl;
     const l = b.vert(px + sx, py, pz + sz, nx, ny, nz, chan, ao, sway, o.trans ?? 0.9);
@@ -179,6 +182,28 @@ function frond(b, o) {
     ang = Math.min(2.35, ang + (o.droop ?? 0.18));
   }
   return { x: px, y: py, z: pz, yaw: o.yaw, ang };
+}
+
+/**
+ * Leafy shoots breaking the outline of a foliage mass. A low-poly lobe is a
+ * convex polyhedron and reads as a *rock* however you colour it; a dozen small
+ * blades poking through the silhouette are what make the same mass read as a
+ * bush. Two triangles each, and they buy more than another subdivision level.
+ */
+function fringe(b, h, w, count, rng, chanBase) {
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * TAU + rng() * 0.8;
+    const t = 0.30 + rng() * 0.62;                 // height up the mass
+    frond(b, {
+      x: Math.cos(a) * w * 0.34 * t, y: h * t, z: Math.sin(a) * w * 0.34 * t,
+      yaw: a + (rng() - 0.5) * 0.9,
+      tilt: 0.35 + rng() * 0.85,
+      len: w * (0.34 + rng() * 0.34), w: w * 0.055,
+      segs: 1, droop: 0.3, taper: 0.9,
+      chanA: chanBase, chanB: chanBase + 0.55, aoA: 0.8, aoB: 1.0,
+      swayA: 0.6, trans: 1.0,
+    });
+  }
 }
 
 /** A flat-ish leaf blade lying near the ground — the broadleaf undergrowth. */
@@ -257,18 +282,30 @@ function tube(b, path, sides, chan, trans, capEnds = true) {
 function buildShrubDark(rng) {
   const b = new Builder();
   const h = 1.50 + rng() * 0.90;
-  const w = h * (0.74 + rng() * 0.34);            // wider than tall — not a tree
-  lobe(b, 0, h * 0.44, 0, w * 0.62, h * 0.46, w * 0.58, 1, rng,
-       { chan: 0.05, trans: 0.42, ragged: 0.30, lift: 0.40 });
-  const n = 4 + ((rng() * 3) | 0);
+  const w = h * (0.78 + rng() * 0.36);            // wider than tall — not a tree
+  // Two big overlapping lobes rather than one, so the dome is asymmetric and
+  // the silhouette has a shoulder. A single lobe plus buds reads as a ball with
+  // warts; two masses read as a bush that grew on one side first.
+  for (let i = 0; i < 2; i++) {
+    const a = i * Math.PI + rng() * 1.2;
+    const r = w * 0.20 * i;
+    lobe(b, Math.cos(a) * r, h * (0.40 + rng() * 0.16), Math.sin(a) * r,
+         w * (0.50 + rng() * 0.16), h * (0.38 + rng() * 0.12), w * (0.48 + rng() * 0.16), 1, rng,
+         { chan: 0.05 + rng() * 0.12, trans: 0.42, ragged: 0.24, lift: 0.34 });
+  }
+  const n = 3 + ((rng() * 3) | 0);
   for (let i = 0; i < n; i++) {
     const a = (i / n) * TAU + rng() * 0.9;
-    const r = w * (0.34 + rng() * 0.44);
-    const s = w * (0.26 + rng() * 0.22);
-    lobe(b, Math.cos(a) * r, h * (0.26 + rng() * 0.60), Math.sin(a) * r,
-         s, s * (0.70 + rng() * 0.35), s, 0, rng,
-         { chan: rng() * 0.30, trans: 0.72, ragged: 0.46, lift: 0.55 });
+    const r = w * (0.36 + rng() * 0.40);
+    const s = w * (0.24 + rng() * 0.20);
+    // The 8-face lobe is a diamond, so heavy raggedness on it produces literal
+    // spikes rather than a bitten outline. Keep the jitter modest here and let
+    // the *arrangement* of buds do the silhouette work.
+    lobe(b, Math.cos(a) * r, h * (0.26 + rng() * 0.55), Math.sin(a) * r,
+         s, s * (0.72 + rng() * 0.32), s, 0, rng,
+         { chan: 0.10 + rng() * 0.35, trans: 0.72, ragged: 0.22, lift: 0.46 });
   }
+  fringe(b, h, w, 9, rng, 0.30);
   return b.finish(h);
 }
 
@@ -276,9 +313,9 @@ function buildShrubDark(rng) {
 function buildShrubBerry(rng) {
   const b = new Builder();
   const h = 1.35 + rng() * 0.80;
-  const w = h * (0.70 + rng() * 0.34);
+  const w = h * (0.72 + rng() * 0.34);
   lobe(b, 0, h * 0.46, 0, w * 0.58, h * 0.48, w * 0.55, 1, rng,
-       { chan: 0.12, trans: 0.80, ragged: 0.34, lift: 0.45 });
+       { chan: 0.12, trans: 0.80, ragged: 0.26, lift: 0.38 });
   const n = 4 + ((rng() * 3) | 0);
   for (let i = 0; i < n; i++) {
     const a = (i / n) * TAU + rng() * 1.0;
@@ -288,8 +325,9 @@ function buildShrubBerry(rng) {
     // colour in patches the way a real one does, not uniformly.
     lobe(b, Math.cos(a) * r, h * (0.30 + rng() * 0.60), Math.sin(a) * r,
          s, s * 0.82, s, 0, rng,
-         { chan: rng() < 0.45 ? 0.85 : 0.20, trans: 0.95, ragged: 0.44, lift: 0.55 });
+         { chan: rng() < 0.45 ? 0.85 : 0.20, trans: 0.95, ragged: 0.24, lift: 0.46 });
   }
+  fringe(b, h, w, 8, rng, 0.15);
   for (let i = 0; i < 3; i++) {                    // berry knots, fully accent
     const a = rng() * TAU, r = w * (0.42 + rng() * 0.40);
     lobe(b, Math.cos(a) * r, h * (0.42 + rng() * 0.45), Math.sin(a) * r,
@@ -306,8 +344,8 @@ function buildShrubBerry(rng) {
  */
 function buildScrubDry(rng) {
   const b = new Builder();
-  const h = 0.70 + rng() * 0.85;
-  const n = 9 + ((rng() * 6) | 0);
+  const h = 0.40 + rng() * 0.46;
+  const n = 10 + ((rng() * 7) | 0);
   for (let i = 0; i < n; i++) {
     const a = rng() * TAU;
     const r = h * 0.16 * rng();
@@ -316,9 +354,9 @@ function buildScrubDry(rng) {
       yaw: a + (rng() - 0.5) * 1.4,
       tilt: 0.10 + rng() * 0.52,
       len: h * (0.62 + rng() * 0.62),
-      w: h * (0.032 + rng() * 0.030),
+      w: h * (0.048 + rng() * 0.038),
       segs: 3, droop: 0.20 + rng() * 0.22, taper: 0.88,
-      chanA: 0.0, chanB: 0.62, aoA: 0.38, aoB: 0.95, swayA: 0.30, trans: 0.85,
+      chanA: 0.0, chanB: 0.88, aoA: 0.44, aoB: 1.0, swayA: 0.30, trans: 0.95,
     });
   }
   return b.finish(h);
@@ -339,8 +377,9 @@ function buildThicket(rng) {
     const top = h * (0.62 + rng() * 0.38);
     lobe(b, Math.cos(a) * r, top * 0.62, Math.sin(a) * r,
          w * (0.36 + rng() * 0.22), top * 0.40, w * (0.34 + rng() * 0.20), 1, rng,
-         { chan: rng() * 0.35, trans: 0.85, ragged: 0.40, lift: 0.42 });
+         { chan: rng() * 0.35, trans: 0.85, ragged: 0.26, lift: 0.36 });
   }
+  fringe(b, h, w, 10, rng, 0.35);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {
     const a = rng() * TAU;

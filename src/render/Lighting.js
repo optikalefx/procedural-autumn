@@ -58,23 +58,23 @@ const KEYS = [
 
   { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xb6c0e4, hemiGnd: 0xdcb072, hemiI: 0.96,
     zen: 0x63a0dc, hor: 0xecd8c6, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
-    fogNear: 0xdcbb92, fogFar: 0xd8bec4, fogSun: 0xffe8c8, fogD: 0.0021,
+    fogNear: 0xdcbb92, fogFar: 0xd2bcca, fogSun: 0xffe8c8, fogD: 0.0021,
     cloudLit: 0xfff6ec, cloudDark: 0xa4abc6, cover: 0.37 },
 
   { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xbac6ec, hemiGnd: 0xe0b476, hemiI: 0.90,
     zen: 0x5fa0de, hor: 0xe8d6c8, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
-    fogNear: 0xd8c3a0, fogFar: 0xd2bcc0, fogSun: 0xf8ecd8, fogD: 0.0015,
+    fogNear: 0xd8c3a0, fogFar: 0xccbac6, fogSun: 0xf8ecd8, fogD: 0.0015,
     cloudLit: 0xfffaf4, cloudDark: 0xa6aecc, cover: 0.33 },
 
   { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xbfbede, hemiGnd: 0xd8ae76, hemiI: 1.00,
     zen: 0x9ec0e6, hor: 0xf0d4bc, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
-    fogNear: 0xdcb488, fogFar: 0xe2c4c6, fogSun: 0xffdfb4, fogD: 0.0021,
+    fogNear: 0xdcb488, fogFar: 0xd8c0cc, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xa4a4c4, cover: 0.39 },
 
   // The money frame: deep golden hour.
   { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.98,
     zen: 0xa9c4e4, hor: 0xf0d0b8, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
-    fogNear: 0xe0ac72, fogFar: 0xe4c0c4, fogSun: 0xffc98c, fogD: 0.0027,
+    fogNear: 0xe0ac72, fogFar: 0xdcbcc8, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0x9c90b6, cover: 0.43 },
 
   { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xb4a8cc, hemiGnd: 0xcc9060, hemiI: 1.16,
@@ -387,8 +387,15 @@ export class Lighting {
       // already casts out to LOD 2 (~720 m); this is what lets those casters
       // land. At 900 m and a 4096 map that is 0.44 m per texel, which is soft
       // but perfectly clean at the distance the extent only reaches from.
+      // Camera height is the only proxy available here for "how far away is the
+      // thing being looked at", and it was under-reading: from the `peaks`
+      // camera at 140 m the extent came out at 470 m while the massif filling
+      // the frame sits 500–1500 m out, so none of it received a cast shadow and
+      // it rendered as one flat cream mass (contrastStd 0.115 against a
+      // reference band of 0.13–0.22). A steeper ramp reaches those casters and
+      // leaves eye-level driving frames, where every texel counts, untouched.
       const ground = focus.y - 6;
-      this._setShadowExtent(clamp(150 + Math.max(ground, 0) * 2.4, 150, 900));
+      this._setShadowExtent(clamp(150 + Math.max(ground, 0) * 4.0, 150, 900));
 
       const texelWorld = (this.shadowExtent * 2) / this.preset.shadowMapSize;
       const sx = Math.round(focus.x / texelWorld) * texelWorld;

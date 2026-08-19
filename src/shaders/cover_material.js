@@ -37,10 +37,10 @@ export function makeCoverUniforms() {
     uWindSpeed:    { value: 1.15 },
     // Backlight through a leaf. Generous, because it is only ever visible when
     // the camera is looking into the sun and the surface is turned away.
-    uTransmit:     { value: 0.85 },
+    uTransmit:     { value: 1.00 },
     // How dark the buried interior of a clump goes. Not zero — the brief is
     // explicit that shaded areas stay as tinted colour, never as holes.
-    uAoDepth:      { value: 0.42 },
+    uAoDepth:      { value: 0.55 },
   };
 }
 
@@ -117,6 +117,27 @@ export function createCoverMaterial(uniforms, card = false) {
                   * ( uAoDepth + ( 1.0 - uAoDepth ) * cInfo.y )
                   * aCov.z;
         vCoverTrans = cInfo.w;
+      `)
+      // ── workaround: instanced fog ────────────────────────────────────────
+      // Atmosphere's shared `fog_vertex` chunk computes
+      //     vFogWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+      // with no `instanceMatrix`. For an InstancedMesh that is the *geometry*
+      // position, i.e. a metre or two from the world origin, so every instance
+      // in this system was hazed as if it stood 1 km from the camera: measured
+      // at the meadow anchor the ground cover rendered at fogFactor ~0.76, the
+      // cap, which is 76% flat cream over whatever albedo it was given. It made
+      // dark shrubs invisible and turned ochre scrub into pale grey rags, and
+      // it survived three rounds of palette changes because the albedo was
+      // barely reaching the frame at all.
+      //
+      // Overwriting the varying after the chunk has run is the smallest local
+      // fix. Logged in docs/INTEGRATION_REQUESTS.md — it affects every
+      // instanced MeshStandardMaterial in the game, not just this one.
+      .replace('#include <fog_vertex>', /* glsl */`
+        #include <fog_vertex>
+        #ifdef USE_FOG
+          vFogWorldPos = vCoverWP;
+        #endif
       `);
 
     shader.fragmentShader = /* glsl */`

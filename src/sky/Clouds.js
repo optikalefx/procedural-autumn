@@ -28,9 +28,18 @@ import { mulberry32 } from '../core/MathUtils.js';
 import { SKY_STATE } from '../render/Lighting.js';
 
 // Cloud deck geometry, in metres. The valley tops out at ~340 m.
-const BASE = 800;
-const TOP = 1700;
-const TILE = 8200;          // world size of one wrap of the noise tile
+//
+// These three numbers between them decide whether the sky reads as cumulus or
+// as flying saucers, and the first pass had them wrong in a way that is only
+// obvious once you write down the aspect ratio: a 900 m slab carrying features
+// two kilometres across is a *lens*, and no amount of erosion noise rescues a
+// shape whose bounding box is 1:2.5. A cumulus is roughly as tall as it is
+// wide. So: a thicker deck (1500 m) carrying narrower cells (TILE down from
+// 8200 to 5400), lifted to a base of 1400 m so the nearest one no longer fills
+// a third of the frame.
+const BASE = 1400;
+const TOP = 2900;
+const TILE = 5400;          // world size of one wrap of the noise tile
 const CIRRUS_ALT = 6200;
 const CIRRUS_TILE = 34000;
 
@@ -94,20 +103,27 @@ float densityAt(vec3 p, float cov) {
   // The erosion octaves are skewed hard with height. Without that shear the
   // density is a 2D shape extruded straight up, and from the side the deck
   // reads as stacked flat plates instead of billowing cloud.
-  float e1 = texture2D(uNoise, uv * 2.1 + vec2(0.30, -0.20) * hf + uWind * 1.6).g;
-  float e2 = texture2D(uNoise, uv * 2.2 + vec2(0.34, 0.22) * hf - uWind * 2.4).b;
+  float e1 = texture2D(uNoise, uv * 1.9 + vec2(0.30, -0.20) * hf + uWind * 1.6).g;
+  float e2 = texture2D(uNoise, uv * 2.4 + vec2(0.34, 0.22) * hf - uWind * 2.4).b;
 
-  // Flat base, cauliflower crown whose height is driven by both coverage and
-  // the mid octave — a constant lid is the other half of the "plate" look.
-  float top = 0.24 + 0.70 * cov * (0.55 + 0.90 * e1);
-  float prof = smoothstep(0.0, 0.13, hf) * (1.0 - smoothstep(top, top + 0.36, hf));
+  // Flat base, cauliflower crown. Two things carry the cumulus read here and
+  // both matter: the base is *hard* (a cumulus has a visible flat underside
+  // where the condensation level cuts it off) and the crown height swings by
+  // more than a factor of two across one cloud, which is what turns a lid into
+  // a row of billows.
+  float top = 0.16 + 0.92 * cov * (0.36 + 1.28 * e1);
+  float prof = smoothstep(0.0, 0.045, hf) * (1.0 - smoothstep(top, top + 0.30, hf));
   float d = cov * prof;
   // Erosion carves the silhouette; too much of it and the low-frequency core
   // is all that survives, which reads as fog rather than as cumulus.
   // Amplitude matters more than frequency here: at 0.24 the erosion barely
   // dented a base shape that peaks at 1.0, and every cloud came out as a
   // smooth lens. It has to be able to cut the silhouette open.
-  d -= (e1 * 0.52 + e2 * 0.24) * (0.35 + 0.65 * hf);
+  // Erosion is weighted toward the *sides* rather than the top: subtracting
+  // hardest at altitude shaves the crown flat, which is precisely the lens
+  // silhouette this was supposed to break up. Weighting it by (1 - cov) eats
+  // the thin margins of a cell and leaves the core standing.
+  d -= (e1 * 0.50 + e2 * 0.30) * (0.55 + 0.45 * hf) * (0.55 + 0.75 * (1.0 - cov));
   return max(d, 0.0) * 2.4;
 }
 
@@ -160,9 +176,14 @@ void main() {
       // gives ~70 m resolution on the cumulus you are actually looking at and
       // lets the tail of the ray run cheap and coarse, where the distance fade
       // is about to swallow it anyway.
-      float span = min(t1 - t0, 40000.0);
+      float span = min(t1 - t0, 26000.0);
       t1 = t0 + span;
-      const float GROW = 1.06;
+      // Growth and the step ceiling together bound the jitter amplitude. The
+      // per-pixel dither is worth one *step*, so a 300 m step on a cloud whose
+      // features are 150 m across shows up as the woven stipple the first pass
+      // had all over every cloud face. Capping the step is what removes it.
+      const float GROW = 1.045;
+      const float MAXSTEP = 210.0;
       float s0 = span * (GROW - 1.0) / (pow(GROW, float(STEPS)) - 1.0);
       // Stable per-pixel jitter (no temporal term) breaks the slab banding
       // without introducing crawl — there is no TAA in the chain to clean up
@@ -194,7 +215,7 @@ void main() {
         vec3 p = uCamPos + d * (t + ign * stepLen);
         float cov = coverageAt(p.xz);
         float dens = cov <= 0.001 ? 0.0 : densityAt(p, cov);
-        if (dens <= 0.001) { t += stepLen; stepLen *= GROW; continue; }
+        if (dens <= 0.001) { t += stepLen; stepLen = min(stepLen * GROW, MAXSTEP); continue; }
 
         float hf = clamp((p.y - BASE_Y) / THICK, 0.0, 1.0);
 
@@ -222,7 +243,7 @@ void main() {
         cumA += trans * a;
         trans *= (1.0 - a);
         t += stepLen;
-        stepLen *= GROW;
+        stepLen = min(stepLen * GROW, MAXSTEP);
       }
       acc += cum;
       alpha += cumA;

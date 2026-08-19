@@ -11,7 +11,10 @@
  *   node tools/wstrip.mjs --species rabbit --mode flee --frames 12 --step 2
  *   node tools/wstrip.mjs --species bear --mode free --track 0 --dist 9
  *
- * modes:  free | graze | walk | flee | alert | burst | flock
+ * modes:  free | graze | walk | flee | alert | burst | flock | ladder
+ *
+ * `ladder` frames the same animal at 4 / 9 / 20 / 45 / 90 / 170 m, which is the
+ * only honest way to check the brief's "reads at 2 m, 40 m and 400 m".
  *
  * The engine's own rAF loop is stopped and `_loop()` is called by hand with a
  * patched clock, so the strip is deterministic and independent of how fast the
@@ -48,6 +51,7 @@ const HOUR = arg('hour', '16.7');
 const FOV = parseFloat(arg('fov', '34'));
 const COUNT = parseInt(arg('count', '0'), 10) || null;
 const RES = arg('res', '640');
+const ANCHOR = arg('anchor', 'meadow');
 const OUT = resolve(arg('out', `shots/wildlife/strip-${SPECIES}-${MODE}.png`));
 
 const URL = `${arg('url', 'http://localhost:5178')}?res=${RES}`;
@@ -75,7 +79,7 @@ const result = await page.evaluate(async (P) => {
   window.__forceCamera = true;
 
   // Stand the camera in a meadow so the spawn search has somewhere to work.
-  const anchor = (window.__cameraAnchors.meadow || window.__cameraAnchors.vista)();
+  const anchor = (window.__cameraAnchors[P.ANCHOR] || window.__cameraAnchors.vista)();
   e.camera.position.set(anchor.x, W.getHeight(anchor.x, anchor.z) + 2, anchor.z);
   e.camera.rotation.set(0, anchor.yaw ?? 0, 0, 'YXZ');
   e.camera.fov = P.FOV;
@@ -145,6 +149,8 @@ const result = await page.evaluate(async (P) => {
   // Birds live in the sky, so they get their own framing: a fixed camera at
   // head height pointing up and along.
   const sky = P.MODE === 'burst' || P.MODE === 'flock';
+  const LADDER = [4, 9, 20, 45, 90, 170];
+  let ladderD = P.DIST;
   const place = () => {
     if (sky) {
       const yaw = anchorP.h + P.YAW;
@@ -167,14 +173,18 @@ const result = await page.evaluate(async (P) => {
     const h = A.rig.proto.height * A.scale;
     const ce = Math.cos(P.ELEV), se = Math.sin(P.ELEV);
     e.camera.position.set(
-      p.x + Math.sin(yaw) * P.DIST * ce,
-      p.y + h * 0.55 + P.DIST * se,
-      p.z + Math.cos(yaw) * P.DIST * ce,
+      p.x + Math.sin(yaw) * ladderD * ce,
+      p.y + h * 0.55 + ladderD * se,
+      p.z + Math.cos(yaw) * ladderD * ce,
     );
+    // Never let the camera end up inside a hill — a river bank puts the ideal
+    // orbit position a metre underground more often than not.
+    const gy = W.getHeight(e.camera.position.x, e.camera.position.z) + 1.6;
+    if (e.camera.position.y < gy) e.camera.position.y = gy;
     e.camera.lookAt(p.x, p.y + h * 0.55, p.z);
     // Keep the subject in focus. The depth of field is part of the shipping
     // look, so the strip keeps it and just points it at the animal.
-    window.__postfx?.setFocus?.(P.DIST);
+    window.__postfx?.setFocus?.(ladderD);
   };
 
   // Settle: let streaming, the gait clock and the post chain reach steady state.
@@ -211,6 +221,7 @@ const result = await page.evaluate(async (P) => {
 
   const notes = [];
   for (let f = 0; f < P.FRAMES; f++) {
+    if (P.MODE === 'ladder') ladderD = LADDER[Math.min(f, LADDER.length - 1)];
     for (let s = 0; s < P.STEP; s++) { place(); e._loop(); }
     // The back buffer is occasionally read empty — a compositor race that shows
     // up as a black tile. Re-render and read again rather than shipping a strip
@@ -237,7 +248,9 @@ const result = await page.evaluate(async (P) => {
     // off the picture is the difference between judging motion and guessing.
     const NM = ['idle', 'graze', 'wander', 'alert', 'flee', 'patrol'];
     const st = { state: NM[A.brain.state], gait: A.rig.gaitName, speed: A.brain.speed, lod: A.lod };
-    const line = `${f}  ${st.state}  ${st.gait}  ${st.speed.toFixed(1)}m/s`;
+    const line = P.MODE === 'ladder'
+      ? `${ladderD} m   lod ${st.lod}   ${st.state}`
+      : `${f}  ${st.state}  ${st.gait}  ${st.speed.toFixed(1)}m/s`;
     g2.font = 'bold 13px monospace';
     g2.fillStyle = 'rgba(0,0,0,0.62)';
     g2.fillRect(cx + 4, cy + 4, g2.measureText(line).width + 10, 19);
@@ -255,7 +268,7 @@ const result = await page.evaluate(async (P) => {
     calls: e.renderer.info.render.calls,
     tris: e.renderer.info.render.triangles,
   };
-}, { SPECIES, MODE, FRAMES, STEP, DT, COLS, DIST, ELEV, YAW, TRACK, HOUR, FOV, COUNT });
+}, { SPECIES, MODE, FRAMES, STEP, DT, COLS, DIST, ELEV, YAW, TRACK, HOUR, FOV, COUNT, ANCHOR });
 
 if (result.error) {
   console.error('wstrip:', result.error);

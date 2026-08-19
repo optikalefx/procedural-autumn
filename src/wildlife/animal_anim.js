@@ -296,7 +296,7 @@ export class AnimRig {
         // Shuffle it back, one leg at a time, which reads as a real weight shift.
         if (cadence === 0 && !lg.stepping) {
           this._neutral(lg, pos, heading, _a);
-          if (Math.hypot(lg.foot.x - _a.x, lg.foot.z - _a.z) > 0.30 * S &&
+          if (Math.hypot(lg.foot.x - _a.x, lg.foot.z - _a.z) > 0.17 * S &&
               !this.legs.some((o) => o.stepping)) {
             lg.stepping = true; lg.p = duty + 1e-4;
           }
@@ -351,7 +351,7 @@ export class AnimRig {
     // Spine flex: the back gathers and extends through a bound, and breathes at
     // rest. Small numbers — a quadruped's back barely moves, and overdoing it
     // reads as a cat rather than a deer.
-    const flex = (G.flight > 0 ? Math.sin(this.phase * Math.PI * 2 - 1.2) * 0.12 * sn : 0) + breathe;
+    const flex = (G.flight > 0 ? Math.sin(this.phase * Math.PI * 2 - 1.2) * 0.16 * sn : 0) + breathe;
     for (let i = 0; i < this.spineB.length; i++) {
       const last = i === this.spineB.length - 1;
       this.spineB[i].rotation.x = flex * (last ? 0.65 : 1);
@@ -481,7 +481,11 @@ export class AnimRig {
 
     for (let i = 0; i < this.tailB.length; i++) {
       const t = this.tailB[i];
-      t.rotation.x = -this.tailLift * (i === 0 ? 1.25 : 0.30) + Math.sin(this.breath * 0.8 + i) * 0.035;
+      // Positive X lifts: the tail chain runs down and back from the pelvis, so
+      // a negative rotation tucked it under the animal instead of flagging it.
+      // The white scut never showed, which is the one signal that makes a
+      // fleeing deer readable at two hundred metres.
+      t.rotation.x = this.tailLift * (i === 0 ? 1.30 : 0.34) + Math.sin(this.breath * 0.8 + i) * 0.035;
       t.rotation.y = this.tailSway * (1 - i * 0.25) * (i === 0 ? 1 : 0.8);
     }
   }

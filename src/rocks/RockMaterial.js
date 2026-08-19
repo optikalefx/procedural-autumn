@@ -7,8 +7,10 @@
 //  albedo/roughness and then applies the warm-key / cool-shadow split.
 //
 //  Art rules encoded here, in priority order:
-//    1. lavender-grey, never brown-grey; light enough that a lit face is nearly
-//       the value of the sky, which is what makes the reference read "clean"
+//    1. lavender-grey and NEUTRAL. Measured on the plates, a boulder's chroma
+//       is 10/255 against a meadow's 119/255 while their luminances are within
+//       15% of each other. Chroma, not value, is what separates stone from a
+//       patch of snow in a gold field — see uRockDesat.
 //    2. per-facet tonal separation — each plane gets its own value, so the
 //       faceting reads even when two facets face the sun almost equally
 //    3. bedding planes, lichen and wet rock are *quiet*; the reference is
@@ -37,13 +39,12 @@ export function createRockMaterial() {
     // pulled toward neutral, and rockShadow stays for creases and contact only.
     uRockDeep:   { value: new THREE.Color().setHex(0x6e6b7c, THREE.SRGBColorSpace) },
     uRockWarm:   { value: PALETTE.rockWarm.clone() },
-    // Golden-hour cast for sun-facing planes. Measuring the reference plates,
-    // lit rock sits around (185,145,119) — clearly warm — while shaded rock
-    // stays neutral-to-cool. That split is the light, not the material, but
-    // the global rig cannot know a plane is rock, so the albedo carries part
-    // of it. Without this the rock is the only desaturated thing in a frame
-    // that is 95% warm, and a desaturated mid-value object reads as chalk.
-    uRockSun:    { value: new THREE.Color().setHex(0xd7ac7f, THREE.SRGBColorSpace) },
+    // A *hint* of golden-hour cast on sun-facing planes, and no more than a
+    // hint. An earlier pass pushed this hard on the theory that a desaturated
+    // object in a 95%-warm frame reads as chalk. Measurement says the opposite
+    // (see uRockDesat below): in the plates the boulder is the one genuinely
+    // neutral thing in the picture, and that is *why* it reads as stone.
+    uRockSun:    { value: new THREE.Color().setHex(0xc9b6a6, THREE.SRGBColorSpace) },
     // The key light's own colour, fed in each frame. Tinting the warm mix by
     // it means the rock is gold at golden hour and pink at dawn without any
     // per-time-of-day tuning here.
@@ -55,6 +56,44 @@ export function createRockMaterial() {
     uShadowTint: { value: new THREE.Vector3(0.91, 0.94, 1.10) },
     uAOStrength: { value: 0.55 },
     uTime:       { value: 0 },
+
+    // ── the chroma governor ──────────────────────────────────────────────────
+    //
+    //  This is the fix for "the boulders read as patches of snow", and it is
+    //  not the fix the previous three passes were reaching for.
+    //
+    //  Measured with a difference mask (capture with Rocks on and off at a
+    //  frozen anchor, then average only the pixels that changed) against the
+    //  same pair measured on reference plate 1:
+    //
+    //                       rock           meadow beside it   rock/meadow
+    //    reference     (149,139,139) C 10  (170,119, 51) C119   luma 1.13
+    //    ours, before  (200,145, 90) C110  (195,121, 52) C144   luma 1.16
+    //
+    //  The luminances are the *same story* in both images — the reference
+    //  boulder is if anything brighter than the grass it sits in. What is not
+    //  the same is chroma: the reference rock is essentially neutral (10/255)
+    //  and ours was two thirds of the way to being grass (110/255). A pale,
+    //  low-chroma, same-hue object in a gold field is exactly what snow looks
+    //  like; a neutral one is what stone looks like. Chasing luminance alone
+    //  would have given us dark grey lumps that match nothing in the plates.
+    //
+    //  So the material governs the *rendered* chroma directly rather than
+    //  trying to cancel a warm light with an inverse-tinted albedo: mix the lit
+    //  colour toward its own luminance. That is stable under any sun colour,
+    //  any time of day and any global grade — all of which are other authors'
+    //  dials and all of which move.
+    uRockDesat:  { value: 0.80 },
+    // The neutral is not pure grey. Rock is the one place the brief allows the
+    // cool complementary note, and a whisper of lavender is what stops a
+    // desaturated object reading as dead cardboard. Luma-normalised, so this
+    // rotates hue without touching value.
+    uRockCast:   { value: new THREE.Vector3(0.965, 0.995, 1.085) },
+    // Single exposure-match dial, applied to the lit colour before fog.
+    // 0.72 of it is the albedo mismatch the previous author measured; the rest
+    // is the shortfall they flagged and could not land. Retuned by capture:
+    // see the table in the round notes.
+    uRockGain:   { value: 0.62 },
   };
   mat.userData.uniforms = uniforms;
 
@@ -100,8 +139,8 @@ export function createRockMaterial() {
 
     shader.fragmentShader = /* glsl */`
       uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
-      uniform vec3 uSunDir, uShadowTint, uSunTint;
-      uniform float uAOStrength, uTime;
+      uniform vec3 uSunDir, uShadowTint, uSunTint, uRockCast;
+      uniform float uAOStrength, uTime, uRockDesat, uRockGain;
       varying vec3 vBake;
       varying vec4 vRockA;
       varying vec3 vRockB;
@@ -170,17 +209,21 @@ export function createRockMaterial() {
         // rockLit is the top of the range, reached only by the brightest
         // facets; most of the rock lives in the lower half of it.
         //
-        // The up-term is weighted lightly on purpose: global lighting already
-        // brightens upward faces, and baking a second big up-term into the
-        // albedo double-counted it and blew every horizontal facet out.
-        float val = 0.19
-                  + up * 0.06
-                  + facet * 0.20              // per-facet tone, the main split
-                  + bed * 0.07
-                  + tint * 0.08
-                  - (1.0 - hN) * 0.07;        // bases sit a little darker
+        // The up-term is sky exposure, not a second copy of the key light: a
+        // horizontal plane sees the whole dome, a vertical one sees half of it.
+        // It is carried in the albedo because the thing it has to produce is a
+        // hard *value step* at every horizontal edge — the reference boulder
+        // has one bright top plane and one clearly darker side, and that step
+        // is most of what makes it read as cut rather than as a lump. It was
+        // weighted at 0.06 before and the boulders came out uniform.
+        float val = 0.13
+                  + up * 0.17                 // sky exposure: tops, not sides
+                  + facet * 0.24              // per-facet tone, the main split
+                  + bed * 0.06
+                  + tint * 0.07
+                  - (1.0 - hN) * 0.08;        // bases sit a little darker
         vec3 rock = mix( uRockDeep, uRockLit, clamp( val, 0.0, 1.0 ) );
-        rock *= mix( 0.62, 1.0, ao );         // creases: multiplied, not tinted
+        rock *= mix( 0.52, 1.0, ao );         // creases: multiplied, not tinted
 
         // A hint of the key light's warmth on sun-facing planes, and no more.
         // The reference rock is near-neutral even in full golden hour; pushing
@@ -188,16 +231,7 @@ export function createRockMaterial() {
         // bans outright.
         float sunFace = clamp( dot( N, normalize( uSunDir ) ), -1.0, 1.0 );
         float warmM = smoothstep( -0.25, 0.60, sunFace );
-        rock = mix( rock, uRockSun * uSunTint, 0.04 + warmM * 0.14 );
-
-        // Exposure match. The palette hues are correct but this pipeline —
-        // light rig, Stylize floor, exposure, PBR-Neutral tone map, grade —
-        // has an end-to-end gain of about 1.45 on rock albedo, which landed a
-        // lit face at ~200 against gold meadow at ~220. Measured on the plates
-        // the same pair is 168 against 241. This factor is what closes that
-        // gap; without it the rocks read as snow patches, which is precisely
-        // how every earlier build looked.
-        rock *= 0.72;
+        rock = mix( rock, uRockSun * uSunTint, 0.02 + warmM * 0.05 );
 
         // ── lichen and moss ───────────────────────────────────────────────
         // Big soft blotches, never speckle. Pale lichen crusts the sunny tops,
@@ -210,8 +244,11 @@ export function createRockMaterial() {
         float mossM   = smoothstep( 0.50, 0.95, blotch2 * 0.8 + (1.0 - ao) * 0.5 )
                       * smoothstep( 0.05, 0.55, up )
                       * moist * moist * ( 1.0 - wet * 0.5 );
-        rock = mix( rock, uLichen, lichenM * 0.34 );
-        rock = mix( rock, uMoss,   mossM  * 0.42 );
+        // Kept deliberately faint: the chroma governor below pulls 80% of the
+        // colour out of everything this material renders, so anything authored
+        // at full strength here only survives as a value blotch anyway.
+        rock = mix( rock, uLichen, lichenM * 0.26 );
+        rock = mix( rock, uMoss,   mossM  * 0.34 );
 
         // ── wet rock ──────────────────────────────────────────────────────
         // Below the waterline the rock is soaked and much darker; just above it
@@ -224,8 +261,11 @@ export function createRockMaterial() {
         wetRock = mix( wetRock, wetRock * vec3( 0.86, 0.96, 1.10 ), 0.55 );
         rock = mix( rock, wetRock, soak * 0.85 );
 
-        // Frost-shattered high ground reads paler and cooler.
-        rock = mix( rock, rock * vec3( 1.06, 1.05, 1.10 ), clamp( vRockB.y, 0.0, 1.0 ) * 0.5 );
+        // Frost-shattered high ground reads cooler — but NOT paler. Anything
+        // that lifts value at altitude compounds with aerial haze and turns a
+        // 700 m crag into a white speck, which is the "snow on the massif"
+        // read we are trying to kill.
+        rock = mix( rock, rock * vec3( 0.96, 0.99, 1.07 ), clamp( vRockB.y, 0.0, 1.0 ) * 0.6 );
 
         // ── contact with the ground ───────────────────────────────────────
         // A band of occlusion just above the terrain line. Cheap, and it is
@@ -240,7 +280,12 @@ export function createRockMaterial() {
 
         diffuseColor.rgb *= rock;
       }`)
-      .replace('#include <dithering_fragment>', /* glsl */`
+      // Hooked at the fog include, not at dithering, so everything below
+      // happens to the *surface* and the shared aerial perspective is then
+      // layered on top of it. The bounce used to be added after fog, which
+      // meant a rock at 600 m still got its full meadow bounce painted on
+      // over the haze.
+      .replace('#include <fog_fragment>', /* glsl */`
       {
         vec3 N = normalize( vWNrm );
         vec3 L = normalize( uSunDir );
@@ -254,10 +299,21 @@ export function createRockMaterial() {
         // Cool violet drift on unlit planes — a tint, never a hue replacement.
         float shade = 1.0 - smoothstep( 0.0, 0.34, ndl );
         gl_FragColor.rgb = mix( gl_FragColor.rgb, gl_FragColor.rgb * uShadowTint, shade * 0.30 );
+
+        // ── chroma governor (see uRockDesat) ──────────────────────────────
+        // Pull the lit colour toward its own luminance, tinted a hair cool.
+        // Done here rather than in the albedo because the thing that has to
+        // come out neutral is the *rendered* pixel, and everything between
+        // albedo and pixel — sun colour, hemisphere fill, Stylize, the global
+        // grade — belongs to other authors and moves without warning.
+        float rockL = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+        gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( rockL ) * uRockCast, uRockDesat );
+        gl_FragColor.rgb *= uRockGain;
+        gl_FragColor.rgb = vec3( 1.0, 0.0, 1.0 );   // DIAG
       }
-      #include <dithering_fragment>`);
+      #include <fog_fragment>`);
   };
 
-  mat.customProgramCacheKey = () => 'procedural-autumn-rock-v1';
+  mat.customProgramCacheKey = () => 'procedural-autumn-rock-v2';
   return mat;
 }

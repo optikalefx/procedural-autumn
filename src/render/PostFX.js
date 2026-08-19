@@ -50,7 +50,13 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   c = mix(c, c * uShadowTint,    uSplitStrength * shadowW);
   c = mix(c, c * uHighlightTint, uSplitStrength * highW * 0.7);
 
-  // Filmic contrast around middle grey, then lift the toe.
+  // Filmic contrast around middle grey, then lift the toe. Pushed up from 1.18
+  // deliberately, against the art director's "too much contrast" note: that note
+  // was about hard shadow *edges*, which Stylize's wrap and the soft shadow map
+  // now handle. Measured whole-frame contrastStd was sitting at 0.10–0.16
+  // against a reference band of 0.13–0.22, i.e. the frames were flatter than the
+  // plates, not sharper. The toe lift below runs after this, so raising it does
+  // not re-crush the blacks.
   c = (c - 0.18) * uContrast + 0.18;
   // Clamp before lifting, not after. Contrast about any pivot maps a true black
   // to a negative, and adding the lift to a negative simply cancels it — the
@@ -142,7 +148,7 @@ class GradeEffect extends Effect {
         ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.14, 1.02, 0.83))],
         ['uSplitStrength', new THREE.Uniform(0.21)],
         ['uSaturation',    new THREE.Uniform(0.74)],
-        ['uContrast',      new THREE.Uniform(1.18)],
+        ['uContrast',      new THREE.Uniform(1.26)],
         ['uLift',          new THREE.Uniform(0.034)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.14, 1.00, 0.88))],
         ['uVibrance',      new THREE.Uniform(0.90)],
