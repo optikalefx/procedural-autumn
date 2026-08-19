@@ -50,3 +50,6 @@ same places are photographed every round and the sheets are directly comparable.
 | 042 | 2026-08-19 | rock value ramp, necklace fixed, winding clean | [042](042-2026-08-19-rock-value-ramp-necklace-fixed-winding-clean.png) |
 | 043 | 2026-08-19 | look r1: fix the shader collision that had grass and tree bark not compiling | [043](043-2026-08-19-look-r1-fix-the-shader-collision-that-had-grass-.png) |
 | 044 | 2026-08-19 | grade neutrality and time of day | [044](044-2026-08-19-grade-neutrality-and-time-of-day.png) |
+| 045 | 2026-08-19 | perf fixed, sky pinned, clouds thinned, warm ground | [045](045-2026-08-19-perf-fixed-sky-pinned-clouds-thinned-warm-ground.png) |
+| 046 | 2026-08-19 | after four authors died mid-edit | [046](046-2026-08-19-after-four-authors-died-mid-edit.png) |
+| 047 | 2026-08-19 | water: plunge bloom, curtain off the rock, shoreline exemption | [047](047-2026-08-19-water-plunge-bloom-curtain-off-the-rock-shorelin.png) |

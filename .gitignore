@@ -1,5 +1,42 @@
+# ── dependencies and build output ──────────────────────────────────────────────
 node_modules/
 dist/
+.vite/
+*.tsbuildinfo
+
+# ── capture harness output ────────────────────────────────────────────────────
+# shots/ is where every tool writes its frames. It is ~2.8 GB and every file in
+# it is regenerable with `node tools/shot.mjs`, so it stays out of history.
 shots/
-# review/ is deliberately tracked: it is the visual record of the project.
+
+# review/ is deliberately TRACKED, not ignored: the archived contact sheets are
+# the visual record of the project and the art director judges rounds from them.
+# See review/INDEX.md.
+
+# reference-art/ is deliberately TRACKED: it is the art target every visual
+# judgement is measured against. Do not add it here, and do not delete from it.
+
+# ── world bakes ───────────────────────────────────────────────────────────────
+# public/bakes/*.pab is the pre-baked terrain, ~32 MB each, and is deliberately
+# tracked so a fresh clone runs without a multi-minute bake. Stale bakes for
+# source hashes that no longer exist should be deleted rather than accumulated —
+# they are the main reason .git is as large as it is.
+
+# ── local noise ───────────────────────────────────────────────────────────────
 .DS_Store
+*.log
+npm-debug.log*
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*~
+
+# ── scratch ───────────────────────────────────────────────────────────────────
+# tools/_scratch/ holds one-off diagnostic instruments and IS tracked — several
+# of them (cost2, tierload, wdrive's ancestors) are load-bearing. Only their
+# output is ignored.
+tools/_scratch/**/out/
+tools/_scratch/**/*.png
