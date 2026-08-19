@@ -312,7 +312,30 @@ export class Lighting {
     // the frame. At 0.66 the shape is unmistakable and still nowhere near a
     // hole — ambient, the stylised diffuse floor and the grade chromatic toe
     // between them keep shaded ground a warm colour rather than an absence.
-    this.sun.shadow.intensity = 0.66;
+    //
+    // 0.66 was still short, and this is now measured rather than judged. The
+    // measurement (tools/_scratch/sepdiag.mjs) captures the same posed frame
+    // twice — once normally, once with intensity forced to 0 — and compares the
+    // two at the pixels that changed, so it is the same surface, same albedo,
+    // same camera, with a cast shadow as the only difference. No albedo or
+    // weather variance can leak into it.
+    //
+    // The target comes off plate 1's meadow, where a cast tree shadow on gold
+    // measures srgb(148,106,47) luma 0.433 against sunlit gold at luma 0.69-0.73
+    // — a shaded/sunlit display-luma ratio of about 0.60. Our sunlit gold sits
+    // at 0.53-0.57 in the same frames, so the same ratio wants a separation of
+    // 0.21-0.23. Measured across intensities:
+    //           drive          meadow
+    //   0.66    0.194          0.152
+    //   0.78    0.233          0.187
+    //   0.88    0.269          0.216
+    // 0.82 lands drive ~0.25 and meadow ~0.20, i.e. the plate's ratio on both,
+    // and it is still a long way from a hole: the shaded pixels come back a warm
+    // srgb(126,73,42) at chroma 0.34, against a reference shadow that is warm
+    // srgb(76,64,48) at its darkest. The reason a bigger number than 0.46 no
+    // longer reads as harsh is that the softness comes from the map (PCF_SOFT at
+    // a 150 m extent) rather than from the shadow being pale.
+    this.sun.shadow.intensity = 0.82;
     this._setShadowExtent(220);
     scene.add(this.sun);
     scene.add(this.sun.target);

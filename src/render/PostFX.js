@@ -18,7 +18,9 @@ uniform vec3  uHighlightTint;
 uniform float uSplitStrength;
 uniform float uSaturation;
 uniform float uContrast;
+uniform float uContrastHue;
 uniform float uLift;
+uniform float uLiftKnee;
 uniform float uToe;
 uniform vec3  uLiftTint;
 uniform float uVibrance;
@@ -77,7 +79,39 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // So the targets are per framing. Eye-level: lumaP05 0.20-0.42, lumaRange
   // 0.41-0.53, contrastStd 0.13-0.18, chromaMean 0.30-0.42. Only hero, peaks
   // and dawn should go anywhere near plate 1 numbers.
-  c = (c - 0.18) * uContrast + 0.18;
+  //
+  // Two ways to apply it, blended by uContrastHue. Per channel is the usual
+  // one, and it does not preserve hue: it is an affine map, and an affine map
+  // moves R:G:B ratios. On a gold pixel the effect is asymmetric and large.
+  // Traced through this pass with real numbers from the river view, the shaded
+  // bank arrives at the grade with G/R 0.393 and leaves the contrast step at
+  // 0.136, i.e. the contrast alone turns an amber into a vermilion; the lift
+  // and the warm regrade downstream spend most of their authority buying that
+  // back and still only reach 0.585, against a reference cast shadow that
+  // measures G/R 0.716. Sunlit gold, being well above the pivot, barely moves.
+  // So "our shaded ground is red-brown where the reference's is amber-olive"
+  // was, in the end, a property of this one line.
+  //
+  // The other way applies the same curve to luminance and scales the colour by
+  // the result, which preserves R:G:B exactly — a shadow becomes a darker
+  // version of the same colour, which is what the reference plates do (plate 1's
+  // sunlit meadow is G/R 0.425 and its cast shadow 0.482, essentially the same
+  // pigment at two brightnesses). Blended rather than swapped, because the
+  // per-channel form is also where a good deal of the frame's chroma comes
+  // from: at uContrastHue 1.0 the conifer-heavy views fall under the reference
+  // chromaMean floor.
+  //
+  // The luma is soft-floored before the divide so the gain cannot go negative
+  // and the divisor is clamped, which between them make this NaN-proof — see
+  // the note on pow() and varyings in the grass shader for why that matters
+  // here in particular: this pass is upstream of nothing, but it is downstream
+  // of bloom, and a single non-finite pixel arriving here is already spread.
+  vec3 cPerCh = (c - 0.18) * uContrast + 0.18;
+  float l0 = luma(c);
+  float l1 = (l0 - 0.18) * uContrast + 0.18;
+  l1 = 0.5 * (l1 + sqrt(l1 * l1 + uToe * uToe));
+  vec3 cRatio = c * (l1 / max(l0, 1e-4));
+  c = mix(cPerCh, cRatio, uContrastHue);
   // Soft toe, not a hard clamp. Contrast about any pivot maps a true black to a
   // negative, so the floor has to happen before the lift — but max(c, 0.0) maps
   // *every* negative to exactly zero, and the additive lift then lands all of
@@ -106,7 +140,16 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // darkest samples (srgb(76,64,48) in plate 1, olive srgb(56,66,32) in plate
   // 3). The tint is luminance-normalised, so this sets a colour, not a
   // brightness. After it, near-neutral pixels measure under 3% in every view.
-  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, 0.22, luma(c)));
+  // uLiftKnee is where the lift has fallen to nothing. It used to be hard-coded
+  // at 0.22 linear (~0.50 sRGB), which is well *above* shaded ground: a bank at
+  // luma 0.10 linear was still collecting 57% of the lift while the sunlit gold
+  // beside it, at 0.28, collected none. The lift was therefore spending most of
+  // its authority closing the sun/shade gap the frame is supposed to have — it
+  // measured as 0.03 of display luma on the river view's shaded bank alone. Pulled in
+  // to 0.13 the lift keeps its actual job (a near-black leaf or a hole under a
+  // canopy still lands on a warm brown rather than on nothing: at 0.02 linear it
+  // is still at 92% strength) and stops paying for the shaded mid-tones.
+  c += uLift * uLiftTint * (1.0 - smoothstep(0.0, uLiftKnee, luma(c)));
 
   // Vibrance up, global saturation down. The pair is a chroma *compressor*, not
   // a chroma trim, and that is what the frames needed: the gold meadow measured
@@ -347,9 +390,11 @@ class GradeEffect extends Effect {
         ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.93, 0.94, 1.12))],
         ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.10, 1.02, 0.90))],
         ['uSplitStrength', new THREE.Uniform(0.21)],
-        ['uSaturation',    new THREE.Uniform(0.74)],
+        ['uSaturation',    new THREE.Uniform(0.80)],
         ['uContrast',      new THREE.Uniform(1.30)],
+        ['uContrastHue',   new THREE.Uniform(0.55)],
         ['uLift',          new THREE.Uniform(0.030)],
+        ['uLiftKnee',      new THREE.Uniform(0.130)],
         ['uToe',           new THREE.Uniform(0.032)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.30, 0.95, 0.68))],
         ['uVibrance',      new THREE.Uniform(0.90)],

@@ -59,11 +59,42 @@ Shadows are now soft (`shadow.radius` 8, 24 blur samples) and deliberately
 **not** black (`sun.shadow.intensity ≈ 0.52`). A tree's shadow on gold meadow
 should read as a soft, warm, semi-transparent shape.
 
-**Shadows are warm, not violet.** Earlier guidance overplayed the cool shadow.
-Measuring the reference plates, blue/violet/magenta together account for about
-**1%** of chromatic pixels. An intermediate build of ours hit 20%. The cool note
-belongs to *distant rock and atmospheric haze*, which the shared Atmosphere
-supplies — not to every shaded surface in the frame.
+**CORRECTED AGAIN — 2026-08-19. The "shadows are warm, not violet" guidance
+below was wrong, and it did real damage. Read this before the paragraph it
+replaces.**
+
+That 1% figure was computed by averaging all five plates, and plate 4 is an
+into-the-sun frame that is essentially 100% red. Averaging across it buried the
+plate the brief itself tells you to judge eye-level views by.
+
+Measured individually, **plate 3 puts 35.5% of its chromatic pixels in the cool
+half** (cyan + azure + blue + violet + magenta + rose), and roughly **40% of its
+ground is one large, soft, high-value violet-blue cast shadow**. That shadow mass
+is not incidental — it is what draws every shape in the picture.
+
+Taken literally, the old guidance drove the cool out of every frame we ship:
+our eye-level views measure **0.1–0.8%** cool against that 35.5%. Combined with
+lifted blacks it is the main reason our meadows measure correct chroma and still
+look flat. It is a textbook case of a frame measuring right and looking wrong —
+in the direction this document pointed.
+
+**So:** a cast shadow on sunlit gold ground should be a *high-value, soft,
+violet-blue mass*, not a darker gold. Shaded surfaces still keep their own hue
+(reference shaded foliage is olive `srgb(56,66,32)`, shaded ground warm
+`srgb(76,64,48)`) — the violet belongs to the large cast-shadow *masses*, not to
+every unlit pixel. Both things are true at once, and the earlier text collapsed
+them into one rule.
+
+<details>
+<summary>Superseded text, kept so the reasoning is auditable</summary>
+
+> Shadows are warm, not violet. Earlier guidance overplayed the cool shadow.
+> Measuring the reference plates, blue/violet/magenta together account for about
+> 1% of chromatic pixels. An intermediate build of ours hit 20%. The cool note
+> belongs to distant rock and atmospheric haze, which the shared Atmosphere
+> supplies — not to every shaded surface in the frame.
+
+</details>
 
 ### Measured targets (use `tools/colorstats.mjs`)
 
@@ -81,7 +112,15 @@ proved the opposite. Across the five reference plates:
 | `neutralPct` | 0 – 28 % | few grey pixels |
 | `vividPct` | 31 – 79 % | most of the frame is strongly coloured |
 
-Hue is overwhelmingly red/orange/yellow — about 95% of chromatic pixels.
+**Do not average these across plates.** Plate 1 is a wide hazy aerial vista and
+plate 4 is an into-the-sun frame; both are outliers, and averaging them into a
+single band has now produced two separate systematic errors in this project (a
+crushed-black regression, and the missing cool half above). Judge eye-level views
+against **plates 3/4/5** and vistas against **plate 1**, per plate, every time.
+
+Hue in the *warm* family accounts for about 95% of chromatic pixels in plates 1
+and 4 — but plate 3, the closest analogue to our eye-level gameplay framing,
+carries 35.5% cool. Check the plate that matches your shot.
 
 What actually makes the reference read as flat and cel-shaded is **large areas
 of uniform colour with few shading gradients**, not low contrast and not low

@@ -85,6 +85,16 @@ const DEFAULTS = {
   // past this the shaded flank of the hero massif closes to within a few
   // percent of its lit flank and the mountain reads as one smooth beige lump.
   floor: 0.13,
+  // NOT A KNOB, DELIBERATELY. A shaped floor — one that fades across the back
+  // hemisphere so a surface 70 degrees past the terminator sits below one at 40
+  // — was built here and reverted, because it measured as a no-op. The river
+  // view's foreground bank, which is the surface the whole idea was for, moved
+  // from luma 0.299 to 0.290 at backFloor 0.46 and 0.288 at 0.30, and the
+  // forest frame moved 0.003 of lumaMean. The reason is arithmetic: on a
+  // back-facing surface the floor supplies only about a third of the light and
+  // ambient supplies the rest, so halving the floor moves the pixel by a sixth
+  // of a sixth. Anything that wants form on the dark side of a mass has to come
+  // from the ambient term's orientation response, not from here.
 };
 
 let patched = false;
