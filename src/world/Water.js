@@ -356,10 +356,7 @@ void main() {
   // and its foam carries value the lake has to get from the sky. Withdrawn
   // inside foam and inside turbulence, where the surface is no longer a mirror
   // of anything.
-  // Same widening as the lake — see the note there. A channel already has an
-  // anisotropic frame to sample in (fp runs across and along the flow), so this
-  // one only needed its range opening up.
-  float sheenMass = 0.16 + 0.84 * smoothstep(0.28, 0.72,
+  float sheenMass = 0.52 + 0.48 * smoothstep(0.30, 0.70,
                     wFbm2(fp * vec2(0.09, 0.02) - vec2(0.0, uTime * speed * 0.05)) * 0.5 + 0.5);
   float sheen = uSheen * 0.62 * sheenMass * (1.0 - foam * 0.9) * (1.0 - vTurb * 0.45);
   vec3 col = mix(lit, env, clamp(max(fres, sheen), 0.0, 0.42));
@@ -495,22 +492,9 @@ void main() {
   // The interior of a lake is exempt from the fade entirely — how far from the
   // bank a pixel is, not how wide a pixel is, decides whether it is water — so
   // the band is free to stay wide enough to actually antialias the margin.
-  // ...and this exemption is where the hard shoreline actually lived. At 2-11 m
-  // from the bank it takes over almost immediately, and its own depth ramp is a
-  // fixed 20 cm — so on any bank steeper than about 1:10 the max() below picks
-  // the exempt term two metres from the water's edge, the footprint-scaled
-  // antialias never gets to run, and the lake ends on a one-pixel step. Which
-  // is exactly what the far shore of the big lake measured at 180 m, and what
-  // a critic recorded as 'a hard aliased line where the water quad meets
-  // terrain'.
-  //
-  // The exemption is for the *interior*, so it has to start where the interior
-  // does. Ten to forty metres out, and its ramp widens with the pixel too —
-  // just far more slowly than the shoreline's, which is the whole distinction
-  // the exemption exists to draw.
-  float lakeCore = smoothstep(10.0, 40.0, vShore);
+  float lakeCore = smoothstep(2.0, 11.0, vShore);
   float shoreFade = max(smoothstep(0.0, 0.62 + min(foot, 5.0) * 0.55, depth),
-                        lakeCore * smoothstep(0.0, 0.20 + min(foot, 5.0) * 0.10, depth));
+                        lakeCore * smoothstep(0.0, 0.20, depth));
   // The mesh is dilated one ring beyond the baked water so the fade has room to
   // finish inside geometry. That ring is the only place this gate does anything
   // — it stops a perched lake from painting itself down a cliff face.
@@ -534,22 +518,10 @@ void main() {
   // Note it is measured in *depth*, negative on the dry side, so it follows
   // the same surface the alpha edge does and can never separate from it.
   float wetT = smoothstep(-uWetBand, -0.02, depth) * (1.0 - shoreFade);
-  // The dilation ring's own taper — and it was throttling the band almost out
-  // of existence. aWet is averaged over the (up to four) grid cells touching a
-  // vertex, so on the outer half of the ring it is 0 and on the inner half it
-  // is 0.25 or 0.5: gating at 0.02-0.30 left the band alive across about one
-  // 8 m cell of an 8 m ring, quantised to the grid, and absent altogether on
-  // any bank whose geometry happened to land the other way. Measured on the
-  // far shore of the big lake at 180 m there was no band at all and the water
-  // ended on a one-pixel step against gold grass — blocker #13 in its plainest
-  // form, still there after the band was written.
-  //
-  // The whole ring may take part now. The depth gate above is the real limit
-  // and it is the honest one: ground more than uWetBand metres above the water
-  // is not a damp margin whatever the mesh says, so a cliff is excluded by
-  // construction and cannot pick this up.
-  wetT *= smoothstep(-0.45, 0.10, vWet);
-  alpha = max(alpha, wetT * 0.66);
+  // The dilation ring's own taper. Wider than the water gate above: this band
+  // lives on the outer half of the ring, where vWet has already fallen away.
+  wetT *= smoothstep(-0.02, 0.30, vWet);
+  alpha = max(alpha, wetT * 0.52);
   if (alpha < 0.012) discard;
 
   // ── wind ripple ───────────────────────────────────────────────────────────
@@ -784,25 +756,8 @@ void main() {
   // stylisation, and it is broad and low-frequency by construction — the
   // brief's "broad low-frequency sky reflection, not mirror detail" — because
   // the mass it rides on is an 80 m noise, not a per-ripple normal.
-  // ...and the *range* in that sheet is the whole read, which the first pass at
-  // this missed. Measured off plate 3, the water there runs from a dark
-  // blue-violet body at srgb(52,62,96) to near-white silver sheets at
-  // srgb(205,216,232) — better than two stops, inside one river, in broad soft
-  // masses. Ours ran 0.52-1.0 of a single dial, which after the mix lands
-  // everywhere between 'pale blue' and 'slightly paler blue': one flat tint, and
-  // a lake that reads as a paint-bucket fill however correct its average is.
-  // The average was never the problem.
-  //
-  // Streaked, not blobbed. The plate's bright masses are long marks lying along
-  // the water, not isotropic patches — a rippled surface hands back sky in
-  // *bands* because the roughness that does it is combed by the wind. Sampling
-  // the mass anisotropically along the wind axis costs nothing and is most of
-  // what makes this read as water rather than as mottling.
-  vec2 sdir = normalize(uWind + vec2(1e-4, 1e-4));
-  vec2 sperp = vec2(-sdir.y, sdir.x);
-  vec2 sq = vec2(dot(p, sdir) * 0.0042, dot(p, sperp) * 0.019);
-  float sheenMass = 0.14 + 0.86 * smoothstep(0.28, 0.72,
-                    wFbm2(sq + vec2(uTime * 0.004, 0.0)) * 0.5 + 0.5);
+  float sheenMass = 0.52 + 0.48 * smoothstep(0.30, 0.70,
+                    wFbm2(p * 0.0085 + vec2(uTime * 0.004, 0.0)) * 0.5 + 0.5);
   // Withdrawn in the shallows for the same reason the mirror is: a rim you can
   // see the bed through does not hand back a sheet of sky.
   float sheen = uSheen * sheenMass * smoothstep(0.10, 1.4, depth);
@@ -849,12 +804,7 @@ void main() {
   float laceD = smoothstep(0.015, 0.10 * laceScale, depth)
               * (1.0 - smoothstep(0.09 * laceScale, 0.36 * laceScale, depth));
   float laceW = 1.0 - smoothstep(0.8, 3.6, distShore);
-  // The floor was rationed to 0.26 against a continuous white fringe reading as
-  // pack ice. That was the right worry and the wrong number: plate 3 draws the
-  // margin of its river as a *bright* cream ribbon several metres wide along
-  // most of its length, and the shelves this map is made of put nearly every
-  // shoreline in the game on the floor rather than at the peak.
-  float lace = laceD * mix(0.42, 1.0, laceW);
+  float lace = laceD * mix(0.26, 1.0, laceW);
   // Broken twice, at two scales. One noise threshold turns the band into a
   // long soft smear with a couple of gaps in it; the reference draws its
   // waterline as a row of separate bright marks, and it takes a coarse noise
@@ -976,23 +926,13 @@ export class Water extends System {
       // grazing angle is 5-8%, which measured two and a half stops under the
       // reference plates. This is the floor under it, and it is the single
       // dial that decides whether a basin reads as water or as a dark hole.
-      // Raised with the widening of sheenMass: the mass now averages 0.57 of
-      // full rather than 0.76, and this is the whole *value* of the water at
-      // anything but a grazing angle, so the mean has to be held where it was
-      // measured or the widening reads as a darker lake rather than as a lake
-      // with structure in it.
-      // 0.88, not 0.80: the mass averages 0.57 of full where it used to average
-      // 0.76, so holding the *mean* reflectance where it was measured takes
-      // 0.50/0.57. Measured on the river anchor the 0.80 arm came back 8% dark
-      // against the arm it replaced, which is the widening reading as a dimmer
-      // river rather than as a river with structure in it.
-      uSheen:        { value: 0.88 },
+      uSheen:        { value: 0.66 },
       // Metres of damp margin drawn on the dry side of the waterline. The
       // reference never shows water meeting dry ground on a line; there is
       // always a band of wet substrate between the two, and its absence is
       // what makes a shoreline read as a cut-out however well antialiased the
       // alpha edge is.
-      uWetBand:      { value: 3.1 },
+      uWetBand:      { value: 2.6 },
       uCoolTint:     { value: new THREE.Vector3(0.96, 1.00, 1.03) },
       // Strength of the cool governor (see wCoolGovern). 0 disables it and
       // water goes the colour of the light; 1 holds it hard against any warm

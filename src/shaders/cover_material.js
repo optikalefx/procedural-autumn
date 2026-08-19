@@ -64,15 +64,28 @@ export function makeCoverUniforms() {
     // surface (uRimBack), the surface has to be near its own silhouette
     // (uRimPow on the fresnel), and it is weighted by the vertex's height rank
     // so a tip glows and a root does not.
-    // 0.95, not the 2.30 the first pass used. Swept on the `backlit` view: at
-    // 2.30 the layer's whole job inverts — the shrubs stop being the dark value
-    // anchor the meadow needs and become the palest thing in the frame, pale
-    // mint lumps floating on salmon grass. The reference's backlit bushes keep
-    // their mass and gain an edge; they do not light up. A rim is a contour, so
-    // the exponent does more for it than the strength does.
-    uRim:          { value: 0.95 },
-    uRimPow:       { value: 2.8 },
-    uRimBack:      { value: 0.12 },
+    // Swept on the `backlit` anchor with everything else held
+    // (tools/_scratch/cover/rimsweep.mjs, shots/cover/rim1 and rim2), which is
+    // the first time these two numbers have been looked at together — and they
+    // only make sense together. The previous round found that 2.30 at exponent
+    // 2.8 turns the shrubs into pale mint lumps floating on salmon grass, and
+    // concluded the strength was too high. Half right: at exponent 2.8 the term
+    // is not a rim at all. `1 - |dot(N,V)|` is high over most of a small clumpy
+    // object, because a floret's normals sweep through every direction inside a
+    // 20 cm ball, so a low exponent lights the whole bush and raising the gain
+    // just washes it faster.
+    //
+    // Push the exponent instead and only normals within a few degrees of
+    // perpendicular fire, which is a contour — and the gain can then go up by
+    // 3.5x without the mass moving at all. The sweep is unambiguous:
+    //   0    / 2.8   flat dark-green blobs, the critic's "no rim"
+    //   2.5  / 1.6   pale wash, the previous round's failure
+    //   3.0  / 8.0   green mass, bright edge — the reference's behaviour
+    // uRimBack up from 0.12 so a frame that is not actually into the sun pays
+    // nothing for it.
+    uRim:          { value: 3.00 },
+    uRimPow:       { value: 8.0 },
+    uRimBack:      { value: 0.30 },
     // Hue of the rim. Not white: a rim on autumn foliage at golden hour is the
     // sun's own colour pushed a step toward the leaf's transmitted amber, and
     // a neutral one reads as a chalk outline.
