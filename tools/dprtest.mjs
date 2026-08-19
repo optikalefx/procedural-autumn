@@ -87,9 +87,18 @@ await page.evaluate((secs) => {
 await page.waitForTimeout(SECONDS * 1000);
 const stats = await page.evaluate(() => {
   window.__drive = false;
-  const f = window.__dpr.frames.slice(40).sort((a, b) => a - b);
+  const all = window.__dpr.frames.slice(40);
+  const f = [...all].sort((a, b) => a - b);
   const pct = (p) => f[Math.min(f.length - 1, Math.floor(p * f.length))];
-  return { frames: f.length, p50: +pct(0.5).toFixed(1), p95: +pct(0.95).toFixed(1), fps50: +(1000 / pct(0.5)).toFixed(1) };
+  // Last third, i.e. after adaptive resolution has had time to settle.
+  const tail = all.slice(Math.floor(all.length * 0.66)).sort((a, b) => a - b);
+  const tp = (p) => tail[Math.min(tail.length - 1, Math.floor(p * tail.length))];
+  return {
+    frames: f.length,
+    p50: +pct(0.5).toFixed(1), p95: +pct(0.95).toFixed(1), fps50: +(1000 / pct(0.5)).toFixed(1),
+    settled_p50: +tp(0.5).toFixed(1), settled_fps: +(1000 / tp(0.5)).toFixed(1),
+    resolution: window.__resolution ? window.__resolution() : null,
+  };
 });
 await browser.close();
 

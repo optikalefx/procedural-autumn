@@ -130,9 +130,19 @@ export const VEHICLE = {
   comHeight: -0.32,
 };
 
+// pixelRatioCap is the single most expensive number in this file. The renderer
+// draws `min(devicePixelRatio, cap)` device pixels per CSS pixel, so on a Retina
+// display a cap of 2.0 is FOUR TIMES the pixels of a cap of 1.0 — and the post
+// chain, measured at 56-59% of frame time, is fixed cost per pixel. These caps
+// were originally authored and tested at deviceScaleFactor 1, where the setting
+// had no effect at all; on the player's machine it was the difference between
+// 47 fps and 16 fps before window size was even accounted for.
+//
+// AdaptiveResolution in Engine scales below these at runtime, so treat them as
+// a ceiling for a fast machine rather than a target.
 export const QUALITY_PRESETS = {
-  ultra:  { shadowMapSize: 4096, cascades: 4, grassMul: 1.0,  ssao: true,  dof: true,  volumetric: true,  reflections: true,  pixelRatioCap: 2.0, treeMul: 1.0 },
-  high:   { shadowMapSize: 3072, cascades: 3, grassMul: 0.8,  ssao: true,  dof: true,  volumetric: true,  reflections: true,  pixelRatioCap: 1.75, treeMul: 0.9 },
-  medium: { shadowMapSize: 2048, cascades: 3, grassMul: 0.55, ssao: true,  dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.5, treeMul: 0.7 },
-  low:    { shadowMapSize: 1024, cascades: 2, grassMul: 0.3,  ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.0, treeMul: 0.5 },
+  ultra:  { shadowMapSize: 4096, cascades: 4, grassMul: 1.0,  ssao: true,  dof: true,  volumetric: true,  reflections: true,  pixelRatioCap: 1.5,  treeMul: 1.0 },
+  high:   { shadowMapSize: 3072, cascades: 3, grassMul: 0.8,  ssao: true,  dof: true,  volumetric: true,  reflections: true,  pixelRatioCap: 1.35, treeMul: 0.9 },
+  medium: { shadowMapSize: 2048, cascades: 3, grassMul: 0.55, ssao: true,  dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.15, treeMul: 0.7 },
+  low:    { shadowMapSize: 1024, cascades: 2, grassMul: 0.3,  ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.0,  treeMul: 0.5 },
 };

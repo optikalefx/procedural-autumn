@@ -306,6 +306,16 @@ async function boot() {
     },
   };
 
+  // What the renderer is ACTUALLY drawing. Without this a future author can
+  // measure a healthy fps without noticing that adaptive resolution quietly
+  // halved the pixel count to get it.
+  window.__resolution = () => ({
+    scale: +engine.resolutionScale.toFixed(3),
+    basePixelRatio: +engine.basePixelRatio.toFixed(3),
+    effective: +(engine.basePixelRatio * engine.resolutionScale).toFixed(3),
+    megapixels: +((engine.renderer.domElement.width * engine.renderer.domElement.height) / 1e6).toFixed(2),
+  });
+
   window.__settle = (frames = 60) => new Promise((res) => {
     let n = 0;
     const tick = () => { if (++n >= frames) res(); else requestAnimationFrame(tick); };

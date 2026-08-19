@@ -17,7 +17,20 @@ export class Engine {
       alpha: false,
       logarithmicDepthBuffer: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.preset.pixelRatioCap));
+    // ── adaptive resolution ────────────────────────────────────────────────
+    // The renderer draws `min(devicePixelRatio, cap)` device pixels per CSS
+    // pixel, and the post chain is fixed cost per pixel. A display difference
+    // the harness never simulated was therefore worth 3x the frame time. Rather
+    // than pick one number and hope, measure and hold a target.
+    this.basePixelRatio = Math.min(window.devicePixelRatio, this.preset.pixelRatioCap);
+    this.resolutionScale = 1;
+    this.targetFrameMs = 1000 / 60;
+    this.minResolutionScale = 0.55;   // below this it reads as soft, not fast
+    this.adaptive = true;
+    this._frameTimes = [];
+    this._lastAdapt = 0;
+
+    this.renderer.setPixelRatio(this.basePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     // Tone mapping happens in the post chain (after bloom, before the grade),
@@ -76,7 +89,9 @@ export class Engine {
     if (!preset) { console.warn(`[engine] unknown quality tier: ${name}`); return false; }
     this.quality = name;
     this.preset = preset;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.pixelRatioCap));
+    this.basePixelRatio = Math.min(window.devicePixelRatio, preset.pixelRatioCap);
+    this.resolutionScale = 1;
+    this.renderer.setPixelRatio(this.basePixelRatio);
     this._onResize();
     for (const fn of this._qualityCbs) {
       try { fn(preset, name); } catch (e) { console.error('[engine] onQuality handler threw', e); }
@@ -89,9 +104,48 @@ export class Engine {
 
   setRenderCallback(fn) { this._render = fn; }
 
+  /**
+   * Scale the render resolution to hold `targetFrameMs`.
+   *
+   * Judged on the 80th percentile of a rolling window rather than the mean, so
+   * one streaming hitch does not drop the whole frame's resolution — and with a
+   * wide dead band plus asymmetric rates (drop fast, recover slowly) so it
+   * cannot oscillate visibly while driving.
+   */
+  _adapt(now) {
+    if (!this.adaptive) return;
+    if (this._frameTimes.length < 45 || now - this._lastAdapt < 900) return;
+
+    const sorted = [...this._frameTimes].sort((a, b) => a - b);
+    const p80 = sorted[Math.floor(sorted.length * 0.8)] * 1000;
+    this._frameTimes.length = 0;
+    this._lastAdapt = now;
+
+    const target = this.targetFrameMs;
+    let next = this.resolutionScale;
+
+    if (p80 > target * 1.25) next = this.resolutionScale * 0.90;
+    else if (p80 < target * 0.80) next = this.resolutionScale * 1.04;
+    else return;
+
+    next = Math.max(this.minResolutionScale, Math.min(1, next));
+    if (Math.abs(next - this.resolutionScale) < 0.005) return;
+
+    this.resolutionScale = next;
+    this._applyResolution();
+  }
+
+  _applyResolution() {
+    this.renderer.setPixelRatio(this.basePixelRatio * this.resolutionScale);
+    const w = window.innerWidth, h = window.innerHeight;
+    this.renderer.setSize(w, h, false);
+    for (const cb of this._resizeCbs) cb(w, h);
+  }
+
   _onResize() {
     const w = window.innerWidth, h = window.innerHeight;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.preset.pixelRatioCap));
+    this.basePixelRatio = Math.min(window.devicePixelRatio, this.preset.pixelRatioCap);
+    this.renderer.setPixelRatio(this.basePixelRatio * this.resolutionScale);
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -116,6 +170,8 @@ export class Engine {
     this._dtSmooth += (dt - this._dtSmooth) * 0.15;
     this.elapsed += dt;
     this.frame++;
+    this._frameTimes.push(dt);
+    this._adapt(performance.now());
 
     for (const fn of this._updaters) fn(dt, this.elapsed);
     for (const fn of this._lateUpdaters) fn(dt, this.elapsed);
