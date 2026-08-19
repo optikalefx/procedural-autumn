@@ -30,6 +30,7 @@ import { WaterAudio } from './water.js';
 import { VehicleAudio } from './vehicle_audio.js';
 import { WildlifeAudio } from './wildlife_audio.js';
 import { Music } from './music.js';
+import { Soundtrack } from './soundtrack.js';
 
 const STORE = 'pa.audio';
 
@@ -139,6 +140,9 @@ export class Audio extends System {
       this.vehicle = new VehicleAudio(actx, this.buses.vehicle, this.ctx);
       this.wildlife = new WildlifeAudio(actx, this.buses.wildlife, this.reverb, this.ctx);
       this.music = new Music(actx, this.buses.music, this.reverb, this.ctx);
+      // The authored bed shares the music bus, so one volume control governs
+      // both and the mix meter already accounts for it.
+      this.soundtrack = new Soundtrack(actx, this.buses.music, this.ctx);
 
       // Metering taps, added after the layers so the water sub-buses exist.
       // An analyser only runs if it is reachable from the destination, so each
@@ -262,6 +266,12 @@ export class Audio extends System {
     try { this.vehicle.update(dt, L); } catch (e) { this._layerFail('vehicle', e); }
     try { this.wildlife.update(dt, L); } catch (e) { this._layerFail('wildlife', e); }
     try { this.music.update(dt, L); } catch (e) { this._layerFail('music', e); }
+    // The bed ducks while a generative phrase is sounding, so the two layers
+    // never occupy the same moment.
+    try {
+      const phraseActive = (this.music?.state?.since ?? 99) < 9;
+      this.soundtrack?.update(dt, phraseActive);
+    } catch (e) { this._layerFail('soundtrack', e); }
   }
 
   _layerFail(name, e) {

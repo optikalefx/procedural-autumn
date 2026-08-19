@@ -34,12 +34,14 @@
 //  a volumetric march fights against.
 //
 //  Everything is driven from one tiling 4-channel noise tile:
-//      R  low-frequency coverage      (also the cloud-shadow map on the ground)
+//      R  low-frequency coverage      (also seeds the ground-shadow map)
 //      G  mid-frequency billow
 //      B  high-frequency fray
 //      A  stretched cirrus
-//  Using the *same* R channel for the ground shadow is what makes the shadow on
-//  the meadow line up with the cloud you can see overhead.
+//  Deriving the ground shadow from the *same* R field is what makes the shadow
+//  on the meadow line up with the cloud you can see overhead — though it goes
+//  out through its own pre-thresholded copy, for the reason in
+//  buildShadowTexture.
 //
 //  Ordering note: the dome is `transparent: false` with CustomBlending, which
 //  keeps it in three's opaque queue (so renderOrder actually applies and the
@@ -64,6 +66,18 @@ const TOP = 2700;
 const TILE = 7000;          // world size of one wrap of the noise tile
 const CIRRUS_ALT = 6200;
 const CIRRUS_TILE = 30000;
+
+// Coverage threshold, as `lo = COVER_BIAS - COVER_SLOPE * cover`, and the
+// vertical ramp above it. Both live here in JS rather than as GLSL literals
+// because the ground-shadow map has to be baked against exactly the same
+// numbers — see buildShadowTexture. The long explanation of why the bias is
+// 0.950 is on the `lo` line in the shader.
+const COVER_BIAS = 0.950;
+const COVER_SLOPE = 0.44;
+const RAMP = 0.100;
+// The keyframe coverage at the shipping hour, which is what the ground shadow
+// is baked for. Lighting's table runs 0.20 at midday to 0.30 at dawn.
+const SHADOW_COVER = 0.215;
 
 // Orientation only — see the long note on the same line in Sky.js. The deck's
 // parallax has to come from uCamPos and the view ray, never from where this
@@ -104,7 +118,7 @@ const float THICK  = ${(TOP - BASE).toFixed(1)};
 // headroom above the new threshold, and a ramp wider than that headroom means
 // no column ever reaches full height: every cloud comes out a flat wisp with no
 // crown for the parallax slices or the normal to shade.
-const float RAMP   = 0.100;
+const float RAMP   = ${RAMP.toFixed(3)};
 
 // The coarse coverage field — the only thing sampled per slice, and therefore
 // the only thing whose feature size has to stay above the slice spacing. Its
@@ -187,7 +201,7 @@ void main() {
   // distribution rather than an assumed one: 0.86 at the shipping hour is the
   // top ~17% of the field by area, which lands the visible sky around a third
   // cloud. tools/_scratch/cloudfrac.mjs is the measurement.
-  float lo = 0.950 - 0.44 * uCover;
+  float lo = ${COVER_BIAS.toFixed(3)} - ${COVER_SLOPE.toFixed(3)} * uCover;
 
   // Fine detail: two taps, once, at the middle of the slab. See topAt().
   vec2  uvM = uv0 + par * 0.5;
@@ -378,7 +392,7 @@ function fbm(size, freqs, rand, billow = false) {
 // is the low tier's budget exactly.
 function buildNoiseTexture(size, seed) {
   const rand = mulberry32(seed);
-  // R is deliberately the *softest* field: it doubles as the ground shadow, and
+  // R is deliberately the *softest* field: it seeds the ground shadow too, and
   // high-frequency detail there just reads as dirt on the meadow.
   const r = normalize01(fbm(size, [2, 4, 8], rand));
   const g = normalize01(fbm(size, [5, 10, 20], rand, true));
@@ -397,6 +411,43 @@ function buildNoiseTexture(size, seed) {
   // No mipmaps: the deck relies on fwidth for its level of detail, and a mip
   // chain on a 4-channel field whose channels are read at different scales
   // would blur the coverage long before it blurred the fray.
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.needsUpdate = true;
+  return { tex, r };
+}
+
+// ── the ground shadow's own map ──────────────────────────────────────────────
+//
+// Atmosphere owns the shadow tap and thresholds whatever map it is handed with
+// a fixed `smoothstep(0.38, 0.90, cov)`. That used to line up with the sky by
+// luck: the deck's threshold sat at 0.65, the field's median is 0.635, and both
+// came out at roughly half the sky. Now that the deck only claims the top ~17%
+// of the field, feeding Atmosphere the raw field would shade half the valley
+// under a sky that is almost clear — the ground would be showing weather that
+// is not there.
+//
+// Rather than reach into another author's shader, hand it a map that is already
+// the silhouette: R is remapped so that Atmosphere's own 0.38…0.90 window lands
+// exactly on the deck's lo…lo+RAMP window. One tap, same cost, and the patch on
+// the meadow is the cloud you can see.
+//
+// Baked at one coverage, because a texture cannot vary with the hour. The
+// shadow only exists in daylight (its strength fades out with the sun), where
+// the keyframe cover runs 0.20–0.30, so the error at the extremes is a shadow
+// silhouette a few per cent tighter or looser than the deck — invisible against
+// a term this soft. Anything more would need the threshold to move, which is
+// Atmosphere's to move.
+function buildShadowTexture(r, size, lo, ramp) {
+  const data = new Uint8Array(size * size);
+  for (let i = 0; i < size * size; i++) {
+    const h = Math.max(0, Math.min(1, (r[i] - lo) / ramp));
+    data[i] = Math.round((0.38 + 0.52 * h) * 255);
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RedFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
@@ -434,7 +485,10 @@ export class Clouds extends System {
     // cumulus is load-bearing for the composition, not an effect.
     const slices = preset?.volumetric ? tier.slices : Math.max(4, tier.slices - 3);
 
-    this.noise = buildNoiseTexture(tier.size, SEED ^ 0x51ed5);
+    const built = buildNoiseTexture(tier.size, SEED ^ 0x51ed5);
+    this.noise = built.tex;
+    this.shadowMap = buildShadowTexture(
+      built.r, tier.size, COVER_BIAS - COVER_SLOPE * SHADOW_COVER, RAMP);
 
     this.uniforms = {
       uNoise:    { value: this.noise },
@@ -479,13 +533,15 @@ export class Clouds extends System {
     this.mesh.name = 'Clouds';
     scene.add(this.mesh);
 
-    // Hand the same coverage field to the shared atmosphere so the meadow gets
-    // the shadow of the cloud that is actually overhead.
+    // Hand the shared atmosphere the pre-thresholded silhouette of this same
+    // coverage field, so the shadow on the meadow is the cloud that is actually
+    // overhead rather than a wash of the underlying noise. See
+    // buildShadowTexture for why it is a second map and not the raw one.
     this.ctx.atmosphere?.setCloudShadow({
-      map: this.noise,
+      map: this.shadowMap,
       scale: 1 / TILE,
       altitude: BASE,
-      strength: 0.30,
+      strength: 0.42,
     });
   }
 
@@ -519,7 +575,11 @@ export class Clouds extends System {
     const a = this.ctx.atmosphere;
     if (a) {
       a.setCloudOffset(this._uv.x, this._uv.y);
-      a.params.cloudShadow = 0.34 * Math.min(Math.max((s.sunElev - 0.02) / 0.18, 0), 1);
+      // Raised with the coverage cut. The old map shaded most of the valley at
+      // partial strength, so the term had to stay weak to avoid reading as a
+      // dimmer switch; the map is now a silhouette that covers a sixth of the
+      // ground, and a shadow that rare has to be worth noticing when it passes.
+      a.params.cloudShadow = 0.42 * Math.min(Math.max((s.sunElev - 0.02) / 0.18, 0), 1);
     }
     void dt;
   }
@@ -529,6 +589,7 @@ export class Clouds extends System {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     this.noise?.dispose();
+    this.shadowMap?.dispose();
     this.ctx.scene.remove(this.mesh);
     this.mesh = null;
   }

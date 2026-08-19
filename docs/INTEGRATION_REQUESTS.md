@@ -2933,3 +2933,52 @@ last part matters — halving the map doubles the normal offset in metres, which
 is the quantity that made the camper's contact shadow disappear in W1, so it
 should be A/B'd at the tier it lands on rather than assumed free. I have not
 touched it: ultra's 4096 is load-bearing art and `Lighting.js` is not mine.
+
+### P9. Cloud-shadow threshold is hard-coded in Atmosphere, so the ground cannot follow the sky.
+
+`Atmosphere`'s cloud-shadow tap ends in a fixed window:
+
+```glsl
+float shade = 1.0 - uCloudShadow * cloudFade * smoothstep(0.38, 0.90, cov);
+```
+
+`Clouds` supplies the map, the scale, the altitude, the offset and the strength,
+but not the threshold — and the threshold is the thing that decides *how much of
+the valley is in shadow*. That was invisible while the two happened to agree: the
+deck's own coverage threshold sat at 0.650 and the coverage field's median is
+0.635, so both came out at roughly half.
+
+They no longer agree. Cutting the deck to the top ~17% of the field (player
+report: "the sky is like 90% clouds") left the raw map shading the ground as if
+the sky were still overcast. Measured with `tools/_scratch/cloudfrac.mjs`, mean
+ground darkening and the fraction of ground pixels darkened by more than 4%,
+under the *new* open sky:
+
+```
+                raw map (0.38-0.90 on the field)     pre-thresholded map
+  hero          3.15%   28.4% of ground              1.17%   12.7%
+  drive         6.87%   47.6%                        0.03%    0.2%
+  meadow        7.45%   84.2%                        0.14%    0.6%
+```
+
+84% of the meadow under cloud shadow with 27% of the sky in cloud is not weather,
+it is a dimmer switch.
+
+**Worked around, no action needed to ship.** `Clouds` now bakes a second, single
+channel `RedFormat` map whose values are pre-remapped so that Atmosphere's own
+0.38-0.90 window lands exactly on the deck's `lo`…`lo + RAMP` window
+(`buildShadowTexture` in `src/sky/Clouds.js`). Same one tap, same cost, ~256 KB
+of extra texture, and the patch on the meadow is now the cloud you can see.
+
+**What would be better:** a `uCloudThreshold` / `uCloudRamp` pair of uniforms
+(or a `threshold`/`ramp` field on `setCloudShadow`) so the shadow tracks the
+deck's coverage as it varies with the hour, instead of being baked at one
+coverage. The keyframe cover runs 0.20 at midday to 0.30 at dawn, so the baked
+map is a few per cent tight at dawn and a few per cent loose at noon — under a
+term this soft it does not show, but it is a fixed cost for no reason.
+
+**Also worth knowing:** the ground is legitimately much more open now. That is
+correct — it is what a mostly-clear sky casts — but if the landscape reads as
+flat to you, the lever is `params.cloudShadow` (now 0.42, raised from 0.34
+because the patches are rarer and each one has to be worth noticing), *not*
+putting the coverage back.

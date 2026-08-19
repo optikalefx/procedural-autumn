@@ -47,6 +47,12 @@ const rows = await page.evaluate(async ({ VIEWS, NOCIRRUS }) => {
   if (window.__settle) await window.__settle(600);
   e.stop();
   e.clock.getDelta = () => 0;
+  // Freeze the auto-exposure. Atmosphere and Stylize harvest a GPU histogram
+  // every 16 frames and move the grade, which is a whole-frame brightness shift
+  // landing between the two renders being differenced — it showed up as a view
+  // whose ground measured *brighter* with the cloud shadow switched on.
+  window.__atmosphere.harvest = () => {};
+  window.__stylize.harvest = () => {};
   const clouds = window.__systems.clouds;
   clouds.wind.set(0, 0);
   // Clouds.update rewrites uCirrus every frame, so the override has to land
@@ -77,9 +83,9 @@ const rows = await page.evaluate(async ({ VIEWS, NOCIRRUS }) => {
     const hold = () => { cam.position.copy(p); cam.quaternion.copy(q); };
     const rel = e.onLateUpdate(hold);
 
-    const R1 = shot(6);
+    const R1 = shot(60);   // terrain streaming needs this after a long jump
     clouds.mesh.visible = false;
-    const R2 = shot(3);
+    const R2 = shot(4);
     const su = window.__sky.uniforms;
     const keep = ['uZenith', 'uHorizon', 'uSunHorizon', 'uGlow', 'uSunColor'].map((k) => su[k].value.clone());
     const kg = su.uGlowIntensity.value, kd = su.uDiscIntensity.value;
@@ -94,9 +100,29 @@ const rows = await page.evaluate(async ({ VIEWS, NOCIRRUS }) => {
     clouds.mesh.visible = true;
     shot(2);
 
+    // R4: the same frame with the ground cloud-shadow term switched off, so the
+    // shadow on the landscape can be measured on its own. Clouds.update rewrites
+    // params.cloudShadow every frame, hence the lateUpdate override.
+    const at = window.__atmosphere;
+    const off = e.onLateUpdate(() => { at.params.cloudShadow = 0; });
+    const R4 = shot(4);
+    e._lateUpdaters.splice(e._lateUpdaters.indexOf(off), 1);
+    shot(2);
+
+    const lum = (a, i) => 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2];
     let sky = 0, any = 0, mid = 0, solid = 0;
+    let gnd = 0, dsum = 0, dsum2 = 0, dhit = 0;
     for (let i = 0; i < R1.length; i += 4) {
-      if (dif(R2, R3, i) <= 8) continue;      // not a sky pixel
+      if (dif(R2, R3, i) <= 8) {
+        // Ground: how much darker is it with the cloud shadow on?
+        const l4 = lum(R4, i);
+        if (l4 < 6) continue;                 // too dark to measure a ratio on
+        gnd++;
+        const dk = 100 * (1 - lum(R1, i) / l4);
+        dsum += dk; dsum2 += dk * dk;
+        if (dk > 4) dhit++;
+        continue;
+      }
       sky++;
       const d = dif(R1, R2, i);
       if (d > 5) any++;
@@ -111,6 +137,9 @@ const rows = await page.evaluate(async ({ VIEWS, NOCIRRUS }) => {
       midPctOfSky: +(100 * mid / Math.max(sky, 1)).toFixed(1),
       solidPctOfSky: +(100 * solid / Math.max(sky, 1)).toFixed(1),
       cover: +window.__systems.clouds.uniforms.uCover.value.toFixed(3),
+      gndDarkMean: +(dsum / Math.max(gnd, 1)).toFixed(2),
+      gndDarkSd: +Math.sqrt(Math.max(dsum2 / Math.max(gnd, 1) - (dsum / Math.max(gnd, 1)) ** 2, 0)).toFixed(2),
+      gndShadedPct: +(100 * dhit / Math.max(gnd, 1)).toFixed(1),
     });
     e._lateUpdaters.splice(e._lateUpdaters.indexOf(rel), 1);
   }
@@ -119,7 +148,8 @@ const rows = await page.evaluate(async ({ VIEWS, NOCIRRUS }) => {
 
 for (const r of rows) {
   console.log(`${r.view.padEnd(7)} h${String(r.hour).padEnd(5)} cover ${r.cover}  sky ${String(r.skyPctOfFrame).padStart(5)}% of frame` +
-              `   cloud ${String(r.cloudPctOfSky).padStart(5)}% of sky   mid ${String(r.midPctOfSky).padStart(5)}%   solid ${String(r.solidPctOfSky).padStart(5)}%`);
+              `   cloud ${String(r.cloudPctOfSky).padStart(5)}% of sky   mid ${String(r.midPctOfSky).padStart(5)}%   solid ${String(r.solidPctOfSky).padStart(5)}%` +
+              `   | ground dark ${String(r.gndDarkMean).padStart(5)}% sd ${String(r.gndDarkSd).padStart(5)} shaded ${String(r.gndShadedPct).padStart(5)}%`);
 }
 if (errs.length) console.log('page-errors:', JSON.stringify(errs.slice(0, 5)));
 await browser.close();
