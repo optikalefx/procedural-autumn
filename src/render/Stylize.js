@@ -57,6 +57,10 @@ const DEFAULTS = {
   // banding, and almost no direct specular. The reference's shaded meadow sits
   // only slightly below its lit meadow in value — the shading does very little
   // work, and colour does the rest.
+  // 0.48, up from 0.36. Widening the terminator is the cheapest way to stop a
+  // back-facing conifer card or a shaded shrub from arriving at the grade as a
+  // silhouette with nothing in it, and it is what the reference does: its
+  // shaded masses are lit masses in a different key, not absences.
   wrap: 0.48,        // 0 = physical, 1 = fully wrapped
   // Banding is the direct expression of the brief's "large areas of uniform
   // colour with few shading gradients". At 0.45/3.0 the quantisation was a
@@ -65,16 +69,21 @@ const DEFAULTS = {
   // firmer, still-soft-edged steps make a mountain flank read as two or three
   // painted masses instead of a gradient.
   steps: 2.6,        // number of quantisation bands
+  // Softer and weaker than the 0.24 / 0.62 the terrain-only era wanted. The
+  // same quantisation that reads as painted masses on a mountain flank reads as
+  // a hard step across a leaf card, and foliage is now on this path too.
   soft: 0.30,        // band edge softness (0.5 = no banding at all)
   banding: 0.52,     // blend between smooth wrap and hard bands
   specular: 0.14,    // direct specular scale
-  // Minimum diffuse response — nothing goes fully unlit. Lowered from 0.11:
-  // the floor is not the thing that keeps foliage out of a hole (foliage is
-  // ShaderMaterial and never ran this term at all — the grade's black lift is
-  // what does that job), it is the thing that decides how much *form* a big
-  // terrain mass keeps. At 0.11, plus ambient, the shaded flank of the `hero`
-  // massif arrived within 7% display of its lit flank and the mountain read as
-  // one smooth beige lump.
+  // Minimum diffuse response — nothing goes fully unlit. Raised back to 0.13
+  // once foliage adopted stylizeDiffuse: the note that used to sit here said
+  // the floor was irrelevant to foliage because trees are ShaderMaterials that
+  // never ran this term, and that stopped being true. Trees, ground cover and
+  // grass are now the largest consumers of it, and they are the surfaces that
+  // were reading as black holes. It still has to stay modest, because it is
+  // also what decides how much *form* a big terrain mass keeps: pushed much
+  // past this the shaded flank of the hero massif closes to within a few
+  // percent of its lit flank and the mountain reads as one smooth beige lump.
   floor: 0.13,
 };
 

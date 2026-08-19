@@ -67,6 +67,42 @@ const CRAG_MIN_STRENGTH = 0.30;
 /** Power-law size pick: many small, few large. `k` > 1 biases small. */
 const powSize = (rng, lo, hi, k) => lo + (hi - lo) * Math.pow(rng(), k);
 
+/**
+ * Where the ground is probed under a crag block's base: the four corners of the
+ * footprint, the four edge midpoints and the centre, as fractions of the
+ * block's own half-extents. Corners alone miss a hummock under the middle of a
+ * thirty-metre wall.
+ */
+const BASE_SAMPLES = [
+  -1, -1, 1, -1, 1, 1, -1, 1,
+  -1, 0, 1, 0, 0, -1, 0, 1,
+  0, 0,
+];
+
+/**
+ * Extra metres of burial past bare contact. Small on purpose: this is only
+ * absorbing how far the drawn LOD mesh sags below the heightfield (measured at
+ * 0.2–0.6 m mean, 6.4 m worst at 800 m) plus enough to put the ground line
+ * across the block's face instead of exactly on its bottom edge.
+ */
+const CONTACT_MARGIN = 2.0;
+
+/**
+ * How many of the nine base probes may stay above ground. An overhanging corner
+ * is cliff-like; an overhanging half is a crate on a hillside.
+ */
+const BASE_TOLERATE = 0;
+
+/**
+ * Deepest a crag block is planted, as a multiple of its own size. A block is
+ * roughly 1.5 sizes tall, so this leaves at least a third of it out of the hill
+ * however broken the ground under it is.
+ */
+const MAX_PLANT = 1.0;
+
+/** Used until `Rocks` hands over the real per-archetype bounds. */
+const FOOT_FALLBACK = { rx: 1.3, rz: 1.3, yLo: -0.7 };
+
 export class RockScatter {
   constructor(world, seed) {
     this.world = world;
@@ -80,7 +116,17 @@ export class RockScatter {
     this._qy = new THREE.Quaternion();
     this._qt = new THREE.Quaternion();
     this._ax = new THREE.Vector3();
+    this._fv = new THREE.Vector3();
+    this._req = new Float64Array(BASE_SAMPLES.length / 2);
+
+    // Per-archetype local bounds, handed over by `Rocks` once the mesh library
+    // is built (see `archFootprints`). Placement needs them to know how far a
+    // block reaches from its origin before it can decide how deep to plant it.
+    this._foot = {};
   }
+
+  /** @param foot arch -> { rx, rz, yLo } in local units, from `archFootprints`. */
+  setFootprints(foot) { this._foot = foot ?? {}; }
 
   hardness(x, z) {
     const W = this.world;
@@ -616,8 +662,15 @@ export class RockScatter {
         // tenth of the block and shoving it a seventh of its width into the
         // hill puts the base flush at the downhill edge, which leaves the whole
         // vertical face out where neighbours can merge with it.
+        // `align` is the bed's dip. It was 0.10 — a block laid dead level —
+        // which is the case the comment above warns about and the single
+        // biggest reason crag blocks hung over air: a level box on a 40-degree
+        // face has to be sunk more than its own height before its downhill
+        // edge reaches the ground, so either it floats or it disappears. Laid
+        // along the dip it needs to be sunk only by its own thickness, which
+        // is what lets it both sit in the hill and stand out of it.
         this._place(px, pz, arch, size * (arch === 'tower' ? 0.66 : 1.0), rng,
-          arch === 'cliff' ? 0.10 : 0.42, 0.0, out,
+          arch === 'cliff' ? 0.62 : 0.55, 0.0, out,
           arch === 'cliff' ? 0.12 : 0.22, 'sag',
           arch === 'cliff' ? 0.14 : 0.20, yaw);
       }
@@ -700,8 +753,11 @@ export class RockScatter {
         // punch the actual notches, and at 40% of the group they stopped
         // reading as pinnacles and started reading as a graveyard on a dune.
         const arch = roll < 0.72 ? 'cliff' : (roll < 0.92 ? 'bench' : 'tower');
+        // Walls and benches take the local dip so they sit in the crest rather
+        // than on it; towers stay near upright, because a leaning pinnacle is
+        // the one crag form that reads as a fallen block.
         this._place(px, pz, arch, size * (arch === 'tower' ? 0.56 : 1.0), rng,
-          arch === 'cliff' ? 0.12 : 0.10, arch === 'bench' ? 0.16 : 0.0, out,
+          arch === 'tower' ? 0.22 : 0.50, arch === 'bench' ? 0.16 : 0.0, out,
           arch === 'tower' ? 0.12 : 0.14, 'sag',
           arch === 'cliff' ? 0.14 : 0.08, arch === 'bench' ? null : yaw);
 
@@ -713,7 +769,7 @@ export class RockScatter {
           const bs = size * (0.55 + rng() * 0.40);
           if (W.isInBounds(bx, bz) && bs * 2 >= minSize) {
             this._place(bx, bz, rng() < 0.14 ? 'tower' : 'cliff', bs, rng,
-              0.12, 0.0, out, 0.14, 'sag', 0.16, yaw);
+              0.50, 0.0, out, 0.14, 'sag', 0.16, yaw);
           }
         }
       }
@@ -742,82 +798,9 @@ export class RockScatter {
       if (L > 1e-4) { x -= (n.x / L) * size * shove; z -= (n.z / L) * size * shove; }
     }
 
-    // ── ground anchor ────────────────────────────────────────────────────────
-    //
-    // Two things must both hold: the rock may never hover, and on a steep face
-    // it must still be able to stand out over air as an overhang.
-    //
-    // Hovering was not a maths error. It is that the terrain the player *sees*
-    // is a coarser mesh than the heightfield we sample: chunks two LOD bands
-    // out carry a vertex every 6–24 m, so a ridge crest renders several metres
-    // below getHeight() and anything planted on the true crest detaches and
-    // floats. The cure is to anchor to the lowest ground across a footprint
-    // wide enough to swallow that error — with a floor on the radius, because
-    // the blocks that float are on ridges seen from 400 m+, where the LOD step
-    // is larger than a small rock's own footprint.
-    const centreH = W.getHeight(x, z);
-    // Crag forms need a much wider footprint than their own size implies. They
-    // sit on ridge crests seen from 400 m+, where the rendered chunk carries a
-    // vertex every 6-24 m; a ring narrower than that samples inside a single
-    // LOD quad and completely misses how far the drawn surface has sagged
-    // below the heightfield. Two rings, because one at a single radius can sit
-    // neatly on the quad's diagonal and miss it again.
-    const wide = arch === 'bench' || arch === 'tower' || arch === 'ledge';
-    const huge = mode === 'sag';
-    const fr = huge ? Math.max(size * 1.0, 26)
-                    : Math.max(size * 0.85, wide ? 12 : (mode === 'centre' ? 9 : 3));
-    let ringMin = centreH;
-    for (let k = 0; k < 6; k++) {
-      const a = (k / 6) * Math.PI * 2 + 0.4;
-      const hh = W.getHeight(x + Math.cos(a) * fr, z + Math.sin(a) * fr);
-      if (hh < ringMin) ringMin = hh;
-    }
-    if (wide || huge) {
-      for (let k = 0; k < 4; k++) {
-        const a = (k / 4) * Math.PI * 2 + 1.1;
-        const hh = W.getHeight(x + Math.cos(a) * fr * 1.7, z + Math.sin(a) * fr * 1.7);
-        if (hh < ringMin) ringMin = hh;
-      }
-    }
-
-    let minH;
-    if (huge) {
-      // ── curvature-corrected anchor, for the crag forms ─────────────────────
-      //
-      // The previous rule — "sit on the minimum of a wide ring" — stops a block
-      // floating but is far too pessimistic on a slope: on a 40-degree face the
-      // minimum of a 26 m ring is 20 m below the site, so a cliff band anchored
-      // to it vanishes into the hill and the face stays a smooth ramp.
-      //
-      // The error being corrected is not the slope, it is the *curvature*: the
-      // drawn terrain is a chord across an LOD quad, so it sags below the
-      // heightfield exactly in proportion to how convex the ground is, and not
-      // at all on a planar slope however steep. Subtracting the drop a plane of
-      // this slope would have produced across the same ring isolates that term.
-      // Ridge crests — where every floating block in `peaks` was — measure a
-      // large sag and get dropped; a steep planar face measures ~0 and keeps
-      // its relief.
-      const planar = W.getSlope(x, z) * fr;
-      const sag = Math.max(0, (centreH - ringMin) - planar);
-      // Capped hard, and in *metres* rather than as a fraction of the block.
-      // The drop used to be up to 1.6 block-widths, which on a ridge nose left
-      // only the top cap of a wall showing: a row of grey shards half sunk in a
-      // smooth slope, with no vertical face and no contact shadow, which is
-      // exactly what reads as "detached". Measuring the real error settled it —
-      // the drawn terrain is now within 3 m of the heightfield everywhere the
-      // crags sit (tools/probe.mjs raycast against the Terrain group at the
-      // `hero` and `peaks` framings: mean 0.0 m, worst 6.4 m at 800 m), so this
-      // only has to absorb a few metres, not tens.
-      minH = centreH - Math.min(sag * 0.7, 5.0);
-    } else {
-      // On a cliff the ring minimum is tens of metres down; following it all the
-      // way would bury the block entirely and there would be no relief at all.
-      // Clamping the drop keeps the uphill half deeply embedded (which is what
-      // stops the float) while the downhill half projects — an overhang.
-      const maxDrop = mode === 'centre' ? size * 0.85 : size * 3.0;
-      minH = Math.max(ringMin, centreH - maxDrop);
-    }
-
+    // Orientation first: how deep a block has to be planted depends on which
+    // way its long axis is pointing, so the anchor cannot be computed before
+    // the rotation is known.
     const up = this._up.set(0, 1, 0).lerp(n, align).normalize();
     const q = this._q.setFromUnitVectors(UP, up);
     // A crag form is oriented, not tumbled: local +X runs along the strike so a
@@ -829,6 +812,102 @@ export class RockScatter {
       this._ax.set(Math.cos(a), 0, Math.sin(a));
       this._qt.setFromAxisAngle(this._ax, (rng() * 2 - 1) * tumble);
       q.multiply(this._qt);
+    }
+
+    // ── ground anchor ────────────────────────────────────────────────────────
+    //
+    // Two things must both hold: the rock may never hover, and on a steep face
+    // it must still be able to stand out over air as an overhang.
+    const centreH = W.getHeight(x, z);
+    const wide = arch === 'bench' || arch === 'tower' || arch === 'ledge';
+    const huge = mode === 'sag';
+
+    let minH;
+    if (huge) {
+      // ── planted anchor, for the crag forms ────────────────────────────────
+      //
+      // Every previous rule here measured the wrong thing, and the audits
+      // agreed with them because the audits measured the wrong thing too.
+      //
+      // A crag block is a wedge driven into a hillside: its uphill corner ends
+      // up tens of metres inside the hill while its downhill corner reaches out
+      // over the slope. `min over vertices of (y - ground)` — the number
+      // `rockfloat.mjs` reported, and the number the wide-ring anchor was tuned
+      // against — is dominated by that buried uphill corner, so it reads a
+      // comfortable "8 m below ground" for a block whose entire visible
+      // downhill edge is hanging in space. Measuring the *base* instead
+      // (tools/_scratch/rockview.mjs) found 73% of the crag blocks in `peaks`
+      // standing clear of the ground, median 6.5 m and up to 60 m of air under
+      // the worst. That is the floating everyone kept reporting; nothing was
+      // wrong with the terrain LOD, which tracks the heightfield to within a
+      // metre at the ranges these are seen from (raycast against the live
+      // `Terrain` group: mean sag 0.2–0.6 m, worst 6.4 m).
+      //
+      // So anchor to the block's OWN base, not to a ring of arbitrary radius:
+      // sample the ground under each corner of the footprint, after rotation,
+      // and sink the block until every one of them is in the hill. This is
+      // self-scaling — a 34 m wall is planted as deep as a 34 m wall needs and
+      // no deeper — which is what the ring rules could never get right, being
+      // either far too wide (26 m for a 12 m block: the whole band vanished)
+      // or, once corrected for slope, effectively zero.
+      const fp = this._foot[arch] ?? FOOT_FALLBACK;
+      const v = this._fv;
+      // The per-axis scale jitter applied below is 0.84–1.18, and it pulls both
+      // ways: a wider block reaches further downhill, a shallower one has less
+      // of itself to bury. Take the unsafe end of each.
+      const ex = fp.rx * size * 1.18, ez = fp.rz * size * 1.18, ey = fp.yLo * size * 0.84;
+      const req = this._req;
+      for (let k = 0, i = 0; k < BASE_SAMPLES.length; k += 2, i++) {
+        v.set(BASE_SAMPLES[k] * ex, ey, BASE_SAMPLES[k + 1] * ez).applyQuaternion(q);
+        // The block's centre may sit no higher than this, or that corner of the
+        // base lifts off the ground.
+        req[i] = W.getHeight(x + v.x, z + v.z) - v.y;
+      }
+      req.sort((a, b) => a - b);
+      // Not the strict minimum: BASE_TOLERATE of the nine probes are allowed to
+      // stay above ground. One corner of a thirty-metre wall reaching out over
+      // a gully is an overhang, which is what a cliff band is supposed to do;
+      // obeying it would sink the other twenty-five metres out of sight, and
+      // the whole course with it — which is how the first attempt at this left
+      // a single tooth showing out of a five-block chain, the loneliest thing
+      // in the frame.
+      let need = req[BASE_TOLERATE];
+      // Margin, so contact survives the drawn mesh sagging a little below the
+      // heightfield at distance, and so the ground line cuts across the block's
+      // face rather than grazing its bottom edge.
+      need -= CONTACT_MARGIN + size * 0.05;
+      // Ground so broken that planting the block would swallow it whole: stop
+      // short instead. Dropping the block outright was tried and is worse — it
+      // punches holes in the middle of a course, and a chain with two blocks
+      // missing stops reading as one wall and becomes the row of separate
+      // crates this whole exercise is about. A little overhang inside a
+      // continuous chain is invisible; a gap in the chain is not.
+      need = Math.max(need, centreH - size * MAX_PLANT);
+      // `y` below is `minH - size * sink`, so fold the sink back in here.
+      minH = Math.min(centreH, need + size * sink);
+    } else {
+      // Everything that is not a crag keeps the old rule: the lowest ground
+      // across a modest ring, clamped so a boulder on a cliff does not vanish.
+      const fr = Math.max(size * 0.85, wide ? 12 : (mode === 'centre' ? 9 : 3));
+      let ringMin = centreH;
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2 + 0.4;
+        const hh = W.getHeight(x + Math.cos(a) * fr, z + Math.sin(a) * fr);
+        if (hh < ringMin) ringMin = hh;
+      }
+      if (wide) {
+        for (let k = 0; k < 4; k++) {
+          const a = (k / 4) * Math.PI * 2 + 1.1;
+          const hh = W.getHeight(x + Math.cos(a) * fr * 1.7, z + Math.sin(a) * fr * 1.7);
+          if (hh < ringMin) ringMin = hh;
+        }
+      }
+      // On a cliff the ring minimum is tens of metres down; following it all the
+      // way would bury the block entirely and there would be no relief at all.
+      // Clamping the drop keeps the uphill half deeply embedded (which is what
+      // stops the float) while the downhill half projects — an overhang.
+      const maxDrop = mode === 'centre' ? size * 0.85 : size * 3.0;
+      minH = Math.max(ringMin, centreH - maxDrop);
     }
 
     const depth = W.getWaterDepth(x, z);
@@ -862,10 +941,21 @@ export class RockScatter {
       tint: rng() * 2 - 1,
       waterY: waterY === null ? -9999 : waterY,
       frost: smoothstep(200, 285, h),
-      // Terrain height under the rock. The shader darkens the band just above
-      // it: contact occlusion is the cheapest and strongest cue that a heavy
-      // object is *sitting in* the ground rather than resting on top of it.
+      // The ground under the rock, as a plane: a height plus the terrain's own
+      // gradient. The shader darkens the band just above it — contact occlusion
+      // is the cheapest and strongest cue that a heavy object is *sitting in*
+      // the ground rather than resting on top of it.
+      //
+      // The gradient is why this is a plane and not a single height. A crag
+      // block is thirty metres across a slope that drops twenty over that
+      // distance; against a level reference its whole downhill half is "below
+      // ground" and got darkened flat, which reads as a shaded lower half, not
+      // as contact. Tilted to the hillside, the band lands where the rock
+      // actually enters the hill and draws the ground line the eye is looking
+      // for. On flat ground the gradient is zero and nothing changes.
       groundY: minH,
+      groundGX: -n.x / Math.max(n.y, 1e-3),
+      groundGZ: -n.z / Math.max(n.y, 1e-3),
       // Visible radius. Paired with Rocks._minSizeFor: a cell far away is only
       // asked for rocks big enough that this radius still reaches the camera,
       // so nothing is ever generated that cannot be seen.

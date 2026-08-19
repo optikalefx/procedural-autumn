@@ -670,3 +670,38 @@ export function buildRockLibrary(seed) {
   }
   return lib;
 }
+
+/**
+ * Per-archetype local footprint, unioned over variants.
+ *
+ * `_place` needs to know how far a block reaches from its own origin before it
+ * can decide how deep to plant it: a 34 m wall laid across a 40-degree face
+ * must be sunk until the *corner that reaches furthest downhill* is in the
+ * ground, and that corner's offset is a property of the mesh, not of the
+ * scatter. Read off the built geometry rather than restated from the `axes`
+ * above, so the two can never drift apart.
+ *
+ *   rx, rz   half-extent in local X (along the strike) and Z (into the hill)
+ *   yLo      how far the base sits below the origin
+ *
+ * The union is taken in the direction that makes the anchor *safe* for whichever
+ * variant is drawn, and the two directions are opposite: the widest reach in XZ
+ * (a corner that reaches further downhill needs more burial) but the shallowest
+ * base in Y (a variant whose base is nearer its origin is the one that lifts off
+ * if the anchor assumes a deeper one).
+ */
+export function archFootprints(lib) {
+  const out = {};
+  for (const [name, geoms] of Object.entries(lib)) {
+    let rx = 0, rz = 0, yLo = -Infinity;
+    for (const g of geoms) {
+      const b = g.boundingBox;
+      if (!b) continue;
+      rx = Math.max(rx, Math.abs(b.min.x), Math.abs(b.max.x));
+      rz = Math.max(rz, Math.abs(b.min.z), Math.abs(b.max.z));
+      yLo = Math.max(yLo, b.min.y);
+    }
+    out[name] = { rx, rz, yLo: Math.min(0, yLo) };
+  }
+  return out;
+}

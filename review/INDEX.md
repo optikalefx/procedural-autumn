@@ -14,3 +14,5 @@ same places are photographed every round and the sheets are directly comparable.
 | 006 | 2026-08-18 | grass rescaled, grade recalibrated to plates | [006](006-2026-08-18-grass-rescaled-grade-recalibrated-to-plates.png) |
 | 007 | 2026-08-18 | clouds, weather, wildlife, foliage light floor | [007](007-2026-08-18-clouds-weather-wildlife-foliage-light-floor.png) |
 | 008 | 2026-08-18 | pre-fog-fix reference | [008](008-2026-08-18-pre-fog-fix-reference.png) |
+| 009 | 2026-08-19 | painterly contrast restored | [009](009-2026-08-19-painterly-contrast-restored.png) |
+| 010 | 2026-08-19 | grade clamp fixed blue restored | [010](010-2026-08-19-grade-clamp-fixed-blue-restored.png) |

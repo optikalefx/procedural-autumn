@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { SEED } from '../world/WorldConfig.js';
-import { buildRockLibrary, ARCHETYPES } from './RockForms.js';
+import { buildRockLibrary, archFootprints, ARCHETYPES } from './RockForms.js';
 import { createRockMaterial } from './RockMaterial.js';
 import { RockScatter, VIS_PER_METRE } from './RockScatter.js';
 
@@ -79,6 +79,10 @@ export class Rocks extends System {
 
     const t0 = performance.now();
     this.library = buildRockLibrary(SEED);
+    // Placement plants a crag block on its own base corners, so it needs the
+    // built mesh's local extents. Read off the geometry rather than restated in
+    // the scatter, so the two cannot drift apart.
+    this.scatter.setFootprints(archFootprints(this.library));
 
     let baseTris = 0;
     for (const [arch, geoms] of Object.entries(this.library)) {
@@ -92,6 +96,9 @@ export class Rocks extends System {
         // repack can rewrite them without touching transforms.
         g.setAttribute('aRockA', new THREE.InstancedBufferAttribute(new Float32Array(cfg.cap * 4), 4));
         g.setAttribute('aRockB', new THREE.InstancedBufferAttribute(new Float32Array(cfg.cap * 3), 3));
+        // Ground gradient under the instance, for the contact band. Separate
+        // from aRockB only because that one is full.
+        g.setAttribute('aRockC', new THREE.InstancedBufferAttribute(new Float32Array(cfg.cap * 2), 2));
 
         const mesh = new THREE.InstancedMesh(g, this.material, cfg.cap);
         mesh.name = `rock_${arch}_${v}`;
@@ -245,6 +252,9 @@ export class Rocks extends System {
         b[i * 3 + 0] = inst.waterY;
         b[i * 3 + 1] = inst.frost;
         b[i * 3 + 2] = inst.groundY;
+        const c = mesh.geometry.attributes.aRockC.array;
+        c[i * 2 + 0] = inst.groundGX;
+        c[i * 2 + 1] = inst.groundGZ;
 
         counts.set(mesh, i + 1);
         total++;
@@ -260,6 +270,7 @@ export class Rocks extends System {
         mesh.instanceMatrix.needsUpdate = true;
         mesh.geometry.attributes.aRockA.needsUpdate = true;
         mesh.geometry.attributes.aRockB.needsUpdate = true;
+        mesh.geometry.attributes.aRockC.needsUpdate = true;
       }
     }
 

@@ -862,3 +862,59 @@ neighbours, no visible intersection line, and its own cast shadow beside it
 rather than under it. The cure was compositional, not positional: chains that
 overlap by more than half a block, and any course shorter than four blocks
 discarded rather than emitted as a stub.
+
+## Look / grade author — 2026-08-19
+
+### Vegetation: the last near-black mass in the game is the conifer canopy
+
+The grade no longer crushes anything. The soft toe in `PostFX.js` keeps distinct
+near-blacks distinct, and the chromatic lift lands the darkest pixels on a warm
+brown of R:G:B ≈ 1 : 0.73 : 0.52 — which is where the reference plates put their
+own darkest samples. Measured across all ten views, near-neutral pixels are now
+under 3% everywhere; they were 44% in `waterfall` and 43% in `river`.
+
+What is left is upstream of me. In `river` and `waterfall` roughly 9% of the
+frame still arrives at the grade at effectively zero luminance, so all of it
+lands on the toe floor and reads as one dark mass. Those pixels are conifer
+canopy, and `src/vegetation/tree_material.js` is where they are made:
+
+- `wrap *= mix(0.18, 1.0, shadow)` — a shadowed canopy keeps 18% of its diffuse.
+- `direct = uSunColor * wrap * mix(0.28, 0.94, ao)` — and then as little as 28%
+  of that where AO is dense.
+
+Multiplied together a shadowed interior card can retain ~5% of the key, on top
+of an already dark green albedo. `uAmbient` (0.55) is the only thing holding it
+up. I raised everything I own that feeds this — `Stylize` wrap 0.36 → 0.48 and
+floor 0.07 → 0.13, `AMBIENT_SCALE` 0.55 → 0.72 — and it moved `river`'s lumaMean
+by 0.008. The two constants above are the lever. Suggested: 0.18 → 0.34 on the
+shadow term and 0.28 → 0.45 on the AO term, then re-measure `river` and
+`waterfall` against a lumaMean floor of 0.37.
+
+### Vegetation: distant tree impostors tile visibly as a diagonal hatch
+
+The far massif in `drive` carries a regular grid of identical dark lozenges. I
+first assumed my cloud shadow and chased it through `Atmosphere.js` — it is not:
+it survives with the cloud-shadow term faded to nothing, it survives at hour 12,
+and the motif is tree-shaped. It is the distant tree impostor/LOD billboard set
+drawn on the mountain face at a repeat frequency that reads as a texture. Most
+legible in `drive`, present in `hero` and `peaks`.
+
+### Harness: `river` and `vehicle` anchors are unusable at `--res 768`
+
+Across ~14 capture rounds today, `river` returned a >80% black frame on most
+runs (the retry logic usually rescued it, sometimes not, and twice it returned
+the loading splash instead), and the `vehicle` anchor repeatedly places the
+camper in open water. `shot.mjs --all` also aborts partway with "Execution
+context was destroyed" whenever another author saves a file mid-capture — Vite's
+HMR reloads the page under the harness. A capture that pins the module graph, or
+retries the whole run on that specific error, would save everyone a lot of time.
+
+### Note for whoever edits `src/render/*` next
+
+`Atmosphere.js` arrived this afternoon with a genuinely important fix (instanced
+meshes were hazed as if at the world origin, pinning them at the `uFogMax` cap)
+and a backtick pair inside the `FOG_VERT` GLSL template literal, which
+terminated the string and took the whole build down. The fix is kept; the
+backticks are gone. Please do not put a backtick in a GLSL string — `lint.mjs`
+catches it, so run it. The fix also removed most of the game's aerial
+perspective in one commit, which is why `FOG_DENSITY_SCALE` went 0.54 → 0.64.

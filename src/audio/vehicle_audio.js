@@ -66,7 +66,12 @@ export class VehicleAudio {
     // system: a shut cutoff is a distant idle, an open one is a labouring
     // climb, and moving it with load is what makes hills audible.
     this.engineLP = filter(actx, 'lowpass', 420, 1.3);
-    this.engineHP = filter(actx, 'highpass', 55, 0.6);
+    // 30 Hz, not 55. This exists only to keep DC and sub-audible rumble out of
+    // the master; at 55 it was cutting the *second order* at idle (a four at
+    // 760 rpm fires at 25 Hz, so the second order is 51 Hz), which left the
+    // idle thin and made the dominant partial jump between the 2nd and 4th
+    // order depending on load.
+    this.engineHP = filter(actx, 'highpass', 30, 0.6);
     this.drive = actx.createWaveShaper();
     this.drive.curve = tanhCurve(2.4);
     this.drive.oversample = '2x';
@@ -215,17 +220,21 @@ export class VehicleAudio {
         : (this._softCurve ??= tanhCurve(2.2));
     }
 
-    const engLevel = (0.055 + rpmN * 0.085 + this._loadSm * 0.055) * (1 - this._shiftDip * 0.75);
+    // Measured against the rest of the mix: at the first pass the vehicle bus
+    // sat at -19.6 dBFS rms while the whole ambience bed was at -33, i.e. the
+    // engine *was* the game. This is a cozy driving game and the engine is
+    // company, not the subject.
+    const engLevel = (0.030 + rpmN * 0.048 + this._loadSm * 0.034) * (1 - this._shiftDip * 0.75);
     this.sm.eng.set(engLevel, actx);
 
     // Intake: only really there when the throttle is open, and its resonance
     // climbs with revs.
-    this.sm.intake.set(0.05 * this._throttleSm * (0.35 + rpmN), actx);
+    this.sm.intake.set(0.028 * this._throttleSm * (0.35 + rpmN), actx);
     this.sm.intakeF.set(180 + rpmN * 520, actx);
 
     // Overrun: lifted off, still spinning. The hollow rush plus a lost octave.
     const over = clamp01((1 - this._throttleSm) * rpmN * 1.5 - 0.15);
-    this.sm.over.set(over * 0.045, actx);
+    this.sm.over.set(over * 0.026, actx);
 
     // ── tyres ───────────────────────────────────────────────────────────────
     const s = this.ctx.world.getSurfaceWeights(v.position.x, v.position.z, this._surf);
@@ -236,7 +245,7 @@ export class VehicleAudio {
     for (const w of v.wheels) slipSum += w.slip ?? 0;
     const scrub = clamp01(slipSum / 4);
 
-    const roll = smoothstep(0.4, 5, speed) * (0.055 + speedN * 0.075);
+    const roll = smoothstep(0.4, 5, speed) * (0.030 + speedN * 0.042);
     this.sm.tyre.set(roll * lerp(0.7, 1.15, soft) * (1 + scrub * 0.5), actx);
     // Soft ground rolls low and dull; loose stone rattles high.
     this.sm.tyreF.set(300 + speedN * 520 + loose * 380, actx);
@@ -244,7 +253,7 @@ export class VehicleAudio {
 
     // ── fording ─────────────────────────────────────────────────────────────
     const depth = clamp01((v.waterDepth ?? 0) / 0.8);
-    this.sm.water.set(depth * (0.05 + speedN * 0.16), actx);
+    this.sm.water.set(depth * (0.04 + speedN * 0.12), actx);
     if (depth > 0.12 && !this._wasWater) this.splash(clamp01(0.4 + speedN));
     this._wasWater = depth > 0.10;
 

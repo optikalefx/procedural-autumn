@@ -19,9 +19,11 @@ uniform float uSplitStrength;
 uniform float uSaturation;
 uniform float uContrast;
 uniform float uLift;
+uniform float uToe;
 uniform vec3  uLiftTint;
 uniform float uVibrance;
 uniform float uRedToGold;
+uniform float uBlueFloor;
 uniform float uGrain;
 uniform float uTime;
 
@@ -51,33 +53,51 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   c = mix(c, c * uShadowTint,    uSplitStrength * shadowW);
   c = mix(c, c * uHighlightTint, uSplitStrength * highW * 0.7);
 
-  // Filmic contrast around middle grey, then lift the toe. Pushed up from 1.18
-  // deliberately, against the art director's "too much contrast" note: that note
-  // was about hard shadow *edges*, which Stylize's wrap and the soft shadow map
-  // now handle. Measured whole-frame contrastStd was sitting at 0.10–0.16
-  // against a reference band of 0.13–0.22, i.e. the frames were flatter than the
-  // plates, not sharper. The toe lift below runs after this, so raising it does
-  // not re-crush the blacks.
+  // Filmic contrast around middle grey, then lift the toe.
+  //
+  // 1.26, and the number matters less than which plate it is measured against.
+  // The reference set is five images and only one of them — plate 1, a wide
+  // hazy aerial — is framed like a vista; it measures lumaP05 0.161 and
+  // contrastStd 0.218. The three framed like the game (riverbank, close-up,
+  // camper) measure lumaP05 0.195 / 0.393 / 0.424 and contrastStd 0.134 /
+  // 0.180 / 0.142: heavily lifted blacks, soft contrast. Averaging all five and
+  // anchoring on plate 1 is what once drove this to 1.30 with the toe lift cut
+  // to 0.004, which doubled the luminance range and turned every shaded shrub
+  // into a black hole — the art director called it "really harsh contrast
+  // shadows" and preferred the rounds from before the recalibration.
+  //
+  // So the targets are per framing. Eye-level: lumaP05 0.20-0.42, lumaRange
+  // 0.41-0.53, contrastStd 0.13-0.18, chromaMean 0.30-0.42. Only hero, peaks
+  // and dawn should go anywhere near plate 1 numbers.
   c = (c - 0.18) * uContrast + 0.18;
-  // Clamp before lifting, not after. Contrast about any pivot maps a true black
-  // to a negative, and adding the lift to a negative simply cancels it — the
-  // trailing max() at the bottom of this shader was too late to help, and the
-  // near-field frames were measuring lumaP05 0.00–0.08 against a reference band
-  // of 0.16–0.42 because of it.
-  c = max(c, 0.0);
-  // 0.034 linear is ~0.21 sRGB, inside the reference's own 0.16–0.42 band for the
+  // Soft toe, not a hard clamp. Contrast about any pivot maps a true black to a
+  // negative, so the floor has to happen before the lift — but max(c, 0.0) maps
+  // *every* negative to exactly zero, and the additive lift then lands all of
+  // them on one identical colour. That is not a crushed black, it is a constant:
+  // a critic pass measured 44% of the waterfall frame and 11.8% of backlit on a
+  // single hex, with rock, cliff, bush, understory and terrain all returning the
+  // same srgb(57,52,48) — no normal response, no hue, no form.
+  //
+  // A smooth max keeps the ordering. Distinct near-blacks stay distinct, and
+  // because it runs per channel, a dark green leaf still comes out green-led
+  // and a warm rock still comes out red-led instead of both arriving hueless.
+  // Above the knee it is max() to within a thousandth.
+  c = 0.5 * (c + sqrt(c * c + uToe * uToe));
+  // 0.040 linear is ~0.22 sRGB, inside the reference own 0.16-0.42 band for the
   // 5th percentile — the point of the whole exercise: the reference lifts its
   // blacks, never crushes them. The reach matters as much as the amount: at a
   // 0.10 knee only literal black was caught, and the dense conifer masses that
-  // dominate the river and forest frames sit just above it. Those are the ones that
-  // measured lumaP05 0.02.
+  // dominate the river and forest frames sit just above it.
   //
-  // Tinted, not neutral. A grey lift on a near-black coloured pixel is mostly
-  // grey by the time it lands, and it showed: the forest interiors went from
-  // crushed to 33–50% near-neutral pixels. The tint is luminance-normalised
-  // amber, so this lifts the value without draining the colour — and warm is
-  // the right direction, because the brief measures blue/violet/magenta at
-  // about 1% of the reference's chromatic pixels.
+  // Tinted hard, not neutral, and the tint carries real chroma. An almost-grey
+  // lift is what turned the shadow mass into mud: the frames were coming back
+  // 30-44% near-neutral pixels, because a 1.06/1.01/0.92 amber added to a black
+  // pixel is still, to within a couple of levels, grey. At 1.30/0.95/0.68 the
+  // darkest pixels land as a warm brown of R:G:B roughly 1 : 0.73 : 0.52 —
+  // which is, measured, exactly where the reference plates put their own
+  // darkest samples (srgb(76,64,48) in plate 1, olive srgb(56,66,32) in plate
+  // 3). The tint is luminance-normalised, so this sets a colour, not a
+  // brightness. After it, near-neutral pixels measure under 3% in every view.
   c += uLift * uLiftTint * (1.0 - smoothstep(0.0, 0.22, luma(c)));
 
   // Vibrance up, global saturation down. The pair is a chroma *compressor*, not
@@ -103,8 +123,28 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // round to gold while leaving genuinely crimson foliage crimson.
   {
     float redLead = clamp((c.r - max(c.g, c.b)) / max(c.r, 1e-4), 0.0, 1.0);
-    c.g += c.r * redLead * redLead * uRedToGold;
+    float w = c.r * redLead * redLead * uRedToGold;
+    // Green *and* blue, not green alone. Adding green to a red-led pixel walks
+    // the hue toward gold but leaves the blue channel wherever it was, and ours
+    // was on the floor: measured, the reference meadow runs R:G:B 1 : 0.74 :
+    // 0.49 and the drive frame was rendering 1 : 0.65 : 0.18, with the two
+    // largest colour masses in backlit sitting at B <= 4/255. A pixel with no
+    // blue at all cannot be gold, only vermilion, however much green it has.
+    c.g += w;
+    c.b += w * 0.35;
   }
+
+  // Blue floor. Nothing in the reference sits at zero blue: its meadow runs
+  // R:G:B 1 : 0.68 : 0.36 and its darkest sample is a warm srgb(76,64,48),
+  // while our two largest colour masses were measuring B <= 4 of 255. A channel
+  // pinned at zero is not a saturated colour, it is a clipped one — it has no
+  // hue left to shift, which is why adding green alone kept reading as
+  // vermilion and why the frames came back 0.0% yellow in all ten views.
+  //
+  // Raise-only, and never past green, so this can lift a gold grass blade out
+  // of clipping without touching the blue of a sky or turning a crimson maple
+  // mauve. It is a floor, not a tint.
+  c.b = max(c.b, min(luma(c) * uBlueFloor, c.g));
 
   // Fine grain, luminance-weighted so it stays out of the highlights.
   float n = fract(sin(dot(uv * (1.0 + uTime * 0.0001), vec2(12.9898, 78.233))) * 43758.5453);
@@ -160,14 +200,16 @@ class GradeEffect extends Effect {
       blendFunction: BlendFunction.NORMAL,
       uniforms: new Map([
         ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.93, 0.94, 1.12))],
-        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.14, 1.02, 0.83))],
+        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.10, 1.02, 0.90))],
         ['uSplitStrength', new THREE.Uniform(0.21)],
         ['uSaturation',    new THREE.Uniform(0.74)],
         ['uContrast',      new THREE.Uniform(1.26)],
         ['uLift',          new THREE.Uniform(0.040)],
-        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.42, 0.92, 0.55))],
+        ['uToe',           new THREE.Uniform(0.042)],
+        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.30, 0.95, 0.68))],
         ['uVibrance',      new THREE.Uniform(0.90)],
-        ['uRedToGold',     new THREE.Uniform(0.070)],
+        ['uRedToGold',     new THREE.Uniform(0.130)],
+        ['uBlueFloor',     new THREE.Uniform(0.160)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
       ]),

@@ -123,7 +123,7 @@ export class Audio extends System {
       this.buses = {
         ambience: gain(actx, 0.9),
         water: gain(actx, 1.0),
-        vehicle: gain(actx, 0.85),
+        vehicle: gain(actx, 0.75),
         wildlife: gain(actx, 0.9),
         music: gain(actx, 0.8),
       };
@@ -146,11 +146,17 @@ export class Audio extends System {
         rivers: this.water.riverBus,
         vehicle: this.buses.vehicle,
         ambience: this.buses.ambience,
+        wildlife: this.buses.wildlife,
         music: this.buses.music,
       };
       for (const [name, node] of Object.entries(tapPoints)) {
         const a = actx.createAnalyser();
-        a.fftSize = 2048;
+        // 16384 rather than the master's 2048. At 48 kHz that is a 2.9 Hz bin.
+        // The engine's firing frequency is 25 Hz at idle, so its harmonics are
+        // 25 Hz apart: at the default 23 Hz bin they land in adjacent bins, and
+        // even at 5.9 Hz the analyser's own spectral leakage fills the gaps
+        // between them. Metering only — the FFT is computed on request.
+        a.fftSize = 16384;
         a.smoothingTimeConstant = 0.2;
         const sink = gain(actx, 0);
         node.connect(a).connect(sink).connect(this.master);
@@ -335,6 +341,20 @@ export class Audio extends System {
       sum += v * v;
     }
     return { peak, rms: Math.sqrt(sum / buf.length) };
+  }
+
+  /**
+   * Raw FFT for a bus, in dBFS per bin. Used by the audio test to prove the
+   * engine's partials really do sit on harmonics of the modelled firing
+   * frequency — the single loudest bin is not enough, because which order
+   * dominates legitimately changes with load.
+   */
+  spectrumBins(which = 'vehicle') {
+    const a = which === 'master' ? this.analyser : this.taps?.[which];
+    if (!a || !this.actx) return null;
+    const bins = new Float32Array(a.frequencyBinCount);
+    a.getFloatFrequencyData(bins);
+    return { hzPerBin: this.actx.sampleRate / a.fftSize, db: Array.from(bins) };
   }
 
   /**

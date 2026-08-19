@@ -118,7 +118,15 @@ const SCALAR_FIELDS = ['sunI', 'hemiI', 'glowI', 'fogD', 'cover'];
 // fogFactor ~0.25 on its furthest ridge, so near, mid and far read as one
 // plane. 0.34 was over-correcting for the fact that the old desaturation term
 // was neutralising the frame, which is fixed at source in Atmosphere now.
-const FOG_DENSITY_SCALE = 0.54;
+// Nudged up from 0.54 after Atmosphere instanced-transform fix landed. Every
+// InstancedMesh — trees, rocks, grass, ground cover — had been hazed as if it
+// stood at the world origin, which pinned it at the uFogMax cap; correcting it
+// removed, in one commit, most of the aerial perspective the painterly look was
+// actually resting on. This buys that dissolve back, now applied to the right
+// object at the right distance. Kept short of the 0.78 that looked best at eye
+// level, because the vistas pay for it: at 0.78 hero lumaP05 climbs to 0.40 and
+// its range falls to 0.41, i.e. back toward the flat cream wash.
+const FOG_DENSITY_SCALE = 0.64;
 
 // The hemisphere fill was authored to keep shadows off the floor while the
 // Stylize diffuse floor was not running (same wiring bug as the fog). With both
@@ -129,16 +137,18 @@ const FOG_DENSITY_SCALE = 0.54;
 // 0.19 in linear; at full ambient ours measured 0.7. Scaling the whole authored
 // curve keeps its time-of-day shape, which is right.
 //
-// 0.62 was still too much for a vista. Worked through for the `hero` massif at
+// 0.62 was still too much for a vista. Worked through for the hero massif at
 // golden hour: sun 2.95, ambient 0.61, stylised diffuse 0.72 lit / 0.12 shaded.
 // Ambient was then 22% of the lit face but 64% of the shaded one, so it set the
-// contrast of every mountain in the frame. At 0.50, with a lower Stylize floor,
-// the shaded flank drops from 0.92 to about 0.74 display against a lit flank at
-// 0.98 — which is the difference between a beige lump and a mountain. Settled a
-// little above that: the eye-level frames (river, forest, waterfall, vehicle)
-// are mostly shaded ground and dark conifer, and 0.50 put all four of them
-// below the reference's 0.37 lumaMean floor. Ambient is the one lever that
-// lifts those without also brightening the lit rock the vistas are made of.
+// contrast of every mountain in the frame. At 0.50 the shaded flank drops from
+// 0.92 to about 0.74 display against a lit flank at 0.98 — the difference
+// between a beige lump and a mountain.
+//
+// Settled well above that at 0.72. The eye-level frames — river, forest,
+// waterfall, vehicle — are mostly shaded ground and dark conifer, and anything
+// at or under 0.55 put all four below the reference bands lumaMean floor of
+// 0.37. Ambient is the one lever that lifts those without also brightening the
+// lit rock the vistas are made of.
 const AMBIENT_SCALE = 0.72;
 
 // Pre-convert the table once; per-frame we only lerp.
@@ -204,12 +214,18 @@ export class Lighting {
     this.sun.shadow.radius = 3.5;
     this.sun.shadow.blurSamples = 10;
     // A cast shadow in the reference is a warm, semi-transparent shape on gold
-    // meadow, not a hole. Three defaults `shadow.intensity` to 1 — fully black
-    // — and that default was in force: measured, the near-field views were
-    // running lumaP05 0.00–0.08 against a reference band of 0.16–0.42, i.e.
-    // crushed. At 0.55 the shadow removes just over half the key and the
-    // ambient plus the diffuse floor keep the shaded ground coloured.
-    this.sun.shadow.intensity = 0.46;
+    // meadow, not a hole. Three defaults shadow.intensity to 1 — fully black —
+    // and that default was once in force, which is how the near-field views came
+    // to measure lumaP05 0.00-0.08 against a reference band of 0.16-0.42.
+    //
+    // The over-correction was as bad in the other direction. At 0.46 the shadows
+    // were technically present and visually absent, and a critic pass named the
+    // missing cast shadow the single biggest reason the meadows read flat: plate
+    // 1 gets its whole sense of form from long soft shapes crossing a third of
+    // the frame. At 0.66 the shape is unmistakable and still nowhere near a
+    // hole — ambient, the stylised diffuse floor and the grade chromatic toe
+    // between them keep shaded ground a warm colour rather than an absence.
+    this.sun.shadow.intensity = 0.66;
     this._setShadowExtent(220);
     scene.add(this.sun);
     scene.add(this.sun.target);

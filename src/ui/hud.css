@@ -17,13 +17,13 @@
 
 #pa-hud {
   --ink: #fff6ea;
-  --ink-dim: rgba(255, 246, 234, 0.62);
-  --ink-faint: rgba(255, 246, 234, 0.34);
+  --ink-dim: rgba(255, 246, 234, 0.7);
+  --ink-faint: rgba(255, 246, 234, 0.5);
   --plum: 43, 28, 51;
   --amber: #f0ad46;
   --ember: #e8622a;
   --gold: #f3cf45;
-  --scrim: rgba(43, 28, 51, 0.55);
+  --scrim: rgba(43, 28, 51, 0.6);
   --scrim-solid: rgba(43, 28, 51, 0.76);
   --edge: rgba(255, 246, 234, 0.16);
   --drop: 0 14px 44px rgba(46, 18, 28, 0.34);
@@ -38,6 +38,11 @@
   font-size: clamp(12px, 0.72vw + 6px, 16px);
   -webkit-font-smoothing: antialiased;
   user-select: none;
+  /* The interface-visibility setting drives --hud-op rather than an inline
+     `style.opacity`. An inline style beats any stylesheet rule, so the previous
+     version silently defeated .pa-capture-hidden below — and the HUD was
+     appearing in every other author's art captures. */
+  opacity: var(--hud-op, 1);
   transition: opacity 0.45s var(--ease);
 }
 
@@ -45,19 +50,22 @@
    a HUD on top of their frames would be rude and would also make my own
    before/after comparisons unreadable — so the HUD stands down whenever the
    harness is driving, unless it was explicitly asked for. */
-#pa-hud.pa-capture-hidden { opacity: 0; }
-#pa-hud.pa-hidden { opacity: 0; }
+#pa-hud.pa-capture-hidden,
+#pa-hud.pa-hidden { opacity: 0; pointer-events: none; }
 #pa-hud.pa-photo .pa-game-only { opacity: 0; transform: translateY(10px); pointer-events: none; }
 
 #pa-hud * { box-sizing: border-box; margin: 0; }
 
-/* Small-caps label, used everywhere a word appears next to a number. */
+/* Small-caps label, used everywhere a word appears next to a number.
+   The shadow is not decoration: cream type sits on a gold hillside for most of
+   this game, and without it the labels vanished entirely at dawn. */
 .pa-label {
   font-size: 0.58em;
   letter-spacing: 0.24em;
   text-transform: uppercase;
   color: var(--ink-faint);
   font-weight: 600;
+  text-shadow: 0 1px 5px rgba(46, 18, 28, 0.75);
 }
 
 .pa-panel {
@@ -80,7 +88,26 @@
   width: min(620px, 46vw);
   height: 4.6em;
   transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
-  /* No panel behind it. A box up here would cut the sky in half. */
+}
+
+/* No panel up here — a box would cut the sky in half — but the strip still
+   needs something to sit on. A soft plum wash, wider than the strip and fading
+   out in every direction, buys legibility over a pale dawn sky without ever
+   reading as a rectangle. */
+.pa-compass::before {
+  content: "";
+  position: absolute;
+  left: -12%;
+  right: -12%;
+  top: -0.9em;
+  bottom: -0.4em;
+  /* A flat colour under a soft elliptical mask, not a gradient background:
+     stacked gradients left hard vertical edges where the ellipse ran out, and
+     the result was exactly the box this was trying to avoid. */
+  background: rgba(43, 28, 51, 0.52);
+  -webkit-mask-image: radial-gradient(ellipse 52% 58% at 50% 42%, #000 12%, transparent 76%);
+  mask-image: radial-gradient(ellipse 52% 58% at 50% 42%, #000 12%, transparent 76%);
+  pointer-events: none;
 }
 
 .pa-compass-track {
@@ -97,10 +124,11 @@
   left: 0;
   width: 1px;
   height: 0.5em;
-  background: rgba(255, 246, 234, 0.45);
+  background: rgba(255, 246, 234, 0.6);
+  box-shadow: 0 0 4px rgba(46, 18, 28, 0.55);
   will-change: transform;
 }
-.pa-tick.pa-major { height: 0.85em; top: 1.35em; background: rgba(255, 246, 234, 0.7); }
+.pa-tick.pa-major { height: 0.85em; top: 1.35em; background: rgba(255, 246, 234, 0.85); }
 
 .pa-card {
   position: absolute;
@@ -110,7 +138,10 @@
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--ink);
-  text-shadow: 0 1px 8px rgba(46, 18, 28, 0.6), 0 0 2px rgba(46, 18, 28, 0.5);
+  /* Three shadows, not one: a tight halo to separate the glyph from a pale
+     dawn sky, and a wide soft one to sit it down on the scene. */
+  text-shadow: 0 0 3px rgba(46, 18, 28, 0.95), 0 1px 3px rgba(46, 18, 28, 0.85),
+               0 2px 12px rgba(46, 18, 28, 0.6);
   transform-origin: 50% 50%;
   will-change: transform;
 }
@@ -132,8 +163,8 @@
   width: 1.55em;
   height: 1.55em;
   border-radius: 50%;
-  background: rgba(43, 28, 51, 0.5);
-  border: 1px solid rgba(255, 246, 234, 0.4);
+  background: rgba(43, 28, 51, 0.62);
+  border: 1px solid rgba(255, 246, 234, 0.5);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   display: grid;
@@ -143,10 +174,11 @@
 }
 .pa-poi-disc svg { width: 0.85em; height: 0.85em; display: block; }
 .pa-poi-dist {
-  font-size: 0.52em;
+  font-size: 0.54em;
   letter-spacing: 0.13em;
+  font-weight: 600;
   color: var(--ink-dim);
-  text-shadow: 0 1px 6px rgba(46, 18, 28, 0.7);
+  text-shadow: 0 1px 5px rgba(46, 18, 28, 0.9), 0 0 2px rgba(46, 18, 28, 0.8);
   white-space: nowrap;
 }
 /* Centred landmark: warms up rather than lighting up. */
@@ -180,33 +212,40 @@
   left: 2.2vw;
   bottom: 2.6vh;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.9em;
+  padding: 0.7em 1.25em 0.7em 0.85em;
   transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
 }
 
-.pa-speedo { position: relative; width: 8.4em; height: 8.4em; }
-.pa-speedo svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.pa-speedo-read {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding-top: 0.5em;
+.pa-dash-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 0.5em 0;
+  background: linear-gradient(180deg, transparent, rgba(255, 246, 234, 0.18), transparent);
 }
+
+.pa-speedo { position: relative; width: 5.6em; height: 5.6em; flex: none; }
+.pa-speedo svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.pa-speed-row { margin-bottom: 0.1em; }
 .pa-speed-num {
-  font-size: 2.1em;
+  font-size: 1.9em;
   font-weight: 700;
-  line-height: 0.92;
+  line-height: 0.95;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   text-shadow: 0 2px 12px rgba(46, 18, 28, 0.55);
 }
-.pa-speed-unit { font-size: 0.52em; letter-spacing: 0.26em; color: var(--ink-faint); margin-top: 0.45em; }
+.pa-speed-unit {
+  font-size: 0.32em;
+  letter-spacing: 0.22em;
+  color: var(--ink-faint);
+  margin-left: 0.55em;
+  vertical-align: 0.28em;
+  font-weight: 600;
+}
 
-.pa-readouts { display: flex; flex-direction: column; gap: 0.5em; padding-bottom: 1.1em; }
+.pa-readouts { display: flex; flex-direction: column; gap: 0.55em; }
 .pa-readout { display: flex; flex-direction: column; gap: 0.12em; }
 .pa-readout-value {
   font-size: 0.95em;
@@ -215,8 +254,9 @@
   font-variant-numeric: tabular-nums;
   text-shadow: 0 1px 8px rgba(46, 18, 28, 0.55);
 }
-.pa-readout-value .pa-unit { font-size: 0.66em; color: var(--ink-dim); margin-left: 0.25em; letter-spacing: 0.1em; }
-.pa-readout-value .pa-leaf { color: var(--gold); margin-right: 0.3em; }
+.pa-readout-value .pa-unit { font-size: 0.62em; color: var(--ink-faint); margin-left: 0.42em; letter-spacing: 0.12em; }
+.pa-readout-value .pa-leaf { color: var(--gold); margin-right: 0.34em; vertical-align: -0.08em; }
+.pa-readout-value .pa-leaf svg { width: 0.82em; height: 0.82em; display: inline-block; }
 
 /* ── corner chips (settings, mute) ────────────────────────────────────── */
 .pa-corner {
@@ -227,19 +267,25 @@
   gap: 0.45em;
   pointer-events: auto;
 }
+/* Never `transition: all` inside this HUD. `visibility` is inherited, so a
+   child with `all` animates its *parent's* visibility change too and stays
+   hidden for the duration — which is exactly why the settings panel could be
+   opened but not focused: its close button was still computing
+   `visibility: hidden` 200 ms after the panel became visible. */
 .pa-chip {
   width: 2.3em;
   height: 2.3em;
   border-radius: 50%;
-  background: rgba(43, 28, 51, 0.42);
-  border: 1px solid rgba(255, 246, 234, 0.16);
+  background: rgba(43, 28, 51, 0.52);
+  border: 1px solid rgba(255, 246, 234, 0.2);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   color: var(--ink-dim);
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: all 0.25s var(--ease);
+  transition: color 0.25s var(--ease), border-color 0.25s var(--ease),
+              background 0.25s var(--ease), transform 0.25s var(--ease);
   padding: 0;
 }
 .pa-chip svg { width: 1.05em; height: 1.05em; display: block; }
@@ -276,8 +322,8 @@
   background: rgba(255, 246, 234, 0.12);
   border: 1px solid rgba(255, 246, 234, 0.18);
   border-radius: 0.45em;
-  padding: 0.1em 0.42em;
-  margin-right: 0.4em;
+  padding: 0.1em 0.45em;
+  margin-right: 0.5em;
 }
 
 /* ── toast ───────────────────────────────────────────────────────────── */
@@ -306,12 +352,36 @@
   pointer-events: auto;
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.32s var(--ease), transform 0.32s var(--ease), visibility 0.32s;
+  /* visibility gets a *zero-duration* transition with a delay on close, never a
+     0.32s one. Chrome reports a transitioning visibility as `hidden` for the
+     whole duration, so an element opened with a plain transition cannot be
+     focused during it — measured: focus stayed on <body> and the panel was
+     unreachable by keyboard until the animation had finished. */
+  transition: opacity 0.32s var(--ease), transform 0.32s var(--ease), visibility 0s linear 0.32s;
   max-height: 92vh;
   overflow-y: auto;
   scrollbar-width: thin;
 }
-.pa-sheet.pa-open { opacity: 1; visibility: visible; transform: translateY(-50%) translateX(0); }
+.pa-sheet.pa-open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0);
+  transition: opacity 0.32s var(--ease), transform 0.32s var(--ease), visibility 0s;
+}
+
+.pa-sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.9em; }
+.pa-sheet-head h2 { margin: 0; }
+.pa-close {
+  width: 1.8em; height: 1.8em; border-radius: 50%;
+  border: 1px solid rgba(255, 246, 234, 0.16);
+  background: transparent; color: var(--ink-dim);
+  font: inherit; font-size: 0.9em; line-height: 1; cursor: pointer;
+  display: grid; place-items: center; padding: 0;
+  transition: color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.pa-close:hover, .pa-close:focus-visible {
+  color: var(--ink); border-color: rgba(240, 173, 70, 0.6); outline: none;
+}
 
 .pa-sheet h2 {
   font-size: 0.72em;
@@ -319,11 +389,16 @@
   letter-spacing: 0.3em;
   text-transform: uppercase;
   color: var(--ink);
-  margin-bottom: 0.9em;
 }
 .pa-group { margin-bottom: 1.15em; }
+/* A group label belongs to what is under it. Without this the tiny caps sat
+   right beneath the previous group's control and read as its caption. */
+.pa-group + .pa-group {
+  padding-top: 0.95em;
+  border-top: 1px solid rgba(255, 246, 234, 0.11);
+}
 .pa-group:last-of-type { margin-bottom: 0.5em; }
-.pa-group > .pa-label { display: block; margin-bottom: 0.55em; }
+.pa-group > .pa-label { display: block; margin-bottom: 0.3em; }
 
 .pa-row {
   display: flex;
@@ -344,8 +419,11 @@
 }
 
 /* Range: a thin warm track with a cream bead. Native, so it is keyboard and
-   screen-reader reachable for free. */
-.pa-sheet input[type="range"] {
+   screen-reader reachable for free.
+   Scoped to the whole HUD, not to the settings sheet: photo mode uses the same
+   control, and while these rules lived under .pa-sheet the photo rail rendered
+   three stock blue system sliders in the middle of a golden valley. */
+#pa-hud input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
@@ -354,12 +432,12 @@
   cursor: pointer;
   margin: 0;
 }
-.pa-sheet input[type="range"]::-webkit-slider-runnable-track {
+#pa-hud input[type="range"]::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: 99px;
   background: linear-gradient(90deg, var(--amber) var(--fill, 50%), rgba(255, 246, 234, 0.18) var(--fill, 50%));
 }
-.pa-sheet input[type="range"]::-webkit-slider-thumb {
+#pa-hud input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 0.85em;
   height: 0.85em;
@@ -369,12 +447,23 @@
   box-shadow: 0 2px 8px rgba(46, 18, 28, 0.5);
   transition: transform 0.18s var(--ease);
 }
-.pa-sheet input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.18); }
-.pa-sheet input[type="range"]:focus-visible::-webkit-slider-thumb {
+#pa-hud input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.18); }
+#pa-hud input[type="range"]:focus-visible::-webkit-slider-thumb {
   transform: scale(1.24);
   box-shadow: 0 0 0 3px rgba(240, 173, 70, 0.4);
 }
-.pa-sheet input[type="range"]:focus { outline: none; }
+#pa-hud input[type="range"]:focus { outline: none; }
+/* Firefox draws its own track and thumb. */
+#pa-hud input[type="range"]::-moz-range-track {
+  height: 3px; border-radius: 99px; background: rgba(255, 246, 234, 0.18);
+}
+#pa-hud input[type="range"]::-moz-range-progress {
+  height: 3px; border-radius: 99px; background: var(--amber);
+}
+#pa-hud input[type="range"]::-moz-range-thumb {
+  width: 0.85em; height: 0.85em; border: none; border-radius: 50%;
+  background: var(--ink); box-shadow: 0 2px 8px rgba(46, 18, 28, 0.5);
+}
 
 /* Segmented control — used for anything with three or four choices. */
 .pa-seg {
@@ -396,7 +485,7 @@
   background: transparent;
   color: var(--ink-dim);
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition: color 0.2s var(--ease), background 0.2s var(--ease);
   white-space: nowrap;
 }
 .pa-seg button:hover { color: var(--ink); }
@@ -449,9 +538,13 @@
   inset: 0;
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.4s var(--ease), visibility 0.4s;
+  transition: opacity 0.4s var(--ease), visibility 0s linear 0.4s;
 }
-.pa-photo-frame.pa-open { opacity: 1; visibility: visible; }
+.pa-photo-frame.pa-open {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.4s var(--ease), visibility 0s;
+}
 
 .pa-bracket {
   position: absolute;
@@ -503,7 +596,7 @@
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.2s var(--ease);
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease);
   padding: 0;
   flex: none;
 }

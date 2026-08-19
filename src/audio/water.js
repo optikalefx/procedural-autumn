@@ -142,6 +142,10 @@ export class WaterAudio {
     this.rvF = Float32Array.from(pf);
 
     this._tick = 0;
+    // Test hook: pin the voice pool to one waterfall. Measuring "does the
+    // water get louder as I approach" is otherwise confounded by whichever
+    // creek happens to be under the camera at the far end of the approach.
+    this.soloFall = -1;
     this.state = { fallGain: 0, riverGain: 0, nearestFall: Infinity, voices: 0 };
   }
 
@@ -166,13 +170,13 @@ export class WaterAudio {
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (d < nearest) nearest = d;
       const ref = this.wfRef[i];
-      const s = this.wfSize[i] * Math.pow(ref / (ref + d), 1.6);
+      const s = this.wfSize[i] * Math.pow(ref / (ref + d), 1.42);
       if (s > s0) { s2 = s1; b2 = b1; s1 = s0; b1 = b0; s0 = s; b0 = i; }
       else if (s > s1) { s2 = s1; b2 = b1; s1 = s; b1 = i; }
       else if (s > s2) { s2 = s; b2 = i; }
     }
     this.state.nearestFall = nearest;
-    const want = [b0, b1, b2];
+    const want = this.soloFall >= 0 ? [this.soloFall, -1, -1] : [b0, b1, b2];
     // Voices that are still on a wanted fall keep it; the rest are re-pointed.
     const held = new Set();
     for (const v of this.falls) if (want.includes(v.target)) held.add(v.target);
@@ -220,7 +224,11 @@ export class WaterAudio {
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const ref = this.wfRef[i];
       const size = this.wfSize[i];
-      const g = 0.62 * size * Math.pow(ref / (ref + d), 1.6);
+      // Exponent 1.42, not 1.6: measured, a big fall at 300 m came out at
+      // -42 dBFS under a -31 dB ambience bed, i.e. inaudible — which loses the
+      // whole point of hearing the valley before you see it. The near field is
+      // barely affected; the far field comes up about a quarter.
+      const g = 0.62 * size * Math.pow(ref / (ref + d), 1.42);
 
       v.level = g;
       fallSum += g;

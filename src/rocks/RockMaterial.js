@@ -133,12 +133,14 @@ export function createRockMaterial() {
       attribute vec3 aBake;      // ao, upward exposure, height in rock
       attribute vec4 aRockA;     // wetness, moisture, tint jitter, size
       attribute vec3 aRockB;     // water surface Y, frost factor, ground Y
+      attribute vec2 aRockC;     // ground gradient dY/dX, dY/dZ under the rock
       varying vec3 vBake;
       varying vec4 vRockA;
       varying vec3 vRockB;
       varying vec3 vWPos;
       varying vec3 vWNrm;
       varying vec3 vLPos;
+      varying float vAbove;      // metres above the hillside plane under the rock
     ` + shader.vertexShader
       .replace('#include <beginnormal_vertex>', /* glsl */`
         #include <beginnormal_vertex>
@@ -163,24 +165,23 @@ export function createRockMaterial() {
             rw = instanceMatrix * rw;
           #endif
           vWPos = ( modelMatrix * rw ).xyz;
+          // Height above the hillside plane through the rock's anchor. Linear
+          // in world position, so interpolating it is exact and the fragment
+          // shader does not have to carry the instance origin.
+          vec3 iw = vec3( 0.0 );
+          #ifdef USE_INSTANCING
+            iw = ( modelMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+          #endif
+          vAbove = vWPos.y - ( aRockB.z
+                 + aRockC.x * ( vWPos.x - iw.x )
+                 + aRockC.y * ( vWPos.z - iw.z ) );
         }`)
-      // ── workaround: instanced fog ──────────────────────────────────────────
-      // Atmosphere's shared `fog_vertex` chunk computes
-      //     vFogWorldPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
-      // with no `instanceMatrix`, so for an InstancedMesh it is the *prototype*
-      // position — a metre or two from the world origin. Every rock in the game
-      // was therefore hazed as if it stood ~1 km from the camera and came back
-      // at the `uFogMax` cap: measured at the `drive` anchor a boulder 50 m away
-      // was 96% flat cream over its own albedo, which is why three previous
-      // passes of albedo and exposure tuning moved the rendered pixel by ~2%.
-      // The ground-cover author hit and documented the same bug; the real fix
-      // belongs in Atmosphere.js (see docs/INTEGRATION_REQUESTS.md).
-      .replace('#include <fog_vertex>', /* glsl */`
-        #include <fog_vertex>
-        #ifdef USE_FOG
-          vFogWorldPos = vWPos;
-        #endif
-      `);
+      // Atmosphere's `fog_vertex` chunk now applies `instanceMatrix` itself, so
+      // the local workaround that used to overwrite `vFogWorldPos` here is gone.
+      // Every rock in the game was previously hazed as if it stood at the world
+      // origin, which pinned it at the `uFogMax` cap and is why three passes of
+      // albedo tuning moved the rendered pixel by ~2%.
+      ;
 
     shader.fragmentShader = /* glsl */`
       uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
@@ -189,6 +190,7 @@ export function createRockMaterial() {
       varying vec3 vBake;
       varying vec4 vRockA;
       varying vec3 vRockB;
+      varying float vAbove;
       varying vec3 vWPos;
       varying vec3 vWNrm;
       varying vec3 vLPos;
@@ -329,8 +331,7 @@ export function createRockMaterial() {
         // about the hillside the rock is half buried in, only about the rock.
         // Height of the band scales with the rock so a cobble gets a few
         // centimetres and a crag block gets a couple of metres.
-        float above = vWPos.y - vRockB.z;
-        float contact = 1.0 - smoothstep( 0.0, 0.45 + size * 0.55, max( above, 0.0 ) );
+        float contact = 1.0 - smoothstep( 0.0, 0.45 + size * 0.55, max( vAbove, 0.0 ) );
         rock *= mix( 1.0, 0.76, contact );
 
         diffuseColor.rgb *= rock;
