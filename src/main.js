@@ -285,6 +285,11 @@ async function boot() {
   window.__systems = ctx.systems;
   window.__ctx = ctx;
 
+  // Indexed accessor so the capture harness can pick a different landmark when
+  // the top-ranked one turns out to be unusable (buried in vegetation, inside a
+  // lake, blocked by a trunk).
+  window.__anchorAt = (kind, i = 0) => poi.anchor(kind, i);
+
   window.__cameraAnchors = {
     vista:     () => poi.anchor('vista'),
     meadow:    () => poi.anchor('meadow'),

@@ -52,7 +52,9 @@ export const VIEWS = {
   // Forest interior — canopy, trunks, dappled light.
   forest:    { anchor: 'forest',   height: 3.0, dist: 14,  pitch: 0.02,  fov: 60, hour: 16.4 },
   // River bank, water in frame.
-  river:     { anchor: 'river',    height: 5.2, dist: 26,  pitch: -0.16, fov: 54, hour: 16.9, yawOffset: 0.42 },
+  // Sits on a shoreline, which is exactly where the grass system grows its
+  // tallest reed fringe — at 5 m the camera was inside the reeds.
+  river:     { anchor: 'river',    height: 6.0, dist: 30, pitch: -0.18, fov: 54, hour: 16.9, yawOffset: 0.42, index: 3 },
   // The tallest waterfall, framed from below.
   waterfall: { anchor: 'waterfall',height: 11,  dist: 58,  pitch: 0.08,  fov: 50, hour: 16.2, yawOffset: -0.55 },
   // High peaks and aerial perspective.
@@ -192,7 +194,11 @@ await acquire('shot');
         look = new THREE.Vector3(l[0], l[1], l[2]);
       } else {
         const cached = (frozen && !dynamicAnchors.includes(v.anchor)) ? frozen[v.anchor] : null;
-        const anchor = cached ?? (api[v.anchor] || api.vista || (() => ({ x: 0, z: 0, yaw: 0 })))();
+        const anchor = cached ?? (
+          (v.index && window.__anchorAt)
+            ? window.__anchorAt(v.anchor, v.index)
+            : (api[v.anchor] || api.vista || (() => ({ x: 0, z: 0, yaw: 0 })))()
+        );
         window.__lastResolvedAnchor = (cached || dynamicAnchors.includes(v.anchor)) ? null : {
           key: v.anchor,
           value: { x: anchor.x, z: anchor.z, yaw: anchor.yaw, lookY: anchor.lookY },
@@ -227,6 +233,35 @@ await acquire('shot');
             gz + Math.cos(yaw) * v.dist
           );
         }
+      }
+
+      // ── clear the near field ────────────────────────────────────────────
+      // Landmark anchors are scored on terrain, so they happily land inside a
+      // thicket, a lake, or behind a conifer — the `forest`, `waterfall` and
+      // `river` views have each been ruined that way, and an author judging a
+      // blocked frame is judging nothing. Raycast along the view direction and,
+      // if something is in our face, lift and step back until it is not.
+      if (!posStr && window.__THREE) {
+        const T = window.__THREE;
+        const ray = new T.Raycaster();
+        ray.far = 6;
+        const dir = new T.Vector3();
+        const MIN_CLEAR = 3.0;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          dir.copy(look).sub(pos).normalize();
+          ray.set(pos, dir);
+          const hits = ray.intersectObjects(e.scene.children, true)
+            .filter((h) => h.distance > 0.05 && h.object.visible &&
+                           h.object.name !== 'Sky' && !h.object.isPoints);
+          if (!hits.length || hits[0].distance > MIN_CLEAR) break;
+          // Rise first — most obstructions here are vegetation rooted below us.
+          pos.y += 2.2;
+          pos.addScaledVector(dir, -2.0);
+          look.y += 0.7;
+        }
+        // Never end up under the ground after lifting.
+        const g = wd.getHeight(pos.x, pos.z) + 1.4;
+        if (pos.y < g) pos.y = g;
       }
 
       e.camera.fov = v ? v.fov : 50;
