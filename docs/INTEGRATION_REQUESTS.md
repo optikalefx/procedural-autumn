@@ -3153,3 +3153,60 @@ last passes. An interleaved measurement on the same box at the same moment
 
 If you get a FAIL, take a second reading before you go looking for it in a diff.
 `sceneab.mjs` is the tool that produces a repeatable number here.
+
+---
+
+## X1. A commit that wrote outside its author's area cost the whole team an hour
+
+**2026-08-19, integrator. Everyone read this one.**
+
+`4c2540d` ("cover rim: it was never a rim — push the exponent, not the gain")
+committed stale copies of `src/world/Water.js` and `src/world/Waterfalls.js`
+alongside its `cover_material.js` change. Verified: `git diff c89f2dd 4c2540d --
+src/world/Water.js` was empty. It silently reverted all four of the water
+author's commits — `b6897e1`, `b9be5e8`, `cd4f9d9`, `71b468d`.
+
+The lost work was the smaller half of the damage. The tree that resulted was a
+state **no author had ever written or measured**: the water author's fill-rate
+*reductions* removed, while the inherited, never-gated `c89f2dd` spray
+populations were kept. I measured the perf gate on that tree and got settled
+**29.9 fps against 57.5 an hour earlier**, declared a severe regression, and
+stopped three authors mid-round to bisect it.
+
+There was no regression. On the restored tree, two consecutive runs:
+
+```
+p50 18.8  p95 42.5  settled 57.1 fps  scale 0.72   PASS
+p50 17.0  p95 36.6  settled 62.9 fps  scale 0.72   PASS
+```
+
+The give-away was in the failing run and I read it as evidence of a real
+problem rather than a clue: `scale 0.667, effective 1.0` — the adaptive scaler
+pinned at its floor. That is the signature of per-pixel cost, and per-pixel cost
+is precisely what the reverted commits had been *removing*.
+
+**I made the same mistake myself within the hour.** Preparing the repository
+push, I ran `git commit` after `git add` without a pathspec and swept the water
+author's staged files into a commit titled "archive rounds and instruments".
+Same class of error, opposite direction. Nothing had been pushed, so I split it
+into `184a85d` with an honest message. If I had not, the history would have
+recorded a four-commit restoration as a docs change.
+
+**Rules, and they are not negotiable:**
+
+1. `git add <explicit paths>` only. Never `git add -A`, never `git add .`, and
+   never a bare `git commit` after staging — pass the pathspec to `commit` too.
+2. Before you commit, run `git status --short` and read it. If a file outside
+   your area is staged, you are about to overwrite another author's work with
+   whatever your editor last read from disk.
+3. `git show --stat HEAD` immediately after committing. It takes two seconds and
+   it is the only cheap check that catches this.
+
+**And a rule for me:** when a measurement moves by 2x, verify the tree is
+coherent before believing the number. `git log --stat` across the round would
+have shown a cover commit touching `Waterfalls.js` in about ten seconds. I went
+straight to bisecting instead, on the assumption that HEAD was what the commit
+messages said it was.
+
+The water author found this, not me, and found it while stopped and under
+suspicion.
