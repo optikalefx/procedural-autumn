@@ -475,7 +475,7 @@ function buildShrubDark(rng) {
          { chan: 0.03 + rise * 0.50 + rng() * 0.16,
            trans: 0.34 + rise * 0.30, ragged: 0.44, lift: 0.08 + rise * 0.54 });
   }
-  leafShell(b, h, w, 118, rng, 0.14, { len: 0.150, wide: 0.056, inset: 0.86 });
+  leafShell(b, h, w, 98, rng, 0.14, { len: 0.158, wide: 0.060, inset: 0.86 });
   skirt(b, w, rng, 6, 0.0);
   return b.finish(h);
 }
@@ -549,7 +549,7 @@ function buildScrubDry(rng) {
   // Broad short blades, not sprays. The whole point of the rebuild is that a
   // long tapered strip seen flat-on is a pale oval; keeping them short and
   // near-parallel-sided keeps them reading as a bristly edge on a mass.
-  leafShell(b, h, w, 54, rng, 0.30, { wide: 0.055, len: 0.19, tilt: 0.42, inset: 0.86 });
+  leafShell(b, h, w, 38, rng, 0.30, { wide: 0.062, len: 0.20, tilt: 0.42, inset: 0.86 });
   skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
@@ -988,7 +988,7 @@ function buildLeafScatter(rng, variant) {
  */
 function buildDeadTuft(rng, variant) {
   const b = new Builder();
-  const n = (variant === 1 ? 11 : 15) + ((rng() * 7) | 0);
+  const n = (variant === 1 ? 9 : 12) + ((rng() * 6) | 0);
   const R = 0.26 + rng() * 0.30;
 
   // REBUILT — this was the starburst. Spreading the origins along the radius
@@ -1136,7 +1136,7 @@ function buildBranch(rng, variant) {
 export const COVER_ARCHETYPES = [
   { key: 'shrubDark',   variants: 3, card: true,  cap: 380, vis: 175, band: 3, recv: true , wind: 0.030, shadow: true,  build: buildShrubDark },
   { key: 'shrubBerry',  variants: 2, card: true,  cap: 130, vis: 155, band: 2, recv: false, wind: 0.032, shadow: false,  build: buildShrubBerry },
-  { key: 'scrubDry',    variants: 3, card: true,  cap: 820, vis: 58,  band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
+  { key: 'scrubDry',    variants: 3, card: true,  cap: 700, vis: 55,  band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
   { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: true , wind: 0.055, shadow: true,  build: buildThicket },
   { key: 'fern',        variants: 2, card: true,  cap: 620, vis: 54,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
   { key: 'broadleaf',   variants: 2, card: true,  cap: 640, vis: 32,  band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
@@ -1156,9 +1156,9 @@ export const COVER_ARCHETYPES = [
   // added. Shrinking the radius is nearly free (these are 20-60 triangle props
   // that contribute nothing past 30 m anyway) and it triples the density under
   // the player's nose for the same triangle count.
-  { key: 'pebble',      variants: 2, card: false, cap: 2000, vis: 29, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
+  { key: 'pebble',      variants: 2, card: false, cap: 1750, vis: 28, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
   { key: 'cobble',      variants: 2, card: false, cap: 880,  vis: 74, band: 1, recv: false, wind: 0.000, shadow: false, build: buildCobble },
-  { key: 'leafScatter', variants: 2, card: true,  cap: 1700, vis: 26, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 1450, vis: 25, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
   { key: 'deadTuft',    variants: 2, card: true,  cap: 1700, vis: 26, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
 ];
 

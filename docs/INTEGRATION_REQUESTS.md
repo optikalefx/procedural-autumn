@@ -2153,11 +2153,16 @@ One caution learned from tuning the global strength: do not multiply the rim by
 albedo. A rim through the albedo path on a dark conifer comes out dark, which
 is the opposite of what a backlit edge does.
 
-## Look / grade: shadowed ground is arriving as saturated cobalt
+## Look / grade: shadowed ground was arriving as saturated cobalt — RESOLVED
 *from the ground-cover author, 2026-08-19*
 
-Not a request for my system so much as a flag on a live regression, because it
-made half my round unjudgeable and it is going to do the same to everyone else's.
+**Resolved during the round by `1b126f2` "pull the cool shadow back to where the
+frame agrees with the metric".** Kept for the record because it cost me most of a
+round of judgement, and because the second half still stands. Shadowed ground now
+reads as a soft high-value violet-grey, which is what the brief's correction
+asks for.
+
+What follows is what it looked like before that landed.
 
 As of this afternoon every cast-shadow mass in the game renders as a strongly
 saturated blue — sampled around `srgb(37,74,158)` on sunlit gold meadow. It is
@@ -2174,7 +2179,7 @@ keeping — what has gone wrong is the amount and the value, not the direction.
 The shadowed ground needs to keep most of its luma and take the violet as a
 tint.
 
-Concretely this blocks two things on my side:
+Concretely it blocked two things on my side (both now unblocked):
   * I cannot judge the ground substrate's stone palette. Stones are the only
     cool note this layer puts at ground level and they are authored to the
     brief's lavender-grey rock anchors, but every stone in shadow is currently
@@ -2198,13 +2203,17 @@ forms (`shrubDark`, `thicket`, `log`, `stump`) and stays off for the ground
 substrate, where it is paid per fragment over a large share of the near field.
 A shrub standing in a tree's shadow band no longer reads as lit.
 
-The same three runs answer a second question. The harness currently fails its
-frame-time assertions (p50 37.8 ms against a 16.7 ms budget), and that failure is
-**not** this system: removing ground cover entirely makes it slightly *worse*,
-not better. Peak load stays inside both hard budgets (4.26 M of 4.5 M triangles,
-597 of 900 draw calls). Whatever regressed frame time this afternoon is upstream
-of the vegetation layers and probably shares a cause with the shadow colour
-above.
+The same three runs answer a second question. At the time of measurement the
+harness was failing its frame-time assertions badly (p50 37.8 ms against a
+16.7 ms budget), and that failure was **not** this system: removing ground cover
+entirely made it slightly *worse*, not better. It recovered on its own later in
+the afternoon (p50 19.3 ms on the same route, no frames over 100 ms), alongside
+the shadow fix above — so the two probably did share a cause.
+
+Final state of this layer after a triangle trim: **peak 4.16 M triangles and 598
+draw calls** whole-game, of which ground cover is roughly 1.0 M and 41. That
+leaves ~340 k of headroom under the 4.5 M cap, which is deliberate — this layer
+is the one most likely to be asked for more density next.
 
 ---
 

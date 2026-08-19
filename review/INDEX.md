@@ -42,3 +42,5 @@ same places are photographed every round and the sheets are directly comparable.
 | 034 | 2026-08-19 | scrub rebuilt, deadfall, substrate | [034](034-2026-08-19-scrub-rebuilt-deadfall-substrate.png) |
 | 035 | 2026-08-19 | edge apron tuned, ribbons gone at 12/16.4/18.6 | [035](035-2026-08-19-edge-apron-tuned-ribbons-gone-at-12-16-4-18-6.png) |
 | 036 | 2026-08-19 | cool shadow pulled back to plate 3 level | [036](036-2026-08-19-cool-shadow-pulled-back-to-plate-3-level.png) |
+| 037 | 2026-08-19 | contour ribbons fixed, world edge closed | [037](037-2026-08-19-contour-ribbons-fixed-world-edge-closed.png) |
+| 038 | 2026-08-19 | cover: scrub canopy rebuild, deadfall, substrate ladder | [038](038-2026-08-19-cover-scrub-canopy-rebuild-deadfall-substrate-la.png) |
