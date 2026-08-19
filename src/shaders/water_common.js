@@ -168,7 +168,16 @@ vec3 wFoamLight(float shadow){
   // Measured off reference plate 5: the falling curtain there is RGB
   // 0.67/0.75/0.81 — not white but distinctly *blue*-white, and 0% of it is
   // clipped. So the desaturation is heavy and the residual tilt is cool.
-  return mix(L, vec3(y), 0.86) * vec3(0.88, 0.97, 1.12) * uFoamGain;
+  // ...but the residual tilt was too strong, and it is the only thing left in
+  // the chain that can colour foam. At 0.88/0.97/1.12 it is a ratio of
+  // 1:1.10:1.27, and every aerated surface in the game came out of it that
+  // blue: the plunge pool at the foot of the 65 m fall measured srgb
+  // 1:1.14:1.31. Re-measured off plate 5 in the space the tilt actually
+  // applies, the falling curtain there is 1:1.12:1.21 and the *whitewater at
+  // the foot of it* — the plunge, which is what this pool is — is 1:0.99:1.00,
+  // effectively neutral. The cool note in these plates belongs to the body of
+  // the water, not to the air in it. Halved toward that.
+  return mix(L, vec3(y), 0.86) * vec3(0.94, 0.99, 1.06) * uFoamGain;
 }
 `;
 

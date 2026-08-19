@@ -9,7 +9,7 @@
 //  identical curve — spray that drifts off the sheet is the classic tell.
 //
 //  Advection is done in "time of flight": each point on the sheet knows how
-//  many seconds ago the water there left the lip, so `flightTime - now` is
+//  many seconds ago the water there left the lip, so 'flightTime - now' is
 //  constant along a parcel's trajectory. Scrolling that coordinate gives flow
 //  that accelerates and stretches exactly like falling water, with no
 //  hand-tuned per-fall speeds.
@@ -178,6 +178,12 @@ void main() {
   // coordinate with the parcel noise (rather than fading the alpha) chews the
   // *silhouette*: a curtain cut off at a constant half-width shows the mesh's
   // own polygon outline, which at close range is the loudest tell in the frame.
+  // Tried and reverted: adding the 'fine' octave here as a second scale of
+  // tearing. It does straighten out the long flat sides, but 'fine' runs at
+  // 3.1 cycles per metre *across* the sheet, so eroding the silhouette with it
+  // cuts the curtain into vertical pinstripes — and captured side by side the
+  // lump structure inside the sheet went with them and the whole column came
+  // back reading as smooth wax. The straight sides are the lesser fault.
   float sideN = abs(vSide) + (c1 - 0.5) * 0.40 * (0.35 + 0.65 * shred);
   // Taper both ends of the *silhouette*. A curtain that begins and ends on a
   // dead-flat horizontal edge is a painted rectangle, and that is precisely how
@@ -190,7 +196,13 @@ void main() {
   // unchanged apart from a lip that now looks like water accelerating.
   float endTaper = min(smoothstep(0.0, 0.055, vU), 1.0 - smoothstep(0.90, 1.0, vU));
   sideN += (1.0 - endTaper) * 0.60;
-  float edge = 1.0 - smoothstep(0.72, 1.06, sideN);
+  // Widened from 0.72-1.06. The brief asks for a *soft* white ribbon and the
+  // plates draw one: plate 5's curtain has no hard boundary anywhere along it,
+  // it fades into the rock over several pixels. A 0.34-wide alpha ramp on a
+  // 7 m curtain is about ten centimetres, i.e. a hard edge at any framing you
+  // would actually stand at. Half a half-width of feather is what turns the
+  // cut-out into a brush mark.
+  float edge = 1.0 - smoothstep(0.58, 1.18, sideN);
   float rim = smoothstep(0.40, 1.0, abs(vSide));
   edge = mix(edge, edge * (0.30 + 0.70 * smoothstep(0.24, 0.60, streak)), shred * rim);
 
@@ -427,7 +439,11 @@ void main() {
   vec3 p = aCentre + aDrift * f + vec3(0.0, aRise * f, 0.0);
   float size = aSize * (0.55 + 0.8 * f);
   // In and out slowly — mist has no edges, only densities.
-  vFade = smoothstep(0.0, 0.35, f) * (1.0 - smoothstep(0.55, 1.0, f));
+  // The tail is pulled forward so a puff is gone before it separates from the
+  // mass. See aRise: the failure mode is not a plume that is too thin, it is
+  // one stray puff that outlived its neighbours and is now a disc on its own
+  // against the sky.
+  vFade = smoothstep(0.0, 0.30, f) * (1.0 - smoothstep(0.42, 0.86, f));
   vSeed = aSeed;
   vUv = uv;
   vWPos = p;
@@ -502,7 +518,16 @@ void main() {
   float glow = min(pow(fwd, 3.0) * 0.34 + pow(fwd, 12.0) * 0.30, 0.52);
   // Denser cores are brighter: light gets scattered out of a fat parcel, not a
   // thin one, and it is the density variation that gives the plume its volume.
-  vec3 col = uFoam * wFoamLight(1.0) * (0.34 + glow) * (0.70 + 0.50 * lump);
+  //
+  // Lifted from 0.34. At that level the plume measured as a faint grey stain:
+  // isolating this mesh at the foot of the 65 m fall left a frame you could
+  // not tell from one with the mist hidden entirely, which is precisely the
+  // "no mist column" a critic pass logged. A plume of vapour in front of a
+  // bright sky is *bright* — in reference plate 5 the haze at the foot of the
+  // fall sits at luma 0.70 against rock at 0.59, i.e. lighter than everything
+  // it covers. It cannot do that while it is scattering a third of the foam
+  // illuminant.
+  vec3 col = uFoam * wFoamLight(1.0) * (0.56 + glow) * (0.70 + 0.50 * lump);
 
   // Primary bow, 42° off the antisolar point. It shows up when the sun is
   // behind the camera, which is exactly when a real one would.
@@ -514,7 +539,12 @@ void main() {
   col += spectrum(t) * band * uRainbow * uSunLight * 0.30
        * smoothstep(0.25, 0.7, a) * smoothstep(0.02, 0.16, uSunDir.y);
 
-  gl_FragColor = vec4(col, a * 0.26);
+  // ...and the same correction in the alpha, which is where most of the
+  // invisibility actually lived. A puff that is 4% opaque at its core needs
+  // twenty-five of them stacked before the plume exists at all, and the
+  // density field only ever puts three or four along a view ray. Fog and
+  // depth-of-field then finished off what was left.
+  gl_FragColor = vec4(col, a * 0.58);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -818,8 +848,16 @@ void main() {
   float poolWide = mix(0.16, 0.5, smoothstep(0.35, 1.6, poolFoot));
   float trough = 0.50 + 0.38 * wSteps(smoothstep(0.20, 0.84, churn), 3.0, poolWide)
                       + 0.15 * (n2 - 0.5);
-  vec3 col = mix(uShallow, uFoam, foam) * trough
-           * wFoamLight(mix(wSunShadow(vWPos), 1.0, 0.5)) * 0.92;
+  // The trough end of the ramp is not the channel's blue. Measured on the 65 m
+  // fall the pool came back srgb(137,159,184), ratio 1:1.16:1.34, against the
+  // whitewater at the foot of reference plate 5 at 1:0.99:1.00 — the *value*
+  // was right (0.61 against 0.60-0.67) and the hue was a stop and a third too
+  // blue, which is what made the plunge read as a pale blue wash lying on the
+  // ground rather than as churn. A trough between crests of foam is still
+  // aerated water; only the water outside the pool is the channel colour.
+  vec3 poolLow = mix(uShallow, uFoam, 0.52);
+  vec3 col = mix(poolLow, uFoam, foam) * trough
+           * wFoamLight(mix(wSunShadow(vWPos), 1.0, 0.5)) * 0.86;
 
   // The outline was a 0.6-wide radial airbrush — more than half the pool's
   // radius spent on a smooth gradient, which draws an ellipse whatever the
@@ -1023,7 +1061,7 @@ export class Waterfalls extends System {
             ny = tz * f.sideX - tx * f.sideZ,
             nz = 0 * tx - ty * f.sideX;
         const nl = Math.hypot(nx, ny, nz);
-        // `|| 1` was the wrong fallback: it left the *vector* at (0,0,0), which
+        // '|| 1' was the wrong fallback: it left the *vector* at (0,0,0), which
         // normalize() in the shader turns into NaN. A degenerate cross product
         // needs a real substitute direction, not a substitute length. Facing
         // back up the channel is what a vertical drop's normal resolves to
@@ -1103,7 +1141,10 @@ export class Waterfalls extends System {
         rate.push((1 / tof) * (burst ? 1.9 : 1.0) * (0.85 + rng() * 0.3));
         u0.push(burst ? 0.55 + rng() * 0.25 : rng() * 0.30);
         sideOff.push((rng() * 2 - 1) * 0.55);
-        size.push((0.22 + rng() * 0.40) * (0.6 + fl.width * 0.10) * (burst ? 1.6 : 1.0));
+        // Same correction as the burst clots: at 0.22-0.62 m scaled by width
+        // these read as separate white teardrops hanging beside the curtain
+        // from any near framing. Spray is a mist of small things.
+        size.push((0.13 + rng() * 0.24) * (0.6 + fl.width * 0.10) * (burst ? 1.6 : 1.0));
         spread.push((0.35 + rng() * 1.0) * (0.5 + fl.disc * 1.6));
         seed.push(rng());
         sideDir.push(fl.sideX, 0, fl.sideZ);
@@ -1171,7 +1212,10 @@ export class Waterfalls extends System {
     for (const fl of this.falls) {
       const b = fl.pts[fl.pts.length - 1];
       const energy = clamp01(fl.disc * 0.6 + fl.height / 90);
-      const count = Math.round(clamp(70 + energy * 330, 64, 400));
+      // Denser, to pay for the smaller sprites below. A cloud reads by count,
+      // not by clot size, and the two have to move together or halving one
+      // just thins the plume out.
+      const count = Math.round(clamp(96 + energy * 430, 88, 520));
       for (let i = 0; i < count; i++) {
         // Spread the launch points across the foot of the curtain, not from one
         // node: a burst radiating from a single point is a firework.
@@ -1205,12 +1249,16 @@ export class Waterfalls extends System {
         // Long enough for the arc to come back down, and no longer — a droplet
         // still on screen after it should have landed reads as snow.
         life.push(clamp(0.50 + vUp * 0.21, 0.6, 2.2));
-        // A plunge is a *mass* of thrown water. At 0.16-0.46 m these clots
-        // were four pixels at ninety metres and half a pixel at eight hundred,
-        // so the burst never registered as anything but grit. The pixel floor
-        // in BURST_VERT keeps them legible at range; this makes them worth
-        // seeing up close.
-        size.push((0.30 + rng() * 0.55) * (0.65 + fl.width * 0.07));
+        // Halved again, and the count raised to pay for it. The previous size
+        // fixed the far view — a clot has to be worth a pixel at 200 m — but
+        // it was set without checking the near one, and near is where the
+        // whole read broke: on a 7 m fall these grew to 2.3 m, which at thirty
+        // metres is a hundred-pixel blob. Fifty of them is not a plunge, it is
+        // confetti, and that is exactly what a critic saw. Individual sprites
+        // must not be readable as shapes; the *cloud* is the read. The pixel
+        // floor in BURST_VERT still holds the far view on its own, so this
+        // costs nothing there.
+        size.push((0.15 + rng() * 0.27) * (0.65 + fl.width * 0.07));
         seed.push(rng());
       }
     }
@@ -1268,24 +1316,54 @@ export class Waterfalls extends System {
       // samples in it. Raising the count and halving the size costs about the
       // same fill rate and reads as vapour instead of as sprites.
       const count = Math.round(clamp(18 + energy * 76, 18, 96));
-      const spread = 3 + energy * 16;
+      // Tightened from 3 + energy*16. A 19 m spread with another half of that
+      // in drift on top puts puffs forty metres from the fall, where they are
+      // no longer part of a plume — they are single soft discs hanging over
+      // dry hillside, and the frame reads as smeared rather than misty. A
+      // plume is *dense and local*; what makes it read is the concentration,
+      // which is also why the alpha could be raised without it becoming a haze
+      // over the whole gorge.
+      const spread = 2.2 + energy * 8.0;
       for (let i = 0; i < count; i++) {
-        // Most of the mist boils off the plunge point; a little climbs the
-        // lower third of the fall itself.
-        const onFall = rng() < 0.3;
-        const t = onFall ? 0.62 + rng() * 0.3 : 1.0;
+        // Three populations, not one. A single uniform cloud of puffs is what
+        // gave the plume its two failure modes at once: thin enough at the
+        // waterline that there was no bloom there, and wide and sparse enough
+        // above it that individual puffs separated out into discs.
+        //
+        //   bloom  — the diffuse white mass sitting *on* the plunge. Big, slow,
+        //            barely rising, tightly centred. This is the thing the
+        //            reference actually draws, and the thing we did not have.
+        //   plume  — medium puffs lifting off it, the visible vapour.
+        //   veil   — small puffs hugging the last few metres of the curtain.
+        //
+        // The veil is confined to the bottom 18% of the path. It used to run
+        // from 0.62, which on a 65 m fall starts twenty-five metres up a bare
+        // cliff, where there is nothing for a puff to belong to.
+        const roll = rng();
+        const kind = roll < 0.34 ? 0 : roll < 0.84 ? 1 : 2;
+        const t = kind === 2 ? 0.82 + rng() * 0.17 : 1.0;
         const p = fl.pts[Math.min(fl.pts.length - 1, Math.round(t * (fl.pts.length - 1)))];
+        const lat = kind === 0 ? 0.34 : kind === 1 ? 0.60 : 0.22;
         centre.push(
-          p.x + (rng() * 2 - 1) * spread * 0.6,
-          p.y + rng() * 2.5,
-          p.z + (rng() * 2 - 1) * spread * 0.6
+          p.x + (rng() * 2 - 1) * spread * lat,
+          p.y + rng() * (kind === 0 ? 1.2 : 2.5),
+          p.z + (rng() * 2 - 1) * spread * lat
         );
         phase.push(rng());
         rate.push(0.045 + rng() * 0.055);
-        size.push((1.7 + rng() * 3.4) * (0.5 + energy * 1.0));
-        rise.push((3 + rng() * 9) * (0.5 + energy));
+        const sizeMul = kind === 0 ? 1.55 : kind === 1 ? 1.0 : 0.62;
+        size.push((1.7 + rng() * 3.4) * (0.5 + energy * 1.0) * sizeMul);
+        // Halved. At up to 24 m of rise the last third of every puff's life
+        // was spent alone against open sky, and an isolated soft disc against
+        // sky is not vapour — it is a bokeh ball, and a critic pass has
+        // already read two of them as dirt on the lens. Vapour thins as it
+        // climbs; it does not travel to the top of the cliff intact.
+        // The bloom barely climbs at all — it is the mass sitting on the water,
+        // not the vapour leaving it.
+        rise.push((2.0 + rng() * 4.5) * (0.5 + energy) * (kind === 0 ? 0.22 : 1.0));
         const a = rng() * Math.PI * 2;
-        drift.push(Math.cos(a) * spread * 0.5, 0, Math.sin(a) * spread * 0.5);
+        const dr = spread * (kind === 0 ? 0.10 : 0.32);
+        drift.push(Math.cos(a) * dr, 0, Math.sin(a) * dr);
         seed.push(rng());
       }
     }
@@ -1311,7 +1389,13 @@ export class Waterfalls extends System {
     const mat = new THREE.ShaderMaterial({
       uniforms: Object.assign(fogUniforms(), this.shared, {
         uCullDist: { value: 700 },
-        uRainbow:  { value: 0.55 },
+        // Cut from 0.55. The bow is evaluated per sprite over a volume, so a
+        // 2.4-degree band in view angle lands on some puffs and not their
+        // neighbours — which at the old mist opacity was invisible and at the
+        // new one is a set of pale green and cyan patches inside the plume.
+        // Magnified they read as mould on the white water, and neither
+        // reference plate has a bow in it at all. Kept as a whisper.
+        uRainbow:  { value: 0.18 },
       }),
       vertexShader: MIST_VERT,
       fragmentShader: MIST_FRAG,

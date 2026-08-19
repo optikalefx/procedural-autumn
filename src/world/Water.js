@@ -116,6 +116,8 @@ uniform float uBodyGain;
 uniform float uAbsorb;
 uniform float uAbsorbPow;
 uniform float uEnvTint;
+uniform float uSheen;
+uniform float uWetBand;
 uniform vec3  uCoolTint;
 uniform float uCoolGain;
 uniform float uPixelScale;
@@ -349,7 +351,15 @@ void main() {
   // Rotated a fraction toward the channel's own hue, never multiplied by it: a
   // river has to pick up a dawn sky the same way the bank beside it does.
   vec3 env = wTint(envRaw, absorb, uEnvTint + 0.10);
-  vec3 col = mix(lit, env, clamp(fres, 0.0, 0.34));
+  // Same floor as the lake, and for the same measurement — see the sheen block
+  // in LAKE_FRAG. Weaker here: a river is genuinely broken up and half aerated,
+  // and its foam carries value the lake has to get from the sky. Withdrawn
+  // inside foam and inside turbulence, where the surface is no longer a mirror
+  // of anything.
+  float sheenMass = 0.52 + 0.48 * smoothstep(0.30, 0.70,
+                    wFbm2(fp * vec2(0.09, 0.02) - vec2(0.0, uTime * speed * 0.05)) * 0.5 + 0.5);
+  float sheen = uSheen * 0.62 * sheenMass * (1.0 - foam * 0.9) * (1.0 - vTurb * 0.45);
+  vec3 col = mix(lit, env, clamp(max(fres, sheen), 0.0, 0.42));
 
   // Specular glints — tight, and killed inside foam so nothing sparkles on
   // what is meant to read as aerated white water. Band-limited against the
@@ -445,6 +455,8 @@ uniform float uBodyGain;
 uniform float uAbsorb;
 uniform float uAbsorbPow;
 uniform float uEnvTint;
+uniform float uSheen;
+uniform float uWetBand;
 uniform vec3  uCoolTint;
 uniform float uCoolGain;
 uniform float uPixelScale;
@@ -487,6 +499,29 @@ void main() {
   // finish inside geometry. That ring is the only place this gate does anything
   // — it stops a perched lake from painting itself down a cliff face.
   float alpha = shoreFade * smoothstep(0.05, 0.55, vWet);
+
+  // ── wet margin ───────────────────────────────────────────────────────────
+  // Everything above places the *edge of the water*. What it cannot do is put
+  // anything on the dry side of that edge, and the dry side is where half the
+  // read lives: in the plates a bank is gold grass, then a band of dark damp
+  // substrate, then the waterline, then water. We drew the first, third and
+  // fourth and skipped the second, which is why a shoreline here has always
+  // read as a cut-out — a perfectly antialiased line is still a line.
+  //
+  // The lake mesh is already dilated a full 8 m quad past the baked water, so
+  // there is geometry sitting over dry ground with nothing drawn on it. This
+  // uses it: a couple of metres of low-alpha cool grey laid over whatever the
+  // terrain author put there, strongest at the waterline and gone by the time
+  // it reaches the edge of the ring. Over gold meadow that reads as damp sand,
+  // which is exactly what it is.
+  //
+  // Note it is measured in *depth*, negative on the dry side, so it follows
+  // the same surface the alpha edge does and can never separate from it.
+  float wetT = smoothstep(-uWetBand, -0.02, depth) * (1.0 - shoreFade);
+  // The dilation ring's own taper. Wider than the water gate above: this band
+  // lives on the outer half of the ring, where vWet has already fallen away.
+  wetT *= smoothstep(-0.02, 0.30, vWet);
+  alpha = max(alpha, wetT * 0.52);
   if (alpha < 0.012) discard;
 
   // ── wind ripple ───────────────────────────────────────────────────────────
@@ -554,12 +589,26 @@ void main() {
   // reference reads its water as a continuous gradient from a pale, almost
   // sandy edge into the deep. Six metres is roughly the depth at which the bed
   // stops contributing anything.
-  float deepT = smoothstep(0.12, 6.0, depth);
-  vec3 body = mix(uShallow, uDeep, deepT);
   // Painterly value structure: broad, slow, low-frequency masses rather than a
   // single flat tint. Large areas of near-uniform colour with soft boundaries
   // is what makes the reference read as painted.
   float band = wFbm2(p * 0.012 + vec2(uTime * 0.006, 0.0)) * 0.5 + 0.5;
+  // The depth ramp is a *contour generator*: it is a smooth function of a
+  // heightfield, so wherever the bed flattens out it draws its own isoline on
+  // the water. Measured on this lake, a shelf came back as flat pale islands
+  // with a boundary you could trace — the same class of artifact as the gold
+  // contour ribbons the terrain author had to break on land. Perturbing the
+  // depth the ramp reads (not the depth anything else reads) with the broad
+  // mass noise turns that boundary ragged for nothing.
+  float deepT = smoothstep(0.0, 7.0, depth + (band - 0.5) * 2.2);
+  // ...and the shallow anchor is not a paint colour. It is what you see when
+  // you can see the bed, and the bed here is gold meadow. Taken literally as
+  // '#9dc4d8' it drew every sandbar in the map as a flat pastel cyan island —
+  // the Caribbean swimming pool the note on uSubsurface below already warns
+  // about, arriving from the other side. Warmed toward the ground it covers,
+  // a shelf reads as sand under water and the step against the deep water
+  // beside it drops from two stops to under one.
+  vec3 body = mix(mix(uShallow, uRefGround, 0.40), uDeep, deepT);
   // Same idea at arm's length: broad masses read at 300 m, these read at 3 m.
   float fine = wFbm2(p * 0.16 + vec2(uTime * 0.03, uTime * 0.012)) * 0.5 + 0.5;
   // The broad masses are a near-field read. At a kilometre they are 80 m
@@ -691,7 +740,29 @@ void main() {
   // With the march now reaching the far bank the reflection is hills and the
   // higher, bluer sky above them — cooler and darker than the gold valley —
   // so fresnel can simply be allowed to do its job.
-  float mirror = clamp(fres * 0.90, 0.0, 0.88) * smoothstep(0.10, 1.2, depth);
+  // ── the broad sheet of reflected sky ─────────────────────────────────────
+  // Fresnel alone is not what the reference plates draw. Measured: plate 3's
+  // river runs srgb(107,119,135) at luma 0.46 with a ratio of 1:1.11:1.27 —
+  // a pale, almost neutral blue-grey. This lake measured srgb(33,49,81) at
+  // luma 0.187 and 1:1.46:2.45, i.e. two and a half stops darker and twice as
+  // saturated, because at anything but a grazing angle physical Fresnel is
+  // 5-8% and the surface is then almost pure body colour. A basin that dark is
+  // a hole in a frame the brief wants at lumaP05 0.16+.
+  //
+  // A real lake is brighter than Fresnel says because it is *rough*: a rippled
+  // surface reflects a cone, and the fraction of that cone that clears the
+  // critical angle is far larger than the mirror-direction reflectance of a
+  // flat one. Stating that as a floor under the Fresnel term is the honest
+  // stylisation, and it is broad and low-frequency by construction — the
+  // brief's "broad low-frequency sky reflection, not mirror detail" — because
+  // the mass it rides on is an 80 m noise, not a per-ripple normal.
+  float sheenMass = 0.52 + 0.48 * smoothstep(0.30, 0.70,
+                    wFbm2(p * 0.0085 + vec2(uTime * 0.004, 0.0)) * 0.5 + 0.5);
+  // Withdrawn in the shallows for the same reason the mirror is: a rim you can
+  // see the bed through does not hand back a sheet of sky.
+  float sheen = uSheen * sheenMass * smoothstep(0.10, 1.4, depth);
+  float mirror = clamp(max(fres * 0.90, sheen), 0.0, 0.88)
+               * smoothstep(0.10, 1.2, depth);
   vec3 col = mix(lit, env, mirror);
 
   // Sun path. Broad and graded, never a hard hotspot — and band-limited, which
@@ -763,6 +834,23 @@ void main() {
   alpha *= mix(0.84, 1.0, smoothstep(0.12, 1.5, depth));
   alpha = max(alpha, foam * 0.92);
 
+  // The damp band is ground with water in it, not water: darker and a shade
+  // cooler than the dry substrate beside it, never brighter. A *pale* fringe
+  // round every lake is pack ice, which is the failure the lace above already
+  // has to be rationed to avoid. Broken with the same shore noise so its outer
+  // boundary is a ragged tide mark rather than a second hard line parallel to
+  // the first — two soft edges in a row is still a stripe.
+  float wetN = wFbm2(p * 0.42 + 5.7) * 0.5 + 0.5;
+  float wet = wetT * mix(0.55, 1.0, smoothstep(0.34, 0.62, wetN));
+  // Pale, not dark. Wet sand in the world is darker than dry sand; wet sand in
+  // *these plates* is not. Plate 3 draws the margin between gold grass and blue
+  // water as a bright cream ribbon and plate 5 draws it as pale grey — the
+  // stylisation puts a light note there, and a dark umber band drawn on the
+  // same geometry reads as mud, which the brief names as an anti-pattern. Lit
+  // through the foam illuminant so it stays neutral under an amber key.
+  col = mix(col, mix(uShallow, uFoam, 0.62) * wFoamLight(shadow) * 0.72,
+            smoothstep(0.0, 0.55, wet));
+
   gl_FragColor = vec4(col, alpha);
   #include <fog_fragment>
   #include <tonemapping_fragment>
@@ -832,7 +920,19 @@ export class Water extends System {
       // reflection is physically neutral, so this is pure art direction: enough
       // that a lake stays the cool note in a hot frame, little enough that a
       // dawn sky still lands on it.
-      uEnvTint:      { value: 0.34 },
+      uEnvTint:      { value: 0.25 },
+      // How much of the sky a *rough* surface hands back regardless of angle.
+      // See the sheen block in LAKE_FRAG: physical Fresnel at anything but a
+      // grazing angle is 5-8%, which measured two and a half stops under the
+      // reference plates. This is the floor under it, and it is the single
+      // dial that decides whether a basin reads as water or as a dark hole.
+      uSheen:        { value: 0.66 },
+      // Metres of damp margin drawn on the dry side of the waterline. The
+      // reference never shows water meeting dry ground on a line; there is
+      // always a band of wet substrate between the two, and its absence is
+      // what makes a shoreline read as a cut-out however well antialiased the
+      // alpha edge is.
+      uWetBand:      { value: 2.6 },
       uCoolTint:     { value: new THREE.Vector3(0.96, 1.00, 1.03) },
       // Strength of the cool governor (see wCoolGovern). 0 disables it and
       // water goes the colour of the light; 1 holds it hard against any warm
