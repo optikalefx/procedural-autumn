@@ -91,12 +91,18 @@ export class GroundCover extends System {
     this.uniforms = makeCoverUniforms();
     this.cells = new Map();        // key -> { data, count, band, cx, cz, d }
     this.queue = [];
+    // Deferred substrate jobs, one slice per entry. See `_buildGround`.
+    this.gQueue = [];
     this.meshes = [];              // flat list, index === slot index
     this.slots = [];               // flat list of every archetype/variant slot
     this._byArch = [];             // [archetype][variant] -> slot, for packing
 
     // Scratch — update() and _repack() must never allocate.
     this._scratch = new Float32Array(MAX_PER_CELL * COVER_STRIDE);
+    // Separate accumulator for the one band-0 substrate cell in flight, so a
+    // slice job cannot be clobbered by a structural cell built in the same
+    // frame out of `_scratch`.
+    this._gscratch = new Float32Array(MAX_PER_CELL * COVER_STRIDE);
     this._counts = null;
     this._cellList = [];
     this._wanted = new Set();
@@ -110,7 +116,7 @@ export class GroundCover extends System {
     this._lastCell = { x: 1e9, z: 1e9 };
     this._catchup = 0;
     this._dirty = true;
-    this.stats = { instances: 0, tris: 0, cells: 0, buildMs: 0 };
+    this.stats = { instances: 0, tris: 0, cells: 0, buildMs: 0, groundMs: 0 };
   }
 
   async init() {
@@ -234,7 +240,13 @@ export class GroundCover extends System {
     let done = 0;
     while (done < this.queue.length) {
       const job = this.queue[done++];
-      const n = this.scatter.generateCell(job.cx, job.cz, CELL, job.band, scratch, MAX_PER_CELL);
+      // Band-0 cells hand their substrate layer to `_buildGround` rather than
+      // generating it here. See the note on `generateGroundSlice`: the layer is
+      // 8-10,000 instances and 4-5 ms, and a per-frame *budget* cannot help
+      // when the smallest unit of work is bigger than the budget.
+      const defer = job.band <= 0;
+      const n = this.scatter.generateCell(job.cx, job.cz, CELL, job.band, scratch,
+                                          MAX_PER_CELL, defer);
       // Two right-sized copies per cell rather than a few hundred small
       // objects: the long-radius forms, which every repack has to consider,
       // and the short-radius substrate, which most repacks can ignore whole.
@@ -249,15 +261,69 @@ export class GroundCover extends System {
         if (scratch[i + 16] >= NEAR_VIS) { far.set(src, a); a += COVER_STRIDE; }
         else { near.set(src, b2); b2 += COVER_STRIDE; }
       }
-      this.cells.set(job.key, {
+      const cell = {
         far, near, nFar, nNear, count: n,
         band: job.band, cx: job.cx, cz: job.cz, d: job.d,
-      });
+      };
+      this.cells.set(job.key, cell);
+      if (defer) {
+        // A cell re-queued at a finer band replaces one that may still have
+        // slices outstanding; those would append a second copy of the substrate
+        // to the new buffer. Drop them.
+        for (let gi = this.gQueue.length - 1; gi >= 0; gi--) {
+          if (this.gQueue[gi].key === job.key) this.gQueue.splice(gi, 1);
+        }
+        this.gQueue.push({ key: job.key, cx: job.cx, cz: job.cz, slice: 0, gn: 0 });
+      }
       this._dirty = true;
       if (performance.now() - t0 > budgetMs) break;
     }
     this.queue.splice(0, done);
     this.stats.buildMs = performance.now() - t0;
+  }
+
+  /**
+   * Generate the deferred substrate for band-0 cells, one slice at a time.
+   *
+   * One cell is in flight at once and its slices accumulate in `_gscratch`;
+   * only when the last slice lands is the cell's near buffer rebuilt, so the
+   * substrate appears all at once rather than growing in quarters. That matters
+   * less than it sounds — a cell only enters band 0 at 50 m, and four frames of
+   * 60 Hz is 67 ms — but a partially-filled cell would also have to be packed
+   * repeatedly, and packing is the other half of the frame cost.
+   *
+   * Everything in this layer has a visibility radius under `NEAR_VIS`, so it
+   * all belongs in the near buffer and the far buffer is never touched.
+   */
+  _buildGround(budgetMs) {
+    if (!this.gQueue.length) return;
+    const t0 = performance.now();
+    const g = this._gscratch;
+    while (this.gQueue.length) {
+      const job = this.gQueue[0];
+      const cell = this.cells.get(job.key);
+      // Evicted while its substrate was still queued, or superseded by a finer
+      // band. Either way the job is stale.
+      if (!cell || cell.cx !== job.cx || cell.cz !== job.cz) { this.gQueue.shift(); continue; }
+      job.gn = this.scatter.generateGroundSlice(job.cx, job.cz, CELL, g, job.gn,
+                                                MAX_PER_CELL, job.slice);
+      job.slice++;
+      if (job.slice >= CoverScatter.GROUND_SLICES) {
+        this.gQueue.shift();
+        const add = job.gn;
+        if (add) {
+          const near = new Float32Array((cell.nNear + add) * COVER_STRIDE);
+          if (cell.near) near.set(cell.near.subarray(0, cell.nNear * COVER_STRIDE), 0);
+          near.set(g.subarray(0, add * COVER_STRIDE), cell.nNear * COVER_STRIDE);
+          cell.near = near;
+          cell.nNear += add;
+          cell.count += add;
+          this._dirty = true;
+        }
+      }
+      if (performance.now() - t0 > budgetMs) break;
+    }
+    this.stats.groundMs = performance.now() - t0;
   }
 
   // ── packing ────────────────────────────────────────────────────────────────
@@ -395,8 +461,8 @@ export class GroundCover extends System {
     // cells, so a large per-frame allowance turns into a real hitch as soon as
     // the queue is deep. Spreading the same work over more frames costs a
     // slightly longer fill-in and no visible spike.
-    if (this._catchup > 0) { this._buildCells(12); this._catchup--; }
-    else this._buildCells(1.6);
+    if (this._catchup > 0) { this._buildCells(12); this._buildGround(10); this._catchup--; }
+    else { this._buildCells(1.6); this._buildGround(1.6); }
 
     if (this._dirty || moved > REPACK_MOVE) this._repack(cam);
     void dt;
@@ -409,6 +475,8 @@ export class GroundCover extends System {
     this.matDepth.dispose();
     this.ctx.scene.remove(this.group);
     this.cells.clear();
+    this.queue.length = 0;
+    this.gQueue.length = 0;
     this.meshes.length = 0;
     this.slots.length = 0;
   }

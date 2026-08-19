@@ -174,7 +174,19 @@ void main() {
   // ribbon that had left its bed. A channel is at most a few metres deep; past
   // that the water is not in a channel any more, it is a waterfall, and the
   // falls system draws it.
-  float airborne = 1.0 - smoothstep(5.0, 11.0, depth);
+  //
+  // ...but the ceiling has to scale with the channel, and a flat 5 m did not.
+  // A 3 m creek running 6 m above its bed has certainly left it; a 14 m river
+  // in an incised gorge legitimately runs that deep, and so does every chute
+  // immediately below a waterfall — which is where the recorded surface sits
+  // highest above the bed. The fixed ceiling was therefore deleting the water
+  // from exactly those reaches, leaving the bare tan channel bed running
+  // parallel to the drop with nothing in it. That is the stray tan stripe
+  // logged beside the falls, and the break at the foot of the column: the
+  // water was not missing, it was being discarded. The guard still catches the
+  // case it was written for, because a narrow ribbon keeps a low ceiling.
+  float airLim = clamp(vWidth * 0.55, 5.0, 16.0);
+  float airborne = 1.0 - smoothstep(airLim, airLim * 2.2, depth);
   float alpha = shoreFade * profile * airborne;
   if (alpha < 0.012) discard;
 

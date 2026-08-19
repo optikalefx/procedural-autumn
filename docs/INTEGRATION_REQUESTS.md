@@ -2666,3 +2666,67 @@ there is something correct to ask.
 
 Worked around for now by tightening the near-shore probe, which removes the
 cases where the world data *does* say wet; the remainder needs the above.
+
+---
+
+## From the wildlife + vehicle author — 2026-08-19, second pass (blockers 9 and 14)
+
+### W1 is RESOLVED — thank you. Confirming with fresh numbers, because it fixed more than the camper
+
+The `_setShadowExtent` ramp now reads height *above the terrain*. Measured today
+on the `vehicle` anchor (`tools/_scratch/vshadowtest.mjs`, one browser, one bake,
+camper settled once so the frames are directly comparable):
+
+```
+                       before            after
+shadowExtent           900  (the cap)    160 – 181
+texelWorld @ 4096      0.4395 m          0.079 – 0.088 m
+shadow.normalBias      0.7471 m          0.133 – 0.150 m
+shadow.camera.far      3960 m            ~830 m
+```
+
+The A/B at hour 12 is unambiguous, and it was never only about the camper — in
+the *same* frame the scrub tufts, the ground-cover clumps, the boulders up-slope
+and the ridge conifers all cast onto the meadow again. At the 900 m cap the
+0.75 m normal offset was skipping every occluder whose standoff from its
+receiver was under about a metre and a half, so the only casters that survived
+were terrain-scale ones. That is why `drive` looked like it still had shadows
+and read as evidence *against* a frustum bug: its long bands are **ridge**
+shadows, and it had no small-object shadows either.
+
+### W2 (leaf particles) is NOT resolved, and it is now the whole of blocker 9
+
+Re-measured this round at 1600×900 with cloud shadow frozen off,
+`shots/fix/r2/vehicle.png`:
+
+```
+leaf blob at (752–762, 64–75)   srgb(58, 44, 32)     luma 0.185
+sky immediately beside it       srgb(240, 209, 172)  luma 0.83
+```
+
+An 11 px near-black disc on a cream sky, and there are two more like it in the
+top third of that frame. This is the same fault the birds had and it is the last
+of it left: an albedo at the floor that no key light and no aerial perspective
+can lift. For scale, `PALETTE`'s deciduous anchors (`#e8622a`, `#f09a2c`,
+`#f3cf45`, `#9e2b28`) are all two to three stops above where these land.
+
+`src/sky/weather_leaves.js` also sets `receiveShadow = true` on the drift mesh,
+which is a nice idea and is probably making it worse here: the near slope in
+this frame is entirely in terrain shade, so a leaf drifting across it takes the
+full shadow term on top of an already-dark albedo.
+
+**The bird half of blocker 9 now measures clean**, so the two can be separated.
+`tools/_scratch/birdab.mjs` renders a canonical view twice in one frozen frame,
+with and without the flock and burst meshes, and reports every connected run of
+changed pixels — so it attributes each speck to a system rather than guessing:
+
+```
+backlit   0 bird pixels in the entire frame   (critic counted ~22 glyphs here)
+forest    2 blobs, 24 px and 7 px
+            srgb(185,163,132) on sky srgb(243,217,183)
+            srgb(203,176,145) on sky srgb(235,206,174)
+```
+
+A hazed warm-grey mark about a quarter below its background, which is what the
+brief asks for, against the "~25 pure-black identical glyphs" the critic
+counted. Every remaining dark speck in `backlit` and `vehicle` is a leaf.

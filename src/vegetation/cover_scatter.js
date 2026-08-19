@@ -475,7 +475,7 @@ export class CoverScatter {
    * is doing the same job the shrub layer's region field does — it makes the
    * detritus look like it came from somewhere.
    */
-  _layerGround(cx, cz, S, out, n, cap) {
+  _layerGround(cx, cz, S, out, n, cap, from = 0, to = Infinity) {
     const N = this.noise, W = this.world;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_GROUND);
@@ -483,9 +483,9 @@ export class CoverScatter {
     // and after the visibility radius took its share the 2 m close-up still
     // measured as a bare slab with a handful of objects on it. What reads as
     // "the ground has stuff on it" is closer to one clump every 3 m².
-    const sites = Math.round(720 * this.mul);
+    const sites = Math.min(to, this.groundSites());
 
-    for (let a = 0; a < sites && n < cap; a++) {
+    for (let a = from; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_GROUND, key) * 4294967296) >>> 0);
       const x = ox + rng() * S, z = oz + rng() * S;
       const g = this._groundTiny(x, z);

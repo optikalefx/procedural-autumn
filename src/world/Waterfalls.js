@@ -179,6 +179,17 @@ void main() {
   // *silhouette*: a curtain cut off at a constant half-width shows the mesh's
   // own polygon outline, which at close range is the loudest tell in the frame.
   float sideN = abs(vSide) + (c1 - 0.5) * 0.40 * (0.35 + 0.65 * shred);
+  // Taper both ends of the *silhouette*. A curtain that begins and ends on a
+  // dead-flat horizontal edge is a painted rectangle, and that is precisely how
+  // every distant fall in the peaks view reads: a five-pixel white strip with
+  // two square ends and an L-shaped notch, sitting on the rock like a sticker.
+  // No amount of interior detail fixes it, because at that range there is no
+  // interior — only the outline. Narrowing the mark where the water necks over
+  // the lip and where it enters the boil turns the strip into a brush stroke.
+  // Both tapers are a few metres on a seventy metre drop, so the near view is
+  // unchanged apart from a lip that now looks like water accelerating.
+  float endTaper = min(smoothstep(0.0, 0.055, vU), 1.0 - smoothstep(0.90, 1.0, vU));
+  sideN += (1.0 - endTaper) * 0.60;
   float edge = 1.0 - smoothstep(0.72, 1.06, sideN);
   float rim = smoothstep(0.40, 1.0, abs(vSide));
   edge = mix(edge, edge * (0.30 + 0.70 * smoothstep(0.24, 0.60, streak)), shred * rim);
@@ -572,7 +583,7 @@ void main() {
   // old 110-300 m fade was switching the burst off exactly where the reference
   // still draws white water at the foot of a fall. It now reaches as far as the
   // curtain it belongs to; the pixel floor above is what keeps it readable.
-  vDist = 1.0 - smoothstep(420.0, 1100.0, -mv.z);
+  vDist = 1.0 - smoothstep(900.0, 2200.0, -mv.z);
   // Taller than wide. A thrown clot of water is a streak in the direction it is
   // travelling, and a round sprite is a bubble — which is exactly how the first
   // pass at this read: a scatter of soft white balls hanging in the gorge.
@@ -1226,7 +1237,7 @@ export class Waterfalls extends System {
         // Reaches as far as the curtain does now that the sprites hold a
         // minimum pixel size — a fall with no spray at its foot reads as a
         // painted strip, which is what every distant fall in peaks looked like.
-        uCullDist: { value: 1400 },
+        uCullDist: { value: 2600 },
         uMinPx:    { value: 2.4 },
       }),
       vertexShader: BURST_VERT,
