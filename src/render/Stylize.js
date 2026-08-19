@@ -52,6 +52,15 @@ const STYLIZED_DIRECT = /* glsl */`
 	vec3 specIrradiance = saturate( rawNL ) * directLight.color * uStyleSpecular;
 `;
 
+const SHADOW_COOL = /* glsl */`
+{
+	float _coolM = ( 1.0 - gSunShadow ) * uShadowCoolAmt;
+	vec3 _d = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
+	vec3 _cool = uShadowCool * dot( _d, vec3( 0.2126, 0.7152, 0.0722 ) );
+	reflectedLight.indirectDiffuse += ( _cool - _d ) * _coolM;
+}
+`;
+
 const DEFAULTS = {
   // Tuned against the reference plates: a very wide terminator, gentle
   // banding, and almost no direct specular. The reference's shaded meadow sits
@@ -85,6 +94,41 @@ const DEFAULTS = {
   // past this the shaded flank of the hero massif closes to within a few
   // percent of its lit flank and the mountain reads as one smooth beige lump.
   floor: 0.13,
+
+  // ── the cool cast-shadow mass ────────────────────────────────────────────
+  // Plate 3 — the plate the brief says to judge eye-level views by — puts about
+  // 40% of its ground under one large, soft cast shadow, and that shadow is not
+  // a darker gold. Measured on the plate itself: sunlit grass runs
+  // srgb(149,100,45) / srgb(130,91,56) at luma 0.34-0.42, and the shadow mass
+  // beside it runs srgb(24,60,99) and srgb(47,66,102) at luma 0.22-0.25. It is
+  // a saturated blue at three quarters of the sunlit value, and it is what
+  // draws every shape in the picture.
+  //
+  // No amount of physically correct blue *light* reaches that, and it is worth
+  // being explicit about why, because two authors have now tried: our gold
+  // ground has a linear blue reflectance of 0.068. Lighting it with a
+  // periwinkle sky multiplies that 0.068; it cannot make the pixel blue-led.
+  // The plate's shadow is painted, not simulated. So this rotates the hue of
+  // the shadowed fraction toward the plate's blue at constant luminance, which
+  // is the same move a painter makes and costs no value structure — the value
+  // drop is still sun.shadow.intensity's job, and the two are independent.
+  //
+  // It applies to the *cast* shadow only, never to the terminator: a surface
+  // simply turned away from the sun keeps its own hue, which is what the brief
+  // means by shaded foliage staying olive and shaded ground staying warm
+  // srgb(76,64,48). Both things are true at once and this is the seam between
+  // them.
+  //
+  // shadowCool is the target hue, normalised to luminance 1 at construction so
+  // the amount below is a pure hue rotation. Authored from the plate's own
+  // srgb(47,66,102), which in linear is 1 : 2.04 : 4.81 about its own luma.
+  shadowCool: new THREE.Color(0.50, 0.98, 2.14),
+  // How far a fully shadowed pixel goes. 1.0 would put a cast shadow exactly on
+  // the plate's blue and read as a hole in the palette; the eye-level frames
+  // measure 0.1-0.8% cool pixels against the plate's 35.5%, and an earlier
+  // build that went to 20% cool *everywhere* was rejected, so the target is
+  // neither end. See the sweep in review/INDEX.md.
+  shadowCoolAmt: 0.42,
   // NOT A KNOB, DELIBERATELY. A shaped floor — one that fades across the back
   // hemisphere so a surface 70 degrees past the terminator sits below one at 40
   // — was built here and reverted, because it measured as a no-op. The river
@@ -96,6 +140,13 @@ const DEFAULTS = {
   // of a sixth. Anything that wants form on the dark side of a mass has to come
   // from the ambient term's orientation response, not from here.
 };
+
+/** shadowCool, scaled to luminance 1 so the amount is a pure hue rotation. */
+function normalisedCool() {
+  const c = DEFAULTS.shadowCool.clone();
+  const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  return c.multiplyScalar(1 / Math.max(l, 1e-4));
+}
 
 let patched = false;
 
@@ -116,6 +167,29 @@ export function patchStylizedLighting() {
   );
   if (!ok) return;
 
+  // ── capture the sun's shadow factor ──────────────────────────────────────
+  // three multiplies it straight into directLight.color and then forgets it, so
+  // by the time any of our code runs there is no way to tell a pixel that is in
+  // a cast shadow from one that is merely dim. The cool shadow mass needs
+  // exactly that distinction, so stash it on the way past. The line only exists
+  // for light indices below NUM_DIR_LIGHT_SHADOWS, which in this game is the
+  // sun and nothing else; when shadows are off the line is not emitted at all
+  // and gSunShadow keeps its declared 1.0, i.e. no shadow anywhere.
+  patchChunk(
+    'lights_fragment_begin',
+    /directLight\.color \*= \( directLight\.visible && receiveShadow \) \? getShadow\( directionalShadowMap\[ i \],([\s\S]*?)\) : 1\.0;/,
+    'float _dirSh = ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ],$1) : 1.0;\n\t\tgSunShadow = min( gSunShadow, _dirSh );\n\t\tdirectLight.color *= _dirSh;',
+    'Stylize'
+  );
+
+  // ── the cool cast-shadow mass ────────────────────────────────────────────
+  // Rotated at the end of lighting rather than inside the direct term, because
+  // it has to act on the *total* — a shadowed pixel is mostly ambient, and
+  // tinting only the sun's contribution would leave the mass it is meant to
+  // draw almost untouched. Luminance-preserving, so value structure is entirely
+  // sun.shadow.intensity's business and the two can be tuned independently.
+  THREE.ShaderChunk.lights_fragment_end += SHADOW_COOL;
+
   // Direct specular must use the unbanded term — banding a highlight rings.
   patchChunk(
     CHUNK,
@@ -133,6 +207,18 @@ export function patchStylizedLighting() {
   THREE.ShaderChunk[CHUNK] =
     STYLIZE_PARS + '\nuniform float uStyleSpecular;\n' + THREE.ShaderChunk[CHUNK];
 
+  // The cool-shadow declarations go in `common`, not in the physical pars,
+  // because lights_fragment_begin and lights_fragment_end are shared with the
+  // lambert and phong programs. Declaring them only alongside the physical
+  // lighting would compile fine today — this game has no Lambert material — and
+  // take the build down the day someone adds one. gSunShadow is a global with a
+  // constant initialiser, so a material whose shadows are off reads 1.0 rather
+  // than an undefined value. Unused declarations in the vertex and depth
+  // programs cost nothing; the compiler drops them.
+  THREE.ShaderChunk.common =
+    'uniform vec3 uShadowCool;\nuniform float uShadowCoolAmt;\nfloat gSunShadow = 1.0;\n'
+    + THREE.ShaderChunk.common;
+
   injectUniforms('lights', {
     uStyleWrap:     { value: DEFAULTS.wrap },
     uStyleSteps:    { value: DEFAULTS.steps },
@@ -140,8 +226,10 @@ export function patchStylizedLighting() {
     uStyleBanding:  { value: DEFAULTS.banding },
     uStyleSpecular: { value: DEFAULTS.specular },
     uStyleFloor:    { value: DEFAULTS.floor },
+    uShadowCool:    { value: normalisedCool() },
+    uShadowCoolAmt: { value: DEFAULTS.shadowCoolAmt },
   });
-  verifyUniforms('Stylize', ['uStyleWrap', 'uStyleSpecular', 'uStyleFloor']);
+  verifyUniforms('Stylize', ['uStyleWrap', 'uStyleSpecular', 'uStyleFloor', 'uShadowCool']);
 }
 
 // ── Opt-in for custom ShaderMaterials ───────────────────────────────────────
@@ -227,6 +315,7 @@ export class Stylize {
       u.uStyleBanding.value = p.banding;
       u.uStyleSpecular.value = p.specular;
       u.uStyleFloor.value = p.floor;
+      if (u.uShadowCoolAmt) u.uShadowCoolAmt.value = p.shadowCoolAmt;
     }
   }
 }
