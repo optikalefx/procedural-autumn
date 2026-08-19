@@ -15,6 +15,7 @@ await page.waitForTimeout(1000);
 await page.evaluate(()=>{const ctx=window.__ctx,input=ctx.input;const t0=performance.now();window.__perfDrive=true;
   const tick=()=>{if(!window.__perfDrive)return;const t=(performance.now()-t0)/1000;
     input.axes.throttle=1;input.axes.brake=0;input.axes.steer=Math.sin(t*0.42)*0.75;requestAnimationFrame(tick);};tick();});
+await page.waitForTimeout(8000);   // steady state: past shader warm-up
 const cdp=await page.context().newCDPSession(page);
 await cdp.send('Profiler.enable');
 await cdp.send('Profiler.setSamplingInterval',{interval:200});

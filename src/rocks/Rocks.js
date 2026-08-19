@@ -197,11 +197,14 @@ export class Rocks extends System {
       const job = this.queue[n++];
       const instances = [];
       this.scatter.generateCell(job.cx, job.cz, CELL, job.minSize, instances);
-      // Variant is picked here so a rock keeps its shape if the cell is
-      // regenerated at finer detail — the field must not reshuffle visibly.
+      // Variant comes from the scatter, which picks it from a position hash so
+      // it can anchor the block against the base of the shape that will
+      // actually be drawn. Clamped here only as a guard: a rock must keep its
+      // shape when the cell is regenerated at finer detail, and a position hash
+      // guarantees that where the old rng-derived index did not.
       for (const inst of instances) {
         const vcount = this.library[inst.arch].length;
-        inst.variant = Math.min(vcount - 1, (inst.rnd * vcount) | 0);
+        inst.variant = Math.min(vcount - 1, Math.max(0, inst.variant | 0));
       }
       this.cells.set(job.key, { instances, minSize: job.minSize, cx: job.cx, cz: job.cz });
       this._dirty = true;

@@ -64,6 +64,7 @@ uniform vec3  uTransTint;
 uniform float uTransStrength;
 uniform float uBands;
 uniform float uCanopyGain;
+uniform float uCanopyAmbient;
 
 vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow) {
   float ndl = dot(N, uSunDir);
@@ -87,24 +88,33 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // Keep only enough range that a cast shadow is still legible across a crown.
   wrap *= mix(0.62, 1.0, shadow);
 
-  // uCanopyGain < 1 on purpose. A leaf mass shaded with a wrapped diffuse
-  // collects far more light than the terrain's N·L at the same sun angle, so
-  // matching the two numerically leaves the canopy a full stop brighter than
-  // the meadow it stands in — which is why distant gold stands were reading as
-  // cream popcorn instead of as gold. The canopy must sit *at or below* the
-  // sunlit ground, exactly as it does in the reference plates.
+  // uCanopyGain sits near unity. It used to be 0.82 to hold the canopy below
+  // the sunlit meadow, but measurement said the opposite was the problem: in
+  // the eye-level frames the canopy *is* most of the frame, and holding all of
+  // it below the ground left river with lumaP95 0.46 and contrastStd 0.07
+  // against reference bands of ~0.60 and 0.13-0.18. A lit crown in the plates
+  // is as bright as the gold it stands in; it is the *shaded* crown that sits
+  // below, and that separation now comes from AO and shadow rather than from a
+  // flat scale on the whole species.
   // AO is a *modulation* of the key, not a second occluder. At mix(0.28, 0.94)
   // an interior clump threw away nearly three quarters of the light before the
   // shadow term had even been applied. A conifer reads as a solid mass because
   // of its albedo and its normals; it does not also need the light removed.
-  vec3 direct = uSunColor * wrap * mix(0.60, 1.02, ao) * uCanopyGain;
+  vec3 direct = uSunColor * wrap * mix(0.54, 1.12, ao) * uCanopyGain;
   // Sky dominates from above: without the extra lift the tops of crowns go as
   // dark as their undersides and the canopy loses all vertical form. The
   // constant term is the part that matters for the dark-hole defect — it is
   // what guarantees a fully occluded, fully shadowed clump still arrives at the
   // grade carrying its own hue instead of as a neutral silhouette.
+  // uCanopyAmbient > 1 is not a fudge. uAmbient arrives as three's hemisphere
+  // irradiance for a single-sided Lambert surface; a leaf card is double-sided,
+  // translucent, and sits in a crown that sees most of the sky dome from both
+  // faces, so it collects appreciably more than that convention allows. This is
+  // the term that decides whether a shadowed crown is a dark green mass or a
+  // hole, because in shadow it is nearly the whole signal.
   vec3 hemi = mix(uGroundColor, uSkyColor, N.y * 0.5 + 0.5)
-            * uAmbient * (0.34 + 0.74 * ao) * (0.80 + 0.48 * clamp(N.y, 0.0, 1.0));
+            * uAmbient * uCanopyAmbient * (0.42 + 0.72 * ao)
+            * (0.80 + 0.48 * clamp(N.y, 0.0, 1.0));
 
   // Transmission. The money shot: at golden hour the far side of every crown
   // lights up like stained glass. Strongest where we look into the sun, where
@@ -139,7 +149,7 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // and has its own knee; stacking a second hard curve on top of it is what was
   // flattening the backlit glow into brown cardboard. Keep just enough to stop
   // two channels clipping together.
-  return col / (1.0 + col * 0.13);
+  return col / (1.0 + col * 0.09);
 }
 `;
 
@@ -173,7 +183,8 @@ export function makeSharedUniforms() {
     uTransTint:     { value: new THREE.Color(1.62, 1.10, 0.58) },
     uTransStrength: { value: 1.9 },
     uBands:         { value: 4.0 },
-    uCanopyGain:    { value: 0.82 },
+    uCanopyGain:    { value: 1.02 },
+    uCanopyAmbient: { value: 1.55 },
   };
 }
 

@@ -114,7 +114,7 @@ for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
     // Local-frame Y tells base from cap; the base is what has to be in the hill.
     let loY = Infinity, hiY = -Infinity;
     for (let k = 1; k < pos.length; k += 3) { if (pos[k] < loY) loY = pos[k]; if (pos[k] > hiY) hiY = pos[k]; }
-    const mid = loY + (hiY - loY) * 0.45;
+    const mid = loY + (hiY - loY) * 0.25;
     let baseClear = -Infinity, minClear = Infinity, lowY = Infinity, footClear = 0;
     let nAll = 0, nBuried = 0;
     for (let k = 0; k < pos.length; k += 3) {

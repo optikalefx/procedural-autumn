@@ -100,8 +100,8 @@ const BASE_TOLERATE = 0;
  */
 const MAX_PLANT = 1.0;
 
-/** Used until `Rocks` hands over the real per-archetype bounds. */
-const FOOT_FALLBACK = { rx: 1.3, rz: 1.3, yLo: -0.7 };
+/** Used until `Rocks` hands over the real per-variant bounds. */
+const FOOT_FALLBACK = { rx: 1.3, rz: 1.3, lo: new Array(9).fill(-0.5) };
 
 export class RockScatter {
   constructor(world, seed) {
@@ -125,8 +125,19 @@ export class RockScatter {
     this._foot = {};
   }
 
-  /** @param foot arch -> { rx, rz, yLo } in local units, from `archFootprints`. */
-  setFootprints(foot) { this._foot = foot ?? {}; }
+  /**
+   * @param foot arch -> per-variant { rx, rz, lo } in local units, from
+   * `archFootprints`. Handing these over also hands over variant choice: with
+   * them, `_place` picks the variant itself (by position hash, so no rng is
+   * consumed and nothing else in the cell shifts) and anchors against that
+   * variant's actual base rather than against a conservative union.
+   */
+  setFootprints(foot) {
+    this._foot = foot ?? {};
+    this._archSeed = {};
+    let k = 0;
+    for (const a of Object.keys(this._foot)) this._archSeed[a] = (0x51ed27 + (k++) * 0x9e3779b9) | 0;
+  }
 
   hardness(x, z) {
     const W = this.world;
@@ -792,6 +803,17 @@ export class RockScatter {
     const n = this._n;
     W.getNormal(x, z, n, Math.max(1.0, size * 0.8));
 
+    // Which mesh variant this instance will draw. Chosen here, not by the
+    // caller, because the anchor below has to measure the base of the shape
+    // that is actually going to be drawn — variants of one archetype differ in
+    // base depth by half a block. From a position hash rather than the rng, so
+    // choosing it consumes nothing and the rest of the cell is unchanged.
+    const vlist = this._foot[arch];
+    const variant = vlist
+      ? Math.min(vlist.length - 1,
+        (hash2i(Math.round(x * 3), Math.round(z * 3), this._archSeed[arch]) * vlist.length) | 0)
+      : 0;
+
     // Push the rock back into the hill so only its outer part protrudes.
     if (shove > 0) {
       const L = Math.hypot(n.x, n.z);
@@ -850,20 +872,26 @@ export class RockScatter {
       // no deeper — which is what the ring rules could never get right, being
       // either far too wide (26 m for a 12 m block: the whole band vanished)
       // or, once corrected for slope, effectively zero.
-      const fp = this._foot[arch] ?? FOOT_FALLBACK;
+      const fp = this._foot[arch]?.[variant] ?? FOOT_FALLBACK;
       const v = this._fv;
       // The per-axis scale jitter applied below is 0.84–1.18, and it pulls both
       // ways: a wider block reaches further downhill, a shallower one has less
       // of itself to bury. Take the unsafe end of each.
-      const ex = fp.rx * size * 1.18, ez = fp.rz * size * 1.18, ey = fp.yLo * size * 0.84;
+      const ex = fp.rx * size * 1.18, ez = fp.rz * size * 1.18;
       const req = this._req;
-      for (let k = 0, i = 0; k < BASE_SAMPLES.length; k += 2, i++) {
-        v.set(BASE_SAMPLES[k] * ex, ey, BASE_SAMPLES[k + 1] * ez).applyQuaternion(q);
-        // The block's centre may sit no higher than this, or that corner of the
+      let nreq = 0;
+      for (let k = 0; k < BASE_SAMPLES.length; k += 2) {
+        const sx = BASE_SAMPLES[k], sz = BASE_SAMPLES[k + 1];
+        const lo = fp.lo[(sx + 1) * 3 + (sz + 1)];
+        if (lo === null || lo === undefined) continue;   // mesh does not reach here
+        v.set(sx * ex, lo * size * 0.84, sz * ez).applyQuaternion(q);
+        // The block's centre may sit no higher than this, or that part of the
         // base lifts off the ground.
-        req[i] = W.getHeight(x + v.x, z + v.z) - v.y;
+        req[nreq++] = W.getHeight(x + v.x, z + v.z) - v.y;
       }
-      req.sort((a, b) => a - b);
+      if (!nreq) { req[0] = centreH; nreq = 1; }
+      const reqs = req.subarray(0, nreq);
+      reqs.sort();
       // Not the strict minimum: BASE_TOLERATE of the nine probes are allowed to
       // stay above ground. One corner of a thirty-metre wall reaching out over
       // a gully is an overhang, which is what a cliff band is supposed to do;
@@ -871,7 +899,7 @@ export class RockScatter {
       // the whole course with it — which is how the first attempt at this left
       // a single tooth showing out of a five-block chain, the loneliest thing
       // in the frame.
-      let need = req[BASE_TOLERATE];
+      let need = reqs[Math.min(BASE_TOLERATE, nreq - 1)];
       // Margin, so contact survives the drawn mesh sagging a little below the
       // heightfield at distance, and so the ground line cuts across the block's
       // face rather than grazing its bottom edge.
@@ -934,7 +962,7 @@ export class RockScatter {
       sz: size * (0.86 + rng() * 0.30),
       arch,
       kind: this._kind,
-      variant: 0,                       // assigned by the caller from the library
+      variant,                          // clamped to the library by the caller
       size,
       wet: clamp01(depth * 1.4 + river * 0.30),
       moisture: W.getMoisture(x, z),

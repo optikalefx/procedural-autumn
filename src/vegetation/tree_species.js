@@ -193,10 +193,10 @@ export const SPECIES = [
     // the job the brief gives conifers, but they are now masses and not
     // absences. Four pairs, not three, so a stand carries visible variation.
     palettes: [
-      [c(0x7ba653), c(0x3a5b38)],
-      [PALETTE.coniferLit, c(0x33502f)],
-      [c(0x8ab35c), c(0x40603f)],
-      [c(0x628f4a), c(0x2e4a34)],
+      [c(0x86ae5e), c(0x4a7040)],
+      [c(0x6f9c54), c(0x43663b)],
+      [c(0x93b96a), c(0x52794a)],
+      [c(0x74a057), c(0x3e6039)],
     ],
   },
 ];

@@ -985,3 +985,58 @@ HUD would switch to the conventional button.
    owns input, and gameplay axes read zero for that frame. Gamepad button 0 is
    the handbrake and is also the natural confirm button; this is how a UI layer
    takes priority without either side hard-coding the other's bindings.
+
+## Rocks author — 2026-08-19, fourth pass
+
+Nothing is requested of anyone here. This is a correction to the record: the
+previous rocks section told the whole team that "the rocks look like they are
+floating" was mis-diagnosed. It was not. It was mis-*measured*, three times, by
+me and by my predecessors, and the frame was right every time.
+
+### The crags really were floating, and every audit said they were not
+
+`peaks` and `hero` both showed crag blocks standing clear of the mountainside.
+Three separate checks said nothing floated:
+
+* `tools/_scratch/rockfloat.mjs` compared each block's lowest vertex with the
+  terrain **at the block's own centre**. On a 40-degree face the centre is
+  twenty metres of ground drop away from where that vertex is, so the test
+  passes for a block whose entire downhill half is in the air.
+* Rewriting it as `min over vertices of (vertex.y − ground under that vertex)`
+  looked airtight and was not. A crag block is a wedge driven into a hillside:
+  its uphill corner ends up sixty to ninety metres *inside* the hill and owns
+  the minimum. 100 % of blocks passed.
+* Raycasting the live `Terrain` group from the `peaks` camera agreed with both,
+  and confirmed the previous author's LOD finding: **the drawn mesh is not the
+  problem.** Mean sag below the heightfield 0.2–0.6 m, worst 6.4 m at 800 m,
+  across LOD2 and LOD3. Nobody needs to change terrain for this.
+
+The number that matters is the clearance of the **base** — the highest clearance
+among the vertices in the bottom quarter of the mesh. Measured that way, 45 % of
+the crag blocks in `peaks` and 50 % in `hero` had part of their base standing in
+open air, up to 44 m of it. Both audits now report it (`rockfloat.mjs` for a
+region, `rockview.mjs` for a named view, with screen coordinates so a block in a
+frame can be looked up).
+
+### What it cost, and the general lesson
+
+Two authors changed the anchoring rule against a metric that could not see the
+defect, so both changes were tuned blind: one buried every cliff band out of
+sight, the next left them hanging. If a measurement and a frame disagree,
+the frame is the ground truth and the measurement is the thing to debug.
+
+### Fixed in `src/rocks/` only — no other module touched
+
+Crag blocks are now anchored on their own base rather than on a sampling ring of
+arbitrary radius, and laid along the dip of the face instead of dead level (the
+previous code's own comment prescribed exactly that and then set the alignment
+to 0.10). `peaks` base-over-air 45 % → 2 %, `hero` 50 % → 3 %; the fraction of
+each mesh inside the hill 0.48 → 0.60. Placement CPU and instance count are
+unchanged (7 643 instances over 961 cells either way, 0.05 ms/cell).
+
+### The `Atmosphere` fog fix landed and rock is in band
+
+The local `vFogWorldPos` workaround in `RockMaterial.js` is deleted, as promised
+— `fog_vertex` now applies `instanceMatrix` itself. Re-measured after removing
+it: a sunlit boulder at the `drive` anchor sits at **0.80–0.83** of the meadow's
+display luminance (reference band 0.78–0.86), so `uRockGain` stays at 1.36.

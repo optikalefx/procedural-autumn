@@ -672,36 +672,48 @@ export function buildRockLibrary(seed) {
 }
 
 /**
- * Per-archetype local footprint, unioned over variants.
+ * Local footprint of every built variant.
  *
- * `_place` needs to know how far a block reaches from its own origin before it
- * can decide how deep to plant it: a 34 m wall laid across a 40-degree face
- * must be sunk until the *corner that reaches furthest downhill* is in the
- * ground, and that corner's offset is a property of the mesh, not of the
- * scatter. Read off the built geometry rather than restated from the `axes`
- * above, so the two can never drift apart.
+ * `_place` needs to know how far a block reaches from its own origin, and how
+ * low its base hangs *at each part of that reach*, before it can decide how
+ * deep to plant it: a 34 m wall laid across a 40-degree face has to be sunk
+ * until the corner that reaches furthest downhill is in the ground.
+ *
+ * A single "lowest local Y" is not enough, and getting that wrong is worth a
+ * whole archetype: `prow` carries a small buttress under one end, so its
+ * bounding-box bottom sits far below where the rest of its base actually is.
+ * Anchoring the whole footprint to that number left 92 % of prows with their
+ * bases in the air. So the base is sampled as a 3x3 grid over the footprint —
+ * the lowest vertex in each ninth — and each ninth constrains only itself.
+ *
+ * Per variant rather than unioned, because variants of one archetype differ in
+ * base depth by half a block; the union of the shallowest is conservative
+ * enough to sink the deep ones out of sight. The scatter picks the variant
+ * itself (from a position hash) so it can look up the right entry.
  *
  *   rx, rz   half-extent in local X (along the strike) and Z (into the hill)
- *   yLo      how far the base sits below the origin
+ *   lo[9]    lowest local Y within each ninth, indexed (sx+1)*3 + (sz+1) with
+ *            sx, sz in {-1, 0, 1}; null where that variant does not reach
  *
- * The union is taken in the direction that makes the anchor *safe* for whichever
- * variant is drawn, and the two directions are opposite: the widest reach in XZ
- * (a corner that reaches further downhill needs more burial) but the shallowest
- * base in Y (a variant whose base is nearer its origin is the one that lifts off
- * if the anchor assumes a deeper one).
+ * Read off the built geometry rather than restated from the `axes` above, so
+ * the two can never drift apart.
  */
 export function archFootprints(lib) {
   const out = {};
   for (const [name, geoms] of Object.entries(lib)) {
-    let rx = 0, rz = 0, yLo = -Infinity;
-    for (const g of geoms) {
+    out[name] = geoms.map((g) => {
       const b = g.boundingBox;
-      if (!b) continue;
-      rx = Math.max(rx, Math.abs(b.min.x), Math.abs(b.max.x));
-      rz = Math.max(rz, Math.abs(b.min.z), Math.abs(b.max.z));
-      yLo = Math.max(yLo, b.min.y);
-    }
-    out[name] = { rx, rz, yLo: Math.min(0, yLo) };
+      const rx = Math.max(Math.abs(b.min.x), Math.abs(b.max.x));
+      const rz = Math.max(Math.abs(b.min.z), Math.abs(b.max.z));
+      const cell = (v, r) => (v < -r / 3 ? 0 : v > r / 3 ? 2 : 1);
+      const lo = new Array(9).fill(null);
+      const pos = g.attributes.position.array;
+      for (let k = 0; k < pos.length; k += 3) {
+        const c = cell(pos[k], rx) * 3 + cell(pos[k + 2], rz);
+        if (lo[c] === null || pos[k + 1] < lo[c]) lo[c] = pos[k + 1];
+      }
+      return { rx, rz, lo };
+    });
   }
   return out;
 }

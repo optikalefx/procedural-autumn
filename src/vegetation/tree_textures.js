@@ -29,7 +29,7 @@ export const TILE = {
 
 const TAU = Math.PI * 2;
 
-/** One small mark. Slight elongation + rotation stops them reading as dots. */
+/** One mark. Slight elongation + rotation stops them reading as dots. */
 function mark(g, x, y, r, elong, rot, value, alpha = 1) {
   g.save();
   g.translate(x, y);
@@ -37,14 +37,22 @@ function mark(g, x, y, r, elong, rot, value, alpha = 1) {
   g.beginPath();
   g.ellipse(0, 0, r * elong, r, 0, 0, TAU);
   const v = Math.round(THREE.MathUtils.clamp(value, 0, 1) * 255);
-  g.fillStyle = `rgba(${v},0,128,${alpha})`;
+  g.fillStyle = 'rgba(' + v + ',0,128,' + alpha + ')';
   g.fill();
   g.restore();
 }
 
 /**
- * Deciduous clump: dense solid core, stippled rim.
+ * Deciduous clump: dense solid core, chunky stippled rim.
  * `spread` > 1 pushes marks outward for the sparse rim variant.
+ *
+ * The mark *sizes* here are the whole of the silhouette defect. The previous
+ * pass sprayed 200-340 marks at 0.023-0.028 of a tile and shrank them further
+ * toward the rim, which at a tile magnification of anything under 1:1 is a
+ * cloud of sub-pixel islands — confetti, not brush marks, exactly as the critic
+ * measured at the canopy boundary. Marks now start large and *stay* large out
+ * to the rim (rimShrink near zero), and there are far fewer of them, so a mark
+ * is still several pixels across at the distance the mid LOD takes over.
  */
 function drawClump(g, ox, oy, size, rng, opts) {
   const cx = ox + size * 0.5, cy = oy + size * 0.5;
@@ -72,46 +80,76 @@ function drawClump(g, ox, oy, size, rng, opts) {
     const px = cx + Math.cos(a) * t * RR;
     const py = cy + Math.sin(a) * t * RR * 0.86;
     const shrink = 1 - opts.rimShrink * t;
-    const r = size * opts.markSize * shrink * (0.65 + 0.7 * rng());
+    const r = size * opts.markSize * shrink * (0.72 + 0.62 * rng());
     // Marks near the rim are dimmer only in *jitter*, not alpha — a soft alpha
     // rim would defeat alphaTest and make the tree fizz at distance.
     mark(g, px, py, r, 1.0 + rng() * opts.elong, rng() * TAU,
-         0.30 + 0.70 * rng() * (1 - 0.25 * t));
+         0.22 + 0.78 * rng() * (1 - 0.22 * t));
   }
 }
 
-/** Conifer bough: a fringe that fans out and droops, seen edge-on. */
+/**
+ * Conifer bough: a fan of tapered spikes seen edge-on.
+ *
+ * This used to be drawn as a chain of small ellipses along each strand, which
+ * at any distance disintegrated into the scatter of two-pixel ticks floating
+ * clear of the tree that the critic photographed. A frond is one filled
+ * polygon: a wide base tapering to a point, with a serrated edge and a droop.
+ * It gives the same spiky reference silhouette but it is a single connected
+ * shape, so minification erodes its outline rather than dissolving its body.
+ */
+function drawFrond(g, x0, y0, dx, dy, len, halfW, droop, rng, value) {
+  const STEPS = 7;
+  const left = [], right = [];
+  for (let i = 0; i <= STEPS; i++) {
+    const t = i / STEPS;
+    // Centreline, sagging quadratically under its own weight.
+    const cxp = x0 + dx * len * t;
+    const cyp = y0 + dy * len * t + t * t * droop;
+    // Width tapers to a point, with a sawtooth so the edge reads as needles.
+    const saw = i === STEPS ? 0 : (i & 1 ? 1.0 : 0.58) * (0.75 + 0.5 * rng());
+    const w = halfW * Math.pow(1 - t, 0.75) * saw;
+    const nx = -dy, ny = dx;
+    left.push([cxp + nx * w, cyp + ny * w]);
+    right.push([cxp - nx * w, cyp - ny * w]);
+  }
+  g.beginPath();
+  g.moveTo(left[0][0], left[0][1]);
+  for (let i = 1; i <= STEPS; i++) g.lineTo(left[i][0], left[i][1]);
+  for (let i = STEPS - 1; i >= 0; i--) g.lineTo(right[i][0], right[i][1]);
+  g.closePath();
+  const v = Math.round(THREE.MathUtils.clamp(value, 0, 1) * 255);
+  g.fillStyle = 'rgba(' + v + ',0,128,1)';
+  g.fill();
+}
+
+/** Conifer bough tile: a fringe of fronds that fans out and droops. */
 function drawNeedleFan(g, ox, oy, size, rng) {
   const cx = ox + size * 0.5;
-  const top = oy + size * 0.16;
-  const strands = 26;
+  const top = oy + size * 0.14;
+  const strands = 15;
   for (let s = 0; s < strands; s++) {
     const side = s & 1 ? 1 : -1;
     const f = (s >> 1) / (strands / 2 - 1);          // 0 centre .. 1 outermost
-    const spread = 0.20 + 1.05 * f + (rng() - 0.5) * 0.16;
+    const spread = 0.22 + 1.02 * f + (rng() - 0.5) * 0.14;
     // Wide length variance is the whole point: an even fringe reads as a plate,
-    // a ragged one reads as needles. Every fourth strand is a runt.
-    const stub = rng() < 0.26 ? 0.45 : 1.0;
-    const len = size * (0.56 - 0.17 * f) * (0.70 + 0.60 * rng()) * stub;
+    // a ragged one reads as needles. Roughly every fourth frond is a runt.
+    const stub = rng() < 0.24 ? 0.52 : 1.0;
+    const len = size * (0.58 - 0.16 * f) * (0.74 + 0.52 * rng()) * stub;
     const dx = Math.sin(spread) * side, dy = Math.cos(spread);
-    const steps = 10;
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      // Quadratic droop: boughs sag under their own weight.
-      const px = cx + dx * len * t;
-      const py = top + dy * len * t * 0.55 + t * t * size * 0.30;
-      const r = size * 0.046 * (1 - 0.5 * t) * (0.7 + 0.6 * rng());
-      mark(g, px, py, r, 2.8 + rng() * 1.8, Math.atan2(dy, dx) + (rng() - 0.5) * 0.5,
-           0.22 + 0.55 * rng());
-    }
+    drawFrond(g, cx, top, dx, dy, len, size * (0.052 + 0.030 * (1 - f)),
+              size * 0.26, rng, 0.24 + 0.56 * rng());
   }
-  // A denser wedge near the trunk so the whorl is not see-through at its root.
-  for (let i = 0; i < 26; i++) {
-    const t = Math.pow(rng(), 0.6);
-    const a = (rng() - 0.5) * 1.5;
-    mark(g, cx + Math.sin(a) * size * 0.20 * t, top + size * 0.15 * t + size * 0.05,
-         size * 0.048 * (0.6 + 0.8 * rng()), 2.2, a, 0.2 + 0.4 * rng());
-  }
+  // A solid wedge near the trunk so the whorl is not see-through at its root
+  // and the fronds have one mass to spring from.
+  g.beginPath();
+  g.moveTo(cx - size * 0.20, top + size * 0.30);
+  g.lineTo(cx, top - size * 0.03);
+  g.lineTo(cx + size * 0.20, top + size * 0.30);
+  g.lineTo(cx, top + size * 0.44);
+  g.closePath();
+  g.fillStyle = 'rgba(120,0,128,1)';
+  g.fill();
 }
 
 /**
@@ -135,23 +173,27 @@ export function buildClusterAtlas(seed = 7, px = 256) {
   // fine pass then sprays well past them. Between the two, the tile has a
   // definite mass with a torn edge and marks you can still count at 5 m.
   drawClump(g, 0, 0, px, mulberry32(seed + 11), {
-    count: 54, corePull: 0.52, markSize: 0.061, rimShrink: 0.34, elong: 1.4, spread: 0.84, tear: 1.15,
+    count: 26, corePull: 0.50, markSize: 0.098, rimShrink: 0.16, elong: 1.3, spread: 0.82, tear: 1.15,
   });
   drawClump(g, 0, 0, px, mulberry32(seed + 12), {
-    count: 340, corePull: 0.80, markSize: 0.023, rimShrink: 0.30, elong: 1.7, spread: 1.20, tear: 1.3,
+    count: 78, corePull: 0.78, markSize: 0.050, rimShrink: 0.10, elong: 1.5, spread: 1.14, tear: 1.3,
   });
   drawClump(g, px, 0, px, mulberry32(seed + 23), {
-    count: 58, corePull: 0.50, markSize: 0.063, rimShrink: 0.30, elong: 0.8, spread: 0.84, tear: 1.1,
+    count: 22, corePull: 0.48, markSize: 0.112, rimShrink: 0.14, elong: 0.8, spread: 0.82, tear: 1.1,
   });
   drawClump(g, px, 0, px, mulberry32(seed + 24), {
-    count: 290, corePull: 0.85, markSize: 0.028, rimShrink: 0.26, elong: 1.1, spread: 1.18, tear: 1.25,
+    count: 62, corePull: 0.82, markSize: 0.058, rimShrink: 0.08, elong: 1.0, spread: 1.12, tear: 1.25,
   });
   drawNeedleFan(g, 0, px, px, mulberry32(seed + 37));
+  // The rim tile is what draws every silhouette edge in the game, so it is the
+  // one that must never fizz: a handful of large, well-separated dabs and no
+  // fine pass at all. It reads as a torn edge because the dabs are far apart,
+  // not because they are small.
   drawClump(g, px, px, px, mulberry32(seed + 53), {
-    count: 24, corePull: 0.95, markSize: 0.062, rimShrink: 0.10, elong: 1.6, spread: 0.9, tear: 1.5,
+    count: 15, corePull: 0.92, markSize: 0.108, rimShrink: 0.02, elong: 1.4, spread: 0.96, tear: 1.5,
   });
   drawClump(g, px, px, px, mulberry32(seed + 54), {
-    count: 195, corePull: 1.05, markSize: 0.025, rimShrink: 0.10, elong: 1.8, spread: 1.22, tear: 1.6,
+    count: 26, corePull: 1.00, markSize: 0.060, rimShrink: 0.0, elong: 1.6, spread: 1.16, tear: 1.6,
   });
 
   // Second pass in JS: write the radial core mask into G. Doing it here rather

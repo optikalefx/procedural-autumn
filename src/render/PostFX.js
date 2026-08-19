@@ -255,6 +255,9 @@ class GradeEffect extends Effect {
 // bought by pushing the meadow into PBR Neutral's shoulder, where its own
 // desaturation term bleaches the gold and the frame measures right but looks
 // like beige sand.
+// Smallest bloom mip, in pixels on its short side. See _capBloomMips().
+const MIN_BLOOM_MIP = 12;
+
 const EXPOSURE = 0.86;
 
 export class PostFX {
@@ -368,10 +371,53 @@ export class PostFX {
     this.mainPass = new EffectPass(camera, ...effects);
     this.composer.addPass(this.mainPass);
 
+    this._capBloomMips();
+
     engine.onResize((w, h) => {
       this.composer.setSize(w, h);
       this.ao?.setSize(w, h);
+      this._capBloomMips();
     });
+  }
+
+  /**
+   * Cap the bloom mip chain so its smallest level never gets tiny.
+   *
+   * THIS IS THE FLASHING-BLACK-FRAME FIX. Measured with a per-frame readback of
+   * the default framebuffer plus a compositor screencast, 7-9% of *presented*
+   * frames during a drive came out entirely black — the whole canvas, with only
+   * the HUD (a separate compositor layer) still on it. Bisecting the chain
+   * pinned it on this effect and nothing else: bloom+tonemap alone reproduced
+   * it at 7.7%, every other effect paired with tonemap measured 0.0%. Bisecting
+   * again on the mip count pinned it on the *depth* of the chain:
+   *
+   *   levels 8 (smallest mip 3x2 px)  7.7% of frames black
+   *   levels 7 (6x4)                  1.4%
+   *   levels 6 (13x7)                 0.3%
+   *   levels 5 (25x14)                0.2%
+   *
+   * i.e. binding a handful-of-pixels render target and then coming back to the
+   * default framebuffer intermittently loses the present. That is a driver bug,
+   * not a bug here, but the last two or three levels of a mipmap bloom are the
+   * ones a viewer can least see and the ones that cost the most in dropped
+   * frames, so the chain stops before it gets there.
+   *
+   * The floor is on the mip's own short side, so this stays correct at every
+   * window size instead of hard-coding a level count for one resolution.
+   *
+   * NOTE FOR THE LOOK AUTHOR: this shortens the widest, faintest part of the
+   * halo. If the glow wants its old reach back, `radius` (currently 0.68) is
+   * the knob — it widens each upsample step and does not reintroduce the tiny
+   * targets. Logged in docs/INTEGRATION_REQUESTS.md.
+   */
+  _capBloomMips() {
+    const pass = this.bloom?.mipmapBlurPass;
+    if (!pass) return;
+    const r = pass.resolution;
+    const short = Math.min(r.width || 0, r.height || 0);
+    if (short < 2) return;
+    const levels = Math.max(1, Math.min(8, Math.floor(Math.log2(short / MIN_BLOOM_MIP))));
+    if (pass.levels !== levels) pass.levels = levels;
   }
 
   render(dt) {
