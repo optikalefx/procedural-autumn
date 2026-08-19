@@ -22,7 +22,10 @@ uniform float uLift;
 uniform float uToe;
 uniform vec3  uLiftTint;
 uniform float uVibrance;
-uniform float uRedToGold;
+uniform float uGoldRotate;
+uniform float uWarmEnd;
+uniform float uWarmSat;
+uniform float uWarmSatSlope;
 uniform float uBlueFloor;
 uniform float uGreenTame;
 uniform float uGreenTameMax;
@@ -30,6 +33,21 @@ uniform float uGrain;
 uniform float uTime;
 
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// Hue/saturation/value, used by the warm regrade below. Standard branchless
+// form; safe for v > 1, which the contrast step can produce.
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
 
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec3 c = inputColor.rgb;
@@ -114,26 +132,69 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   c = mix(vec3(luma(c)), c, 1.0 + uVibrance * (1.0 - sat));
   c = mix(vec3(luma(c)), c, uSaturation);
 
-  // Hue-vs-hue: push the red band toward gold.
+  // ── Warm regrade: rotate the red band to gold and cap its saturation ───────
   //
-  // Measured against the plates, our chromatic pixels were 78% red / 6% orange
-  // where the reference is 52% red / 38% orange. Autumn foliage and dry grass
-  // both sit in the orange-gold band, and our albedos land a little too far
-  // round toward red; global desaturation cannot fix that — it only drains the
-  // colour toward grey, and the red-ward lift and highlight tints then turn
-  // that grey salmon-pink. Lifting green where red leads walks the hue back
-  // round to gold while leaving genuinely crimson foliage crimson.
+  // THIS IS THE "MONOCHROME ORANGE" FIX. Read the numbers before touching it.
+  //
+  // Measured on `meadow` against plate 1, as a share of chromatic pixels:
+  //   red 68.4 / orange 29.1 / yellow 1.6 / y-grn 0.0
+  //   plate 1 : 51.8 / 38.4 / 4.8 / 3.1
+  // while lumaP05, lumaRange, contrastStd and chromaMean were all inside their
+  // bands. Nothing about the frame was wrong except *where the hues sat*, and
+  // a whole sheet of frames read as one rust-coloured smear because of it.
+  //
+  // The predecessor of this block was additive — `c.g += c.r * redLead^2 * k`
+  // with k = 0.13. Two things were wrong with it. It is quadratic in redLead,
+  // so it is weakest exactly on the dominant gold mass (which is only
+  // moderately red-led) and strongest on the crimson maples that should be
+  // left alone; and at k = 0.13 its whole authority was to move the meadow
+  // from R:G:B 1 : 0.48 : 0.17 to 1 : 0.52 : 0.19, against a reference gold of
+  // 1 : 0.68 : 0.36. It could not reach the masses that make the frame.
+  //
+  // So drive the correction off hue angle directly, and off measurement:
+  //
+  //   our gold mass  srgb(0.622, 0.300, 0.103)   hue 22 deg   sat 0.83
+  //   plate 1 meadow srgb(0.911, 0.621, 0.327)   hue 29 deg   sat 0.63
+  //
+  // i.e. the gold is a *seven degree* rotation plus a large saturation cut.
+  // The cut is the bigger half of it, and it is the half that restores blue
+  // rather than adding green: pulling saturation down raises the lowest
+  // channel, which on every red-led pixel in this game is blue. Adding green
+  // alone was the trap the last two authors fell into — it walks the hue meter
+  // toward gold while leaving B pinned near zero, and a pixel with no blue
+  // reads vermilion no matter what its hue angle says. It also matches the
+  // plates on chroma, which we were over rather than under: reference
+  // chromaMean 0.29-0.31 and vividPct 31-34 against our 0.39-0.43 and 56-63.
+  //
+  // Done in a gamma space, not the linear one this pass otherwise works in.
+  // Hue angle and saturation are perceptual quantities and the histogram that
+  // judges them is computed on display values; in linear the same gold measures
+  // sat 0.97, where a saturation ceiling has almost nothing to grip. pow() is
+  // an approximation of the sRGB curve and deliberately so — this is a look
+  // control, not a colour-management step.
+  //
+  // It runs *after* the tone curve, not before. PBR Neutral's first move is to
+  // subtract an offset derived from the minimum channel, which is precisely the
+  // blue we are trying to put back; corrected upstream, the curve takes most of
+  // it away again.
   {
-    float redLead = clamp((c.r - max(c.g, c.b)) / max(c.r, 1e-4), 0.0, 1.0);
-    float w = c.r * redLead * redLead * uRedToGold;
-    // Green *and* blue, not green alone. Adding green to a red-led pixel walks
-    // the hue toward gold but leaves the blue channel wherever it was, and ours
-    // was on the floor: measured, the reference meadow runs R:G:B 1 : 0.74 :
-    // 0.49 and the drive frame was rendering 1 : 0.65 : 0.18, with the two
-    // largest colour masses in backlit sitting at B <= 4/255. A pixel with no
-    // blue at all cannot be gold, only vermilion, however much green it has.
-    c.g += w;
-    c.b += w * 0.35;
+    vec3 g = pow(max(c, 0.0), vec3(1.0 / 2.2));
+    vec3 hsv = rgb2hsv(g);
+    float deg = hsv.x * 360.0;
+    // Wrap the rose/magenta side negative so the band is continuous through red.
+    deg -= 360.0 * step(300.0, deg);
+    // Full authority from red through amber, tapering out before anything
+    // genuinely green-led. The taper matters: `forest` and `waterfall` are
+    // majority conifer and put 32-48% of their chromatic pixels above 60 deg,
+    // and rotating those would march the conifer mass toward green — the exact
+    // thing uGreenTame exists to prevent.
+    float warm = smoothstep(-45.0, -8.0, deg) * (1.0 - smoothstep(uWarmEnd - 25.0, uWarmEnd, deg));
+    hsv.x = fract((deg + uGoldRotate * warm) / 360.0);
+    // Ceiling with a soft knee, not a clamp: below uWarmSat nothing moves, above
+    // it the excess is compressed rather than flattened, so a crimson maple and
+    // a gold grass blade do not arrive at the same saturation.
+    hsv.y -= max(hsv.y - uWarmSat, 0.0) * uWarmSatSlope * warm;
+    c = pow(hsv2rgb(hsv), vec3(2.2));
   }
 
   // Blue floor. Nothing in the reference sits at zero blue: its meadow runs
@@ -257,7 +318,10 @@ class GradeEffect extends Effect {
         ['uToe',           new THREE.Uniform(0.032)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.30, 0.95, 0.68))],
         ['uVibrance',      new THREE.Uniform(0.90)],
-        ['uRedToGold',     new THREE.Uniform(0.130)],
+        ['uGoldRotate',    new THREE.Uniform(11.0)],
+        ['uWarmEnd',       new THREE.Uniform(66.0)],
+        ['uWarmSat',       new THREE.Uniform(0.63)],
+        ['uWarmSatSlope',  new THREE.Uniform(0.85)],
         ['uBlueFloor',     new THREE.Uniform(0.160)],
         ['uGreenTame',     new THREE.Uniform(0.75)],
         ['uGreenTameMax',  new THREE.Uniform(0.45)],

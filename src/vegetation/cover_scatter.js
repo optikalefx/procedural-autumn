@@ -81,7 +81,7 @@ const PAL = {
   aster:       C(0xa993e4), asterPink:   C(0xd292c8),
   goldenrod:   C(0xf3d060),
   seedTip:     C(0xe3cd9e),
-  litterWarm:  C(0xd4823a), litterGold:  C(0xe6b34c), litterRed: C(0xac3f38),
+  litterWarm:  C(0xc26f30), litterGold:  C(0xdfa844), litterRed: C(0x9c3730),
   // Weathered wood, and much paler than it looks written down. Forcing this
   // pair to pure white and re-capturing showed a correctly lit, clearly
   // faceted cylinder, so the normals and the light were always fine — the
@@ -386,10 +386,14 @@ export class CoverScatter {
             scale: 0.65 + rng() * 0.55, tone: 0.86 + rng() * 0.28, hue: 0.020,
           });
         } else if ((roll -= wLeaf) < 0) {
+          // Weighted to the rust and crimson end rather than the gold. A
+          // fallen leaf that is *lighter* than the meadow it lies on reads as
+          // paper confetti at 2 m; the reference's litter is always a step
+          // down in value from the ground and a step round toward red.
           const warm = rng();
           n = this._emit(out, n, cap, 'leafScatter', mx, mz, rng, {
-            colA: warm < 0.55 ? PAL.litterWarm : PAL.litterGold,
-            colB: warm < 0.28 ? PAL.litterRed : PAL.litterGold,
+            colA: warm < 0.62 ? PAL.litterWarm : PAL.litterRed,
+            colB: warm < 0.40 ? PAL.litterRed : PAL.litterGold,
             sink: 0.01, scale: 0.8 + rng() * 0.8,
             tone: 0.90 + rng() * 0.24, hue: 0.028,
           });

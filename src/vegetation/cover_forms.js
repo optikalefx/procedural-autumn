@@ -249,8 +249,8 @@ function skirt(b, w, rng, count = 5, chan = 0.0) {
  * share a height band and the outline never stripes.
  */
 function leafShell(b, h, w, count, rng, chanBase, o = {}) {
-  const wide = o.wide ?? 0.058;
-  const len = o.len ?? 0.17;
+  const wide = o.wide ?? 0.062;
+  const len = o.len ?? 0.125;
   for (let i = 0; i < count; i++) {
     const a = i * 2.39996 + rng() * 0.6;
     const t = (i + 0.5) / count;
@@ -372,7 +372,7 @@ function buildShrubDark(rng) {
          i === 0 ? 1 : 0, rng,
          { chan: 0.05 + rng() * 0.10, trans: 0.42, ragged: 0.30, lift: 0.34 });
   }
-  leafShell(b, h, w, 38, rng, 0.14);
+  leafShell(b, h, w, 44, rng, 0.14);
   skirt(b, w, rng, 5, 0.0);
   return b.finish(h);
 }
@@ -386,8 +386,8 @@ function buildShrubBerry(rng) {
        { chan: 0.12, trans: 0.80, ragged: 0.32, lift: 0.38 });
   // A third of the shell rides the accent channel, so the bush turns colour in
   // patches the way a real one does rather than uniformly.
-  leafShell(b, h, w, 22, rng, 0.10);
-  leafShell(b, h, w, 12, rng, 0.55, { len: 0.15 });
+  leafShell(b, h, w, 24, rng, 0.10);
+  leafShell(b, h, w, 13, rng, 0.55, { len: 0.11 });
   for (let i = 0; i < 3; i++) {                    // berry knots, fully accent
     const a = rng() * TAU, r = w * (0.34 + rng() * 0.32);
     lobe(b, Math.cos(a) * r, h * (0.38 + rng() * 0.42), Math.sin(a) * r,
@@ -430,7 +430,7 @@ function buildScrubDry(rng) {
   // Broad short blades, not sprays. The whole point of the rebuild is that a
   // long tapered strip seen flat-on is a pale oval; keeping them short and
   // near-parallel-sided keeps them reading as a bristly edge on a mass.
-  leafShell(b, h, w, 26, rng, 0.30, { wide: 0.055, len: 0.19, tilt: 0.42 });
+  leafShell(b, h, w, 28, rng, 0.30, { wide: 0.060, len: 0.15, tilt: 0.42 });
   skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
@@ -453,7 +453,7 @@ function buildThicket(rng) {
          i === 0 ? 1 : 0, rng,
          { chan: rng() * 0.35, trans: 0.85, ragged: 0.40, lift: 0.36 });
   }
-  leafShell(b, h, w, 28, rng, 0.30, { wide: 0.042, len: 0.16 });
+  leafShell(b, h, w, 30, rng, 0.30, { wide: 0.045, len: 0.13 });
   skirt(b, w, rng, 5, 0.10);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {
@@ -734,8 +734,8 @@ function buildPebble(rng, variant) {
  */
 function buildLeafScatter(rng, variant) {
   const b = new Builder();
-  const n = variant === 1 ? 4 + ((rng() * 3) | 0) : 6 + ((rng() * 5) | 0);
-  const R = 0.26 + rng() * 0.34;
+  const n = variant === 1 ? 6 + ((rng() * 4) | 0) : 8 + ((rng() * 6) | 0);
+  const R = 0.22 + rng() * 0.26;
   for (let i = 0; i < n; i++) {
     const a = rng() * TAU, r = R * Math.sqrt(rng());
     // tilt ≈ 0.67 is where `leafBlade` lays the blade flat with its normal
@@ -743,7 +743,7 @@ function buildLeafScatter(rng, variant) {
     // patch a different share of the key light than its neighbour, which is
     // what stops the patch reading as one tone.
     leafBlade(b, Math.cos(a) * r, 0.006 + rng() * 0.024, Math.sin(a) * r,
-              rng() * TAU, 0.080 + rng() * 0.085, 0.030 + rng() * 0.024,
+              rng() * TAU, 0.058 + rng() * 0.060, 0.024 + rng() * 0.018,
               0.56 + rng() * 0.30, rng() < 0.45 ? 1.0 : 0.15, 0.85);
   }
   return b.finish(0.10);
@@ -761,9 +761,13 @@ function buildDeadTuft(rng, variant) {
   const R = 0.26 + rng() * 0.30;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * TAU + rng() * 1.2;
+    // Origins spread along the radius rather than sharing one hub: at a
+    // common centre a straw mat reads as a drawn asterisk, which is not a
+    // thing that exists on a hillside.
+    const or_ = R * (0.10 + rng() * 0.62);
     frond(b, {
-      x: Math.cos(a) * R * 0.16, y: 0.012, z: Math.sin(a) * R * 0.16,
-      yaw: a,
+      x: Math.cos(a) * or_, y: 0.012, z: Math.sin(a) * or_,
+      yaw: a + (rng() - 0.5) * 1.6,
       tilt: 1.12 + rng() * 0.36,                 // laid over, not standing
       len: R * (0.42 + rng() * 0.44), w: 0.026 + rng() * 0.020,
       segs: 1, droop: 0.10, taper: 0.75,

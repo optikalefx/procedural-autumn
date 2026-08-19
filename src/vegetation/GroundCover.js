@@ -164,7 +164,7 @@ export class GroundCover extends System {
   _bandFor(d) {
     if (d < 50) return 0;          // ground substrate, flowers  (vis <= 44)
     if (d < 134) return 1;         // ferns, branches            (vis <= 88)
-    if (d < 196) return 2;         // scrub, berries, litter     (vis <= 165)
+    if (d < 196) return 2;         // scrub, berries, litter     (vis <= 155)
     return 3;                      // shrubs, thickets, deadfall (vis <= 250)
   }
 

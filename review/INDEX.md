@@ -29,3 +29,7 @@ same places are photographed every round and the sheets are directly comparable.
 | 021 | 2026-08-19 | water lakes and falls, terrain structure, tree canopy | [021](021-2026-08-19-water-lakes-and-falls-terrain-structure-tree-can.png) |
 | 022 | 2026-08-19 | look: cloud/sky keys de-lilaced, exposure+range, foliage blue via green governor | [022](022-2026-08-19-look-cloud-sky-keys-de-lilaced-exposure-range-fo.png) |
 | 023 | 2026-08-19 | look: sky and cloud keys, exposure and range, foliage blue restored | [023](023-2026-08-19-look-sky-and-cloud-keys-exposure-and-range-folia.png) |
+| 024 | 2026-08-19 | ground substrate and scrub | [024](024-2026-08-19-ground-substrate-and-scrub.png) |
+| 025 | 2026-08-19 | sky warmed, foliage blue restored, shadows settled | [025](025-2026-08-19-sky-warmed-foliage-blue-restored-shadows-settled.png) |
+| 026 | 2026-08-19 | cover: substrate, scrub rebuild, shadow self-occlusion fix | [026](026-2026-08-19-cover-substrate-scrub-rebuild-shadow-self-occlus.png) |
+| 027 | 2026-08-19 | ground substrate and scrub — final | [027](027-2026-08-19-ground-substrate-and-scrub-final.png) |

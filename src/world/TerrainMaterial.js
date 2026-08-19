@@ -90,6 +90,11 @@ export function createTerrainMaterial(world, opts = {}) {
     uRockCastLit:   { value: new THREE.Vector3(0.985, 0.995, 1.045) },
     uRockCastShade: { value: new THREE.Vector3(0.930, 0.990, 1.150) },
     uRockDesat:   { value: 0.45 },
+    // Value floor for governed rock, as a screen blend against 1.0. See the
+    // governor block: the palette's rock is high-value lavender-grey lit and
+    // still high-value in shade, and ours was rendering unlit stone at luma
+    // 0.217 against a reference band of 0.40-0.70.
+    uRockLift:    { value: 0.18 },
     // Pulling a colour to its own luminance loses the brightest channel, so
     // the governed result needs a gain or the massifs go a stop darker than
     // the boulders standing on them.
@@ -149,7 +154,7 @@ export function createTerrainMaterial(world, opts = {}) {
       uniform vec3 uSnow, uSand, uLitter;
       uniform vec3 uShadowTint;
       uniform vec3 uRockCastLit, uRockCastShade;
-      uniform float uRockDesat, uRockGain, uGrassSat;
+      uniform float uRockDesat, uRockGain, uRockLift, uGrassSat;
       uniform float uSnowLine;
       uniform float uDebugMask;
 
@@ -170,6 +175,10 @@ export function createTerrainMaterial(world, opts = {}) {
       // How much of this fragment is bare rock. Needed after the lighting for
       // the chroma governor — see the uRockDesat block below.
       float gRockM = 0.0;
+      // The same, weighted by how rock-shaped the ground under it is. The
+      // governor uses this rather than gRockM so a gravel shelf in a meadow
+      // keeps some of its warmth while a cliff does not.
+      float gRockGov = 0.0;
 
       // ── cheap value-noise stack ──────────────────────────────────────────
       vec2 hash22(vec2 p){
@@ -659,11 +668,47 @@ export function createTerrainMaterial(world, opts = {}) {
         // from the art review. Scaling the breakers by how close the slope
         // already is to rock keeps them working on the edge and nowhere else.
         float edgeBreak = smoothstep(0.06, 0.55, steep);
-        float rockM = clamp(steep * 1.26 - 0.20
-                          + ((macro - 0.5) * 0.78 + (macro2 - 0.5) * 0.22) * fMacro * edgeBreak
-                          + (meso - 0.5) * 0.22 * fMeso * edgeBreak
-                          + smoothstep(232.0, 330.0, vWorldPos.y) * 0.34, 0.0, 1.0);
-        float rockCover = massEdge(rockM, 0.44);
+        // What the geometry on its own says. The breakers are kept out of this
+        // sum deliberately, so their amplitude can be scaled by how close the
+        // *geometry* already is to the line.
+        float rockBase = steep * 1.26 - 0.20
+                       + smoothstep(232.0, 330.0, vWorldPos.y) * 0.34;
+        // THE BREAKERS MAY ONLY RUFFLE THE LINE, AND ONLY WHERE THE LINE IS.
+        // Scaling by edgeBreak alone was not enough: edgeBreak is ~1 for every
+        // slope past about 26 degrees, so the 240 m octave — worth ±0.39 of a
+        // field whose threshold is 0.44 — could carry rockM across the cut
+        // anywhere on a flank, not just near its boundary. When it did, it
+        // opened a single ~200 m2 plate of bare rock in the middle of a soil
+        // slope: the grey mass with hard straight edges that the river view has
+        // been carrying since the mask was written, and which was mistaken for
+        // a shadow artefact for two rounds.
+        //
+        // Scaling every breaker by proximity to the threshold keeps what the
+        // breakers were for — a boundary that wanders tens of metres, climbs
+        // the gullies and gives out on the buttresses — and makes opening a
+        // plate away from the boundary arithmetically impossible.
+        float nearLine = 1.0 - smoothstep(0.0, 0.34, abs(rockBase - 0.44));
+        float breakAmp = nearLine * edgeBreak;
+        float rockM = clamp(rockBase
+                          + ((macro - 0.5) * 0.72 + (macro2 - 0.5) * 0.26) * fMacro * breakAmp
+                          + (meso - 0.5) * 0.34 * fMeso * breakAmp
+                          + (fine - 0.5) * 0.30 * breakAmp, 0.0, 1.0);
+        // FEATHERED, NOT MASS-EDGED, AND THAT IS THE FIX FOR THE POLYGON.
+        // massEdge takes its width from fwidth of the field, which is the right
+        // answer when the field has a real gradient across the boundary: the
+        // edge lands crisp and antialiases itself for free. rockM's gradient
+        // across a uniform flank is almost nil, so the width collapsed to the
+        // 0.010 floor — and the contour of a nearly-flat field is decided by
+        // the 2 m texel structure of the slope map underneath it, which is
+        // exactly why the boundary came out as long straight segments meeting
+        // at corners rather than as a wandering line.
+        //
+        // A feather with a floor in FIELD units spans real ground wherever the
+        // field is slow, and still resolves crisply wherever the slope
+        // genuinely breaks, because fwidth wins there. The ruffle octaves above
+        // supply the definite-mass character that the hard cut used to.
+        float rockFeather = max(fwidth(rockM) * 1.4, 0.15);
+        float rockCover = smoothstep(0.44 - rockFeather, 0.44 + rockFeather, rockM);
         albedo = mix(albedo, rock, rockCover);
         gRockM = max(rockCover, max(ribM, scourM) * 0.72);
 
@@ -691,6 +736,13 @@ export function createTerrainMaterial(world, opts = {}) {
         vec3 screeCol = mix(uScree, uRockMid, meso * 0.45);
         albedo = mix(albedo, screeCol, screeM * 0.66);
         gRockM = max(gRockM, screeM * 0.66);
+        // Only genuinely rock-shaped ground gets the full chroma governor — see
+        // the block after the lighting. A gravel shelf, a scoured bank or a
+        // talus fan on gentle ground is stone, but it is stone lying in a warm
+        // meadow; pulling all of it the whole way to neutral is what turned
+        // patches of it into grey cut-outs with nothing but hue to distinguish
+        // them from the ground they sit in.
+        gRockGov = gRockM * (0.62 + 0.38 * smoothstep(0.35, 0.90, slope));
 
         // Shelves. A terrace cut into a massif is nearly flat, so it misses
         // every slope-driven rule above and comes out as a bare grey plate —
@@ -785,7 +837,7 @@ export function createTerrainMaterial(world, opts = {}) {
         albedo = mix(albedo, uSnow, snowSel);
 
         if (uDebugMask > 0.5) {
-          float m = massEdge(rockM, 0.44);
+          float m = rockCover;
           if (uDebugMask < 1.5)      albedo = vec3(m, 1.0 - m, screeM);
           else if (uDebugMask < 2.5) albedo = vec3(max(0.0, curv), 0.0, max(0.0, -curv));
           else if (uDebugMask < 3.5) albedo = vec3(loose, bedM, slope * 0.5);
@@ -864,10 +916,24 @@ export function createTerrainMaterial(world, opts = {}) {
       // ones puts the chroma back where the plates put it, and it turns the
       // plane-to-plane value break the relief normal creates into a hue break
       // as well, which is the single strongest cue in the reference cliffs.
-      if (gRockM > 0.002) {
+      // THE GOVERNOR ALSO NEEDS A VALUE FLOOR, and measured against the plates
+      // that was the larger half of the "torn grey paper" defect in the river
+      // view. Sampled off the shipped frame, the governed slab came back at
+      // luma 0.217 with chroma 0.066; reference rock runs luma 0.40-0.51 where
+      // it is hazy and 0.56-0.70 in the near field, and even the palette's own
+      // *shadow* anchor #5c5a75 is luma 0.36. Stone that is both hueless and a
+      // stop darker than the ground it lies in stops reading as a surface and
+      // starts reading as a hole cut in the hillside — which is exactly the
+      // note the look author wrote up. Chroma was never far off; value was.
+      //
+      // Applied as a screen blend so it lifts the shadow end hard and the
+      // highlight end barely at all: a sunlit crag keeps its range and its
+      // relation to the snow above it, and only the unlit half moves.
+      if (gRockGov > 0.002) {
         float rl = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-        vec3 governed = vec3(rl) * mix(uRockCastLit, uRockCastShade, gShade) * uRockGain;
-        gl_FragColor.rgb = mix(gl_FragColor.rgb, governed, gRockM * uRockDesat);
+        float rlL = rl + max(0.0, 1.0 - rl) * uRockLift;
+        vec3 governed = vec3(rlL) * mix(uRockCastLit, uRockCastShade, gShade) * uRockGain;
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, governed, gRockGov * uRockDesat);
       }
       // ── ground chroma ─────────────────────────────────────────────────────
       // The rock governor above is a deliberate, measured desaturation, and it
