@@ -35,6 +35,26 @@ export function createHideMaterial(c) {
     uDark: { value: new THREE.Color(c.dark) },
     uHorn: { value: new THREE.Color(c.horn ?? 0x9d8a6a) },
     uShadeLo: { value: c.shadeLo ?? 0.68 },
+    // ── the distance silhouette ─────────────────────────────────────────────
+    // Measured: off-road the median closest approach a player makes to an
+    // animal is 77 m, where a deer is about sixteen pixels tall. At that size
+    // the only thing an eye can use is the *shape*, and the shape only exists
+    // if it holds a value the background does not. Left alone, a warm mid-brown
+    // hide behind 80 m of aerial perspective lands on precisely the value of
+    // the dark straw and litter patches in sunlit gold grass, which is why a
+    // deer at 100 m reads as ground clutter.
+    //
+    // This is not a hack bolted onto the lighting: it is what the reference
+    // does. Plate 3's bear is legible as a bear at a hundred metres because it
+    // is a single flat dark shape, with no internal shading and no haze in it.
+    // So with distance the four hide regions collapse into one tone, the
+    // shading gradient flattens out, and the whole thing is pulled down in
+    // value *after* fog — because fog's entire job is to take away the value
+    // the animal needs to keep.
+    uSilNear: { value: c.silNear ?? 38.0 },
+    uSilFar:  { value: c.silFar  ?? 145.0 },
+    uSilDark: { value: c.silDark ?? 0.58 },   // post-fog value multiplier at full range
+    uSilFlat: { value: c.silFlat ?? 0.62 },   // how far the regions collapse into uDark
   };
 
   const mat = new THREE.MeshStandardMaterial({
@@ -53,11 +73,18 @@ export function createHideMaterial(c) {
       attribute float aShade;
       varying vec4 vMix;
       varying float vShade;
+      varying float vHideDepth;
     ` + shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
        vMix = aMix;
        vShade = aShade;`
+    ).replace(
+      '#include <project_vertex>',
+      `#include <project_vertex>
+       // View depth, taken after the skinning has already moved the vertex, so
+       // an animal mid-bound reports where it actually is.
+       vHideDepth = -mvPosition.z;`
     );
 
     shader.fragmentShader = /* glsl */`
@@ -66,13 +93,28 @@ export function createHideMaterial(c) {
       uniform vec3 uDark;
       uniform vec3 uHorn;
       uniform float uShadeLo;
+      uniform float uSilNear;
+      uniform float uSilFar;
+      uniform float uSilDark;
+      uniform float uSilFlat;
       varying vec4 vMix;
       varying float vShade;
+      varying float vHideDepth;
     ` + shader.fragmentShader.replace(
       '#include <color_fragment>',
       `#include <color_fragment>
+       float hideSil = smoothstep( uSilNear, uSilFar, vHideDepth );
        vec3 hideCol = uCoat * vMix.x + uPale * vMix.y + uDark * vMix.z + uHorn * vMix.w;
-       diffuseColor.rgb *= hideCol * mix( uShadeLo, 1.0, vShade );`
+       // Four regions near, one flat tone far.
+       hideCol = mix( hideCol, mix( hideCol, uDark, uSilFlat ), hideSil );
+       // ...and no internal shading gradient far, which is what makes a shape
+       // read as a shape rather than as a smudge.
+       float hideShade = mix( uShadeLo, 1.0, vShade );
+       diffuseColor.rgb *= hideCol * mix( hideShade, 0.92, hideSil * 0.85 );`
+    ).replace(
+      '#include <fog_fragment>',
+      `#include <fog_fragment>
+       gl_FragColor.rgb *= mix( 1.0, uSilDark, hideSil );`
     );
   };
   // One program for every hide; only the uniform values differ.
@@ -684,7 +726,16 @@ export const SPECIES = {
     brain: {
       // The freeze is the whole sighting: a deer notices you a long way off,
       // stands and stares for a beat or two, and only then leaves.
-      alertDist: 62, fleeDist: 28, calmDist: 95,
+      // `noticeDist` is the outer band, and it is a legibility number rather
+      // than an ethology one. Measured off-road, the median closest approach a
+      // player ever makes to a deer is 77 m; the encounter therefore has to be
+      // readable well outside `alertDist`, and a frozen animal is not. From
+      // 108 m in (which at 13 m/s means the deer reacts around 123 m of real
+      // distance) it is up, broadside and moving. Deliberately short of the
+      // 172 m spawn radius: a valley where every deer is already standing to
+      // attention when it streams in has no grazing in it, and the head-down
+      // pose is half the gift.
+      alertDist: 62, fleeDist: 28, calmDist: 95, noticeDist: 108,
       freezeTime: [1.0, 2.6], fleeTime: [3.5, 7.0],
       grazeTime: [6, 20], idleTime: [2.5, 7], walkTime: [4, 12],
       herd: [1, 4], herdRadius: 9, wanderRadius: 34,
@@ -713,7 +764,9 @@ export const SPECIES = {
     brain: {
       // A bear mostly does not care that you exist. It looks up when you get
       // close, and only leaves if you get closer than that.
-      alertDist: 24, fleeDist: 11, calmDist: 44,
+      // A bear does not spook, but it does stop and look, and a bear that has
+      // stopped and turned side-on is the most legible animal in the game.
+      alertDist: 24, fleeDist: 11, calmDist: 44, noticeDist: 66,
       freezeTime: [1.4, 3.0], fleeTime: [2.5, 5.0],
       grazeTime: [10, 26], idleTime: [3, 9], walkTime: [10, 30],
       herd: [1, 1], herdRadius: 0, wanderRadius: 60,
@@ -744,6 +797,9 @@ export const SPECIES = {
     brain: {
       // A rabbit barely freezes at all — it is gone before you have registered
       // that it was there, which is the opposite beat to the deer's.
+      // No `noticeDist`: a 0.25 m animal at 50 m is under three pixels, so the
+      // wary-watch beat would cost animation and buy the player nothing. A
+      // rabbit's whole legibility is the bolt, and that happens at 26 m.
       alertDist: 36, fleeDist: 26, calmDist: 45,
       freezeTime: [0.15, 0.65], fleeTime: [1.6, 3.4],
       grazeTime: [4, 12], idleTime: [1.5, 5], walkTime: [1.5, 5],

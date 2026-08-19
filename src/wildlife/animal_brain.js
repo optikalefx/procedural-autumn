@@ -28,6 +28,12 @@ export const ST = {
   ALERT:  3,   // has noticed you: frozen, head up, facing you
   FLEE:   4,   // leaving
   PATROL: 5,   // bears only: ambling along a river
+  // Long-range wariness. Between `noticeDist` and `alertDist` an animal has
+  // seen you but is in no danger: it stops feeding, swings broadside, watches,
+  // and drifts a few steps across your line. See `_watch` for why this state
+  // exists at all — it is the only one of the six that is here for the
+  // *player's* eyes rather than the animal's.
+  WATCH:  6,
 };
 
 // Water deeper than this is off limits to everything, always. Placement, wander
@@ -88,6 +94,8 @@ export class Brain {
     this._grazeStep = 0;
     this._lookT = 2 + this.rnd() * 5;
     this.headUp = false;
+    this._watchMove = 0;       // seconds left of the current wary drift
+    this._watchSide = 1;       // which way it is drifting across your line
     this._avoid = 0;
     this._scale = 1;
   }
@@ -105,6 +113,7 @@ export class Brain {
     this._patrolDir = this.rnd() < 0.5 ? -1 : 1;
     this._stuck = 0;
     this._avoid = 0;
+    this._watchMove = 0;
   }
 
   /** Place the animal for the first time (or after a long absence). */
@@ -117,6 +126,7 @@ export class Brain {
     this.state = this.rnd() < this.cfg.grazeChance ? ST.GRAZE : ST.IDLE;
     if (this.cfg.patrol && this.rnd() < 0.6) this.state = ST.PATROL;
     this.headUp = false;
+    this._watchMove = 0;
     this._lookT = 1 + this.rnd() * 6;
     this.timer = 1 + this.rnd() * 4;
     this.graze = this.state === ST.GRAZE ? 1 : 0;
@@ -159,28 +169,61 @@ export class Brain {
       case ST.ALERT:  this._alert(dt, threat, d); break;
       case ST.FLEE:   this._flee(dt, W, threat, d); break;
       case ST.PATROL: this._patrol(dt, W); break;
+      case ST.WATCH:  this._watch(dt, W, threat); break;
     }
 
     // ── threat overrides ────────────────────────────────────────────────────
+    //
+    // Three bands, not two, and the outer one is new. `alertDist` is a freeze,
+    // and a freeze is the *worst* thing an animal can do for legibility: at a
+    // hundred metres a motionless deer is thirteen pixels of brown in gold
+    // grass and the eye reads it as a rock. So the freeze now happens only
+    // where it is actually readable, and the band outside it — from
+    // `alertDist` out to `noticeDist` — is WATCH: heads up, broadside, moving.
+    const notice = c.noticeDist ?? c.alertDist;
     if (this.state !== ST.FLEE) {
       if (dEff < c.fleeDist || (herdAlarm > 0.5 && this.state !== ST.ALERT && dEff < c.alertDist)) {
         // Deer and rabbits freeze first — that beat of stillness before the
         // bolt is the whole reason a deer sighting feels like a sighting.
         if (this.state !== ST.ALERT) this._enterAlert();
-      } else if (dEff < c.alertDist && this.state !== ST.ALERT) {
+      } else if (dEff < c.alertDist && this.state !== ST.ALERT && this.state !== ST.WATCH) {
+        // `!== ST.WATCH` is the other half of the statue fix. An animal that
+        // has already done its freeze and settled into watching must not be
+        // re-frozen every frame just for standing inside `alertDist`; it has
+        // already paid that beat. It re-freezes only by getting genuinely
+        // closer, which is the `dEff < fleeDist` branch above.
         this._enterAlert();
         this.timer = lerp(c.freezeTime[0], c.freezeTime[1], this.rnd()) * 1.6;
+      } else if (dEff < notice && this.state !== ST.ALERT && this.state !== ST.WATCH) {
+        this._enterWatch();
+      } else if (this.state === ST.WATCH && dEff > notice * 1.2) {
+        // Out of range again: back to whatever it was doing, and it goes back
+        // to feeding rather than standing, because a meadow of statues is the
+        // failure mode this state was added to avoid.
+        this.state = (c.patrol && this.group?.line) ? ST.PATROL
+          : this.rnd() < c.grazeChance ? ST.GRAZE : ST.IDLE;
+        this.timer = this._span(this.state === ST.GRAZE ? c.grazeTime : c.idleTime);
+        this.headUp = false;
       }
     }
 
     // ── smoothed pose channels ──────────────────────────────────────────────
     const wantGraze = (this.state === ST.GRAZE && !this.headUp) ? 1 : 0;
     const wantAlert = this.state === ST.ALERT ? 1
+      : this.state === ST.WATCH ? (this.wantSpeed > 0.05 ? 0.62 : 0.85)
       : this.state === ST.FLEE ? 0.55
       : this.group && herdAlarm > 0.5 ? 0.4 : 0;
     this.graze = toward(this.graze, wantGraze, dt * (wantGraze ? 1.6 : 4.5));
     this.alert = toward(this.alert, wantAlert, dt * (wantAlert > this.alert ? 6 : 2.2));
-    this.flag = toward(this.flag, this.state === ST.FLEE && this.key === 'deer' ? 1 : 0, dt * 5);
+    // The white scut. It goes fully up in flight, and to half-mast the moment
+    // the animal freezes — a stationary deer is the hardest thing in the game
+    // to see, and this is the one high-value patch on it. Real deer do raise
+    // the tail as they square up, before they commit to leaving.
+    const wantFlag = this.key !== 'deer' ? 0
+      : this.state === ST.FLEE ? 1
+      : this.state === ST.ALERT ? 0.8
+      : this.state === ST.WATCH ? 0.55 : 0;
+    this.flag = toward(this.flag, wantFlag, dt * 5);
 
     this._steer(dt, W, S);
   }
@@ -313,12 +356,27 @@ export class Brain {
           }
           this.heading = this.wantHeading;   // the launch is instant, not a turn
         }
-      } else if (d > this.cfg.calmDist * 0.55) {
-        this.state = ST.IDLE;
-        this.timer = this._span(this.cfg.idleTime) * 0.5;
-        if (this.group) this.group.alarm = 0;
       } else {
-        this.timer = 0.6 + this.rnd();       // still watching
+        // The freeze is a *beat*, not a state, and it used to be neither.
+        //
+        // The exits here were written against `d`, but the override at the top
+        // of `update` re-arms ALERT against `dEff`, which is `d` minus fifteen
+        // metres at driving speed. So for every threat distance between those
+        // two thresholds the animal fell out of ALERT and was slammed straight
+        // back into it on the same frame, forever: head up, speed zero, for as
+        // long as the player was anywhere near. That band — 43 to 77 m of
+        // threat distance, 62 to 96 m from the eye — is precisely where the
+        // measured median closest approach of 77 m lands. The one moment the
+        // encounter was supposed to happen, the deer was a statue, and a
+        // statue is the least visible thing in this game.
+        //
+        // So the freeze now resolves the way it reads in life: stand and
+        // stare, then relax into wary movement while still keeping an eye on
+        // you. WATCH is the resolution, not IDLE, because the player is still
+        // there — and WATCH moves.
+        this.state = ST.WATCH;
+        this._enterWatch();
+        if (this.group) this.group.alarm = 0.35;
       }
     }
     void dt;
@@ -345,6 +403,81 @@ export class Brain {
       // A rabbit that has run this far is gone — it went down a hole. Letting
       // it simply stop in the open would undo the whole effect.
       if (this.key === 'rabbit') this.done = true;
+    }
+    void W;
+  }
+
+  _enterWatch() {
+    this.state = ST.WATCH;
+    // Weighted toward moving rather than standing. The first cut of this state
+    // split the time about evenly, and `fractionMovingInView` measured *worse*
+    // than no WATCH at all (24.2% -> 20.5%): it had replaced wandering animals
+    // with standing ones. Motion is the entire reason the state exists, so the
+    // drift is now the default and the pauses are the punctuation.
+    this.timer = 0.5 + this.rnd() * 0.7;
+    this.headUp = true;
+    this.hasLook = true;
+    this._watchMove = 0;
+    this._grazeStep = 0;
+    if (this.group && this.group.alarm < 0.35) this.group.alarm = 0.35;
+  }
+
+  /**
+   * Wary, at a distance. This state exists for the *player*, not the animal.
+   *
+   * The measured problem it answers: off-road, the median closest approach to
+   * an animal is 77 m, where a 1.5 m deer subtends about sixteen pixels of the
+   * player's viewport — in gold grass, at a wide chase framing, while they are
+   * steering. Nothing static survives that. Two things do, and both are here:
+   *
+   *   · **Motion.** Peripheral vision is a motion detector long before it is a
+   *     contrast detector. A sixteen-pixel blob that walks is seen; the same
+   *     blob standing still is not, however dark it is.
+   *   · **Broadside.** A deer seen head-on is ~0.5 m wide; seen across the
+   *     flank it is ~1.9 m. That is close to four times the silhouette area,
+   *     for free, and it is also what a wary ungulate genuinely does — it
+   *     drifts across your line keeping one eye on you rather than facing you
+   *     down or turning tail.
+   *
+   * So: stop feeding, head up, swing side-on, watch, take a few steps, watch
+   * again. It never carries the animal far — the drift alternates sides and is
+   * reeled back toward home — so this does not thin the population out ahead
+   * of the player the way a long-range flee response would.
+   */
+  _watch(dt, W, threat) {
+    const bearing = threat
+      ? Math.atan2(threat.x - this.pos.x, threat.z - this.pos.z)
+      : this.heading;
+    if (threat) {
+      this.lookAt.set(threat.x, this.pos.y + 1.45 * this._scale, threat.z);
+      this.hasLook = true;
+    }
+
+    if (this._watchMove > 0) {
+      this._watchMove -= dt;
+      this.wantHeading = bearing + Math.PI * 0.5 * this._watchSide;
+      // A walk, not a trot. This is unhurried on purpose: an animal that
+      // scurries at 120 m has already spent the reaction the close pass wants.
+      this.wantSpeed = this.gait.walk * this._scale * (0.85 + this._bias * 0.35);
+      if (this._watchMove <= 0) this.timer = 0.8 + this.rnd() * 1.2;
+    } else {
+      this.wantSpeed = 0;
+      // Squared up but off the shoulder, so the head reads against the sky
+      // and the flank still reads against the ground.
+      this.wantHeading = bearing + (this.slot & 1 ? 1.15 : -1.15);
+      if (this.timer < 0) {
+        // Drift back toward home if the last few steps took it too far out,
+        // otherwise alternate so the animal stays roughly where it lives.
+        const hx = this.home.x - this.pos.x, hz = this.home.z - this.pos.z;
+        const far = Math.hypot(hx, hz) > this.cfg.wanderRadius * 1.15;
+        if (far) {
+          const toHome = Math.atan2(hx, hz);
+          this._watchSide = wrapAngle(toHome - bearing) > 0 ? 1 : -1;
+        } else {
+          this._watchSide = -this._watchSide;
+        }
+        this._watchMove = 2.0 + this.rnd() * 2.4;
+      }
     }
     void W;
   }
@@ -492,7 +625,9 @@ export class Brain {
     drive.speed = this.speed;
     drive.graze = this.graze;
     drive.alert = this.alert;
-    drive.flag = this.flag > 0.5;
+    // A float, not a boolean. The scut is at half-mast in ALERT and WATCH and
+    // fully up in flight, and quantising that to on/off threw away the beat.
+    drive.flag = this.flag;
     drive.look = this.hasLook ? this.lookAt : null;
     drive.lod = lod;
     return drive;

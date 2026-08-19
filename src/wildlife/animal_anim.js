@@ -231,7 +231,7 @@ export class AnimRig {
    *   pos, heading, speed   world position / yaw / ground speed (m/s)
    *   graze 0..1            head down into the grass
    *   alert 0..1            head up, ears forward, body stiff
-   *   flag  bool            tail up (deer alarm flash)
+   *   flag  0..1            tail up (deer alarm flash; half-mast when wary)
    *   look  Vector3|null    world point to watch
    *   lod   0 near | 1 mid
    * }
@@ -536,7 +536,7 @@ export class AnimRig {
 
     // The deer's alarm flag: tail up, white underside showing. That flash is
     // what makes a fleeing deer readable at two hundred metres.
-    this.tailLift = damp(this.tailLift, drive.flag ? 1 : drive.alert * 0.35, 9, dt);
+    this.tailLift = damp(this.tailLift, Math.max(drive.flag ?? 0, drive.alert * 0.35), 9, dt);
 
     for (let i = 0; i < this.tailB.length; i++) {
       const t = this.tailB[i];
