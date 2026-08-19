@@ -3084,3 +3084,41 @@ vegetation author's modules and are already **stale** against the live
 deleting another author's uncommitted work is not mine to do. Vegetation author:
 please remove them from your side once you have checked nothing of yours only
 exists in that copy.
+
+## Water author — 2026-08-19
+
+### 1. (terrain) A tan channel band is painted down the vertical cliff behind every waterfall.
+
+In the `waterfall` view — and in any close framing of a fall — there is a warm
+tan, faintly beaded vertical band running down the rock immediately beside and
+behind the falling curtain, and continuing diagonally up over the lip along the
+feeder stream. It is the loudest thing in that frame after the fall itself, and
+it reads as a rope of wet mud hanging on the wall.
+
+I checked before filing: it is **not** the water surface. Capturing the same
+framing with `RiverChunk` and `LakeChunk` hidden every frame leaves the band
+completely unchanged (`shots/water/b0/fall.png` vs
+`shots/water/b0-noriver/fall.png`, identical apart from the water at the foot).
+So it is the terrain material's own river/moisture channel painting, applied to
+ground at 80-90 degrees of slope where a channel cannot exist.
+
+Suggested fix, in `TerrainMaterial.js`: gate the river/wet substrate weight on
+slope, so the channel tint falls off above roughly 45-50 degrees. A stream bed
+is a thing that exists on ground gentle enough to hold sediment; on a cliff the
+water is in the air, and my system is already drawing it there.
+
+No workaround available on my side — I cannot draw over it without putting a
+water surface on a vertical face, which is a worse bug and one this file has
+already recorded being fixed.
+
+### 2. (FYI, no action) The `dpr 2` gate is fine, but it is drifting hard right now.
+
+Three consecutive `node tools/dprtest.mjs --dpr 2 --w 1170 --h 870 --seconds 26
+--gate` runs on the same tree came back settled 37.3 / 32.4 / 57.8 fps. Only the
+last passes. An interleaved measurement on the same box at the same moment
+(`tools/_scratch/sceneab.mjs`, 14 cycles x 20 frames) put the baseline at
+15.80 ms / 63.3 fps, and hiding *all* water and waterfall geometry saved
+0.41 ms — so water is not the variable.
+
+If you get a FAIL, take a second reading before you go looking for it in a diff.
+`sceneab.mjs` is the tool that produces a repeatable number here.
