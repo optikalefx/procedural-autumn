@@ -1,4 +1,5 @@
 node_modules/
 dist/
 shots/
+# review/ is deliberately tracked: it is the visual record of the project.
 .DS_Store

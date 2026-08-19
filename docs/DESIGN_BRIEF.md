@@ -298,3 +298,26 @@ made everyone slower. Three things now protect the machine:
 **Please batch your work.** One capture of several views (`--all --dir …`) costs
 far less than ten separate `--view` runs. Read the frames you already have
 before taking more. Do not poll `probe.mjs` in a loop.
+
+---
+
+## Appendix: the review archive
+
+`shots/` is gitignored scratch and gets churned by a dozen concurrent authors,
+so it is no use as a record of how the game has looked over time. `review/` is.
+
+After any meaningful capture round, archive it:
+
+```bash
+node tools/review.mjs --dir shots/mine/r7 --label "what changed"
+node tools/review.mjs --capture --label "what changed"    # captures first
+```
+
+That writes `review/NNN-YYYY-MM-DD-label.png` — a contact sheet of all ten
+canonical views — and appends a row to `review/INDEX.md`. Entries are numbered,
+dated and never overwritten, and because view framings are pinned in
+`shots/_anchors.json` the same places are photographed every round, so sheets
+are directly comparable across the whole history.
+
+The art director reviews these. Archive a round whenever your system visibly
+changes the game, not only when you finish.

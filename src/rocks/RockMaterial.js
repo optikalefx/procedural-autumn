@@ -104,8 +104,9 @@ export function createRockMaterial() {
     //     gain 0.62 -> boulder luma  38   (meadow 132, ratio 0.29)
     //     gain 2.00 -> boulder luma 127   (meadow 126, ratio 1.01)
     //     gain 1.65 -> boulder 0.88 of the meadow, just over the band
-    //     gain 1.45 -> 0.80, mid-band, and the distant crags stop reading pale
-    uRockGain:   { value: 1.45 },
+    //     gain 1.45 -> 0.88 of the meadow, still at the top of the band
+    //     gain 1.36 -> 0.83, mid-band, and the distant crags stop reading pale
+    uRockGain:   { value: 1.36 },
   };
   mat.userData.uniforms = uniforms;
 

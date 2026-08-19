@@ -536,6 +536,15 @@ export class RockScatter {
    */
   _contourCourse(x0, z0, targetY, scale, c, up, rng, minSize, out) {
     const W = this.world;
+    // Anything shorter than this is not a cliff band, it is two or three blocks
+    // sitting on a smooth slope — which is what every "the crags look like they
+    // are floating" report has actually turned out to be. Nothing hovers
+    // (measured with tools/_scratch/rockfloat.mjs: every crag block's lowest
+    // vertex is 5-20 m below the ground at its own centre); an isolated block
+    // on a bare hillside simply has no visible contact and the eye cannot place
+    // it. So a course that dies early is discarded rather than left as a stub.
+    const startAt = out.length;
+    const MIN_COURSE = 4;
     // Blocks are about two scales wide and land two thirds of a scale apart, so
     // each overlaps its neighbours by most of its length. The union is the
     // cliff; no single block is ever meant to read on its own, and any block
@@ -607,6 +616,7 @@ export class RockScatter {
           arch === 'cliff' ? 0.14 : 0.20, yaw);
       }
     }
+    if (out.length - startAt < MIN_COURSE) out.length = startAt;
   }
 
   /**
@@ -627,6 +637,7 @@ export class RockScatter {
    */
   _cragCrest(x0, z0, c, up, rng, minSize, out) {
     const W = this.world;
+    const startAt = out.length;              // stub groups are dropped, as above
     const scale = clamp((8 + c.hard * 8 + c.s * 5) * (0.80 + rng() * 0.45), 7, 15);
     const n = 4 + ((rng() * 5) | 0);
     const step = scale * (0.62 + rng() * 0.26);
@@ -698,9 +709,9 @@ export class RockScatter {
               0.12, 0.0, out, 0.14, 'sag', 0.16, yaw);
           }
         }
-
       }
     }
+    if (out.length - startAt < 4) out.length = startAt;
   }
 
   // ── the single placement routine ───────────────────────────────────────────
