@@ -36,6 +36,19 @@ export class Engine {
     this._frameTimes = [];
     this._lastAdapt = 0;
 
+    // Automatic tier fallback. Resolution scaling alone cannot save a machine
+    // that is short of frame time, because it refuses to go below native — so
+    // once it is pinned at its floor and still missing the target, the only
+    // honest lever left is fewer effects. Measured on the player's window:
+    // ultra 32 fps, medium 75. A player should not have to find that menu.
+    //
+    // Never steps back up: recovering would re-enter the state that triggered
+    // the step and oscillate. An explicit ?quality= is respected and never
+    // overridden.
+    this.autoQuality = !new URLSearchParams(location.search).get('quality');
+    this._strainSince = 0;
+    this.onQualityAutoChange = null;
+
     this.renderer.setPixelRatio(this.basePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -136,10 +149,38 @@ export class Engine {
 
     const floor = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
     next = Math.max(floor, Math.min(1, next));
+
+    // Pinned at the floor and still well over budget: resolution has nothing
+    // left to give. Hold that state for a few seconds — a hitchy stretch of
+    // streaming should not trigger a tier change — then drop a tier.
+    if (next <= floor + 1e-4 && p80 > target * 1.35) {
+      if (!this._strainSince) this._strainSince = now;
+      else if (now - this._strainSince > 4000) {
+        this._strainSince = 0;
+        if (this._stepQualityDown(p80)) return;
+      }
+    } else {
+      this._strainSince = 0;
+    }
     if (Math.abs(next - this.resolutionScale) < 0.005) return;
 
     this.resolutionScale = next;
     this._applyResolution();
+  }
+
+  /** Drop one quality band. Returns whether it moved. */
+  _stepQualityDown(p80) {
+    if (!this.autoQuality) return false;
+    const ORDER = ['ultra', 'high', 'medium', 'low'];
+    const i = ORDER.indexOf(this.quality);
+    if (i < 0 || i === ORDER.length - 1) return false;
+    const next = ORDER[i + 1];
+    console.warn(`[engine] ${p80.toFixed(0)} ms/frame at minimum resolution — ` +
+                 `dropping quality ${this.quality} -> ${next}`);
+    this._autoDropped = true;
+    this.setQuality(next);
+    this.onQualityAutoChange?.(next, p80);
+    return true;
   }
 
   _applyResolution() {

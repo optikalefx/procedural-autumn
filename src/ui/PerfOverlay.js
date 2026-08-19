@@ -79,7 +79,7 @@ export class PerfOverlay {
       lines.push(
         `res  ${eff.toFixed(2)}x  (${(e.resolutionScale * 100).toFixed(0)}% of ${e.basePixelRatio.toFixed(2)})` +
         (soft ? '  <span style="color:#ff7a6b">BELOW NATIVE</span>' : ''),
-        `px   ${mp.toFixed(2)} MP   dpr ${window.devicePixelRatio}   ${e.quality}`,
+        `px   ${mp.toFixed(2)} MP   dpr ${window.devicePixelRatio}   ${e.quality}${e._autoDropped ? ' (auto)' : ''}`,
       );
     }
     // Audio state. "The sound is gone" is otherwise undiagnosable: the context
