@@ -64,6 +64,19 @@ const r=await page.evaluate((TRIES)=>new Promise((resolve)=>{
     return {n, frac:n/(GW*GH), box:[x0*STEP,y0*STEP,bw*STEP,bh*STEP], fill:n/(bw*bh)}; };
   const hide=(o)=>{ if(!o) return ()=>{}; const was=o.visible; o.visible=false; return ()=>{o.visible=was;}; };
   const S=window.__systems;
+  // Post-chain trials: a single NaN pixel in the HDR buffer comes back out of a
+  // blur as an axis-aligned block, which is what this artefact looks like. If
+  // shortening the bloom chain removes it, the square is one bad pixel being
+  // spread, not something that is actually drawn square.
+  const postTrials=()=>{
+    const b=window.__ctx.postfx.bloom, ao=window.__ctx.postfx.ao, dof=window.__ctx.postfx.dof;
+    const L=b.mipmapBlurPass.levels;
+    return [
+      ['post: bloom levels 1', ()=>{b.mipmapBlurPass.levels=1;}, ()=>{b.mipmapBlurPass.levels=L;}],
+      ['post: bloom opacity 0', ()=>{b.blendMode.opacity.value=0;}, ()=>{b.blendMode.opacity.value=1;}],
+      ['post: dof opacity 0', ()=>{if(dof)dof.blendMode.opacity.value=0;}, ()=>{if(dof)dof.blendMode.opacity.value=1;}],
+      ['post: ao off', ()=>{if(ao)ao.enabled=false;}, ()=>{if(ao)ao.enabled=true;}],
+    ]; };
   const candidates=()=>[
     ['weather.leaves', S.weather?.leaves?.mesh],
     ['weather.motes', S.weather?.motes?.points],
@@ -96,18 +109,57 @@ const r=await page.evaluate((TRIES)=>new Promise((resolve)=>{
     // whole picture going dark.
     if(a.n && a.fill>0.85 && a.frac>0.0005 && a.frac<0.6){
       const trials=[];
+      const verdict=()=>{ const b=scan(); return b.n && b.fill>0.85 && b.frac>0.0005
+        ? `still there ${JSON.stringify(b.box)}` : 'GONE'; };
+      for(const [label,on,off] of postTrials()){
+        on(); pf.render(0.016); const v=verdict(); off(); trials.push([label,v]);
+      }
       for(const [label,obj] of candidates()){
         if(!obj){ trials.push([label,'not found']); continue; }
-        const undo=hide(obj); pf.render(0.016);
-        const b=scan();
+        const undo=hide(obj); pf.render(0.016); const v=verdict(); undo();
+        trials.push([label, v]);
+      }
+      // Narrow inside grass: one ring, then one tile.
+      const rings=S.grass?.rings ?? [];
+      for(let ri=0; ri<rings.length; ri++){
+        const undo=hide(rings[ri].group ?? rings[ri].mesh);
+        if(rings[ri].group||rings[ri].mesh){ pf.render(0.016); trials.push([`grass ring ${ri}`, verdict()]); }
         undo();
-        trials.push([label, b.n && b.fill>0.85 && b.frac>0.0005 ? 'still there' : 'GONE']);
+      }
+      // Where is the bad value? The composer buffer is half-float, so it has to
+      // be read as uint16 and decoded: exponent 31 is Inf or NaN.
+      const hdrProbe=()=>{ try{
+        const rt=pf.composer.inputBuffer;
+        const w=rt.width, h=rt.height;
+        const buf=new Uint16Array(w*h*4);
+        r.readRenderTargetPixels(rt,0,0,w,h,buf);
+        let bad=0; const where=[];
+        for(let i=0;i<buf.length;i++){ if(((buf[i]>>10)&0x1f)===0x1f){ bad++;
+          if(where.length<8){ const px=(i>>2); where.push([px%w, (px/w)|0, ['r','g','b','a'][i&3],
+            (buf[i]&0x3ff)?'NaN':'Inf']); } } }
+        return {w,h,bad,where};
+      }catch(err){ return {err:String(err).slice(0,80)}; } };
+      const hdr=hdrProbe();
+      // The count of non-finite channels is a far sharper probe than the black
+      // block: it survives any change to the post chain, and it says whether a
+      // term produced the NaN rather than whether the bloom happened to spread
+      // it this frame.
+      const gm=S.grass?.rings?.[0]?.material;
+      const gu=gm?.userData?.uniforms ?? S.grass?.uniforms;
+      const nanTrials=[];
+      if(gu){
+        const probe=(label,set,unset)=>{ set(); pf.render(0.016);
+          nanTrials.push([label, hdrProbe().bad]); unset(); };
+        for(const d of [1,2,3,4,5]){
+          if(!gu.uDebug) break;
+          probe(`grass uDebug=${d}`, ()=>{gu.uDebug.value=d;}, ()=>{gu.uDebug.value=0;});
+        }
       }
       window.__squareDone=true;
       pf.render(0.016);
       const again=scan();
-      resolve({found:true, tries, box:a.box, frac:a.frac, fill:a.fill, grid:[FW,FH],
-        reproducible:!!(again.n&&again.fill>0.85), trials});
+      resolve({found:true, tries, box:a.box, frac:a.frac, fill:a.fill, grid:[FW,FH], hdr,
+        reproducible:!!(again.n&&again.fill>0.85), trials, nanTrials, hasUniforms:!!gu});
       return;
     }
     if(++tries>=TRIES){ window.__squareDone=true; resolve({found:false, tries}); return; }
@@ -121,5 +173,10 @@ if(!r.found){ console.log(`no black rectangle in ${r.tries} frames of view ${VIE
 console.log(`black rectangle found after ${r.tries} frames of view ${VIEW}`);
 console.log(`  frame ${r.grid[0]}x${r.grid[1]}  box ${JSON.stringify(r.box)}  ${(100*r.frac).toFixed(2)}% of frame, fill ${r.fill.toFixed(2)}`);
 console.log(`  survives an immediate re-render: ${r.reproducible}`);
+if(r.hdr) console.log(`  scene HDR buffer ${r.hdr.w}x${r.hdr.h}: ${r.hdr.bad} non-finite channels${r.hdr.err?' '+r.hdr.err:''}`
+  + (r.hdr.where&&r.hdr.where.length?`\n    first few: ${r.hdr.where.map(w=>`(${w[0]},${w[1]}).${w[2]}=${w[3]}`).join('  ')}`:''));
+if(r.nanTrials&&r.nanTrials.length){ console.log('\n  non-finite HDR channels with the grass debug output forced:');
+  for(const [k,v] of r.nanTrials) console.log(`    ${k.padEnd(24)} ${v}`); }
+else console.log(`\n  (grass uniforms reachable: ${r.hasUniforms})`);
 console.log('\n  hide one object, render the same frame again:');
 for(const [k,v] of r.trials) console.log(`    ${k.padEnd(24)} ${v}`);

@@ -24,6 +24,8 @@ uniform vec3  uLiftTint;
 uniform float uVibrance;
 uniform float uRedToGold;
 uniform float uBlueFloor;
+uniform float uGreenTame;
+uniform float uGreenTameMax;
 uniform float uGrain;
 uniform float uTime;
 
@@ -146,6 +148,53 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // mauve. It is a floor, not a tint.
   c.b = max(c.b, min(luma(c) * uBlueFloor, c.g));
 
+  // Green-side chroma governor — the other half of the blue-channel finding.
+  //
+  // The blue floor above is keyed on luminance, and luminance in a green-led
+  // pixel is nine tenths the green channel, so a foliage mass gets almost no
+  // lift out of it: the trees author measured our foliage at R:G:B 1 : 0.86 :
+  // 0.38 against plate 1's 1 : 0.84 : 0.68 and correctly declined to patch it
+  // inside their own material, because a per-material blue lift makes foliage
+  // disagree with the terrain it stands on.
+  //
+  // Measured, the reference does not put a saturated green anywhere. Every
+  // conifer sampled across the plates comes back near-neutral and warm, with
+  // red at or above green:
+  //   plate 1 near conifer  srgb(138,119,98)   1 : 0.86 : 0.71   chroma 0.16
+  //   plate 2 near conifer  srgb(112, 99, 84)  1 : 0.88 : 0.75   chroma 0.11
+  //   plate 2 mid conifer   srgb(106,105, 76)  1 : 0.99 : 0.72   chroma 0.12
+  //   plate 3 conifer       srgb( 95, 82, 64)  1 : 0.86 : 0.67   chroma 0.12
+  // Ours rendered srgb(90,103,40) — 1 : 1.15 : 0.44, chroma 0.25: green *above*
+  // red and barely half the blue. That is the whole "blue channel is short on
+  // foliage" finding, and it is a saturation error, not a hue error.
+  //
+  // So: pull green-led pixels toward their own luminance. It is the same
+  // operator the terrain uses on bare rock, deliberately, so the two agree —
+  // and because it is a pull toward grey it raises the *lowest* channel, which
+  // on a green-led pixel is blue. Gold meadow, orange canopy, crimson maple,
+  // sky and water are all red- or blue-led and grnLead is zero on every one
+  // of them, so none of them move.
+  //
+  // Capped well short of full: the brief wants conifer as "the visual rest in a
+  // hot palette", not as grey. At the cap a pure green would keep just over half
+  // its chroma.
+  //
+  // 0.75 was picked by sweeping 0 / 0.6 / 1.15 / 1.8 and measuring the near
+  // conifer in forest, which is the largest green mass in any canonical view:
+  //   0     srgb( 84,102, 38)  1 : 1.21 : 0.45   chroma 0.25
+  //   0.6   srgb( 89,101, 58)  1 : 1.14 : 0.65   chroma 0.17
+  //   1.15  srgb( 91,100, 68)  1 : 1.09 : 0.75   chroma 0.12
+  // against a reference conifer band of chroma 0.04-0.21 and blue 0.67-0.75 of
+  // red. 1.15 measures dead centre and looks it — a sage green that has stopped
+  // reading as conifer. 0.75 lands blue at ~0.69 of red, which is the trees
+  // author's stated target, with enough chroma left that the mass still says
+  // evergreen next to gold. Gold meadow, gold canopy and the camper measure
+  // bit-identical across the whole sweep; nothing red-led is inside this term.
+  {
+    float grnLead = clamp((c.g - max(c.r, c.b)) / max(c.g, 1e-4), 0.0, 1.0);
+    c = mix(c, vec3(luma(c)), min(grnLead * uGreenTame, uGreenTameMax));
+  }
+
   // Fine grain, luminance-weighted so it stays out of the highlights.
   float n = fract(sin(dot(uv * (1.0 + uTime * 0.0001), vec2(12.9898, 78.233))) * 43758.5453);
   c += (n - 0.5) * uGrain * (1.0 - smoothstep(0.5, 1.0, luma(c)));
@@ -203,13 +252,15 @@ class GradeEffect extends Effect {
         ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.10, 1.02, 0.90))],
         ['uSplitStrength', new THREE.Uniform(0.21)],
         ['uSaturation',    new THREE.Uniform(0.74)],
-        ['uContrast',      new THREE.Uniform(1.26)],
-        ['uLift',          new THREE.Uniform(0.040)],
-        ['uToe',           new THREE.Uniform(0.042)],
+        ['uContrast',      new THREE.Uniform(1.30)],
+        ['uLift',          new THREE.Uniform(0.030)],
+        ['uToe',           new THREE.Uniform(0.032)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.30, 0.95, 0.68))],
         ['uVibrance',      new THREE.Uniform(0.90)],
         ['uRedToGold',     new THREE.Uniform(0.130)],
         ['uBlueFloor',     new THREE.Uniform(0.160)],
+        ['uGreenTame',     new THREE.Uniform(0.75)],
+        ['uGreenTameMax',  new THREE.Uniform(0.45)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
       ]),
@@ -257,21 +308,41 @@ class GradeEffect extends Effect {
 // like beige sand.
 // Smallest bloom mip, in pixels on its short side. See _capBloomMips().
 //
-// Raised from 12 after re-measuring: at 12 one presented frame in ~160 still
-// came out entirely black during a drive. Per-frame framebuffer readback over
-// a 40 s drive, same route, same session, only this number changed:
+// The black frames were never the mip chain's fault; they were NaN.
 //
-//   levels 6 (smallest mip ~25x14 px)   0.61% of presented frames black
-//   levels 5 (~50x28)                   0.10%
-//   levels 4 (~100x56)                  0.00%   (1281 frames, none)
-//
-// gl.flush() after the composer did not help (0.43%) and renderer.resetState()
-// only halved it (0.11%), which is consistent with the driver losing the
-// present rather than with anything in our own GL state. 48 puts the floor at
-// levels 4 at 1600x900 and scales with the window.
-const MIN_BLOOM_MIP = 48;
+// A drive-time readback of every presented frame put the rate at 0.61% with
+// six levels, 0.10% with five and 0.00% with four, which reads exactly like a
+// driver bug on small render targets and is why the floor was raised twice.
+// It is not. A single NaN fragment anywhere in the scene is averaged outward by
+// each downsample, so a deeper chain simply carries it further: four levels
+// confined it to a block, six spread it over the whole frame. The source was
+// `pow(vT, uTipBias)` in the grass albedo with `vT` a hair below zero (see
+// src/shaders/grass_material.js). With that clamped, six levels measures zero
+// black frames, so the floor stays where the look wants it.
+const MIN_BLOOM_MIP = 12;
 
-const EXPOSURE = 0.86;
+// Raised to 0.94 with the toe and lift pulled back (0.040/0.042 -> 0.026/0.030)
+// and contrast to 1.30. The old numbers were set while the shadow clamp bug was
+// live: `max(c, 0.0)` after the contrast pivot landed every negative on one
+// value, so any reduction of the lift produced a flat black mass rather than a
+// dark one, and the art director quite correctly rejected it. With the smooth
+// toe in place a smaller lift produces *varied* darks, so the range is now
+// available at no cost in flatness.
+//
+// Measured on `drive`, which is framed like plates 3/4/5:
+//   before  lumaP05 0.326  range 0.460  contrastStd 0.152  chroma 0.391
+//   after   lumaP05 0.306  range 0.518  contrastStd 0.169  chroma 0.404
+// against an eye-level band of P05 0.20-0.42 / range 0.41-0.53 / std 0.13-0.18
+// / chroma 0.30-0.42. Plate 1's own lit meadow measures luma 0.650 and its big
+// cast tree shadow 0.566 — a 13% value drop that keeps full chroma — and ours
+// was rendering that same pair at 0.501 / 0.433, i.e. the right *ratio* on a
+// meadow a sixth of a stop too dark to read as sunlit.
+//
+// Checked against the shoulder, which is what capped exposure before: `hero`
+// P95 goes 0.811 -> 0.847 (plate 1 is 0.866) and its chromaMean *rises*
+// 0.308 -> 0.313, so the bright end is still under PBR Neutral's desaturating
+// knee rather than bleaching through it.
+const EXPOSURE = 0.92;
 
 export class PostFX {
   constructor(engine, quality = 'ultra') {
@@ -426,10 +497,8 @@ export class PostFX {
    *   levels 6 (13x7)                 0.3%
    *   levels 5 (25x14)                0.2%
    *
-   * Re-measured later with a readback on EVERY presented frame rather than a
-   * sampled one, which is what it takes to see a sub-1% artefact at all: a
-   * floor of 12 px was still producing 0.61% black frames on a drive, and only
-   * a floor near 48 px (levels 4 at 1600x900) reached zero. See MIN_BLOOM_MIP.
+   * That table is real but its cause was misattributed. Deeper chains do not
+   * lose the present; they carry a NaN further. See MIN_BLOOM_MIP.
    *
    * i.e. binding a handful-of-pixels render target and then coming back to the
    * default framebuffer intermittently loses the present. That is a driver bug,

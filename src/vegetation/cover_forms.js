@@ -232,6 +232,50 @@ function skirt(b, w, rng, count = 5, chan = 0.0) {
   }
 }
 
+/**
+ * A shell of leafy shoots over a foliage mass — two triangles each, and they
+ * are what the silhouette is actually made of.
+ *
+ * This replaced a shell of small octahedral buds, and the reason is worth
+ * keeping. A low-poly lobe is a convex polyhedron: at 2 m each of its eight
+ * faces is a flat plate several centimetres across, and jittering the vertices
+ * only makes the plates more obviously plates. Zoomed, a bush built that way
+ * reads as a stack of folded dark card. Thirty small blades breaking the
+ * outline instead read as brush marks, which is both what the plates paint and
+ * what the brief asks for — and at two triangles each they cost a quarter of
+ * what the buds did.
+ *
+ * Placement is on the golden angle up a rising shell, so no two neighbours
+ * share a height band and the outline never stripes.
+ */
+function leafShell(b, h, w, count, rng, chanBase, o = {}) {
+  const wide = o.wide ?? 0.058;
+  const len = o.len ?? 0.17;
+  for (let i = 0; i < count; i++) {
+    const a = i * 2.39996 + rng() * 0.6;
+    const t = (i + 0.5) / count;
+    // Bases sit near the outer edge of the core, and the blade is short enough
+    // that its tip lands only about a quarter of a radius beyond it. Longer
+    // blades — the first attempt used nearly half the bush's width — project
+    // as straight rigid planks radiating out of the mass, which is worse than
+    // the smooth blob they were meant to fix.
+    const r = w * (0.24 + 0.20 * Math.sin(t * Math.PI)) * (0.82 + rng() * 0.36);
+    frond(b, {
+      x: Math.cos(a) * r, y: h * (0.12 + t * 0.80), z: Math.sin(a) * r,
+      yaw: a + (rng() - 0.5) * 1.1,
+      // Capped short of horizontal: a blade lying flat reads as a plank.
+      tilt: (o.tilt ?? 0.30) + rng() * 0.62,
+      len: w * len * (0.7 + rng() * 0.7),
+      w: w * wide * (0.7 + rng() * 0.6),
+      // taper 0.55 leaves the blade near-parallel-sided: a strongly tapered
+      // strip is a spike, and a fan of spikes is the almond pile again.
+      segs: 1, droop: 0.30, taper: 0.55,
+      chanA: chanBase, chanB: chanBase + 0.60,
+      aoA: 0.60 + t * 0.30, aoB: 1.0, swayA: 0.45, trans: 1.0,
+    });
+  }
+}
+
 /** A flat-ish leaf blade lying near the ground — the broadleaf undergrowth. */
 function leafBlade(b, ox, oy, oz, yaw, len, wide, tilt, chan, trans) {
   const dx = Math.cos(yaw), dz = Math.sin(yaw);
@@ -312,32 +356,23 @@ function buildShrubDark(rng) {
   // across a third of the frame.
   const h = 1.00 + rng() * 0.66;
   const w = h * (1.02 + rng() * 0.46);            // decisively wider than tall
-  // Two big overlapping lobes rather than one, so the dome is asymmetric and
-  // the silhouette has a shoulder. A single lobe plus buds reads as a ball with
-  // warts; two masses read as a bush that grew on one side first.
+  // Two overlapping cores carry the value and nothing else — they live inside
+  // the leaf shell and should barely reach the outline. Asymmetric, so the
+  // mass reads as a bush that grew on one side first rather than as a dome.
   for (let i = 0; i < 2; i++) {
     const a = i * Math.PI + rng() * 1.2;
-    const r = w * 0.19 * i;
-    lobe(b, Math.cos(a) * r, h * (0.38 + rng() * 0.14), Math.sin(a) * r,
-         w * (0.44 + rng() * 0.14), h * (0.34 + rng() * 0.10), w * (0.42 + rng() * 0.14), 1, rng,
-         { chan: 0.05 + rng() * 0.12, trans: 0.42, ragged: 0.38, lift: 0.34 });
+    const r = w * 0.17 * i;
+    // Only the first is subdivided. Both cores live inside the blade shell and
+    // never reach the outline, so the second is buying value and nothing else,
+    // and eight faces buy value as well as thirty-two do. Across the ~900
+    // instances this archetype streams that is 22 k triangles for no visible
+    // difference — measured by swapping it and comparing the crops.
+    lobe(b, Math.cos(a) * r, h * (0.34 + rng() * 0.12), Math.sin(a) * r,
+         w * (0.32 + rng() * 0.10), h * (0.28 + rng() * 0.09), w * (0.30 + rng() * 0.10),
+         i === 0 ? 1 : 0, rng,
+         { chan: 0.05 + rng() * 0.10, trans: 0.42, ragged: 0.30, lift: 0.34 });
   }
-  const n = 6 + ((rng() * 3) | 0);
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * TAU + rng() * 0.9;
-    const r = w * (0.30 + rng() * 0.34);
-    // SIZE is what makes an 8-face lobe legal here. At the previous
-    // 0.24-0.44 w each bud was eight flat facets a third of a metre across,
-    // and at 2 m the bush silhouetted as a stack of black slabs — the single
-    // worst asset in the close-up. At 0.13-0.23 w the same eight facets are a
-    // few centimetres each and read as the bitten edge they were meant to be.
-    // More of them, smaller, also costs fewer triangles than subdividing.
-    const s = w * (0.13 + rng() * 0.10);
-    lobe(b, Math.cos(a) * r, h * (0.24 + rng() * 0.52), Math.sin(a) * r,
-         s, s * (0.72 + rng() * 0.32), s, 0, rng,
-         { chan: 0.10 + rng() * 0.35, trans: 0.72, ragged: 0.34, lift: 0.46 });
-  }
-  fringe(b, h, w, 10, rng, 0.30);
+  leafShell(b, h, w, 38, rng, 0.14);
   skirt(b, w, rng, 5, 0.0);
   return b.finish(h);
 }
@@ -347,24 +382,16 @@ function buildShrubBerry(rng) {
   const b = new Builder();
   const h = 0.95 + rng() * 0.60;
   const w = h * (0.95 + rng() * 0.40);
-  lobe(b, 0, h * 0.44, 0, w * 0.50, h * 0.42, w * 0.48, 1, rng,
-       { chan: 0.12, trans: 0.80, ragged: 0.38, lift: 0.38 });
-  const n = 6 + ((rng() * 3) | 0);
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * TAU + rng() * 1.0;
-    const r = w * (0.30 + rng() * 0.36);
-    const s = w * (0.13 + rng() * 0.11);
-    // A couple of lobes ride high on the accent channel, so the bush turns
-    // colour in patches the way a real one does, not uniformly.
-    lobe(b, Math.cos(a) * r, h * (0.28 + rng() * 0.56), Math.sin(a) * r,
-         s, s * 0.82, s, 0, rng,
-         { chan: rng() < 0.45 ? 0.85 : 0.20, trans: 0.95, ragged: 0.34, lift: 0.46 });
-  }
-  fringe(b, h, w, 9, rng, 0.15);
+  lobe(b, 0, h * 0.40, 0, w * 0.34, h * 0.34, w * 0.32, 1, rng,
+       { chan: 0.12, trans: 0.80, ragged: 0.32, lift: 0.38 });
+  // A third of the shell rides the accent channel, so the bush turns colour in
+  // patches the way a real one does rather than uniformly.
+  leafShell(b, h, w, 22, rng, 0.10);
+  leafShell(b, h, w, 12, rng, 0.55, { len: 0.15 });
   for (let i = 0; i < 3; i++) {                    // berry knots, fully accent
-    const a = rng() * TAU, r = w * (0.40 + rng() * 0.36);
-    lobe(b, Math.cos(a) * r, h * (0.40 + rng() * 0.42), Math.sin(a) * r,
-         w * 0.075, w * 0.062, w * 0.075, 0, rng,
+    const a = rng() * TAU, r = w * (0.34 + rng() * 0.32);
+    lobe(b, Math.cos(a) * r, h * (0.38 + rng() * 0.42), Math.sin(a) * r,
+         w * 0.070, w * 0.058, w * 0.070, 0, rng,
          { chan: 1.0, trans: 0.35, ragged: 0.24, lift: 0.3 });
   }
   skirt(b, w, rng, 5, 0.0);
@@ -391,36 +418,19 @@ function buildScrubDry(rng) {
   const w = h * (1.50 + rng() * 0.95);
   for (let i = 0; i < 2; i++) {
     const a = i * 2.4 + rng() * 1.4;
-    const r = w * 0.15 * i;
-    lobe(b, Math.cos(a) * r, h * (0.30 + rng() * 0.12), Math.sin(a) * r,
-         w * (0.38 + rng() * 0.14), h * (0.30 + rng() * 0.10), w * (0.36 + rng() * 0.14), 1, rng,
-         { chan: 0.0, trans: 0.55, ragged: 0.44, lift: 0.32 });
+    const r = w * 0.14 * i;
+    // Only the first core is subdivided. There are several hundred of these on
+    // a hillside and the second lobe is entirely inside the blade shell, so it
+    // is buying value, not silhouette, and eight faces buy that just as well.
+    lobe(b, Math.cos(a) * r, h * (0.28 + rng() * 0.12), Math.sin(a) * r,
+         w * (0.30 + rng() * 0.12), h * (0.28 + rng() * 0.10), w * (0.28 + rng() * 0.12),
+         i === 0 ? 1 : 0, rng,
+         { chan: 0.0, trans: 0.55, ragged: 0.36, lift: 0.32 });
   }
-  const n = 5 + ((rng() * 3) | 0);
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * TAU + rng() * 0.9;
-    const r = w * (0.24 + rng() * 0.30);
-    const s = w * (0.10 + rng() * 0.09);
-    lobe(b, Math.cos(a) * r, h * (0.22 + rng() * 0.44), Math.sin(a) * r,
-         s, s * (0.66 + rng() * 0.30), s, 0, rng,
-         { chan: 0.30 + rng() * 0.45, trans: 0.85, ragged: 0.42, lift: 0.50 });
-  }
-  // Stiff twiggy sprays standing proud of the body. Short and thin: they are
-  // an edge treatment on a mass, and the moment they get long enough to be
-  // read individually the almond problem comes straight back.
-  const sprays = 9 + ((rng() * 5) | 0);
-  for (let i = 0; i < sprays; i++) {
-    const a = (i / sprays) * TAU + rng() * 0.7;
-    const t = 0.25 + rng() * 0.55;
-    frond(b, {
-      x: Math.cos(a) * w * 0.26 * t, y: h * (0.28 + rng() * 0.38), z: Math.sin(a) * w * 0.26 * t,
-      yaw: a + (rng() - 0.5) * 0.8,
-      tilt: 0.30 + rng() * 0.80,
-      len: h * (0.40 + rng() * 0.44), w: h * 0.028,
-      segs: 1, droop: 0.20, taper: 0.92,
-      chanA: 0.45, chanB: 1.0, aoA: 0.85, aoB: 1.0, swayA: 0.65, trans: 1.0,
-    });
-  }
+  // Broad short blades, not sprays. The whole point of the rebuild is that a
+  // long tapered strip seen flat-on is a pale oval; keeping them short and
+  // near-parallel-sided keeps them reading as a bristly edge on a mass.
+  leafShell(b, h, w, 26, rng, 0.30, { wide: 0.055, len: 0.19, tilt: 0.42 });
   skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
@@ -439,10 +449,11 @@ function buildThicket(rng) {
     const r = w * 0.32 * rng();
     const top = h * (0.62 + rng() * 0.38);
     lobe(b, Math.cos(a) * r, top * 0.62, Math.sin(a) * r,
-         w * (0.36 + rng() * 0.22), top * 0.40, w * (0.34 + rng() * 0.20), 1, rng,
+         w * (0.36 + rng() * 0.22), top * 0.40, w * (0.34 + rng() * 0.20),
+         i === 0 ? 1 : 0, rng,
          { chan: rng() * 0.35, trans: 0.85, ragged: 0.40, lift: 0.36 });
   }
-  fringe(b, h, w, 10, rng, 0.35);
+  leafShell(b, h, w, 28, rng, 0.30, { wide: 0.042, len: 0.16 });
   skirt(b, w, rng, 5, 0.10);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {
@@ -587,7 +598,7 @@ function buildSeedHead(rng) {
  */
 function buildLeafDrift(rng) {
   const b = new Builder();
-  const R = 0.9 + rng() * 0.9;
+  const R = 0.55 + rng() * 0.55;
   const n = 10;
   const c = b.vert(0, 0.055, 0, 0, 1, 0, 0.25, 1.0, 0.0, 0.35);
   const rim = [];
@@ -698,14 +709,19 @@ function buildPebble(rng, variant) {
   const b = new Builder();
   const big = variant === 1;
   const n = big ? 2 + ((rng() * 2) | 0) : 3 + ((rng() * 3) | 0);
-  const R = big ? 0.19 + rng() * 0.15 : 0.070 + rng() * 0.065;
+  // Hard ceiling on the size. At the first pass the large variant reached
+  // 0.34 m before instance scale and rendered as metre-wide dark wedges dotted
+  // over the meadow — boulders, which belong to the rocks system, not stones,
+  // which belong here. The whole point of this archetype is the *bottom* of
+  // the size hierarchy.
+  const R = big ? 0.090 + rng() * 0.080 : 0.055 + rng() * 0.055;
   for (let i = 0; i < n; i++) {
     const a = rng() * TAU, r = R * (0.4 + rng() * 1.5);
     const s = R * (0.45 + rng() * 0.75);
     lobe(b, Math.cos(a) * r, s * (0.30 + rng() * 0.22), Math.sin(a) * r,
          s, s * (0.40 + rng() * 0.30), s * (0.70 + rng() * 0.50), 0, rng,
-         { chan: rng() * 0.9, trans: 0.0, ragged: 0.44, lift: 0.30,
-           ao: 0.74 + rng() * 0.26, sway: 0 });
+         { chan: 0.30 + rng() * 0.65, trans: 0.0, ragged: 0.44, lift: 0.30,
+           ao: 0.80 + rng() * 0.20, sway: 0 });
   }
   return b.finish(R);
 }
@@ -787,6 +803,34 @@ function buildBranch(rng) {
 //  triangle budget, and it is also the right art call: the far field should be
 //  composed of the big shapes only.
 
+//  `shadow` casts into the sun's shadow map. `recv` is **false everywhere**,
+//  and that is a bug fix, not a style choice.
+//
+//  Every mesh in this layer used to do both, and the result was that shrubs,
+//  logs, stumps and scrub rendered as flat, hueless, near-black silhouettes
+//  with no normal response at all — the exact pathology the critic measured
+//  across "rock, cliff, bush, understory and terrain". The cause is
+//  self-shadowing: the shadow pass draws the same displaced geometry through
+//  `customDepthMaterial`, the sun's shadow is 24 soft blur samples wide, and
+//  there is not enough normal bias to keep a 20 cm form out of its own shadow.
+//  Ground-hugging forms had it worse still, picking up the terrain's bias
+//  envelope as well. Proof: forcing the log's albedo to white left it black
+//  with receive on, and turning receive off restored a correctly lit, clearly
+//  faceted cylinder at the palette value.
+//
+//  It is also, separately, where all this layer's frame time was going.
+//  `tools/perf.mjs --seconds 45 --res 1536`, median frame time:
+//
+//      cover removed from the scene          15.4 ms
+//      cover present, no shadows at all      14.9 ms   (the geometry is free)
+//      cover present, cast only              15.8 ms   (+0.4)
+//      cover present, cast and receive       27.9 ms   (+12.5)
+//
+//  Receiving is paid per fragment, and a scatter layer covers a large share of
+//  the near field. Logged in docs/INTEGRATION_REQUESTS.md — if the sun's
+//  `shadow.normalBias` is raised, foliage could receive again and a bush
+//  standing inside a tree's shadow band would stop reading as lit.
+//
 //  `card` selects the double-sided material. Every archetype whose silhouette
 //  is carried by strips wants it — a `fringe` spray is a one-sided quad, so on
 //  a front-sided material roughly half of every bush's ragged edge was simply
@@ -794,23 +838,23 @@ function buildBranch(rng) {
 //  boxy blobs. The closed forms (stones, logs) stay front-sided.
 
 export const COVER_ARCHETYPES = [
-  { key: 'shrubDark',   variants: 3, card: true,  cap: 150, vis: 240, band: 3, wind: 0.030, shadow: true,  build: buildShrubDark },
-  { key: 'shrubBerry',  variants: 2, card: true,  cap: 100, vis: 165, band: 2, wind: 0.032, shadow: true,  build: buildShrubBerry },
-  { key: 'scrubDry',    variants: 3, card: true,  cap: 150, vis: 135, band: 2, wind: 0.075, shadow: false, build: buildScrubDry },
-  { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, wind: 0.055, shadow: true,  build: buildThicket },
-  { key: 'fern',        variants: 2, card: true,  cap: 380, vis: 64,  band: 1, wind: 0.045, shadow: false, build: buildFern },
-  { key: 'broadleaf',   variants: 2, card: true,  cap: 340, vis: 46,  band: 0, wind: 0.030, shadow: false, build: buildBroadleaf },
+  { key: 'shrubDark',   variants: 3, card: true,  cap: 300, vis: 190, band: 3, recv: false, wind: 0.030, shadow: true,  build: buildShrubDark },
+  { key: 'shrubBerry',  variants: 2, card: true,  cap: 130, vis: 155, band: 2, recv: false, wind: 0.032, shadow: false,  build: buildShrubBerry },
+  { key: 'scrubDry',    variants: 3, card: true,  cap: 240, vis: 110, band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
+  { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: false, wind: 0.055, shadow: true,  build: buildThicket },
+  { key: 'fern',        variants: 2, card: true,  cap: 380, vis: 64,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
+  { key: 'broadleaf',   variants: 2, card: true,  cap: 340, vis: 40,  band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
   { key: 'moss',        variants: 2, card: false, cap: 420, vis: 40,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss },
-  { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 48,  band: 0, wind: 0.055, shadow: false, build: buildFlowerAster },
-  { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 58,  band: 0, wind: 0.065, shadow: false, build: buildGoldenrod },
-  { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 52,  band: 0, wind: 0.085, shadow: false, build: buildSeedHead },
+  { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 42,  band: 0, recv: false, wind: 0.055, shadow: false, build: buildFlowerAster },
+  { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 44,  band: 0, recv: false, wind: 0.065, shadow: false, build: buildGoldenrod },
+  { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 44,  band: 0, recv: false, wind: 0.085, shadow: false, build: buildSeedHead },
   { key: 'leafDrift',   variants: 2, card: true,  cap: 260, vis: 120, band: 2, recv: false, wind: 0.006, shadow: false, build: buildLeafDrift },
-  { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, wind: 0.000, shadow: true,  build: buildLog },
-  { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, wind: 0.000, shadow: true,  build: buildStump },
-  { key: 'branch',      variants: 2, card: false, cap: 220, vis: 88,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
-  { key: 'pebble',      variants: 2, card: false, cap: 700, vis: 54,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
-  { key: 'leafScatter', variants: 2, card: true,  cap: 700, vis: 50,  band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
-  { key: 'deadTuft',    variants: 2, card: true,  cap: 760, vis: 48,  band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
+  { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildLog },
+  { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildStump },
+  { key: 'branch',      variants: 2, card: false, cap: 150, vis: 88,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
+  { key: 'pebble',      variants: 2, card: false, cap: 800, vis: 40,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 800, vis: 38,  band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
+  { key: 'deadTuft',    variants: 2, card: true,  cap: 620, vis: 38,  band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
 ];
 
 /** arch key -> index into COVER_ARCHETYPES, for the flat instance buffers. */

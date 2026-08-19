@@ -363,7 +363,13 @@ export function createGrassMaterial(shared, ring) {
           // pow(,<1) carries the warm tip colour a long way down the blade. A
           // linear (or smoothstep) ramp leaves the middle two-thirds at base
           // colour, which is what put a dead olive band across the midground.
-          vec3 col = mix( rootC, tipC, pow( vT, uTipBias ) );
+          // max(), because vT is a varying and a varying can land a hair outside
+          // the range its vertices span. pow(negative, 0.42) is NaN, and one NaN
+          // pixel is not a dead pixel: the bloom mip chain averages it outward
+          // until a whole block of the frame is NaN, which renders as the
+          // hard-edged black square players reported. Measured: a single
+          // fragment at the blade root, spread to 76x68 px at 1280x720.
+          vec3 col = mix( rootC, tipC, pow( max( vT, 0.0 ), uTipBias ) );
           // Occlusion at the root grounds the field into the terrain. Keep it
           // *shallow* — deep enough to read as contact, not so deep that
           // looking down into the canopy shows a brown floor.

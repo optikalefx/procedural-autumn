@@ -16,7 +16,10 @@ await page.routeWebSocket(/^wss?:\/\/(localhost|127\.0\.0\.1):5178\//, () => {})
 const p = new URLSearchParams({ res: RES }); if (QUALITY) p.set('quality', QUALITY);
 await page.goto(`http://localhost:5178/?${p}`, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
-await page.waitForTimeout(1200);
+// --warm 0 records from the first frame after __ready, which is where the boot
+// stall lives; the default skips it so steady-state numbers are not dominated
+// by one-off pipeline creation.
+await page.waitForTimeout(parseInt(arg('warm', '1200'), 10));
 if (EVAL) await page.evaluate(EVAL);
 await page.evaluate(() => {
   const e = window.__engine, r = e.renderer;
@@ -31,7 +34,7 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(SECONDS * 1000);
 const d = await page.evaluate(() => {
-  const f = window.__perf.frames.slice(60); window.__perfDrive = false;
+  const f = window.__perf.frames.slice(5); window.__perfDrive = false;
   const ms = f.map((x) => x.ms).sort((a, b) => a - b);
   const pct = (q) => ms.length ? ms[Math.min(ms.length - 1, Math.floor(q * ms.length))] : 0;
   return { n: f.length, p50: +pct(0.5).toFixed(2), p95: +pct(0.95).toFixed(2), p99: +pct(0.99).toFixed(2),

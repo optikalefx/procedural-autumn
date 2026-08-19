@@ -40,7 +40,7 @@ export function makeCoverUniforms() {
     uTransmit:     { value: 1.00 },
     // How dark the buried interior of a clump goes. Not zero — the brief is
     // explicit that shaded areas stay as tinted colour, never as holes.
-    uAoDepth:      { value: 0.64 },
+    uAoDepth:      { value: 0.72 },
   };
 }
 

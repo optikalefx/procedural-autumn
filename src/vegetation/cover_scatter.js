@@ -82,12 +82,19 @@ const PAL = {
   goldenrod:   C(0xf3d060),
   seedTip:     C(0xe3cd9e),
   litterWarm:  C(0xd4823a), litterGold:  C(0xe6b34c), litterRed: C(0xac3f38),
-  barkGrey:    C(0xa1968a), barkWarm:    C(0x8a7057),
+  // Weathered wood, and much paler than it looks written down. Forcing this
+  // pair to pure white and re-capturing showed a correctly lit, clearly
+  // faceted cylinder, so the normals and the light were always fine — the
+  // previous 0xa1968a simply arrived at the screen as a flat black band across
+  // the bottom of the `forest` frame. Plate 2 and plate 5 back the pale
+  // reading anyway: their fallen wood and driftwood are near the value of the
+  // rock, not the value of the shadow.
+  barkGrey:    C(0xd6ccbc), barkWarm:    C(0xb69878),
   // Ground substrate. Stone follows the brief's rock anchors exactly —
   // lavender-grey lit, violet-grey shaded, never brown-grey — and it is the
   // only cool note this layer puts at ground level. Straw sits just below the
   // sunlit meadow gold so a mat of it reads as texture, not as a bald patch.
-  stoneLit:    C(0xd0cbd9), stoneDeep:   C(0x8b88a0),
+  stoneLit:    C(0xdad5e2), stoneDeep:   C(0xa5a1b6),
   strawPale:   C(0xdcb264), strawDeep:   C(0xa88146),
 };
 
@@ -227,7 +234,7 @@ export class CoverScatter {
     if (!W.isInBounds(x, z)) return 0;
     if (W.getWaterDepth(x, z) > 0.08) return 0;
     if (W.getSlope(x, z) > 1.35) return 0;
-    return 1 - this.roads.sample(x, z) * 0.50;
+    return 1 - this.roads.sample(x, z) * 0.30;
   }
 
   // ── instance emission ──────────────────────────────────────────────────────
@@ -333,7 +340,7 @@ export class CoverScatter {
     const N = this.noise, W = this.world;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_GROUND);
-    const sites = Math.round(130 * this.mul);
+    const sites = Math.round(260 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_GROUND, key) * 4294967296) >>> 0);
@@ -353,15 +360,19 @@ export class CoverScatter {
 
       // Unnormalised weights; the roll below divides through by the total, so
       // these read as "how much more stone than straw", not as probabilities.
-      const wStone = 0.30 + w.rock * 2.2 + w.dirt * 0.5 + slope * 0.9
-                   + road * 1.6 - moist * 0.35;
-      const wLeaf  = 0.16 + lit * 2.4 + can * 0.55;
-      const wStraw = (0.60 + (1 - moist) * 0.85) * (1 - clamp01(can * 0.75));
+      const wStone = 0.55 + w.rock * 2.2 + w.dirt * 0.6 + slope * 0.9
+                   + road * 1.8 - moist * 0.35;
+      const wLeaf  = 0.35 + lit * 2.4 + can * 0.55;
+      // Straw was carrying two thirds of the mix and hitting its instance cap
+      // while stone and leaf sat at a quarter of theirs. It is also the weakest
+      // of the three: it sits inside the meadow's own gold, so it adds texture
+      // but no value or hue break, and the slab it is covering is gold too.
+      const wStraw = (0.34 + (1 - moist) * 0.55) * (1 - clamp01(can * 0.75));
       const wMoss  = Math.max(0, moist - 0.52) * 2.4 + can * 0.45 - road * 1.0;
       const wTwig  = 0.10 + can * 0.80 + lit * 0.35;
       const total = Math.max(1e-4, wStone + wLeaf + wStraw + wMoss + wTwig);
 
-      const members = 3 + ((rng() * (4 + acc * 5)) | 0);
+      const members = 4 + ((rng() * (5 + acc * 6)) | 0);
       const spread = 0.5 + rng() * (1.2 + acc * 2.4);
       for (let m = 0; m < members && n < cap; m++) {
         const ang = rng() * TAU, r = spread * Math.sqrt(rng());
@@ -372,7 +383,7 @@ export class CoverScatter {
         if ((roll -= wStone) < 0) {
           n = this._emit(out, n, cap, 'pebble', mx, mz, rng, {
             colA: PAL.stoneDeep, colB: PAL.stoneLit, sink: 0.02,
-            scale: 0.7 + rng() * 0.9, tone: 0.86 + rng() * 0.28, hue: 0.020,
+            scale: 0.65 + rng() * 0.55, tone: 0.86 + rng() * 0.28, hue: 0.020,
           });
         } else if ((roll -= wLeaf) < 0) {
           const warm = rng();
@@ -413,7 +424,7 @@ export class CoverScatter {
     const N = this.noise, W = this.world;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_OPEN);
-    const sites = Math.round(15 * this.mul);
+    const sites = Math.round(26 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_OPEN, key) * 4294967296) >>> 0);
@@ -507,7 +518,7 @@ export class CoverScatter {
     const N = this.noise, W = this.world;
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_SCRUB);
-    const sites = Math.round(10 * this.mul);
+    const sites = Math.round(22 * this.mul);
 
     for (let a = 0; a < sites && n < cap; a++) {
       const rng = mulberry32((hash2i(a, L_SCRUB, key) * 4294967296) >>> 0);
@@ -521,7 +532,7 @@ export class CoverScatter {
 
       const d = clamp01((1 - moist) * 1.15 - 0.10 + smoothstep(0.12, 0.62, slope) * 0.55
                         + patch * 0.45) * open * g;
-      if (rng() > d * 1.1) continue;
+      if (rng() > d * 1.5) continue;
 
       const tufts = 2 + ((rng() * (2 + d * 5)) | 0);
       const spread = 2.0 + rng() * 5.0;
@@ -706,7 +717,7 @@ export class CoverScatter {
         n = this._emit(out, n, cap, 'leafDrift', mx, mz, rng, {
           colA: warm < 0.6 ? PAL.litterWarm : PAL.litterGold,
           colB: warm < 0.3 ? PAL.litterRed : PAL.litterGold,
-          scale: 0.85 + rng() * 0.95, sink: 0.02,
+          scale: 0.75 + rng() * 0.65, sink: 0.02,
           tone: 0.90 + rng() * 0.22, hue: 0.028,
         });
       }
@@ -820,7 +831,7 @@ export class CoverScatter {
               n = this._emit(out, n, cap, 'leafDrift', mx, mz, rng, {
                 colA: rng() < 0.6 ? PAL.litterWarm : PAL.litterGold,
                 colB: rng() < 0.4 ? PAL.litterRed : PAL.litterGold,
-                scale: 0.9 + rng() * 1.1, sink: 0.02,
+                scale: 0.8 + rng() * 0.7, sink: 0.02,
                 tone: 0.90 + rng() * 0.22, hue: 0.028,
               });
             }

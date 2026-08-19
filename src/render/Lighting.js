@@ -31,6 +31,25 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 //  space on read; they land close to their hex after AgX because AgX keeps
 //  middle grey. Anything whose *linear* luminance exceeds ~0.9 will clip to
 //  white once bloom is applied, so the sky keys deliberately stay under it.
+//
+//  The daylight hor/sunHor keys were paled and lightened after measuring a
+//  vertical ladder up plate 1's sky against ours. The *zenith* keys were paled
+//  too and then put back: the vistas only ever see up to about 14 deg of sky, so
+//  they are lit almost entirely by `hor` and did not care, while `waterfall`
+//  pitches up and lost its blue — a blind A/B of the whole round picked the old
+//  frame for that view and the new one everywhere else, and this was the reason.
+//  So: pale the band the vistas actually see, and leave the dome blue.
+//
+//                        top of frame        mid sky          near the ridge
+//    plate 1        luma 0.89 chroma 0.02  0.88 / 0.02      0.80 / 0.15
+//    ours (before)  luma 0.78 chroma 0.21  0.84 / 0.33      0.83 / 0.33
+//    ours (after)   luma 0.80 chroma 0.21  0.87 / 0.29      —
+//
+//  The reference sky is a near-white dome that only turns peach where it meets
+//  the haze band; ours was a saturated peach slab, darkest at the top, and in
+//  the three vista views that slab is close to half the frame. The haze keeps
+//  its own colour — fogNear/fogFar are untouched — because that is what plate 1
+//  actually puts over its ridges (measured srgb(223,185,167), chroma 0.22).
 const KEYS = [
   { h: 0.0,  sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x5c6892, hemiGnd: 0x3a3c52, hemiI: 0.42,
     zen: 0x0d1226, hor: 0x1c2440, sunHor: 0x2e3050, glow: 0x2a3358, glowI: 0.12,
@@ -46,51 +65,51 @@ const KEYS = [
   { h: 6.3,  sun: 0x9a7ea0, sunI: 0.55, hemiSky: 0x8d96b2, hemiGnd: 0x776a76, hemiI: 0.84,
     zen: 0x25407e, hor: 0xb59aa4, sunHor: 0xe0a088, glow: 0xf0ac82, glowI: 0.50,
     fogNear: 0x9c8a94, fogFar: 0x8a82a0, fogSun: 0xe0a088, fogD: 0.0036,
-    cloudLit: 0xc9a8b0, cloudDark: 0x4a4a70, cover: 0.39 },
+    cloudLit: 0xc9a8b0, cloudDark: 0x584f6e, cover: 0.34 },
 
   // Cool dawn — long low light, pale horizon. Cool is a *relative* statement:
   // the zenith is the bluest of the day, but the haze itself stays peach, or
   // the frame measures out at a fifth of the reference's chroma.
   { h: 7.4,  sun: 0xffbc80, sunI: 2.60, hemiSky: 0xb8bcd0, hemiGnd: 0xd0a482, hemiI: 1.14,
-    zen: 0x76abdc, hor: 0xf2c8a2, sunHor: 0xffc794, glow: 0xffd4ab, glowI: 0.95,
+    zen: 0x76abdc, hor: 0xf4d4b4, sunHor: 0xffc794, glow: 0xffd4ab, glowI: 0.95,
     fogNear: 0xe6ab7c, fogFar: 0xd2b4c4, fogSun: 0xffcc96, fogD: 0.0024,
-    cloudLit: 0xffe0c4, cloudDark: 0x8c94b8, cover: 0.43 },
+    cloudLit: 0xffe0c4, cloudDark: 0xa8968e, cover: 0.30 },
 
   { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xb6c0e4, hemiGnd: 0xdcb072, hemiI: 0.96,
-    zen: 0x63a0dc, hor: 0xecd8c6, sunHor: 0xf4e2ca, glow: 0xffeed6, glowI: 0.72,
+    zen: 0x63a0dc, hor: 0xf2e2d6, sunHor: 0xf8ead8, glow: 0xffeed6, glowI: 0.72,
     fogNear: 0xdcbb92, fogFar: 0xd2bcca, fogSun: 0xffe8c8, fogD: 0.0021,
-    cloudLit: 0xfff6ec, cloudDark: 0xa4abc6, cover: 0.37 },
+    cloudLit: 0xfff6ec, cloudDark: 0xbcae9e, cover: 0.24 },
 
   { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xbac6ec, hemiGnd: 0xe0b476, hemiI: 0.90,
-    zen: 0x5fa0de, hor: 0xe8d6c8, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
+    zen: 0x5fa0de, hor: 0xf0e2d8, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
     fogNear: 0xd8c3a0, fogFar: 0xccbac6, fogSun: 0xf8ecd8, fogD: 0.0015,
-    cloudLit: 0xfffaf4, cloudDark: 0xa6aecc, cover: 0.33 },
+    cloudLit: 0xfffaf4, cloudDark: 0xbcb4a8, cover: 0.20 },
 
   { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xbfbede, hemiGnd: 0xd8ae76, hemiI: 1.00,
-    zen: 0x9ec0e6, hor: 0xf0d4bc, sunHor: 0xf8d6ae, glow: 0xffe6bc, glowI: 0.80,
+    zen: 0x9ec0e6, hor: 0xf2dcc8, sunHor: 0xf8dcbc, glow: 0xffe6bc, glowI: 0.80,
     fogNear: 0xdcb488, fogFar: 0xd8c0cc, fogSun: 0xffdfb4, fogD: 0.0021,
-    cloudLit: 0xfff2e2, cloudDark: 0xa4a4c4, cover: 0.39 },
+    cloudLit: 0xfff2e2, cloudDark: 0xbcaa9a, cover: 0.20 },
 
   // The money frame: deep golden hour.
   { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.98,
-    zen: 0xa9c4e4, hor: 0xf0d0b8, sunHor: 0xf8c184, glow: 0xffcf90, glowI: 1.00,
+    zen: 0xa9c4e4, hor: 0xf2dac6, sunHor: 0xf8cd9c, glow: 0xffcf90, glowI: 1.00,
     fogNear: 0xe0ac72, fogFar: 0xdcbcc8, fogSun: 0xffc98c, fogD: 0.0027,
-    cloudLit: 0xffe2bc, cloudDark: 0x9c90b6, cover: 0.43 },
+    cloudLit: 0xffe2bc, cloudDark: 0xb49688, cover: 0.22 },
 
   { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xb4a8cc, hemiGnd: 0xcc9060, hemiI: 1.16,
-    zen: 0x5b83c2, hor: 0xf3c8a0, sunHor: 0xf8a262, glow: 0xffae66, glowI: 1.20,
+    zen: 0x5b83c2, hor: 0xf4d2b0, sunHor: 0xf8ac74, glow: 0xffae66, glowI: 1.20,
     fogNear: 0xe2a266, fogFar: 0xdcb0b6, fogSun: 0xffa860, fogD: 0.0035,
-    cloudLit: 0xffcc9c, cloudDark: 0x8a80aa, cover: 0.47 },
+    cloudLit: 0xffcc9c, cloudDark: 0xa8867a, cover: 0.32 },
 
   { h: 19.0, sun: 0xff8446, sunI: 1.50, hemiSky: 0xb49eac, hemiGnd: 0xb27a58, hemiI: 1.14,
     zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
     fogNear: 0xd88a62, fogFar: 0xbe8c9c, fogSun: 0xff8a48, fogD: 0.0040,
-    cloudLit: 0xffb078, cloudDark: 0x766698, cover: 0.49 },
+    cloudLit: 0xffb078, cloudDark: 0x94706a, cover: 0.34 },
 
   { h: 19.8, sun: 0x9c5a76, sunI: 0.32, hemiSky: 0x8a92ae, hemiGnd: 0x7a6672, hemiI: 0.72,
     zen: 0x33508e, hor: 0xb890a0, sunHor: 0xd0756e, glow: 0xe07a62, glowI: 0.66,
     fogNear: 0xa8808e, fogFar: 0x92849e, fogSun: 0xd8756e, fogD: 0.0043,
-    cloudLit: 0xd09aa0, cloudDark: 0x554f76, cover: 0.45 },
+    cloudLit: 0xd09aa0, cloudDark: 0x6a5468, cover: 0.36 },
 
   { h: 21.0, sun: 0x4a4a80, sunI: 0.12, hemiSky: 0x64709a, hemiGnd: 0x40425a, hemiI: 0.48,
     zen: 0x151c3a, hor: 0x35395c, sunHor: 0x53476c, glow: 0x54486e, glowI: 0.22,
@@ -211,8 +230,34 @@ export class Lighting {
     // peter-panning gap under ridgelines in the first pass.
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.35;
-    this.sun.shadow.radius = 3.5;
-    this.sun.shadow.blurSamples = 10;
+    // NOTE ON SOFTNESS — do not re-add shadow.radius or shadow.blurSamples here.
+    //
+    // They used to be set (3.5 / 10) alongside a forced PCF_SOFT below, and both
+    // were dead values: radius is read only by SHADOWMAP_TYPE_PCF and
+    // blurSamples only by VSM. An author flagged that and it was never resolved,
+    // so this pass resolved it — by measuring, in both directions.
+    //
+    // Look: PCF with radius 4 is genuinely softer and better. A/B'd inside one
+    // page load on `waterfall`, the only canonical view with cast tree shadows
+    // on a large clean receiver, PCF_SOFT gives hard aliased blobs on the cliff,
+    // PCF r=4 gives soft legible tree shapes, PCF r=9 dissolves them entirely.
+    //
+    // Performance: it is not affordable. Two 45 s drives each, interleaved on
+    // the same machine so concurrent load hits both arms:
+    //   PCF_SOFT   p50 19.0 / 17.5 ms   p95 47.0 / 40.4   >50 ms  123 /  99
+    //   PCF r=4    p50 26.8 / 28.2 ms   p95 56.6 / 59.0   >50 ms  194 / 190
+    // a ~55% regression at the median, while a performance author is already
+    // chasing frames over 100 ms. Three's PCF_SOFT is nine bilinear-filtered
+    // compares and PCF is nine point compares, so the cost is not the tap count
+    // — it is that a radius-4 kernel scatters those taps four texels apart
+    // across a 4096² map and loses the cache. It gets worse, not better, with a
+    // larger radius, which is the direction "softer" wants to go.
+    //
+    // So the softness we ship is the texel size: PCF_SOFT's penumbra is one
+    // texel, which is 7 cm at the 150 m eye-level extent and 44 cm at the 900 m
+    // vista extent. If a future pass wants a real penumbra the cheap route is
+    // the shadow *map*, not the filter — a second, coarse, wide-extent map for
+    // the soft distant shapes — not turning this constant back on.
     // A cast shadow in the reference is a warm, semi-transparent shape on gold
     // meadow, not a hole. Three defaults shadow.intensity to 1 — fully black —
     // and that default was once in force, which is how the near-field views came
@@ -309,6 +354,17 @@ export class Lighting {
    * cheaper and clean. The renderer belongs to Engine, which system authors do
    * not edit, so this is a one-shot late binding via the debug surface.
    * See docs/INTEGRATION_REQUESTS.md.
+   *
+   * PCF_SOFT and not plain PCF, measured — see the note beside shadow.bias in
+   * the constructor for the numbers. Plain PCF would let shadow.radius soften
+   * the edge, which is what the art direction wants, and costs 55% at the
+   * median frame time, which we do not have.
+   *
+   * The scene-wide needsUpdate below recompiles every program in the game in
+   * one frame and shows up as a ~500 ms hitch at about 1.5 s into a run. It is
+   * only here because these files may not edit Engine; if Engine sets
+   * PCFSoftShadowMap at construction this whole method becomes a no-op. Logged
+   * in docs/INTEGRATION_REQUESTS.md.
    */
   _configureShadows() {
     if (this._shadowsConfigured) return;
@@ -324,6 +380,22 @@ export class Lighting {
         if (Array.isArray(m)) m.forEach((x) => { x.needsUpdate = true; });
         else m.needsUpdate = true;
       });
+      // Rebuild them all now rather than letting each one recompile the first
+      // frame it happens to enter the frustum.
+      //
+      // Invalidating a material does not recompile it; the next *render* of an
+      // object using it does. main.js warms the whole scene with
+      // renderer.compile() before the first frame, but that runs before this
+      // switch, so every one of those programs is thrown away here and rebuilt
+      // lazily. Measured on a drive: the camper's seven materials and the first
+      // wildlife material rebuilt at 0.62 s, 1.14 s and 1.15 s after the game
+      // reported ready — as the camera rig swung the camper into view — and the
+      // frame that caught the last of them took 508 ms. compile() walks
+      // everything visible rather than everything in frustum, so doing it here
+      // costs one stall on the first frame, where a loading screen is still up,
+      // instead of three freezes in the first two seconds of play.
+      const cam = globalThis.__engine?.camera;
+      if (cam) r.compile(this.scene, cam);
     }
   }
 
@@ -384,7 +456,20 @@ export class Lighting {
     s.sunIntensity = k.sunI;
     s.cloudLit.copy(k.cloudLit);
     s.cloudDark.copy(k.cloudDark);
-    s.cloudAmbient.copy(k.hemiSky).lerp(k.cloudDark, 0.45);
+    // Cloud ambient — the colour the underside and the cirrus veil fall back
+    // to. It used to be hemiSky lerped toward cloudDark, and both were mauve,
+    // so `ccol = mix(uAmbient, uLit, 0.62)` in Clouds put a lavender veil over
+    // the whole upper sky in every daylight frame. Measured on `hero`: the top
+    // of the sky rendered srgb(205,178,182) — B above G, i.e. literally
+    // magenta-led — against plate 1's srgb(251,213,198) cream and
+    // srgb(227,228,224) near-white. Hiding the cloud dome alone moved it to
+    // srgb(215,188,173). The plates' skies are cream at the skyline going pale
+    // and neutral upward; nothing in them is lilac.
+    //
+    // Pulling a third of the way to the horizon colour keeps the ambient a
+    // *sky* colour rather than a pigment, and it tracks the time of day for
+    // free because `hor` already does.
+    s.cloudAmbient.copy(k.hemiSky).lerp(k.cloudDark, 0.45).lerp(k.hor, 0.34);
     s.cloudCover = k.cover;
     s.fogNear.copy(k.fogNear);
     s.fogFar.copy(k.fogFar);

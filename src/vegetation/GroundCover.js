@@ -35,7 +35,7 @@ const CELL = 48;                 // metres per scatter cell
 // cell is created and pops rather than fading in.
 const STREAM_RADIUS = 300;
 const REPACK_MOVE = 12;          // metres of camera travel before a repack
-const MAX_PER_CELL = 1500;       // scratch capacity for one cell's generation
+const MAX_PER_CELL = 2200;       // scratch capacity for one cell's generation
 
 // One prevailing wind for the whole valley, matching the leaf-drift direction
 // in cover_scatter.js. Held constant so each instance's local sway axis can be
@@ -151,7 +151,7 @@ export class GroundCover extends System {
                 `built in ${this.buildMs.toFixed(0)} ms`);
 
     // Fill the world around wherever the camera starts before the first frame.
-    this._catchup = 40;
+    this._catchup = 80;
   }
 
   // ── streaming ──────────────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ export class GroundCover extends System {
    * cell only ever adds things that were invisible from where they were added.
    */
   _bandFor(d) {
-    if (d < 72) return 0;          // flowers, moss, broadleaf   (vis <= 58)
+    if (d < 50) return 0;          // ground substrate, flowers  (vis <= 44)
     if (d < 134) return 1;         // ferns, branches            (vis <= 88)
     if (d < 196) return 2;         // scrub, berries, litter     (vis <= 165)
     return 3;                      // shrubs, thickets, deadfall (vis <= 250)
@@ -327,7 +327,7 @@ export class GroundCover extends System {
     // A teleport (capture harness, fast travel) invalidates the whole cache;
     // spend a much bigger budget for a few frames rather than trickle in.
     const moved = this._lastPack.distanceTo(cam);
-    if (moved > 160) this._catchup = 36;
+    if (moved > 160) this._catchup = 70;
 
     const ccx = Math.floor(cam.x / CELL), ccz = Math.floor(cam.z / CELL);
     if (ccx !== this._lastCell.x || ccz !== this._lastCell.z) {
@@ -335,8 +335,13 @@ export class GroundCover extends System {
       this._refreshQueue(cam);
     }
 
-    if (this._catchup > 0) { this._buildCells(26); this._catchup--; }
-    else this._buildCells(2.0);
+    // 12 ms rather than 26. A single cell of the ground-substrate layer is a
+    // few hundred instances now, and the budget is only checked *between*
+    // cells, so a large per-frame allowance turns into a real hitch as soon as
+    // the queue is deep. Spreading the same work over more frames costs a
+    // slightly longer fill-in and no visible spike.
+    if (this._catchup > 0) { this._buildCells(12); this._catchup--; }
+    else this._buildCells(1.6);
 
     if (this._dirty || moved > REPACK_MOVE) this._repack(cam);
     void dt;

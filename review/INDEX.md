@@ -27,3 +27,5 @@ same places are photographed every round and the sheets are directly comparable.
 | 019 | 2026-08-19 | water lighting response, lake cliff-sheet fix, plunge scale | [019](019-2026-08-19-water-lighting-response-lake-cliff-sheet-fix-plu.png) |
 | 020 | 2026-08-19 | water: waterline antialias, shore fade core | [020](020-2026-08-19-water-waterline-antialias-shore-fade-core.png) |
 | 021 | 2026-08-19 | water lakes and falls, terrain structure, tree canopy | [021](021-2026-08-19-water-lakes-and-falls-terrain-structure-tree-can.png) |
+| 022 | 2026-08-19 | look: cloud/sky keys de-lilaced, exposure+range, foliage blue via green governor | [022](022-2026-08-19-look-cloud-sky-keys-de-lilaced-exposure-range-fo.png) |
+| 023 | 2026-08-19 | look: sky and cloud keys, exposure and range, foliage blue restored | [023](023-2026-08-19-look-sky-and-cloud-keys-exposure-and-range-folia.png) |

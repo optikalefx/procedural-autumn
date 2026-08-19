@@ -1601,3 +1601,310 @@ measurement as solid.
 `fog_vertex`, so the local override this system carried (overwriting
 `vFogWorldPos` after the chunk) computes exactly the same value. I have removed
 it. Nothing needed.
+
+## From the performance author — 2026-08-19
+
+### The black square is a single NaN pixel, and it is fixed
+
+Both reported artefacts — the hard-edged black square in stills
+(`shots/round21/drive.png`, `shots/water/r9/river-h16_7-nogov.png`) and the
+intermittent whole-black frames during a drive — were the same defect, and
+neither was a driver bug.
+
+**Mechanism.** One fragment writes NaN into the scene HDR buffer. Every
+downsample step of the bloom's mipmap chain averages that texel with its
+neighbours, so the NaN grows by about a texel per level and each level's texel
+is twice as wide. Four levels confine it to a block of a few dozen pixels; six
+spread it across the whole frame. The block is axis-aligned and exactly solid
+because it is a mip footprint, and it is pure black because NaN rasterises
+black.
+
+That is also why it looked like a driver bug: shortening the chain reduced the
+rate monotonically (0.61% of presented frames at six levels, 0.10% at five,
+0.00% at four), which is exactly what a small-render-target problem would look
+like. It is not — the chain was only the amplifier.
+
+It also explains why turning the bloom *off* did not help. `BlendFunction.ADD`
+with opacity 0 evaluates `mix(base, base + bloom, 0.0)`, and `NaN * 0.0` is
+NaN, so a bloom that contributes nothing still poisons the pixel. Setting
+`intensity` to 0 has the same problem. Only shortening the chain moved it,
+which sent two of us hunting the wrong thing.
+
+**Source.** `src/shaders/grass_material.js`, the blade albedo:
+
+```
+vec3 col = mix( rootC, tipC, pow( vT, uTipBias ) );
+```
+
+`vT` is a varying carrying `position.y` over `[0,1]`. Interpolation can land a
+hair outside the range its vertices span, and `pow(-1e-7, 0.42)` is NaN. It
+fires on roughly one fragment per few hundred frames, always at a blade root.
+Now `pow( max( vT, 0.0 ), uTipBias )`. Grass author: this is the only change I
+made to your file and it is a no-op everywhere `vT >= 0`.
+
+**Measured after.** `tools/_scratch/nansweep.mjs` — 0 non-finite pixels in 60
+frames of each of the nine canonical views. `tools/_scratch/squarehunt.mjs` —
+no black rectangle in 1200 frames of `drive`, where before the fix it found one
+within 4 to 77 frames. Whole-frame blacks: 0 of 3171 presented frames on a
+60 s drive, against 0.6-0.9% before.
+
+**`MIN_BLOOM_MIP` is back to 12.** I had raised it to 48 to suppress the
+symptom, which measurably shortened the widest, faintest part of the halo
+(mean 6/255 across the frame, ~20% of pixels moving by more than 8 levels).
+With the cause fixed that is not needed and the look is untouched.
+
+### `pow()` on a varying is a live hazard in four other shaders
+
+Same class, not yet observed firing, so I have not touched anyone's file:
+
+```
+src/shaders/water_common.js:189   pow(h, 0.55)
+src/vegetation/tree_material.js:146,567   pow(toward, 1.3), pow(ridge, 1.7)
+src/world/Waterfalls.js:425       pow(fwd, 3.0)
+src/sky/Sky.js:70,77              pow(c, 3.0), pow(c, 14.0) ...
+```
+
+If the base is a varying, or a dot product that is not explicitly clamped, wrap
+it in `max(x, 0.0)`. It costs one instruction and the failure mode is a black
+block somewhere else in the frame, hours later, that looks like someone else's
+bug. `tools/_scratch/nansweep.mjs` is the check: it reads the HDR buffer and
+counts non-finite channels per view, so it finds the cause rather than waiting
+for the bloom to make it visible.
+
+### Instance attributes now upload only the range that was written
+
+`Trees`, `GroundCover`, `Rocks` and the camper's `ParticleField` were setting
+`needsUpdate = true` on instance buffers sized for the worst case, which
+re-uploads the entire buffer including the unused tail. A tree re-bin was
+pushing 7.1 MB across the bus in a single frame, about a third of it slots
+holding no instances at all. They now call `addUpdateRange(0, count * itemSize)`
+first. Peak upload per frame is 7.9 MB -> 1.7 MB and the content is identical;
+nothing about the picture changes. Owners: the helper is a four-line `upload()`
+at the top of each file, delete it if you restructure.
+
+---
+
+## From the look author — 2026-08-19
+
+### 1. TERRAIN: the hard-edged grey slab in `river` is a rock-mask/chroma-governor bug, not a shadow
+
+`shots/fix/river3.png` and `shots/look/r1/river.png` show an enormous flat
+grey-violet polygon with hard straight edges across the left third of the frame.
+It was handed to me as a shadow defect. It is not a shadow, and it is not in the
+grade — I bisected it inside one page load, at full bake resolution:
+
+| variant | polygon |
+|---|---|
+| base | present |
+| `atmosphere.params.cloudShadow = 0` | present |
+| `sun.shadow.intensity = 0` | present |
+| `sun.castShadow` forced false | present |
+
+So neither the shadow map nor the projected cloud shadow draws it. Raycasting
+through it lands on `Terrain/Mesh` / `MeshStandardMaterial`, and sampling
+`world.getSurfaceWeights` across the boundary gives:
+
+```
+inside  (-728.3, 88.6)  rock 1.00  grass 0.00  dry 0.00   slope 1.21
+outside (-731.3, 89.6)  rock 0.71  grass 0.27  dry 0.11   slope 0.94
+outside (-726.5, 87.2)  rock 0.86  grass 0.13  dry 0.05   slope 1.01
+```
+
+Both sides face away from the sun (`dot(N, sunDir)` is -0.54 and -0.42, so the
+stylised diffuse term is at its floor on both). The entire difference is albedo:
+where the rock mask saturates at 1.0 the chroma governor in `TerrainMaterial.js`
+—
+
+```glsl
+vec3 governed = vec3(rl) * mix(uRockCastLit, uRockCastShade, gShade) * uRockGain;
+gl_FragColor.rgb = mix(gl_FragColor.rgb, governed, gRockM * uRockDesat);
+```
+
+— takes the pixel to a near-neutral. Measured on the final frame the slab is
+chroma **0.065** against **0.381** on the lit slope 30 px away, at only 0.07
+lower luma. It is a *chroma* hole, not a value one, which is exactly why it
+reads as torn grey paper laid over the hill rather than as shading.
+
+Two things would fix it, and I cannot do either from the render files:
+
+1. The rock mask needs a soft ramp at its edge. A ~0.15-wide feather on the
+   mask would turn the straight polygon boundary into a transition.
+2. `uRockDesat` is applied at full strength wherever `gRockM` is 1 regardless of
+   how big the resulting region is. A 200 m² flat patch of governed rock on a
+   *soil* slope is not what the governor was for (bare crags and cliffs are).
+   Gating it on slope, or on the same curvature term the rock shading already
+   computes, would keep the crags and drop the slabs.
+
+It costs `river` its whole measured value structure — lumaRange 0.361 and
+contrastStd 0.114 against an eye-level band of 0.41-0.53 and 0.13-0.18. Every
+other canonical view is inside both bands. `river` is the only one that is not,
+and this slab is why.
+
+### 2. GROUNDCOVER / GRASS: flat near-black quads lying in the meadow
+
+`shots/look/r3/meadow.png` and `r3/backlit.png`, e.g. around (400, 600),
+(1150, 750) and (1450, 560) at 1600x900: hard-edged black lozenges sitting flat
+on the grass, with no shading response and no soft edge. They read as holes in
+the ground. They survive with `sun.castShadow` forced false, so they are not
+cast shadows — they look like an unlit decal or litter card whose material has
+no lighting term. Not mine to fix, but they are the most conspicuous artefact
+left in the two meadow framings.
+
+### 3. ENGINE: shadow map type is set twice
+
+`Engine` sets `VSMShadowMap`; `Lighting._configureShadows()` overrides it on the
+first frame and then walks the scene setting `needsUpdate` on every material,
+which recompiles every program in the game in one frame. `tools/perf.mjs` sees
+it as a 500-1200 ms frame about 1.1-1.9 s into every run — the worst frame of
+the whole drive, every time. It is only there because the render files may not
+edit `Engine`. If whoever owns `Engine` sets `THREE.PCFSoftShadowMap` at
+construction, the override and the scene-wide recompile can both be deleted —
+`Lighting` will detect the type already matches and do nothing.
+
+While there: `sun.shadow.radius` and `blurSamples` are gone from `Lighting`, and
+the reason is recorded in a comment beside `shadow.bias`. Short version, so
+nobody re-tries it: plain `PCFShadowMap` with `radius: 4` is visibly the softer
+and better-looking shadow, and it costs p50 26.8/28.2 ms against PCF_SOFT's
+19.0/17.5 ms over two interleaved 45 s drives each. Not affordable.
+
+### The last freeze is at boot, and it needs one warm-up frame in `main.js`
+
+After everything below, a 120 s drive at ultra has exactly **one** frame over
+50 ms and one over 100 ms, and they are the same frame: a ~530 ms stall about
+1.2 s after `window.__ready` goes true. Nothing during play comes close.
+
+It is first-*draw* pipeline creation, not compilation. `renderer.compile()`
+links programs; the driver does not build the pipeline state object until
+something is actually drawn with one, and an object that is off-screen at boot
+does not pay that until it enters the frustum. Measured: hiding the camper
+halves the stall (1008 ms -> 528 ms recorded from the first frame after ready),
+and so does setting `frustumCulled = false` on everything.
+
+I took the half I could reach without editing `main.js`: `Lighting.
+_configureShadows()` switches `shadowMap.type` on the first frame, which
+invalidates every program `main.js` had just warmed, so it now calls
+`renderer.compile(scene, camera)` immediately after the switch instead of
+letting each material rebuild the first frame it happens to be visible. That
+moved the worst frame from 866 ms to 530 ms and the count of frames over 50 ms
+from 89 to 1.
+
+**What I need from `main.js`:** before setting `window.__ready = true`, render
+one throwaway frame *through the post chain* with a camera wide enough to see
+the whole scene — the composer's buffer format is part of the pipeline state,
+so warming through `postfx.render()` is what makes it count, and a plain
+`renderer.render()` into the canvas will not. Something like:
+
+```js
+const warm = engine.camera.clone();
+warm.fov = 140; warm.near = 0.01; warm.far = 4000; warm.updateProjectionMatrix();
+const real = engine.camera;
+engine.camera = warm; postfx.render(0.016); engine.camera = real;
+```
+
+then flip `__ready`. That is a stall behind the loading screen instead of a
+freeze a second into play.
+
+### Where the ultra frame actually goes, for whoever owns the budget
+
+GPU time per pass, `EXT_disjoint_timer_query_webgl2`, median of four
+interleaved repeats, static camera so the measurement is not confounded by the
+drive travelling further when the frame is cheaper:
+
+| pass | drive | forest |
+|---|---|---|
+| RenderPass (scene + shadow map) | 41% | 45% |
+| N8AOPostPass | 20% | 19% |
+| EffectPass (DOF, bloom, tone, vignette, grade, SMAA) | 39% | 36% |
+
+**Post-processing is 56-59% of the frame, and it is fixed cost per pixel** — it
+does not care what is on screen. Hiding all trees, all grass or all ground
+cover each moves the total by under 8%; freezing the shadow map moves it by
+4-7%. So the remaining gap to a 25 ms p95 at ultra is not in anyone's geometry
+budget, it is in the post chain, and every knob in there is a look decision I
+am not going to take unilaterally:
+
+- `N8AO` is already `halfRes` with 16 AO samples; the denoise is 2 x 8 taps at
+  radius 12. Dropping to 8 AO samples or one denoise iteration is the cheapest
+  20%-of-a-fifth available.
+- `DepthOfFieldEffect` renders at `height: 720` against a 900 px canvas.
+  Halving that is the single biggest saving in the chain and costs bokeh
+  crispness.
+- `SMAA` is three full-res passes.
+
+Frame time is also vsync-quantised in the headless harness (16.7 / 33.3 ms), so
+a p95 of 30 ms means "misses 60 Hz on about one frame in twenty", not "runs at
+33 fps". Worth knowing before anyone reads a 5 ms regression into noise.
+
+### Triangle peak
+
+Every canonical still is inside the 4.5 M budget now (1.62 M hero to 4.11 M
+backlit, previously 6.37 M in backlit). The 45-120 s drive peaks at 4.94 M,
+which is over. The only art-neutral way I can see to close it is to frustum-cull
+tree instances in `Trees._rebuild` — currently every tree within 1000 m is
+submitted in all directions, so roughly half the near and mid instances are
+behind the camera. It has to keep anything inside the live `lighting.
+shadowExtent` or long shadows will vanish from the frame, and it needs a re-bin
+on rotation as well as on the existing 11 m of travel. I have **not** done it:
+it is a real popping risk in a file another author is actively editing, and the
+measurement above says it would buy about 3% of frame time. Flagging it as the
+next move for whoever picks this up rather than half-landing it.
+
+### 7. Shadow *receive* is the expensive half, by 3:1 (perf — FYI, no action needed from you)
+
+Not a request, but the numbers cost me four `perf.mjs` runs and they generalise
+beyond my system, so: with ground cover casting and receiving on every mesh it
+was adding **12.5 ms to the median frame** (p50 27.9 ms against 15.4 ms with
+the layer removed from the scene). Splitting it:
+
+| configuration | p50 | p95 | peak tris |
+|---|---|---|---|
+| ground cover removed from the scene | 15.4 ms | 34.4 ms | 4.63 M |
+| present, `castShadow`/`receiveShadow` both off | 14.9 ms | 32.2 ms | 4.92 M |
+| present, cast only | 18.5 ms | 50.0 ms | 5.09 M |
+| present, cast and receive | 27.9 ms | 59.5 ms | 5.11 M |
+| **shipped:** receive only on shrubs/thickets/logs/stumps | **15.8 ms** | 35.1 ms | 5.07 M |
+
+The geometry is free — 350 k triangles across 31 instanced calls does not move
+the median at all. What costs is `receiveShadow` on *many small* surfaces: the
+24-sample soft shadow is paid per fragment, and a scatter layer covers a large
+share of the near field with objects too small for the result to be visible on.
+Casting is a third of the price of receiving.
+
+If anyone else runs a dense scatter (grass, wildlife, leaf particles), the same
+split is probably worth checking before trimming geometry — I spent a pass
+trimming triangles that turned out to be irrelevant.
+
+Also for whoever owns the whole-scene budget: peak triangles is 4.63 M with my
+layer *absent*, so the 4.5 M breach is not here. My share measures 350 k.
+
+### 8. Shadow `normalBias` is too small for small geometry — everything in this layer was self-shadowing (lighting)
+
+This turned out to be the single biggest defect in ground cover, and I suspect
+it is the unfixed remainder of critic finding 1 on other systems too.
+
+Any cover mesh with `castShadow` **and** `receiveShadow` rendered as a flat,
+hueless, near-black silhouette with zero normal response. The shadow pass draws
+the same geometry through `customDepthMaterial`, the sun's shadow is 24 soft
+blur samples wide, and there is not enough normal bias to keep a 20 cm form out
+of its own shadow, so the whole object tests as shadowed. Ground-hugging forms
+(litter, stones, straw) were worse still — they sat inside the *terrain's* bias
+envelope and went black even with no caster of their own.
+
+The proof is unambiguous. Forcing the fallen log's albedo to pure white left it
+a **flat black band** across the bottom of `forest` with receive on. Turning
+receive off, at the ordinary palette value, gave a correctly lit cylinder with
+visible facets, a lit top and a shaded underside — same albedo, same normals,
+same light.
+
+I have shipped `receiveShadow = false` on every ground-cover mesh. That is the
+right call given the alternative, and it also happens to be worth 12 ms a frame
+(item 7), but it is a workaround: a bush standing inside a tree's long shadow
+now renders lit, which will read wrong in exactly the golden-hour frames the
+brief cares most about.
+
+**Ask:** raise `sun.shadow.normalBias` (and/or `bias`) until a 20 cm object
+stops shadowing itself, then tell me and I will turn receive back on for the
+shrub, thicket, log and stump archetypes — that subset measured at +0.4 ms, so
+it is affordable. Worth checking rocks, wildlife and the camper for the same
+symptom while you are in there; anything small that casts and receives will
+have it.
