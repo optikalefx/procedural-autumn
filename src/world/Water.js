@@ -1005,6 +1005,29 @@ export class Water extends System {
       // 0.50/0.57. Measured on the river anchor the 0.80 arm came back 8% dark
       // against the arm it replaced, which is the widening reading as a dimmer
       // river rather than as a river with structure in it.
+      //
+      // CHECKED AGAINST CRITIC PASS 4, WHICH RECORDS THE OPPOSITE OF WHAT THIS
+      // DIAL DOES. Pass 4 has `peaks` losing its lake colour between 045 and
+      // 048 — cyan 4.7% -> 0.1%, "045's read as water; this reads as slate" —
+      // and 048 is the round this raise landed in, so the obvious next move is
+      // to put it back. Do not. Measured, same framing, back to back, lake
+      // patch only:
+      //
+      //   uSheen 0.88  srgb(117,123,125)  1:1.05:1.07
+      //   uSheen 0.66  srgb(110,115,116)  1:1.05:1.05
+      //   uSheen 0.00  srgb( 91, 93, 91)  1:1.02:1.00
+      //
+      // The sheen is what *supplies* the blue. Take it away and the lake goes
+      // three stops down and dead neutral — a dark hole, which is the failure
+      // this dial exists to prevent. Turning it back down to chase the slate
+      // measurement would make the slate worse.
+      //
+      // Which means the greying is somewhere else, and at this range the
+      // candidate is not in this file: `peaks` frames its lake at 420 m, where
+      // marchOn has already faded the landscape reflection out and aerial
+      // perspective owns most of the pixel. Whoever holds Atmosphere and the
+      // grade should have this measurement before anyone reaches for a water
+      // dial to fix it.
       uSheen:        { value: 0.88 },
       // Metres of damp margin drawn on the dry side of the waterline. The
       // reference never shows water meeting dry ground on a line; there is
