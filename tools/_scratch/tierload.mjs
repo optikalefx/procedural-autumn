@@ -27,7 +27,19 @@ try {
 
   const rows = [];
   for (const tier of TIERS) {
-    await page.evaluate((t) => { window.__engine.setQuality(t); }, tier);
+    // Engine now auto-drops a tier when it is pinned at the resolution floor
+    // and still over budget, which raced this probe: every reading came back one
+    // tier below the one just set. Pin the tier and the resolution so the counts
+    // describe the tier under test and nothing else.
+    await page.evaluate((t) => {
+      const e = window.__engine;
+      e.autoQuality = false;
+      e.setQuality(t);
+      e.autoQuality = false;
+      e.adaptive = false;
+      e.resolutionScale = 0.68;
+      e._applyResolution();
+    }, tier);
     // A tier change forces a terrain rescan that drains at 3 ms a frame, so
     // give it long enough to finish before counting.
     await page.evaluate(() => window.__settle(220));

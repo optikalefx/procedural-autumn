@@ -2881,3 +2881,55 @@ comparison and not a metric, and it is worth saying out loud: any author
 reaching for `cmp`/imagemagick to "prove" a change is art-neutral will get a
 number that means nothing. Use `ab.mjs`, or prove the invariant directly in the
 page the way `tools/_scratch/farcheck.mjs` does.
+
+### P7. ADDENDUM after `Engine.autoQuality` landed — the tier step is now the biggest hitch.
+
+The auto tier step is the right feature and it works: at 2560x1400 dpr2 the game
+now settles at `medium`, scale 1.00, and 28 fps instead of pinning at the
+resolution floor. But `setQuality()` calls `_onResize()`, which is the same
+drawing-buffer reallocation as P1, *and* it fires `onQuality` on PostFX, which
+rebuilds AO/DOF/effect passes. So walking ultra -> high -> medium now costs
+several of the stalls in P1 rather than one.
+
+`tools/_scratch/systime.mjs --seconds 45 --w 1280 --h 800 --dpr 2` on the
+current tree, auto quality on:
+
+```
+frames 2041   mean 22.0   p50 16.8   p95 40.4   max 959
+frames over 60 ms: 959, 958, 894, 803, 747, 724, 704, 696, 642, 574, 559, 558 ms
+```
+
+Every one of those is in `~gap before update` with the render callback measuring
+20-107 ms inside it — i.e. outside every system and outside the render, in the
+reallocation. For contrast, the same window with the tier pinned and the
+resolution settled had **one** frame over 100 ms in 55 seconds.
+
+Every system's per-frame CPU in that same run, for the record:
+`vehicle 0.24, weather 0.23, terrain 0.20 (max 7.5), wildlife 0.19, hud 0.18,
+grass 0.13, stylize 0.08, atmosphere 0.05` — about 1.5 ms of CPU per frame for
+the whole game. There is no CPU hitch left on the scene side to find. **P1 is
+the entire remaining hitch budget** and it is worth more than anything else
+either of us can still do.
+
+### P8. `preset.shadowMapSize` never takes effect on a runtime tier change.
+
+`QUALITY_PRESETS` carries `shadowMapSize` 4096 / 3072 / 2048 / 1024, and
+`Lighting` reads `this.preset.shadowMapSize` in its constructor. After
+`Engine.setQuality()` the map stays at whatever it booted with —
+`tools/_scratch/tierload.mjs` reports `shadow 4096` at every tier including
+`low`. Measured with `tools/_scratch/sceneab.mjs` at 1.06 MP, 24 interleaved
+cycles, IQR 0.03-0.04:
+
+```
+  4096 -> 3072   -2.3%
+  4096 -> 2048   -6.5%
+  4096 -> 1024   -8.6%
+```
+
+Lighting owner: `onQuality(preset)` needs to set `sun.shadow.mapSize`, null the
+existing `sun.shadow.map` so it reallocates, and re-run `_setShadowExtent` so
+`normalBias` (derived from `2 * extent / preset.shadowMapSize`) tracks it. That
+last part matters — halving the map doubles the normal offset in metres, which
+is the quantity that made the camper's contact shadow disappear in W1, so it
+should be A/B'd at the tier it lands on rather than assumed free. I have not
+touched it: ultra's 4096 is load-bearing art and `Lighting.js` is not mine.

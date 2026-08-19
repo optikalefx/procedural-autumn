@@ -65,11 +65,14 @@ const TILE = 7000;          // world size of one wrap of the noise tile
 const CIRRUS_ALT = 6200;
 const CIRRUS_TILE = 30000;
 
+// Orientation only — see the long note on the same line in Sky.js. The deck's
+// parallax has to come from uCamPos and the view ray, never from where this
+// 1 m sphere happens to be sitting relative to the eye.
 const VERT = /* glsl */`
 varying vec3 vDir;
 void main() {
   vDir = position;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vec4 mv = vec4(mat3(modelViewMatrix) * position, 1.0);
   gl_Position = projectionMatrix * mv;
   gl_Position.z = gl_Position.w;
 }`;
@@ -96,7 +99,12 @@ const float BASE_Y = ${BASE.toFixed(1)};
 const float THICK  = ${(TOP - BASE).toFixed(1)};
 // Vertical span, in field units, over which a cloud goes from nothing to its
 // full height. Narrow = cliff-edged cartoon cloud, wide = mush.
-const float RAMP   = 0.155;
+//
+// Narrowed along with the threshold below. The coverage field only has ~0.14 of
+// headroom above the new threshold, and a ramp wider than that headroom means
+// no column ever reaches full height: every cloud comes out a flat wisp with no
+// crown for the parallax slices or the normal to shade.
+const float RAMP   = 0.100;
 
 // The coarse coverage field — the only thing sampled per slice, and therefore
 // the only thing whose feature size has to stay above the slice spacing. Its
@@ -146,20 +154,50 @@ void main() {
   // get rid of. The clamp is set to just under one slice-spacing per feature:
   // past it the deck stops gaining apparent height and flattens toward the
   // skyline, which is what distant cumulus do anyway.
+  //
+  // Tightened from 0.75 with the coverage cut. 0.75 of a tile is six widths of
+  // the coarsest coverage feature, so the eight slices under a low-elevation
+  // pixel were six near-independent draws on the coverage field, and their
+  // *union* is what the eye reads as sky cover — which is why the deck looked
+  // overcast at only half areal coverage. At 0.40 the slices stay inside about
+  // three feature widths and a gap in the field survives as a gap in the sky.
   vec2 par = d.xz / dy * (THICK * uInvTile);
   float pl = length(par);
-  par *= min(pl, 0.75) / max(pl, 1e-4);
+  par *= min(pl, 0.40) / max(pl, 1e-4);
 
   // Coverage threshold. Higher cover = lower threshold = more sky filled.
-  float lo = 0.745 - 0.44 * uCover;
+  //
+  // WHY THIS NUMBER IS NOT 0.745
+  // ----------------------------
+  // 0.745 was picked as if the coverage field were uniform on 0..1 with a mean
+  // of 0.5. It is not: normalize01() stretches an fbm min-to-max, and this
+  // field's mean comes out at 0.635. So the shipping-hour threshold of 0.650
+  // landed within 0.015 of the field's own median and put HALF the deck area
+  // under cloud — measured, 50.7% areal at cover 0.215.
+  //
+  // Areal is not what the player sees, either. Every ray crosses the deck at a
+  // grazing angle, so a low-elevation pixel is the union of eight slices spread
+  // over several feature widths, and a 50% areal deck reads as an overcast one:
+  // measured, 84-99% of visible sky was cloud in the eye-level and hero views,
+  // which is exactly the "the sky is like 90% clouds" the player reported.
+  //
+  // The reference plates are the opposite — open gradient with, at most, a few
+  // soft high wisps — and an overcast deck also flattens the light this whole
+  // palette is built on. So the threshold is now set from the field's measured
+  // distribution rather than an assumed one: 0.86 at the shipping hour is the
+  // top ~17% of the field by area, which lands the visible sky around a third
+  // cloud. `tools/_scratch/cloudfrac.mjs` is the measurement.
+  float lo = 0.950 - 0.44 * uCover;
 
   // Fine detail: two taps, once, at the middle of the slab. See topAt().
   vec2  uvM = uv0 + par * 0.5;
   // Kept well under RAMP: detail this field can outweigh the coarse coverage
   // turns organised cloud masses into an even mottle, which is the other way
   // for a sky to look broken.
-  float det = (texture2D(uNoise, uvM * 1.5 + vec2(0.31, -0.17)).g - 0.5) * 0.13
-            + (texture2D(uNoise, uvM * 2.6 + vec2(-0.23, 0.41)).b - 0.5) * 0.055;
+  // Scaled down with RAMP, so the detail keeps the same weight against the
+  // coarse coverage it perturbs and does not start deciding where clouds are.
+  float det = (texture2D(uNoise, uvM * 1.5 + vec2(0.31, -0.17)).g - 0.5) * 0.084
+            + (texture2D(uNoise, uvM * 2.6 + vec2(-0.23, 0.41)).b - 0.5) * 0.036;
 
   // Column height at the middle of the slab: the one value that drives the
   // lighting, so shading costs a few extra taps for the whole pixel rather
@@ -469,6 +507,11 @@ export class Clouds extends System {
     u.uCirrus.value = 0.22 * (0.35 + 0.65 * s.dayFactor);
     u.uOpacity.value = 0.35 + 0.65 * s.dayFactor;
 
+    // Cosmetic only: the dome is drawn as a direction field (see VERT), so the
+    // image no longer depends on this being exact — which matters, because the
+    // camera pose is written in lateUpdate and this value is one frame old.
+    // uCamPos is one frame old for the same reason, and that is harmless: at
+    // 22 m/s a frame is 0.37 m against a 7000 m tile.
     this.mesh.position.copy(this.ctx.camera.position);
 
     // Scroll the ground shadow with the deck, and fade it out with the sun so

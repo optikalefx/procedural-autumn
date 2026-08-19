@@ -281,7 +281,23 @@ export class VehiclePhysics {
     let engine = 0, brake = 0;
 
     if (ctrl.throttle > 0.02 && this.speed > -0.4) {
-      engine = ctrl.throttle * VEHICLE.engineForce * (0.45 + 0.55 * fade) * waterFade;
+      // ── low-range crawl ───────────────────────────────────────────────────
+      // Standing in for a first gear: extra torque from rest, gone by ~9 m/s.
+      // Without it the extra power only shows up as wheelspin on the flat,
+      // which is the opposite of what a hill needs.
+      const crawl = 1 + 0.55 * (1 - smoothstep(1.0, 9.0, absSpeed));
+
+      // ── grade assist ──────────────────────────────────────────────────────
+      // How much of the camper's own forward axis points uphill. On the flat
+      // this is 0 and changes nothing; pointed up a 35-degree slope it is ~0.57
+      // and adds most of the gravity component straight back. That is what
+      // makes it *climb* rather than merely being faster everywhere — a cozy
+      // game should not punish the player for pointing at an interesting hill.
+      const grade = clamp(this._fwd.y, 0, 1);
+      const assist = 1 + 1.15 * grade;
+
+      engine = ctrl.throttle * VEHICLE.engineForce
+             * (0.45 + 0.55 * fade) * waterFade * crawl * assist;
     } else if (reversing) {
       engine = -ctrl.brake * VEHICLE.engineForce * 0.42 * waterFade;
     }

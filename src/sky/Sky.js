@@ -17,11 +17,25 @@ import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
 import { SKY_STATE } from '../render/Lighting.js';
 
+// A sky is at infinity, so the dome must be a *direction field* and nothing
+// else. Dropping the translation column of the model-view (mat3(...)) does
+// exactly that: the dome is rigidly attached to the camera's orientation and is
+// completely unaffected by where the camera — or the mesh — happens to be.
+//
+// The obvious alternative, parking the mesh at the camera every frame, is what
+// this used to do, and it is a trap. The dome's radius is 1 m, so a positional
+// mismatch of Δ metres tilts the whole sky by about Δ radians: 0.3 m of drift
+// is 17° of sky. And a mismatch is guaranteed, because CameraRig writes the
+// camera pose in *lateUpdate*, after every system has already run — so the mesh
+// was always parked at the previous frame's position, plus the camera-shake
+// offset, which is why the sky swung about whenever the player drove or dragged
+// the mouse. Measured at 22 m/s: one frame of travel displaced the sky ~2400x
+// more than that frame's true parallax.
 const VERT = /* glsl */`
 varying vec3 vDir;
 void main() {
   vDir = position;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vec4 mv = vec4(mat3(modelViewMatrix) * position, 1.0);
   gl_Position = projectionMatrix * mv;
   gl_Position.z = gl_Position.w;   // always at the far plane
 }`;
@@ -155,6 +169,9 @@ export class Sky {
     u.uNight.value = 1.0 - s.dayFactor;
 
 
+    // Cosmetic only — the dome's *image* no longer depends on this (see VERT),
+    // but keeping the mesh near the camera stops it being an outlier in any
+    // bounds or sorting pass that walks the scene.
     this.mesh.position.copy(camera.position);
   }
 

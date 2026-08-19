@@ -125,7 +125,10 @@ export const VEHICLE = {
   suspensionStiffness: 34000,
   suspensionDamping: 3400,
   maxSteer: 0.62,
-  engineForce: 12000,
+  // 12000 N against 1850 kg is 6.5 m/s^2 of thrust. Gravity down a 30-degree
+  // slope is 4.9 m/s^2 and down 40 degrees is 6.3 — so the camper had almost
+  // nothing left for a real hill and simply stalled on the steep ones.
+  engineForce: 21000,
   brakeForce: 22000,
   comHeight: -0.32,
 };
