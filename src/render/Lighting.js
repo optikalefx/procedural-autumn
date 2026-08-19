@@ -925,6 +925,38 @@ export class Lighting {
     }
   }
 
+  /**
+   * P8 in docs/INTEGRATION_REQUESTS.md. `preset.shadowMapSize` is 4096 / 3072 /
+   * 2048 / 1024 across the tiers, but it was only ever read in the constructor,
+   * so a runtime tier step left the map at whatever it booted with —
+   * `tools/_scratch/tierload.mjs` reported `shadow 4096` even at `low`. The
+   * perf author measured the map alone at 1.06 MP over 24 interleaved cycles:
+   * 4096 -> 3072 is -2.3%, -> 2048 is -6.5%, -> 1024 is -8.6%. That is most of
+   * what stepping a tier down is supposed to buy, and we were not collecting it.
+   */
+  onQuality(preset) {
+    if (!preset?.shadowMapSize) return;
+    this.preset = preset;                       // both biases read through this
+    const S = preset.shadowMapSize;
+    if (this.sun.shadow.mapSize.x === S) return;
+
+    this.sun.shadow.mapSize.set(S, S);
+    // three allocates the depth target on first use and never re-checks
+    // mapSize. Disposing it is the only thing that forces the reallocation.
+    this.sun.shadow.map?.dispose();
+    this.sun.shadow.map = null;
+    this.sun.shadow.needsUpdate = true;
+
+    // Both biases are derived from texel width, and a texel just changed width
+    // by up to 4x. `_setShadowExtent` memoises on the extent and would early-
+    // return, leaving the normal offset sized for the old map — that exact
+    // mismatch is what made the camper's contact shadow disappear in W1. Clear
+    // the memo and re-derive at the current extent.
+    const e = this.shadowExtent;
+    this.shadowExtent = -1;
+    this._setShadowExtent(e);
+  }
+
   dispose() {
     this.scene.remove(this.sun, this.sun.target, this.hemi, this.fill);
   }
