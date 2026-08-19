@@ -49,7 +49,21 @@ const REPACK_MOVE = 12;          // metres of camera travel before a repack
 // whose nearest corner is further away than anything in it could be seen from.
 // Every archetype at or above this radius goes in the far buffer; the number
 // itself only has to sit in the gap between `scrubDry` (55) and `cobble` (74).
-const NEAR_VIS = 60;
+// RAISED from 60 to 92 with the arrival of `groundMat` (vis 88), and then to
+// 132 when that radius went to 130. The rule is the same both times and it is
+// worth stating as a rule, because getting it wrong is silent and expensive:
+//
+//   NEAR_VIS must sit JUST ABOVE the radius of the most numerous archetype.
+//
+// The far buffer is scanned for every live cell out to 300 m — around 120 of
+// them — and the near buffer only for cells inside NEAR_VIS. `groundMat` is by
+// a distance the most numerous long-radius thing in the layer (a cell can hold
+// several hundred), so leaving it above the threshold puts tens of thousands of
+// extra distance tests into every repack, which happens every 12 m of travel.
+// At 132 the mats ride in the near buffer and a cell beyond 132 m skips them
+// wholesale, while `shrubDark` (135) and `thicket` (250) — a couple of dozen
+// per cell — stay in the far buffer where they belong.
+const NEAR_VIS = 132;
 // Scratch capacity for one cell's generation. A 48 m cell is 2304 m², and the
 // ground-substrate layer now aims at roughly one clump every 3 m² with up to
 // twenty pieces in a clump, so the old 2200 was clipping the far half of every
@@ -129,6 +143,10 @@ export class GroundCover extends System {
 
     this.matSolid = createCoverMaterial(this.uniforms, false);
     this.matCard = createCoverMaterial(this.uniforms, true);
+    // One extra program, for the broad ground mats' distance fade-in. It is a
+    // compile-time define rather than a uniform because every other archetype
+    // must not pay a second smoothstep per vertex for a branch it never takes.
+    this.matMat = createCoverMaterial(this.uniforms, true, true);
     this.matDepth = createCoverDepthMaterial(this.uniforms);
 
     for (let ai = 0; ai < COVER_ARCHETYPES.length; ai++) {
@@ -145,7 +163,8 @@ export class GroundCover extends System {
           g.getAttribute(k).setUsage(THREE.DynamicDrawUsage);
         }
 
-        const mesh = new THREE.InstancedMesh(g, arch.card ? this.matCard : this.matSolid, cap);
+        const mat = arch.nearFade ? this.matMat : (arch.card ? this.matCard : this.matSolid);
+        const mesh = new THREE.InstancedMesh(g, mat, cap);
         mesh.name = `cover_${arch.key}_${v}`;
         mesh.count = 0;
         mesh.visible = false;
@@ -374,9 +393,18 @@ export class GroundCover extends System {
 
           // Lean with the ground, but only partly: a bush on a 30° slope grows
           // more upright than the hill, and fully aligning it looks pasted on.
+          //
+          // Per archetype, because that is only true of things that *stand* on
+          // the ground. A three-metre ground mat leaning 55% of a 30° slope
+          // buries its uphill edge half a metre deep and flies its downhill one
+          // the same distance clear, which is the failure every previous
+          // attempt at broad ground cover in this file hit. `conform: 1` takes
+          // those to the full terrain normal, where a flat thing on a flat
+          // slope is exactly right.
+          const cf = slot.arch.conform ?? 0.55;
           const nx = data[i + 19], nz = data[i + 20];
           const ny = Math.sqrt(Math.max(0.02, 1 - nx * nx - nz * nz));
-          tilt.set(nx * 0.55, ny * 0.55 + 0.45, nz * 0.55).normalize();
+          tilt.set(nx * cf, ny * cf + (1 - cf), nz * cf).normalize();
           const yaw = data[i + 3];
           q.setFromUnitVectors(UP, tilt);
           qy.setFromAxisAngle(UP, yaw);
@@ -472,6 +500,7 @@ export class GroundCover extends System {
     for (const slot of this.slots) slot.geo.dispose();
     this.matSolid.dispose();
     this.matCard.dispose();
+    this.matMat.dispose();
     this.matDepth.dispose();
     this.ctx.scene.remove(this.group);
     this.cells.clear();

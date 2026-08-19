@@ -47,6 +47,36 @@ export function makeCoverUniforms() {
     // material that has a transmission term. The brief asks for glowing tips at
     // golden hour and says to budget for it; 1.7 is what that costs.
     uTransmit:     { value: 1.70 },
+    // Backlit RIM, and it is a separate term from transmission on purpose.
+    //
+    // Transmission multiplies the surface's own albedo, which is correct
+    // physics for light coming *through* a leaf and useless for the thing the
+    // brief actually asks for: "glowing grass tips and bright silhouette
+    // edges". Our foliage albedos are dark by design — that is the whole job of
+    // this layer — so 1.7x of a dark green is still a dark green, which is why
+    // the critic could write "no rim or translucency in the backlit frame"
+    // about a material that already had a transmission term. The look author
+    // makes the same point in docs/INTEGRATION_REQUESTS.md about the global
+    // rim: never multiply a rim by albedo.
+    //
+    // So this one is added as light. It is gated three ways and therefore costs
+    // nothing outside the frame it exists for: the sun has to be behind the
+    // surface (uRimBack), the surface has to be near its own silhouette
+    // (uRimPow on the fresnel), and it is weighted by the vertex's height rank
+    // so a tip glows and a root does not.
+    // 0.95, not the 2.30 the first pass used. Swept on the `backlit` view: at
+    // 2.30 the layer's whole job inverts — the shrubs stop being the dark value
+    // anchor the meadow needs and become the palest thing in the frame, pale
+    // mint lumps floating on salmon grass. The reference's backlit bushes keep
+    // their mass and gain an edge; they do not light up. A rim is a contour, so
+    // the exponent does more for it than the strength does.
+    uRim:          { value: 0.95 },
+    uRimPow:       { value: 2.8 },
+    uRimBack:      { value: 0.12 },
+    // Hue of the rim. Not white: a rim on autumn foliage at golden hour is the
+    // sun's own colour pushed a step toward the leaf's transmitted amber, and
+    // a neutral one reads as a chalk outline.
+    uRimTint:      { value: new THREE.Color(1.0, 0.82, 0.52) },
     // How dark the buried interior of a clump goes. Not zero — the brief is
     // explicit that shaded areas stay as tinted colour, never as holes.
     uAoDepth:      { value: 0.72 },
@@ -77,6 +107,26 @@ const COVER_DISPLACE = /* glsl */`
   vec3 coverOrigin = ( modelMatrix * COVER_IMAT * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
   float coverDist = distance( cameraPosition, coverOrigin );
   float coverFade = 1.0 - smoothstep( aCov.w * 0.76, aCov.w, coverDist );
+  #ifdef COVER_NEAR_FADE
+    // Broad ground mats fade IN as well as out. Their job is the mid band,
+    // where the substrate tier's 23 m props have already vanished and the
+    // terrain albedo is the whole picture; inside that a 1.5 m lobe is a flat
+    // slab and the fine substrate is the better answer. Shrinking toward the
+    // root, so a mat sinks into the ground rather than dissolving in mid air.
+    //
+    // The fractions are of the instance's OWN radius, which is what makes one
+    // number serve two jobs: the broad swathe carries the full 130 m and so
+    // fades in over 8-20 m, and the small mat is emitted with visMul 0.34 (44 m)
+    // and so fades in over 2.7-6.7 m. Big props stay out of the near field
+    // where they read as slabs; small ones fill it.
+    //
+    // Removing the near fade altogether was tried and is a regression, and the
+    // capture that says so is shots/cover/a10/drive.png against
+    // shots/round46/drive.png: full-size swathes two metres from the camera put
+    // dull olive plates all over the one meadow floor the critic scored as
+    // close to shipping. That frame is on the brief's do-not-trade list.
+    coverFade *= smoothstep( aCov.w * 0.062, aCov.w * 0.152, coverDist );
+  #endif
   transformed *= coverFade;
   float coverPh = aCov.y + uTime * uWindSpeed;
   // Two incommensurable rates so a field of plants never pulses in unison.
@@ -89,8 +139,10 @@ const COVER_DISPLACE = /* glsl */`
 /**
  * @param {object} uniforms  shared block from makeCoverUniforms()
  * @param {boolean} card     true for strip/blade geometry, which needs two sides
+ * @param {boolean} nearFade true for the broad ground mats, which fade IN with
+ *                           distance as well as out — see COVER_NEAR_FADE
  */
-export function createCoverMaterial(uniforms, card = false) {
+export function createCoverMaterial(uniforms, card = false, nearFade = false) {
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.95,
@@ -98,21 +150,22 @@ export function createCoverMaterial(uniforms, card = false) {
     side: card ? THREE.DoubleSide : THREE.FrontSide,
     dithering: true,
   });
-  mat.name = card ? 'coverCard' : 'coverSolid';
+  mat.name = nearFade ? 'coverMat' : (card ? 'coverCard' : 'coverSolid');
   mat.userData.uniforms = uniforms;
 
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     mat.userData.shader = shader;
 
-    shader.vertexShader = COVER_COMMON + /* glsl */`
+    shader.vertexShader = (nearFade ? '#define COVER_NEAR_FADE\n' : '')
+      + COVER_COMMON + /* glsl */`
       attribute vec3 aColA;
       attribute vec3 aColB;
       uniform float uAoDepth;
       varying vec3 vCoverCol;
       varying vec3 vCoverNW;
       varying vec3 vCoverWP;
-      varying float vCoverTrans;
+      varying vec2 vCoverTT;
     ` + shader.vertexShader
       .replace('#include <beginnormal_vertex>', /* glsl */`
         #include <beginnormal_vertex>
@@ -125,7 +178,8 @@ export function createCoverMaterial(uniforms, card = false) {
         vCoverCol = mix( aColA, aColB, cInfo.x )
                   * ( uAoDepth + ( 1.0 - uAoDepth ) * cInfo.y )
                   * aCov.z;
-        vCoverTrans = cInfo.w;
+        // x: translucency, y: height rank up the plant (0 root … 1 tip).
+        vCoverTT = vec2( cInfo.w, cInfo.z );
       `)
       ;
 
@@ -133,10 +187,14 @@ export function createCoverMaterial(uniforms, card = false) {
       uniform vec3 uSunDir;
       uniform vec3 uSunColor;
       uniform float uTransmit;
+      uniform float uRim;
+      uniform float uRimPow;
+      uniform float uRimBack;
+      uniform vec3 uRimTint;
       varying vec3 vCoverCol;
       varying vec3 vCoverNW;
       varying vec3 vCoverWP;
-      varying float vCoverTrans;
+      varying vec2 vCoverTT;
     ` + shader.fragmentShader
       .replace('#include <color_fragment>', /* glsl */`
         #include <color_fragment>
@@ -157,17 +215,30 @@ export function createCoverMaterial(uniforms, card = false) {
           // it. Wrapping the second term rather than clamping it keeps a soft
           // gradient across a lobe instead of a hard glowing rim.
           vec3 coverV = normalize( cameraPosition - vCoverWP );
+          vec3 coverN = normalize( vCoverNW );
           float coverToward = clamp( dot( -coverV, uSunDir ), 0.0, 1.0 );
-          float coverThru = clamp( 0.5 - 0.62 * dot( normalize( vCoverNW ), uSunDir ), 0.0, 1.0 );
+          float coverThru = clamp( 0.5 - 0.62 * dot( coverN, uSunDir ), 0.0, 1.0 );
           totalEmissiveRadiance += uSunColor * diffuseColor.rgb *
-            ( uTransmit * vCoverTrans * coverThru * pow( coverToward, 1.9 ) );
+            ( uTransmit * vCoverTT.x * coverThru * pow( coverToward, 1.9 ) );
+
+          // Silhouette rim. Added as light, never through the albedo — see the
+          // note beside uRim in makeCoverUniforms. coverBack is the same gate
+          // the global stylizeRim() uses, so a front-lit frame pays nothing for
+          // it, and the height-rank weight is what makes it read as glowing
+          // tips rather than as a chalk line round the whole plant.
+          float coverFres = 1.0 - clamp( abs( dot( coverN, coverV ) ), 0.0, 1.0 );
+          float coverBack = smoothstep( uRimBack, 1.0, coverToward );
+          float coverTip = 0.25 + 0.75 * vCoverTT.y;
+          totalEmissiveRadiance += uSunColor * uRimTint *
+            ( uRim * pow( coverFres, uRimPow ) * coverBack * coverTip * vCoverTT.x );
         }
       `);
   };
 
   // Two variants of the same source; without a distinguishing key three would
   // share one compiled program between the front- and double-sided materials.
-  mat.customProgramCacheKey = () => (card ? 'cover-card' : 'cover-solid');
+  mat.customProgramCacheKey = () =>
+    (nearFade ? 'cover-mat' : (card ? 'cover-card' : 'cover-solid'));
   return mat;
 }
 

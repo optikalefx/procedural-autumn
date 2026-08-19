@@ -173,17 +173,72 @@ function lobe(b, cx, cy, cz, rx, ry, rz, detail, rng, o = {}) {
     return;
   }
 
+  // MASS NORMAL. `bias` blends every vertex normal of this lobe toward one
+  // supplied direction — the direction from the *whole plant's* centre out
+  // through this lobe — before the lobe's own radial term is applied.
+  //
+  // This is the fix for "scrub reads as black faceted blobs", and the mechanism
+  // is worth stating because four previous rounds treated it as a facet-size
+  // problem and it is not.
+  //
+  // A floret whose normals point radially out of its own 10 cm centre answers
+  // the key light independently of the floret 10 cm away from it. Thirty-one of
+  // them therefore paint thirty-one unrelated values inside one silhouette,
+  // which is *noise*, not form — and averaged over a 60 px bush the noise
+  // integrates to the middle of the response curve, i.e. to one flat dark
+  // value. Worse at golden hour, which is the game's own light: the previous
+  // fix biased every floret hard toward +Y to make it read as a soft mark, and
+  // with the sun 20° above the horizon a sky-facing normal takes sin(20°) of
+  // the key. The bush was authored to be dark and then lit as if it were flat
+  // ground.
+  //
+  // Biasing toward the mass instead gives the whole sunward flank of the plant
+  // one bright value, the top a middle one and the far flank a dark one — three
+  // broad masses, which is exactly what the reference's bushes are painted as
+  // (crop plate 1 at the birch bases, plate 2 at the river bank). The floret's
+  // own radial component survives at `1 - bias` and is what keeps the surface
+  // from reading as a single smooth dome.
+  const bias = Math.min(0.85, o.bias ?? 0);
+  const bx = o.bx ?? 0, by = o.by ?? 1, bz = o.bz ?? 0;
+
   for (let i = 0; i < V.length; i++) {
     const d = V[i];
     // Outward from the lobe centre, then bent toward the sky. A lobe lit this
     // way has one broad lit top and one broad shaded underside — two flat
     // masses — instead of a continuous sphere gradient.
     let nx = d[0], ny = d[1] + lift, nz = d[2];
-    const l = Math.hypot(nx, ny, nz) || 1;
+    let l = Math.hypot(nx, ny, nz) || 1;
     nx /= l; ny /= l; nz /= l;
+    if (bias > 0) {
+      nx = nx * (1 - bias) + bx * bias;
+      ny = ny * (1 - bias) + by * bias;
+      nz = nz * (1 - bias) + bz * bias;
+      l = Math.hypot(nx, ny, nz);
+      // A blend of two unit vectors can only reach zero length if they are
+      // exactly opposed at bias 0.5, which `ragged` jitter makes unlikely and
+      // not impossible. A zero normal is the black-square defect (3003973), so
+      // it is caught here rather than trusted not to happen.
+      if (l < 1e-4) { nx = 0; ny = 1; nz = 0; }
+      else { nx /= l; ny /= l; nz /= l; }
+    }
     b.vert(P[i][0], P[i][1], P[i][2], nx, ny, nz, chan, o.ao ?? -1, o.sway ?? -1, trans);
   }
   for (const f of F) b.tri(base + f[0], base + f[1], base + f[2]);
+}
+
+/**
+ * Unit direction from a plant's own centre out through a point on it, for
+ * `lobe`'s `bias`. `sx`/`sy` normalise the plant's proportions so a wide flat
+ * shrub still produces a hemisphere of directions rather than a disc of them,
+ * and the `Math.max` floor stops a floret low on the flank pointing downward —
+ * a bush's underside is in shadow, but its skirt is not a ceiling.
+ */
+function massDir(px, py, pz, cy, sx, sy) {
+  const dx = px / sx, dz = pz / sx;
+  const dy = Math.max(-0.12, (py - cy) / sy);
+  const l = Math.hypot(dx, dy, dz);
+  if (l < 1e-4) return { bx: 0, by: 1, bz: 0 };
+  return { bx: dx / l, by: dy / l, bz: dz / l };
 }
 
 /**
@@ -628,7 +683,7 @@ function buildShrubDark(rng) {
   // the silhouette was a spiky polyhedron rather than a lump. Cutting the size
   // alone would have left the spikes; cutting the jitter alone would have left
   // 25 cm plates. Both, and the count up to keep the mass closed.
-  const crowns = 31 + ((rng() * 5) | 0);
+  const crowns = 35 + ((rng() * 5) | 0);
   for (let i = 0; i < crowns; i++) {
     const a = i * 2.39996 + (rng() < 0.34 ? rng() * TAU : rng() * 0.9);
     const rise = clamp01(Math.pow((i + 0.35) / crowns, 0.60) + (rng() - 0.5) * 0.30);
@@ -650,12 +705,29 @@ function buildShrubDark(rng) {
     // other, and a golden-angle spiral of equal discs is a sunflower head —
     // which is what "stacked scales" was. A 2.4x spread inside the same mean
     // breaks the pattern for nothing.
-    const sz = w * (0.098 - 0.022 * rise) * (0.62 + rng() * 0.86);
-    lobe(b, Math.cos(a) * r, h * (0.12 + 0.54 * rise), Math.sin(a) * r,
+    // Spread narrowed from 0.62-1.48. The top of that range put a 40 cm floret
+    // on a 1.4 m bush, and one lobe that size is three hard plates the eye
+    // groups before it groups the mass — the "low-poly blob" reading survives
+    // any amount of value work while the biggest facet is that big. Same mean,
+    // two thirds the spread, and the count up to keep the covering closed.
+    const sz = w * (0.098 - 0.022 * rise) * (0.74 + rng() * 0.54);
+    const fx = Math.cos(a) * r, fy = h * (0.12 + 0.54 * rise), fz = Math.sin(a) * r;
+    // SIXTH, and unlike the five above it is not another size correction — the
+    // facets are the right size now and the bush was still a dark scribble. See
+    // the note on `bias` in `lobe`: the value range has to be organised by the
+    // mass, not distributed at random across it.
+    const md = massDir(fx, fy, fz, h * 0.20, w * 0.34, h * 0.52);
+    lobe(b, fx, fy, fz,
          sz, sz * (0.74 + rng() * 0.34) * (h / w), sz * (0.86 + rng() * 0.32),
          0, rng,
          { chan: 0.02 + rise * 0.50 + rng() * 0.44,
-           trans: 0.32 + rise * 0.34, ragged: 0.44,
+           trans: 0.32 + rise * 0.34,
+           // Ragged down from 0.44. At half the lobe radius the worst vertices
+           // ran a spike out past the silhouette, and thirty-one spikes on a
+           // 90 px bush is the "hard-edged scribble" outline. The reference's
+           // bushes have a *lobed* edge — bitten, but out of a curve.
+           ragged: 0.32,
+           bias: 0.62, bx: md.bx, by: md.by, bz: md.bz,
            // Per-floret normal bias is where the interior value range actually
            // comes from. The palette pair is deliberately narrow, so albedo
            // cannot supply it; what can is adjacent faces landing in different
@@ -674,7 +746,16 @@ function buildShrubDark(rng) {
            //
            // The ceiling is not a taste call — see the clamp in `lobe`. At 1.0
            // the underside normal is the zero vector.
-           lift: 0.42 + rise * 0.44 });
+           //
+           // AND NOW CUT BACK, because the reasoning above is right about the
+           // floret and wrong about the plant. Biasing toward +Y does make one
+           // floret read as one soft mark — and at golden hour, with the sun
+           // 20° up, it also hands every mark the same weak grazing value, so
+           // the plant has no lit side. `bias` above does the softening job
+           // instead, and does it toward the direction that actually catches
+           // the key. What is left here is a small sky term that keeps the
+           // tops a shade above the flanks.
+           lift: 0.16 + rise * 0.20 });
   }
   // Marks sized to the floret facet, and pushed back out to `inset` 1.0 so
   // their tips clear the mass. Cut too small last round they vanished into it,
@@ -687,8 +768,18 @@ function buildShrubDark(rng) {
   // of them was ninety chances to read as a separate pale card; and `span`
   // holds their tips one step off the mass instead of taking them to the pale
   // end of the palette. See the note on `span` in `leafShell`.
-  leafShell(b, h, w, 44, rng, 0.14,
-            { len: 0.090, wide: 0.038, inset: 0.94, tilt: 0.24, span: 0.30 });
+  // …and pulled back in again. `inset` 0.94 with the blade's own 0.34-1.26
+  // radius roll puts a third of them wholly outside the crown radius, which is
+  // a halo of loose marks on gold, not a ragged edge. At 0.78 the bases are
+  // buried and only the tips break the outline. Shorter with it, so a tip
+  // clears the mass by a couple of centimetres rather than by a blade length.
+  leafShell(b, h, w, 42, rng, 0.14,
+            { len: 0.074, wide: 0.038, inset: 0.78, tilt: 0.24, span: 0.30,
+              // Held back off the default 1.0. A blade is the thinnest thing on
+              // the plant, so the backlit rim finds it first and finds all of
+              // it; at full translucency the `backlit` frame came back with
+              // near-white slivers standing off every bush.
+              trans: 0.70 });
   skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
@@ -717,26 +808,32 @@ function buildShrubBerry(rng) {
   // the *worse* of the two — the maroon pair has a wider value range, so a
   // 25 cm plate of it against gold was the highest-contrast hard edge anywhere
   // in the layer.
-  const crowns = 29 + ((rng() * 5) | 0);
+  const crowns = 33 + ((rng() * 5) | 0);
   for (let i = 0; i < crowns; i++) {
     const a = i * 2.39996 + (rng() < 0.34 ? rng() * TAU : rng() * 0.9);
     const rise = clamp01(Math.pow((i + 0.35) / crowns, 0.58) + (rng() - 0.5) * 0.30);
     const rr = w * (0.37 - 0.22 * rise) * Math.sqrt(0.05 + rng() * 0.95);
-    const sz = w * (0.102 - 0.023 * rise) * (0.62 + rng() * 0.86);
-    lobe(b, Math.cos(a) * rr, h * (0.13 + 0.54 * rise), Math.sin(a) * rr,
+    const sz = w * (0.102 - 0.023 * rise) * (0.74 + rng() * 0.54);
+    const fx = Math.cos(a) * rr, fy = h * (0.13 + 0.54 * rise), fz = Math.sin(a) * rr;
+    const md = massDir(fx, fy, fz, h * 0.21, w * 0.35, h * 0.52);
+    lobe(b, fx, fy, fz,
          sz, sz * (0.74 + rng() * 0.32) * (h / w), sz * (0.84 + rng() * 0.34),
          0, rng,
          { chan: rng() < 0.34 ? 0.55 + rng() * 0.30 : 0.03 + rise * 0.40,
-           trans: 0.55 + rise * 0.35, ragged: 0.42,
-           // Sky-biased for the reason set out in `shrubDark`: one floret, one
-           // soft mark; the value range lives between florets, not across the
-           // eight faces of each.
-           lift: 0.44 + rise * 0.42 });
+           trans: 0.55 + rise * 0.35, ragged: 0.32,
+           // Mass-biased with `shrubDark`, and it matters more here: the maroon
+           // pair has the widest value range in the layer, so unorganised
+           // per-floret normals turned it into the highest-contrast noise
+           // anywhere in the frame.
+           bias: 0.62, bx: md.bx, by: md.by, bz: md.bz,
+           lift: 0.16 + rise * 0.20 });
   }
-  leafShell(b, h, w, 34, rng, 0.10,
-            { len: 0.090, wide: 0.036, inset: 0.98, tilt: 0.24, span: 0.30 });
-  leafShell(b, h, w, 14, rng, 0.54,
-            { len: 0.082, wide: 0.034, inset: 1.0, tilt: 0.24, span: 0.26 });
+  leafShell(b, h, w, 32, rng, 0.10,
+            { len: 0.074, wide: 0.036, inset: 0.80, tilt: 0.24, span: 0.30,
+              trans: 0.70 });
+  leafShell(b, h, w, 13, rng, 0.54,
+            { len: 0.068, wide: 0.034, inset: 0.84, tilt: 0.24, span: 0.26,
+              trans: 0.70 });
   // Berry knots, fully accent, and small enough to read as a fleck rather than
   // as a facet. Tucked *into* the crowns, not perched on the outside.
   for (let i = 0; i < 5; i++) {
@@ -770,13 +867,20 @@ function buildScrubDry(rng) {
   for (let i = 0; i < 2; i++) {
     const a = i * 2.4 + rng() * 1.4;
     const r = w * 0.14 * i;
+    const fx = Math.cos(a) * r, fy = h * (0.28 + rng() * 0.12), fz = Math.sin(a) * r;
+    const md = massDir(fx, fy, fz, h * 0.10, w * 0.34, h * 0.42);
     // Only the first core is subdivided. There are several hundred of these on
     // a hillside and the second lobe is entirely inside the blade shell, so it
     // is buying value, not silhouette, and eight faces buy that just as well.
-    lobe(b, Math.cos(a) * r, h * (0.28 + rng() * 0.12), Math.sin(a) * r,
+    lobe(b, fx, fy, fz,
          w * (0.30 + rng() * 0.12), h * (0.28 + rng() * 0.10), w * (0.28 + rng() * 0.12),
          i === 0 ? 1 : 0, rng,
-         { chan: 0.0, trans: 0.55, ragged: 0.30, lift: 0.58 });
+         { chan: 0.0, trans: 0.55, ragged: 0.30,
+           // A scrub clump is squat and wide, so its two cores nearly share a
+           // centre; without the mass bias they present one sky-facing dome
+           // that at golden hour is the same grazing value from every side.
+           bias: 0.45, bx: md.bx, by: md.by, bz: md.bz,
+           lift: 0.24 });
   }
   // Broad short blades, not sprays. The whole point of the rebuild is that a
   // long tapered strip seen flat-on is a pale oval; keeping them short and
@@ -790,7 +894,7 @@ function buildScrubDry(rng) {
   // of them, and the tip held a third of the way up the pair instead of nine
   // tenths.
   leafShell(b, h, w, 46, rng, 0.26,
-            { wide: 0.050, len: 0.125, tilt: 0.42, inset: 0.84, span: 0.34 });
+            { wide: 0.050, len: 0.105, tilt: 0.42, inset: 0.70, span: 0.24 });
   skirt(b, w, rng, 4, 0.0);
   return b.finish(h);
 }
@@ -841,16 +945,21 @@ function buildThicket(rng) {
     const rise = clamp01(Math.pow((i + 0.4) / crowns, 0.55) + (rng() - 0.5) * 0.34);
     const rr = w * (0.34 - 0.16 * rise) * Math.sqrt(0.05 + rng() * 0.95);
     const sz = w * (0.088 - 0.020 * rise) * (0.62 + rng() * 0.86);
-    lobe(b, s.x + Math.cos(a) * rr, s.top * (0.14 + 0.82 * rise), s.z + Math.sin(a) * rr,
+    const fx = s.x + Math.cos(a) * rr, fy = s.top * (0.14 + 0.82 * rise);
+    const fz = s.z + Math.sin(a) * rr;
+    const md = massDir(fx, fy, fz, h * 0.26, w * 0.42, h * 0.60);
+    lobe(b, fx, fy, fz,
          sz, sz * (0.80 + rng() * 0.36), sz * (0.84 + rng() * 0.34), 0, rng,
          { chan: 0.05 + rise * 0.55 + rng() * 0.24, trans: 0.70 + rise * 0.30,
-           ragged: 0.42, lift: 0.44 + rise * 0.42 });
+           ragged: 0.34,
+           bias: 0.58, bx: md.bx, by: md.by, bz: md.bz,
+           lift: 0.16 + rise * 0.20 });
   }
   // Same mark scale as the two shrubs. A thicket is bigger, so a blade sized
   // as a fraction of *its* width was a 40 cm plate — the widest flat facet in
   // the layer, on the archetype with the longest visibility radius.
   leafShell(b, h, w, 118, rng, 0.30,
-            { wide: 0.034, len: 0.090, inset: 0.94, tilt: 0.26, span: 0.36 });
+            { wide: 0.034, len: 0.078, inset: 0.80, tilt: 0.26, span: 0.36 });
   skirt(b, w, rng, 5, 0.10);
   const whips = 4 + ((rng() * 4) | 0);
   for (let i = 0; i < whips; i++) {
@@ -1448,6 +1557,179 @@ function buildThatchMound(rng) {
 }
 
 /**
+ * A GROUND MAT — a broad, low, ragged swathe of matted growth, and the answer
+ * to critic blocker 5 ("bare substrate ... an entire hillside is bare brown").
+ *
+ * The mechanism the previous four rounds missed is a *range* problem, not a
+ * density one. Every prop in the substrate tier — grit, litter, straw, thatch —
+ * carries a visibility radius of 22-24 m, and `_layerGround` only runs in
+ * band-0 cells, i.e. inside 50 m. So beyond about 24 metres the game has no
+ * ground dressing at all, and whatever the terrain albedo happens to be is the
+ * whole picture. That is exactly what `review/045`'s RIVER tile is: a hillside
+ * between 20 and 120 m out, with a fine dusting of thatch along its near edge
+ * and nothing whatever past it.
+ *
+ * Raising the substrate caps cannot reach that. A 30 cm thatch mound at 80 m is
+ * two pixels; ten thousand of them would cost 400,000 triangles and still read
+ * as noise. What covers ground at 80 m is something the size of a car.
+ *
+ * Area per triangle is therefore the only number that matters here, and this
+ * form is built to win it: a swathe is sixteen squashed lobes over three metres
+ * — 176 triangles for roughly 15 m2 of painted ground, about 0.09 m2 per
+ * triangle, against the thatch mound's 0.003 and a straw strand's 0.0005. Two
+ * orders of magnitude.
+ *
+ * Three things keep it from being the flat decal every previous attempt at
+ * broad ground cover collapsed into:
+ *
+ *  · it CONFORMS. `COVER_ARCHETYPES.conform` takes the instance to the full
+ *    terrain tilt rather than the 55% every other archetype uses, so a three
+ *    metre mat lies *on* a slope instead of burying one edge and flying the
+ *    other. Nothing else in this layer is big enough to have needed that.
+ *  · its normals are organised by the mass (see `lobe`'s `bias`), so the mat
+ *    turns through the key light as one low swell with a lit flank and a shaded
+ *    one, rather than as sixteen unrelated plates.
+ *  · it is fringed. A combed rim of short blades is what says "this is growing"
+ *    rather than "this is a stain", and it is what breaks the outline where the
+ *    mat meets bare ground.
+ *
+ * And it fades *in* with distance as well as out — see `nearFade` in
+ * `shaders/cover_material.js`. Up close the fine substrate is the right answer
+ * and a 1.5 m lobe is a slab; this form exists for the 15-90 m band where
+ * nothing else in the game is doing anything at all.
+ */
+function buildGroundMat(rng, variant) {
+  const b = new Builder();
+  const broad = variant === 1;
+  // SIZED DOWN from 2.9-4.6 m, and the reason is the oldest lesson in this
+  // file: the facet has to be the size of the mark. At that radius a lobe was
+  // 2.8 m across and a fifth of a metre tall — a squashed octahedron whose four
+  // top faces are each a metre-wide flat triangle with a dead straight edge.
+  // Rendered with everything else in the layer hidden
+  // (`tools/_scratch/cover/matonly.mjs`) they were unmistakably giant gold
+  // playing cards lying on the hill. Area per triangle is still the number that
+  // matters, but it is bounded above by the largest facet the frame can show.
+  //
+  // …and then WIDENED again, without undoing any of that, by decoupling the two
+  // numbers the previous round moved together. What made a 4.6 m mat read as a
+  // playing card was not its footprint, it was `s = R * (0.19 … 0.31)` — the
+  // lobe size scaled off the radius, so a wide mat got metre-wide facets. The
+  // radius itself is the only thing that buys painted ground per triangle, and
+  // it is the number the frame needs: with the cap binding at 700 instances,
+  // coverage is `cap * pi * R^2`, so this is the cheapest lever there is.
+  //
+  // So: radius up ~40%, lobe count up with it, and `s` re-expressed below in
+  // ABSOLUTE metres so a wider mat gets *more* marks of the same size rather
+  // than bigger ones. Largest facet is unchanged; area per instance is 1.9x.
+  const R = broad ? 2.00 + rng() * 1.05 : 0.90 + rng() * 0.50;
+  // Ankle deep whatever the footprint. The relief is nearly absolute and only
+  // creeps with the radius: an early version scaled it as 0.15-0.24 R, which on
+  // a three-metre swathe is a lobe standing a metre and a half off the ground,
+  // and `meadow` came back with pale olive tents pitched across it.
+  const H = 0.065 + R * 0.026;
+
+  // ── WHAT THIS FORM IS MADE OF, AND WHY IT IS NOT MADE OF LOBES ───────────
+  //
+  // Four rounds built this as a disc of squashed octahedra, tuned their size
+  // down twice, and got the same picture every time — see
+  // shots/cover/a4-river.png and a6-river.png, both taken on the critic's own
+  // hillside: hard-edged pale quads lying loose on brown, at 6 m and at 40 m
+  // alike. Shrinking them made them smaller quads. The mark was wrong, not its
+  // scale.
+  //
+  // A lobe is a closed convex solid. Seen at the grazing angle you get looking
+  // along a hillside, it presents one or two of its facets flat to camera, with
+  // a hard straight silhouette and no interior structure — a chip. Nothing
+  // about its size changes that.
+  //
+  // What already reads correctly on this ground is `buildDeadTuft`: laid-down
+  // strands, all leaning one way in overlapping courses, which is how weather
+  // actually lays dead grass. Those are 2-triangle tapered strips on the
+  // double-sided material, so at a grazing angle they present an EDGE, they
+  // catch the backlit rim along their length, and twenty of them overlapping
+  // read as a surface rather than as twenty objects. They are also a third the
+  // cost of a lobe per mark.
+  //
+  // So this is a deadTuft an order of magnitude bigger: two or three courses of
+  // laid strands over a two-to-three-metre swathe, with a handful of sunk lobes
+  // underneath doing nothing but putting the mat's colour on the ground where
+  // the strands leave gaps. The triangle bill per instance drops by about 45%
+  // against the lobe version it replaces, which is what pays for the cap.
+  const courses = broad ? (rng() < 0.32 ? 3 : 2) : 2;
+  const lay0 = rng() * TAU;
+
+  // The body. Few, wide, and pressed most of the way into the ground: these are
+  // a colour wash under the strands, not objects in their own right, so they
+  // are deliberately the flattest thing in the file. `lift` is high and `bias`
+  // low so their normals sit near vertical and they take the light the way the
+  // ground beside them does — a mat that answers the key differently from the
+  // hill it lies on reads as a sticker on it.
+  // Size and raggedness of a body lobe are the two numbers that decide whether
+  // this form reads as ground or as litter, and both were still too big at the
+  // first pass — shots/cover/a11/river.png shows metre-wide pale plates lying
+  // at angles across the hill at 20-30 m. The arithmetic that produced them:
+  // s up to 0.56, plus `ragged` 0.52 displacing vertices by half the radius
+  // again, times an instance scale of up to 1.20, is a 1.0 m facet. Every
+  // round that has tuned this form has been beaten by that same product, so it
+  // is now written out: MAX FACET = s_max * (1 + ragged) * scale_max, and it
+  // must stay under about 0.45 m or the mat is a playing card.
+  //   0.24 * 1.35 * 1.20 = 0.39 m.
+  const body = broad ? Math.max(6, Math.min(11, Math.round(R * R * 1.25))) : 5;
+  for (let i = 0; i < body; i++) {
+    const a = i * 2.39996 + rng() * 0.8;
+    const r = R * 0.70 * Math.sqrt(0.05 + rng() * 0.95);
+    const s = 0.15 + rng() * 0.09;
+    const y = H * (0.10 + rng() * 0.30);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    const md = massDir(x, y, z, -H * 1.2, R * 0.70, H * 2.4);
+    lobe(b, x, y, z,
+         s, H * (0.42 + rng() * 0.34), s * (0.74 + rng() * 0.46), 0, rng,
+         { chan: 0.05 + rng() * 0.45, trans: 0.34,
+           ragged: 0.35,
+           bias: 0.22, bx: md.bx, by: md.by, bz: md.bz,
+           lift: 0.70,
+           // Near the top of the range: a mat is open ground, not the buried
+           // interior of a clump, and darkening it is how the previous broad
+           // forms turned into stains.
+           ao: 0.84 + rng() * 0.16, sway: 0.02 + rng() * 0.05 });
+  }
+
+  // The strands. Length is drawn off a squared curve so most are stubs and one
+  // or two in a course run right across — the size hierarchy the brief asks for,
+  // inside one prop. Tilt past vertical (1.30+) lies them over so the far end
+  // settles into the ground rather than standing off it.
+  // Short and many, not long and few. shots/cover/a12-river.png is what the
+  // other choice looks like: at 0.20-0.60 m before an instance scale of up to
+  // 1.20, the strands come out as 0.7 m laths lying loose on the hill — the
+  // same defect `buildDeadTuft` records against its own first version. Twenty
+  // short strands are a surface; one long one is an object. Strands are two
+  // triangles each, so the count is nearly free and the length is not.
+  const perCourse = broad ? Math.max(14, Math.min(26, Math.round(R * R * 2.6))) : 10;
+  for (let c = 0; c < courses; c++) {
+    const lay = lay0 + c * (1.9 + rng() * 0.9);
+    const cl = Math.cos(lay), sl = Math.sin(lay);
+    for (let i = 0; i < perCourse; i++) {
+      // Elongated along the lay direction, so a course is a swept band rather
+      // than a disc of strands that happen to point the same way.
+      const u = (rng() - 0.5) * R * 1.70, v = (rng() - 0.5) * R * 1.05;
+      const t = rng();
+      frond(b, {
+        x: cl * u - sl * v, y: 0.010 + rng() * H * 0.55, z: sl * u + cl * v,
+        yaw: lay + (rng() - 0.5) * 1.15,
+        tilt: 1.30 + rng() * 0.30,
+        len: 0.13 + t * t * 0.25, w: 0.030 + rng() * 0.030,
+        segs: 1, droop: 0.20, taper: 0.70,
+        // Base in the deep half of the pair, tip in the lit half: a strand that
+        // is one flat colour end to end is a painted stripe.
+        chanA: 0.10 + rng() * 0.25, chanB: 0.80 + rng() * 0.20,
+        aoA: 0.78, aoB: 1.0, swayA: 0.25, trans: 0.85,
+      });
+    }
+  }
+  return b.finish(H * 1.8);
+}
+
+/**
  * Fallen deadwood — the sticks that fill the gaps between the logs.
  *
  * REBUILT. The old form was 0.9-2.2 m long at a single radius, dead straight
@@ -1617,6 +1899,22 @@ export const COVER_ARCHETYPES = [
   { key: 'cobble',      variants: 2, card: false, cap: 1050, vis: 74, band: 2, recv: false, wind: 0.000, shadow: false, build: buildCobble },
   { key: 'leafScatter', variants: 2, card: true,  cap: 1450, vis: 22, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter },
   { key: 'deadTuft',    variants: 2, card: true,  cap: 2900, vis: 23, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft },
+  // The mid-range ground dressing. `conform: 1` takes it to the full terrain
+  // tilt (every other archetype leans only 55% with the ground, which is right
+  // for a plant standing on a slope and wrong for a three-metre mat lying on
+  // one), and `nearFade` keeps it out of the 2 m band where the fine substrate
+  // is the better answer and a metre-wide lobe would be a slab. See
+  // `buildGroundMat` for why the radius is 88 m rather than the substrate's 23.
+  // Radius RAISED from 88 to 130, and this was the second half of why the
+  // critic's hillside stayed bare after the placement gate was fixed. The
+  // instance fade in `shaders/cover_material.js` shrinks a prop from `0.76*vis`
+  // to `vis`, so at 88 the layer stopped drawing at 67 m and was gone by 88 —
+  // a 35 m annulus — while the hillside it was written for runs from 20 to
+  // 120 m. Measured at the `river` anchor: 330 mats in front of the camera, of
+  // which 220 were outside the fade window and drawing at zero size. Cells are
+  // generated for this layer at `band <= 1`, i.e. out to a nearest-corner
+  // distance of 134 m, so 130 is the largest radius that is fully populated.
+  { key: 'groundMat',   variants: 2, card: true,  cap: 1200, vis: 130, band: 2, recv: false, wind: 0.010, shadow: false, build: buildGroundMat, conform: 1.0, nearFade: true },
 ];
 
 /** arch key -> index into COVER_ARCHETYPES, for the flat instance buffers. */

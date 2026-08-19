@@ -71,7 +71,15 @@ const PAL = {
   // Both ends stay well clear of the black floor described above; the deep end
   // is the brief's own conifer anchor family, which is what the reference's
   // shaded bush foliage measures at.
-  shrubDeep:   C(0x557a50), shrubLit:    C(0xaecb75),
+  // Pulled a step cooler and a step more saturated, and the lit end brought
+  // down. Measured against the plates rather than reasoned about: the bushes at
+  // plate 1's birch bases and plate 2's river bank are a *blue-green* against
+  // the gold — that complementary split is what makes them read at 60 px — and
+  // they sit at about 0.42-0.48 luma against the meadow's 0.70. At the previous
+  // pair, once the mass-normal fix in `cover_forms.js` gave the sunward flank a
+  // real value, the lit end came out a warm olive within a hair of the meadow's
+  // own hue, and a bush that shares the ground's hue is a smudge on it.
+  shrubDeep:   C(0x4a7d51), shrubLit:    C(0x9dc267),
   shrubMaroon: C(0xa8613f), shrubMarLit: C(0xd08a48),
   berryLeaf:   C(0x9c5236), berryLit:    C(0xd4652c), berry: C(0xbe4038),
   // A step darker and a step more saturated than the terrain's sunlit gold
@@ -128,6 +136,26 @@ const PAL = {
   // push, and both ends down toward the brief's own `#c3bfcc` / `#5c5a75`.
   stoneLit:    C(0xc6c3d7), stoneDeep:   C(0x82819e),
   strawPale:   C(0xecc47c), strawDeep:   C(0xc69a58),
+  // The broad ground mats. Three pairs, chosen at the site from what the ground
+  // is, and all three authored to sit *just under* the surface they dress —
+  // a mat that is lighter than the terrain reads as a spill and one that is a
+  // whole value step darker reads as a stain. Half a step down and a step up in
+  // chroma is the reading the plates give: the reference's open ground is never
+  // one flat colour, it is gold worked over with slightly deeper gold.
+  // Deep ends pulled DOWN a value step and the lit ends held, which widens the
+  // pair rather than darkening the mat. Measured in situ on the critic's
+  // hillside (tools/_scratch/px.mjs on shots/cover/a1-river.png): the shaded
+  // slope reads srgb(92,64,28), luma 0.27, and the mats on it read
+  // srgb(141,111,54), luma 0.45 — 1.7x the ground they lie on, at every single
+  // instance, so each one read as a separate pale object rather than as the
+  // surface. A mat is vegetation on dirt and is *supposed* to be lighter than
+  // it; what it is not supposed to be is uniformly lighter. With the deep end
+  // down, a mat's own shaded flank now lands near the ground's value and only
+  // its lit strand tips reach the old one, which is the value structure the
+  // reference's ground has and the flat pair did not.
+  matDry:      C(0xa87f3a), matDryLit:   C(0xecc478),
+  matHerb:     C(0x6f7238), matHerbLit:  C(0xc0c66a),
+  matRust:     C(0x9a6330), matRustLit:  C(0xe0a75c),
 };
 
 // Fixed leaf-drift direction. Litter piles downwind of a crown, and the whole
@@ -140,7 +168,7 @@ const CAN_CELL = 6;                  // metres per canopy raster cell
 // Layer salts. Distinct constants so no two layers can ever share a stream.
 const L_OPEN = 0x51a1, L_SCRUB = 0x5c2b, L_BANK = 0xba17;
 const L_UNDER = 0x0fe2, L_FLOWER = 0xf10e, L_LITTER = 0x11e2, L_DEAD = 0xdead;
-const L_GROUND = 0x9704, L_STONE = 0x5701;
+const L_GROUND = 0x9704, L_STONE = 0x5701, L_MAT = 0x3a71;
 
 export class CoverScatter {
   constructor(world, seed, opts = {}) {
@@ -240,13 +268,60 @@ export class CoverScatter {
         W.getWaterDepth(x + d, z + d) > 0.15 || W.getWaterDepth(x - d, z + d) > 0.15 ||
         W.getWaterDepth(x + d, z - d) > 0.15 || W.getWaterDepth(x - d, z - d) > 0.15) return 0;
 
+    // ── THE SLOPE GATE, AND WHY IT IS NOT ALSO A ROCK GATE ──────────────────
+    //
+    // This is critic blocker 5's remaining half: `review/045` and
+    // `shots/round46/river.png` show an entire hillside, 20 to 120 m out and
+    // most of the frame, as bare brown ground with nothing whatever growing on
+    // it. Everything below is the result of reading the inputs at those exact
+    // pixels (`tools/_scratch/cover/hillprobe.mjs`) rather than reasoning about
+    // which gate might be closing, and the answer was not the one the previous
+    // two rounds assumed.
+    //
+    // Ray-marched onto the terrain at the `river` anchor, every bare pixel on
+    // that hillside reports:
+    //
+    //     slope 0.84 … 1.93   rock 1.00   dirt 0.70   grass 0.00   snow 0.00
+    //
+    // and the old gate below vetoed on `w.rock > 0.60`. So the hillside was
+    // rejected for being ROCK. It is not rock. Read `WorldData.getSurfaceWeights`:
+    //
+    //     rockW = smoothstep( 0.55, 1.15, slope ) + smoothstep( 230, 300, h ) * 0.6
+    //
+    // Below the alpine line `w.rock` is a *pure restatement of slope*. It
+    // carries no independent information about the substrate at all. Which
+    // means the previous round's reasoning — "ground cover stops where the
+    // surface becomes rock, not where it becomes steep, and `w.rock` is already
+    // the test for that" — was exactly backwards, and its raise of the slope
+    // limit from 1.20 to 1.55 changed nothing: `rock > 0.60` is `slope > 0.93`,
+    // and the `smoothstep(0.18, 0.58, w.rock)` fade below had already taken `g`
+    // to zero at slope 0.92. Cover stopped dead at 42°, whatever the number on
+    // the line above said. That is the whole defect.
+    //
+    // So the two halves of `rockW` are separated here and treated as what they
+    // actually are:
+    //
+    //  · the ALTITUDE half is real information — above ~230 m the world is
+    //    genuinely crag and scree, and it still vetoes.
+    //  · the SLOPE half is a slope term, and is applied once, as a fade, with a
+    //    hard stop only where a plant would be standing on something near
+    //    vertical (1.95 ≈ 63°).
+    //
+    // The reference supports the generous reading: plate 2 carries gold grass
+    // and scrub right up the cut bank behind the truck, and plate 3's far slope
+    // is dressed to the scree line. A 45° hillside in autumn is covered.
     const slope = W.getSlope(x, z);
-    if (slope > 1.20) return 0;
+    if (slope > 1.95) return 0;
     const w = W.getSurfaceWeights(x, z, this._w);
-    if (w.rock > 0.60 || w.snow > 0.45) return 0;
+    if (w.snow > 0.45) return 0;
+    // The altitude half of `w.rock`, recovered exactly as WorldData builds it.
+    // Kept in this form rather than eyeballed so that if that formula ever
+    // changes, the mismatch is visible here instead of silent.
+    const alpine = smoothstep(230, 300, W.getHeight(x, z));
+    if (alpine > 0.55) return 0;
 
-    let g = (1 - smoothstep(0.18, 0.58, w.rock)) * (1 - w.snow);
-    g *= 1 - smoothstep(0.50, 1.08, slope);
+    let g = (1 - smoothstep(0.10, 0.55, alpine)) * (1 - w.snow);
+    g *= 1 - smoothstep(1.30, 1.95, slope);
     g *= 1 - this.roads.sample(x, z) * 0.97;
     return g;
   }
@@ -284,7 +359,9 @@ export class CoverScatter {
     // this call runs ten thousand times per band-0 cell against the site's few
     // hundred — it is pure cost in the hot loop for a result that is a copy of
     // one already taken.
-    if (slopeCheck && W.getSlope(x, z) > 1.35) return 0;
+    // Raised with `_ground`'s, and for the same reason. Grit and straw lying on
+    // a 40° bank is what the reference's banks are made of.
+    if (slopeCheck && W.getSlope(x, z) > 1.95) return 0;
     return 1 - this.roads.sample(x, z) * 0.30;
   }
 
@@ -412,6 +489,10 @@ export class CoverScatter {
    */
   generateCell(cx, cz, S, band, out, cap, deferGround = false) {
     let n = 0;
+    // Mats first. They are the layer that decides whether a frame reads as
+    // dressed ground at all, they are only a few hundred instances, and if a
+    // cell ever clips its buffer it must not be them that goes.
+    if (band <= 1) n = this._layerMat(cx, cz, S, out, n, cap);
     n = this._layerOpen(cx, cz, S, band, out, n, cap);
     if (band <= 2) n = this._layerScrub(cx, cz, S, out, n, cap);
     n = this._layerBank(cx, cz, S, out, n, cap);
@@ -695,6 +776,181 @@ export class CoverScatter {
             visMul: 0.75,
           });
         }
+      }
+    }
+    return n;
+  }
+
+  /**
+   * The broad ground mats — critic blocker 5, "bare substrate ... an entire
+   * hillside is bare brown".
+   *
+   * This is a *range* layer, not a density one, and that is the whole point of
+   * it. Everything in `_layerGround` carries a 22-24 m visibility radius and
+   * only runs in band-0 cells, so past about 24 metres the game has no ground
+   * dressing whatever and the terrain albedo is the entire picture. The RIVER
+   * tile in `review/045` is that fact: a hillside from 20 to 120 m out with a
+   * thin scurf of thatch along its bottom edge and nothing at all above it. No
+   * achievable number of 30 cm props reaches 90 m — see `buildGroundMat`.
+   *
+   * Placement is driven by BARENESS and almost nothing else, which is what
+   * keeps this affordable. Where the grass carpet already covers, the layer
+   * emits close to nothing and costs close to nothing; where the surface
+   * weights say clay, dirt or thin dry ground, it fills. So the meadow — most
+   * of the game, and the part that already reads — is untouched, and the frame
+   * that fails is the frame that pays.
+   *
+   * The mix follows the ground the same way `_layerGround`'s does: damp and
+   * shaded goes herbaceous green, dry and exposed goes gold thatch, and the
+   * eroding warm ground round a river cut takes the rust pair, which is the
+   * only place in the layer where a mat is allowed to be a colour accent
+   * rather than a texture.
+   */
+  _layerMat(cx, cz, S, out, n, cap) {
+    const N = this.noise, W = this.world;
+    const ox = cx * S, oz = cz * S;
+    const key = this._cellKey(cx, cz, L_MAT);
+    // 260 sites over a 2304 m² cell is one candidate every 8.9 m². A broad
+    // swathe puts strands and body over roughly a third of its own disc, i.e.
+    // 6-8 m², so a fully bald slope — which accepts nearly every candidate —
+    // comes out at around 60% of the ground actually dressed, and a closed
+    // meadow, where the bareness gate below drops acceptance to about an
+    // eighth, comes out at 8%. Those two numbers are the layer's whole job.
+    //
+    // Held near the original 240 rather than raised, and the density for a
+    // bald slope taken from the drift loop below instead, because THIS is the
+    // number that costs. A site pays `getSurfaceWeights` whether or not it is
+    // accepted, and the layer runs on every cell out to 134 m; a drift member
+    // only runs on a site that was already accepted, which on the meadow is one
+    // in eight. Raised to 430 the perf gate went from settled 63.7 fps to 45.9;
+    // the density it bought is now bought where it is nearly free.
+    const sites = Math.round(260 * this.mul);
+
+    for (let a = 0; a < sites && n < cap; a++) {
+      const rng = mulberry32((hash2i(a, L_MAT, key) * 4294967296) >>> 0);
+      const x = ox + rng() * S, z = oz + rng() * S;
+
+      // ORDER MATTERS HERE, and it is the difference between this layer costing
+      // nothing and costing forty per cent of the frame rate.
+      //
+      // `_ground` is by a distance the most expensive test in this file: nine
+      // `getWaterDepth` probes plus a surface-weight fetch. The first version of
+      // this layer ran it on every candidate site and did the cheap acceptance
+      // roll afterwards, so 240 cells' worth of the most expensive query in the
+      // system was being spent to keep about a third of it. Measured on the
+      // player's configuration, `tools/dprtest.mjs --dpr 2 --w 1170 --h 870`:
+      // settled 62.5 fps with this layer off against 37.3 with it on. Rolling
+      // first and probing only what survives is the whole fix.
+      const slope = W.getSlope(x, z);
+      if (slope > 1.95) continue;
+      const can = this._canopyAt(x, z);
+      const moist = W.getMoisture(x, z);
+      const w = W.getSurfaceWeights(x, z, this._w);
+
+      // NOT gated on bareness, and that is a correction rather than a choice.
+      //
+      // The first version of this layer keyed off `1 - w.grass`, on the
+      // reasonable-sounding theory that the grass weight says where the ground
+      // is already dressed. That was dropped, and the note that replaced it
+      // claimed the critic's hillside measures `grass` 0.97-1.00. It does not —
+      // that reading was taken along the anchor's own yaw ray, which lands on
+      // the flat valley floor to the RIGHT of the bare slope. Probed at the
+      // pixels that actually look bare (`tools/_scratch/cover/hillprobe.mjs`)
+      // the hillside measures `grass 0.00, rock 1.00, dirt 0.70, slope 1.0-1.9`.
+      // The lesson stands and the number was wrong: sample where the defect is,
+      // not where the camera is pointing.
+      //
+      // So the bareness gate is BACK, on the correct reading, and it is the
+      // single most valuable line in this layer.
+      //
+      // The cap is the binding constraint, not the acceptance rate: measured on
+      // the `river` anchor, `groundMat_0` sits at 700/700 while the hillside it
+      // exists for is still bare. Every mat spent in closed meadow is a mat not
+      // spent on the slope, and in the meadow it is worse than wasted — a pale
+      // flat lozenge lying on a closed gold carpet is the "hard-edged decal"
+      // artefact the look author logged against this layer. Concentration, not
+      // volume, is what fills the frame that fails.
+      //
+      // `w.grass` measures 0.00 on the bare hillside and 0.86-0.99 across the
+      // meadow floor, so it separates the two cases almost perfectly, and the
+      // 0.16 floor keeps a thin scatter of texture in the good meadow rather
+      // than a visible boundary where the layer switches off.
+      const bare = 1 - smoothstep(0.30, 0.90, w.grass);
+      const lean = smoothstep(0.22, 0.95, slope) * 0.45
+                 + clamp01(w.dirt) * 0.35;
+      // Mid-frequency, so mats arrive in drifts with open ground between them
+      // rather than as an even quilt. Deliberately a different frequency and
+      // offset from the substrate's accumulation field: two layers clumping on
+      // the same noise would stack into one blotch pattern.
+      const acc = smoothstep(-0.55, 0.55,
+        N.fbm(x * 0.026 - 143.1, z * 0.026 + 58.9, 2, 2.1, 0.5, 1));
+      // Floor raised on the clump field. At 0.46 the drift wavelength (38 m)
+      // is wide enough that whole stretches of a ten-metre-wide bare strip fall
+      // in a trough and get nothing — visible in shots/cover/a8-river.png as
+      // brown gaps between dressed bands. Clumping is meant to make hollows
+      // richer than ridges, not to leave the ground the layer exists for empty.
+      if (rng() > clamp01((0.16 + 0.84 * bare) * (0.64 + acc * 0.36) * (1 + lean))) continue;
+
+      // Only now the expensive one. A mat is two to five metres across, so it
+      // needs the eight-point spill probe at a real footprint — a centre that
+      // tests dry a metre from a bank puts half a swathe out over the river.
+      const g = this._ground(x, z, 1.6);
+      if (g < 0.20) continue;
+
+      // Broad swathes lead on open ground; the small mat is for the ragged
+      // margins and the steeper ground, where a three-metre swathe would
+      // overhang whatever it is edging.
+      const broad = rng() < 0.62 - clamp01(slope * 0.30) - can * 0.20;
+      const herb = moist * 0.9 + can * 0.9 - slope * 0.35;
+      const rust = clamp01((1 - moist) * 0.7 + slope * 0.5 + clamp01(w.dirt) * 0.8 - can * 0.6);
+      let colA, colB;
+      // Threshold raised from 0.88. In open meadow `moist` sits near 0.7 and
+      // `can` near 0.3, which cleared 0.88 and made the *herbaceous* pair the
+      // default on the drive route — dull olive patches on gold, which is what
+      // shots/cover/a10/drive.png shows. Herb is for genuinely damp shaded
+      // ground under a canopy, and 1.06 is where that starts.
+      if (herb > 1.06) { colA = PAL.matHerb; colB = PAL.matHerbLit; }
+      else if (rust > 0.78 && rng() < 0.38) { colA = PAL.matRust; colB = PAL.matRustLit; }
+      else { colA = PAL.matDry; colB = PAL.matDryLit; }
+
+      // Two or three swathes per accepted site on genuinely bare ground, one on
+      // grass — a drift rather than a single stamp.
+      //
+      // This is where the density for the bald hillside comes from, and it is
+      // deliberately bought here rather than by raising `sites`. The site count
+      // is what pays for `_ground`, which is nine `getWaterDepth` probes and a
+      // surface-weight fetch and by a distance the most expensive call in this
+      // file; the members are free by comparison because they only run on sites
+      // that already passed it, and on the meadow — most of the map — the
+      // bareness term keeps the count at one so nothing changes there at all.
+      const drift = 1 + ((rng() * (0.7 + bare * 3.4)) | 0);
+      for (let mI = 0; mI < drift && n < cap; mI++) {
+        let mx = x, mz = z;
+        if (mI > 0) {
+          const ma = rng() * TAU, mr = 1.6 + rng() * 3.4;
+          mx = x + Math.cos(ma) * mr; mz = z + Math.sin(ma) * mr;
+          // A member is a two-to-three metre object like its site, so it gets
+          // the same spill probe. Anything cheaper puts half a swathe over the
+          // river, which is the defect the eight-point probe exists for.
+          if (this._ground(mx, mz, 1.5) < 0.20) continue;
+        }
+        const mBroad = mI === 0 ? broad : rng() < 0.55 - clamp01(slope * 0.30);
+        n = this._emit(out, n, cap, 'groundMat', mx, mz, rng, {
+          colA, colB,
+          variant: mBroad ? 1 : 0,
+          // The small mat carries a third of the radius. Two jobs out of one
+          // archetype: the near-field fade in the material is a fraction of the
+          // instance's own radius, so this is what lets small mats dress the
+          // ground from 7 m while broad swathes stay out until 20.
+          visMul: mBroad ? 1 : 0.34,
+          // Sunk, so the rim of the mat is buried and there is no under-edge to
+          // read as an object lying on the ground.
+          sink: 0.04 + rng() * 0.05,
+          scale: 0.86 + rng() * 0.34,
+          // Wide. Forty mats at one tone is a repeated stamp; the reference's
+          // ground is the same colour worked over at a dozen values.
+          tone: 0.76 + rng() * 0.42, hue: 0.034,
+        });
       }
     }
     return n;
