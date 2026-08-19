@@ -599,10 +599,31 @@ void main() {
 }
 `;
 
+// ── Per-tier post chain ──────────────────────────────────────────────────────
+//
+// QUALITY_PRESETS owns whether SSAO and DOF exist at all; it has no vocabulary
+// for *sampling rates*, which is what the rest of a tier drop should be. This
+// table is that vocabulary, and it lives here because these are post decisions.
+//
+// `medium` and `low` inherit `ssao: true/false` and `dof: false` from the
+// preset, so the effects they drop are dropped by the preset. What this adds is
+// that a tier they *keep* an effect at is a cheaper version of it.
+//
+// Nothing here softens the image at any tier: SMAA and the guard pass are
+// present at every tier, and no tier lowers a render resolution. A tier drop
+// removes work; it never trades sharpness for it.
+const POST_TIERS = {
+  ultra:  { aoSamples: 16, denoiseSamples: 8, denoiseIterations: 2, bloomMip: 12 },
+  high:   { aoSamples: 16, denoiseSamples: 8, denoiseIterations: 2, bloomMip: 12 },
+  medium: { aoSamples: 8,  denoiseSamples: 4, denoiseIterations: 1, bloomMip: 24 },
+  low:    { aoSamples: 8,  denoiseSamples: 4, denoiseIterations: 1, bloomMip: 32 },
+};
+
 export class PostFX {
   constructor(engine, quality = 'ultra') {
     this.engine = engine;
-    this.preset = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.high;
+    this.tier = QUALITY_PRESETS[quality] ? quality : 'high';
+    this.preset = QUALITY_PRESETS[this.tier];
     const { renderer, scene, camera } = engine;
 
     this.composer = new EffectComposer(renderer, {
@@ -613,48 +634,10 @@ export class PostFX {
     this.renderPass = new RenderPass(scene, camera);
     this.composer.addPass(this.renderPass);
 
-    if (this.preset.ssao) {
-      this.ao = new N8AOPostPass(scene, camera, engine.width, engine.height);
-      // A grass field is hundreds of thousands of mutually-occluding sheets, so
-      // a metres-wide AO radius finds a contact between every pair of adjacent
-      // blades and fills the canopy interior with salt-and-pepper — the exact
-      // high-frequency noise the brief rules out, and the grass author's logged
-      // request. Pulling the radius in to roughly a blade-height keeps the cue
-      // that actually reads (a rock or a trunk meeting the ground) and drops
-      // the one that only adds noise.
-      this.ao.configuration.aoRadius = 1.1;
-      this.ao.configuration.distanceFalloff = 1.0;
-      // Weaker and less blue than it was. Ambient occlusion is a contact cue,
-      // not a grade: at 2.6 with a near-navy tint it was stamping a cold violet
-      // into every crease of a gold meadow, which is the exact failure the
-      // brief calls out — the cool note belongs to distant rock and haze, not
-      // to shaded ground. Blue/violet/magenta together are about 1% of the
-      // reference's chromatic pixels.
-      this.ao.configuration.intensity = 1.15;
-      this.ao.configuration.color = new THREE.Color(0x40303f);
-      this.ao.configuration.halfRes = true;
-      // Sampling rate, set explicitly rather than through setQualityMode().
-      //
-      // Two things were wrong with the preset call. It came *after* the two
-      // denoise lines and silently overwrote them (its 'High' preset is
-      // denoiseSamples 8 / denoiseRadius 6, not the 8 / 12 written here), and
-      // its 'High' means 64 AO samples per pixel — which, at half res over a
-      // 1600x900 frame, is 23 M depth taps every frame and was the single most
-      // expensive thing in the whole render. A/B'd inside one page load with
-      // 4 s blocks so machine load hits both arms equally, 64 -> 16 samples is
-      // p50 -1.4 ms and p95 -23.4 ms. Nothing else in the frame is worth that
-      // much.
-      //
-      // This is a sampling *rate*, not a look control: radius, intensity and
-      // colour above are what shape the AO, and they are untouched. At half res
-      // with two poisson denoise iterations the difference 16 samples makes is
-      // noise, and the denoiser is what removes it — which is why the still
-      // frames measure the same either way (docs/INTEGRATION_REQUESTS.md).
-      this.ao.configuration.aoSamples = 16;
-      this.ao.configuration.denoiseSamples = 8;
-      this.ao.configuration.denoiseRadius = 12;
-      this.composer.addPass(this.ao);
-    }
+    this.ao = null;
+    this.dof = null;
+    this._dofEffect = null;
+    this.mainPass = null;
 
     this.bloom = new BloomEffect({
       intensity: 0.38,

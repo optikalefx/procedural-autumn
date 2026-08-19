@@ -64,15 +64,47 @@ const setProgress = (p, label) => {
   if (label && statusEl) statusEl.textContent = label;
 };
 
+/**
+ * Choose a quality tier from what the machine has to do, not only from what it
+ * has.
+ *
+ * The original version looked at memory and core count alone, so a Retina
+ * laptop was handed `ultra` no matter how many pixels its display demanded —
+ * and the renderer then drew up to four times the pixels the tier was tuned
+ * against. The player's machine reported eight cores, took `ultra`, and ran at
+ * 4 fps. Pixel load belongs in this decision.
+ */
 function pickQuality() {
   const q = new URLSearchParams(location.search).get('quality');
   if (q && QUALITY_PRESETS[q]) return q;
+
   const mem = navigator.deviceMemory ?? 8;
   const cores = navigator.hardwareConcurrency ?? 8;
-  if (mem >= 8 && cores >= 8) return 'ultra';
-  if (mem >= 6 && cores >= 6) return 'high';
-  if (cores >= 4) return 'medium';
-  return 'low';
+
+  // Megapixels this display would ask for at the tier's own cap, using the
+  // window rather than the screen — a small window on a big monitor is cheap.
+  const cssPx = (window.innerWidth || 1280) * (window.innerHeight || 720);
+  const dpr = Math.min(window.devicePixelRatio || 1, QUALITY_PRESETS.ultra.pixelRatioCap);
+  const megapixels = (cssPx * dpr * dpr) / 1e6;
+
+  let tier = mem >= 8 && cores >= 8 ? 'ultra'
+           : mem >= 6 && cores >= 6 ? 'high'
+           : cores >= 4 ? 'medium'
+           : 'low';
+
+  // Step down for heavy pixel loads. AdaptiveResolution in Engine will not
+  // rescue this on its own: it refuses to draw below one device pixel per CSS
+  // pixel, because rendering under native reads as a blurry game rather than a
+  // fast one. Below native the honest lever is fewer effects, not less sharpness.
+  const ORDER = ['ultra', 'high', 'medium', 'low'];
+  let steps = 0;
+  if (megapixels > 6.0) steps = 2;
+  else if (megapixels > 3.5) steps = 1;
+  if (steps) tier = ORDER[Math.min(ORDER.length - 1, ORDER.indexOf(tier) + steps)];
+
+  console.log(`[quality] ${tier} — ${megapixels.toFixed(2)} MP at dpr ${dpr}, ` +
+              `${cores} cores, ${mem} GB` + (steps ? ` (stepped down ${steps} for pixel load)` : ''));
+  return tier;
 }
 
 /**

@@ -47,6 +47,7 @@ const RESET = `
     if (o.visible !== s.v) o.visible = s.v;
     if (o.castShadow !== s.c) o.castShadow = s.c;
   });
+  R.shadowMap.enabled = true;
   if (L && L.sun) {
     L.sun.castShadow = true;
     if (L.sun.shadow.mapSize.x !== window.__snapMap) {
@@ -78,6 +79,8 @@ try {
     window.__fn = [];
     const keep = (o, k) => { if (o && typeof o[k] === 'function') window.__fn.push([o, k, o[k]]); };
     const S0 = window.__systems, T0 = window.__terrain;
+    keep(e, '_render');
+    keep(window.__ctx.postfx, 'render');
     keep(T0, 'update');
     for (const n of Object.keys(S0)) { keep(S0[n], 'update'); keep(S0[n], 'lateUpdate'); }
     keep(S0.trees, '_rebuild');
