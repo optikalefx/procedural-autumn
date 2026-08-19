@@ -80,6 +80,34 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 //  of arriving olive. Do not re-saturate these to chase "more golden": the gold
 //  belongs to the ground albedo, and every time it has been moved into the
 //  light instead, the whole frame has gone one colour.
+//
+//  THE DAYLIGHT `fogFar` KEYS WERE MAGENTA-LED — 2026-08-19.
+//
+//  Every one of them, 7.4 through 19.0, had blue *above* green: 0xdcbcc8 at
+//  golden hour is srgb(220,188,200), which is a pink. Past `farStart * 5` the
+//  haze is entirely fogFar, so in a vista that pink is the colour of every
+//  distant ridge — and it is exactly the critic's fourth blocker, "the cool
+//  half is arriving as candy pink in the distant range instead of as
+//  blue-violet in the cast shadow". Confirmed by construction: neutralising the
+//  key light (KEY_TINT below) took `hero`'s rose share *up* from 17.4% to
+//  24.7%, because there was less orange left to bury the pink under.
+//
+//  Plate 1 is the plate vistas are judged against and its distance ramp has
+//  blue as the LOWEST channel the whole way in, with no magenta anywhere:
+//    far peak      srgb(219,183,167)   1 : 0.834 : 0.762
+//    far mtn L     srgb(230,187,170)   1 : 0.817 : 0.740
+//    far mtn R     srgb(223,194,181)   1 : 0.869 : 0.812
+//    mid ridge     srgb(209,179,165)   1 : 0.857 : 0.789
+//    haze band     srgb(203,169,150)   1 : 0.833 : 0.740
+//  (plate 3's far slopes *are* mauve — srgb(141,111,122) — but that is a
+//  shadowed hillside, not the haze, and it is the cast-shadow mass this brief
+//  keeps pointing at. Do not put it back in the fog.)
+//
+//  So the daylight fogFar keys are re-authored onto plate 1's ramp: still paler
+//  and less saturated than fogNear, which is what "far" means, but warm-neutral
+//  rather than pink. The blue-hour and twilight keys (6.3, 19.8 and the night
+//  block) keep B above G — at those hours the distance genuinely is blue and
+//  the plates say nothing about it.
 const KEYS = [
   { h: 0.0,  sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x5c6892, hemiGnd: 0x3a3c52, hemiI: 0.42,
     zen: 0x0d1226, hor: 0x1c2440, sunHor: 0x2e3050, glow: 0x2a3358, glowI: 0.12,
@@ -102,38 +130,38 @@ const KEYS = [
   // the frame measures out at a fifth of the reference's chroma.
   { h: 7.4,  sun: 0xffcc9c, sunI: 2.60, hemiSky: 0xb8bcd0, hemiGnd: 0xd0a482, hemiI: 1.14,
     zen: 0x76abdc, hor: 0xf4d4b4, sunHor: 0xffc794, glow: 0xffd4ab, glowI: 0.95,
-    fogNear: 0xe6b79c, fogFar: 0xd2b4c4, fogSun: 0xffcc96, fogD: 0.0024,
+    fogNear: 0xe6b79c, fogFar: 0xd4b8ac, fogSun: 0xffcc96, fogD: 0.0024,
     cloudLit: 0xffe0c4, cloudDark: 0xa8968e, cover: 0.30 },
 
   { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xb6c0e4, hemiGnd: 0xdcb072, hemiI: 0.96,
     zen: 0x63a0dc, hor: 0xf2e2d6, sunHor: 0xf8ead8, glow: 0xffeed6, glowI: 0.72,
-    fogNear: 0xdcbb92, fogFar: 0xd2bcca, fogSun: 0xffe8c8, fogD: 0.0021,
+    fogNear: 0xdcbb92, fogFar: 0xd2bfb4, fogSun: 0xffe8c8, fogD: 0.0021,
     cloudLit: 0xfff6ec, cloudDark: 0xbcae9e, cover: 0.24 },
 
   { h: 12.5, sun: 0xffecc8, sunI: 3.40, hemiSky: 0xbac6ec, hemiGnd: 0xe0b476, hemiI: 0.90,
     zen: 0x5fa0de, hor: 0xf0e2d8, sunHor: 0xeee6da, glow: 0xfff4e4, glowI: 0.62,
-    fogNear: 0xd8c3a0, fogFar: 0xccbac6, fogSun: 0xf8ecd8, fogD: 0.0015,
+    fogNear: 0xd8c3a0, fogFar: 0xccbdb2, fogSun: 0xf8ecd8, fogD: 0.0015,
     cloudLit: 0xfffaf4, cloudDark: 0xbcb4a8, cover: 0.20 },
 
   { h: 15.5, sun: 0xffe6c4, sunI: 3.25, hemiSky: 0xbfbede, hemiGnd: 0xd8ae76, hemiI: 1.00,
     zen: 0x9ec0e6, hor: 0xf2dcc8, sunHor: 0xf8dcbc, glow: 0xffe6bc, glowI: 0.80,
-    fogNear: 0xdcb99c, fogFar: 0xd8c0cc, fogSun: 0xffdfb4, fogD: 0.0021,
+    fogNear: 0xdcb99c, fogFar: 0xd8c2b6, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xbcaa9a, cover: 0.20 },
 
   // The money frame: deep golden hour.
   { h: 17.1, sun: 0xffd49c, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.98,
     zen: 0xa9c4e4, hor: 0xf2dac6, sunHor: 0xf8cd9c, glow: 0xffcf90, glowI: 1.00,
-    fogNear: 0xe0b296, fogFar: 0xdcbcc8, fogSun: 0xffc98c, fogD: 0.0027,
+    fogNear: 0xe0b296, fogFar: 0xdcbcae, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0xb49688, cover: 0.22 },
 
   { h: 18.3, sun: 0xffb47e, sunI: 2.05, hemiSky: 0xb4a8cc, hemiGnd: 0xcc9060, hemiI: 1.16,
     zen: 0x5b83c2, hor: 0xf4d2b0, sunHor: 0xf8ac74, glow: 0xffae66, glowI: 1.20,
-    fogNear: 0xe2a888, fogFar: 0xdcb0b6, fogSun: 0xffa860, fogD: 0.0035,
+    fogNear: 0xe2a888, fogFar: 0xdab0a2, fogSun: 0xffa860, fogD: 0.0035,
     cloudLit: 0xffcc9c, cloudDark: 0xa8867a, cover: 0.32 },
 
   { h: 19.0, sun: 0xff9a6a, sunI: 1.50, hemiSky: 0xb49eac, hemiGnd: 0xb27a58, hemiI: 1.14,
     zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
-    fogNear: 0xd88a62, fogFar: 0xbe8c9c, fogSun: 0xff8a48, fogD: 0.0040,
+    fogNear: 0xd88a62, fogFar: 0xc09084, fogSun: 0xff8a48, fogD: 0.0040,
     cloudLit: 0xffb078, cloudDark: 0x94706a, cover: 0.34 },
 
   { h: 19.8, sun: 0x9c5a76, sunI: 0.32, hemiSky: 0x8a92ae, hemiGnd: 0x7a6672, hemiI: 0.72,
@@ -199,6 +227,85 @@ const SCALAR_FIELDS = ['sunI', 'hemiI', 'glowI', 'fogD', 'cover'];
 // is untouched) while letting the shadowed forest mass in the near third
 // arrive dark enough to be the frame's black point.
 const FOG_DENSITY_SCALE = 0.42;
+
+// ── THE NEUTRAL POINT — 2026-08-19 ──────────────────────────────────────────
+//
+// The rocks author supplied the cleanest diagnostic this project has had: a
+// surface with equal RGB reflectance does not come back neutral. Reproduced
+// directly (tools/_scratch/look/neutral.mjs floats a linear-0.5 grey card in
+// full sun, with receiveShadow off so no cast shadow can contaminate it):
+//
+//              a pure grey card renders as        an unlit 0.5 grey through
+//              sun + hemi + stylise + grade       the post chain alone
+//   h 7.4      1 : 0.778 : 0.512                  1 : 0.999 : 0.997
+//   h 12       1 : 0.982 : 0.726                  1 : 0.999 : 0.997
+//   h 16.7     1 : 0.796 : 0.410                  1 : 0.999 : 0.997
+//   h 18.6     1 : 0.553 : 0.350                  1 : 0.999 : 0.997
+//
+// Two things follow, and they close a question that has been mis-attributed
+// three times. **The grade is exactly neutral.** A known grey put through
+// tone map, split-tone, contrast, lift, vibrance, warm regrade, blue floor and
+// grain comes out 184,184,184 at every hour. Every previous author who went
+// looking for the warm cast in PostFX was looking in the wrong file. It is the
+// key light, and it is the same finding as "the key light was a hue
+// replacement, not a tint" — that commit halved the error at one hour and left
+// the mechanism in place.
+//
+// What the reference does instead, measured on its own sunlit stone:
+//   plate 5 boulder      srgb(181,169,163)   1 : 0.929 : 0.896
+//   plate 5 rock         srgb(160,152,150)   1 : 0.950 : 0.939
+//   plate 1 fg rock      srgb(157,140,137)   1 : 0.893 : 0.871
+//   plate 2 mountain     srgb(114,111,119)   1 : 0.974 : 1.049
+// — all in the same frames whose grass measures chroma 0.58-0.71. The
+// reference gets blazing gold and neutral stone *in one frame* because its key
+// is achromatic in ratio and the gold lives in the albedo. Ours cannot: at
+// h16.7 a grey card loses 59% of its blue to the light before any surface
+// author gets a say, which is why stone cannot be lavender, why the cool
+// shadow cannot be reached by rotating a pixel whose blue is already gone, and
+// why the ground drifts salmon at dawn and brick at dusk — those are the same
+// multiply at a more extreme ratio.
+//
+// So the key is now applied as a *tint of a neutral*: the authored hue lerped
+// toward its own luminance. Luminance is preserved exactly (luma is linear in
+// the channels, so mixing toward vec3(luma) cannot change it), which means
+// intensity, exposure and every value calibration in this file and in PostFX
+// are untouched by this — it moves hue and nothing else.
+//
+// The warmth of golden hour does not go away, because it was never really
+// coming from here: it comes from the gold ground albedo, from the sky and
+// haze, and from the grade's highlight tint. What goes away is the warmth
+// being applied to *rock, birch, conifer and the camper as well*, which is the
+// monochrome-orange complaint in its final form.
+//
+// Swept in one boot on the grey card and on a `#f0ad46` card, both in full sun
+// (tools/_scratch/look/neutral.mjs --variants), then on real views:
+//
+//   tint    grey h16.7        grey h7.4         gold h16.7       gold h7.4
+//   1.00    1:0.797:0.412     1:0.775:0.512     1:0.659:0.331    1:0.682:0.335
+//   0.55    1:0.844:0.666     1:0.880:0.728     1:0.692:0.328    1:0.721:0.332
+//   0.30    1:0.925:0.805     1:0.964:0.859     1:0.716:0.326    1:0.748:0.330
+//   0.00    1:1.018:1.003     1:1.071:1.041     1:0.748:0.323    1:0.786:0.334
+//   want    1:0.89 :0.87  …  1:0.97:1.05        1:0.72 :0.33  (plate 3 / critic)
+//
+// The gold column is the reason this is safe: it barely moves, because a gold
+// surface's hue was always mostly its own albedo. The grey column is the whole
+// defect, and it is 0.41 -> 0.81 of blue at one number.
+//
+// 0.30, not 0.0. At 0.0 the grass reads acid yellow-green rather than gold and
+// the rock goes lilac — the frame stops being golden hour and starts being an
+// overcast noon with a warm sky. At 0.30 the birch trunks come back near-white
+// (the brief calls them a signature and they were rendering tan), the conifers
+// are green instead of olive, the rock is lavender-grey instead of brown-grey,
+// and the gold ground is unchanged to the eye. Judged on `drive` at full res.
+const KEY_TINT = 0.30;
+
+/** Lerp a light colour toward its own luminance. Preserves luminance exactly. */
+function tintKey(c, amt) {
+  if (amt >= 1) return c;
+  const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  c.setRGB(l + (c.r - l) * amt, l + (c.g - l) * amt, l + (c.b - l) * amt);
+  return c;
+}
 
 // The hemisphere fill was authored to keep shadows off the floor while the
 // Stylize diffuse floor was not running (same wiring bug as the fog). With both
@@ -274,6 +381,9 @@ export class Lighting {
     // constants below remain the shipping values.
     this.ambientScale = 1.0;
     this.fogScale = 1.0;
+    // Null means "use KEY_TINT". Set to a number to sweep the key's hue width
+    // in one browser boot — see the note beside KEY_TINT.
+    this.keyTint = null;
 
     // Sunrise / sunset in hours. The elevation curve is shaped so that the
     // canonical golden-hour views (16.4 … 17.9) sit between 5° and 18° — a
@@ -374,7 +484,16 @@ export class Lighting {
     // makes. Measured on the meadow view, dropping from 0.82 also took the blue
     // mass from chroma 0.111 to 0.144 without moving its luminance, because a
     // shadow with more sun in it has more chroma for the rotation to work with.
-    this.sun.shadow.intensity = 0.74;
+    // 0.62, down from 0.74. The cool cast-shadow mass in Stylize is no longer
+    // luminance-preserving, so shadow depth and shadow hue are no longer
+    // independent the way the old note in that file recorded — a darker shadow
+    // now also makes the painted blue darker, and a dark saturated blue on gold
+    // ground reads as water rather than as shade. Lighter shadow, high-value
+    // mass, which is what the brief asks for in as many words: "a soft,
+    // HIGH-VALUE violet-blue mass". Also back toward the 0.52 the art-director
+    // correction originally asked for, without going all the way and losing the
+    // shadow shapes that draw the forms.
+    this.sun.shadow.intensity = 0.62;
     this._setShadowExtent(220);
     scene.add(this.sun);
     scene.add(this.sun.target);
@@ -533,7 +652,13 @@ export class Lighting {
     // 0 while the sun is under the horizon, 1 once it is properly up.
     const day = smoothstep(-0.08, 0.10, elev);
 
+    // The key illuminates as a tint of a neutral, not as its authored hue. See
+    // the note beside KEY_TINT. Applied here and not to the baked table so the
+    // sun *disc* and the sky glow, published below from the same key, keep the
+    // authored colour — a low sun looks orange because the disc is orange, not
+    // because everything it touches is.
     this.sun.color.copy(k.sun);
+    tintKey(this.sun.color, this.keyTint ?? KEY_TINT);
     this.sun.intensity = k.sunI;
     this.sun.castShadow = k.sunI > 0.35;
 

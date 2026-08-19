@@ -25,6 +25,10 @@ const HOURS = (arg('hours', '7.4,12,16.7,18.6')).split(',').map(Number);
 const RES = arg('res', '768');
 const DIR = arg('dir', 'shots/look/neutral');
 const VIEW = arg('view', 'meadow');
+// label=js :: label=js — evaluated in the page before each hour is posed.
+const VARIANTS = (arg('variants', 'ship=()=>{}')).split('::').map((x) => {
+  const i = x.indexOf('='); return { label: x.slice(0, i), on: x.slice(i + 1) };
+});
 
 const VIEWS = {
   meadow: { anchor: 'meadow', height: 1.6, dist: 6, pitch: -0.05, fov: 58 },
@@ -44,7 +48,9 @@ await page.goto(`http://localhost:5178/?res=${RES}`, { waitUntil: 'domcontentloa
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 300000, polling: 250 });
 
 const rows = [];
+for (const va of VARIANTS) {
 for (const hour of HOURS) {
+  await page.evaluate((src) => eval(src)(), va.on);
   const rects = await page.evaluate(async ({ v, frozen, hour }) => {
     const THREE = window.__THREE, e = window.__engine, wd = window.__world;
     const api = window.__cameraAnchors || {};
@@ -143,7 +149,7 @@ for (const hour of HOURS) {
 
   await page.waitForTimeout(500);
   const png = await page.screenshot();
-  writeFileSync(`${DIR}/h${hour}.png`, png);
+  writeFileSync(`${DIR}/${va.label}-h${hour}.png`, png);
 
   const b64 = png.toString('base64');
   const vals = await page.evaluate(async ({ b64, rects }) => {
@@ -162,13 +168,14 @@ for (const hour of HOURS) {
 
   for (const [k, [r, g, b] ] of Object.entries(vals)) {
     rows.push({
-      hour, patch: k,
+      variant: va.label, hour, patch: k,
       srgb: `${Math.round(r)},${Math.round(g)},${Math.round(b)}`,
       ratio: `1:${(g / Math.max(r, 1e-6)).toFixed(3)}:${(b / Math.max(r, 1e-6)).toFixed(3)}`,
       luma: +((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255).toFixed(3),
     });
   }
-  process.stderr.write(`[neutral] h${hour}\n`);
+  process.stderr.write(`[neutral] ${va.label} h${hour}\n`);
+}
 }
 await browser.close();
 console.table(rows);

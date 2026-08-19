@@ -19,10 +19,46 @@
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, mulberry32 } from '../core/MathUtils.js';
 
-const FLOCKS = 2;            // wheeling flocks alive at once
-const FLOCK_MAX = 34;        // birds per flock
+// ── how many birds, how big, how high ────────────────────────────────────────
+//
+// The previous numbers put ~25 birds of one size at one altitude in a single
+// wheeling ring. Measured against the frame they came out *larger than the
+// conifer crowns beside them* and, being one uniform stamp, read as dirt on
+// the lens rather than as wildlife. The reference plates carry exactly one
+// readable animal silhouette; they do not carry a swarm.
+//
+// So the flock is now two species at two altitudes with a real size spread.
+// `scale` multiplies a geometry whose wingspan is 1.0, so it *is* the wingspan
+// in metres: a golden eagle is ~2.0 m, a raven ~1.2 m, a crow ~0.9 m. Anything
+// above ~2 m is not a bird, it is a hang-glider, and that is what 2.1× of a
+// 0.85–1.35 jitter was producing.
+const FLOCK_SPECIES = [
+  // High, sparse, slow — the one you actually notice.
+  { count: [2, 4],  scale: [1.30, 1.95], alt: [62, 104], spread: 26, radius: [30, 86], rate: [0.85, 1.30], amp: [0.40, 0.62], turn: [0.09, 0.15] },
+  // Lower, looser, quicker — the background texture.
+  { count: [5, 10], scale: [0.62, 1.00], alt: [24, 54],  spread: 17, radius: [16, 52], rate: [2.10, 3.20], amp: [0.70, 1.02], turn: [0.16, 0.27] },
+];
+const FLOCKS = FLOCK_SPECIES.length;
+const FLOCK_MAX = 10;        // instances allocated per flock mesh
 const BURSTS = 3;            // simultaneous startle bursts
-const BURST_MAX = 13;        // birds per burst
+const BURST_MAX = 11;        // birds per burst
+
+// Plumage. The old value was 0x191410 — linear 0.0086, i.e. three quarters of
+// a stop off pure black, which no amount of key light or aerial perspective
+// can lift. It rendered blacker than anything else in the frame at every
+// distance, and it is why the critic read the flock as specks of dirt.
+//
+// The instinct behind it was right for the wrong subject: the previous author
+// gave the animals no eyes because the reference reads them as silhouettes,
+// and a bear at 40 m *is* a silhouette. A bird at 200 m is not — it is a small
+// warm-grey mark that the haze is supposed to be able to eat. These are dark
+// enough to silhouette against a bright sky and light enough that the shared
+// atmosphere has something to work on.
+const PLUMAGE = [
+  [0x6a5b49, 0x54473a, 0x7d6d58],   // high flock: buteo browns
+  [0x4e4438, 0x3d352c, 0x655847],   // low flock: corvid grey-browns
+];
+const BURST_PLUMAGE = [0x5d5140, 0x746550, 0x8a7a63];
 
 /**
  * One bird, nose along +Z, wings along ±X. `aWing` is 0 on the body and ±1 on
@@ -33,10 +69,14 @@ function birdGeometry() {
   const pos = [], nor = [], wing = [], col = [];
   const push = (x, y, z, nx, ny, nz, w) => {
     pos.push(x, y, z); nor.push(nx, ny, nz); wing.push(w);
-    // Vertex colour is the identity here; it exists so that USE_COLOR is on and
-    // three multiplies the per-instance colour in. Wing sheets sit a shade
-    // darker than the body, which keeps them readable at ten pixels.
-    const v = w === 0 ? 1.0 : 0.86;
+    // Vertex colour carries the plumage's own value structure so the bird has
+    // internal range before any light touches it. Wing sheets sit a shade
+    // darker than the body (which keeps them readable at ten pixels), and the
+    // underside is paler than the back — a countershaded bird seen from below
+    // against a bright sky is the only view the player ever gets of the high
+    // flock, and a single flat value there is exactly what made every glyph
+    // identical.
+    const v = (w === 0 ? 1.0 : 0.84) * clamp(1.0 - y * 3.2, 0.82, 1.34);
     col.push(v, v, v);
   };
   const tri = (a, b, c, w) => {
@@ -177,37 +217,44 @@ export class Birds {
     // ── wheeling flocks ──────────────────────────────────────────────────────
     this.flocks = [];
     for (let f = 0; f < FLOCKS; f++) {
+      const S = FLOCK_SPECIES[f];
       const mesh = makeFlockMesh(geo, this.mat, FLOCK_MAX);
-      const n = 14 + ((this.rnd() * (FLOCK_MAX - 14)) | 0);
+      const n = Math.min(FLOCK_MAX,
+        S.count[0] + ((this.rnd() * (S.count[1] - S.count[0] + 1)) | 0));
+      const pal = PLUMAGE[f % PLUMAGE.length];
       const birds = [];
       for (let i = 0; i < n; i++) {
         birds.push({
-          r: 14 + this.rnd() * 30,
+          r: lerp(S.radius[0], S.radius[1], this.rnd()),
           a: this.rnd() * Math.PI * 2,
-          w: (0.16 + this.rnd() * 0.10) * (f % 2 ? -1 : 1),   // angular speed
-          y: (this.rnd() - 0.5) * 16,
+          // Angular speed. Both flocks used to turn the same way per index;
+          // alternating per bird as well keeps the ring from reading as one
+          // rigid carousel.
+          w: lerp(S.turn[0], S.turn[1], this.rnd()) * (f % 2 ? -1 : 1),
+          // Vertical offset inside the flock. This is the number that had every
+          // bird on one line: ±8 m at 150 m out is under a degree of arc.
+          y: (this.rnd() - 0.5) * S.spread,
           bob: this.rnd() * 6.28,
           rw: 0.13 + this.rnd() * 0.2,
-          sc: 0.85 + this.rnd() * 0.5,
+          // Size. A wide spread inside the species is what stops fourteen
+          // identical stamps, and it is free.
+          sc: lerp(S.scale[0], S.scale[1], this.rnd() ** 1.6),
         });
-        // Corvid-dark with a couple of paler birds so the flock is not a
-        // uniform stamp. Warm-dark, not black — black reads as a hole.
-        // Against a bright sky a bird is a silhouette. Anything with real
-        // albedo picks up the golden-hour key and renders as an orange flake,
-        // which is what the first pass looked like.
-        const pale = this.rnd() < 0.18;
-        this._col.setHex(pale ? 0x4c4438 : 0x191410);
+        // A value spread inside the plumage as well as a hue spread — two birds
+        // of the same species at the same distance are still not the same mark.
+        this._col.setHex(pal[(this.rnd() * pal.length) | 0]);
+        this._col.multiplyScalar(0.82 + this.rnd() * 0.42);
         mesh.setColorAt(i, this._col);
         const b = mesh.userData.beat.array;
         b[i * 3] = this.rnd() * 6.28;
-        b[i * 3 + 1] = 2.3 + this.rnd() * 1.1;
-        b[i * 3 + 2] = 0.78 + this.rnd() * 0.30;
+        b[i * 3 + 1] = lerp(S.rate[0], S.rate[1], this.rnd());
+        b[i * 3 + 2] = lerp(S.amp[0], S.amp[1], this.rnd());
       }
       mesh.count = n;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.group.add(mesh);
       this.flocks.push({
-        mesh, birds, n,
+        mesh, birds, n, spec: S,
         cx: 0, cy: 0, cz: 0,          // flock centre
         tx: 0, tz: 0,                 // where the centre is drifting to
         t: this.rnd() * 20,
@@ -220,7 +267,8 @@ export class Birds {
     this.burstMesh.count = BURSTS * BURST_MAX;
     this.burstMesh.scale.setScalar(1);
     for (let i = 0; i < BURSTS * BURST_MAX; i++) {
-      this._col.setHex(this.rnd() < 0.4 ? 0x5a4c36 : 0x241d16);
+      this._col.setHex(BURST_PLUMAGE[(this.rnd() * BURST_PLUMAGE.length) | 0]);
+      this._col.multiplyScalar(0.84 + this.rnd() * 0.36);
       this.burstMesh.setColorAt(i, this._col);
       const b = this.burstMesh.userData.beat.array;
       b[i * 3] = this.rnd() * 6.28;
@@ -236,7 +284,9 @@ export class Birds {
       for (let j = 0; j < BURST_MAX; j++) {
         birds.push({
           x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
-          a: this.rnd() * 6.28, sc: 0.75 + this.rnd() * 0.40,
+          // Startled songbirds: 0.35–0.6 m across, not the 0.75–1.15 m the
+          // burst used to fire — those were rooks coming out of a sapling.
+          a: this.rnd() * 6.28, sc: 0.34 + this.rnd() * 0.26,
         });
       }
       this.bursts.push({ birds, life: 0, n: 0, base: i * BURST_MAX });
@@ -297,7 +347,11 @@ export class Birds {
     F.cz += (tdz / tl) * Math.min(sp, tl);
 
     const ground = W.isInBounds(F.cx, F.cz) ? W.getHeight(F.cx, F.cz) : 20;
-    const wantY = ground + 42 + fi * 13 + Math.sin(this._time * 0.11 + fi) * 8;
+    // Each species keeps its own band, and the band itself breathes — a flock
+    // pinned to one altitude for a whole session is half of what made these
+    // read as a decal stuck to the lens.
+    const A = F.spec.alt;
+    const wantY = ground + lerp(A[0], A[1], 0.5 + 0.5 * Math.sin(this._time * 0.09 + fi * 2.1));
     F.cy = F.cy === 0 ? wantY : lerp(F.cy, wantY, 1 - Math.exp(-0.4 * dt));
 
     const D = this._dummy, E = this._e;
@@ -308,16 +362,27 @@ export class Birds {
       const r = b.r * (1 + Math.sin(this._time * b.rw + b.bob) * 0.22);
       const x = F.cx + Math.sin(b.a) * r;
       const z = F.cz + Math.cos(b.a) * r;
-      const y = F.cy + b.y + Math.sin(this._time * 0.6 + b.bob) * 2.2;
-      D.position.set(x, y, z);
+      // Vertical spread is a big fraction of the ring radius, so the flock is a
+      // volume rather than a disc; the slow term keeps birds crossing each
+      // other in depth instead of holding formation.
+      const y = F.cy + b.y + Math.sin(this._time * 0.6 + b.bob) * 2.2
+        + Math.sin(this._time * 0.17 + b.bob * 1.7) * (F.spec.spread * 0.22);
+      // The flock's altitude band is measured at the *centre*, but a bird can
+      // be fifty metres out from it and over ground eighty metres higher — on
+      // a valley wall that put birds at, and under, ground level. Keep every
+      // bird clear of the ground it is actually over.
+      const gy = W.isInBounds(x, z) ? W.getHeight(x, z) : ground;
+      D.position.set(x, Math.max(y, gy + 14), z);
       // Heading is the tangent; bank into the turn, which is what makes a
       // wheeling flock flash light and dark as it comes round.
       const yaw = b.a + (b.w > 0 ? Math.PI * 0.5 : -Math.PI * 0.5);
       E.set(Math.sin(this._time * 0.5 + b.bob) * 0.05, yaw, clamp(b.w * 4.2, -0.9, 0.9));
       D.quaternion.setFromEuler(E);
-      // A wheeling bird has to survive being a dozen pixels a hundred metres
-      // up, so the flock species is deliberately a big one — raven scale.
-      D.scale.setScalar(b.sc * 2.1);
+      // `sc` is already the wingspan in metres — see FLOCK_SPECIES. It used to
+      // be multiplied by 2.1 here on the argument that a wheeling bird has to
+      // survive being a dozen pixels, which is true and is not an argument for
+      // a three-metre raven; the answer is fewer birds, not bigger ones.
+      D.scale.setScalar(b.sc);
       D.updateMatrix();
       F.mesh.setMatrixAt(i, D.matrix);
     }

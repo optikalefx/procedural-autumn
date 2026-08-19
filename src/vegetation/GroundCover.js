@@ -35,6 +35,21 @@ const CELL = 48;                 // metres per scatter cell
 // cell is created and pops rather than fading in.
 const STREAM_RADIUS = 300;
 const REPACK_MOVE = 12;          // metres of camera travel before a repack
+// Visibility radius that splits a cell's instances into two buffers.
+//
+// A repack has to look at every instance of every live cell to decide whether
+// it is inside its own radius, and nine tenths of them are 3-30 cm substrate
+// props with radii of 25-55 m. Streaming holds cells out to 300 m, so the scan
+// was spending nine tenths of its time on grit that could not possibly be
+// visible — a million distance tests per repack, roughly once a second while
+// driving, which is exactly the shape of the >50 ms frames in `perf.mjs`.
+//
+// Splitting at generation time costs one extra pass over a cell that has just
+// been generated, and lets a repack skip the whole near buffer for any cell
+// whose nearest corner is further away than anything in it could be seen from.
+// Every archetype at or above this radius goes in the far buffer; the number
+// itself only has to sit in the gap between `scrubDry` (55) and `cobble` (74).
+const NEAR_VIS = 60;
 // Scratch capacity for one cell's generation. A 48 m cell is 2304 m², and the
 // ground-substrate layer now aims at roughly one clump every 3 m² with up to
 // twenty pieces in a clump, so the old 2200 was clipping the far half of every
@@ -220,9 +235,24 @@ export class GroundCover extends System {
     while (done < this.queue.length) {
       const job = this.queue[done++];
       const n = this.scatter.generateCell(job.cx, job.cz, CELL, job.band, scratch, MAX_PER_CELL);
-      // One right-sized copy per cell rather than a few hundred small objects.
-      const data = n > 0 ? scratch.slice(0, n * COVER_STRIDE) : null;
-      this.cells.set(job.key, { data, count: n, band: job.band, cx: job.cx, cz: job.cz, d: job.d });
+      // Two right-sized copies per cell rather than a few hundred small
+      // objects: the long-radius forms, which every repack has to consider,
+      // and the short-radius substrate, which most repacks can ignore whole.
+      let nFar = 0;
+      for (let k = 0; k < n; k++) if (scratch[k * COVER_STRIDE + 16] >= NEAR_VIS) nFar++;
+      const nNear = n - nFar;
+      const far = nFar ? new Float32Array(nFar * COVER_STRIDE) : null;
+      const near = nNear ? new Float32Array(nNear * COVER_STRIDE) : null;
+      for (let k = 0, a = 0, b2 = 0; k < n; k++) {
+        const i = k * COVER_STRIDE;
+        const src = scratch.subarray(i, i + COVER_STRIDE);
+        if (scratch[i + 16] >= NEAR_VIS) { far.set(src, a); a += COVER_STRIDE; }
+        else { near.set(src, b2); b2 += COVER_STRIDE; }
+      }
+      this.cells.set(job.key, {
+        far, near, nFar, nNear, count: n,
+        band: job.band, cx: job.cx, cz: job.cz, d: job.d,
+      });
       this._dirty = true;
       if (performance.now() - t0 > budgetMs) break;
     }
@@ -252,52 +282,65 @@ export class GroundCover extends System {
 
     for (let ci = 0; ci < list.length; ci++) {
       const c = list[ci];
-      const data = c.data;
-      for (let k = 0; k < c.count; k++) {
-        const i = k * COVER_STRIDE;
-        const x = data[i], z = data[i + 2];
-        const dx = x - cam.x, dz = z - cam.z;
-        const vis = data[i + 16];
-        if (dx * dx + dz * dz > vis * vis) continue;
+      // Distance to the cell's nearest edge, not to its centre. A cell is 48 m
+      // across, so a centre-distance test would keep scanning a cell for
+      // 34 metres after the near half of it stopped being able to show
+      // anything — and would drop instances that are still visible in the
+      // half nearest the camera.
+      const ex = Math.max((c.cx * CELL) - cam.x, 0, cam.x - (c.cx + 1) * CELL);
+      const ez = Math.max((c.cz * CELL) - cam.z, 0, cam.z - (c.cz + 1) * CELL);
+      const nearVisible = ex * ex + ez * ez < NEAR_VIS * NEAR_VIS;
+      const passes = nearVisible ? 2 : 1;
+      for (let pass = 0; pass < passes; pass++) {
+        const data = pass === 0 ? c.far : c.near;
+        const cnt = pass === 0 ? c.nFar : c.nNear;
+        if (!data) continue;
+        for (let k = 0; k < cnt; k++) {
+          const i = k * COVER_STRIDE;
+          const x = data[i], z = data[i + 2];
+          const dx = x - cam.x, dz = z - cam.z;
+          const vis = data[i + 16];
+          if (dx * dx + dz * dz > vis * vis) continue;
 
-        const slot = this._byArch[data[i + 17]][data[i + 18]];
-        const idx = counts[slot.index];
-        if (idx >= slot.mesh.instanceMatrix.count) continue;
+          const slot = this._byArch[data[i + 17]][data[i + 18]];
+          const idx = counts[slot.index];
+          if (idx >= slot.mesh.instanceMatrix.count) continue;
 
-        // Lean with the ground, but only partly: a bush on a 30° slope grows
-        // more upright than the hill, and fully aligning it looks pasted on.
-        const nx = data[i + 19], nz = data[i + 20];
-        const ny = Math.sqrt(Math.max(0.02, 1 - nx * nx - nz * nz));
-        tilt.set(nx * 0.55, ny * 0.55 + 0.45, nz * 0.55).normalize();
-        const yaw = data[i + 3];
-        q.setFromUnitVectors(UP, tilt);
-        qy.setFromAxisAngle(UP, yaw);
-        q.multiply(qy);
-        p.set(x, data[i + 1], z);
-        s.set(data[i + 4], data[i + 5], data[i + 6]);
-        m.compose(p, q, s);
-        slot.mesh.setMatrixAt(idx, m);
+          // Lean with the ground, but only partly: a bush on a 30° slope grows
+          // more upright than the hill, and fully aligning it looks pasted on.
+          const nx = data[i + 19], nz = data[i + 20];
+          const ny = Math.sqrt(Math.max(0.02, 1 - nx * nx - nz * nz));
+          tilt.set(nx * 0.55, ny * 0.55 + 0.45, nz * 0.55).normalize();
+          const yaw = data[i + 3];
+          q.setFromUnitVectors(UP, tilt);
+          qy.setFromAxisAngle(UP, yaw);
+          q.multiply(qy);
+          p.set(x, data[i + 1], z);
+          s.set(data[i + 4], data[i + 5], data[i + 6]);
+          m.compose(p, q, s);
+          slot.mesh.setMatrixAt(idx, m);
 
-        const g = slot.geo;
-        const cA = g.getAttribute('aColA').array;
-        cA[idx * 3] = data[i + 7]; cA[idx * 3 + 1] = data[i + 8]; cA[idx * 3 + 2] = data[i + 9];
-        const cB = g.getAttribute('aColB').array;
-        cB[idx * 3] = data[i + 10]; cB[idx * 3 + 1] = data[i + 11]; cB[idx * 3 + 2] = data[i + 12];
-        const cv = g.getAttribute('aCov').array;
-        cv[idx * 4] = data[i + 13];
-        cv[idx * 4 + 1] = data[i + 14];
-        cv[idx * 4 + 2] = data[i + 15];
-        cv[idx * 4 + 3] = vis;
-        // World wind rotated into the instance's own frame, so a whole hillside
-        // sways one way instead of each plant swaying along its own yaw.
-        const cw = Math.cos(yaw), sw = Math.sin(yaw);
-        const wd = g.getAttribute('aWindDir').array;
-        wd[idx * 2] = WIND_X * cw - WIND_Z * sw;
-        wd[idx * 2 + 1] = WIND_X * sw + WIND_Z * cw;
+          const g = slot.geo;
+          const cA = g.getAttribute('aColA').array;
+          cA[idx * 3] = data[i + 7]; cA[idx * 3 + 1] = data[i + 8]; cA[idx * 3 + 2] = data[i + 9];
+          const cB = g.getAttribute('aColB').array;
+          cB[idx * 3] = data[i + 10]; cB[idx * 3 + 1] = data[i + 11]; cB[idx * 3 + 2] = data[i + 12];
+          const cv = g.getAttribute('aCov').array;
+          cv[idx * 4] = data[i + 13];
+          cv[idx * 4 + 1] = data[i + 14];
+          cv[idx * 4 + 2] = data[i + 15];
+          cv[idx * 4 + 3] = vis;
+          // World wind rotated into the instance's own frame, so a whole hillside
+          // sways one way instead of each plant swaying along its own yaw.
+          const cw = Math.cos(yaw), sw = Math.sin(yaw);
+          const wd = g.getAttribute('aWindDir').array;
+          wd[idx * 2] = WIND_X * cw - WIND_Z * sw;
+          wd[idx * 2 + 1] = WIND_X * sw + WIND_Z * cw;
 
-        counts[slot.index] = idx + 1;
-        total++;
-        tris += slot.mesh.userData.tris;
+          counts[slot.index] = idx + 1;
+          total++;
+          tris += slot.mesh.userData.tris;
+        }
       }
     }
 

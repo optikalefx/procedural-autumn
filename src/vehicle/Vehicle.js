@@ -16,6 +16,7 @@ import { clamp, clamp01, lerp, smoothstep, damp } from '../core/MathUtils.js';
 import { buildCamper, buildWheel, buildMaterials, buildEnvMap, DIM } from './CamperModel.js';
 import { VehiclePhysics } from './VehiclePhysics.js';
 import { ParticleField, TrackRibbons, surfaceDust, KIND } from './VehicleFX.js';
+import { VehicleShadow } from './VehicleShadow.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
@@ -114,6 +115,10 @@ export class Vehicle extends System {
     const budget = ctx.preset?.grassMul >= 0.8 ? 1100 : 550;
     this.particles = new ParticleField(scene, budget);
     this.tracks = new TrackRibbons(scene, 4, ctx.preset?.grassMul >= 0.8 ? 190 : 110);
+    // Contact occlusion. One draw call, and it is the difference between the
+    // camper resting on the meadow and hovering over it — see VehicleShadow.js
+    // for why this is ambient occlusion and deliberately not a cast shadow.
+    this.contactShadow = new VehicleShadow(scene, world);
 
     this._sample = (x, z) => world.getHeight(x, z);
     this._syncTransform();
@@ -157,6 +162,10 @@ export class Vehicle extends System {
 
     this.particles.update(dt, ctx.engine.height);
     this.tracks.update(dt);
+    let onGround = 0;
+    for (let i = 0; i < this.wheels.length; i++) if (this.wheels[i].grounded) onGround++;
+    this.contactShadow.update(this.position.x, this.position.z, this.heading,
+      onGround / Math.max(1, this.wheels.length));
     this._patchAnchor();
   }
 
@@ -395,6 +404,7 @@ export class Vehicle extends System {
     this.rig?.parent?.remove(this.rig);
     this.particles?.dispose();
     this.tracks?.dispose();
+    this.contactShadow?.dispose();
     this.phys?.dispose();
     this.env?.dispose();
     for (const m of Object.values(this.materials ?? {})) m.dispose?.();

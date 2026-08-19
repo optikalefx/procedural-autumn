@@ -23,7 +23,7 @@ const VIEWS={
   backlit:{anchor:'meadow',height:2.4,dist:10,pitch:0.04,fov:52,hour:17.9,faceSun:true},
   dawn:{anchor:'vista',height:48,dist:130,pitch:-0.13,fov:46,hour:7.4},
 };
-const frozen = existsSync('shots/_anchors.json') ? JSON.parse(readFileSync('shots/_anchors.json','utf8')) : {};
+const frozen = existsSync('review/anchors.json') ? JSON.parse(readFileSync('review/anchors.json','utf8')) : {};
 await acquire('looksweep');
 const browser=await chromium.launch({args:['--use-gl=angle','--use-angle=metal','--ignore-gpu-blocklist','--enable-gpu-rasterization','--disable-frame-rate-limit']});
 const page=await browser.newPage({viewport:{width:1600,height:900},deviceScaleFactor:1});

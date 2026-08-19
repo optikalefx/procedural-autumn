@@ -2387,3 +2387,197 @@ Frame-time assertions still fail (p50 31 ms), but both runs were taken with
 `load average 5–8` and 23–37 chrome processes alive, i.e. other authors
 capturing. The triangle and draw-call peaks are the numbers I trust from those
 runs and they are the ones that moved.
+
+---
+
+## From the wildlife + vehicle author — 2026-08-19 (critic blockers 9 and 14)
+
+### W1. `Lighting.js` — `_setShadowExtent` reads *absolute world Y* as "how high is the camera", and it is why the camper casts no shadow (critic blocker 14)
+
+**Not mine to fix — `src/render/Lighting.js` is yours and you are in it right
+now. This is the measurement, not a patch.**
+
+The critic's own clue was the decisive one: in `vehicle.png` the conifer at
+(1150–1290, 90–560) also casts nothing onto the grass at (1150–1350, 550–620),
+so the failure is *location-dependent, not object-dependent*. It is.
+
+Everything on my side checks out. Reproducing the `vehicle` framing headless
+(`tools/_scratch/vshadowdiag.mjs`):
+
+```
+casters in vehicleRig:  42 meshes, castShadow=true on all 42, none culled
+shadow pass draw counts: Terrain 1320  Rocks 312  Trees 228  GroundCover 48
+                         vehicleRig 516        <- the camper IS in the caster set
+camper bbox in the shadow camera's clip volume:
+  x [-0.0248, -0.0182]   y [-0.0045, 0.0007]   z [0.092, 0.095]
+                                               <- comfortably inside, not clipped
+wheel clearance vs world.getHeight():  +0.041  +0.031  -0.020  +0.119 m
+                                               <- the camper is on the ground
+```
+
+The problem is the frustum, and specifically this line in `update()`:
+
+```js
+const ground = focus.y - 6;
+this._setShadowExtent(clamp(150 + Math.max(ground, 0) * 4.0, 150, 900));
+```
+
+`focus` is `cam.position`, so `focus.y` is **altitude above sea level**, not
+height above the terrain. The `vehicle` anchor sits on a mountainside at
+**y = 194 m**, with the camera 2.6 m above it at y = 198.4. That is an
+eye-level driving frame by every meaning of the phrase, and the formula reads it
+as a 200 m aerial vista:
+
+```
+                          vehicle @ h17/h12        drive @ h16.7
+camera y (absolute)              198.4                  ~40
+ground under the camera          195.8                  ~36
+height ABOVE ground                2.6                   4.2   <- the same shot
+shadowExtent                       900  (the cap)        ~286
+texelWorld @ 4096                0.4395 m              0.140 m
+shadow.normalBias                0.7471 m              0.238 m
+shadow.camera.far                 3960 m                 992 m
+shadow.bias                    -0.000356             -0.000236
+   -> in metres of depth slack   -1.41 m               -0.23 m
+```
+
+Both biases are derived from the extent, so at the cap the shadow test carries
+**0.75 m of normal offset and ~1.4 m of depth slack**. Any occluder whose
+standoff from the receiving surface is under about a metre and a half is skipped
+entirely. A camper is 2.5 m tall and 4.6 m long — it occupies **13.5 texels**
+across the whole 4096 map at that extent — and a conifer's contact shadow is
+thinner still. Both vanish. Terrain-scale casters (ridges) survive, which is why
+the frame is not obviously shadowless until you look for object shadows.
+
+**A/B, both at hour 12.0, `shadow.intensity` forced to 1.0 so any cast shadow is
+unmistakable, cloud shadow frozen off:**
+
+```
+node tools/shot.mjs --view vehicle --hour 12.0 --w 1600 --h 900 \
+  --eval "window.__atmosphere.params.cloudShadow=0; window.__lighting.sun.shadow.intensity=1.0;"
+  -> shots/fix/crop/veh_h12_shadow1.png       NO shadow under the camper,
+                                              none from the conifer, none from
+                                              the rocks. Zero cast shadows in
+                                              the entire frame.
+
+  ... same, plus a hard clamp of the extent to 170 m:
+  --eval "...; (()=>{const L=window.__lighting;const f=L._setShadowExtent.bind(L);
+           L._setShadowExtent=(e)=>f(Math.min(e,170));L.shadowExtent=-1;})()"
+  -> shots/fix/crop/veh_h12_clamp_shadow1.png  the camper's shadow is there.
+```
+
+One clamp, nothing else changed, and the shadow comes back. That is the whole
+bug.
+
+**Suggested fix (yours to make or reject):** drive the ramp off height *above
+the terrain*, which is what the comment beside it already says it wants —
+
+```js
+const above = focus.y - (world.getHeight(focus.x, focus.z) ?? 0);
+this._setShadowExtent(clamp(150 + Math.max(above, 0) * 4.0, 150, 900));
+```
+
+That leaves `hero` (62 m over the vista) and `peaks` (120 m over a summit)
+exactly where they are — the reasoning in your comment about reaching the
+600–1300 m casters is untouched — while returning every eye-level frame to the
+150–170 m extent regardless of what altitude the valley floor happens to be at.
+Worth also considering a floor on the smallest occluder the biases will pass:
+`normalBias` at the 0.90 cap will erase contact shadows on a vista frame too,
+it just does not show because nothing small is in focus there.
+
+Second, smaller note: at hour 17.0 the `vehicle` anchor's slope faces away from
+a 14.6° sun (`sunDir` = (-0.967, 0.252, -0.019)), so the receiving ground is at
+the terminator and *no* cast shadow would be visible there even with the frustum
+fixed. The h12 case is the one that proves the bug; the h17 frame has a second,
+unrelated reason to look shadowless.
+
+I have added an ambient **contact occlusion** patch under the camper on my side
+(`src/vehicle/VehicleShadow.js`, one draw call). It is deliberately
+non-directional — it models the sky/bounce occlusion under the vehicle, which no
+shadow map produces — so it will layer correctly with the cast shadow once the
+frustum is fixed and will not double up.
+
+### W2. `src/sky/weather_*` — the falling leaf particles are near-black blobs (critic blocker 9, second half)
+
+Not mine, filing as instructed. The critic measured `vehicle.png` (60–660,
+20–280): **~18 near-black blobs, one about 50 px across, three stops darker than
+any leaf in the frame.** They are still there in `shots/fix/take/vehicle.png` —
+visible as dark specks across the sky in the top third, and they read as dirt on
+the lens in exactly the way the birds did.
+
+Two things worth checking, because they are the two that were wrong with the
+birds:
+
+1. **Albedo at the floor.** The bird plumage was `0x191410` — linear 0.0086,
+   which no key light and no aerial perspective can lift, so it rendered blacker
+   than anything else in the frame at every distance. If the leaves carry a
+   similar "silhouette" colour, that is the whole effect. `PALETTE`'s deciduous
+   anchors (`#e8622a`, `#f09a2c`, `#f3cf45`, `#9e2b28`) are two to three stops
+   above where these are landing.
+2. **Screen-space size.** A leaf at 50 px in a 1600×900 frame is a dinner plate.
+   The bird flock had the same fault (a 2.1× multiplier on a 1 m geometry).
+
+If they are billboards on a custom `ShaderMaterial`, check they opted into
+`fogUniforms()` + `fog: true` as well — an unfogged near-black sprite is the
+worst case of both faults at once.
+
+---
+
+## L1. grass / ground cover / trees — please adopt `stylizeShadowCool()`
+
+*Filed by the look author, 2026-08-19. This is the one thing capping critic
+blocker 2, and it cannot be fixed from `src/render/` alone.*
+
+The cool cast-shadow mass is applied in `THREE.ShaderChunk.lights_fragment_end`,
+so it reaches every material on three's physical lighting path — terrain, rock,
+water bed, the camper — and **none of the raw `ShaderMaterial`s**. Grass, ground
+cover and the tree canopy already opt in to `stylizeDiffuse()`; they do not opt
+in to this, because until now there was nothing to opt in to.
+
+The visible consequence, and it is the reason the mass is currently shipping at
+70% of the reference's chroma rather than 100%: inside one cast shadow the
+*terrain* turns blue-violet and the *grass standing on it stays gold*. Half a
+painted mass reads as standing water with grass growing out of it, and swept at
+plate 3's own saturation it unambiguously does. `shots/look/cool3/E/meadow.png`
+is that failure at full strength; `cool4/J/drive.png` is what it looks like when
+backed off far enough to hide the disagreement.
+
+`src/shaders/grass_material.js` additionally applies its own **warm** shadow
+tint — `uShadowTint { 1.06, 0.97, 0.88 }` with `uShadowSoft 0.68` — which is
+the opposite sign to the mass and predates the 2026-08-19 brief correction. That
+tint was right under the superseded "shadows are warm, not violet" guidance and
+is wrong under the current one.
+
+The opt-in matches the `fogUniforms()` / `stylizeDiffuse()` pattern exactly:
+
+```js
+import { STYLIZE_PARS, stylizeUniforms, stylizeCoolUniforms } from '../render/Stylize.js';
+
+uniforms: THREE.UniformsUtils.merge([ stylizeUniforms(), stylizeCoolUniforms(), { /* yours */ } ]),
+```
+
+```glsl
+// after your lighting, before fog:
+//   sh   = getShadowMask()          (1 lit, 0 occluded — the raw mask, not your
+//                                    attenuated `sh`, or the mask saturates twice)
+//   wnY  = world-space normal .y    (a blade card can just use its ground normal)
+//   dist = length(vFogWorldPos - vFogCamPos)   (you already have these varyings)
+gl_FragColor.rgb = stylizeShadowCool( gl_FragColor.rgb, sh, wnY, dist );
+```
+
+`Stylize.update()` already writes every one of those uniforms on any material it
+has harvested, so a material that merges the block tracks runtime tuning for
+free — no per-system numbers to keep in sync.
+
+Two notes so this does not fight anything you already do:
+
+- It is **not** a value control. It rotates hue and applies `uShadowCoolLift` to
+  the pixel's own luminance; how dark your shadow is stays entirely yours
+  (`uShadowSoft`, and `sun.shadow.intensity`, which I have moved 0.74 -> 0.62).
+- It tapers to `uShadowCoolUp` (0.30) on vertical surfaces, so a trunk or a
+  blade card seen edge-on picks up much less of it than the ground does. That is
+  deliberate and matches the plates; you should not need to gate it yourself.
+
+If grass's warm `uShadowTint` is removed in the same pass, please say so — I can
+then take `shadowCool` back toward plate 3's measured `(0.48, 1.10, 1.54)` and
+the mass gets the other 30% of its chroma back.

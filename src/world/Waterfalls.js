@@ -40,8 +40,11 @@ attribute float aFlight;   // seconds since this water left the lip
 attribute float aWidth;
 attribute float aDisc;
 attribute vec3  aNrm;
+attribute vec3  aSideDir;   // unit horizontal width axis of this fall
 
 uniform float uTime;
+uniform float uPixelScale;  // radians of view angle per output pixel
+uniform float uMinPx;       // narrowest a curtain is ever allowed to draw
 
 varying vec3  vWPos;
 varying vec3  vNrm;
@@ -50,9 +53,26 @@ varying float vSide;
 varying float vFlight;
 varying float vWidth;
 varying float vDisc;
+varying float vGrow;
 
 void main() {
   vec3 transformed = position;
+
+  // ── LOD: a fall never gets narrower than a couple of pixels ───────────────
+  // A 4 m curtain at 800 m is a third of a pixel wide. The rasteriser then
+  // samples it at one point in three, the silhouette noise inside the shader
+  // decides that point at random, and the fall comes back as a dashed line of
+  // hard-ended white lozenges with rock between them — which is exactly what
+  // the peaks and dawn views showed. Widening the geometry to a floor of a
+  // couple of pixels is the standard line-primitive fix: the mark stays
+  // continuous, and the alpha is pulled down (softly — a distant fall is a
+  // bright thread, not a grey one) so it does not gain weight as it recedes.
+  float camDist = distance(cameraPosition, transformed);
+  float halfW = max(aWidth * 0.5, 0.05);
+  float wantHalf = uMinPx * camDist * uPixelScale * 0.5;
+  vGrow = clamp(wantHalf / halfW, 1.0, 7.0);
+  transformed += aSideDir * (aSide * halfW * (vGrow - 1.0));
+
   vWPos = transformed;
   vNrm = aNrm;
   vU = aU; vSide = aSide; vFlight = aFlight; vWidth = aWidth; vDisc = aDisc;
@@ -76,6 +96,7 @@ varying float vSide;
 varying float vFlight;
 varying float vWidth;
 varying float vDisc;
+varying float vGrow;
 
 ${WATER_NOISE}
 ${WATER_ENV}
@@ -133,6 +154,15 @@ void main() {
   float hairFade = 1.0 - smoothstep(22.0, 70.0, sheetDist);
   fine = mix(0.5, fine, fineFade);
   h1   = mix(0.5, h1, hairFade);
+  // The two coarse octaves are the ones that chew the *silhouette*, and they
+  // needed the same treatment. A metre of lump on a curtain three pixels wide
+  // is a coin-toss per pixel, and a coin-toss per pixel down a 70 m fall is a
+  // dashed line. Past a couple of hundred metres the honest read is a solid
+  // white thread — which is what the reference plates draw a distant fall as.
+  float lodFar = smoothstep(140.0, 460.0, sheetDist);
+  c1 = mix(c1, 0.5, lodFar);
+  s1 = mix(s1, 0.5, lodFar);
+  streak = mix(streak, 0.5, lodFar);
 
   // The sheet is coherent at the lip and shreds into ribbons as it falls — but
   // it stays a *curtain* the whole way down. Shredding it to translucent
@@ -161,11 +191,24 @@ void main() {
   // wall behind it was showing through every pixel of white water, and the
   // depth-of-field pass then smeared more of that wall into it. A curtain of
   // aerated water a metre thick is opaque. Only the torn edges are not.
+  // ...and both of those go solid at range, for the reason given at lodFar.
+  body = mix(body, 1.0, lodFar);
+  edge = mix(edge, 1.0 - smoothstep(0.86, 1.14, abs(vSide)), lodFar);
+
   float alpha = body * edge * (0.84 + 0.16 * vDisc);
   // Let go just before the pool so the sheet never clips through the foam.
   alpha *= 1.0 - smoothstep(0.93, 1.0, vU);
+  // Pay back a little of the width the LOD borrowed. Not all of it: a fall on
+  // a far ridge is a *bright* thread in the reference, not a grey one, so the
+  // exponent is well under the 1.0 that would conserve energy exactly.
+  alpha *= pow(1.0 / vGrow, 0.42);
   alpha = clamp(alpha, 0.0, 1.0);
-  if (alpha < 0.015) discard;
+  // NaN-blind guards were the shape of every black-pixel bug this project has
+  // had: a less-than test is false when its left side is NaN, so the fragment
+  // survives the guard and writes a non-finite colour. Stated the other way
+  // round — keep the fragment only if alpha is provably big enough — a NaN
+  // fails the test and is discarded.
+  if (!(alpha >= 0.015)) discard;
 
   vec3 V = normalize(cameraPosition - vWPos);
   vec3 N = normalize(vNrm);
@@ -443,6 +486,101 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
+// ── impact burst ─────────────────────────────────────────────────────────────
+//  Water hitting rock does not drift; it is *thrown*. The streak particles
+//  above ride the fall's own path and then nudge outward by half a metre at the
+//  end of it, which at the foot of a 96 m drop is nothing at all — measured on
+//  the biggest fall in the map the whole "burst" spanned about 70 cm, which is
+//  why every capture of a plunge came back with the curtain simply stopping in
+//  the dirt.
+//
+//  So the impact gets its own set: real ballistic arcs launched from the
+//  landing point, with an upward component scaled by the energy arriving and a
+//  horizontal one biased downstream. Parabolas are what give a plunge its
+//  shape — a burst rises, slows, arcs over and falls back, and it is that
+//  silhouette rather than any amount of noise that reads as churn.
+const BURST_VERT = /* glsl */`
+#include <fog_pars_vertex>
+attribute vec3  aOrigin;
+attribute vec3  aVel;
+attribute float aPhase;
+attribute float aLife;
+attribute float aSize;
+attribute float aSeed;
+
+uniform float uTime;
+uniform float uCullDist;
+
+varying vec2  vUv;
+varying float vFade;
+varying float vSeed;
+varying float vDist;
+varying float vAge;
+
+void main() {
+  float f = fract(aPhase + uTime / aLife);
+  float t = f * aLife;
+  // Gravity, honestly. Half of 9.81 is what turns a straight line into an arc,
+  // and the arc is the whole read.
+  vec3 p = aOrigin + aVel * t - vec3(0.0, 4.905, 0.0) * t * t;
+  // A droplet cluster shatters and spreads as it flies.
+  float size = aSize * (0.5 + 1.35 * f);
+  vFade = smoothstep(0.0, 0.07, f) * (1.0 - smoothstep(0.48, 1.0, f));
+  vSeed = aSeed;
+  vAge = f;
+  vUv = uv;
+
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  if (-mv.z > uCullDist) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // Individual droplets are a near-field read; past a couple of hundred metres
+  // the mist volume is what a plume does to a frame.
+  vDist = 1.0 - smoothstep(110.0, 300.0, -mv.z);
+  // Taller than wide. A thrown clot of water is a streak in the direction it is
+  // travelling, and a round sprite is a bubble — which is exactly how the first
+  // pass at this read: a scatter of soft white balls hanging in the gorge.
+  mv.xy += vec2(position.x * size * 0.66, position.y * size * 1.45);
+
+  vec3 transformed = p;
+  gl_Position = projectionMatrix * mv;
+  #include <fog_vertex>
+}`;
+
+const BURST_FRAG = /* glsl */`
+#include <fog_pars_fragment>
+precision highp float;
+uniform vec3  uSunLight;
+uniform vec3  uAmbient;
+uniform vec3  uFoam;
+varying vec2  vUv;
+varying float vFade;
+varying float vSeed;
+varying float vDist;
+varying float vAge;
+
+${WATER_NOISE}
+${WATER_FOAM_LIGHT}
+
+void main() {
+  vec2 d = vUv * 2.0 - 1.0;
+  // A torn clot of water, not a gaussian dot. The noise is keyed to the
+  // sprite's own uv and seed so it turns with the billboard rather than
+  // swimming across it, and it is what stops a hundred of these stacking into
+  // one smooth white cauliflower.
+  float lump = wFbm3(d * 3.6 + vSeed * 53.0) * 0.5 + 0.5;
+  float r = length(d) * (1.14 - 0.52 * lump);
+  // A tighter exponent than the mist's. Spray has an edge — it is water, not
+  // vapour — and a fat gaussian falloff is what made a hundred of these stack
+  // into soft white balls instead of into churn.
+  float a = pow(1.0 - smoothstep(0.0, 1.0, r), 2.4) * vFade * (0.40 + 0.85 * lump);
+  if (!(a >= 0.012)) discard;
+  // Freshly thrown water is denser and whiter than the tail of the arc.
+  vec3 col = uFoam * wFoamLight(1.0) * (0.80 + 0.26 * (1.0 - vAge));
+  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.46 * vDist);
+  #include <fog_fragment>
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
 // ── plunge pool ──────────────────────────────────────────────────────────────
 const POOL_VERT = /* glsl */`
 #include <fog_pars_vertex>
@@ -489,8 +627,19 @@ void main() {
   // cannot do is climb a wall, so the cutoff belongs much further up.
   float bench = 1.0 - smoothstep(1.15, 2.30, length(vec2(bx, bz)) / 3.2);
 
-  float r = length(vLocal) / max(vRadius, 0.5);
-  if (r > 1.0) discard;
+  float R = max(vRadius, 0.5);
+  // Pool space: x runs downstream, y across. The mesh is built as a disc here
+  // and stretched along x on the way into the world, so everything below can be
+  // reasoned about as a circle and still come out as a downstream-biased oval.
+  vec2 q = vLocal / R;
+  float r = length(q);
+  if (!(r <= 1.0)) discard;
+
+  // Where the water actually lands is *upstream* of the pool's centre. That
+  // single offset is most of what turns a symmetric splash decal into a plunge:
+  // the boil sits under the curtain and the foam trails away from it.
+  vec2 imp = vec2(-0.34, 0.0);
+  float rImp = length((q - imp) * vec2(1.0, 1.22));
 
   // Churn, not a whirlpool. The previous form added a sin(r * 14) ring train to
   // a noise sampled in a radially-advected frame, and the two together drew a
@@ -498,19 +647,29 @@ void main() {
   // symbol rather than as water landing hard on rock. Both of its ingredients
   // were polar functions of the same origin, which is a rosette generator.
   //
-  // So: two octaves in the pool's own flat frame, drifting outward, plus one
-  // slow radial pulse an order of magnitude broader than the old ring train —
-  // enough to say that foam is thrown outward in surges, not enough to draw
-  // rings on the water.
-  // Radial advection, but slowly. normalize(vLocal) makes the sample offset a
-  // function of angle, which shears the noise field along every radius — so
-  // the faster this scrolls the more the churn smears into long spokes. At 1.4
-  // the pool was drawn as a starburst of thirty-metre streaks.
-  vec2 sp = vLocal * 0.55 - normalize(vLocal + 1e-4) * (uTime * 0.42);
-  float n = wFbm3(sp) * 0.5 + 0.5;
-  float n2 = wFbm2(vLocal * 1.55 + vec2(uTime * 0.35, -uTime * 0.22) + 8.7) * 0.5 + 0.5;
-  float surge = sin(r * 2.6 - uTime * 1.5) * 0.5 + 0.5;
-  float churn = n * 0.56 + n2 * 0.30 + surge * 0.14;
+  // The advection is now mostly *downstream* and only a little radial. Radial
+  // advection alone shears the noise along every radius, which at any speed
+  // worth seeing smears the churn into thirty-metre spokes; a pool with a
+  // current through it moves one way, and saying so gets motion for free
+  // without the starburst.
+  vec2 outw = normalize(vLocal + 1e-4);
+  vec2 sp = vLocal * 0.55 - (outw * 0.26 + vec2(1.05, 0.0)) * uTime;
+  float n  = wFbm3(sp) * 0.5 + 0.5;
+  float n2 = wFbm2(vLocal * 1.55 + vec2(uTime * 0.62, -uTime * 0.20) + 8.7) * 0.5 + 0.5;
+  // One slow surge travelling out from the impact — foam is thrown outward in
+  // pulses. An order of magnitude broader than the old ring train, so it says
+  // "surge" without drawing rings on the water.
+  float surge = sin(rImp * 2.6 - uTime * 1.5) * 0.5 + 0.5;
+  float churn = n * 0.54 + n2 * 0.30 + surge * 0.16;
+
+  // ── the shape ────────────────────────────────────────────────────────────
+  // Two masses, not one disc. A hard white boil under the curtain, and a tail
+  // of broken foam dragged off it downstream. The tail is gated on the
+  // downstream half-plane, which is the whole reason the pool stops reading as
+  // a circular decal centred on nothing.
+  float boil = 1.0 - smoothstep(0.05, 0.66, rImp);
+  float tail = (1.0 - smoothstep(0.15, 1.02, r)) * smoothstep(-0.42, 0.62, q.x);
+  float density = clamp(boil * 1.20 + tail * 0.70, 0.0, 1.35) * vPower;
 
   // Chew the outline with low-frequency noise so the pool never reads as the
   // disc it is actually built from.
@@ -521,17 +680,21 @@ void main() {
   // alone is a rosette however many octaves it has; mixing in a noise sampled
   // in the plane breaks the radial symmetry and the boundary starts reading as
   // torn foam instead of as a flower.
-  vec2 dirL = normalize(vLocal + 1e-4);
-  float lobes = wFbm2(dirL * 2.4 + vec2(uTime * 0.09, 0.0)) * 0.5 + 0.5;
+  float lobes  = wFbm2(outw * 2.4 + vec2(uTime * 0.09, 0.0)) * 0.5 + 0.5;
   float lobes2 = wFbm2(vLocal * 0.30 + vec2(uTime * 0.05, 3.1)) * 0.5 + 0.5;
   float rEff = r / mix(0.56, 1.12, lobes * 0.45 + lobes2 * 0.55);
 
-  float density = (1.0 - smoothstep(0.0, 1.0, rEff)) * vPower;
-  float cut = 0.70 - density * 0.58;
-  float foam = smoothstep(cut, cut + 0.16, churn) * smoothstep(1.05, 0.55, rEff);
+  float cut = 0.72 - density * 0.62;
+  float foam = smoothstep(cut, cut + 0.15, churn) * smoothstep(1.06, 0.52, rEff);
   // The white core under the impact, chewed by the same churn so it is a
   // painted shape rather than a printed disc.
-  foam = max(foam, (1.0 - smoothstep(0.0, 0.46, rEff)) * (0.55 + 0.45 * churn));
+  foam = max(foam, (1.0 - smoothstep(0.02, 0.44, rImp)) * (0.58 + 0.42 * churn));
+  // Streaks pulled downstream off the boil. Long across the flow direction and
+  // narrow against it — the marks a current leaves, and the thing that says
+  // which way the water is going once it has landed.
+  float threads = wFbm3(vLocal * vec2(0.22, 1.35) - vec2(uTime * 1.6, 0.0)) * 0.5 + 0.5;
+  foam = max(foam, smoothstep(0.56, 0.74, threads) * tail * vPower * 0.85);
+  foam = clamp(foam, 0.0, 1.0);
   foam *= bench;
 
   // Value structure inside the mass. Alpha alone gives a smooth white potato:
@@ -540,13 +703,13 @@ void main() {
   // outline was never the problem — the inside of it had no tone in it. Real
   // churn is white crests over blue-grey troughs, and it is the troughs that
   // make the crests read as water rather than as paint.
-  float trough = 0.68 + 0.44 * smoothstep(0.30, 0.78, churn)
-                      + 0.18 * (n2 - 0.5);
+  float trough = 0.60 + 0.52 * smoothstep(0.28, 0.80, churn)
+                      + 0.22 * (n2 - 0.5);
   vec3 col = mix(uShallow, uFoam, foam) * trough
            * wFoamLight(mix(wSunShadow(vWPos), 1.0, 0.5)) * 0.92;
 
-  float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.15, 0.55, rEff);
-  if (alpha < 0.02) discard;
+  float alpha = clamp(foam * 1.05, 0.0, 1.0) * smoothstep(1.12, 0.52, rEff);
+  if (!(alpha >= 0.02)) discard;
 
   gl_FragColor = vec4(col, alpha);
   #include <fog_fragment>
@@ -588,6 +751,9 @@ export class Waterfalls extends System {
       uReflectSteps: { value: preset?.reflections ? 8 : 0 },
       uFoam:         { value: PALETTE.waterFoam.clone() },
       uShallow:      { value: PALETTE.waterShallow.clone() },
+      // Radians of view angle per output pixel, kept in step with Water's own.
+      // The sheet's minimum-width LOD is measured against it.
+      uPixelScale:   { value: 0.0016 },
       // One dial for every aerated surface in the game — see wFoamLight. Set so
       // sunlit foam lands just under 1.0 before exposure: high enough to read as
       // white water, low enough that the structure inside it survives the tone
@@ -598,6 +764,7 @@ export class Waterfalls extends System {
     this._buildPaths();
     this._buildSheet();
     this._buildSpray();
+    this._buildBurst();
     this._buildMist();
     this._buildPools();
 
@@ -706,7 +873,8 @@ export class Waterfalls extends System {
 
   // ── sheet ──────────────────────────────────────────────────────────────────
   _buildSheet() {
-    const pos = [], u = [], side = [], flight = [], wid = [], disc = [], nrm = [], idx = [];
+    const pos = [], u = [], side = [], flight = [], wid = [], disc = [], nrm = [],
+          sdir = [], idx = [];
     let base = 0;
     const C = SHEET_COLS.length;
 
@@ -720,14 +888,21 @@ export class Waterfalls extends System {
         let nx = ty * f.sideZ - tz * 0,
             ny = tz * f.sideX - tx * f.sideZ,
             nz = 0 * tx - ty * f.sideX;
-        const nl = Math.hypot(nx, ny, nz) || 1;
-        nx /= nl; ny /= nl; nz /= nl;
+        const nl = Math.hypot(nx, ny, nz);
+        // `|| 1` was the wrong fallback: it left the *vector* at (0,0,0), which
+        // normalize() in the shader turns into NaN. A degenerate cross product
+        // needs a real substitute direction, not a substitute length. Facing
+        // back up the channel is what a vertical drop's normal resolves to
+        // anyway, so it is continuous with the non-degenerate case.
+        if (nl > 1e-5) { nx /= nl; ny /= nl; nz /= nl; }
+        else { nx = -f.dirX; ny = 0; nz = -f.dirZ; }
         for (let c = 0; c < C; c++) {
           const off = SHEET_COLS[c] * p.w * 0.5;
           pos.push(p.x + f.sideX * off, p.y, p.z + f.sideZ * off);
           u.push(p.u); side.push(SHEET_COLS[c]); flight.push(p.flight);
           wid.push(p.w); disc.push(f.disc);
           nrm.push(nx, ny, nz);
+          sdir.push(f.sideX, 0, f.sideZ);
         }
       }
       for (let i = 0; i < f.pts.length - 1; i++) {
@@ -749,12 +924,15 @@ export class Waterfalls extends System {
     geo.setAttribute('aWidth', new THREE.Float32BufferAttribute(wid, 1));
     geo.setAttribute('aDisc', new THREE.Float32BufferAttribute(disc, 1));
     geo.setAttribute('aNrm', new THREE.Float32BufferAttribute(nrm, 3));
+    geo.setAttribute('aSideDir', new THREE.Float32BufferAttribute(sdir, 3));
     geo.setIndex(idx);
     geo.computeBoundingSphere();
     this._geoms.push(geo);
 
     const mat = new THREE.ShaderMaterial({
-      uniforms: Object.assign(fogUniforms(), this.shared),
+      uniforms: Object.assign(fogUniforms(), this.shared, {
+        uMinPx: { value: 1.9 },
+      }),
       vertexShader: SHEET_VERT,
       fragmentShader: SHEET_FRAG,
       transparent: true,
@@ -842,6 +1020,98 @@ export class Waterfalls extends System {
     this.sprayCount = rows.length;
   }
 
+  // ── impact burst ───────────────────────────────────────────────────────────
+  /**
+   * Ballistic droplet clusters thrown from the landing point. See BURST_VERT:
+   * this is the thing that was missing, not more noise on the pool.
+   *
+   * Launch speed is tied to the energy actually arriving — a 96 m drop throws
+   * water several metres into the air, a 27 m chute barely lifts it — and the
+   * horizontal component is biased downstream so the burst leans the way the
+   * water was already travelling instead of blooming symmetrically.
+   */
+  _buildBurst() {
+    const rng = mulberry32(0x3f19c4);
+    const origin = [], vel = [], phase = [], life = [], size = [], seed = [];
+
+    for (const fl of this.falls) {
+      const b = fl.pts[fl.pts.length - 1];
+      const energy = clamp01(fl.disc * 0.6 + fl.height / 90);
+      const count = Math.round(clamp(48 + energy * 210, 44, 260));
+      for (let i = 0; i < count; i++) {
+        // Spread the launch points across the foot of the curtain, not from one
+        // node: a burst radiating from a single point is a firework.
+        const across = (rng() * 2 - 1) * fl.width * 0.55;
+        const along = rng() * fl.width * 0.5;
+        origin.push(
+          b.x + fl.sideX * across + fl.dirX * along,
+          b.y + 0.3 + rng() * 0.9,
+          b.z + fl.sideZ * across + fl.dirZ * along
+        );
+
+        // Calibrated down hard from the first attempt. At 3.4 + 7 m/s of lift
+        // the biggest fall in the map threw droplets thirteen metres into the
+        // air, and a sprite that far from anything reads as snow rather than as
+        // spray. A plunge throws water a *couple* of metres; what makes it read
+        // is the density of the cloud, not the size of the arc.
+        const vUp = (1.9 + rng() * 3.8) * (0.5 + energy);
+        const a = rng() * Math.PI * 2;
+        const vH = (1.0 + rng() * 3.1) * (0.5 + energy);
+        // Two thirds of the horizontal throw is downstream, a third is random —
+        // enough scatter that the plume is not a fan, enough bias that it has
+        // a direction.
+        const hx = Math.cos(a) * 0.62 + fl.dirX * 0.85;
+        const hz = Math.sin(a) * 0.62 + fl.dirZ * 0.85;
+        const hl = Math.hypot(hx, hz);
+        const ux = hl > 1e-4 ? hx / hl : fl.dirX;
+        const uz = hl > 1e-4 ? hz / hl : fl.dirZ;
+        vel.push(ux * vH, vUp, uz * vH);
+
+        phase.push(rng());
+        // Long enough for the arc to come back down, and no longer — a droplet
+        // still on screen after it should have landed reads as snow.
+        life.push(clamp(0.50 + vUp * 0.21, 0.6, 2.2));
+        size.push((0.16 + rng() * 0.30) * (0.65 + fl.width * 0.07));
+        seed.push(rng());
+      }
+    }
+    if (!origin.length) return;
+
+    const quad = new THREE.PlaneGeometry(1, 1);
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.index = quad.index;
+    geo.attributes.position = quad.attributes.position;
+    geo.attributes.uv = quad.attributes.uv;
+    geo.instanceCount = phase.length;
+    const IA = (arr, n) => new THREE.InstancedBufferAttribute(new Float32Array(arr), n);
+    geo.setAttribute('aOrigin', IA(origin, 3));
+    geo.setAttribute('aVel', IA(vel, 3));
+    geo.setAttribute('aPhase', IA(phase, 1));
+    geo.setAttribute('aLife', IA(life, 1));
+    geo.setAttribute('aSize', IA(size, 1));
+    geo.setAttribute('aSeed', IA(seed, 1));
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+    this._geoms.push(geo);
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: Object.assign(fogUniforms(), this.shared, {
+        uCullDist: { value: 420 },
+      }),
+      vertexShader: BURST_VERT,
+      fragmentShader: BURST_FRAG,
+      transparent: true,
+      depthWrite: false,
+      fog: true,
+    });
+    this._materials.push(mat);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = 10;
+    mesh.frustumCulled = false;
+    mesh.name = 'WaterfallBurst';
+    this.group.add(mesh);
+    this.burstCount = phase.length;
+  }
+
   // ── mist ───────────────────────────────────────────────────────────────────
   _buildMist() {
     const rng = mulberry32(0x2ee11c);
@@ -920,7 +1190,7 @@ export class Waterfalls extends System {
     const world = this.ctx.world;
     const pos = [], local = [], rad = [], pow = [], idx = [];
     let base = 0;
-    const RINGS = 4, SEG = 24;
+    const RINGS = 5, SEG = 32;
 
     // Drape each vertex on whatever it lands on. A flat disc at the recorded
     // plunge height is buried by any ground that rises across it and leaves a
@@ -950,13 +1220,32 @@ export class Waterfalls extends System {
       const radius = clamp(2.2 + Math.sqrt(fl.disc * fl.height) * 1.45, 3.0, 11);
       const power = clamp01(0.45 + fl.disc * 0.7);
 
-      pos.push(b.x, drapeY(b.x, b.z), b.z); local.push(0, 0); rad.push(radius); pow.push(power);
+      // ── downstream bias ───────────────────────────────────────────────────
+      // The pool is still built as a disc in its own space — the shader shapes
+      // it there — but it is *placed* as an oval stretched along the flow and
+      // shifted downstream of the impact. Water landing on rock throws its
+      // foam the way it was already going; a circle centred on the landing
+      // point is a splash decal, and reads as one from every angle.
+      const dX = fl.dirX, dZ = fl.dirZ;      // unit, downstream, horizontal
+      const sX = fl.sideX, sZ = fl.sideZ;    // unit, across
+      const K_DOWN = 1.55, K_SIDE = 0.88, SHIFT = 0.42;
+      const place = (lx, lz) => {
+        const d = lx * K_DOWN + radius * SHIFT;
+        const s = lz * K_SIDE;
+        return [b.x + dX * d + sX * s, b.z + dZ * d + sZ * s];
+      };
+
+      {
+        const [wx, wz] = place(0, 0);
+        pos.push(wx, drapeY(wx, wz), wz); local.push(0, 0); rad.push(radius); pow.push(power);
+      }
       for (let r = 1; r <= RINGS; r++) {
         const rr = radius * (r / RINGS);
         for (let s = 0; s < SEG; s++) {
           const a = (s / SEG) * Math.PI * 2;
           const lx = Math.cos(a) * rr, lz = Math.sin(a) * rr;
-          pos.push(b.x + lx, drapeY(b.x + lx, b.z + lz), b.z + lz);
+          const [wx, wz] = place(lx, lz);
+          pos.push(wx, drapeY(wx, wz), wz);
           local.push(lx, lz); rad.push(radius); pow.push(power);
         }
       }
@@ -1006,6 +1295,14 @@ export class Waterfalls extends System {
     if (!u) return;
     const { lighting, sky } = this.ctx;
     u.uTime.value = elapsed;
+
+    // Angular pixel size, for the sheet's minimum-width LOD. Same derivation as
+    // Water's, recomputed each frame because fov and buffer size both move.
+    const cam = this.ctx.camera, rend = this.ctx.renderer;
+    if (cam && rend) {
+      const h = rend.getDrawingBufferSize(this._tmpSize ??= new THREE.Vector2()).y;
+      if (h > 0) u.uPixelScale.value = 2 * Math.tan(cam.fov * Math.PI / 360) / h;
+    }
 
     const sun = lighting?.sun;
     if (sun) {

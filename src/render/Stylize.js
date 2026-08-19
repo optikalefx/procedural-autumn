@@ -133,6 +133,7 @@ const SHADOW_COOL = /* glsl */`
 	_coolM *= mix( uShadowCoolUp, 1.0, smoothstep( 0.20, 0.70, _coolWN.y ) );
 
 	vec3 _d = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
+	float _lumD = dot( _d, vec3( 0.2126, 0.7152, 0.0722 ) );
 	// The brief's words for the mass are "soft, HIGH-VALUE violet-blue", and that
 	// last part is the half this term was missing. Measured over every blue-led
 	// pixel in the frame (tools/_scratch/coolstat.mjs), plate 3's shadow mass
@@ -147,8 +148,40 @@ const SHADOW_COOL = /* glsl */`
 	// pixel, the rotation then has more warm to cancel, and the two effects
 	// almost exactly annul. The value has to be put back on the cool side of the
 	// rotation, which is where the reference has it.
-	vec3 _cool = uShadowCool * ( dot( _d, vec3( 0.2126, 0.7152, 0.0722 ) ) * uShadowCoolLift );
-	reflectedLight.indirectDiffuse += ( _cool - _d ) * _coolM;
+	// ── THE MIX PARAMETER WAS THE MECHANISM, AND IT HAD A HOLE IN THE MIDDLE ──
+	//
+	// The critic's structural objection is correct and it is worth stating
+	// precisely: a *partial* mix from gold to blue cannot express plate 3's
+	// shadow, because the straight line between those two colours passes
+	// through neutral. This file's own comment identified the dead zone (0.4 to
+	// 0.6 buys nothing but desaturation) and then shipped 0.55, which is inside
+	// it. That is the whole of blocker 2: the effect was switched off with its
+	// saturation cost still being paid.
+	//
+	// So the mix parameter is no longer the amount knob. The rotation is FULL,
+	// and the two things it was being asked to do instead are now separate:
+	//
+	//   uShadowCoolLift  what the mass is WORTH  — a value multiplier, and the
+	//                    half that makes it read as shade rather than as paint.
+	//                    The predecessor swept the amount to 0.92, kept a lift
+	//                    of 1.45, and correctly rejected the result as "blue
+	//                    paint over the ground" — a shadow that is fully blue
+	//                    AND brighter than its surroundings is spilled pigment
+	//                    whatever its hue. Below 1.0 it is a shadow.
+	//   uShadowCoolKeep  how much of the surface's own colour survives, so a
+	//                    shadowed maple, a shadowed conifer and shadowed grass
+	//                    are not literally the same pixel. Small: plate 3's
+	//                    mass really is close to one flat colour with darker
+	//                    tufts drawn over it.
+	//
+	// Target triple re-read off plate 3's shadow mass in linear, normalised to
+	// its own luminance: srgb(42,65,77) is linear 1 : 2.30 : 3.21, i.e.
+	// (0.48, 1.10, 1.54) at luminance 1. The old triple normalised to
+	// (0.72, 1.03, 1.55) — the blue was already right and the RED was half a
+	// stop too high, which is why the mass kept reading as slate-mauve.
+	vec3 _tgt = uShadowCool * ( _lumD * uShadowCoolLift );
+	_tgt = mix( _tgt, _d * uShadowCoolLift, uShadowCoolKeep );
+	reflectedLight.indirectDiffuse += ( _tgt - _d ) * _coolM;
 }
 `;
 
@@ -279,7 +312,25 @@ const DEFAULTS = {
   // the difference between those two numbers is the difference between shade
   // and a hill painted cornflower. Swept: 0.213 / 0.178 / 0.144 chroma at three
   // desaturations; 0.178 is the plate.
-  shadowCool: new THREE.Color(0.70, 1.00, 1.51),
+  // Re-read off plate 3's shadow mass itself, in linear, at luminance 1.
+  // srgb(42,65,77) is linear 1 : 2.30 : 3.21 -> (0.48, 1.10, 1.54). The triple
+  // it replaces normalised to (0.72, 1.03, 1.55): the blue was already there,
+  // and the RED was the error — half a stop too high is the difference between
+  // a blue-grey shade and the slate-mauve the critic measured as rose.
+  //
+  // Then walked back to (0.62, 1.08, 1.40) — 30% of the way to neutral — after
+  // looking at it. At the plate's own chroma the mass reads as standing water
+  // between the grass rather than as shade, and the reason is structural and
+  // worth writing down because it caps this effect until it is fixed: this
+  // chunk only reaches materials on three's lighting path. Grass, ground cover
+  // and the tree canopy are raw ShaderMaterials that opt in to stylizeDiffuse()
+  // and *not* to this, and grass additionally applies its own WARM shadow tint
+  // (uShadowTint 1.06/0.97/0.88 in grass_material.js). So inside one cast
+  // shadow the terrain goes cool and the grass standing on it stays gold — the
+  // mass is only half painted, and the more saturated the half is, the more it
+  // reads as a puddle with grass growing out of it. stylizeShadowCool() below
+  // is the opt-in; see docs/INTEGRATION_REQUESTS.md.
+  shadowCool: new THREE.Color(0.62, 1.08, 1.40),
   // How far a fully shadowed pixel goes.
   //
   // 0.42 was picked on the reasoning that 1.0 would put a cast shadow exactly on
@@ -306,7 +357,12 @@ const DEFAULTS = {
   // reference's shadow mass is soft and high-value, and ours was arriving hard
   // and saturated. 0.55 keeps the gold reading as gold underneath, which is the
   // thing the count cannot see. A case where the frame overrules the metric.
-  shadowCoolAmt: 0.55,
+  // FULL. See the block comment in SHADOW_COOL: partial values are not a
+  // gentler version of this effect, they are the effect walked into the neutral
+  // crossing point between gold and blue, and 0.55 sat exactly there. What used
+  // to be bought with this knob is now bought with shadowCoolLift (value) and
+  // shadowCoolKeep (material identity), neither of which passes through grey.
+  shadowCoolAmt: 1.0,
   // Where the shadow mask saturates. 1.0 is the old linear behaviour; lower
   // values pull partially-occluded pixels into the mass at full strength, which
   // is what turns speckle into a shape. Swept — see the note in SHADOW_COOL.
@@ -332,7 +388,35 @@ const DEFAULTS = {
   // frame's black point to do it, which is the wrong trade in a round whose
   // other ship-blocker is that the blacks are too high. 1.55 keeps the mass
   // recognisably the plate's colour and the black point at the plate's.
+  // Below 1.0 now, and that is the point. It was 1.45 — a fully-rotated shadow
+  // was being handed back at 145% of the luminance it arrived with, which is
+  // why full rotation was rejected as "blue paint over the ground": the mass
+  // was the reference's hue at nothing like the reference's value. Plate 3 puts
+  // its shadow at luma 0.240 against sunlit grass at 0.366, and the pixel
+  // reaching this line has already lost the sun. Swept — see the round notes.
+  // Swept at 0.92 / 1.30 / 1.45 / 1.70 / 2.00 against plate 3, with the target
+  // saturation swept across it, on `drive` and `meadow` at full rotation:
+  //
+  //   lift  target        drive shadow                 meadow mass          reads as
+  //   1.30  plate         srgb( 92,110,127) chr 0.139  srgb(40,60,79) 0.151  cobalt water
+  //   1.70  plate         srgb(113,134,151) chr 0.153  srgb(46,83,103) 0.221 cobalt water
+  //   1.70  30% neutral   srgb(121,132,147) chr 0.106  srgb(59,80,95) 0.141  pale shade
+  //   1.45  30% neutral   srgb(114,124,139) chr 0.103  srgb(51,70,86) 0.136  SHADE
+  //   1.45  50% neutral   srgb(132,133,146) chr 0.064  srgb(64,70,79) 0.059  grey, no note
+  //   plate3 mass         srgb( 42, 65, 77) chr 0.135
+  //
+  // The two most saturated rows measure closest to plate 3 on the mass and are
+  // the two that look worst, which is this project's named failure mode in its
+  // purest form. The frame is trusted: at 1.45/30% the cast shadows on `drive`
+  // are blue-violet ribbons across gold ground and read as light, and that is
+  // what the brief is describing.
   shadowCoolLift: 1.45,
+  // How much of the surface's own colour survives the rotation. Small on
+  // purpose: plate 3's mass really is close to one flat slate with darker tufts
+  // drawn over it, and at 0.35 the gold came back through strongly enough to
+  // land the mass on grey again. It exists so a shadowed crimson maple, a
+  // shadowed conifer and shadowed grass are not bit-identical.
+  shadowCoolKeep: 0.16,
   shadowCoolNear: 110.0,
   shadowCoolFar: 520.0,
   // NOT A KNOB, DELIBERATELY. A shaped floor — one that fades across the back
@@ -422,7 +506,7 @@ export function patchStylizedLighting() {
   // than an undefined value. Unused declarations in the vertex and depth
   // programs cost nothing; the compiler drops them.
   THREE.ShaderChunk.common =
-    'uniform vec3 uShadowCool;\nuniform float uShadowCoolAmt;\nuniform float uShadowCoolReach;\nuniform float uShadowCoolUp;\nuniform float uShadowCoolLift;\nuniform float uShadowCoolNear;\nuniform float uShadowCoolFar;\nfloat gSunShadow = 1.0;\n'
+    '#define STYLIZE_COOL_DECLARED\nuniform vec3 uShadowCool;\nuniform float uShadowCoolAmt;\nuniform float uShadowCoolReach;\nuniform float uShadowCoolUp;\nuniform float uShadowCoolLift;\nuniform float uShadowCoolKeep;\nuniform float uShadowCoolNear;\nuniform float uShadowCoolFar;\nfloat gSunShadow = 1.0;\n'
     + THREE.ShaderChunk.common;
 
   injectUniforms('lights', {
@@ -440,6 +524,7 @@ export function patchStylizedLighting() {
     uShadowCoolReach: { value: DEFAULTS.shadowCoolReach },
     uShadowCoolUp: { value: DEFAULTS.shadowCoolUp },
     uShadowCoolLift: { value: DEFAULTS.shadowCoolLift },
+    uShadowCoolKeep: { value: DEFAULTS.shadowCoolKeep },
     uShadowCoolNear: { value: DEFAULTS.shadowCoolNear },
     uShadowCoolFar: { value: DEFAULTS.shadowCoolFar },
   });
@@ -492,7 +577,58 @@ float stylizeRim( float rawNV, float rawVL ) {
   float b = clamp( -rawVL, 0.0, 1.0 );
   return uStyleRim * pow( f, uStyleRimPow ) * smoothstep( uStyleRimBack, 1.0, b );
 }
-#endif`;
+#endif
+
+// ── the cool cast-shadow mass, for a shader that does its own lighting ──────
+// The guard pairs with the #define the patch above prepends to the common
+// chunk, so a material that is on three's lighting path AND includes this block
+// declares these once, not twice.
+//
+// lit  is the final diffuse colour; sh is the sun's shadow factor (1 lit, 0
+// occluded — getShadowMask() is exactly this); wnY is the world-space normal's
+// Y; dist is the distance from the camera in metres. Returns the colour with
+// the mass applied. Merge stylizeCoolUniforms() to get the uniforms.
+#ifndef STYLIZE_COOL_DECLARED
+#define STYLIZE_COOL_DECLARED
+uniform vec3 uShadowCool;
+uniform float uShadowCoolAmt;
+uniform float uShadowCoolReach;
+uniform float uShadowCoolUp;
+uniform float uShadowCoolLift;
+uniform float uShadowCoolKeep;
+uniform float uShadowCoolNear;
+uniform float uShadowCoolFar;
+#endif
+
+vec3 stylizeShadowCool( vec3 lit, float sh, float wnY, float dist ) {
+  float m = clamp( ( 1.0 - sh ) / max( uShadowCoolReach, 1e-4 ), 0.0, 1.0 );
+  m = m * m * ( 3.0 - 2.0 * m ) * uShadowCoolAmt;
+  m *= 1.0 - smoothstep( uShadowCoolNear, uShadowCoolFar, dist );
+  m *= mix( uShadowCoolUp, 1.0, smoothstep( 0.20, 0.70, wnY ) );
+  float l = dot( lit, vec3( 0.2126, 0.7152, 0.0722 ) );
+  vec3 t = uShadowCool * ( l * uShadowCoolLift );
+  t = mix( t, lit * uShadowCoolLift, uShadowCoolKeep );
+  return mix( lit, t, m );
+}`;
+
+/**
+ * Uniform block a custom ShaderMaterial merges in to use `stylizeShadowCool`.
+ * Separate from stylizeUniforms() so a material can adopt the diffuse response
+ * without also adopting the cast-shadow mass, which is what trees and grass do
+ * today. Stylize.update() writes both blocks on any registered material.
+ */
+export function stylizeCoolUniforms() {
+  return {
+    uShadowCool:      { value: normalisedCool() },
+    uShadowCoolAmt:   { value: DEFAULTS.shadowCoolAmt },
+    uShadowCoolReach: { value: DEFAULTS.shadowCoolReach },
+    uShadowCoolUp:    { value: DEFAULTS.shadowCoolUp },
+    uShadowCoolLift:  { value: DEFAULTS.shadowCoolLift },
+    uShadowCoolKeep:  { value: DEFAULTS.shadowCoolKeep },
+    uShadowCoolNear:  { value: DEFAULTS.shadowCoolNear },
+    uShadowCoolFar:   { value: DEFAULTS.shadowCoolFar },
+  };
+}
 
 /** Uniform block a custom ShaderMaterial merges in to use `stylizeDiffuse`. */
 export function stylizeUniforms() {
@@ -553,6 +689,7 @@ export class Stylize {
       if (u.uShadowCoolReach) u.uShadowCoolReach.value = p.shadowCoolReach;
       if (u.uShadowCoolUp) u.uShadowCoolUp.value = p.shadowCoolUp;
       if (u.uShadowCoolLift) u.uShadowCoolLift.value = p.shadowCoolLift;
+      if (u.uShadowCoolKeep) u.uShadowCoolKeep.value = p.shadowCoolKeep;
       if (u.uShadowCoolNear) u.uShadowCoolNear.value = p.shadowCoolNear;
       if (u.uShadowCoolFar) u.uShadowCoolFar.value = p.shadowCoolFar;
       if (u.uShadowCool) u.uShadowCool.value.copy(normalisedCool(p.shadowCool));

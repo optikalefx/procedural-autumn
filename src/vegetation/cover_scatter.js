@@ -65,7 +65,13 @@ const PAL = {
   // level. These values are still dark against the meadow (the reference's own
   // shrubs sit at 0.72 of its sunlit gold's luma, and ours land close to that);
   // they are simply far enough above the floor for form and hue to survive it.
-  shrubDeep:   C(0x668f5f), shrubLit:    C(0x9cc072),
+  // Widened. The pair sets the whole value range available inside a bush, and
+  // at #668f5f -> #9cc072 that range was about a fifth of a stop — so a form
+  // rebuilt specifically to *carry* interior value had almost none to carry.
+  // Both ends stay well clear of the black floor described above; the deep end
+  // is the brief's own conifer anchor family, which is what the reference's
+  // shaded bush foliage measures at.
+  shrubDeep:   C(0x557a50), shrubLit:    C(0xaecb75),
   shrubMaroon: C(0xa8613f), shrubMarLit: C(0xd08a48),
   berryLeaf:   C(0x9c5236), berryLit:    C(0xd4652c), berry: C(0xbe4038),
   // A step darker and a step more saturated than the terrain's sunlit gold
@@ -89,7 +95,11 @@ const PAL = {
   // fallen leaf must be a step *down* from the meadow it lies on or it reads
   // as paper confetti — but a step down from #f0ad46 is a warm rust, and at
   // the previous values a leaf scatter at 2 m read as small black chips.
-  litterWarm:  C(0xd2803a), litterGold:  C(0xe8b455), litterRed: C(0xb04338),
+  // `litterRed` warmed and lifted a step. At #b04338 a single fallen leaf on
+  // sunlit gold was a hard, near-black-red diamond — the value gap the rule
+  // above asks for, overshot into a hole. It still sits below the meadow; it
+  // is simply on the rust side of red rather than the blood side.
+  litterWarm:  C(0xd2803a), litterGold:  C(0xe8b455), litterRed: C(0xbe5a3a),
   // Weathered wood, and much paler than it looks written down. Forcing this
   // pair to pure white and re-capturing showed a correctly lit, clearly
   // faceted cylinder, so the normals and the light were always fine — the
@@ -120,7 +130,7 @@ const CAN_CELL = 6;                  // metres per canopy raster cell
 // Layer salts. Distinct constants so no two layers can ever share a stream.
 const L_OPEN = 0x51a1, L_SCRUB = 0x5c2b, L_BANK = 0xba17;
 const L_UNDER = 0x0fe2, L_FLOWER = 0xf10e, L_LITTER = 0x11e2, L_DEAD = 0xdead;
-const L_GROUND = 0x9704;
+const L_GROUND = 0x9704, L_STONE = 0x5701;
 
 export class CoverScatter {
   constructor(world, seed, opts = {}) {
@@ -334,6 +344,7 @@ export class CoverScatter {
     n = this._layerBank(cx, cz, S, out, n, cap);
     if (band <= 2) n = this._layerLitter(cx, cz, S, out, n, cap);
     n = this._layerDeadfall(cx, cz, S, band, out, n, cap);
+    if (band <= 2) n = this._layerStones(cx, cz, S, out, n, cap);
     if (band <= 1) n = this._layerUnderstory(cx, cz, S, out, n, cap);
     if (band <= 0) n = this._layerFlowers(cx, cz, S, out, n, cap);
     // Skirt before substrate. Both want the same near-field budget, and if one
@@ -443,7 +454,7 @@ export class CoverScatter {
       // clumping". The accumulation field still widens it, but a drift now
       // lands inside a metre or two and leaves real gaps between drifts, which
       // is the only way a scatter reads as weather rather than as noise.
-      const spread = 0.30 + rng() * (0.55 + acc * 1.45);
+      const spread = 0.26 + rng() * (0.40 + acc * 1.05);
 
       // ONE TYPE WINS PER CLUMP. Rolling the mix independently per member is
       // what turned every drift into confetti: twenty pieces inside two metres,
@@ -492,12 +503,20 @@ export class CoverScatter {
           // Power law over the three stone tiers. Grit is the common case and
           // a cobble is a once-in-a-while event, which is what gives a stony
           // stretch a readable size hierarchy instead of a uniform grade.
+          // Cobbles left this clump and became their own layer (`_layerStones`).
+          // They carried a 74 m visibility radius while the only thing that
+          // emitted them ran at band 0, i.e. inside 50 m — so every cobble in
+          // the game popped into existence at fifty metres, fully sized, with
+          // twenty-four metres of its fade still to go. Splitting them also
+          // gives the anchor role to something honest: within a grit drift the
+          // big piece is now the large pebble tier, and the landmark-scale
+          // stones are placed against the ground that actually has them.
           const anchor = !bigStone && m === 0 && rng() < 0.62;
           if (anchor) bigStone = true;
-          const t = anchor ? 0.90 + rng() * 0.10 : rng() * 0.86;
-          n = this._emit(out, n, cap, t < 0.86 ? 'pebble' : 'cobble', mx, mz, rng, {
+          const t = anchor ? 0.70 + rng() * 0.16 : rng() * 0.58;
+          n = this._emit(out, n, cap, 'pebble', mx, mz, rng, {
             colA: PAL.stoneDeep, colB: PAL.stoneLit, sink: 0.02,
-            variant: t < 0.58 ? 0 : t < 0.86 ? 1 : (t < 0.96 ? 0 : 1),
+            variant: t < 0.58 ? 0 : 1,
             // Squared, so within a tier most stones sit near the bottom of its
             // range and only a few reach the top. A flat scale range is what
             // produced the measured "every stone within ±30% of the same size".
@@ -512,7 +531,7 @@ export class CoverScatter {
           const warm = rng();
           n = this._emit(out, n, cap, 'leafScatter', mx, mz, rng, {
             colA: warm < 0.82 ? PAL.litterWarm : PAL.litterRed,
-            colB: warm < 0.40 ? PAL.litterRed : PAL.litterGold,
+            colB: warm < 0.22 ? PAL.litterRed : PAL.litterGold,
             sink: 0.01, scale: 0.65 + rng() * rng() * 1.10,
             tone: 0.90 + rng() * 0.24, hue: 0.028, flat: true,
           });
@@ -544,6 +563,73 @@ export class CoverScatter {
             visMul: 0.75,
           });
         }
+      }
+    }
+    return n;
+  }
+
+  /**
+   * Stone. Cobbles and boulder chips on the ground that actually has them:
+   * eroding banks, gravel bars, dry rocky slopes.
+   *
+   * Its own layer rather than the top tier of the grit clump, for two reasons.
+   * The first is a fix — see the note in `_layerGround`; the second is that a
+   * 30 cm stone and a 4 cm chip do not answer the same question. Grit is
+   * *texture* on ground the player is standing on, so it wants a short radius
+   * and huge numbers; a cobble is an *object* that gives a bank its scale from
+   * fifty metres away, and it wants the opposite. The critic measured the river
+   * bank as "~70 identical pebbles with no clumping and no size hierarchy" on a
+   * frame where the bank fills half the picture, and no amount of retuning one
+   * shared clump was going to produce both readings at once.
+   *
+   * Ecology rather than noise: `_ground` refuses anything over 1.2 slope, so
+   * the steep eroding banks that most need something on them are exactly where
+   * every other layer here declines to build. This one takes them.
+   */
+  _layerStones(cx, cz, S, out, n, cap) {
+    const W = this.world, N = this.noise;
+    const ox = cx * S, oz = cz * S;
+    const key = this._cellKey(cx, cz, L_STONE);
+    const sites = Math.round(64 * this.mul);
+
+    for (let a = 0; a < sites && n < cap; a++) {
+      const rng = mulberry32((hash2i(a, L_STONE, key) * 4294967296) >>> 0);
+      const x = ox + rng() * S, z = oz + rng() * S;
+      if (!W.isInBounds(x, z)) continue;
+      if (W.getWaterDepth(x, z) > 0.10) continue;
+      const slope = W.getSlope(x, z);
+      if (slope > 1.45) continue;
+
+      const w = W.getSurfaceWeights(x, z, this._w);
+      const river = W.getRiver(x, z);
+      const stony = clamp01(w.rock * 1.5 + w.dirt * 1.0 + w.sand * 0.7
+                            + smoothstep(0.20, 0.75, slope) * 0.8
+                            + smoothstep(0.06, 0.32, river) * 0.9
+                            - w.grass * 0.55 - w.snow * 2.0);
+      if (stony < 0.08) continue;
+      // Stones come in bars and scree runs, not in an even grade over a
+      // hillside. The field is what leaves clean stretches between them.
+      const field = smoothstep(-0.40, 0.45,
+        N.fbm(x * 0.021 + 55.1, z * 0.021 - 33.7, 2, 2.2, 0.5, 1));
+      if (rng() > clamp01(stony * (0.30 + field * 1.05))) continue;
+
+      // One big stone at the centre with a handful of smaller ones around it.
+      // The size step between member 0 and the rest is deliberately large: a
+      // hierarchy is what lets the eye group a scatter into objects, and a
+      // narrow range is what stopped it doing so before.
+      const members = 2 + ((rng() * 5) | 0);
+      const spread = 0.55 + rng() * 1.85;
+      for (let m = 0; m < members && n < cap; m++) {
+        const ang = rng() * TAU, r = m === 0 ? 0 : spread * Math.sqrt(rng());
+        const mx = x + Math.cos(ang) * r, mz = z + Math.sin(ang) * r;
+        if (!W.isInBounds(mx, mz)) continue;
+        if (W.getWaterDepth(mx, mz) > 0.10) continue;
+        n = this._emit(out, n, cap, 'cobble', mx, mz, rng, {
+          colA: PAL.stoneDeep, colB: PAL.stoneLit, sink: 0.05,
+          variant: m === 0 ? 1 : 0,
+          scale: m === 0 ? 0.90 + rng() * 0.80 : 0.42 + rng() * rng() * 0.80,
+          tone: 0.86 + rng() * 0.28, hue: 0.018, flat: true,
+        });
       }
     }
     return n;

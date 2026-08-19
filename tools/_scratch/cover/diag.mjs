@@ -55,10 +55,11 @@ const info = await page.evaluate(async ({ X, Z, YAW, HOUR }) => {
     stats: gc.stats,
     preset: window.__engine.preset ?? null,
     arch: arch.filter((a) => a.count > 0),
+    coverTris: arch.reduce((t, a) => t + a.tris, 0),
     capped: arch.filter((a) => a.count >= a.cap).map((a) => a.n),
     nearCells: cells.slice(0, 12),
     maxCell: Math.max(...cells.map((c) => c.n)),
-    clipped: cells.filter((c) => c.n >= 5600).length,
+    clipped: cells.filter((c) => c.n >= 8200).length,
     render: { calls: e.renderer.info.render.calls, tris: e.renderer.info.render.triangles },
     fps: window.__fps,
   };
