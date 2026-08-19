@@ -1,0 +1,12 @@
+import { chromium } from 'playwright';
+import { readFileSync } from 'node:fs';
+import { acquire } from '../_lock.mjs';
+await acquire('probe');
+const b = await chromium.launch();
+const p = await b.newPage({viewport:{width:400,height:300}});
+p.on('pageerror', e=>console.log('ERR',e.message));
+p.on('console', m=>{ if(m.type()==='error') console.log('CERR', m.text()); });
+await p.goto('http://localhost:5178');
+await p.waitForFunction(()=>window.__ready===true,null,{timeout:300000,polling:300});
+console.log(await p.evaluate(readFileSync(process.argv[2],'utf8')));
+await b.close();

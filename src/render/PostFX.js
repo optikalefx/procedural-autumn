@@ -23,6 +23,9 @@ uniform float uToe;
 uniform vec3  uLiftTint;
 uniform float uVibrance;
 uniform float uGoldRotate;
+uniform float uHuePivot;
+uniform float uHueSpread;
+uniform float uHueSpreadW;
 uniform float uWarmEnd;
 uniform float uWarmSat;
 uniform float uWarmSatSlope;
@@ -136,14 +139,14 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   //
   // THIS IS THE "MONOCHROME ORANGE" FIX. Read the numbers before touching it.
   //
-  // Measured on `meadow` against plate 1, as a share of chromatic pixels:
+  // Measured on meadow against plate 1, as a share of chromatic pixels:
   //   red 68.4 / orange 29.1 / yellow 1.6 / y-grn 0.0
   //   plate 1 : 51.8 / 38.4 / 4.8 / 3.1
   // while lumaP05, lumaRange, contrastStd and chromaMean were all inside their
   // bands. Nothing about the frame was wrong except *where the hues sat*, and
   // a whole sheet of frames read as one rust-coloured smear because of it.
   //
-  // The predecessor of this block was additive — `c.g += c.r * redLead^2 * k`
+  // The predecessor of this block was additive — c.g += c.r * redLead^2 * k
   // with k = 0.13. Two things were wrong with it. It is quadratic in redLead,
   // so it is weakest exactly on the dominant gold mass (which is only
   // moderately red-led) and strongest on the crimson maples that should be
@@ -184,12 +187,28 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     // Wrap the rose/magenta side negative so the band is continuous through red.
     deg -= 360.0 * step(300.0, deg);
     // Full authority from red through amber, tapering out before anything
-    // genuinely green-led. The taper matters: `forest` and `waterfall` are
+    // genuinely green-led. The taper matters: forest and waterfall are
     // majority conifer and put 32-48% of their chromatic pixels above 60 deg,
     // and rotating those would march the conifer mass toward green — the exact
     // thing uGreenTame exists to prevent.
     float warm = smoothstep(-45.0, -8.0, deg) * (1.0 - smoothstep(uWarmEnd - 25.0, uWarmEnd, deg));
-    hsv.x = fract((deg + uGoldRotate * warm) / 360.0);
+    // Hue *spread*, which is the operator this frame actually needed. A pure
+    // rotation cannot fix a monochrome frame; it only moves the smear, and the
+    // proof is in the archive — rotating by 11 deg took meadow from 68% red /
+    // 29% orange to 5% / 89%, a frame that reads as monochrome yellow instead
+    // of monochrome orange and is no closer to the plate.
+    //
+    // Measured in 10 deg bins, plate 1 spreads its chromatic pixels 20.6 / 29.8
+    // / 24.4 / 11.1 across 10-50 deg. Ours piled 58% into one bin. So push hues
+    // away from wherever the pile is: a Gaussian-weighted expansion about the
+    // pile centre, which separates the crimson maples below it from the gold
+    // canopy above it and leaves everything far from the pivot alone. Gain is
+    // the multiplier on the distance from the pivot, so 0.9 nearly doubles the
+    // local spread; the Gaussian is what keeps it local, and without it a gain
+    // this size throws the 50 deg tail into pure green.
+    float dh = deg - uHuePivot;
+    float spread = dh * uHueSpread * exp(-(dh * dh) / (uHueSpreadW * uHueSpreadW));
+    hsv.x = fract((deg + (uGoldRotate + spread) * warm) / 360.0);
     // Ceiling with a soft knee, not a clamp: below uWarmSat nothing moves, above
     // it the excess is compressed rather than flattened, so a crimson maple and
     // a gold grass blade do not arrive at the same saturation.
@@ -318,7 +337,10 @@ class GradeEffect extends Effect {
         ['uToe',           new THREE.Uniform(0.032)],
         ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.30, 0.95, 0.68))],
         ['uVibrance',      new THREE.Uniform(0.90)],
-        ['uGoldRotate',    new THREE.Uniform(11.0)],
+        ['uGoldRotate',    new THREE.Uniform(1.5)],
+        ['uHuePivot',      new THREE.Uniform(27.0)],
+        ['uHueSpread',     new THREE.Uniform(0.90)],
+        ['uHueSpreadW',    new THREE.Uniform(15.0)],
         ['uWarmEnd',       new THREE.Uniform(66.0)],
         ['uWarmSat',       new THREE.Uniform(0.63)],
         ['uWarmSatSlope',  new THREE.Uniform(0.85)],

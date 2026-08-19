@@ -94,7 +94,7 @@ export function createTerrainMaterial(world, opts = {}) {
     // governor block: the palette's rock is high-value lavender-grey lit and
     // still high-value in shade, and ours was rendering unlit stone at luma
     // 0.217 against a reference band of 0.40-0.70.
-    uRockLift:    { value: 0.18 },
+    uRockLift:    { value: 0.30 },
     // Pulling a colour to its own luminance loses the brightest channel, so
     // the governed result needs a gain or the massifs go a stop darker than
     // the boulders standing on them.
@@ -117,7 +117,10 @@ export function createTerrainMaterial(world, opts = {}) {
     // Dev only, always 0 in the shipped frame. Set from the console or the
     // capture harness to false-colour the surface masks:
     //   window.__terrain.material.userData.uniforms.uDebugMask.value = 1
-    // 1 = grass(green) / rock(red) / scree(blue), 2 = curvature, 3 = sediment.
+    // 1 = rock(red) / grass(green) / scree(blue), 2 = curvature, 3 = talus /
+    // hardness / slope, 4 = olive / dry / litter, 5 = steep / rockM / rim band.
+    // Blitted over the lit colour, so what you see is the mask and not the mask
+    // times the light.
     // Working out which of six overlapping masks owns a grey hillside by
     // reading the code is slow and unreliable; looking at it takes one capture.
     uDebugMask:   { value: 0 },
@@ -179,6 +182,8 @@ export function createTerrainMaterial(world, opts = {}) {
       // governor uses this rather than gRockM so a gravel shelf in a meadow
       // keeps some of its warmth while a cliff does not.
       float gRockGov = 0.0;
+      // Dev only. See the uDebugMask block; blitted unlit at the end.
+      vec3 gDebug = vec3(0.0);
 
       // ── cheap value-noise stack ──────────────────────────────────────────
       vec2 hash22(vec2 p){
@@ -452,7 +457,20 @@ export function createTerrainMaterial(world, opts = {}) {
         // reference floor of 0.28. In plates 2 and 3 gold climbs a long way up
         // the flanks in big definite blobs and rock is reserved for genuine
         // faces; this holds grass to about 39 degrees to match.
-        float steep = smoothstep(0.80, 1.42, slope);
+        // RAISED AND WIDENED AGAIN, on measurement. Debug mask 5 read off the
+        // river frame (with the grade bypassed, so the numbers are the shader's
+        // own) gives steep 0.70 inside the grey slab and 0.17-0.29 on the ochre
+        // ground around it — which is slope 1.19 against 0.95-1.00, a
+        // difference of about six degrees. The line as tuned resolved its whole
+        // decision between slope 1.09 and 1.22, so six degrees of slope flipped
+        // gold meadow to bare stone, and that is what let an ordinary soil
+        // flank wear a 200 m2 plate of governed grey.
+        //
+        // Bare rock starts where soil genuinely cannot hold: the transition now
+        // opens around 52 degrees and completes near 60, which leaves the
+        // buttresses, gorge walls and summit faces as stone and gives the
+        // flanks back to the gold that the plates put on them.
+        float steep = smoothstep(0.94, 1.66, slope);
         float bench = 1.0 - smoothstep(0.10, 0.34, slope);   // flat shelf / meadow
 
         // ── ground cover: gold meadow, olive damp grass, pale dry straw ─────
@@ -671,8 +689,14 @@ export function createTerrainMaterial(world, opts = {}) {
         // What the geometry on its own says. The breakers are kept out of this
         // sum deliberately, so their amplitude can be scaled by how close the
         // *geometry* already is to the line.
+        // The altitude term is domain-warped, for the same reason the snow line
+        // is: an untouched smoothstep on world height is a level curve by
+        // construction, and a level curve drawn across a cone is a contour map.
+        // The gold ribbons wandering across the peaks massif are that term
+        // meeting the drainage flutes.
+        float altWarp = vWorldPos.y + (macro - 0.5) * 74.0 + (macro2 - 0.5) * 26.0;
         float rockBase = steep * 1.26 - 0.20
-                       + smoothstep(232.0, 330.0, vWorldPos.y) * 0.34;
+                       + smoothstep(232.0, 330.0, altWarp) * 0.34;
         // THE BREAKERS MAY ONLY RUFFLE THE LINE, AND ONLY WHERE THE LINE IS.
         // Scaling by edgeBreak alone was not enough: edgeBreak is ~1 for every
         // slope past about 26 degrees, so the 240 m octave — worth ±0.39 of a
@@ -690,7 +714,7 @@ export function createTerrainMaterial(world, opts = {}) {
         float nearLine = 1.0 - smoothstep(0.0, 0.34, abs(rockBase - 0.44));
         float breakAmp = nearLine * edgeBreak;
         float rockM = clamp(rockBase
-                          + ((macro - 0.5) * 0.72 + (macro2 - 0.5) * 0.26) * fMacro * breakAmp
+                          + ((macro - 0.5) * 0.52 + (macro2 - 0.5) * 0.46) * fMacro * breakAmp
                           + (meso - 0.5) * 0.34 * fMeso * breakAmp
                           + (fine - 0.5) * 0.30 * breakAmp, 0.0, 1.0);
         // FEATHERED, NOT MASS-EDGED, AND THAT IS THE FIX FOR THE POLYGON.
@@ -707,9 +731,35 @@ export function createTerrainMaterial(world, opts = {}) {
         // field is slow, and still resolves crisply wherever the slope
         // genuinely breaks, because fwidth wins there. The ruffle octaves above
         // supply the definite-mass character that the hard cut used to.
-        float rockFeather = max(fwidth(rockM) * 1.4, 0.15);
+        // The floor is wide because the field behind it is steep: rockM moves
+        // 1.26 for every 1.0 of steep, and steep itself crosses its whole
+        // range in 0.72 of slope. A 0.26 feather buys about eight degrees of
+        // transition, which is a band metres wide on real ground rather than
+        // the pixel-wide contour a derivative width collapses to.
+        // TAPERED WITH DISTANCE. The polygon was a near-field failure: a wide
+        // feather there spans metres of visible ground and turns a torn edge
+        // into a transition. At vista range the same width spans a third of a
+        // massif and smears the grass/rock line into mush, which loses the
+        // broad definite masses the reference is built from. Near wide, far
+        // crisp — and far is where the derivative width is honest anyway,
+        // because a distant face crosses the whole field inside a pixel.
+        float rockFeather = max(fwidth(rockM) * 1.4,
+                                mix(0.26, 0.09, smoothstep(140.0, 520.0, camDist)));
         float rockCover = smoothstep(0.44 - rockFeather, 0.44 + rockFeather, rockM);
         albedo = mix(albedo, rock, rockCover);
+        // Transition material along the line. A feather on its own only
+        // cross-dissolves gold into grey, and across a chroma gap this wide
+        // (0.43 against 0.07 measured) a cross-dissolve still reads as one
+        // shape laid over another — a torn edge with a blurred border rather
+        // than ground. Every reference plate mediates that meeting with a band
+        // of paler, drier material: straw, grit and scoured dirt where the soil
+        // thins out over stone. Giving the band its own colour turns the
+        // boundary into a sequence of materials, which is what reads as a
+        // hillside. Peaks at the half-way line and vanishes at both ends, so it
+        // costs nothing anywhere else.
+        float rimBand = rockCover * (1.0 - rockCover) * 4.0;
+        vec3 rimCol = mix(mix(uDirt, uScree, 0.34 + meso * 0.30), uGrassDry, 0.34);
+        albedo = mix(albedo, rimCol, rimBand * 0.45);
         gRockM = max(rockCover, max(ribM, scourM) * 0.72);
 
         // Hollows and lips, applied to whatever ended up on the surface. On
@@ -742,7 +792,10 @@ export function createTerrainMaterial(world, opts = {}) {
         // meadow; pulling all of it the whole way to neutral is what turned
         // patches of it into grey cut-outs with nothing but hue to distinguish
         // them from the ground they sit in.
-        gRockGov = gRockM * (0.62 + 0.38 * smoothstep(0.35, 0.90, slope));
+        // The transition band is excluded outright: it is soil and grit lying
+        // on stone, and greying it would undo the whole point of painting it.
+        gRockGov = gRockM * (0.62 + 0.38 * smoothstep(0.35, 0.90, slope))
+                          * (1.0 - rimBand * 0.70);
 
         // Shelves. A terrace cut into a massif is nearly flat, so it misses
         // every slope-driven rule above and comes out as a bare grey plate —
@@ -836,12 +889,19 @@ export function createTerrainMaterial(world, opts = {}) {
         snowSel *= 1.0 - smoothstep(0.85, 1.30, slope);
         albedo = mix(albedo, uSnow, snowSel);
 
+        // Debug read-out. Written to gDebug and blitted OVER the lit colour at
+        // the end of the shader rather than multiplied into the albedo, which
+        // is how it used to work and which made it useless exactly where it was
+        // needed: a mask painted into the albedo is still multiplied by the
+        // light, so on a slope facing away from the sun every channel comes
+        // back at the diffuse floor and two very different masks look the same
+        // dark smudge. Half a round was lost reading a false answer off it.
         if (uDebugMask > 0.5) {
-          float m = rockCover;
-          if (uDebugMask < 1.5)      albedo = vec3(m, 1.0 - m, screeM);
-          else if (uDebugMask < 2.5) albedo = vec3(max(0.0, curv), 0.0, max(0.0, -curv));
-          else if (uDebugMask < 3.5) albedo = vec3(loose, bedM, slope * 0.5);
-          else                       albedo = vec3(oliveM, dryM, litterM);
+          if (uDebugMask < 1.5)      gDebug = vec3(rockCover, 1.0 - rockCover, screeM);
+          else if (uDebugMask < 2.5) gDebug = vec3(max(0.0, curv), 0.0, max(0.0, -curv));
+          else if (uDebugMask < 3.5) gDebug = vec3(loose, hardRock, slope * 0.5);
+          else if (uDebugMask < 4.5) gDebug = vec3(oliveM, dryM, litterM);
+          else                       gDebug = vec3(steep, rockM, rimBand);
         }
 
         diffuseColor.rgb *= albedo;
@@ -931,7 +991,12 @@ export function createTerrainMaterial(world, opts = {}) {
       // relation to the snow above it, and only the unlit half moves.
       if (gRockGov > 0.002) {
         float rl = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-        float rlL = rl + max(0.0, 1.0 - rl) * uRockLift;
+        // Weighted by sun-facing. Lit stone never had the problem — measured,
+        // it sits where the plates put it — and lifting it too flattened every
+        // massif toward white and cost the peaks view 0.04 of luma range in one
+        // round. It is the unlit half that was falling to 0.217 against a
+        // palette shadow anchor of 0.36, so the lift follows the shade term.
+        float rlL = rl + max(0.0, 1.0 - rl) * uRockLift * gShade;
         vec3 governed = vec3(rlL) * mix(uRockCastLit, uRockCastShade, gShade) * uRockGain;
         gl_FragColor.rgb = mix(gl_FragColor.rgb, governed, gRockGov * uRockDesat);
       }
@@ -954,6 +1019,7 @@ export function createTerrainMaterial(world, opts = {}) {
                                  mix(vec3(gl), gl_FragColor.rgb, 1.0 + gsat));
         }
       }
+      if (uDebugMask > 0.5) gl_FragColor.rgb = gDebug;
       #include <dithering_fragment>`
     );
   };

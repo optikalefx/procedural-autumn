@@ -50,6 +50,36 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 //  the three vista views that slab is close to half the frame. The haze keeps
 //  its own colour — fogNear/fogFar are untouched — because that is what plate 1
 //  actually puts over its ridges (measured srgb(223,185,167), chroma 0.22).
+//  THE SUN AND HAZE KEYS ARE A HUE *WIDTH* CONTROL — 2026-08-19.
+//
+//  The standing art-director complaint on this project is that the game reads
+//  as monochrome orange, and measurement finally located it. A fine hue
+//  histogram (10 deg bins, tools/_scratch/huefine.mjs) of the meadow frame put
+//  58% of every chromatic pixel inside the single 20-30 deg bin and nothing at
+//  all above 70 deg. Plate 1 spreads the same mass across 10-50 deg with a real
+//  8% tail out to 130. It is not that our hues are in the wrong place; it is
+//  that they are all in the *same* place.
+//
+//  The key light was most of it. At 0xffbe72 the golden-hour sun is
+//  linear 1 : 0.51 : 0.17 — as a multiplier that is a hue *replacement*, not a
+//  tint. Crimson maple, gold grass, orange canopy and green conifer all get
+//  their green and blue channels scaled by 0.5 and 0.17, which collapses four
+//  distinct albedo hues into one band; no grade downstream can pull them back
+//  apart, because by then they are the same colour. The haze did the same job
+//  to the distance: fogNear was 0xe0ac72, saturation 0.49, where the comment
+//  right above it correctly records plate 1's own haze as srgb(223,185,167) —
+//  saturation 0.25. The measured value and the shipped value had drifted apart.
+//
+//  So the golden-hour keys are warm by a *ratio*, not by saturation:
+//    sun 17.1   0xffbe72 -> 0xffd49c   linear 1 : 0.51 : 0.17  ->  1 : 0.66 : 0.35
+//    haze 17.1  0xe0ac72 -> 0xe0b296   saturation 0.49 -> 0.33
+//  and the same move, scaled, at 7.4 / 15.5 / 18.3 / 19.0. The frame still
+//  reads as late afternoon — the sun is still a full stop warmer than the
+//  midday key — but albedo hue survives the multiply, which is what puts the
+//  yellow and yellow-green bands back and lets the conifers stay green instead
+//  of arriving olive. Do not re-saturate these to chase "more golden": the gold
+//  belongs to the ground albedo, and every time it has been moved into the
+//  light instead, the whole frame has gone one colour.
 const KEYS = [
   { h: 0.0,  sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x5c6892, hemiGnd: 0x3a3c52, hemiI: 0.42,
     zen: 0x0d1226, hor: 0x1c2440, sunHor: 0x2e3050, glow: 0x2a3358, glowI: 0.12,
@@ -70,9 +100,9 @@ const KEYS = [
   // Cool dawn — long low light, pale horizon. Cool is a *relative* statement:
   // the zenith is the bluest of the day, but the haze itself stays peach, or
   // the frame measures out at a fifth of the reference's chroma.
-  { h: 7.4,  sun: 0xffbc80, sunI: 2.60, hemiSky: 0xb8bcd0, hemiGnd: 0xd0a482, hemiI: 1.14,
+  { h: 7.4,  sun: 0xffcc9c, sunI: 2.60, hemiSky: 0xb8bcd0, hemiGnd: 0xd0a482, hemiI: 1.14,
     zen: 0x76abdc, hor: 0xf4d4b4, sunHor: 0xffc794, glow: 0xffd4ab, glowI: 0.95,
-    fogNear: 0xe6ab7c, fogFar: 0xd2b4c4, fogSun: 0xffcc96, fogD: 0.0024,
+    fogNear: 0xe6b79c, fogFar: 0xd2b4c4, fogSun: 0xffcc96, fogD: 0.0024,
     cloudLit: 0xffe0c4, cloudDark: 0xa8968e, cover: 0.30 },
 
   { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xb6c0e4, hemiGnd: 0xdcb072, hemiI: 0.96,
@@ -85,23 +115,23 @@ const KEYS = [
     fogNear: 0xd8c3a0, fogFar: 0xccbac6, fogSun: 0xf8ecd8, fogD: 0.0015,
     cloudLit: 0xfffaf4, cloudDark: 0xbcb4a8, cover: 0.20 },
 
-  { h: 15.5, sun: 0xffe0b0, sunI: 3.25, hemiSky: 0xbfbede, hemiGnd: 0xd8ae76, hemiI: 1.00,
+  { h: 15.5, sun: 0xffe6c4, sunI: 3.25, hemiSky: 0xbfbede, hemiGnd: 0xd8ae76, hemiI: 1.00,
     zen: 0x9ec0e6, hor: 0xf2dcc8, sunHor: 0xf8dcbc, glow: 0xffe6bc, glowI: 0.80,
-    fogNear: 0xdcb488, fogFar: 0xd8c0cc, fogSun: 0xffdfb4, fogD: 0.0021,
+    fogNear: 0xdcb99c, fogFar: 0xd8c0cc, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xbcaa9a, cover: 0.20 },
 
   // The money frame: deep golden hour.
-  { h: 17.1, sun: 0xffbe72, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.98,
+  { h: 17.1, sun: 0xffd49c, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.98,
     zen: 0xa9c4e4, hor: 0xf2dac6, sunHor: 0xf8cd9c, glow: 0xffcf90, glowI: 1.00,
-    fogNear: 0xe0ac72, fogFar: 0xdcbcc8, fogSun: 0xffc98c, fogD: 0.0027,
+    fogNear: 0xe0b296, fogFar: 0xdcbcc8, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0xb49688, cover: 0.22 },
 
-  { h: 18.3, sun: 0xff9c52, sunI: 2.05, hemiSky: 0xb4a8cc, hemiGnd: 0xcc9060, hemiI: 1.16,
+  { h: 18.3, sun: 0xffb47e, sunI: 2.05, hemiSky: 0xb4a8cc, hemiGnd: 0xcc9060, hemiI: 1.16,
     zen: 0x5b83c2, hor: 0xf4d2b0, sunHor: 0xf8ac74, glow: 0xffae66, glowI: 1.20,
-    fogNear: 0xe2a266, fogFar: 0xdcb0b6, fogSun: 0xffa860, fogD: 0.0035,
+    fogNear: 0xe2a888, fogFar: 0xdcb0b6, fogSun: 0xffa860, fogD: 0.0035,
     cloudLit: 0xffcc9c, cloudDark: 0xa8867a, cover: 0.32 },
 
-  { h: 19.0, sun: 0xff8446, sunI: 1.50, hemiSky: 0xb49eac, hemiGnd: 0xb27a58, hemiI: 1.14,
+  { h: 19.0, sun: 0xff9a6a, sunI: 1.50, hemiSky: 0xb49eac, hemiGnd: 0xb27a58, hemiI: 1.14,
     zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
     fogNear: 0xd88a62, fogFar: 0xbe8c9c, fogSun: 0xff8a48, fogD: 0.0040,
     cloudLit: 0xffb078, cloudDark: 0x94706a, cover: 0.34 },
@@ -170,6 +200,9 @@ const FOG_DENSITY_SCALE = 0.64;
 // lit rock the vistas are made of.
 const AMBIENT_SCALE = 0.72;
 
+// Shadow normal offset, expressed in shadow-map texels. See _setShadowExtent().
+const SHADOW_NORMAL_BIAS_TEXELS = 5.5;
+
 // Pre-convert the table once; per-frame we only lerp.
 const BAKED = KEYS.map((k) => {
   const o = { h: k.h };
@@ -229,7 +262,16 @@ export class Lighting {
     // normal offset; a large normalBias is what produced the visible
     // peter-panning gap under ridgelines in the first pass.
     this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.35;
+    // normalBias is now derived from the shadow map's texel footprint rather
+    // than being a constant — see SHADOW_NORMAL_BIAS_TEXELS and
+    // _setShadowExtent(). A constant is wrong on both ends: 0.35 m is three
+    // texels at ultra and under two at medium, and the ground-cover author
+    // measured that anything small which both casts and receives was testing as
+    // shadowed by itself. Their proof was a fallen log forced to pure white
+    // albedo still rendering as a flat black band across the bottom of forest,
+    // with the same mesh lighting correctly the moment receive was turned off.
+    // Ground-hugging litter was worse: it sits inside the terrain's own bias
+    // envelope. See item 8 in docs/INTEGRATION_REQUESTS.md.
     // NOTE ON SOFTNESS — do not re-add shadow.radius or shadow.blurSamples here.
     //
     // They used to be set (3.5 / 10) alongside a forced PCF_SOFT below, and both
@@ -345,6 +387,22 @@ export class Lighting {
     c.left = -e; c.right = e; c.top = e; c.bottom = -e;
     c.updateProjectionMatrix();
     this.shadowExtent = e;
+    // Normal offset in *texels*, not metres. The quantity that decides whether
+    // a surface shadows itself is how far the PCF kernel reaches in world
+    // space, and that is one shadow texel — 0.107 m at ultra's 4096 map over a
+    // 220 m extent, but 0.43 m at low's 1024. A constant metre value is
+    // therefore simultaneously too large on the best preset (peter-panning
+    // under ridgelines, which is what the old comment was reacting to) and far
+    // too small on the worst.
+    //
+    // 5.5 texels. PCF_SOFT is a 2x2 bilinear-filtered kernel, so its penumbra
+    // is about 1.5 texels; a receiver needs to clear its own caster by that
+    // plus the depth-slope error, and small geometry has no depth slope to
+    // spare. Below ~4 texels the ground-cover archetypes still self-shadow;
+    // above ~7 the gap under a camper wheel becomes visible at 2 m. At ultra
+    // this is 0.59 m against the old 0.35.
+    this.sun.shadow.normalBias =
+      SHADOW_NORMAL_BIAS_TEXELS * (2 * e / this.preset.shadowMapSize);
   }
 
   /**

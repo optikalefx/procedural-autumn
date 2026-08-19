@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { acquire } from './_lock.mjs';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // POI ranking shifts whenever the terrain bake changes, so `--view meadow` can
 // frame a different place between runs and quietly invalidate a before/after
@@ -437,4 +438,11 @@ await acquire('shot');
   return results;
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+// Only run when invoked directly. Importing this module for its VIEWS table
+// used to fire a whole extra capture and sit on a semaphore slot — it cost one
+// author ~20 minutes of a blocked slot before they spotted it.
+const invokedDirectly = process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}
