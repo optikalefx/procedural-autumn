@@ -160,13 +160,13 @@ class GradeEffect extends Effect {
       blendFunction: BlendFunction.NORMAL,
       uniforms: new Map([
         ['uShadowTint',    new THREE.Uniform(new THREE.Vector3(0.93, 0.94, 1.12))],
-        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.08, 1.03, 0.88))],
+        ['uHighlightTint', new THREE.Uniform(new THREE.Vector3(1.14, 1.02, 0.83))],
         ['uSplitStrength', new THREE.Uniform(0.21)],
-        ['uSaturation',    new THREE.Uniform(0.86)],
-        ['uContrast',      new THREE.Uniform(1.30)],
-        ['uLift',          new THREE.Uniform(0.004)],
-        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.06, 1.01, 0.92))],
-        ['uVibrance',      new THREE.Uniform(0.10)],
+        ['uSaturation',    new THREE.Uniform(0.74)],
+        ['uContrast',      new THREE.Uniform(1.26)],
+        ['uLift',          new THREE.Uniform(0.034)],
+        ['uLiftTint',      new THREE.Uniform(new THREE.Vector3(1.14, 1.00, 0.88))],
+        ['uVibrance',      new THREE.Uniform(0.90)],
         ['uRedToGold',     new THREE.Uniform(0.125)],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
@@ -196,17 +196,24 @@ class GradeEffect extends Effect {
 // the whole reason `peaks` and `hero` read as pale tan with no form — it is the
 // shoulder eating the highlights, not the lighting failing to make them. The
 // bright end has to sit *under* the shoulder for form to survive it.
-// Measured against the reference plates rather than judged by eye. At 0.86 with
-// vibrance 0.90 the frame came out simultaneously too dark and too saturated —
-// lumaMean 0.34 against a reference band of 0.37-0.68, P95 0.60 against 0.87,
-// and chromaMean 0.39-0.49 against 0.28-0.42. Those two dials fight each other:
-// vibrance was compensating for the missing brightness by pushing chroma.
-// PBR Neutral desaturates as values approach white (its own `desaturation`
-// term). Pushing exposure until the *mean* luminance matched the plates drove
-// most of the meadow into that shoulder and bleached the gold out of it — the
-// frame measured correctly and looked like beige sand. Lower exposure with
-// higher saturation puts the gold back and keeps a real dark end.
-const EXPOSURE = 1.12;
+// Briefly raised to 1.12 to chase the plates' mean luminance. That was a
+// mis-calibration and it cost the look: the reference set is five plates, and
+// the wide hazy aerial (plate 1, lumaP05 0.161 / contrastStd 0.218) is the only
+// one framed like a vista. The three plates framed like the game — riverbank,
+// close-up, camper — measure lumaP05 0.195/0.393/0.424 and contrastStd
+// 0.134/0.180/0.142. They have heavily *lifted* blacks and soft contrast.
+// Averaging all five and anchoring on plate 1 pulled exposure up and the toe
+// lift down, which doubled the luminance range and turned every shaded shrub
+// into a black hole — the art director's "harsh contrast shadows".
+//
+// So: eye-level views target plates 3/4/5 — lumaP05 0.20-0.42, lumaRange
+// 0.41-0.53, contrastStd 0.13-0.18, chromaMean 0.30-0.42. Only hero/peaks/dawn
+// should approach plate 1. 0.86 with vibrance 0.90 is what lands there; the
+// frame reads darker than the plate-1 mean on purpose, because a high mean is
+// bought by pushing the meadow into PBR Neutral's shoulder, where its own
+// desaturation term bleaches the gold and the frame measures right but looks
+// like beige sand.
+const EXPOSURE = 0.86;
 
 export class PostFX {
   constructor(engine, quality = 'ultra') {

@@ -107,6 +107,21 @@ export function createRockMaterial() {
     //     gain 1.45 -> 0.88 of the meadow, still at the top of the band
     //     gain 1.36 -> 0.83, mid-band, and the distant crags stop reading pale
     uRockGain:   { value: 1.36 },
+    // Luminance floor, in scene-linear units, applied after the gain.
+    //
+    // The global cel-shading in Stylize.js floors the *direct* diffuse term, so
+    // nothing is unlit by facing away from the sun — but a surface inside a cast
+    // shadow is multiplied down after that floor, and a big shaded slab has no
+    // other light source in this rig. The water author measured one of them
+    // costing a frame 0.045 of lumaMean; it renders at 0.13 display against the
+    // brief's black point of 0.16-0.42. This lifts only pixels below the floor
+    // and leaves anything lit untouched. Calibrated by capture at the frozen
+    // `river` anchor, where a big backlit bank slab is the darkest rock in any
+    // canonical view: floor 0.030 moved it not at all (it already sat at 0.036
+    // scene-linear), floor 0.300 took it to 0.36 display — far too far — and
+    // 0.085 lands it at ~0.19, just inside the brief's band. A sunlit facet
+    // measures 0.54 scene-linear, so it is nowhere near this.
+    uRockFloorL: { value: 0.085 },
   };
   mat.userData.uniforms = uniforms;
 
@@ -170,7 +185,7 @@ export function createRockMaterial() {
     shader.fragmentShader = /* glsl */`
       uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
       uniform vec3 uSunDir, uShadowTint, uSunTint, uRockCast;
-      uniform float uAOStrength, uTime, uRockDesat, uRockGain;
+      uniform float uAOStrength, uTime, uRockDesat, uRockGain, uRockFloorL;
       varying vec3 vBake;
       varying vec4 vRockA;
       varying vec3 vRockB;
@@ -253,7 +268,12 @@ export function createRockMaterial() {
                   + tint * 0.07
                   - (1.0 - hN) * 0.08;        // bases sit a little darker
         vec3 rock = mix( uRockDeep, uRockLit, clamp( val, 0.0, 1.0 ) );
-        rock *= mix( 0.52, 1.0, ao );         // creases: multiplied, not tinted
+        // Creases: multiplied, not tinted. The floor was 0.52, which stacked
+        // with the contact band below to take a crease on a shaded face to a
+        // third of an already dark albedo — a big backlit riverside slab
+        // measured 0.13 display against the brief's lifted black point of
+        // 0.16-0.42, i.e. a hole in the picture rather than a dark object.
+        rock *= mix( 0.66, 1.0, ao );
 
         // A hint of the key light's warmth on sun-facing planes, and no more.
         // The reference rock is near-neutral even in full golden hour; pushing
@@ -311,7 +331,7 @@ export function createRockMaterial() {
         // centimetres and a crag block gets a couple of metres.
         float above = vWPos.y - vRockB.z;
         float contact = 1.0 - smoothstep( 0.0, 0.45 + size * 0.55, max( above, 0.0 ) );
-        rock *= mix( 1.0, 0.66, contact );
+        rock *= mix( 1.0, 0.76, contact );
 
         diffuseColor.rgb *= rock;
       }`)
@@ -344,6 +364,13 @@ export function createRockMaterial() {
         float rockL = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
         gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( rockL ) * uRockCast, uRockDesat );
         gl_FragColor.rgb *= uRockGain;
+
+        // Lifted black point (see uRockFloorL). Additive rather than a max() so
+        // the facet-to-facet steps survive inside the shadow instead of all
+        // clamping to one flat value, which would turn a shaded boulder into a
+        // silhouette — the failure the brief calls out as crushed blacks.
+        float litL = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+        gl_FragColor.rgb += uRockCast * max( 0.0, uRockFloorL - litL ) * 0.85;
       }
       #include <fog_fragment>`);
   };

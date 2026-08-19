@@ -792,7 +792,16 @@ export class RockScatter {
       // its relief.
       const planar = W.getSlope(x, z) * fr;
       const sag = Math.max(0, (centreH - ringMin) - planar);
-      minH = centreH - Math.min(sag * 1.35, size * 1.6);
+      // Capped hard, and in *metres* rather than as a fraction of the block.
+      // The drop used to be up to 1.6 block-widths, which on a ridge nose left
+      // only the top cap of a wall showing: a row of grey shards half sunk in a
+      // smooth slope, with no vertical face and no contact shadow, which is
+      // exactly what reads as "detached". Measuring the real error settled it —
+      // the drawn terrain is now within 3 m of the heightfield everywhere the
+      // crags sit (tools/probe.mjs raycast against the Terrain group at the
+      // `hero` and `peaks` framings: mean 0.0 m, worst 6.4 m at 800 m), so this
+      // only has to absorb a few metres, not tens.
+      minH = centreH - Math.min(sag * 0.7, 5.0);
     } else {
       // On a cliff the ring minimum is tens of metres down; following it all the
       // way would bury the block entirely and there would be no relief at all.

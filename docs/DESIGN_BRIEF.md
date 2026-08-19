@@ -321,3 +321,18 @@ are directly comparable across the whole history.
 
 The art director reviews these. Archive a round whenever your system visibly
 changes the game, not only when you finish.
+
+---
+
+## Appendix: unattended runs
+
+`shots/` grows ~20 MB per capture round per author and will fill the disk on a
+long unattended run. `review/` is the permanent record and is never touched.
+
+```bash
+node tools/prune.mjs            # keep the 3 newest rounds per author
+node tools/prune.mjs --keep 5
+```
+
+Prune before starting a long session, and archive anything you want to keep to
+`review/` first — that is what survives.
