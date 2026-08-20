@@ -3,7 +3,7 @@
 //  vistas, riverbanks, waterfall bases, forest interiors, peaks, meadows.
 //  Used by photo mode, the compass HUD, wildlife spawning and the capture rig.
 // ─────────────────────────────────────────────────────────────────────────────
-import { clamp01, smoothstep, mulberry32 } from '../core/MathUtils.js';
+import { clamp01, smoothstep, mulberry32, hash2i } from '../core/MathUtils.js';
 
 export class PointsOfInterest {
   constructor(world, seed = 20261018) {
@@ -212,13 +212,26 @@ export class PointsOfInterest {
           // came back standing in a conifer thicket with no ground and no
           // horizon in the frame.
           score: ahead * 0.06 - blocked * 0.40 - damp * 26 - moistHere * 90
-                 - W.getSlope(p.x, p.z) * 30 - (wet ? 400 : 0) + this.rng() * 3,
+                 - W.getSlope(p.x, p.z) * 30 - (wet ? 400 : 0)
+                 // Jitter from POSITION, not from a sequential draw. `this.rng()`
+                 // is deterministic only if candidates are always generated in
+                 // the same order, and they are not — two runs of the same
+                 // command against the same bake put the camera on two massifs
+                 // 1.4 km apart at headings 45 degrees different (P3). A draw
+                 // consumed in a different order gives every candidate a
+                 // different jitter and reorders the sort. Hashing the position
+                 // gives each candidate the same jitter no matter when it
+                 // arrives, which is what "deterministic anchor" has to mean.
+                 + hash2i(Math.round(p.x), Math.round(p.z)) * 3,
         });
       }
     }
 
     for (const k of Object.keys(this.list)) {
-      this.list[k].sort((a, b) => b.score - a.score);
+      // Tie-break on position so an exact score tie cannot depend on arrival
+      // order either. Array.prototype.sort is stable, which preserves input
+      // order for ties — and input order is precisely what is not stable here.
+      this.list[k].sort((a, b) => (b.score - a.score) || (a.x - b.x) || (a.z - b.z));
       this.list[k] = this._thin(this.list[k], k === 'road' ? 60 : 140, 40);
     }
   }
