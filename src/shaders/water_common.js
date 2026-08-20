@@ -61,10 +61,42 @@ vec3 wDesat(vec3 c, float amount){
 // A neutral pixel counts as a failure, not just a warm one. Shaded water in
 // plate 3 is a strong blue-violet; ours measured #4a4344 at chroma 0.027,
 // which is charcoal.
+//
+// RE-MEASURED against plate 3, in the units this function works in — cool =
+// (b - r) / luma, linear. The plate's river runs 1.74 in its far reach
+// (srgb #25405a), 1.90 mid-channel in shade (#2c4f71) and 2.38 in the lit
+// deep body (#2b5a8a). Ours measured **1.15** mid-channel in the river view
+// (#33364a), so the water was a little over half as separated as the target.
+//
+// The floor as written could never have caught that. 'want' was 0.34 of
+// uDeep's own blue-red separation, and uDeep's separation is 1.15 — so the
+// floor sat at 0.39 and the pixel sat at 1.15, three times above it. The
+// governor has never fired on flowing water in this build; every capture that
+// looked governed was governed by the tint chain instead.
+//
+// What it is measured against changed too, and that matters as much as the
+// number. The body colour the rest of the shader treats as the water's hue is
+// not uDeep: it is pow(absorb, uAbsorbPow), deepened for the reason given at
+// 'lit' because a warm key cancels straight absorption. Handing the governor
+// the shallow copy meant the two disagreed about what colour water is, and it
+// also cost the rotation its strength — wTint moves a pixel further per unit
+// amount when the tint it is given is further from neutral. Callers pass the
+// deepened form now, so separation runs 1.81 rather than 1.15 for uDeep and a
+// coefficient of 1.40 puts the floor at 2.5, which is plate 3's lit deep body
+// (2.38) with a little headroom for what the shared haze takes back out.
+//
+// Self-scaling, and that is what keeps it honest: the shallows pass in a pale
+// absorb whose separation is a third of uDeep's and are asked for a third as
+// much, which is why a shelf can stay the near-neutral #9c98ad the plate draws
+// while the deep water beside it is asked for a strong blue-violet. It is that
+// saturation *split*, not an average chroma, that reads as water.
+//
+// It stays a floor. Water already past it is untouched, and because the
+// rotation is one-shot the result lands short of 'want' rather than on it.
 vec3 wCoolGovern(vec3 c, vec3 absorb, float amount){
   float y = max(wLuma(c), 1e-4);
   float cool = (c.b - c.r) / y;
-  float want = max(absorb.b - absorb.r, 1e-3) * 0.34;
+  float want = max(absorb.b - absorb.r, 1e-3) * 1.40;
   float miss = clamp(1.0 - cool / want, 0.0, 1.0);
   return wTint(c, absorb, clamp(miss * amount, 0.0, 0.72));
 }

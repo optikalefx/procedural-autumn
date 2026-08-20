@@ -155,6 +155,39 @@ void main() {
   // construction and cannot pick this up.
   wetT *= smoothstep(-0.45, 0.10, vWet);
   alpha = max(alpha, wetT * 0.66);
+
+  // ── the perched-lake guard ───────────────────────────────────────────────
+  // A hard-edged blue wedge lies across a bare gorge wall in the 'waterfall'
+  // framing and across a ridge in 'peaks', with straight polygon edges and no
+  // ground contact anywhere. The comment on 'vWet' above claims that gate
+  // "stops a perched lake from painting itself down a cliff face". It does
+  // not, and it cannot: aWet is a property of the *mesh*, quantised to the
+  // 8 m lake grid, so a vertex on the rim of a perched basin carries a wet
+  // value from the cell it belongs to and the fragments interpolated off it
+  // inherit it all the way down the rock. Nothing in this shader ever asked
+  // the world whether there was water at the pixel.
+  //
+  // The river ribbon has had the equivalent guard for several rounds — see
+  // 'airborne' in water_river.js, written for a ribbon that kept going after
+  // its bed dropped out from under it. This is the same defect with a lake in
+  // it, and it went unnoticed for as long as it did because the water was a
+  // pale haze; a round that made the body properly blue made it loud.
+  //
+  // The honest signal is the bake. D.g is the baked water surface and it is
+  // the sentinel -9999 wherever the bake says there is no standing water. The
+  // data texture filters linearly, so that sentinel is blended across the
+  // boundary and anything still below about -40 is unambiguously *outside*
+  // any water body rather than merely near its edge.
+  float baked = smoothstep(-4000.0, -40.0, D.g);
+  // Both terms are needed. The mesh is deliberately dilated a ring past the
+  // baked water so the shoreline fade has geometry to finish inside, and that
+  // ring is legitimately outside the bake — but it lies within a fraction of
+  // a metre of the ground it covers, because that is what a shore is. Water
+  // painting itself down a rock face is metres above the rock. Gating on the
+  // bake alone would delete the dilation ring and take the whole antialiased
+  // shoreline and the damp band with it.
+  float perched = (1.0 - baked) * smoothstep(1.2, 3.5, depth);
+  alpha *= 1.0 - perched;
   // MEASURED — this widening was the one un-isolated perf suspect left in the
   // system, on the reasoning that the ring's fragments now clear the discard
   // below and run the full lake shader including a 24-step wEnvReflect. It is
@@ -236,6 +269,58 @@ void main() {
   vec3 V = normalize(cameraPosition - vWPos);
   if (!gl_FrontFacing) N = -N;
 
+  // ── the roughness mass ───────────────────────────────────────────────────
+  // One low-frequency field, stepped, and everything painterly below is driven
+  // off it: how pale the body is, how much sky the surface hands back, and how
+  // far past the shore the reflected cone reaches. One field rather than three,
+  // because in the plate a pale patch is pale in its body *and* bright in its
+  // reflection at the same time — a stretch of rougher, shallower water is one
+  // physical thing, not three coincidences. Three independent stepped fields
+  // multiply into a dozen levels and come back as mottling.
+  //
+  // Streaked, not blobbed. The plate's bright masses are long marks lying along
+  // the water, not isotropic patches — a rippled surface hands back sky in
+  // *bands* because the roughness that does it is combed by the wind. Sampling
+  // the mass anisotropically along the wind axis costs nothing and is most of
+  // what makes this read as water rather than as mottling.
+  //
+  // Stepped, because the shoulder is the read. Plate 3's bright sheets are flat
+  // hard-shouldered masses spanning luma 0.29 to 0.61 with a boundary you can
+  // put a finger on; run through a smooth ramp the same noise gives every value
+  // between the two in equal measure, which averages to the correct mean and
+  // looks like satin. The average was never the problem.
+  //
+  // A second octave, and it is not a refinement — without it this shader has no
+  // masses at all on most of the water in the game. MEASURED by rendering the
+  // field straight to the frame in the river view: the surface came back as one
+  // continuous blue-to-magenta ramp with no step in it, and the reason is scale,
+  // not band-limiting (the footprint there is under 0.6 m, so the quantiser is
+  // running at its narrowest). The broad term is 238 m along the wind by 53 m
+  // across it — sized for the open basin this shader was written for — and the
+  // channel it is now being asked to paint is fifteen metres wide, so a whole
+  // reach sits inside a third of one feature and the three levels have nowhere
+  // to change. The plate's masses are metres across, not hundreds.
+  //
+  // That matters because the lake surface draws far more than lakes now: the
+  // 'river' framing is standing water end to end, so this field has to hold up
+  // at channel scale and at basin scale from the same constants. 62 m by 14 m
+  // is a mass a river can carry two or three of.
+  //
+  // The fine octave is the one with features small enough to alias, so it fades
+  // out on the footprint and the sum is renormalised as it goes — the broad
+  // term keeps the same mean and range on its own once the fine one is gone,
+  // which is what stops a distant basin changing value as it recedes.
+  vec2 sdir = normalize(uWind + vec2(1e-4, 1e-4));
+  vec2 sperp = vec2(-sdir.y, sdir.x);
+  vec2 sq  = vec2(dot(p, sdir) * 0.0042, dot(p, sperp) * 0.019);
+  vec2 sq2 = vec2(dot(p, sdir) * 0.016, dot(p, sperp) * 0.072);
+  float sheenWide = mix(0.14, 0.5, smoothstep(0.9, 3.4, foot));
+  float fineAmt = 0.55 * (1.0 - smoothstep(1.2, 4.0, foot));
+  float massRaw = (wFbm2(sq + vec2(uTime * 0.004, 0.0))
+                 + wFbm2(sq2 + vec2(uTime * 0.013, 0.0)) * fineAmt)
+                / (1.0 + fineAmt) * 0.5 + 0.5;
+  float mass = wSteps(smoothstep(0.24, 0.76, massRaw), 3.0, sheenWide);
+
   // The ramp reaches further than it did. A shelf that darkens to full depth
   // colour inside four metres gives a lake two states — rim and body — and the
   // reference reads its water as a continuous gradient from a pale, almost
@@ -243,8 +328,9 @@ void main() {
   // stops contributing anything.
   // Painterly value structure: broad, slow, low-frequency masses rather than a
   // single flat tint. Large areas of near-uniform colour with soft boundaries
-  // is what makes the reference read as painted.
-  float band = wFbm2(p * 0.012 + vec2(uTime * 0.006, 0.0)) * 0.5 + 0.5;
+  // is what makes the reference read as painted. The field is the shared one
+  // computed above — it was a separate 83 m noise, which is the same
+  // one-feature-per-reach problem, and folding the two saves a wFbm2 as well.
   // The depth ramp is a *contour generator*: it is a smooth function of a
   // heightfield, so wherever the bed flattens out it draws its own isoline on
   // the water. Measured on this lake, a shelf came back as flat pale islands
@@ -252,7 +338,35 @@ void main() {
   // contour ribbons the terrain author had to break on land. Perturbing the
   // depth the ramp reads (not the depth anything else reads) with the broad
   // mass noise turns that boundary ragged for nothing.
-  float deepT = smoothstep(0.0, 7.0, depth + (band - 0.5) * 2.2);
+  // ...and the ramp is stepped, which is the whole difference between a shelf
+  // and a sandbar. Measured off plate 3: the pale mass inside its water runs
+  // #9c98ad at luma 0.61 against #2b5a8a at 0.33 for the deep body beside it —
+  // two masses, nearly a stop apart, with a boundary you can put a finger on.
+  // A continuous ramp cannot draw that however far it reaches; it draws the
+  // average of the two and a gradient where the edge should be, which is what
+  // every shelf in this map has looked like.
+  //
+  // The perturbation above stays and matters *more* here, not less. Quantising
+  // a smooth function of the bed turns the contour-generator problem from one
+  // isoline into three, so the depth the ramp reads is jittered by the broad
+  // mass noise before the quantiser sees it and the three boundaries come out
+  // ragged. The step width falls back to 0.5 — a plain linear ramp — as soon as
+  // a level is smaller than a pixel, so nothing here can band or crawl at
+  // range; a distant basin still gets the smooth gradient it had.
+  //
+  // The perturbation carries more than it used to, and that is the point
+  // rather than a side effect. The pale masses inside plate 3's water are
+  // shelves and bars: the *body* going pale where the bed is close, at
+  // #9c98ad against #2b5a8a — a factor of 1.9 in luma, and the brightest note
+  // in the water short of the waterline itself. Our carved channels have a
+  // smooth bed and therefore no bars at all, so on this map the ramp sits at
+  // one level down the whole reach and the mechanism that draws the plate's
+  // best feature never fires. Perturbing by 3.4 m against a 0-7 m ramp is what
+  // lets a two-metre channel hold a pale mass and a deep one; it is a
+  // stylisation, and it is the same one the plate is making, since a painter
+  // draws a bar where the picture wants a bar.
+  float shelfWide = mix(0.15, 0.5, smoothstep(1.2, 5.0, foot));
+  float deepT = wSteps(smoothstep(0.0, 7.0, depth + (massRaw - 0.5) * 3.4), 3.0, shelfWide);
   // ...and the shallow anchor is not a paint colour. It is what you see when
   // you can see the bed, and the bed here is gold meadow. Taken literally as
   // '#9dc4d8' it drew every sandbar in the map as a flat pastel cyan island —
@@ -267,7 +381,7 @@ void main() {
   // features seen through haze, and all they do there is mottle the surface
   // into pale swirls that look like scum on it — a distant lake wants to be
   // one flat mass of colour, which is what the reference plates do with it.
-  body *= 0.86 + 0.28 * band * (1.0 - 0.65 * far) + 0.16 * (fine - 0.5) * near;
+  body *= 0.86 + 0.28 * mass * (1.0 - 0.65 * far) + 0.16 * (fine - 0.5) * near;
   // Ankle-deep water over gold meadow is warm, not cyan. Letting the bed colour
   // through the shallows is what stops a flooded flat reading as a plastic
   // sheet laid over the ground.
@@ -312,7 +426,14 @@ void main() {
   // that does not amount to writing its own fog — the brief reserves that for
   // Atmosphere, and rightly.
   float absorbPow = uAbsorbPow * (1.0 + 0.42 * far);
-  vec3 lit = wTint(irr * bodyY, pow(absorb, vec3(absorbPow)), uAbsorb) * uBodyGain;
+  // Hoisted: the cool governor at the bottom of the shader has to be handed
+  // the same deepened hue this line tints with, or the two disagree about
+  // what colour the water is. See wCoolGovern.
+  vec3 absorbDeep = pow(absorb, vec3(absorbPow));
+  vec3 lit = wTint(irr * bodyY, absorbDeep, uAbsorb) * uBodyGain;
+
+  // The mass this rides on is computed above the body colour, because the
+  // depth ramp and the reflection both read it too — see the note there.
 
   // Near-mirror at grazing angles: this is the whole point of a lake.
   float fres = 0.020 + 0.980 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
@@ -358,8 +479,19 @@ void main() {
   // the honest answer is the sky, which is also the one that keeps a distant
   // basin the cool note in a hot valley.
   marchOn *= 1.0 - far * 0.78;
+  // How much of the cone reaches past the shore, decided by the roughness mass
+  // — see the long note at the river's copy of this, which is where it was
+  // measured. A lake looked at from its own bank is the same geometry as a
+  // river looked at from its own bank: the mirror direction points into the
+  // opposite shore across the entire surface, the march hands back hillside
+  // everywhere, and because that hillside is deliberately desaturated and
+  // darkened it lands within a few percent of the body colour in value. Mixing
+  // between two colours that close cannot produce a mass however it is
+  // weighted. A rough patch reflects a wider cone whose top clears the ridge,
+  // so roughness is what decides how much sky is in the answer.
+  float reach = marchOn * (0.30 + 0.70 * (1.0 - mass));
   vec3 envRaw = wSkyTilt(R);
-  if (marchOn > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), marchOn);
+  if (reach > 0.01) envRaw = mix(envRaw, wEnvReflect(vWPos, R), reach);
   // A reflection off the air/water interface is spectrally neutral: it is the
   // sky, not the water. Multiplying it by the body colour is what stopped every
   // lake in the game turning sepia at dawn with the rest of the world. Water
@@ -417,20 +549,21 @@ void main() {
   // a lake that reads as a paint-bucket fill however correct its average is.
   // The average was never the problem.
   //
-  // Streaked, not blobbed. The plate's bright masses are long marks lying along
-  // the water, not isotropic patches — a rippled surface hands back sky in
-  // *bands* because the roughness that does it is combed by the wind. Sampling
-  // the mass anisotropically along the wind axis costs nothing and is most of
-  // what makes this read as water rather than as mottling.
-  vec2 sdir = normalize(uWind + vec2(1e-4, 1e-4));
-  vec2 sperp = vec2(-sdir.y, sdir.x);
-  vec2 sq = vec2(dot(p, sdir) * 0.0042, dot(p, sperp) * 0.019);
-  float sheenMass = 0.14 + 0.86 * smoothstep(0.28, 0.72,
-                    wFbm2(sq + vec2(uTime * 0.004, 0.0)) * 0.5 + 0.5);
+  // The mass this rides on is computed above the reflection now, because the
+  // reflection reads it too — see the note there.
+  float sheenMass = 0.10 + 0.90 * mass;
   // Withdrawn in the shallows for the same reason the mirror is: a rim you can
   // see the bed through does not hand back a sheet of sky.
   float sheen = uSheen * sheenMass * smoothstep(0.10, 1.4, depth);
-  float mirror = clamp(max(fres * 0.90, sheen), 0.0, 0.88)
+  // The mass scales the Fresnel sheet too, not just the sheen floor beside it.
+  // Measured on the river capture and it applies here with more force: a lake
+  // is nearly always seen at a grazing angle from its own bank, fres runs into
+  // its ceiling across the whole surface, and max() then discards the sheen
+  // mass and every bit of value range it carries. Scaling by roughness rather
+  // than adding another dial — a combed lane hands back less of a grazing
+  // reflection than the glassy lane beside it, which is the banding plate 3
+  // draws on its water.
+  float mirror = clamp(max(fres * 0.90 * (0.36 + 0.64 * mass), sheen), 0.0, 0.88)
                * smoothstep(0.10, 1.2, depth);
   vec3 col = mix(lit, env, mirror);
 
@@ -449,7 +582,7 @@ void main() {
 
   // A thin lapping line where the water meets the ground. Measured in metres
   // from the shore, not in depth: a shallow shelf is not a beach.
-  float fn = wFbm3(p * 0.75 + vec2(uTime * 0.05, 0.0)) * 0.5 + 0.5;
+  float fn = wFbm3(p * 0.30 + vec2(uTime * 0.05, 0.0)) * 0.5 + 0.5;
   float bx = wBed(p + vec2(2.0, 0.0)) - wBed(p - vec2(2.0, 0.0));
   float bz = wBed(p + vec2(0.0, 2.0)) - wBed(p - vec2(0.0, 2.0));
   float slope = length(vec2(bx, bz)) * 0.25;
@@ -478,13 +611,43 @@ void main() {
   // margin of its river as a *bright* cream ribbon several metres wide along
   // most of its length, and the shelves this map is made of put nearly every
   // shoreline in the game on the floor rather than at the peak.
-  float lace = laceD * mix(0.42, 1.0, laceW);
+  // A second placement, in metres of water rather than in depth — see the long
+  // note in the river shader, the argument is the same one and this is the
+  // shore it fails on hardest. A lake dammed against a steep bank crosses the
+  // whole 1.5-36 cm depth window inside a few centimetres of ground, so the
+  // band existed and was narrower than a pixel. Still depth-anchored, so it
+  // cannot leave the alpha edge.
   // Broken twice, at two scales. One noise threshold turns the band into a
   // long soft smear with a couple of gaps in it; the reference draws its
   // waterline as a row of separate bright marks, and it takes a coarse noise
   // to place the marks and a finer one to give each of them an edge.
+  //
+  // The coarse one places them with wSteps now rather than with a smoothstep.
+  // Two soft ramps multiplied together are still a soft ramp: what came out was
+  // a band whose *strength* varied continuously along the shore, which reads as
+  // a line that fades in and out, not as separate marks with gaps between them.
+  // fn is stretched to a real 0..1 before quantising (raw fbm never leaves the
+  // middle third) and dropped from 1.3 m features to 3.3 m, because a scallop
+  // in plate 3 is metres long, not a hand's width. The fine noise keeps its
+  // job — an edge on each mark — but is faded on the footprint, which it never
+  // was: 0.34 m features are sub-pixel on any shore past a few dozen metres.
+  //
+  // And what the coarse mark drives is the band's *width*, for the reason set
+  // out at the river's copy of this: modulating opacity gives a line that
+  // pulses in brightness, modulating reach gives one that bulges and pinches,
+  // and only the second reads as a scallop. It is also what keeps the pack-ice
+  // failure away without rationing the peak — the band is allowed to be bright
+  // and several metres wide at a mark precisely because it closes to a
+  // hairline between them.
   float fn2 = wFbm2(p * 2.9 + vec2(uTime * 0.09, uTime * 0.04)) * 0.5 + 0.5;
-  float marks = smoothstep(0.36, 0.50, fn) * smoothstep(0.30, 0.46, fn2);
+  float laceWide = mix(0.11, 0.5, smoothstep(0.5, 2.4, foot));
+  float scallop = wSteps(smoothstep(0.30, 0.70, fn), 3.0, laceWide);
+  float edge = mix(1.0, smoothstep(0.30, 0.50, fn2), 1.0 - smoothstep(0.12, 0.45, foot));
+  float laceReach = max(1.1, foot * 1.6) * (0.12 + 1.25 * scallop);
+  float laceM = (1.0 - smoothstep(laceReach * 0.20, laceReach, distShore))
+              * smoothstep(0.012, 0.04 + 0.07 * laceScale, depth);
+  float lace = max(laceD * mix(0.42, 1.0, laceW) * (0.20 + 0.80 * scallop), laceM);
+  float marks = mix(0.55, 1.0, edge);
   // Far shorelines get a pale edge, not a white rope: the lace noise is
   // sub-pixel past a couple of hundred metres and averages to a solid band.
   float foam = lace * marks * mix(1.0, 0.45, smoothstep(140.0, 520.0, dist));
@@ -493,7 +656,21 @@ void main() {
   // The governor runs on the *body*, before the foam is laid over it. Foam is
   // near-neutral by construction, so a governor that treats neutral as a miss
   // would tint every whitecap in the game blue.
-  col = wCoolGovern(col, absorb, uCoolGain);
+  // ...and in proportion to how much of the pixel is body rather than mirror,
+  // for the reason set out at the river's call site: the floor is a statement
+  // about the water, and a reflected sky rotated toward the body hue comes back
+  // as bright saturated blue where plate 3 keeps its pale masses near-neutral.
+  //
+  // Half, not all of it, and the number was swept rather than argued. At a full
+  // withdrawal (1.0 - mirror * 0.85) the far half of the lake in the mouth
+  // framing measured 1:1.65:2.42; at 0.50 it measures 1:1.86:2.81 against plate
+  // 3's 1:2.11:3.23, and the near water, the shelves and the dawn frame all
+  // moved by less than one part in a hundred. The grazing far field is where a
+  // lake is almost all mirror and is exactly where it used to read as a pale
+  // neutral slab, so that is the arm of the sweep that had something to gain.
+  // The saturation split the gate exists to protect survives it — checked on
+  // the capture, the pale masses are still visibly the desaturated ones.
+  col = wCoolGovern(col, absorbDeep, uCoolGain * (1.0 - mirror * 0.50));
   vec3 foamCol = uFoam * wFoamLight(shadow) * 0.86;
   col = mix(col, foamCol, foam);
 
