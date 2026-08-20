@@ -2044,7 +2044,8 @@ export const COVER_ARCHETYPES = [
   //   leafScatter 22 m     0.8 s            44 / 61.6 m        2.5 / 3.8 s
   //   moss        26 m     1.1 s            45 / 60.8 m        2.5 / 3.8 s
   //   broadleaf   32 m     1.5 s            46 / 59.8 m        2.6 / 3.7 s
-  //   pebble      24 m     0.9 s            30 / 39 m          1.4 / 2.1 s
+  //   pebble      24 m     0.9 s            24 / 31 m          0.9 / 1.5 s
+  //     its anchor stone                        41 / 53 m          2.2 / 3.2 s
   //
   // MEASURED before shipping — `tools/_scratch/lodab.mjs`, both arms in one
   // page load, ABBA blocks, adaptive resolution frozen (a null A/B reads
@@ -2064,10 +2065,12 @@ export const COVER_ARCHETYPES = [
   //
   // `pebble` is the exception and it is deliberate. It is the most numerous
   // thing in the game and most of it is 3-10 cm grit, which is under a pixel
-  // past 25 m — so its base radius moves only to 30 m and the ANCHOR stone in
-  // each drift (20-50 cm, the piece the eye groups the drift around) carries
-  // `visMul: 1.7` at the emit site instead. Reach follows what can be
-  // resolved, not what the archetype is called.
+  // past 25 m — so its base radius does not move at all, and the ANCHOR stone
+  // in each drift (20-50 cm, the piece the eye groups the drift around)
+  // carries `visMul: 1.7` at the emit site instead. Reach follows what can be
+  // resolved, not what the archetype is called; buying reach for grit would
+  // have been the single most expensive line in this table and the only one
+  // the player could not see.
   //
   // ── the original note, which is still right about density ────────────────
   // Caps raised hard and radii pulled in, and the two move
@@ -2099,7 +2102,7 @@ export const COVER_ARCHETYPES = [
   // Stones keep the default: a pebble is a lump that intersects the surface
   // whatever it does, and one lying exactly parallel to a steep slope looks
   // stuck to it.
-  { key: 'pebble',      variants: 2, card: false, cap: 4400, vis: 30, visSpread: 1.30, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
+  { key: 'pebble',      variants: 2, card: false, cap: 4400, vis: 24, visSpread: 1.30, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
   { key: 'cobble',      variants: 2, card: false, cap: 1050, vis: 74, band: 2, recv: false, wind: 0.000, shadow: false, build: buildCobble },
   { key: 'leafScatter', variants: 2, card: true,  cap: 5200, vis: 44, visSpread: 1.40, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter, conform: 0.95 },
   { key: 'deadTuft',    variants: 2, card: true,  cap: 9600, vis: 46, visSpread: 1.40, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft, conform: 0.95 },

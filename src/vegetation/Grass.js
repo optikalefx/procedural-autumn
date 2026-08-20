@@ -57,11 +57,19 @@ const RINGS = [
   // that pops has a cliff in it.
   //
   // `tileSize` has to grow with it: the assert below only guarantees
-  // 2 x tileSize of coverage from a 4x4 grid, so a 45 m fadeOut needs 24 m
-  // tiles, which is what it has (46 m guaranteed, 1 m of margin).
-  // `maxBlades` scales with tile AREA
-  // (24/16)^2 = 2.25 to hold density; changing one without the other is a
-  // silent density change.
+  // 2 x tileSize of coverage from a 4x4 grid, so a 42 m fadeOut needs 22 m
+  // tiles, and `maxBlades` scales with tile AREA (22/16)^2 = 1.89 to hold the
+  // same 74 blades/m2. Changing one without the other is a silent density
+  // change.
+  //
+  // 22 and not 24, and the difference is worth stating because it is a real
+  // cost the fade window hides. Every blade in a visible tile runs the vertex
+  // shader whether or not the fade has collapsed it to zero area, and the tile
+  // cull is per TILE — so a coarser grid submits a wider skirt of blades that
+  // are already invisible. Going from 16 m to 24 m tiles put 0.93 M submitted
+  // triangles into the frame that draw nothing. 22 m is the smallest tile the
+  // 42 m fadeOut allows, and it costs 110,000 fewer allocated blades than 24
+  // for exactly the same picture.
   //
   // MEASURED, not reasoned about — `tools/_scratch/lodab.mjs`, both arms in one
   // page load, ABBA blocks, adaptive resolution frozen, `meadow` pose (a null
@@ -89,7 +97,7 @@ const RINGS = [
   // 0.044 m hair, and the ground coverage that loses is bought back with bend
   // and tuft splay in grass_scatter.js, which cost no instances at all.
   {
-    tileSize: 24, segments: 5, tipBias: 0.72, maxBlades: 42750, perClump: 26, clumpRadius: 0.48,
+    tileSize: 22, segments: 5, tipBias: 0.72, maxBlades: 35900, perClump: 26, clumpRadius: 0.48,
     // Height is the other half of the coverage trade, and the cheap half. An
     // arched blade's horizontal reach scales with its length, so 0.38 -> 0.44
     // buys back most of the ground the narrower blade stopped hiding, for no
@@ -98,7 +106,7 @@ const RINGS = [
     // inside the "ground cover, not a wheat crop" bound in grass_scatter.js:
     // typical stand goes ~0.34 m to ~0.39 m against a 2 m vehicle.
     width: 0.052, height: 0.44, salt: 0x1111, floor: 0.46,
-    fadeIn: [-20, -10], fadeOut: [20, 45], widthGain: 0.0, aoScale: 1.0,
+    fadeIn: [-20, -10], fadeOut: [20, 42], widthGain: 0.0, aoScale: 1.0,
   },
   // Mid ring: two rows still cannot carry a curl, but at 20–70 m the blade is a
   // few pixels wide and only its *lean* survives, so it gets the extra row that
@@ -111,7 +119,7 @@ const RINGS = [
   {
     tileSize: 40, segments: 3, tipBias: 0.78, maxBlades: 18500, perClump: 30, clumpRadius: 1.20,
     width: 0.115, height: 0.40, salt: 0x2222, floor: 0.40,
-    fadeIn: [18, 43], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
+    fadeIn: [18, 40], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
   },
   {
     tileSize: 96, segments: 1, maxBlades: 16000, perClump: 34, clumpRadius: 3.2,

@@ -140,9 +140,10 @@ export class GroundCover extends System {
     this._lastPack = new THREE.Vector3(1e9, 1e9, 1e9);
     this._lastCell = { x: 1e9, z: 1e9 };
     this._lastRefresh = new THREE.Vector3(1e9, 1e9, 1e9);
+    this._packT = -1e9;
     this._catchup = 0;
     this._dirty = true;
-    this.stats = { instances: 0, tris: 0, cells: 0, buildMs: 0, groundMs: 0 };
+    this.stats = { instances: 0, tris: 0, cells: 0, buildMs: 0, groundMs: 0, packMs: 0, packMaxMs: 0, packs: 0 };
   }
 
   async init() {
@@ -192,7 +193,14 @@ export class GroundCover extends System {
         mesh.userData.tris = g.userData.tris;
 
         this.group.add(mesh);
-        const slot = { mesh, geo: g, arch, ai, variant: v, index: this.meshes.length };
+        // Attribute arrays cached on the slot. `_repack` writes every drawn
+        // instance in one unbudgeted pass, and it used to reach them with five
+        // `getAttribute` lookups PER INSTANCE — at 26,000 instances that is
+        // 130,000 string lookups in the one frame of the round that can least
+        // afford them. Nothing about them changes after init.
+        const slot = { mesh, geo: g, arch, ai, variant: v, index: this.meshes.length,
+                       aColA: g.getAttribute('aColA'), aColB: g.getAttribute('aColB'),
+                       aCov: g.getAttribute('aCov'), aWindDir: g.getAttribute('aWindDir') };
         this.meshes.push(mesh);
         this.slots.push(slot);
         list.push(slot);
@@ -377,6 +385,13 @@ export class GroundCover extends System {
   // ── packing ────────────────────────────────────────────────────────────────
 
   _repack(cam) {
+    // A repack is the one piece of work in this system that is neither budgeted
+    // nor resumable: it walks every instance of every live cell and rewrites
+    // the matrix and five attributes of each one that passes. It runs on 12 m
+    // of camera travel, i.e. about once a second at driving speed, so if it
+    // costs more than a frame it does not show up in p50 at all — it shows up
+    // as a periodic hitch in p95, which is the number the player feels.
+    const tPack = performance.now();
     const counts = this._counts;
     counts.fill(0);
 
@@ -444,12 +459,11 @@ export class GroundCover extends System {
           m.compose(p, q, s);
           slot.mesh.setMatrixAt(idx, m);
 
-          const g = slot.geo;
-          const cA = g.getAttribute('aColA').array;
+          const cA = slot.aColA.array;
           cA[idx * 3] = data[i + 7]; cA[idx * 3 + 1] = data[i + 8]; cA[idx * 3 + 2] = data[i + 9];
-          const cB = g.getAttribute('aColB').array;
+          const cB = slot.aColB.array;
           cB[idx * 3] = data[i + 10]; cB[idx * 3 + 1] = data[i + 11]; cB[idx * 3 + 2] = data[i + 12];
-          const cv = g.getAttribute('aCov').array;
+          const cv = slot.aCov.array;
           cv[idx * 4] = data[i + 13];
           cv[idx * 4 + 1] = data[i + 14];
           cv[idx * 4 + 2] = data[i + 15];
@@ -457,7 +471,7 @@ export class GroundCover extends System {
           // World wind rotated into the instance's own frame, so a whole hillside
           // sways one way instead of each plant swaying along its own yaw.
           const cw = Math.cos(yaw), sw = Math.sin(yaw);
-          const wd = g.getAttribute('aWindDir').array;
+          const wd = slot.aWindDir.array;
           wd[idx * 2] = WIND_X * cw - WIND_Z * sw;
           wd[idx * 2 + 1] = WIND_X * sw + WIND_Z * cw;
 
@@ -479,16 +493,19 @@ export class GroundCover extends System {
         // `needsUpdate` re-uploads the unused tail as well, which measured
         // 15.6 MB of pointless bus traffic over a 30 s drive.
         upload(slot.mesh.instanceMatrix, n);
-        upload(slot.geo.getAttribute('aColA'), n);
-        upload(slot.geo.getAttribute('aColB'), n);
-        upload(slot.geo.getAttribute('aCov'), n);
-        upload(slot.geo.getAttribute('aWindDir'), n);
+        upload(slot.aColA, n);
+        upload(slot.aColB, n);
+        upload(slot.aCov, n);
+        upload(slot.aWindDir, n);
       }
     }
 
     this.stats.instances = total;
     this.stats.tris = tris | 0;
     this.stats.cells = this.cells.size;
+    this.stats.packMs = performance.now() - tPack;
+    this.stats.packs++;
+    if (this.stats.packMs > this.stats.packMaxMs) this.stats.packMaxMs = this.stats.packMs;
     this._lastPack.copy(cam);
     this._dirty = false;
   }
@@ -537,7 +554,26 @@ export class GroundCover extends System {
     if (this._catchup > 0) { this._buildCells(12); this._buildGround(10); this._catchup--; }
     else { this._buildCells(1.6); this._buildGround(1.6); }
 
-    if (this._dirty || moved > REPACK_MOVE) this._repack(cam);
+    // ── when to repack ──────────────────────────────────────────────────
+    // `_dirty` is set by EVERY completed cell and every completed substrate
+    // slice, and a repack is a full rewrite of every drawn instance — it is the
+    // one piece of work here that is neither budgeted nor resumable. While
+    // driving, cells complete several times a second, so the old condition ran
+    // a full repack several times a second as well. That was affordable at
+    // 7,000 instances (~4 ms) and is not at 26,000 (measured 12.2 ms max), and
+    // it lands as a periodic hitch in p95 rather than anywhere in p50.
+    //
+    // Nothing is lost by coalescing them. A cell that has just finished
+    // building is at least 84 m away for substrate and up to 300 m for the
+    // structural forms — several seconds of driving before any of it is inside
+    // its own visibility radius — so holding its instances back for a fifth of
+    // a second is invisible. Travel still forces a repack on its own schedule,
+    // and the first pack after a teleport is never delayed.
+    const now = performance.now();
+    if (moved > REPACK_MOVE || (this._dirty && now - this._packT > 200)) {
+      this._packT = now;
+      this._repack(cam);
+    }
     void dt;
   }
 

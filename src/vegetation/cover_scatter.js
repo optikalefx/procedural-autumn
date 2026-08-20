@@ -549,7 +549,18 @@ export class CoverScatter {
   static GROUND_SLICES = 4;
 
   /** Sites per slice, so the streamer can size its jobs without guessing. */
-  groundSites() { return Math.round(720 * this.mul); }
+  // 620, down from 720, and this is the near-field half of a trade rather than
+  // a saving. Reach and density both cost instances, but they do not cost the
+  // same instances: density is bought in the near field, where a prop is
+  // hundreds of pixels and overdraw is the whole frame cost, and reach is
+  // bought in an annulus where each prop is a handful of pixels. So the
+  // cheapest way to pay for a substrate that now reaches 44-64 m is to thin the
+  // one that sits under the bumper — 14% fewer clumps at 0-20 m, against
+  // roughly three times as much of it visible overall. The layer still answers
+  // the blocker it was written for (65% of the 2 m road close-up was a smooth
+  // untextured slab); it answers it with 620 clumps instead of 720, and it now
+  // answers it out to where the player is looking as well.
+  groundSites() { return Math.round(620 * this.mul); }
 
   /**
    * @param {number} band 0 = closest (everything) … 3 = far (big shapes only)
