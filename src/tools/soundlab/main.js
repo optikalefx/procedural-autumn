@@ -120,11 +120,16 @@ function valsFor(sound) {
 
 function select(id, force = false) {
   const s = byId(id);
-  if (!s || (s === state.sound && !force)) {
-    if (s !== state.sound) return;
-  }
+  if (!s) return;
+  if (s === state.sound && !force && state.rig.audio) return;
   stop();
+  // The master chain is downstream of everything, so it is one setting, not one
+  // per sound. Values live in each sound's `vals` (that is what the config
+  // emitter reads) but they are carried across a switch: turning the volume
+  // down and picking a different sound should not turn it back up.
+  const prev = state.sound ? valsFor(state.sound) : null;
   state.sound = s;
+  if (prev) for (const p of MASTER_PARAMS) valsFor(s)[p.key] = prev[p.key];
   $('#soundSelect').value = id;
   $('#blurb').textContent = s.blurb;
   $('#moduleName').textContent = s.module;
@@ -202,7 +207,9 @@ function renderParams() {
     host.appendChild(sec);
   }
 
-  const needs = [...(s.needs ?? []), ...(s.id.startsWith('master') ? MASTER_NEEDS : [])];
+  // The master chain is on every sound's panel, so its unreachable constants
+  // belong on every sound's list too.
+  const needs = [...(s.needs ?? []), ...MASTER_NEEDS];
   const nbox = $('#needs');
   nbox.textContent = '';
   if (needs.length) {
@@ -218,6 +225,7 @@ function renderParams() {
 
 function control(p, v) {
   const row = el('div', `row ${p.kind}`);
+  row.dataset.key = p.key;
   const lab = el('label', 'lab');
   lab.appendChild(el('span', 'name', p.label));
   if (p.unit) lab.appendChild(el('span', 'unit', p.unit));
@@ -296,10 +304,8 @@ function setVal(p, x) {
   }
   renderJson();
   // Highlight anything that no longer sits on its default.
-  for (const row of $('#params').querySelectorAll('.row')) {
-    const name = row.querySelector('.name')?.textContent;
-    if (name === p.label) row.classList.toggle('changed', x !== p.def);
-  }
+  const row = $('#params').querySelector(`.row[data-key="${p.key}"]`);
+  row?.classList.toggle('changed', x !== p.def);
 }
 
 function applyAll() {
@@ -508,15 +514,17 @@ function buildConfig() {
   const s = state.sound;
   const v = valsFor(s);
   const conditions = {}, params = {}, master = {};
-  const needs = [];
+  const sites = {}, needs = [];
 
   for (const p of s.params) {
     if (p.type === 'readout') continue;
     if (v[p.key] === p.def) continue;
     (p.kind === 'condition' ? conditions : params)[p.key] = v[p.key];
-    if (p.needs || p.src) {
-      needs.push(`${p.key}: ${p.needs ? `${p.src ?? ''} — ${p.needs}` : p.src}`);
-    }
+    // Where the value lives in the code, so it can be pasted back without a
+    // search — and, separately, whether it can be reached from this page at
+    // all. A `src` is not a complaint; only a `needs` is.
+    if (p.src) sites[p.key] = p.src;
+    if (p.needs) needs.push(`${p.key}: ${p.src ?? '?'} — ${p.needs}`);
   }
   for (const p of MASTER_PARAMS) {
     if (v[p.key] !== p.def) master[p.key] = v[p.key];
@@ -542,6 +550,9 @@ function buildConfig() {
   }
 
   const st = state.meter?.stats;
+  // `-inf` is a real reading, but it is not a number JSON can carry; null says
+  // "measured, and it was silence" rather than quietly becoming 0.
+  const num = (x, d = 1) => (Number.isFinite(x) ? +x.toFixed(d) : null);
   const cfg = {
     tool: 'procedural-autumn/soundlab',
     sound: s.id,
@@ -552,18 +563,19 @@ function buildConfig() {
   if (Object.keys(params).length) cfg.params = params;
   if (Object.keys(layers).length) cfg.layers = layers;
   if (Object.keys(master).length) cfg.master = master;
+  if (Object.keys(sites).length) cfg.sites = sites;
   if (st && Number.isFinite(st.rms)) {
     cfg.measured = {
       bus: state.meter.bus,
-      rms: +fmtDb(st.rms),
-      peak: +fmtDb(st.hold),
-      dBA: +fmtDb(st.dBA),
-      tilt: +fmtDb(st.tilt),
-      bitePct: +st.bite.toFixed(1),
-      centroidHz: +st.centroid.toFixed(0),
-      floor: +fmtDb(st.floor),
-      p50: +fmtDb(st.p50),
-      windowSeconds: +(st.samples / 60).toFixed(1),
+      rms: num(st.rms),
+      peak: num(st.hold),
+      dBA: num(st.dBA),
+      tilt: num(st.tilt),
+      bitePct: num(st.bite),
+      centroidHz: num(st.centroid, 0),
+      floor: num(st.floor),
+      p50: num(st.p50),
+      windowSeconds: num(st.samples / 60),
     };
   }
   if (needs.length) cfg.needsExposing = needs;
