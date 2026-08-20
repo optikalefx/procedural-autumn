@@ -44,6 +44,10 @@ const FOG_PARS = /* glsl */`
   uniform float uCloudScale;       // world metres -> uv
   uniform float uCloudAltitude;
   uniform vec2  uCloudOffset;
+  uniform vec3  uCloudShadowTint; // per-channel gain inside the shadow
+  uniform float uCloudSoftLo;     // coverage where the shadow starts
+  uniform float uCloudSoftHi;     // coverage where it reaches full strength
+  uniform float uCloudScale2;     // second tap's scale, relative to the first
   varying vec3  vFogWorldPos;
   varying vec3  vFogCamPos;
 #endif`;
@@ -126,11 +130,24 @@ const FOG_FRAG = /* glsl */`
     float sy = max(uFogSunDir.y, 0.16);
     float climb = clamp((uCloudAltitude - vFogWorldPos.y) / sy, 0.0, 4200.0);
     vec2 cuv = (vFogWorldPos.xz + uFogSunDir.xz * climb) * uCloudScale + uCloudOffset;
-    float cov = texture2D(uCloudMap, cuv).r;
+    // TWO TAPS, UNIONED — see the cloudScale2 note in DEFAULTS. The baked
+    // silhouette covers about a sixth of the world, which at eye level means
+    // the ground has no shadow in it far more often than it has one. A second
+    // tap of the same map at a different scale and phase raises that to about a
+    // third and, because max() of two soft fields is a soft field, it makes the
+    // patches bigger and less regular rather than more numerous.
+    vec2 cuv2 = mat2(0.8, 0.6, -0.6, 0.8) * cuv * uCloudScale2 + vec2(0.421, 0.137);
+    float cov = max(texture2D(uCloudMap, cuv).r, texture2D(uCloudMap, cuv2).r);
     // Soft, wide edges: a hard-edged cloud shadow at this scale reads as a
     // texture crawling over the ground rather than as weather.
-    float shade = 1.0 - uCloudShadow * cloudFade * smoothstep(0.38, 0.90, cov);
-    gl_FragColor.rgb *= shade;
+    float m = uCloudShadow * cloudFade * smoothstep(uCloudSoftLo, uCloudSoftHi, cov);
+    // Per-channel absorption, not a grey multiply. uCloudShadowTint is how much
+    // of 'm' each channel pays; vec3(1.0) is the old neutral darkening. Biasing
+    // it toward blue takes the shadowed gold meadow to a deeper amber-brown
+    // instead of a darker grey-gold, which is the hue the player asked for and
+    // the hue plates 2 and 3 actually put under their big ground masses. The
+    // triple is authored at luma 1.0 so hue and depth stay independent knobs.
+    gl_FragColor.rgb *= max(vec3(0.0), vec3(1.0) - m * uCloudShadowTint);
   }
 
   // ── Mie inscattering: the haze glows around the sun ─────────────────────
@@ -279,6 +296,147 @@ const DEFAULTS = {
   cloudShadow: 0.0,
   cloudScale: 1 / 2600,
   cloudAltitude: 900.0,
+  // ── THE LARGE SOFT WARM GROUND MASS (docs/INTEGRATION_REQUESTS.md X2) ─────
+  //
+  // Rounds 035-040 had a broad soft mass sweeping across the meadow in the
+  // `drive` frame; 048 had none, and the blind A/B lost 8-18 to its own history
+  // largely on that. Two literal readings of two legitimate player notes took
+  // it out: Stylize.shadowCoolAmt 1.0 -> 0.30 (they asked for a warmer mass and
+  // got no mass) and Clouds.COVER_BIAS 0.745 -> 0.950 (they asked for a calmer
+  // sky and lost the ground patches with it). Neither is being reverted. The
+  // mass comes back here, and the reason it has to come back *here* was
+  // measured rather than assumed:
+  //
+  //   · The 035/040 mass was NOT bigger than today's cast shadows. Cropped and
+  //     compared tile against tile, the shadow shapes on the meadow are the same
+  //     shapes. What made them read was that they were a different HUE from the
+  //     ground — royal blue at 035, mauve at 040. Today they are gold shadows on
+  //     gold ground, so they read as texture and not as a shape.
+  //   · Giving them a warm hue from Stylize does almost nothing, and this is
+  //     worth recording because it is the obvious first move. Swept on `drive`
+  //     with shadowCool re-authored warm (linear 1.42/0.92/0.36, srgb ratio
+  //     1:0.82:0.55, a light brown) at amt 0.75 / lift 0.84 / keep 0.30, three
+  //     ground rects inside a cast shadow moved srgb(180,143,65) ->
+  //     srgb(177,144,63), srgb(166,132,58) -> srgb(166,133,57), srgb(184,144,64)
+  //     -> srgb(186,147,65). That is nothing. stylizeShadowCool() runs at
+  //     lights_fragment_end, and grass then ADDS its translucency, sky fill,
+  //     wrapped diffuse and sheen on top of it in its tonemapping hook — so on
+  //     an eye-level meadow, where most ground pixels are blades, the tint is
+  //     applied to a minority of the final pixel. Ground cover and the tree
+  //     canopy are the same story. That is the structural cap a predecessor
+  //     recorded in Stylize and it is still real; it is filed as L3.
+  //   · The sun's own shadow map cannot be widened either: it is 150-200 m of
+  //     extent at eye level and the vehicle author proved (W1) that growing it
+  //     deletes every contact shadow in the frame.
+  //
+  // The fog chunk is the one hook that reaches every material in the game --
+  // terrain, grass, cover, canopy, rock, water -- after all of them have
+  // finished shading. So the large mass is a cloud shadow, which is also what
+  // the reference plates' large ground masses actually are.
+  //
+  // All of the knobs below are Atmosphere-side and multiply what Clouds hands
+  // setCloudShadow(), so the cloud deck itself -- coverage, tile, strength --
+  // is untouched and the calmer sky the player asked for stays exactly as it
+  // is. Only its shadow on the ground changes.
+
+  // Gain on the strength Clouds supplies. Clouds rewrites params.cloudShadow
+  // every frame from its own sun-elevation ramp, so a constant here is the only
+  // place a look author can scale the term without editing the sky.
+  //
+  // 0.85, and this is a REDUCTION in per-pixel depth, deliberately. Clouds
+  // supplies 0.42 at full sun, so a fully shadowed pixel today is multiplied by
+  // 0.58. The critic's target, measured off the one reference cast shadow that
+  // falls on gold, is 0.64 of the lit luma. At this gain the shadowed meadow
+  // lands at 0.645 (see the tint note for the arithmetic). The brief is
+  // explicit that this change is about area and shape and must not raise
+  // contrast; the area comes from cloudScale2 and cloudSoftHi below, and the
+  // depth goes slightly the other way.
+  cloudShadowGain: 0.85,
+  // Multiplier on the uv scale Clouds supplies (it passes 1/7000). Above 1 the
+  // tile shrinks in world space and the patches get smaller and more frequent.
+  //
+  // 3.0, i.e. the patches get SMALLER, which is the opposite of the guess in the
+  // request, and it was measured rather than argued (tools/_scratch/cloudframe.mjs
+  // walks the 200 m ground fan an eye-level camera actually sees, at 600 world
+  // positions, and bins the shadowed fraction):
+  //
+  //   mul   tile     no shadow   an edge in frame   whole frame shaded
+  //   1.0   7000 m      76%            13%                12%
+  //   2.2   3182 m      63%            18%                20%
+  //   3.0   2333 m      60%            22%                18%
+  //   5.5   1273 m      54%            36%                10%
+  //
+  // Coverage is a fixed fraction of the world, so patch size only trades
+  // against how often a patch is near the eye. At 7000 m the features are
+  // ~2.3 km across, which from a 4 m camera is either the whole visible meadow
+  // or none of it. Not taken past 3.0: below a ~2 km tile the wrap starts to be
+  // a thing you could learn while driving, and the fog-chunk note above this
+  // block is right that a legible repeat is the one thing this term must never
+  // become. The remaining 60% is the honest limit of a cloud silhouette and is
+  // filed as L4 — the ground shadow is baked at the same threshold as the deck,
+  // so the only way to raise coverage further without putting clouds back in
+  // the sky is to bake it separately, which is Clouds' file and not this one.
+  cloudScaleMul: 3.0,
+  // Scale of the second tap relative to the first, applied after a rotation so
+  // the two taps are decorrelated rather than a resampling of the same blobs.
+  // The union is what buys the area, and the area is X2's cleanest number:
+  // shadow area in the ground region fell from 21.0% at round 040 to 10.9% now.
+  // Measured over the tile (tools/_scratch/cloudmask.mjs):
+  //
+  //   one tap, ship window 0.38/0.90     9.3%
+  //   one tap, window 0.38/0.62         14.2%
+  //   two taps, window 0.38/0.90        14.7%
+  //   two taps, window 0.38/0.62        21.1%   <- round 040
+  //   three taps, window 0.38/0.62      29.9%
+  //
+  // Two taps and the narrower window land on 040 to within a tenth of a point.
+  // The third tap is not taken: it costs a third texture fetch on every fogged
+  // fragment in the game and overshoots the target.
+  cloudScale2: 0.57,
+  // Per-channel absorption inside the shadow, at luma 1.0 so it is a hue knob
+  // and not a second depth knob. vec3(1,1,1) is the old neutral multiply.
+  //
+  // The player, of the mass this replaces: "adjust the colour of the 'gray'
+  // ground ... it would be more cozy if that was a soft yellow or a light
+  // brown". Two independent measurements say the same thing about HOW:
+  //
+  //   · plate 5's lit orange field is srgb(255,186,108), ratio 1:0.73:0.42, and
+  //     the shadowed field under the birch is srgb(209,148,87), ratio 1:0.71:
+  //     0.42 -- the same hue at 0.82x the value. Not a hue rotation.
+  //   · the critic's measurement of plate 1's cast shadow on gold: 0.64 of the
+  //     lit luma, red-to-green held (0.68 -> 0.70), BLUE down 17%. Ours pulled
+  //     green and held blue, which is the axis that desaturates as it darkens
+  //     and is exactly how a gold meadow arrives grey.
+  //
+  // So: hold red and green together, take the darkening out of blue. At the
+  // shipping gain (m = 0.42 * 0.85 = 0.357) a fully shadowed pixel is
+  // multiplied by (0.654, 0.654, 0.536): red-to-green held exactly, blue 18%
+  // down on the other two, luma 0.645 of lit. That is the critic's target on
+  // all three axes.
+  //
+  // It cannot produce grey at any strength or any hour, and that is structural
+  // rather than a tuning claim: every channel gain is positive, red and green
+  // are attenuated identically and least, so a pixel can only move along its
+  // own hue toward umber. There is no setting of this triple that walks gold
+  // through neutral, which is what the cool target in Stylize could do and did.
+  cloudShadowTint: new THREE.Vector3(0.97, 0.97, 1.30),
+  // The window the baked silhouette ramps across, and it is not free to choose:
+  // Clouds.buildShadowTexture writes 0.38 + 0.52 * h, so 0.38 is "no cloud" and
+  // 0.90 is "solid cloud". Setting the low end below 0.38 does not soften the
+  // edge, it applies a fraction of the shadow to the entire world -- an
+  // exposure change wearing a shadow's clothes, and the first thing I tried.
+  // The edge softness comes from the bake ramp and the texel footprint (9.6 m
+  // at a 512 map and this scale), not from here.
+  //
+  // The high end is 0.62 rather than 0.90 and that is the other half of the
+  // area: the baked map is mostly penumbra (84% of texels sit at the 0.38
+  // floor, and of the rest only a fifth reach 0.90), so mapping the ramp onto
+  // the full 0.38-0.90 range spends most of the shadow's own body at partial
+  // strength. Landing full strength at 0.62 turns a wide dim smudge into a
+  // mass with a soft edge, which is the shape difference between round 040 and
+  // now, and it costs no depth because the depth is set by the gain.
+  cloudSoftLo: 0.38,
+  cloudSoftHi: 0.62,
 };
 
 let patched = false;
@@ -322,6 +480,10 @@ export function patchFogChunks() {
     uCloudScale:       { value: DEFAULTS.cloudScale },
     uCloudAltitude:    { value: DEFAULTS.cloudAltitude },
     uCloudOffset:      { value: new THREE.Vector2() },
+    uCloudShadowTint:  { value: DEFAULTS.cloudShadowTint.clone() },
+    uCloudSoftLo:      { value: DEFAULTS.cloudSoftLo },
+    uCloudSoftHi:      { value: DEFAULTS.cloudSoftHi },
+    uCloudScale2:      { value: DEFAULTS.cloudScale2 },
   });
   verifyUniforms('Atmosphere', ['uFogDensity', 'uFogFarColor', 'uFogSunDir', 'uCloudMap']);
 }
@@ -348,6 +510,7 @@ export class Atmosphere {
       sunColor: PALETTE.sunDisc.clone(),
       cloudMap: sharedCloudMap,
       cloudOffset: new THREE.Vector2(),
+      cloudShadowTint: DEFAULTS.cloudShadowTint.clone(),
     };
     this._materials = new Set();
   }
@@ -413,11 +576,23 @@ export class Atmosphere {
       if (u.uFogInscatterMax) u.uFogInscatterMax.value = p.inscatterMax;
       if (u.uFogDesat) u.uFogDesat.value = p.desat;
       if (u.uCloudShadow) {
-        u.uCloudShadow.value = p.cloudShadow;
-        u.uCloudScale.value = p.cloudScale;
+        // The gain and the scale multiplier are applied here rather than folded
+        // into params, because Clouds rewrites params.cloudShadow every frame
+        // and re-supplies params.cloudScale on every init. Applying them at
+        // upload keeps this file's look decisions out of the sky's data flow.
+        u.uCloudShadow.value = p.cloudShadow * p.cloudShadowGain;
+        u.uCloudScale.value = p.cloudScale * p.cloudScaleMul;
         u.uCloudAltitude.value = p.cloudAltitude;
-        u.uCloudOffset.value.copy(p.cloudOffset);
+        // Offset scales with it too, or the patches would drift across the
+        // ground at wind speed divided by cloudScaleMul.
+        u.uCloudOffset.value.copy(p.cloudOffset).multiplyScalar(p.cloudScaleMul);
         if (u.uCloudMap.value !== p.cloudMap) u.uCloudMap.value = p.cloudMap;
+        if (u.uCloudShadowTint) {
+          u.uCloudShadowTint.value.copy(p.cloudShadowTint);
+          u.uCloudSoftLo.value = p.cloudSoftLo;
+          u.uCloudSoftHi.value = p.cloudSoftHi;
+          u.uCloudScale2.value = p.cloudScale2;
+        }
       }
       if (u.fogColor) u.fogColor.value.copy(p.nearColor);
     }
