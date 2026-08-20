@@ -39,14 +39,29 @@ export class Soundtrack {
     this.src = null;
     this.failed = false;
 
+    // Separate from the fade so ducking and fading cannot fight each other —
+    // but *in series with it*, which it was not. `out` connected straight to
+    // the bus and also to `duck`, and `duck` connected to nothing, so the bed
+    // reached the mix around the ducking stage and the duck node was a dead
+    // end. Proved rather than read (tools/_scratch/musicbalance.mjs): forcing
+    // duck.gain to zero with the bed playing moved the music bus by 0.0 dB.
+    // The bed has never once ducked under a generative phrase.
     this.out = gain(actx, 0);
-    this.out.connect(bus);
-
-    // Separate from the fade so ducking and fading cannot fight each other.
     this.duck = gain(actx, 1);
-    this.out.connect(this.duck);
+    this.out.connect(this.duck).connect(bus);
 
-    this.level = 0.46;          // deliberately under the ambience bed
+    // 0.21, not 0.46. The old value carried the comment "deliberately under the
+    // ambience bed", and it was — but only because the ambience bed was running
+    // about seven times its own model at the time, from the LFO bug fixed in
+    // the ambience pass. This number was levelled against that bug. Measured
+    // afterwards, the bed sat 16 dB over the world and a parked moment was
+    // music with a valley faintly behind it.
+    //
+    // Not the full 11 dB the world came down. The player asked for a quiet
+    // valley, not a quieter game, so the world sitting lower than the music is
+    // correct and stays; this only closes the gap far enough that the bed is
+    // something you hear the valley through rather than instead of.
+    this.level = 0.21;
     this.playing = false;
     this._t = 0;
     this._until = 20 + Math.random() * 25;   // do not open the game with music
@@ -119,8 +134,13 @@ export class Soundtrack {
       }
     }
 
-    // Duck under a generative phrase so the two never compete.
-    const want = musicActive ? 0.35 : 1;
+    // Duck under a generative phrase so the two never compete. 0.6, not 0.35:
+    // now that the node is actually in the signal path and the bed is 7 dB
+    // lower than it was, a 9 dB duck would put the bed under the ambience for
+    // the length of every phrase — which is a hole, not a duck. 4.4 dB is
+    // enough to open a space for the phrase and still leave the bed audible
+    // underneath it.
+    const want = musicActive ? 0.6 : 1;
     const g = this.duck.gain;
     const now = this.actx.currentTime;
     g.cancelScheduledValues(now);
