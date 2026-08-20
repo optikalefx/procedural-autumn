@@ -14,7 +14,8 @@
  * "is this good", and it is only honest if the judge cannot see the labels.
  */
 import { readdirSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { acquire } from './_lock.mjs';
+import { join, basename, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const argv = process.argv.slice(2);
@@ -61,7 +62,45 @@ for (const f of shared) {
 }
 
 writeFileSync(join(OUT, 'KEY.json'), JSON.stringify(key, null, 2));
+
+// ── stitched pairs ───────────────────────────────────────────────────────────
+// Two separate files make the judge hold one frame in memory while looking at
+// the other, and memory is exactly what normalises a defect. Butting them
+// against a shared edge turns "is this better" into a difference the eye finds
+// on its own — a value step across the seam, a shoreline that lines up on one
+// side and stairsteps on the other. Same pixels, same scale, no labels but
+// LEFT and RIGHT.
+if (has('stitch')) {
+  const { chromium } = await import('playwright');
+  const W = parseInt(arg('stitch-width', '1500'), 10);   // per panel
+  await acquire('ab-stitch');
+  const browser = await chromium.launch();
+  for (const f of shared) {
+    const view = basename(f, '.png');
+    const enc = (side) =>
+      readFileSync(join(OUT, `${view}-${side}.png`)).toString('base64');
+    const html = `<!doctype html><meta charset="utf-8"><style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{background:#0c0a10;font:12px ui-monospace,Menlo,monospace}
+      .pair{display:flex;gap:4px}
+      figure{position:relative;flex:0 0 ${W}px}
+      img{display:block;width:${W}px;height:auto}
+      figcaption{position:absolute;left:0;top:0;padding:5px 12px;background:#000c;
+        color:#ffd9a8;letter-spacing:.22em;font-size:13px}
+    </style><div class="pair">
+      <figure><img src="data:image/png;base64,${enc('left')}"><figcaption>LEFT</figcaption></figure>
+      <figure><img src="data:image/png;base64,${enc('right')}"><figcaption>RIGHT</figcaption></figure>
+    </div>`;
+    const page = await browser.newPage({ viewport: { width: W * 2 + 4, height: 200 }, deviceScaleFactor: 1 });
+    await page.setContent(html, { waitUntil: 'load' });
+    await page.screenshot({ path: resolve(join(OUT, `${view}-PAIR.png`)), fullPage: true });
+    await page.close();
+  }
+  await browser.close();
+  console.log(`stitched ${shared.length} pair(s): ${OUT}/<view>-PAIR.png`);
+}
+
 console.log(`paired ${shared.length} view(s) into ${OUT}`);
 console.log('views:', shared.map((f) => basename(f, '.png')).join(', '));
-console.log('Judge the -left / -right images WITHOUT reading KEY.json.');
+console.log('Judge the -PAIR (or -left / -right) images WITHOUT reading KEY.json.');
 console.log(`Reveal with: node tools/ab.mjs --out ${OUT} --reveal`);

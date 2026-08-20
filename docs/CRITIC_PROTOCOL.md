@@ -11,10 +11,17 @@ The bar is a shipping first-party Nintendo cozy title. Compare against
 1. **Capture.** `node tools/shot.mjs --all --dir shots/<round>`
    Always at `--w 1600 --h 900` or larger.
 2. **Look.** Read each PNG. Then read the reference plates in `reference-art/`.
-3. **Blind A/B.** `node tools/ab.mjs --a shots/<prev> --b shots/<round> --out shots/ab-<n>`
-   Judge `-left` vs `-right` per view **before** revealing the key. For each
+3. **Blind A/B.** `node tools/ab.mjs --a shots/<prev> --b shots/<round> --out shots/ab-<n> --stitch`
+   Judge `<view>-PAIR.png` per view **before** revealing the key. For each
    view state which side is better and *why*, in concrete terms.
    Then `node tools/ab.mjs --out shots/ab-<n> --reveal`.
+
+   `--stitch` butts the two frames against a shared seam in one image. Prefer
+   it: reading `-left.png` and `-right.png` as two files makes you hold one
+   frame in memory while looking at the other, and memory is exactly what
+   normalises a defect you saw last round. A value step or a stairstepped
+   shoreline that survives the seam is a difference you cannot talk yourself
+   out of.
 4. **Verdict.** For each view, one of:
    - `SHIP` — indistinguishable in quality from the reference. Rare.
    - `CLOSE` — one or two specific, named defects away.
