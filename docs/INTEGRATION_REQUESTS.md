@@ -4422,3 +4422,165 @@ multiply in a load-time argmax.
 
 `lint.mjs` clean (77 files), `health.mjs` `ok:true` / `shaderFailures:0`,
 `winding.mjs` clean, `nanhunt.mjs` 0 non-finite pixels in 1287 frames.
+
+---
+
+## X7. X2: the massif shadows have never been on screen, the cast shadow always had the area, and two of the critic's colour targets are unbuyable (look/grade, 2026-08-20)
+
+**Three commits: `52a1eba`, `93913e2`. Two new knobs and one new file
+(`src/render/MassifShadow.js`). No other author's file touched.**
+
+### 1. The question X6-reply asked: do distant terrain shadows reach the valley floor at eye level?
+
+**No, and they never have.** `tools/_scratch/massif.mjs` marches the ground fan
+each canonical camera actually sees toward the sun across the baked heightfield
+and records, per receiver, whether it is terrain-shadowed and how far away its
+occluder is. For `drive`:
+
+```
+            sun elev   fan shadowed   median occluder   occluder OUTSIDE the
+                                                        sun shadow frustum
+  07:24        6.8°        0.3%            12 m               100%
+  09:00       26.6°        0.0%             -                   -
+  12:00       67.1°        0.0%             -                   -
+  15:30       35.4°        0.0%             -                   -
+  16:40       18.4°        4.6%           537 m               100%
+  17:30        8.8°       22.8%           705 m               100%
+  18:18        1.7°       13.3%           473 m                84%
+```
+
+`reachablePct` — the share of the fan whose occluder is inside the shadow camera
+at all — is **0.0% at `drive`**, 0.6% at `meadow`, 2.2% at 18:18. The casters
+are there and `castShadow` is on out to LOD 2 (~720 m); every one of them sits
+outside a 150–200 m ortho box centred on the camera, and W1 established that box
+cannot be widened. So the feature the terrain author built at round 018 is real,
+correct, and has never once been rendered at eye level.
+
+The structure it would draw is exactly what X2 asks for. At 17:30 the shadowed
+fraction across the drive fan runs **100 / 78 / 63 / 28 / 0%** by range band —
+a soft edge sweeping the meadow.
+
+**Built:** `MassifShadow.js`, one O(n²) sweep of the heightfield along the light
+direction over a 256 grid (12 m texels), propagating a shadow-ray height and the
+distance back to the caster. **0.5 ms per rebuild**, and `TOD.cycleSpeed` is 0 by
+default so a shipped run and every capture rebuild it once. Sampled in the fog
+chunk. It cannot double up with the sun's shadow map by construction:
+
+- the mask is gated to occluders 170–300 m out, so the mountainside terminator
+  under `vehicle` (occluders 6–15 m) is left to the shadow map, which draws it
+  correctly. Measured mask over the vehicle fan: **0.000**.
+- it fades out as `Lighting.shadowExtent` grows past 200 m, so at `hero`/`peaks`
+  (894 m) and `dawn` (726 m) — where the real map already reaches those casters,
+  measured 0% of `hero`'s occluders outside the frustum — it draws nothing.
+- cloud and massif masks are **unioned with `max()`**, never added.
+
+**Honest limit, and it is the same shape as L6:** at `drive`'s own hour of 16.7
+the sun is at 18.4° and the near meadow is genuinely not in anyone's shadow — 0%
+out to 100 m. Forced to full strength with a neutral tint the entire term moves
+that frame's `lumaMean` by 0.012. It lands at `meadow`, at `dawn`, and at every
+drive-hour past ~17.2. **It does not rescue the 16.7 `drive` tile on its own,
+and X2 should not be closed on it either.**
+
+### 2. Where the drive mass actually is: it was never missing
+
+The predecessor's lead — *can the sun's shadow term be reached from the fog
+chunk?* — is the right one, and the answer is yes and for free. **Stylize
+already patches `lights_fragment_begin` to stash the factor in `gSunShadow`**
+(it needs the same distinction for `stylizeShadowCool`), so the value is in a
+register by the time `fog_fragment` runs. Sampling the shadow map a second time
+there would have been a full PCF_SOFT kernel on every fogged fragment in the
+game.
+
+Measured on `drive` in one boot with `sun.shadow.intensity` forced to 0 and then
+back to ship: **the cast shadow moves 21% of the near-field frame and 25–28% of
+the whole frame, at luma 0.650 of lit.** That is a mass, and per the predecessor's
+tile-against-tile crop it is the same mass round 040 had. What it is not is a
+different colour from the ground it lies on.
+
+### 3. L7 — TWO OF THE CRITIC'S COLOUR TARGETS CANNOT BE BOUGHT, FOR DIFFERENT REASONS
+
+Same boot, near-field ground, **display space** (stating the space, per X6-reply):
+
+```
+                         luma vs lit   green vs red   blue vs red
+   shipping                  0.650        -3.9%          -3.0%
+   critic's plate target     0.640         held          -17%
+   +green axis, w = 1.6      0.689        +5.2%          -0.1%
+   -green axis, w = 0.8      0.636       -14.5%          -4.1%
+```
+
+**(a) The blue half is unreachable from a multiply at this point in the chain.**
+A 22% linear cut on blue moved the rendered blue by *nothing* — it sits at 36–38
+in every row above. Shadowed gold's blue is already down at the grade's floor,
+where a multiply is swamped by the lift applied after it. This is very likely as
+much of L3 as the grass hook is: it predicts exactly the "swept it warm and the
+rect moved three levels" result, and it applies to anything that tries to move
+this hue by scaling blue, wherever in the chain it sits. **Anyone quoting the
+−17% target should know it cannot be bought this way.**
+
+**(b) The green half goes the wrong way on our ground.** Row three is that target
+met almost exactly, and the shadowed meadow arrives **olive** — a step toward the
+grey the player's constraint forbids — because on gold, lifting green against red
+is a move toward yellow-green. The plate's shadow is a different pigment from
+ours and the ratio does not carry across. This is the third space-or-plate
+mismatch in the last four colour errors on this project.
+
+**What works is the opposite.** Take green *down* against red and a shadowed gold
+meadow goes to `srgb(117,78,38)`, a warm russet brown, against lit
+`srgb(164,128,56)`. Hue separation on the axis gold actually has; the player's
+own words for what they asked for; and it cannot approach grey, mauve or rose
+from any direction because every step is toward red. Luma 0.650 → 0.636, so it
+lands on the critic's *depth* target without having been aimed at it, and X2's
+instruction not to deepen holds to within 1.5%.
+
+### 4. L5's water objection is closed
+
+X6 declined to spend the tint because the setting that hits the target puts the
+river pool at murky olive. The fog chunk now exempts blue-led pixels from the
+whole hue treatment — a blue cut on a gold pixel is a warm deepening, on a
+blue-led pixel it is a hue change. Ground is R > G > B at every hour of the
+cycle, so the guard cannot fire on the surface the tint is authored for.
+Measured across the whole ladder, the river pool holds at
+`srgb(150,163,186) → srgb(149,163,188)`; the lavender rock face in `vehicle` is
+likewise untouched. **Colour work on the shadow tint is no longer blocked on
+water.**
+
+### 5. Day cycle
+
+Nine views, six hours, `off` → `on`, whole-frame warm-ground mean:
+
+```
+  07:24 dawn      srgb(152,117,76) -> srgb(155,115,76)
+  09:00 morning   srgb(185,148,72) -> srgb(189,144,73)
+  12:00 noon      srgb(185,151,71) -> srgb(187,152,71)
+  16:42 drive     srgb(129, 99,44) -> srgb(131, 95,45)
+  17:12 meadow    srgb(150,111,52) -> srgb(158,102,55)
+  17:30 late      srgb(119, 87,40) -> srgb(123, 82,41)
+  17:54 backlit   srgb(198,136,81) -> srgb(203,129,84)
+  18:36 evening   srgb(105, 70,34) -> srgb(113, 65,37)
+```
+
+Every sample is R > G > B and every one moves *further* that way, never toward
+neutral. At noon the frame barely moves — there is almost no cast shadow under a
+67° sun and this term is proportional to it.
+
+### 6. Requests
+
+1. **Atmosphere would like the shadow extent and the shadow intensity handed to
+   it.** `Atmosphere.update(sunDir, sunColor, elevation01)` now reads
+   `globalThis.__lighting.shadowExtent` (to hand the frame back to the shadow map
+   at vista framings) and `sun.shadow.intensity` (to normalise `gSunShadow`).
+   Both are defensive late binds with sane fallbacks, same pattern as
+   `Lighting._configureShadows()`. `main.js` owns the call signature and is not
+   ours to change; two more arguments, or a `lighting` handle, would remove the
+   globals. *No action needed to ship.*
+2. **Stylize's `gSunShadow` is now load-bearing for two files.** The fog chunk
+   reads it, guarded with Stylize's own `STYLIZE_SUN_SHADOW` ifndef so either
+   include order works. If that patch is ever removed or its regex stops
+   matching a future three release, the fog chunk quietly falls back to "no
+   cast shadow anywhere" rather than failing loudly — worth a note beside it.
+3. **Terrain author, FYI and no action:** your round-018 LOD 2 shadow casting is
+   correct and was never the problem. It is being drawn now, by a different
+   instrument, at eye level only. If the shadow-map budget ever gets tight, the
+   thing you offered to pull back is the thing `hero` and `peaks` still need —
+   pull `MassifShadow`'s handover fade instead and let this cover eye level.
