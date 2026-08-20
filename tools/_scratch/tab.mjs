@@ -63,6 +63,25 @@ const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal', 
 const p = await b.newPage({ viewport: { width: W, height: H } });
 p.on('pageerror', (e) => console.log('PAGEERR', e.message.slice(0, 300)));
 p.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE', m.text().slice(0, 200)); });
+// Neuter Vite's HMR client, exactly as shot.mjs does. Without it, saving any
+// source file mid-run reloads the page, which wipes window.__hold and makes
+// every step after the save silently measure the base build. It cost me one
+// full sweep before this was here.
+await p.addInitScript(() => {
+  const RealWS = window.WebSocket;
+  window.WebSocket = function (url, protocols) {
+    if (typeof url === 'string' && /[?&]token=|vite-hmr|__vite/.test(url)) {
+      return {
+        readyState: 3, url, close() {}, send() {},
+        addEventListener() {}, removeEventListener() {},
+        set onopen(_) {}, set onclose(_) {}, set onerror(_) {}, set onmessage(_) {},
+      };
+    }
+    return new RealWS(url, protocols);
+  };
+  window.WebSocket.prototype = RealWS.prototype;
+  Object.assign(window.WebSocket, RealWS);
+});
 await p.goto(`http://localhost:5178/?res=${arg('res', '768')}`, { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
 
