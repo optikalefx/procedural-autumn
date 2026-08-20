@@ -371,6 +371,22 @@ export class TrackRibbons {
   }
 
   /**
+   * Break every ribbon at its current end.
+   *
+   * A ribbon is a strip between consecutive emitted points, so a teleport of
+   * any distance would otherwise draw one 20 m quad from where the camper was
+   * to where it now is — a tyre track across ground no tyre touched. Same
+   * mechanism as the lane-full path in `emit`.
+   */
+  cut() {
+    for (let l = 0; l < this.lanes; l++) {
+      this.active[l] ^= 1;
+      this.buffers[this.active[l]].reset(l);
+      this._last[l] = null;
+    }
+  }
+
+  /**
    * @param lane   wheel index
    * @param x,z    contact point
    * @param nx,nz  wheel lateral axis (unit, world)

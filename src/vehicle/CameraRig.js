@@ -83,6 +83,7 @@ export class CameraRig extends System {
     this._primed = false;
     this._shake = 0;
     this._boomFrac = 1;            // how much of the boom the terrain allows
+    this._teleportSeq = 0;         // last vehicle teleport this rig has seen
   }
 
   async init() {
@@ -115,6 +116,16 @@ export class CameraRig extends System {
     // The capture harness poses the camera itself; do not fight it.
     this.active = true;
     if (window.__forceCamera) { this._primed = false; return; }
+
+    // A rescue moves the camper 20 m in one frame. Damping toward that would
+    // fly the camera across the intervening ground, through whatever is in the
+    // way, for the best part of a second. Re-prime instead: the boom snaps to
+    // its new place behind the camper, which is what a cut is for.
+    if (v.teleportSeq !== this._teleportSeq) {
+      this._teleportSeq = v.teleportSeq;
+      this._primed = false;
+      this.lookAt.copy(v.position);
+    }
 
     dt = Math.min(dt, 1 / 20);
     this._readLook(dt, v);

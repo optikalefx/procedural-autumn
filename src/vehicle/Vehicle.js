@@ -26,6 +26,47 @@ const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 // anything that could read as the body sitting on its bump stops.
 const MAX_SETTLE = 0.14;
 
+// ── rescue (R) ───────────────────────────────────────────────────────────────
+// The player's own spec, and it is deliberately this simple: "we need some kind
+// of rescue button if the user is stuck. Something that puts them on a nearby
+// surface. Lets just random 20m away, random angle. The user can just hit it
+// again if they are stuck again."
+//
+// So: no pathfinding, no search for the "best" place in the valley, no memory
+// of where you have been. One ring, random bearings on it, and the first
+// landing that is genuinely somewhere a camper could be parked.
+// The rings, in metres. 20 is the player's number and is always tried first;
+// the wider two exist only because a ring that yields nothing would otherwise
+// be a button that visibly does nothing, and a dead rescue button is worse
+// than one that moves you 30 m. In practice the first ring wins almost always
+// — see the ring histogram in tools/_scratch/rescuetest.mjs.
+const RESCUE_RINGS = [20, 30, 42];
+const RESCUE_TRIES = 28;        // random bearings sampled on each ring
+const RESCUE_COOLDOWN = 1.0;    // s between presses; see `rescue()`
+const RESCUE_WATER = 0.05;      // m — anything deeper is standing water
+const RESCUE_FOOT = 2.2;        // m — footprint radius the checks are run over
+const RESCUE_CLEAR = 2.8;       // m of clear ground the camper needs around it
+const RESCUE_STEP = 1.1;        // m of height change across a footprint = a ledge
+// Slope limits, and these are measured numbers rather than taste.
+//
+// `init` picks the camper's *spawn* with `getSlope > 0.42`. Reusing that alone
+// was too strict: this valley's median footprint slope is 0.72, so a single
+// 20 m ring at 0.42 found nothing at all from 23% of reachable ground, and
+// from 57% of the steep or wet ground that is exactly where the button gets
+// pressed. A rescue that declines more than half the time it is needed is not
+// a rescue. (tools/_scratch/rescuediag.mjs)
+//
+// The first attempt at fixing that relaxed the limit to a *mean* footprint
+// slope of 0.85 with a max of 1.25, and that was worse, not better: over 100
+// rescues 12% of landings on ground whose mean slope was under 0.3 slid more
+// than 2.5 m in the two seconds after landing, some of them into the river.
+// The mean is the wrong statistic. A footprint can average 0.25 and still have
+// a 1.2 sample in it — flat ground beside a drop — and the camper finds the
+// drop. The limit is on the WORST sample in the footprint, and the extra reach
+// comes from the ring stepping outward instead. (tools/_scratch/rescuetest.mjs)
+const RESCUE_SLOPE = 0.42;      // ideal: flat enough to be a nice place to stop
+const RESCUE_SLOPE_OK = 0.65;   // acceptable: still holds, measured (see above)
+
 export class Vehicle extends System {
   constructor(ctx) {
     super(ctx);
@@ -57,6 +98,10 @@ export class Vehicle extends System {
     this._lateralSmooth = 0;
     this._settle = 0;
     this._invQuat = new THREE.Quaternion();
+    this._rescueCool = 0;
+    this._rescueHold = false;
+    this.rescues = 0;
+    this.teleportSeq = 0;      // CameraRig watches this and re-primes its boom
   }
 
   async init() {
@@ -138,11 +183,18 @@ export class Vehicle extends System {
       speed: this.speed, heading: this.heading,
       up: this.up.y, grounded: this.wheels.filter((w) => w.grounded).length,
       water: this.waterDepth, recoveries: this.phys.recoveries,
+      rescues: this.rescues, slope: world.getSlope(this.position.x, this.position.z),
       nan: this.phys.nanEvents ?? 0,
       ground: world.getHeight(this.position.x, this.position.z),
     });
     window.__vehicleTeleport = (x, z, h = 0) => this.phys.teleport(x, z, h);
     window.__vehicleTune = (o) => this.phys.tune(o);
+    // Test surface for tools/_scratch/rescuetest.mjs. `force` skips only the
+    // cooldown, never a validity check.
+    window.__vehicleRescue = (force = false) => {
+      if (force) this._rescueCool = 0;
+      return this.rescue();
+    };
   }
 
   update(dt) {
@@ -155,11 +207,32 @@ export class Vehicle extends System {
     this.throttle = ax.throttle;
     this.steer = ax.steer;
 
+    // ── rescue ──────────────────────────────────────────────────────────────
+    // `justPressed` is cleared by Input every frame and zeroed entirely while a
+    // menu has focus, so this cannot fire from the settings sheet or fire twice
+    // from one press.
+    this._rescueCool = Math.max(0, this._rescueCool - dt);
+    if (input.justPressed('KeyR')) this.rescue();
+    // Once per session, and only after the player has genuinely been fighting
+    // it for a couple of seconds: a key you only need when stuck is no use if
+    // you learn about it before you are. `_stuckFor` is the physics' own
+    // measure — full throttle or full brake, going nowhere, on the ground.
+    if (!this._toldAboutRescue && this.phys._stuckFor > 2.4) {
+      this._toldAboutRescue = true;
+      ctx.systems.hud?.toast?.('Stuck? Press R');
+    }
+
+    // A rescue leaves the park brake on. Any deliberate input releases it —
+    // the player has taken over and the camper should behave normally from
+    // that instant, with no "press again to release" ceremony.
+    if (ax.throttle > 0.02 || ax.brake > 0.02 || Math.abs(ax.steer) > 0.05) this._rescueHold = false;
+
     this.phys.step(dt, {
       throttle: ax.throttle,
       brake: ax.brake,
       steer: ax.steer,
       handbrake: ax.handbrake,
+      park: this._rescueHold,
     });
 
     this._syncTransform();
@@ -176,6 +249,212 @@ export class Vehicle extends System {
     this.contactShadow.update(this.position.x, this.position.z, this.heading,
       onGround / Math.max(1, this.wheels.length));
     this._patchAnchor();
+  }
+
+  // ── rescue ────────────────────────────────────────────────────────────────
+
+  /**
+   * Put the camper down somewhere it can drive away from.
+   *
+   * The destination is exactly what was asked for — `RESCUE_RANGE` metres away
+   * on a random bearing — but the *landing* is checked, because a rescue that
+   * drops you in the river or on a 40-degree face is not a rescue. A site has
+   * to be, over the whole footprint and not just at the centre point:
+   *
+   *   · inside the world;
+   *   · dry (`getWaterDepth` under 5 cm — no standing water);
+   *   · gentle enough not to slide straight back — no sample in the footprint
+   *     over 0.65, and preferably none over 0.42, which is somewhere you would
+   *     choose to park rather than merely somewhere you can sit;
+   *   · a continuous surface, not a step — no ledge or overhang inside the
+   *     footprint, which is how you end up half inside a cliff;
+   *   · clear of tree trunks and of boulders big enough to matter.
+   *
+   * Every bearing on the ring is scored and the best survivor wins, so a flat
+   * clearing beats a passable-but-tilted verge. If the 20 m ring holds nothing
+   * at all — a lakeside, a gorge — the search steps out to 30 and then 42 m
+   * rather than declining, because a rescue button that does nothing is worse
+   * than one that moves you further than advertised. Only if all three rings
+   * come back empty does it decline and say so.
+   *
+   * @returns {{x:number,z:number,range:number,relaxed:boolean}|null}
+   */
+  rescue() {
+    if (!this.phys?.ready || this._rescueCool > 0) return null;
+
+    const site = this._rescueSite();
+    if (!site) {
+      this.ctx.systems.hud?.toast?.('Nowhere clear to move to — try again');
+      // Still take the cooldown: a failed press must not let the search run
+      // every frame while the key is held down.
+      this._rescueCool = RESCUE_COOLDOWN;
+      return null;
+    }
+
+    // Heading is preserved rather than randomised. The *place* is random
+    // because the player asked for that; spinning them as well would make an
+    // already-disorienting jump worse, and the site checks have already
+    // guaranteed there is nothing to be pointed into.
+    this.phys.teleport(site.x, site.z, this.heading);
+    // The physics teleport zeroes linear and angular velocity; these are the
+    // things on this side that would otherwise carry the old motion across.
+    this.phys._stuckFor = 0;
+    this.phys._invertedFor = 0;
+    this.phys.righting = 0;
+    this._syncTransform();
+    this._lastSpeed = 0;
+    this._accelSmooth = 0;
+    this._lateralSmooth = 0;
+    this._settle = 0;
+    this.pivot.rotation.set(0, 0, 0);
+    this.pivot.position.y = 0;
+    // Otherwise a 20 m quad of tyre track is drawn across untouched ground.
+    this.tracks?.cut();
+
+    this._rescueHold = true;      // park brake on until the player drives away
+    this._rescueCool = RESCUE_COOLDOWN;
+    this.rescues++;
+    this.teleportSeq++;
+    this.ctx.systems.hud?.toast?.(site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
+    return site;
+  }
+
+  /**
+   * Sample bearings on each rescue ring in turn and return the best landing.
+   *
+   * The 20 m ring is tried first and, if it holds anything decent, wins — the
+   * wider rings exist only so that a bad neighbourhood produces a longer hop
+   * rather than a button that does nothing.
+   */
+  _rescueSite() {
+    const px = this.position.x, pz = this.position.z;
+    let best = null, okBest = null;
+    for (const range of RESCUE_RINGS) {
+      // A random start angle plus an even stride covers the ring rather than
+      // clumping, which independent draws do. Still random, still one line.
+      const a0 = Math.random() * Math.PI * 2;
+      for (let i = 0; i < RESCUE_TRIES; i++) {
+        const a = a0 + (i / RESCUE_TRIES) * Math.PI * 2 + (Math.random() - 0.5) * 0.2;
+        const x = px + Math.sin(a) * range;
+        const z = pz + Math.cos(a) * range;
+        const s = this._siteScore(x, z);
+        if (!s) continue;
+        const site = { x, z, range, ...s };
+        if (!okBest || s.score > okBest.score) okBest = site;
+        if (s.ideal && (!best || s.score > best.score)) best = site;
+      }
+      // Good enough on this ring: stop here rather than reaching further out.
+      if (best) return { ...best, relaxed: false };
+    }
+    if (okBest) return { ...okBest, relaxed: true };
+    return null;
+  }
+
+  /**
+   * Hard checks (bounds, water, slope) return null — those sites are never
+   * used. The comfort checks (ledge, obstacles) only clear the `clear` flag,
+   * so a site that fails them is still available to the relaxed second pass.
+   */
+  _siteScore(x, z) {
+    const W = this.ctx.world;
+    if (!W.isInBounds(x, z)) return null;
+    const h = W.getHeight(x, z);
+    if (!Number.isFinite(h)) return null;
+    if (W.getWaterDepth(x, z) > RESCUE_WATER) return null;
+
+    // Eight points around the footprint plus the centre. The centre alone is
+    // not enough: a 2 m wide camper straddles the lip of a bank quite happily
+    // as far as a single sample is concerned.
+    let worst = W.getSlope(x, z);
+    let sum = worst;
+    let step = 0;
+    for (let k = 0; k < 8; k++) {
+      const b = (k / 8) * Math.PI * 2;
+      const sx = x + Math.sin(b) * RESCUE_FOOT;
+      const sz = z + Math.cos(b) * RESCUE_FOOT;
+      if (!W.isInBounds(sx, sz)) return null;
+      if (W.getWaterDepth(sx, sz) > RESCUE_WATER) return null;
+      const sh = W.getHeight(sx, sz);
+      if (!Number.isFinite(sh)) return null;
+      const sl = W.getSlope(sx, sz);
+      worst = Math.max(worst, sl);
+      sum += sl;
+      step = Math.max(step, Math.abs(sh - h));
+    }
+    const mean = sum / 9;
+    // Hard, and in this order because each is cheaper than the next.
+    // Above RESCUE_SLOPE_OK the camper slides back down, and a rescue that
+    // does that has achieved nothing. A ledge inside the footprint is the same
+    // failure wearing a different hat.
+    if (worst > RESCUE_SLOPE_OK) return null;
+    if (step > RESCUE_STEP) return null;
+    // Only now is the obstacle query worth paying for.
+    const gap = Math.min(this._treeGap(x, z), this._rockGap(x, z));
+    if (gap < RESCUE_CLEAR) return null;
+
+    // Flatter and roomier is better; the terms are on comparable scales here so
+    // a plain weighted sum is enough and needs no tuning.
+    const score = -mean * 2 - worst * 2 - step * 0.8 + Math.min(gap, 8) * 0.3;
+    return { score, ideal: worst <= RESCUE_SLOPE, slope: worst, mean, step, gap };
+  }
+
+  /**
+   * Distance to the nearest tree trunk, minus that trunk's radius.
+   *
+   * Read straight off the Trees system's own bucketed placement table rather
+   * than raycast against the scene: the buckets are a 64 m grid with a prefix
+   * -summed index, so this touches a few dozen trees rather than 120 000, and
+   * it sees trees that are currently drawn as far-field impostors too.
+   * Defensive throughout — Trees may not have built yet, or may not exist.
+   */
+  _treeGap(x, z) {
+    const T = this.ctx.systems.trees?.trees;
+    if (!T?.n || !T.order || !T.bucketStart) return Infinity;
+    const { px, pz, pscale, order, bucketStart, BW, BS, half } = T;
+    const R = 8;
+    const bi = (v) => clamp(((v + half) / BS) | 0, 0, BW - 1);
+    const bx0 = bi(x - R), bx1 = bi(x + R), bz0 = bi(z - R), bz1 = bi(z + R);
+    let best = Infinity;
+    for (let bz = bz0; bz <= bz1; bz++) {
+      for (let bx = bx0; bx <= bx1; bx++) {
+        const b = bz * BW + bx;
+        const end = bucketStart[b + 1];
+        for (let i = bucketStart[b]; i < end; i++) {
+          const t = order[i];
+          const dx = px[t] - x, dz = pz[t] - z;
+          // Trunk, not crown: parking under a canopy is fine, parking inside a
+          // bole is not. A prototype trunk is ~0.35 m at scale 1.
+          const d = Math.hypot(dx, dz) - (0.15 + 0.35 * (pscale?.[t] ?? 1));
+          if (d < best) best = d;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Distance to the nearest boulder, minus its horizontal half-extent. Rock
+   * geometry is authored ~2 units across, so `sx`/`sz` are metres of radius.
+   * Cobbles are ignored: the camper drives over those, and counting them would
+   * reject most of a riverbed.
+   */
+  _rockGap(x, z) {
+    const cells = this.ctx.systems.rocks?.cells;
+    if (!cells?.size) return Infinity;
+    let best = Infinity;
+    for (const c of cells.values()) {
+      const list = c?.instances;
+      if (!list) continue;
+      for (let i = 0; i < list.length; i++) {
+        const r = list[i];
+        if (r.size < 0.8) continue;
+        const dx = r.x - x, dz = r.z - z;
+        if (Math.abs(dx) > 12 || Math.abs(dz) > 12) continue;
+        const d = Math.hypot(dx, dz) - Math.max(r.sx ?? r.size, r.sz ?? r.size);
+        if (d < best) best = d;
+      }
+    }
+    return best;
   }
 
   // ── transform ─────────────────────────────────────────────────────────────

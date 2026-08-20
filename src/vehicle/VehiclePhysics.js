@@ -24,9 +24,6 @@ const PATCH_DIV = 128;        // cells; 1.375 m per cell — finer than the whee
 const REBUILD_AT = 46;        // metres of drift from the patch centre before rebuild
 const ROWS_PER_FRAME = 14;    // incremental sampling budget
 
-// ── suspension geometry ─────────────────────────────────────────────────────
-// Spring rate in Bullet/Rapier's per-unit-mass units.  Static sag is then
-// g/4 / SPRING_K metres, which fixes the loaded ride height below.
 // Wheel-brake gain applied when the throttle is held against a reversing
 // camper (see the drivetrain block in `step`).  The service brake runs at
 // `brakeForce * 0.02`; this is deliberately a shade softer, because it fires
@@ -34,6 +31,9 @@ const ROWS_PER_FRAME = 14;    // incremental sampling budget
 // onto its nose rather than stand on it.
 const REV_BRAKE = 0.017;
 
+// ── suspension geometry ─────────────────────────────────────────────────────
+// Spring rate in Bullet/Rapier's per-unit-mass units.  Static sag is then
+// g/4 / SPRING_K metres, which fixes the loaded ride height below.
 const SPRING_K = 26.0;
 const CONNECT_Y = 0.04;                                   // hard point, body local
 const STATIC_SAG = 9.81 / 4 / SPRING_K;                   // ~0.094 m
@@ -209,6 +209,38 @@ export class VehiclePhysics {
     }
   }
 
+  /**
+   * The height of the *collider* at (x, z), which is not `world.getHeight`.
+   *
+   * The patch is a 1.375 m grid sampled from `getHeight`, so between samples
+   * the surface the wheels actually touch is a straight line across whatever
+   * the terrain does in between — below the rendered ground over a convex
+   * cell, above it over a concave one. `Vehicle._groundSettle` already covers
+   * the cosmetic half of that; this covers the half that matters to physics.
+   *
+   * In this world the two agree to under a millimetre at the sampled points —
+   * measured, after this was written on the assumption that they would not —
+   * so this is belt and braces rather than a fix for anything observed. It is
+   * kept because the assumption it removes is the kind that quietly becomes
+   * true later: a finer heightfield, a rougher terrain octave, or a coarser
+   * PATCH_DIV would all open the gap, and a body placed into one arrives
+   * falling.
+   */
+  _patchHeight(x, z) {
+    const n = PATCH_DIV + 1;
+    const h = PATCH_SIZE * 0.5;
+    const fx = (x - (this._patchCX - h)) / this._cell;
+    const fz = (z - (this._patchCZ - h)) / this._cell;
+    const j0 = clamp(Math.floor(fx), 0, n - 2);
+    const i0 = clamp(Math.floor(fz), 0, n - 2);
+    const tx = clamp(fx - j0, 0, 1), tz = clamp(fz - i0, 0, 1);
+    const H = this._heights;
+    // Column-major, matching `_sampleRow`.
+    const a = lerp(H[i0 + j0 * n], H[i0 + (j0 + 1) * n], tx);
+    const b = lerp(H[(i0 + 1) + j0 * n], H[(i0 + 1) + (j0 + 1) * n], tx);
+    return lerp(a, b, tz);
+  }
+
   _makeGround(cx, cz, heights) {
     if (this.groundCollider) this.P.removeCollider(this.groundCollider, false);
     if (!this.groundBody) {
@@ -337,6 +369,23 @@ export class VehiclePhysics {
     // the tail lamps should say so — including the throttle-as-brake case
     // above, which is otherwise the one time the camper stops with no light on.
     this.braking = brake > 60;
+
+    // ── park brake ──────────────────────────────────────────────────────────
+    // Set after a rescue and released the moment the player touches a control.
+    // Without it a rescue is only half of what was asked for: the camper is put
+    // somewhere fine and then freewheels off it, because the only thing holding
+    // it on a hill is the 4.4 of engine braking. Measured over 24 rescues with
+    // no input at all, on ground whose worst footprint slope was under 0.5, the
+    // median landing rolled 3.0 m in three seconds and the worst rolled 7.2 —
+    // several of them into water the site check had specifically avoided.
+    // Gravity down a 0.3 gradient is 2.7 m/s²; nothing in the drivetrain was
+    // ever going to argue with that.
+    if (ctrl.park) {
+      engine = 0;
+      brake = Math.max(brake, VEHICLE.brakeForce * 0.06);
+      this.braking = false;      // parked is not braking; no tail lamps for it
+    }
+    this.parked = !!ctrl.park;
 
     const hb = ctrl.handbrake > 0.5;
 
@@ -489,13 +538,22 @@ export class VehiclePhysics {
   teleport(x, z, heading = 0) {
     if (!this.ready) return;
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading);
-    this.body.setTranslation({ x, y: this.world.getHeight(x, z) + RIDE_HEIGHT + 0.05, z }, true);
-    this.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
-    this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    // Ground first, then place on it: the body has to be set against the patch
+    // it is about to stand on, not the one it is leaving. Height comes off the
+    // collider rather than `world.getHeight` — see `_patchHeight`.
     this._sampleAll(this._heights, x, z);
     this._makeGround(x, z, this._heights);
     this._fillRow = PATCH_DIV + 1;
+    const y = this._patchHeight(x, z) + RIDE_HEIGHT + 0.02;
+    this.body.setTranslation({ x, y, z }, true);
+    this.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
+    this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    // The accumulator can be holding most of a timestep from the frame that is
+    // being interrupted; spending it on the frame after a teleport steps the
+    // new pose forward before anything has been read from it.
+    this._accum = 0;
+    this.syncBasis();
   }
 
   dispose() {
