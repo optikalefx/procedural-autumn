@@ -28,14 +28,23 @@ const MAX_RPM = 4200;
 // geared low and long: first is a crawler, fifth is 90 km/h at 2 500 rpm.
 const GEARS = [15.2, 9.4, 6.3, 4.5, 3.4];
 
-/** A 4-stroke four's spectrum: strong 1st and 2nd order, a long soft tail. */
+/**
+ * A 4-stroke four's spectrum: strong 1st and 2nd order, a short soft tail.
+ *
+ * The exponent is the whole character. At 1/h^1.15 over 26 harmonics this was
+ * within a hair of a sawtooth, and a sawtooth is the definition of buzzy — the
+ * 24th order was still only 32 dB down, which at an idle firing frequency of
+ * 25 Hz puts real energy at 600 Hz and above with nothing asking it to be
+ * there. 1/h^1.9 over 16 keeps the even-order lead that makes it read as a
+ * four and lets the tail actually end.
+ */
 function engineWave(actx) {
-  const n = 26;
+  const n = 16;
   const re = new Float32Array(n), im = new Float32Array(n);
   for (let h = 1; h < n; h++) {
     // Even orders lead — that is the half-order firing pattern of a four.
     const even = h % 2 === 0 ? 1.5 : 0.75;
-    im[h] = (even / Math.pow(h, 1.15)) * (1 + 0.18 * Math.sin(h * 2.4));
+    im[h] = (even / Math.pow(h, 1.9)) * (1 + 0.18 * Math.sin(h * 2.4));
   }
   return actx.createPeriodicWave(re, im, { disableNormalization: false });
 }
@@ -73,19 +82,31 @@ export class VehicleAudio {
     // order depending on load.
     this.engineHP = filter(actx, 'highpass', 30, 0.6);
     this.drive = actx.createWaveShaper();
-    this.drive.curve = tanhCurve(2.4);
+    this.drive.curve = tanhCurve(1.5);
     this.drive.oversample = '2x';
+    // The cab. Saturation *generates* harmonics, so a waveshaper sitting after
+    // the only lowpass in the chain hands the mix a fresh top end that nothing
+    // downstream is asked to remove. Measured, that showed up as an engine bus
+    // whose octave bands stopped falling at 4 kHz and ran flat to 16 — a
+    // rolloff that turns into a shelf is the signature, and a shelf up there is
+    // exactly what "harsh" means. The load filter still opens with the hill;
+    // this only says the sound reaches you through a van.
+    this.cabLP = filter(actx, 'lowpass', 520, 0.5);
     this.gEngine = gain(actx, 0);
 
     this.osc1.connect(this.gOsc1).connect(this.engineLP);
     this.osc2.connect(this.gOsc2).connect(this.engineLP);
-    this.engineLP.connect(this.engineHP).connect(this.drive).connect(this.gEngine).connect(this.bus);
+    this.engineLP.connect(this.engineHP).connect(this.drive).connect(this.cabLP)
+      .connect(this.gEngine).connect(this.bus);
     this.osc1.start();
     this.osc2.start();
 
     // ── intake / induction ──────────────────────────────────────────────────
     const pink = noiseBuffer(actx, 4, 'pink', 0x44c1);
     const white = noiseBuffer(actx, 4, 'white', 0xb3e2);
+    // A second, uncorrelated pink bed for the tyres. Sharing one buffer between
+    // two layers makes them sum coherently and comb.
+    const pink3 = noiseBuffer(actx, 4, 'pink', 0x6d19);
     this.intakeSrc = noiseSource(actx, pink);
     this.intakeBand = filter(actx, 'bandpass', 220, 2.6);
     this.gIntake = gain(actx, 0);
@@ -101,15 +122,25 @@ export class VehicleAudio {
     // Two bands: a soft roll under the vehicle, and a grit layer that only
     // exists on loose surfaces. Grass is nearly all roll; scree is nearly all
     // grit; a dirt track sits between and is where the game spends its time.
-    this.tyreSrc = noiseSource(actx, white, 0.9);
-    this.tyreBand = filter(actx, 'bandpass', 420, 0.8);
+    // Pink, not white. A Q 0.8 bandpass rolls off at 6 dB/oct, and white noise
+    // carries 3 dB more energy per octave as you go up, so the two cancel to a
+    // 3 dB/oct skirt — which is barely a rolloff at all, and reads as hiss
+    // rather than as a tyre. Pink under the same filter falls at a real
+    // 6 dB/oct. The extra lowpass takes it to 18.
+    this.tyreSrc = noiseSource(actx, pink3, 0.9);
+    this.tyreBand = filter(actx, 'bandpass', 360, 0.8);
+    this.tyreLP = filter(actx, 'lowpass', 1500, 0.6);
     this.gTyre = gain(actx, 0);
-    this.tyreSrc.connect(this.tyreBand).connect(this.gTyre).connect(this.bus);
+    this.tyreSrc.connect(this.tyreBand).connect(this.tyreLP).connect(this.gTyre).connect(this.bus);
 
-    this.gritSrc = noiseSource(actx, white, 1.31);
-    this.gritHP = filter(actx, 'highpass', 2200, 0.7);
+    // Grit is meant to be the bright layer — it is loose stone — but a highpass
+    // with no ceiling above it runs to Nyquist, and on white noise that is a
+    // rising shelf into the most fatiguing octave in the spectrum.
+    this.gritSrc = noiseSource(actx, pink3, 1.31);
+    this.gritHP = filter(actx, 'highpass', 2000, 0.7);
+    this.gritCap = filter(actx, 'lowpass', 6500, 0.6);
     this.gGrit = gain(actx, 0);
-    this.gritSrc.connect(this.gritHP).connect(this.gGrit).connect(this.bus);
+    this.gritSrc.connect(this.gritHP).connect(this.gritCap).connect(this.gGrit).connect(this.bus);
 
     // ── fording ─────────────────────────────────────────────────────────────
     this.waterSrc = noiseSource(actx, white, 1.07);
@@ -121,6 +152,7 @@ export class VehicleAudio {
       f1: new Smooth(this.osc1.frequency, 0.045, 0.15),
       f2: new Smooth(this.osc2.frequency, 0.045, 0.3),
       lp: new Smooth(this.engineLP.frequency, 0.07, 6),
+      cab: new Smooth(this.cabLP.frequency, 0.10, 8),
       eng: new Smooth(this.gEngine.gain, 0.06, 0.002),
       intake: new Smooth(this.gIntake.gain, 0.08, 0.002),
       intakeF: new Smooth(this.intakeBand.frequency, 0.09, 4),
@@ -216,25 +248,39 @@ export class VehicleAudio {
     if (wantHard !== this._hardOn) {
       this._hardOn = wantHard;
       this.drive.curve = wantHard
-        ? (this._hardCurve ??= tanhCurve(4.2))
-        : (this._softCurve ??= tanhCurve(2.2));
+        ? (this._hardCurve ??= tanhCurve(2.6))
+        : (this._softCurve ??= tanhCurve(1.5));
     }
+    // The cab filter tracks the same two terms as the load filter, so effort
+    // still opens the sound up — a climb is allowed to get brighter. What it
+    // will not do any more is stay open when the camper is coasting on the
+    // flat, which is where the player spends almost all of their time.
+    this.sm.cab.set(520 + rpmN * 640 + this._loadSm * 1050, actx);
 
     // Measured against the rest of the mix: at the first pass the vehicle bus
     // sat at -19.6 dBFS rms while the whole ambience bed was at -33, i.e. the
     // engine *was* the game. This is a cozy driving game and the engine is
     // company, not the subject.
-    const engLevel = (0.030 + rpmN * 0.048 + this._loadSm * 0.034) * (1 - this._shiftDip * 0.75);
+    // Re-measured against the rest of the mix a second time. The first pass
+    // moved the engine from -19.6 to -25.5 dBFS rms, which was still 12 dB
+    // above the entire ambience bed and, A-weighted, was the whole master on
+    // its own: -42.5 dBA of engine inside a -42.0 dBA mix.
+    //
+    // The cut is deliberately uneven. Idle comes down 9 dB and a loaded climb
+    // only 5, so the span from ticking over to labouring widens from 9.7 dB to
+    // 13.9 — you notice the engine on a hill and forget it on the flat, which
+    // is the opposite of turning one constant down.
+    const engLevel = (0.0105 + rpmN * 0.021 + this._loadSm * 0.030) * (1 - this._shiftDip * 0.75);
     this.sm.eng.set(engLevel, actx);
 
     // Intake: only really there when the throttle is open, and its resonance
     // climbs with revs.
-    this.sm.intake.set(0.028 * this._throttleSm * (0.35 + rpmN), actx);
+    this.sm.intake.set(0.016 * this._throttleSm * (0.35 + rpmN), actx);
     this.sm.intakeF.set(180 + rpmN * 520, actx);
 
     // Overrun: lifted off, still spinning. The hollow rush plus a lost octave.
     const over = clamp01((1 - this._throttleSm) * rpmN * 1.5 - 0.15);
-    this.sm.over.set(over * 0.026, actx);
+    this.sm.over.set(over * 0.017, actx);
 
     // ── tyres ───────────────────────────────────────────────────────────────
     const s = this.ctx.world.getSurfaceWeights(v.position.x, v.position.z, this._surf);
@@ -245,11 +291,16 @@ export class VehicleAudio {
     for (const w of v.wheels) slipSum += w.slip ?? 0;
     const scrub = clamp01(slipSum / 4);
 
-    const roll = smoothstep(0.4, 5, speed) * (0.030 + speedN * 0.042);
-    this.sm.tyre.set(roll * lerp(0.7, 1.15, soft) * (1 + scrub * 0.5), actx);
+    const roll = smoothstep(0.4, 5, speed) * (0.016 + speedN * 0.026);
+    // Soft ground is now the *quietest* surface, not the loudest. This term ran
+    // lerp(0.7, 1.15, soft), which made grass 4.3 dB louder than bare rock —
+    // precisely backwards, and precisely what the player heard as "driving
+    // through grass should be softer". Grass gives way under a tyre; scree
+    // does not, and the loud one should be the hard one.
+    this.sm.tyre.set(roll * lerp(1.0, 0.62, soft) * (1 + scrub * 0.5), actx);
     // Soft ground rolls low and dull; loose stone rattles high.
-    this.sm.tyreF.set(300 + speedN * 520 + loose * 380, actx);
-    this.sm.grit.set(roll * loose * 0.85 * (1 + scrub), actx);
+    this.sm.tyreF.set(260 + speedN * 380 + loose * 420 - soft * 90, actx);
+    this.sm.grit.set(roll * loose * 0.55 * (1 + scrub * 0.8), actx);
 
     // ── fording ─────────────────────────────────────────────────────────────
     const depth = clamp01((v.waterDepth ?? 0) / 0.8);

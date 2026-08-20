@@ -80,7 +80,15 @@ export function gain(actx, v = 0) {
   return g;
 }
 
-/** A slow sine LFO wired into `param`, for breathing gusts and wobble. */
+/**
+ * A slow sine LFO wired into `param`, for breathing gusts and wobble.
+ *
+ * `depth` is in the param's own units and **sums** with whatever the mixer
+ * writes to that param — it does not scale it. That is what you want for a
+ * filter cutoff (a 380 Hz swing on a 900 Hz band is a gust you can hear
+ * arrive) and it is a trap for a gain. See `swell` below before reaching for
+ * this on a `gain` AudioParam.
+ */
 export function lfo(actx, freq, depth, param, phaseSeconds = 0) {
   const o = actx.createOscillator();
   o.frequency.value = freq;
@@ -89,6 +97,27 @@ export function lfo(actx, freq, depth, param, phaseSeconds = 0) {
   o.connect(g).connect(param);
   o.start(actx.currentTime + phaseSeconds);
   return { osc: o, gain: g };
+}
+
+/**
+ * A *multiplicative* slow swell: a gain node centred on 1.0 with an LFO moving
+ * it by `depth` as a fraction, so 0.8 breathes between ×0.2 and ×1.8.
+ *
+ * This exists because `lfo()` on a gain param is a bug that hides in plain
+ * sight. The LFO sums into the param, so its depth is an absolute amplitude
+ * rather than a proportion of the level the mixer asked for — and if the depth
+ * is larger than that level, the LFO simply *becomes* the level and everything
+ * upstream of the gain stops mattering. Measured on this project: the ambience
+ * bed's model was zeroed and the bed kept playing within 0.3 dB, because two
+ * ±0.35 LFOs were sitting on gains the model was setting to 0.05.
+ *
+ * Put the breathing in its own node and the two stay separable: the mixer owns
+ * the level, the swell owns the movement, and neither can eat the other.
+ */
+export function swell(actx, freq, depth, phaseSeconds = 0) {
+  const g = gain(actx, 1);
+  lfo(actx, freq, depth, g.gain, phaseSeconds);
+  return g;
 }
 
 /**

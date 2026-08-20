@@ -17,7 +17,7 @@
 //  five voices whether the player is beside one fall or twelve.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, lerp } from '../core/MathUtils.js';
-import { noiseBuffer, noiseSource, filter, gain, lfo, Smooth, panner } from './synth.js';
+import { noiseBuffer, noiseSource, filter, gain, swell, Smooth, panner } from './synth.js';
 
 const FALL_VOICES = 3;
 const RIVER_VOICES = 2;
@@ -40,11 +40,19 @@ class WaterVoice {
     this.src.connect(this.low).connect(this.gLow).connect(this.air);
     this.src.connect(this.body).connect(this.gBody).connect(this.air);
     this.src.connect(this.hiss).connect(this.gHiss).connect(this.air);
-    this.air.connect(this.out).connect(this.pan).connect(bus);
-
     // A slow swell so a held tone does not sit perfectly still. Real falling
     // water breathes as the sheet wanders.
-    lfo(actx, 0.043 + Math.random() * 0.02, 0.09, this.out.gain);
+    //
+    // This was an LFO summed into `out.gain` at a depth of 0.09. `out.gain` is
+    // the distance model's output, and it falls well below 0.09 long before a
+    // fall is meant to be inaudible — so the modulation became a *floor*, and
+    // every voice in the pool kept sounding at roughly 0.09 no matter how far
+    // away its source was. Distance could not switch water off, which is why
+    // steepening the falloff curves last round did not quieten the valley.
+    // As a multiplying node it scales the distance model instead of replacing
+    // it, and silence is reachable again.
+    this.swell = swell(actx, 0.043 + Math.random() * 0.02, 0.34);
+    this.air.connect(this.swell).connect(this.out).connect(this.pan).connect(bus);
 
     this.sm = {
       out: new Smooth(this.out.gain, 0.35, 0.0015),

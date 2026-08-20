@@ -214,15 +214,26 @@ async function main() {
 
   // ── driving across grass ─────────────────────────────────────────────────
   if (want('drive')) {
+    // Re-seat the camper on the same meadow every few seconds. A free 40 s
+    // drive leaves the valley: three baseline runs of this scenario finished in
+    // 2nd gear on grass, 4th on grass and 5th on scree, and comparing an engine
+    // change across those is comparing three different sounds. Pinning the
+    // surface and keeping the gear low is what makes the before/after mean
+    // something.
     await page.evaluate(() => {
-      const q = window.__poi.best('meadow');
-      window.__vehicleTeleport?.(q.x, q.z, 0);
+      window.__meadow = window.__poi.best('meadow');
+      window.__vehicleTeleport?.(window.__meadow.x, window.__meadow.z, 0);
     });
     await page.waitForTimeout(1200);
     await page.keyboard.down('KeyW');
-    await page.waitForTimeout(4000);                        // get up to speed first
+    await page.waitForTimeout(3000);                        // get up to speed first
+    const reseat = setInterval(() => {
+      page.evaluate(() => window.__vehicleTeleport?.(window.__meadow.x, window.__meadow.z, 6))
+        .catch(() => {});
+    }, 6000);
     const drive = await page.evaluate((ms) => window.__prof(ms, ['vehicle', 'ambience', 'master']),
                                       Math.min(SECONDS, 40) * 1000);
+    clearInterval(reseat);
     const v = await page.evaluate(() => ({ ...window.__audio.debugState().vehicle,
                                            speed: Math.abs(window.__vehicleState().speed) }));
     await page.keyboard.up('KeyW');

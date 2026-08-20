@@ -13,7 +13,7 @@
 //  once is what makes ambience read as wallpaper.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, lerp, smoothstep, mulberry32 } from '../core/MathUtils.js';
-import { noiseBuffer, noiseSource, filter, gain, lfo, Smooth, ping, stopLater, panner } from './synth.js';
+import { noiseBuffer, noiseSource, filter, gain, lfo, swell, Smooth, ping, stopLater, panner } from './synth.js';
 
 // Bird species as (pitch, shape) recipes rather than samples. `bend` is how far
 // the note slides, in semitone-ish ratio; `n` is notes per call.
@@ -83,28 +83,45 @@ export class Ambience {
 
     // ── layer 1: wind over open dry grass ─────────────────────────────────
     // A band around 900 Hz is the "dry rustle"; the low shelf under it is the
-    // body of moving air. Two LFOs on the filter make gusts, and they are
-    // deliberately not in phase with the gain LFO so gusts swell and brighten
-    // at slightly different moments, the way real ones do.
+    // body of moving air. The filter LFO and the swell run at different rates
+    // and phases, so gusts brighten and swell at slightly different moments,
+    // the way real ones do.
+    //
+    // The swell is a node in the chain, not an LFO on `grassGain.gain`. It was
+    // the latter, at a depth of 0.35 against a model that sets that gain to
+    // about 0.05, which meant the LFO *was* the wind and the model was
+    // inaudible: zeroing every gain here left the bed playing within 0.3 dB of
+    // normal (`tools/_scratch/lfoprobe.mjs`). That is why the bed ignored the
+    // weather, why the conifer hiss played in open meadow, and why two rounds
+    // of cutting the bus gain did not fix "the wind is too loud".
     this.grassSrc = noiseSource(actx, pink);
-    this.grassBand = filter(actx, 'bandpass', 900, 0.55);
-    this.grassLow = filter(actx, 'lowpass', 1800, 0.7);
+    this.grassBand = filter(actx, 'bandpass', 820, 0.55);
+    // Two poles rather than one. Harshness is spectral before it is loud, and
+    // a single 12 dB/oct skirt over a broad band left a fifth of this bed's
+    // energy above 2 kHz — right in the ear's most sensitive octave.
+    this.grassLow = filter(actx, 'lowpass', 1100, 0.7);
+    this.grassLow2 = filter(actx, 'lowpass', 1500, 0.5);
+    this.grassSwell = swell(actx, 0.037, 0.55, 0.4);
     this.grassGain = gain(actx, 0);
-    this.grassSrc.connect(this.grassBand).connect(this.grassLow).connect(this.grassGain).connect(bus);
-    lfo(actx, 0.061, 380, this.grassBand.frequency);
-    lfo(actx, 0.037, 0.35, this.grassGain.gain, 0.4);
+    this.grassSrc.connect(this.grassBand).connect(this.grassLow).connect(this.grassLow2)
+      .connect(this.grassSwell).connect(this.grassGain).connect(bus);
+    lfo(actx, 0.061, 210, this.grassBand.frequency);
 
     // ── layer 2: wind through conifers ────────────────────────────────────
-    // Needles hiss far higher than grass does and have almost no low end; the
+    // Needles hiss higher than grass does and have almost no low end; the
     // separation between this and the grass band is most of what tells the
-    // player they have driven into the trees.
+    // player they have driven into the trees. It is a *hiss*, so it is the
+    // layer most able to fatigue — the band is narrower and capped than it
+    // was, and it now genuinely plays only where there are conifers.
     this.coniferSrc = noiseSource(actx, pink2, 0.93);
-    this.coniferBand = filter(actx, 'bandpass', 2400, 0.4);
-    this.coniferHi = filter(actx, 'highpass', 700, 0.5);
+    this.coniferBand = filter(actx, 'bandpass', 1850, 0.7);
+    this.coniferHi = filter(actx, 'highpass', 620, 0.5);
+    this.coniferCap = filter(actx, 'lowpass', 3200, 0.6);
+    this.coniferSwell = swell(actx, 0.029, 0.58, 2.0);
     this.coniferGain = gain(actx, 0);
-    this.coniferSrc.connect(this.coniferHi).connect(this.coniferBand).connect(this.coniferGain).connect(bus);
-    lfo(actx, 0.048, 900, this.coniferBand.frequency, 1.1);
-    lfo(actx, 0.029, 0.4, this.coniferGain.gain, 2.0);
+    this.coniferSrc.connect(this.coniferHi).connect(this.coniferBand).connect(this.coniferCap)
+      .connect(this.coniferSwell).connect(this.coniferGain).connect(bus);
+    lfo(actx, 0.048, 480, this.coniferBand.frequency, 1.1);
 
     // ── layer 3: the hush at altitude ─────────────────────────────────────
     // Almost no information — a low moving air mass with the top rolled off.
@@ -112,8 +129,9 @@ export class Ambience {
     // layers are being taken away.
     this.hushSrc = noiseSource(actx, pink, 0.61);
     this.hushLow = filter(actx, 'lowpass', 320, 0.8);
+    this.hushSwell = swell(actx, 0.023, 0.48, 1.4);
     this.hushGain = gain(actx, 0);
-    this.hushSrc.connect(this.hushLow).connect(this.hushGain).connect(bus);
+    this.hushSrc.connect(this.hushLow).connect(this.hushSwell).connect(this.hushGain).connect(bus);
     lfo(actx, 0.021, 110, this.hushLow.frequency, 0.7);
 
     // ── layer 4: crickets ─────────────────────────────────────────────────
@@ -126,7 +144,7 @@ export class Ambience {
     // Birds go through the shared valley reverb: a call with no tail sounds
     // like it was recorded in a cupboard, and the tail is what places it out
     // among the trees.
-    this.birdBus = gain(actx, 0.9);
+    this.birdBus = gain(actx, 0.78);
     this.birdBus.connect(bus);
     this.birdWet = gain(actx, 0.34);
     this.birdBus.connect(this.birdWet).connect(reverb);
@@ -151,29 +169,54 @@ export class Ambience {
     const actx = this.actx;
     const wind = clamp(L.wind, 0.35, 2.2);
 
+    // How hard it is blowing, 0.16 … 1.31.
+    //
+    // `wind` is Weather's whole-valley gust envelope, and in practice it runs
+    // 0.35 … 1.26 — not 0 … 2. The old curve normalised it against 1.8 and
+    // then lerped 0.55 … 1.5, which compressed the entire real range of the
+    // weather into 4.4 dB. Normalised against the range the weather actually
+    // produces, and squared, the same weather now spans 18 dB.
+    //
+    // That is deliberately *more* dynamic than before, not less. The player's
+    // note was that the quiet moments are the good ones and the loud ones are
+    // too much, which is a complaint about the floor being high rather than
+    // the peak being high — so the answer is to widen the gap, not to flatten
+    // everything toward the middle.
+    const breeze = clamp01((wind - 0.32) / 0.94);
+    const strength = 0.26 + 0.88 * breeze * breeze;
+
     // Open ground: gold meadow and dry grass. Fades out under canopy and above
     // the treeline, both of which have their own layer.
     const openness = clamp01(L.open) * (1 - L.altitude * 0.75);
-    const grass = 0.055 * openness * lerp(0.55, 1.5, clamp01(wind / 1.8)) * L.indoors;
+    const grass = 0.235 * openness * strength * L.indoors;
     // Conifers: keyed off moisture/forest weight, which is what actually puts
-    // the trees there.
-    const conifer = 0.048 * clamp01(L.forest) * lerp(0.5, 1.6, clamp01(wind / 1.8)) * L.indoors;
-    // Altitude hush ramps in over the last stretch below the treeline.
-    const hush = 0.075 * L.altitude * lerp(0.7, 1.4, clamp01(wind / 1.8));
+    // the trees there. Lower than the grass bed because it is a hiss and sits
+    // an octave higher, where the ear is roughly 1 dB *more* sensitive.
+    const conifer = 0.165 * clamp01(L.forest) * strength * L.indoors;
+    // Altitude hush ramps in over the last stretch below the treeline. It is
+    // nearly all sub-500 Hz, where the ear gives up 9 dB, so it carries a
+    // higher number for the same loudness.
+    const hush = 0.180 * L.altitude * lerp(0.55, 1.15, breeze);
 
     // Crickets: dusk and the short hour before dawn, and never on bare rock or
     // snow — they live in the grass.
     const h = L.hour;
     const dusk = smoothstep(17.6, 19.6, h) * (1 - smoothstep(22.5, 24, h));
     const preDawn = smoothstep(2.5, 4.0, h) * (1 - smoothstep(5.4, 6.6, h));
-    const cricket = 0.10 * Math.max(dusk, preDawn) * clamp01(L.open + L.forest * 0.4) * (1 - L.altitude) * L.indoors;
+    // Trimmed alongside the wind bed. Crickets were always modelled correctly,
+    // so they were only ever quiet *relative* to a wind layer that was running
+    // six times louder than its own model. Left alone they would simply have
+    // inherited the problem.
+    const cricket = 0.075 * Math.max(dusk, preDawn) * clamp01(L.open + L.forest * 0.4) * (1 - L.altitude) * L.indoors;
 
     this.sm.grass.set(grass, actx);
     this.sm.conifer.set(conifer, actx);
     this.sm.hush.set(hush, actx);
     this.sm.cricket.set(cricket, actx);
-    // Wind gets brighter as it strengthens — a gust you can hear arrive.
-    this.sm.grassF.set(1200 + wind * 900, actx);
+    // Wind gets brighter as it strengthens — a gust you can hear arrive. The
+    // ceiling came down with it: at 1200 + wind*900 this sat near 1.9 kHz, and
+    // a fifth of the bed's energy was above 2 kHz.
+    this.sm.grassF.set(740 + breeze * 540, actx);
 
     this.state.grass = grass;
     this.state.conifer = conifer;
