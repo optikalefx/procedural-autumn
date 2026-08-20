@@ -5285,3 +5285,169 @@ node tools/_scratch/camdive.mjs --dir shots/p1-dive   # D1, by driving
 node tools/_scratch/watersplit.mjs     # which water mesh each disagreement is
 ```
 
+
+---
+
+## V1. The boom is fitted against rock and trunks now — two interfaces I would rather borrow than own (vehicle/camera → rocks, trees, 2026-08-20)
+
+`CameraRig._boomFit` fitted the chase boom against terrain and water and
+nothing else. P2 is what that costs with rock in the world, and the player has
+now sent the same defect with a tree in it: a trunk floor to ceiling down the
+middle of the frame with four branches across it, the camper a sliver in the
+lower right, the near foliage around it fading correctly because bark does not
+fade. Both are one bug — the boom is fitted against the world the *data*
+describes, not the world that is *drawn* — and both are now fixed in
+`src/vehicle/BoomClearance.js`.
+
+### What I measured
+
+Rock, headless and deterministic in the style of `rockroad.mjs`
+(`tools/_scratch/camrock.mjs`, ~30 s, no browser). 21 528 fitted booms over
+1240 poses — every road centreline point thinned, plus off-road ground a camper
+could park on — at six orbit yaws and three zooms:
+
+```
+rock fit OFF   camera inside a rock 285/21528 (1.32%)   worst reach/dist 10.49   mean boom 0.929
+rock fit ON    camera inside a rock  49/21528 (0.23%)   worst reach/dist  1.73   mean boom 0.907
+```
+
+Trunks, in a browser because tree placement has no headless path, but **both
+arms inside one page load**, alternating which arm runs first at each pose
+(`tools/_scratch/camtree.mjs`). 12 150 fitted booms over 675 poses beside a
+trunk, at res 1536:
+
+```
+trunk fit OFF   camera inside a bole 33/12150 (0.27%)   within 1 m 592 (4.87%)   mean boom 0.951
+trunk fit ON    camera inside a bole  1/12150 (0.01%)   within 1 m  47 (0.39%)   mean boom 0.937
+```
+
+Both tools import the rig's own exported `chaseDesired` / `boomFree` and swap
+only the callback under test, so the A/B is of the camera code and not of a
+tool's memory of it. Both score against the exact solid — the rock's oriented
+bounding box, the trunk's cylinder — not against the approximation being
+tested.
+
+### 1. ROCKS — I did not reimplement your field, and I would like to stop reading it
+
+You offered `nearestRockSurface(x, z)` and asked not to have the extents
+reimplemented against instance matrices. I have not touched a matrix or an
+InstancedMesh. What I read is `rocks.cells` (the shape documented at
+Rocks.js:64) and `rocks.library` — the built geometries, for the same bounding
+boxes `archFootprints` itself reads. It is still your field being re-derived in
+my file, and I would rather it were yours.
+
+**The signature I need is not the one you offered**, and this is the one thing
+I want to get right before you build it:
+
+```js
+rockFloorAt(x, z, ground) -> number    // the top of the rock over this column
+```
+
+A plan *distance* does not compose with the fit. `_boomFit` marches columns and
+asks "how high is the world here" — it already takes `max(getHeight,
+getWaterHeight)`, and rock is a third `max` and nothing else. A distance would
+have me inventing a height from it at the call site, which is exactly the
+re-derivation we are both trying to avoid.
+
+Two properties it must have, both of which cost me measurable numbers to learn:
+
+* **Continuous.** Return the *dome* over each instance, not the box top:
+  `ground + (top - ground) * sqrt(1 - u^6)`, `u` normalised across the
+  footprint. A box top is exact and steps 15 m vertically at the plan edge, and
+  the camera flies that step. The dome decays to `ground` at `u = 1`, so it is
+  continuous with the field it is max'd against — hence `ground` being an
+  argument rather than something I add afterwards.
+* **`u` is Chebyshev, not Euclidean.** An ellipse inscribed in the footprint
+  leaves the four corners with no term at all: 10 of the 14 failures that
+  survived my first version were corners. Normalise across the rectangle.
+
+`MIN_RISE = 1.5 m` (ignore anything that does not stand at least that far above
+its own `groundY`) is mine to pass in if you would rather not bake it in — a
+40 cm cobble is already inside the 1.6–4.0 m of air the camera insists on, so
+folding it in can only cost frame time.
+
+The 49 that survive are at the plan edge or at the boom's 0.34 collapse clamp,
+which is a shot rule I am not moving. Your placement rule and this fit are
+independent: the corridor covers the road, the fit covers everywhere else, and
+the numbers above are all measured *with* your clearance on.
+
+### 2. TREES — one published trunk radius would be worth more than the rest of this
+
+I read `trees.trees` — `px`/`py`/`pz`/`pscale`/`pImpH` with
+`order`/`bucketStart`/`BW`/`BS`/`half` — bucketed, read-only,
+optional-chained, exactly as `Vehicle._treeGap` already does (filed as R3). If
+you change that table's shape, both of us stop working quietly rather than
+loudly, and a line here is enough for me to follow.
+
+One thing I could not get from it: **the trunk radius**. I am using
+`0.15 + 0.35 * pscale`, copied from the rescue check so the two at least agree,
+and it is wrong per species by a factor of three — `trunkRadiusK` runs 0.0165
+for birch to 0.045 for the heavy bole, so at the same height an oak's bole is
+nearly 3x a birch's. I did not import `SPECIES` to fix it because
+`tree_species.js` pulls in `tree_textures.js`, and a camera has no business
+dragging the texture atlas into its dependency graph.
+
+**Cheapest thing that would help: a `ptrunk` Float32Array in the table** —
+per-tree bole radius in world metres, alongside `pImpW`. You already compute it
+(`r0 = H * P.trunkRadiusK * jitter` in `growTree`). Everything else I need I
+have.
+
+If you would rather own the query outright, the shape is:
+
+```js
+trees.trunkRetract(anchor, desired, keep, maxT) -> fraction of the boom
+```
+
+`TrunkField.attach()` already prefers `trees.trunkRetract` if it appears, so
+that is a drop-in. It scans inwards from `maxT` and returns the first length
+whose endpoint is clear of every bole by `keep`.
+
+**Generalising both into one query, as the coordinator asked:** I do not think
+it should be one. I tried it as one and the shapes fought. Rock wants a *floor*
+— it is wide, low, and a boom that meets a crag should ride over it the way it
+rides over a hill. A trunk wants a *retraction* — it is thin and tall, lifting
+the camera over a 25 m spruce because the boom passed a metre from its bole is
+absurd, and there is no useful "height of the world" at a trunk column. What
+they can share is the *convention*: both are "the boom asks a system what it
+must not be inside", both take the boom as two points and answer in the boom's
+own units where the answer is a length. If a third solid ever wants in
+(buildings?), that is the shape to copy.
+
+### 3. Why the boom fit does not remove the need to fade bark — and why bark should now fade
+
+The 65 poses where the camera still ends inside `TRUNK_KEEP` of a bole are
+**all 65** at the boom's 0.34 collapse clamp: dense wood where no boom length
+between the camper and full extension is clear, so there is nothing for a fit
+to choose. That is the case the fade exists for, and no fit will ever close it.
+
+So this is a request to `src/render/Occlusion.js` and
+`src/vegetation/tree_material.js`, neither of which is mine, and I am filing it
+rather than touching it. `31f0c04` backs bark out of the fade for two reasons,
+and **both have since been withdrawn or narrowed by their own author**:
+
+1. **The twelve milliseconds is gone.** X4 is the occlusion author's own
+   correction: it was contention, not cost, and the real figure is 0.6 ms —
+   with the explicit note that *on a material that already alpha-tests, the
+   dither discard is cheap*. The perf objection to fading bark no longer has a
+   number behind it.
+2. **The shearing objection was against the vertex shrink, not the dither.**
+   `shots/occlude/bark-on.png` shows branch tubes sheared into diagonal
+   streaks — that is the shrink deforming a tube, and it says nothing about a
+   discard. The dither has also been rewritten since (`4c1fda7`, ordered Bayer
+   → interleaved gradient noise), so the screen-door read that motivated part
+   of the original caution is not the same artifact any more.
+
+The player's frame is a fully opaque trunk with four branches across it, in
+front of fronds that *are* fading — so the fade is working and bark is the
+hole in it. I would take dithered bark over an opaque bole, and I have 65
+measured poses per 12 150 where the camera cannot be moved out of the way.
+
+Reproduce all of the above:
+
+```bash
+node tools/_scratch/camrock.mjs                  # rock A/B, headless, ~30 s
+node tools/_scratch/camrock.mjs --dome           # why the dome exponent is 6
+node tools/_scratch/camrock.mjs --poses 60 --why # what the residual actually is
+node tools/_scratch/camtree.mjs                  # trunk A/B, both arms, one page load
+node tools/_scratch/camtree.mjs --keep           # why TRUNK_KEEP is 1.2 and not 2.4
+```
