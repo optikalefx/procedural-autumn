@@ -279,6 +279,13 @@ the dome under opaque cloud deletes all three.
 **Ask:** author the night block at `cover 0.10–0.13` (h21 through h5), ramping
 back to the existing 0.32–0.36 by h19 and h6.3, where cloud *is* the event.
 
+**Measured after the change**, with `cloudprobe.mjs`'s solid-cloud tier (a
+pixel the deck moved by more than 24/255): `dome-h0` **2.6%** of the upper frame
+and `hero-h0` **1.1%**, with every sky sample point *darker* with cloud than
+without (dLuma −0.03 to −0.06). That is the plates' read. It is achieved by
+scaling B's value down by a factor of four and a half, which is the wrong place
+for the number to live.
+
 **What I have shipped in the meantime**, so that my side works at whatever I am
 handed: `Clouds.update()` scales the value it is given by
 `(1 - 0.78 * SKY_STATE.starAmount)`, which lands h0 at an effective 0.077 and
@@ -303,6 +310,10 @@ the sky points (>1 means blue leads green, i.e. magenta-led):
 | `dome-h19.8` | 1.445 | **3.950** |
 | `dome-h7.4` | 1.474 | **1.676** |
 | `hero-h19` | 0.857 | 0.854 |
+
+Re-measured on the final build after the cloud rework, the gap is wider still:
+`dome-h19.8` reads **2.852 with cloud against 12.371 without**. A twilight
+zenith at blue 12x green is not a cloud artifact by any reading.
 
 **The violet is in the dome, not in the deck.** Hiding the cloud layer makes the
 zenith *more* magenta at every twilight hour measured, by more than a factor of
@@ -674,19 +685,52 @@ behind haze.
    that frame from white paper into the sunset it now is, and it did more for
    the value range than the amplitude cut did.
 
-3. **`fwidth` of the cube-face uv for anti-aliasing.** It spikes to a full unit
+3. **`amp = mix(MIN, MAX, pow(u, 6.6))` as a magnitude distribution.** It gave
+   the right count and the right *maximum* — 0.373 against the plate's 0.394 —
+   and a median of 0.190 against the plate's 0.085, for a spread of ×6.0 against
+   ×8.2. The failure is not obvious from the expression: with a mix(), nearly
+   every star sits at MIN, which is far *below* the visibility floor and so
+   contributes nothing, while every star that clears the floor is already well
+   clear of it. The population a real sky is made of — the one just barely
+   visible — did not exist at any setting of the two constants. Replaced with a
+   power law, `amp = MIN · u^(-1/2.2)`, whose defining property is that it is
+   scale-free: the median *visible* star sits at 1.37× the visibility threshold
+   whatever that threshold turns out to be. It took p50 from 0.190 to 0.069
+   against the plate's 0.085 in one capture, and it is the one number in the
+   starfield that will not need re-tuning when the night level moves.
+
+4. **Isotropic noise on the Milky Way, and then too much anisotropy.** Round
+   one was ordinary fbm of `dir` multiplied by a gaussian stripe, and the lead's
+   read of the frame was exactly right — "a vague smudge with no structure and
+   no direction, it looks like a smear on the lens". Round noise cannot describe
+   a band, because the first thing the eye takes from a band is which way it
+   runs. Round two stretched the noise 4.6× along the band and came back looking
+   like a searchlight: parallel scratches running its whole length, worse than
+   the smudge. 1.6× is the setting that reads as clouds drawn out along a band.
+   The pole moved too, from a crown at 83° (essentially the zenith, which in a
+   pitched-up view projects as a vertical column) to 60°, where the band arcs
+   across the upper sky as a diagonal the way it does in both plates.
+
+5. **`mix(warm, white, ci / 0.17)` for star colour.** Nominally a fifth of the
+   field was warm; in the frame every star was blue-white. Writing the warm
+   branch as a full fade to white means only the stars with `ci` near zero are
+   amber at all, and most of those are too faint to see. Capping the fade at
+   0.55 keeps the whole warm fifth visibly warm.
+
+6. **`fwidth` of the cube-face uv for anti-aliasing.** It spikes to a full unit
    along all six cube seams, so star radii clamp huge there and a bright cross is
    drawn across the sky. `fwidth(dir)` is continuous everywhere and gives the
    same number. One line, an hour to find.
 
-4. **Star density, three times.** `SK_FILL` 0.26 → 2315 /Mpx, 0.115 → 316,
-   0.055 → 48. The metric is a *contrast* test (local maxima 0.045 display luma
+7. **Star density, four times.** `SK_FILL` 0.26 → 2315 /Mpx, 0.115 → 316,
+   0.055 → 48, then the whole mapping changed under it. The metric is a
+   *contrast* test (local maxima 0.045 display luma
    above their neighbourhood) so it moves with the night level and with capture
    resolution, and it is not a property of the field alone. It is now 0.085 —
    deliberately a compromise that sits inside 76–174 at both the current level
    and the darker one it is heading for, rather than optimal at either.
 
-5. **The `Sky.js` header was wrong on all three counts.** It said the scene was
+8. **The `Sky.js` header was wrong on all three counts.** It said the scene was
    AgX tone-mapped in the material with bloom at a 0.62 threshold on the
    display-referred result. `renderer.toneMapping` is `NoToneMapping`, PostFX
    moved to Khronos PBR Neutral, and bloom runs *before* the curve on the linear
@@ -728,3 +772,228 @@ behind haze.
   hours where it would read it is behind a ridge or a tree. The aureole carries
   the frame. That is faithful to the plates — neither `sunset.jpg` nor
   `sunset2.jpg` contains a disc — but it means the disc code is nearly untested.
+
+## Author D — what landed
+
+Owner of `src/sky/Clouds.js`. Nothing else was edited. Two tools added:
+`tools/cloudprobe.mjs` and `tools/clouddrift.mjs`.
+
+### The measurements
+
+Before = `shots/BASELINE/` (pinned pre-round build). After = `shots/D-r4/`,
+captured from the integrated tree. `colorstats.mjs`, whole frame:
+
+| `hero-h19` | BASELINE | **D-r4** | `sunset.jpg` |
+|---|---|---|---|
+| lumaP05 | 0.263 | **0.233** | 0.247 |
+| lumaP95 | 0.612 | **0.898** | 0.927 |
+| lumaRange | 0.349 | **0.665** | 0.680 |
+| contrastStd | 0.113 | **0.215** | 0.221 |
+| chromaMean | 0.358 | **0.297** | 0.392 |
+| violet + magenta + rose | 6.6% | **1.2%** | 0 |
+
+| `dome-h19` | BASELINE | **D-r4** | `sunset.jpg` |
+|---|---|---|---|
+| lumaP05 | 0.329 | 0.476 | 0.247 |
+| lumaP95 | 0.619 | **0.941** | 0.927 |
+| lumaRange | 0.291 | **0.466** | 0.680 |
+| chromaMean | 0.315 | 0.218 | 0.392 |
+
+`cloudprobe.mjs` — the same frame captured twice, once with the cloud dome
+hidden, so the deck's own contribution is isolated:
+
+| | solid cloud, upper frame | lumaP95 with | without | zenith dLuma |
+|---|---|---|---|---|
+| `hero-h19` | 48.3% | **0.803** | 0.583 | +0.081 |
+| `hero-h19.8` | 17.5% | **0.588** | 0.481 | +0.004 |
+| `dome-h7.4` | 56.7% | **0.887** | 0.776 | −0.008 |
+| `hero-h7.4` | 14.2% | 0.759 | 0.790 | −0.096 |
+| `dome-h0` | **2.6%** | 0.118 | 0.168 | **−0.059** |
+| `hero-h0` | **1.1%** | 0.114 | 0.143 | **−0.047** |
+
+Read those last two rows together with the night plates: cloud covers 1–3% of
+the night sky and every sample point is *darker* with it than without. That is
+`night2.jpg` — a mass slightly under the sky value with a moonlit shoulder, not
+a hole punched in the star field. `dome-h0` frame max also drops 1.000 → 0.956
+with cloud in, which is the deck occluding the moon halo: the layers are one
+picture now, not two stacked.
+
+`clouddrift.mjs --view dome --hour 19` — cross-correlated sky band:
+
+```
+pair   dt     px/s   deg/s   dir    peak
+  1  3.90s    1.85   0.213    56°   0.905
+  2  3.57s    2.19   0.251    50°   0.892
+  3  3.85s    2.76   0.317    49°   0.846
+```
+Direction holds within 7° across ten seconds; speed is 0.21–0.32 °/s (the
+spread is ±0.5 px of integer-search quantisation on a 4–8 px displacement, not a
+real variation). Correlation peak 0.91 → 0.85 across the run: the deck is
+translating, and decaying slowly because the detail layer shears against the
+mass — that decay *is* the evolution, and it is why it no longer reads as a
+scrolling texture.
+
+### Frame cost
+
+**The absolute number is untrustworthy; the differential is not.**
+`perf.mjs --seconds 25` on the integrated tree reports p50 42.8 ms / p95
+100.4 ms and FAILs its budget — but it ran with three other authors' headless
+captures resident on the same machine, and `docs/STATE.md` already attributes
+this project's standing performance problem to pixel ratio and the post chain,
+not to the scene.
+
+So the deck was measured against *itself* instead, toggling one mesh on and off
+inside one session and alternating the arms so any drift in machine load falls
+on both equally (`tools/_scratch/cloudcost.mjs`), at h19 with the camera pitched
+up so the deck fills the frame — its worst case:
+
+```
+clouds ON   median frame 31.60 ms
+clouds OFF  median frame 31.80 ms
+deck costs  -0.20 ms  (-0.6%)
+```
+
+A negative cost is obviously not real; it means the deck's cost is **below the
+noise floor of this machine under this load**. It should still be re-run on a
+quiet machine, but there is no regression here to find.
+
+What can be stated without a timer at all:
+
+- Draw calls and triangles are **unchanged**. The deck is still one 48x24 sphere,
+  one draw call. `health.mjs` on the final tree: `ok: true`, 526 calls,
+  3.75 M tris, 0 shader failures, all 13 systems up.
+- Per fragment the shader gained roughly **15 ALU ops and one extra `hg()`** (a
+  `pow`), and **zero additional texture taps** — `hs` was already being sampled
+  for the self-shadow; the limb is the same subtraction read the other way. One
+  per-slice multiply was removed.
+- The noise tile went from `RGBA8` to `RGBA16F`: **1 MB to 2 MB**, and the taps
+  per pixel are unchanged in count. That is the one real cost, and it is texture
+  bandwidth on a tile small enough to stay resident.
+
+### What changed, and why
+
+1. **The lit limb was already being computed and thrown away.** The self-shadow
+   test samples the column one step toward the light and clamps `hs - ht` at
+   zero. The negative half of that same subtraction is the sunward shoulder of
+   the mass — its limb. Un-clamping it is the whole directional lighting event
+   and it cost one `clamp`.
+2. **The belly, when the sun is under the deck.** `vert` was a fixed
+   `0.50 + 0.50 * f`, i.e. crown-lit at every hour, which draws an 18:00–20:00
+   cloud lit from the top. It now flips with `uBelow`, and the belly term is
+   weighted by `(1 - ht)` so it glows where the cloud is *thin*.
+3. **Body near-neutral, chroma on the rim only.** Handing `cloudLit` (#ffb078,
+   chroma 0.53 at 19:00) straight to the shader tints the whole mass orange.
+   The body is desaturated in JS; the saturated colour lives in `uRim`, which
+   the shader spends only on the limb, the belly and the silver lining, and only
+   through `warm` — down to a third away from the light's azimuth and a third by
+   30° of elevation, which is the chroma-at-the-horizon rule made into a number.
+4. **Every colour is now a RATIO to the sky, never a level.** `reanchor()`
+   anchors lit/dark/ambient/rim to `0.42·luma(zenith) + 0.58·luma(horizon)` in
+   daylight and to `luma(zenith)` at night — 1.55 / 0.38 / 0.85 / 3.2 by day,
+   0.88 / 0.42 / 0.68 / 1.55 at night. Author C owns absolute level; this file
+   owns the ratios. It paid for itself twice in one afternoon: B re-authored the
+   night keys ten times brighter and then dark again, and the deck tracked both
+   without a number here moving.
+5. **`noViolet()`.** A hard clamp pulling linear blue down to green on every
+   cloud colour while the sun is up, off at night. The `cloudAmbient` bug cannot
+   be re-created from this file by tuning; it is structurally excluded.
+6. **Opacity 0.35 → 1.0 at night, cover scaled instead.** `uOpacity` was
+   `0.35 + 0.65 * dayFactor`, and `dayFactor` is 0.03 by 19:00 — so the deck was
+   being cross-faded out an hour before sunset was over, and a 35%-opaque layer
+   cannot occlude a star. Grace at night is now `uCover * (1 - 0.78·starAmount)`.
+7. **Two rendering bugs that the new contrast exposed.**
+   - The noise tile was **8-bit**. Half a step is 0.00196 of the field, ÷ RAMP
+     0.100 × the normal's k = 3.12 gives a **0.061 normal tilt at texel
+     frequency** — a fur crawling over every shaded flank, invisible against the
+     old 1.40-wide terminator and glaring against this one. Now RGBA16F: 2.44e-4
+     round-trip, a 0.0076 tilt. 2 MB instead of 1 MB, built once.
+   - The lattice fade was **smoothstep**, which is C1 with a kink in its
+     gradient on every lattice line. Finite-differencing it for a normal turns
+     those kinks into facets — a diagonal weave through the mid-tone of every
+     cloud on `dome-h7.4`. Quintic (`6t⁵-15t⁴+10t³`) removes it; it is the same
+     reason Perlin dropped his own cubic in 2002.
+8. **Slice contouring.** Silhouette softness was a constant 0.085 against a
+   slice spacing of 0.143, so each slice crossed its threshold in isolation and
+   drew a contour line: concentric onion rings round every mass at 19:00. It is
+   now `1.15 / (SLICES - 1)`, derived rather than guessed, which also fixes the
+   low tiers. Parallax clamp 0.40 → 0.30, and the additive silver moved off the
+   per-slice `inside` onto the per-pixel column height for the same reason.
+9. **Aerial fade.** `smoothstep(0.022, 0.19)` had the deck 90% melted into haze
+   at 3° of elevation — and 3° is where `hero` and `ridge` spend their entire sky
+   budget. Now `(0.014, 0.14)`, it fades toward `sunHorizon` rather than a
+   neutral haze on the light's side, and the alpha loss there drops to 0.34.
+   That last number is what makes a silver lining possible at all: a rim needs
+   an opaque cloud in front of the glare, and at 22% opacity the glare simply
+   shone through.
+10. **Drift.** Wind 4.4/2.1 → 6.2/3.0 m/s, and the detail and cirrus layers now
+    ride their own vectors, sheared against the mass. The coarse field still
+    moves on `uWind` exactly, because Atmosphere's ground-shadow map is scrolled
+    by the same vector and the patch on the meadow has to be the cloud overhead.
+
+### What did NOT work
+
+- **Chasing the highlight with an absolute gain.** The first pass multiplied
+  `cloudLit` by up to 1.58. It hit `lumaP95` but the lead's integrated capture
+  showed why that was worthless: the composite's `lumaRange` came out at 0.269,
+  *worse than the baseline's 0.291*, because everything had moved to the top of
+  the histogram together. `sunset.jpg` reaches 0.927 while holding 0.247 at the
+  bottom. Reverted in favour of ratios plus a genuinely dark core (`energy`
+  floor 0.18 → 0.07, `dark` at 0.38× the sky).
+- **Anchoring night cloud to the sky's mean.** Anchoring to
+  `0.5·(zenith + horizon)` put the night deck at 3× the rendered sky, because
+  the horizon key is several times the zenith and the night framing that matters
+  is pitched *up*. Night now anchors to the zenith alone.
+- **Weighting the sun→moon key swing on `moonIntensity`.** It is already 0.53 at
+  19:00, and the moon is 104° of azimuth from the sun there, so the deck's
+  shading visibly rolled over across the two money frames. Multiplying by
+  `starAmount` defers the swing into the hours where the deck has no contrast
+  left to roll — 0.08 at 19:00, 0.31 at 19:48, 0.79 at 21:00.
+- **Warming the cloud shadow toward the zenith to get the "cool half" back.** At
+  19:00 the zenith key is `0x4a6bb4`; pulling the shadow 22% toward it produced
+  a desaturated mauve — R above B above G — which is the candy-pink complaint,
+  not the cure. Desaturation plus `noViolet` was the answer instead.
+- **Raising cover at golden hour to get cloud across the sun in
+  `sunvista-h17p1`.** Tried and abandoned: the sun-facing sky at that hour is
+  already at 1.0 linear from the aureole (see request D3), so more cloud there
+  buys a grey slab over a white field, not a rim.
+
+### Assumptions about A, B and C
+
+- **A (dome).** I assume `Sky.js` keeps drawing at `renderOrder -1000` and that
+  stars and the Milky Way are written into the dome's colour. That is what makes
+  cloud occlusion free — the deck alpha-blends over them and needs nothing from
+  A. If the starfield ever moves to its own pass drawn *after* `renderOrder
+  -999`, occlusion breaks silently and this file has no way to know.
+- **B (light).** I assume `cloudLit` / `cloudDark` / `cloudAmbient` keep their
+  *hues* meaningful and stop being read for their levels — this file now uses B's
+  hue and discards B's value in favour of a ratio. I also assume `starAmount`
+  stays a genuine "is the sky dark yet" ramp, because both the night cover scale
+  and the key-light swing hang off it. And see request D1: the night `cover`
+  values are wrong for this brief and I am scaling them locally until they move.
+- **C (post).** I assume the bloom threshold stays near 0.80 linear and that
+  exposure is C's alone to set. The rim is authored to cross that threshold on a
+  limb and nowhere else. If exposure moves, the deck moves with the sky and the
+  relationship holds; if the *threshold* moves a long way down, the rim will
+  bloom into the body and I would want to know.
+
+### Still not good enough
+
+1. `dome-h19` `lumaP05` is **0.476** against `sunset.jpg`'s 0.247. The dome
+   framing has no dark foreground, so it is not a fair comparison — but the
+   darkest cloud in that frame is still not dark enough, and `lumaRange` 0.466
+   against 0.680 says the same thing from the other side.
+2. **No silver lining at `sunvista-h17p1`.** Cover is at the day's minimum
+   (0.22) at that hour and the sun-facing sky is blown; there is no cloud across
+   the disc and no headroom for an edge if there were. Request D3.
+3. **Faint slice contouring survives** on the largest masses at low elevation
+   (`dome-h19`, mid-left). Much reduced, not gone. The real fix is more slices
+   or a proper analytic integral through the deck, and neither is a
+   frame-budget-free change.
+4. **`dome-h7.4` reads 56.7% cloud.** That follows B's `cover 0.30` at that hour
+   and it is more sky than `morning.jpg` covers. I did not override it — one
+   author scaling another's curve is already happening once, at night, and twice
+   is how a value stops being findable.
+5. The deck's masses still have a **lenticular, stacked-plate silhouette** at
+   grazing angles. It suits the plates' flat-mass look better than it has any
+   right to, but it is not cumulus, and a critic who knows what a cloud looks
+   like will name it.

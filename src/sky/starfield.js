@@ -67,10 +67,10 @@ export const STAR_GLSL = /* glsl */`
 // ladder.mjs counts local maxima more than 0.045 display luma above their own
 // neighbourhood — so it moves with the night exposure, which is Author C's.
 // If the night level changes, re-measure this; do not assume it still holds.
-#define SK_FILL 0.180
+#define SK_FILL 0.070
 // Extra fill inside the Milky Way. The band is *made* of stars we cannot
 // resolve plus a scatter of ones we can.
-#define SK_FILL_MW 0.150
+#define SK_FILL_MW 0.060
 
 vec3 skHash33(vec3 p) {
   p = fract(p * vec3(0.1031, 0.1030, 0.0973));
@@ -102,12 +102,17 @@ vec3 skFaceUV(vec3 d) {
 }
 
 // ── the Milky Way ───────────────────────────────────────────────────────────
-// A great circle, defined by its pole. The pole is very nearly horizontal on
-// purpose: that puts the band through the zenith and down to two opposite
-// points of the skyline, so every view that looks up crosses it somewhere.
-// A pole with a large y would put the band in a ring around the horizon, where
-// terrain hides it and where it reads as a fog bank rather than as a galaxy.
-#define SK_MW_POLE normalize(vec3(0.902, 0.128, -0.412))
+// A great circle, defined by its pole. The band it draws reaches a maximum
+// elevation of asin(sqrt(1 - poleY^2)) — so poleY sets how the band crosses the
+// frame, and it is a composition control, not a physical one.
+//
+// At poleY 0.128 the crown is at 83 deg, i.e. essentially the zenith, and in a
+// pitched-up view a band through the zenith is a near-vertical column: the
+// first capture of this came back looking like a searchlight. At 0.50 the crown
+// is at 60 deg and the band arcs across the upper sky as a diagonal, which is
+// how it sits in both plates. Much higher and it becomes a ring around the
+// horizon, where terrain hides it and it reads as a fog bank.
+#define SK_MW_POLE normalize(vec3(0.720, 0.500, -0.480))
 
 // Returns .x = haze density (0..1+), .y = local star-density boost (0..1).
 vec2 skMilkyWay(vec3 dir) {
@@ -116,8 +121,8 @@ vec2 skMilkyWay(vec3 dir) {
 
   // Two nested widths: a bright spine inside a wide, faint envelope. A single
   // gaussian reads as an airbrushed stripe; the reference band has a core.
-  float core = exp(-(b * b) / (2.0 * 0.075 * 0.075));
-  float wide = exp(-(b * b) / (2.0 * 0.215 * 0.215));
+  float core = exp(-(b * b) / (2.0 * 0.100 * 0.100));
+  float wide = exp(-(b * b) / (2.0 * 0.255 * 0.255));
   float band = 0.66 * core + 0.34 * wide;
 
   // Structure, and it is deliberately ANISOTROPIC.
@@ -133,8 +138,13 @@ vec2 skMilkyWay(vec3 dir) {
   // and compressed ACROSS it (high frequency, 11 and 26). The clouds come out
   // as streaks parallel to the band, which is both what the plates show and
   // what the real thing looks like.
-  vec3 q1 = along * 2.40 + SK_MW_POLE * b * 11.0;
-  vec3 q2 = along * 6.10 + SK_MW_POLE * b * 26.0;
+  // The ratio of the two frequencies is the elongation, and the first attempt at
+  // it (2.4 along / 11 across) was three times too strong: the clouds stopped
+  // being clouds and became parallel scratches running the length of the band.
+  // 3.2 against 5.0 is a 1.6x stretch, which reads as "drawn out along the
+  // band" without ever reading as a line.
+  vec3 q1 = along * 3.20 + SK_MW_POLE * b * 5.0;
+  vec3 q2 = along * 7.50 + SK_MW_POLE * b * 13.0;
   float lobes = skFBM(q1 + 4.0);
   float clump = skFBM(q2 + 19.0);
 
@@ -142,11 +152,11 @@ vec2 skMilkyWay(vec3 dir) {
   // single detail that stops this being an airbrush stroke. A narrow, deep
   // subtraction offset slightly from the spine, wandering along its length —
   // the wander is what keeps it from reading as a drawn line.
-  float lane = b - 0.030 - 0.055 * (skFBM(along * 1.6 + 31.0) - 0.5);
-  float rift = 1.0 - 0.80 * exp(-(lane * lane) / (2.0 * 0.030 * 0.030));
+  float lane = b - 0.038 - 0.070 * (skFBM(along * 1.6 + 31.0) - 0.5);
+  float rift = 1.0 - 0.62 * exp(-(lane * lane) / (2.0 * 0.042 * 0.042));
 
-  float dens = band * (0.18 + 1.25 * lobes) * (0.45 + 0.95 * clump) * rift;
-  dens = pow(clamp(dens, 0.0, 1.0), 0.85) * 1.35;
+  float dens = band * (0.30 + 1.00 * lobes) * (0.50 + 0.85 * clump) * rift;
+  dens = pow(clamp(dens, 0.0, 1.0), 0.85) * 1.30;
   return vec2(dens, clamp(band * (0.35 + 1.00 * lobes) * rift, 0.0, 1.0));
 }
 
@@ -184,9 +194,9 @@ vec2 skMilkyWay(vec3 dir) {
 // The faintest star the field draws, and the slope of the magnitude
 // distribution. See skStars() for what the slope is and why it is not a
 // smoothstep or a power of a uniform hash.
-#define SK_MAG_MIN 0.048
+#define SK_MAG_MIN 0.052
 #define SK_MAG_SLOPE 2.2
-#define SK_MAG_MAX 0.70
+#define SK_MAG_MAX 1.05
 
 vec3 skStars(vec3 dir, float t, float mwBoost) {
   vec3 fuv = skFaceUV(dir);

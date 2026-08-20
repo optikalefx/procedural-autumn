@@ -251,17 +251,24 @@ void main() {
   // footprint in the units the silhouette threshold uses, so the same number
   // both antialiases nearby cloud edges and melts distant ones into a wash
   // instead of letting them alias.
-  // The floor is one slice spacing, not a constant.
   //
-  // Each slice crosses its own coverage threshold at f, so with a softness
-  // narrower than the gap between slices those crossings never overlap and the
-  // deck draws its own contour lines: a set of concentric onion rings around
-  // every mass, plainest at 19:00 where the belly lighting varies most from
-  // slice to slice. 0.085 against a spacing of 0.143 at eight slices was well
-  // inside that failure. Tying it to SLICES also fixes it on the low tiers,
-  // where four slices are 0.333 apart and uSoft was a hand-tuned guess at the
-  // same quantity.
-  float sw = max(fwidth(ht) * 1.4, 1.15 / float(SLICES - 1) + uSoft);
+  // THE FLOOR IS ONE SLICE SPACING, NOT A CONSTANT
+  // ----------------------------------------------
+  // Each slice crosses its own coverage threshold at its own f, so a softness
+  // narrower than the gap between slices means those crossings never overlap
+  // and the deck draws its own contour map: concentric onion rings around every
+  // mass, plainest at 19:00 where the belly lighting varies most from slice to
+  // slice. The old floor was a flat 0.085 against a spacing of 0.143 at eight
+  // slices — well inside that failure — plus a per-tier uSoft fudge that was
+  // a hand-tuned guess at this same quantity. Deriving it from SLICES fixes
+  // both, and retires the fudge.
+  //
+  // Capped at 0.26 for the low tier, which runs four slices: 1.15/3 = 0.38 is
+  // wider than the entire coverage ramp and the silhouette would dissolve into
+  // a wash with no cloud shape in it at all. Coarse contours beat no shape.
+  // The cap never binds at six slices or more, so it does not touch the tiers
+  // this round was judged on.
+  float sw = max(fwidth(ht) * 1.4, min(1.15 / float(SLICES - 1), 0.26) + uSoft);
 
   // ── shading ──────────────────────────────────────────────────────────────
   // The deck is a heightfield, so it has a real normal, and at golden hour the

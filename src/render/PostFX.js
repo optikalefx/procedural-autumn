@@ -845,19 +845,27 @@ const EXPOSURE_ELEV_MIN   = 0.66;   // multiplier at the top of the arc
 // 1.34x bought top-end by moving lumaP05 from 0.305 to 0.369 — the wrong
 // trade. Everything below the horizon does need it.
 //
+// The night end started at 2.10 and came down to 1.28 as the three daylight
+// constants below (tone-curve offset, contrast pivot, toe) were scaled out of
+// the night in turn. Each of them was suppressing the night frame, so each time
+// one went the exposure needed less to do. That is the honest reading of this
+// table: MOST of what looked like a night exposure problem was three
+// display-referred corrections applied to a frame two decades below the range
+// they were sized for.
+//
 //   sin(elev)   x     what
 //     0.40+    1.00   day: handed to the EXPOSURE_ELEV ramp above, untouched
 //     0.10     1.00   dawn/golden hour: the shipping sheet, bit-identical
 //     0.00     1.00   sun on the horizon — the sunset plates, and already there
-//    -0.09     1.28   civil twilight
-//    -0.22     1.80   astronomical twilight into night
-//    -0.45     2.10   deep night
+//    -0.09     1.07   civil twilight
+//    -0.22     1.20   astronomical twilight into night
+//    -0.45     1.28   deep night
 const EXPOSURE_LOW = [
   [ 0.10, 1.00 ],
   [ 0.00, 1.00 ],
-  [-0.09, 1.28 ],
-  [-0.22, 1.80 ],
-  [-0.45, 2.10 ],
+  [-0.09, 1.07 ],
+  [-0.22, 1.20 ],
+  [-0.45, 1.28 ],
 ];
 
 /** Interpolate EXPOSURE_LOW at `e`, smoothstepped between rows. */
@@ -1105,14 +1113,34 @@ export class PostFX {
       twiContrast: 0.30,
       twiVibrance: 0.34,
       nightLiftCut: 0.85,
+      nightContrast: 1.05,
+      nightToeCut: 0.60,
       // How much of PBR Neutral's black offset survives at full night. See the
       // note in TONEMAP_FRAG — at 1.0 the curve eats two thirds of the night
       // frame and inflates its blue-to-red ratio fourfold.
       nightOffset: 0.15,
-      rodAmount: 0.70,
+      rodAmount: 0.50,
       // The scotopic axis, luminance-normalised. Written every frame so a
       // sweep can move it; see the note in the grade.
-      rodTint: [0.958, 0.910, 2.012],
+      //
+      // Swept against the plates' own night chromaMean (0.157-0.172) on camp-h0,
+      // measuring whole-frame chroma at rodAmount 0.70 / 0.90:
+      //   1 : 0.95 : 2.10   0.094 / -
+      //   1 : 1.55 : 4.75   0.124 / 0.138
+      //   1 : 2.88 : 11.7   0.153 / 0.175
+      // and then re-swept on amount alone once the contrast pivot came down,
+      // which raised every dark pixel and with it the chroma the term has to
+      // work on: 0.45 -> 0.162, 0.60 -> 0.188 against the three night plates'
+      // own chromaMean of 0.157 / 0.164 / 0.172. Held at 0.50, the middle of
+      // that band — past it the autumn meadow stops being an autumn meadow and
+      // starts reading as frost, which is a real colour for the SNOW the plates
+      // happen to be shot on and not for this game's ground.
+      // and the value distribution is bit-stable across all of them — p05/p95
+      // move by 0.004 — so this is a pure hue-and-chroma operator, which is
+      // what a scotopic shift should measure like and what a saturation
+      // multiply would not. The last row is close to the plates' own moonlit
+      // ground, srgb(14,47,88) at linear 1 : 6.3 : 24.
+      rodTint: [0.32, 0.92, 3.75],
       // Where `lowSun` reaches 0, in sin(elev). 0.34 is ~20 deg.
       lowSunEnd: 0.34,
     };
@@ -1461,7 +1489,38 @@ export class PostFX {
     // the toe cut turning every shaded shrub into a black hole at eye level in
     // daylight, and the art director rejecting it. `lowSun` is 0 at noon and
     // 0.35 at h17.1, so the daylight sheet moves by a third of this at most.
-    u.get('uContrast').value = 1.36 + L.twiContrast * lowSun;
+    // ── AND THE CONTRAST PIVOT IS THE THIRD DAYLIGHT CONSTANT ────────────────
+    //
+    // The grade's contrast pivots on 0.18 — middle grey — which is the right
+    // pivot for a frame whose subject spans 0.1 to 1.0. At night the BRIGHTEST
+    // pixel in the frame is about 0.05, so every pixel is far below the pivot
+    // and a contrast above 1 throws all of them deep negative; the soft toe
+    // beneath is then the only thing bringing them back, and what it brings
+    // back is dominated by the toe constant rather than by the pixel.
+    //
+    // Worked with real numbers, a night ground channel at 0.020 linear:
+    //   contrast 1.36  ->  v = -0.0624, toe 0.022 -> 0.0019
+    //   contrast 1.05  ->  v = -0.0090, toe 0.022 -> 0.0089
+    // i.e. at the daylight setting the output is four fifths toe. That is the
+    // same failure as the lift and the tone curve's black offset, from a third
+    // direction: a term sized for a display-referred daylight frame becomes the
+    // majority of the signal in a frame that lives two decades lower. It shows
+    // up as the night ground going grey — one constant added to all three
+    // channels of a dark pixel IS a desaturation — while the sky's chroma
+    // simultaneously reads too HIGH, because the tone curve's min-channel
+    // subtraction is pulling the other way on the pixels just above it.
+    //
+    // Ramped toward 1.0 rather than to it. The plates' own night contrast is
+    // low (contrastStd 0.074-0.123 across the three) so there is nothing here
+    // that wants a strong S-curve, but a value of exactly 1 makes this line a
+    // no-op and the next author will delete it.
+    const contrastDay = 1.36 + L.twiContrast * lowSun;
+    u.get('uContrast').value = contrastDay + (L.nightContrast - contrastDay) * night;
+    // The toe goes with it, for the same reason and by the same argument as the
+    // lift: with the pivot brought down there is much less negative excursion
+    // for it to catch, and what it does catch it should catch gently or it is
+    // once again the majority of a dark pixel.
+    u.get('uToe').value = 0.022 * (1 - L.nightToeCut * night);
     // Vibrance down at twilight. It is a chroma *compressor* — it boosts by
     // (1 - sat), so it does its largest work on the least saturated pixels in
     // the frame, and at dusk those are the sky and the haze. Measured on the
