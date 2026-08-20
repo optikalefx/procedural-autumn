@@ -1105,3 +1105,59 @@ capture, so it is positional. **Not yet identified.** A scene scan
 a massif near the boundary is the first thing to test. The particle systems
 reporting radius 1e6-1e7 are `frustumCulled = false` sentinels and are normal.
 Reproduce by driving, not by posing.
+
+---
+
+## Correction to pass 6, blocker #2 — the "plate 5 rock" target was gold grass
+
+**Filed by the integrator, 2026-08-20, from the rocks author's round.**
+
+Pass 6 ranked "rock is grey" as blocker #2: our `waterfall` massif at 70.4%
+neutral / 1.6% vivid against **"plate 5's rock at 11.8% neutral / 44.7% vivid"**.
+
+**That target is not rock.** The rocks author measured plate 5 directly with
+re-runnable fractional rects:
+
+| rect | srgb | ratio | neutral | vivid |
+|---|---|---|---|---|
+| boulder, lower right | 186:183:182 | 1:0.981:0.975 | 27.6% | **0.0%** |
+| cliff, left edge | 165:157:152 | 1:0.947:0.922 | 75.3% | **0.0%** |
+| cliff, top centre | 170:158:153 | 1:0.932:0.902 | 34.5% | **0.1%** |
+| *grass beside a boulder* | 219:165:117 | 1:0.755:0.535 | 5.1% | **59.8%** |
+
+Pass 6's figure is the last row. **Plate 5's actual rock is near-neutral grey
+with essentially zero vivid pixels, and plate 3's massifs agree at 0%.** Our
+1.6% vivid was slightly *more* chromatic than the reference, not less. Grey is
+the reference answer. Blocker #2 as written is withdrawn.
+
+The earlier rocks author who measured `1 : 0.93 : 0.91` and declared hue closed
+had measured real rock and was right. The contradiction between the two
+measurements was never about which *quantity* to use — it was that one of them
+sampled the wrong *pixels*.
+
+**This is the second target in three passes produced by sampling the wrong
+region.** Pass 4 judged an eye-level view against plate 1, which the brief
+forbids at line 119. Pass 5's "conifers are red-led" came from patches that
+included gold grass, and died to the fog-off test. Now this. **Before quoting a
+reference number, mask the region and state what is in it** — the rocks author's
+paint-mask method is the model: it showed the existing `--diff` mask was
+counting swaying foliage as "rock" (18.5% of frame, host at 43.7% vivid) where
+the true figure is 9.3%.
+
+**A second misattribution in the same blocker, and this one reopens another.**
+Painting the rock material showed the rock system owns **9.3%** of the
+`waterfall` frame and **none** of the massif rect pass 6 quoted. The grey mass
+everyone has been calling "rock" is **`TerrainMaterial`** — pass 3's blocker #6,
+still open. That is also why the previous author's hue ladder measured only
+marginally: they were pushing on a surface that is not the grey one.
+
+**What was real, and shipped.** Every rock in every plate is **red-led**; ours
+had blue above red. `uRockCast` 0.925/0.985/1.165 → 0.95/0.924/0.888 (`90c5256`).
+The old value had been fitted at `hero` — the one view where rock sits at 0.34
+luma under heavy haze and so contributes least to its own pixel — which put
+every eye-level rock 0.25 of blue ratio off. Interleaved A/B: the `waterfall`
+crag chain goes 1:0.990:1.124 → 1:0.900:0.875 against a host of 1:0.924:0.893.
+The necklace was on `waterfall`, not `hero`, and did not reproduce as a hue
+mismatch on `hero` at all.
+
+`hero` regresses slightly and the author flagged it rather than burying it.
