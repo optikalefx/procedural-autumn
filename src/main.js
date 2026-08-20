@@ -20,6 +20,7 @@ const GEN_HASH = sourceHash(terrainGenSource);
 import { Terrain } from './world/Terrain.js';
 import { Atmosphere } from './render/Atmosphere.js';
 import { Stylize } from './render/Stylize.js';
+import { setOcclusionTarget } from './render/Occlusion.js';
 import { Lighting } from './render/Lighting.js';
 import { PostFX } from './render/PostFX.js';
 import { Sky } from './sky/Sky.js';
@@ -293,6 +294,19 @@ async function boot() {
       try { s.update(dt, t); }
       catch (e) { console.error(`[system:${name}] update threw`, e); s.enabled = false; }
     }
+
+    // ── camera occlusion ────────────────────────────────────────────────────
+    // Hand the shared transparent frustum the one thing that has to stay
+    // visible. After the systems loop, so the camper has already been stepped
+    // this frame and the cone is not aimed one frame behind it.
+    //
+    // This is the only thing in render/Occlusion.js that needs a world system,
+    // which is why it is here rather than in the helper; setOcclusionTarget
+    // switches itself off unless the subject is near and near the view axis, so
+    // the fly camera and every landscape capture are untouched. CameraRig would
+    // be a tidier owner — see docs/INTEGRATION_REQUESTS.md.
+    const veh = ctx.systems.vehicle;
+    setOcclusionTarget(cam, veh?.enabled ? veh.position : null);
   });
 
   engine.onLateUpdate((dt, t) => {

@@ -26,6 +26,14 @@
 //  and the fade rather than ghosting the un-swayed pose.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+// Camera occlusion — the transparent frustum between the chase camera and the
+// camper (src/render/Occlusion.js). Two call sites here, both marked OCCLUDE.
+// Note this material takes the *shrink* form, not the dithered discard the
+// tree canopy takes: cover is opaque, and a discard would cost it early-Z on a
+// surface that currently has it. Shrinking toward the root is free, it is
+// already exactly what coverFade does at the visibility limit below, and a
+// shrub sinking into the ground is a nicer read than one dissolving in place.
+import { occlusionUniforms, OCCLUDE_PARS } from '../render/Occlusion.js';
 
 /** Shared uniform block. One object drives every cover material. */
 export function makeCoverUniforms() {
@@ -157,6 +165,20 @@ const COVER_DISPLACE = /* glsl */`
     // close to shipping. That frame is on the brief's do-not-trade list.
     coverFade *= smoothstep( aCov.w * 0.062, aCov.w * 0.152, coverDist );
   #endif
+  #ifdef COVER_OCCLUDE
+    // OCCLUDE. Defined on the visible material only — createCoverDepthMaterial
+    // shares this string and must NOT define it, or a shrub would stop casting
+    // its shadow the moment the camera came up behind it and the ground would
+    // flicker as you drove.
+    //
+    // Evaluated at the vertex rather than at coverOrigin: the cone is under a
+    // metre wide at the camera, and a 1.5 m shrub whose root is below the axis
+    // but whose crown is squarely across it is the common case, not the rare
+    // one. mat3 rather than a second mat4 multiply, since coverOrigin is
+    // already the transformed origin.
+    coverFade *= occludeFade(
+      coverOrigin + mat3( modelMatrix ) * ( mat3( COVER_IMAT ) * transformed ) );
+  #endif
   transformed *= coverFade;
   float coverPh = aCov.y + uTime * uWindSpeed;
   // Two incommensurable rates so a field of plants never pulses in unison.
@@ -184,11 +206,12 @@ export function createCoverMaterial(uniforms, card = false, nearFade = false) {
   mat.userData.uniforms = uniforms;
 
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
+    Object.assign(shader.uniforms, uniforms, occlusionUniforms());   // OCCLUDE
     mat.userData.shader = shader;
 
     shader.vertexShader = (nearFade ? '#define COVER_NEAR_FADE\n' : '')
-      + COVER_COMMON + /* glsl */`
+      + '#define COVER_OCCLUDE\n'                   // OCCLUDE
+      + COVER_COMMON + OCCLUDE_PARS + /* glsl */`
       attribute vec3 aColA;
       attribute vec3 aColB;
       uniform float uAoDepth;

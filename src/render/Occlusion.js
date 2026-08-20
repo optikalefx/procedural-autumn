@@ -13,27 +13,29 @@
 //  behind a camper in a wood looks like — it is simply not playable, and the
 //  difference between a cozy drive and fighting the camera is entirely this.
 //
-//  ── the shape ────────────────────────────────────────────────────────────
+//  ── the shape: BOTH of the two standard answers, because each alone fails ─
 //
-//  A truncated cone: apex end at the camera with radius `near`, widening to
-//  `wide` at the subject, and closed off at the subject so nothing behind or
-//  beside the camper is touched.
+//    · A near-camera sphere (the cheap answer) clears the bough in your face,
+//      and does nothing about the trunk the camper is parked behind fifteen
+//      metres out.
+//    · A camera-to-subject cone (the correct answer) clears that trunk, and
+//      sails straight past the bough — because a bough owning the right third
+//      of the frame is three or four metres off the view AXIS in world units
+//      even while it is centimetres from the lens.
 //
-//  That single shape is deliberately both of the two standard answers at once,
-//  because each alone is wrong here in a way the frames show:
+//  Both were built and both were photographed before this settled. The first
+//  version tried to be tidy and express the near half as a floor under the cone
+//  radius; the player's own conifer bough went straight through it, for the
+//  reason above. So it is a max() of two shapes, which costs one extra
+//  length() and is the thing that actually clears the frame:
 //
-//    · A pure near-camera radius (the cheap answer) clears the bough in your
-//      face, and does nothing about the trunk fifteen metres out that the
-//      camper is parked behind.
-//    · A pure camera-to-subject capsule (the correct answer) clears that trunk,
-//      and leaves the bough — because a bough half a metre from the lens is
-//      barely off-axis in world units even while it owns a third of the frame.
+//    max( sphere of radius `nearFull..nearNone` about the camera,
+//         cone of radius `wide * t` from the camera to the subject )
 //
-//  Interpolating the radius along the axis makes it one expression. Radius
-//  proportional to distance from the camera is a *constant angular cone*, i.e.
-//  a fixed hole in screen space — which is literally what the player asked for
-//  — and the `near` term is the floor under that hole so it never closes to
-//  nothing at arm's length.
+//  The cone's radius being linear in t makes it a *constant angular* cone, i.e.
+//  a fixed hole in screen space — literally the transparent frustum that was
+//  asked for — and it closes before the subject so nothing beside or behind
+//  the camper is touched.
 //
 //  ── how it fades ─────────────────────────────────────────────────────────
 //
@@ -84,25 +86,52 @@
 import * as THREE from 'three';
 
 const DEFAULTS = {
-  // Radius of the hole at the camera itself, in metres. This is the whole of
-  // what clears the bough in your face. It reads large for a radius and is
-  // not: at 1 m from the lens the visible half-height at fov 55 is 0.52 m, so
-  // anything under about a metre of radius here is still inside the frame.
-  near: 0.95,
-  // Radius at the subject. The camper is ~2.3 m wide and ~2.6 m tall, so this
-  // is its silhouette plus a margin — enough that a trunk grazing the edge of
-  // the vehicle opens up rather than clipping it.
-  wide: 3.40,
-  // Width of the feather, as a fraction of the radius. Wide on purpose: the
-  // brief for this feature is explicit that a tree which blinks out is worse
-  // than one you can see past, and a dithered edge at half the radius crosses
-  // a trunk over several centimetres of screen rather than at a line.
-  soft: 0.55,
-  // Where the cone starts closing toward the subject, as a fraction of the
-  // camera-to-subject distance. Without this the cone would carry straight on
-  // through the camper and dissolve the grass and shrubs immediately around
-  // it, which puts a bare patch under the vehicle wherever it stands.
-  taper: 0.86,
+  // ── (1) the near-camera sphere ───────────────────────────────────────────
+  // Everything within `nearFull` metres of the lens is gone; nothing past
+  // `nearNone` is touched.
+  //
+  // This is a SPHERE and not the near end of the cone, and the frames are what
+  // decided that. The first build put a floor under the cone radius instead, on
+  // the reasoning that one expression is tidier than two — and the conifer
+  // bough in the top corner of the frame, the exact thing the player
+  // photographed, sailed straight through it. A world-space radius around the
+  // view axis is the wrong test for near clutter, because at a metre from the
+  // lens EVERYTHING is in your face: a bough owning the right third of the
+  // screen is three or four metres off-axis in world units and only centimetres
+  // from your eye. Distance from the camera is the honest criterion for that
+  // half of the problem, and it is also the cheap one.
+  nearFull: 1.50,
+  nearNone: 3.40,
+
+  // ── (2) the cone to the subject ──────────────────────────────────────────
+  // Radius at the subject, in metres. The camper's silhouette from behind is
+  // about 1.2 m half-width and 1.3 m half-height; this is that plus enough
+  // margin that the vehicle sits inside the *fully* cleared core rather than
+  // in the feather, which is the difference between seeing it and seeing a
+  // halftone of it.
+  //
+  // Price it against the subject and nothing else. The cone contributes a
+  // CONSTANT fraction of the screen at every depth — wide / (D * tan(fov/2)) —
+  // so a value picked for comfort rather than for the camper is a permanent
+  // hole through the middle of the picture at every range. The first pass used
+  // 3.40 and that is 55% of the half-height at a 12 m chase; the frame came
+  // back looking screen-printed.
+  wide: 2.40,
+  // Width of the feather, as a fraction of the radius, shared by both shapes.
+  // The brief for this feature is explicit that a tree which blinks out is
+  // worse than one you can see past, so this is a band and not a line — but at
+  // the 0.55 it started on, more than half the cone's area was in partial
+  // dither at once. 0.35 still crosses a near trunk over a couple of
+  // centimetres of screen.
+  soft: 0.35,
+  // Where the cone starts closing, as a fraction of the camera-to-subject
+  // distance. Without it the cone carries on through the camper and dissolves
+  // the cover immediately around the vehicle, which puts a bare patch under it
+  // wherever it stands. 0.92 rather than the 0.86 of the first pass: at 0.86 a
+  // bough half a metre in front of the camper was already outside the closing
+  // cone and stayed drawn across the windscreen, which is the one thing this
+  // must not do.
+  taper: 0.92,
   // How far a fully-enclosed fragment goes. 1.0 is fully transparent.
   amount: 1.0,
 
@@ -127,7 +156,9 @@ const PARAMS = { ...DEFAULTS };
 // same object every call instead of a clone.
 const UNIFORMS = {
   uOccTarget: { value: new THREE.Vector3() },
-  uOccNear:   { value: DEFAULTS.near },
+  // x: nearFull, y: nearNone. Packed because these two are only ever read
+  // together and a uniform slot is a uniform slot on the low tiers.
+  uOccNear:   { value: new THREE.Vector2(DEFAULTS.nearFull, DEFAULTS.nearNone) },
   uOccWide:   { value: DEFAULTS.wide },
   uOccSoft:   { value: DEFAULTS.soft },
   uOccTaper:  { value: DEFAULTS.taper },
@@ -170,7 +201,7 @@ export function setOcclusionTarget(camera, pos) {
   if (_d.dot(_f) / dist < PARAMS.minFacing) { UNIFORMS.uOccAmount.value = 0; return; }
 
   UNIFORMS.uOccTarget.value.copy(pos);
-  UNIFORMS.uOccNear.value  = PARAMS.near;
+  UNIFORMS.uOccNear.value.set(PARAMS.nearFull, Math.max(PARAMS.nearNone, PARAMS.nearFull + 0.01));
   UNIFORMS.uOccWide.value  = PARAMS.wide;
   UNIFORMS.uOccSoft.value  = PARAMS.soft;
   UNIFORMS.uOccTaper.value = PARAMS.taper;
@@ -187,7 +218,7 @@ export const OCCLUDE_PARS = /* glsl */`
 #ifndef OCCLUDE_DECLARED
 #define OCCLUDE_DECLARED
 uniform vec3  uOccTarget;
-uniform float uOccNear;
+uniform vec2  uOccNear;    // x: fully gone inside this, y: untouched outside it
 uniform float uOccWide;
 uniform float uOccSoft;
 uniform float uOccTaper;
@@ -195,30 +226,39 @@ uniform float uOccAmount;
 
 // 1.0 = untouched, 0.0 = fully out of the way. wp is a world-space position.
 //
+// Two shapes, combined with max(): a sphere around the camera for near clutter
+// and a cone to the subject for what the camper is actually parked behind. See
+// the note beside nearFull in the JS — neither one alone clears the frame the
+// player photographed.
+//
 // Every division in here is guarded, and that is not decoration: a fade built
 // on a divide is this project's classic source of non-finite pixels, and
-// tools/nanhunt.mjs is run against it. len2 cannot be small because the caller
-// gates on a minimum subject distance AND this rejects it again; the smoothstep
-// edges are forced apart by construction so the degenerate edge0 == edge1 case
+// tools/nanhunt.mjs is run against it. len2 is rejected below 1; the smoothstep
+// edges are forced apart by construction, so the degenerate edge0 == edge1 case
 // cannot arise however the parameters are tuned at runtime.
 float occludeFade( vec3 wp ) {
   if ( uOccAmount <= 0.0 ) return 1.0;
+  vec3 rel = wp - cameraPosition;
+
+  // (1) near-camera sphere.
+  float m = 1.0 - smoothstep( uOccNear.x, uOccNear.y, length( rel ) );
+
+  // (2) cone to the subject.
   vec3 axis = uOccTarget - cameraPosition;
   float len2 = dot( axis, axis );
-  if ( len2 < 1.0 ) return 1.0;
-
-  vec3 rel = wp - cameraPosition;
-  float t = dot( rel, axis ) / len2;          // 0 at the camera, 1 at the subject
-  if ( t <= 0.0 || t >= 1.0 ) return 1.0;     // behind us, or past the subject
-
-  float radial = length( rel - axis * t );
-  // Linear in t: a cone, i.e. a fixed hole in screen space, with uOccNear as
-  // the floor under it. The taper shuts it before the subject so the ground the
-  // camper stands on keeps its cover.
-  float r = mix( uOccNear, uOccWide, t ) * ( 1.0 - smoothstep( uOccTaper, 1.0, t ) );
-  float r1 = max( r, 1e-3 );
-  float r0 = r1 * ( 1.0 - max( uOccSoft, 0.02 ) );
-  return 1.0 - uOccAmount * ( 1.0 - smoothstep( r0, r1, radial ) );
+  if ( len2 >= 1.0 ) {
+    float t = dot( rel, axis ) / len2;         // 0 at the camera, 1 at the subject
+    if ( t > 0.0 && t < 1.0 ) {                // behind us, or past the subject
+      // Linear in t, i.e. a fixed hole in screen space — literally the frustum
+      // that was asked for — shut down by the taper before it reaches the
+      // subject so the ground the camper stands on keeps its cover.
+      float r  = uOccWide * t * ( 1.0 - smoothstep( uOccTaper, 1.0, t ) );
+      float r1 = max( r, 1e-3 );
+      float r0 = r1 * ( 1.0 - max( uOccSoft, 0.02 ) );
+      m = max( m, 1.0 - smoothstep( r0, r1, length( rel - axis * t ) ) );
+    }
+  }
+  return 1.0 - uOccAmount * m;
 }
 #endif`;
 

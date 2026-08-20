@@ -15,6 +15,11 @@
 import * as THREE from 'three';
 import { fogUniforms } from '../render/Atmosphere.js';
 import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
+// Camera occlusion: the transparent frustum between the chase camera and the
+// camper. Opt-in only — three call sites in this file, all marked OCCLUDE.
+// The depth materials below deliberately do NOT take it, so a canopy you can
+// see through still casts its shadow. See src/render/Occlusion.js.
+import { occlusionUniforms, OCCLUDE_PARS, OCCLUDE_DITHER } from '../render/Occlusion.js';
 import { PALETTE } from '../world/WorldConfig.js';
 
 // ── shared GLSL ──────────────────────────────────────────────────────────────
@@ -322,11 +327,13 @@ varying float vTone;
 varying float vAO;
 varying vec3 vN;
 varying vec3 vWorld;
+varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <shadowmap_pars_vertex>
 #include <fog_pars_vertex>
 ${WIND}
+${OCCLUDE_PARS}
 
 void main() {
   float scale = length(instanceMatrix[0].xyz);
@@ -340,6 +347,17 @@ void main() {
 
   vec3 local = position + disp / max(scale, 1e-4);
   vec4 worldPosition = modelMatrix * instanceMatrix * vec4(local, 1.0);
+
+  // OCCLUDE. Evaluated HERE, at the clump's centre, and deliberately not at the
+  // billboard corner four lines down. A clump quad is several metres across, so
+  // a corner-evaluated fade interpolates to roughly the mean of the corners
+  // across the middle of the quad — and the middle is exactly the part lying
+  // over the camper. Measured on the frame: boughs squarely across the vehicle
+  // came back at half fade because their corners were outside the cone. It is
+  // also the better read: a clump is one brush stroke, and half a stroke
+  // dissolving looks like an error rather than like the camera getting out of
+  // the way.
+  vOcc = occludeFade(worldPosition.xyz);
 
   // Billboard in the *current* camera's basis. In the shadow pass that camera
   // is the sun, so each clump presents its full disc to the light and the
@@ -382,6 +400,7 @@ varying float vTone;
 varying float vAO;
 varying vec3 vN;
 varying vec3 vWorld;
+varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <packing>
@@ -390,8 +409,13 @@ varying vec3 vWorld;
 ${CANOPY_LIGHT}
 ${SHADOW_SAMPLE}
 ${CUTOUT}
+${OCCLUDE_DITHER}
 
 void main() {
+  // OCCLUDE, first: this is the cheapest discard in the shader and it saves the
+  // atlas fetch as well as the shading. Inert during the impostor bake, where
+  // uOccAmount is unbound and reads 0.
+  occludeCut(vOcc);
   vec4 t = texture2D(uAtlas, vUv);
   if (t.a < cutoutThreshold(uAlphaTest, vUv)) discard;
 
@@ -477,7 +501,8 @@ void main() {
 export function createLeafMaterial(atlas, shared, opts = {}) {
   const bake = !!opts.bake;
   const uniforms = Object.assign(
-    bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(), shared,
+    bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(),
+    bake ? {} : occlusionUniforms(), shared,          // OCCLUDE
     {
       uAtlas: { value: atlas },
       uAlphaTest: { value: opts.alphaTest ?? 0.38 },
@@ -526,11 +551,13 @@ varying float vStyle;
 varying vec3 vN;
 varying vec3 vWorld;
 varying float vHeight;
+varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <shadowmap_pars_vertex>
 #include <fog_pars_vertex>
 ${WIND}
+${OCCLUDE_PARS}
 
 void main() {
   float scale = length(instanceMatrix[0].xyz);
@@ -549,6 +576,7 @@ void main() {
   vN = wn;
   vWorld = worldPosition.xyz;
   vHeight = position.y * scale;
+  vOcc = occludeFade(worldPosition.xyz);   // OCCLUDE
 
   #ifdef USE_FOG
     vFogWorldPos = worldPosition.xyz;
@@ -574,12 +602,14 @@ varying float vStyle;
 varying vec3 vN;
 varying vec3 vWorld;
 varying float vHeight;
+varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <packing>
 #include <shadowmap_pars_fragment>
 #include <fog_pars_fragment>
 ${SHADOW_SAMPLE}
+${OCCLUDE_DITHER}
 
 float h21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -651,6 +681,7 @@ float chevronScar(vec2 uv, vec2 freq, float density) {
 }
 
 void main() {
+  occludeCut(vOcc);        // OCCLUDE — before the bark noise, which is not cheap
   // pat is the bark *pattern*, kept separate from the base colour so the
   // impostor bake can store shading without baking a species hue into it.
   // (Named pat, not mod: mod() is a GLSL builtin and shadowing it is illegal.)
@@ -813,7 +844,8 @@ export function createBarkMaterial(shared, opts = {}) {
   const bake = !!opts.bake;
   const mat = new THREE.ShaderMaterial({
     uniforms: Object.assign(
-      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(), shared,
+      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(),
+      bake ? {} : occlusionUniforms(), shared,        // OCCLUDE
       { uBake: { value: bake ? 1 : 0 } }),
     vertexShader: BARK_VERT,
     fragmentShader: BARK_FRAG,
