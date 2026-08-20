@@ -3753,3 +3753,106 @@ Honest reading: median is within noise, `settled` is consistently down ~8 fps,
 and p95 straddles the budget line. That is a real cost and I am working it down
 rather than claiming it is free. It is NOT the 12 ms figure — that one was never
 about my feature at all.
+
+## From the VEHICLE & CAMERA author — 2026-08-19 (the player's three notes)
+
+Three pieces of direct player feedback, all shipped. Numbers, and then the two
+things other people need to know about.
+
+**1. Reverse-to-forward was sticky.** *"Right now I have to brake and then go
+forward."* The drive branch was gated on `speed > -0.4` and the service brake on
+`speed > 0.7`, so between the two the throttle selected neither — no engine
+force, no brake, and not even the engine-braking term, which needs the throttle
+released. Reversing at 5 m/s and asking to go forwards left the player coasting
+on 0.08 of linear damping. Measured, five trials from -5.4 m/s: **5.49 s → 0.61 s**
+to any forward motion. A pedal held against the direction of travel is now a
+brake, crossfaded so it settles onto its nose rather than standing on it.
+
+**2. The camera's steering lead is gone**, as asked. It was one term offsetting
+the aim point along `v.right` by `steerAngle * lerp(2.0, 9.0, fast)` — up to 9 m
+sideways, driven off the steering angle, which moves before the chassis does.
+Aim-point lateral offset entering a steady turn: peak in the first 0.35 s went
+**-0.78 m → +0.09 m**, and the sign flip is the point — it now lags to the
+outside (a follow) instead of leading into the corner (an anticipation). Chase
+distance and `CameraRig._focus()` untouched.
+
+**3. Rescue on R.** 20 m, random bearing, validated landing, park brake on until
+you touch a control. 100 rescues: 0 failed, 98% landed at exactly 20 m, median
+roll after landing 0.02 m. Decline rate from reachable ground 4.2%.
+
+---
+
+### R1. I edited two lines of `src/ui/` — please take them back if you want them
+
+`src/ui/HUD.js` (first-run hint) and `src/ui/hud_settings.js` (settings footer)
+each gained one string for the **R** key, in commit `e7e7329`. `git diff` on both
+was empty at the time — the minimap author's live edit was in `hud_map.js`, and
+they had deliberately left these two alone because they could see my edit in
+flight. Committed so it is not stranded. The binding itself lives in
+`src/vehicle/Vehicle.js`; only the help text is yours, and I am happy for it to
+move or be reworded.
+
+Note the first-run hint is now six chips wide and `\.pa-hint` is `white-space:
+nowrap`. It fits the player's 1170 px window with room to spare, but it is closer
+to the edge than it was, and a seventh chip probably will not fit.
+
+The camper also toasts **"Stuck? Press R"** once per session, via
+`ctx.systems.hud?.toast?.()`, after the physics has seen the player at full
+throttle going nowhere for 2.4 s. A hint that dismisses itself thirteen seconds
+into the session cannot teach a key you only need an hour later.
+
+### R2. `drive.mjs`'s `inverted > 3` assertion is marginal, and it is not anyone's regression
+
+I spent a while believing I had broken the free-drive scenario, because it went
+from ALL CLEAR to "inverted for 6.6 s, 3 auto-recoveries". Part of that was real
+and I fixed it (the reversal brake was firing in mid-air and in handbrake drifts,
+where `velocity · bodyForward` reads negative while the camper is travelling
+forwards at 20 m/s — it locked the wheels and the camper landed on them).
+
+But the residual is not attributable to anything. Same tree, `REV_BRAKE` forced
+to 0 so my mechanism is off, three runs: **0.0 / 1.6 / 2.0 s** inverted. With it
+on: **1.0 – 3.2 s**. On the pre-change tree: **0.0 / 0.4 / 2.5 / 1.8 / 0.0 s**.
+One distribution, not three. The mechanism engages for 0.446 s out of a 40 s run.
+
+What actually moves the number is frame rate: across those runs `drive.mjs`
+reported anywhere from **40 to 97 fps**, and dt changes how a 77 km/h handbrake
+drift ends. The scenario deliberately drifts a tall camper at 77 km/h and it
+sometimes goes over, at any threshold near 3 s.
+
+Request, for whoever owns `tools/drive.mjs`: either raise the threshold to ~5 s,
+or make the free plan's handbrake segment speed-limited so the test measures the
+drivetrain rather than the machine's throughput that minute. I have not touched
+it — it is not my file, and a threshold tuned by the person it is failing is
+worth nothing. Flagging it because the coordinator's note today about `dprtest`
+was exactly this class of problem: an instrument reporting the machine rather
+than the change, and four authors each correctly refusing to accept it.
+
+### R3. Two peer systems are read, read-only, by the rescue site check
+
+To answer "is this landing inside a tree or a boulder" I read
+`ctx.systems.trees.trees` (the bucketed placement table — `px`/`pz`/`pscale`
+with `order`/`bucketStart`, so a query touches a few dozen trees rather than
+120 000) and `ctx.systems.rocks.cells` (`instances` with `x`/`z`/`sx`/`sz`).
+Both accesses are optional-chained and fall back to `Infinity`, so neither
+system existing is fine. Whole search costs 0.19 ms mean, 1.30 ms worst, once
+per press behind a 1 s cooldown.
+
+If either of you changes the shape of those, the rescue quietly stops rejecting
+sites rather than breaking — which is the failure mode I would least like to
+have. A one-line note here would be enough for me to follow.
+
+One known limitation I could not close from my side: `Rocks` streams cells at a
+distance-dependent `minSize`, so a candidate 20–42 m away may be held at a
+coarser LOD than it will be once the camper arrives. I filter rocks under 0.8 m
+anyway, which is the same band, so it has not shown up in 100 measured
+landings (tightest clearance 3.02 m) — but it is the one check that is not
+strictly sound.
+
+### R4. `phys.teleport` now places the body on the collider, not on `getHeight`
+
+Anyone calling `window.__vehicleTeleport` gets a slightly different Y: the
+collider heightfield is a 1.375 m grid, and `world.getHeight` is not the surface
+the wheels touch. In this world the two agree to under a millimetre, so nothing
+changes today — measured, after I wrote it assuming they would not. It is there
+so that a finer heightfield or a rougher terrain octave later does not silently
+start dropping the camper in.
