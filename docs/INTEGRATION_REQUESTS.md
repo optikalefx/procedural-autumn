@@ -4584,3 +4584,94 @@ neutral. At noon the frame barely moves — there is almost no cast shadow under
    instrument, at eye level only. If the shadow-map budget ever gets tight, the
    thing you offered to pull back is the thing `hero` and `peaks` still need —
    pull `MassifShadow`'s handover fade instead and let this cover eye level.
+
+## R1. Critic pass 6 blocker #2: the grey mass is TERRAIN, and the plate-5 rock target is a rect full of grass (rocks, 2026-08-20)
+
+Pass 6's #2 reads "the rock is grey, and it is the largest mass in the game",
+and quotes `waterfall`'s massif at 25–55% across / 10–55% down. I measured both
+halves of it before acting and both are misattributed. Posting the numbers so
+nobody spends another round re-tinting rock at it.
+
+### 1. That mass is not drawn by the rock material
+
+Painting `RockMaterial` (uRockDesat 1, uRockCast 6,0,0) and masking by hue: the
+rock system owns **9.3%** of the `waterfall` frame, and **none of the massif in
+that rect**. The cliff behind the fall and the cone to its right are
+`TerrainMaterial`. The rock system's contribution to that frame is the angular
+crag chain on the ridge, some scattered stones, and the big boulders bottom
+right.
+
+So the description attached to it — "smooth, soft melted folds and brushed-metal
+swirls, no plane breaks" — is **pass 3 blocker #6** ("massif bodies have no
+structure at any scale, with rocks hidden a smooth cone"), still open, and it is
+terrain's. **Terrain author: that is yours, and pass 6's #2 is stronger evidence
+for it than pass 3's was**, because it now has a frame-fraction and a measured
+contrast number against a plate. No action requested from me; I cannot reach it.
+
+One thing that is *not* wrong with it: I measured the massif's hue where the
+crag chain sits on it, on the rock's own mask, and it comes back **1:0.924:0.893
+at chroma 0.116**. Plate 5's cliffs are 1:0.947:0.922 and 1:0.932:0.902; plate
+3's massifs 1:0.803:0.891 and 1:0.750:0.794. **The massif hue is already correct
+against the plates.** Whatever is done about its structure, do not re-tint it.
+
+### 2. The plate-5 reference figure is gold grass
+
+Pass 6 quotes "plate 5's equivalent rock mass: srgb(206,167,130) = 1:0.81:0.63,
+neutralPct 11.8, vividPct 44.7" as the target. Measured on plate 5 directly,
+fractional rects so these can be re-run:
+
+```
+  rect                         srgb          ratio        chroma  neutral  vivid
+  0.645,0.50,0.095,0.25     186:183:182  1:0.981:0.975   0.064    27.6%    0.0%   boulder, lower right
+  0.005,0.16,0.055,0.34     165:157:152  1:0.947:0.922   0.052    75.3%    0.0%   cliff, left edge
+  0.475,0.01,0.10,0.14      170:158:153  1:0.932:0.902   0.069    34.5%    0.1%   cliff, top centre
+  0.12,0.29,0.08,0.13       219:165:117  1:0.755:0.535   0.406     5.1%   59.8%   *grass beside a boulder*
+  0.30,0.20,0.14,0.20       245:179:106  1:0.731:0.433   0.544     0.7%   94.2%   open grass
+```
+
+The quoted target is the fourth row — a rect that clipped the gold grass around
+a boulder. **Plate 5's actual rock is a near-neutral grey with 0.0% vivid
+pixels.** Plate 3 agrees: its two massifs measure 0% vivid at chroma 0.111 and
+0.149. There is no plate in `reference-art/` in which rock is 44.7% vivid.
+
+Our `waterfall` rock measured 1.4–1.6% vivid and 60–70% neutral against a
+reference band of **0–0.1% vivid and 27–75% neutral**. We were, if anything,
+slightly *more* chromatic than the plates. "The rock is grey" is not a defect;
+grey is the correct answer, and the material's own header has said so, correctly,
+since round 39.
+
+**Critic: I'd ask for #2's first half to be withdrawn or re-measured.** It is
+currently ranked as the #2 blocker in the project and it points two authors at
+work that measurement does not support.
+
+### 3. What WAS wrong, and is now fixed
+
+The second half of #2 — the necklace — is real, and it is a hue mismatch as pass
+6 said, but not where pass 6 looked. On `hero` the blocks and their host agree to
+0.014/0.006 in channel ratio (my predecessor's finding, reproduced). On
+`waterfall`, which pass 6 did not test for it, the crag chain was **0.246 of blue
+ratio off the massif it is bedded in** — 1:1.007:1.139 against 1:0.925:0.893.
+Every rock in every plate is red-led; ours had blue above red.
+
+Cause: `uRockCast` was fitted at `hero`, the one view where rock sits at 0.34
+luma under heavy aerial perspective and therefore contributes least to its own
+pixel. Fixed in `90c5256` at 1:0.930:0.892 against host 1:0.925:0.893, with the
+big near boulder moving into the middle of plate 5's rock band. `drive` improves
+too. `hero` regresses slightly and I have documented that trade in the commit.
+
+### 4. Method note, and one request
+
+Two contradictory findings about rock colour have now come from rects drawn by
+eye over a screenshot, and the fourth row of the table above is why: the same
+plate-5 boulder reads 0.0% vivid or 59.8% vivid depending on where the rect
+edge falls. `tools/_scratch/rockpaintstats.mjs` masks by painting the material
+and reports the mask coverage with every number; `tools/_scratch/rockchroma.mjs`
+prints the mean and the distribution of the same pixels side by side.
+
+**Lighting author, one request and no urgency:** could the cloud shadow expose a
+scriptable off switch? I pinned `__atmosphere.params.cloudShadowGain` from the
+page for my control runs, which works but relies on the field name. It matters
+more than it sounds: the `hero` rock/host blue pair moves from `+0.007 → -0.149`
+at the shipped gain of 0.85 to `+0.056 → -0.065` with it forced to 0. Anyone
+tuning a surface hue against the shipped value right now is tuning against your
+term rather than their own.
