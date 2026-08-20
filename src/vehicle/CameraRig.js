@@ -15,15 +15,20 @@
 //     goes from "admire the paintwork" to "frame the whole valley";
 //   · a manual orbit eases back to trailing once you stop touching it — but
 //     only while actually moving, so a parked player can look around freely;
-//   · it samples the terrain along its own boom and lifts over anything in the
+//   · it samples the world along its own boom and lifts over anything in the
 //     way, at every orbit angle and every zoom level.
 //
 //  All of it is frame-rate independent exponential damping (`damp`), never
 //  `lerp(a, b, 0.1)` — that would change feel with framerate.
+//
+//  The boom's floor is `_floorAt`, and it is the *whole* world, not the
+//  heightfield: terrain, then water, then rock. Every one of those was added
+//  after a frame the player was shown. See `RockBoom.js` for the last of them.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { clamp, clamp01, lerp, smoothstep, damp, dampAngle, wrapAngle } from '../core/MathUtils.js';
+import { RockBoom } from './RockBoom.js';
 
 // Cockpit is built (see `_cockpit`) but not in the player-facing cycle: the
 // body panels are single-sided, so from the driver's seat you see straight out
@@ -35,9 +40,9 @@ const MODES = ['chase', 'orbit'];
 
 // Boom length limits. The low end lets you inspect the roof rack; the high end
 // is what the reference vista plates are shot at.
-const ZOOM_MIN = 5.5;
-const ZOOM_MAX = 68;
-const ZOOM_DEFAULT = 19;         // deliberately wide: the camper is a figure in
+export const ZOOM_MIN = 5.5;
+export const ZOOM_MAX = 68;
+export const ZOOM_DEFAULT = 19;  // deliberately wide: the camper is a figure in
                                  // a landscape, not the subject of a portrait
 const PITCH_MIN = -0.20;         // just under the sill, looking up into the trees
 const PITCH_MAX = 1.30;          // near-vertical, looking straight down
@@ -49,8 +54,66 @@ const RECENTER_DELAY = 2.0;      // seconds of no mouse before easing back
  * into the valley, which is how the wide reference plate is framed.
  */
 const PITCH_REST_NEAR = 0.20;
-const restPitch = (zoom) =>
+export const restPitch = (zoom) =>
   PITCH_REST_NEAR + 0.35 * Math.pow(clamp01((zoom - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN)), 0.7);
+
+/** How much air the camera itself wants under it, in metres. */
+export const camClearance = (zoom) => lerp(1.6, 4.0, clamp01((zoom - 12) / (ZOOM_MAX - 12)));
+
+/**
+ * How much of the boom the world allows, as a fraction of its full length.
+ *
+ * March from the camper outwards and stop at the first sample that would be
+ * inside something. Pure, and exported, because an audit that re-derives this
+ * loop is auditing the audit: `tools/_scratch/camrock.mjs` fits the boom with
+ * this exact function and only swaps the `floorAt` it is given.
+ *
+ * `floorAt(x, z)` is the top of the world at a column — see `CameraRig._floorAt`.
+ */
+export function boomFree(anchor, desired, zoom, floorAt) {
+  const dx = desired.x - anchor.x, dy = desired.y - anchor.y, dz = desired.z - anchor.z;
+  const run = Math.hypot(dx, dz);
+  const steps = clamp(Math.ceil(run / 2.0), 6, 30);
+  // Required air under the boom, from "may skim the grass" near the camper to
+  // a comfortable gap at the camera end.
+  const clr = (t) => lerp(0.35, camClearance(zoom), t);
+
+  let free = 1;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const g = floorAt(anchor.x + dx * t, anchor.z + dz * t);
+    if (anchor.y + dy * t < g + clr(t)) { free = (i - 1) / steps; break; }
+  }
+  // Never collapse all the way onto the camper — past this the shot is just
+  // the roof rack, and lifting takes over instead.
+  return Math.max(free, 0.34);
+}
+
+/**
+ * Where the chase boom wants to put the camera, before any damping. Pure, and
+ * exported for the same reason as `boomFree`: the audit must pose the camera
+ * the way the rig poses it, not the way a tool remembers the rig posing it.
+ *
+ * Writes the boom pivot into `anchor` and the unfitted endpoint into `desired`;
+ * returns the two shot-shape numbers `_chase` needs afterwards.
+ */
+export function chaseDesired(anchor, desired, o) {
+  const wide = clamp01((o.zoom - 16) / (ZOOM_MAX - 16));
+  // Wound right in, aim at the waistline so the whole camper sits in frame
+  // instead of the roof rack; wound out, ride high above the roof so it reads
+  // as a figure in a valley.
+  const close = clamp01((10 - o.zoom) / 4.5);
+  anchor.set(o.x, o.y + lerp(1.05, 0.62, close) + wide * 2.4, o.z);
+  // Spherical boom: yaw around the camper, pitch above the horizon.
+  const dist = o.zoom * lerp(1.0, 1.10, o.fast);
+  const cp = Math.cos(o.pitch), sp = Math.sin(o.pitch);
+  desired.set(
+    anchor.x - Math.sin(o.yaw) * dist * cp,
+    anchor.y + dist * sp,
+    anchor.z - Math.cos(o.yaw) * dist * cp,
+  );
+  return { wide, close };
+}
 
 export class CameraRig extends System {
   constructor(ctx) {
@@ -82,8 +145,13 @@ export class CameraRig extends System {
     this._axis = new THREE.Vector3(0, 0, 1);
     this._primed = false;
     this._shake = 0;
-    this._boomFrac = 1;            // how much of the boom the terrain allows
+    this._boomFrac = 1;            // how much of the boom the world allows
     this._teleportSeq = 0;         // last vehicle teleport this rig has seen
+
+    // The rock term in `_floorAt`. Bound once: `boomFree` takes the floor as a
+    // callback and this is on the render path 30+ times a frame.
+    this.rockBoom = new RockBoom();
+    this._floor = (x, z) => this._floorAt(x, z);
   }
 
   async init() {
@@ -93,11 +161,19 @@ export class CameraRig extends System {
     window.__cameraState = () => {
       const w = this.ctx.world;
       const p = this.camPos;
-      const g = Math.max(w.getHeight(p.x, p.z), w.getWaterHeight(p.x, p.z) ?? -1e9);
+      const terrain = Math.max(w.getHeight(p.x, p.z), w.getWaterHeight(p.x, p.z) ?? -1e9);
+      const g = this._floorAt(p.x, p.z);
+      const inside = this.rockBoom.insideAny(p.x, p.y, p.z, 0);
       return {
         mode: this.mode, zoom: this.zoom, zoomTarget: this.zoomTarget,
         yaw: this.orbitYaw, pitch: this.orbitPitch, fov: this.fov,
         x: p.x, y: p.y, z: p.z, ground: g, clearance: p.y - g,
+        // `ground` is the whole world's floor now, so the terrain-only number
+        // stays alongside it — a rig that is being held up by rock and one that
+        // is being held up by a hill look identical without it.
+        terrain, rockLift: g - terrain, boomFrac: this._boomFrac,
+        rockCandidates: this.rockBoom.n,
+        insideRock: inside ? `${inside.arch} size ${inside.size.toFixed(1)}` : null,
         limits: { zoomMin: ZOOM_MIN, zoomMax: ZOOM_MAX, pitchMin: PITCH_MIN, pitchMax: PITCH_MAX },
       };
     };
@@ -129,6 +205,17 @@ export class CameraRig extends System {
 
     dt = Math.min(dt, 1 / 20);
     this._readLook(dt, v);
+
+    // Gather the rock near the camper once, before anything queries the floor.
+    // After `_readLook` because that is where the wheel has just moved `zoom`,
+    // and the disc has to cover the boom the player asked for rather than the
+    // one it has damped to yet — a fast flick out to 68 m must not fit itself
+    // against a 19 m disc for the half-second the dolly takes.
+    // A teleport needs nothing extra here: this runs before `_chase` re-primes
+    // the boom, so the cut lands against the rock at the new place, not the old.
+    const boom = Math.max(this.zoom, this.zoomTarget) * 1.12;
+    this.rockBoom.attach(this.ctx.systems?.rocks).prime(v.position.x, v.position.z, boom + 6);
+
     if (this.mode === 'chase') this._chase(dt, v);
     else if (this.mode === 'orbit') this._orbit(dt, v);
     else this._cockpit(dt, v);
@@ -186,16 +273,36 @@ export class CameraRig extends System {
 
   // ── shared: keep a point clear of the ground ──────────────────────────────
   _clearGround(p, clearance) {
-    const w = this.ctx.world;
-    const h = w.getHeight(p.x, p.z);
-    const wh = w.getWaterHeight(p.x, p.z);
-    const floor = Math.max(h, wh ?? -1e9) + clearance;
+    const floor = this._floorAt(p.x, p.z) + clearance;
     if (p.y < floor) p.y = floor;
     return p;
   }
 
   /**
-   * Keep the boom out of the hillside.
+   * The top of the world at one column: terrain, or water over it, or rock
+   * over that.
+   *
+   * Every boom sample and both hard floors come through here, so there is
+   * exactly one answer to "what is solid at (x, z)" and no way for a caller to
+   * be fitted against a subset of it. That is not hypothetical tidiness — the
+   * water term was added to three of the four call sites once already, and the
+   * rock term (P2) is only needed because a fourth field existed that none of
+   * them knew about.
+   *
+   * A caveat worth carrying: this is only as good as the queries it calls.
+   * `getWaterHeight` returns null over a few per cent of deep water (P1, being
+   * fixed at the source by the water author), and a null there reads as "no
+   * water" and lets the camera under the surface. `?? -1e9` is a defensive
+   * clamp, not a correct field, and it is not this file's to fix.
+   */
+  _floorAt(x, z) {
+    const w = this.ctx.world;
+    const g = Math.max(w.getHeight(x, z), w.getWaterHeight(x, z) ?? -1e9);
+    return this.rockBoom.lift(x, z, g);
+  }
+
+  /**
+   * Keep the boom out of the hillside — and out of the crag.
    *
    * Two mechanisms, in this order, because they fix different failures:
    *
@@ -209,27 +316,12 @@ export class CameraRig extends System {
    *
    * Both matter far more at full zoom-out, where the boom is 68 m of hillside,
    * so the sample count follows the boom length rather than being fixed.
+   *
+   * The march itself is `boomFree` above; what stays here is the damping, which
+   * is the part that has state and feel in it.
    */
   _boomFit(anchor, desired, dt) {
-    const w = this.ctx.world;
-    const dx = desired.x - anchor.x, dy = desired.y - anchor.y, dz = desired.z - anchor.z;
-    const run = Math.hypot(dx, dz);
-    const steps = clamp(Math.ceil(run / 2.0), 6, 30);
-    // Required air under the boom, from "may skim the grass" near the camper to
-    // a comfortable gap at the camera end.
-    const nearCam = lerp(1.6, 4.0, clamp01((this.zoom - 12) / (ZOOM_MAX - 12)));
-    const clr = (t) => lerp(0.35, nearCam, t);
-
-    let free = 1;
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const sx = anchor.x + dx * t, sz = anchor.z + dz * t;
-      const g = Math.max(w.getHeight(sx, sz), w.getWaterHeight(sx, sz) ?? -1e9);
-      if (anchor.y + dy * t < g + clr(t)) { free = (i - 1) / steps; break; }
-    }
-    // Never collapse all the way onto the camper — past this the shot is just
-    // the roof rack, and lifting takes over instead.
-    free = Math.max(free, 0.34);
+    const free = boomFree(anchor, desired, this.zoom, this._floor);
     // Snap in hard (being inside a hill is a hard failure), ease back out slowly
     // so cresting a rise does not fling the camera backwards.
     this._boomFrac = free < this._boomFrac
@@ -240,12 +332,11 @@ export class CameraRig extends System {
 
   /** How much air the camera itself wants under it, in metres. */
   _camClearance() {
-    return lerp(1.6, 4.0, clamp01((this.zoom - 12) / (ZOOM_MAX - 12)));
+    return camClearance(this.zoom);
   }
 
   _groundAt(x, z) {
-    const w = this.ctx.world;
-    return Math.max(w.getHeight(x, z), w.getWaterHeight(x, z) ?? -1e9);
+    return this._floorAt(x, z);
   }
 
   /**
@@ -263,7 +354,6 @@ export class CameraRig extends System {
   _chase(dt, v) {
     const speed = Math.abs(v.speed);
     const fast = smoothstep(2, 21, speed);
-    const wide = clamp01((this.zoom - 16) / (ZOOM_MAX - 16));
 
     // Follow a damped heading. Reversing keeps the camera behind the *nose*,
     // which is what players expect when backing out of a ditch.
@@ -277,22 +367,13 @@ export class CameraRig extends System {
       if (Math.abs(d) < 1.4) slideYaw = this.followYaw + d * 0.35;
     }
 
-    // Where the boom pivots and where the eye rests. Wound right in, aim at the
-    // waistline so the whole camper sits in frame instead of the roof rack;
-    // wound out, ride high above the roof so it reads as a figure in a valley.
-    const close = clamp01((10 - this.zoom) / 4.5);
-    const anchor = this._t.copy(v.position)
-      .addScaledVector(this._up, lerp(1.05, 0.62, close) + wide * 2.4);
-
-    // Spherical boom: yaw around the camper, pitch above the horizon.
-    const yaw = slideYaw + this.orbitYaw;
-    const dist = this.zoom * lerp(1.0, 1.10, fast);
-    const cp = Math.cos(this.orbitPitch), sp = Math.sin(this.orbitPitch);
-    const desired = this._t2.set(
-      anchor.x - Math.sin(yaw) * dist * cp,
-      anchor.y + dist * sp,
-      anchor.z - Math.cos(yaw) * dist * cp,
-    );
+    // Where the boom pivots and where the eye rests — shared with the audit,
+    // see `chaseDesired`.
+    const anchor = this._t, desired = this._t2;
+    const { wide, close } = chaseDesired(anchor, desired, {
+      x: v.position.x, y: v.position.y, z: v.position.z,
+      yaw: slideYaw + this.orbitYaw, zoom: this.zoom, pitch: this.orbitPitch, fast,
+    });
 
     // Pull the boom in past anything solid, then keep what is left in the air.
     const frac = this._boomFit(anchor, desired, dt);
