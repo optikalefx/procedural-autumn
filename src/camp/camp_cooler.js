@@ -67,11 +67,11 @@ import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 // ─────────────────────────────────────────────────────────────────────────────
 export const COOLER_COLORWAYS = [
   // Harvest red. The hero, and the plate the brief points at.
-  { body: 0xb14c47, lid: 0xa8453f, band: null, hw: 'rope', hard: 0x22201f },
+  { body: 0xc05a5e, lid: 0xb85357, band: null, hw: 'rope', hard: 0x1b1c1f },
   // Stone body, navy lid, the white gasket band at the seam.
-  { body: 0x969a9c, lid: 0x2f4770, band: 0xc9c6bd, hw: 'swing', hard: 0x1d1d20 },
+  { body: 0xb3b7b8, lid: 0x3d5c8c, band: 0xdbd8cf, hw: 'swing', hard: 0x1a1b1e },
   // Seafoam. Reads cool against every autumn hue in the valley.
-  { body: 0x3a9086, lid: 0x35887f, band: null, hw: 'rope', hard: 0x22201f },
+  { body: 0x4daea2, lid: 0x47a69a, band: null, hw: 'rope', hard: 0x1b1c1f },
 ];
 
 // The HDPE material already carries the burgundy, so every tint below is a
@@ -267,7 +267,10 @@ export function buildCooler(rnd, opts = {}) {
   g.name = 'camp_cooler';
 
   const cw = COOLER_COLORWAYS[(opts.colorway ?? 0) % COOLER_COLORWAYS.length];
-  const wear = clamp01(opts.wear ?? 0.5);
+  // Floored, not taken raw: the layout hands out `wear` uniformly on 0..1 and a
+  // cooler that draws 0.05 arrives in the valley looking like a shop display,
+  // which the brief rules out for every prop in the set.
+  const wear = 0.40 + 0.60 * clamp01(opts.wear ?? 0.5);
   // Two chest sizes, a 45 and a 65. One size everywhere reads as a catalogue.
   const big = opts.size !== undefined ? !!opts.size : rnd() < 0.34;
   const W = big ? 0.79 : 0.66, HT = big ? 0.42 : 0.40, D = big ? 0.45 : 0.40;
@@ -297,10 +300,15 @@ export function buildCooler(rnd, opts = {}) {
   // trunk rather than as plastic: a convex face under a matte material has no
   // straight terminator anywhere on it, so nothing on it says "panel". Flat
   // faces and a 75 mm corner is the entire rotomould read.
+  // Where the two latches sit. Declared up here because the body's own tint
+  // needs it — see the contact occlusion under each strap.
+  const LATCH_X = Math.min(aW * 0.53, aW - RC - 0.030);
+
   const SHOULDER = h(0.276);
+  const RAILTOP = h(0.056);         // where the base rail's undercut ends
   const wallInset = (y) => {
-    const t = clamp01((y - h(0.026)) / (SHOULDER - h(0.026)));
-    const draft = 0.023 * Math.pow(1 - t, 1.25);
+    const t = clamp01((y - RAILTOP) / (SHOULDER - RAILTOP));
+    const draft = 0.018 * Math.pow(1 - t, 1.25);
     return draft - 0.0010 * Math.sin(Math.PI * t);
   };
   // The outer surface of the wall at a given height, for anything bolted to it.
@@ -312,19 +320,27 @@ export function buildCooler(rnd, opts = {}) {
   //  One continuous surface, so the 50 mm wall thickness at the rim is real
   //  rather than implied — which is the first thing you see when the lid is up.
   // ───────────────────────────────────────────────────────────────────────────
-  const yb = h(0.026);              // underside of the chest, clear of the feet
+  const yb = h(0.024);              // underside of the chest, clear of the feet
   const RIM = h(0.304);             // top of the rim
-  const REB = 0.011;                // how far the body steps in under the lid
+  const REB = 0.014;                // how far the body steps in under the lid
   const WALL = 0.050;
 
   const bp = [];
   {
-    const rvB = 0.023;                                   // bottom roll
-    for (let k = 0; k <= 5; k++) {
-      const f = (k / 5) * Math.PI * 0.5;
-      const y = yb + rvB * (1 - Math.cos(f));
-      bp.push([y, rvB * (1 - Math.sin(f)) + wallInset(y)]);
+    // The base rail. Every one of these chests has a moulded plinth the wall
+    // steps out to at the foot, and the undercut above it is the one hard
+    // horizontal shadow line on the lower half of the prop. Without it the wall
+    // just runs its bottom radius into the dirt and the box appears to be
+    // resting on a curve — which is most of why the earlier rounds read as
+    // floating even where a shadow was being cast.
+    const RAIL = 0.006;
+    const rvB = 0.016;                                   // underside roll
+    for (let k = 0; k <= 4; k++) {
+      const f = (k / 4) * Math.PI * 0.5;
+      bp.push([yb + rvB * (1 - Math.cos(f)), RAIL + rvB * (1 - Math.sin(f))]);
     }
+    bp.push([h(0.046), RAIL]);                           // rail face
+    filletV(bp, h(0.046), RAIL, h(0.010), 0.012, 3);     // the undercut
     for (const v of [0.080, 0.108, 0.136, 0.164, 0.192, 0.222, 0.250, 0.276]) {
       bp.push([h(v), wallInset(h(v))]);                  // wall
     }
@@ -368,7 +384,8 @@ export function buildCooler(rnd, opts = {}) {
     ]);
   }
   const mottle = (x, y, z) =>
-    1 + 0.020 * Math.sin(x * 11.7 + z * 5.3) * Math.cos(z * 13.1 - y * 6.9);
+    1 + 0.038 * Math.sin(x * 11.7 + z * 5.3) * Math.cos(z * 13.1 - y * 6.9)
+      + 0.016 * Math.sin(x * 37.0 - y * 23.0) * Math.cos(z * 41.0 + x * 19.0);
 
   // ── the two wear colours, and why they are computed rather than typed ─────
   //
@@ -388,6 +405,11 @@ export function buildCooler(rnd, opts = {}) {
   // Abraded HDPE goes chalky: the body's own hue, pulled most of the way to a
   // light neutral. Derived from the colourway so every colourway scuffs in its
   // own colour rather than in one grey.
+  // The moulded liner. Half the reference plates have a white interior, and the
+  // open-lid state is what the layout puts in front of the player one time in
+  // five — a same-colour cavity gave the critic "zero wall thickness, a
+  // knife-edge rim on a box that should have 60 mm of foam".
+  const LINER = through(0.500, 0.482, 0.430);
   const CB = C(cw.body);
   const SCUFF = through(
     lerp(CB.r, 0.60, 0.62), lerp(CB.g, 0.58, 0.62), lerp(CB.b, 0.54, 0.62));
@@ -412,7 +434,7 @@ export function buildCooler(rnd, opts = {}) {
     // chest, and four rounds of frames read as a soft red trunk. The dust then
     // lifts the last 40 mm back up, which is the ordering the reference plate
     // has too: pale dirty foot, dark shin, bright shoulder.
-    const sky = 1 - 0.22 * (1 - smoothstep(h(0.030), h(0.285), y));
+    const sky = 1 - 0.13 * (1 - smoothstep(h(0.048), h(0.285), y));
     c = [c[0] * sky, c[1] * sky, c[2] * sky];
     // Baked occlusion in the rebate under the lid. The seam is the read that
     // decides whether the two halves are two halves, and a 13 mm recess is not
@@ -420,17 +442,46 @@ export function buildCooler(rnd, opts = {}) {
     // the lid and the body fuse into one lump. This is the one place on the
     // prop where a value is painted rather than lit, and it is worth it.
     const ao = smoothstep(h(0.258), h(0.286), y) * (1 - smoothstep(h(0.300), h(0.306), y));
-    c = [c[0] * (1 - 0.62 * ao), c[1] * (1 - 0.62 * ao), c[2] * (1 - 0.63 * ao)];
+    c = [c[0] * (1 - 0.50 * ao), c[1] * (1 - 0.50 * ao), c[2] * (1 - 0.51 * ao)];
+    // The undercut above the base rail. The geometry is there and the
+    // silhouette shows it, but a 10 mm groove in a matte wall gives the shader
+    // almost nothing — measured, the rail read as a four-level lightening at
+    // 8 m. Painting the groove is the same argument as the seam AO above.
+    const gao = smoothstep(h(0.038), h(0.050), y) * (1 - smoothstep(h(0.058), h(0.072), y));
+    c = [c[0] * (1 - 0.34 * gao), c[1] * (1 - 0.34 * gao), c[2] * (1 - 0.35 * gao)];
+    // …and occlusion where the latch straps meet the wall. The straps stand
+    // 20 mm proud and must occlude what is behind them; the camp's shadow map
+    // has nowhere near the resolution to resolve a 30 mm strap at 8 m, so the
+    // contact goes in by hand or the latches read as decals printed on.
+    for (const lxs of [-1, 1]) {
+      const near = (1 - smoothstep(0.016, 0.042, Math.abs(x - lxs * LATCH_X)))
+                 * smoothstep(h(0.228), h(0.250), y)
+                 * (1 - smoothstep(h(0.286), h(0.302), y))
+                 * clamp01(smoothstep(aD - 0.050, aD - 0.012, z));
+      c = [c[0] * (1 - 0.32 * near), c[1] * (1 - 0.32 * near), c[2] * (1 - 0.32 * near)];
+    }
     // and the dust it has been standing in — the top of it ragged, not level
     const ragged = h(0.185) * (0.60 + 0.58 * (0.5 + 0.5 * Math.sin(x * 21.3 + z * 15.7)
                                                    * Math.cos(z * 17.9 - x * 11.1))
                                     + 0.22 * Math.sin(x * 61.0 + z * 44.0));
-    let d = clamp01(smoothstep(ragged, h(0.004), y)) * (0.42 + 0.34 * wear);
+    let d = clamp01(smoothstep(ragged, h(0.032), y)) * (0.42 + 0.34 * wear);
     for (const [sx, sy, sz, sr, amp] of grime) {
       d += (1 - smoothstep(sr * 0.25, sr, Math.hypot((x - sx) * 0.8, (y - sy) * 1.5, (z - sz) * 0.8)))
          * amp * 0.30 * wear;
     }
-    return mixTo(c, DUST, clamp01(d));
+    c = mixTo(c, DUST, clamp01(d));
+    // Contact occlusion: the last 30 mm of a box standing on dirt sees almost
+    // no sky at all. This has to be applied *after* the dust or the pale foot
+    // is the brightest part of the wall, which is exactly the signature of a
+    // prop that looks pasted onto the plate.
+    const cao = 1 - 0.20 * (1 - smoothstep(h(0.012), h(0.058), y));
+    c = [c[0] * cao, c[1] * cao, c[2] * cao];
+    // and the liner, which overrides everything because none of the above
+    // happens on the inside of a closed box
+    const li = clamp01(smoothstep(-0.004, 0.010,
+                 Math.min(aW - 0.052 - Math.abs(x), aD - 0.052 - Math.abs(z))))
+             * clamp01(smoothstep(h(0.055), h(0.078), y));
+    return mixTo(c, LINER, li * 0.94);
   };
 
   S.add(shell(bp.map(([y, ins]) =>
@@ -446,7 +497,7 @@ export function buildCooler(rnd, opts = {}) {
   //  one lump and the prop stops being a cooler.
   // ───────────────────────────────────────────────────────────────────────────
   const LIDTOP = h(0.400);
-  const PROUD = -0.010;
+  const PROUD = -0.016;
   const ROLL = 0.029;                    // the lid's own corner roll, top edge
   const lp = [];
   {
@@ -487,22 +538,36 @@ export function buildCooler(rnd, opts = {}) {
     }
     c = mixTo(c, SCUFF, clamp01(s));
     // and the underside of the overhang, which is in shadow whatever the hour
-    const ao = 1 - smoothstep(h(0.298), h(0.312), y);
-    return [c[0] * (1 - 0.5 * ao), c[1] * (1 - 0.5 * ao), c[2] * (1 - 0.5 * ao)];
+    const ao = 1 - smoothstep(h(0.298), h(0.316), y);
+    // …and a lift on the top plane, which sees the whole sky. Together with the
+    // 30 % fall-off down the body this is what keeps the lid separate from the
+    // chest in the five frames of seven where the camp is in the camper's shade
+    // and every surface would otherwise land inside one value.
+    const top = 1 + 0.07 * smoothstep(h(0.352), h(0.400), y);
+    const k2 = (1 - 0.42 * ao) * top;
+    c = [c[0] * k2, c[1] * k2, c[2] * k2];
+    // the lid's own liner: the plug face that seats into the cavity
+    const li = clamp01(smoothstep(-0.004, 0.010,
+                 Math.min(aW - 0.056 - Math.abs(x), aD - 0.056 - Math.abs(z))))
+             * (1 - smoothstep(h(0.302), h(0.312), y));
+    return mixTo(c, LINER, li * 0.94);
   };
 
-  {
-    const geo = shell(lp.map(([y, ins]) =>
-      ring(new THREE.Vector3(0, y, 0), UX, UZ, aW - ins, aD - ins, RC - ins, RN)));
-    let post = null;
-    if (opts.lidOpen) {
-      const py = RIM, pz = -(aD - REB - 0.012);
-      post = M().makeTranslation(0, py, pz)
-        .multiply(M().makeRotationX(-lerp(1.55, 1.86, rnd())))
-        .multiply(M().makeTranslation(0, -py, -pz));
-    }
-    S.add(geo, 'hdpe', null, lidTint, post);
-  }
+  // The hinge axis, declared once. Everything that swings is rotated about
+  // *this* line and the knuckles are built on it, because an open lid pivoting
+  // about a guessed point leaves a visible gap at the back seam — which is what
+  // the round-6 site frames showed, along with a lid apparently floating with
+  // no barrel under it at all.
+  const HY = h(0.292), HZ = -(aD - REB + 0.006);
+  const swing = opts.lidOpen
+    ? M().makeTranslation(0, HY, HZ)
+        .multiply(M().makeRotationX(-lerp(1.58, 1.82, rnd())))
+        .multiply(M().makeTranslation(0, -HY, -HZ))
+    : null;
+
+  S.add(shell(lp.map(([y, ins]) =>
+    ring(new THREE.Vector3(0, y, 0), UX, UZ, aW - ins, aD - ins, RC - ins, RN))),
+    'hdpe', null, lidTint, swing);
 
   // ───────────────────────────────────────────────────────────────────────────
   //  Moulded panel on the front and back faces.
@@ -518,8 +583,8 @@ export function buildCooler(rnd, opts = {}) {
     // Four rings, not three: the first pair is a true vertical wall so the
     // rolled edge has an unambiguous normal, and the cap sits 2.5 mm inside the
     // body wall where nothing can see it.
-    for (const [ins, out] of [[0, -0.003], [0, 0.0016], [0.0022, proud * 0.68],
-                              [0.0056, proud * 0.93], [0.0098, proud]]) {
+    for (const [ins, out] of [[0, -0.003], [0, 0.0016], [0.0040, proud * 0.52],
+                              [0.0098, proud * 0.86], [0.0170, proud]]) {
       const flat = ring(new THREE.Vector3(0, 0, 0), UX, UY,
                         halfU - ins, halfY - ins, Math.max(0.006, rc - ins), 6);
       rings.push(flat.map((p) => {
@@ -531,7 +596,7 @@ export function buildCooler(rnd, opts = {}) {
     return shell(rings);
   };
   for (const sgn of [1, -1]) {
-    S.add(facePad('z', sgn, aW - RC - 0.034, h(0.082), h(0.226), 0.074, 0.0022),
+    S.add(facePad('z', sgn, aW - RC - 0.032, h(0.088), h(0.224), 0.076, 0.0038),
           'hdpe', null, bodyTint);
   }
 
@@ -557,42 +622,62 @@ export function buildCooler(rnd, opts = {}) {
     return shell(rings);
   };
 
-  const latchX = Math.min(aW * 0.53, aW - RC - 0.030);
   for (const sx of [-1, 1]) {
-    const x = sx * latchX;
+    const x = sx * LATCH_X;
     const sl = (rnd() - 0.5) * 0.004;      // no two latches are pulled alike
     // Stations follow the surface the strap is lying on, offset ~5 mm along its
     // normal: the lid's top land, then the 38 mm top roll, then the lid face,
     // then a duck across the seam into the rebate, then the body wall.
-    const path = [
-      [h(0.4010), aD - 0.022],             // anchored on the lid's top land
-      [h(0.4003), aD - 0.012],
-      [h(0.3993), aD - 0.002],             // over the top roll
-      [h(0.3880), aD + 0.0075],
-      [h(0.3700), aD + 0.0155 + sl],       // down the lid face
-      [h(0.3400), aD + 0.0165 + sl],
-      [h(0.3180), aD + 0.0175 + sl],
-      [h(0.3060), aD + 0.0165],
-      [h(0.2990), aD + 0.0115],            // ducking under the lid's edge
-      [h(0.2900), aD + 0.0050],            // and across the shadow gap
-      [h(0.2820), aD + 0.0035],
-      [h(0.2720), aD + 0.0075],            // back out onto the body wall
-      [h(0.2630), aD + 0.0095],            // the T flares here
-      [h(0.2550), aD + 0.0105],
-      [h(0.2490), aD + 0.0085],
+    // Stations lie on the surface the strap is against, offset ~5 mm along its
+    // normal: the lid's top land, over the 29 mm top roll, down the lid face,
+    // then a duck under the 16 mm overhang and out onto the body wall.
+    const LID_Z = aD - PROUD - 0.001;     // the lid's outer face
+    const lidPath = [
+      [h(0.4010), aD - 0.020],            // anchored on the lid's top land
+      [h(0.4003), aD - 0.010],
+      [h(0.3993), aD + 0.002],            // over the top roll
+      [h(0.3880), aD + 0.0135],
+      [h(0.3700), LID_Z + 0.0050 + sl],   // down the lid face
+      [h(0.3400), LID_Z + 0.0055 + sl],
+      [h(0.3180), LID_Z + 0.0065 + sl],
+      [h(0.3060), LID_Z + 0.0055],
     ];
-    const wid = [0.028, 0.029, 0.029, 0.029, 0.029, 0.028, 0.028, 0.028, 0.028, 0.028,
-                 0.030, 0.036, 0.056, 0.060, 0.052];
-    const thk = [0.008, 0.009, 0.009, 0.009, 0.009, 0.008, 0.008, 0.008, 0.008, 0.008,
-                 0.009, 0.010, 0.012, 0.013, 0.010];
-    S.add(ribbon(x, path, wid, thk), 'rubber', null, rubRGB);
+    const bodyPath = [
+      [h(0.2990), aD + 0.0120],           // ducking in under the overhang
+      [h(0.2900), aD + 0.0035],           // across the shadow gap
+      [h(0.2810), aD + 0.0020],
+      [h(0.2720), aD + 0.0070],           // back out onto the body wall
+      [h(0.2650), aD + 0.0090],           // the T flares from here…
+      [h(0.2590), aD + 0.0102],
+      [h(0.2530), aD + 0.0108],
+      [h(0.2430), aD + 0.0125],           // …and tucks over the keeper
+    ];
+    const lidW = [0.028, 0.029, 0.029, 0.029, 0.029, 0.028, 0.028, 0.028];
+    const lidT = [0.008, 0.009, 0.009, 0.009, 0.009, 0.008, 0.008, 0.008];
+    const bodyW = [0.028, 0.028, 0.030, 0.036, 0.046, 0.058, 0.060, 0.050];
+    const bodyT = [0.008, 0.008, 0.009, 0.010, 0.011, 0.012, 0.013, 0.010];
 
-    // The anchor that pins the strap to the lid, and the keeper the T hooks
-    // under. Both are the small hard shapes that read as *mechanism*.
-    P.add(rbox(0.048, 0.013, 0.030, 0.005, 1), 'rubber',
-          at(x, h(0.4005), aD - 0.022), rubRGB);
-    P.add(rbox(0.058, 0.016, 0.024, 0.007, 1), 'plastic',
-          at(x, h(0.2365), faceZ(h(0.2365)) + 0.002), hardRGB);
+    if (opts.lidOpen) {
+      // The latch is unhooked and lying against the raised lid — so the strap
+      // *and its anchor* have to be rotated about the hinge with everything
+      // else. Left in the closed pose they stand bolt upright in mid-air where
+      // the lid used to be, which is exactly what the round-6 site frames
+      // showed: two black antennae above an open box.
+      const tail = lidPath.concat([[h(0.2960), LID_Z + 0.0110], [h(0.2900), LID_Z + 0.0155]]);
+      S.add(ribbon(x, tail, lidW.concat([0.030, 0.034]), lidT.concat([0.009, 0.011])),
+            'rubber', null, rubRGB, swing);
+    } else {
+      S.add(ribbon(x, lidPath.concat(bodyPath), lidW.concat(bodyW), lidT.concat(bodyT)),
+            'rubber', null, rubRGB);
+    }
+    // The anchor that pins the strap to the lid — lid furniture, so it swings.
+    S.add(rbox(0.048, 0.013, 0.030, 0.005, 1), 'rubber',
+          at(x, h(0.4005), aD - 0.020), rubRGB, swing);
+    // …and the keeper the T hooks under, which is body furniture and stays.
+    // Wider than the T on purpose: a keeper the T covers completely is a
+    // keeper nobody can see the latch *engaging*.
+    S.add(rbox(0.082, 0.020, 0.030, 0.009, 2), 'hdpe',
+          at(x, h(0.2380), faceZ(h(0.2380)) + 0.006), bodyTint);
   }
 
   // ── padlock lugs, front corners ───────────────────────────────────────────
@@ -602,16 +687,15 @@ export function buildCooler(rnd, opts = {}) {
   // radius, and they are most of what stops the front face reading as a blank
   // panel from across the camp.
   {
-    const lx = Math.min(aW - RC - 0.010, aW * 0.78);
+    const lx = Math.min(aW - RC - 0.004, aW * 0.84);
     for (const sx of [-1, 1]) {
-      P.add(rbox(0.032, 0.030, 0.020, 0.006, 1), 'hdpe',
-            at(sx * lx, h(0.268), faceZ(h(0.268)) + 0.004), bodyTint);
-      // the lid's half only when the lid is down; it belongs to the lid, and
-      // Parts has no hinge to swing it on
-      if (!opts.lidOpen) {
-        P.add(rbox(0.032, 0.026, 0.020, 0.006, 1), 'hdpe',
-              at(sx * lx, h(0.312), aD + 0.013), lidTint);
-      }
+      // Both halves go in the smooth bin: through Parts these came out as
+      // hard-edged flat-black boxes with a stairstepped silhouette, and the
+      // critic read them as glued-on primitives rather than as mouldings.
+      S.add(rbox(0.030, 0.028, 0.020, 0.008, 2), 'hdpe',
+            at(sx * lx, h(0.270), faceZ(h(0.270)) + 0.004), bodyTint);
+      S.add(rbox(0.030, 0.024, 0.020, 0.008, 2), 'hdpe',
+            at(sx * lx, h(0.310), aD - PROUD + 0.002), lidTint, swing);
     }
   }
 
@@ -693,14 +777,26 @@ export function buildCooler(rnd, opts = {}) {
   }
 
   // ── hinge, at the back seam ───────────────────────────────────────────────
+  // Two knuckles a side, one on the body and one on the lid, interleaved on the
+  // hinge axis, with a short steel pin through each pair. The previous build ran
+  // one bright steel rod the full width of the chest; at metalness 0.95 it threw
+  // a specular pinstripe along the whole back seam that read as chrome trim, and
+  // in the shaded frames it inverted the seam from a dark line to a light one.
   {
-    const z = -(aD - REB - 0.002);
+    // Barrels, not blocks. Rounded boxes on the parting line read as two dark
+    // rectangles laid on the seam — no cylindrical form, no crown highlight, no
+    // gap between knuckles. Hexagonal barrels on the axis give each knuckle a
+    // lit facet and a dark facet, which is the same argument the shared kit
+    // makes for a chair's tube.
     for (const sx of [-1, 1]) {
-      P.add(rbox(0.086, 0.034, 0.028, 0.010, 1), 'plastic',
-            at(sx * aW * 0.42, h(0.290), z - 0.004), hardRGB);
+      const kx = sx * aW * 0.40;
+      S.add(tube(0.016, 0.062, 7), 'plastic',
+            at(kx, HY, HZ - 0.006, 0, 0, Math.PI * 0.5), hardRGB);
+      S.add(tube(0.016, 0.044, 7), 'plastic',
+            at(kx + sx * 0.056, HY, HZ - 0.006, 0, 0, Math.PI * 0.5), hardRGB, swing);
+      P.add(tube(0.0055, 0.128, 6), 'steel',
+            at(kx + sx * 0.028, HY, HZ - 0.006, 0, 0, Math.PI * 0.5), [0.75, 0.75, 0.75]);
     }
-    P.add(tube(0.0065, W * 0.90, 6), 'steel',
-          at(0, h(0.294), z - 0.014, 0, 0, Math.PI * 0.5), [1, 1, 1]);
   }
 
   S.flush(g);

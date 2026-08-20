@@ -53,13 +53,15 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const HEX_HDPE = 0x8f3a3c;
 const HEX_PLASTIC = 0x2a2a2e;
 const HEX_WOOD = 0x8a6a46;
-// Mill aluminium, warmed off the kit's `alu` swatch. 0xb9bdc2 is a cool grey,
-// which is right for the metal itself but wrong for a dielectric standing in
-// for it: without a metal's dark diffuse the cool cast survives into the
-// midtones and the legs come out lavender against warm dirt. Held a shade
-// darker too, so the sky gradient in `beam()` has headroom above it and the
-// frame is not the brightest thing in the camp at dusk — the fire is.
-const HEX_ALU = 0xadaba4;
+// Mill aluminium. Not the kit's 0xb9bdc2: that is a cool grey, right for the
+// metal itself but wrong for a dielectric standing in for it, because without a
+// metal's dark diffuse the cool cast survives into the midtones and the legs
+// come out lavender against warm dirt. Nearly neutral instead, and held well
+// below white — the ×1.4 sky gradient in `beam()` is what takes the upward
+// facets to near-white where the plan view needs them, and holding the base
+// down is what keeps the side facets from going chalky at eye level and keeps
+// the frame from being the brightest thing in the camp at dusk. The fire is.
+const HEX_ALU = 0xa9aaa8;
 const HEX_ANOD = 0x2b2c30;
 const HEX_STEEL = 0xa8abae;
 
@@ -231,9 +233,15 @@ export function buildTable(rnd, opts = {}) {
   // to a camp chair reads instantly as a scale error, and scale errors are
   // invisible in a studio capture — the `wide` framing with the camper in it is
   // the one that catches them.
-  const W = 0.552 + rnd() * 0.052;   // long axis, X
-  const D = 0.432 + rnd() * 0.046;   // short axis, Z — the front edge faces +Z
-  const H = 0.398 + rnd() * 0.042;   // slat top
+  const W = 0.536 + rnd() * 0.050;   // long axis, X
+  const D = 0.420 + rnd() * 0.042;   // short axis, Z — the front edge faces +Z
+  // 425–470 mm, not 400. The integrator's whole-camp plan frame is what moved
+  // this: at 400 mm the top sat so close to the dirt that it and its own shadow
+  // merged into one shape and the table read as a black doormat lying on the
+  // ground. Height is the cheapest elevation cue there is — it pushes the cast
+  // shadow clear of the top's own footprint — and 470 mm is still inside the
+  // band the brief allows (0.6 × 0.6 at 0.5 is the big end of the same family).
+  const H = 0.425 + rnd() * 0.045;   // slat top
 
   // ── the top ────────────────────────────────────────────────────────────────
   // A perimeter rail of black anodised extrusion carrying a panel of slats. The
@@ -241,7 +249,7 @@ export function buildTable(rnd, opts = {}) {
   // silhouette, and its 26 mm depth gives the top a real edge that catches a
   // terminator line all the way round instead of a paper-thin plane.
   const railT = 0.014;               // rail wall, horizontal
-  const railH = 0.026;               // rail depth, vertical — top flush at H
+  const railH = 0.022;               // rail depth, vertical — top flush at H
   const anodBase = tintFrom(TOP.hex, TOP.want);
 
   // How the gaps read at eye level.
@@ -255,12 +263,31 @@ export function buildTable(rnd, opts = {}) {
   // a value cue, not an occlusion one, and a value cue survives any angle and
   // any distance.
   //
-  // So the top 1.5 mm of every slat and of the perimeter rail is lifted and
+  // So the top 1.5 mm of every slat and of the perimeter rail is lifted, and
   // everything below it is dropped to about a third. The top stops being a
   // plane and becomes corduroy. The r3 build had all of it on one flat value
   // and went solid black from every eye-level angle — the exact failure the
   // brief names.
-  const faceLift = (y) => 0.38 + 1.05 * smoothstep(H - 0.0042, H - 0.0009, y);
+  //
+  // The lift is nearly ×2 rather than a nudge for a second reason: black
+  // anodised aluminium under an open sky does not photograph black. In the
+  // plate the slat faces sit around 30% grey with a sheen on them, and it is
+  // 30% grey — not 17% — that keeps the top from dissolving into its own cast
+  // shadow when the camera is high and far, which is where the integrator found
+  // it dissolving.
+  //
+  // The ramp is deliberately deeper than the slat cap rather than confined to
+  // it, because of what a *very* grazing view does. The prop framing looks
+  // along the top from about 10° above, and at 10° a slat 12 mm deep occludes
+  // 68 mm of the top behind it — more than the 54 mm pitch — so not one square
+  // millimetre of any slat's top face is visible and the top is genuinely, not
+  // apparently, a black plane. What you see instead is the *side wall* of each
+  // slat with the gap beside it, so it is the side wall that has to carry the
+  // stripe: it runs from nearly the face's value at the top down to the recess
+  // value at the bottom, and the eye reads that alternation as slats. The slats
+  // are also 8.5 mm deep now rather than 14, which pulls the occlusion angle in
+  // far enough that the faces themselves come back by about 15°.
+  const faceLift = (y) => 0.30 + 1.66 * smoothstep(H - 0.0090, H - 0.0005, y);
   const wearOf = anodWear(rnd, wear);
   const railTint = (x, y, z) => {
     const w = wearOf(x, y, z), f = faceLift(y);
@@ -296,11 +323,13 @@ export function buildTable(rnd, opts = {}) {
     // Cap: segmented so the wear function has vertices to vary across, and
     // lightly rounded so its long edges take a highlight. The radius is small
     // on purpose — a 1.4 mm break, not a bullnose; anodised extrusion is sharp.
-    P.add(rbox(slatL, 0.0042, slatW, 0.0014, 3),
-      TOP.key, at(0, H - 0.0021, z), railTint);
-    // Web. A plain box; it is never seen except in silhouette from below.
-    P.add(new THREE.BoxGeometry(slatL - 0.003, 0.0098, slatW - 0.012),
-      TOP.key, at(0, H - 0.0091, z), railTint);
+    P.add(rbox(slatL, 0.0040, slatW, 0.0013, 3),
+      TOP.key, at(0, H - 0.0020, z), railTint);
+    // Web. A plain box; it is never seen except in silhouette from below, and
+    // it is what puts a real step — not just a painted one — under each slat
+    // edge, which is what the plan view reads as gaps.
+    P.add(new THREE.BoxGeometry(slatL - 0.003, 0.0045, slatW - 0.011),
+      TOP.key, at(0, H - 0.00625, z), railTint);
   }
 
   // ── the frame ──────────────────────────────────────────────────────────────
@@ -328,15 +357,28 @@ export function buildTable(rnd, opts = {}) {
   // vertical whether you like it or not. That is the object. The only free
   // choice is the depth splay, which is small — 8 mm proud of the top edge, so
   // the feet stand just outside the silhouette and the stance reads as braced.
-  const xt = W * 0.5 - 0.048;       // leg top, X — inboard of the corner
-  const xf = W * 0.5 + 0.008;       // foot, X — just proud of the top edge
+  //
+  // The feet stand 25 mm proud of the top's edge across the width and 22 mm
+  // proud front-to-back, and that number is doing real work rather than being
+  // an eyeballed detail. At the 8 mm the first pass used, the *entire frame*
+  // was inside the top's own outline: seen from directly above — which is how a
+  // player looking down at a camp mostly sees it — there was nothing outside
+  // the black rectangle at all, so the table had no legs and no height and read
+  // as a mat on the dirt. Pushing the feet out projects four bright leg ends
+  // past the silhouette, and four bright ends round a dark rectangle is the
+  // whole difference between a table and a stain.
+  //
+  // 25 mm is as far as it can go: the layout solver reserves a 0.40 m radius
+  // for this prop and the corner foot is then 0.391 m out on the diagonal.
+  const xt = W * 0.5 - 0.055;       // leg top, X — inboard of the corner
+  const xf = W * 0.5 + 0.025;       // foot, X — proud of the top edge
   const zt = D * 0.5 - 0.038;       // leg top, Z
-  const zf = D * 0.5 + 0.008;       // foot, Z — splayed outward
+  const zf = D * 0.5 + 0.022;       // foot, Z — splayed outward
   const yTop = H - railH + 0.004;   // top of the leg, buried in the rail
-  const yFoot = 0.030;              // bottom of the leg, buried in the foot
+  const yFoot = 0.046;              // bottom of the leg, buried in the foot
 
   const LEG_W = 0.022, LEG_T = 0.0145;   // in-plane × out-of-plane
-  const SKY_ALU = 0.34, SKY_DARK = 0.20; // see `beam()`
+  const SKY_ALU = 0.40, SKY_DARK = 0.20; // see `beam()`
   // Mill-finish aluminium is not a mirror and it is not uniform; a touch of
   // per-table tint keeps two tables in the same camp from being clones, and the
   // dust ramp over the lowest 110 mm is what sits the feet in the dirt rather
@@ -410,25 +452,32 @@ export function buildTable(rnd, opts = {}) {
     // ── stabiliser bar and feet ──────────────────────────────────────────────
     // The flat black bar tying this frame's two feet together, and the moulded
     // shoes it ends in. The bar is the single most useful thing on the whole
-    // prop for making the table not float: it is a dark horizontal 30 mm off the
-    // ground, so it sits directly against its own contact shadow and the eye
-    // reads the two together as ground contact even at a distance where the feet
-    // themselves are gone.
-    P.add(rbox(0.030, 0.011, zf * 2 + 0.050, 0.0048),
-      DARK.key, at(footX, 0.031, 0), blackTint);
+    // prop for making the table not float: it is a dark horizontal low down,
+    // sitting directly against its own contact shadow, and the eye reads the two
+    // together as ground contact even at a distance where the feet are gone.
+    //
+    // The whole assembly lives higher up the leg than a measurement off the
+    // plate would put it — the shoe reaches 51 mm and the bar sits at 52 — and
+    // that is a deliberate accommodation, not a scale error. The camp's dirt
+    // decal is a *lifted* mesh: `camp_ground.js` adds `LIFT` 13 mm plus up to
+    // 22 mm of berm and ±26 mm of hummock noise on top of the terrain the layout
+    // solver placed this prop against. So the visible ground under a prop can
+    // stand 30–40 mm above y = 0, and the r4 build proved it: the shoes spanned
+    // −4…36 mm, every one of them was under the dirt, and all four legs came out
+    // of the render as bare cut sticks ending in mid-air. Anything that has to
+    // be seen touching the ground has to clear that band. Logged for the ground
+    // author in `docs/CAMP_REQUESTS.md`; this is the belt to that braces.
+    P.add(rbox(0.031, 0.014, zf * 2 + 0.050, 0.005),
+      DARK.key, at(footX, 0.052, 0), blackTint);
 
     for (const sz of [-1, 1]) {
-      // Sunk 2 mm. Every one of these has been stood on soft dirt, and 2 mm of
-      // bed is cheap insurance against a foot hovering over an uneven clearing
-      // — a single floating foot in the `table-back` framing is the defect that
-      // undoes the whole prop.
-      P.add(rbox(0.038, 0.040, 0.054, 0.013),
-        DARK.key, at(footX, 0.016, sz * zf), blackTint);
+      P.add(rbox(0.036, 0.056, 0.058, 0.014),
+        DARK.key, at(footX, 0.023, sz * zf), blackTint);
       // A rubber pad on the underside, a hair wider than the moulding so it
       // shows as a dark line under it — what a foot needs to not look like the
       // leg was simply cut off at ground level.
-      P.add(rbox(0.040, 0.010, 0.056, 0.004),
-        'rubber', at(footX, 0.0005, sz * zf), blackTint);
+      P.add(rbox(0.038, 0.012, 0.060, 0.005),
+        'rubber', at(footX, 0.003, sz * zf), blackTint);
     }
   }
 
@@ -455,9 +504,8 @@ export function buildTable(rnd, opts = {}) {
   if (opts.dressed) dressTable(P, rnd, W, D, H, wear);
 
   P.flush(g);
-  // The feet reach ±(W/2 + 8 mm) across and ±(D/2 + 8 mm) deep, so the real
-  // clearance the layout solver needs is a shade under 0.40 m on the diagonal.
-  // Matches the radius `camp_site.js` reserves for a table.
+  // The corner foot lands 0.391 m from the origin on the diagonal, so 0.40 is
+  // the honest clearance and it matches the radius `camp_site.js` reserves.
   g.userData.footprint = 0.40;
   return g;
 }
@@ -557,7 +605,7 @@ function paperback(P, rnd, x, y, z, yaw, wear) {
   const cover = tintFrom(HEX_HDPE, covers[Math.floor(rnd() * covers.length) % covers.length]);
   // Paper yellows; a well-read paperback's block is nearer bone than white, and
   // it gets more so with wear.
-  const pages = tintFrom(HEX_WOOD, 0xd9cfb4 - Math.floor(wear * 0x0a0a06));
+  const pages = tintFrom(HEX_WOOD, 0xd6d2c6 - Math.floor(wear * 0x0a0a06));
 
   const base = at(x, y + BT * 0.5, z, 0, yaw, 0);
   const local = (m) => M().multiplyMatrices(base, m);

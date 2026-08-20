@@ -139,3 +139,52 @@ node tools/health.mjs
 node tools/nanhunt.mjs
 node tools/dprtest.mjs --dpr 2 --w 1170 --h 870 --gate
 ```
+
+---
+
+## Additions to the contract, forced by measurement
+
+_Added mid-round. These are not style notes; each one was a shipped defect._
+
+### The fire's light comes from `opts.light`
+
+`Camp` constructs a `THREE.PointLight` at boot, at zero intensity, and never
+removes it. `Firepit` is handed it as `opts.light` and must use it when given,
+falling back to creating one only when it is not.
+
+This scene contains no other point light. A light appearing at runtime takes
+three's `NUM_POINT_LIGHTS` define from 0 to 1 and every lit material in the
+valley — terrain, rock, grass, cover, trees, water, the camper — relinks.
+Measured (`tools/_scratch/camphitch.mjs`): the first camp linked 36 programs
+and froze two consecutive frames at **986 ms and 898 ms**, at the exact moment
+the player was being shown the thing they just asked for. A light going 1 → 2
+costs the same. `Camp` now adopts a Firepit's own light if it made one, so this
+cannot regress silently, but the right thing is to use what you are given.
+
+`dispose()` must not dispose a light that came from `opts`.
+
+### Materials are created ONCE, per module, not per instance
+
+`campMaterials()` is the pattern: a module-level `let _mats = null` with a
+getter that builds on first call. Anything built per instance is a fresh
+program on the frame the camp appears, however thoroughly it was pre-warmed —
+the pre-warmed program belonged to an object that has since been thrown away.
+
+This applies to `CampGround.build()` as much as to `Firepit`: a material with
+an `onBeforeCompile` is a distinct program cache key, so rebuilding one per
+site is rebuilding a shader per site. Per-site values belong in uniforms.
+
+### There is one Firepit for the session
+
+`Camp` builds it during the boot pre-warm and moves it, rather than building
+one per camp. If `Firepit` grows a `rebuild(rnd)` method, `Camp` calls it on
+each pitch so the stone ring can be re-rolled; without one the fire is simply
+reused as it is.
+
+### The camera has a subject, and it is not always the camper
+
+`CameraRig.setFocus(v3 | null)` points the boom at something other than the
+camper; null returns it. `Camp` gives the fire focus when a camp is pitched,
+hands it back when the player clicks the camper, and — this one is not
+optional — hands it back on any throttle or any real speed. A camera still
+pointed at a fire while the player is steering is not a camera.

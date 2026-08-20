@@ -58,7 +58,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import {
-  Parts, at, span, tube, rod, rbox, fabricPanel, sweptArc, dusted, tintFrom,
+  Parts, at, span, tube, rod, rbox, fabricPanel, sweptArc, dusted, tintOf, tintMul,
 } from './camp_materials.js';
 import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 
@@ -82,27 +82,45 @@ export const CHAIR_COLORWAYS = [
   { body: 0x35899b, side: 0x2d7688, insert: 0x2a6a7b, bind: 0x235a68, blocked: false },
   // 1 — plate 3: Helinox colour-block. Teal body, rust wings, grey mesh
   //     shoulders, and an olive binding tape round the top and the front lip.
-  { body: 0x2a9cb2, side: 0xe0672e, insert: null,     bind: 0x7d7350, blocked: true },
+  { body: 0x2a9cb2, side: 0xe8631f, insert: null,     bind: 0x8a8055, blocked: true },
   // 2 — plate 2: the green quad chair.
   { body: 0x4f8446, side: 0x44733d, insert: 0x355c31, bind: 0x2d4a26, blocked: false },
   // 3 — plate 4: the red one.
-  { body: 0xc2422f, side: 0xa93628, insert: 0x7d281c, bind: 0x35211c, blocked: false },
+  { body: 0xd04c34, side: 0xb43a2b, insert: 0x8a2c1e, bind: 0x35211c, blocked: false },
 ];
 
 /**
- * The two mesh greys, as multipliers on the shared `mesh` material.
+ * The two screen greys — and why they are NOT on the `mesh` material.
  *
- * `mesh` is authored at 0x14161a — an opaque dark screen, because a real alpha
- * panel this size is pure aliasing crawl at 20 m — and that is right for an
- * insect screen seen against a lit tent, but a chair's back mesh is held up
- * against the sky and reads as a mid grey in every plate. These lift it there
- * without anyone else's mesh moving. The multipliers look alarming — about 30×
- * — but that is only what it costs to get from a 0x14 base to a 0x9a one
- * through a linear-space vertex colour, and two earlier attempts at 0x5c and
- * 0x6a both still read as a black hole punched in the chair.
+ * `mesh` is authored at 0x14161a, which is right for an insect screen seen
+ * against a lit tent wall, and the obvious move is `tintFrom(0x14161a, …)` to
+ * lift it for a chair back, which is held up against the sky and reads as a mid
+ * grey in all four plates. That does not work here. Three passes at it —
+ * 0x5c5d54, 0x6a6b5f, 0x9a9b8e, the last a 30× multiplier — each moved the
+ * rendered value by only a few percent and the panel stayed a black hole
+ * punched in the chair. Whatever the stylised path does with a very dark base
+ * colour, a vertex colour does not undo it.
+ *
+ * So the chair's screens are `fabricIn` — the same double-sided cloth material
+ * as the rest of the chair, at a grey the tint reaches reliably. It is an
+ * opaque screen either way; a real alpha panel this size is pure aliasing crawl
+ * at 20 m. Nobody else's mesh moves, which is the point of not "fixing" the
+ * shared material from this file.
  */
-const MESH_BACK = tintFrom(0x14161a, 0x9a9b8e);   // the quad chair's back panel
-const MESH_WING = tintFrom(0x14161a, 0xacada0);   // plate 3's shoulder inserts
+const MESH_BACK = tintOf(0x8d8f88);   // the quad chair's back panel
+const MESH_WING = tintOf(0x6f7169);   // plate 3's shoulder inserts
+
+/**
+ * Piping.
+ *
+ * Every seam on both armchair plates is finished with near-black tape, and that
+ * tape is doing more work than it looks: it draws the edge of every panel, so
+ * the chair keeps its internal structure when the fabric itself falls to the
+ * same value as the dirt it is standing on. A red chair on red-brown ground
+ * with no piping loses its whole lower half the moment you squint, which is
+ * exactly what happened to this one in round 4.
+ */
+const PIPE = tintOf(0x241f1c);
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Surface patchwork
@@ -161,6 +179,23 @@ const shade = (base, y0, y1, k) => (x, y) => {
   return [base[0] * s, base[1] * s, base[2] * s];
 };
 
+/**
+ * Occlusion by depth into the pouch, for the sling.
+ *
+ * A height gradient is the wrong axis here: the inside and the outside of the
+ * bowl are at the same height, so `shade()` gives them the same value and the
+ * interior comes out LIGHTER than the exterior, because it faces the sky. A
+ * bowl's inside is the darkest part of the object. This measures how far a
+ * point hangs below the pocket-to-pocket chord — which is exactly how deep in
+ * the pouch it is, and therefore how little sky it can see.
+ */
+const pouchAO = (base, k, front, top) => (x, y, z) => {
+  const t = clamp01((front.z - z) / (front.z - top.z));
+  const d = clamp01((lerp(front.y, top.y, t) - y) / 0.21);
+  const f = 1 - k * d * d;
+  return [base[0] * f, base[1] * f, base[2] * f];
+};
+
 /** Fade a colourway toward the sun-bleached grey a season outdoors gives it. */
 function weathered(hex, wear) {
   const c = new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
@@ -190,10 +225,16 @@ function pathOf(pts, tension = 0.5) {
  * small thing that reads as unfinished from exactly the low angle the fireside
  * framing uses.
  */
-function legWithFoot(P, foot, top, tint, r, capR = 0.0118, capL = 0.052) {
+function legWithFoot(P, foot, top, tint, r, capR = 0.0142, capL = 0.056) {
   const dir = new THREE.Vector3().subVectors(top, foot).normalize();
   const capTop = foot.clone().addScaledVector(dir, capL);
-  P.add(rod(capR, capL), 'rubber', span(foot, capTop), tint);
+  // The cap is lifted about 40% off the `rubber` base. At the material's own
+  // 0x1b1b1e it sits within a couple of percent of the `tube` black beside it,
+  // so a foot that is geometrically there reads as the tube simply stopping —
+  // which is what "the legs have no feet" means in a critique. A moulded rubber
+  // foot is matte and scuffed pale; giving it its own value is what makes the
+  // contact visible at 15 m.
+  P.add(rod(capR, capL), 'rubber', span(foot, capTop), tintMul(tint, [1.45, 1.42, 1.36]));
   const start = foot.clone().addScaledVector(dir, capL * 0.55);
   P.add(tube(r, start.distanceTo(top)), 'tube', span(start, top), tint);
 }
@@ -259,7 +300,7 @@ const SLING_PROFILE = pathOf([
  * The sling surface. `u` runs left to right, `v` from the front lip up to the
  * top edge; both are global to the whole sheet.
  */
-function slingSurface(ph, wrinkle) {
+function slingSurface(ph, wrinkle, j) {
   // The panel normal of the pocket-to-pocket chord plane: up and forward.
   const n = V(0, S.topZ - S.frontZ, -(S.topY - S.frontY)).normalize().multiplyScalar(-1);
   const pr = V(0, 0, 0);
@@ -281,13 +322,13 @@ function slingSurface(ph, wrinkle) {
 
     // 2 — the free bow of unloaded cloth, ~8% of the span, along the chord
     //     normal. Zero on every edge of the sheet, so the pockets stay pinned.
-    out.addScaledVector(n, -S.sag * bowl(u, v));
+    out.addScaledVector(n, -j.sag * bowl(u, v));
 
     // 3 — the pouch. The centreline takes the profile in full and the free
     //     edges take `edgeShare` of it, with a rounded falloff between, so the
     //     cross-section is a U: flattish under the sitter, steep up the sides.
     SLING_PROFILE(v, pr);
-    const w = 1 - (1 - S.edgeShare) * Math.pow(t, 1.55);
+    const w = 1 - (1 - j.edge) * Math.pow(t, 1.55);
     out.y += (pr.y - cy) * w;
     out.z += (pr.z - cz) * w;
 
@@ -310,6 +351,12 @@ function slingSurface(ph, wrinkle) {
     // itself at the edge, which is what it actually does.
     const free = Math.pow(sv, 0.8) * Math.pow(t, 2.6);
     out.x -= Math.sign(s) * 0.040 * free;
+    // The hem also DROPS, hard, just behind the front lip. Without this the
+    // near hem rises monotonically from the lip to the top pocket and the side
+    // silhouette is a symmetric canoe hull — you cannot tell which way the
+    // chair is facing, which is a fatal thing for a prop the layout solver aims
+    // at a fire. The notch is what says "seat here, back there" in one line.
+    out.y -= j.dip * Math.pow(t, 2.2) * Math.exp(-Math.pow((v - 0.30) / 0.22, 2));
     // …and forward. This is the wrap: a butterfly sling's wings curl round the
     // sitter, so the hem stands ~50 mm in front of the rail at shoulder height.
     // It is what gives the chair depth from the side, where round 2 was a flat
@@ -318,7 +365,7 @@ function slingSurface(ph, wrinkle) {
 
     // 6 — the scoop in the top edge: the middle of the head end is cut and
     //     hangs about 60 mm below the shoulders. Vanishes at the pockets.
-    const sc = 0.062 * clamp01(smoothstep(0.52, 1.0, v)) * Math.cos(Math.PI * s);
+    const sc = j.scoop * clamp01(smoothstep(0.52, 1.0, v)) * Math.cos(Math.PI * s);
     out.y -= sc;
     out.z -= sc * 0.28;
 
@@ -334,22 +381,57 @@ function slingSurface(ph, wrinkle) {
     //     radial pucker at each pocket that grows from zero at the corner so
     //     the corner itself stays exactly where the tube end is.
     let cr = wrinkle * (
-      0.0042 * Math.sin(u * 8.6 + v * 2.2 + ph) * sv +
-      0.0030 * Math.sin(v * 11.0 - u * 3.1 + ph * 1.7) * Math.sin(Math.PI * u));
+      0.0075 * Math.sin(u * 8.6 + v * 2.2 + ph) * sv +
+      0.0052 * Math.sin(v * 11.0 - u * 3.1 + ph * 1.7) * Math.sin(Math.PI * u));
     for (const [pu, pv] of PUCK) {
       const du = u - pu, dv = (v - pv) * 0.8;
       const d = Math.hypot(du, dv);
-      cr += 0.16 * d * Math.exp(-d * 7.0) *
-            Math.cos(Math.atan2(dv, du) * 4.5 + ph + pu * 2.1 + pv * 3.7);
+      // Two harmonics per pocket, not one. Cloth pulled into a corner throws a
+      // fan of creases of visibly different lengths; a single cosine gives an
+      // even scallop that reads as a moulding seam. Amplitude is up from 9 mm
+      // to 19 mm because at 9 mm the tension read did not survive being
+      // squinted at, which is the only test that matters at 15 m.
+      const a = Math.atan2(dv, du);
+      cr += 0.30 * d * Math.exp(-d * 6.0) * Math.cos(a * 4.5 + ph + pu * 2.1 + pv * 3.7);
+      cr += 0.13 * d * Math.exp(-d * 10.0) * Math.cos(a * 8.0 - ph * 1.3 + pv * 2.2);
     }
     out.addScaledVector(n, cr);
+
+    // 9 — the rolled hems. Cloth does not stop at a knife edge: the front lip
+    //     and the head end are both turned under and stitched round a cord, so
+    //     each has a couple of millimetres of thickness and turns away from the
+    //     camera before it ends. Without this the sling's outline is a razor
+    //     cut with no material behind it, which is visible at 2 m and is the
+    //     difference between cloth and a decal.
+    const rollF = clamp01(smoothstep(0.062, 0.0, v));
+    out.addScaledVector(n, -0.011 * rollF);
+    out.y -= 0.013 * rollF;
+    const rollT = clamp01(smoothstep(0.955, 1.0, v));
+    out.addScaledVector(n, -0.008 * rollT);
+    out.z -= 0.007 * rollT;
+
+    // 10 — one shoulder a little lower than the other. Two chairs beside a fire
+    //      built from the same numbers are two copies of a prop; the shock cord
+    //      in a real one never seats evenly and one corner always sits proud.
+    //      Antisymmetric in u, so it cannot be mistaken for a modelling error.
+    out.y += j.twist * Math.sin(2 * Math.PI * u) * sv;
     return out;
   };
 }
 
 function buildSling(P, rnd, cw, wear, g) {
   const ph = rnd() * 6.283;
-  const surf = slingSurface(ph, 0.8 + wear * 0.9);
+  // Per-instance cut and seat of the cloth. `Camp.js` puts two or three of
+  // these in an arc facing one fire, and every term here is one the eye reads
+  // as "somebody has been sitting in that one" rather than as a variant.
+  const j = {
+    sag: S.sag * (0.84 + rnd() * 0.34),
+    edge: S.edgeShare + (rnd() - 0.5) * 0.10,
+    scoop: 0.062 * (0.86 + rnd() * 0.30),
+    dip: 0.050 * (0.82 + rnd() * 0.38),
+    twist: (rnd() - 0.5) * 0.020,
+  };
+  const surf = slingSurface(ph, 0.8 + wear * 0.9, j);
   const dust = dusted([1, 1, 1], { top: 0.14, amount: 0.18 + 0.30 * wear });
 
   // ── upper frame ───────────────────────────────────────────────────────────
@@ -369,9 +451,11 @@ function buildSling(P, rnd, cw, wear, g) {
     // that says the cloth is *hung on* the frame rather than moulded to it, and
     // it is clearly visible in both sling plates.
     const a = railAt(sx, 1.0), b0 = railAt(sx, 0.94);
-    // Kept short: at 30 mm these read as antennae in the side framing.
-    const tip = a.clone().addScaledVector(a.clone().sub(b0).normalize(), 0.017);
-    P.add(rod(0.0090, 0.020), 'plastic', span(a, tip), dust);
+    // Kept very short: at 30 mm, and even at 20, these read as antennae with
+    // ball finials in the side and back framings. The plate's nub is a few
+    // millimetres of pole end showing out of the corner pocket, no more.
+    const tip = a.clone().addScaledVector(a.clone().sub(b0).normalize(), 0.011);
+    P.add(rod(0.0086, 0.013), 'plastic', span(a, tip), dust);
   }
 
   // Front cross rail, bowed down a little under the lip of the sling.
@@ -388,7 +472,10 @@ function buildSling(P, rnd, cw, wear, g) {
   P.add(tube(0.0062, hubR.x - hubL.x), 'tube', span(hubL, hubR), dust);
   for (const sx of [-1, 1]) {
     const hub = V(sx * S.hubX, S.hubY, 0);
-    P.add(rbox(0.046, 0.040, 0.062, 0.013), 'plastic',
+    // 40 mm and squared off, not 46 and round. At the larger size with a 13 mm
+    // radius the pair read as two spheres on a bar — a dumbbell slung under the
+    // seat — instead of as two moulded knuckles the legs plug into.
+    P.add(rbox(0.040, 0.033, 0.056, 0.008), 'plastic',
           at(hub.x, hub.y, hub.z, 0, 0, sx * 0.10), dust);
     legWithFoot(P, V(sx * S.footX, -0.004, S.footZf), hub, dust, S.legR);
     legWithFoot(P, V(sx * S.footX * 0.94, -0.004, S.footZb), hub, dust, S.legR);
@@ -406,16 +493,21 @@ function buildSling(P, rnd, cw, wear, g) {
   // across u: the profile is where all the curvature is, and a coarse v grid
   // faceted the lumbar break into a visible crease at 3 m.
   const DENS = [36, 52];
-  // The occlusion gradient is gentle — 0.12, not the 0.26 of round 1. At 0.26
-  // the pan went to navy while the shoulders stayed teal and the chair read as
-  // two pieces of cloth from different bolts.
-  const body = shade(weathered(cw.body, wear), 0.36, 0.78, 0.12);
-  const side = shade(weathered(cw.side, wear), 0.36, 0.78, 0.12);
-  const bind = shade(weathered(cw.bind, wear), 0.36, 0.78, 0.10);
+  // Occlusion by depth into the pouch rather than by height — see `pouchAO`.
+  // A height gradient made the inside of the bowl lighter than the outside,
+  // which is backwards and which a critic caught before this author did.
+  const F = V(0, S.frontY, S.frontZ), T = V(0, S.topY, S.topZ);
+  const body = pouchAO(weathered(cw.body, wear), 0.30, F, T);
+  const side = pouchAO(weathered(cw.side, wear), 0.30, F, T);
+  const bind = pouchAO(weathered(cw.bind, wear), 0.24, F, T);
 
   const V0 = 0.040;          // the front lip binding, ~17 mm of tape
   const V1 = 0.962;          // the top binding
-  const WING = 0.150;        // width of a side wing in u
+  // 125, not 150: the rust wings sit within about 15° of the sunlit dirt in
+  // hue, so the wider they are the more of the chair disappears into the ground
+  // when you squint. The cool panel has to be the dominant one and the warm one
+  // the accent — which is also how plate 3 is cut.
+  const WING = 0.125;        // width of a side wing in u
   const INSV = 0.500;        // the shoulder gore starts at the lumbar break
 
   // The shoulder gore is a WEDGE, not a stripe. Round 3 cut it as a fixed
@@ -440,9 +532,9 @@ function buildSling(P, rnd, cw, wear, g) {
     const w = WING + gore(v);
     return w + u * (1 - 2 * w);
   }), [0, 1, INSV, V1], G, 'fabricIn', body);
-  const goreKey = cw.blocked ? 'mesh' : 'fabricIn';
+  const goreKey = 'fabricIn';
   const goreTint = cw.blocked ? MESH_WING
-    : shade(weathered(cw.insert ?? cw.side, wear), 0.36, 0.78, 0.12);
+    : pouchAO(weathered(cw.insert ?? cw.side, wear), 0.30, F, T);
   patch(P, rm((u, v) => WING + u * gore(v)), [0, 1, INSV, V1], GW, goreKey, goreTint);
   patch(P, rm((u, v) => 1 - WING - (1 - u) * gore(v)), [0, 1, INSV, V1], GW, goreKey, goreTint);
   g.userData.seatHeight = 0.37;
@@ -461,24 +553,42 @@ const A = {
   seatY: 0.452,       // the seat RAIL; the cloth pools 90 mm below it
   backTop: 0.848,
   armY: 0.660, armZf: 0.196, armZb: -0.186,
-  tubeR: 0.0072,      // 14.4 mm
-  braceR: 0.0062,     // 12.4 mm — the scissor diagonals read as lighter
+  // Two gauges, and further apart than round 4's 14.4/12.4 — at that spread
+  // the rail, the legs, both X-braces and the arm posts were all one stroke
+  // width, and from the side the chair was a scribble of a dozen identical
+  // black lines. The plates use a visibly heavier main tube and let the light
+  // braces sit behind it.
+  tubeR: 0.0080,      // 16.0 mm — rail, legs, seat frame
+  braceR: 0.0058,     // 11.6 mm — the scissor diagonals read as lighter
 };
 
-/** The back panel: a slightly hollowed rectangle leaning back off the seat. */
+/**
+ * The back panel.
+ *
+ * Bounded by the frame, not by a rectangle inside it. Round 4 authored this as
+ * a flat card between four fixed corners and it left daylight in two places a
+ * real chair has none: a wedge of grass between the top rail and the top of the
+ * cloth, and a slot between the bottom of the cloth and the back of the seat.
+ * Both were legible at 3 m and both said "this is a card in a wire hoop".
+ *
+ * So the outline is now the bent tube itself — `bx/by/bz` trace the same path
+ * the frame sweptArc traces, so the cloth reaches the tube's centreline and
+ * wraps it — and the bottom edge is pinned to `seatSurface`'s own back hem,
+ * dip and all, so the two pieces of cloth meet along a seam instead of leaving
+ * a gap that the ground shows through.
+ */
 function backSurface(ph) {
-  const BL = V(-0.240, 0.486, -0.228), BR = V(0.240, 0.486, -0.228);
-  const TL = V(-0.208, 0.822, -0.302), TR = V(0.208, 0.822, -0.302);
-  const n = V(0, 0, 1);   // the back bows away from the sitter, straight back
+  const bx = (v) => (0.268 + 0.010 * Math.sin(Math.PI * v * 0.8)) *
+                    (1 - 0.35 * Math.pow(clamp01(smoothstep(0.80, 1.0, v)), 2));
+  const by = (v) => 0.466 + 0.382 * v - 0.010 * Math.sin(Math.PI * v);
+  const bz = (v) => -0.212 - 0.090 * Math.pow(v, 0.75);
   return (u, v, out) => {
-    const bx = lerp(BL.x, BR.x, u), tx = lerp(TL.x, TR.x, u);
-    out.set(lerp(bx, tx, v), lerp(BL.y, TL.y, v), lerp(BL.z, TL.z, v));
-    // The waist. Plate 4's fabric surround pinches hard at mid-height and that
-    // hourglass is most of what stops a mesh back reading as a bath towel.
-    out.x *= 1 - 0.115 * Math.pow(Math.sin(Math.PI * v), 1.2);
-    // 55 mm of hollow. Mesh slung between two uprights is not a plane; from the
-    // side this is what separates the back panel from the frame that holds it.
-    out.addScaledVector(n, -0.055 * bowl(u, v));
+    out.set((u * 2 - 1) * bx(v), by(v), bz(v));
+    // Meet the seat's back hem exactly, including its 26 mm dip.
+    out.y -= 0.026 * Math.sin(Math.PI * u) * Math.pow(1 - v, 2);
+    // 55 mm of hollow. Cloth slung between two uprights is not a plane; from
+    // the side this is what separates the back panel from the frame holding it.
+    out.z -= 0.055 * bowl(u, v);
     // Vertical drape: mesh hung between two uprights falls in shallow flutes.
     out.z -= 0.006 * Math.sin(u * 11.0 + ph) * Math.sin(Math.PI * v) *
              Math.sin(Math.PI * u);
@@ -537,7 +647,6 @@ function buildArm(P, rnd, cw, wear, g) {
   const dust = dusted([1, 1, 1], { top: 0.15, amount: 0.18 + 0.30 * wear });
   const DENS = [30, 30];
   const body = shade(weathered(cw.body, wear), 0.30, 0.70, 0.13);
-  const trim = shade(weathered(cw.side, wear), 0.30, 0.70, 0.13);
 
   const footF = (sx) => V(sx * A.footX, -0.004, A.footZ);
   const footB = (sx) => V(sx * A.footX, -0.004, -A.footZ);
@@ -561,10 +670,10 @@ function buildArm(P, rnd, cw, wear, g) {
     legWithFoot(P, footF(sx), seatF(sx), dust, A.tubeR, 0.0112, 0.046);
     legWithFoot(P, footB(sx), seatB(sx), dust, A.tubeR, 0.0112, 0.046);
     // Seat side rail: this is also what the arm's rear leg lands on.
-    P.add(tube(0.0065, seatF(sx).distanceTo(seatB(sx))), 'tube',
+    P.add(tube(0.0072, seatF(sx).distanceTo(seatB(sx))), 'tube',
           span(seatF(sx), seatB(sx)), dust);
   }
-  P.add(tube(0.0065, 2 * A.seatX), 'tube', span(seatF(-1), seatF(1)), dust);
+  P.add(tube(0.0072, 2 * A.seatX), 'tube', span(seatF(-1), seatF(1)), dust);
 
   // The scissor X on all four faces. This is the whole reason a quad chair
   // folds, and the crossed diagonals under the seat are a big part of what the
@@ -604,34 +713,36 @@ function buildArm(P, rnd, cw, wear, g) {
       V(sx * 0.286, 0.566, 0.226), V(sx * 0.300, A.armY - 0.016, A.armZf),
       V(sx * 0.292, A.armY + 0.004, -0.040),
       V(sx * 0.276, A.armY + 0.012, A.armZb), V(sx * 0.272, 0.706, -0.266),
-    ], 0.5), 34, 0.0066, 6), 'tube', null, dust);
+    ], 0.5), 34, 0.0062, 6), 'tube', null, dust);
 
-    // 124 × 32 × 404 mm, tipped so the front end drops and the outer edge sits
+    // 124 × 32 × 470 mm, tipped so the front end drops and the outer edge sits
     // a little lower than the inner — both true of a real arm and both worth
     // the two lines because they keep the top face off the horizontal, which is
     // where it caught the sun and blew out to near-white in round 1. Wide and
-    // shallow, not deep: at 42 mm thick with a 19 mm radius it read as a bolster
-    // rather than as a padded sleeve over a tube.
-    P.add(rbox(0.124, 0.032, 0.404, 0.013, 2), 'fabric',
-          at(sx * 0.278, A.armY + 0.006, 0.006, 0.052, 0, -sx * 0.075), body);
-    // A short flap of cloth under the outer edge, so the pad is a sleeve over
-    // something rather than a bar floating beside the frame.
-    const flapEdge = (t, out) => out.set(
-      sx * (0.322 - 0.010 * Math.sin(Math.PI * t)),
-      A.armY - 0.014 - 0.020 * (t - 0.5),
-      lerp(A.armZf + 0.006, A.armZb - 0.006, t));
-    patch(P, skirtSurface(flapEdge, () => 0.034, ph, 0.004),
-          [0, 1, 0, 1], [22, 6], 'fabricIn', trim);
+    // shallow, not deep: at 42 mm thick it read as a bolster rather than as a
+    // padded sleeve over a tube.
+    //
+    // Long enough to REACH THE BACK FRAME. At 404 mm it stopped 90 mm short and
+    // the arm read as a plank cantilevered off the front post with its rear end
+    // floating — a real quad chair's arm is carried at both ends. The separate
+    // cloth flap that used to hang under the outer edge is gone with it: beside
+    // a pad that now has genuine thickness it read as a second, thinner plank.
+    P.add(rbox(0.124, 0.032, 0.470, 0.013, 2), 'fabric',
+          at(sx * 0.278, A.armY + 0.006, -0.028, 0.052, 0, -sx * 0.075),
+          shade(weathered(cw.body, wear), A.armY - 0.014, A.armY + 0.024, 0.34));
 
     // ── cup holder ──────────────────────────────────────────────────────────
     // Moulded rim plus a mesh pouch, on one arm only, exactly as the plates
     // show. A rim and not a disc: the hole is the whole point of a cup holder.
     if (sx === cupSide) {
       const cx = sx * 0.318, cy = A.armY - 0.030, cz = A.armZf - 0.026;
-      P.add(new THREE.TorusGeometry(0.0435, 0.0054, 5, 12), 'plastic',
-            at(cx, cy, cz, -Math.PI / 2, 0, 0), dust);
-      P.add(new THREE.CylinderGeometry(0.0435, 0.034, 0.062, 10, 1, true), 'mesh',
-            at(cx, cy - 0.031, cz), MESH_BACK);
+      P.add(new THREE.TorusGeometry(0.0450, 0.0062, 5, 12), 'plastic',
+            at(cx, cy, cz, -Math.PI / 2, 0, 0), tintMul(dust, [1.7, 1.66, 1.6]));
+      // Dark, not screen-grey: this is a recess and it has to read as a hole.
+      // At the back panel's grey it came out as a bright square floating in
+      // front of the chair from three-quarter front.
+      P.add(new THREE.CylinderGeometry(0.0435, 0.034, 0.062, 10, 1, true), 'fabricIn',
+            at(cx, cy - 0.031, cz), tintOf(0x2e2f2b));
       P.add(new THREE.CylinderGeometry(0.034, 0.030, 0.008, 10, 1, false), 'plastic',
             at(cx, cy - 0.066, cz), dust);
     }
@@ -642,35 +753,51 @@ function buildArm(P, rnd, cw, wear, g) {
   // plate 4 is made. Both the window and the surround are driven off the same
   // `wu(v)` so their seams are the same vertices.
   const back = backSurface(ph);
-  const wu = (v) => 0.135 + 0.115 * Math.pow(Math.sin(Math.PI * v), 1.25);
+  const wu = (v) => 0.150 + 0.085 * Math.pow(Math.sin(Math.PI * v), 1.2);
   const remap = (f) => (u, v, out) => back(f(u, v), v, out);
-  patch(P, remap((u, v) => u * wu(v)), [0, 1, 0, 1], [10, 34], 'fabricIn', body);
-  patch(P, remap((u, v) => 1 - wu(v) * (1 - u)), [0, 1, 0, 1], [10, 34], 'fabricIn', body);
+  // Each side border is three strips: piping, cloth, piping. The tape is 16% of
+  // the border's width, which at the waist is about 8 mm — the same as the
+  // plates — and it is what keeps the panel's edges drawn when the red falls to
+  // ground value.
+  const piped = (map) => {
+    const w = 0.16;
+    patch(P, remap((u, v) => map(u * w, v)), [0, 1, 0, 1], [3, 34], 'fabricIn', PIPE);
+    patch(P, remap((u, v) => map(w + u * (1 - 2 * w), v)), [0, 1, 0, 1], [8, 34], 'fabricIn', body);
+    patch(P, remap((u, v) => map(1 - w + u * w, v)), [0, 1, 0, 1], [3, 34], 'fabricIn', PIPE);
+  };
+  piped((a, v) => a * wu(v));
+  piped((a, v) => 1 - wu(v) * (1 - a));
   const mid = (u, v) => wu(v) + u * (1 - 2 * wu(v));
-  patch(P, remap(mid), [0, 1, 0, 0.115], [24, 6], 'fabricIn', body);
-  patch(P, remap(mid), [0, 1, 0.885, 1], [24, 6], 'fabricIn', body);
-  patch(P, remap(mid), [0, 1, 0.115, 0.885], [24, 28], 'mesh', MESH_BACK);
+  patch(P, remap(mid), [0, 1, 0, 0.098], [24, 5], 'fabricIn', body);
+  patch(P, remap(mid), [0, 1, 0.098, 0.115], [24, 2], 'fabricIn', PIPE);
+  patch(P, remap(mid), [0, 1, 0.115, 0.885], [24, 28], 'fabricIn', MESH_BACK);
+  patch(P, remap(mid), [0, 1, 0.885, 0.902], [24, 2], 'fabricIn', PIPE);
+  patch(P, remap(mid), [0, 1, 0.902, 1], [24, 5], 'fabricIn', body);
 
   // ── seat and skirts ───────────────────────────────────────────────────────
+  // Every skirt is cloth down to v = 0.86 and tape below it. A camp chair's
+  // hems are all taped, and a taped hem is also the cheapest way to give a
+  // hanging edge a definite terminus instead of a fading gradient.
   const seat = seatSurface(ph);
+  const hemmed = (surf, dens) => {
+    patch(P, surf, [0, 1, 0, 0.86], dens, 'fabricIn', body);
+    patch(P, surf, [0, 1, 0.86, 1], [dens[0], 3], 'fabricIn', PIPE);
+  };
   patch(P, seat, [0, 1, 0, 1], DENS, 'fabricIn', body);
   // Front skirt. Its hem is a deep concave curve — 105 mm at the middle against
   // 55 at the corners, hanging off an edge that has already dipped 26 — and
   // that curve is the strongest single line in the quad chair's silhouette from
   // the front, so it is worth getting exactly right.
-  patch(P, skirtSurface((t, out) => seat(t, 0, out),
-                        (t) => 0.055 + 0.050 * Math.cos(Math.PI * (t - 0.5)), ph, 0.018),
-        [0, 1, 0, 1], [30, 8], 'fabricIn', body);
+  hemmed(skirtSurface((t, out) => seat(t, 0, out),
+                      (t) => 0.055 + 0.050 * Math.cos(Math.PI * (t - 0.5)), ph, 0.018), [30, 9]);
   for (const sx of [-1, 1]) {
-    patch(P, skirtSurface((t, out) => seat(sx < 0 ? 0 : 1, t, out),
-                          (t) => 0.046 + 0.034 * Math.sin(Math.PI * t), ph + sx, 0.006),
-          [0, 1, 0, 1], [24, 6], 'fabricIn', body);
+    hemmed(skirtSurface((t, out) => seat(sx < 0 ? 0 : 1, t, out),
+                        (t) => 0.046 + 0.034 * Math.sin(Math.PI * t), ph + sx, 0.006), [24, 7]);
   }
   // Back skirt, so the seat is not open when the chair is seen from behind —
   // the turntable's `back` frame is where a hollow prop gets caught.
-  patch(P, skirtSurface((t, out) => seat(1 - t, 1, out),
-                        () => 0.040, ph + 2.0, -0.008),
-        [0, 1, 0, 1], [24, 6], 'fabricIn', body);
+  hemmed(skirtSurface((t, out) => seat(1 - t, 1, out),
+                      () => 0.040, ph + 2.0, -0.008), [24, 7]);
 
   g.userData.seatHeight = 0.365;
 }

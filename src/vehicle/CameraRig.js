@@ -150,6 +150,24 @@ export class CameraRig extends System {
     this._axis = new THREE.Vector3(0, 0, 1);
     this._primed = false;
     this._shake = 0;
+
+    // ── what the boom is pointed at ───────────────────────────────────────
+    //
+    // Normally the camper, and for the whole history of this rig that was the
+    // only possibility — every anchor in here was `v.position` directly. The
+    // camp changes that: the player's own request was "when camp is placed,
+    // you need to focus the camera around the fire. Allow the user to click
+    // the car to change focus back to the car."
+    //
+    // `subject` is the point the boom pivots around and the eye rests on. It
+    // is DAMPED toward the focus rather than snapped, so switching between the
+    // camper and the fire is a slow drift across eight metres — a camera
+    // operator walking, not a cut. Everything else the rig reads (heading,
+    // speed, the bank, the landing shake) still comes from the camper, which
+    // is correct: those describe how the shot moves, not what it is of.
+    this.focus = null;               // null = the camper
+    this.subject = new THREE.Vector3();
+    this._subjPrimed = false;
     this._boomFrac = 1;            // how much of the boom the world allows
     this._teleportSeq = 0;         // last vehicle teleport this rig has seen
 
@@ -212,6 +230,18 @@ export class CameraRig extends System {
     }
 
     dt = Math.min(dt, 1 / 20);
+
+    // Drift the subject toward whatever has focus. 2.2 is about a second and a
+    // half to cross the gap between a parked camper and its fire, which reads
+    // as deliberate without being slow enough to feel like lag.
+    const want = this.focus ?? v.position;
+    if (!this._subjPrimed || !this._primed) { this.subject.copy(want); this._subjPrimed = true; }
+    else {
+      this.subject.x = damp(this.subject.x, want.x, 2.2, dt);
+      this.subject.y = damp(this.subject.y, want.y, 2.2, dt);
+      this.subject.z = damp(this.subject.z, want.z, 2.2, dt);
+    }
+
     this._readLook(dt, v);
 
     // Gather the rock near the camper once, before anything queries the floor.
@@ -380,7 +410,7 @@ export class CameraRig extends System {
     // see `chaseDesired`.
     const anchor = this._t, desired = this._t2;
     const { wide, close } = chaseDesired(anchor, desired, {
-      x: v.position.x, y: v.position.y, z: v.position.z,
+      x: this.subject.x, y: this.subject.y, z: this.subject.z,
       yaw: slideYaw + this.orbitYaw, zoom: this.zoom, pitch: this.orbitPitch, fast,
     });
 
@@ -446,7 +476,7 @@ export class CameraRig extends System {
     this.orbitAngle += dt * 0.11;
     const r = clamp(this.zoom, 6, ZOOM_MAX);
     const cp = Math.cos(this.orbitPitch), sp = Math.sin(this.orbitPitch);
-    const anchor = this._t.copy(v.position).addScaledVector(this._up, 1.0 + r * 0.05);
+    const anchor = this._t.copy(this.subject).addScaledVector(this._up, 1.0 + r * 0.05);
     const a = this.orbitAngle + this.orbitYaw;
     const desired = this._t2.set(
       anchor.x + Math.sin(a) * r * cp,
@@ -505,7 +535,10 @@ export class CameraRig extends System {
   _focus(v) {
     const fx = this.ctx.postfx;
     if (!fx?.setFocus) return;
-    const d = this.camPos.distanceTo(v.position);
+    // The focus plane follows the SUBJECT, not the camper — otherwise looking
+    // at a fire eight metres from the camper puts the fire out of focus and
+    // sharpens an empty patch of meadow behind it.
+    const d = this.camPos.distanceTo(this.subject);
     fx.setFocus(d * 1.15 + 4);
   }
 
@@ -528,6 +561,20 @@ export class CameraRig extends System {
       cam.fov = this.fov;
       cam.updateProjectionMatrix();
     }
+  }
+
+  /**
+   * Point the boom at something other than the camper.
+   *
+   * @param target THREE.Vector3 to look at, or null for the camper.
+   *
+   * Deliberately does not take a duration or an easing: the drift is a
+   * property of the rig, not of the caller, and a caller that could ask for a
+   * cut would eventually ask for one in the middle of a drive.
+   */
+  setFocus(target) {
+    if (target && this.focus && this.focus.distanceToSquared(target) < 1e-6) return;
+    this.focus = target ? (this.focus ? this.focus.copy(target) : target.clone()) : null;
   }
 
   dispose() { this.active = false; }

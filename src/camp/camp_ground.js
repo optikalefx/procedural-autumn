@@ -131,23 +131,28 @@ const DAMP  = C(0x866d58);   // damp unwalked earth — patches, never a ring
 // stone beside strongly coloured ground — and that licence belongs to stone,
 // not to a patch of dust on a warm valley floor.
 const GRIT  = C(0xafa590);   // exposed grit — half a step cooler, no more
-const STUB  = C(0xc2aa78);   // crushed, yellowed grass stubble at the fringe
+const STUB  = C(0xc8b585);   // crushed, yellowed grass stubble at the fringe
 // Fallen leaves. This valley is deciduous and it is autumn; a clearing in it
 // collects leaves at its downwind fringe within a day. It is also the one
 // warm, chromatic note the dirt is allowed — it ties the ground to the canopy
 // overhead, and it is the reason the disc is not four shades of one colour.
-const LEAF  = C(0xa96335);
-// Uncrushed growth at the fringe, seen from above. Its whole job is to be the
-// colour the meadow's ground already is, so the tongues of surviving grass
-// that interlock with the dirt do not read as holes in it.
-const MAT   = C(0xada05f);
+const LEAF  = C(0xa96b3c);
+// Uncrushed growth at the fringe, seen from above.
+//
+// This was #ada05f, and it rendered as an unbroken green ribbon a metre wide
+// around the whole disc that read as moss. Two things were wrong with it. It
+// was twenty degrees greener than the meadow's own ground beside it, and dry
+// autumn grass crushed flat is not green at all — it is a pale straw-grey. And
+// it was the mix BASE, so every fragment the threshold did not claim came out
+// as a hundred percent of it.
+const MAT   = C(0xc4b48c);
 
 // Small props lying on the dirt.
 const STONE_A = C(0xa9a49c);
 const STONE_B = C(0x8e8478);
 const STONE_C = C(0xb5a998);
-const TWIG_A  = C(0x7a6650);
-const TWIG_B  = C(0x8f7a5e);
+const TWIG_A  = C(0x8d7454);
+const TWIG_B  = C(0xa48d69);
 
 const TAU = Math.PI * 2;
 
@@ -190,7 +195,401 @@ float massEdgeW( float field, float threshold, float floorW ) {
   float w = max( fwidth( field ) * 1.35, floorW );
   return smoothstep( threshold - w, threshold + w, field );
 }
+
+// World metres per pixel at this fragment. Written once at the top of the
+// albedo block; hardEdge below is useless without it.
+float gPx = 1.0;
+
+// The same threshold, with the edge width expressed as a WIDTH ON THE GROUND
+// instead of a width in the field.
+//
+// This is the fix for the defect that survived four rounds. massEdgeW's floor
+// is in field units, and on an fBm at 0.3–1.0 cycles per metre the field's
+// gradient is shallow — 0.03 of field range is thirty to sixty centimetres of
+// ground. So the floor, which exists only to stop a one-pixel contour, became
+// the dominant term and quietly turned every "definite edge" in this shader
+// into a half-metre ramp. Four captures of an airbrush, from code whose
+// comments claimed flat masses with definite edges.
+//
+// The gradient is recoverable: fwidth(f) is the field's change across a pixel
+// and gPx is that pixel's size in metres, so fwidth(f)/gPx is |∇f| in field
+// units per metre. Divide the width you actually want — five centimetres of
+// ground — by that, and the edge is five centimetres wide wherever it lands.
+// fwidth(f) itself remains the floor, which is exactly one pixel: antialiased,
+// never wider.
+float hardEdge( float field, float threshold, float wMetres ) {
+  float fw = fwidth( field );
+  float w = max( fw, ( fw / max( gPx, 1e-5 ) ) * wMetres );
+  return smoothstep( threshold - w, threshold + w, field );
+}
 `;
+
+
+// ── the material set, built once for the session ─────────────────────────────
+//
+//  Not once per build, and that is a measured perf fix rather than tidiness.
+//  Three folds `onBeforeCompile` into the program cache key, so a material
+//  constructed inside `build()` is a brand new program every time a camp is
+//  pitched — 36 link events and two frames near 900 ms on the first camp, which
+//  the player felt as a freeze. Worse, Camp.js pre-warms the whole feature at
+//  boot by building one of everything under the loading screen and throwing it
+//  away, and a program belonging to a discarded material is discarded with it,
+//  so the pre-warm was warming nothing here at all.
+//
+//  Module scope, the way `campMaterials()` does it in camp_materials.js. Every
+//  per-site value that used to be a constructor argument is a uniform now.
+//  There is exactly one camp in the world at a time — see the note at the top
+//  of Camp.js — so one shared uniform block is not a restriction, and a uniform
+//  can be animated, which is what lets the build-in be a radial wipe rather
+//  than a fade.
+let _gm = null;
+
+function groundMaterials() {
+  if (_gm) return _gm;
+
+  // One object, referenced by both materials, so `setReveal` is a single write.
+  const uReveal = { value: 1 };
+
+  const dirt = new THREE.MeshStandardMaterial({
+      color: 0xffffff, roughness: 0.95, metalness: 0.0,
+      transparent: true, depthWrite: false, dithering: true,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+  const u = {
+    uCentre: { value: new THREE.Vector2(0, 0) },
+    uReveal,
+    uEarth: { value: EARTH }, uPack: { value: PACK }, uDamp: { value: DAMP },
+    uGrit: { value: GRIT }, uStub: { value: STUB },
+    uMat: { value: MAT }, uLeaf: { value: LEAF },
+  };
+  dirt.userData.uniforms = u;
+  dirt.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, u);
+      sh.vertexShader = /* glsl */`
+        attribute float aB;
+        attribute float aU;
+        varying vec3 vWPos;
+        varying float vB;
+        varying float vU;
+        varying float vCam;
+      ` + sh.vertexShader.replace('#include <begin_vertex>', /* glsl */`
+        #include <begin_vertex>
+        vWPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+        vB = aB;
+        vU = aU;
+        vCam = length( cameraPosition - vWPos );
+      `);
+
+      sh.fragmentShader = /* glsl */`
+        uniform vec2 uCentre;
+        uniform float uReveal;
+        uniform vec3 uEarth, uPack, uDamp, uGrit, uStub, uMat, uLeaf;
+        varying vec3 vWPos;
+        varying float vB;
+        varying float vU;
+        varying float vCam;
+
+        ${NOISE_GLSL}
+
+        // Carried from the albedo block to the normal block. Three's chunk
+        // order puts <color_fragment> well before <normal_fragment_maps>, and
+        // re-deriving four noise fields there would be pure waste.
+        float gTrod = 0.0;
+        float gGrit = 0.0;
+        float gBump = 0.0;
+        float gAlpha = 1.0;
+        vec2  gP = vec2( 0.0 );
+
+        // The bump field. Two things only: a broad hummock octave that the
+        // vertex relief is too coarse to carry, and the scuff arcs.
+        //
+        // The arcs are concentric rings phase-warped by a metre of noise, which
+        // is what turns "a target" into "somebody has been walking round this
+        // fire". A polar noise would be the obvious way to draw them and it is
+        // the wrong one — atan() has a seam at the antimeridian and it would
+        // draw a hairline crack from the fire to the edge of the clearing.
+        // Fine and shallow. The first pass gave the broad octave 15 cm of
+        // amplitude at a 1.7 m wavelength, which is a nineteen degree slope —
+        // enough to shade the whole disc into soft swells and read as an
+        // airbrush. Grain, not swells: 4 cm of relief at 30 cm.
+        float bumpF( vec2 p ) {
+          float b = vn( p * 3.40 ) * 0.030 + vn( p * 1.10 ) * 0.055;
+          float r = length( p - uCentre );
+          b += sin( r * 7.4 + fbm2( p * 0.52 ) * 12.0 ) * 0.022 * gTrod;
+          return b;
+        }
+      ` + sh.fragmentShader.replace('#include <color_fragment>', /* glsl */`
+        #include <color_fragment>
+        {
+          vec2 P = vWPos.xz;
+          gP = P;
+          gPx = max( fwidth( P.x ), fwidth( P.y ) );
+          float rr = length( P - uCentre );
+
+          // ── the fields the masses are cut from ────────────────────────────
+          // A domain warp, so a mass boundary is a lobed organic outline rather
+          // than the smooth blob a raw fbm threshold gives.
+          vec2 wq = P * 0.33;
+          vec2 warp = vec2( fbm2( wq + vec2( 19.3, 4.1 ) ),
+                            fbm2( wq + vec2( -7.7, 23.9 ) ) ) - 0.5;
+          vec2 Q = P + warp * 2.6;
+          float blot = fbm2( Q * 0.30 );           // ~3.5 m
+          float meso = fbm2( P * 0.95 + 12.4 );    // ~1 m
+
+          // A WEAK radial bias, and only on one mass. The first pass made every
+          // mass a function of radius and the result was a lit sphere: a pale
+          // middle inside a dark ring is what a shaded ball looks like, whatever
+          // it happens to be painted on.
+          // Weaker still after the whole-camp frame called the disc a raised
+          // dome. The geometry is a shallow BOWL — 13 mm of lift at the centre
+          // against 35 mm at the berm — so the bulge was never in the mesh; it
+          // was a pale middle inside a darker rim, which is what a lit sphere
+          // looks like whatever it is painted on.
+          float inner = 1.0 - smoothstep( 0.06, 0.98, vU );
+
+          // ── mass 1: the scuffed paths ────────────────────────────────────
+          // Ridged, not blobby. Inverting |n - ½| turns islands into connected
+          // snaking bands, and connected bands are what ground that people walk
+          // over and over actually looks like. Radius only decides how much of
+          // the disc they cover — see docs/CAMP_REQUESTS.md for why this is a
+          // statistical stand-in for the real prop footprints.
+          float ridge = 1.0 - abs( blot * 2.0 - 1.0 );
+          float trodF = ridge * ( 0.76 + 0.30 * inner ) + meso * 0.26;
+          float trod  = hardEdge( trodF, 0.60, 0.060 );
+
+          // ── mass 2: damp unwalked earth. Patches, deliberately not a ring ─
+          float dampF = fbm2( Q * 0.52 + 61.7 ) + 0.07 * ( 1.0 - inner ) - 0.28 * trod;
+          float damp  = hardEdge( dampF, 0.58, 0.060 );
+
+          // ── mass 3: exposed grit where the scuffing has cut through ──────
+          float gritF = fbm2( Q * 1.05 + 31.1 ) + meso * 0.20;
+          float grit  = hardEdge( gritF, 0.78, 0.045 ) * ( 0.22 + 0.78 * trod );
+
+          // ── mass 4: crushed stubble, on the vegetation gradient ──────────
+          // Keyed on the cover field itself, not on radius, so it follows the
+          // wobble of the boundary exactly instead of running beside it.
+          float stubF = ( 1.0 - abs( vB - 0.40 ) / 0.38 )
+                      + ( meso - 0.5 ) * 0.70 + ( blot - 0.5 ) * 0.40;
+          float stub  = hardEdge( stubF, 0.50, 0.090 );
+
+          vec3 c = uEarth;
+          c = mix( c, uDamp, damp * 0.90 );
+          c = mix( c, uPack, trod * 0.92 );
+          c = mix( c, uGrit, grit );
+          c = mix( c, uStub, stub * 0.92 );
+
+          // -- the fringe, and why the interlock is opaque -------------------
+          // Two passes were spent making this transition by cutting ragged
+          // holes in the alpha, and both produced the same defect: an olive
+          // lobe reaching two metres into the disc. What shows through a hole
+          // is bare TERRAIN, and the terrain's meadow albedo is a strong
+          // yellow-green that belongs to neither surface — so each hole read as
+          // a puddle of the wrong colour rather than as a tuft of grass.
+          //
+          // So the interlock is a COLOUR boundary on an opaque surface: fingers
+          // of crushed stubble reaching out, tongues of uncrushed growth
+          // reaching in, thresholded against the clearing's own cover field so
+          // they thin exactly as the real blades above them do. Alpha is left
+          // to do only the last handspan, where the grass is back to 95% and
+          // there is nothing left to hide.
+          //
+          // It happens HERE, above the three fine scales rather than below
+          // them, and that ordering is the whole difference between a fringe
+          // and a flat khaki ring. Mixed in last it overwrote every scale of
+          // detail the fringe had, which is why the r4 capture had a metre of
+          // dead colour all round the disc while the middle of it was textured.
+          float tongN = fbm2( P * 2.30 + 5.5 ) * 0.78 + fbm2( P * 5.10 - 22.0 ) * 0.30;
+          float tong  = hardEdge( vB * 2.3 + tongN, 0.72, 0.050 );
+          c = mix( uMat, c, tong );
+
+          // ── leaves, blown to the fringe and out of the walked lines ──────
+          float leafF = fbm2( P * 1.75 + 91.0 ) + ( 1.0 - vB ) * 0.11 - trod * 0.34;
+          float leaf  = hardEdge( leafF, 0.84, 0.035 );
+          c = mix( c, uLeaf, leaf * 0.85 );
+
+
+          // ── the two fine scales, and why they are albedo ─────────────────
+          // This is where the first pass failed hardest. All of its surface
+          // detail was carried in the shading normal — and Stylize.js quantises
+          // diffuse into bands, so a six degree normal perturbation moves
+          // nothing at all unless it happens to land on a band edge. The
+          // capture at three metres came back completely, glassily smooth.
+          //
+          // In a cel-shaded pipeline surface texture has to be ALBEDO, and it
+          // has to have edges. Both scales fade to their own mean over a range
+          // chosen for their wavelength, which is the distance budget every
+          // octave in TerrainMaterial is given for the same reason: albedo
+          // finer than a couple of pixels crawls when the camera moves.
+          // Three of them, an octave and a bit apart, each with the distance
+          // budget its own wavelength earns. Scale matters as much as amplitude:
+          // a 32 cm blotch is eleven pixels in the plan framing, and massEdgeW's
+          // derivative width across eleven pixels is wider than the whole useful
+          // range of the field — so the first attempt at this resolved to mush.
+          // Anything meant to survive to fifteen metres has to be most of a
+          // metre across.
+          float mac  = fbm2( P * 1.30 + 77.0 );         // ~0.8 m scuff blotches
+          float macF = 1.0 - smoothstep( 20.0, 46.0, vCam );
+          c *= 1.0 + ( hardEdge( mac, 0.60, 0.050 ) * 0.098
+                     - hardEdge( 1.0 - mac, 0.62, 0.050 ) * 0.086 ) * macF;
+
+          float mic  = fbm2( P * 4.10 + 19.0 );         // ~24 cm
+          float micF = 1.0 - smoothstep( 7.0, 19.0, vCam );
+          c *= 1.0 + ( hardEdge( mic, 0.60, 0.032 ) * 0.080
+                     - hardEdge( 1.0 - mic, 0.62, 0.032 ) * 0.072 ) * micF;
+
+          float spk  = vn( P * 18.0 + 3.3 );            // ~5.5 cm grit
+          float spkF = 1.0 - smoothstep( 3.5, 9.5, vCam );
+          c = mix( c, c * vec3( 0.70, 0.685, 0.665 ),
+                   hardEdge( spk, 0.76, 0.012 ) * spkF * 0.60 * ( 0.35 + 0.65 * grit ) );
+          c = mix( c, uGrit * 1.10,
+                   hardEdge( 1.0 - spk, 0.80, 0.012 ) * spkF * 0.35 );
+
+          // Scuff arcs as a whisper of value on the walked ground. Deliberately
+          // small — painted bands on ground are how TerrainMaterial drew a
+          // contour map twice, and the arcs are mostly carried by the bump.
+          float arc = sin( rr * 7.4 + fbm2( P * 0.52 ) * 12.0 );
+          c *= 1.0 + arc * 0.055 * trod;
+
+          // Ash and scorch around the hearth. The fire pit itself covers the
+          // middle of this; what shows is the halo beyond its stones.
+          float ash = 1.0 - smoothstep( 0.95, 2.40, rr );
+          c = mix( c, c * vec3( 0.78, 0.765, 0.775 ), ash * 0.32 );
+
+          diffuseColor.rgb *= c;
+
+          gTrod = trod;
+          gGrit = grit;
+          gBump = ( 0.90 + 0.75 * grit - 0.30 * trod )
+                * ( 1.0 - smoothstep( 14.0, 38.0, vCam ) );
+
+          // ── the edge ─────────────────────────────────────────────────────
+          // Not an alpha ramp, and deliberately not much of an alpha at all.
+          // vB is the clearing's own bare-ground field, baked per vertex from
+          // campCoverAt at full radius, so the dirt and the grass can never
+          // disagree about where the boundary is. The transition the eye reads
+          // is the opaque stubble interlock above; all this does is take the
+          // surface out inside a quarter of a metre, at a bare-ground value of
+          // 0.04 where the meadow is back to 95% of its blades and the last
+          // centimetre is under standing grass either way.
+          float rag  = fbm2( P * 1.90 + 41.5 ) - 0.5;
+          float ragW = smoothstep( 0.005, 0.06, vB ) * ( 1.0 - smoothstep( 0.10, 0.30, vB ) );
+          float alpha = hardEdge( vB * 6.0 + rag * 0.42 * ragW, 0.22, 0.055 );
+
+          // Scuff past the boundary: a few flattened patches under grass that
+          // is still standing, which is what the last stride into a camp
+          // actually leaves. Capped well under opaque so the blades read over
+          // the top of it.
+          float outM = ( 1.0 - smoothstep( 0.96, 1.15, vU ) )
+                     * hardEdge( fbm2( P * 0.85 + 17.0 ), 0.62, 0.050 );
+          alpha = max( alpha, outM * 0.42 );
+
+          // ── build-in ─────────────────────────────────────────────────────
+          // A radial wipe, not a global fade. Camp.js eases the clearing's own
+          // radius open ahead of the props; the dirt sweeping outward at the
+          // same rate is what makes the sequence read as "the ground was
+          // cleared" rather than as a group of objects fading in.
+          float wipe = smoothstep( 0.0, 0.11,
+              uReveal * 1.45 - 0.12 - vU + ( fbm2( P * 1.2 ) - 0.5 ) * 0.16 );
+          gAlpha = alpha * wipe;
+          // Deliberately no discard here. The normal block below takes
+          // screen-space derivatives, and derivatives inside non-uniform
+          // control flow are undefined — killing the transparent lanes at the
+          // fringe would corrupt the bump on the lanes beside them, which is
+          // exactly the band where the ground is most closely looked at.
+        }
+      `).replace('#include <roughnessmap_fragment>', /* glsl */`
+        #include <roughnessmap_fragment>
+        // Compacted ground is smoother than loose grit. Small, but it is the
+        // only thing separating the two masses when the sun is behind cloud.
+        roughnessFactor = clamp( 0.99 - 0.10 * gTrod + 0.04 * gGrit, 0.55, 1.0 );
+      `).replace('#include <normal_fragment_maps>', /* glsl */`
+        #include <normal_fragment_maps>
+        if ( gBump > 0.02 ) {
+          // Finite differences with a step tied to the pixel footprint, which
+          // band-limits the field for free: at 3 m it resolves the grain, at
+          // 30 m it has already smoothed it into the mass it belongs to.
+          float px = max( fwidth( gP.x ), fwidth( gP.y ) );
+          float e  = max( 0.055, px * 1.7 );
+          float b0 = bumpF( gP );
+          float bx = bumpF( gP + vec2( e, 0.0 ) );
+          float bz = bumpF( gP + vec2( 0.0, e ) );
+          vec3 wn = vec3( -( bx - b0 ) / e, 0.0, -( bz - b0 ) / e ) * gBump * 0.75;
+          normal = normalize( normal + ( viewMatrix * vec4( wn, 0.0 ) ).xyz );
+        }
+      `).replace('#include <lights_fragment_end>', /* glsl */`
+        #include <lights_fragment_end>
+        {
+          // ── shade: the dirt keeps its own hue ──────────────────────────
+          // The plum diagonal that two reviews called the loudest defect in
+          // the feature. It is not a noise octave and it is not a bad lerp —
+          // it is the stylised cast-shadow mass, and it was found by painting
+          // one uniform magenta at a time and re-shooting the plan framing:
+          // every mask came back innocent and the stain stayed exactly where
+          // the birch's shadow was.
+          //
+          // Stylize.js appends SHADOW_COOL to `lights_fragment_end`, which
+          // rotates a shadowed pixel's total diffuse toward a violet-blue at
+          // constant luminance. On gold grass that lands as shade. On a warm
+          // brown it lands on the straight line from brown to violet-blue, and
+          // the middle of that line is WINE. Stylize's own comment names the
+          // dead zone — "the straight line between those two colours passes
+          // through neutral" — and quotes the player asking for exactly this
+          // surface to be "a soft yellow or a light brown" instead of grey.
+          //
+          // So this pulls the shaded total back toward the fragment's OWN hue
+          // at the SAME luminance. Not a warm triple invented here, and not a
+          // veto of the art direction: value structure stays entirely the
+          // shadow's business, the cool mass still cools the disc, and what it
+          // can no longer do is change what the ground is made of. Gated on
+          // how much direct light the fragment actually received, so lit
+          // ground is untouched.
+          const vec3 LUMA = vec3( 0.2126, 0.7152, 0.0722 );
+          vec3  ind = reflectedLight.indirectDiffuse;
+          float il  = dot( ind, LUMA );
+          float dl  = dot( reflectedLight.directDiffuse, LUMA );
+          float shade = 1.0 - smoothstep( 0.10, 0.80, dl / max( il, 1e-4 ) );
+          vec3  d   = reflectedLight.directDiffuse + ind;
+          float ld  = dot( d, LUMA );
+          vec3  own = diffuseColor.rgb / max( dot( diffuseColor.rgb, LUMA ), 1e-4 );
+          reflectedLight.indirectDiffuse += mix( d, own * ld, 0.72 * shade ) - d;
+        }
+      `).replace('#include <dithering_fragment>', /* glsl */`
+        #include <dithering_fragment>
+        gl_FragColor.a *= gAlpha;
+      `);
+    };
+
+
+  const lu = { uReveal };
+  const patchVert = (sh) => {
+      Object.assign(sh.uniforms, lu);
+      sh.vertexShader = /* glsl */`
+        attribute vec3 aBase;
+        attribute float aU;
+        uniform float uReveal;
+      ` + sh.vertexShader.replace('#include <begin_vertex>', /* glsl */`
+        #include <begin_vertex>
+        // The same radial wipe the dirt uses, so a stone appears on the frame
+        // the dirt reaches it rather than at some unrelated moment.
+        float wk = clamp( ( uReveal * 1.45 - 0.12 - aU ) / 0.10, 0.0, 1.0 );
+        wk = wk * wk * ( 3.0 - 2.0 * wk );
+        transformed = mix( aBase, transformed, wk );
+      `);
+    };
+
+  const litter = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.88, metalness: 0.0, flatShading: true,
+  });
+  litter.userData.uniforms = lu;
+  litter.onBeforeCompile = patchVert;
+
+  const litterDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  litterDepth.onBeforeCompile = patchVert;
+
+
+  _gm = { dirt, litter, litterDepth, u, lu };
+  return _gm;
+}
 
 export class CampGround {
   constructor(scene, world) {
@@ -198,8 +597,11 @@ export class CampGround {
     this.world = world;
     this.mesh = null;
     this.props = null;
-    this.mat = null;
-    this.propMat = null;
+    const M = groundMaterials();
+    this.u = M.u;
+    this.mat = M.dirt;
+    this.propMat = M.litter;
+    this.propDepth = M.litterDepth;
     this.reveal = 1;
     this._lat = new Map();     // memoised lattice heights
     this._n = new THREE.Vector3();
@@ -387,279 +789,8 @@ export class CampGround {
     sanitizeNormals(g);
     g.computeBoundingSphere();
 
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0xffffff, roughness: 0.95, metalness: 0.0,
-      transparent: true, depthWrite: false, dithering: true,
-      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-    });
-    const u = {
-      uCentre: { value: new THREE.Vector2(x, z) },
-      uReveal: { value: this.reveal },
-      uEarth: { value: EARTH }, uPack: { value: PACK }, uDamp: { value: DAMP },
-      uGrit: { value: GRIT }, uStub: { value: STUB },
-      uMat: { value: MAT }, uLeaf: { value: LEAF },
-    };
-    mat.userData.uniforms = u;
-    mat.onBeforeCompile = (sh) => {
-      Object.assign(sh.uniforms, u);
-      sh.vertexShader = /* glsl */`
-        attribute float aB;
-        attribute float aU;
-        varying vec3 vWPos;
-        varying float vB;
-        varying float vU;
-        varying float vCam;
-      ` + sh.vertexShader.replace('#include <begin_vertex>', /* glsl */`
-        #include <begin_vertex>
-        vWPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
-        vB = aB;
-        vU = aU;
-        vCam = length( cameraPosition - vWPos );
-      `);
-
-      sh.fragmentShader = /* glsl */`
-        uniform vec2 uCentre;
-        uniform float uReveal;
-        uniform vec3 uEarth, uPack, uDamp, uGrit, uStub, uMat, uLeaf;
-        varying vec3 vWPos;
-        varying float vB;
-        varying float vU;
-        varying float vCam;
-
-        ${NOISE_GLSL}
-
-        // Carried from the albedo block to the normal block. Three's chunk
-        // order puts <color_fragment> well before <normal_fragment_maps>, and
-        // re-deriving four noise fields there would be pure waste.
-        float gTrod = 0.0;
-        float gGrit = 0.0;
-        float gBump = 0.0;
-        float gAlpha = 1.0;
-        vec2  gP = vec2( 0.0 );
-
-        // The bump field. Two things only: a broad hummock octave that the
-        // vertex relief is too coarse to carry, and the scuff arcs.
-        //
-        // The arcs are concentric rings phase-warped by a metre of noise, which
-        // is what turns "a target" into "somebody has been walking round this
-        // fire". A polar noise would be the obvious way to draw them and it is
-        // the wrong one — atan() has a seam at the antimeridian and it would
-        // draw a hairline crack from the fire to the edge of the clearing.
-        // Fine and shallow. The first pass gave the broad octave 15 cm of
-        // amplitude at a 1.7 m wavelength, which is a nineteen degree slope —
-        // enough to shade the whole disc into soft swells and read as an
-        // airbrush. Grain, not swells: 4 cm of relief at 30 cm.
-        float bumpF( vec2 p ) {
-          float b = vn( p * 3.40 ) * 0.030 + vn( p * 1.10 ) * 0.055;
-          float r = length( p - uCentre );
-          b += sin( r * 7.4 + fbm2( p * 0.52 ) * 12.0 ) * 0.022 * gTrod;
-          return b;
-        }
-      ` + sh.fragmentShader.replace('#include <color_fragment>', /* glsl */`
-        #include <color_fragment>
-        {
-          vec2 P = vWPos.xz;
-          gP = P;
-          float rr = length( P - uCentre );
-
-          // ── the fields the masses are cut from ────────────────────────────
-          // A domain warp, so a mass boundary is a lobed organic outline rather
-          // than the smooth blob a raw fbm threshold gives.
-          vec2 wq = P * 0.33;
-          vec2 warp = vec2( fbm2( wq + vec2( 19.3, 4.1 ) ),
-                            fbm2( wq + vec2( -7.7, 23.9 ) ) ) - 0.5;
-          vec2 Q = P + warp * 2.6;
-          float blot = fbm2( Q * 0.30 );           // ~3.5 m
-          float meso = fbm2( P * 0.95 + 12.4 );    // ~1 m
-
-          // A WEAK radial bias, and only on one mass. The first pass made every
-          // mass a function of radius and the result was a lit sphere: a pale
-          // middle inside a dark ring is what a shaded ball looks like, whatever
-          // it happens to be painted on.
-          // Weaker still after the whole-camp frame called the disc a raised
-          // dome. The geometry is a shallow BOWL — 13 mm of lift at the centre
-          // against 35 mm at the berm — so the bulge was never in the mesh; it
-          // was a pale middle inside a darker rim, which is what a lit sphere
-          // looks like whatever it is painted on.
-          float inner = 1.0 - smoothstep( 0.06, 0.98, vU );
-
-          // ── mass 1: the scuffed paths ────────────────────────────────────
-          // Ridged, not blobby. Inverting |n - ½| turns islands into connected
-          // snaking bands, and connected bands are what ground that people walk
-          // over and over actually looks like. Radius only decides how much of
-          // the disc they cover — see docs/CAMP_REQUESTS.md for why this is a
-          // statistical stand-in for the real prop footprints.
-          float ridge = 1.0 - abs( blot * 2.0 - 1.0 );
-          float trodF = ridge * ( 0.76 + 0.30 * inner ) + meso * 0.26;
-          float trod  = massEdgeW( trodF, 0.60, 0.030 );
-
-          // ── mass 2: damp unwalked earth. Patches, deliberately not a ring ─
-          float dampF = fbm2( Q * 0.52 + 61.7 ) + 0.07 * ( 1.0 - inner ) - 0.28 * trod;
-          float damp  = massEdgeW( dampF, 0.58, 0.035 );
-
-          // ── mass 3: exposed grit where the scuffing has cut through ──────
-          float gritF = fbm2( Q * 1.05 + 31.1 ) + meso * 0.20;
-          float grit  = massEdgeW( gritF, 0.78, 0.028 ) * ( 0.22 + 0.78 * trod );
-
-          // ── mass 4: crushed stubble, on the vegetation gradient ──────────
-          // Keyed on the cover field itself, not on radius, so it follows the
-          // wobble of the boundary exactly instead of running beside it.
-          float stubF = ( 1.0 - abs( vB - 0.40 ) / 0.38 )
-                      + ( meso - 0.5 ) * 0.70 + ( blot - 0.5 ) * 0.40;
-          float stub  = massEdgeW( stubF, 0.50, 0.050 );
-
-          vec3 c = uEarth;
-          c = mix( c, uDamp, damp * 0.90 );
-          c = mix( c, uPack, trod * 0.92 );
-          c = mix( c, uGrit, grit );
-          c = mix( c, uStub, stub * 0.92 );
-
-          // -- the fringe, and why the interlock is opaque -------------------
-          // Two passes were spent making this transition by cutting ragged
-          // holes in the alpha, and both produced the same defect: an olive
-          // lobe reaching two metres into the disc. What shows through a hole
-          // is bare TERRAIN, and the terrain's meadow albedo is a strong
-          // yellow-green that belongs to neither surface — so each hole read as
-          // a puddle of the wrong colour rather than as a tuft of grass.
-          //
-          // So the interlock is a COLOUR boundary on an opaque surface: fingers
-          // of crushed stubble reaching out, tongues of uncrushed growth
-          // reaching in, thresholded against the clearing's own cover field so
-          // they thin exactly as the real blades above them do. Alpha is left
-          // to do only the last handspan, where the grass is back to 95% and
-          // there is nothing left to hide.
-          //
-          // It happens HERE, above the three fine scales rather than below
-          // them, and that ordering is the whole difference between a fringe
-          // and a flat khaki ring. Mixed in last it overwrote every scale of
-          // detail the fringe had, which is why the r4 capture had a metre of
-          // dead colour all round the disc while the middle of it was textured.
-          float tongN = fbm2( P * 2.30 + 5.5 ) * 0.78 + fbm2( P * 5.10 - 22.0 ) * 0.30;
-          float tong  = massEdgeW( vB * 2.3 + tongN, 0.72, 0.032 );
-          c = mix( uMat, c, tong );
-
-          // ── leaves, blown to the fringe and out of the walked lines ──────
-          float leafF = fbm2( P * 1.75 + 91.0 ) + ( 1.0 - vB ) * 0.30 - trod * 0.32;
-          float leaf  = massEdgeW( leafF, 0.84, 0.026 );
-          c = mix( c, uLeaf, leaf * 0.85 );
-
-
-          // ── the two fine scales, and why they are albedo ─────────────────
-          // This is where the first pass failed hardest. All of its surface
-          // detail was carried in the shading normal — and Stylize.js quantises
-          // diffuse into bands, so a six degree normal perturbation moves
-          // nothing at all unless it happens to land on a band edge. The
-          // capture at three metres came back completely, glassily smooth.
-          //
-          // In a cel-shaded pipeline surface texture has to be ALBEDO, and it
-          // has to have edges. Both scales fade to their own mean over a range
-          // chosen for their wavelength, which is the distance budget every
-          // octave in TerrainMaterial is given for the same reason: albedo
-          // finer than a couple of pixels crawls when the camera moves.
-          // Three of them, an octave and a bit apart, each with the distance
-          // budget its own wavelength earns. Scale matters as much as amplitude:
-          // a 32 cm blotch is eleven pixels in the plan framing, and massEdgeW's
-          // derivative width across eleven pixels is wider than the whole useful
-          // range of the field — so the first attempt at this resolved to mush.
-          // Anything meant to survive to fifteen metres has to be most of a
-          // metre across.
-          float mac  = fbm2( P * 1.30 + 77.0 );         // ~0.8 m scuff blotches
-          float macF = 1.0 - smoothstep( 20.0, 46.0, vCam );
-          c *= 1.0 + ( massEdgeW( mac, 0.60, 0.028 ) * 0.098
-                     - massEdgeW( 1.0 - mac, 0.62, 0.028 ) * 0.086 ) * macF;
-
-          float mic  = fbm2( P * 4.10 + 19.0 );         // ~24 cm
-          float micF = 1.0 - smoothstep( 7.0, 19.0, vCam );
-          c *= 1.0 + ( massEdgeW( mic, 0.60, 0.024 ) * 0.080
-                     - massEdgeW( 1.0 - mic, 0.62, 0.024 ) * 0.072 ) * micF;
-
-          float spk  = vn( P * 18.0 + 3.3 );            // ~5.5 cm grit
-          float spkF = 1.0 - smoothstep( 3.5, 9.5, vCam );
-          c = mix( c, c * vec3( 0.70, 0.685, 0.665 ),
-                   massEdgeW( spk, 0.76, 0.020 ) * spkF * 0.60 * ( 0.35 + 0.65 * grit ) );
-          c = mix( c, uGrit * 1.10,
-                   massEdgeW( 1.0 - spk, 0.80, 0.020 ) * spkF * 0.35 );
-
-          // Scuff arcs as a whisper of value on the walked ground. Deliberately
-          // small — painted bands on ground are how TerrainMaterial drew a
-          // contour map twice, and the arcs are mostly carried by the bump.
-          float arc = sin( rr * 7.4 + fbm2( P * 0.52 ) * 12.0 );
-          c *= 1.0 + arc * 0.055 * trod;
-
-          // Ash and scorch around the hearth. The fire pit itself covers the
-          // middle of this; what shows is the halo beyond its stones.
-          float ash = 1.0 - smoothstep( 0.95, 2.40, rr );
-          c = mix( c, c * vec3( 0.76, 0.745, 0.755 ), ash * 0.45 );
-
-          diffuseColor.rgb *= c;
-
-          gTrod = trod;
-          gGrit = grit;
-          gBump = ( 0.90 + 0.75 * grit - 0.30 * trod )
-                * ( 1.0 - smoothstep( 14.0, 38.0, vCam ) );
-
-          // ── the edge ─────────────────────────────────────────────────────
-          // Not an alpha ramp, and deliberately not much of an alpha at all.
-          // vB is the clearing's own bare-ground field, baked per vertex from
-          // campCoverAt at full radius, so the dirt and the grass can never
-          // disagree about where the boundary is. The transition the eye reads
-          // is the opaque stubble interlock above; all this does is take the
-          // surface out inside a quarter of a metre, at a bare-ground value of
-          // 0.04 where the meadow is back to 95% of its blades and the last
-          // centimetre is under standing grass either way.
-          float rag  = fbm2( P * 1.90 + 41.5 ) - 0.5;
-          float ragW = smoothstep( 0.005, 0.06, vB ) * ( 1.0 - smoothstep( 0.10, 0.30, vB ) );
-          float alpha = massEdgeW( vB * 6.0 + rag * 0.42 * ragW, 0.22, 0.028 );
-
-          // Scuff past the boundary: a few flattened patches under grass that
-          // is still standing, which is what the last stride into a camp
-          // actually leaves. Capped well under opaque so the blades read over
-          // the top of it.
-          float outM = ( 1.0 - smoothstep( 0.96, 1.15, vU ) )
-                     * massEdgeW( fbm2( P * 0.85 + 17.0 ), 0.62, 0.030 );
-          alpha = max( alpha, outM * 0.42 );
-
-          // ── build-in ─────────────────────────────────────────────────────
-          // A radial wipe, not a global fade. Camp.js eases the clearing's own
-          // radius open ahead of the props; the dirt sweeping outward at the
-          // same rate is what makes the sequence read as "the ground was
-          // cleared" rather than as a group of objects fading in.
-          float wipe = smoothstep( 0.0, 0.11,
-              uReveal * 1.45 - 0.12 - vU + ( fbm2( P * 1.2 ) - 0.5 ) * 0.16 );
-          gAlpha = alpha * wipe;
-          // Deliberately no discard here. The normal block below takes
-          // screen-space derivatives, and derivatives inside non-uniform
-          // control flow are undefined — killing the transparent lanes at the
-          // fringe would corrupt the bump on the lanes beside them, which is
-          // exactly the band where the ground is most closely looked at.
-        }
-      `).replace('#include <roughnessmap_fragment>', /* glsl */`
-        #include <roughnessmap_fragment>
-        // Compacted ground is smoother than loose grit. Small, but it is the
-        // only thing separating the two masses when the sun is behind cloud.
-        roughnessFactor = clamp( 0.99 - 0.10 * gTrod + 0.04 * gGrit, 0.55, 1.0 );
-      `).replace('#include <normal_fragment_maps>', /* glsl */`
-        #include <normal_fragment_maps>
-        if ( gBump > 0.02 ) {
-          // Finite differences with a step tied to the pixel footprint, which
-          // band-limits the field for free: at 3 m it resolves the grain, at
-          // 30 m it has already smoothed it into the mass it belongs to.
-          float px = max( fwidth( gP.x ), fwidth( gP.y ) );
-          float e  = max( 0.055, px * 1.7 );
-          float b0 = bumpF( gP );
-          float bx = bumpF( gP + vec2( e, 0.0 ) );
-          float bz = bumpF( gP + vec2( 0.0, e ) );
-          vec3 wn = vec3( -( bx - b0 ) / e, 0.0, -( bz - b0 ) / e ) * gBump * 0.75;
-          normal = normalize( normal + ( viewMatrix * vec4( wn, 0.0 ) ).xyz );
-        }
-      `).replace('#include <dithering_fragment>', /* glsl */`
-        #include <dithering_fragment>
-        gl_FragColor.a *= gAlpha;
-      `);
-    };
-
-    this.mat = mat;
-    this.mesh = new THREE.Mesh(g, mat);
+    this.u.uCentre.value.set(x, z);
+    this.mesh = new THREE.Mesh(g, this.mat);
     this.mesh.name = 'camp_ground';
     this.mesh.position.set(x, 0, z);
     this.mesh.receiveShadow = true;
@@ -742,7 +873,7 @@ export class CampGround {
 
     const twig = (lx, lz, u, len) => {
       const wx = x + lx, wz = z + lz;
-      const rad = lerp(0.007, 0.015, rng());
+      const rad = lerp(0.011, 0.023, rng());
       const y = this._surfaceY(wx, wz) + LIFT + rad * 0.55;
       q.setFromEuler(new THREE.Euler(
         (rng() - 0.5) * 0.35, rng() * TAU, (rng() - 0.5) * 0.16));
@@ -755,11 +886,15 @@ export class CampGround {
 
     const colours = [];
 
-    // Clumps. Sizes matter more than counts here: the first pass topped out at
-    // 11 cm, which is three pixels in the plan framing and simply was not there.
-    // A stone has to be 15–25 cm before it reads as a stone from standing
-    // height, and it is the big ones that carry the shadow.
-    const clumps = 10 + Math.floor(rng() * 4);
+    // Clumps, and they have to be tight. The version before this one scattered
+    // fifty stones of one size across the whole disc at a roughly even spacing,
+    // and a critic reading the plan frame called it "an even Poisson spread of
+    // same-size grey lumps" — which is exactly the failure the grass system
+    // documents: a uniform scatter reads as a texture, and only groups with
+    // bare ground between them read as objects. So: one anchor stone per group,
+    // clearly larger than everything near it, with small satellites drawn tight
+    // around it, and fewer groups than there used to be stones.
+    const clumps = 6 + Math.floor(rng() * 4);
     for (let k = 0; k < clumps; k++) {
       const a0 = k * GOLDEN + rng() * 0.4;
       const Ra = boundaryAt(a0);
@@ -767,25 +902,28 @@ export class CampGround {
       // they kick out of the way ends up at the edges, which is also where a
       // scatter does the most for the fringe.
       const r0 = lerp(1.7, Ra * 1.02, Math.pow(rng(), 0.55));
-      const spread = lerp(0.34, 0.70, rng());
+      const spread = lerp(0.16, 0.38, rng());
+      const anchor = place(a0, r0);
+      if (anchor) colours.push(stone(anchor.lx, anchor.lz, anchor.u, lerp(0.155, 0.30, rng())));
       const count = 4 + Math.floor(rng() * 6);
       for (let i = 0; i < count; i++) {
-        const a = a0 + (rng() - 0.5) * (spread / Math.max(0.8, r0)) * 2.4;
-        const r = r0 + (rng() - 0.5) * spread * 2.0;
+        const a = a0 + (rng() - 0.5) * (spread / Math.max(0.8, r0)) * 2.6;
+        const r = r0 + (rng() - 0.5) * spread * 2.2;
         const pt = place(a, r);
         if (!pt) continue;
-        if (rng() < 0.76) colours.push(stone(pt.lx, pt.lz, pt.u, lerp(0.055, 0.235, Math.pow(rng(), 1.7))));
+        if (rng() < 0.80) colours.push(stone(pt.lx, pt.lz, pt.u, lerp(0.040, 0.125, Math.pow(rng(), 1.5))));
         else colours.push(twig(pt.lx, pt.lz, pt.u, lerp(0.16, 0.40, rng())));
       }
     }
 
-    // Loners, so the clumps are not the only thing on the ground.
-    for (let i = 0; i < 26; i++) {
+    // Loners, so the clumps are not the only thing on the ground. Small — a
+    // lone stone the size of an anchor would read as a group of one.
+    for (let i = 0; i < 14; i++) {
       const a = rng() * TAU;
       const Ra = boundaryAt(a);
       const pt = place(a, lerp(1.5, Ra * 1.04, Math.sqrt(rng())));
       if (!pt) continue;
-      if (rng() < 0.60) colours.push(stone(pt.lx, pt.lz, pt.u, lerp(0.045, 0.125, rng())));
+      if (rng() < 0.55) colours.push(stone(pt.lx, pt.lz, pt.u, lerp(0.040, 0.095, rng())));
       else colours.push(twig(pt.lx, pt.lz, pt.u, lerp(0.18, 0.46, rng())));
     }
 
@@ -864,37 +1002,9 @@ export class CampGround {
     sanitizeNormals(geo);
     geo.computeBoundingSphere();
 
-    const u = { uReveal: { value: this.reveal } };
-    const patchVert = (sh) => {
-      Object.assign(sh.uniforms, u);
-      sh.vertexShader = /* glsl */`
-        attribute vec3 aBase;
-        attribute float aU;
-        uniform float uReveal;
-      ` + sh.vertexShader.replace('#include <begin_vertex>', /* glsl */`
-        #include <begin_vertex>
-        // The same radial wipe the dirt uses, so a stone appears on the frame
-        // the dirt reaches it rather than at some unrelated moment.
-        float wk = clamp( ( uReveal * 1.45 - 0.12 - aU ) / 0.10, 0.0, 1.0 );
-        wk = wk * wk * ( 3.0 - 2.0 * wk );
-        transformed = mix( aBase, transformed, wk );
-      `);
-    };
-
-    const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true, roughness: 0.88, metalness: 0.0, flatShading: true,
-    });
-    mat.userData.uniforms = u;
-    mat.onBeforeCompile = patchVert;
-
-    const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
-    depth.onBeforeCompile = patchVert;
-
-    this.propMat = mat;
-    this.propDepth = depth;
-    this.props = new THREE.Mesh(geo, mat);
+    this.props = new THREE.Mesh(geo, this.propMat);
     this.props.name = 'camp_ground_litter';
-    this.props.customDepthMaterial = depth;
+    this.props.customDepthMaterial = this.propDepth;
     this.props.castShadow = true;
     this.props.receiveShadow = true;
     this.props.position.set(x, 0, z);
@@ -903,8 +1013,7 @@ export class CampGround {
 
   setReveal(k) {
     this.reveal = clamp01(k);
-    if (this.mat?.userData.uniforms) this.mat.userData.uniforms.uReveal.value = this.reveal;
-    if (this.propMat?.userData.uniforms) this.propMat.userData.uniforms.uReveal.value = this.reveal;
+    this.u.uReveal.value = this.reveal;
     if (this.mesh) this.mesh.visible = this.reveal > 0.004;
     if (this.props) this.props.visible = this.reveal > 0.02;
   }
@@ -920,9 +1029,11 @@ export class CampGround {
       this.props.geometry.dispose();
       this.props = null;
     }
-    this.mat?.dispose(); this.mat = null;
-    this.propMat?.dispose(); this.propMat = null;
-    this.propDepth?.dispose(); this.propDepth = null;
+    // The materials are NOT disposed. They belong to the module, not to this
+    // instance — see `groundMaterials()`. Camp.js's boot pre-warm constructs a
+    // CampGround, builds it and disposes it under the loading screen, and if
+    // that call took the programs with it the first real camp would pay the
+    // compile again.
     this._lat.clear();
   }
 }

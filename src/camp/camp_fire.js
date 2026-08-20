@@ -233,6 +233,7 @@ const FLAME_FRAG = /* glsl */`
   uniform float uEdgePow;
   uniform float uFlicker;
   uniform float uKnee;
+  uniform vec2  uChroma;
 
   varying float vV;
   varying vec3  vTint;
@@ -265,6 +266,16 @@ const FLAME_FRAG = /* glsl */`
     // 0.35-0.5 m of flame comes from.
     float tipK = smoothstep(0.10, 0.94, vV);
     vec3 col = mix(vTint, uTipCol, tipK * 0.80);
+    // ── how a fire wins in daylight ─────────────────────────────────────────
+    // It cannot out-brighten the sun, so it has to be the most CHROMATIC thing
+    // in the frame and the only thing whose silhouette changes. Authored for
+    // night — where a hot core genuinely does go near-white — the same colours
+    // arrive at midday as a pale yellow smudge on gold dirt, with nothing to
+    // separate them. Pulling green and blue down by day deepens the whole
+    // stack toward a saturated orange that nothing else in an autumn valley
+    // is, and leaves the night untouched.
+    col.g *= uChroma.x;
+    col.b *= uChroma.y;
     float fade = smoothstep(1.0, 0.48, vV);
 
     float a = depth * fade * vW * vFlick * uFlicker * uGain;
@@ -352,9 +363,15 @@ function flameShell(R, H, radial, rings, shellIdx, tint, weight, lean, squash, s
   };
   for (let j = 0; j < rings; j++) {
     for (let i = 0; i < radial; i++) {
-      // CCW seen from outside: (j,i) -> (j,i+1) -> (j+1,i+1) -> (j+1,i).
-      push(j, i); push(j, i + 1); push(j + 1, i + 1);
-      push(j, i); push(j + 1, i + 1); push(j + 1, i);
+      // Wound so the geometric normal from the cross product agrees with the
+      // analytic outward normal pushed above. Verified rather than reasoned:
+      // the first version had it the other way round and `tools/winding.mjs`
+      // reported 0.0% agreement over 424 sampled triangles. It happens to be
+      // invisible on this material — the flame shades on abs(dot(N,V)) and
+      // draws double-sided — but it is a trap for anyone who later wants a
+      // one-sided or normal-lit variant, and it is the gate.
+      push(j, i); push(j + 1, i + 1); push(j, i + 1);
+      push(j, i); push(j + 1, i); push(j + 1, i + 1);
     }
   }
   const g = new THREE.BufferGeometry();
@@ -523,7 +540,12 @@ const FX_VERT = /* glsl */`
     // one takes its own path through the thermal, at its own rate.
     p.x += sin(t * (2.1 + aSeed * 2.4) + aSeed * 31.0) * uWander * t;
     p.z += cos(t * (1.7 + aSeed * 2.1) + aSeed * 17.0) * uWander * t;
-    p.xz += uWind * (uWindLean * t * t);
+    // LINEAR in t, not quadratic. Wind is a velocity, not an acceleration, and
+    // the difference does not show on a 1.5 s spark — it shows on a 7 s smoke
+    // puff, which at 0.52 t^2 had travelled THIRTY-THREE METRES downwind before
+    // it faded. That is why the whole-camp frames had no smoke column in them:
+    // the smoke was there, it was just most of the way to the next valley.
+    p.xz += uWind * (uWindLean * t);
 
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     gl_PointSize = clamp(aSize * (1.0 + uGrow * a) * uScale / max(-mv.z, 0.08), 1.0, 210.0);
@@ -569,8 +591,104 @@ const SMOKE_FRAG = /* glsl */`
     gl_FragColor = vec4(vColor, a);
   }`;
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  The material set — built once, per module, exactly like campMaterials()
+//
+//  WHY THIS IS NOT PER-INSTANCE, and it is a frame-time fix rather than a
+//  tidiness one. Pitching a camp used to freeze the game for most of a second:
+//  the first camp linked 36 shader programs, two consecutive frames of 986 ms
+//  and 898 ms, measured with tools/_scratch/camphitch.mjs. Camp.js pre-warms
+//  the whole prop set under the loading screen so the engine compiles
+//  everything before the player can see a stall — but a pre-warm only warms
+//  the *materials it was given*, and a constructor that news up four
+//  ShaderMaterials every time hands the pre-warm four objects that no longer
+//  exist by the time the player clicks. So the real camp linked a fresh set on
+//  the very frame it appeared.
+//
+//  Held at module scope there is exactly one flame program, one bed program,
+//  one spark program and one smoke program for the session, and the pre-warm's
+//  compile is the one the live camp uses.
+//
+//  Per-instance variation therefore has to live in a uniform or a vertex
+//  attribute, never in a material. It already did: the shell colours, weights
+//  and seeds are attributes, and everything the hour ramps drive is a uniform.
+//  There is at most one Firepit in the world at a time (Camp.js guarantees it),
+//  so a shared `uTime` has exactly one writer.
+//
+//  Consequence for teardown: `dispose()` must NOT touch these. The pre-warm
+//  builds and throws away a Firepit at boot, and a material disposed there is
+//  gone for the rest of the session — a black flame from the first camp on.
+// ─────────────────────────────────────────────────────────────────────────────
+let _fireMats = null;
+
+function fireMaterials() {
+  if (_fireMats) return _fireMats;
+  const fx = (frag, o) => new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 }, uScale: { value: 600 }, uGain: { value: 1 },
+      uDrag: { value: o.drag }, uGrav: { value: o.grav },
+      uWander: { value: o.wander }, uGrow: { value: o.grow },
+      uWind: { value: new THREE.Vector2(0.86, 0.51) },
+      uWindLean: { value: o.windLean },
+    },
+    vertexShader: FX_VERT,
+    fragmentShader: frag,
+    transparent: true,
+    depthWrite: false,
+    blending: o.additive ? THREE.CustomBlending : THREE.NormalBlending,
+    ...(o.additive ? {
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+    } : {}),
+  });
+
+  _fireMats = {
+    flame: new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uGain: { value: 1 },
+        uAmp: { value: 0.52 },
+        uSway: { value: 0.030 },
+        uPinch: { value: 0.40 },
+        uWind: { value: new THREE.Vector2(0.86, 0.51) },
+        uReveal: { value: 1 },
+        uFlicker: { value: 1 },
+        uEdgePow: { value: 1.42 },
+        uKnee: { value: 0.10 },
+        uChroma: { value: new THREE.Vector2(1, 1) },
+        uTipCol: { value: new THREE.Vector3(1.00, 0.330, 0.075) },
+      },
+      vertexShader: FLAME_VERT,
+      fragmentShader: FLAME_FRAG,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+    }),
+    bed: new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uGain: { value: 1 }, uReveal: { value: 1 } },
+      vertexShader: BED_VERT,
+      fragmentShader: BED_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -4,
+      side: THREE.DoubleSide,
+    }),
+    // A camp fire throws a few dozen sparks, not a fountain.
+    ember: fx(EMBER_FRAG, {
+      drag: 1.55, grav: 0.30, wander: 0.085, grow: -0.35, windLean: 0.26, additive: true,
+    }),
+    smoke: fx(SMOKE_FRAG, {
+      drag: 0.80, grav: 0.145, wander: 0.105, grow: 6.2, windLean: 0.42, additive: false,
+    }),
+  };
+  return _fireMats;
+}
+
 class FireFX {
-  constructor(parent, max, frag, opts) {
+  constructor(parent, max, material, opts) {
     this.max = max;
     this.head = 0;
     this.time = 0;
@@ -589,23 +707,7 @@ class FireFX {
     g.setAttribute('aSeed', this.seed);
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 1.4, 0), 6);
 
-    this.material = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 }, uScale: { value: 600 }, uGain: { value: 1 },
-        uDrag: { value: opts.drag }, uGrav: { value: opts.grav },
-        uWander: { value: opts.wander }, uGrow: { value: opts.grow },
-        uWind: { value: new THREE.Vector2(0.86, 0.51) },
-        uWindLean: { value: opts.windLean },
-      },
-      vertexShader: FX_VERT,
-      fragmentShader: frag,
-      transparent: true,
-      depthWrite: false,
-      blending: opts.additive ? THREE.CustomBlending : THREE.NormalBlending,
-      ...(opts.additive ? {
-        blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
-      } : {}),
-    });
+    this.material = material;
     this.points = new THREE.Points(g, this.material);
     this.points.frustumCulled = false;
     this.points.renderOrder = opts.order;
@@ -651,10 +753,20 @@ class FireFX {
     this._dirty = false;
   }
 
+  /** Age every slot out. Used when the fire moves to a new camp. */
+  clear() {
+    this.birth.array.fill(-1e6);
+    this.birth.addUpdateRange(0, this.max);
+    this.birth.needsUpdate = true;
+    this.head = 0;
+    this._lo = this._hi = -1;
+    this._dirty = false;
+  }
+
+  /** Geometry only. The material is a module singleton — see fireMaterials(). */
   dispose() {
     this.points.parent?.remove(this.points);
     this.points.geometry.dispose();
-    this.material.dispose();
   }
 }
 
@@ -761,7 +873,22 @@ function splitLog(rnd, len, R, spanA) {
     A.push(new THREE.Vector3(-0.06 * R * tp + bx, y, bz));
   }
   const barkP = [], splitP = [];
-  const tri = (arr, a, b, c) => arr.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  // ── the winding, and how it was caught ──────────────────────────────────
+  //
+  // Emitted as (a, b, c) every one of these faces was wound inside out, and
+  // `Parts.add` DERIVES normals from the winding — so `tools/winding.mjs`
+  // reported perfect agreement while every piece of firewood in the camp was
+  // lit by its own back face. That is precisely the failure the winding tool's
+  // header describes ("a surface that stayed dark from every angle... each
+  // time it was misdiagnosed first"), and the tool cannot see it, because the
+  // normals really do agree with the winding: both are wrong together.
+  //
+  // What catches it is the signed volume, sum of (a x b).c / 6 over the
+  // triangles: positive for an outward-wound closed solid, negative for an
+  // inward one. This mesh measured -0.0049. Reversed here rather than at each
+  // call site so the bark, the two split faces and both end caps can never
+  // disagree with each other.
+  const tri = (arr, a, b, c) => arr.push(a.x, a.y, a.z, c.x, c.y, c.z, b.x, b.y, b.z);
   const quad = (arr, a, b, c, d) => { tri(arr, a, b, c); tri(arr, a, c, d); };
 
   for (let l = 0; l < NL; l++) {
@@ -844,7 +971,80 @@ export class Firepit {
     this.solids = new THREE.Group();
     this.group.add(this.solids);
 
-    const R = opts.radius ?? 0.62;
+    // Sparks and smoke live for the lifetime of the object; only the geometry
+    // in the pit is rebuilt per camp.
+    // A camp fire throws a few dozen sparks, not a fountain: 96 slots at ~10/s
+    // and a ~2 s life is about twenty alive at any moment, which is what the
+    // night plate actually shows.
+    const FM = fireMaterials();
+    this.embers = new FireFX(this.group, 96, FM.ember, { order: 7, name: 'camp_fire_sparks' });
+    this.smoke = new FireFX(this.group, 112, FM.smoke, { order: 8, name: 'camp_fire_smoke' });
+
+    // ── the light ─────────────────────────────────────────────────────────
+    //
+    // Camp.js owns a PointLight that exists from boot and is never removed,
+    // and hands it in as `opts.light`. Use it. A light *appearing* at runtime
+    // changes NUM_POINT_LIGHTS, which relinks every lit material in the
+    // valley — measured as most of a second of freeze on the frame the player
+    // clicks — and there is nothing about a fire's light that has to be born
+    // with the fire. Creating one is the fallback for a standalone Firepit
+    // (a test, a tool) where nobody supplied one.
+    //
+    // It is NOT parented to `this.group`: it outlives this object, so
+    // `setPosition` carries it instead and `dispose` leaves it alone.
+    //
+    // Colour is a real fire's ~1900 K and that saturation is deliberate here
+    // even though Lighting.js spends a page warning against a saturated key —
+    // that warning is about a *global* key performing a hue replacement on
+    // every albedo in the frame. This is a local accent inside an otherwise
+    // blue night, which is the good kind of hue variety rather than the bad,
+    // and it is what the night plates show on the tent wall.
+    //
+    // DECAY IS INVERSE SQUARE WITH A TIGHT CUTOFF, and the reason is Stylize
+    // rather than physics. A slow falloff (1.25) was tried first, on the
+    // argument that inverse square is a 25:1 range between the ring and the
+    // chairs. It measured terribly, and the frame that proved it was a night
+    // capture with this light switched off entirely: deep navy dirt, the tent
+    // a dark shape, one warm rim on the moonlit grass — the reference plate,
+    // essentially. Turn the light back on at any intensity that lit the ring
+    // and the whole clearing went pale lavender out to six metres and the
+    // night was gone.
+    //
+    // The cause is the stylised direct term: it wraps the N.L, quantises it,
+    // and then floors it so nothing is ever unlit. At a grazing angle three
+    // metres out that turns a real 0.13 of cosine into more than 0.4, so a
+    // point light in this engine reaches roughly three times as far as its
+    // falloff says it does. Inverse square plus a ~6.6 m cutoff window brings
+    // the lit pool back to the size a fire's actually is, and the *emissive*
+    // flame and ember bed carry the warmth the light no longer sprays across
+    // the camp.
+    this.ownsLight = !opts.light;
+    this.light = opts.light ?? new THREE.PointLight(0xffa259, 1.6, 6.5, 2.0);
+    this.light.color.setHex(0xffa259, THREE.SRGBColorSpace);
+    this.light.distance = 6.6;
+    this.light.decay = 2.0;
+    this.light.castShadow = false;
+    this.light.name = 'camp_fire_light';
+    if (this.ownsLight) scene.add(this.light);
+
+    this._sc = new THREE.Color();
+    scene.add(this.group);
+
+    this._build(rnd, opts);
+  }
+  /**
+   * Build every piece of geometry in the pit.
+   *
+   * Split out of the constructor so `rebuild(rnd)` exists. Camp.js keeps ONE
+   * Firepit for the whole session and moves it to wherever the next camp is —
+   * it has to, because a fire constructed per camp is a set of programs linked
+   * per camp however thoroughly the boot pre-warm ran. The cost of that is
+   * that every camp gets the same stone ring, which Camp's own note calls a
+   * real loss. `rebuild` is what buys it back: the materials and the light are
+   * session-scoped, the geometry is not.
+   */
+  _build(rnd, opts) {
+    const R = opts.radius ?? 0.58;
     this.radius = R;
     const P = new Parts('fire');
     const hotSpots = [];
@@ -991,17 +1191,7 @@ export class Firepit {
     P.flush(this.solids, { cast: true, receive: true });
 
     // ── the ember bed ─────────────────────────────────────────────────────
-    this.bedMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uGain: { value: 1 }, uReveal: { value: 1 } },
-      vertexShader: BED_VERT,
-      fragmentShader: BED_FRAG,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.CustomBlending,
-      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
-      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -4,
-      side: THREE.DoubleSide,
-    });
+    this.bedMat = fireMaterials().bed;
     this.bed = new THREE.Mesh(emberBed(rnd, R * 0.74, hotSpots), this.bedMat);
     this.bed.frustumCulled = false;
     this.bed.renderOrder = 5;
@@ -1010,122 +1200,84 @@ export class Firepit {
 
     // ── the flame ─────────────────────────────────────────────────────────
     //
-    // Three nested shells in one geometry, one draw call, ~740 triangles.
-    // Weights are chosen so the sum down the axis lands near-white while the
-    // outermost shell alone is a translucent orange: 0.30 + 0.46 + 0.62.
+    // Three nested shells in one geometry, one draw call, ~900 triangles.
     const seed = rnd() * 10;
     const lean = new THREE.Vector2((rnd() - 0.5) * 0.05, (rnd() - 0.5) * 0.05);
     // Weights are the per-shell radiance and they are SMALL, because the shells
     // are double-sided: a view ray down the axis crosses six surfaces, not
-    // three, so the sum here is 2 x (0.100 + 0.150 + 0.205) = 0.91 at unit
+    // three, so the sum here is 2 x (0.100 + 0.200 + 0.300) = 1.20 at unit
     // gain. The first pass authored them as if each shell were one layer and
     // put 2.8 linear down the axis at midday, which is 2.6x the bloom
     // threshold at that hour — a white disc with a wash out to the grass.
     const shells = [
-      // Heights are close together and radii are not, which is the correction
-      // that made the plume read. Authored as 0.62 / 0.47 / 0.30 the inner two
-      // shells had already ended by 300 mm, so everything above the fuel was
-      // the outer shell alone at a tenth of the core's radiance — a warm wisp
-      // instead of a flame. Now all three run most of the way up and the
-      // core/body/tip structure is a *radial* one, which is what it is in a
-      // real flame.
-      // 22 radial segments on the outer shell, not 15: it is the shell that
-      // draws the silhouette, and at 15 the flame's outline is a visible
-      // polygon at any framing closer than three metres. The inner two never
-      // reach a silhouette, so they stay cheap.
+      // ── SIZE ────────────────────────────────────────────────────────────
+      // The integrator's whole-camp frame settled this. At 0.62 m the flame
+      // was "a small pale flicker roughly the size of the mug on the table",
+      // the least conspicuous object in a picture arranged entirely around it.
+      // A fire people sit round throws a flame of the same order as the ring
+      // is wide — 1.16 m here — and the core/body/tip structure this shell
+      // stack exists to produce cannot read at forty pixels either. 0.80 m of
+      // geometry, about 0.72 m of it visible after the tip fade.
       //
-      // The weights fall off steeply outward — 0.055 / 0.145 / 0.255 — which
-      // is what makes the outer shell a translucent edge instead of a second
-      // solid. Authored flat at 0.135 / 0.165 / 0.175 the outer shell alone
-      // doubled the local frame value at dusk and the flame arrived as a pale
-      // pink silhouette with a small orange core inside it.
-      flameShell(0.228, 0.620, 22, 13, 0, [1.00, 0.330, 0.075], 0.100,
+      // ── HEIGHTS CLOSE, RADII NOT ────────────────────────────────────────
+      // Authored as 0.62 / 0.47 / 0.30 the inner two shells had already ended
+      // by 300 mm, so everything above the fuel was the outer shell alone at a
+      // tenth of the core's radiance — a warm wisp instead of a flame. All
+      // three now run most of the way up and the core/body/tip structure is a
+      // *radial* one, which is what it is in a real flame.
+      //
+      // ── 22 RADIAL SEGMENTS ON THE OUTER SHELL ───────────────────────────
+      // It is the shell that draws the silhouette, and at 15 the flame's
+      // outline is a visible polygon at any framing closer than three metres.
+      // The inner two never reach a silhouette, so they stay cheap.
+      flameShell(0.256, 0.800, 22, 14, 0, [1.00, 0.330, 0.075], 0.100,
         lean, 0.115, seed + 0.0),
-      flameShell(0.156, 0.545, 15, 12, 1, [1.00, 0.545, 0.185], 0.200,
+      flameShell(0.176, 0.710, 15, 13, 1, [1.00, 0.545, 0.185], 0.200,
         lean, 0.085, seed + 1.7),
-      flameShell(0.094, 0.400, 12, 10, 2, [1.00, 0.840, 0.610], 0.300,
+      flameShell(0.106, 0.530, 12, 11, 2, [1.00, 0.840, 0.610], 0.300,
         lean, 0.060, seed + 3.4),
     ];
     const flameGeo = mergeAttr(shells);
-    flameGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.36, 0), 1.2);
-    this.flameMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 },
-        uGain: { value: 1 },
-        uAmp: { value: 0.42 },
-        uSway: { value: 0.030 },
-        uPinch: { value: 0.34 },
-        uWind: { value: new THREE.Vector2(0.86, 0.51) },
-        uReveal: { value: 1 },
-        uFlicker: { value: 1 },
-        uEdgePow: { value: 1.42 },
-        uKnee: { value: 0.10 },
-        uTipCol: { value: new THREE.Vector3(1.00, 0.330, 0.075) },
-      },
-      vertexShader: FLAME_VERT,
-      fragmentShader: FLAME_FRAG,
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      blending: THREE.CustomBlending,
-      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
-    });
+    flameGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.45, 0), 1.4);
+    this.flameMat = fireMaterials().flame;
     this.flame = new THREE.Mesh(flameGeo, this.flameMat);
     this.flame.frustumCulled = false;
     this.flame.renderOrder = 6;
     this.flame.name = 'camp_fire_flame';
     this.group.add(this.flame);
 
-    // ── embers and smoke ──────────────────────────────────────────────────
-    // A camp fire throws a few dozen sparks, not a fountain. 90 slots at ~9/s
-    // and a two-second life is about eighteen alive at any moment, which is
-    // what the night plate actually shows.
-    this.embers = new FireFX(this.group, 96, EMBER_FRAG, {
-      drag: 1.55, grav: 0.30, wander: 0.085, grow: -0.35, windLean: 0.10,
-      additive: true, order: 7, name: 'camp_fire_sparks',
-    });
-    this.smoke = new FireFX(this.group, 64, SMOKE_FRAG, {
-      drag: 0.85, grav: 0.40, wander: 0.135, grow: 3.4, windLean: 0.46,
-      additive: false, order: 8, name: 'camp_fire_smoke',
-    });
-
-    // ── the light ─────────────────────────────────────────────────────────
-    //
-    // One point light, no shadow. Placed at the top of the burning zone rather
-    // than at the centre of the pit: a light at ground level throws every prop
-    // in the camp an upward shadow that reads as horror-film, and a fire's
-    // luminous body genuinely sits above its fuel.
-    //
-    // Colour is a real fire's ~1900 K and that saturation is deliberate here
-    // even though Lighting.js spends a page warning against a saturated key —
-    // that warning is about a *global* key performing a hue replacement on
-    // every albedo in the frame. This is a local accent inside an otherwise
-    // blue night, which is the good kind of hue variety rather than the bad,
-    // and it is what the night plates show on the tent wall.
-    //
-    // DECAY IS 1.25, NOT 2, and that is the load-bearing number here. Inverse
-    // square across the span this light has to cover is a 25:1 range between
-    // the stones at 0.6 m and the chairs at 2.5 m: any intensity that lights a
-    // chair blows the ring to white paper, and any intensity that keeps the
-    // ring readable leaves the chair unlit. Measured on the first pass at
-    // decay 2 — the stones, the ash and the grass six metres out all came back
-    // as one white mass. 1.25 gives 3.5:1 over the same span, which is the
-    // falloff a fire actually reads with in the night plates.
-    this.light = new THREE.PointLight(0xffa259, 2.55, 11, 1.25);
-    this.light.position.set(0, 0.40, 0);
-    this.light.castShadow = false;
-    this.light.name = 'camp_fire_light';
-    this.group.add(this.light);
-
-    this._sc = new THREE.Color();
-    scene.add(this.group);
   }
 
-  setPosition(v) { this.group.position.copy(v); }
+  /** New stones, new fuel, new coals; same materials, same light, same programs. */
+  rebuild(rnd = Math.random, opts = {}) {
+    for (const m of [...this.solids.children]) {
+      this.solids.remove(m);
+      m.geometry?.dispose?.();
+    }
+    if (this.bed) { this.group.remove(this.bed); this.bed.geometry.dispose(); this.bed = null; }
+    if (this.flame) { this.group.remove(this.flame); this.flame.geometry.dispose(); this.flame = null; }
+    // Sparks and smoke are stored in the group's own space, so a camp pitched
+    // somewhere else would otherwise inherit the last one's embers mid-flight.
+    this.embers?.clear();
+    this.smoke?.clear();
+    this._build(rnd, { ...opts, radius: opts.radius ?? this.radius });
+  }
+
+
+  setPosition(v) {
+    this.group.position.copy(v);
+    // The light is not a child of the group (it outlives this object), so it
+    // has to be carried by hand. `update` writes the y each frame.
+    this.light.position.set(v.x, v.y + 0.46, v.z);
+  }
 
   setReveal(k) {
     this.reveal = clamp01(k);
     this.group.visible = this.reveal > 0.004;
+    // The light is not a child of the group, so hiding the group does not hide
+    // it. `update` returns early while invisible, which would otherwise leave
+    // the last camp's intensity burning over an empty patch of dirt.
+    if (!this.group.visible) this.light.intensity = 0;
     // The solids ease up from the ground; the flame and the light ride their
     // own curves in `update`, so the fire lights before it is fully built —
     // which reads as somebody getting it going rather than as an object fading
@@ -1190,7 +1342,7 @@ export class Firepit {
     // measured against — 1.05 linear with the sun high, 0.72 at the horizon,
     // 1.70 at night (PostFX's glare ramp). Multiplied by the 0.91 stack above
     // these put the core at 1.05 / 1.15 / 2.55 linear at the three hours.
-    const gain = lerp(lerp(1.05, 2.00, dusk), 2.90, night) * T.gain;
+    const gain = lerp(lerp(1.90, 2.90, dusk), 4.60, night) * T.gain;
     const f = this._flicker(d);
 
     const fu = this.flameMat.uniforms;
@@ -1199,7 +1351,9 @@ export class Firepit {
     fu.uFlicker.value = f;
     fu.uReveal.value = rv;
     fu.uWind.value.copy(this._wind);
-    fu.uKnee.value = lerp(lerp(0.10, 0.80, dusk), 1.30, night) * T.knee;
+    fu.uKnee.value = lerp(lerp(0.10, 0.55, dusk), 0.80, night) * T.knee;
+    const chroma = Math.max(dusk * 0.55, night);
+    fu.uChroma.value.set(lerp(0.78, 1.0, chroma), lerp(0.56, 1.0, chroma));
     // A tighter falloff at night, for the same reason as the crusher: the wide
     // soft edge that reads as heat by day reads as a violet fringe after dark.
     fu.uEdgePow.value = lerp(1.35, 2.05, Math.max(dusk * 0.5, night));
@@ -1217,19 +1371,29 @@ export class Firepit {
     // ── the light ───────────────────────────────────────────────────────────
     // 1.7 at midday — a supporting warm accent that just lifts the near stones
     // — against 8.6 at night, where it is the entire lighting of the camp.
-    const base = lerp(lerp(0.80, 2.60, dusk), 4.20, night);
+    // Swept at 23:00 against a control frame with the light switched off. 4.2
+    // put the whole clearing in pale lavender out to six metres; 1.15 left the
+    // tent dark. 2.1 keeps the lit pool inside about three metres, which is
+    // where the night plates put the edge of a camp fire's reach.
+    const base = lerp(lerp(0.85, 1.45, dusk), 2.10, night);
     this.light.intensity = base * f * rv * rv * T.light;
-    this.light.distance = lerp(6.0, 9.5, Math.max(dusk, night));
+    this.light.distance = lerp(4.6, 6.6, Math.max(dusk, night));
     // Warmer and a touch less saturated by day, so it does not read as a
     // coloured lamp on a sunlit prop.
     this._sc.setRGB(1.0, lerp(0.50, 0.40, night), lerp(0.22, 0.135, night));
     this.light.color.copy(this._sc);
-    this.light.position.y = 0.36 + 0.07 * f;
+    this.light.position.y = this.group.position.y + 0.42 + 0.08 * f;
 
     // ── spawning ────────────────────────────────────────────────────────────
     const px = window.__engine?.renderer?.domElement?.height ?? 900;
     const emberGain = lerp(lerp(0.55, 0.95, dusk), 1.25, night) * rv * T.ember;
-    const smokeGain = lerp(lerp(0.135, 0.062, dusk), 0.030, night) * rv * T.smoke;
+    // A thin drifting column is the only part of a camp fire that is legible
+    // at thirty metres, and it is what tells the player from across the
+    // clearing that the fire is lit. The first passes had it at a sixth of
+    // this and the integrator could not find it in the whole-camp frame at
+    // all. Sparse but CONTINUOUS is the shape: many small puffs at low alpha,
+    // not a few fat ones.
+    const smokeGain = lerp(lerp(0.320, 0.125, dusk), 0.042, night) * rv * T.smoke;
 
     if (rv > 0.35) {
       // ~9 sparks a second, in ones and twos, plus a burst when a log settles.
@@ -1240,8 +1404,8 @@ export class Firepit {
       this._emberAcc -= Math.floor(this._emberAcc);
       while (k-- > 0) this._spawnEmber();
 
-      this._smokeAcc += d * 1.25;
-      let s = Math.min(3, Math.floor(this._smokeAcc));
+      this._smokeAcc += d * 5.2;
+      let s = Math.min(5, Math.floor(this._smokeAcc));
       this._smokeAcc -= Math.floor(this._smokeAcc);
       while (s-- > 0) this._spawnSmoke(night);
     }
@@ -1274,23 +1438,39 @@ export class Firepit {
     // Smoke is lit by the sky above and by the fire below; near the pit it is
     // warm and it cools as it climbs. At night there is nothing to light it at
     // all, which is why `smokeGain` all but switches it off.
-    const g = 0.62 + Math.random() * 0.14;
+    // Darker than it looks like it should be: this column is seen against a
+    // near-white autumn sky as often as against the trees, and a pale grey
+    // puff simply disappears into the first of those.
+    const g = 0.44 + Math.random() * 0.16;
     this.smoke.spawn(
       Math.cos(a) * r, 0.56 + Math.random() * 0.20, Math.sin(a) * r,
       (Math.random() - 0.5) * 0.30, 0.50 + Math.random() * 0.40, (Math.random() - 0.5) * 0.30,
-      3.4 + Math.random() * 2.8,
-      0.13 + Math.random() * 0.10,
+      4.6 + Math.random() * 3.6,
+      0.150 + Math.random() * 0.085,
       g * lerp(1.06, 0.90, night), g * lerp(0.95, 0.90, night), g * lerp(0.84, 0.96, night),
       Math.random());
   }
 
+  /**
+   * Geometry only.
+   *
+   * The four ShaderMaterials are module singletons (see fireMaterials()) and
+   * the point light usually belongs to Camp.js. Camp pre-warms the prop set at
+   * boot by building one of everything and throwing it away, so anything this
+   * disposes is gone for the session — disposing the flame material here would
+   * leave every camp after the first with a black flame.
+   */
   dispose() {
     this.scene.remove(this.group);
     this.embers.dispose();
     this.smoke.dispose();
     this.group.traverse((o) => { o.geometry?.dispose?.(); });
-    this.flameMat.dispose();
-    this.bedMat.dispose();
+    if (this.ownsLight) {
+      this.light.parent?.remove(this.light);
+      this.light.dispose?.();
+    } else {
+      this.light.intensity = 0;
+    }
   }
 }
 

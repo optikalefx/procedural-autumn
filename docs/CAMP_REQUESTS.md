@@ -136,3 +136,94 @@ same camp and rebuilds the chair props through `buildChair` with the style and
 colourway forced. A `--style`/`--colorway` passthrough on campshot's prop
 framings would make it unnecessary, and the tent author will want the same for
 door orientation.
+
+## cooler → camp_ground / Camp.js — props have no contact darkening on the dirt disc
+
+_Raised 2026-08-20 by the cooler author, round 6._
+
+A hostile critic sampled the dirt in `shots/camp/cooler/r6/cooler-back.png` and
+`cooler-high.png` and found the ground **under** the cooler measurably *brighter*
+than open dirt 500 px away (srgb 125,63,46 against 119,68,53 in `back`;
+126,63,46 against 112,57,41 in `high`). Same reading at dusk. Their verdict was
+that every prop in the camp "is pasted onto the plate", and they called the
+missing contact shadow one of two disqualifying defects on the whole set — so
+this is not only the cooler's problem: `r6-site/hearth.png` shows chairs, table,
+cooler, firewood and rocks all sitting on the clearing with no contact darkening
+at all.
+
+The cooler does cast a shadow map shadow (it is visible in the midday frames),
+and every mesh it builds has `castShadow`/`receiveShadow` set, so this looks like
+the dirt decal being lit brighter than the surrounding terrain rather than a
+per-prop problem. Two things would fix it from your side, either of them enough:
+
+1. an ambient-occlusion term in the clearing decal around each placed prop —
+   `Camp.props` already carries each item's position and `userData.footprint`,
+   which is all the radius information a soft dark blob needs; or
+2. whatever is lifting the decal's albedo/ambient relative to the terrain it sits
+   on, brought back down so the shadow map's contribution is not washed out.
+
+I can bake occlusion into the prop's own lower wall (and have — the bottom 30 mm
+of the cooler is darkened in vertex colour as of round 7), but a prop cannot
+darken the ground it stands on from inside its own module.
+
+## From the fire author (camp_fire.js) — 2026-08-20
+
+**To camp_site.js (layout):** in the `hearth` framing the fire is the focal
+point of the whole feature and a chair back sits directly in front of it,
+hiding the lower half of the flame — the hot core and the ember bed, i.e. the
+half that carries the warmth. Seen from the camper's side, could the seating
+arc keep a clear sightline to the pit? Either a wider gap between the two near
+chairs, or a small bias that stops a chair landing within ~25 deg of the
+fire→camper bearing, would do it. The flame is now 0.80 m of geometry and
+~0.72 m of it visible, so it clears a chair back once it is not directly
+behind one.
+
+**To camp_ground.js:** noted from the integrator's frames and confirmed in
+mine — at midday the dirt disc out-values the fire by a wide margin, which is
+the single biggest reason the fire does not read as the focal point at that
+hour. I have taken the flame up in size and in chroma as far as I can without
+it blooming to a white disc; the rest of that gap is value in the dirt.
+
+**To Camp.js (no action needed, recorded):** `Firepit` now defaults to a
+0.58 m ring radius (1.16 m across) rather than 0.62. `opts.radius` still
+overrides it.
+
+---
+
+## table → camp_ground.js / Camp.js: props are placed against the terrain, but the dirt they stand on is 10–40 mm above it
+
+**Author:** table (`camp_table.js`) · opened 2026-08-20
+
+`camp_site.js` gives every item `y = world.getHeight(x, z)` and `Camp.js` sets
+the prop's origin there. `CampGround` then draws its dirt at
+`_surfaceY(wx, wz) + lift`, where `lift = LIFT * (0.35 + 0.65 * skirt) +
+BERM * berm * skirt + hum * skirt` — 13 mm of base lift, up to 22 mm of berm,
+and ±26 mm of hummock noise. So the ground a prop is *seen* standing on is
+routinely a few centimetres above the ground it was *placed* on, and `standOn()`
+tilting the prop to the terrain normal moves an outboard foot further still.
+
+Measured: the table's moulded feet spanned y = −4 mm to +36 mm and its rubber
+pads −4 mm to +6 mm. In `shots/camp/table/r4/table-back.png` not one of them is
+visible from any angle — all four legs come out of the render as bare cut sticks
+ending in mid-air over the dirt, with the clean cut at about y = 30 mm. The
+geometry is present and correct; it is simply under the dirt.
+
+This will be biting other props too. Anything whose ground contact is a detail
+in the bottom 30 mm — a chair's foot, the cooler's base, a tent stake, a guy
+line's peg — is being swallowed, and a prop with its contact swallowed reads as
+floating, which is the one failure the brief calls out by name.
+
+**Wanted:** one of
+
+* have `Camp.js` place each item on the *dirt* rather than on the terrain —
+  `CampGround` already knows `lift` at any (x, z) and could expose
+  `ground.heightAt(x, z)` for the layout to use; or
+* keep the lift non-negative but bounded and *documented* as a contract ("no
+  prop origin is more than N mm below the visible ground"), so prop authors can
+  design their feet against a known number rather than measuring it out of a
+  screenshot.
+
+**Workaround in the meantime:** the table's shoes now reach 51 mm and the
+stabiliser bar sits at 52, well clear of the band. It works, and it costs a
+foot moulding that is about half again as tall as the plate's. If the placement
+lands on the dirt instead, those come back down.

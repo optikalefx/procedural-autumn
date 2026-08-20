@@ -14,6 +14,20 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 800 } });
 const errs = [];
 page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()); });
 page.on('pageerror', (e) => errs.push(String(e)));
+// Six peers are saving files all round. A Vite reload part-way through a
+// scripted interaction destroys the page and every assertion after it — this
+// harness spent one run reporting that window.__camp did not exist.
+await page.addInitScript(() => {
+  const Real = window.WebSocket;
+  window.WebSocket = function (u, p) {
+    if (p === 'vite-hmr' || String(p).includes('vite')) {
+      return { readyState: 3, url: u, protocol: '', addEventListener() {}, removeEventListener() {},
+               send() {}, close() {}, set onopen(_) {}, set onmessage(_) {}, set onclose(_) {}, set onerror(_) {} };
+    }
+    return new Real(u, p);
+  };
+  window.WebSocket.prototype = Real.prototype;
+});
 await page.goto('http://localhost:5178?res=768', { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
 
@@ -29,6 +43,11 @@ const snap = (label) => page.evaluate((l) => ({
   promptShown: window.__camp.prompt.el.style.opacity,
   raise: +window.__camp.raise.toFixed(2),
   props: window.__camp.props.length,
+  focusCamp: !!window.__camp._focusCamp,
+  // How far the camera's subject is from the camper: ~0 means it is looking at
+  // the car, ~the site distance means it has drifted to the fire.
+  subjOffCar: +(window.__systems.cameraRig?.subject
+    ? window.__systems.cameraRig.subject.distanceTo(window.__systems.vehicle.position) : -1).toFixed(2),
 }), label);
 
 // Park somewhere open, then let the springs settle and the camper stop.
@@ -78,6 +97,39 @@ log.push(await snap('after the raise'));
 await page.screenshot({ path: 'shots/camp/play-pitched.png' });
 
 // Pack up.
+// The camera should have walked over to the fire by now.
+await page.waitForTimeout(2200);
+log.push(await snap('2 s after the raise — camera should be on the fire'));
+await page.screenshot({ path: 'shots/camp/play-focus-fire.png' });
+
+// Clicking the camper takes focus back.
+const carPx = await page.evaluate(() => {
+  const v = window.__systems.vehicle, c = window.__engine.camera;
+  const p = v.position.clone(); p.y += 1.0; p.project(c);
+  return { x: (p.x * 0.5 + 0.5) * window.innerWidth, y: (-p.y * 0.5 + 0.5) * window.innerHeight, z: p.z };
+});
+console.log('carPx', JSON.stringify(carPx));
+if (carPx.z < 1) {
+  await page.mouse.move(carPx.x, carPx.y);
+  await page.waitForTimeout(220);
+  await page.mouse.down(); await page.waitForTimeout(70); await page.mouse.up();
+  await page.waitForTimeout(2200);
+  console.log('focusProbe', JSON.stringify(await page.evaluate(() => {
+    const c = window.__camp, v = window.__systems.vehicle;
+    return {
+      click: c._click, justPitched: c._justPitched, speed: +v.speed.toFixed(2),
+      throttle: window.__ctx.input.axes.throttle,
+      missCar: c._rayMiss(v.position, 2.8),
+      missCamp: c._rayMiss({ x: c.site.x, y: c.site.y + 0.4, z: c.site.z }, 5.22),
+      mouse: { x: +window.__ctx.input.mouse.x.toFixed(3), y: +window.__ctx.input.mouse.y.toFixed(3) },
+    };
+  })));
+  log.push(await snap('after clicking the camper'));
+  await page.screenshot({ path: 'shots/camp/play-focus-car.png' });
+} else {
+  log.push({ label: 'camper is off-screen; click test skipped', state: '-', aim: {}, props: -1, raise: -1 });
+}
+
 await page.keyboard.press('KeyE');
 await page.waitForTimeout(1200);
 log.push(await snap('after E — packed up'));
