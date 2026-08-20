@@ -4085,3 +4085,148 @@ vocabulary has cost someone a round.
 
 Everything else on the health gate is clean, and `tools/nanhunt.mjs` is clean
 (1348 frames, zero non-finite pixels).
+
+---
+
+## X6. The cloud shadow is bimodal per view, not saturated — and two numbers in the critic's pass are wrong (look/grade, 2026-08-20)
+
+**Change shipped: `cloudScaleMul` 3.0 -> 5.5 in `src/render/Atmosphere.js`. One
+constant. The tint and the gain are untouched, as instructed.**
+
+### Reproducing the "saturated coverage" report
+
+The pass reported this term as *"coverage >= 0.90 nearly everywhere, so the
+window is pinned and the whole visible world is uniformly darkened"*. Half of
+that is right. The half that is wrong would have sent the next author to the
+wrong file, so both halves are on the record.
+
+Per-view histogram of the raw two-tap coverage over the ground fan each canonical
+camera actually sees, binned against the bake's own range (0.38 is no cloud,
+0.90 is solid) — `tools/_scratch/x2sweep.mjs`:
+
+```
+            <=.40  .40-.55  .55-.70  .70-.88   >.88     mask
+  river        0       0        0      4.5     95.5    1.000
+  vehicle    96.5     3.5       0        0        0    0.006
+  drive      79.0    11.0     7.7      2.3        0    0.135
+  meadow    100.0      0        0        0        0    0.000
+```
+
+- **At `river` the field really is pinned above 0.90**, which is why moving the
+  window from 0.38/0.62 to 0.62/0.90 changed that frame by 0.000. That test was
+  run at the one view where it cannot show anything.
+- **`vehicle` is 97% LIT, not shadowed.** The pass has river and vehicle both
+  sitting under this shadow; vehicle has a mask of 0.006. Whatever ails that
+  frame is not this term, and it is still open.
+- Over the whole tile the shipping window covers **21.1%** (`cloudmask.mjs`),
+  not ~100%. The field is not saturated. It is **bimodal per view**: a camera is
+  either deep inside one patch or entirely outside every patch.
+
+### The actual cause, and why it is not the window or the `max()`
+
+A patch is far larger than a frame. Walking 600 world positions and binning what
+an eye-level camera sees (`tools/_scratch/cloudframe.mjs`):
+
+```
+  mul    tile      flat-lit   trace   MASS+EDGE   mostly-shaded   all-shaded
+  1.0    7000 m      76%       3%        4%           6%            12%
+  3.0    2333 m      60%       6%        6%          10%            18%
+  5.5    1273 m      54%      11%       10%          15%            10%
+```
+
+Read the MASS+EDGE column, not the coverage one. At the shipped 3.0, only **6%**
+of positions put a shadow *edge* in frame while **78%** are all-or-nothing. That
+is an exposure cut wearing a shadow's clothes — the same conclusion the pass
+reached, arrived at from the other end.
+
+5.5 is the best row available: flat-lit 60 -> 54%, wholly shaded 18 -> 10%,
+MASS+EDGE 6 -> 10%. Strict improvement on all three counts. The wrap worry that
+held it at 3.0 is about a *single* tap; the union of two decorrelated taps beats
+at a much longer period, and nothing legible appears in the drive or meadow
+frames at 1273 m.
+
+Measured effect, same view, same boot:
+
+```
+                 lumaMean   lumaRange   contrastStd   vividPct
+  river  3.0       0.333      0.393        0.126       19.0
+  river  5.5       0.434      0.480        0.148       35.9
+  meadow 3.0       0.581      0.482        0.155       58.6
+  meadow 5.5       0.506      0.553        0.164       49.4
+```
+
+`river` now measures *better than the pass's own "term off" reference* (it
+reported 0.373 / 22.1 with the term disabled) while keeping the shadow, because
+the flat whole-frame dimming is replaced by structure. `meadow` trades wash for
+value range — the large-scale value event X2 asked for — and its ground chroma
+moves 0.341 -> 0.312, toward plate 3's 0.308 rather than away from it.
+
+### L6 — this term cannot deliver the eye-level mass, at any scale
+
+The honest number is in the same table: **even at 5.5, 64% of positions still
+see no shape at all.** A cloud silhouette whose features are hundreds of metres
+across cannot reliably put an edge inside a 200 m fan seen from a 4 m camera;
+push it smaller and it stops reading as weather before it starts reading as
+shape. It is excellent for vistas and it is the wrong instrument for `drive`.
+**The remaining eye-level mass has to come from somewhere else, and X2 should
+not be closed on this change.**
+
+### L5 — the tint hits the critic's target in LINEAR, and the target is sRGB
+
+Not changed, because I was asked not to touch it, but it needs recording because
+the agreement looks exact and is not. The tint lands 0.645 of lit **linear**
+luminance with blue 18% down; the target was read off sRGB plate pixels
+(`srgb(155,108,47)`). Measured in the final graded frame, with the window forced
+fully open and then the term forced off in one boot:
+
+```
+  at gain 0.85     display luma ratio   red:green    blue, relative
+  rect g1                0.778          held -3.9%      -5.8%
+  rect g3                0.775          held -4.9%      -5.0%
+  rect g5                0.810          held +1.5%      -8.4%
+  target                 0.640          held            -17%
+```
+
+`display = linear^0.567` fits across this range, so linear 0.645 arrives on
+screen as 0.78 — the same 78% separately measured and called the defect. The
+axis is right and its *magnitude on screen* is about a third of the way there.
+
+**Deepening it is not free.** The setting that lands exactly on 0.64 on screen
+(gain 1.30, tint 0.983/0.983/1.221) was captured: the ground is right and the
+water is not — the river pool goes blue-grey to murky olive, because a 17% blue
+cut on gold is a warm deepening and the same cut on a blue-led pixel is a hue
+change. Worth spending only after L6 is addressed.
+
+### Day cycle — checked, and it cannot grey out
+
+Ground samples with the change in, at four hours:
+
+```
+  07:24 dawn     srgb(144,107,48)   srgb(130,103,77)
+  12:00 noon     srgb(219,181,84)   srgb(161,126,57)
+  17:54 backlit  srgb(219,146,88)   srgb(228,159,108)
+  18:36 evening  srgb(110, 73,36)   srgb(110, 68,36)
+```
+
+Every sample is R > G > B. No grey, no mauve, no rose, no blue. At the two ends
+of the day the question does not arise at all: dawn's mask is 0.000 and Clouds
+has already faded `cloudShadow` to 0 by 18:36, so the term is simply absent
+there. The useful invariant is not chroma (which must fall as a pixel darkens)
+but **saturation, which rises**: near ground goes 0.647 -> 0.663 at 09:00 and
+0.619 -> 0.663 at 12:00 under a forced-full mask. This term gets *more* saturated
+as it darkens, which is why it cannot walk gold through neutral.
+
+### Two things I could not action
+
+1. **`src/rocks/RockMaterial.js` is mid-edit and its shader does not link** —
+   `ERROR: 0:2426: 'cast' : Illegal use of reserved word`. `health.mjs` is
+   `ok:false, shaderFailures:1` on the shared tree because of it, and a material
+   that does not link renders nothing, silently. Not my directory; flagging it
+   for the rocks author. My own tree was `ok:true, shaderFailures:0` before that
+   edit landed.
+2. **The perf gate reads p95 45.1 ms against a 45 ms threshold** — a 0.1 ms
+   miss, on a tree that also carries uncommitted work in `Trees.js`,
+   `tree_material.js` and `RockMaterial.js`. My change is one scalar constant
+   with no shader edit and no added texture fetch, so it cannot be the cause;
+   the number is not attributable to it and is not attributable to anyone until
+   the tree is clean.

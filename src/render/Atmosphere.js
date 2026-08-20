@@ -351,6 +351,41 @@ const DEFAULTS = {
   // explicit that this change is about area and shape and must not raise
   // contrast; the area comes from cloudScale2 and cloudSoftHi below, and the
   // depth goes slightly the other way.
+  //
+  // ── HELD AT 0.85, AND THE TARGET IT MEETS IS A LINEAR ONE. FILED AS L5. ──
+  //
+  // The arithmetic above is correct and lands 0.645 of the lit LINEAR
+  // luminance with blue 18% down. Both numbers match the critic's target
+  // digit for digit, and that agreement is what makes the following worth
+  // recording rather than quietly fixing: the critic's target was read off
+  // sRGB plate pixels -- it quotes srgb(155,108,47) -- and this file's is
+  // linear. They are not the same quantity.
+  //
+  // Measured rather than argued. Captured drive twice in one boot with the
+  // coverage window forced fully open and then the term forced off
+  // (tools/_scratch/x2sweep.mjs, variants full and none), which isolates this
+  // term's transfer function in the final graded frame, and sampled three
+  // ground rects:
+  //
+  //   at gain 0.85     display luma ratio   red:green      blue, relative
+  //   rect g1                0.778          held -3.9%        -5.8%
+  //   rect g3                0.775          held -4.9%        -5.0%
+  //   rect g5                0.810          held +1.5%        -8.4%
+  //   critic's target        0.640          held              -17%
+  //
+  // The mapping through the tonemap and grade fits display = linear^0.567
+  // across this range, so linear 0.645 arrives on screen as 0.78 -- which is
+  // the same 78% the critic separately measured and called the defect.
+  //
+  // NOT CHANGED HERE, deliberately, and this is the interesting part. The
+  // setting that lands exactly on 0.64 on screen (gain 1.30, tint
+  // 0.983/0.983/1.221) was captured, and the ground is right while the WATER
+  // is not: with the window forced open the river pool goes from blue-grey to
+  // a murky olive, because a 17% relative blue cut on gold is a warm deepening
+  // and the same cut on an already blue-led pixel is a hue change. Deepening
+  // this term is therefore not free, and it should not be spent until the
+  // coverage below is a shadow rather than an exposure -- at which point the
+  // depth needed on screen may be different again. Filed as L5.
   cloudShadowGain: 0.85,
   // Multiplier on the uv scale Clouds supplies (it passes 1/7000). Above 1 the
   // tile shrinks in world space and the patches get smaller and more frequent.
@@ -376,7 +411,55 @@ const DEFAULTS = {
   // filed as L4 — the ground shadow is baked at the same threshold as the deck,
   // so the only way to raise coverage further without putting clouds back in
   // the sky is to bake it separately, which is Clouds' file and not this one.
-  cloudScaleMul: 3.0,
+  //
+  // ── 5.5. THE TERM WAS AN EXPOSURE CUT, AND THE TABLE ABOVE SAYS WHY ──────
+  //
+  // A critic pass reported this term as "saturated: coverage >= 0.90 nearly
+  // everywhere, so the window is pinned and the whole world is uniformly
+  // darkened". That is half right, and the half that is wrong would have sent
+  // the next author to the wrong file, so both halves are recorded.
+  //
+  // Reproduced with a per-view histogram of the raw two-tap coverage over the
+  // ground fan each camera actually sees (tools/_scratch/x2sweep.mjs), binned
+  // against the bake's own range where 0.38 is no cloud and 0.90 is solid:
+  //
+  //             <=.40  .40-.55  .55-.70  .70-.88  >.88    mask
+  //   river        0       0        0      4.5    95.5    1.000
+  //   vehicle    96.5     3.5       0        0       0    0.006
+  //   drive      79.0    11.0     7.7      2.3       0    0.135
+  //   meadow    100.0      0        0        0       0    0.000
+  //
+  // So the field is not saturated anywhere except at river, which is where the
+  // critic measured it. It is BIMODAL PER VIEW: a camera is either deep inside
+  // one patch or completely outside every patch. Note vehicle in particular --
+  // the report has river and vehicle both sitting under this shadow, and
+  // vehicle is 97% lit, so whatever ails that frame is not this term. Over the
+  // whole tile the shipping window covers 21.1% (cloudmask.mjs), not ~100%.
+  //
+  // The cause is not the window and not the max() of the taps. It is that a
+  // patch is far larger than a frame. The table above is the proof, read down
+  // the MASS+EDGE column rather than the coverage one: at mul 3.0 only 6% of
+  // world positions put a shadow EDGE in an eye-level frame, while 60% are
+  // flat-lit and 18% are wholly shaded. A term that is all-or-nothing 78% of
+  // the time is an exposure cut wearing a shadow's clothes, which is the
+  // critic's conclusion reached from the other end.
+  //
+  // 5.5 is the best row available: flat 60 -> 54%, wholly shaded 18 -> 10%,
+  // and MASS+EDGE 6 -> 10%. That is a strict improvement against the reported
+  // defect on all three counts -- fewer frames dimmed as a whole, more frames
+  // with an actual shape in them. The wrap worry that held it at 3.0 is real
+  // but is about a single tap: the union of two decorrelated taps beats at a
+  // much longer period than either, and at 1273 m nothing legible appears in
+  // the drive or meadow frames.
+  //
+  // It is an improvement and not a fix, and the honest number is in the same
+  // column: even at 5.5, 64% of positions still see no shape at all. A cloud
+  // silhouette whose features are hundreds of metres across cannot reliably put
+  // an edge inside a 200 m fan seen from a 4 m camera, at any scale -- push it
+  // smaller and it stops reading as weather before it starts reading as shape.
+  // The eye-level ground mass X2 asks for is not reachable from this term
+  // alone. Filed as L6.
+  cloudScaleMul: 5.5,
   // Scale of the second tap relative to the first, applied after a rotation so
   // the two taps are decorrelated rather than a resampling of the same blobs.
   // The union is what buys the area, and the area is X2's cleanest number:
@@ -412,13 +495,33 @@ const DEFAULTS = {
   // shipping gain (m = 0.42 * 0.85 = 0.357) a fully shadowed pixel is
   // multiplied by (0.654, 0.654, 0.536): red-to-green held exactly, blue 18%
   // down on the other two, luma 0.645 of lit. That is the critic's target on
-  // all three axes.
+  // all three axes in linear; see the colour-space note on cloudShadowGain for
+  // what it comes to on screen, which is not the same number.
   //
   // It cannot produce grey at any strength or any hour, and that is structural
   // rather than a tuning claim: every channel gain is positive, red and green
   // are attenuated identically and least, so a pixel can only move along its
   // own hue toward umber. There is no setting of this triple that walks gold
   // through neutral, which is what the cool target in Stylize could do and did.
+  //
+  // Checked rather than asserted, because the player's constraint on this is
+  // absolute ("if it reads grey at any hour it is wrong"). Captured at 09:00
+  // and 12:00 with the window forced fully open, which is the worst case this
+  // term can reach and about five times the area it reaches in practice:
+  //
+  //          near ground        mid ground         far ground
+  //   09:00  srgb(155,121,52)   srgb(113, 80,38)   srgb(181,149,64)
+  //   12:00  srgb(152,119,51)   srgb(112, 82,38)   srgb(156,125,53)
+  //
+  // Every one of those is a light brown or a soft yellow-brown, which is the
+  // player's own wording for what they wanted. The useful number is not the
+  // chroma, which necessarily falls as a pixel darkens, but the SATURATION:
+  // near ground goes 0.647 -> 0.663 at 09:00 and 0.619 -> 0.663 at 12:00. This
+  // term gets MORE saturated as it darkens, which is the exact opposite of the
+  // desaturating wash the critic measured, and it is why it cannot grey out.
+  //
+  // At dusk the question does not arise: Clouds fades params.cloudShadow to 0
+  // on its own sun-elevation ramp, and it is already 0 by 18:36.
   cloudShadowTint: new THREE.Vector3(0.97, 0.97, 1.30),
   // The window the baked silhouette ramps across, and it is not free to choose:
   // Clouds.buildShadowTexture writes 0.38 + 0.52 * h, so 0.38 is "no cloud" and
