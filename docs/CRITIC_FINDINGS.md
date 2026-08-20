@@ -1317,3 +1317,322 @@ level sets running **down** the fall line, so a face gets fluting and nothing
 crossing it — which is precisely why it reads as drapery rather than as stone.
 Raising that anti-contour floor is the obvious experiment and it is also how
 this file produced a contour map twice, so it wants its own round.
+
+---
+
+# Critic pass 7 — 2026-08-20 (round 051 / `shots/round54`)
+
+First pass taken after `5fb4932` (settle) and `731d2c9` (anchor). Every number
+below is stated with the pixels it came from, and every rect was rendered as an
+overlay and looked at before the number was quoted. **All statistics are on the
+8-bit sRGB-encoded values as stored in the file** — the same convention as
+`tools/colorstats.mjs`. No linearisation anywhere in this pass.
+
+## 1. Blind A/B — round 051 beats round 040 8–2, reversing 049's 8–2 loss
+
+**Method.** Cells were cropped out of the archived contact sheets themselves
+(4 cols, 520×293, grid origin y=47), with the bottom 26 px removed to take the
+caption off. Both arms therefore sit at identical reduced resolution, and no
+label survives. 20 pairs: 10 live (040 vs 051, one per view) and **10 old-vs-old
+decoys** drawn from {029, 034, 037, 039, 042, 046, 048, 049}. **045 was excluded
+outright** because its cells carry the perf HUD and would mark that build. Sides
+were flipped per pair with `crypto.randomBytes` rejection sampling, pair order
+was shuffled the same way, and `KEY.json` was not opened until all 20 verdicts
+were written to disk.
+
+| pair | view | kind | pick | winner | conf |
+|---|---|---|---|---|---|
+| 01 | dawn | decoy | left | **042** over 046 | med |
+| 02 | peaks | decoy | left | **042** over 037 | low |
+| 03 | forest | **live** | left | **051** over 040 | high |
+| 04 | backlit | **live** | left | **051** over 040 | med |
+| 05 | vehicle | decoy | right | **042** over 039 | med |
+| 06 | meadow | **live** | left | **051** over 040 | med |
+| 07 | peaks | **live** | left | **051** over 040 | low |
+| 08 | hero | decoy | right | **039** over 046 | med |
+| 09 | hero | **live** | left | **051** over 040 | med |
+| 10 | dawn | **live** | right | **051** over 040 | low |
+| 11 | waterfall | **live** | left | **051** over 040 | high |
+| 12 | vehicle | **live** | right | **051** over 040 | med |
+| 13 | forest | decoy | right | **039** over 049 | med |
+| 14 | river | decoy | left | **042** over 034 | high |
+| 15 | backlit | decoy | right | **039** over 034 | low |
+| 16 | river | **live** | right | **040** over 051 | med |
+| 17 | drive | **live** | right | **040** over 051 | med |
+| 18 | meadow | decoy | right | **037** over 034 | med |
+| 19 | drive | decoy | right | **042** over 046 | low |
+| 20 | waterfall | decoy | right | **039** over 034 | low |
+
+**Live score: 051 wins 8, 040 wins 2.** Round 049 lost the same match-up 8–2;
+this is a clean reversal.
+
+**Restricted to the five views the anchor bug never touched** — `hero`, `peaks`,
+`dawn`, `backlit`, `vehicle` — **051 wins 5–0**. Both of 040's wins (`river`,
+`drive`) fall in the anchor-unstable set.
+
+Decoy cross-check that supports the tree work as the cause: 049's `forest` lost
+to 039's (pair 13) while 051's `forest` beat 040's decisively (pair 03), and 039
+and 040 are adjacent rounds. So `forest` went 049 < 040 ≈ 039 < 051.
+
+### Contamination, declared
+
+1. **Settle.** 051's cells are settled; 040's and every decoy's are not, so 051
+   shows more resolved geometry. Of the 8 live wins, at most two (`vehicle`,
+   `meadow`) could plausibly turn on resolved density; the reasons I wrote for
+   the other six are canopy hue and colour content, which settling does not
+   produce. The two 040 wins are *strengthened* by this, not weakened.
+2. **Anchor.** `drive`, `meadow`, `river`, `forest`, `waterfall` may be different
+   places on the 040 side. Hence the 5–0 subset above. In particular
+   **"051's `drive` lost 040's foreground tree" is not a filable finding** — the
+   two framings are not the same place.
+3. **Resolution.** At 520×267 fine defects (aliasing, moiré, card edges) are not
+   judgeable. Everything in §2–§4 was judged at full 1280×720 afterwards.
+4. **Recurrence.** Both live arms appeared exactly 10 times, so neither was the
+   unique repeat. My two "I have seen this before" impressions while judging were
+   both between *different* decoy builds (042/040 on `dawn`, 039/040 on `hero`) —
+   i.e. I could not in fact discriminate builds by recurrence.
+5. **Order.** A source-code read of `Atmosphere.js` landed in my context between
+   pair 18 and pair 19. Pairs 19 and 20 are both decoys, so no live pair was
+   judged after it. Nothing image-derived was seen before judging.
+
+## 2. Ranked blockers
+
+### B1 — BLOCKER: rock chunks are floating in mid-air, in four of ten views
+
+`meadow`, `peaks`, `hero`, `dawn`. In a 420×220 crop of `meadow` (x 0–420,
+y 20–240) there are **≈12 detached tan chunks**; in a 400×220 crop of `peaks`
+(x 480–880, y 120–340) there are **≈18**. They are not "sitting proud of the
+surface" — several have clear sky visible *underneath* them, one in `peaks` is
+entirely off the mountain silhouette against the paler range behind, and **not
+one of them casts a shadow onto the face it hovers over**. They are sand-tan
+(RGB ≈ 0.80/0.70/0.55) against a grey-mauve face, so they do not even read as
+the same material as the mountain.
+
+Separately, on the gold slope in `peaks` (x 1030–1280, y 300–580) there are
+angular **blue-grey rock meshes with a hard aliased edge and an orange fringe**,
+sitting on a flat gold hillside — no hue relationship to anything in the frame,
+and their "shadow" is a soft brown smudge rather than a cast shadow.
+
+This is first because nothing else in the sheet destroys the illusion as
+completely, and because it is not a subtlety of grade or haze — it is geometry in
+the wrong place.
+
+### B2 — BLOCKER: `river` is half a frame of one contiguous dark warm ground mass
+
+Paint-mask rule, stated explicitly: hue 10–40°, chroma 0.15–0.45, luma < 0.45.
+The false-colour output was rendered and checked — the magenta is the dirt bank,
+one connected region running from the left edge to frame centre.
+
+| | our `river` | plate 3 |
+|---|---|---|
+| pixels matching the rule | **50.6 %** | 17.0 % |
+| distribution | one contiguous mass | scattered, no dominant blob |
+| cool (hue 150–300°) | 10.3 % | 22.7 % |
+
+Bare-dirt patch (x 397–525, y 338–468, ≈95 % bare dirt, verified on the overlay):
+`lumaMean 0.268, lumaRange 0.156, contrastStd 0.059, 1 luma mode`. It is one
+gradient. Plate 3's grass (bear excluded from the rect) is
+`0.479 / 0.185 / 0.057` at `chromaMean 0.527, vividPct 98.7`.
+
+And **pass 4's flat tan quadrilateral cards are still there** — visible at full
+res as hard-edged untextured parallelograms lying on the dirt at (30,115),
+(95,655), (270,630), (300,545), plus clustered blocky yellow-green shrub cubes
+across x 30–330, y 300–420.
+
+**Closed by this pass:** pass 6's "the hillside is under a full-frame cloud
+shadow" is *fixed*. HEAD's `river` measures `lumaMean 0.372, vividPct 27.0`
+against pass 6's shadowed 0.283 / 9.5. `7187a81` (`cloudScaleMul` 3.0 → 5.5) did
+what it claimed. What is left underneath is the bank, and it is worse than the
+shadow was.
+
+### B3 — BLOCKER: the river water is a flat colour fill
+
+Patch x 870–973, y 518–619 (10,403 px, verified on the overlay to contain water
+only — no bank, no foam blob):
+
+| | ours | plate 3 water | plate 5 water |
+|---|---|---|---|
+| lumaMean | **0.208** | 0.527 | 0.729 |
+| lumaRange (P95−P05) | **0.043** | 0.485 | 0.639 |
+| contrastStd | **0.016** | 0.131 | 0.191 |
+| luma modes | **1** | 3 | 3 |
+
+A luma range of 0.043 over ten thousand pixels is a fill, not a surface. At full
+res the crop shows no flow lines, no wave gradient, no reflection; the foam is
+five hard-edged pale blobs that read as torn paper; there is a **straight seam**
+across the middle where two water surfaces meet, and a **straight horizontal cut**
+at the bottom-right frame edge where the mesh ends. Birch trunks enter the water
+with no waterline interaction at all.
+
+Nothing has touched `RIVER_FRAG` or the river ribbon since 2026-08-19; every
+water fix in the last three rounds went to lakes and falls.
+
+### B4 — BLOCKER: distance recession has not moved in twenty-two rounds
+
+Measured on `dawn` with two fixed rects, both verified clean on the overlay:
+`sky_far` = x 51–358, y 94–130 (pure sky); `ridge_far` = x 51–358, y 173–216
+(entirely inside the far range, no sky).
+
+| round | sky luma | far-ridge luma | Δ (sky − ridge) | ridge chroma |
+|---|---|---|---|---|
+| 021 | 0.719 | 0.758 | **−0.039** (inverted) | 0.271 |
+| 029 | 0.749 | 0.802 | −0.053 | 0.242 |
+| **032** | 0.758 | **0.495** | **+0.263** | 0.123 |
+| 037 | 0.757 | 0.495 | +0.262 | 0.123 |
+| 042 | 0.758 | 0.495 | +0.263 | 0.123 |
+| 046 | 0.769 | 0.495 | +0.274 | 0.108 |
+| 049 | 0.769 | 0.496 | +0.273 | 0.108 |
+| **054 (HEAD)** | 0.769 | **0.496** | **+0.273** | 0.108 |
+| **plate 1 (target)** | 0.889 | 0.750 | **+0.139** | 0.210 |
+
+(Round 045 excluded: its `sky_far` rect contains the perf HUD — `lumaP05 0.261`,
+`contrastStd 0.150` against 0.736/0.015 either side of it.)
+
+**The far ridge's luminance has been 0.495–0.496 for twenty-two consecutive
+rounds.** Round 032 corrected a genuine inversion (ridge brighter than sky) and
+overshot straight past plate 1's −0.139 to +0.263, and no work since has moved it
+by more than 0.001. `hero`, the same anchor at a different hour, is +0.218.
+
+The chroma half is over-corrected in the same event: our far ridge is at 0.108,
+**half** plate 1's 0.210.
+
+The mechanism is in the shader and matches exactly. `src/render/Atmosphere.js`
+runs two stages: the chroma stage at `uFogDesat 1.35 × fogFactor`, re-tinting at
+*the pixel's own luminance* so it can never lift value; and the value stage
+capped at `uFogMax = 0.76` (line 401) and scaled by
+`FOG_DENSITY_SCALE = 0.42` (`Lighting.js:255`, unchanged since `92f0bbd` — the
+round-033 commit). Chroma is stripped 1.35× faster than value is lifted. That is
+precisely the defect: **desaturated but never lightened.** The two numbers to
+argue about are `FOG_DENSITY_SCALE` and `uFogMax`, not `uFogDesat`.
+
+### B5 — BLOCKER: the vistas carry no black, and the near massifs are gradients rather than shapes
+
+Whole-frame, against plate 1 (the vista plate; **not** averaged with the others):
+
+| | lumaP05 | lumaRange | contrastStd |
+|---|---|---|---|
+| plate 1 | **0.153** | **0.718** | 0.221 |
+| `hero` | 0.328 | 0.507 | 0.172 |
+| `dawn` | 0.365 | 0.428 | 0.136 |
+| `peaks` | 0.327 | 0.498 | 0.159 |
+
+All three sit at more than double plate 1's black point and at 60–70 % of its
+range. Plate 1's blacks are near-conifer silhouettes in the foreground; our
+vistas have no dark anchor at all — the darkest large mass is the near massif,
+and it is not dark.
+
+That massif, in `dawn` (x 563–605 … 742, y 446–605, 28,461 px, verified pure rock
+— no vegetation, no sky): `lumaMean 0.381, lumaRange 0.104, contrastStd 0.031,
+**1 luma mode**`. Plate 1's near rock, tightly masked: `lumaRange 0.440,
+contrastStd 0.109`. The `meadow` mountain face at full res reads as draped cloth —
+soft vertical folds, no planes, no silhouette breaks.
+
+*Supporting but not load-bearing:* an edge-density probe (each region resampled
+to 256 px wide, then the share of pixels whose 3×3 luma range exceeds 0.05)
+gives `meadow`'s face 0.2 % steps at a mean local range of 0.0056 — a whole
+mountain with the step statistics of a single pebble face — against 6.5–10.3 %
+for plate 1's and plate 2's rock. **I do not lean on this number**: the count
+depends on how much silhouette happens to fall inside the rect, and plate 5's
+isolated flat boulder scores 0.5 %, lower than ours. The clean evidence is the
+`lumaRange 0.104` above and the crop.
+
+## 3. The two views you asked about
+
+### `river` — still the worst frame, and the diagnosis has moved
+
+Pass 6 blamed the cloud shadow. **That is now fixed** (B2, closed note). What is
+left is two separate systems failing in the same frame:
+
+- **The bank (B2).** 50.6 % of the frame is one contiguous dark warm ground mass
+  with a 0.156 luma range and one mode, still carrying pass 4's flat tan cards
+  and a new crop of blocky yellow-green shrub cubes. This is a ground-cover and
+  terrain-albedo problem.
+- **The water (B3).** A 0.043-range single-mode navy fill with hard mesh seams.
+  This is a water problem, and the river ribbon has not been touched since
+  2026-08-19 while three rounds of water work went to lakes and falls.
+
+There is a third, structural cause worth putting in front of the terrain author:
+the channel is carved up to ~34 m wide and 6.8 m deep (`TerrainGen.js:1116–1140`)
+but the water ribbon drawn in it is at most 12.2 m (`TerrainGen.js:1351`),
+holding 0.22–1.12 m of water (`TerrainGen.js:1249`). **Even a perfectly aimed
+shot puts ~11 m of bare bed on each side of the water.** The frame is not badly
+aimed so much as badly proportioned — though the aim does not help: the anchor
+yaw is quantised to 22.5° bins and `shot.mjs` adds a further 0.42 rad offset.
+
+And the standing warning survives another pass: `river`'s whole-frame statistics
+(`lumaMean 0.372, chromaMean 0.291, vividPct 27.0`) match plate 3's
+(`0.375 / 0.309 / 31.4`) almost exactly. **Do not defend this frame with
+whole-frame numbers.** Every real finding here came from a mask.
+
+### Distance recession in `hero`/`dawn` — worse than "moved 0.03"
+
+See B4. On my rects it has moved **0.010** since round 032, in the wrong
+direction, and the far-ridge luminance itself is unchanged to three decimals
+across 22 rounds. The filing forty rounds ago was right and has simply never been
+worked. It is not a tuning oversight — it is a structural property of the two-stage
+haze: the chroma stage cannot lift value by construction, and the value stage is
+held at 0.42 × density with a 0.76 cap.
+
+`hero` (+0.218) is better than `dawn` (+0.273) but both are well past plate 1's
++0.139, and `dawn`'s far ridge is additionally at half plate 1's chroma.
+
+## 4. What is genuinely good
+
+- **`forest` is the first frame in the sheet that reads as the reference's world** —
+  orange/gold/red/olive in one canopy, real silhouette variety, a lake, wildlife,
+  and falling leaves that land as depth cues rather than noise.
+- **`backlit` now matches plate 4, its correct plate, on every global statistic**:
+  lumaMean 0.583 v 0.622, lumaRange 0.544 v 0.534, chromaMean 0.389 v 0.424,
+  neutralPct 0 v 0. The standing "backlit is a regression" finding should be
+  re-opened, not re-asserted.
+- **`vehicle` finally makes the camper the subject** — warm red against gold,
+  framed by an overhead canopy, on a ground plane you can read the slope of.
+- **The grass reads as grass**: individual blades with clumping and a warm tip
+  gradient in `meadow`, `vehicle` and `forest`, with none of the even-Poisson
+  look the brief forbids.
+- **Rock chroma is settled and pass 6's withdrawal holds.** `hero`'s massif rock,
+  tightly masked, is `chromaMean 0.114` against plate 1's 0.088 and plate 5's
+  0.070 — a hair more chromatic than the plates, which is the right side of the
+  line and not worth another round.
+- **The trajectory is real.** HEAD beat round 040 8–2 blind, and 5–0 on the
+  subset where the comparison is provably the same place. The last six passes
+  could not have told you that, because the harness could not.
+
+## 5. Claims this pass killed — including two of my own
+
+- **"The massif face is one wash where plate 5 shows three zones."** Withdrawn
+  before filing. Plate 5's rock, tightly masked, is `lumaRange 0.017,
+  contrastStd 0.017, 1 mode` — it is flatter than anything we render. Our `hero`
+  massif face is `0.310 / 0.101 / 2 modes`. **Ours has more internal structure
+  than the reference.** The real defect is elsewhere (B5: the *near* massif in
+  `dawn`, at 0.104, and the absence of planar breaks) and it is about edge
+  quality, not value range.
+- **"`backlit`'s ground is one wash."** Withdrawn. Ours is `lumaRange 0.390`
+  against plate 4's ground at `0.105`. I had it backwards.
+- **"051's `drive` lost its foreground tree."** Not attributable — `drive` is in
+  the anchor-unstable set and the 040 arm is very likely a different place.
+- **A skyline-correlation test I wrote to detect anchor drift.** Inconclusive:
+  it returns r = −0.04 for `backlit`, a view the anchor bug never touched, because
+  foliage fills the frame and there is no horizon to trace. Discarded rather than
+  quoted.
+- **The edge-density probe in B5** is reported with its limitation stated and is
+  not load-bearing. Plate 5's isolated boulder scores *below* ours on it.
+
+## 6. Method
+
+- A/B cells: cropped from `review/0NN-*.png` at (14 + 530i, 47 + 303j), 520×293,
+  bottom 26 px discarded. Sides and order randomised with `crypto.randomBytes`
+  rejection sampling; key sealed until all verdicts were on disk.
+- Patch statistics: every rect was drawn onto the source image and the overlay was
+  read before any number from it was used. Six rects were re-cut after the overlay
+  showed contamination — `hero`'s far ridge straddled the skyline, `hero`'s and
+  `dawn`'s massif rects caught vegetation, plate 1's near rock caught meadow,
+  plate 3's grass rect contained the bear, and plate 3's shadow rect contained a
+  trunk. **All five of those would have produced wrong numbers**, which is the
+  same failure that cost passes 4, 5 and 6.
+- Colour space: 8-bit sRGB-encoded, as stored. Stated again because a mismatch
+  here has already cost this project two rounds.
+- Eye-level views judged against plates 3/4/5, vistas against plate 1, per plate,
+  never averaged.
+- No capture was taken. `shots/round54` (= round 051) and the archived sheets were
+  used throughout, per the semaphore constraint.
