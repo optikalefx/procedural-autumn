@@ -55,24 +55,30 @@ const has = (n) => argv.includes(`--${n}`);
 // where the camper is.
 const SITE = {
   // The frame this whole round is judged on: eye level, chairs and fire, the
-  // camper in the background. az 0 from the vehicle bearing = standing on the
-  // far side of the fire from the camper, looking back across it.
-  hearth:  { az: 0.0,  dist: 8.5,  elev: 1.55, fov: 46, aim: 0.55, ref: 'vehicle' },
+  // camper in the background.
+  //
+  // az is measured from the bearing fire -> camper, so az 0 stands BETWEEN the
+  // fire and the camper — which, with the camper 8 m out and the camera 8.5 m
+  // out, is inside the camper. That is exactly what the first two runs of this
+  // framing produced: a full-frame photograph of a red door panel. pi puts the
+  // camera on the far side of the fire with the camper behind it, which is the
+  // shot this framing was always described as.
+  hearth:  { az: 3.14, dist: 8.5,  elev: 1.55, fov: 46, aim: 0.55, ref: 'vehicle' },
   // Three-quarter from the tent side, so the tent has a silhouette against the
   // valley rather than being seen end-on.
   tentside:{ az: 2.05, dist: 9.5,  elev: 1.75, fov: 44, aim: 0.7 },
   // Low and close: the fire fills the lower third. Where the flame is judged.
   fireside:{ az: 0.75, dist: 3.3,  elev: 0.62, fov: 40, aim: 0.35 },
 
-  // From the camper's own door, which is the angle the player actually
-  // arrives at — so it is measured from the camper too, at az pi.
-  arrival: { az: 3.14, dist: 13.5, elev: 2.5,  fov: 50, aim: 0.8, ref: 'vehicle' },
+  // From behind the camper's own door, which is the angle the player actually
+  // arrives at: az 0 is the camper's side of the fire, pushed out past it.
+  arrival: { az: 0.0,  dist: 15.0, elev: 2.6,  fov: 50, aim: 0.8, ref: 'vehicle' },
   // Overhead-ish: reads the *arrangement* with nothing else to look at. If the
   // layout is a ring of evenly spaced objects, this is the frame that says so.
   plan:    { az: 1.2,  dist: 11.0, elev: 9.5,  fov: 46, aim: 0.0 },
   // Wide, with the camper: the scale check. Every prop in this set is small,
   // and scale errors are invisible until something known is beside them.
-  wide:    { az: 0.62, dist: 22.0, elev: 5.0,  fov: 42, aim: 0.9, ref: 'vehicle' },
+  wide:    { az: 2.35, dist: 22.0, elev: 5.0,  fov: 42, aim: 0.9, ref: 'vehicle' },
 };
 
 // ── prop framings: one object, three-quarter front, close ────────────────────

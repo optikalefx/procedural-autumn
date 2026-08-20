@@ -88,7 +88,7 @@ const SKIRT = 1.05;      // metres of mesh past the boundary
 const LIFT = 0.013;
 // The matted berm just inside the boundary — trodden grass has thickness, and
 // a 2 cm rise there is what stops the fringe reading as a printed edge.
-const BERM = 0.032;
+const BERM = 0.022;
 
 // ── palette ──────────────────────────────────────────────────────────────────
 // Authored as sRGB hex and converted, because vertex/fragment albedo multiplies
@@ -107,20 +107,40 @@ const BERM = 0.032;
 // under the gold beside it, and all of its interest is small hard-edged dark
 // rock, not large swings of value. The first pass ran EARTH to DAMP as a
 // two-stop drop across the disc and the capture read as a mud crater.
-const EARTH = C(0xbd9f76);   // general dry trodden earth
-const PACK  = C(0xd0bb98);   // compacted, walked flat, dusty and pale
-const DAMP  = C(0x967a58);   // damp unwalked earth — patches, never a ring
+//
+// The fourth pass lifted these to put the dirt above the sunlit grass, on a
+// literal reading of "lighter than the shadowed grass". That was wrong, and
+// the whole-camp frame said so in three ways at once: the disc became the
+// brightest thing in the frame and pulled the eye off the fire, it read as
+// beach sand rather than as earth, and — the tell that named the cause — the
+// tree shadow crossing it turned MAUVE. That last one is arithmetic. This
+// scene's shade is tinted violet on purpose (grassShadow #4a4f86 is the
+// palette's complementary anchor), and a violet shade multiplied into a
+// near-neutral pale albedo has nothing warm left to fight it. Give the albedo
+// real chroma and the same shadow lands as a warm brown.
+//
+// So: a warm mid brown, one step BELOW the sunlit meadow, with chroma in it.
+// The squint test is the specification — a dark fire and a few dark props on a
+// mid ground, inside a lighter gold field.
+const EARTH = C(0xb19075);   // general dry trodden earth
+const PACK  = C(0xc6ad92);   // compacted, walked flat, dusty and pale
+const DAMP  = C(0x866d58);   // damp unwalked earth — patches, never a ring
 // Grit is the one mass that may lean cool, and it must lean only a *little*.
 // At #bdb5a8 it came back as puddles of wet cement in the plan frame. The
 // palette's note about the rock says the plates are bimodal — near-neutral
 // stone beside strongly coloured ground — and that licence belongs to stone,
 // not to a patch of dust on a warm valley floor.
-const GRIT  = C(0xb6a88e);   // exposed grit — half a step cooler, no more
-const STUB  = C(0xcdb680);   // crushed, yellowed grass stubble at the fringe
+const GRIT  = C(0xafa590);   // exposed grit — half a step cooler, no more
+const STUB  = C(0xc2aa78);   // crushed, yellowed grass stubble at the fringe
+// Fallen leaves. This valley is deciduous and it is autumn; a clearing in it
+// collects leaves at its downwind fringe within a day. It is also the one
+// warm, chromatic note the dirt is allowed — it ties the ground to the canopy
+// overhead, and it is the reason the disc is not four shades of one colour.
+const LEAF  = C(0xa96335);
 // Uncrushed growth at the fringe, seen from above. Its whole job is to be the
 // colour the meadow's ground already is, so the tongues of surviving grass
 // that interlock with the dirt do not read as holes in it.
-const MAT   = C(0xb7a35d);
+const MAT   = C(0xada05f);
 
 // Small props lying on the dirt.
 const STONE_A = C(0xa9a49c);
@@ -376,7 +396,8 @@ export class CampGround {
       uCentre: { value: new THREE.Vector2(x, z) },
       uReveal: { value: this.reveal },
       uEarth: { value: EARTH }, uPack: { value: PACK }, uDamp: { value: DAMP },
-      uGrit: { value: GRIT }, uStub: { value: STUB }, uMat: { value: MAT },
+      uGrit: { value: GRIT }, uStub: { value: STUB },
+      uMat: { value: MAT }, uLeaf: { value: LEAF },
     };
     mat.userData.uniforms = u;
     mat.onBeforeCompile = (sh) => {
@@ -399,7 +420,7 @@ export class CampGround {
       sh.fragmentShader = /* glsl */`
         uniform vec2 uCentre;
         uniform float uReveal;
-        uniform vec3 uEarth, uPack, uDamp, uGrit, uStub, uMat;
+        uniform vec3 uEarth, uPack, uDamp, uGrit, uStub, uMat, uLeaf;
         varying vec3 vWPos;
         varying float vB;
         varying float vU;
@@ -455,7 +476,12 @@ export class CampGround {
           // mass a function of radius and the result was a lit sphere: a pale
           // middle inside a dark ring is what a shaded ball looks like, whatever
           // it happens to be painted on.
-          float inner = 1.0 - smoothstep( 0.10, 0.92, vU );
+          // Weaker still after the whole-camp frame called the disc a raised
+          // dome. The geometry is a shallow BOWL — 13 mm of lift at the centre
+          // against 35 mm at the berm — so the bulge was never in the mesh; it
+          // was a pale middle inside a darker rim, which is what a lit sphere
+          // looks like whatever it is painted on.
+          float inner = 1.0 - smoothstep( 0.06, 0.98, vU );
 
           // ── mass 1: the scuffed paths ────────────────────────────────────
           // Ridged, not blobby. Inverting |n - ½| turns islands into connected
@@ -464,12 +490,12 @@ export class CampGround {
           // the disc they cover — see docs/CAMP_REQUESTS.md for why this is a
           // statistical stand-in for the real prop footprints.
           float ridge = 1.0 - abs( blot * 2.0 - 1.0 );
-          float trodF = ridge * ( 0.62 + 0.66 * inner ) + meso * 0.26;
+          float trodF = ridge * ( 0.76 + 0.30 * inner ) + meso * 0.26;
           float trod  = massEdgeW( trodF, 0.60, 0.030 );
 
           // ── mass 2: damp unwalked earth. Patches, deliberately not a ring ─
-          float dampF = fbm2( Q * 0.52 + 61.7 ) + 0.16 * ( 1.0 - inner ) - 0.28 * trod;
-          float damp  = massEdgeW( dampF, 0.66, 0.035 );
+          float dampF = fbm2( Q * 0.52 + 61.7 ) + 0.07 * ( 1.0 - inner ) - 0.28 * trod;
+          float damp  = massEdgeW( dampF, 0.58, 0.035 );
 
           // ── mass 3: exposed grit where the scuffing has cut through ──────
           float gritF = fbm2( Q * 1.05 + 31.1 ) + meso * 0.20;
@@ -480,13 +506,43 @@ export class CampGround {
           // wobble of the boundary exactly instead of running beside it.
           float stubF = ( 1.0 - abs( vB - 0.40 ) / 0.38 )
                       + ( meso - 0.5 ) * 0.70 + ( blot - 0.5 ) * 0.40;
-          float stub  = massEdgeW( stubF, 0.40, 0.050 );
+          float stub  = massEdgeW( stubF, 0.50, 0.050 );
 
           vec3 c = uEarth;
           c = mix( c, uDamp, damp * 0.90 );
           c = mix( c, uPack, trod * 0.92 );
           c = mix( c, uGrit, grit );
           c = mix( c, uStub, stub * 0.92 );
+
+          // -- the fringe, and why the interlock is opaque -------------------
+          // Two passes were spent making this transition by cutting ragged
+          // holes in the alpha, and both produced the same defect: an olive
+          // lobe reaching two metres into the disc. What shows through a hole
+          // is bare TERRAIN, and the terrain's meadow albedo is a strong
+          // yellow-green that belongs to neither surface — so each hole read as
+          // a puddle of the wrong colour rather than as a tuft of grass.
+          //
+          // So the interlock is a COLOUR boundary on an opaque surface: fingers
+          // of crushed stubble reaching out, tongues of uncrushed growth
+          // reaching in, thresholded against the clearing's own cover field so
+          // they thin exactly as the real blades above them do. Alpha is left
+          // to do only the last handspan, where the grass is back to 95% and
+          // there is nothing left to hide.
+          //
+          // It happens HERE, above the three fine scales rather than below
+          // them, and that ordering is the whole difference between a fringe
+          // and a flat khaki ring. Mixed in last it overwrote every scale of
+          // detail the fringe had, which is why the r4 capture had a metre of
+          // dead colour all round the disc while the middle of it was textured.
+          float tongN = fbm2( P * 2.30 + 5.5 ) * 0.78 + fbm2( P * 5.10 - 22.0 ) * 0.30;
+          float tong  = massEdgeW( vB * 2.3 + tongN, 0.72, 0.032 );
+          c = mix( uMat, c, tong );
+
+          // ── leaves, blown to the fringe and out of the walked lines ──────
+          float leafF = fbm2( P * 1.75 + 91.0 ) + ( 1.0 - vB ) * 0.30 - trod * 0.32;
+          float leaf  = massEdgeW( leafF, 0.84, 0.026 );
+          c = mix( c, uLeaf, leaf * 0.85 );
+
 
           // ── the two fine scales, and why they are albedo ─────────────────
           // This is where the first pass failed hardest. All of its surface
@@ -509,13 +565,13 @@ export class CampGround {
           // metre across.
           float mac  = fbm2( P * 1.30 + 77.0 );         // ~0.8 m scuff blotches
           float macF = 1.0 - smoothstep( 20.0, 46.0, vCam );
-          c *= 1.0 + ( massEdgeW( mac, 0.60, 0.028 ) * 0.085
-                     - massEdgeW( 1.0 - mac, 0.62, 0.028 ) * 0.075 ) * macF;
+          c *= 1.0 + ( massEdgeW( mac, 0.60, 0.028 ) * 0.098
+                     - massEdgeW( 1.0 - mac, 0.62, 0.028 ) * 0.086 ) * macF;
 
           float mic  = fbm2( P * 4.10 + 19.0 );         // ~24 cm
           float micF = 1.0 - smoothstep( 7.0, 19.0, vCam );
-          c *= 1.0 + ( massEdgeW( mic, 0.60, 0.024 ) * 0.070
-                     - massEdgeW( 1.0 - mic, 0.62, 0.024 ) * 0.062 ) * micF;
+          c *= 1.0 + ( massEdgeW( mic, 0.60, 0.024 ) * 0.080
+                     - massEdgeW( 1.0 - mic, 0.62, 0.024 ) * 0.072 ) * micF;
 
           float spk  = vn( P * 18.0 + 3.3 );            // ~5.5 cm grit
           float spkF = 1.0 - smoothstep( 3.5, 9.5, vCam );
@@ -534,23 +590,6 @@ export class CampGround {
           // middle of this; what shows is the halo beyond its stones.
           float ash = 1.0 - smoothstep( 0.95, 2.40, rr );
           c = mix( c, c * vec3( 0.76, 0.745, 0.755 ), ash * 0.45 );
-
-          // -- the fringe, and why the interlock is opaque -------------------
-          // Two passes were spent making this transition by cutting ragged
-          // holes in the alpha, and both produced the same defect: an olive
-          // lobe reaching two metres into the disc. What shows through a hole
-          // is bare TERRAIN, and the terrain's meadow albedo is a strong
-          // yellow-green that belongs to neither surface — so each hole read as
-          // a puddle of the wrong colour rather than as a tuft of grass.
-          //
-          // So the interlock is a COLOUR boundary on an opaque surface: fingers
-          // of crushed stubble reaching out, tongues of uncrushed growth
-          // reaching in, thresholded against the clearing's own cover field so
-          // they thin exactly as the real blades above them do. Alpha is left
-          // to do only the last handspan, where the grass is back to 95% and
-          // there is nothing left to hide.
-          float tong = massEdgeW( vB * 2.2 + fbm2( P * 1.40 + 5.5 ) * 1.05, 0.80, 0.035 );
-          c = mix( uMat, c, tong );
 
           diffuseColor.rgb *= c;
 
@@ -662,7 +701,7 @@ export class CampGround {
       if (u > 1.06 || r < 1.25) return null;
       const lx = Math.cos(a) * r, lz = Math.sin(a) * r;
       const bare = 1 - campCoverAt(x + lx, z + lz);
-      if (bare < 0.22) return null;
+      if (bare < 0.10) return null;
       return { lx, lz, u, bare };
     };
 

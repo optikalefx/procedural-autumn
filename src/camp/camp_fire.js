@@ -70,6 +70,11 @@ import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 
 const TAU = Math.PI * 2;
 
+// Neutral tuning. `window.__fireTune` may override any field at runtime; that
+// is how tools/_scratch/firesweep.mjs shoots a parameter ladder in one page
+// load instead of one capture-pool slot per guess.
+const FIRE_TUNE = { gain: 1, light: 1, bed: 1, ember: 1, smoke: 1, knee: 1, elev: NaN };
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Time of day
 //
@@ -227,6 +232,7 @@ const FLAME_FRAG = /* glsl */`
   uniform vec3  uTipCol;
   uniform float uEdgePow;
   uniform float uFlicker;
+  uniform float uKnee;
 
   varying float vV;
   varying vec3  vTint;
@@ -262,7 +268,31 @@ const FLAME_FRAG = /* glsl */`
     float fade = smoothstep(1.0, 0.48, vV);
 
     float a = depth * fade * vW * vFlick * uFlicker * uGain;
-    if (a < 0.0008) discard;
+
+    // ── the tail crusher, and why a fire needs one in this engine ───────────
+    //
+    // PostFX applies a Purkinje shift at night: below uRodKnee (0.60 linear
+    // luma) a pixel is mixed halfway toward luma * (0.958, 0.910, 2.012), and
+    // the gate that tapers the term off is the pixel's own *coolness* — so a
+    // dim WARM pixel gets the shift at full strength. The comment beside it
+    // says outright that the knee is set where it is so that "a campfire, a
+    // headlight pool, a lit window" stays above it and keeps its colour.
+    //
+    // That is a contract with this file, and the first four passes broke it.
+    // A soft additive envelope tapering from a hot core out to nothing spends
+    // most of its screen area in the 0.05-0.4 band, and measured at 20:24 that
+    // band came back srgb(142,106,157) — a lavender ghost around an orange
+    // flame, with blue LEADING red. Read as a defect it looks like the flame
+    // has a halo of fog; it is actually the grade doing exactly what it was
+    // written to do to a warm thing that is not bright enough to be a light.
+    //
+    // So the flame is either bright enough to read as fire or it is not there.
+    // This is a soft square law about uKnee: it leaves the body untouched and
+    // collapses the sub-knee tail toward zero rather than letting it linger.
+    // uKnee rides the same night ramp the grade does, so by day — where there
+    // is no rod term — the soft wide envelope survives intact.
+    a *= smoothstep(0.0, uKnee, a);
+    if (a < 0.0015) discard;
     // Straight additive through CustomBlending (ONE, ONE) so the whole HDR
     // value travels in rgb. Routing it through the alpha channel instead would
     // hand a >1 blend factor to fixed-function blending, which is where a
@@ -1009,11 +1039,11 @@ export class Firepit {
       // solid. Authored flat at 0.135 / 0.165 / 0.175 the outer shell alone
       // doubled the local frame value at dusk and the flame arrived as a pale
       // pink silhouette with a small orange core inside it.
-      flameShell(0.240, 0.620, 22, 13, 0, [1.00, 0.285, 0.050], 0.055,
+      flameShell(0.228, 0.620, 22, 13, 0, [1.00, 0.330, 0.075], 0.100,
         lean, 0.115, seed + 0.0),
-      flameShell(0.162, 0.545, 15, 12, 1, [1.00, 0.500, 0.140], 0.145,
+      flameShell(0.156, 0.545, 15, 12, 1, [1.00, 0.545, 0.185], 0.200,
         lean, 0.085, seed + 1.7),
-      flameShell(0.098, 0.400, 12, 10, 2, [1.00, 0.830, 0.585], 0.255,
+      flameShell(0.094, 0.400, 12, 10, 2, [1.00, 0.840, 0.610], 0.300,
         lean, 0.060, seed + 3.4),
     ];
     const flameGeo = mergeAttr(shells);
@@ -1029,6 +1059,7 @@ export class Firepit {
         uReveal: { value: 1 },
         uFlicker: { value: 1 },
         uEdgePow: { value: 1.42 },
+        uKnee: { value: 0.10 },
         uTipCol: { value: new THREE.Vector3(1.00, 0.330, 0.075) },
       },
       vertexShader: FLAME_VERT,
@@ -1143,7 +1174,10 @@ export class Firepit {
     this._windT -= d;
     if (this._windT <= 0) { windXZ(this._wind); this._windT = 0.5; }
 
-    const elev = sunElevation();
+    // Debug surface for tools/_scratch sweeps. Absent in a normal run, and a
+    // handful of property reads when it is present.
+    const T = (typeof window !== 'undefined' && window.__fireTune) || FIRE_TUNE;
+    const elev = Number.isFinite(T.elev) ? T.elev : sunElevation();
     const dusk = duskAmount(elev);
     const night = nightAmount(elev);
     const rv = this.reveal;
@@ -1156,7 +1190,7 @@ export class Firepit {
     // measured against — 1.05 linear with the sun high, 0.72 at the horizon,
     // 1.70 at night (PostFX's glare ramp). Multiplied by the 0.91 stack above
     // these put the core at 1.05 / 1.15 / 2.55 linear at the three hours.
-    const gain = lerp(lerp(1.20, 1.85, dusk), 3.60, night);
+    const gain = lerp(lerp(1.05, 2.00, dusk), 2.90, night) * T.gain;
     const f = this._flicker(d);
 
     const fu = this.flameMat.uniforms;
@@ -1165,6 +1199,10 @@ export class Firepit {
     fu.uFlicker.value = f;
     fu.uReveal.value = rv;
     fu.uWind.value.copy(this._wind);
+    fu.uKnee.value = lerp(lerp(0.10, 0.80, dusk), 1.30, night) * T.knee;
+    // A tighter falloff at night, for the same reason as the crusher: the wide
+    // soft edge that reads as heat by day reads as a violet fringe after dark.
+    fu.uEdgePow.value = lerp(1.35, 2.05, Math.max(dusk * 0.5, night));
     // At midday the tip has to stay chromatic or bloom eats it; at night it can
     // afford to go deeper and redder because there is nothing to compete with.
     fu.uTipCol.value.set(1.0, lerp(0.360, 0.245, night), lerp(0.090, 0.050, night));
@@ -1173,14 +1211,14 @@ export class Firepit {
     bu.uTime.value = this._t;
     // The bed carries more of the fire at night, when it is the thing that says
     // the pit is full of heat rather than full of black sticks.
-    bu.uGain.value = lerp(0.26, 0.78, Math.max(dusk * 0.62, night)) * rv;
+    bu.uGain.value = lerp(0.26, 0.95, Math.max(dusk * 0.62, night)) * rv * T.bed;
     bu.uReveal.value = rv;
 
     // ── the light ───────────────────────────────────────────────────────────
     // 1.7 at midday — a supporting warm accent that just lifts the near stones
     // — against 8.6 at night, where it is the entire lighting of the camp.
-    const base = lerp(lerp(0.62, 1.15, dusk), 2.05, night);
-    this.light.intensity = base * f * rv * rv;
+    const base = lerp(lerp(0.80, 2.60, dusk), 4.20, night);
+    this.light.intensity = base * f * rv * rv * T.light;
     this.light.distance = lerp(6.0, 9.5, Math.max(dusk, night));
     // Warmer and a touch less saturated by day, so it does not read as a
     // coloured lamp on a sunlit prop.
@@ -1190,8 +1228,8 @@ export class Firepit {
 
     // ── spawning ────────────────────────────────────────────────────────────
     const px = window.__engine?.renderer?.domElement?.height ?? 900;
-    const emberGain = lerp(lerp(0.55, 0.85, dusk), 1.05, night) * rv;
-    const smokeGain = lerp(lerp(0.135, 0.062, dusk), 0.030, night) * rv;
+    const emberGain = lerp(lerp(0.55, 0.95, dusk), 1.25, night) * rv * T.ember;
+    const smokeGain = lerp(lerp(0.135, 0.062, dusk), 0.030, night) * rv * T.smoke;
 
     if (rv > 0.35) {
       // ~9 sparks a second, in ones and twos, plus a burst when a log settles.
@@ -1238,7 +1276,7 @@ export class Firepit {
     // all, which is why `smokeGain` all but switches it off.
     const g = 0.62 + Math.random() * 0.14;
     this.smoke.spawn(
-      Math.cos(a) * r, 0.40 + Math.random() * 0.18, Math.sin(a) * r,
+      Math.cos(a) * r, 0.56 + Math.random() * 0.20, Math.sin(a) * r,
       (Math.random() - 0.5) * 0.30, 0.50 + Math.random() * 0.40, (Math.random() - 0.5) * 0.30,
       3.4 + Math.random() * 2.8,
       0.13 + Math.random() * 0.10,

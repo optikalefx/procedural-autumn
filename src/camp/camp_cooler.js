@@ -46,7 +46,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
-  Parts, campMaterials, sanitizeNormals, M, at, rbox, tube, tintFrom,
+  Parts, campMaterials, sanitizeNormals, C, M, at, rbox, tube, tintFrom,
 } from './camp_materials.js';
 import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 
@@ -290,16 +290,18 @@ export function buildCooler(rnd, opts = {}) {
   const rubRGB = tintFrom(RUBBER_BASE, cw.hard);
 
   // ── the wall's own section ────────────────────────────────────────────────
-  // Draft at the bottom, a slight barrel at the waist. A rotomould is pulled
-  // from a mould, so it drafts; the wall relaxes outward as it cools, so the
-  // widest point sits above the middle. Fifteen and three and a half
-  // millimetres — invisible as numbers, and the difference between a wall that
-  // reads as moulded and one that reads as extruded.
+  // Draft, and almost nothing else. A rotomould is pulled from a mould, so it
+  // drafts; but the faces themselves are flat. Earlier rounds carried a 3 mm
+  // barrel at the waist on the theory that a cooling wall relaxes outward, and
+  // in the frames that barrel was most of why the prop read as a padded red
+  // trunk rather than as plastic: a convex face under a matte material has no
+  // straight terminator anywhere on it, so nothing on it says "panel". Flat
+  // faces and a 75 mm corner is the entire rotomould read.
   const SHOULDER = h(0.276);
   const wallInset = (y) => {
     const t = clamp01((y - h(0.026)) / (SHOULDER - h(0.026)));
     const draft = 0.023 * Math.pow(1 - t, 1.25);
-    return draft - 0.0030 * Math.sin(Math.PI * t);
+    return draft - 0.0010 * Math.sin(Math.PI * t);
   };
   // The outer surface of the wall at a given height, for anything bolted to it.
   const faceZ = (y) => aD - wallInset(y);
@@ -317,7 +319,7 @@ export function buildCooler(rnd, opts = {}) {
 
   const bp = [];
   {
-    const rvB = 0.028;                                   // bottom roll
+    const rvB = 0.023;                                   // bottom roll
     for (let k = 0; k <= 5; k++) {
       const f = (k / 5) * Math.PI * 0.5;
       const y = yb + rvB * (1 - Math.cos(f));
@@ -359,7 +361,7 @@ export function buildCooler(rnd, opts = {}) {
   for (let i = 0; i < 5; i++) {
     grime.push([
       (rnd() * 2 - 1) * aW,
-      h(lerp(0.055, 0.165, rnd())),
+      h(lerp(0.060, 0.215, rnd())),
       (rnd() < 0.5 ? -1 : 1) * aD * lerp(0.35, 1.05, rnd()),
       lerp(0.055, 0.125, rnd()),
       lerp(0.35, 0.85, rnd()),
@@ -367,11 +369,29 @@ export function buildCooler(rnd, opts = {}) {
   }
   const mottle = (x, y, z) =>
     1 + 0.020 * Math.sin(x * 11.7 + z * 5.3) * Math.cos(z * 13.1 - y * 6.9);
-  const pale = (c, k, warm) => [
-    lerp(c[0], c[0] * 0.52 + 0.46 * warm, k),
-    lerp(c[1], c[1] * 0.52 + 0.45 * warm, k),
-    lerp(c[2], c[2] * 0.52 + 0.43 * warm, k),
-  ];
+
+  // ── the two wear colours, and why they are computed rather than typed ─────
+  //
+  // Vertex colour on these props is a *multiplier* on a material that is
+  // already burgundy, so "blend the tint toward [1.14, 1.04, 0.86]" — which is
+  // what dusted() does, correctly, for a white material — only ever produces a
+  // slightly brighter burgundy. Three rounds of this prop had dust and scuffs
+  // authored that way and not one frame showed either of them; the surface just
+  // went a shade warmer and read as clean. What the multiplier has to be is the
+  // one that turns the *material's own* colour into the colour we want, which
+  // is exactly what tintFrom computes — so both wear colours are derived from
+  // an absolute linear target here and divided through HDPE's base.
+  const base = C(HDPE_BASE);
+  const through = (r, g, b) => [r / base.r, g / base.g, b / base.b];
+  // Pale dry valley dirt, in linear.
+  const DUST = through(0.335, 0.278, 0.190);
+  // Abraded HDPE goes chalky: the body's own hue, pulled most of the way to a
+  // light neutral. Derived from the colourway so every colourway scuffs in its
+  // own colour rather than in one grey.
+  const CB = C(cw.body);
+  const SCUFF = through(
+    lerp(CB.r, 0.60, 0.62), lerp(CB.g, 0.58, 0.62), lerp(CB.b, 0.54, 0.62));
+  const mixTo = (c, t, k) => [lerp(c[0], t[0], k), lerp(c[1], t[1], k), lerp(c[2], t[2], k)];
 
   const bodyTint = (x, y, z) => {
     const k = mottle(x, y, z);
@@ -382,18 +402,35 @@ export function buildCooler(rnd, opts = {}) {
     // corner abrasion low down, where it takes the truck bed
     const dx = Math.max(0, Math.abs(x) - (aW - RC)), dz = Math.max(0, Math.abs(z) - (aD - RC));
     const cor = clamp01(smoothstep(RC * 0.42, RC * 1.0, Math.hypot(dx, dz)))
-              * (1 - smoothstep(h(0.050), h(0.160), y)) * 0.26 * wear;
-    c = pale(c, clamp01(rub + cor), 1);
+              * (1 - smoothstep(h(0.055), h(0.175), y)) * 0.42 * wear;
+    c = mixTo(c, SCUFF, clamp01(rub + cor));
+    // Sky occlusion down the wall. A vertical face high up sees most of the
+    // hemisphere; the same face at ankle height sees the ground instead, and
+    // that gradient is why a real cooler in a photograph has a lighter top half
+    // and a darker bottom half even in flat light. Without it the body is one
+    // even chip of hue from rim to foot, the lid does not separate from the
+    // chest, and four rounds of frames read as a soft red trunk. The dust then
+    // lifts the last 40 mm back up, which is the ordering the reference plate
+    // has too: pale dirty foot, dark shin, bright shoulder.
+    const sky = 1 - 0.22 * (1 - smoothstep(h(0.030), h(0.285), y));
+    c = [c[0] * sky, c[1] * sky, c[2] * sky];
+    // Baked occlusion in the rebate under the lid. The seam is the read that
+    // decides whether the two halves are two halves, and a 13 mm recess is not
+    // deep enough to shadow itself at every hour — at noon the sky fills it and
+    // the lid and the body fuse into one lump. This is the one place on the
+    // prop where a value is painted rather than lit, and it is worth it.
+    const ao = smoothstep(h(0.258), h(0.286), y) * (1 - smoothstep(h(0.300), h(0.306), y));
+    c = [c[0] * (1 - 0.62 * ao), c[1] * (1 - 0.62 * ao), c[2] * (1 - 0.63 * ao)];
     // and the dust it has been standing in — the top of it ragged, not level
-    const ragged = h(0.118) * (0.72 + 0.55 * (0.5 + 0.5 * Math.sin(x * 21.3 + z * 15.7)
-                                                   * Math.cos(z * 17.9 - x * 11.1)));
-    let d = clamp01(smoothstep(ragged, h(0.006), y)) * (0.30 + 0.34 * wear);
+    const ragged = h(0.185) * (0.60 + 0.58 * (0.5 + 0.5 * Math.sin(x * 21.3 + z * 15.7)
+                                                   * Math.cos(z * 17.9 - x * 11.1))
+                                    + 0.22 * Math.sin(x * 61.0 + z * 44.0));
+    let d = clamp01(smoothstep(ragged, h(0.004), y)) * (0.42 + 0.34 * wear);
     for (const [sx, sy, sz, sr, amp] of grime) {
       d += (1 - smoothstep(sr * 0.25, sr, Math.hypot((x - sx) * 0.8, (y - sy) * 1.5, (z - sz) * 0.8)))
          * amp * 0.30 * wear;
     }
-    d = clamp01(d);
-    return [c[0] * (1 - d) + 1.16 * d, c[1] * (1 - d) + 1.05 * d, c[2] * (1 - d) + 0.86 * d];
+    return mixTo(c, DUST, clamp01(d));
   };
 
   S.add(shell(bp.map(([y, ins]) =>
@@ -410,7 +447,7 @@ export function buildCooler(rnd, opts = {}) {
   // ───────────────────────────────────────────────────────────────────────────
   const LIDTOP = h(0.400);
   const PROUD = -0.010;
-  const ROLL = 0.038;                    // the lid's own corner roll, top edge
+  const ROLL = 0.029;                    // the lid's own corner roll, top edge
   const lp = [];
   {
     lp.push([h(0.290), WALL + 0.026]);                     // plug underside
@@ -421,10 +458,10 @@ export function buildCooler(rnd, opts = {}) {
     filletH(lp, RIM - h(0.001), 0.024, -h(0.005), -0.021, 3);
     lp.push([h(0.298), 0.001]);                            // skirt bottom edge
     filletH(lp, h(0.298), 0.001, h(0.005), PROUD - 0.001, 3);
-    for (const v of [0.316, 0.338, 0.358]) lp.push([h(v), PROUD - 0.001]);
+    for (const v of [0.314, 0.338, 0.360, 0.371]) lp.push([h(v), PROUD - 0.001]);
     for (let k = 1; k <= 6; k++) {                         // the big top roll
       const f = (k / 6) * Math.PI * 0.5;
-      lp.push([h(0.362) + ROLL * Math.sin(f) * (HT / 0.40), PROUD - 0.001 + ROLL * (1 - Math.cos(f))]);
+      lp.push([h(0.371) + ROLL * Math.sin(f) * (HT / 0.40), PROUD - 0.001 + ROLL * (1 - Math.cos(f))]);
     }
     lp.push([LIDTOP, PROUD - 0.001 + ROLL + 0.030]);        // top land
     filletH(lp, LIDTOP, PROUD - 0.001 + ROLL + 0.030, -h(0.011), 0.011, 3);
@@ -446,9 +483,12 @@ export function buildCooler(rnd, opts = {}) {
     let s = clamp01(smoothstep(RC * 0.35, RC * 0.95, Math.hypot(dx, dz)))
           * smoothstep(h(0.340), h(0.392), y) * 0.34 * wear;
     for (const [sx, sy, sz, sr] of scuffs) {
-      s += (1 - smoothstep(sr * 0.3, sr, Math.hypot(x - sx, (y - sy) * 1.7, z - sz))) * 0.40 * wear;
+      s += (1 - smoothstep(sr * 0.3, sr, Math.hypot(x - sx, (y - sy) * 1.7, z - sz))) * 0.55 * wear;
     }
-    return pale(c, clamp01(s), 0.92);
+    c = mixTo(c, SCUFF, clamp01(s));
+    // and the underside of the overhang, which is in shadow whatever the hour
+    const ao = 1 - smoothstep(h(0.298), h(0.312), y);
+    return [c[0] * (1 - 0.5 * ao), c[1] * (1 - 0.5 * ao), c[2] * (1 - 0.5 * ao)];
   };
 
   {
@@ -491,7 +531,7 @@ export function buildCooler(rnd, opts = {}) {
     return shell(rings);
   };
   for (const sgn of [1, -1]) {
-    S.add(facePad('z', sgn, aW - RC - 0.040, h(0.082), h(0.226), 0.056, 0.004),
+    S.add(facePad('z', sgn, aW - RC - 0.034, h(0.082), h(0.226), 0.074, 0.0022),
           'hdpe', null, bodyTint);
   }
 
@@ -528,8 +568,8 @@ export function buildCooler(rnd, opts = {}) {
       [h(0.4010), aD - 0.022],             // anchored on the lid's top land
       [h(0.4003), aD - 0.012],
       [h(0.3993), aD - 0.002],             // over the top roll
-      [h(0.3835), aD + 0.0102],
-      [h(0.3620), aD + 0.0160 + sl],       // down the lid face
+      [h(0.3880), aD + 0.0075],
+      [h(0.3700), aD + 0.0155 + sl],       // down the lid face
       [h(0.3400), aD + 0.0165 + sl],
       [h(0.3180), aD + 0.0175 + sl],
       [h(0.3060), aD + 0.0165],
@@ -555,12 +595,32 @@ export function buildCooler(rnd, opts = {}) {
           at(x, h(0.2365), faceZ(h(0.2365)) + 0.002), hardRGB);
   }
 
+  // ── padlock lugs, front corners ───────────────────────────────────────────
+  // A Tundra carries two moulded ears either side of the latches, one on the
+  // lid and one on the body, that line up so a padlock passes through both.
+  // They are 30 mm of hard-edged detail on an object that is otherwise all
+  // radius, and they are most of what stops the front face reading as a blank
+  // panel from across the camp.
+  {
+    const lx = Math.min(aW - RC - 0.010, aW * 0.78);
+    for (const sx of [-1, 1]) {
+      P.add(rbox(0.032, 0.030, 0.020, 0.006, 1), 'hdpe',
+            at(sx * lx, h(0.268), faceZ(h(0.268)) + 0.004), bodyTint);
+      // the lid's half only when the lid is down; it belongs to the lid, and
+      // Parts has no hinge to swing it on
+      if (!opts.lidOpen) {
+        P.add(rbox(0.032, 0.026, 0.020, 0.006, 1), 'hdpe',
+              at(sx * lx, h(0.312), aD + 0.013), lidTint);
+      }
+    }
+  }
+
   // ── badge: a shape, not text ──────────────────────────────────────────────
   {
     const by = h(0.170);
     const z = faceZ(by) + 0.003;
     P.add(rbox(0.106, 0.036, 0.007, 0.010, 2), 'plastic', at(0, by, z + 0.0015),
-          tintFrom(PLASTIC_BASE, 0x767068));
+          tintFrom(PLASTIC_BASE, 0x9a9184));
     P.add(rbox(0.090, 0.023, 0.007, 0.007, 2), 'plastic', at(0, by, z + 0.0038),
           tintFrom(PLASTIC_BASE, 0x1e2227));
   }
@@ -596,8 +656,8 @@ export function buildCooler(rnd, opts = {}) {
       // latches; the real ones are a dark braided cord anyway.
       S.add(t, 'cord', null, tintFrom(0xd8cfae, 0x5b5449));
       // the moulded grip sleeve at the bottom of the U
-      P.add(tube(0.021, 0.132, 6), 'plastic',
-            at(wx + sx * 0.042, y0 - droop, 0, Math.PI * 0.5, 0, 0), hardRGB);
+      P.add(tube(0.0165, 0.098, 6), 'plastic',
+            at(wx + sx * 0.040, y0 - droop, 0, Math.PI * 0.5, 0, 0), hardRGB);
     } else {
       const zA = Math.min(aD * 0.50, aD - RC - 0.014);
       for (const sz of [-1, 1]) {

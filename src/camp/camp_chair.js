@@ -96,11 +96,13 @@ export const CHAIR_COLORWAYS = [
  * panel this size is pure aliasing crawl at 20 m — and that is right for an
  * insect screen seen against a lit tent, but a chair's back mesh is held up
  * against the sky and reads as a mid grey in every plate. These lift it there
- * without anyone else's mesh moving, and they stay well under the fire: at
- * hour 20.4 the brighter of the two lands around 0.22 of the flame's value.
+ * without anyone else's mesh moving. The multipliers look alarming — about 30×
+ * — but that is only what it costs to get from a 0x14 base to a 0x9a one
+ * through a linear-space vertex colour, and two earlier attempts at 0x5c and
+ * 0x6a both still read as a black hole punched in the chair.
  */
-const MESH_BACK = tintFrom(0x14161a, 0x5c5d54);   // the quad chair's back panel
-const MESH_WING = tintFrom(0x14161a, 0x6d6e63);   // plate 3's shoulder inserts
+const MESH_BACK = tintFrom(0x14161a, 0x9a9b8e);   // the quad chair's back panel
+const MESH_WING = tintFrom(0x14161a, 0xacada0);   // plate 3's shoulder inserts
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Surface patchwork
@@ -207,8 +209,14 @@ function legWithFoot(P, foot, top, tint, r, capR = 0.0118, capL = 0.052) {
 const S = {
   footX: 0.276, footZf: 0.250, footZb: -0.258,   // 0.55 × 0.51 m of splayed feet
   hubX: 0.098, hubY: 0.238,                      // the two moulded hubs
-  frontX: 0.254, frontY: 0.445, frontZ: 0.250,   // front corner pockets
-  topX: 0.292, topY: 0.840, topZ: -0.160,        // top corner pockets
+  // The back was 0.84 in round 2 and the pan only 150 mm deep, which put 470 mm
+  // of back above a trough you could not see into: from above, the chair was a
+  // flat sail with a dark slot at the bottom. A real butterfly sling is a 250 mm
+  // pan with 350 mm of back over it, so the pockets moved — front lip forward
+  // and down, top pocket down and back — and the profile below spends four of
+  // its six control points on the pan.
+  frontX: 0.256, frontY: 0.440, frontZ: 0.268,   // front corner pockets
+  topX: 0.294, topY: 0.792, topZ: -0.176,        // top corner pockets
   railR: 0.0072,                                  // 14.4 mm — the upper frame
   legR: 0.0068,                                   // 13.6 mm — the legs
   sag: 0.046,                                     // the free 8%-of-span bow
@@ -235,14 +243,16 @@ const S = {
  * spreads its points evenly over t; reading them as a table of "the section at
  * this height" is only correct because of that.
  *
- *   v = 0.0  front lip, at the pockets — the highest part of the seat
- *   v = 0.4  the pan: the lowest point, well forward of centre
- *   v = 0.6  the lumbar break, where the pouch turns up and pushes back
- *   v = 1.0  top pocket, curling a few mm forward again
+ *   v = 0.0  front lip, at the pockets — 40 mm above the pan
+ *   v = 0.2–0.6  the pan: 250 mm of nearly level seat, which is the part a
+ *                round-2 profile with its lowest point at a single v did not
+ *                have and the reason that chair had no seat to look into
+ *   v = 0.8  the lumbar break, where the pouch turns up and pushes back
+ *   v = 1.0  top pocket
  */
 const SLING_PROFILE = pathOf([
-  V(0, 0.445, 0.250), V(0, 0.412, 0.208), V(0, 0.400, 0.078),
-  V(0, 0.462, -0.072), V(0, 0.618, -0.166), V(0, 0.840, -0.160),
+  V(0, 0.440, 0.268), V(0, 0.406, 0.206), V(0, 0.400, 0.088),
+  V(0, 0.438, -0.046), V(0, 0.570, -0.150), V(0, 0.792, -0.176),
 ], 0.5);
 
 /**
@@ -282,19 +292,33 @@ function slingSurface(ph, wrinkle) {
     out.z += (pr.z - cz) * w;
 
     // 4 — the waist. Plate 3 is visibly narrower at the lumbar break than at
-    //     either the lip or the shoulders; the wings are cut on a curve.
-    out.x *= 1 - 0.070 * Math.pow(sv, 1.3);
+    //     either the lip or the shoulders; the wings are cut on a curve. The
+    //     pinch is a bump centred at v = 0.60 rather than a sin(πv), because a
+    //     sin peaks at v = 0.5 and that is the middle of the seat — narrowing
+    //     the pan is exactly the wrong place to take width out.
+    out.x *= 1 - 0.080 * Math.exp(-Math.pow((v - 0.60) / 0.28, 2)) * Math.pow(sv, 0.35);
 
     // 5 — the free hem, pulled in off the rail. This is the tension read: the
     //     edge is a concave curve between two pockets, not a straight line
     //     following the tube. It has to vanish at v = 0 and v = 1 or the
     //     corners come off their pockets, hence the sin(πv).
-    out.x -= Math.sign(s) * 0.036 * Math.pow(sv, 0.8) *
-             clamp01(smoothstep(0.38, 1.0, t));
+    // The falloff is t^2.6 rather than a smoothstep. A smoothstep spread the
+    // displacement over the outer third of the wing and tipped the whole panel,
+    // which from three-quarter front turned each wing into a flat fin standing
+    // out sideways like a manta. t^2.6 keeps almost all of it inside the last
+    // 15% of the width, which is a rolled hem — the cloth turning over on
+    // itself at the edge, which is what it actually does.
+    const free = Math.pow(sv, 0.8) * Math.pow(t, 2.6);
+    out.x -= Math.sign(s) * 0.040 * free;
+    // …and forward. This is the wrap: a butterfly sling's wings curl round the
+    // sitter, so the hem stands ~50 mm in front of the rail at shoulder height.
+    // It is what gives the chair depth from the side, where round 2 was a flat
+    // leaning sail with no seat you could see into.
+    out.z += 0.050 * free;
 
     // 6 — the scoop in the top edge: the middle of the head end is cut and
-    //     hangs about 55 mm below the shoulders. Vanishes at the pockets.
-    const sc = 0.055 * clamp01(smoothstep(0.62, 1.0, v)) * Math.cos(Math.PI * s);
+    //     hangs about 60 mm below the shoulders. Vanishes at the pockets.
+    const sc = 0.062 * clamp01(smoothstep(0.52, 1.0, v)) * Math.cos(Math.PI * s);
     out.y -= sc;
     out.z -= sc * 0.28;
 
@@ -345,8 +369,9 @@ function buildSling(P, rnd, cw, wear, g) {
     // that says the cloth is *hung on* the frame rather than moulded to it, and
     // it is clearly visible in both sling plates.
     const a = railAt(sx, 1.0), b0 = railAt(sx, 0.94);
-    const tip = a.clone().addScaledVector(a.clone().sub(b0).normalize(), 0.026);
-    P.add(rod(0.0092, 0.030), 'plastic', span(a, tip), dust);
+    // Kept short: at 30 mm these read as antennae in the side framing.
+    const tip = a.clone().addScaledVector(a.clone().sub(b0).normalize(), 0.017);
+    P.add(rod(0.0090, 0.020), 'plastic', span(a, tip), dust);
   }
 
   // Front cross rail, bowed down a little under the lip of the sling.
@@ -391,26 +416,35 @@ function buildSling(P, rnd, cw, wear, g) {
   const V0 = 0.040;          // the front lip binding, ~17 mm of tape
   const V1 = 0.962;          // the top binding
   const WING = 0.150;        // width of a side wing in u
-  const INS0 = 0.150, INS1 = 0.250;   // the shoulder insert column
-  const INSV = 0.470;        // insert starts above the lumbar break
+  const INSV = 0.500;        // the shoulder gore starts at the lumbar break
+
+  // The shoulder gore is a WEDGE, not a stripe. Round 3 cut it as a fixed
+  // column of u and it came out as two hard vertical bars flanking the centre
+  // panel — a flag, not a garment. In plate 3 the mesh is a triangular gore
+  // sewn between the body and the wing: zero width where the wing meets the
+  // seat and 110 mm across at the shoulder. Everything below is expressed as a
+  // remap of u so the gore, the wing and the body all tile the same sheet
+  // exactly however wide the gore happens to be at a given height.
+  const gore = (v) => 0.108 * clamp01(smoothstep(INSV, 0.90, v));
+  const rm = (f) => (u, v, out) => surf(f(u, v), v, out);
+  const G = [26, 52], GW = [7, 52];
 
   patch(P, surf, [0, 1, 0, V0], DENS, 'fabricIn', bind);
   patch(P, surf, [0, 1, V1, 1], DENS, 'fabricIn', bind);
   patch(P, surf, [0, WING, V0, V1], DENS, 'fabricIn', side);
   patch(P, surf, [1 - WING, 1, V0, V1], DENS, 'fabricIn', side);
-  patch(P, surf, [INS1, 1 - INS1, V0, V1], DENS, 'fabricIn', body);
-  for (const [a, b] of [[INS0, INS1], [1 - INS1, 1 - INS0]]) {
-    if (cw.blocked) {
-      // Plate 3's mesh shoulder, in the `mesh` material lifted to a mid grey —
-      // an opaque dark screen rather than real alpha, because a transparent
-      // panel this size at 20 m is pure aliasing crawl (see camp_materials.js).
-      patch(P, surf, [a, b, V0, INSV], DENS, 'fabricIn', body);
-      patch(P, surf, [a, b, INSV, V1], DENS, 'mesh', MESH_WING);
-    } else {
-      patch(P, surf, [a, b, V0, V1], DENS, 'fabricIn',
-            cw.insert ? shade(weathered(cw.insert, wear), 0.36, 0.78, 0.12) : body);
-    }
-  }
+  // Below the gore the body simply runs wing to wing.
+  patch(P, rm((u) => WING + u * (1 - 2 * WING)), [0, 1, V0, INSV], G, 'fabricIn', body);
+  // Above it, the body is squeezed by the gore on both sides.
+  patch(P, rm((u, v) => {
+    const w = WING + gore(v);
+    return w + u * (1 - 2 * w);
+  }), [0, 1, INSV, V1], G, 'fabricIn', body);
+  const goreKey = cw.blocked ? 'mesh' : 'fabricIn';
+  const goreTint = cw.blocked ? MESH_WING
+    : shade(weathered(cw.insert ?? cw.side, wear), 0.36, 0.78, 0.12);
+  patch(P, rm((u, v) => WING + u * gore(v)), [0, 1, INSV, V1], GW, goreKey, goreTint);
+  patch(P, rm((u, v) => 1 - WING - (1 - u) * gore(v)), [0, 1, INSV, V1], GW, goreKey, goreTint);
   g.userData.seatHeight = 0.37;
 }
 
@@ -572,12 +606,14 @@ function buildArm(P, rnd, cw, wear, g) {
       V(sx * 0.276, A.armY + 0.012, A.armZb), V(sx * 0.272, 0.706, -0.266),
     ], 0.5), 34, 0.0066, 6), 'tube', null, dust);
 
-    // 112 × 40 × 400 mm, tipped so the front end drops and the outer edge sits
+    // 124 × 32 × 404 mm, tipped so the front end drops and the outer edge sits
     // a little lower than the inner — both true of a real arm and both worth
     // the two lines because they keep the top face off the horizontal, which is
-    // where it caught the sun and blew out to near-white in round 1.
-    P.add(rbox(0.114, 0.042, 0.404, 0.019, 2), 'fabric',
-          at(sx * 0.276, A.armY + 0.004, 0.006, 0.052, 0, -sx * 0.075), body);
+    // where it caught the sun and blew out to near-white in round 1. Wide and
+    // shallow, not deep: at 42 mm thick with a 19 mm radius it read as a bolster
+    // rather than as a padded sleeve over a tube.
+    P.add(rbox(0.124, 0.032, 0.404, 0.013, 2), 'fabric',
+          at(sx * 0.278, A.armY + 0.006, 0.006, 0.052, 0, -sx * 0.075), body);
     // A short flap of cloth under the outer edge, so the pad is a sleeve over
     // something rather than a bar floating beside the frame.
     const flapEdge = (t, out) => out.set(
@@ -606,7 +642,7 @@ function buildArm(P, rnd, cw, wear, g) {
   // plate 4 is made. Both the window and the surround are driven off the same
   // `wu(v)` so their seams are the same vertices.
   const back = backSurface(ph);
-  const wu = (v) => 0.140 + 0.080 * Math.pow(Math.sin(Math.PI * v), 1.3);
+  const wu = (v) => 0.135 + 0.115 * Math.pow(Math.sin(Math.PI * v), 1.25);
   const remap = (f) => (u, v, out) => back(f(u, v), v, out);
   patch(P, remap((u, v) => u * wu(v)), [0, 1, 0, 1], [10, 34], 'fabricIn', body);
   patch(P, remap((u, v) => 1 - wu(v) * (1 - u)), [0, 1, 0, 1], [10, 34], 'fabricIn', body);

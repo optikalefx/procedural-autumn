@@ -115,3 +115,24 @@ leg that the brief asks for and that is what pins a 22 mm tube in space. The
 switch is two named descriptors at the top of `camp_table.js` (`FRAME`, `TOP`,
 `BOSS`); reverting them to `alu` / `anod` / `steel` is a three-line change the
 moment the metals can see a sky.
+
+## chair → campshot / Camp.js (2026-08-20)
+
+Two harness gaps found while shooting `camp_chair.js`; neither is urgent but
+both cost this author a round.
+
+1. `campshot --seed N` is a no-op. It writes `window.__camp.__seed`, but
+   `Camp.js:339` builds its RNG with `siteRng(x, z, world.seed)` and never reads
+   `__seed`, so two runs at the same site are byte-identical. Either honour
+   `__seed` in `pitchNear`, or drop the flag from campshot's help.
+2. `pitchNear` only ever finds a site at `--park meadow` on this world; `road`,
+   `vista` and `forest` all report "no valid site near the camper". That leaves
+   one layout, and `camp_site.js` rolls each chair's style from that one RNG —
+   it came up 'arm' three times out of three, so the sling chair could not be
+   photographed at all through campshot.
+
+Workaround in the meantime is `tools/_scratch/chairlab.mjs`, which pitches the
+same camp and rebuilds the chair props through `buildChair` with the style and
+colourway forced. A `--style`/`--colorway` passthrough on campshot's prop
+framings would make it unnecessary, and the tent author will want the same for
+door orientation.

@@ -65,7 +65,7 @@ const CLICK_TIME = 0.55;   // s held that still counts as a click
 const AIM_FLOOR = 0.42;
 
 // The clearing's soft edge, in metres.
-const CLEARING_FEATHER = 1.7;
+const CLEARING_FEATHER = 1.4;
 
 // The fraction of the clearing radius that things actually stand on, and
 // therefore the fraction that has to be clear of trunks and boulders.

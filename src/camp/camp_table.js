@@ -53,7 +53,13 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const HEX_HDPE = 0x8f3a3c;
 const HEX_PLASTIC = 0x2a2a2e;
 const HEX_WOOD = 0x8a6a46;
-const HEX_ALU = 0xb9bdc2;
+// Mill aluminium, warmed off the kit's `alu` swatch. 0xb9bdc2 is a cool grey,
+// which is right for the metal itself but wrong for a dielectric standing in
+// for it: without a metal's dark diffuse the cool cast survives into the
+// midtones and the legs come out lavender against warm dirt. Held a shade
+// darker too, so the sky gradient in `beam()` has headroom above it and the
+// frame is not the brightest thing in the camp at dusk — the fire is.
+const HEX_ALU = 0xadaba4;
 const HEX_ANOD = 0x2b2c30;
 const HEX_STEEL = 0xa8abae;
 
@@ -116,7 +122,7 @@ const smoothstep = (a, b, x) => {
  * (three.js starts `CylinderGeometry` at theta = 0, which puts a vertex on +Z),
  * so `wide` measures point-to-point and `thin` measures flat-to-flat.
  */
-function beam(P, key, a, b, flat, wide, thin, tint = null) {
+function beam(P, key, a, b, flat, wide, thin, tint = null, sky = 0) {
   const dir = new THREE.Vector3().subVectors(b, a);
   const len = dir.length();
   if (len < 1e-5) return;
@@ -134,8 +140,35 @@ function beam(P, key, a, b, flat, wide, thin, tint = null) {
   const kx = thin / (2 * Math.cos(Math.PI / 6) * R); // flat-to-flat is √3·R
   const kz = wide / (2 * R);                         // point-to-point is 2·R
   const m = M().makeBasis(nx.multiplyScalar(kx), dir, nz.multiplyScalar(kz));
-  m.setPosition(new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5));
-  P.add(tube(R, len), key, m, tint);
+  const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+  m.setPosition(mid);
+
+  // `sky` bakes the one thing the stopgap material cannot do for itself.
+  //
+  // A metal tube outdoors is not evenly lit: its upward facets see the whole
+  // sky and its downward facets see the ground, so it carries a strong gradient
+  // from bright along the top edge to dark underneath, and that gradient is
+  // most of what makes a 22 mm tube read as round metal at eight pixels. A
+  // dielectric standing in for it has no such gradient — it is a uniformly pale
+  // rod, which at dusk reads as white plastic. So the gradient is written into
+  // the vertex colour from each vertex's offset off the beam's own centreline:
+  // +Y-facing goes up, -Y-facing goes down.
+  //
+  // It is baked, so it does not track the sun. That is correct rather than
+  // lazy: the term stands in for the *sky*, which is overhead all day, and not
+  // for the sun. When the metals get an environment map this can drop to about
+  // a third of its value — the real probe will be doing the same job.
+  const base = typeof tint === 'function' ? tint : () => (tint || [1, 1, 1]);
+  const shaded = sky === 0 ? tint : (x, y, z) => {
+    const px = x - mid.x, py = y - mid.y, pz = z - mid.z;
+    const d = px * dir.x + py * dir.y + pz * dir.z;
+    const rx = px - dir.x * d, ry = py - dir.y * d, rz = pz - dir.z * d;
+    const r2 = rx * rx + ry * ry + rz * rz;
+    const k = 1 + sky * (r2 > 1e-12 ? ry / Math.sqrt(r2) : 0);
+    const c = base(x, y, z);
+    return [c[0] * k, c[1] * k, c[2] * k];
+  };
+  P.add(tube(R, len), key, m, shaded);
 }
 
 /**
@@ -159,7 +192,11 @@ function anodWear(rnd, wear) {
             + Math.sin(z * 27.0 + p2) * 0.18;
     const centre = smoothstep(0.20, 0.02, Math.hypot(x, z)) * 0.14 * wear;
     const m = 1 + n * amp + centre;
-    return [m, m * 0.995, m * 0.985];
+    // A hair cool. The camp sits on red dirt under a low autumn sun and a
+    // neutral black picks up so much warm bounce it turns brown; holding a
+    // little blue in it is what keeps the top reading as anodised metal
+    // rather than as a plank.
+    return [m * 0.965, m * 0.985, m];
   };
 }
 
@@ -206,7 +243,29 @@ export function buildTable(rnd, opts = {}) {
   const railT = 0.014;               // rail wall, horizontal
   const railH = 0.026;               // rail depth, vertical — top flush at H
   const anodBase = tintFrom(TOP.hex, TOP.want);
-  const railTint = tintMul(anodBase, anodWear(rnd, wear));
+
+  // How the gaps read at eye level.
+  //
+  // They cannot read by being see-through, and it took a render to accept that:
+  // the prop framing looks along the top from about 11° above it, and at 11° a
+  // 10 mm gap is occluded by anything deeper than 2 mm of slat. A slat is 12.
+  // So at eye level a slat top with real gaps in it shows no holes at all — and
+  // neither does the reference plate, which is shot from about the same angle.
+  // What the plate shows is a *bright slat face beside a dark recess*, which is
+  // a value cue, not an occlusion one, and a value cue survives any angle and
+  // any distance.
+  //
+  // So the top 1.5 mm of every slat and of the perimeter rail is lifted and
+  // everything below it is dropped to about a third. The top stops being a
+  // plane and becomes corduroy. The r3 build had all of it on one flat value
+  // and went solid black from every eye-level angle — the exact failure the
+  // brief names.
+  const faceLift = (y) => 0.38 + 1.05 * smoothstep(H - 0.0042, H - 0.0009, y);
+  const wearOf = anodWear(rnd, wear);
+  const railTint = (x, y, z) => {
+    const w = wearOf(x, y, z), f = faceLift(y);
+    return [anodBase[0] * w[0] * f, anodBase[1] * w[1] * f, anodBase[2] * w[2] * f];
+  };
 
   // Long rails, front and back, running the full width.
   for (const sz of [-1, 1]) {
@@ -245,24 +304,39 @@ export function buildTable(rnd, opts = {}) {
   }
 
   // ── the frame ──────────────────────────────────────────────────────────────
-  // Two X-frames, one in each side plane, crossing in the depth direction. The
-  // reference is unambiguous once you find the black stabiliser bars: they run
-  // front-to-back, joining the two feet on one side, so the scissor lives in
-  // the side plane and the legs cross across the *depth* of the table.
+  // Two X-frames, and they cross across the *width*, not the depth.
   //
-  // The stance is splayed outward across the width (feet 5 mm proud of the top
-  // edge, ~9° of lean) and converges slightly in depth (the feet are inboard of
-  // the top corners). That combination is not arbitrary: the outward splay is
-  // what stops a table this tall tipping when you lean on an edge, and the
-  // inward convergence in depth is what lets the whole thing fold flat.
-  const xt = W * 0.5 - 0.055;       // leg top, X — under the corner, inboard
-  const xf = W * 0.5 + 0.006;       // foot, X — just proud of the top edge
-  const zt = D * 0.5 - 0.030;       // leg top, Z
-  const zf = zt - 0.045;            // foot, Z — converging
-  const yTop = H - railH + 0.005;   // top of the leg, buried in the rail
-  const yFoot = 0.028;              // bottom of the leg, buried in the foot
+  // This is worth being explicit about because the first pass got it backwards
+  // and the mistake is invisible in a description and obvious in a render. The
+  // plate settles it three ways at once: the two black stabiliser bars run
+  // front-to-back, one down each side; the two pivot crossings are separated
+  // along the *depth* of the table, one behind the other; and each bar's two
+  // feet belong to legs that rise in the same direction. So a frame is a wide
+  // trapezoid — two legs, one at the front and one at the back, both running
+  // from the top corners on one side down to the feet on the other, tied by a
+  // top tube at the head and by the black bar at the feet. Two of those, pinned
+  // through each other on a shaft that runs front-to-back at the crossing.
+  //
+  // The payoff is compositional, not pedantic. With the X across the width it
+  // reads as an X from the front, from both three-quarters and from the back —
+  // four of the six angles a player sees. Crossing it across the depth hides it
+  // in all four of those and only shows it from the side, which is how the r1
+  // build ended up looking like a table on four bent sticks.
+  //
+  // The lean is not a style choice either: a leg that runs from one top corner
+  // to the opposite foot on a 560 × 400 table is at atan(0.56 / 0.40) ≈ 54° from
+  // vertical whether you like it or not. That is the object. The only free
+  // choice is the depth splay, which is small — 8 mm proud of the top edge, so
+  // the feet stand just outside the silhouette and the stance reads as braced.
+  const xt = W * 0.5 - 0.048;       // leg top, X — inboard of the corner
+  const xf = W * 0.5 + 0.008;       // foot, X — just proud of the top edge
+  const zt = D * 0.5 - 0.038;       // leg top, Z
+  const zf = D * 0.5 + 0.008;       // foot, Z — splayed outward
+  const yTop = H - railH + 0.004;   // top of the leg, buried in the rail
+  const yFoot = 0.030;              // bottom of the leg, buried in the foot
 
   const LEG_W = 0.022, LEG_T = 0.0145;   // in-plane × out-of-plane
+  const SKY_ALU = 0.34, SKY_DARK = 0.20; // see `beam()`
   // Mill-finish aluminium is not a mirror and it is not uniform; a touch of
   // per-table tint keeps two tables in the same camp from being clones, and the
   // dust ramp over the lowest 110 mm is what sits the feet in the dirt rather
@@ -276,98 +350,114 @@ export function buildTable(rnd, opts = {}) {
   const bossTint = tintFrom(BOSS.hex, BOSS.want);
 
   // The crossing height falls out of the geometry rather than being dialled in:
-  // two straight members between (±zt, top) and (∓zf, foot) meet at
-  // zf / (zt + zf) of the way up. With the numbers above that is ~44%, which is
-  // where the reference's pivot sits. Deriving it means the crossing stays put
-  // when the size randomiser moves D.
-  const tCross = zt / (zt + zf);
+  // two straight members between (±xt, top) and (∓xf, foot) meet at
+  // xf / (xt + xf) of the way up — about 55% here, which is where the plate's
+  // pivot sits. Deriving it means the crossing stays put when the size
+  // randomiser moves W.
+  const tCross = xt / (xt + xf);
+  const zCross = zt + (zf - zt) * tCross;
+  const yCross = yTop + (yFoot - yTop) * tCross;
+  const xCross = 0;
+  const EZ = V(0, 0, 1);
 
   for (const sx of [-1, 1]) {
-    // Both legs on this side are coplanar (x varies only with y), so one plane
-    // normal serves both, and the flats of both legs stay parallel — which is
-    // what makes the two tubes of an X catch the sun as one shape.
+    // `sx` is the side the frame's *head* is on; its feet are on the other side.
+    const headX = sx * xt, footX = -sx * xf;
     const legs = [1, -1].map((sz) => ({
       sz,
-      top: V(sx * xt, yTop, sz * zt),
-      foot: V(sx * xf, yFoot, -sz * zf),
+      top: V(headX, yTop, sz * zt),
+      foot: V(footX, yFoot, sz * zf),
     }));
+    // The frame plane contains both legs and the front-to-back direction (the
+    // two legs sit at matched depths either side of centre), so the normal is
+    // just the leg direction crossed with +Z. Taken this way it stays
+    // well-conditioned even if the depth splay is dialled to zero, which the
+    // leg-cross-leg form would not be.
     const nrm = new THREE.Vector3()
-      .crossVectors(
-        new THREE.Vector3().subVectors(legs[0].foot, legs[0].top),
-        new THREE.Vector3().subVectors(legs[1].foot, legs[1].top))
+      .crossVectors(new THREE.Vector3().subVectors(legs[0].foot, legs[0].top), EZ)
       .normalize();
 
-    for (const leg of legs) {
-      beam(P, FRAME.key, leg.top, leg.foot, nrm, LEG_W, LEG_T, aluTint);
+    // Head tube: the frame's own top member, running front-to-back under the
+    // slats and carrying both legs. It is what the legs actually hang off, and
+    // it gives the gaps something with a lit edge to reveal from a low angle
+    // instead of empty dark.
+    beam(P, FRAME.key,
+      V(headX, yTop + 0.004, -zt - 0.012), V(headX, yTop + 0.004, zt + 0.012),
+      V(1, 0, 0), 0.019, 0.014, aluTint, SKY_ALU);
 
-      // Collar where the leg meets the top. Kept short (55 mm) so the bright
-      // run of the leg starts almost immediately below the table — a long
-      // bracket eats the top of the specular line, which is the part of it that
-      // reads against the dark top.
-      const c0 = leg.top.clone().lerp(leg.foot, 0.012);
-      const c1 = leg.top.clone().lerp(leg.foot, 0.12);
-      beam(P, DARK.key, c0, c1, nrm, LEG_W + 0.009, LEG_T + 0.008, blackTint);
+    for (const leg of legs) {
+      beam(P, FRAME.key, leg.top, leg.foot, nrm, LEG_W, LEG_T, aluTint, SKY_ALU);
+
+      // Collar where the leg meets the head tube. Kept short so the bright run
+      // of the leg starts almost immediately below the table — a long bracket
+      // eats the top of the specular line, which is the part of it that reads
+      // against the dark top.
+      beam(P, DARK.key,
+        leg.top.clone().lerp(leg.foot, 0.010),
+        leg.top.clone().lerp(leg.foot, 0.105),
+        nrm, LEG_W + 0.009, LEG_T + 0.008, blackTint, SKY_DARK);
 
       // The moulded clamp that sits just below the pivot on each tube. In the
       // plates there are four of these and they are most of what says
       // "mechanism"; they also chop each leg into two bright segments of
       // unequal length, which is far better looking than one even run.
-      const k0 = leg.top.clone().lerp(leg.foot, tCross + 0.055);
-      const k1 = leg.top.clone().lerp(leg.foot, tCross + 0.175);
-      beam(P, DARK.key, k0, k1, nrm, LEG_W + 0.010, LEG_T + 0.009, blackTint);
-    }
-
-    // The pivot itself: a small stainless boss on the outer face of the X. Six
-    // sides and 7 mm across, so it is one or two pixels of bright at distance —
-    // which is exactly right, because a highlight at the crossing is what tells
-    // you the two tubes are joined rather than merely overlapping.
-    {
-      const c = legs[0].top.clone().lerp(legs[0].foot, tCross);
-      const a = c.clone().addScaledVector(nrm, -0.014);
-      const b = c.clone().addScaledVector(nrm, 0.014);
-      beam(P, BOSS.key, a, b, new THREE.Vector3(0, 1, 0), 0.014, 0.014, bossTint);
+      beam(P, DARK.key,
+        leg.top.clone().lerp(leg.foot, tCross + 0.045),
+        leg.top.clone().lerp(leg.foot, tCross + 0.155),
+        nrm, LEG_W + 0.010, LEG_T + 0.009, blackTint, SKY_DARK);
     }
 
     // ── stabiliser bar and feet ──────────────────────────────────────────────
-    // The flat black bar tying this leg pair together, and the two moulded feet
-    // it ends in. The bar is the single most useful thing on the whole prop for
-    // making the table not float: it is a dark horizontal 25 mm off the ground,
-    // so it sits directly against its own contact shadow and the eye reads the
-    // two together as ground contact even at a distance where the feet
+    // The flat black bar tying this frame's two feet together, and the moulded
+    // shoes it ends in. The bar is the single most useful thing on the whole
+    // prop for making the table not float: it is a dark horizontal 30 mm off the
+    // ground, so it sits directly against its own contact shadow and the eye
+    // reads the two together as ground contact even at a distance where the feet
     // themselves are gone.
-    P.add(rbox(0.028, 0.011, zf * 2 + 0.052, 0.0045),
-      DARK.key, at(sx * xf, 0.030, 0), blackTint);
+    P.add(rbox(0.030, 0.011, zf * 2 + 0.050, 0.0048),
+      DARK.key, at(footX, 0.031, 0), blackTint);
 
     for (const sz of [-1, 1]) {
       // Sunk 2 mm. Every one of these has been stood on soft dirt, and 2 mm of
       // bed is cheap insurance against a foot hovering over an uneven clearing
       // — a single floating foot in the `table-back` framing is the defect that
       // undoes the whole prop.
-      P.add(rbox(0.034, 0.038, 0.050, 0.011),
-        DARK.key, at(sx * xf, 0.017 - 0.002, sz * zf), blackTint);
-      // A rubber pad on the underside: a hair wider than the moulding so it
-      // shows as a dark line under it, which is what a foot needs to not look
-      // like the leg was simply cut off at ground level.
-      P.add(rbox(0.036, 0.010, 0.052, 0.004),
-        'rubber', at(sx * xf, 0.0015, sz * zf), blackTint);
+      P.add(rbox(0.038, 0.040, 0.054, 0.013),
+        DARK.key, at(footX, 0.016, sz * zf), blackTint);
+      // A rubber pad on the underside, a hair wider than the moulding so it
+      // shows as a dark line under it — what a foot needs to not look like the
+      // leg was simply cut off at ground level.
+      P.add(rbox(0.040, 0.010, 0.056, 0.004),
+        'rubber', at(footX, 0.0005, sz * zf), blackTint);
     }
   }
 
-  // ── under-frame ────────────────────────────────────────────────────────────
-  // Two cross-members running front-to-back under the top, at the leg
-  // attachment lines. Honest — the legs cannot hang off a slat — and they give
-  // the gaps something to reveal from a low angle other than empty dark.
-  for (const sx of [-1, 1]) {
-    P.add(rbox(0.014, 0.012, D - railT * 2 - 0.002, 0.003),
-      FRAME.key, at(sx * xt, H - railH + 0.006, 0), aluTint);
+  // ── the pivot ──────────────────────────────────────────────────────────────
+  // The shaft the two frames turn on, running front-to-back between the two
+  // crossings, with a stainless boss on the outside of each. The shaft is
+  // hidden end-on from the front and from both three-quarters, and it is the
+  // one strong horizontal in the profile view — which is exactly the view where
+  // the X collapses and the frame would otherwise have nothing to say.
+  beam(P, FRAME.key,
+    V(xCross, yCross, -zCross - 0.014), V(xCross, yCross, zCross + 0.014),
+    V(1, 0, 0), 0.014, 0.014, aluTint, SKY_ALU);
+  for (const sz of [-1, 1]) {
+    // 14 mm across, so it is one or two pixels of bright at distance — which is
+    // right, because a highlight at the crossing is what tells you the two tubes
+    // are joined rather than merely overlapping.
+    const c = V(xCross, yCross, sz * zCross);
+    beam(P, BOSS.key,
+      c.clone().addScaledVector(EZ, sz * 0.014),
+      c.clone().addScaledVector(EZ, sz * 0.026),
+      V(1, 0, 0), 0.015, 0.015, bossTint, SKY_ALU);
   }
 
   if (opts.dressed) dressTable(P, rnd, W, D, H, wear);
 
   P.flush(g);
-  // The feet reach ±(W/2 + 6 mm) across and ±(D/2 − 30 mm) deep, so the real
-  // clearance the layout solver needs is a shade under 0.40 m. Matches the
-  // radius `camp_site.js` reserves for a table.
+  // The feet reach ±(W/2 + 8 mm) across and ±(D/2 + 8 mm) deep, so the real
+  // clearance the layout solver needs is a shade under 0.40 m on the diagonal.
+  // Matches the radius `camp_site.js` reserves for a table.
   g.userData.footprint = 0.40;
   return g;
 }

@@ -40,13 +40,20 @@ export const SITE_MAX = 18.0;
 
 // The clearing's radius, and therefore the size of the camp.
 //
-// 6.4 m, and it is a measured number rather than a taste one. The first pass
-// used 5.2 with the tent at 0.86 of it — which put the tent at 4.5 m, where the
-// clearing's own feathered edge still leaves a third of the grass standing, and
-// the first capture came back with the tent pitched in knee-deep meadow. The
-// props are now inside 0.75 R, and the clearing is wide enough that everything
-// in the camp stands on bare ground with a margin of scuffed fringe beyond it.
-export const CAMP_RADIUS = 6.4;
+// It has been three numbers and each move was forced by a capture.
+//
+// 5.2 with the tent at 0.86 R put the tent at 4.5 m, inside the clearing's own
+// feathered edge where a third of the grass still stands — the first capture
+// came back with the tent pitched in knee-deep meadow. 6.4 with the props
+// pulled inside 0.72 R fixed that and overshot: eleven metres of bare ground
+// for furniture that spans five, which reads as a gravel pit with a camp in
+// the middle of it rather than as a patch of ground somebody cleared.
+//
+// 5.8 with a tighter 1.4 m feather is where the arithmetic actually lands. The
+// tent sits at 0.62 R = 3.6 m and is 2.3 m long, so its far corner is at 4.8 m
+// against full cover to 4.4 m — it stands on bare ground with its guy lines in
+// the fringe, which is what a real pitch looks like.
+export const CAMP_RADIUS = 5.8;
 
 /**
  * March the mouse ray against the heightfield.
@@ -256,34 +263,78 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   for (const o of opts.obstacles ?? []) placed.push({ x: o.x, z: o.z, r: o.r });
 
   // Reject a candidate that lands on top of something already placed, or on
-  // ground the prop cannot stand on. Ten tries then give up: a camp that is one
-  // chair short is a camp, and a camp with a chair inside the cooler is a bug.
-  const tryPlace = (kind, angle, radius, foot, make, tries = 14) => {
+  // ground the prop cannot stand on. Then give up: a camp that is one chair
+  // short is a camp, and a camp with a chair inside the cooler is a bug.
+  //
+  // `insist` is for the tent, and only for the tent. A camp missing a chair or
+  // a table still reads as somebody's camp; a camp with no tent reads as a
+  // bug, because the feature's own spec is about pitching one. When insisting,
+  // the search sweeps the FULL circle at several radii and, if even that finds
+  // nothing, takes the least-bad candidate rather than returning nothing.
+  const tryPlace = (kind, angle, radius, foot, make,
+                    { tries = 14, insist = false, swing = 0.5 } = {}) => {
+    let best = null, bestPenalty = Infinity;
+    if (insist) tries = 64;
     for (let i = 0; i < tries; i++) {
-      // The search widens with each failure, and it has to: the obstacles
-      // seeded into `placed` are trunks and boulders the valley put there, and
-      // a camp pitched beside a birch has to be able to walk a chair most of
-      // the way round the fire to get past it. The first version jittered by
-      // 0.16 rad per try and could not clear a single trunk.
-      const a = angle + (rnd() - 0.5) * (i * 0.42);
-      const r = radius * (1 + (rnd() - 0.5) * (0.10 + i * 0.05));
+      // ── how the search widens, and why it is bounded ────────────────────
+      //
+      // Failures push the candidate OUTWARD first and only sideways within
+      // `swing`. The earlier version widened the angle without a bound
+      // (i * 0.42, reaching ±2.7 rad by the last try), which meant a chair
+      // that failed a few times could be flung to the far side of the fire —
+      // and the chairs occupying one arc on one side is the single strongest
+      // thing making a camp read as a place people sat down together rather
+      // than as furniture on a roundabout. On open ground the early tries
+      // almost always succeed so it rarely bit; under obstacle pressure — a
+      // camp pitched among trunks, which is now the common case — it would.
+      //
+      // So: radius carries the search (a chair pushed half a metre out is
+      // still a chair in the circle), the angle is clamped to `swing`, and a
+      // prop that genuinely cannot fit is simply not placed.
+      //
+      // A note on how this was nearly justified with a fabricated number.
+      // `tools/_scratch/camplayout.mjs` first reported the chairs' arc at a
+      // median of 4.48 rad and that looked like a smoking gun. It was the
+      // instrument: the census sorted raw atan2 bearings, so two chairs 0.3
+      // rad apart that straddled the ±pi seam sorted as 6.0 rad apart. Fixed,
+      // the same layouts measure 0.74 / 1.22 / 1.93 rad, which is the design
+      // intent. The bound is still right — it is a guard, not a fix — but it
+      // was very nearly written into this file as a defect it never repaired.
+      //
+      // The tent is the exception. It insists, and it sweeps the full circle
+      // on the golden angle — which covers every bearing evenly without ever
+      // repeating one — because a camp with no tent is a bug and a tent on an
+      // unexpected bearing is just a tent.
+      const a = insist ? angle + i * GOLDEN
+                       : angle + (rnd() - 0.5) * Math.min(swing, 0.12 + i * 0.14);
+      const r = insist ? radius * (0.80 + 0.30 * ((i * 7) % 5) / 4)
+                       : radius * (1 + (rnd() - 0.5) * 0.10 + i * 0.055);
       const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
-      let clash = false;
+      // How far this candidate overlaps the worst thing it touches, so an
+      // insisted placement can pick the least-bad rather than the first.
+      let worst = 0;
       for (const p of placed) {
-        if (Math.hypot(p.x - x, p.z - z) < (p.r + foot) * 1.04) { clash = true; break; }
+        const over = (p.r + foot) * 1.04 - Math.hypot(p.x - x, p.z - z);
+        if (over > worst) worst = over;
       }
-      if (clash) continue;
       // Standing on a lip reads as a prop clipping the ground, and a chair with
       // one leg in the air is the first thing anyone notices. Reject the worst
       // of it here rather than trying to fix it with per-leg raycasts later.
       const relief = footprintRelief(world, x, z, foot);
+      const penalty = worst * 3 + Math.max(0, relief - 0.34) * 2;
+      if (penalty < bestPenalty) { bestPenalty = penalty; best = { x, z, a, relief }; }
+      if (worst > 0) continue;
       if (relief > 0.34 && i < tries - 2) continue;
       const item = make(x, z, a, relief);
       placed.push({ x, z, r: foot });
       out.push(item);
       return item;
     }
-    return null;
+    if (!insist || !best) return null;
+    const item = make(best.x, best.z, best.a, best.relief);
+    placed.push({ x: best.x, z: best.z, r: foot });
+    out.push(item);
+    return item;
   };
 
   // ── the tent ───────────────────────────────────────────────────────────────
@@ -293,7 +344,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   {
     const side = rnd() < 0.5 ? 1 : -1;
     const a = seatCentre + side * lerp(1.75, 2.45, rnd());
-    tryPlace('tent', a, R * 0.70, 1.45, (x, z, ang) => ({
+    tryPlace('tent', a, R * 0.62, 1.45, (x, z, ang) => ({
       kind: 'tent', x, z, y: world.getHeight(x, z),
       // The door turns toward the fire, then backs off 15–35 degrees. Facing a
       // tent door dead at the fire is what a level editor does; a real one is
@@ -301,7 +352,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.62,
       tilt: 0.55,      // how much of the ground normal it takes
       opts: { colorway: Math.floor(rnd() * 4), wear: rnd() },
-    }));
+    }), { insist: true });
   }
 
   // ── the chairs ─────────────────────────────────────────────────────────────
@@ -310,14 +361,19 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   // chairs at exactly ±0.6 rad is a pair of parentheses; two at +0.45 and −0.78
   // is two people who sat down.
   {
-    const n = opts.chairs ?? (rnd() < 0.62 ? 2 : 3);
+    // 2, 3 or occasionally 4. Never 1: a single chair by a fire is a lonely
+    // image, and this feature's whole job is the opposite of that.
+    const rc = rnd();
+    const n = opts.chairs ?? (rc < 0.50 ? 2 : rc < 0.86 ? 3 : 4);
     // Total arc widens with the number of chairs but sub-linearly, so three
     // chairs sit closer together than two chairs spread apart would.
-    const span = lerp(0.85, 1.55, (n - 2) / 1.6) + rnd() * 0.25;
+    const span = lerp(0.85, 1.85, (n - 2) / 2.2) + rnd() * 0.25;
     for (let i = 0; i < n; i++) {
       const frac = n === 1 ? 0.5 : i / (n - 1);
       const a = seatCentre + (frac - 0.5) * span + (rnd() - 0.5) * 0.22;
       const r = R * lerp(0.30, 0.38, rnd());
+      // A chair may drift 0.28 rad — sixteen degrees — and no further. Beyond
+      // that it has left the group it belongs to.
       tryPlace('chair', a, r, 0.42, (x, z) => ({
         kind: 'chair', x, z, y: world.getHeight(x, z),
         // A chair points at the fire, off by up to 20 degrees. Chairs that all
@@ -325,24 +381,44 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
         yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.70,
         tilt: 1.0,     // four feet on the ground; take the normal fully
         opts: { colorway: Math.floor(rnd() * 4), style: rnd() < 0.5 ? 'sling' : 'arm', wear: rnd() },
-      }));
+      }), { swing: 0.28 });
     }
   }
 
-  // ── the cooler ─────────────────────────────────────────────────────────────
+  // ── the coolers ────────────────────────────────────────────────────────────
   // Just outside the seating arc, on one flank, where somebody would reach for
   // it without getting up. Turned mostly toward the fire so its latches — the
   // detail that says "cooler" at 15 m — face the camera in the frames that
   // matter.
+  //
+  // One about two thirds of the time and two the rest, on opposite flanks, in
+  // different colourways. Two is what a real camp has (food in one, drinks in
+  // the other) and it is also the cheapest variety in the whole layout: the
+  // difference between "every camp has exactly one of everything" and "this
+  // camp is a bit different from the last one" is worth more than another prop
+  // type would be. The second one is smaller and is often the one left open.
   {
     const flank = rnd() < 0.5 ? 1 : -1;
+    const cw = Math.floor(rnd() * 3);
     const a = seatCentre + flank * lerp(0.95, 1.35, rnd());
     tryPlace('cooler', a, R * lerp(0.38, 0.46, rnd()), 0.46, (x, z) => ({
       kind: 'cooler', x, z, y: world.getHeight(x, z),
       yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.9,
       tilt: 1.0,
-      opts: { colorway: Math.floor(rnd() * 3), lidOpen: rnd() < 0.18, wear: rnd() },
-    }));
+      opts: { colorway: cw, lidOpen: rnd() < 0.18, wear: rnd() },
+    }), { swing: 0.55 });
+    if (rnd() < 0.34) {
+      const a2 = seatCentre - flank * lerp(0.85, 1.45, rnd());
+      tryPlace('cooler', a2, R * lerp(0.36, 0.44, rnd()), 0.40, (x, z) => ({
+        kind: 'cooler', x, z, y: world.getHeight(x, z),
+        yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 1.3,
+        tilt: 1.0,
+        // Never the same colourway as the first: two identical coolers side by
+        // side is the single loudest "these were instanced" tell in the camp.
+        opts: { colorway: (cw + 1 + Math.floor(rnd() * 2)) % 3, small: true,
+                lidOpen: rnd() < 0.40, wear: rnd() },
+      }), { swing: 0.55 });
+    }
   }
 
   // ── the table ──────────────────────────────────────────────────────────────
@@ -357,7 +433,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 1.1,
       tilt: 1.0,
       opts: { wear: rnd(), dressed: rnd() < 0.7 },
-    }));
+    }), { swing: 0.40 });
   }
 
   // ── firewood ───────────────────────────────────────────────────────────────
@@ -368,7 +444,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
     tryPlace('woodpile', a, R * lerp(0.42, 0.52, rnd()), 0.44, (x, z) => ({
       kind: 'woodpile', x, z, y: world.getHeight(x, z),
       yaw: rnd() * TAU, tilt: 1.0, opts: { logs: 5 + Math.floor(rnd() * 4), wear: rnd() },
-    }));
+    }), { swing: 0.85 });
   }
 
   return out;

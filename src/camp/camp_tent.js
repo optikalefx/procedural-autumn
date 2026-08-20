@@ -283,7 +283,7 @@ export function buildTent(rnd, opts = {}) {
   // The gap is what lets you see the bathtub floor under it, and a fly that
   // touches the ground all the way round is the second-loudest tell after flat
   // fabric.
-  const hemLow = 0.020, hemRise = 0.072 + 0.026 * wear;
+  const hemLow = 0.016, hemRise = 0.052 + 0.022 * wear;
   const hemY = (phi) => {
     const k = 0.5 - 0.5 * Math.cos(4 * (phi - QUARTER));
     const j = hemJit[goreOf(phi)];
@@ -345,20 +345,46 @@ export function buildTent(rnd, opts = {}) {
 
     // The pole: a crease, not a swell. Narrow sigma so the fabric leaves the
     // arc quickly and the pole reads as a line down the fly.
-    let s = 0.021 * Math.exp(-Math.pow(d / 0.115, 2)) * (v > 0.9 ? 1 - (v - 0.9) * 3.2 : 1);
+    let s = 0.022 * Math.exp(-Math.pow(d / 0.095, 2)) * (v > 0.9 ? 1 - (v - 0.9) * 3.2 : 1);
 
     // The panel between two poles is pulled inward: zero gradient on the pole
     // line (the fabric leaves the crease tangentially) and zero at the panel
     // centre (a minimum, not a second crease).
     s -= slackAmp * (0.5 - 0.5 * Math.cos(PI * t)) * heightGate(v) * goreSlack[goreOf(phi)];
 
-    // Wrinkles. Every angular frequency is an integer so the shell closes on
-    // itself at phi = 0 without a seam.
-    s += 0.0130 * Math.sin(6 * phi + ph[0] + v * 2.4) * heightGate(v) * t;
-    s += 0.0092 * Math.sin(15 * phi + ph[1] - v * 5.4) * Math.exp(-(t / 0.5) * (t / 0.5)) * heightGate(v);
-    s += 0.0115 * Math.sin(11 * phi + ph[2] + v * 1.2) * Math.exp(-v / 0.26) * (0.35 + 0.65 * t);
-    s += 0.0044 * Math.sin(26 * phi + ph[3] + v * 8.0) * heightGate(v);
-    s += 0.0065 * Math.sin(3 * phi + ph[1] * 1.7) * Math.sin(PI * v) * t;
+    // Wrinkles. These are the whole prop.
+    //
+    // Round four's set was inaudible on the front and back panels because every
+    // high-frequency term was gated to the pole line, and the one ungated term
+    // ran at 6 cycles around the tent — less than one full wave across a panel,
+    // which is not a wrinkle, it is a lump. A lump is worse than nothing here:
+    // the stylised shading quantises diffuse into bands, so a smooth 250 mm
+    // swell does not shade as a swell, it shades as a hard-edged dark blotch,
+    // and round four grew one of those on the side panel over a guy-out.
+    // Creases band well; domes band badly. So everything below is directional —
+    // long folds running down the panel, cross folds where the fabric gathers
+    // above the hem — and every angular frequency is an integer so the shell
+    // closes on itself at phi = 0 without a seam.
+    // Fold amplitude has to die out towards the crown. On a dome every panel
+    // line converges there, so creases that survive to the top all meet at one
+    // point and the tent becomes a beach umbrella — which is exactly what round
+    // five shipped, complete with hard black shadow slots down each rib where
+    // the crease got deep enough to shadow itself.
+    const crown = smoothstep(0.94, 0.50, v);
+    const gate = heightGate(v) * crown;
+    // Two long folds beating against each other, so the spacing is irregular
+    // rather than radial.
+    s += 0.0072 * Math.sin(7 * phi + ph[0] + v * 1.9) * gate * t;
+    s += 0.0056 * Math.sin(11 * phi + ph[1] - v * 1.2) * gate * t;
+    // Mid folds, amplitude modulated around the tent so some are creases and
+    // some are barely there. Even spacing is the tell of a procedural wrinkle,
+    // and it survives being squinted at.
+    s += 0.0080 * Math.sin(19 * phi + ph[2] + v * 2.6) * gate
+       * (0.45 + 0.55 * Math.sin(3 * phi + ph[3]));
+    s += 0.0040 * Math.sin(29 * phi + ph[3] - v * 3.1) * gate;
+    // Cross folds where the fabric gathers above the hem.
+    s += 0.0105 * Math.sin(13 * phi + ph[3]) * Math.exp(-v / 0.28) * (0.30 + 0.70 * t);
+    s += 0.0058 * Math.sin(9 * phi + ph[0] * 1.7 + v * 8.0) * Math.exp(-v / 0.42) * t;
 
     // Guy-out pucker: a cone of fabric pulled out at the anchor, a five-arm fan
     // of creases raking off it, and a tension line running from it down to the
@@ -369,7 +395,7 @@ export function buildTent(rnd, opts = {}) {
       dp = ((((dp + PI) % TAU) + TAU) % TAU) - PI;
       const dx = dp * 0.62, dy = (v - gy.v) * H;
       const D = Math.hypot(dx, dy);
-      s += 0.022 * Math.exp(-(D / 0.090) * (D / 0.090));
+      s += 0.0095 * Math.exp(-(D / 0.048) * (D / 0.048));
       const k = D / 0.22;
       s += 0.0125 * Math.cos(5 * Math.atan2(dy, dx) + gy.ph) * k * Math.exp(-k * k * 0.7);
       // the pull-down towards the hem below the anchor
@@ -387,27 +413,32 @@ export function buildTent(rnd, opts = {}) {
   };
 
   // ── the door ───────────────────────────────────────────────────────────────
-  // A D-arch centred on +Z, running from the hem up over the top and back down.
-  // `doorFloor` is the arch height in v, and the fly grid's v = 0 edge is set
-  // to it — so the aperture is an exact curve rather than a stairstepped mask,
-  // and the tessellation can be whatever the silhouette needs.
-  const doorPhi = 0.44, doorV = 0.50;
-  const doorFloor = (phi) => {
-    let d = phi - HALF;
-    d = ((((d + PI) % TAU) + TAU) % TAU) - PI;
-    const x = Math.abs(d) / doorPhi;
-    if (x >= 1) return 0;
-    return doorV * Math.pow(1 - x * x, 0.62);
+  // A D: near-vertical sides, an arched top, and a SILL 200 mm off the dirt.
+  //
+  // Round three cut the aperture straight down to the hem and the whole
+  // front-bottom of the tent went missing with it — you looked under the fly,
+  // past an inset inner tent, and out the far side, and the thing read as
+  // levitating over its own shadow. Real fly doors have a sill for the same
+  // reason: a zip that runs into the dirt does not stay a zip for long.
+  const SILL_Y = 0.20, DOOR_TOP = 0.78;        // metres, and a fraction of H
+  const vOfY = (y) => (2 / PI) * Math.asin(clamp(Math.pow(clamp01(y / H), nProf / 2), 0, 1));
+  const vSill = vOfY(SILL_Y);
+  const doorV = vOfY(DOOR_TOP * H);
+  const doorPhi = 0.40;
+  // (1 - x^5)^0.5 rather than the wheel-arch (1 - x^2)^0.62: the fifth power
+  // holds the arch near full height across most of the door and then drops it
+  // hard at the sides, which is the difference between a D and an almond.
+  const dPhi = (phi) => {
+    const d = phi - HALF;
+    return ((((d + PI) % TAU) + TAU) % TAU) - PI;
+  };
+  const doorArch = (phi) => {
+    const x = Math.abs(dPhi(phi)) / doorPhi;
+    if (x >= 1) return vSill;
+    return vSill + (doorV - vSill) * Math.sqrt(1 - Math.pow(x, 5));
   };
 
   const outwardRef = (p, out) => out.set(p.x, 0.4, p.z);
-
-  // ── the fly ────────────────────────────────────────────────────────────────
-  const NU = 224, NV = 40;
-  const flyGeo = patch((u, s, out) => {
-    const phi = u * TAU;
-    return surf(phi, lerp(doorFloor(phi), V_MAX, s), out);
-  }, NU, NV, outwardRef);
 
   const cA = tintOf(cw.fly), cB = tintOf(cw.flyAlt);
   const flyTint = (x, y, z) => {
@@ -435,7 +466,47 @@ export function buildTent(rnd, opts = {}) {
     b = (b * ao) * (1 - dk) + 0.86 * dk;
     return [r, gg, b];
   };
-  P.add(flyGeo, 'fabric', null, flyTint);
+
+  // ── the fly ────────────────────────────────────────────────────────────────
+  // Three patches, not one, because the aperture now has a sill and a shell
+  // whose bottom edge is the door can no longer also be the shell whose bottom
+  // edge is the hem:
+  //
+  //     MAIN   everything outside the door band, hem to crown
+  //     FRONT  inside the band, door arch to crown
+  //     SILL   inside the band, hem to the sill line
+  //
+  // The seams are the two vertical ribs at phi = pi/2 ± doorPhi, and they are
+  // watertight by construction rather than by luck: `vRow` is one shared row
+  // table with a break at the sill, MAIN walks all of it, SILL walks the rows
+  // below the break and FRONT the rows above, so the three patches put vertices
+  // at *identical* parameter values along the shared ribs. Sampling the same
+  // rib at two different densities would leave a sub-millimetre crack, and a
+  // crack in a shell you can see the sky through is a defect that survives
+  // being squinted at.
+  const NVS = 6, NVU = 40, NVT = NVS + NVU;
+  const vRow = (k) => (k <= NVS
+    ? (k / NVS) * vSill
+    : vSill + ((k - NVS) / NVU) * (V_MAX - vSill));
+  const NU_ALL = 232;
+  const bandFrac = (doorPhi * 2) / TAU;
+  const NU_F = Math.max(12, Math.round(NU_ALL * bandFrac));
+  const NU_M = Math.max(24, NU_ALL - NU_F);
+
+  P.add(patch((u, s, out) => {                                        // MAIN
+    const phi = HALF + doorPhi + u * (TAU - doorPhi * 2);
+    return surf(phi, vRow(s * NVT), out);
+  }, NU_M, NVT, outwardRef), 'fabric', null, (x, y, z) => flyTint(x, y, z));
+
+  P.add(patch((u, s, out) => {                                        // FRONT
+    const phi = HALF - doorPhi + u * doorPhi * 2;
+    return surf(phi, lerp(doorArch(phi), V_MAX, s), out);
+  }, NU_F, NVU, outwardRef), 'fabric', null, (x, y, z) => flyTint(x, y, z));
+
+  P.add(patch((u, s, out) => {                                        // SILL
+    const phi = HALF - doorPhi + u * doorPhi * 2;
+    return surf(phi, vRow(s * NVS), out);
+  }, NU_F, NVS, outwardRef), 'fabric', null, (x, y, z) => flyTint(x, y, z));
 
   // Crown patch, closing the ring the grid stops at. On a real dome this is a
   // reinforced disc over the pole crossing, so it is slightly darker (two
@@ -472,7 +543,7 @@ export function buildTent(rnd, opts = {}) {
     // Mixed halfway back to the fly: seam tape is the same coated nylon in a
     // contrast colour, not a stripe of paint, and at full saturation a 30 mm
     // line down each pole is the loudest thing on the tent.
-    const tape = [lerp(cA[0], acc[0], 0.72), lerp(cA[1], acc[1], 0.72), lerp(cA[2], acc[2], 0.72)];
+    const tape = [lerp(cA[0], acc[0], 0.38), lerp(cA[1], acc[1], 0.38), lerp(cA[2], acc[2], 0.38)];
     P.add(ribbon(L, R, outwardRef), 'fabric', null, (x, y) => {
       const k2 = clamp01(smoothstep(0.16, 0.0, y)) * 0.20;
       return [tape[0] * (1 - k2) + 1.1 * k2, tape[1] * (1 - k2) + 1.02 * k2, tape[2] * (1 - k2) + 0.86 * k2];
@@ -482,31 +553,45 @@ export function buildTent(rnd, opts = {}) {
   // ── door: reveal, zip track, pulls ─────────────────────────────────────────
   // The reveal is the whole trick. A hole cut in a single-sided shell is a
   // paper edge; turning 60 mm of fabric inward gives the aperture a lip that
-  // catches light on top and goes black at the sides, which is what says
-  // "there is a volume behind this" — the same argument as the camper's window
-  // reveals, which are deliberately deeper than a real car's.
+  // catches light along its top and goes black down its sides, which is what
+  // says "there is a volume behind this" — the same argument as the camper's
+  // window reveals, which are deliberately deeper than a real car's.
+  //
+  // `arch` is the aperture's outline as an open curve running left jamb → over
+  // the top → right jamb; `sillLine` closes it along the bottom. The reveal
+  // wraps the whole loop, the zip only follows the arch, because that is where
+  // a zip goes.
   const arch = [];
   {
-    const n = 46;
+    const n = 54;
     for (let i = 0; i <= n; i++) {
-      const phi = HALF - doorPhi + (i / n) * doorPhi * 2;
-      const v = doorFloor(phi);
+      const phi = HALF - doorPhi * 0.999 + (i / n) * doorPhi * 1.998;
+      const v = doorArch(phi);
       arch.push({ phi, v, p: surf(phi, v, new THREE.Vector3()), n: normalAt(phi, v, new THREE.Vector3()) });
     }
   }
+  const sillLine = [];
+  {
+    const n = 18;
+    for (let i = 0; i <= n; i++) {
+      const phi = HALF + doorPhi * 0.999 - (i / n) * doorPhi * 1.998;
+      sillLine.push({ phi, v: vSill, p: surf(phi, vSill, new THREE.Vector3()), n: normalAt(phi, vSill, new THREE.Vector3()) });
+    }
+  }
+  const loop = arch.concat(sillLine);
   const archC = new THREE.Vector3();
-  for (const a of arch) archC.add(a.p);
-  archC.multiplyScalar(1 / arch.length);
+  for (const a2 of loop) archC.add(a2.p);
+  archC.multiplyScalar(1 / loop.length);
 
   {
     const L = [], R = [];
-    for (const a of arch) {
-      const inward = new THREE.Vector3().subVectors(archC, a.p).normalize();
-      L.push(a.p.clone());
-      R.push(a.p.clone().addScaledVector(a.n, -0.062).addScaledVector(inward, 0.016));
+    for (const a2 of loop) {
+      const inward = new THREE.Vector3().subVectors(archC, a2.p).normalize();
+      L.push(a2.p.clone());
+      R.push(a2.p.clone().addScaledVector(a2.n, -0.062).addScaledVector(inward, 0.018));
     }
     const revRef = (p, out) => out.subVectors(archC, p);
-    const revTint = (x, y, z) => { const t = flyTint(x, y, z); return [t[0] * 0.5, t[1] * 0.5, t[2] * 0.52]; };
+    const revTint = (x, y, z) => { const t = flyTint(x, y, z); return [t[0] * 0.62, t[1] * 0.62, t[2] * 0.66]; };
     P.add(ribbon(L, R, revRef), 'fabricIn', null, revTint);
   }
 
@@ -516,54 +601,55 @@ export function buildTent(rnd, opts = {}) {
   {
     const L = [], R = [];
     for (let i = 0; i < arch.length; i++) {
-      const a = arch[i];
-      const b = arch[Math.min(arch.length - 1, i + 1)];
-      const c = arch[Math.max(0, i - 1)];
-      const tng = new THREE.Vector3().subVectors(b.p, c.p).normalize();
-      const away = new THREE.Vector3().crossVectors(tng, a.n).normalize();
-      if (away.dot(new THREE.Vector3().subVectors(a.p, archC)) < 0) away.negate();
-      const p0 = a.p.clone().addScaledVector(a.n, 0.004);
-      const p1 = p0.clone().addScaledVector(away, 0.026);
+      const a2 = arch[i];
+      const b2 = arch[Math.min(arch.length - 1, i + 1)];
+      const c2 = arch[Math.max(0, i - 1)];
+      const tng = new THREE.Vector3().subVectors(b2.p, c2.p).normalize();
+      const away = new THREE.Vector3().crossVectors(tng, a2.n).normalize();
+      if (away.dot(new THREE.Vector3().subVectors(a2.p, archC)) < 0) away.negate();
+      const p0 = a2.p.clone().addScaledVector(a2.n, 0.004);
+      const p1 = p0.clone().addScaledVector(away, 0.024);
       archOut.push(p1.clone());
       L.push(p0); R.push(p1);
     }
     P.add(ribbon(L, R, outwardRef), 'fabric', null, tintOf(cw.trim));
   }
 
-  // Two zip pulls with cord tails, parked where a zip actually parks: one at
-  // the bottom of the arch, one just over the crown of it.
-  for (const [f, side] of [[0.055, -1], [0.52, 1]]) {
+  // Two zip pulls with cord tails, parked where a zip actually parks: one down
+  // at the right jamb, one just over the crown of the arch.
+  for (const [f, side] of [[0.965, -1], [0.5, 1]]) {
     const i = Math.round(f * (arch.length - 1));
-    const a = arch[i];
-    const p = a.p.clone().addScaledVector(a.n, 0.012);
-    P.add(rbox(0.013, 0.024, 0.005, 0.003), 'plastic', at(p.x, p.y, p.z, 0, Math.atan2(a.n.x, a.n.z), side * 0.3), [1, 1, 1]);
-    const tail = p.clone().add(V(0, -0.036, 0)).addScaledVector(a.n, 0.004);
-    P.add(tube(0.0025, p.distanceTo(tail), 4), 'cord', span(p, tail, M()), [1, 1, 1]);
+    const a2 = arch[i];
+    const p = a2.p.clone().addScaledVector(a2.n, 0.012);
+    P.add(rbox(0.013, 0.026, 0.005, 0.003), 'plastic',
+      at(p.x, p.y, p.z, 0, Math.atan2(a2.n.x, a2.n.z), side * 0.3), [1, 1, 1]);
+    const tail = p.clone().add(V(0, -0.040, 0)).addScaledVector(a2.n, 0.004);
+    P.add(tube(0.0026, p.distanceTo(tail), 4), 'cord', span(p, tail, M()), [1, 1, 1]);
   }
 
   // The door rolled back and toggled, on the colourways whose plate shows it
   // open. Following the arch means the bundle reads as *the door*, not as a
   // sausage parked nearby.
   if (cw.doorOpen) {
-    const n0 = 2, n1 = Math.round(arch.length * 0.52);
+    const n0 = 1, n1 = Math.round(arch.length * 0.30);
     P.add(sweptArc((t) => {
       const i = Math.round(lerp(n0, n1, t));
-      const a = arch[i];
-      const away = new THREE.Vector3().subVectors(archOut[i], a.p).normalize();
-      return a.p.clone().addScaledVector(a.n, 0.048).addScaledVector(away, 0.030);
-    }, 14, 0.042, 6), 'fabric', null, (x, y, z) => {
-      const t = flyTint(x, y, z); return [t[0] * 0.9, t[1] * 0.9, t[2] * 0.9];
+      const a2 = arch[i];
+      const away = new THREE.Vector3().subVectors(archOut[i], a2.p).normalize();
+      return a2.p.clone().addScaledVector(a2.n, 0.046).addScaledVector(away, 0.028);
+    }, 12, 0.034, 6), 'fabric', null, (x, y, z) => {
+      const t = flyTint(x, y, z); return [t[0] * 0.88, t[1] * 0.88, t[2] * 0.88];
     });
     // Two toggle ties around it. The torus is oriented so its axis follows the
     // bundle, which is the difference between a tie and a hula hoop.
-    for (const f of [0.3, 0.75]) {
+    for (const f of [0.28, 0.74]) {
       const i = Math.round(lerp(n0, n1, f));
-      const a = arch[i];
-      const b = arch[Math.min(arch.length - 1, i + 3)];
-      const away = new THREE.Vector3().subVectors(archOut[i], a.p).normalize();
-      const c = a.p.clone().addScaledVector(a.n, 0.048).addScaledVector(away, 0.030);
-      const axis = new THREE.Vector3().subVectors(b.p, a.p).normalize();
-      P.add(new THREE.TorusGeometry(0.046, 0.0042, 4, 12), 'cord', orient(c, axis), [1, 1, 1]);
+      const a2 = arch[i];
+      const b2 = arch[Math.min(arch.length - 1, i + 3)];
+      const away = new THREE.Vector3().subVectors(archOut[i], a2.p).normalize();
+      const c2 = a2.p.clone().addScaledVector(a2.n, 0.046).addScaledVector(away, 0.028);
+      const axis = new THREE.Vector3().subVectors(b2.p, a2.p).normalize();
+      P.add(new THREE.TorusGeometry(0.038, 0.0042, 4, 12), 'cord', orient(c2, axis), [1, 1, 1]);
     }
   }
 
@@ -572,17 +658,19 @@ export function buildTent(rnd, opts = {}) {
   // that is precisely why it has to exist: the aperture needs three receding
   // values behind it (lit rim → dark canopy → warm floor) or it is a black hole
   // painted on a dome.
-  const iS = 0.945, iH = 0.94, vTub = 0.062;
+  const iS = 0.968, iH = 0.94, vTub = 0.062;
   const innerBase = (phi, v, out) => {
     const r = profR(v) * iS;
     return out.set(planX(phi) * r, profY(v) * iH, planZ(phi) * r);
   };
+  // Deliberately smaller than the fly's aperture — about 60% of its width and
+  // 70% of its height — so looking in you see a ring of canopy fabric before
+  // you see a hole. Two apertures the same size read as one hole with a thick
+  // rim; two different sizes read as depth.
   const innerDoor = (phi) => {
-    let d = phi - HALF;
-    d = ((((d + PI) % TAU) + TAU) % TAU) - PI;
-    const x = Math.abs(d) / (doorPhi * 0.78);
+    const x = Math.abs(dPhi(phi)) / (doorPhi * 0.62);
     if (x >= 1) return vTub;
-    return Math.max(vTub, doorV * 0.86 * Math.pow(1 - x * x, 0.62));
+    return Math.max(vTub, doorV * 0.72 * Math.sqrt(1 - Math.pow(x, 4)));
   };
   const innerRef = (p, out) => out.set(p.x, 0.4, p.z);
   const innerTint = tintOf(cw.inner);
@@ -634,12 +722,38 @@ export function buildTent(rnd, opts = {}) {
       [floorTint[0] * 0.9, floorTint[1] * 0.9, floorTint[2] * 0.9]);
   }
 
+  // Somebody's kit, on the floor, visible through the door.
+  //
+  // This is four primitives and it is worth more than any of them: an aperture
+  // with nothing behind it is a hole, and an aperture with a rolled pad and a
+  // stuff sack behind it is a room somebody sleeps in. Everything in here is
+  // tinted well up because it lives inside the fly's own shadow, where the
+  // renderer gives it almost nothing and its true value would be black.
+  {
+    const inX = A * iS * 0.52, inZ = B * iS * 0.34;
+    const pad = V(-inX * 0.35, 0.10, -inZ * 0.30);
+    const padEnd = V(inX * 0.72, 0.095, inZ * 0.55);
+    P.add(rod(0.082, pad.distanceTo(padEnd), 7), 'fabricIn', span(pad, padEnd, M()),
+      [0.96, 0.80, 0.58]);                                  // a rolled foam pad
+    // A sleeping bag, half unrolled, lying along the other side.
+    const bagA = V(inX * 0.30, 0.085, -inZ * 0.95);
+    const bagB = V(-inX * 0.55, 0.075, inZ * 0.85);
+    P.add(rod(0.092, bagA.distanceTo(bagB), 7), 'fabricIn', span(bagA, bagB, M()),
+      [0.58, 0.68, 0.90]);
+    // A stuff sack propped against the back wall.
+    P.add(rbox(0.17, 0.15, 0.16, 0.055), 'fabricIn',
+      at(inX * 0.55, 0.085, -inZ * 1.25, 0, 0.5, 0.12), [0.82, 0.76, 0.60]);
+    // A head torch hanging from the canopy, off centre.
+    P.add(rbox(0.05, 0.028, 0.028, 0.010), 'plastic',
+      at(-A * iS * 0.18, profY(0.62) * iH, -B * iS * 0.10, 0, 0.3, 0), [1.15, 1.15, 1.15]);
+  }
+
   // The mesh inner door, zipped shut on the colourways whose plate shows it
   // that way. Solid dark geometry rather than an alpha panel: a real screen at
   // 20 m is pure aliasing crawl, and the value is all the read needs.
   if (!cw.doorOpen) {
     P.add(patch((u, s, out) => {
-      const phi = HALF - doorPhi * 0.78 + u * doorPhi * 1.56;
+      const phi = HALF - doorPhi * 0.62 + u * doorPhi * 1.24;
       return innerBase(phi, lerp(vTub, innerDoor(phi), s), out);
     }, 34, 8, innerRef), 'mesh', null, [1.5, 1.45, 1.4]);
   }
@@ -697,7 +811,7 @@ export function buildTent(rnd, opts = {}) {
     // A reinforcement patch where the line pulls on the fly.
     // A reinforcement patch where the line pulls on the fly. Small: at 52 mm
     // in a saturated accent it read as a signal flag stuck to the tent.
-    P.add(rbox(0.038, 0.038, 0.004, 0.008), 'fabric', orient(anchor, nrm),
+    P.add(rbox(0.046, 0.046, 0.004, 0.009), 'fabric', orient(anchor, nrm),
       [acc[0] * 0.78 + 0.06, acc[1] * 0.78 + 0.06, acc[2] * 0.78 + 0.06]);
 
     const away = new THREE.Vector3(nrm.x, 0, nrm.z).normalize();
@@ -735,7 +849,7 @@ export function buildTent(rnd, opts = {}) {
   // skins; it is handed a warp that does the sweeping, exactly the way the
   // chair author uses it for a sling that is not a rectangle either.
   {
-    const browPhiL = HALF + 0.60, browPhiR = HALF - 0.60;
+    const browPhiL = HALF + 0.48, browPhiR = HALF - 0.48;
     const browV = 0.60;
 
     // Where the leading edge sits: mid-height at the centre, dropping at the
@@ -787,11 +901,19 @@ export function buildTent(rnd, opts = {}) {
       return p;
     };
 
+    // NOTE the 1 - u. `fabricPanel` takes its facing from cross(dp/du, dp/dv),
+    // and with u running left → right along the brow that cross product points
+    // down and back: round three rendered the awning's *underside* upwards and
+    // the brow came out as a dark cave over the door. Running u the other way
+    // flips it. The lower skin keeps the same winding on purpose — it is
+    // `fabricIn`, which is double-sided, so the face you actually see from
+    // below is a back face and three flips its normal for you.
+    const skin = (u, v, p) => hood(1 - u, v, p);
     const corners = [bl, br, fr, fl];
-    P.add(fabricPanel(corners, 26, 16, 0, hood), 'fabric', null, flyTint);
+    P.add(fabricPanel(corners, 26, 16, 0, skin), 'fabric', null, flyTint);
     P.add(fabricPanel(corners, 26, 16, 0,
-      (u, v, p) => { hood(u, v, p); p.y -= 0.010; }), 'fabricIn', null,
-      (x, y, z) => { const t = flyTint(x, y + 0.010, z); return [t[0] * 0.46, t[1] * 0.46, t[2] * 0.52]; });
+      (u, v, p) => { skin(u, v, p); p.y -= 0.010; }), 'fabricIn', null,
+      (x, y, z) => { const t = flyTint(x, y + 0.010, z); return [t[0] * 0.60, t[1] * 0.60, t[2] * 0.66]; });
 
     // The brow pole along the seam, and the two lines holding the corners down.
     P.add(sweptArc((t) => {
@@ -822,7 +944,7 @@ export function buildTent(rnd, opts = {}) {
   // Round two put it at v = 0.70 with a 75 mm lip, where it broke the crown
   // line from the front and read as a piece of litter stuck to the top.
   {
-    const vPhi = -HALF, vV = 0.56, hw = 0.17;
+    const vPhi = -HALF, vV = 0.46, hw = 0.17;
     const l = surf(vPhi - hw, vV, new THREE.Vector3());
     const r = surf(vPhi + hw, vV, new THREE.Vector3());
     const nl = normalAt(vPhi - hw, vV, new THREE.Vector3());
