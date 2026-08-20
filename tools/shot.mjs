@@ -69,6 +69,13 @@ export const VIEWS = {
   vehicle:   { anchor: 'vehicle',  height: 2.6, dist: 11,  pitch: -0.10, fov: 44, hour: 17.0, subject: true },
   // Golden-hour backlit shot — the money frame for foliage translucency.
   backlit:   { anchor: 'meadow',   height: 2.4, dist: 10,  pitch: 0.04,  fov: 52, hour: 17.9, faceSun: true },
+  // The same key, over water. `backlit` is anchored on `meadow` and has no
+  // water in frame at all, so every translucent thing that grows at a
+  // waterline — the reed and sedge stands, the lace, spray — has never once
+  // been judged against a low sun, which is the only light that shows them.
+  // The banks author had to verify its stands by hand at `--view mouth
+  // --hour 17.9` because the harness had no framing for it.
+  backwater: { anchor: 'mouth',    height: 2.2, dist: 14,  pitch: 0.02,  fov: 54, hour: 17.9, faceSun: true },
   // Dawn cool pass, checks the grade does not fall apart off-golden-hour.
   dawn:      { anchor: 'vista',    height: 48,  dist: 130, pitch: -0.13, fov: 46, hour: 7.4 },
 };

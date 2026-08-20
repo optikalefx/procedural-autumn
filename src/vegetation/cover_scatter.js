@@ -33,14 +33,141 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { NoiseField } from '../core/Noise.js';
-import { clamp01, smoothstep, mulberry32, hash2i } from '../core/MathUtils.js';
+import { clamp01, smoothstep, mulberry32, hash2i, bilinear } from '../core/MathUtils.js';
 // Shared with the grass field on purpose: the wheel ruts have to be bare in
 // both layers, or the track reads as a mown stripe with bushes growing in it.
 import { RoadMask } from './grass_scatter.js';
 import { SPECIES } from './tree_species.js';
-import { ARCH_INDEX, COVER_ARCHETYPES } from './cover_forms.js';
+import { ARCH_INDEX, COVER_ARCHETYPES, REED_HEIGHT } from './cover_forms.js';
 
 const TAU = Math.PI * 2;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  DISTANCE TO WATER
+//
+//  Everything a shoreline layer wants to know is "how far is the water from
+//  here", and that is the one field the world does not publish. `TerrainGen`
+//  computes it — `_climate()` builds exactly this raster to drive moisture and
+//  stores it as `this.distToWater` — but it is not in `bakeFormat.js`, so it
+//  does not survive the worker boundary; and `WorldData.distToShoreApprox` is a
+//  stub that answers 0 or 8 off the river mask, which is blind to every lake in
+//  the world. Requested properly in docs/INTEGRATION_REQUESTS.md; rebuilt here
+//  meanwhile, because a shoreline placement rule keyed off anything else is a
+//  rule keyed off rivers only.
+//
+//  Why a raster and not a probe. The alternative is to ask `getWaterDepth` on a
+//  ring of candidate radii, which is what `_nearWater` does at one radius for
+//  one bit of information. Answering "3.4 metres" that way costs a couple of
+//  dozen depth lookups per candidate site, on a layer that has to run a few
+//  dozen candidates per cell over every cell in the world — including the great
+//  majority that hold no water at all and whose entire cost should be one
+//  fetch. A chamfer is built once and read for the price of a bilinear.
+//
+//  Two passes of a 3-4-5-ish chamfer rather than an exact Euclidean transform.
+//  The error is under 2% at the ranges this is used over (0-10 m), which is
+//  centimetres, and nothing here is deciding anything at centimetre precision.
+//
+//  Stored quantised to 1/8 m in a Uint16 (4.7 MB at the shipping 1536² grid,
+//  against 9.4 for floats). The `INF` seed is well under the type's ceiling so
+//  that `d + step` inside the sweep cannot wrap — a wrapped distance reads as
+//  "touching the water" and would put a reed bed on a mountain top.
+// ─────────────────────────────────────────────────────────────────────────────
+const SHORE_Q = 8;                     // quantisation steps per metre
+const SHORE_INF = 60000;               // ≈ 7.5 km, and 60000 + 24 cannot wrap
+
+export class ShoreField {
+  constructor(world) {
+    const R = world.res, N = R * R;
+    this.res = R;
+    this.half = world.half;
+    this.invTexel = world.invTexel;
+    const d = new Uint16Array(N).fill(SHORE_INF);
+
+    // Wet from the BAKED grids rather than from `getWaterDepth`. The baked
+    // water surface is what both the river ribbon and the lake mesh are derived
+    // from, it is already on this exact grid, and reading it directly is two
+    // million array indexes instead of two million bilinear interpolations plus
+    // two million noise evaluations of `microDetail`.
+    //
+    // The threshold is 2 cm of standing water, not "the cell is marked". A
+    // priority-flood marks the whole filled basin including the rim texels it
+    // raised by nothing, and seeding the chamfer from those puts the shoreline a
+    // texel or two out into the meadow all the way round every lake.
+    const h = world.height, w = world.water;
+    for (let i = 0; i < N; i++) if (w[i] > -9000 && w[i] - h[i] > 0.02) d[i] = 0;
+
+    const S = Math.round(world.texel * SHORE_Q);              // orthogonal step
+    const D = Math.round(world.texel * SHORE_Q * 1.41421356); // diagonal step
+    // Forward sweep: every texel takes the best of the four causal neighbours.
+    for (let y = 1; y < R; y++) {
+      const row = y * R, prev = row - R;
+      for (let x = 1; x < R - 1; x++) {
+        const i = row + x;
+        let v = d[i];
+        const a = d[i - 1] + S; if (a < v) v = a;
+        const b = d[prev + x] + S; if (b < v) v = b;
+        const c = d[prev + x - 1] + D; if (c < v) v = c;
+        const e = d[prev + x + 1] + D; if (e < v) v = e;
+        d[i] = v;
+      }
+    }
+    // Backward sweep: the other four, which is what makes the result symmetric.
+    for (let y = R - 2; y >= 0; y--) {
+      const row = y * R, next = row + R;
+      for (let x = R - 2; x >= 1; x--) {
+        const i = row + x;
+        let v = d[i];
+        const a = d[i + 1] + S; if (a < v) v = a;
+        const b = d[next + x] + S; if (b < v) v = b;
+        const c = d[next + x + 1] + D; if (c < v) v = c;
+        const e = d[next + x - 1] + D; if (e < v) v = e;
+        d[i] = v;
+      }
+    }
+    this.grid = d;
+    // ── the half-texel the chamfer cannot see ────────────────────────────────
+    //
+    // What the sweep above measures is the distance to the nearest wet TEXEL
+    // CENTRE, and the waterline is not at a texel centre — it is somewhere
+    // inside the last wet texel, on average half a texel short of its middle.
+    // At the shipping 2 m grid that is a metre of systematic error, in the one
+    // metre that matters most: a caller asking "put this 0.3 m up the bank"
+    // and walking to `at() == 0.3` lands 0.7 m OUT IN THE WATER. Measured
+    // exactly that way — 22 instances placed against the ~200 the site count
+    // predicted, all of them the ones whose own jitter pushed them back uphill.
+    //
+    // Subtracting the bias here rather than in each caller is the right place
+    // for it: it makes `at()` mean "metres to the water's edge", which is what
+    // every caller believes it already means, and it keeps `RockScatter`'s
+    // waterline wetness honest for free. It cannot be exact — a raster does not
+    // know where inside a texel the shore runs — so callers that must land on
+    // dry ground still confirm against `getWaterDepth`.
+    this.lip = world.texel * 0.5;
+  }
+
+  /** Metres from (x, z) to the water's edge. 0 inside it. */
+  at(x, z) {
+    const gx = (x + this.half) * this.invTexel;
+    const gz = (z + this.half) * this.invTexel;
+    const d = bilinear(this.grid, this.res, this.res, gx, gz) / SHORE_Q - this.lip;
+    return d > 0 ? d : 0;
+  }
+}
+
+/**
+ * One field per world, shared by every system that needs it.
+ *
+ * Cached on the world object rather than owned by a scatterer because both
+ * `CoverScatter` and `RockScatter` want it and neither should pay 4.7 MB and a
+ * chamfer twice. Built lazily on first use, not in a constructor: `Water.js`
+ * hands `WorldData` its lake surface after both scatterers exist, and a field
+ * built at construction time would predate it.
+ */
+export function shoreField(world) {
+  let f = world.__shoreField;
+  if (!f) { f = new ShoreField(world); world.__shoreField = f; }
+  return f;
+}
 
 // Floats per instance in the flat cell buffers.
 //  0..2  position      3  yaw        4..6  scale
@@ -96,6 +223,36 @@ const PAL = {
   scrubRust:   C(0xb56a35), scrubRustTip: C(0xd99a4e),
   willow:      C(0x8fa855), willowTip:   C(0xd8e078),
   alder:       C(0x6b8a4e), alderTip:    C(0xaec258),
+  // ── the water margin ──────────────────────────────────────────────────────
+  // The one place in this palette where a *cool* green is correct. Everything
+  // else at ground level is a warm olive pulled toward the meadow's gold,
+  // because everything else is standing on gold; a reed bed is standing on
+  // water, and the water it stands on is the coolest, darkest area of the
+  // frame. The reference plate's reed margin separates from the river behind it
+  // by hue as much as by value — a blue-green against a violet-blue — and a
+  // reed authored in the meadow's olive family disappears into the bank instead.
+  //
+  // The deep end sits at luma ~0.14 linear, comfortably clear of the flat warm
+  // floor documented at the head of this palette (~0.10), and it is the value
+  // that carries the base of a stand and its thatch. The lit end is where the
+  // backlit crest lands.
+  reedDeep:    C(0x4d7346), reedLit:     C(0xa8c25e),
+  // A share of every stand has gone over to seed. Reeds in late autumn are not
+  // uniformly green — a bed is patched green and straw, and that patching is
+  // most of what stops a stand reading as one flat green shape. Warmer and a
+  // step lighter than the green pair, so a dry clump reads as a highlight
+  // inside the bed rather than as a different plant.
+  reedDry:     C(0xae8f4a), reedDryTip:  C(0xe4cd7e),
+  // Sedge on the bank lip. Deliberately between the reed green and the meadow
+  // gold: this is the form that has to hand one off to the other, so it is a
+  // damp olive at the root running to a sunlit gold-green at the blade tips.
+  sedgeDeep:   C(0x64803a), sedgeTip:    C(0xd0c866),
+  // The damp band itself — a ground mat pair, cooler and a clear step darker
+  // than the dry meadow's `matDry` (#a87f3a / #ecc478). This is the middle of
+  // the three bands the reference plate shows across a bank: hot gold behind,
+  // this, then water. It only ever appears within about three metres of a
+  // waterline, so it is allowed to be the strongest hue break in the layer.
+  matDamp:     C(0x5c7838), matDampLit:  C(0xa4bb5a),
   fernBase:    C(0x718646), fernBronze:  C(0xd08e4e), fernGold: C(0xecc05e),
   broadleaf:   C(0x6a884b), broadTip:    C(0xb0c45c),
   moss:        C(0x7a9a55), mossDeep:    C(0x58754a),
@@ -198,7 +355,7 @@ const CAN_CELL = 6;                  // metres per canopy raster cell
 // Layer salts. Distinct constants so no two layers can ever share a stream.
 const L_OPEN = 0x51a1, L_SCRUB = 0x5c2b, L_BANK = 0xba17;
 const L_UNDER = 0x0fe2, L_FLOWER = 0xf10e, L_LITTER = 0x11e2, L_DEAD = 0xdead;
-const L_GROUND = 0x9704, L_STONE = 0x5701, L_MAT = 0x3a71;
+const L_GROUND = 0x9704, L_STONE = 0x5701, L_MAT = 0x3a71, L_SHORE = 0x5e3d;
 
 export class CoverScatter {
   constructor(world, seed, opts = {}) {
@@ -416,6 +573,41 @@ export class CoverScatter {
     return out;
   }
 
+  /**
+   * The world's distance-to-water raster, built on first use. See `ShoreField`.
+   */
+  _shore() {
+    return this._sf || (this._sf = shoreField(this.world));
+  }
+
+  /**
+   * Plantability at the water's edge, where `_ground` is the wrong test.
+   *
+   * `_ground` refuses anything with water within its own footprint radius, and
+   * that rule is correct for every other layer in this file — it is the reason
+   * nothing here stands in a lake. It is also exactly why the shoreline in
+   * `shots/w-base/river.png` is a bare tan band: every layer backs off its own
+   * radius from the waterline, so the last metre and a half of bank is swept
+   * clean by construction and the terrain's shore texel is left showing.
+   *
+   * The reference plate has no such band. Gold grass grows to the water and
+   * *overhangs* it; the plant silhouette is the shoreline. So the margin layer
+   * tests its own centre and lets its blades hang out over the water, which is
+   * what a bank tuft does. `wade` is how much standing water the centre itself
+   * may sit in — zero for a mat, a few centimetres for a sedge whose crown is
+   * on wet mud.
+   */
+  _shoreGround(x, z, wade = 0.03) {
+    const W = this.world;
+    if (!W.isInBounds(x, z)) return 0;
+    if (W.getWaterDepth(x, z) > wade) return 0;
+    const slope = W.getSlope(x, z);
+    // A cut bank is not a margin. Past about 55° the ground is undercut rock and
+    // clay, which the plates show bare and which `_layerStones` already dresses.
+    if (slope > 1.60) return 0;
+    return (1 - smoothstep(1.05, 1.60, slope)) * (1 - this.roads.sample(x, z) * 0.85);
+  }
+
   /** Is there water within ~1.5 m of here? Four lookups, per clump site. */
   _nearWater(x, z) {
     const W = this.world, s = 1.5;
@@ -602,6 +794,12 @@ export class CoverScatter {
     n = this._layerOpen(cx, cz, S, band, out, n, cap);
     if (band <= 2) n = this._layerScrub(cx, cz, S, out, n, cap);
     n = this._layerBank(cx, cz, S, out, n, cap);
+    // Ahead of everything below it, and for the same reason the mats run first:
+    // the margin is the layer that decides whether a waterline reads at all,
+    // it is a few hundred instances in the cells that hold a shoreline and
+    // literally zero in every other cell in the world, and if a cell ever clips
+    // its buffer it must not be the shoreline that goes.
+    if (band <= 2) n = this._layerShore(cx, cz, S, band, out, n, cap);
     if (band <= 2) n = this._layerLitter(cx, cz, S, out, n, cap);
     n = this._layerDeadfall(cx, cz, S, band, out, n, cap);
     if (band <= 2) n = this._layerStones(cx, cz, S, out, n, cap);
@@ -1387,9 +1585,19 @@ export class CoverScatter {
     return n;
   }
 
-  /** Riverbank and lake-shore thickets — willow and alder. */
+  /**
+   * Riverbank and lake-shore thickets — willow and alder.
+   *
+   * Keyed on distance to water rather than on the river mask, and that is a fix
+   * rather than a refactor. `getRiver` is the *channel* raster: it is zero over
+   * every lake in the world, so the only water this layer could ever see was
+   * flowing water, and a lake shore got thickets only where the moisture term
+   * happened to clear 0.66 — which is a regional field, not a shoreline. Half
+   * the waterline in the game was invisible to the one layer whose whole job is
+   * to stand on it.
+   */
   _layerBank(cx, cz, S, out, n, cap) {
-    const W = this.world;
+    const W = this.world, N = this.noise, SF = this._shore();
     const ox = cx * S, oz = cz * S;
     const key = this._cellKey(cx, cz, L_BANK);
 
@@ -1398,13 +1606,25 @@ export class CoverScatter {
       const x = ox + rng() * S, z = oz + rng() * S;
       const river = W.getRiver(x, z);
       const moist = W.getMoisture(x, z);
-      // Wants the bank, not the channel: peaks just outside the water line.
-      const bankness = clamp01(smoothstep(0.03, 0.16, river) * (1 - smoothstep(0.34, 0.60, river)))
-                     + clamp01(smoothstep(0.66, 0.90, moist)) * 0.40;
+      const sd = SF.at(x, z);
+      // A willow stands back from the lip — it wants wet feet and dry roots —
+      // so the weight peaks a few metres up the bank and dies by twelve. The
+      // river term is kept as a *bonus* rather than as the gate: a big channel
+      // carries more bank vegetation than a pond does, which is true, and it is
+      // no longer the only thing that can open the layer at all.
+      const bankness = clamp01(smoothstep(0.4, 2.6, sd) * (1 - smoothstep(6.0, 13.0, sd)))
+                     * (0.55 + clamp01(smoothstep(0.03, 0.30, river)) * 0.55)
+                     + clamp01(smoothstep(0.66, 0.90, moist)) * 0.28;
       if (bankness < 0.12) continue;
+      // Thickets come in groves with bare bank between them, and the field they
+      // clump on is deliberately offset from the reed layer's so the two
+      // interleave along a shore instead of arriving together. A bank where
+      // every reed bed has a willow behind it reads as a repeated motif.
+      const grove = smoothstep(-0.28, 0.30,
+        N.fbm(x * 0.014 - 502.9, z * 0.014 + 61.4, 2, 2.1, 0.5, 1));
       const g = this._ground(x, z, 2.0);
       if (g < 0.10) continue;
-      if (rng() > bankness * g * 1.2) continue;
+      if (rng() > bankness * g * grove * 1.9) continue;
 
       const alder = rng() < 0.45;
       const members = 2 + ((rng() * 3.2) | 0);
@@ -1418,6 +1638,378 @@ export class CoverScatter {
           colB: alder ? PAL.alderTip : PAL.willowTip,
           scale: 0.72 + rng() * 0.70, tone: 0.88 + rng() * 0.22, hue: 0.030,
         });
+      }
+    }
+    return n;
+  }
+
+  /**
+   * The water margin: reed stands in the shallows, a damp bank band above them,
+   * and a sedge fringe on the lip that hangs over the waterline.
+   *
+   * ── WHY THIS IS ONE LAYER AND NOT THREE ────────────────────────────────────
+   *
+   * They are three *bands of one section* through a bank, and the whole point
+   * of the reference plate is that the three read as a sequence: hot gold
+   * meadow, a darker olive damp band, then water, with the plant silhouette
+   * doing the joining. Splitting them into separate layers means three
+   * independent noise fields deciding independently where they stop, and a
+   * bank where the damp mat is present and the sedge is not is a bank with a
+   * painted stripe on it. Sharing one site, one shore distance and one stand
+   * field is what keeps the section coherent as it runs along the shore.
+   *
+   * ── THE ONE RULE THAT MATTERS: STANDS, NOT AN OUTLINE ──────────────────────
+   *
+   * Uniform density along a contour is the single most artificial thing this
+   * layer could do. It is also the thing it does by default, because the gate
+   * — "is there shallow water here" — is itself a contour, so any density
+   * applied evenly to everything that passes it draws a green pipe-cleaner
+   * around every lake in the world.
+   *
+   * `stand` is the answer and it is deliberately a HARD threshold on a slow
+   * field: `smoothstep(0.06, 0.40, fbm)` over a ~55 m wavelength accepts about a
+   * quarter of the shoreline and refuses the rest outright. Three quarters of
+   * every waterline in this game has no reeds on it at all, which is what makes
+   * the quarter that does read as a reed bed rather than as an edge treatment.
+   *
+   * `bay` is the second half of it and it is measured rather than noised. Eight
+   * depth probes on a 9 m ring: on a straight bank about half come back wet, in
+   * a bay — where the water wraps around you — more than half, on a point fewer.
+   * Reeds want slack water, which is what a bay is, so the two multiply and the
+   * beds land in the re-entrants and leave the headlands bare. That correlation
+   * is what makes the placement read as *caused* instead of as noise that
+   * happens to be lumpy, and it is the same argument `RockScatter` opens with.
+   *
+   * The damp band is deliberately NOT stand-gated. It is a property of the
+   * ground rather than a plant that chose to grow there — everything within
+   * two metres of standing water is damp — so gating it would produce exactly
+   * the painted-stripe artefact described above, in the opposite direction. It
+   * is modulated in *width* instead, by a faster field, so the band scallops in
+   * and out rather than running as a ribbon of constant gauge.
+   */
+  _layerShore(cx, cz, S, band, out, n, cap) {
+    const W = this.world, N = this.noise, SF = this._shore();
+    const ox = cx * S, oz = cz * S;
+    const key = this._cellKey(cx, cz, L_SHORE);
+    // 74 candidates over a 2304 m² cell. Higher than the shrub layers because
+    // the target is a strip a few metres wide rather than an area: a cell that
+    // a shoreline crosses corner to corner holds maybe 300 m² of margin, i.e.
+    // an eighth of the cell, so an eighth of these land anywhere useful. The
+    // other seven eighths cost ONE `ShoreField.at` each and are gone — which is
+    // the whole reason the distance raster exists rather than a probe ring.
+    const sites = Math.round(74 * this.mul);
+
+    for (let a = 0; a < sites && n < cap; a++) {
+      const rng = mulberry32((hash2i(a, L_SHORE, key) * 4294967296) >>> 0);
+      const x = ox + rng() * S, z = oz + rng() * S;
+
+      // The cheap gate first, and it is the only thing most of the world pays.
+      // 5.5 rather than the band's own width: the dry half walks its site down
+      // the distance gradient into the band (see below), so a candidate five
+      // metres out is not a candidate in the wrong place, it is a candidate the
+      // layer can still use. Widening it is how the band gets its density.
+      const sd = SF.at(x, z);
+      if (sd > 7.0) continue;
+      const g = this._shoreGround(x, z, 0.80);
+      if (g < 0.10) continue;
+
+      const depth = W.getWaterDepth(x, z);
+      // 0.80, not the brief's 0.4. The brief's number is the depth a reed bed
+      // is *densest* at, and it is the right number for that; measured across
+      // this world's channels (`tools/_scratch/banks/shoreprobe.mjs`) the bed
+      // frequently drops from 0 to 7 m inside four metres of bank, so a hard
+      // 0.4 m ceiling leaves a shelf one texel wide and a bed with nowhere to
+      // stand. The thinning curve in the member loop is what actually shapes
+      // the bed — this is only the point past which it is open water.
+      if (depth > 0.80) continue;
+
+      // ~55 m wavelength, thresholded hard. See the note above: this is the
+      // line that makes a bed a bed. Offset and frequency are unique to this
+      // layer — sharing either with the mat or shrub fields would stack the
+      // two into one blotch pattern along the same shore.
+      const stand = smoothstep(0.06, 0.40,
+        N.fbm(x * 0.018 + 311.7, z * 0.018 - 174.3, 2, 2.15, 0.5, 1));
+
+      if (depth > 0.04) {
+        // ── reeds, standing in the water ───────────────────────────────────
+        if (stand < 0.05) continue;
+        // Eight probes, and they are only ever paid by a candidate that already
+        // knows it is standing in shallow water — a few per cell, on the cells
+        // that hold a shoreline at all.
+        let wetRing = 0;
+        for (let k = 0; k < 8; k++) {
+          const ang = k * 0.7853982 + 0.31;
+          if (W.getWaterDepth(x + Math.cos(ang) * 9, z + Math.sin(ang) * 9) > 0.05) wetRing++;
+        }
+        // 0 on a headland, ~0.45 on a straight bank, 1 in a re-entrant.
+        const bay = clamp01((wetRing / 8 - 0.28) * 2.1);
+        // Fast water scours a bed out. The river mask is channel strength, so a
+        // big trunk river's centre gets nothing and its slack margins keep the
+        // full weight — which is also where a real reed bed is.
+        const slack = 1 - smoothstep(0.30, 0.68, W.getRiver(x, z));
+        const d = stand * (0.30 + bay * 0.85) * slack;
+        if (rng() > d * 1.35) continue;
+
+        // ── the stand is elongated along the shore ─────────────────────────
+        //
+        // A circular clump dropped on a margin puts a third of itself out into
+        // open water, where the depth test then deletes it — so what survives is
+        // a half-disc with a straight edge along the contour, which is the
+        // outline read arriving through the back door. The depth GRADIENT points
+        // into deeper water, so its perpendicular is the shore tangent; running
+        // the stand two or three times as far along that as across it fills a
+        // bay the way a bed actually grows into one, and the members that do
+        // stray deep are deleted at the frayed end where it does not show.
+        const e = 3.0;
+        let gx = W.getWaterDepth(x + e, z) - W.getWaterDepth(x - e, z);
+        let gz = W.getWaterDepth(x, z + e) - W.getWaterDepth(x, z - e);
+        const gl = Math.hypot(gx, gz);
+        if (gl < 1e-4) { gx = 1; gz = 0; } else { gx /= gl; gz /= gl; }
+        const tx = -gz, tz = gx;
+        const along = 3.4 + rng() * 5.2, across = 1.1 + rng() * 1.9;
+
+        // One character per stand. The file's own rule, and it is worth
+        // restating here because a reed bed is the case where breaking it is
+        // most tempting: rolling green-or-straw per culm gives a bed of evenly
+        // mixed confetti, which averages to one dull colour over any area big
+        // enough to read. A stand that has gone over to seed *as a stand* is a
+        // straw-coloured patch inside a green bed, which is what the plates
+        // show and what gives the margin its internal variation.
+        const dryStand = rng() < 0.30;
+        // A bed is a MASS. This is the count that decides whether the layer
+        // reads as a stand or as a scatter of green wires, and it is bought at
+        // the only place in this layer where instances are cheap: a member runs
+        // one depth lookup where a site has already paid a raster fetch, a
+        // ground test, eight ring probes and two gradient probes. Twenty-odd
+        // members inside a 4x2 m lens is roughly two clumps per square metre,
+        // which is what a photographed reed bed measures at and what the
+        // reference plate's margin reads as.
+        const members = 10 + ((rng() * (9 + stand * 14 + bay * 10)) | 0);
+        for (let m = 0; m < members && n < cap; m++) {
+          const u = (rng() + rng() - 1) * along;
+          const v = (rng() + rng() - 1) * across;
+          const mx = x + tx * u + gx * v, mz = z + tz * u + gz * v;
+          if (!W.isInBounds(mx, mz)) continue;
+          const md = W.getWaterDepth(mx, mz);
+          // Thinning with depth rather than a cliff at one number. A bed that
+          // stops dead at a depth draws a second contour just outside the
+          // first, which is the outline read this whole layer is written to
+          // avoid, arrived at from inside the bed.
+          if (md > 0.75) continue;
+          if (rng() > 0.28 + 0.72 * smoothstep(0.70, 0.12, md)) continue;
+          if (this.world.getSlope(mx, mz) > 1.5) continue;
+
+          // Tier follows depth, so the bed shortens toward the mud and drops
+          // its short tier as the water deepens past what a spike rush can
+          // stand in. The scale floor then guarantees emergence: a culm has to
+          // clear its own depth by a comfortable margin or the water closes
+          // over it, and a reed level with the surface reads as nothing at all.
+          // `REED_HEIGHT` is exported from `cover_forms.js` precisely so this
+          // arithmetic is against the mesh that exists rather than a guess.
+          let variant;
+          if (md > 0.18) variant = rng() < 0.68 ? 0 : 1;
+          else if (md > 0.07) variant = rng() < 0.55 ? 1 : 0;
+          else variant = rng() < 0.50 ? 2 : 1;
+          const sc = Math.max((md + 0.34) / REED_HEIGHT[variant], 0.74 + rng() * 0.46);
+
+          const dry = rng() < 0.22 ? !dryStand : dryStand;
+          n = this._emit(out, n, cap, 'reed', mx, mz, rng, {
+            colA: dry ? PAL.reedDry : PAL.reedDeep,
+            colB: dry ? PAL.reedDryTip : PAL.reedLit,
+            variant, scale: sc,
+            // Rooted on the bed, not floated on the surface. `_emit` takes the
+            // terrain height, and the sink is small because a culm emerging
+            // from silt has no visible base to hide.
+            sink: 0.02,
+            tone: 0.88 + rng() * 0.26, hue: 0.030,
+            // Straight up. `_emit` would otherwise hand the instance the bed's
+            // own normal, and a submerged shelf tilts; a whole bed leaning one
+            // way reads as combed. `conform` in the archetype table takes what
+            // little of this survives down to 15%.
+            nx: 0, nz: 0,
+          });
+        }
+        continue;
+      }
+
+      // ── the dry side: damp band and sedge fringe ───────────────────────────
+      //
+      // ── WALK THE SITE INTO THE BAND, DO NOT WAIT FOR ONE TO LAND IN IT ────
+      //
+      // This is the whole economy of the dry half and the first version got it
+      // wrong by a factor of twenty. Candidates are drawn uniformly over
+      // everything inside `sd < 5.5`, the band that actually wants dressing is
+      // the first metre or two, and area grows with distance — so measured at
+      // the `mouth` anchor (`tools/_scratch/banks/drybranch.mjs`) the shore
+      // distance of an accepted dry candidate came out as: 4 sites under 1 m,
+      // 58 between 1 and 2, 215 between 2 and 3, 426 between 3 and 4. The damp
+      // test then threw away 759 of 801. Six sedge tufts and thirty-six mats
+      // survived over a 288 m square, which in the capture is a shoreline of
+      // bare pink sand with nothing whatever on it.
+      //
+      // A distance field has a gradient of magnitude one, so "move three metres
+      // closer to the water" is one multiply — there is no search and no
+      // rejection. Draw the offset the site WANTS from the band profile and
+      // walk it there. Acceptance goes from 5% to ~90% for the same number of
+      // candidates and the same cost per candidate, and the distribution across
+      // the band is now the one that was authored rather than the one that
+      // falls out of the geometry of an annulus.
+      const q = 2.0;
+      let ax = SF.at(x - q, z) - SF.at(x + q, z);
+      let az = SF.at(x, z - q) - SF.at(x, z + q);
+      const al = Math.hypot(ax, az);
+      // No gradient means a flat pan of standing water or a raster plateau far
+      // from anything; there is no "toward the water" to walk along.
+      if (al < 1e-3) continue;
+      ax /= al; az /= al;
+      const toWater = Math.atan2(az, ax);
+
+      // Width, not presence. `edge` is the scalloping field — a faster
+      // wavelength than `stand`, so the damp band swells to three metres in
+      // places and pinches to half of one in others, and the boundary between
+      // damp and dry meadow is a wandering line rather than an offset contour.
+      const edge = N.fbm(x * 0.042 - 88.3, z * 0.042 + 27.6, 2, 2.2, 0.5, 1);
+      // 1.4 to 4.0 m, not the brief's "metre or two". The brief describes the
+      // reference plate, where the meadow runs to the water and the damp strip
+      // is all that separates them. This world's terrain paints a much wider
+      // pale shore — sectioned at the `river` anchor
+      // (`tools/_scratch/banks/transect.mjs`) the bare band between waterline
+      // and closed grass runs three to six metres — so a band authored at the
+      // plate's width covers a third of what it has to cover and leaves a
+      // second, paler stripe outside it. The proper fix is upstream (the
+      // terrain's `sand` weight is gated on `WorldData.distToShoreApprox`,
+      // which is a stub; logged in docs/INTEGRATION_REQUESTS.md); until then
+      // the band is authored against the ground that is actually there.
+      const width = 1.4 + clamp01(edge + 0.9) * 2.4;
+      // Squared toward the water, because that is where the band is dark and
+      // where the sand it has to cover is: two thirds of every site lands in
+      // the inner half of the band and the outer half gets the stragglers that
+      // blur its edge into the meadow.
+      const want = 0.05 + width * rng() * rng();
+      let bx = x + ax * (sd - want), bz = z + az * (sd - want);
+      if (!W.isInBounds(bx, bz)) continue;
+
+      // ── and then confirm against the depth field ─────────────────────────
+      //
+      // `ShoreField.at` already carries the half-texel lip correction, so the
+      // walk lands close to where it was aimed; what it cannot do is know where
+      // inside a texel the shore actually runs, which on a shallow shelf is a
+      // metre either way. One depth lookup settles it in the common case, and
+      // three 0.8 m steps back up the gradient cover a texel and a half, which
+      // is more than the residual error can be.
+      for (let k = 0; k < 3; k++) {
+        if (W.getWaterDepth(bx, bz) <= 0.02) break;
+        bx -= ax * 0.8; bz -= az * 0.8;
+      }
+      const bsd = SF.at(bx, bz);
+      if (bsd > width * 1.4 + 0.8) continue;
+
+      const cn = this._clumpNormal(bx, bz, this._n2);
+      const damp = clamp01(1 - smoothstep(width * 0.45, width * 1.15, bsd));
+      // ── the band is a STRIP, and a strip needs a strip's density ──────────
+      //
+      // The arithmetic that sets this, because it is not the same arithmetic
+      // any other layer in this file uses. Every other layer dresses an AREA
+      // and its density is per hectare; this one dresses two metres either side
+      // of a line. A hundred and twenty metres of shoreline in frame is about
+      // 240 m² of band, and a sward that reads as a sward — the reference's
+      // damp olive strip is continuous turf, not dotted clumps — needs three or
+      // four tufts per square metre over it. That is a thousand instances in a
+      // frame, out of a layer whose sites can only ever land a hundred or two
+      // in the band at all.
+      //
+      // So the density is bought in the MEMBERS, which cost one raster fetch
+      // and one ground test each, and not in `sites`, which cost a fetch, a
+      // ground test, a depth lookup, two gradient probes and a walk. A member
+      // spread of ±3.4 m along the shore by the band's own width across is
+      // about 8 m², so twenty-odd members in it is the 3/m² the sward wants.
+      //
+      // `lush` is the same scalloping field that sets the width, reused rather
+      // than drawn again — so where the band is wide it is also thick, and
+      // where it pinches it thins to a scatter. Modulating both from one field
+      // is what makes the fringe read as scalloped bays and points instead of a
+      // ribbon of even gauge, which on a shoreline is the same defect the reeds'
+      // `stand` field exists to prevent.
+      const lush = clamp01(edge + 0.55);
+      const members = 4 + ((rng() * (4 + damp * 9 + lush * 15)) | 0);
+      for (let m = 0; m < members && n < cap; m++) {
+        // Members spread ALONG the shore, not across it. Scattering them in a
+        // disc walks half of them out of the band they were placed in, which
+        // both wastes them and blurs the band's outer edge into the meadow.
+        const su = (rng() + rng() - 1) * 3.4;
+        const sv = (rng() - 0.5) * width * 1.25;
+        const mx = bx - Math.sin(toWater) * su + Math.cos(toWater) * sv;
+        const mz = bz + Math.cos(toWater) * su + Math.sin(toWater) * sv;
+        const msd = SF.at(mx, mz);
+        if (msd > width * 1.4 + 0.8) continue;
+        const mdamp = clamp01(1 - smoothstep(width * 0.45, width * 1.15, msd));
+
+        // The lip gets sedge; the shoulder behind it gets the damp mat. The
+        // split is by distance rather than by a coin, because the whole section
+        // is trying to read as three bands and a mat in front of a sedge tuft
+        // would put the pale note on the wrong side of the dark one.
+        //
+        // The sedge share is high and that is deliberate: this is the form
+        // whose blades arch out over the water, and the tan shore texel it has
+        // to cover is not a thin line — in `shots/banks/mouth.png` it is two
+        // metres of pink sand along the whole waterline. A mat lies flat and
+        // shows the sand between its strands; a fringe of overhanging tufts is
+        // what actually hides it.
+        // Three tufts to one mat, right across the band, and the ratio is a
+        // correction. Splitting them evenly by distance gave 1200 damp mats per
+        // 288 m square against 500 tufts — which is the whole cap of
+        // `groundMat` spent on a shoreline, stolen from the meadow layer that
+        // shares it, on the one form here that does NOT cover the tan shore
+        // texel. A mat lies flat and shows the ground between its strands; a
+        // fringe of arching tufts is what hides it. The mat's job in this band
+        // is only to carry the damp olive *colour* under and between the tufts,
+        // and a quarter of the members is enough for that.
+        if (rng() < clamp01(0.92 - msd * 0.14)) {
+          // A sedge crown may sit in a few centimetres of water. That is not a
+          // tolerance, it is the form's job: a tuft whose base is exactly on
+          // the line leaves the line visible, and one whose base is a hand's
+          // width into it covers it.
+          if (this._shoreGround(mx, mz, 0.11) < 0.10) continue;
+          // Fine sedge right at the lip, coarse tufts behind: a size ladder
+          // across a metre, which is what makes the edge read as ragged rather
+          // than as a row.
+          const fine = msd < 0.5 ? rng() < 0.62 : rng() < 0.25;
+          n = this._emit(out, n, cap, 'sedge', mx, mz, rng, {
+            colA: PAL.sedgeDeep,
+            // A share takes the meadow's own straw at the tip. This is the
+            // hand-off: at the top of the band the fringe is gold like the
+            // meadow behind it, at the water it is olive like the reeds, and
+            // nothing anywhere is a hard boundary between the two.
+            colB: rng() < 0.18 + msd * 0.40 ? PAL.strawPale : PAL.sedgeTip,
+            variant: fine ? 1 : 0,
+            // Yawed so the overhang leans at the water. Without this the form's
+            // lay points at a random bearing and a third of every tuft hangs
+            // backwards into the bank, where it is invisible.
+            yaw: toWater + (rng() - 0.5) * 0.9,
+            scale: (fine ? 0.86 : 1.02) + rng() * 0.50,
+            sink: 0.02, tone: 0.88 + rng() * 0.26, hue: 0.032,
+            nx: cn.nx, nz: cn.nz,
+          });
+        } else {
+          if (this._shoreGround(mx, mz, 0.04) < 0.10) continue;
+          n = this._emit(out, n, cap, 'groundMat', mx, mz, rng, {
+            colA: PAL.matDamp, colB: PAL.matDampLit,
+            // Small pads only. The broad variant is a three-metre swathe and
+            // this band is one to three metres wide — a broad one accepted at
+            // its centre lies half of itself in dry gold meadow, which is the
+            // one place the damp pair must never appear.
+            variant: 0, visMul: 0.78,
+            sink: 0.04 + rng() * 0.05,
+            scale: 0.90 + rng() * 0.40,
+            // Narrower than the meadow's mats. A tone jitter is what stops
+            // forty mats reading as one stamp, but here the whole point is that
+            // the band is a distinguishable VALUE — spread it as wide as the
+            // dry mats and the band's own mean drifts back toward the gold it
+            // is supposed to separate from.
+            tone: 0.84 + rng() * 0.28, hue: 0.026,
+            nx: cn.nx, nz: cn.nz,
+          });
+        }
       }
     }
     return n;

@@ -5681,3 +5681,306 @@ node tools/_scratch/coverab.mjs river --out shots/cover/ab
 node tools/_scratch/covermask.mjs --base shots/cover/ab-river-base.png \
   --mask shots/cover/hill-d7_12.png --hidden groundCover=shots/cover/ab-river-nocover.png
 ```
+
+## Banks author (water round) — 2026-08-20
+
+**1. Bake `distToWater` and publish it on `WorldData`.** Every shoreline
+placement rule — reeds in the shallow margin, the damp bank band, rock density
+at the waterline, wet-rock tinting above the surface — is a function of "how far
+is the water from here", and that is the one field the world computes and then
+throws away. `TerrainGen._climate()` builds exactly this raster (a two-pass
+chamfer on the water mask) to drive moisture and stores it as
+`this.distToWater`; it is not in `bakeFormat.js`, so it does not survive the
+worker boundary and no consumer can see it.
+
+What exists instead is `WorldData.distToShoreApprox(x, z)`, which returns `0`
+when `getRiver(x, z) > 0` and `8` otherwise. It is a stub, it is quantised to
+two values, and — because `getRiver` is the *channel* raster and is identically
+zero over standing water — it is blind to every lake in the world. It is
+currently live in `getSurfaceWeights`, where it gates the `sand` term: that is
+why lake shores get no shore texel at all while river banks get a hard-edged
+one.
+
+Ask: `out.distToWater` through `bakeFormat.js` (a `Uint8`/`Uint16` quantised to
+1/8 m is 2.4-4.7 MB at res 1536 and needs no float precision), plus a
+`WorldData.getDistToWater(x, z)` bilinear accessor, and `distToShoreApprox`
+retired in favour of it.
+
+*Workaround in place, no action needed to ship.* `ShoreField` in
+`src/vegetation/cover_scatter.js` rebuilds the chamfer from `world.height` and
+`world.water` on first use and caches itself on the world object as
+`world.__shoreField`, so `CoverScatter` and `RockScatter` share one copy.
+`RockScatter` imports it out of the vegetation module, which is the wrong
+direction for that dependency and would go away with this request. It also
+rebuilds from the *baked* water grid only, so it does not see the one-ring
+dilation `Water._buildLakes` adds to the drawn lake mesh — a metre or two of
+error on a lake rim, invisible at the tolerances it is read at, and gone once
+the field is baked.
+
+**2. (`Water.js` owner, FYI, no action requested.)** Rock may now stand in up to
+0.85 m of water where `getRiver(x, z) > 0.20` — a genuine flowing channel, never
+standing water. That is deliberate: the foam and wake terms in
+`shaders/water_river.js` are written to react to something breaking the surface
+and previously had nothing to react to, because `RockScatter._place` vetoed
+every rock past 0.4 m of depth everywhere. The lake case is unchanged, and the
+veto that produced the slab-in-a-lake report is still the rule everywhere the
+river mask is zero. If the river surface moves relative to the bed this round,
+these will re-seat automatically — they are anchored to `getHeight` at their own
+centre and sized off `getWaterDepth`, both sampled at generation time.
+
+## Connect author (water round) — 2026-08-20
+
+**C1. `water_river.js`: consume `aLake`.** `Water._buildRivers` now emits a
+per-vertex `aLake` attribute, 0 through a free-flowing reach and ramping to 1
+over the last ~34 m of a reach that arrives at standing water (and over the
+first ~30 m of one born at a spill point). Nothing declares it yet, so it is
+uploaded and ignored — harmless, and there so that landing this is one
+`attribute float aLake;` and a few multiplies rather than a change on both
+sides of the contract.
+
+What the geometry already does with it: the channel flares to 1.7× its width,
+`aFlow` and `aTurb` are taken to zero, station spacing tightens, and the
+ribbon's own height converges onto the lake surface and then passes ~0.45 m
+*under* it, so the lake mesh (renderOrder 4, depthWrite) occludes the last few
+metres and there is no hard quad edge in mid-air. That handover works, but it
+is a depth-test trick and it costs one station's worth of near-coplanar
+crossing over open water.
+
+What the shader could do better than geometry can:
+
+- `alpha *= 1.0 - smoothstep(0.55, 1.0, vLake)` — an honest fade instead of a
+  dive, and then the sink in `Water.js` can be reduced to a plain lift.
+- Fold the flow scroll out: `speed` should go to the lake's wind-ripple rate,
+  not stay at river pace, or the delta reads as a conveyor belt.
+- `foam` and the waterline lace should go with it. A delta has no bank shear
+  and no standing waves; `aTurb` is already zeroed, but `bankFoam` is driven by
+  `vSide` and `vFlow` and will keep drawing a bright edge on water that has
+  stopped moving.
+
+**C2. `water_lake.js`: `aWet` is no longer a cell count.** It used to be the
+fraction of the (up to four) 8 m grid cells touching a vertex that held water —
+five discrete values on a lattice — and `alpha = shoreFade * smoothstep(0.05,
+0.55, vWet)` inherited that staircase, which is a good part of the straight
+polygonal shoreline in `shots/w-base/`. It is now a smooth function of the
+vertex's own depth: 0 below −3.5 m, 0.25 at the waterline, 1 by 0.45 m of
+depth. Every gate written against it still behaves the way its comment says it
+does — the cliff guard is now literally a depth test, and the whole damp band
+still clears `smoothstep(-0.45, 0.10, vWet)`. No action needed; noted because
+the comments in that file describe the old quantity.
+
+**C3. Camera anchors will need refreshing, integrator's call.** The terrain
+moved: the carve follows a smoothed centreline now, so channels are in slightly
+different places and `review/anchors.json` resolves to slightly different
+ground. `waterfall` still frames the 96 m fall at [-720, -30] and `river`,
+`hero` and `mouth` all still frame what they are named for, so nothing is
+broken — but a critic comparing against `review/048..051` is comparing two
+terrains. `node tools/shot.mjs --refresh-views` after the round lands, once,
+for everybody.
+
+**C4. Banks: the mask is now the channel, not a texel.** `riverMask` used to be
+`log(flow)` on the raw D8 staircase — one 2 m texel wide, wandering, with
+dropouts. It is rasterised from the smoothed centrelines now, so it is the
+actual wet channel plus about a metre of margin, it has no dropouts, and it
+agrees with where the water is drawn to within the width of the waterline.
+`getRiver(x, z)` therefore means something different in degree: it covers ~2.3%
+of the map where it covered ~0.95%, and it is continuous across the channel
+rather than a ridge along its middle. Anything tuned against the old thresholds
+(`ShoreField`, the reed fringe, rock density at the waterline) will read wider
+margins. The `sand`/`riverBed` terms in `TerrainMaterial` are the visible ones.
+
+**3. (`Water.js` / `water_lake.js` owners.) The pale shore band is the water
+mesh drawn over dry land, not the terrain and not vegetation.** This is the
+defect the banks brief describes as "a bare tan band and then straight into flat
+blue water", and it cannot be fixed from the vegetation side because it is
+painted *over* whatever is there.
+
+Measured by hiding one system at a time inside a single page load
+(`tools/_scratch/coverab.mjs mouth --out shots/banks/ab3 --states '[{"tag":"base"},
+{"tag":"nowater","hide":["water"]},{"tag":"nocover","hide":["groundCover"]},
+{"tag":"bare","hide":["groundCover","grass"]}]'`), mean sRGB over two regions of
+the `mouth` foreground that read as pale pink sand:
+
+| region | base | water hidden | cover hidden | cover+grass hidden |
+|---|---|---|---|---|
+| 300,700 420x140 | 57.0 / 40.8 / **35.5** | 59.2 / 35.4 / **19.2** | 57.4 / 40.9 / 35.7 | 57.6 / 41.0 / 35.7 |
+| 700,760 300x100 | 36.1 / 27.1 / **27.6** | 65.8 / 40.9 / **21.7** | 36.4 / 27.0 / 27.4 | 36.5 / 27.1 / 27.4 |
+
+Hiding **every** scatter layer moves those pixels by under one percent. Hiding
+the **water** moves the blue channel by 16 and 6 points and restores a warm tan
+— i.e. the ground under the pale band is normal dry meadow ground, and the band
+is the lake surface being rasterised several metres inland of its own waterline
+at low alpha. In region two the whole 300x100 patch is under it.
+
+Best guess at the cause, from `Water._buildLakes` as described in this file's
+own terrain-author entry: the lake mesh "coarsens sixteen 2 m texels into an 8 m
+quad, dilates one ring so the shoreline fade has geometry to finish inside".
+That dilation is 8 m of quad on a surface whose fade has to finish inside it, so
+wherever the bank is shallow the fade's tail lands on dry ground. `WorldData`
+already compensates in the other direction — `getWaterHeight` takes the max of
+the grid and the drawn lake level precisely because the two disagree — so the
+overhang is known to exist; what is new here is that it is *visible*, and that
+it is the single largest thing between this shoreline and the reference plate.
+
+Ask: clip the lake surface's alpha against actual depth (`waterLevel -
+getHeight`) rather than letting the fade run to the edge of the dilated
+geometry, so the surface ends where the water ends.
+
+*What I did on my side meanwhile.* Nothing can be laid flat on that ground and
+seen — a ground mat under a translucent overlay is still under it. So the damp
+band's budget went three-to-one into `sedge`, an upright arching tuft whose
+blades stand clear of the overlay, rather than into `groundMat`, which lies in
+it. That is the right form for the reference plate anyway; it is worth knowing
+it was also forced.
+
+---
+
+## LOOK → CONNECT: a lake surface is drawn on a cliff face, and it is now bright blue
+
+Two of the canonical framings contain a hard-edged blue polygon lying on bare
+rock, well above any bed. In `shots/look/waterfall.png` it is an arrow-shaped
+wedge across the gorge wall at roughly (830-960, 380-420) of a 1600x900 frame;
+`shots/look/peaks.png` has a second one on the ridge at (1350-1500, 380-500).
+Both have straight polygon edges and a jagged outline, and neither has any
+ground contact.
+
+It is the **lake** surface, not the river ribbon — confirmed by rendering each
+shader's own debug colour and seeing only the lake shader respond. The river
+shader has a guard for this case (`airLim` / `airborne`, and the `cliff`
+hand-off to the falls system); the lake surface has only `smoothstep(0.05,
+0.55, vWet)` on the dilation ring, which asks whether the mesh is inside the
+baked water body and never asks whether the *ground* is below it.
+
+Not present in `shots/w-base/waterfall.png` captured at the start of this
+round, so it arrived with the lake work in flight rather than being old.
+
+This is not a shading fix and I have not attempted one: the surface is where it
+should not be, and any alpha rule I could write in `water_lake.js` would be the
+`airborne` guard again, in the wrong file, without the width attribute it needs
+to scale. **Ask:** gate the lake mesh (or its alpha) on `depth` having a
+plausible ceiling the way the ribbon does, so a perched cell cannot paint
+itself down a rock face.
+
+Worth doing soon because this round made it *louder*, not quieter. The lake body
+went from a pale neutral (#5e84af, blue/red 1.85, luma 0.50 in the `mouth`
+framing) to a saturated blue-violet (#3d5e80, blue/red 2.11, luma 0.35), which
+is the reference colour and is the point — but it also turns a wedge that used
+to read as haze on the rock into an unmistakable blue arrow.
+
+## LOOK → CONNECT: the `river` framing is standing water end to end
+
+Worth knowing rather than fixing. Everything visible in `--view river` is drawn
+by `water_lake.js`; the ribbon shader contributes no pixels to it at all
+(measured the same way). That is presumably the `lake` ramp in the polyline
+contract doing its job, and it is fine — but it means the *lake* shader is now
+the one that has to hold up at channel scale, and it was not written for that.
+Its mass field was 238 m by 53 m, so a fifteen-metre reach sat inside a third of
+one feature and the surface came back as one flat tint. Fixed on my side with a
+second octave at 62 m by 14 m; flagging it because the same assumption may be
+baked into other constants that were tuned on open basins.
+
+## LOOK → whoever owns Water.js uniforms: `uCoolGain` is the binding constraint
+
+No new uniform needed this round — everything landed inside the existing set.
+But for the record, the thing now limiting how blue water can get is
+`uCoolGain: 0.55` (Water.js:167), not anything in the shaders.
+
+`wCoolGovern` rotates by `miss * amount`, so 0.55 is a hard ceiling on the
+rotation however far below the floor a pixel sits. With the floor recalibrated
+this round, `miss` already runs 0.4-0.6 on deep water, which means the governor
+is amount-limited rather than floor-limited: raising the floor coefficient from
+1.40 to 1.75 moved the `mouth` lake's blue/red ratio from 2.14 to 2.21, and the
+plate is at 3.23. Sweeping the coefficient further is not worth the risk it
+carries at other times of day for two percent a time.
+
+**Ask, if a future round wants the last of that chroma:** try `uCoolGain` at
+0.7-0.8 and re-shoot `dawn` and `backlit` before keeping it. I have not touched
+it, because it is a shared dial and a concurrent write to Water.js loses the
+other authors' work.
+
+
+**3. (`Water.js` / `water_lake.js` owners.) The pale shore band is the water
+mesh drawn over dry land — not the terrain, and not vegetation.** This is the
+defect the banks brief describes as "a bare tan band and then straight into flat
+blue water". It cannot be fixed from the vegetation side, because it is painted
+*over* whatever is standing there.
+
+Measured by hiding one system at a time inside a single page load, so nothing
+else can drift between arms:
+
+```bash
+node tools/_scratch/coverab.mjs mouth --out shots/banks/ab3 --no-cloud-control \
+  --states '[{"tag":"base"},{"tag":"nowater","hide":["water"]},
+             {"tag":"nocover","hide":["groundCover"]},
+             {"tag":"bare","hide":["groundCover","grass"]}]'
+```
+
+Mean sRGB over two regions of the `mouth` foreground that read as pale pink sand
+(percentages, R / G / B):
+
+| region | base | water hidden | cover hidden | cover+grass hidden |
+|---|---|---|---|---|
+| 300,700 420x140 | 57.0 / 40.8 / **35.5** | 59.2 / 35.4 / **19.2** | 57.4 / 40.9 / 35.7 | 57.6 / 41.0 / 35.7 |
+| 700,760 300x100 | 36.1 / 27.1 / **27.6** | 65.8 / 40.9 / **21.7** | 36.4 / 27.0 / 27.4 | 36.5 / 27.1 / 27.4 |
+
+Hiding **every** scatter layer moves those pixels by under one percent. Hiding
+the **water** moves blue by 16 and 6 points and restores a warm tan. So the
+ground under the pale band is ordinary dry meadow ground, and the band is the
+lake surface being rasterised several metres inland of its own waterline at low
+alpha. In region two the whole 300x100 patch is under it.
+
+Likely cause, from this file's own terrain-author entry describing
+`Water._buildLakes`: the lake mesh "coarsens sixteen 2 m texels into an 8 m
+quad, dilates one ring so the shoreline fade has geometry to finish inside".
+That is 8 m of quad whose fade must finish inside it, so on any shallow bank the
+tail lands on dry ground. `WorldData.getWaterHeight` already compensates in the
+other direction — it takes the max of the grid and the drawn lake level
+precisely because the two disagree — so the overhang is known; what is new is
+that it is *visible*, and that it is the largest single thing between this
+shoreline and the reference plate.
+
+Ask: clip the lake surface's alpha against real depth (`level - getHeight`)
+rather than letting the fade run to the edge of the dilated geometry, so the
+surface ends where the water ends.
+
+*What I did on my side meanwhile.* Nothing laid flat on that ground can be seen
+— a ground mat under a translucent overlay is still under it. So the damp band's
+budget went three-to-one into `sedge`, an upright arching tuft whose blades
+stand clear of the overlay, rather than into `groundMat`, which lies in it. That
+is the right form for the reference plate anyway; it is worth recording that it
+was also forced.
+
+**4. Status note on item 2 above — the `RockScatter.js` work is NOT on disk.**
+A separate Claude Code session reverted `src/rocks/RockScatter.js` to HEAD while
+withdrawing its own authors' in-flight work; it could not attribute the file and
+took ours with it. Everything item 2 describes (the 0.85 m depth allowance in a
+flowing channel, the `bed` anchor, the widened riverbed classification, shingle
+bars, waterline wetness) is therefore currently absent from the tree. Treat item
+2 as a description of intent, not of shipped behaviour, until the integrator
+confirms the patch is restored. `src/vegetation/cover_scatter.js` and
+`src/vegetation/cover_forms.js` were not touched and are intact.
+
+**C5. Standing water covers ~17.5% of the map, and it is not the water code.**
+Raised because the plan render makes it the loudest thing in a top-down frame,
+and because the two obvious suspects are both ruled out by measurement:
+
+- *The priority flood's epsilon.* `_fillDepressions` now computes a second,
+  epsilon-free surface (`fillFlat`) and lake depth is measured against that, so
+  merely-level meadow can no longer "fill" to 0.55 m by accumulating 8e-4 m per
+  popped cell. Effect on lake area: **104 349 → 103 533 cells at res 768, under
+  1%.** Worth having — it is also what makes every body exactly level — but it
+  is not the cause.
+- *Outlet incision.* A lake persists only if its outlet is resistant, so the
+  honest model is that the spill sill is cut down by whatever the outlet river
+  carves. Modelled at full strength (`level -= 0.8 + m²·6` at the spill, `m`
+  from the spill cell's own discharge): **17.52% → 16.43% wet, 154 bodies → 152.**
+  It barely moves because the median spill carries almost no discharge and the
+  basins are not shallow: the largest is 42 hectares and **74 m deep**, the top
+  twenty run 13–74 m.
+
+So this is the drainage of the heightfield, not a threshold in the water code:
+the priority flood is finding genuinely deep closed basins, and `GATES` in
+`TerrainGen._tectonic` — two low passes in the rim, at fixed azimuths — is the
+only thing giving the interior anywhere to drain to. Whoever owns the tectonic
+stage should look at whether the gates are deep enough and whether the regional
+tilt actually reaches them. I have not touched it: it would move every camera
+anchor and every biome in the map, and it is not a water-round change.

@@ -21,6 +21,13 @@
 import * as THREE from 'three';
 import { clamp, clamp01, smoothstep, mulberry32, hash2i, bilinear } from '../core/MathUtils.js';
 import { NoiseField } from '../core/Noise.js';
+// Distance to the nearest standing water, as a raster. Lives in
+// `cover_scatter.js` because that is where it was first needed and it caches
+// itself on the world object, so importing it here costs an import and not a
+// second 4.7 MB chamfer. It belongs in `WorldData` — `TerrainGen._climate()`
+// already builds exactly this field and drops it on the floor — and that is
+// logged in docs/INTEGRATION_REQUESTS.md.
+import { shoreField } from '../vegetation/cover_scatter.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -109,6 +116,52 @@ const BASE_TOLERATE = 1;
  * however broken the ground under it is.
  */
 const MAX_PLANT = 1.0;
+
+/**
+ * How far a crag block that will not seat may be rotated toward the local dip,
+ * and in what steps. See the dip-lay loop in `_place`.
+ *
+ * 0.92 rather than 1.0: at a full 1.0 the block's base plane is exactly the
+ * hillside and the whole course lies down flat into it, which trades the
+ * hanging read for a shingled one — the blocks stop being blocks and become
+ * scales on the face. A hair short of the dip keeps the base cutting into the
+ * hill at a few degrees, which is what puts the ground line across the block's
+ * face instead of along its bottom edge.
+ *
+ * Set to 0 to disable the step entirely, which is the A/B arm: with it off,
+ * `_place` behaves exactly as it did before (the loop falls straight through to
+ * the shrink branch), so `tools/_scratch/rocklos.mjs` can be run against both.
+ */
+const DIP_LAY_MAX = 0.92;
+const DIP_LAY_STEP = 0.12;
+
+/**
+ * The depth past which a crag block is thrown away rather than planted, as a
+ * multiple of its size — and, now, also the depth it is allowed to reach.
+ *
+ * These used to be two different numbers, and the gap between them was the bug.
+ * `need` was clamped up at `size * MAX_PLANT` but the block was only rejected
+ * past `size * MAX_PLANT * 1.30`, so every block whose base needed a depth in
+ * between was planted as deep as it was allowed to go and **left with the rest
+ * of its base in the air** — deliberately, per the comment that used to sit on
+ * the clamp: "a little overhang inside a continuous chain is invisible". It is
+ * not invisible. Measured line-of-sight from the canonical poses
+ * (`tools/_scratch/rocklos.mjs`), 33-43 % of crag blocks in the four affected
+ * views sat exactly on that clamp, and they are the blocks the critic circled.
+ *
+ * With one number there is no band: a block either gets its base into the hill
+ * or it is not placed. The reject is stated in the same units the clamp is —
+ * the *final* burial, margin included — so passing the reject now guarantees
+ * `need` is never raised, which is what makes the clamp unreachable rather than
+ * merely rarer.
+ *
+ * A block planted at 1.30 of its size still stands ~0.2 of a size proud (a crag
+ * form is roughly 1.5 sizes tall), so "it disappears" — the objection that put
+ * the clamp there — is not what this trades for. What it trades for is holes,
+ * and the dip-lay step above exists to keep that number small: laying a block
+ * along the face is what stops it needing the depth in the first place.
+ */
+const PLANT_HARD = MAX_PLANT * 1.30;
 
 /** Used until `Rocks` hands over the real per-variant bounds. */
 const FOOT_FALLBACK = { rx: 1.3, rz: 1.3, lo: new Array(9).fill(-0.5) };
@@ -232,6 +285,9 @@ export class RockScatter {
     // and costs nothing at stream time, and nothing at all at runtime — this is
     // a placement rule, so it is paid when a cell is generated and never again.
     this._roads = new RoadProximity(world?.roads);
+    // Set for the duration of a shingle bar, which is the one cluster allowed
+    // past the loose-stone clump field in `_place`. See `_clusterShingle`.
+    this._barDense = false;
     /** Set false to A/B the clearance rule without a second page load. */
     this.roadClearance = true;
   }
@@ -248,6 +304,11 @@ export class RockScatter {
     this._archSeed = {};
     let k = 0;
     for (const a of Object.keys(this._foot)) this._archSeed[a] = (0x51ed27 + (k++) * 0x9e3779b9) | 0;
+  }
+
+  /** The world's distance-to-water raster, built on first use. */
+  _shore() {
+    return this._sf || (this._sf = shoreField(this.world));
   }
 
   hardness(x, z) {
@@ -303,8 +364,30 @@ export class RockScatter {
     const depth = W.getWaterDepth(x, z);
     const hard = this.hardness(x, z);
 
-    if (river > 0.05 || depth > 0.02) {
-      return { kind: 'riverbed', s: clamp01(river * 2.2 + 0.35), h, slope, hard };
+    // ── the water margin ─────────────────────────────────────────────────────
+    //
+    // Widened from "the river mask is non-zero here" to "there is water within
+    // nine metres", and the two are not the same question. `getRiver` is the
+    // channel raster and reads zero over standing water, so a lake shore
+    // classified as meadow and got the erratic vocabulary — a lone hero boulder
+    // and its court, which is a glacial landform and not what a beach is made
+    // of. And even on a river the mask falls off inside the channel width, so
+    // the bank a metre back from the water was already out of the process.
+    //
+    // Nine metres because that is roughly where the bank stops being the
+    // river's and starts being the hillside's: past it the talus, rib and
+    // erratic tests below are the right vocabulary again. `s` runs with
+    // proximity rather than being flat, so the rock thickens toward the water
+    // instead of filling a nine-metre corridor evenly — the acceptance roll in
+    // `generateCell` is `rng() > sqrt(s)`, so this is a real density gradient
+    // and not just a stronger yes.
+    const sd = this._shore().at(x, z);
+    if (river > 0.05 || depth > 0.02 || sd < 9.0) {
+      const near = 1 - smoothstep(1.0, 9.0, sd);
+      return {
+        kind: 'riverbed', h, slope, hard, sd, river, depth,
+        s: clamp01(river * 1.9 + near * near * 0.95 + 0.22),
+      };
     }
 
     // ── the mountain ─────────────────────────────────────────────────────────
@@ -422,7 +505,7 @@ export class RockScatter {
   _cluster(x, z, c, up, rng, minSize, out) {
     this._kind = c.kind;          // tagged onto every instance, for debugging
     switch (c.kind) {
-      case 'riverbed': return this._clusterRiver(x, z, c, rng, minSize, out);
+      case 'riverbed': return this._clusterRiver(x, z, c, up, rng, minSize, out);
       case 'talus':    return this._clusterTalus(x, z, c, up, rng, minSize, out);
       case 'rib':      return this._clusterRib(x, z, c, up, rng, minSize, out);
       case 'scree':    return this._clusterScree(x, z, c, rng, minSize, out);
@@ -434,11 +517,79 @@ export class RockScatter {
 
   // ── cluster shapes ─────────────────────────────────────────────────────────
 
-  /** Rapids: big framing slabs on the banks, worn cobbles in the channel. */
-  _clusterRiver(x, z, c, rng, minSize, out) {
+  /**
+   * The water margin: big framing slabs on the banks, worn cobbles in the
+   * channel, shingle where the river is shallow and quick.
+   *
+   * ── SHINGLE ────────────────────────────────────────────────────────────────
+   *
+   * A gravel bar is not a small boulder field and cannot be made out of one.
+   * What it is, is thousands of pieces of one size class, packed at a density
+   * nothing else in this system runs at, in a lens that is elongated along the
+   * flow and has a sharp edge on the fast side and a feathered one on the slack
+   * side. That last part is the whole read: a bar with a soft edge all round is
+   * a pile, and a pile on a riverbank is talus.
+   *
+   * It goes where the river is shallow and fast, because that is where the
+   * water has the competence to move gravel and not the depth to keep it
+   * suspended — a riffle. `river` gives channel strength and `slope` stands in
+   * for velocity (a steep reach is a quick one), and the product of the two
+   * with shallow depth picks riffles out of pools without needing a hydraulic
+   * model.
+   *
+   * ── ROCKS THAT BREAK THE SURFACE ───────────────────────────────────────────
+   *
+   * `_place` vetoes anything under 0.4 m of water, and that veto exists for a
+   * good reason — a house-sized slab was once sitting in the middle of a lake.
+   * But the water shader's foam and wake terms are written to react to
+   * something standing in the flow, and with nothing ever standing in it they
+   * have nothing to draw. So the veto is relaxed **only** in a genuine channel
+   * (`river > 0.20`, which is zero over every lake in the world) and **only**
+   * for rocks placed with the `bed` anchor, which cannot sink; and the size is
+   * grown until the rock clears its own depth. Either both conditions hold and
+   * the rock is a boulder in a rapid, or the original veto applies unchanged.
+   */
+  _clusterRiver(x, z, c, up, rng, minSize, out) {
     const W = this.world;
-    const n = 5 + ((rng() * 10) | 0);
-    const R = 9 + rng() * 16;
+
+    // ── is this a riffle? ────────────────────────────────────────────────────
+    //
+    // Quick water over a shallow bed. Both terms have to be present — a steep
+    // bank beside a deep pool is not a bar, and a shallow flat is a mudflat.
+    // Sampled once for the whole cluster, because a bar is one landform and
+    // asking the question per stone would dissolve it into the even sprinkle
+    // this file opens by refusing.
+    //
+    // The channel strength is taken over a NEIGHBOURHOOD and the depth at the
+    // point, and that asymmetry is the whole rule rather than a detail. The
+    // first version asked for both at the cluster centre, which is a condition
+    // no place in the world can satisfy: `getRiver` peaks in the middle of a
+    // channel and the middle of a channel is where the water is deepest —
+    // sectioned across this world's reaches (`tools/_scratch/banks/shoreprobe.mjs`)
+    // the mask reads 1.0 under seven metres of water. So the test was "strong
+    // channel AND shallow", which is "deep AND shallow", and the census found
+    // exactly zero shingle bars in the world. A bar forms at the EDGE of a
+    // fast reach, on the inside of a bend or the tail of a riffle, which is
+    // shallow ground *beside* a strong mask and not under one.
+    const cDepth = W.getWaterDepth(x, z);
+    let rmax = c.river;
+    for (let k = 0; k < 4; k++) {
+      const a = k * 1.5707963 + 0.4;
+      const r = this.world.getRiver(x + Math.cos(a) * 7, z + Math.sin(a) * 7);
+      if (r > rmax) rmax = r;
+    }
+    const quick = smoothstep(0.16, 0.55, rmax) * smoothstep(0.05, 0.35, c.slope);
+    if (quick > 0.30 && cDepth < 0.42 && c.sd < 6.0 && rng() < quick) {
+      return this._clusterShingle(x, z, c, up, rng, minSize, out);
+    }
+
+    // Denser close to the water. The old count was flat over a 9-25 m disc
+    // wherever the river mask fired, which spent the same number of rocks on a
+    // bank twenty metres back as on the waterline itself — and the waterline is
+    // the only part of it the player can tell is a riverbank.
+    const near = 1 - smoothstep(1.0, 9.0, c.sd);
+    const n = 5 + ((rng() * (9 + near * 12)) | 0);
+    const R = 8 + rng() * (12 + near * 9);
     for (let i = 0; i < n; i++) {
       const a = rng() * Math.PI * 2;
       // `R * sqrt(rng)` is uniform over the disc, which is the flattest
@@ -470,22 +621,130 @@ export class RockScatter {
       // Smaller roll = bigger archetype, so the core biases the draw toward the
       // top of the table and the rim toward rubble.
       const roll = rng() * (1.45 - core * 0.85);
+      // ── how big the framing rock is depends on what the water is doing ────
+      //
+      // "Big framing slabs on the banks" is right for a gorge and wrong for a
+      // beach, and until the process was widened to reach every shoreline it
+      // could only ever fire on a channel so the distinction never came up.
+      // With a lake shore now classified as riverbed, the same table put 5 m
+      // slabs on a gently shelving margin — captured in `shots/banks/mouth.png`
+      // as a pair of untextured grey wedges filling a third of the frame, at a
+      // scale nothing else on that beach shared.
+      //
+      // A slab that size is deposited by water with the energy to move it, so
+      // tie it to the channel strength: a real river gets the framing rock the
+      // reference's rapids have, and standing water gets cobbles.
+      const gorge = 0.45 + smoothstep(0.08, 0.55, c.river) * 0.78;
       let arch, size;
-      if (roll < 0.20 && depth < 0.9) { arch = 'slab'; size = powSize(rng, 1.6, 5.2, 1.5); }
-      else if (roll < 0.28) { arch = 'hero'; size = powSize(rng, 1.8, 3.6, 1.7); }
-      else if (roll < 0.62) { arch = 'boulder'; size = powSize(rng, 0.5, 3.0, 1.8); }
+      if (roll < 0.20 && depth < 0.9) { arch = 'slab'; size = powSize(rng, 1.6, 5.2, 1.5) * gorge; }
+      // The compound `hero` mesh is the most expensive thing this system draws
+      // and it is the signature erratic-in-a-meadow prop. It belongs in a gorge,
+      // where a house-sized block in the flow is the whole picture, and it does
+      // not belong on a lake beach — where, once the process was widened to
+      // reach every shoreline, the census found a dozen of them around one
+      // anchor. Below the gorge threshold the roll falls through to `boulder`,
+      // which is the same size class at a fraction of the mesh.
+      else if (roll < 0.28) {
+        arch = gorge > 0.95 ? 'hero' : 'boulder';
+        size = powSize(rng, 1.8, 3.6, 1.7) * gorge;
+      }
+      else if (roll < 0.62) { arch = 'boulder'; size = powSize(rng, 0.5, 3.0, 1.8) * (0.62 + gorge * 0.44); }
       else { arch = 'rubble'; size = powSize(rng, 0.12, 0.50, 2.0); }
       size *= 0.66 + core * 0.52;
       if (size * 2 < minSize) continue;
-      // Shallows only. A rock that never breaks the surface is invisible and
-      // still costs a draw, so in the wash at the channel edge it is grown
-      // until it stands proud — but only there. Growing rocks to clear any
-      // depth is what put a slab in the middle of a lake.
-      if (depth > 0.4) continue;
-      if (depth > 0.05) size = Math.max(size, depth * 1.15 + 0.25);
-      // Water-worn rock lies on its flattest face and barely tips.
-      this._place(px, pz, arch, size, rng, 0.30, 0.10, out, depth > 0.05 ? 0.06 : 0.14);
+
+      // ── standing in the flow ────────────────────────────────────────────
+      //
+      // A rock that never breaks the surface is invisible and still costs a
+      // draw. In a genuine channel it is grown until it stands proud and
+      // anchored to the bed so it cannot sink back under; anywhere else — every
+      // lake in the world, and every slack margin — the original 0.4 m rule is
+      // what still applies, and `_place` enforces it independently of anything
+      // decided here.
+      const chan = W.getRiver(px, pz) > 0.20;
+      if (depth > (chan ? 0.85 : 0.4)) continue;
+      if (depth > 0.05) {
+        // 1.9 rather than 1.15. A boulder is roughly 0.75 of its nominal size
+        // from its ground contact to its crown once the anchor and the sink
+        // have taken their share, so 1.15 left it awash — level with the
+        // surface, which is the one height at which a rock in water reads as
+        // nothing at all. At 1.9 the crown stands about half a depth clear and
+        // there is a shoulder for the shader's foam ring to break against.
+        size = Math.max(size, depth * 1.9 + 0.30);
+      }
+      // Water-worn rock lies on its flattest face and barely tips. Wet ones
+      // take the `bed` anchor: the ring minimum is the wrong rule inside a
+      // channel, where the ring reaches the thalweg and drops the rock a metre
+      // below the bed it is supposed to be sitting on.
+      this._place(px, pz, arch, size, rng, 0.30, 0.10, out,
+                  depth > 0.05 ? 0.06 : 0.14, depth > 0.05 ? 'bed' : 'min');
     }
+  }
+
+  /**
+   * A shingle bar. See the note on `_clusterRiver` for why it is its own shape.
+   *
+   * The lens is built in the river's own frame: `along` runs down the fall line
+   * (which is where the water is going), `across` is the width. A bar is two to
+   * four times as long as it is wide and its stones grade — coarse at the head
+   * where the water arrives with the most energy, fine at the tail where it has
+   * dropped it. That grading is why this is a walk down the bar rather than a
+   * disc: a uniform mix over an ellipse reads as a texture, and the whole
+   * reason to build a landform is that a landform has a direction.
+   */
+  _clusterShingle(x, z, c, up, rng, minSize, out) {
+    const W = this.world;
+    this._uphill(x, z, up);
+    // Downhill is the flow direction. On a bench flat enough that the gradient
+    // is meaningless there is no riffle either, so bail rather than guess.
+    if (Math.abs(up.x) + Math.abs(up.z) < 0.05) return;
+    const fx = -up.x, fz = -up.z;
+    const sx = -fz, sz = fx;
+
+    const len = 9 + rng() * 16;
+    const wide = len * (0.24 + rng() * 0.22);
+    // Dense. This is the one placement in the file that is allowed to bypass
+    // the loose-stone clump field in `_place` — that field exists to break up
+    // rubble shed evenly over a hillside by three overlapping clusters, and a
+    // bar is already the clump it would otherwise be imposing. Left on, it
+    // deletes about half a bar at random and what is left is a scatter of grit
+    // on mud, which is precisely the thing that is not a gravel bar.
+    this._barDense = true;
+    // Retagged off 'riverbed'. `_kind` is carried onto every instance for
+    // exactly this — a bar is a different landform from a rapid and the census
+    // has to be able to tell them apart, or "are the gravel bars firing at all"
+    // is a question that can only be answered by looking at pictures.
+    this._kind = 'shingle';
+    const n = 40 + ((rng() * 46) | 0);
+    for (let i = 0; i < n; i++) {
+      // Along the bar with a triangular bias to the middle, and across it with
+      // a *squared* one — so the flanks feather and the axis is solid.
+      const t = (rng() + rng() - 1);
+      const u = t * len;
+      const v = (rng() - rng()) * wide * (1 - Math.abs(t) * 0.55);
+      const px = x + fx * u + sx * v, pz = z + fz * u + sz * v;
+      if (!W.isInBounds(px, pz)) continue;
+      const depth = W.getWaterDepth(px, pz);
+      // A bar is a bar because it is *out of* the water, or barely in it. Past
+      // a foot of water it is a bed, and a bed of gravel is invisible.
+      if (depth > 0.30) continue;
+      if (W.getSlope(px, pz) > 1.4) continue;
+
+      // Grading: coarse at the head (u > 0, upstream), fine at the tail.
+      const coarse = clamp01(0.5 + t * 0.5);
+      const roll = rng();
+      let arch, size;
+      if (roll < 0.05 + coarse * 0.10) { arch = 'boulder'; size = powSize(rng, 0.34, 0.55 + coarse * 0.75, 1.7); }
+      else if (roll < 0.16 + coarse * 0.12) { arch = 'slab'; size = powSize(rng, 0.16, 0.34 + coarse * 0.40, 1.6); }
+      else { arch = 'rubble'; size = powSize(rng, 0.07, 0.16 + coarse * 0.24, 1.8); }
+      if (size * 2 < minSize) continue;
+      // Flush and barely tipped. Shingle is imbricated — every stone lying on
+      // its flattest face, all leaning the same way — so `align` is high and
+      // `tumble` is nearly nothing. A bar of randomly tumbled stones reads as
+      // rubble tipped out of a truck.
+      this._place(px, pz, arch, size, rng, 0.82, 0.06, out, 0.30, 'bed');
+    }
+    this._barDense = false;
   }
 
   /** Talus fan: blocks get bigger and sparser toward the bottom of the run-out. */
@@ -1195,7 +1454,10 @@ export class RockScatter {
     // `river` anchors, the even sprinkle is not mostly rubble, it is knee-high
     // `boulder` from erratic courts and rib debris. The threshold is where a
     // stone stops being a *thing in the picture* and becomes ground texture.
-    if (arch === 'rubble' || size < 1.0) {
+    // `_barDense` opts a shingle bar out. See `_clusterShingle`: the bar IS the
+    // clump this field exists to impose, and applying it on top deletes half a
+    // bar at random.
+    if ((arch === 'rubble' || size < 1.0) && !this._barDense) {
       if (this.noise.fbm(x * 0.021, z * 0.021, 2, 2.1, 0.5, 13) < -0.08) return;
     }
 
@@ -1222,18 +1484,30 @@ export class RockScatter {
     // Orientation first: how deep a block has to be planted depends on which
     // way its long axis is pointing, so the anchor cannot be computed before
     // the rotation is known.
-    const up = this._up.set(0, 1, 0).lerp(n, align).normalize();
-    const q = this._q.setFromUnitVectors(UP, up);
-    // A crag form is oriented, not tumbled: local +X runs along the strike so a
-    // chain of them overlaps into one wall, and local +Z faces downhill.
-    this._qy.setFromAxisAngle(UP, yaw === null ? rng() * Math.PI * 2 : yaw);
-    q.multiply(this._qy);
-    if (tumble > 0) {
-      const a = rng() * Math.PI * 2;
-      this._ax.set(Math.cos(a), 0, Math.sin(a));
-      this._qt.setFromAxisAngle(this._ax, (rng() * 2 - 1) * tumble);
-      q.multiply(this._qt);
-    }
+    // Every random this rotation needs is drawn here, once, in exactly the
+    // order it was drawn before, and the rotation itself is then a pure
+    // function of `align`. That is what lets the anchor below re-orient a block
+    // that will not seat without disturbing the rest of the cell — see the
+    // dip-lay step in the `sag` branch.
+    const yawA = yaw === null ? rng() * Math.PI * 2 : yaw;
+    const tumbleA = tumble > 0 ? rng() * Math.PI * 2 : 0;
+    const tumbleB = tumble > 0 ? (rng() * 2 - 1) * tumble : 0;
+    const q = this._q;
+    const orient = (al) => {
+      const up = this._up.set(0, 1, 0).lerp(n, al).normalize();
+      q.setFromUnitVectors(UP, up);
+      // A crag form is oriented, not tumbled: local +X runs along the strike so
+      // a chain of them overlaps into one wall, and local +Z faces downhill.
+      this._qy.setFromAxisAngle(UP, yawA);
+      q.multiply(this._qy);
+      if (tumble > 0) {
+        this._ax.set(Math.cos(tumbleA), 0, Math.sin(tumbleA));
+        this._qt.setFromAxisAngle(this._ax, tumbleB);
+        q.multiply(this._qt);
+      }
+      return q;
+    };
+    orient(align);
 
     // ── ground anchor ────────────────────────────────────────────────────────
     //
@@ -1303,10 +1577,39 @@ export class RockScatter {
       //   * and it may not lose more than half its size whatever happens. Past
       //     that the block has stopped being the thing the course needed —
       //     instead the guard after the loop throws it away.
+      // ── lay it along the dip before making it smaller ────────────────────
+      //
+      // Shrinking alone cannot fix this, and the loop below spent four
+      // iterations a block finding that out. The depth a level block has to be
+      // planted to get its base into a planar slope is the ground drop across
+      // its own footprint, which is `footprintWidth * slope` — linear in size.
+      // The allowance is `size * MAX_PLANT` — also linear in size. The ratio is
+      // therefore scale-INVARIANT on a planar face: a block that does not fit
+      // at 20 m does not fit at 12 m either. The loop shrank it to its 0.50
+      // floor anyway and then clamped, which is how the massifs ended up
+      // carrying blocks that were both too small AND still hanging.
+      //
+      // The lever that is not scale-invariant is the rotation. `align` lerps
+      // the block's up-vector toward the ground normal; at the 0.50-0.62 the
+      // crag callers pass, a block on a 40-degree face is still tilted only
+      // ~20 degrees and its base plane cuts into the hill at the difference.
+      // Laid along the dip it needs to be sunk by its own thickness and no
+      // more — which is exactly what the comment at the crest caller already
+      // claims is happening, and was not.
+      //
+      // So: raise `align` toward the dip, in steps, and only start shrinking
+      // once the block is lying on the face and still does not fit. Rotation is
+      // free — it consumes no rng (see `orient`) and costs one re-probe.
+      //
+      // Not applied to `tower`: a leaning pinnacle is the one crag form that
+      // reads as a fallen block, which is why its caller passes 0.22, and a
+      // tower that will not seat should shrink or go rather than lie down.
       const size0 = size;
+      let al = align;
+      const dipMax = arch === 'tower' ? align : DIP_LAY_MAX;
       let nreq = this._probeBase(x, z, q, fp, size);
       let plant = 0;
-      for (let it = 0; it < 4; it++) {
+      for (let it = 0; it < 8; it++) {
         if (nreq === 0) { this._req[0] = centreH; nreq = 1; }
         // The BASE_TOLERATE'th lowest probe, without sorting the whole array.
         let ref = Infinity;
@@ -1318,9 +1621,14 @@ export class RockScatter {
         if (!isFinite(ref)) ref = centreH;
         plant = centreH - ref;
         if (plant <= size * MAX_PLANT) break;
-        const next = Math.max(size * clamp((size * MAX_PLANT) / plant, 0.72, 0.94), size0 * 0.50);
-        if (next >= size - 1e-3) break;
-        size = next;
+        if (al < dipMax - 1e-3) {
+          al = Math.min(dipMax, al + DIP_LAY_STEP);
+          orient(al);
+        } else {
+          const next = Math.max(size * clamp((size * MAX_PLANT) / plant, 0.72, 0.94), size0 * 0.50);
+          if (next >= size - 1e-3) break;
+          size = next;
+        }
         nreq = this._probeBase(x, z, q, fp, size);
       }
       // Nowhere to stand. The block has been shrunk as far as it is allowed to
@@ -1330,7 +1638,12 @@ export class RockScatter {
       // Clamping there is what put a house-sized slab in clear sky above the
       // ridge in `waterfall`, the single worst artifact this system has shipped.
       // A hole in a chain is a much cheaper mistake than a rock in the sky.
-      if (plant > size * MAX_PLANT * 1.30) return;
+      // Stated in the same units the anchor below is clamped in — the *final*
+      // burial, contact margin included — so that surviving this test is
+      // exactly the condition under which the clamp cannot bind. See
+      // PLANT_HARD: the two used to disagree, and the blocks that fell between
+      // them are the ones that hung in the air.
+      if (plant + CONTACT_MARGIN + size * 0.05 > size * PLANT_HARD) return;
 
       const reqs = this._req.subarray(0, nreq);
       reqs.sort();
@@ -1352,9 +1665,22 @@ export class RockScatter {
       // missing stops reading as one wall and becomes the row of separate
       // crates this whole exercise is about. A little overhang inside a
       // continuous chain is invisible; a gap in the chain is not.
-      need = Math.max(need, centreH - size * MAX_PLANT);
+      need = Math.max(need, centreH - size * PLANT_HARD);
       // `y` below is `minH - size * sink`, so fold the sink back in here.
       minH = Math.min(centreH, need + size * sink);
+    } else if (mode === 'bed') {
+      // ── the bed anchor, for rock lying in water ──────────────────────────
+      //
+      // The ring rule below is the wrong measurement inside a channel and
+      // getting it wrong is invisible on land and fatal here. A river bed is
+      // incised: three metres either side of a cobble sitting on a riffle is
+      // the thalweg, half a metre lower, so the ring minimum drops the cobble
+      // half a metre and the water closes over the thing that was grown
+      // specifically to break the surface. A bed is also the smoothest surface
+      // in the world — that is what running water does to it — so there is
+      // nothing for the ring to protect against. Sit on the ground at the
+      // rock's own centre, a tenth of a size proud of hovering.
+      minH = centreH - size * 0.10;
     } else {
       // Everything that is not a crag keeps the old rule: the lowest ground
       // across a modest ring, clamped so a boulder on a cliff does not vanish.
@@ -1394,7 +1720,18 @@ export class RockScatter {
     // and it lives here so every cluster type inherits it — the rng has already
     // been consumed at this point, so dropping the instance does not disturb
     // the rest of the cell.
-    if (depth > 0.4) return;
+    //
+    // ONE EXCEPTION, and it is deliberately narrow enough that the lake case
+    // cannot reach it. A rock standing in a rapid is what the foam and wake
+    // terms in `shaders/water_river.js` are written to react to, and with
+    // nothing ever standing in the flow those terms have nothing to draw. So a
+    // rock may sit in up to 0.85 m of water when BOTH: the river mask says this
+    // is a flowing channel (it is identically zero over standing water, which
+    // is what makes it the right test rather than a depth threshold), and the
+    // caller asked for the `bed` anchor, which cannot drop the rock below the
+    // ground it was sized against. A lake satisfies neither.
+    const inChannel = river > 0.20 && mode === 'bed';
+    if (depth > (inChannel ? 0.85 : 0.4)) return;
 
     // The per-axis jitter, drawn here rather than inside the push so that the
     // road veto below can drop this instance without disturbing anything else
@@ -1434,7 +1771,24 @@ export class RockScatter {
       kind: this._kind,
       variant,                          // clamped to the library by the caller
       size,
-      wet: clamp01(depth * 1.4 + river * 0.30),
+      // ── wet rock ─────────────────────────────────────────────────────────
+      //
+      // The shader already knows how to draw wet stone (`RockMaterial`: 0.62 of
+      // the dry value, pushed cool, with the specular lifted) and it already
+      // draws a soak band under `waterY` for anything straddling the surface.
+      // What it was never told is that a rock at the waterline is wet whether
+      // or not it is *in* the water: wave wash, spray off a riffle and
+      // capillary rise keep the first metre or two of every bank dark, and that
+      // dark band under the vegetation is a large part of why a reference
+      // shoreline reads as a shoreline. Without it every rock near the water
+      // was the same pale lavender as a rock on a dry hillside, which is the
+      // brief's complaint that "the rocks near the water look identical to
+      // rocks anywhere else".
+      //
+      // One raster fetch, and it decays over two metres, so a boulder field
+      // fifteen metres up the bank is untouched.
+      wet: clamp01(depth * 1.6 + river * 0.30
+                   + (1 - smoothstep(0.25, 2.20, this._shore().at(x, z))) * 0.42),
       moisture: W.getMoisture(x, z),
       tint: jTint,
       waterY: waterY === null ? -9999 : waterY,

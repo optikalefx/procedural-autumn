@@ -5,10 +5,22 @@
 //    1. Tectonic base       ridged multifractal + domain warp + continental mask
 //    2. Hydraulic erosion   droplet sim carves real drainage networks
 //    3. Depression filling  priority-flood -> lake basins
-//    4. Flow accumulation   D8 over the filled surface -> river discharge
-//    5. Channel carving     rivers cut banks proportional to discharge
-//    6. Water surface       monotone downhill river/lake surface + waterfall tags
+//    4. Flow accumulation   D8 over the filled surface -> river discharge,
+//                           then lake bodies (level + spill point) and the
+//                           river mask that excludes them
+//    5. Channel carving     centrelines are traced and SMOOTHED first, then the
+//                           bed is cut along them
+//    6. Water surface       rasterised from those same centrelines plus the
+//                           lake levels, so a mouth, a lake and an outlet are
+//                           one continuous surface; waterfall tags
 //    7. Climate             moisture from rivers/altitude -> biome weights
+//
+//  Steps 5 and 6 both consume `this.channels`, which `_traceRivers` builds at
+//  the top of step 5. That is deliberate ordering, not an accident of where the
+//  call landed: for three rounds the carve was splatted around the raw D8
+//  river mask while the ribbon was swept along a polyline, and where the two
+//  diverged the carved bed showed as a bare tan channel *beside* the water.
+//  One centreline, carved from and drawn from, is the fix.
 //
 //  Runs inside a worker. Emits transferable Float32Arrays.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -20,6 +32,94 @@ const GATES = [
   { dir: 0.62,  width: 0.40, depth: 1.00 },   // primary valley mouth
   { dir: -2.35, width: 0.26, depth: 0.72 },   // secondary side canyon
 ];
+
+// 8-neighbourhood, shared by the lake labeller and anything else that walks it.
+const D8X = [-1, 0, 1, -1, 1, -1, 0, 1];
+const D8Y = [-1, -1, -1, 0, 0, 1, 1, 1];
+
+// ── the river↔lake join, in constants ────────────────────────────────────────
+// How far the depression fill had to raise a cell before it counts as standing
+// water. Three passes used to carry three different answers to this — 0.12 in
+// `_fillDepressions`, 0.6 in the mask, 0.55 in the surface — so a trace could
+// walk into a cell the surface pass had already called lake and emit a ribbon
+// across it. One constant, one answer.
+const LAKE_MIN_DEPTH = 0.55;
+// Under this a "body" is a handful of texels the priority flood caught in a
+// local pit: no shoreline, no depth and no reflection — a puddle-shaped bug.
+// In square metres, not in cells, because the same world is baked at three
+// resolutions and a cell count would mean three different definitions of lake.
+const LAKE_MIN_AREA = 400;
+// ...and a body only gets to *terminate a river* if it is a lake you could put
+// a boat on. Measured on this seed at res 768: 161 bodies, of which 46 clear
+// this bar and hold 93% of the standing water between them. The other 115 are
+// pans and hollows a metre across strewn along the valley floor, and clipping a
+// trace at every one of them cut the river network from 93 trunks to 17 — the
+// channel runs *through* a pond, it does not end at one.
+const LAKE_MAJOR_AREA = 3000;
+const LAKE_MAJOR_DEPTH = 1.5;
+// Metres of channel over which a reach hands over to standing water, and over
+// which one is born again at a spill point. Long enough that the flare reads as
+// a delta from a moving vehicle, short enough that a 150 m tributary is not all
+// mouth. The contract asks for 25-40 m.
+const MOUTH_LEN = 34;
+const OUTLET_LEN = 30;
+// Metres the mouth carries on *past* the waterline, and metres an outlet starts
+// *inside* the lake. Both reaches need a little geometry over open water: it is
+// what lets the ribbon slide under the lake surface instead of stopping on a
+// quad edge in mid-air.
+const MOUTH_INTO = 12;
+const OUTLET_PRE = 10;
+// How much wider a channel runs where it spreads into standing water. A delta
+// is not a pipe that stops; it is the same discharge over three times the area,
+// which is exactly why it is also shallow and slow.
+const MOUTH_FLARE = 1.7;
+// Laplacian passes over the traced centreline. See `_traceRivers` — the per
+// point displacement clamp, not this count, is what makes the smoothing
+// width-aware, so this only has to be large enough to kill a 4 m staircase.
+const SMOOTH_PASSES = 12;
+// Shortest reach worth carving, in metres. A river network chopped at every
+// lake has short links in it by construction — pond to pond down a valley
+// floor — and they are as much of the connectivity as the trunks are.
+// Deliberately short: this governs what exists in the terrain, not what gets
+// a ribbon. PUBLISH_MIN_W is what governs that.
+const MIN_REACH = 12;
+// Meander wavelength, in channel widths. Natural meander trains run 10-14.
+const MEANDER_WAVE = 16;
+// Peak lateral offset, in channel widths. A sine-generated curve of amplitude A
+// and wavelength L swings 2*pi*A/L radians off its axis, and sinuosity is
+// 1/J0(that): at L = 12w, A = 2.0w gives 1.05 rad and 1.36, A = 2.4w gives
+// 1.26 rad and 1.55. The valley-floor gate takes most reaches below whatever
+// is asked for here, so it is set at the top of the plausible range.
+const MEANDER_AMP = 5.0;
+// Metres the ground may rise above the reach's own surface before the meander
+// stops growing into it. This is the valley floor, in one number: a bend fills
+// the flat it is in and stops at the bank.
+const MEANDER_FREEBOARD = 1.8;
+// Radians of phase wander per unit of fbm — see the call site. This is what
+// makes one bend longer than the next; at 0 every meander is the same length.
+const MEANDER_GAIN = 2.5;
+// Cells of upstream drainage before a channel counts as a stream. Also the
+// seed for the moisture field — see `_climate`, which must not be tied to what
+// the ribbon happens to draw.
+const RIVER_MIN = 900;
+// Narrowest channel that gets a published polyline. Every traced reach carves
+// its bed, writes its water surface and paints its mask, because that is the
+// terrain; only reaches this wide are handed to Water.js, audio and wildlife.
+// Water.js already refuses anything under 1.5 m — a one-texel brook swept as a
+// ribbon is a blue thread laid over gold grass — so publishing them costs a
+// megabyte of JSON in the bake header, and two hundred thousand transparent
+// double-sided triangles, to draw something that is a defect when it does show.
+// Four metres, measured: it is where `w = 1.2 + discharge*11` crosses a quarter
+// of full discharge, and the reaches it drops still carve their beds, write
+// their water surface and paint their mask. They read as damp gullies with a
+// rill in them, which is what a stream that narrow is.
+const PUBLISH_MIN_W = 4.0;
+// ...and how deep a hollow has to be to count as damp ground for the same
+// purpose. Calibrated, not chosen: it is the value at which the mean moisture
+// of the map comes back to the 0.54 it measured before the water grid stopped
+// being a per-texel derivation, which is the number the whole forest, shrub
+// and grass distribution was tuned against.
+const DAMP_MIN_DEPTH = 0.3;
 
 export class TerrainGen {
   constructor(opts = {}) {
@@ -56,6 +156,7 @@ export class TerrainGen {
       riverMask: this.riverMask,
       flow: this.flow,
       moisture: this.moisture,
+      distToWaterM: this.distToWaterM,
       hardness: this.hardness,
       sediment: this.sediment,
       slope: this.slope,
@@ -1021,9 +1122,27 @@ export class TerrainGen {
       }
     }
 
+    // Two surfaces come out of one flood, and the difference between them is
+    // the whole reason this round found the valley floor covered in ponds.
+    //
+    //   filled  carries the +EPS per popped cell that gives a flat area a
+    //           drainage direction. D8 needs it: over a perfectly level fill
+    //           there is no downhill neighbour and routing stalls.
+    //   flat    is the same flood without it — the spill elevation propagated
+    //           unchanged, so a cell that genuinely drains keeps its own height.
+    //
+    // Lake depth has to be measured against `flat`. Measured against `filled`,
+    // the epsilon accumulates along the processing order — 8e-4 m per cell, so
+    // 690 cells of merely-level meadow "fills" to 0.55 m — and a top-down
+    // render of the bake comes back with the whole basin speckled in false
+    // ponds, 160 bodies over 17% of the map, every one of them clipping the
+    // rivers that ought to run through it. It also means a body's level is now
+    // exactly constant across it, which is what standing water is.
     const EPS = 0.0008;
+    const flat = new Float32Array(h);
     while (heap.size > 0) {
       const { key: hv, val: i } = heap.pop();
+      const fv = flat[i];
       const y = (i / R) | 0, x = i - y * R;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -1034,20 +1153,22 @@ export class TerrainGen {
           if (closed[ni]) continue;
           closed[ni] = 1;
           if (filled[ni] <= hv) filled[ni] = hv + EPS;
+          if (fv > flat[ni]) flat[ni] = fv;
           heap.push(filled[ni], ni);
         }
       }
     }
 
     this.filled = filled;
-    // Lake depth = how much we had to raise the surface.
+    this.fillFlat = flat;
+    // Lake depth = how much standing water is above the bed. The 0.12 floor
+    // here is only noise rejection; what counts as a lake is LAKE_MIN_DEPTH,
+    // decided once in `_lakeBodies`, which is also what publishes `this.lakes`.
     this.lakeDepth = new Float32Array(N);
-    let lakeCells = 0;
     for (let i = 0; i < N; i++) {
-      const d = filled[i] - h[i];
-      if (d > 0.12) { this.lakeDepth[i] = d; lakeCells++; }
+      const d = flat[i] - h[i];
+      if (d > 0.12) this.lakeDepth[i] = d;
     }
-    this.lakes = { cellCount: lakeCells };
   }
 
   // ── 4. D8 flow accumulation ────────────────────────────────────────────────
@@ -1092,14 +1213,21 @@ export class TerrainGen {
     this.flow = flow;
     this.flowDir = dir;
 
+    // Lake bodies before the mask, because the mask is defined against them.
+    this._lakeBodies();
+
     // Normalise into a discharge measure and build the river mask.
     const riverMask = new Float32Array(N);
-    const RIVER_MIN = 900;      // cells of upstream drainage to be a stream
     for (let i = 0; i < N; i++) {
       // A lake has no channel. Routing D8 across the flat filled surface of a
       // lake yields dead-straight "rivers"; masking them out is both correct
       // and the thing that stops the map looking like a circuit board.
-      if (this.lakeDepth[i] > 0.6) continue;
+      //
+      // Gated on a *major* labelled body rather than on raw fill depth, so
+      // neither a puddle nor a knee-deep pan silently punches a hole in a
+      // river the trace then has to be clipped at.
+      const lb = this.lakeId[i];
+      if (lb >= 0 && this.lakeMajorFlag[lb]) continue;
       const f = flow[i];
       if (f > RIVER_MIN) {
         riverMask[i] = clamp01(Math.log(f / RIVER_MIN) / Math.log(220));
@@ -1108,43 +1236,168 @@ export class TerrainGen {
     this.riverMask = riverMask;
   }
 
-  // ── 5. Carve channels proportional to discharge ────────────────────────────
-  _carveChannels() {
-    const R = this.res, N = R * R, h = this.height, rm = this.riverMask;
-    const carve = new Float32Array(N);
+  /**
+   * Connected bodies of standing water: which cells, what level, and the rim
+   * cell each one spills over.
+   *
+   * Nothing in the bake had a concept of a lake as an *object* before this, and
+   * that absence is four of the five defects in the water round. `_traceRivers`
+   * could not ask "am I about to walk into a lake", so it followed D8 straight
+   * across one — over the flat filled surface, at riverMask 0 — and emitted a
+   * dead 1.2 m ribbon at zero discharge over open water. That is the pale
+   * stripe in shots/w-base/river.png. And with no spill point recorded, a river
+   * leaving a lake was an unrelated trace that began in the middle of nowhere.
+   *
+   * The level comes from `fillFlat`, the epsilon-free flood, so it is exactly
+   * the spill elevation and exactly constant over the body. Averaged over
+   * `filled` instead it would dome by a third of a metre from rim to centre —
+   * a lake that is not level, which is the one thing standing water never is,
+   * and at a shallow shoreline a third of a metre is metres of waterline.
+   */
+  _lakeBodies() {
+    const R = this.res, N = R * R;
+    const id = new Int32Array(N).fill(-1);
+    const bodies = [];
+    const stack = new Int32Array(N);
+    const cells = new Int32Array(N);
+    const d = this.lakeDepth, filled = this.fillFlat;
+    const cellArea = (this.worldSize / R) * (this.worldSize / R);
+    const minCells = Math.max(4, Math.round(LAKE_MIN_AREA / cellArea));
+    const majorCells = Math.round(LAKE_MAJOR_AREA / cellArea);
 
-    // Splat a widening channel around every river cell.
-    for (let y = 1; y < R - 1; y++) {
-      for (let x = 1; x < R - 1; x++) {
-        const i = y * R + x;
-        const m = rm[i];
-        if (m <= 0) continue;
-        const width = 1.0 + m * 7.5;               // texels
-        const depth = 0.8 + m * m * 6.0;           // metres
-        const w = Math.ceil(width);
-        for (let dy = -w; dy <= w; dy++) {
-          for (let dx = -w; dx <= w; dx++) {
-            const nx = x + dx, ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= R || ny >= R) continue;
-            const d = Math.hypot(dx, dy) / width;
-            if (d > 1) continue;
-            const prof = Math.cos(d * Math.PI * 0.5);      // U-shaped bed
-            const amt = depth * prof * prof;
-            const ni = ny * R + nx;
-            if (amt > carve[ni]) carve[ni] = amt;
+    for (let s = 0; s < N; s++) {
+      if (d[s] <= LAKE_MIN_DEPTH || id[s] >= 0) continue;
+      const b = bodies.length;
+      let sp = 0, n = 0, sum = 0, deepest = 0;
+      let spill = -1, spillH = Infinity;
+      stack[sp++] = s; id[s] = b;
+      while (sp > 0) {
+        const i = stack[--sp];
+        cells[n++] = i; sum += filled[i];
+        if (d[i] > deepest) deepest = d[i];
+        const y = (i / R) | 0, x = i - y * R;
+        for (let k = 0; k < 8; k++) {
+          const nx = x + D8X[k], ny = y + D8Y[k];
+          if (nx < 0 || ny < 0 || nx >= R || ny >= R) continue;
+          const ni = ny * R + nx;
+          if (d[ni] > LAKE_MIN_DEPTH) {
+            if (id[ni] < 0) { id[ni] = b; stack[sp++] = ni; }
+          } else if (filled[ni] < spillH) {
+            // The outlet, recovered rather than recomputed: the priority flood
+            // raised every cell inside this basin to the elevation of the
+            // lowest cell on its rim, so the lowest rim cell IS the spill.
+            spillH = filled[ni]; spill = ni;
           }
+        }
+      }
+      if (n < minCells) {
+        for (let k = 0; k < n; k++) id[cells[k]] = -1;
+        continue;
+      }
+      bodies.push({
+        level: sum / n, cells: n, spill, spillH, deepest,
+        major: n >= majorCells && deepest >= LAKE_MAJOR_DEPTH,
+      });
+    }
+
+    this.lakeId = id;
+    this.lakeBodies = bodies;
+    // Flat lookup so the hot loops can ask "is this a lake a river ends at?"
+    // without chasing an object per texel.
+    this.lakeMajorFlag = Uint8Array.from(bodies, (b) => (b.major ? 1 : 0));
+    let labelled = 0, major = 0;
+    for (const b of bodies) { labelled += b.cells; if (b.major) major++; }
+    this.lakes = { cellCount: labelled, bodyCount: bodies.length, majorCount: major };
+  }
+
+  // ── 5. Carve channels along the smoothed centrelines ───────────────────────
+  /**
+   * The bed is cut from the same polyline the ribbon is swept along.
+   *
+   * It used to be splatted around every cell of the raw D8 river mask — a
+   * staircase of 2 m texels — while the water was drawn along a polyline, and
+   * where those two diverged you saw the carved bed as a bare tan channel
+   * *beside* the water. That is the defect logged three rounds running as "the
+   * tan stripe beside the fall". Two derivations of one channel is the whole
+   * bug; there is now one.
+   *
+   * The cut is also stated as an ELEVATION rather than as a depth to subtract.
+   * `bedC` is exactly `surf - wdep`, the surface the rasteriser is about to
+   * write minus the water depth at the centreline, so the bed cannot end up
+   * above the water it is supposed to hold — which is the other half of the
+   * same defect, water drawn where the ground had been left too high.
+   *
+   * Guarded, though, by the old relative carve: taken literally an absolute
+   * cut flattens whatever it passes through, and a river in a gorge would
+   * bulldoze its own walls into a floodplain the full splat radius wide.
+   * Whichever of the two removes LESS rock wins, so the shaping happens on the
+   * valley floor where the channel is and the walls stand.
+   */
+  _carveChannels() {
+    // The centrelines have to exist before the carve, and they are traced here
+    // rather than in generate() so that the two can never be run out of order.
+    this._traceRivers();
+
+    const R = this.res, N = R * R, h = this.height;
+    const texel = this.worldSize / R, half = this.worldSize / 2;
+    const hOrig = Float32Array.from(h);
+    const bedTarget = new Float32Array(N).fill(Infinity);
+
+    const splat = (wx, wz, m, lk, surf, wdep, dcarve) => {
+      // Same footprint the mask splat used — (1 + m*7.5) texels — so the
+      // valley the carve cuts is the one the terrain has always had, widened
+      // where the channel spreads into a delta.
+      const radT = (1.0 + m * 7.5) * (1 + lk * 0.6);
+      const bedC = surf - wdep;
+      const gx = (wx + half) / texel, gz = (wz + half) / texel;
+      const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
+      const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
+      const invR = 1 / radT;
+      for (let iy = z0; iy <= z1; iy++) {
+        const dz = iy + 0.5 - gz;
+        for (let ix = x0; ix <= x1; ix++) {
+          const dx = ix + 0.5 - gx;
+          const d = Math.sqrt(dx * dx + dz * dz) * invR;
+          if (d > 1) continue;
+          const prof = Math.cos(d * Math.PI * 0.5);        // U-shaped bed
+          const p2 = prof * prof;
+          const ni = iy * R + ix;
+          const ho = hOrig[ni];
+          const lowered = ho - dcarve * p2;
+          const shaped = bedC + (ho - bedC) * (1 - p2);
+          const tgt = lowered > shaped ? lowered : shaped;
+          if (tgt < bedTarget[ni]) bedTarget[ni] = tgt;
+        }
+      }
+    };
+
+    for (const sta of this.channels) {
+      for (let k = 0; k < sta.length - 1; k++) {
+        const a = sta[k], b = sta[k + 1];
+        // Sub-step along the segment: stations are up to 6 m apart and a disc
+        // every 6 m is a string of beads, not a channel.
+        const seg = Math.hypot(b.x - a.x, b.z - a.z);
+        const sub = Math.max(1, Math.ceil(seg / (texel * 0.7)));
+        for (let t = 0; t < sub; t++) {
+          const u = t / sub;
+          splat(lerp(a.x, b.x, u), lerp(a.z, b.z, u),
+                lerp(a.m, b.m, u), lerp(a.lake, b.lake, u),
+                lerp(a.surf, b.surf, u), lerp(a.wdep, b.wdep, u),
+                lerp(a.dcarve, b.dcarve, u));
         }
       }
     }
 
-    for (let i = 0; i < N; i++) h[i] -= carve[i];
+    const carve = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      if (bedTarget[i] < h[i]) { carve[i] = h[i] - bedTarget[i]; h[i] = bedTarget[i]; }
+    }
     this.carve = carve;
 
     this._carveRills();
 
     // Recompute slope after carving — used everywhere downstream.
     const slope = new Float32Array(N);
-    const texel = this.worldSize / R;
     let mn = Infinity, mx = -Infinity;
     for (let y = 0; y < R; y++) {
       for (let x = 0; x < R; x++) {
@@ -1239,28 +1492,103 @@ export class TerrainGen {
   }
 
   // ── 6. Water surface & waterfall detection ─────────────────────────────────
+  /**
+   * Rasterise the water surface from the centrelines and the lake levels.
+   *
+   * Not from the grid: `rm[i] > 0 ? h[i] + 0.22 + rm[i]*0.9 : ...` sampled the
+   * carved bed per texel, which meant the ribbon's height and the grid's height
+   * were two different functions of two different things and disagreed by
+   * whatever the carve happened to do at that texel. Now the polyline is the
+   * only statement of where the surface is, and both the ribbon and this grid
+   * read it — so `getWaterHeight`, the shoreline depth fade, the wet-ground
+   * shading and the ribbon cannot drift apart.
+   *
+   * The river mask is rebuilt from the same lines for the same reason. It is
+   * what puts tan riverbed albedo on the ground (see TerrainMaterial's `river`
+   * channel); leaving it on the D8 staircase while the water followed a smooth
+   * line is precisely how a bare channel ends up drawn beside a river.
+   */
   _waterSurface() {
-    const R = this.res, N = R * R, h = this.height, rm = this.riverMask;
+    const R = this.res, N = R * R, h = this.height;
     const water = new Float32Array(N).fill(-9999);
+    const rm = new Float32Array(N);
     const waterfalls = [];
     const texel = this.worldSize / R;
+    const half = this.worldSize / 2;
 
-    // River surface sits just above the carved bed.
+    // Standing water first: one flat level per body.
     for (let i = 0; i < N; i++) {
-      if (rm[i] > 0) water[i] = h[i] + 0.22 + rm[i] * 0.9;
-      // 0.12 m was low enough that the priority-flood's epsilon flats counted
-      // as lakes, sheeting water over huge areas of merely-level meadow.
-      if (this.lakeDepth[i] > 0.55) {
-        water[i] = Math.max(water[i], this.filled[i] + 0.05);
-      }
+      const b = this.lakeId[i];
+      if (b >= 0) water[i] = this.lakeBodies[b].level;
     }
 
+    // Then the channels, over a footprint a little wider than the ribbon so the
+    // shoreline fade and the damp band have ground to finish on.
+    const wsplat = (wx, wz, m, surf, hw, wdep) => {
+      const radT = Math.max(1.2, (hw * 1.35) / texel);
+      // Below this the ground has fallen out from under the channel and the
+      // splat is painting water over a lip. Writing it anyway is what puts a
+      // hard-edged pale blue wedge on the grass below a plunge pool — a lake
+      // triangle at full alpha over ground five metres beneath it, with a
+      // dead-straight edge, because the depth fade in the shader can only ask
+      // whether there is ground *under* the water and there is, a long way
+      // under. A channel is a few metres deep; past that this is a waterfall,
+      // and the falls system draws it.
+      const floor = surf - wdep - 3.0;
+      const gx = (wx + half) / texel, gz = (wz + half) / texel;
+      const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
+      const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
+      const invR = 1 / radT;
+      for (let iy = z0; iy <= z1; iy++) {
+        const dz = iy + 0.5 - gz;
+        for (let ix = x0; ix <= x1; ix++) {
+          const dx = ix + 0.5 - gx;
+          const d = Math.sqrt(dx * dx + dz * dz) * invR;
+          if (d > 1) continue;
+          const ni = iy * R + ix;
+          if (h[ni] < floor) continue;
+          if (surf > water[ni]) water[ni] = surf;
+          // The mask has to stop close to the wet channel. TerrainMaterial
+          // paints tan riverbed wherever it exceeds 0.02 and a pale gravel bar
+          // wherever it exceeds 0.04, so every metre of mask that reaches past
+          // the waterline is a metre of dry ground painted as riverbed — the
+          // stripe this round exists to remove, in its quietest form.
+          //
+          // Gated on the ground, not only on the distance: the radial taper
+          // alone cannot know that this particular texel is four metres up a
+          // bank. Half a metre of freeboard is the gravel bar and the damp
+          // margin the reference plates always show; past that it is a bank,
+          // and a bank is grass.
+          if (h[ni] > surf + 0.5) continue;
+          const v = m * (1 - smoothstep(0.42, 0.80, d));
+          if (v > rm[ni]) rm[ni] = v;
+        }
+      }
+    };
+    for (const sta of this.channels) {
+      for (let k = 0; k < sta.length - 1; k++) {
+        const a = sta[k], b = sta[k + 1];
+        const seg = Math.hypot(b.x - a.x, b.z - a.z);
+        const sub = Math.max(1, Math.ceil(seg / (texel * 0.7)));
+        for (let t = 0; t < sub; t++) {
+          const u = t / sub;
+          wsplat(lerp(a.x, b.x, u), lerp(a.z, b.z, u), lerp(a.m, b.m, u),
+                 lerp(a.surf, b.surf, u), lerp(a.w, b.w, u) * 0.5,
+                 lerp(a.wdep, b.wdep, u));
+        }
+      }
+    }
+    this.riverMask = rm;
+
     // Enforce monotone-downhill along flow direction, so water never runs uphill.
+    // Standing water is exempt: a lake is level by definition, and letting this
+    // pass shave 2 mm off successive cells across one would put a gradient on
+    // the one surface in the map that must not have one.
     const idx = Array.from({ length: N }, (_, i) => i).sort((a, b) => this.filled[b] - this.filled[a]);
     for (const i of idx) {
       if (water[i] < -9000) continue;
       const d = this.flowDir[i];
-      if (d < 0 || water[d] < -9000) continue;
+      if (d < 0 || water[d] < -9000 || this.lakeId[d] >= 0) continue;
       if (water[d] > water[i]) water[d] = water[i] - 0.002;
     }
 
@@ -1311,55 +1639,564 @@ export class TerrainGen {
 
     this.water = water;
     this.waterfalls = kept;
-    this.riverPolylines = this._traceRivers();
-    void texel;
   }
 
-  // Trace the main river trunks as polylines for ribbon meshes & audio emitters.
+  /**
+   * Trace the river trunks as smooth centrelines, clipped at standing water,
+   * with a mouth where a reach arrives at a lake and an outlet where one is
+   * born at a spill point.
+   *
+   * This runs BEFORE the carve, and everything downstream — the bed, the water
+   * grid, the ribbon, the audio emitters, the wildlife pathing — is derived
+   * from what it returns. Three separate defects were all one thing: the trace
+   * was the *last* step of the bake and nothing else could agree with it.
+   *
+   * Two structures come out:
+   *   this.channels        the full-fat stations, with the bed depth and the
+   *                        water depth the carve and the rasteriser need
+   *   this.riverPolylines  exactly the six fields docs/WATER_CONTRACT.md
+   *                        publishes, rounded, because they go through
+   *                        JSON.stringify into the bake header
+   */
   _traceRivers() {
     const R = this.res, rm = this.riverMask, flow = this.flow;
-    const visited = new Uint8Array(R * R);
-    const lines = [];
+    const N = R * R;
+    const texel = this.worldSize / R;
+    const half = this.worldSize / 2;
+    const filled = this.filled, lakeId = this.lakeId, bodies = this.lakeBodies;
+    const major = this.lakeMajorFlag;
+    const visited = new Uint8Array(N);
+    // Where the reach that claimed each cell ended up putting its centreline,
+    // AFTER smoothing and meandering. A tributary that runs into a claimed cell
+    // has to finish on the trunk's line, not on the raw D8 cell it happened to
+    // reach: the trunk has since moved up to four channel widths sideways, so
+    // ending at the cell leaves a visible gap and the network reads as a
+    // scatter of disconnected dashes. This is the "disconnected" half of the
+    // brief, and it is a lookup, not a search.
+    const ownerX = new Float32Array(N), ownerZ = new Float32Array(N);
+    const channels = [];
     const heads = [];
 
-    for (let y = 2; y < R - 2; y += 2) {
-      for (let x = 2; x < R - 2; x += 2) {
+    // Every cell, not every other cell. The old stride of 2 looked at one
+    // river cell in four, so three quarters of the headwaters were never
+    // candidates and their reaches only entered the network below the first
+    // confluence that happened to land on an even texel.
+    for (let y = 2; y < R - 2; y++) {
+      for (let x = 2; x < R - 2; x++) {
         const i = y * R + x;
-        if (rm[i] < 0.10) continue;
-        // A head is a river cell with no significant river neighbour uphill.
+        if (rm[i] <= 0) continue;
+        // A head is a river cell with no river neighbour uphill.
+        //
+        // Both thresholds here used to sit at 0.08-0.10 of the mask, which is
+        // flow > 1533 against the RIVER_MIN of 900 that defines a stream at
+        // all. Everything in that band — the low-discharge tips of every
+        // tributary, and measured on this seed 75.8% of all river cells — was
+        // neither a head nor reachable from one, so no centreline ever ran
+        // through it. That was survivable while the mask and the water grid
+        // were separate per-texel derivations. It is not now that the carve,
+        // the water surface and the mask all come off these lines: it deleted
+        // three quarters of the drainage network from the map, including the
+        // 96 m fall at [-720, -30] that half the comments in TerrainMaterial
+        // are written about.
         let isHead = true;
         for (let dy = -1; dy <= 1 && isHead; dy++)
           for (let dx = -1; dx <= 1; dx++) {
             if (!dx && !dy) continue;
             const ni = (y + dy) * R + (x + dx);
-            if (rm[ni] > 0.08 && this.flowDir[ni] === i) { isHead = false; break; }
+            if (rm[ni] > 0 && this.flowDir[ni] === i) { isHead = false; break; }
           }
         if (isHead) heads.push({ i, f: flow[i] });
       }
     }
     heads.sort((a, b) => b.f - a.f);
 
-    for (const head of heads.slice(0, 220)) {
-      let cur = head.i;
-      const pts = [];
-      let steps = 0;
+    const px = new Float64Array(6000), pz = new Float64Array(6000);
+    const ox = new Float64Array(6000), oz = new Float64Array(6000);
+    const tx = new Float64Array(6000), tz = new Float64Array(6000);
+    const pm = new Float32Array(6000), pb = new Float32Array(6000);
+    const lim = new Float32Array(6000), cum = new Float64Array(6000);
+
+    // ── every head, not the largest 220 ────────────────────────────────────
+    // The cap was harmless while the mask and the water grid were computed
+    // per-texel from flow accumulation and the polylines were only used to
+    // sweep ribbons. They are not any more: the carve, the water surface, the
+    // river mask and — through the mask — the moisture field and every tree,
+    // shrub and grass blade that moisture places all come off these lines. A
+    // cap is then a cap on how much of the drainage network exists at all, and
+    // at 220 it took the forest off the near ridge of the hero frame.
+    //
+    // `visited` already makes this cheap: a reach stops at the first cell an
+    // earlier trace claimed, so the total work is the number of river cells,
+    // not the number of heads times the length of a river.
+    for (const head of heads) {
+      // ── walk downstream, and STOP at standing water ─────────────────────
+      // The old walk kept following flowDir across the flat filled surface of
+      // a lake. Every one of those points had riverMask 0, so it emitted at
+      // w = 1.2 and flow = 0: a dead ribbon across open water.
+      let cur = head.i, steps = 0, endBody = -1, n0 = 0, joinCell = -1;
       while (cur >= 0 && steps < 6000) {
-        if (visited[cur] && steps > 3) break;
+        const lb = lakeId[cur];
+        if (lb >= 0 && major[lb]) { endBody = lb; break; }
+        if (visited[cur] && steps > 3) { joinCell = cur; break; }
         visited[cur] = 1;
         const cy = (cur / R) | 0, cx = cur - cy * R;
-        pts.push({
-          x: (cx / R) * this.worldSize - this.worldSize / 2,
-          y: this.water[cur] > -9000 ? this.water[cur] : this.height[cur],
-          z: (cy / R) * this.worldSize - this.worldSize / 2,
-          w: 1.2 + rm[cur] * 11,
-          flow: rm[cur],
-        });
+        px[n0] = ox[n0] = (cx / R) * this.worldSize - half;
+        pz[n0] = oz[n0] = (cy / R) * this.worldSize - half;
+        // Seed the ownership with the raw cell, so that a tributary joining a
+        // reach that is later rejected for being too short lands on the cell
+        // rather than on the world origin.
+        ownerX[cur] = px[n0]; ownerZ[cur] = pz[n0];
+        pm[n0] = rm[cur];
+        pb[n0] = filled[cur];
+        n0++;
         cur = this.flowDir[cur];
         steps++;
       }
-      if (pts.length > 12) lines.push(pts);
+      // Finish on the trunk, not a texel short of it. The junction point is
+      // the confluence: pinned through the smoothing and tapered out of the
+      // meander at both ends, so it stays exactly where the trunk's centreline
+      // is however far either line has moved.
+      if (joinCell >= 0 && n0 > 0 && n0 < 6000) {
+        px[n0] = ox[n0] = ownerX[joinCell];
+        pz[n0] = oz[n0] = ownerZ[joinCell];
+        pm[n0] = pm[n0 - 1];
+        pb[n0] = filled[joinCell];
+        n0++;
+      }
+
+      // In metres, not in texels. `n0 < 12` was 24 m at res 1536 and 48 m at
+      // res 768, so the same world baked at two resolutions had two different
+      // river networks — and once traces are clipped at lakes the reaches
+      // between two of them are legitimately short, which is exactly the class
+      // this threshold was quietly deleting.
+      if (n0 < 4 || n0 * texel < MIN_REACH) continue;
+
+      // Is this reach an outlet? Below a lake the mask resumes immediately, so
+      // a head lands within a texel or two of the shore — which is why an
+      // outlet river already existed in the bake and simply began nowhere.
+      let startBody = -1;
+      {
+        const hy = (head.i / R) | 0, hx = head.i - hy * R;
+        let best = 1e9;
+        for (let dy = -3; dy <= 3; dy++) {
+          const ny = hy + dy; if (ny < 0 || ny >= R) continue;
+          for (let dx = -3; dx <= 3; dx++) {
+            const nx = hx + dx; if (nx < 0 || nx >= R) continue;
+            const b = lakeId[ny * R + nx];
+            if (b < 0 || !major[b]) continue;
+            const dd = dx * dx + dy * dy;
+            if (dd < best) { best = dd; startBody = b; }
+          }
+        }
+      }
+
+      // ── repair the discharge ────────────────────────────────────────────
+      // Discharge only ever grows downstream, and the raw sample drops to the
+      // headwater minimum roughly one point in eight where the D8 walk strays
+      // a texel off the channel core. A running maximum is the exact repair.
+      // Water.js used to do this with a windowed maximum instead, which also
+      // dragged the next confluence's width five stations upstream — and would
+      // now undo the mouth's decay, so it moves here where it belongs: the
+      // carve and the ribbon have to agree about how wide the channel is.
+      for (let k = 1; k < n0; k++) if (pm[k] < pm[k - 1]) pm[k] = pm[k - 1];
+      {
+        const B = 6, tmp = new Float32Array(n0);
+        for (let k = 0; k < n0; k++) {
+          let s = 0, c = 0;
+          for (let j = Math.max(0, k - B); j <= Math.min(n0 - 1, k + B); j++) { s += pm[j]; c++; }
+          tmp[k] = s / c;
+        }
+        pm.set(tmp.subarray(0, n0));
+      }
+
+      // ── take the staircase out of the centreline ────────────────────────
+      // flowDir is D8 on a 2 m grid, so every raw trace is a 45°/90° zigzag
+      // with a ~4 m period, and until now nothing smoothed the *position*:
+      // Water.js smoothed the width and the discharge and then swept the
+      // ribbon along the original staircase coordinates.
+      //
+      // Laplacian passes rather than Chaikin, because the displacement of
+      // every point is re-clamped against its ORIGINAL position on each pass
+      // and so the line can never leave its own valley however hard it is
+      // smoothed. The clamp is a fraction of the channel half-width, and that
+      // is what makes this width-aware without a per-reach iteration count: a
+      // 12 m trunk may cut five metres off a hairpin, a 2 m brook is held to
+      // within a texel of the bed it actually cut.
+      for (let k = 0; k < n0; k++) lim[k] = Math.max(texel * 1.5, (1.2 + pm[k] * 11) * 0.6);
+      for (let pass = 0; pass < SMOOTH_PASSES; pass++) {
+        tx[0] = px[0]; tz[0] = pz[0];
+        tx[n0 - 1] = px[n0 - 1]; tz[n0 - 1] = pz[n0 - 1];
+        for (let k = 1; k < n0 - 1; k++) {
+          tx[k] = px[k] + ((px[k - 1] + px[k + 1]) * 0.5 - px[k]) * 0.55;
+          tz[k] = pz[k] + ((pz[k - 1] + pz[k + 1]) * 0.5 - pz[k]) * 0.55;
+        }
+        for (let k = 0; k < n0; k++) {
+          let dx = tx[k] - ox[k], dz = tz[k] - oz[k];
+          // Saturated, not clipped. A hard projection onto the circle of
+          // radius lim puts every point of a tight bend on the boundary and
+          // the line then inherits the boundary's corners — measured, 1.8% of
+          // stations came out with a turning radius smaller than the channel
+          // width, which is the contract's own definition of "sharp". tanh
+          // takes the same limit asymptotically and is smooth everywhere.
+          const L = Math.hypot(dx, dz);
+          if (L > 1e-9) {
+            const q = L / lim[k];
+            const s = 1 / Math.pow(1 + q * q * q * q * q * q, 1 / 6);
+            dx *= s; dz *= s;
+          }
+          px[k] = ox[k] + dx; pz[k] = oz[k] + dz;
+        }
+      }
+
+      // ── meander ─────────────────────────────────────────────────────────
+      // D8 steepest descent on a smooth fractal heightfield produces very
+      // nearly direct paths, and de-staircasing them only makes that visible:
+      // measured over 288 trunks the sinuosity was median 1.08, and the LONGEST
+      // trunks — the ones that fill a frame — were the straightest at 1.07.
+      // Geomorphology calls anything under 1.05 straight and a lowland
+      // meandering river 1.4-3.0. Nothing in this generator ever produced a
+      // meander; smoothing did not remove the sinuosity, it revealed that there
+      // was none.
+      //
+      // A sine-generated curve is the standard model of one (Langbein &
+      // Leopold): the direction angle swings sinusoidally along the path, and
+      // the sinuosity is then 1/J0(w) in the peak swing w — 1.1 rad of swing is
+      // 1.4. Expressed as a lateral offset of amplitude A at wavelength L that
+      // is w = 2*pi*A/L, and the wavelength of a natural meander train is
+      // 10-14 channel widths. So both scales come off the width this reach
+      // already carries, which is what makes a 12 m trunk swing forty metres
+      // and a 2 m brook barely wander.
+      //
+      // The signal is fbm rather than a sine so that no two bends are the same
+      // length, and the phase is integrated per station so a channel that
+      // widens downstream lengthens its meanders as it goes.
+      {
+        cum[0] = 0;
+        for (let k = 1; k < n0; k++) cum[k] = cum[k - 1] + Math.hypot(px[k] - px[k - 1], pz[k] - pz[k - 1]);
+        const len = cum[n0 - 1];
+        if (len > MIN_REACH) {
+          const nrm = this.noise;
+          const phase = new Float64Array(n0);
+          const offs = new Float64Array(n0);
+          const nrmX = new Float64Array(n0), nrmZ = new Float64Array(n0);
+          const cap = new Float64Array(n0), amp = new Float64Array(n0);
+          const seed = (head.i % 977) * 3.77;
+          for (let k = 1; k < n0; k++) {
+            const wch = 1.2 + pm[k] * 11;
+            phase[k] = phase[k - 1] + (cum[k] - cum[k - 1]) / (MEANDER_WAVE * wch);
+          }
+          for (let k = 0; k < n0; k++) {
+            const wch = 1.2 + pm[k] * 11;
+            // Unit normal, from a tangent taken over a few stations so the
+            // offset direction is not itself noisy.
+            const a = Math.max(0, k - 3), b = Math.min(n0 - 1, k + 3);
+            const tx2 = px[b] - px[a], tz2 = pz[b] - pz[a];
+            const tl = Math.hypot(tx2, tz2) || 1;
+            const nx = -tz2 / tl, nz = tx2 / tl;
+
+            // A sine with a wandering phase, not amplitude-modulated noise.
+            // Bends in a real meander train are close to a constant amplitude
+            // and irregular in *spacing*; fbm gives the opposite, and its RMS
+            // is only 0.27 of full scale, which held the mean lateral offset
+            // to 2.2 m where the channel had 9.2 m of room. Phase modulation
+            // puts the irregularity where it belongs and lets the crests reach
+            // the amplitude the sinuosity target is computed from.
+            const sig = Math.sin(phase[k] * Math.PI * 2
+                                 + nrm.fbm(phase[k] * 0.35, seed, 2, 2.0, 0.5, 1) * MEANDER_GAIN);
+            // How far the valley floor lets it go, each way independently, so
+            // a bend fills the flat it is in and stops at the bank. Without
+            // this the meander climbs the hillside, which is worse than a
+            // straight line.
+            const want = MEANDER_AMP * wch;
+            // The bar the ground has to clear is the reach's own bed, not the
+            // ground it happens to be standing on: the carve that follows this
+            // line cuts 0.8 + discharge^2 * 6 metres, so a river can migrate
+            // anywhere it can cut down to its own bed, and a trunk in an
+            // eroded V has far more room than the un-carved surface suggests.
+            // Measured against the pre-carve surface alone the gate closed at
+            // the first texel almost everywhere and the meander never grew:
+            // median sinuosity moved 1.081 -> 1.089.
+            const ref = pb[k] + MEANDER_FREEBOARD + (0.8 + pm[k] * pm[k] * 6.0) * 0.8;
+            let room = want;
+            const dir = sig >= 0 ? 1 : -1;
+            for (let t = texel; t <= want; t += texel) {
+              const gx = Math.round((px[k] + nx * dir * t + half) / texel);
+              const gz = Math.round((pz[k] + nz * dir * t + half) / texel);
+              if (gx < 0 || gz < 0 || gx >= R || gz >= R) { room = t - texel; break; }
+              if (this.height[gz * R + gx] > ref) { room = t - texel; break; }
+            }
+            // Taper to nothing at both ends: the head is a confluence or a
+            // spill point and the tail is a waterline, and neither may move.
+            const taperM = Math.min(20, len * 0.2);
+            const tp = Math.min(1, Math.min(cum[k], len - cum[k]) / Math.max(taperM, 1e-3));
+            // `sig` carries the sign; `dir` only chose which side to probe for
+            // room, so the magnitude and the side are applied once each.
+            // A slow envelope over the whole train. Bends of one constant
+            // amplitude for a kilometre read as a decorative squiggle rather
+            // than as a river; real reaches alternate between tight bend
+            // trains and long gentle sweeps, and the envelope's wavelength is
+            // several meanders, so it does not fight the bends themselves.
+            const env = 0.45 + 0.55 * (nrm.fbm(phase[k] * 0.17 + 41.0, seed, 2, 2.0, 0.5, 1) * 0.5 + 0.5);
+            cap[k] = Math.min(want, room) * tp * env;
+            amp[k] = Math.abs(sig) * dir;
+            nrmX[k] = nx; nrmZ[k] = nz;
+          }
+          // Smooth the CAP, not the offset. The valley's available width is a
+          // smooth quantity and the probe that measures it is not — it steps a
+          // texel at a time, so `room` jitters station to station and puts a
+          // corner in the line wherever it changes. Smoothing the finished
+          // offset instead also attenuates the meander, badly on a narrow
+          // brook where the wavelength is only ten stations: measured, median
+          // sinuosity 1.354 -> 1.204 for a fifth of the sharp-corner count.
+          // The signal is already smooth; only its ceiling is not.
+          for (let pass = 0; pass < 4; pass++) {
+            for (let k = 1; k < n0 - 1; k++) {
+              cap[k] += ((cap[k - 1] + cap[k + 1]) * 0.5 - cap[k]) * 0.5;
+            }
+          }
+          for (let k = 0; k < n0; k++) {
+            offs[k] = amp[k] * cap[k];
+            tx[k] = px[k] + nrmX[k] * offs[k];
+            tz[k] = pz[k] + nrmZ[k] * offs[k];
+          }
+          // Two light unconstrained passes: the offset is band-limited but the
+          // room gate is not, so a bend that runs into a bank gets a corner
+          // where it was clipped. Endpoints stay pinned.
+          for (let pass = 0; pass < 2; pass++) {
+            for (let k = 1; k < n0 - 1; k++) {
+              tx[k] += ((tx[k - 1] + tx[k + 1]) * 0.5 - tx[k]) * 0.5;
+              tz[k] += ((tz[k - 1] + tz[k + 1]) * 0.5 - tz[k]) * 0.5;
+            }
+          }
+          // A meander that crosses itself is an oxbow the moment it forms, and
+          // we have no mechanism to cut one off. Non-adjacent stations closer
+          // than a channel width get pulled back toward the unmeandered line
+          // until they are not.
+          // The window is in METRES of channel, not in station indices. Station
+          // spacing is one texel, so an index window of "four stations" is 8 m
+          // at res 1536 and 16 m at res 768 — under a channel width in the
+          // first case, which made every station of every wide river look like
+          // a near-crossing with its own immediate neighbours and pulled the
+          // entire meander back onto the axis. Two neighbouring stations of a
+          // 12 m river are SUPPOSED to be less than 12 m apart.
+          for (let guard = 0; guard < 4; guard++) {
+            let hit = false;
+            for (let k = 0; k < n0; k++) {
+              const wch = 1.2 + pm[k] * 11;
+              const near = cum[k] + wch * 4;             // ignore anything nearer than this along the line
+              const far = cum[k] + MEANDER_WAVE * wch * 1.3;
+              for (let j = k + 1; j < n0 && cum[j] < far; j++) {
+                if (cum[j] < near) continue;
+                const dd = Math.hypot(tx[j] - tx[k], tz[j] - tz[k]);
+                if (dd >= wch * 1.2) continue;
+                hit = true;
+                tx[k] = (tx[k] + px[k]) * 0.5; tz[k] = (tz[k] + pz[k]) * 0.5;
+                tx[j] = (tx[j] + px[j]) * 0.5; tz[j] = (tz[j] + pz[j]) * 0.5;
+              }
+            }
+            if (!hit) break;
+          }
+          for (let k = 0; k < n0; k++) { px[k] = tx[k]; pz[k] = tz[k]; }
+          // The base elevation has to be re-read where the line actually is
+          // now, or the water surface follows ground the channel has left.
+          for (let k = 0; k < n0; k++) {
+            const gx = Math.min(R - 1, Math.max(0, Math.round((px[k] + half) / texel)));
+            const gz = Math.min(R - 1, Math.max(0, Math.round((pz[k] + half) / texel)));
+            pb[k] = filled[gz * R + gx];
+          }
+        }
+      }
+
+      cum[0] = 0;
+      for (let k = 1; k < n0; k++) cum[k] = cum[k - 1] + Math.hypot(px[k] - px[k - 1], pz[k] - pz[k - 1]);
+      const total = cum[n0 - 1];
+      if (total < MIN_REACH) continue;
+
+      // Unit tangents at the two ends, for the runs that carry on past the
+      // waterline at either end. Over eight points, not three: a three-point
+      // baseline is 6 m at res 1536 and picks up whatever wobble the smoothing
+      // left, and the extrapolation then leaves the line at an angle to it — a
+      // 120 degree corner at the last station of a mouth, measured, which
+      // sweeps the ribbon back over itself in the delta.
+      const e0 = Math.min(n0 - 1, 8), e1 = Math.max(0, n0 - 9);
+      const hx0 = px[0] - px[e0], hz0 = pz[0] - pz[e0];
+      const l0 = Math.hypot(hx0, hz0) || 1;
+      const hx1 = px[n0 - 1] - px[e1], hz1 = pz[n0 - 1] - pz[e1];
+      const l1 = Math.hypot(hx1, hz1) || 1;
+
+      // Arc-length sampler over the smoothed line, extrapolating straight off
+      // either end so the mouth reaches open water and the outlet is born in it.
+      let cursor = 0;
+      const at = (s, out) => {
+        if (s <= 0) {
+          out.x = px[0] + (hx0 / l0) * -s; out.z = pz[0] + (hz0 / l0) * -s;
+          out.m = pm[0]; out.b = pb[0]; return out;
+        }
+        if (s >= total) {
+          const e = s - total;
+          out.x = px[n0 - 1] + (hx1 / l1) * e; out.z = pz[n0 - 1] + (hz1 / l1) * e;
+          out.m = pm[n0 - 1]; out.b = pb[n0 - 1]; return out;
+        }
+        while (cursor < n0 - 2 && cum[cursor + 1] < s) cursor++;
+        while (cursor > 0 && cum[cursor] > s) cursor--;
+        const seg = cum[cursor + 1] - cum[cursor];
+        const t = seg > 1e-6 ? (s - cum[cursor]) / seg : 0;
+        out.x = px[cursor] + (px[cursor + 1] - px[cursor]) * t;
+        out.z = pz[cursor] + (pz[cursor + 1] - pz[cursor]) * t;
+        out.m = pm[cursor] + (pm[cursor + 1] - pm[cursor]) * t;
+        out.b = pb[cursor] + (pb[cursor + 1] - pb[cursor]) * t;
+        return out;
+      };
+
+      // Neither ramp may eat the whole reach; a 60 m connector between two
+      // lakes is legitimately almost all mouth, a 600 m trunk is not.
+      const mLen = endBody >= 0 ? Math.min(MOUTH_LEN, total * 0.45) : 0;
+      const oLen = startBody >= 0 ? Math.min(OUTLET_LEN, total * 0.45) : 0;
+      // The runs past either waterline are straight extrapolations, so they
+      // have to be walked out one step at a time and stopped the moment they
+      // leave the water. A reach that arrives at a perched pool on a lip had
+      // its outlet projected ten metres back along its own tangent — straight
+      // out over the void — and drew a flared, dead-flat blue chevron pinned to
+      // a vertical rock face in the waterfall view.
+      const probe = { x: 0, z: 0, m: 0, b: 0 };
+      const overWater = (s, body) => {
+        at(s, probe);
+        const gx = Math.round((probe.x + half) / texel);
+        const gz = Math.round((probe.z + half) / texel);
+        if (gx < 0 || gz < 0 || gx >= R || gz >= R) return false;
+        return lakeId[gz * R + gx] === body;
+      };
+      let sStart = 0, sEnd = total;
+      if (startBody >= 0) {
+        for (let s = -2; s >= -OUTLET_PRE; s -= 2) {
+          if (!overWater(s, startBody)) break;
+          sStart = s;
+        }
+      }
+      if (endBody >= 0) {
+        for (let s = total + 2; s <= total + MOUTH_INTO; s += 2) {
+          if (!overWater(s, endBody)) break;
+          sEnd = s;
+        }
+      }
+
+      const sta = [];
+      const tmpP = { x: 0, z: 0, m: 0, b: 0 };
+      for (let s = sStart; ; ) {
+        at(s, tmpP);
+        const m = tmpP.m;
+        const lkM = mLen > 0 ? clamp01((s - (total - mLen)) / mLen) : 0;
+        const lkO = oLen > 0 ? clamp01((oLen - s) / oLen) : 0;
+        const lk = Math.max(lkM, lkO);
+        // The bed shallows and the water thins as the channel spreads out.
+        // Both have to go to nothing or the delta is a trench with a step in
+        // the surface at the end of it.
+        const dcarve = (0.8 + m * m * 6.0) * (1 - lk);
+        const wdep = 0.22 + m * 0.9 * (1 - lk * 0.75);
+        sta.push({
+          s, x: tmpP.x, z: tmpP.z, m, lake: lk, lkM, lkO,
+          dcarve, wdep,
+          surf: tmpP.b - dcarve + wdep,
+          w: 0,
+        });
+        if (s >= sEnd) break;
+        // Station spacing scales with the channel: a 12 m trunk does not need
+        // the same density as a 1.5 m brook, and the header is JSON.
+        let ns = s + clamp(m * 11 * 0.35, 2.0, 6.0);
+        // Snap to the end rather than leaving a sliver behind it. A five
+        // centimetre final segment has an essentially arbitrary direction, and
+        // the ribbon's last cross-section is swept perpendicular to it: a 120
+        // degree kink in the last quad of a mouth, measured, for a segment too
+        // short to be worth having.
+        if (sEnd - ns < 1.0) ns = sEnd;
+        s = Math.min(sEnd, ns);
+      }
+      if (sta.length < 5) continue;
+
+      // ── one continuous water surface ────────────────────────────────────
+      // Monotone first — water never runs uphill, and a confluence can hand a
+      // reach a `filled` sample a few centimetres above its predecessor — then
+      // the lake anchors, which are exact. River surface and lake surface used
+      // to be two different functions of two different fields (`bed + 0.22 +
+      // rm*0.9` against `filled + 0.05`), and the step where a channel reached
+      // standing water is what that disagreement looked like.
+      for (let k = 1; k < sta.length; k++) {
+        if (sta[k].surf > sta[k - 1].surf) sta[k].surf = sta[k - 1].surf;
+      }
+      if (endBody >= 0) {
+        const lv = bodies[endBody].level;
+        for (const p of sta) if (p.lkM > 0) p.surf = lerp(p.surf, lv, p.lkM);
+      }
+      if (startBody >= 0) {
+        const lv = bodies[startBody].level;
+        for (const p of sta) if (p.lkO > 0) p.surf = lerp(p.surf, lv, p.lkO);
+      }
+
+      // ── backwater ────────────────────────────────────────────────────────
+      // Water cannot stand below the water it drains into, and until this pass
+      // existed it did: `lakeDepth` is measured on the PRE-carve terrain, so a
+      // trace is clipped where the untouched ground meets the lake and the
+      // carve then incises its bed up to 5.7 m below that. The mouth ramp then
+      // had to climb back out — 65 of 288 reaches ran measurably uphill, and
+      // one 30 m strait between two lakes at the same level dipped 5.6 m in
+      // the middle and came back, a trench of water with a lake at each end.
+      //
+      // A backward maximum is both the guarantee (monotone downhill, which the
+      // forward pass alone stops giving once the lake anchors are applied) and
+      // the phenomenon: where a channel is cut below the level of the lake it
+      // enters, the lake reaches up it. That is a drowned mouth, and it ends
+      // by itself where the natural surface climbs past the lake.
+      for (let k = sta.length - 2; k >= 0; k--) {
+        if (sta[k].surf < sta[k + 1].surf) {
+          const raised = sta[k + 1].surf - sta[k].surf;
+          sta[k].surf = sta[k + 1].surf;
+          // Raised water is standing water. Half a metre of backwater is a
+          // slack pool at the mouth; anything more is an arm of the lake, and
+          // it should flare, stop flowing and stop foaming like one.
+          const drown = clamp01(raised / 0.5);
+          if (drown > sta[k].lake) sta[k].lake = drown;
+        }
+      }
+      // Width, and the bed profile the carve cuts, both follow the FINAL lake
+      // value — the drowned part of a mouth is as wide and as shallow as the
+      // ramped part, or the delta has a trench down the middle of it.
+      for (const p of sta) {
+        p.dcarve = (0.8 + p.m * p.m * 6.0) * (1 - p.lake);
+        p.wdep = 0.22 + p.m * 0.9 * (1 - p.lake * 0.75);
+        p.w = (1.2 + p.m * 11) * (1 + p.lake * (MOUTH_FLARE - 1));
+      }
+
+      // Publish where this reach's centreline actually ended up, cell by cell,
+      // so a tributary arriving later can finish on it.
+      for (let k = 0; k < n0; k++) {
+        const gx = Math.min(R - 1, Math.max(0, Math.round((ox[k] + half) / texel)));
+        const gz = Math.min(R - 1, Math.max(0, Math.round((oz[k] + half) / texel)));
+        const ci = gz * R + gx;
+        ownerX[ci] = px[k]; ownerZ[ci] = pz[k];
+      }
+
+      channels.push(sta);
     }
-    return lines;
+
+    this.channels = channels;
+    // The published contract, and only the published contract: every extra
+    // property here is paid for in the bake header, which is JSON and already
+    // a couple of megabytes. Rounded for the same reason — 0.1 is three
+    // characters where 0.11999999731779099 is nineteen, and a decimetre is two
+    // orders finer than anything a ribbon metres wide can show. Height keeps a
+    // centimetre because a step in a water surface is visible at that scale.
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const r2 = (v) => Math.round(v * 100) / 100;
+    const r3 = (v) => Math.round(v * 1000) / 1000;
+    this.riverPolylines = channels.filter((sta) => {
+      let w = 0;
+      for (const p of sta) if (p.w > w) w = p.w;
+      return w >= PUBLISH_MIN_W;
+    }).map((sta) => sta.map((p) => ({
+      x: r1(p.x), y: r2(p.surf), z: r1(p.z),
+      w: r1(p.w), flow: r3(p.m * (1 - p.lake)), lake: r3(p.lake),
+    })));
+    return this.riverPolylines;
   }
 
   // ── 7. Climate / moisture / biome weights ──────────────────────────────────
@@ -1369,8 +2206,21 @@ export class TerrainGen {
     const n = this.noise;
 
     // Distance-to-water via a cheap multi-pass jump flood on the river mask.
+    // Seeded from the drainage network, not from the drawn water surface. A
+    // valley bottom is moist because water collects there, whether or not a
+    // ribbon is swept along it — and once the water grid became a rasterisation
+    // of the traced centrelines, tying moisture to it made the forest a
+    // function of how many reaches survived the trace. Measured: mean moisture
+    // 0.54 -> 0.41 and the near ridge of the hero frame lost its trees.
+    //
+    // Same argument for the hollows. A pan too small and too shallow to draw as
+    // a lake still collects water, and there are thousands of them strewn over
+    // this valley floor; dropping them from the *seed* moved the mean distance
+    // to water from 26 m to 46 m and took a fifth of the forest with it.
     const dist = new Float32Array(N).fill(1e9);
-    for (let i = 0; i < N; i++) if (this.water[i] > -9000) dist[i] = 0;
+    for (let i = 0; i < N; i++) {
+      if (this.water[i] > -9000 || this.flow[i] > RIVER_MIN || this.lakeDepth[i] > DAMP_MIN_DEPTH) dist[i] = 0;
+    }
     for (let pass = 0; pass < 6; pass++) {
       for (let y = 1; y < R; y++) for (let x = 1; x < R; x++) {
         const i = y * R + x;
@@ -1395,6 +2245,31 @@ export class TerrainGen {
     }
     this.moisture = moisture;
     this.distToWater = dist;
+
+    // ...and publish it, in metres, because every shoreline rule downstream is
+    // a function of this and until now the bake computed it, used it for
+    // moisture, and threw it away.
+    //
+    // What consumers had instead was `WorldData.distToShoreApprox`, which
+    // returns 0 where the *channel* mask is non-zero and 8 otherwise. Two
+    // values, no gradient, and — because the channel mask is identically zero
+    // over standing water — blind to every lake in the world. It is live in
+    // `getSurfaceWeights` gating the `sand` term, so that term was a step
+    // function: measured over 19,138 dry sample points this round, mean sand
+    // weight inside the mask 0.992 and outside it 0.004. Fully on or fully
+    // off. That is the hard-edged pale slab across the foreground of the
+    // `mouth` framing, and widening the river mask this round (0.95% of the
+    // map to 2.3%, and continuous across the channel rather than a ridge along
+    // its middle) made it 2.4x larger without changing anything about it.
+    //
+    // Capped at 48 m so it quantises to u8 at 19 cm — finer than the 2 m grid
+    // it is derived from, and nothing downstream cares about a shoreline
+    // fifty metres away. Note `moisture` above deliberately keeps reading the
+    // uncapped cell distance over its own 90 m range; the cap is on what is
+    // published, not on what the climate model sees.
+    const distM = new Float32Array(N);
+    for (let i = 0; i < N; i++) distM[i] = Math.min(dist[i] * texel, 48);
+    this.distToWaterM = distM;
   }
 }
 

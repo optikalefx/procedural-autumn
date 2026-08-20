@@ -153,7 +153,18 @@ export class WorldData {
 
     const rockW = smoothstep(0.55, 1.15, s) + smoothstep(230, 300, h) * 0.6;
     const snowW = smoothstep(258, 320, h) * (1 - smoothstep(0.9, 1.4, s));
-    const sandW = smoothstep(0.9, 0.0, depth) * smoothstep(3.0, 0.2, this.distToShoreApprox(x, z));
+    // Bare shore, and it has to be *narrow*. Reference plate 3 puts gold grass
+    // right to the waterline with a bright broken lace on it and no bare sand
+    // anywhere; plate 5 puts grass tufts straight against whitewater. A wide
+    // pale beach is not in the art direction at all, and the previous form —
+    // a step function on the two-valued shore stub — drew one across the whole
+    // foreground of the `mouth` framing.
+    //
+    // 2.2 m of real distance, and capped well below 1 so the gold underneath
+    // still reads through it. This is a damp margin the grass thins over, not
+    // a surface of its own.
+    const sandW = smoothstep(0.9, 0.0, depth)
+                * smoothstep(2.2, 0.15, this.getDistToWater(x, z)) * 0.72;
     const grassW = clamp01((1 - rockW) * (0.35 + m * 0.85)) * (1 - snowW);
     const dryW = clamp01((1 - rockW) * (1 - m) * 1.1) * (1 - snowW);
     const dirtW = clamp01(smoothstep(0.35, 0.75, s) * (1 - snowW) * 0.7);
@@ -168,9 +179,22 @@ export class WorldData {
     return out;
   }
 
-  distToShoreApprox(x, z) {
-    const r = this.getRiver(x, z);
-    return r > 0 ? 0 : 8;
+  /**
+   * Metres to the nearest water, from the baked chamfer field. Capped at 48.
+   *
+   * This replaces `distToShoreApprox`, which returned 0 where the *channel*
+   * mask was non-zero and 8 otherwise — two values, no gradient, and blind to
+   * every lake in the world, because the channel mask is identically zero over
+   * standing water. See the note at the end of `TerrainGen._climate`.
+   */
+  getDistToWater(x, z) {
+    // A bake written before this field existed decodes without it — the field
+    // list lives in each bake's own header, so old files stay readable. Fall
+    // back to the far end of the range rather than to NaN, which would silently
+    // paint sand across the whole map through getSurfaceWeights below.
+    if (!this.distToWaterM) return 48;
+    const [gx, gz] = this.toGrid(x, z);
+    return bilinear(this.distToWaterM, this.res, this.res, gx, gz);
   }
 
   /** Data textures consumed by terrain / grass / water shaders. */

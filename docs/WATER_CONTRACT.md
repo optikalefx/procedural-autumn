@@ -115,3 +115,48 @@ under you mid-round, that is why. Do not pass `--refresh-views`; it re-resolves
 every anchor and invalidates the whole review archive.
 
 Do not commit. The integrator commits, so that a bad round is one revert.
+
+## Integrator's queue — landed findings still to be applied
+
+Held here rather than in `docs/INTEGRATION_REQUESTS.md` because three authors
+append to that file concurrently and one entry has already been lost to a
+read-modify-write race on it.
+
+1. **`uWetBand` is at 3.1 m and should be near 1.0.** `Water.js:171`. This is
+   the pale band the banks author measured rasterising metres inland of the
+   waterline, and it is the single largest remaining difference between our
+   shoreline and reference plate 3. Their measurement is unambiguous: hiding
+   every scatter layer moves those pixels under 1%, hiding the *water* moves
+   blue by 16 points and restores a warm tan — so the band is the lake surface
+   drawn over dry meadow, not the ground and not vegetation.
+   `docs/WATER_ART_SPEC.md` §3.5 independently measured the plates' damp band
+   at 0.7–1.1 m on ordinary banks, with 3.1 m reached only on the shallowest,
+   and flagged our value as sitting at the *top* of the plate range rather than
+   the middle. Two authors reached the same number from opposite directions.
+   Blocked on `Water.js` being free.
+
+2. **`distToWater` should be baked.** `TerrainGen._climate()` already computes
+   the exact chamfer raster every shoreline rule needs and then discards it; it
+   is not in `bakeFormat.js`, so nothing downstream can see it. What exists
+   instead is `WorldData.distToShoreApprox`, which returns 0 or 8 and — because
+   it reads the *channel* mask, which is identically zero over standing water —
+   is blind to every lake in the world. It is live in `getSurfaceWeights`
+   gating the `sand` term, which is why lake shores get no shore texel while
+   river banks get a hard-edged one. The banks author has a working
+   reimplementation (`ShoreField` in `cover_scatter.js`, cached on the world
+   object) that `RockScatter` currently imports out of the vegetation module —
+   the wrong direction for that dependency, and it goes away with this.
+   Touches `bakeFormat.js`, `WorldData.js`, `TerrainGen.js`, `worldWorker.js`.
+
+3. **Refresh the camera anchors, once, after the round lands.**
+   `node tools/shot.mjs --refresh-views`. The carve follows a smoothed
+   centreline now, so channels have moved and `review/anchors.json` resolves to
+   different ground; a critic comparing against `review/048..051` is comparing
+   two terrains. Do it once, for everybody, and never mid-round — three authors
+   reported framings moving under them between captures, and concurrent
+   `shot.mjs` runs additionally race on writing that file.
+
+4. **Crag blocks float in clear sky** on the massif in `mouth`. Pre-existing,
+   nothing in this round goes near crag placement, and the rock census reports
+   `airborne: 0` near both water anchors — so it is the crag system, not the
+   scatterer. Not a water defect; logged so it is not rediscovered as one.

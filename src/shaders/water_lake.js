@@ -154,6 +154,36 @@ void main() {
   // is not a damp margin whatever the mesh says, so a cliff is excluded by
   // construction and cannot pick this up.
   wetT *= smoothstep(-0.45, 0.10, vWet);
+
+  // ...and the band has to be limited in METRES OF GROUND, not only in depth.
+  //
+  // uWetBand is a depth, and on a flat apron a depth is an enormous area: at a
+  // bed slope of 1:30, 1.1 m of it is thirty-three metres of shore. That is
+  // the pale slab filling the foreground of the 'mouth' framing. It survived
+  // narrowing the band from 3.1 m to 1.1 m, survived retiring the terrain sand
+  // stub, and survived darkening the shallow-shelf body colour, because none
+  // of those was what drew it. Hiding the lake meshes alone — river ribbons
+  // left visible — removes it and hands back warm meadow, which is what
+  // finally named it.
+  //
+  // The river shader has had the answer since the round that fixed the same
+  // defect on channel margins: divide depth by the local bed gradient to get
+  // a horizontal distance, and gate on that. Its comment says it exactly —
+  // "a wide shallow flat is not a shoreline, and treating it as one is what
+  // turns river margins into big amorphous white blobs". A lake margin is the
+  // identical case and never got the identical fix.
+  //
+  // Sampled on both axes because a lake bank has no channel tangent to work
+  // across, and floored so a dead-level pan cannot divide by zero and paint
+  // the county.
+  float bedE = wBed(vWPos.xz + vec2(2.0, 0.0));
+  float bedN = wBed(vWPos.xz + vec2(0.0, 2.0));
+  float grad = max(length(vec2(bedE - D.r, bedN - D.r)) * 0.5, 0.035);
+  float shoreM = abs(depth) / grad;
+  // docs/WATER_ART_SPEC.md 3.5 measures the plates' damp band at 0.7-1.1 m on
+  // an ordinary bank, reaching ~3.1 m only on the very shallowest. That is a
+  // width on the ground, which is what this now is.
+  wetT *= 1.0 - smoothstep(1.1, 3.1, shoreM);
   alpha = max(alpha, wetT * 0.66);
 
   // ── the perched-lake guard ───────────────────────────────────────────────
@@ -366,7 +396,19 @@ void main() {
   // stylisation, and it is the same one the plate is making, since a painter
   // draws a bar where the picture wants a bar.
   float shelfWide = mix(0.15, 0.5, smoothstep(1.2, 5.0, foot));
-  float deepT = wSteps(smoothstep(0.0, 7.0, depth + (massRaw - 0.5) * 3.4), 3.0, shelfWide);
+  // The ramp reached to 7 m, and a lake in this map has a wide shallow apron:
+  // anything under about two metres therefore sat at the pale shallow anchor,
+  // and on the 'mouth' framing that painted a single near-neutral mass across
+  // most of the foreground — brighter than the gold meadow beside it, when
+  // reference plate 3 puts its shelf half a stop BELOW the meadow. Attributed
+  // by hiding one system at a time in a single page load: with water hidden
+  // the mass disappears entirely and the ground under it is ordinary warm
+  // meadow, so it is this surface and not the terrain's sand term (which was a
+  // step function on a two-valued stub, separately fixed) and not the damp
+  // band (narrowed from 3.1 m to 1.1 m first, with no effect on it at all).
+  //
+  // 3.2 m puts the transition where a shelf actually stops contributing.
+  float deepT = wSteps(smoothstep(0.0, 3.2, depth + (massRaw - 0.5) * 3.4), 3.0, shelfWide);
   // ...and the shallow anchor is not a paint colour. It is what you see when
   // you can see the bed, and the bed here is gold meadow. Taken literally as
   // '#9dc4d8' it drew every sandbar in the map as a flat pastel cyan island —
@@ -374,7 +416,16 @@ void main() {
   // about, arriving from the other side. Warmed toward the ground it covers,
   // a shelf reads as sand under water and the step against the deep water
   // beside it drops from two stops to under one.
-  vec3 body = mix(mix(uShallow, uRefGround, 0.40), uDeep, deepT);
+  // ...and the shallow anchor itself was too pale and too warm. Warming the
+  // pale tone 40% toward the ground it covers is the right idea — a shelf
+  // should read as bed seen through water — but taken this far it lands ABOVE
+  // the meadow in value, which is the one thing a shelf may never do.
+  // docs/WATER_ART_SPEC.md 1.2 measures plate 3's shelf at #536684: C 0.194,
+  // S 0.374, cool 1.12, and 0.53 stops BELOW the meadow. Half the ground mix
+  // and a third off the value lands on that; the deep end is untouched, so the
+  // saturation split the plate has between shelf and deep body survives.
+  vec3 shelf = mix(uShallow, uRefGround, 0.20) * 0.62;
+  vec3 body = mix(shelf, uDeep, deepT);
   // Same idea at arm's length: broad masses read at 300 m, these read at 3 m.
   float fine = wFbm2(p * 0.16 + vec2(uTime * 0.03, uTime * 0.012)) * 0.5 + 0.5;
   // The broad masses are a near-field read. At a kilometre they are 80 m
@@ -563,6 +614,34 @@ void main() {
   // than adding another dial — a combed lane hands back less of a grazing
   // reflection than the glassy lane beside it, which is the banding plate 3
   // draws on its water.
+  // ...but the ceiling was 0.88, and that is the pale slab.
+  //
+  // A lake in this map is nearly always seen from its own bank, so the whole
+  // near half of it sits at a grazing angle and fres is pinned at its ceiling
+  // there. At 0.88 the surface is then 88% environment, the march over open
+  // water usually clears the far ridge, and what comes back is wSkyTilt — the
+  // pale sky, lifted 0.42 in y to sample higher and bluer. The foreground of
+  // the 'mouth' framing is that: a mirror of the sky, brighter than the gold
+  // meadow beside it, neutral, and completely immune to the body colour.
+  //
+  // Which is exactly why it survived four separate attempts to fix it as
+  // something else — narrowing the damp band 3.1 m to 1.1 m, gating that band
+  // in metres of ground instead of depth, retiring the terrain's two-valued
+  // sand stub, and darkening the shallow-shelf anchor. None of them touched
+  // it, because none of them was in the term that draws it. Hiding the lake
+  // meshes while leaving the river ribbons visible is what finally isolated it.
+  //
+  // The river shader caps the same quantity at 0.42 on the same geometry, and
+  // docs/WATER_ART_SPEC.md names this failure F3 with a measurement: under 15%
+  // of the water may be simultaneously C < 0.09 and above the meadow in value.
+  // Note the spec's instrument cannot see this particular instance — its water
+  // mask is a blue rule, and water this neutral falls outside it, so item 5
+  // reports 0.1% on a frame with a sky-mirror across the foreground. Trust the
+  // frame over the number here; the mask share is printed for this reason.
+  //
+  // 0.52 keeps the grazing sheet that gives a lake its far-shore glare and
+  // stops it owning the near field. The mass scaling stays: it is what kept
+  // the sheen's value range from being discarded by the max().
   float mirror = clamp(max(fres * 0.90 * (0.36 + 0.64 * mass), sheen), 0.0, 0.88)
                * smoothstep(0.10, 1.2, depth);
   vec3 col = mix(lit, env, mirror);
@@ -602,9 +681,54 @@ void main() {
   // resolves into a bare stair-stepped polygon edge — visible at 3x on any
   // mid-distance bank. A waterline is a couple of pixels wide at every range,
   // which is a statement about the footprint, not about depth.
-  float laceScale = 1.0 + min(foot, 6.0) * 1.7;
-  float laceD = smoothstep(0.015, 0.10 * laceScale, depth)
-              * (1.0 - smoothstep(0.09 * laceScale, 0.36 * laceScale, depth));
+  // 6.0 was far too generous a cap, and it is the pale slab.
+  //
+  // laceScale multiplies a set of DEPTH windows. At the cap it reaches 11.2,
+  // which puts laceD's window at roughly 1 m to 4 m of depth — so on any lake
+  // with a wide shallow apron the waterline paints the entire apron, and the
+  // apron is most of the near field. wFootprint divides by cos(incidence) with
+  // a floor of 0.035 precisely so grazing geometry reports the very large
+  // footprint it really has, and a lake seen from its own bank is the most
+  // grazing geometry in the game.
+  //
+  // The intent of the scaling is sound and is argued above: a waterline should
+  // be a couple of pixels wide at every range rather than dropping below
+  // Nyquist in the mid distance. But a couple of pixels is what it has to buy,
+  // and 2.5 m of footprint already buys that at any range this map contains.
+  //
+  // Capped once, here, and reused by laceReach below, because the same
+  // unbounded footprint was inflating a world-space reach there as well. This
+  // is failure F6 in docs/WATER_ART_SPEC.md — a foam line reading as pack ice —
+  // arriving through the band-limiting term rather than through opacity, which
+  // is where the round that wrote this was watching for it. It survived
+  // narrowing the damp band, gating that band in metres of ground, retiring
+  // the terrain sand stub, darkening the shallow-shelf anchor and dropping the
+  // reflection ceiling, because none of those is what draws it: foam is
+  // applied last, through col = mix(col, foamCol, foam), over everything.
+  float laceFoot = min(foot, 2.5);
+  float laceScale = 1.0 + laceFoot * 1.7;
+  // ...and laceScale must not be applied to these, because they are DEPTHS and
+  // it is a HORIZONTAL footprint. That unit mismatch is the pale slab.
+  //
+  // A pixel spanning foot metres of ground spans foot * grad metres of DEPTH,
+  // where grad is the local bed gradient computed for the damp band above. On
+  // a flat apron grad is small, so the honest depth pad is small however wide
+  // the pixel is — which is correct: a shallow shelf seen at a grazing angle
+  // needs a wider band in metres of shore, not a deeper one in metres of
+  // water. Multiplying the depth window by the raw footprint instead pushed it
+  // out to roughly 0.5-1.9 m of depth, which on this lake is the entire
+  // foreground, and foam is applied last through col = mix(col, foamCol, foam)
+  // over everything else.
+  //
+  // Confirmed by writing vec4(foam, mirror, deepT, 1.0) straight to the frame:
+  // the slab comes back solid RED. It survived six other fixes — narrowing the
+  // damp band, gating that band in metres of ground, retiring the terrain sand
+  // stub, darkening the shallow-shelf anchor, dropping the reflection ceiling,
+  // and capping the footprint feeding laceReach — because none of them was the
+  // term that draws it.
+  float laceDepthPad = min(laceFoot * grad, 0.30);
+  float laceD = smoothstep(0.015, 0.10 + laceDepthPad, depth)
+              * (1.0 - smoothstep(0.09 + laceDepthPad, 0.36 + laceDepthPad * 2.0, depth));
   float laceW = 1.0 - smoothstep(0.8, 3.6, distShore);
   // The floor was rationed to 0.26 against a continuous white fringe reading as
   // pack ice. That was the right worry and the wrong number: plate 3 draws the
@@ -643,7 +767,32 @@ void main() {
   float laceWide = mix(0.11, 0.5, smoothstep(0.5, 2.4, foot));
   float scallop = wSteps(smoothstep(0.30, 0.70, fn), 3.0, laceWide);
   float edge = mix(1.0, smoothstep(0.30, 0.50, fn2), 1.0 - smoothstep(0.12, 0.45, foot));
-  float laceReach = max(1.1, foot * 1.6) * (0.12 + 1.25 * scallop);
+  // CAPPED, and this is the pale slab.
+  //
+  // Every other use of foot in this file is bounded — laceScale takes
+  // min(foot, 6.0), the shoreline fade min(foot, 5.0) — and this one was not.
+  // It matters more here than anywhere else because laceReach is a distance in
+  // METRES OF WORLD, not a blend width: whatever it comes to, the line below
+  // paints lace across that much shore.
+  //
+  // wFootprint divides by cos(incidence) with a floor of 0.035, precisely so a
+  // grazing surface reports the large footprint it really has. A lake seen
+  // from its own bank over a near-flat apron is the most grazing geometry in
+  // the game, so foot there runs to tens of metres, and 1.6x that is a lace
+  // band wider than the bay. That is the flat pale mass filling the foreground
+  // of the 'mouth' framing: not sand, not the damp margin, not the shallow
+  // shelf, not a sky mirror — the waterline itself, painted a hundred times
+  // too wide, and applied last through col = mix(col, foamCol, foam), which is
+  // why it was immune to every body, shelf and reflection change made while
+  // hunting it.
+  //
+  // It is the pack-ice failure named in docs/WATER_ART_SPEC.md F6, arriving
+  // through the footprint rather than through opacity — which is where the
+  // round that wrote this term was watching for it.
+  //
+  // 2.5 m still lets a distant shoreline hold a lace band a pixel or two wide
+  // rather than dropping it below Nyquist, which is what the scaling is for.
+  float laceReach = max(1.1, laceFoot * 1.6) * (0.12 + 1.25 * scallop);
   float laceM = (1.0 - smoothstep(laceReach * 0.20, laceReach, distShore))
               * smoothstep(0.012, 0.04 + 0.07 * laceScale, depth);
   float lace = max(laceD * mix(0.42, 1.0, laceW) * (0.20 + 0.80 * scallop), laceM);

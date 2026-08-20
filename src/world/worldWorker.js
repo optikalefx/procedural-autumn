@@ -14,7 +14,7 @@ self.onmessage = (e) => {
   const transfer = [
     data.height.buffer, data.water.buffer, data.riverMask.buffer,
     data.flow.buffer, data.moisture.buffer, data.hardness.buffer,
-    data.sediment.buffer, data.slope.buffer,
+    data.sediment.buffer, data.slope.buffer, data.distToWaterM.buffer,
   ];
   self.postMessage({ type: 'done', data, ms }, transfer);
 };

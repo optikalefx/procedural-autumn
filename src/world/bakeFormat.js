@@ -25,6 +25,13 @@ export const U8_FIELDS = [
   { name: 'hardness',  min: 0, max: 1 },
   { name: 'sediment',  min: 0, max: 1 },
   { name: 'slope',     min: 0, max: 6 },
+  // Metres to the nearest water, capped at 48 by the generator. u8 over that
+  // range is 19 cm, finer than the 2 m grid it is derived from. See the note
+  // at the end of TerrainGen._climate for why this had to become a real
+  // field: the two-valued stub it replaces made the terrain's sand term a
+  // step function, on at 0.992 inside the river mask and off at 0.004
+  // outside it, with no gradient anywhere and no knowledge of lakes at all.
+  { name: 'distToWaterM', min: 0, max: 48 },
 ];
 
 /** flow spans many orders of magnitude, so it is stored log-compressed. */

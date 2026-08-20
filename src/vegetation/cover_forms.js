@@ -250,6 +250,7 @@ function frond(b, o) {
   const segs = o.segs ?? 4;
   const dirx = Math.cos(o.yaw), dirz = Math.sin(o.yaw);
   let px = o.x ?? 0, py = o.y ?? 0, pz = o.z ?? 0;
+  let lx = px, ly = py, lz = pz;                 // the last ring actually drawn
   let ang = o.tilt ?? 0.4;                       // radians from vertical
   const step = o.len / segs;
   let pl = -1, pr = -1;
@@ -361,12 +362,27 @@ function frond(b, o) {
     }
     pl = l; pr = r;
     segAng = ang;
+    lx = px; ly = py; lz = pz;
     px += dirx * Math.sin(ang) * step;
     pz += dirz * Math.sin(ang) * step;
     py += Math.cos(ang) * step;
     ang = Math.min(2.35, ang + (o.droop ?? 0.18));
   }
-  return { x: px, y: py, z: pz, yaw: o.yaw, ang };
+  // ── two different "ends", and the difference is a whole segment ────────────
+  //
+  // `x/y/z` is where the walk finished, which is ONE STEP BEYOND the last
+  // vertex ring — the loop pushes a ring and then advances, so the advance
+  // after the final ring is never drawn. `lx/ly/lz` is the last ring itself,
+  // i.e. the actual tip of the geometry.
+  //
+  // Both are kept because the existing callers want the overshoot: `goldenrod`
+  // and `seedHead` stack a second frond on the first and rely on the gap to
+  // space the flower head off the stem. Anything that wants to sit ON the tip —
+  // a cattail head — must use `l*`, or it hangs a visibly detached mark in the
+  // air a whole segment above the plant. At `segs: 2` that overshoot is half
+  // the culm length, which on the tall reed measured 0.8 m of clear sky between
+  // the culm and its own seed head.
+  return { x: px, y: py, z: pz, lx, ly, lz, yaw: o.yaw, ang };
 }
 
 /**
@@ -1978,6 +1994,242 @@ function buildBranch(rng, variant) {
   return b.finish(r * 4);
 }
 
+// ── the water margin ─────────────────────────────────────────────────────────
+
+/**
+ * Built height of each reed and sedge tier, in metres, and the reason these are
+ * constants rather than an `rng()` draw inside the builder.
+ *
+ * Every archetype here is grown ONCE per variant and instanced, so a builder
+ * that writes `h = 1.00 + rng() * 0.58` is not producing variation — it is
+ * producing a single arbitrary number that nobody downstream can predict. That
+ * is harmless for a bush and not harmless here: `_layerShore` has to guarantee
+ * that a reed clears the water it is standing in, and the only way it can do
+ * that arithmetic is if it knows how tall the mesh is. The first version of
+ * this rolled 2.07 m for the tall tier against a scatterer assuming 1.29, which
+ * is a reed bed either drowned or two metres over its own bank depending on
+ * which way the seed happened to fall.
+ *
+ * Per-instance size variation is unaffected: `_emit` already jitters scale by
+ * 0.86-1.20 on every axis and `_layerShore` draws its own scale on top of that.
+ */
+export const REED_HEIGHT = [1.30, 0.78, 0.42];
+export const SEDGE_HEIGHT = [0.38, 0.26];
+
+/**
+ * Reed / rush — the stand that grows *in* the shallow margin, 0 to 0.4 m deep.
+ *
+ * Everything else in this file is a mass with marks on it. A reed bed is the
+ * opposite: it is nothing but marks, and the mass is what forty of them add up
+ * to. Three things carry it, and they are all silhouette rather than shading,
+ * because at the ranges this is read from (a stand is 20-80 px tall) shading is
+ * a single value per culm and nothing more.
+ *
+ *  1. NEAR VERTICAL, AND STRAIGHT. A reed is the only near-vertical line in the
+ *     landscape apart from a birch trunk. Tilt runs 0.03-0.20 rad and the droop
+ *     is a tenth of what the fern uses, so a culm bends only in its last
+ *     quarter. Arch them like grass and the stand reads as a second, greener
+ *     meadow standing in the water, which is exactly the thing it is meant to
+ *     distinguish itself from.
+ *
+ *  2. THE TOP EDGE IS RAGGED, THE BOTTOM EDGE IS SOLID. Culm heights are drawn
+ *     mostly in a narrow band with about one in eight running a quarter taller —
+ *     a reed bed has an even crest with individual spikes over it, not a
+ *     haircut and not a random spread. At the foot go three small squashed
+ *     lobes: they are the thatch of last year's growth, they close the base into
+ *     one dark mass, and they are what gives the stand a waterline. Without them
+ *     the bottom of a stand dissolves into separate wires standing in blue and
+ *     the whole thing reads as a wire brush.
+ *
+ *  3. THE BACKLIT READ IS THE POINT. `trans` is 0.95-1.0 on every strip and the
+ *     colour channel runs the full pair from root to tip, so with the sun
+ *     behind it a stand goes from a dark base to a glowing crest over its own
+ *     height. That gradient inside a 30 px object is the whole reason to build
+ *     reeds at all rather than tint the grass field green near water.
+ *
+ * Three variants, and they are three *depths* rather than three species: the
+ * tall reed stands in 15-40 cm, the rush in the wash, the spike rush on wet mud
+ * where it laps. `cover_scatter._layerShore` picks between them from the water
+ * depth at the instance, so a stand thins and shortens as its bed deepens
+ * instead of ending on a line.
+ */
+function buildReed(rng, variant) {
+  const b = new Builder();
+  const tall = variant === 0, mid = variant === 1;
+  const h = REED_HEIGHT[variant];
+  // Culm count rises as the tier shortens. A tall reed is a few strong stems; a
+  // spike rush is a dense turf, and at 35 cm it has to be dense or it is three
+  // green hairs on the mud.
+  const culms = tall ? 12 + ((rng() * 6) | 0)
+              : mid ? 15 + ((rng() * 7) | 0)
+                    : 17 + ((rng() * 8) | 0);
+  // Splay grows as the tier shortens too — a bulrush is a column, a spike rush
+  // is a rosette. Expressed as a fraction of height so the proportion survives
+  // the per-instance scale jitter.
+  const R = h * (tall ? 0.11 : mid ? 0.16 : 0.26);
+
+  // ── last year's thatch at the foot ───────────────────────────────────────
+  //
+  // Short, STEEP blades, and the steepness is the whole point. The first
+  // version of this used three squashed `lobe`s, on the reasonable-sounding
+  // theory that a lobe is the cheapest mass there is and `skirt` already does
+  // exactly this under a shrub. Captured (`shots/banks/mouth.png`, zoomed on
+  // the bed) every clump turned out to be standing on a hard-edged PALE CYAN
+  // PAD — the single worst artifact in the frame, and it read as a puck of ice
+  // under every reed.
+  //
+  // The mechanism is the one `frond`'s own note states and it is worth writing
+  // down twice: a squashed lobe with `lift` is a flat surface whose normals all
+  // point at the sky, and a sky-facing normal at golden hour takes almost none
+  // of the low gold key and nearly all of the cool sky dome. Authoring it in
+  // the deep green of the pair changes nothing — it is not the albedo that is
+  // pale, it is the light. The culms above it come out correctly dark green
+  // because a near-vertical strip's normal is near-horizontal and it is lit by
+  // the key.
+  //
+  // So the base closes with the same vocabulary the rest of the form uses: a
+  // ring of stubs at the culms' own tilt, held at the deep end of the colour
+  // pair and with the AO floor down where a contact shadow belongs. Sixteen
+  // triangles against the lobes' twenty-four, so it is cheaper as well.
+  const stubs = 7 + ((rng() * 3) | 0);
+  for (let i = 0; i < stubs; i++) {
+    const a = i * 2.39996 + rng() * 0.9;
+    frond(b, {
+      x: Math.cos(a) * R * (0.25 + rng() * 0.55), y: 0.0,
+      z: Math.sin(a) * R * (0.25 + rng() * 0.55),
+      yaw: a + (rng() - 0.5) * 1.2,
+      tilt: 0.16 + rng() * 0.34,
+      len: h * (0.14 + rng() * 0.13), w: h * (0.026 + rng() * 0.020),
+      segs: 1, droop: 0.20, taper: 0.55,
+      // The deep sixth of the pair and no further. This is the value anchor at
+      // the waterline; anything that reaches the lit end of the pair here puts
+      // a highlight exactly where the stand needs to meet the water in shadow.
+      chanA: 0.0, chanB: 0.16,
+      aoA: 0.24, aoB: 0.48, swayA: 0.04, trans: 0.30,
+    });
+  }
+
+  for (let i = 0; i < culms; i++) {
+    // Golden angle, so no two neighbours sit in the same bearing band and the
+    // stand never stripes when the camera swings past it.
+    const a = i * 2.39996 + rng() * 0.8;
+    const r = R * Math.sqrt(rng());
+    // Mostly an even crest, with about one culm in eight running a quarter
+    // over it. A flat top is a brush; a uniform random spread over 0.4-1.0 is a
+    // ragged blur with no crest at all. The bed needs both.
+    const spike = rng() < 0.13;
+    const hj = spike ? 1.00 + rng() * 0.26 : 0.62 + rng() * 0.34;
+    const len = h * hj;
+    // Splay outward with radius: a culm on the rim of the clump leans away, one
+    // in the middle stands up. That is what makes a stand read as a bundle
+    // rather than as a bundle of parallel lines.
+    const lean = (r / Math.max(R, 1e-3)) * (tall ? 0.16 : mid ? 0.26 : 0.44);
+    const tip = frond(b, {
+      x: Math.cos(a) * r, y: 0, z: Math.sin(a) * r,
+      yaw: a + (rng() - 0.5) * 0.8,
+      tilt: 0.03 + lean + rng() * 0.10,
+      len,
+      // A culm at 2-5 cm. Written as a fraction of height so a 35 cm spike rush
+      // does not come out with the same 4 cm blade a 1.5 m bulrush has — at that
+      // proportion the short tier is a fan of paddles.
+      w: h * (0.020 + rng() * 0.016),
+      // Two segments on the two tall tiers so the nod at the tip is a curve
+      // rather than a corner. `frond` applies `droop` between rings, so a
+      // single-segment strip is dead straight whatever the droop says — the
+      // spike rush is 40 cm and can afford to be, the 78 cm rush cannot.
+      segs: tall || mid ? 2 : 1,
+      droop: tall ? 0.16 : 0.24, taper: 0.72,
+      // The full pair, root to tip. This is the backlit gradient.
+      chanA: 0.0, chanB: 1.0,
+      // Dark at the water. The AO floor here is the value anchor that separates
+      // a stand from the water behind it at 60 m.
+      aoA: 0.30 + rng() * 0.14, aoB: 1.0,
+      swayA: 0.22, trans: 0.95,
+    });
+    // Seed heads on the tall tier only, and on a minority of its culms. A
+    // cattail head is the one dark, *thick* mark in the whole form and it is
+    // what tells the eye at distance that the green line is a plant. On every
+    // culm it reads as a row of matchsticks.
+    if (tall && rng() < 0.30) {
+      // Started a little BELOW the culm's last ring so the head overlaps the
+      // stem it grows out of. Butted exactly onto the tip, a 4 cm wide mark on
+      // a 3 cm wide culm shows a step at the join, and at 2 m that step reads as
+      // a dark chip floating on a wire — which is what the first capture showed.
+      const drop = h * 0.06;
+      frond(b, {
+        // `l*`, not `x/y/z` — see the note at the end of `frond`. The head sits
+        // on the culm's last ring; the walk's own end point is half a culm
+        // higher and hangs the head in clear sky.
+        x: tip.lx, y: tip.ly - drop, z: tip.lz,
+        // Long and narrow. A cattail head is a 15 cm cigar, not a 4 cm lozenge,
+        // and the proportion is what makes it read as a seed head at 40 m
+        // rather than as a speck of dirt on the lens.
+        yaw: tip.yaw, tilt: tip.ang, len: h * (0.13 + rng() * 0.08),
+        w: h * (0.019 + rng() * 0.009),
+        segs: 1, droop: 0.10, taper: 0.18,
+        // Held near the deep end of the pair rather than run to the tip: the
+        // head is a dark accent over a lit crest, so it has to be the value the
+        // crest is not.
+        chanA: 0.10, chanB: 0.22, aoA: 0.90, aoB: 1.0, swayA: 0.85, trans: 0.55,
+      });
+    }
+  }
+  return b.finish(h);
+}
+
+/**
+ * Sedge — the arching tuft that sits ON the waterline and hangs over it.
+ *
+ * The reference plate's shoreline has no sand stripe and no drawn edge: the
+ * grass silhouette *is* the shoreline, ragged and scalloped, and it overhangs
+ * the water by a hand's width everywhere. That overhang is the whole form. A
+ * tuft that stops at the bank leaves the terrain's own shore texel visible as a
+ * hard line, which is the tan band in `shots/w-base/river.png`; a tuft whose
+ * outer blades arch past horizontal covers it with something whose edge is made
+ * of thirty separate blade tips.
+ *
+ * So `droop` is large (0.42-0.55, carrying the outer blades past horizontal by
+ * their second segment) and there is a per-instance `lay` direction that half
+ * the blades favour — a bank tuft leans out over the water, it is not a
+ * rosette. `cover_scatter._layerShore` yaws the instance so the lay points
+ * downhill toward the water.
+ */
+function buildSedge(rng, variant) {
+  const b = new Builder();
+  const fine = variant === 1;
+  const h = SEDGE_HEIGHT[variant];
+  const n = fine ? 15 + ((rng() * 8) | 0) : 20 + ((rng() * 10) | 0);
+  const R = h * 0.15;
+  // Local +X is the lay. The scatterer sets the instance yaw, so leaving this
+  // at zero and biasing about it is what lets a whole bank lean the same way —
+  // out over the water — instead of each tuft picking its own direction.
+  for (let i = 0; i < n; i++) {
+    // Biased toward the lay rather than uniform around the clock: `rng()-rng()`
+    // is triangular about zero, so two blades in three leave on the water side
+    // and the rest fill the back of the tuft.
+    const a = (rng() - rng()) * 2.0;
+    const r = R * Math.sqrt(rng());
+    const out = Math.abs(a) < 1.0;                 // on the overhanging side
+    frond(b, {
+      x: Math.cos(a) * r, y: 0.01 + rng() * 0.02, z: Math.sin(a) * r,
+      yaw: a + (rng() - 0.5) * 0.5,
+      tilt: 0.22 + rng() * 0.42,
+      // The blades that lean out over the water are the long ones. Squared, so
+      // most are stubs filling the body and two or three make the overhang.
+      len: h * (0.55 + (out ? 0.85 : 0.40) * rng() * rng() + 0.25 * rng()),
+      w: h * (0.030 + rng() * 0.024),
+      segs: 2,
+      // Big. This is the arch that carries a blade past horizontal by its
+      // second ring, which is what puts a tip out over open water.
+      droop: out ? 0.44 + rng() * 0.16 : 0.30 + rng() * 0.12,
+      taper: 0.74,
+      chanA: 0.0, chanB: 1.0,
+      aoA: 0.38 + rng() * 0.16, aoB: 1.0, swayA: 0.30, trans: 0.95,
+    });
+  }
+  return b.finish(h);
+}
+
 // ── the archetype table ──────────────────────────────────────────────────────
 //
 //  `band` is the streaming detail class: a cell only generates archetypes whose
@@ -2049,6 +2301,40 @@ export const COVER_ARCHETYPES = [
   { key: 'shrubBerry',  variants: 2, card: true,  cap: 112, vis: 145, band: 2, recv: false, wind: 0.032, shadow: false,  build: buildShrubBerry },
   { key: 'scrubDry',    variants: 3, card: true,  cap: 700, vis: 55,  band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
   { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: false, wind: 0.055, shadow: true,  build: buildThicket },
+  // ── the water margin ─────────────────────────────────────────────────────
+  //
+  // Both of these are placed by `_layerShore` and by nothing else, so their
+  // caps are a *shoreline* budget rather than a world one: the number that
+  // matters is how many can be in frame at once when the camera is standing on
+  // a bank, which is the `river` and `mouth` framings.
+  //
+  // Measured from the placement rule rather than guessed. A stand accepts on
+  // roughly a quarter of the shoreline (the hard threshold on the stand field —
+  // see `_layerShore`), a stand is 8-22 clumps, and `river` has of the order of
+  // 300 m of waterline inside 105 m of the camera. That is 20-30 stands, so
+  // 700 per variant is about three times what a worst-case frame draws and
+  // leaves headroom for a lake shore seen along its length. `reed` costs
+  // 90-140 triangles, so a full cap of the tall tier is 100 k — against a scene
+  // that runs at 4.1-4.3 M. This layer is cheap by the instance and would be
+  // ruinous by the hectare, which is why it is gated on a field that says no
+  // three times out of four rather than on a density number.
+  //
+  // `conform` is low on purpose and it is not a style choice: a reed grows
+  // vertically out of a sloping bed, and at the default 0.55 a stand on a 20°
+  // shelf leans downstream as one block, which reads as a bed that has been
+  // combed. `sedge` takes a little more because a bank tuft does lean out with
+  // the slope — that lean is the overhang the form is built for.
+  { key: 'reed',        variants: 3, card: true,  cap: 700, vis: 105, visSpread: 1.25, band: 2, recv: false, wind: 0.085, shadow: false, build: buildReed,  conform: 0.15 },
+  // The sedge cap is the one number in this table set by a STRIP rather than by
+  // an area, and it is high for that reason. Every other entry's density is
+  // instances per hectare; this one is instances per running metre of
+  // shoreline, and a 58 m radius standing on a bank can hold well over a
+  // hundred metres of waterline. At three tufts per square metre over a two
+  // metre band that is 700-900 in frame before the fringe reads as continuous.
+  // At 78 triangles it is the cheapest thing in the layer per unit of ground
+  // covered, and it only exists within about two metres of standing water — so
+  // the cap is only ever approached in a frame that is *about* a shoreline.
+  { key: 'sedge',       variants: 2, card: true,  cap: 2600, vis: 68, visSpread: 1.30, band: 1, recv: false, wind: 0.060, shadow: false, build: buildSedge, conform: 0.35 },
   { key: 'fern',        variants: 2, card: true,  cap: 950, vis: 44,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
   { key: 'broadleaf',   variants: 2, card: true,  cap: 1700, vis: 46, visSpread: 1.30, band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
   { key: 'moss',        variants: 2, card: true,  cap: 1300, vis: 45, visSpread: 1.35, band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss, conform: 0.95 },

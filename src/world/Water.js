@@ -39,6 +39,16 @@ const LAKE_CHUNK = 768;      // metres per lake draw call
 // steeper than this is the mesh bridging two different bodies across a lip,
 // and it draws as a vertical wall of water down the rock between them.
 const LAKE_LEVEL_STEP = 2.5;
+// Depth, in metres, at which the lake mesh is cut. Negative: the boundary sits
+// on the DRY side of the waterline, far enough out that the shoreline fade and
+// the damp band both finish inside geometry and neither can ever end on a cell
+// edge. Just past uWetBand (3.1), which is the widest thing LAKE_FRAG draws.
+const LAKE_ISO = -1.4;
+// ...and the most 8 m rings the mesh may grow to go looking for that contour.
+// Four is 32 m, which reaches LAKE_ISO on any bank steeper than about 1:10.
+// Gentler than that and the mesh stops early — but a damp margin 32 m wide is
+// already past anything the eye reads as a shoreline.
+const LAKE_DILATE = 4;
 // A ribbon and a lake covering the same flooded reach are coplanar and would
 // z-fight. Six centimetres is far more than depth precision at these ranges and
 // far less than anything the eye can read as a step.
@@ -158,7 +168,22 @@ export class Water extends System {
       // always a band of wet substrate between the two, and its absence is
       // what makes a shoreline read as a cut-out however well antialiased the
       // alpha edge is.
-      uWetBand:      { value: 3.1 },
+      // MEASURED DOWN from 3.1. Two authors reached the same conclusion from
+      // opposite directions this round. The banks author hid one system at a
+      // time inside a single page load and showed that the pale slab filling
+      // the foreground of the 'mouth' framing is THIS BAND: hiding every
+      // scatter layer moves those pixels under 1%, hiding the water moves
+      // blue by 16 points and hands back ordinary warm meadow. The ground
+      // under it was never sand — the lake surface was rasterising metres
+      // inland of its own waterline. And docs/WATER_ART_SPEC.md 3.5, sampling
+      // the plates independently, put their damp band at 0.7-1.1 m on an
+      // ordinary bank and reached 3.1 m only on the very shallowest, flagging
+      // our value as sitting at the TOP of the plate range rather than in it.
+      //
+      // The band is measured in metres of NEGATIVE depth, so on a shallow
+      // bank 3.1 m of it is tens of metres of ground. That is the whole
+      // defect: it is a depth, and it reads as an area.
+      uWetBand:      { value: 1.1 },
       uCoolTint:     { value: new THREE.Vector3(0.96, 1.00, 1.03) },
       // Strength of the cool governor (see wCoolGovern). 0 disables it and
       // water goes the colour of the light; 1 holds it hard against any warm
@@ -221,7 +246,7 @@ export class Water extends System {
     const getBucket = (k) => {
       let b = buckets.get(k);
       if (!b) {
-        b = { pos: [], side: [], dist: [], flow: [], turb: [], wid: [], tan: [], idx: [], n: 0 };
+        b = { pos: [], side: [], dist: [], flow: [], turb: [], wid: [], lake: [], tan: [], idx: [], n: 0 };
         buckets.set(k, b);
       }
       return b;
@@ -230,32 +255,24 @@ export class Water extends System {
     for (const poly of polys) {
       if (!poly || poly.length < 6) continue;
 
-      // ── repair the channel profile ────────────────────────────────────────
-      // The baked polylines carry per-point width and discharge sampled off the
-      // flow-accumulation grid, and roughly one point in eight drops out to the
-      // headwater minimum where the trace strays a texel off the channel. Swept
-      // straight, that turns a 12 m trunk into a row of paper darts. A windowed
-      // maximum repairs the dropouts (discharge only ever grows downstream),
-      // then a box blur takes the stairstep out of the confluences.
+      // ── smooth the channel profile ───────────────────────────────────────
+      // This used to open with a windowed *maximum* over ±5 points, repairing
+      // the dropouts where the D8 trace strayed a texel off the channel core.
+      // TerrainGen now does that repair exactly, with a running maximum, before
+      // it carves — the bed and the ribbon have to agree about how wide the
+      // channel is, and only the bake can make that true. Repeating it here
+      // would also drag the mouth's flare and its decay 40 m upstream of the
+      // waterline, which is the one place the profile is deliberately not
+      // monotone. So: a box blur only, over what the bake published.
       const n0 = poly.length;
-      const wRep = new Float32Array(n0), fRep = new Float32Array(n0);
-      const RAD = 5;
+      const wSm = new Float32Array(n0), fSm = new Float32Array(n0), kSm = new Float32Array(n0);
+      const BLUR = 4;
       for (let i = 0; i < n0; i++) {
-        let mw = 0, mf = 0;
-        for (let k = Math.max(0, i - RAD); k <= Math.min(n0 - 1, i + RAD); k++) {
-          if (poly[k].w > mw) mw = poly[k].w;
-          if (poly[k].flow > mf) mf = poly[k].flow;
-        }
-        wRep[i] = mw; fRep[i] = mf;
-      }
-      const wSm = new Float32Array(n0), fSm = new Float32Array(n0);
-      const BLUR = 8;
-      for (let i = 0; i < n0; i++) {
-        let sw = 0, sf = 0, c = 0;
+        let sw = 0, sf = 0, sk = 0, c = 0;
         for (let k = Math.max(0, i - BLUR); k <= Math.min(n0 - 1, i + BLUR); k++) {
-          sw += wRep[k]; sf += fRep[k]; c++;
+          sw += poly[k].w; sf += poly[k].flow; sk += poly[k].lake ?? 0; c++;
         }
-        wSm[i] = sw / c; fSm[i] = sf / c;
+        wSm[i] = sw / c; fSm[i] = sf / c; kSm[i] = sk / c;
       }
 
       // ── resample: station spacing scales with the channel, so a 12 m trunk
@@ -263,7 +280,7 @@ export class Water extends System {
       const stations = [];
       let maxW = 0;
       const push = (i, d) => {
-        stations.push({ x: poly[i].x, y: poly[i].y, z: poly[i].z, w: wSm[i], flow: fSm[i], d });
+        stations.push({ x: poly[i].x, y: poly[i].y, z: poly[i].z, w: wSm[i], flow: fSm[i], lake: kSm[i], d });
         if (wSm[i] > maxW) maxW = wSm[i];
       };
       let travelled = 0, sinceStation = 0;
@@ -272,7 +289,10 @@ export class Water extends System {
         const seg = Math.hypot(poly[i].x - poly[i - 1].x, poly[i].z - poly[i - 1].z);
         travelled += seg;
         sinceStation += seg;
-        const stepM = Math.min(12, Math.max(4, wSm[i] * 0.9));
+        // Tighter through the mouth: the flare, the surface convergence and
+        // the dive under the lake all happen inside 34 m, and at a 12 m
+        // station spacing that is two quads to do all three in.
+        const stepM = Math.min(12, Math.max(4, wSm[i] * 0.9)) * (1 - kSm[i] * 0.55);
         if (sinceStation >= stepM || i === poly.length - 1) {
           push(i, travelled);
           sinceStation = 0;
@@ -301,7 +321,9 @@ export class Water extends System {
         // Discharge squeezed through a narrow channel is fast, and fast water
         // over a rough bed aerates even where it is not steep.
         const pinch = clamp01(stations[k].flow * 5 / Math.max(stations[k].w, 1.5));
-        stations[k].turb = clamp01(steep * 0.85 + pinch * 0.25);
+        // Standing water is not turbulent, and a delta is the slowest water in
+        // the whole reach: the same discharge over three times the area.
+        stations[k].turb = clamp01(steep * 0.85 + pinch * 0.25) * (1 - stations[k].lake);
       }
       // Smooth turbulence along the reach — foam does not switch on per-vertex.
       const sm = stations.map((s) => s.turb);
@@ -323,14 +345,26 @@ export class Water extends System {
         const s = stations[si];
         const base = b.n;
         const hw = s.w * 0.5;
+        // ── hand over to the lake, in height ────────────────────────────────
+        // The mouth's y already converges onto the lake surface in the bake, so
+        // free-flowing reaches keep RIVER_LIFT and the last third of the mouth
+        // passes *under* the standing water. That is the handover: the lake
+        // mesh has renderOrder 4 against the ribbon's 6 and writes depth, so
+        // once the ribbon is below it the depth test discards it and the lake
+        // is what you see. No hard quad edge in mid-air, and no coplanar
+        // double-draw either — the ribbon is either 6 cm clear above the lake
+        // or 45 cm clear below it, and the crossing takes one station over
+        // water metres deep.
+        const lift = RIVER_LIFT * (1 - s.lake) - 0.45 * smoothstep(0.62, 1.0, s.lake);
         for (let c = 0; c < COLS.length; c++) {
           const off = COLS[c] * hw;
-          b.pos.push(s.x - s.tz * off, s.y + RIVER_LIFT, s.z + s.tx * off);
+          b.pos.push(s.x - s.tz * off, s.y + lift, s.z + s.tx * off);
           b.side.push(COLS[c]);
           b.dist.push(s.d);
           b.flow.push(s.flow);
           b.turb.push(s.turb);
           b.wid.push(s.w);
+          b.lake.push(s.lake);
           b.tan.push(s.tx, s.tz);
         }
         b.n += COLS.length;
@@ -361,6 +395,14 @@ export class Water extends System {
       geo.setAttribute('aFlow', new THREE.Float32BufferAttribute(b.flow, 1));
       geo.setAttribute('aTurb', new THREE.Float32BufferAttribute(b.turb, 1));
       geo.setAttribute('aWidth', new THREE.Float32BufferAttribute(b.wid, 1));
+      // 0 free-flowing, 1 standing. Nothing in water_river.js reads it yet —
+      // the shader is another author's file this round and the request to
+      // consume it (fold foam and the flow scroll out, and take alpha to zero
+      // rather than relying on the ribbon sinking under the lake) is filed as
+      // C1 in docs/INTEGRATION_REQUESTS.md. Supplied now so that landing it is
+      // one declaration and no geometry change; an attribute the program does
+      // not use is never bound.
+      geo.setAttribute('aLake', new THREE.Float32BufferAttribute(b.lake, 1));
       geo.setAttribute('aTan', new THREE.Float32BufferAttribute(b.tan, 2));
       geo.setIndex(b.idx);
       geo.computeBoundingSphere();
@@ -391,10 +433,41 @@ export class Water extends System {
    * of a single body of water.
    *
    * Instead: one vertex every ~8 m carrying the *local* baked surface height,
-   * cells emitted only where there is water, the whole thing dilated one ring
-   * so the per-pixel depth fade has geometry to finish inside. The polygon
-   * boundary is then always well outside the visible waterline, and the
-   * waterline itself is decided by the terrain.
+   * cells emitted only where there is water, the whole thing dilated so the
+   * per-pixel depth fade has geometry to finish inside. The polygon boundary is
+   * then always well outside the visible waterline, and the waterline itself is
+   * decided by the terrain.
+   *
+   * ── the boundary is a contour, not a cell edge ──────────────────────────────
+   * Two things were still quantising the shoreline to the 8 m lattice, and
+   * between them they are the straight polygonal segments in the baseline
+   * capture:
+   *
+   *   1. The mesh stopped on cell edges. It is now cut on the marching-squares
+   *      contour of (water − terrain) at LAKE_ISO, with the crossing point
+   *      interpolated along each lattice edge, so the boundary polyline follows
+   *      a terrain contour and its vertices land anywhere on an edge rather
+   *      than only on lattice points. Cells wholly inside still emit a plain
+   *      quad — the interior never needed fixing, only the rim.
+   *   2. `aWet` was the fraction of the (up to four) touching cells that held
+   *      water: 0, ¼, ½, ¾ or 1. LAKE_FRAG gates alpha on it, so the alpha edge
+   *      inherited a five-level, grid-aligned staircase however good the
+   *      per-pixel depth fade underneath it was. It is now a smooth function of
+   *      the vertex's own depth, which leaves that fade — which reads the
+   *      terrain per pixel — as the only thing deciding where the water ends.
+   *
+   * The dilation also had to grow. LAKE_FRAG draws a damp band out to
+   * `uWetBand` metres of *negative* depth on the dry side; one 8 m ring reaches
+   * −0.5 m on a gentle bank, so the band was being cut off mid-fade on a
+   * straight cell edge. It now grows outward until the contour has somewhere to
+   * land, capped at LAKE_DILATE rings.
+   *
+   * ── and the level-step cull no longer punches notches ───────────────────────
+   * Quads spanning more than LAKE_LEVEL_STEP are still refused, for the reason
+   * recorded at the constant. What changed is that they are far rarer: the bake
+   * now gives every body one flat level instead of a per-cell surface that
+   * domed with the priority flood's epsilon, so a legitimate lake no longer
+   * trips the test at all and only a genuine lip between two bodies does.
    */
   _buildLakes() {
     const world = this.ctx.world;
@@ -459,27 +532,44 @@ export class Water extends System {
       }
     }
 
-    // ── dilate one ring, carrying the neighbouring level outward ────────────
+    // ── dilate outward, carrying the water level with it ────────────────────
     // These cells are never *seen* as water unless the ground genuinely lies
-    // below the lake there; they exist so the shoreline fade never coincides
-    // with the edge of the mesh.
+    // below the lake there; they exist so neither the shoreline fade nor the
+    // damp band on the dry side of it ever coincides with the edge of the mesh.
+    //
+    // One ring was not enough for the second of those. LAKE_FRAG draws the damp
+    // margin out to uWetBand metres of negative depth, and on a 1:16 bank a
+    // single 8 m ring reaches half a metre — so the band was being cut off
+    // mid-fade on a straight cell edge, which is a polygonal shoreline drawn in
+    // damp grey instead of in blue. A breadth-first walk carries the level out
+    // as far as the contour needs, and no further: a ring stops growing where
+    // the ground has already climbed past LAKE_ISO.
     const mask = Uint8Array.from(wet);
-    for (let cz = 0; cz < G; cz++) {
-      for (let cx = 0; cx < G; cx++) {
-        const k = cz * G + cx;
-        if (wet[k]) continue;
-        let n = 0, sum = 0;
-        for (let dz = -1; dz <= 1; dz++) {
-          const z = cz + dz; if (z < 0 || z >= G) continue;
-          for (let dx = -1; dx <= 1; dx++) {
-            const x = cx + dx; if (x < 0 || x >= G) continue;
-            if (!wet[z * G + x]) continue;
-            n++; sum += level[z * G + x];
+    {
+      let frontier = [];
+      for (let k = 0; k < G * G; k++) if (wet[k]) frontier.push(k);
+      for (let ring = 0; ring < LAKE_DILATE && frontier.length; ring++) {
+        const next = [];
+        for (const k of frontier) {
+          const cx = k % G, cz = (k / G) | 0;
+          for (let dz = -1; dz <= 1; dz++) {
+            const z = cz + dz; if (z < 0 || z >= G) continue;
+            for (let dx = -1; dx <= 1; dx++) {
+              const x = cx + dx; if (x < 0 || x >= G) continue;
+              const nk = z * G + x;
+              if (mask[nk]) continue;
+              mask[nk] = 1;
+              level[nk] = level[k];
+              // Stop growing once the terrain here is already well above the
+              // water: past that the contour has landed and further rings are
+              // geometry nothing will ever draw on.
+              const gx = Math.min(R - 1, x * S + (S >> 1));
+              const gz = Math.min(R - 1, z * S + (S >> 1));
+              if (level[k] - world.height[gz * R + gx] > LAKE_ISO) next.push(nk);
+            }
           }
         }
-        if (!n) continue;
-        mask[k] = 1;
-        level[k] = sum / n;
+        frontier = next;
       }
     }
 
@@ -533,22 +623,43 @@ export class Water extends System {
     const vLevel = new Float32Array(VG * VG);
     const vWet = new Float32Array(VG * VG);
     const vShore = new Float32Array(VG * VG);
+    const vDepth = new Float32Array(VG * VG).fill(-1e9);
     const vOk = new Uint8Array(VG * VG);
+    // Metres of negative depth over which aWet lets go. It has to reach past
+    // uWetBand or the damp band is throttled off before the depth gate in the
+    // shader — which is the bug the previous author measured on the far shore
+    // of the big lake — and it has to stay short of a cliff, which is the case
+    // the gate exists for.
+    const wetSpan = (this.shared?.uWetBand?.value ?? 3.1) + 0.4;
     for (let vz = 0; vz < VG; vz++) {
       for (let vx = 0; vx < VG; vx++) {
-        let n = 0, lv = 0, w = 0, sh = 0;
+        let n = 0, lv = 0, sh = 0;
         for (let dz = -1; dz <= 0; dz++) {
           const cz = vz + dz; if (cz < 0 || cz >= G) continue;
           for (let dx = -1; dx <= 0; dx++) {
             const cx = vx + dx; if (cx < 0 || cx >= G) continue;
             const k = cz * G + cx;
             if (!mask[k]) continue;
-            n++; lv += level[k]; w += wet[k]; sh += Math.min(dist[k], 12) * quadM;
+            n++; lv += level[k]; sh += Math.min(dist[k], 12) * quadM;
           }
         }
         if (!n) continue;
         const vi = vz * VG + vx;
-        vOk[vi] = 1; vLevel[vi] = lv / n; vWet[vi] = w / n; vShore[vi] = sh / n;
+        vOk[vi] = 1; vLevel[vi] = lv / n; vShore[vi] = sh / n;
+        // Depth at the vertex against the terrain under it, sampled at the
+        // texel the vertex actually sits on. This is the field the contour is
+        // cut on and the field aWet is derived from, so the mesh boundary, the
+        // alpha gate and the per-pixel shoreline fade in the shader are all
+        // statements about the same surface.
+        const gx = Math.min(R - 1, vx * S), gz = Math.min(R - 1, vz * S);
+        const dep = vLevel[vi] - world.height[gz * R + gx];
+        vDepth[vi] = dep;
+        // Smooth in depth, not a count of wet cells. The old form took five
+        // discrete values on an 8 m lattice and LAKE_FRAG gates alpha on it,
+        // so the waterline inherited a grid-aligned staircase no matter how
+        // good the per-pixel fade underneath it was.
+        vWet[vi] = dep <= -wetSpan ? 0
+                 : 0.25 + 0.75 * clamp01((dep + 0.05) / 0.5);
       }
     }
 
@@ -556,41 +667,75 @@ export class Water extends System {
     // than predicted here, so it can never claim surface the mesh does not have.
     const drawn = new Uint8Array(G * G);
 
-    const vertexAt = (vx, vz, out) => {
-      const vi = vz * VG + vx;
-      if (!vOk[vi]) return false;
-      out[0] = vLevel[vi]; out[1] = vWet[vi]; out[2] = vShore[vi];
-      return true;
-    };
+    // ── marching squares over the lattice ───────────────────────────────────
+    // Corners are walked 00 → 01 → 11 → 10, which is the reverse of the natural
+    // order and is what the quad emission below always used; keep it, or every
+    // lake triangle faces down. Inside corners contribute themselves, and every
+    // edge whose two ends disagree contributes the point where the depth field
+    // crosses LAKE_ISO. Fanned from the first vertex, so a wholly-inside cell
+    // is exactly the two triangles it was before.
+    const CX = [0, 0, 1, 1], CZ = [0, 1, 1, 0];
+    // Edge identity, so the two cells either side of one lattice edge land on
+    // the same interpolated point and the surface does not split along it.
+    const edgeMap = new Map();
+    const poly = new Int32Array(8);
 
-    const vv = [0, 0, 0];
     for (let bz = 0; bz < chunks; bz++) {
       for (let bx = 0; bx < chunks; bx++) {
         const cz0 = bz * perChunk, cx0 = bx * perChunk;
         const cz1 = Math.min(G, cz0 + perChunk), cx1 = Math.min(G, cx0 + perChunk);
         vmap.fill(-1);
+        edgeMap.clear();
         const pos = [], wetA = [], shoreA = [], idx = [];
 
         const vert = (vx, vz) => {
           const li = (vz - cz0) * (perChunk + 1) + (vx - cx0);
           const hit = vmap[li];
           if (hit >= 0) return hit;
-          if (!vertexAt(vx, vz, vv)) return -1;
+          const vi = vz * VG + vx;
+          if (!vOk[vi]) return -1;
           const id = pos.length / 3;
-          pos.push(-half + vx * quadM, vv[0], -half + vz * quadM);
-          wetA.push(vv[1]);
-          shoreA.push(vv[2]);
+          pos.push(-half + vx * quadM, vLevel[vi], -half + vz * quadM);
+          wetA.push(vWet[vi]);
+          shoreA.push(vShore[vi]);
           vmap[li] = id;
+          return id;
+        };
+
+        // The point on the lattice edge (ax,az)→(bx,bz) where depth crosses the
+        // iso value, with everything the vertex carries interpolated to it.
+        const cross = (ax0, az0, bx0, bz0) => {
+          // Canonical direction, so the two cells sharing this edge produce one
+          // vertex from one arithmetic rather than two that nearly agree.
+          const swap = bz0 < az0 || (bz0 === az0 && bx0 < ax0);
+          const ax = swap ? bx0 : ax0, az = swap ? bz0 : az0;
+          const bx2 = swap ? ax0 : bx0, bz2 = swap ? az0 : bz0;
+          const ai = az * VG + ax, bi = bz2 * VG + bx2;
+          const key = ai * 2 + (az === bz2 ? 1 : 0);
+          const hit = edgeMap.get(key);
+          if (hit !== undefined) return hit;
+          const fa = vDepth[ai], fb = vDepth[bi];
+          let t = (LAKE_ISO - fa) / (fb - fa);
+          t = t < 0.03 ? 0.03 : t > 0.97 ? 0.97 : t;
+          const id = pos.length / 3;
+          pos.push(-half + (ax + (bx2 - ax) * t) * quadM,
+                   vLevel[ai] + (vLevel[bi] - vLevel[ai]) * t,
+                   -half + (az + (bz2 - az) * t) * quadM);
+          wetA.push(vWet[ai] + (vWet[bi] - vWet[ai]) * t);
+          shoreA.push(vShore[ai] + (vShore[bi] - vShore[ai]) * t);
+          edgeMap.set(key, id);
           return id;
         };
 
         for (let cz = cz0; cz < cz1; cz++) {
           for (let cx = cx0; cx < cx1; cx++) {
-            if (!mask[cz * G + cx]) continue;
-            const a = vert(cx, cz), b = vert(cx + 1, cz);
-            const c = vert(cx + 1, cz + 1), d = vert(cx, cz + 1);
-            if (a < 0 || b < 0 || c < 0 || d < 0) continue;
-            // A lake surface is level. Reject any quad whose corners disagree
+            const kc = cz * G + cx;
+            if (!mask[kc]) continue;
+            const ci = [cz * VG + cx, (cz + 1) * VG + cx,
+                        (cz + 1) * VG + cx + 1, cz * VG + cx + 1];
+            if (!vOk[ci[0]] || !vOk[ci[1]] || !vOk[ci[2]] || !vOk[ci[3]]) continue;
+
+            // A lake surface is level. Reject any cell whose corners disagree
             // about where the surface is by more than a step.
             //
             // This is the bug behind everything a critic pass logged against
@@ -605,12 +750,33 @@ export class Water extends System {
             // an isolation capture (lake chunks hidden, everything else on)
             // shows the falls system's curtain behind it, correctly white and
             // fully streaked, having been covered up the whole time.
-            const ya = pos[a * 3 + 1], yb = pos[b * 3 + 1];
-            const yc = pos[c * 3 + 1], yd = pos[d * 3 + 1];
-            const span = Math.max(ya, yb, yc, yd) - Math.min(ya, yb, yc, yd);
-            if (span > LAKE_LEVEL_STEP) continue;
-            idx.push(a, c, b, a, d, c);
-            drawn[cz * G + cx] = 1;
+            //
+            // It used to punch notches out of a perfectly good rim as well,
+            // because a lake's baked surface domed with the priority flood's
+            // epsilon and a steep-banked cell could trip the test on its own.
+            // The bake hands over one flat level per body now, so this fires
+            // only where there really are two bodies with a lip between them.
+            let lo = Infinity, hi = -Infinity;
+            for (let q = 0; q < 4; q++) {
+              const L = vLevel[ci[q]];
+              if (L < lo) lo = L;
+              if (L > hi) hi = L;
+            }
+            if (hi - lo > LAKE_LEVEL_STEP) continue;
+
+            let np = 0;
+            for (let q = 0; q < 4; q++) {
+              const qn = (q + 1) & 3;
+              const inA = vDepth[ci[q]] > LAKE_ISO;
+              const inB = vDepth[ci[qn]] > LAKE_ISO;
+              if (inA) poly[np++] = vert(cx + CX[q], cz + CZ[q]);
+              if (inA !== inB) {
+                poly[np++] = cross(cx + CX[q], cz + CZ[q], cx + CX[qn], cz + CZ[qn]);
+              }
+            }
+            if (np < 3) continue;
+            for (let q = 1; q < np - 1; q++) idx.push(poly[0], poly[q], poly[q + 1]);
+            drawn[kc] = 1;
             quadCount++;
           }
         }
@@ -642,9 +808,10 @@ export class Water extends System {
     // rejection, grass and cover scatter, the camper's fording drag and its
     // audio — goes through `WorldData.getWaterHeight`, which was a nearest-texel
     // point sample of the raw bake. This mesh is not a point sample of the raw
-    // bake: it coarsens sixteen 2 m texels into an 8 m quad, dilates one ring so
-    // the shoreline fade has geometry to finish inside, and averages each vertex
-    // over the quads that touch it. Two derivations of one field, and they
+    // bake: it coarsens sixteen 2 m texels into an 8 m quad, dilates outward so
+    // the shoreline fade has geometry to finish inside, cuts its rim on a depth
+    // contour, and averages each vertex over the quads that touch it. Two
+    // derivations of one field, and they
     // disagreed under 91% of drawn water shallower than 15 cm and under 41 m of
     // it at (-768, 832) — measured in P1.
     //
@@ -654,15 +821,22 @@ export class Water extends System {
     //
     // ~740 KB at res 1536 (385² floats + 384² bytes).
     const origin = -half;
+    const iso = LAKE_ISO;
     const field = {
       level: vLevel,          // (G+1)² lattice, metres
-      drawn,                  // G², 1 where the mesh emitted this quad
-      G, quadM, origin,
+      depth: vDepth,          // (G+1)² lattice, water minus terrain
+      drawn,                  // G², 1 where the mesh emitted anything here
+      G, quadM, origin, iso,
       /**
-       * Height of the drawn lake surface at world (x, z), or null where no
-       * lake quad is drawn. Evaluates the emitted triangles exactly: the quad
-       * is split a-c-b / a-d-c, and a downward ray takes the highest surface it
-       * meets, so on a quad boundary any drawn quad touching the point answers.
+       * Height of the drawn lake surface at world (x, z), or null where the
+       * mesh does not cover the point.
+       *
+       * Two tests, matching the two things the emit loop does: the cell has to
+       * have emitted geometry at all, and the point has to be on the inside of
+       * the contour. The second is bilinear where marching squares is linear
+       * along each edge, so the two disagree only inside a saddle cell — a few
+       * centimetres of a boundary that is itself three metres out on the dry
+       * side of the waterline, where the answer is `no water here` either way.
        */
       levelAt(x, z) {
         const fx = (x - origin) / quadM, fz = (z - origin) / quadM;
@@ -678,10 +852,13 @@ export class Water extends System {
             const cz = cz0 + iz; if (cz < 0) continue;
             if (!drawn[cz * G + cx]) continue;
             const u = fx - cx, v = fz - cz;
-            const ya = vLevel[cz * VG + cx], yb = vLevel[cz * VG + cx + 1];
-            const yc = vLevel[(cz + 1) * VG + cx + 1], yd = vLevel[(cz + 1) * VG + cx];
-            const y = u >= v ? ya * (1 - u) + yb * (u - v) + yc * v
-                             : ya * (1 - v) + yd * (v - u) + yc * u;
+            const i00 = cz * VG + cx, i10 = i00 + 1;
+            const i01 = (cz + 1) * VG + cx, i11 = i01 + 1;
+            const dp = (vDepth[i00] * (1 - u) + vDepth[i10] * u) * (1 - v)
+                     + (vDepth[i01] * (1 - u) + vDepth[i11] * u) * v;
+            if (dp <= iso) continue;
+            const y = (vLevel[i00] * (1 - u) + vLevel[i10] * u) * (1 - v)
+                    + (vLevel[i01] * (1 - u) + vLevel[i11] * u) * v;
             if (best === null || y > best) best = y;
           }
         }
