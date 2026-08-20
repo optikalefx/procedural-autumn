@@ -139,6 +139,7 @@ export class GroundCover extends System {
     this.visMul = 1;
     this._lastPack = new THREE.Vector3(1e9, 1e9, 1e9);
     this._lastCell = { x: 1e9, z: 1e9 };
+    this._lastRefresh = new THREE.Vector3(1e9, 1e9, 1e9);
     this._catchup = 0;
     this._dirty = true;
     this.stats = { instances: 0, tris: 0, cells: 0, buildMs: 0, groundMs: 0 };
@@ -225,7 +226,15 @@ export class GroundCover extends System {
    * cell only ever adds things that were invisible from where they were added.
    */
   _bandFor(d) {
-    if (d < 50) return 0;          // ground substrate, flowers  (vis <= 44)
+    // Boundary 0 RAISED from 50 to 68. It is a hard ceiling on how far the
+    // substrate can be seen, and it was the thing that made the substrate's
+    // 22-24 m radii look like a free choice: nothing in `_layerGround` could
+    // reach past 50 m however generous its radius, because no cell beyond that
+    // ever generates it. With the substrate now carrying 30-59 m radii (see
+    // `visSpread` in cover_forms.js) it has to sit clear of the largest of
+    // them — deadTuft tops out at 42 * 1.40 = 58.8 — with room for the
+    // half-cell of slack `_refreshQueue` allows.
+    if (d < 68) return 0;          // ground substrate, flowers  (vis <= 59)
     if (d < 134) return 1;         // ferns, branches            (vis <= 88)
     if (d < 196) return 2;         // scrub, berries, litter     (vis <= 155)
     return 3;                      // shrubs, thickets, deadfall (vis <= 250)
@@ -491,8 +500,23 @@ export class GroundCover extends System {
     if (moved > 160) this._catchup = 70;
 
     const ccx = Math.floor(cam.x / CELL), ccz = Math.floor(cam.z / CELL);
-    if (ccx !== this._lastCell.x || ccz !== this._lastCell.z) {
+    // Also on distance travelled, not only on crossing a cell boundary.
+    //
+    // A cell's detail band is decided from the camera position at refresh time,
+    // and a camera that enters a cell at one corner and leaves at the opposite
+    // one travels 68 m without ever changing cell index. That was harmless
+    // while the substrate faded out at 23 m against a 50 m boundary — 27 m of
+    // slack. The substrate now reaches 59 m against a 68 m boundary, so the
+    // slack is 9 m and in-cell travel could carry a band-1 cell (no substrate
+    // at all) inside the radius at which its substrate should be visible. The
+    // symptom would be a wedge of undressed ground appearing at speed, which
+    // is exactly the class of defect this whole change exists to remove.
+    // A refresh is a 15x15 scan of integers; running it every 20 m of travel
+    // costs nothing and bounds the error at 20 m instead of 68.
+    const travelled = this._lastRefresh.distanceToSquared(cam);
+    if (ccx !== this._lastCell.x || ccz !== this._lastCell.z || travelled > 400) {
       this._lastCell.x = ccx; this._lastCell.z = ccz;
+      this._lastRefresh.copy(cam);
       this._refreshQueue(cam);
     }
 

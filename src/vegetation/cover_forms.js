@@ -2003,8 +2003,8 @@ export const COVER_ARCHETYPES = [
   { key: 'scrubDry',    variants: 3, card: true,  cap: 700, vis: 55,  band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
   { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: false, wind: 0.055, shadow: true,  build: buildThicket },
   { key: 'fern',        variants: 2, card: true,  cap: 950, vis: 44,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
-  { key: 'broadleaf',   variants: 2, card: true,  cap: 640, vis: 32,  band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
-  { key: 'moss',        variants: 2, card: true,  cap: 440, vis: 26,  band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss, conform: 0.95 },
+  { key: 'broadleaf',   variants: 2, card: true,  cap: 1700, vis: 44, visSpread: 1.30, band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
+  { key: 'moss',        variants: 2, card: true,  cap: 1300, vis: 42, visSpread: 1.35, band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss, conform: 0.95 },
   { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 42,  band: 0, recv: false, wind: 0.055, shadow: false, build: buildFlowerAster },
   { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 44,  band: 0, recv: false, wind: 0.065, shadow: false, build: buildGoldenrod },
   { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 44,  band: 0, recv: false, wind: 0.085, shadow: false, build: buildSeedHead },
@@ -2012,7 +2012,65 @@ export const COVER_ARCHETYPES = [
   { key: 'log',         variants: 2, card: false, cap: 90,  vis: 210, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildLog },
   { key: 'stump',       variants: 1, card: false, cap: 90,  vis: 165, band: 3, recv: false, wind: 0.000, shadow: true,  build: buildStump },
   { key: 'branch',      variants: 2, card: false, cap: 300, vis: 50,  band: 1, recv: false, wind: 0.000, shadow: false, build: buildBranch },
-  // The substrate tier. Caps raised hard and radii pulled in, and the two move
+  // ── THE SUBSTRATE TIER, AND WHY ITS RADII WENT BACK OUT ──────────────────
+  //
+  // The three most numerous archetypes in the game used to carry the SHORTEST
+  // radii in it: leafScatter 22 m, deadTuft 23 m, pebble 24 m, moss 26 m. The
+  // note below argues that pulling them in is free because "past about 20
+  // metres the terrain's own albedo is carrying the ground anyway". Every
+  // sentence of that is true of a camera standing on the ground and false of
+  // the one the game actually has. `tools/_scratch/boomprobe.mjs` measures the
+  // chase camera 9-11 m behind and 5-9 m above the camper while driving, so a
+  // radius of 23 m from the CAMERA is about 11 m in front of the BUMPER, and
+  // the instance fade (`shaders/cover_material.js`, from 0.76*vis) had a
+  // deadTuft mat still visibly inflating out of the ground 6 m ahead of the
+  // front wheels. At 13 m/s that is a third of a second of warning. It is what
+  // the player reported, twice, and their words are exact: "basically right in
+  // front of the car. Like directly in front of it."
+  //
+  // Two things changed rather than one, because the radius alone would only
+  // have moved the ring rather than dissolved it. `visSpread` (see `_emit` in
+  // cover_scatter.js) turns each archetype's single radius into a distribution,
+  // so the layer thins out over a long band instead of every mat of a type
+  // finishing its shrink at the same metre; and `_bandFor`'s band-0 boundary in
+  // GroundCover.js went 50 -> 68, because no radius past 50 could have been
+  // populated at all — `_layerGround` only ever runs in band-0 cells, which is
+  // the ceiling that made 23 m look like a free choice.
+  //
+  // Lead time in front of the bumper at 13 m/s, before and after:
+  //
+  //             old vis   first seen      new vis (mean/max)  first seen
+  //   deadTuft    23 m     0.9 s            42 / 58.8 m        2.3 / 3.6 s
+  //   leafScatter 22 m     0.8 s            40 / 56 m          2.2 / 3.4 s
+  //   moss        26 m     1.1 s            42 / 56.7 m        2.3 / 3.4 s
+  //   broadleaf   32 m     1.5 s            44 / 57.2 m        2.5 / 3.5 s
+  //   pebble      24 m     0.9 s            30 / 39 m          1.4 / 2.1 s
+  //
+  // MEASURED before shipping — `tools/_scratch/lodab.mjs`, both arms in one
+  // page load, ABBA blocks, adaptive resolution frozen (a null A/B reads
+  // 0.00 ms on this rig). Old radii against new, `meadow` pose:
+  //
+  //   instances 7,539 -> 22,538   cover triangles 0.68 M -> 1.58 M
+  //   p50 +0.2 ms      p95 -0.7 ms      of a 41 ms frame
+  //
+  // Three times the instance count for two tenths of a millisecond. The perf
+  // author's finding is why, and it is worth restating because this table's own
+  // comments still argue the opposite: THIS LAYER COSTS OVERDRAW, NOT GEOMETRY.
+  // Reach is bought in an annulus, where the number of props grows as r dr and
+  // the pixels each one covers fall as 1/r^2 — so the pixel cost of extending
+  // outward grows only as dr/r, while the near field, which nothing here
+  // changes, keeps paying for all of it. Pulling a radius in is not the free
+  // win the note below claims; it is a large art loss for a rounding error.
+  //
+  // `pebble` is the exception and it is deliberate. It is the most numerous
+  // thing in the game and most of it is 3-10 cm grit, which is under a pixel
+  // past 25 m — so its base radius moves only to 30 m and the ANCHOR stone in
+  // each drift (20-50 cm, the piece the eye groups the drift around) carries
+  // `visMul: 1.7` at the emit site instead. Reach follows what can be
+  // resolved, not what the archetype is called.
+  //
+  // ── the original note, which is still right about density ────────────────
+  // Caps raised hard and radii pulled in, and the two move
   // together on purpose: what the eye reads is *density*, which is cap over
   // π·vis², and the previous numbers bought 800 stones spread over 5000 m² —
   // 0.16 per square metre. That is why the 2 m close-up still showed a bare
@@ -2041,10 +2099,10 @@ export const COVER_ARCHETYPES = [
   // Stones keep the default: a pebble is a lump that intersects the surface
   // whatever it does, and one lying exactly parallel to a steep slope looks
   // stuck to it.
-  { key: 'pebble',      variants: 2, card: false, cap: 2150, vis: 24, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
+  { key: 'pebble',      variants: 2, card: false, cap: 4400, vis: 30, visSpread: 1.30, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
   { key: 'cobble',      variants: 2, card: false, cap: 1050, vis: 74, band: 2, recv: false, wind: 0.000, shadow: false, build: buildCobble },
-  { key: 'leafScatter', variants: 2, card: true,  cap: 1450, vis: 22, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter, conform: 0.95 },
-  { key: 'deadTuft',    variants: 2, card: true,  cap: 2900, vis: 23, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft, conform: 0.95 },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 5200, vis: 40, visSpread: 1.40, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter, conform: 0.95 },
+  { key: 'deadTuft',    variants: 2, card: true,  cap: 9000, vis: 42, visSpread: 1.40, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft, conform: 0.95 },
   // The mid-range ground dressing. `conform: 1` takes it to the full terrain
   // tilt (every other archetype leans only 55% with the ground, which is right
   // for a plant standing on a slope and wrong for a three-metre mat lying on

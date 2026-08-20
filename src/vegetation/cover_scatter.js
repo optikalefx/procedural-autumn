@@ -502,7 +502,26 @@ export class CoverScatter {
     out[i + 13] = arch.wind * (0.6 + rng() * 0.9);
     out[i + 14] = rng() * TAU;
     out[i + 15] = o.tone ?? 1;
-    out[i + 16] = arch.vis * (o.visMul ?? 1);
+    // ── visibility radius, per instance, not per archetype ──────────────
+    // `visSpread` widens an archetype's single radius into a distribution.
+    // Without it every instance of a type finishes shrinking at exactly the
+    // same distance, so what the player sees approaching is a COHERENT RING of
+    // props inflating out of the ground together — the defect the player
+    // reported twice ("the pop-in of grass and rocks is basically right in
+    // front of the car"). Sweeping the disappearance distance across a range
+    // turns that ring into a density gradient: at any distance in the band some
+    // props are full size, some are half grown and some are not there yet, and
+    // there is no edge anywhere for the eye to lock onto.
+    //
+    // `rng() * rng()` rather than a flat roll, and the shape is the whole
+    // economy of it. Instance count grows with the SQUARE of reach, so a flat
+    // roll over [V, 1.4V] would buy the far end at the price of the near field.
+    // The product of two uniforms piles most instances at the bottom of the
+    // range and sends a thin tail to the top — a dense near field with a few
+    // stragglers carrying the far one, which is also what a real drift of
+    // litter looks like. Mean multiplier is 1 + 0.25*(spread-1).
+    const vs = arch.visSpread;
+    out[i + 16] = arch.vis * (o.visMul ?? 1) * (vs ? 1 + (vs - 1) * rng() * rng() : 1);
     out[i + 17] = ai;
     // `variant` lets a caller weight the choice. The uniform roll is right for
     // foliage, where the variants are the same plant grown twice, and wrong for
@@ -803,6 +822,14 @@ export class CoverScatter {
             // produced the measured "every stone within ±30% of the same size".
             scale: (anchor ? 0.85 + rng() * 0.75 : 0.50 + rng() * rng() * 0.95),
             tone: 0.86 + rng() * 0.28, hue: 0.020, flat: true, nx: cn.nx, nz: cn.nz,
+            // Reach follows what can actually be resolved, which on this tier
+            // spans an order of magnitude. Grit is 3-10 cm: at 30 m it is one
+            // pixel, so its radius costs a great deal (it is the most numerous
+            // thing in the game) and buys nothing past there. The anchor stone
+            // is 20-50 cm and reads as an object — it is the piece the eye
+            // groups the drift around, and it is the one that has to be
+            // present before the player is close enough to notice it arrive.
+            visMul: anchor ? 1.7 : 1,
           });
         } else if (kind === 1) {
           // Weighted to the rust and crimson end rather than the gold. A

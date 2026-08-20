@@ -30,6 +30,47 @@ const RINGS = [
   // whole game — so it is the one ring whose *individual blades* can be
   // resolved, and it is budgeted the other way round from the far two.
   //
+  // ── WHY THE HAND-OVER MOVED, AND WHAT IT COST ────────────────────────────
+  // The player reported twice that "the pop-in of grass and rocks is basically
+  // right in front of the car". The distance that makes that true is not in
+  // this table: `tools/_scratch/boomprobe.mjs` measures the chase camera
+  // sitting 9-11 m behind and 5-9 m above the camper while driving, so the
+  // bumper is about 12 m nearer everything than the camera is. The old ladder
+  // — near fadeOut [20,30], mid fadeIn [18,28] — therefore ran its whole
+  // hand-over between 6 m and 18 m IN FRONT OF THE BUMPER, i.e. 0.5-1.4 s at
+  // 13 m/s, and the mid ring started thickening level with the front wheels.
+  //
+  // The other half is that the hand-over is a *step in coverage*, not just a
+  // change of blade shape. Near ring: 74 blades/m2 at 0.052 x 0.44 m. Mid
+  // ring: 11.6 blades/m2 at 0.115 x 0.40 m. That is 1.69 m2 of blade per m2 of
+  // ground against 0.53 — a 3.2x drop — and the old ladder crossed all of it
+  // in twelve metres. What the player sees driving into that is the meadow
+  // visibly thickening just ahead of the car.
+  //
+  // So the fix is not only further out, it is *longer*: the near ring now
+  // tapers from 18 m to 42 m instead of 20 m to 30 m. Coverage still falls
+  // 1.71 -> 0.53, but over 26 m instead of 12 — a gradient 2.6x gentler, with
+  // its steepest point 19 m ahead of the bumper (1.5 s) instead of 13 m
+  // (1.0 s), and the last near blade going out at 30 m ahead (2.3 s).
+  //
+  // `tileSize` has to grow with it: the assert below only guarantees
+  // 2 x tileSize of coverage from a 4x4 grid, so a 42 m fadeOut needs 22 m
+  // tiles and 24 gives it margin. `maxBlades` scales with tile AREA
+  // (24/16)^2 = 2.25 to hold density; changing one without the other is a
+  // silent density change.
+  //
+  // MEASURED, not reasoned about — `tools/_scratch/lodab.mjs`, both arms in one
+  // page load, ABBA blocks, adaptive resolution frozen, `meadow` pose (a null
+  // A/B on this rig reads 0.00 ms):
+  //
+  //   near [20,30] mid [18,28]  ->  [26,42] / [24,40]   p50 +0.8 ms  p95 -0.1
+  //   near [20,30] mid [18,28]  ->  [12,42] / [10,40]   p50 +0.0 ms  p95 +1.3
+  //
+  // i.e. under a millisecond of a 41 ms frame to move the whole hand-over out
+  // by a car length and a half. The perf author's finding that this layer
+  // costs overdraw rather than geometry is why: every blade the change adds
+  // sits beyond 26 m, where it is two pixels wide.
+  //
   // "3 segments still reads as a curve at 2 m" was wrong, and it was the fourth
   // blocker of critic pass 4. Three uniformly-spaced rows put the entire top
   // third of the blade in one straight-sided quad, so the taper and the arc
@@ -44,7 +85,7 @@ const RINGS = [
   // 0.044 m hair, and the ground coverage that loses is bought back with bend
   // and tuft splay in grass_scatter.js, which cost no instances at all.
   {
-    tileSize: 16, segments: 5, tipBias: 0.72, maxBlades: 19000, perClump: 26, clumpRadius: 0.48,
+    tileSize: 24, segments: 5, tipBias: 0.72, maxBlades: 42750, perClump: 26, clumpRadius: 0.48,
     // Height is the other half of the coverage trade, and the cheap half. An
     // arched blade's horizontal reach scales with its length, so 0.38 -> 0.44
     // buys back most of the ground the narrower blade stopped hiding, for no
@@ -53,15 +94,20 @@ const RINGS = [
     // inside the "ground cover, not a wheat crop" bound in grass_scatter.js:
     // typical stand goes ~0.34 m to ~0.39 m against a 2 m vehicle.
     width: 0.052, height: 0.44, salt: 0x1111, floor: 0.46,
-    fadeIn: [-20, -10], fadeOut: [20, 30], widthGain: 0.0, aoScale: 1.0,
+    fadeIn: [-20, -10], fadeOut: [18, 42], widthGain: 0.0, aoScale: 1.0,
   },
   // Mid ring: two rows still cannot carry a curl, but at 20–70 m the blade is a
   // few pixels wide and only its *lean* survives, so it gets the extra row that
   // buys the bent tip and nothing more.
+  //
+  // `fadeIn` tracks the near ring's `fadeOut` two metres inside it, exactly as
+  // before — the overlap is what guarantees there is never a hole. Total
+  // coverage across the new band runs 1.71 (18 m) -> 1.38 (30 m) -> 0.53
+  // (42 m), monotonic, no dip.
   {
     tileSize: 40, segments: 3, tipBias: 0.78, maxBlades: 18500, perClump: 30, clumpRadius: 1.20,
     width: 0.115, height: 0.40, salt: 0x2222, floor: 0.40,
-    fadeIn: [18, 28], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
+    fadeIn: [16, 40], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
   },
   {
     tileSize: 96, segments: 1, maxBlades: 16000, perClump: 34, clumpRadius: 3.2,
