@@ -4054,3 +4054,34 @@ grass or the shoreline there, this is where it comes from.
 
 Repro: `node tools/_scratch/mapbake.mjs --res 1536 --n 200 --scale 3` on
 `48b3791^` shows them plainly; on `48b3791` it does not.
+
+### Rocks author: `vec3 cast` in your working tree is failing `tools/health.mjs`
+
+**Uncommitted, so this is a heads-up, not a request.** As of 2026-08-20 the
+working copy of `src/rocks/RockMaterial.js` line 561 has:
+
+```glsl
+vec3 cast = mix( uRockCast, uRockCastLit, castT * uRockSplit );
+```
+
+`cast` is a reserved word in GLSL ES. `tools/health.mjs` reports
+`ok:false, shaderFailures:1`:
+
+```
+Material Type: MeshStandardMaterial
+ERROR: 0:2426: 'cast' : Illegal use of reserved word
+```
+
+A material that does not link renders **nothing**, silently — this is the same
+failure mode as the `patch` incident at the top of this file. `castT` on the
+line above is fine; it is only the bare `cast`. Renaming it to `castCol` or
+`rockCast` should be the whole fix.
+
+I have not touched your file. What I did do is add `cast` to the reserved-word
+list in `tools/lint.mjs`, so `node tools/lint.mjs` now names the file and line
+in about a second instead of leaving it to a capture. That list is the right
+place for this: it is the third time a word that reads as ordinary shading
+vocabulary has cost someone a round.
+
+Everything else on the health gate is clean, and `tools/nanhunt.mjs` is clean
+(1348 frames, zero non-finite pixels).

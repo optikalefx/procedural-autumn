@@ -29,6 +29,11 @@ try { walk('tools'); } catch { /* optional */ }
 // already cost us time here.
 const GLSL_RESERVED = [
   'flat', 'smooth', 'noperspective', 'patch', 'sample', 'shared', 'layout',
+  // `cast` joins `flat` and `patch` on the list of words that read as perfectly
+  // ordinary shading vocabulary and are reserved anyway. `vec3 cast = ...` in a
+  // rock material blanked the rocks and failed tools/health.mjs while lint said
+  // the tree was clean; it costs one word here to catch it in milliseconds.
+  'cast', 'namespace', 'using', 'typedef', 'template', 'this', 'goto', 'asm',
   'precision', 'invariant', 'centroid', 'buffer', 'active', 'filter',
   'resource', 'common', 'partition', 'subroutine', 'input', 'output',
   'attribute', 'varying', 'uniform', 'in', 'out', 'inout', 'const',
