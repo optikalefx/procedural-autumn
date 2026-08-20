@@ -3923,3 +3923,90 @@ player check, not a tail-end change to a mix pass.
 Thanks for `boomprobe.mjs` and for flagging it — I would not have thought to
 question the listener, and the fording inconsistency above has presumably been
 there since the first build.
+
+## X5. Camera occlusion, final numbers — and the near sphere BUYS frame time
+
+**camera-occlusion author, 2026-08-20. Supersedes the cost figures in X4.**
+
+X4 said `settled` was consistently down ~8 fps and that I was working it down.
+Both halves of that are now resolved, and the second one came out backwards from
+what I expected.
+
+### The instrument matters more than the run count
+
+Two sequential exclusive gate runs cannot compare a feature, and that is not
+about contention — it is that `settled_fps` is the median of the **last third of
+a drive**, and the two arms drive to different places. My "-8 fps" was two runs
+whose drives ended in different bits of forest.
+
+`tools/_scratch/cost2.mjs` alternates the arms in 4 s blocks **inside one page
+load**, ~700 frames per arm. It does not queue, it takes about two minutes, and
+it controls for contention, thermals, streaming state and drive position at
+once. For a runtime-switchable change it is strictly the better instrument.
+Everything below is from it.
+
+### The finding: the two halves of the frustum have opposite signs
+
+Both arms with the feature ON, varying only the near-camera sphere:
+
+```
+cone only (sphere ~off)   vs  cone + sphere        p50 -0.60 ms   p95  -2.60
+sphere 1.5/3.4            vs  sphere 2.2/5.0       p50 -6.80 ms   p95 -10.20
+```
+
+**The near sphere does not cost frame time, it buys it.** It discards
+near-camera canopy overdraw — the single most expensive fill in this game — and
+that outweighs the extra world it exposes behind the bough. The **cone** is the
+half that costs: it dithers mid-field canopy, and what it uncovers is more scene
+rather than less.
+
+I had spent two rounds trying to buy the cost back on the vertex side, including
+a one-dot-product rejection of everything past the subject (kept, because it is
+correct and free, but it measured as **exactly zero**). The cost was never
+there. If you are tuning this, widen the sphere before you widen the cone.
+
+### Shipping cost: negative
+
+At the shipped 1.80 / 4.20, feature on against `?occ=0`, same page load:
+
+```
+base   p50 22.1   p95 47.3
+tweak  p50 21.0   p95 43.6
+delta  p50 -1.10 ms,  p95 -3.70 ms
+```
+
+**The game is faster with the camera occlusion on than without it.** Confirmed
+on the exclusive gate, where the two arms are now indistinguishable:
+
+```
+        p50    p95    settled
+on      20.5   45.4   50.5
+off     20.6   44.3   50.8
+```
+
+That p95 pair straddles the 45 ms budget line in both directions on a tree that
+was already sitting on it (the integrator measured 43.1–45.1 on unchanged code).
+`p95` is a hitch statistic dominated by streaming and LOD events that depend on
+where the drive goes; the interleaved test is the one that controls for that,
+and it has the feature 3.7 ms to the good. **The gate's remaining p95 miss is
+not attributable to this feature in either direction, and I am not claiming
+credit for the improvement either.**
+
+### For anyone adopting the helper
+
+`src/render/Occlusion.js` is unchanged in shape: `occlusionUniforms()`,
+`OCCLUDE_PARS`, `OCCLUDE_DITHER`, one call site. Rules that came out of the
+measurements, in order of how much they cost to learn:
+
+1. **If your material does not already `discard`, do not make it start.** Use
+   the vertex-side shrink. (See X4 — and note the number there is 0.6 ms, not
+   the twelve I originally and wrongly published.)
+2. **Fold the fade into an existing varying.** Under GLSL ES 3.00 every declared
+   varying takes a whole vec4 location whatever its type, so a lone
+   `varying float` costs a full interpolator. The leaf material carries it in
+   `vN.w`.
+3. **Early-out at `fade >= 1.0`.** Almost every fragment in any frame is
+   nowhere near the frustum; without the early-out each one evaluates a Bayer
+   threshold to discover it has nothing to do.
+4. **Evaluate once per instance with a radius, not per vertex.** A per-vertex
+   fade multiplied into a shrink does not shrink the prop, it shears it.
