@@ -184,6 +184,7 @@ export class Vehicle extends System {
       up: this.up.y, grounded: this.wheels.filter((w) => w.grounded).length,
       water: this.waterDepth, recoveries: this.phys.recoveries,
       rescues: this.rescues, slope: world.getSlope(this.position.x, this.position.z),
+      revBrake: this.phys.revBrakeTime ?? 0,
       nan: this.phys.nanEvents ?? 0,
       ground: world.getHeight(this.position.x, this.position.z),
     });

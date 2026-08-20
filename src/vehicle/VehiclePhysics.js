@@ -386,6 +386,11 @@ export class VehiclePhysics {
     // as the camper arrives at rest rather than slamming into the stop.
     if (ctrl.throttle > 0.02 && backward > 0) {
       brake = Math.max(brake, ctrl.throttle * VEHICLE.brakeForce * REV_BRAKE * backward);
+      // Diagnostic, one add per frame. It exists because this mechanism has
+      // already caused one regression by firing where it had no business
+      // firing, and "how often does it actually engage?" was the question that
+      // settled it. Surfaced on __vehicleState as `revBrake`.
+      this.revBrakeTime = (this.revBrakeTime ?? 0) + dt;
     }
     if (ctrl.throttle < 0.02 && ctrl.brake < 0.02) brake = 220 * 0.02;   // engine braking
 
