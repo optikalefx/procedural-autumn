@@ -20,6 +20,9 @@ import { SEED } from '../world/WorldConfig.js';
 import { buildRockLibrary, archFootprints, ARCHETYPES } from './RockForms.js';
 import { createRockMaterial } from './RockMaterial.js';
 import { RockScatter, VIS_PER_METRE } from './RockScatter.js';
+// OCCLUDE. Rock ships two programs and this file owns the choice between them;
+// see `_gateOcclusion` below and the note on `opts.occlude` in RockMaterial.js.
+import { occlusionActive, occlusionTouchesSphere } from '../render/Occlusion.js';
 
 const CELL = 64;              // metres per scatter cell
 // Metres. Matches the largest instance vis radius in RockScatter, which caps
@@ -74,6 +77,12 @@ export class Rocks extends System {
     this._lastCell = { x: 1e9, z: 1e9 };
     this._catchup = 0;
     this._dirty = true;
+    // OCCLUDE. Frames of program warm-up left, the meshes currently on the
+    // occluding program, and whether that set is non-empty — see
+    // `_gateOcclusion`.
+    this._occWarm = 2;
+    this._occAny = false;
+    this._occHit = new Set();
     this.stats = { instances: 0, tris: 0, cells: 0 };
   }
 
@@ -81,6 +90,12 @@ export class Rocks extends System {
     const { scene, world } = this.ctx;
 
     this.material = createRockMaterial();
+    // OCCLUDE. The same shader with the screen-door dither in it, sharing this
+    // material's uniform block so `update` still writes the sun once. Swapped
+    // onto a mesh only while one of its instances stands between the lens and
+    // the camper — it gives up early-Z, and a crag field cannot afford that in
+    // every frame. See RockMaterial.js.
+    this.materialOcc = createRockMaterial({ occlude: true, uniforms: this.material.userData.uniforms });
     this.scatter = new RockScatter(world, SEED);
 
     const t0 = performance.now();
@@ -118,6 +133,13 @@ export class Rocks extends System {
         mesh.frustumCulled = false;
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         mesh.userData.arch = arch;
+        // OCCLUDE. A bounding radius about the INSTANCE ORIGIN rather than
+        // about the geometry's own centre, so the frustum gate does not have to
+        // rotate the centre offset per instance. Conservative by exactly that
+        // offset, which is what a gate wants to be.
+        if (!g.boundingSphere) g.computeBoundingSphere();
+        mesh.userData.occR = g.boundingSphere.center.length() + g.boundingSphere.radius;
+        mesh.userData.occOn = false;
         this.group.add(mesh);
         this.meshes.push(mesh);
         list.push(mesh);
@@ -295,6 +317,101 @@ export class Rocks extends System {
 
   // ── frame ──────────────────────────────────────────────────────────────────
 
+  /**
+   * OCCLUDE — pick the rock program for each instanced mesh, once a frame.
+   *
+   * In lateUpdate, not update: main.js aims the frustum at the end of the
+   * update pass, so this is the first place in the frame that can read where it
+   * actually points. See the same note in Trees.js.
+   *
+   * Per MESH means per archetype and variant — `rock_cliff_2`, `rock_boulder_0`
+   * — because a program is a property of a draw call. That is coarse: one crag
+   * block against the lens puts every drawn block of that shape on the
+   * discarding program. It is still the right trade, because the frames where
+   * ANY of them qualifies are rare (the volume ends at the camper, ~19 m
+   * behind the lens on the default chase) and the alternative is paying for it
+   * in every frame of the game.
+   */
+  _gateOcclusion() {
+    // Program warm-up: one frame drawn through the occluding variant so its
+    // compile lands behind the loading fade rather than at the moment a crag
+    // crosses the lens. See the same two-frame dance in Trees.js.
+    if (this._occWarm > 0) {
+      const on = this._occWarm === 2;
+      for (const m of this.meshes) { m.userData.occOn = on; m.material = on ? this.materialOcc : this.material; }
+      this._occAny = on;
+      this._occWarm--;
+      return;
+    }
+
+    const active = occlusionActive();
+    if (!active && !this._occAny) return;      // nothing on, nothing to turn off
+
+    const hit = this._occHit;
+    hit.clear();
+    if (active) {
+      const cam = this.ctx.camera.position;
+      const ccx = Math.floor(cam.x / CELL), ccz = Math.floor(cam.z / CELL);
+      // Two cells of reach. The volume ends at the camper and the chase wheel
+      // tops out at 68 m, and a cell is 64 m, so one ring is not quite enough
+      // once the camera sits near a cell edge. The per-cell reject below means
+      // the extra ring costs a distance compare each.
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const c = this.cells.get((ccx + dx) * 100003 + (ccz + dz));
+          if (!c) continue;
+          for (const inst of c.instances) {
+            const ix = inst.x - cam.x, iz = inst.z - cam.z;
+            if (ix * ix + iz * iz > inst.vis * inst.vis) continue;   // not drawn at all
+            const mesh = this.byArch[inst.arch]?.[inst.variant];
+            if (!mesh || hit.has(mesh)) continue;
+            const r = mesh.userData.occR * Math.max(inst.sx, inst.sy, inst.sz);
+            if (occlusionTouchesSphere(inst.x, inst.y, inst.z, r)) hit.add(mesh);
+          }
+        }
+      }
+    }
+
+    let any = false;
+    for (const m of this.meshes) {
+      const on = hit.has(m);
+      if (on !== m.userData.occOn) {
+        m.userData.occOn = on;
+        m.material = on ? this.materialOcc : this.material;
+      }
+      any = any || on;
+    }
+    this._occAny = any;
+  }
+
+  lateUpdate() {
+    this._gateOcclusion();
+  }
+
+  /**
+   * Is there a rock of consequence within `r` of a point?
+   *
+   * Added for the Camp system, which must not clear a patch of ground with a
+   * two-metre erratic standing in the middle of it. Walks the live cells only —
+   * a rock that has not streamed in yet is also a rock the player cannot see,
+   * and the site test runs at the moment of placement, which is exactly when
+   * the cells around the camper are resident.
+   *
+   * `minSize` skips the gravel: a camp is happily pitched among 20 cm cobbles
+   * and that is part of what makes it look like a real spot.
+   */
+  boulderNear(x, z, r, minSize = 0.45) {
+    for (const c of this.cells.values()) {
+      for (const inst of c.instances) {
+        if (inst.size < minSize) continue;
+        const reach = r + inst.size * 0.75;
+        const dx = inst.x - x, dz = inst.z - z;
+        if (dx * dx + dz * dz < reach * reach) return inst;
+      }
+    }
+    return null;
+  }
+
   update(dt, elapsed) {
     const cam = this.ctx.camera.position;
     const u = this.material.userData.uniforms;
@@ -330,6 +447,7 @@ export class Rocks extends System {
   dispose() {
     for (const m of this.meshes) m.geometry.dispose();
     this.material.dispose();
+    this.materialOcc.dispose();
     this.ctx.scene.remove(this.group);
     this.cells.clear();
     void ARCHETYPES;

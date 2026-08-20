@@ -34,10 +34,14 @@ import * as THREE from 'three';
 // already exactly what coverFade does at the visibility limit below, and a
 // shrub sinking into the ground is a nicer read than one dissolving in place.
 import { occlusionUniforms, OCCLUDE_PARS } from '../render/Occlusion.js';
+import { campSite, CAMP_CLEARING_GLSL } from '../camp/camp_clearing.js';
 
 /** Shared uniform block. One object drives every cover material. */
 export function makeCoverUniforms() {
   return {
+    // Shared by reference with camp_clearing.js; see the note there on why the
+    // clearing is a shader fact rather than a re-scatter.
+    uCampSite:     campSite.uCampSite,
     uTime:         { value: 0 },
     uSunDir:       { value: new THREE.Vector3(0.4, 0.7, 0.3) },
     uSunColor:     { value: new THREE.Color(1, 1, 1) },
@@ -135,6 +139,7 @@ attribute vec2 aWindDir;
 uniform float uTime;
 uniform float uWindStrength;
 uniform float uWindSpeed;
+${CAMP_CLEARING_GLSL}
 `;
 
 // `transformed` is in geometry space with the plant's base at the origin, so
@@ -186,6 +191,13 @@ const COVER_DISPLACE = /* glsl */`
     // The constant turns those into roughly 1.6 m and 0.5 m of plant.
     coverFade *= occludeFadeAt( coverOrigin, aCov.w * 0.012 );
   #endif
+  // The camp clearing. Applied to coverFade rather than to transformed
+  // directly, because COVER_DISPLACE is shared with the depth material — so a
+  // shrub inside the camp stops casting its shadow at the same instant it
+  // stops being drawn. Doing this only on the visible material leaves a
+  // perfect shrub-shaped shadow lying across the bare dirt, which is a
+  // considerably worse bug than the one it would be fixing.
+  coverFade *= campCover( coverOrigin.xz );
   transformed *= coverFade;
   float coverPh = aCov.y + uTime * uWindSpeed;
   // Two incommensurable rates so a field of plants never pulses in unison.

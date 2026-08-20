@@ -104,7 +104,6 @@ export class VehicleAudio {
 
     // ── intake / induction ──────────────────────────────────────────────────
     const pink = noiseBuffer(actx, 4, 'pink', 0x44c1);
-    const white = noiseBuffer(actx, 4, 'white', 0xb3e2);
     this.intakeSrc = noiseSource(actx, pink);
     this.intakeBand = filter(actx, 'bandpass', 220, 2.6);
     this.gIntake = gain(actx, 0);
@@ -139,8 +138,16 @@ export class VehicleAudio {
     this.tyres = new TyreContact(actx, this.bus, VEHICLE.wheelRadius);
 
     // ── fording ─────────────────────────────────────────────────────────────
-    this.waterSrc = noiseSource(actx, white, 1.07);
-    this.waterBand = filter(actx, 'bandpass', 1600, 0.5);
+    // White noise through a Q of 0.5 is barely filtered at all: the skirts are
+    // two octaves wide, so most of the source's top end walked straight past
+    // the band and the bed measured 44% of its energy in 2-5 kHz — the region
+    // the ear is most sensitive to, and the one that fatigues. Dropping the
+    // centre frequency could not fix that, because the problem was never where
+    // the band sat; it was how much went around it. Pink at a narrower Q puts
+    // the same bed at 8%. See `noiseBuffer` in synth.js, which has said pink is
+    // the right bed for water since it was written.
+    this.waterSrc = noiseSource(actx, pink, 0.85);
+    this.waterBand = filter(actx, 'bandpass', 900, 0.9);
     this.gWater = gain(actx, 0);
     this.waterSrc.connect(this.waterBand).connect(this.gWater).connect(this.bus);
 
@@ -297,7 +304,9 @@ export class VehicleAudio {
 
     // ── fording ─────────────────────────────────────────────────────────────
     const depth = clamp01((v.waterDepth ?? 0) / 0.8);
-    this.sm.water.set(depth * (0.04 + speedN * 0.12), actx);
+    // Compensated x1.5 for the pink source, which carries far less energy per
+    // unit amplitude than white; net, the bed lands ~7 dBA below the old one.
+    this.sm.water.set(depth * (0.06 + speedN * 0.18), actx);
     if (depth > 0.12 && !this._wasWater) this.splash(clamp01(0.4 + speedN));
     this._wasWater = depth > 0.10;
 
@@ -366,18 +375,31 @@ export class VehicleAudio {
     stopLater([o, g, lp, n, nf, ng], actx, t + 0.35);
   }
 
-  /** Water entry. Bright, short, and it sweeps down as the bow wave collapses. */
+  /** Water entry: a dropping whoomph as the bow wave collapses, not a hiss. */
   splash(strength = 0.6) {
     const actx = this.actx;
     const t = actx.currentTime + 0.01;
-    const n = noiseSource(actx, this._splashBuf ??= noiseBuffer(actx, 1.2, 'white', 0x5a12));
-    const bp = filter(actx, 'bandpass', 2600, 0.7);
-    bp.frequency.setValueAtTime(3000, t);
-    bp.frequency.exponentialRampToValueAtTime(700, t + 0.42);
+    // This was the sharp one. White noise swept 3000 -> 700 Hz starts inside
+    // the ear's most sensitive octave and spends its whole decay there: 46% of
+    // the transient's energy sat in 2-5 kHz, against 11% now. It is also the
+    // sound the ford bed gets blamed for — the bed is continuous and shows up
+    // on the meter, while this is 0.5 s and barely moves an RMS window.
+    //
+    // `splashPatch` is how the sound lab reaches a one-shot: there is no live
+    // AudioParam to write, because the graph below does not exist until this
+    // method runs. Absent the lab it is undefined and the shipped numbers win.
+    const p = this.splashPatch ?? {};
+    const f0 = p.f0 ?? 1400, f1 = p.f1 ?? 380;
+    const n = noiseSource(actx, this._splashBuf ??= noiseBuffer(actx, 1.2, 'pink', 0x5a12));
+    const bp = filter(actx, 'bandpass', f0, 0.7);
+    bp.frequency.setValueAtTime(f0, t);
+    bp.frequency.exponentialRampToValueAtTime(f1, t + 0.5);
     const g = gain(actx, 0);
     n.connect(bp).connect(g).connect(this.bus);
-    ping(actx, g, t, clamp01(strength) * 0.22, 0.012, 0.45);
-    stopLater([n, bp, g], actx, t + 0.7);
+    // 0.4 against the old 0.22 is not a louder splash: pink is much quieter
+    // per unit amplitude, and this measures ~3 dBA below what it replaces.
+    ping(actx, g, t, clamp01(strength) * (p.peak ?? 0.4), p.attack ?? 0.022, 0.5);
+    stopLater([n, bp, g], actx, t + 0.75);
   }
 
   /** Handbrake: four hard clicks on the ratchet. */

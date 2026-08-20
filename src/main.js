@@ -37,6 +37,7 @@ import { GroundCover } from './vegetation/GroundCover.js';
 import { Grass }       from './vegetation/Grass.js';
 import { Wildlife }    from './wildlife/Wildlife.js';
 import { Vehicle }     from './vehicle/Vehicle.js';
+import { Camp }        from './camp/Camp.js';
 import { CameraRig }   from './vehicle/CameraRig.js';
 import { Audio }       from './audio/Audio.js';
 import { HUD }         from './ui/HUD.js';
@@ -52,6 +53,10 @@ const SYSTEMS = [
   ['grass',       Grass],
   ['wildlife',    Wildlife],
   ['vehicle',     Vehicle],
+  // After Vehicle: Camp reads `vehicle.brakeHold` and the camper's position on
+  // the same frame they are written, and before CameraRig so the reticle has
+  // been placed by the time the boom decides what it is looking at.
+  ['camp',        Camp],
   ['cameraRig',   CameraRig],
   ['audio',       Audio],
   ['hud',         HUD],

@@ -16,12 +16,16 @@ import * as THREE from 'three';
 import { fogUniforms } from '../render/Atmosphere.js';
 import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 // Camera occlusion: the transparent frustum between the chase camera and the
-// camper. Opt-in only — three call sites in this file, all marked OCCLUDE, and
-// all three are in the LEAF material. The depth materials deliberately do not
-// take it, so a canopy you can see through still casts its shadow.
+// camper. Opt-in only — every call site in this file is marked OCCLUDE. The
+// depth materials deliberately do not take it, so a canopy you can see through
+// still casts its shadow.
 //
-// BARK DOES NOT OPT IN, AND IT IS NOT AN OVERSIGHT. Measured on the gate
-// configuration, same tree, three runs:
+// BARK TAKES IT THROUGH A SECOND PROGRAM, AND THE SECOND PROGRAM IS THE WHOLE
+// POINT. The player's frame that opened this round is a trunk floor to ceiling
+// down the middle with the camper a sliver behind it — the near foliage around
+// it fading correctly, and the bark not — so bark has to fade. What it cannot
+// do is fade unconditionally. Measured on the gate configuration, same tree,
+// three runs:
 //
 //   feature off                                46.3 fps
 //   leaves + cover, bark discarding            31.9 fps
@@ -35,6 +39,17 @@ import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 // (The canopy pays nothing for its discard: it is alpha-tested and had given
 // early-Z up long ago, which is why the feature is a net WIN there — it throws
 // away near-camera overdraw.)
+//
+// So `createBarkMaterial` builds two of them. `{ occlude: true }` adds the
+// dither and gives up early-Z; the default does not and is bit-identical to
+// what shipped before. Trees.js owns the choice and makes it per instanced
+// mesh per frame, from a CPU-side copy of the same volume — see
+// `_gateOcclusion` there, and `occlusionTouchesColumn` in render/Occlusion.js.
+// A near slot holds one species-variant's trunks inside 84 m, a handful of
+// instances, and in the overwhelming majority of frames NO slot has anything
+// in the frustum and every mesh keeps the cheap program. The 12 ms is a bill
+// that now arrives only on the frames that are actually hiding the camper, and
+// only for the one slot that is doing the hiding.
 //
 // The obvious alternative, shrinking the trunk toward its own axis in the
 // vertex shader, was built and photographed: shots/occlude/bark-on.png. It is
@@ -723,7 +738,7 @@ void main() {
 }
 `;
 
-const BARK_FRAG = STYLIZE_PARS + /* glsl */`
+const BARK_FRAG_BODY = STYLIZE_PARS + /* glsl */`
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
 uniform vec3  uSkyColor;
@@ -814,6 +829,16 @@ float chevronScar(vec2 uv, vec2 freq, float density) {
 }
 
 void main() {
+  // OCCLUDE, first, and only in the occluding variant of this program — see the
+  // note at the top of the file for why there are two. Per FRAGMENT rather than
+  // per vertex: a trunk is a five-sided tube with rings up to a metre apart, so
+  // a vertex-side fade would carry the feather across the bark in flat bands,
+  // and this program has already given up early-Z by containing the discard at
+  // all. Being first is what makes that bearable — every discarded fragment
+  // skips the noise, the lenticels and the scars below.
+  #ifdef BARK_OCCLUDE
+    occludeCut(occludeFadeAt(vWorld, 0.0));
+  #endif
   // pat is the bark *pattern*, kept separate from the base colour so the
   // impostor bake can store shading without baking a species hue into it.
   // (Named pat, not mod: mod() is a GLSL builtin and shadowing it is illegal.)
@@ -972,14 +997,28 @@ void main() {
 }
 `;
 
+/**
+ * @param opts.bake     impostor-bake variant: no lights, no fog, no occlusion.
+ * @param opts.occlude  the discarding variant. Costs early-Z on the whole
+ *                      program — see the note at the top of this file — so a mesh
+ *                      is only swapped onto it while something it draws is
+ *                      actually between the lens and the camper.
+ */
 export function createBarkMaterial(shared, opts = {}) {
   const bake = !!opts.bake;
+  const occlude = !bake && !!opts.occlude;      // OCCLUDE
   const mat = new THREE.ShaderMaterial({
     uniforms: Object.assign(
-      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(), shared,
+      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(),
+      occlude ? occlusionUniforms() : {}, shared,          // OCCLUDE
       { uBake: { value: bake ? 1 : 0 } }),
     vertexShader: BARK_VERT,
-    fragmentShader: BARK_FRAG,
+    // OCCLUDE. The pars and the dither are concatenated in only for the
+    // occluding variant, so the plain program does not so much as declare the
+    // uniform block and stays byte-for-byte the shader that shipped.
+    fragmentShader: (occlude
+      ? `${OCCLUDE_PARS}\n${OCCLUDE_DITHER}\n#define BARK_OCCLUDE\n`
+      : '') + BARK_FRAG_BODY,
     lights: !bake,
     fog: !bake,
     side: THREE.FrontSide,

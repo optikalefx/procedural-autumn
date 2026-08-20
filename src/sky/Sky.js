@@ -273,7 +273,14 @@ void main() {
     vec2 mw = skMilkyWay(dir);
     // The band is unresolved starlight, so it is very slightly warm-neutral
     // rather than the blue-white of the resolved stars.
-    col += vec3(0.86, 0.83, 0.95) * mw.x * mwVis * 0.034 * ext;
+    //
+    // 0.058, up from 0.034. The band's *resolved* half went up far harder at
+    // the same time — SK_FILL_MW now saturates through the spine — so this is
+    // no longer carrying the band on its own the way it was. Raising it past
+    // about 0.07 with that many stars in the band turns it back into fog: the
+    // haze fills the gaps between the points and the granularity that makes it
+    // read as a star cloud goes with it.
+    col += vec3(0.86, 0.83, 0.95) * mw.x * mwVis * 0.058 * ext;
     col += skStars(dir, uTime, mw.y * mwVis) * starVis * ext;
   }
 

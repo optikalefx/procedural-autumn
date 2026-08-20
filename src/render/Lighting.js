@@ -173,8 +173,29 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 //  dome's luminance, which is where both plates put it. The absolute level of
 //  the frame belongs to the exposure and the grade.
 const KEYS = [
+  // ── the night dome was taken down 22% in linear, at the three keys where
+  //    nightFactor is at or near 1 ─────────────────────────────────────────
+  // This is a *relative* value move and so it belongs here and not in Sky.js:
+  // the table owns the sky against the ground, and the dome shader is
+  // explicitly forbidden from carrying a level control (see the standing note
+  // beside NIGHT_KEY_OVERRIDE there). Two consequences are deliberate:
+  //
+  //  * the clouds follow. Clouds.js hangs its whole palette off `luma(zenith)`
+  //    as a ratio, so a night deck darkens in step with the sky it is drawn
+  //    against and its lit/dark ratios are untouched. Doing this in the dome
+  //    instead would have left night cloud sitting proud of a darker sky —
+  //    "a hole punched in the star field", which is the failure that file
+  //    names as the one it is protecting against.
+  //  * `glow` is NOT scaled. It is the aureole colour and the aureole is added
+  //    after the gradient, so scaling it here would darken a horizon glow that
+  //    was never part of this change.
+  //
+  // 19.8 and 6.3 are left alone on purpose. Both are calibrated twilight keys
+  // measured against `sunset.jpg` and `morning.jpg`, the ramp into night is
+  // only ~6% at 19.8, and letting the table lerp 19.8 -> 21.0 carry it costs
+  // nothing and keeps two hard-won frames out of this.
   { h: 0.0,  sun: 0x3f6ec8, sunI: 0.05, hemiSky: 0x3162c4, hemiGnd: 0x2a3a60, hemiI: 0.38,
-    zen: 0x4e415b, hor: 0x4e425e, sunHor: 0x504260, glow: 0x423b52, glowI: 0.10,
+    zen: 0x453951, hor: 0x453a53, sunHor: 0x473a55, glow: 0x423b52, glowI: 0.10,
     fogNear: 0x334670, fogFar: 0x4e425e, fogSun: 0x47405c, fogD: 0.0052,
     cloudLit: 0x656384, cloudDark: 0x2a2940, cover: 0.11 },
 
@@ -189,7 +210,9 @@ const KEYS = [
   // back to the authored daylight values by 19.0 and 6.3 where cloud is the
   // event rather than the obstruction.
   { h: 5.2,  sun: 0x5474b4, sunI: 0.16, hemiSky: 0x3f6cbe, hemiGnd: 0x30406a, hemiI: 0.55,
-    zen: 0x504868, hor: 0x5a506f, sunHor: 0x6b5368, glow: 0x695370, glowI: 0.26,
+    // Scaled 0.913, not 0.78: nightFactor is 0.39 at this hour, and this key
+    // is already half-way into the blue hour.
+    zen: 0x4d4564, hor: 0x564d6a, sunHor: 0x674f64, glow: 0x695370, glowI: 0.26,
     fogNear: 0x3e527b, fogFar: 0x5a506f, fogSun: 0x695367, fogD: 0.0050,
     cloudLit: 0x736f92, cloudDark: 0x2f2e48, cover: 0.13 },
 
@@ -291,12 +314,12 @@ const KEYS = [
     cloudLit: 0xc09a90, cloudDark: 0x5a5a80, cover: 0.36 },
 
   { h: 21.0, sun: 0x4568c0, sunI: 0.07, hemiSky: 0x3564c6, hemiGnd: 0x2c3c64, hemiI: 0.42,
-    zen: 0x4e435c, hor: 0x504661, sunHor: 0x5b4761, glow: 0x55465c, glowI: 0.18,
+    zen: 0x453b52, hor: 0x473e56, sunHor: 0x513f56, glow: 0x55465c, glowI: 0.18,
     fogNear: 0x364872, fogFar: 0x504661, fogSun: 0x554760, fogD: 0.0051,
     cloudLit: 0x676589, cloudDark: 0x2b2a42, cover: 0.12 },
 
   { h: 24.0, sun: 0x3f6ec8, sunI: 0.05, hemiSky: 0x3162c4, hemiGnd: 0x2a3a60, hemiI: 0.38,
-    zen: 0x4e415b, hor: 0x4e425e, sunHor: 0x504260, glow: 0x423b52, glowI: 0.10,
+    zen: 0x453951, hor: 0x453a53, sunHor: 0x473a55, glow: 0x423b52, glowI: 0.10,
     fogNear: 0x334670, fogFar: 0x4e425e, fogSun: 0x47405c, fogD: 0.0052,
     cloudLit: 0x656384, cloudDark: 0x2a2940, cover: 0.11 },
 ];

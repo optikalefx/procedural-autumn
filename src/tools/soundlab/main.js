@@ -41,6 +41,7 @@ const LEVEL_CONST = {
   intake: { name: 'intake level', value: 0.016, site: 'src/audio/vehicle_audio.js:278' },
   overrun: { name: 'overrun level', value: 0.017, site: 'src/audio/vehicle_audio.js:283' },
   grit: { name: 'grit level', value: 0.55, site: 'src/audio/vehicle_audio.js:303' },
+  ford: { name: 'ford level floor', value: 0.06, site: 'src/audio/vehicle_audio.js:309' },
   wildlife: { name: 'wildlife sub-bus gain', value: 1.0, site: 'src/audio/wildlife_audio.js:19' },
   music: { name: 'music sub-bus gain', value: 0.9, site: 'src/audio/music.js:30' },
   soundtrack: { name: 'bed level', value: 0.21, site: 'src/audio/soundtrack.js:64' },

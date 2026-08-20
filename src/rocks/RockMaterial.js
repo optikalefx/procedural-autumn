@@ -39,8 +39,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
+// Camera occlusion: the transparent frustum between the chase camera and the
+// camper (src/render/Occlusion.js). Opt-in, and only on the second material —
+// see the note on `opts.occlude` below. Call sites are marked OCCLUDE.
+import { occlusionUniforms, OCCLUDE_PARS, OCCLUDE_DITHER } from '../render/Occlusion.js';
 
-export function createRockMaterial() {
+/**
+ * @param opts.occlude   build the variant that dithers out of the way of the
+ *   chase camera. It is a SECOND material and not a uniform on the first, for
+ *   the same reason bark has two programs (see vegetation/tree_material.js):
+ *   rock is opaque, this shader is a full MeshStandard plus per-pixel value
+ *   noise, and one `discard` anywhere in a program turns early-Z off for all of
+ *   it — so every rock behind the crag in front of you would start shading
+ *   itself. Rocks.js swaps a mesh onto this one only while one of its instances
+ *   is actually in the frustum, which in most frames is none of them.
+ * @param opts.uniforms  share another rock material's uniform block, so the two
+ *   variants cannot drift and `Rocks.update` still writes the sun once.
+ */
+export function createRockMaterial(opts = {}) {
+  const occlude = !!opts.occlude;             // OCCLUDE
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.93,
@@ -49,7 +66,7 @@ export function createRockMaterial() {
     flatShading: false,   // normals are already exact per facet
   });
 
-  const uniforms = {
+  const uniforms = opts.uniforms ?? {
     uRockLit:    { value: PALETTE.rockLit.clone() },
     uRockMid:    { value: PALETTE.rockMid.clone() },
     uRockShadow: { value: PALETTE.rockShadow.clone() },
@@ -278,7 +295,9 @@ export function createRockMaterial() {
   mat.userData.uniforms = uniforms;
 
   mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
+    // Object.assign, never UniformsUtils.merge — merge() deep clones, and the
+    // occlusion block has to arrive by reference or the frustum never moves.
+    Object.assign(shader.uniforms, uniforms, occlude ? occlusionUniforms() : {});   // OCCLUDE
     mat.userData.shader = shader;
 
     shader.vertexShader = /* glsl */`
@@ -335,7 +354,7 @@ export function createRockMaterial() {
       // albedo tuning moved the rendered pixel by ~2%.
       ;
 
-    shader.fragmentShader = /* glsl */`
+    shader.fragmentShader = (occlude ? OCCLUDE_PARS + OCCLUDE_DITHER : '') + /* glsl */`
       uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
       uniform vec3 uSunDir, uShadowTint, uSunTint, uRockCast;
       uniform vec4 uRockRamp;
@@ -362,7 +381,21 @@ export function createRockMaterial() {
                    mix(dot(rhash(i + vec2(0,1)), f - vec2(0,1)),
                        dot(rhash(i + vec2(1,1)), f - vec2(1,1)), u.x), u.y);
       }
-    ` + shader.fragmentShader
+    ` + (occlude
+      // OCCLUDE. First thing in main(), before the noise and before the
+      // lighting: this program has already given up early-Z by containing a
+      // discard at all, so the only thing left to save is the rest of the
+      // shader, and every fragment the frustum takes out skips all of it.
+      //
+      // Per fragment, off vWPos, rather than per vertex. A rock is a convex
+      // polytope — a crag block face can be twenty metres of flat wall between
+      // four vertices — so a vertex-side fade would spread the feather linearly
+      // across the whole facet instead of putting it where the volume's edge
+      // actually crosses the stone.
+      ? shader.fragmentShader.replace('#include <clipping_planes_fragment>', /* glsl */`
+        #include <clipping_planes_fragment>
+        occludeCut( occludeFadeAt( vWPos, 0.0 ) );`)
+      : shader.fragmentShader)
       .replace('#include <roughnessmap_fragment>', /* glsl */`
         #include <roughnessmap_fragment>
         // Wet rock is smoother; it is the only place this material is glossy.

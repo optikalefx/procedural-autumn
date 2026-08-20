@@ -61,16 +61,44 @@ export const STAR_GLSL = /* glsl */`
 // Calibrated by measurement, not by feel, and the measurement is only valid at
 // one night sky level. At 0.26 with a night dome measuring display luma 0.058
 // (i.e. correctly exposed against the plates' 0.050-0.056), dome-h0 came back
-// at 2315 stars/Mpx against the plates' 76-174. 0.115 gave 316. This is set for
-// roughly 130 at that same exposure, and measures 92/Mpx at 1600x900 against
-// today's over-bright night sky. The count is a *contrast* measurement —
-// ladder.mjs counts local maxima more than 0.045 display luma above their own
-// neighbourhood — so it moves with the night exposure, which is Author C's.
-// If the night level changes, re-measure this; do not assume it still holds.
-#define SK_FILL 0.070
+// at 2315 stars/Mpx against the plates' 76-174. 0.115 gave 316. 0.070 was set
+// for roughly 130 at that same exposure and measured 82/Mpx at 1600x900. The
+// count is a *contrast* measurement — ladder.mjs counts local maxima more than
+// 0.045 display luma above their own neighbourhood — so it moves with the night
+// exposure. If the night level changes, re-measure; do not assume it holds.
+//
+// ── and it is now three times that, on purpose ─────────────────────────────
+// The plate counts above are what a *photograph of a real sky* gives, and this
+// was matched to them for a round. Asked to look at a denser sky beside it, the
+// art direction went the other way and picked density: 0.210 measures 585
+// stars/Mpx on the sky-filling framing against the old 82. That is no longer a
+// naked-eye sky and it is not meant to be — it is the sky this game wants over
+// its valley. Do not "correct" it back toward the plates without asking.
+#define SK_FILL 0.210
 // Extra fill inside the Milky Way. The band is *made* of stars we cannot
 // resolve plus a scatter of ones we can.
-#define SK_FILL_MW 0.060
+//
+// At 1.20 this saturates: SK_FILL_MW * mwBoost passes 1 through the spine, so
+// every cell in the core of the band holds a star and the band comes out
+// GRANULAR — actually made of points — instead of being a haze wash with a
+// scatter of stars laid over it. That is the whole difference between the band
+// reading as a star cloud and reading as a smear on the lens, and no amount of
+// haze amplitude buys it. The unresolved-light term in Sky.js was pulled back
+// once this landed, because with real stars in the band the haze only has to
+// fill between them.
+#define SK_FILL_MW 1.20
+// How strongly star density clusters, 0..1.
+//
+// A uniform per-cell probability is a Poisson scatter, and a Poisson scatter is
+// the one thing a real star field is not: the sky has knots and it has lanes of
+// almost nothing. A low-frequency fbm over direction modulates the fill, and
+// squaring it is what makes the sparse side genuinely sparse rather than merely
+// thinner. The frequency, 5.0, is a cluster about 11 deg across — big enough to
+// read as structure at a glance, small enough that several fit in a frame.
+//
+// This matters most inside the band, where the fill is saturated: without it
+// the granularity is even sand, and even sand does not read as a galaxy.
+#define SK_CLUMP 0.85
 
 vec3 skHash33(vec3 p) {
   p = fract(p * vec3(0.1031, 0.1030, 0.0973));
@@ -206,9 +234,16 @@ vec2 skMilkyWay(vec3 dir) {
 // The faintest star the field draws, and the slope of the magnitude
 // distribution. See skStars() for what the slope is and why it is not a
 // smoothstep or a power of a uniform hash.
-#define SK_MAG_MIN 0.048
+//
+// Both ends carry a 1.15 gain over the values the calibration above derived
+// (0.048 / 1.35). It is written into the two constants rather than applied as a
+// multiplier on the way out because m, the 0..1 magnitude that the size, halo,
+// colour skew and twinkle depth are all driven from, is (amp - MIN)/(MAX - MIN)
+// — invariant under scaling both ends together. So this is a pure brightness
+// move and provably changes nothing else about the field's shape.
+#define SK_MAG_MIN 0.0552
 #define SK_MAG_SLOPE 1.7
-#define SK_MAG_MAX 1.35
+#define SK_MAG_MAX 1.5525
 
 vec3 skStars(vec3 dir, float t, float mwBoost) {
   vec3 fuv = skFaceUV(dir);
@@ -219,7 +254,12 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
   // across the cube seams. One cell unit is (PI/4)/SK_CELLS radians.
   float pxCell = clamp(length(fwidth(dir)) * SK_CELLS * 4.0 / SK_PI, 0.004, 0.9);
 
-  float fill = SK_FILL + SK_FILL_MW * mwBoost;
+  // See SK_CLUMP. One fbm lookup for the whole 3x3 neighbourhood, which is
+  // correct as well as cheap: a cluster is 11 deg across and a cell is 1.5, so
+  // sampling it per-cell would only add noise the eye reads as grain.
+  float clump = skFBM(dir * 5.00 + 61.0);
+  float fill = (SK_FILL + SK_FILL_MW * mwBoost)
+             * mix(1.0, 0.22 + 2.60 * clump * clump, SK_CLUMP);
   vec3 acc = vec3(0.0);
 
   for (int j = -1; j <= 1; j++) {

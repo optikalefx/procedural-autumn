@@ -1,0 +1,373 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  camp_site — where the camp may go, and where each thing in it stands.
+//
+//  Two jobs, kept apart on purpose:
+//
+//    · `groundRay` / `scoreSite`  — can a camp exist here at all?
+//    · `layoutCamp`               — given that it can, where does everything go?
+//
+//  The second one is the whole reason this feature either reads as calm or
+//  reads as "objects were placed by a computer", so it is worth being explicit
+//  about what it is doing. A camp is not a random scatter and it is not a
+//  circle of evenly spaced furniture. It is a set of things arranged around a
+//  fire by people who all wanted to face the fire and none of whom wanted to
+//  sit in the smoke, carry the cooler far, or pitch the tent where sparks land.
+//  Those four preferences produce the arrangement; randomness only decides how
+//  far each thing drifts from where the preference put it.
+// ─────────────────────────────────────────────────────────────────────────────
+import * as THREE from 'three';
+import { clamp, clamp01, lerp, smoothstep, mulberry32 } from '../core/MathUtils.js';
+
+const TAU = Math.PI * 2;
+// The golden angle. Successive multiples of it never repeat and never clump,
+// which is why it is the standard way to place seeds on a sunflower head and
+// exactly what is wanted for "spread these around the fire but not evenly".
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));   // 2.39996…
+
+// ── how far from the camper the player may put a camp ────────────────────────
+// Near enough that the camper is in the same frame as the fire — the shot the
+// whole feature exists to produce — and far enough that the tent is not
+// touching the tailgate. 4.7 m of camper plus 2.5 m of tent means anything
+// under about 6 m is a collision.
+export const SITE_MIN = 6.0;
+export const SITE_MAX = 18.0;
+
+// The clearing's radius, and therefore the size of the camp.
+//
+// 6.4 m, and it is a measured number rather than a taste one. The first pass
+// used 5.2 with the tent at 0.86 of it — which put the tent at 4.5 m, where the
+// clearing's own feathered edge still leaves a third of the grass standing, and
+// the first capture came back with the tent pitched in knee-deep meadow. The
+// props are now inside 0.75 R, and the clearing is wide enough that everything
+// in the camp stands on bare ground with a margin of scuffed fringe beyond it.
+export const CAMP_RADIUS = 6.4;
+
+/**
+ * March the mouse ray against the heightfield.
+ *
+ * Deliberately not a scene raycast. `Raycaster.intersectObjects(scene, true)`
+ * over this world walks streamed terrain LOD tiles, ~500 k grass blades in
+ * three rings, instanced cover and the tree BVH — it is milliseconds, every
+ * frame, to answer a question the heightfield answers in microseconds. It is
+ * also *wrong* for this job: the first thing it would hit is a grass blade or a
+ * shrub, so the reticle would jitter between the ground and whatever foliage
+ * happened to be in front of it.
+ *
+ * Linear march to a sign change, then bisect. The march step grows with
+ * distance because precision only matters near the hit.
+ */
+export function groundRay(world, origin, dir, maxDist = 260) {
+  let t = 1.0;
+  let prevT = 0, prevD = origin.y - world.getHeight(origin.x, origin.z);
+  // A ray pointing up out of the valley never hits; bail rather than marching
+  // 260 m of sky.
+  if (dir.y > 0 && prevD > 0) {
+    const rise = dir.y * maxDist;
+    if (prevD + rise > 0 && dir.y > 0.35) return null;
+  }
+  while (t < maxDist) {
+    const x = origin.x + dir.x * t, y = origin.y + dir.y * t, z = origin.z + dir.z * t;
+    const d = y - world.getHeight(x, z);
+    if (d <= 0 && prevD > 0) {
+      // Bisect the bracket. Eight halvings of a 6 m step is 23 mm, which is
+      // under the terrain's own vertex spacing and far under what the eye can
+      // see in a reticle.
+      let a = prevT, b = t;
+      for (let i = 0; i < 8; i++) {
+        const m = (a + b) * 0.5;
+        const mx = origin.x + dir.x * m, my = origin.y + dir.y * m, mz = origin.z + dir.z * m;
+        if (my - world.getHeight(mx, mz) <= 0) b = m; else a = m;
+      }
+      const hx = origin.x + dir.x * b, hz = origin.z + dir.z * b;
+      return { x: hx, z: hz, y: world.getHeight(hx, hz), dist: b };
+    }
+    prevT = t; prevD = d;
+    t += clamp(0.6 + t * 0.045, 0.6, 6.0);
+  }
+  return null;
+}
+
+/**
+ * Is this a place a camp could be?
+ *
+ * Returns `{ ok, reason, score, x, z, y }`. `score` is 0..1 and is only
+ * meaningful when ok — it drives how confident the reticle looks, so a player
+ * aiming at a merely-acceptable spot gets a visibly less settled ring than one
+ * aiming at a good one, without ever being told a number.
+ *
+ * The footprint samples are a ring plus the centre rather than a disc: the
+ * failure this is guarding against is a lip, a boulder or a waterline crossing
+ * the site, and all three are found at the rim. Sixteen ring samples at two
+ * radii is 33 heightfield lookups, which is nothing, and it catches a 1.5 m
+ * hummock that a 4-sample cross walks straight over.
+ */
+export function scoreSite(world, x, z, opts = {}) {
+  const R = opts.radius ?? CAMP_RADIUS;
+  const out = { ok: false, reason: '', score: 0, x, z, y: world.getHeight(x, z) };
+
+  if (!Number.isFinite(x) || !Number.isFinite(z)) { out.reason = 'nowhere'; return out; }
+  if (Math.abs(x) > 900 || Math.abs(z) > 900) { out.reason = 'out of bounds'; return out; }
+
+  let minY = Infinity, maxY = -Infinity, slopeSum = 0, slopeMax = 0, wet = 0, n = 0;
+  for (const rr of [0, R * 0.55, R]) {
+    const count = rr === 0 ? 1 : 16;
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * TAU;
+      const sx = x + Math.cos(a) * rr, sz = z + Math.sin(a) * rr;
+      const h = world.getHeight(sx, sz);
+      const s = world.getSlope(sx, sz);
+      if (!Number.isFinite(h)) { out.reason = 'nowhere'; return out; }
+      if (h < minY) minY = h;
+      if (h > maxY) maxY = h;
+      slopeSum += s; if (s > slopeMax) slopeMax = s;
+      if (world.getWaterDepth(sx, sz) > 0.02) wet++;
+      n++;
+    }
+  }
+  const slopeMean = slopeSum / n;
+  const relief = maxY - minY;
+
+  // Water first: it is the only hard, obvious, unarguable no.
+  if (wet > 0) { out.reason = 'in the water'; return out; }
+  // Then the two that actually decide whether a tent can be pitched. The limits
+  // are the vehicle's own rescue numbers (RESCUE_SLOPE 0.42 ideal, 0.65
+  // acceptable), narrowed a little: a camper can be parked on ground a person
+  // would not choose to sleep on.
+  if (slopeMax > 0.62) { out.reason = 'too steep'; return out; }
+  if (relief > 1.55) { out.reason = 'too uneven'; return out; }
+
+  // Anything solid standing in the middle of the site. Trees are the real case
+  // — a tent inside a trunk is the single worst thing this feature could ship —
+  // and rocks are the same test.
+  const blocker = opts.blocked?.(x, z, R);
+  if (blocker) { out.reason = blocker; return out; }
+
+  out.ok = true;
+  // Flat, level and dry scores 1. The score decays over the acceptable band
+  // rather than at its edge, so the reticle firms up as the player finds the
+  // nice spot instead of switching from bad to good at a threshold.
+  out.score = clamp01(
+    (1 - smoothstep(0.10, 0.55, slopeMean)) * 0.55 +
+    (1 - smoothstep(0.25, 1.35, relief)) * 0.45
+  );
+  out.slope = slopeMean;
+  out.relief = relief;
+  return out;
+}
+
+/**
+ * Clamp a point into the annulus around the camper the player may build in.
+ * Returns the clamped point and whether it had to move — the reticle draws
+ * itself differently when it is being held at the limit, so the rule is
+ * legible without a message.
+ */
+export function clampToSite(px, pz, vx, vz) {
+  const dx = px - vx, dz = pz - vz;
+  const d = Math.hypot(dx, dz);
+  if (d < 1e-4) return { x: vx + SITE_MIN, z: vz, clamped: true };
+  const t = clamp(d, SITE_MIN, SITE_MAX);
+  return { x: vx + (dx / d) * t, z: vz + (dz / d) * t, clamped: Math.abs(t - d) > 0.01 };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The layout
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Arrange a camp.
+ *
+ * The arrangement is built from four facts about how people actually set one
+ * up, and every one of them is a constraint here rather than a random draw:
+ *
+ *  1. **The fire is the centre and the reason.** Everything is placed in polar
+ *     coordinates about it, so everything relates to it by construction.
+ *
+ *  2. **Nobody sits in the smoke.** Smoke goes downwind, so the chairs take the
+ *     *upwind* arc. This is the single strongest reason the result reads as
+ *     considered rather than scattered: the whole camp has an axis, and the
+ *     axis has a cause the player can feel from the drifting smoke without ever
+ *     being told.
+ *
+ *  3. **The tent goes furthest out and off to one side** — clear of sparks,
+ *     clear of the seating arc, door turned toward the fire but not square to
+ *     it. Square-on is the tell of a placed object; real tents are pitched to
+ *     the ground, not to the furniture.
+ *
+ *  4. **The cooler and the table are within arm's reach of a chair**, because
+ *     that is what they are for. They sit *between* two chairs, or just outside
+ *     the arc beside one, never opposite it across the fire.
+ *
+ *  Randomness enters as jitter on angle, radius and yaw, drawn from the seeded
+ *  RNG so a given site always builds the same camp — which matters more than it
+ *  sounds, because it is what lets a critic A/B two builds of the same site.
+ *
+ * @param rnd    seeded RNG
+ * @param world  WorldData, for standing each prop on the actual ground
+ * @param cx,cz  the fire, in world XZ
+ * @param opts   { windDir: THREE.Vector2, radius, chairs }
+ * @returns array of { kind, x, z, y, yaw, tilt, scale, opts }
+ */
+export function layoutCamp(rnd, world, cx, cz, opts = {}) {
+  const R = opts.radius ?? CAMP_RADIUS;
+  const wind = opts.windDir ?? new THREE.Vector2(0.86, 0.51);
+  // The direction the smoke leaves in. Chairs sit opposite it.
+  const downwind = Math.atan2(wind.y, wind.x);
+  const seatCentre = downwind + Math.PI;
+
+  const out = [];
+  const placed = [];   // { x, z, r } for separation tests
+
+  // Reject a candidate that lands on top of something already placed, or on
+  // ground the prop cannot stand on. Ten tries then give up: a camp that is one
+  // chair short is a camp, and a camp with a chair inside the cooler is a bug.
+  const tryPlace = (kind, angle, radius, foot, make, tries = 10) => {
+    for (let i = 0; i < tries; i++) {
+      const a = angle + (rnd() - 0.5) * (i * 0.16);
+      const r = radius * (1 + (rnd() - 0.5) * (0.10 + i * 0.03));
+      const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      let clash = false;
+      for (const p of placed) {
+        if (Math.hypot(p.x - x, p.z - z) < (p.r + foot) * 1.04) { clash = true; break; }
+      }
+      if (clash) continue;
+      // Standing on a lip reads as a prop clipping the ground, and a chair with
+      // one leg in the air is the first thing anyone notices. Reject the worst
+      // of it here rather than trying to fix it with per-leg raycasts later.
+      const relief = footprintRelief(world, x, z, foot);
+      if (relief > 0.34 && i < tries - 2) continue;
+      const item = make(x, z, a, relief);
+      placed.push({ x, z, r: foot });
+      out.push(item);
+      return item;
+    }
+    return null;
+  };
+
+  // ── the tent ───────────────────────────────────────────────────────────────
+  // One tent. Off the seating axis by 100–140 degrees so it frames the camp
+  // from the side rather than closing it off from behind, and at 0.86 R so its
+  // guy lines are still on the dirt.
+  {
+    const side = rnd() < 0.5 ? 1 : -1;
+    const a = seatCentre + side * lerp(1.75, 2.45, rnd());
+    tryPlace('tent', a, R * 0.70, 1.45, (x, z, ang) => ({
+      kind: 'tent', x, z, y: world.getHeight(x, z),
+      // The door turns toward the fire, then backs off 15–35 degrees. Facing a
+      // tent door dead at the fire is what a level editor does; a real one is
+      // pitched across the slope with the door wherever that leaves it.
+      yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.62,
+      tilt: 0.55,      // how much of the ground normal it takes
+      opts: { colorway: Math.floor(rnd() * 4), wear: rnd() },
+    }));
+  }
+
+  // ── the chairs ─────────────────────────────────────────────────────────────
+  // Two or three, on an arc upwind of the fire. The arc is *not* symmetric: the
+  // gaps between chairs are drawn from a spread so the group has a shape. Two
+  // chairs at exactly ±0.6 rad is a pair of parentheses; two at +0.45 and −0.78
+  // is two people who sat down.
+  {
+    const n = opts.chairs ?? (rnd() < 0.62 ? 2 : 3);
+    // Total arc widens with the number of chairs but sub-linearly, so three
+    // chairs sit closer together than two chairs spread apart would.
+    const span = lerp(0.85, 1.55, (n - 2) / 1.6) + rnd() * 0.25;
+    for (let i = 0; i < n; i++) {
+      const frac = n === 1 ? 0.5 : i / (n - 1);
+      const a = seatCentre + (frac - 0.5) * span + (rnd() - 0.5) * 0.22;
+      const r = R * lerp(0.30, 0.38, rnd());
+      tryPlace('chair', a, r, 0.42, (x, z) => ({
+        kind: 'chair', x, z, y: world.getHeight(x, z),
+        // A chair points at the fire, off by up to 20 degrees. Chairs that all
+        // aim exactly at the centre look like a Stonehenge diagram.
+        yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.70,
+        tilt: 1.0,     // four feet on the ground; take the normal fully
+        opts: { colorway: Math.floor(rnd() * 4), style: rnd() < 0.5 ? 'sling' : 'arm', wear: rnd() },
+      }));
+    }
+  }
+
+  // ── the cooler ─────────────────────────────────────────────────────────────
+  // Just outside the seating arc, on one flank, where somebody would reach for
+  // it without getting up. Turned mostly toward the fire so its latches — the
+  // detail that says "cooler" at 15 m — face the camera in the frames that
+  // matter.
+  {
+    const flank = rnd() < 0.5 ? 1 : -1;
+    const a = seatCentre + flank * lerp(0.95, 1.35, rnd());
+    tryPlace('cooler', a, R * lerp(0.38, 0.46, rnd()), 0.46, (x, z) => ({
+      kind: 'cooler', x, z, y: world.getHeight(x, z),
+      yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.9,
+      tilt: 1.0,
+      opts: { colorway: Math.floor(rnd() * 3), lidOpen: rnd() < 0.18, wear: rnd() },
+    }));
+  }
+
+  // ── the table ──────────────────────────────────────────────────────────────
+  // Between two chairs, at the same radius, which is where a small folding
+  // table actually ends up. Skipped one time in five: a camp that always has
+  // exactly one of everything is a checklist.
+  if (rnd() < 0.82) {
+    const flank = rnd() < 0.5 ? -1 : 1;
+    const a = seatCentre + flank * lerp(0.35, 0.72, rnd());
+    tryPlace('table', a, R * lerp(0.34, 0.42, rnd()), 0.40, (x, z) => ({
+      kind: 'table', x, z, y: world.getHeight(x, z),
+      yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 1.1,
+      tilt: 1.0,
+      opts: { wear: rnd(), dressed: rnd() < 0.7 },
+    }));
+  }
+
+  // ── firewood ───────────────────────────────────────────────────────────────
+  // A stack of split logs, downwind-ish of the fire and well back from it.
+  // Small, but it is the prop that says somebody is *staying*.
+  {
+    const a = downwind + (rnd() - 0.5) * 1.1;
+    tryPlace('woodpile', a, R * lerp(0.42, 0.52, rnd()), 0.44, (x, z) => ({
+      kind: 'woodpile', x, z, y: world.getHeight(x, z),
+      yaw: rnd() * TAU, tilt: 1.0, opts: { logs: 5 + Math.floor(rnd() * 4), wear: rnd() },
+    }));
+  }
+
+  return out;
+}
+
+/** Peak-to-peak height across a prop's footprint. */
+function footprintRelief(world, x, z, r) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU;
+    const h = world.getHeight(x + Math.cos(a) * r, z + Math.sin(a) * r);
+    if (h < lo) lo = h;
+    if (h > hi) hi = h;
+  }
+  const c = world.getHeight(x, z);
+  return Math.max(hi, c) - Math.min(lo, c);
+}
+
+/**
+ * The quaternion that stands a prop on the ground.
+ *
+ * `tilt` is how much of the terrain normal the prop takes: 1 for a chair, whose
+ * four feet genuinely follow the slope, and about 0.55 for a tent, whose floor
+ * is a taut rectangle that bridges small undulations rather than draping over
+ * them. Taking the full normal on a tent makes it look like it is sliding
+ * downhill; taking none makes it look like it is levitating on the high side.
+ */
+export function standOn(world, x, z, yaw, tilt = 1, out = new THREE.Quaternion()) {
+  const e = 0.9;
+  const hL = world.getHeight(x - e, z), hR = world.getHeight(x + e, z);
+  const hD = world.getHeight(x, z - e), hU = world.getHeight(x, z + e);
+  const n = new THREE.Vector3(hL - hR, 2 * e, hD - hU).normalize();
+  const up = new THREE.Vector3(0, 1, 0);
+  const tilted = new THREE.Quaternion().setFromUnitVectors(up, n);
+  // Slerp from identity so `tilt` is a real fraction of the rotation rather
+  // than a lerp of a normal, which would denormalise on a steep slope.
+  tilted.slerp(new THREE.Quaternion(), 1 - clamp01(tilt));
+  return out.setFromAxisAngle(up, yaw).premultiply(tilted);
+}
+
+/** A seeded RNG keyed off a site's position, so the same spot builds the same camp. */
+export function siteRng(x, z, seed = 0) {
+  const k = (Math.round(x * 16) * 73856093) ^ (Math.round(z * 16) * 19349663) ^ (seed * 83492791);
+  return mulberry32(k >>> 0);
+}

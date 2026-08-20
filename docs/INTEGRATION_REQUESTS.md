@@ -5984,3 +5984,30 @@ only thing giving the interior anywhere to drain to. Whoever owns the tectonic
 stage should look at whether the gates are deep enough and whether the regional
 tilt actually reaches them. I have not touched it: it would move every camera
 anchor and every biome in the map, and it is not a water-round change.
+
+---
+
+## Camp round — 2026-08-20
+
+**C1 · Trees: `trunksNear(x, z, r)` added.** The Camp system must refuse to
+pitch a tent inside a trunk, and `Trees` had no point query. Added a read-only
+method over the existing placement bucket grid — no new state, no change to
+placement or rendering. Returns `[{ x, z, radius }]`.
+
+**C2 · Rocks: `boulderNear(x, z, r, minSize)` added.** Same reason: a camp
+cleared around a two-metre erratic. Walks the live cells only. Read-only.
+
+**C3 · Grass and ground cover now read `uCampSite`.** One shared vec4 from
+`src/camp/camp_clearing.js`, injected into `makeGrassUniforms()` and
+`makeCoverUniforms()`, thinning plants inside the camp clearing. The alternative
+— telling both systems to re-scatter the affected tiles — is a visible hitch at
+the exact moment the player is being shown something new, and GroundCover's
+frame-budgeted cells would have trickled the shrubs away one at a time over a
+second. Reasoning in full at the top of `camp_clearing.js`.
+
+Note for the grass author: the first version multiplied `cover` before the
+`grow` threshold, and it did not work. `grow` thresholds `cover` against a
+*window* around each blade's LOD rank, so a rank-0 blade survives a cover of
+zero — the camp was pitched in full-height grass and the capture said so. The
+clearing now draws against `aShape.w` instead, with the threshold remapped past
+both ends of [0,1]. Worth knowing if anything else ever wants to suppress grass.

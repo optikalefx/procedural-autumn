@@ -19,6 +19,7 @@
 import * as THREE from 'three';
 import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 import { PALETTE } from '../world/WorldConfig.js';
+import { campSite, CAMP_CLEARING_GLSL } from '../camp/camp_clearing.js';
 
 /**
  * Shared blade strip. Local `position` carries (side, v, 0):
@@ -61,6 +62,9 @@ export function makeBladeGeometry(segments, tipBias = 1.0) {
 export function makeGrassUniforms() {
   return {
     uTime:        { value: 0 },
+    // Shared by reference with camp_clearing.js — Camp.js writes it, every ring
+    // reads it, and there is deliberately only one clearing in the world.
+    uCampSite:    campSite.uCampSite,
     uSunDir:      { value: new THREE.Vector3(0.4, 0.6, 0.3) },
     uSunColor:    { value: new THREE.Color(1, 0.88, 0.72) },
 
@@ -209,6 +213,8 @@ varying float vDry;
 varying float vShade;
 varying float vGust;
 
+${CAMP_CLEARING_GLSL}
+
 float gHash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
@@ -233,6 +239,21 @@ const VERT_BODY = /* glsl */`
   float cover = min( smoothstep( uFadeIn.x, uFadeIn.y, dCam ),
                      1.0 - smoothstep( uFadeOut.x, uFadeOut.y, dCam ) );
   float grow = smoothstep( aMisc.z - 0.22, aMisc.z + 0.02, cover );
+
+  // ── the camp clearing ───────────────────────────────────────────────────
+  // Stochastic removal, so the clearing thins out blade by blade instead of
+  // mowing the field to an even stubble. The draw is aShape.w — the blade's
+  // wind phase, an independent uniform in [0,1) — and NOT aMisc.z, the LOD
+  // rank, which was the first attempt and did not work: grow thresholds cover
+  // against a *window* around the rank, so a rank-0 blade survives a cover of
+  // zero. The camp was pitched in knee-deep grass and the capture said so.
+  //
+  // The threshold is remapped past both ends of [0,1] rather than used raw,
+  // for the same reason: at camp cover exactly 0 every blade must go, and a
+  // smoothstep centred on a draw of 0.0 returns 0.5 at 0.0. 1.24/-0.12 gives
+  // both ends a margin wider than the transition band.
+  float campT = campCover( basePos.xz ) * 1.24 - 0.12;
+  grow *= smoothstep( aShape.w - 0.06, aShape.w + 0.06, campT );
 
   float t    = position.y;
   float side = position.x;

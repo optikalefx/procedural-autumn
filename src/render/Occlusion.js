@@ -39,22 +39,34 @@
 //
 //  ── how it fades ─────────────────────────────────────────────────────────
 //
-//  Two mechanisms, because the game has two kinds of surface and only one of
-//  them can afford a discard:
+//  Three mechanisms, because the game has three kinds of surface and only one
+//  of them can afford a discard for free:
 //
-//    · Foliage and bark are ALPHA-TESTED. A naive opacity fade does nothing on
-//      an alpha-tested material (there is no blending to fade into) and an
+//    · Foliage is ALPHA-TESTED. A naive opacity fade does nothing on an
+//      alpha-tested material (there is no blending to fade into) and an
 //      alpha-test ramp pops. Dithered screen-door transparency is the standard
 //      answer for this look, costs a handful of ALU, and — unlike real
 //      transparency — needs no sort and does not disturb the render order the
-//      rest of the game is tuned against. Those shaders already discard, so
-//      early-Z is already off for them and the discard is genuinely free.
+//      rest of the game is tuned against. That shader already discards, so
+//      early-Z is already off for it and the discard is genuinely free.
 //    · Ground cover is opaque. Adding a discard there would cost early-Z on a
 //      surface that has it, so instead it reuses the shrink-toward-the-root
 //      that `coverFade` in shaders/cover_material.js already does at the
 //      visibility limit: a plant in the way sinks into the ground. Vertex-side
 //      only, no fragment cost at all, and it is the idiom that file already
 //      speaks.
+//    · BARK AND ROCK are opaque too, and neither can be shrunk. A trunk pulled
+//      toward its own axis shears its branches off it (photographed:
+//      shots/occlude/bark-on.png), and a boulder pulled toward its centre is a
+//      boulder visibly deflating in the middle of the frame. Both therefore
+//      dither like the foliage — and both pay the early-Z that costs, which on
+//      bark alone measured at 19 fps. So each of them ships TWO PROGRAMS, one
+//      with the dither and one without, and the system that owns the meshes
+//      swaps between them per instanced mesh per frame using the CPU copy of
+//      this volume further down the file. The bill arrives only on the frames
+//      that are actually hiding the camper, and only on the meshes doing the
+//      hiding; every other frame is bit-identical to a build without this.
+//      See `_gateOcclusion` in vegetation/Trees.js and rocks/Rocks.js.
 //
 //  ── what it must NOT touch ───────────────────────────────────────────────
 //
@@ -77,6 +89,12 @@
 //    uniforms: Object.assign( { …yours }, occlusionUniforms() )
 //    vertexShader:   OCCLUDE_PARS   + `… vOcc = occludeFade( worldPos ); …`
 //    fragmentShader: OCCLUDE_DITHER + `… occludeCut( vOcc ); …`
+//
+//  If your surface is OPAQUE and its shader is not already discarding, do not
+//  opt in like that. Build a second material with the three lines in it, leave
+//  the first one alone, and gate the swap on `occlusionTouchesSphere` /
+//  `occlusionTouchesColumn` below — otherwise the whole draw loses early-Z in
+//  every frame of the game to buy a fade that engages in very few of them.
 //
 //  MERGE WITH Object.assign, NOT THREE.UniformsUtils.merge(). merge() deep
 //  clones, which would give your material a private copy of the target vector
@@ -210,6 +228,7 @@ export function occlusionUniforms() { return UNIFORMS; }
 
 const _d = new THREE.Vector3();
 const _f = new THREE.Vector3();
+const _cam = new THREE.Vector3();
 
 /**
  * Point the frustum at the thing that must stay visible, once per frame.
@@ -220,6 +239,10 @@ const _f = new THREE.Vector3();
  */
 export function setOcclusionTarget(camera, pos) {
   if (!pos || !camera || !PARAMS.enabled) { UNIFORMS.uOccAmount.value = 0; return; }
+  // The CPU mirror below needs the same lens the shader gets it from three's
+  // own `cameraPosition`. Copied on every engaged frame, and never read while
+  // uOccAmount is 0.
+  _cam.copy(camera.position);
 
   // Nothing to keep visible if the subject is not in front of us. Cheap, and
   // it is what makes this safe to leave switched on in every capture and in
@@ -254,6 +277,135 @@ export function setOcclusionTarget(camera, pos) {
   // the feature went.
   const far = Math.max(dist + 1.0, PARAMS.nearNone + CLUMP_MARGIN);
   UNIFORMS.uOccFar2.value = far * far;
+}
+
+// ── the same shape, on the CPU ───────────────────────────────────────────────
+//
+//  The shader owns the fade; this owns the QUESTION "is anything I am about to
+//  draw inside the volume at all", and it exists because two of the materials
+//  that opt in cannot afford to carry the effect unconditionally.
+//
+//  A discard anywhere in a program turns early-Z off for the whole of it, and
+//  bark and rock are the two opaque surfaces in this game that have early-Z and
+//  need it — see the measurement in the header of vegetation/tree_material.js,
+//  where switching the bark program to a discarding one cost 19 fps. So each of
+//  them ships TWO programs, one with the dither and one without, and swaps
+//  between them per mesh per frame. In the overwhelming majority of frames
+//  nothing is in the frustum, every mesh keeps the discard-free program, and
+//  the build is bit-identical to one that never had this. The swap is what
+//  makes the answer to the player's request affordable, and these three
+//  functions are what decide it.
+//
+//  All three are CONSERVATIVE: they may say yes where the shader's own fade
+//  turns out to be 1.0 everywhere on the surface, and that costs a program
+//  swap and nothing else. They must never say no where the shader would fade,
+//  because that is a solid trunk in the middle of the frame — so every margin
+//  here is spent in the same direction, and the cone test drops the taper (a
+//  term that only ever narrows the cone) for the same reason.
+
+/** GLSL smoothstep, so the mirror below reads like the shader it mirrors. */
+function sstep(e0, e1, x) {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Is the frustum switched on this frame at all? False in every capture, in the
+ * fly camera, and whenever the camper is off-axis or out of range — which is
+ * the cheap first line of every gate.
+ */
+export function occlusionActive() { return UNIFORMS.uOccAmount.value > 0; }
+
+/**
+ * `occludeFadeAt` from the GLSL above, in JS. 1.0 = untouched.
+ *
+ * Kept alongside the shader string rather than in the consumers, because the
+ * one thing that must not happen to these two is that they drift.
+ */
+export function occlusionFadeAt(x, y, z, radius = 0) {
+  const amt = UNIFORMS.uOccAmount.value;
+  if (amt <= 0) return 1;
+  const rx = x - _cam.x, ry = y - _cam.y, rz = z - _cam.z;
+  const d2 = rx * rx + ry * ry + rz * rz;
+  if (d2 > UNIFORMS.uOccFar2.value) return 1;
+
+  const n = UNIFORMS.uOccNear.value;
+  let m = 1 - sstep(n.x, n.y, Math.max(Math.sqrt(d2) - radius, 0));
+
+  const t3 = UNIFORMS.uOccTarget.value;
+  const ax = t3.x - _cam.x, ay = t3.y - _cam.y, az = t3.z - _cam.z;
+  const len2 = ax * ax + ay * ay + az * az;
+  if (len2 >= 1) {
+    const t = (rx * ax + ry * ay + rz * az) / len2;
+    if (t > 0 && t < 1) {
+      const r = UNIFORMS.uOccWide.value * t * (1 - sstep(UNIFORMS.uOccTaper.value, 1, t));
+      const r1 = Math.max(r, 1e-3);
+      const r0 = r1 * (1 - Math.max(UNIFORMS.uOccSoft.value, 0.02));
+      const ox = rx - ax * t, oy = ry - ay * t, oz = rz - az * t;
+      m = Math.max(m, 1 - sstep(r0 * r0, r1 * r1, ox * ox + oy * oy + oz * oz));
+    }
+  }
+  return 1 - amt * m;
+}
+
+/**
+ * Does a sphere reach into either shape?
+ *
+ * Not `occlusionFadeAt(centre) < 1`: a rock whose centre is fifteen metres away
+ * can still have a face against the lens, and that face is the whole reason
+ * this feature exists. The sphere's own radius is therefore subtracted from
+ * both tests, the cone is measured at the furthest `t` the sphere can reach
+ * rather than at its centre's, and the taper is ignored.
+ */
+export function occlusionTouchesSphere(x, y, z, radius) {
+  if (UNIFORMS.uOccAmount.value <= 0) return false;
+  const rx = x - _cam.x, ry = y - _cam.y, rz = z - _cam.z;
+  const d2 = rx * rx + ry * ry + rz * rz;
+  const far = Math.sqrt(UNIFORMS.uOccFar2.value) + radius;
+  if (d2 > far * far) return false;
+  if (Math.sqrt(d2) - radius < UNIFORMS.uOccNear.value.y) return true;
+
+  const t3 = UNIFORMS.uOccTarget.value;
+  const ax = t3.x - _cam.x, ay = t3.y - _cam.y, az = t3.z - _cam.z;
+  const len2 = ax * ax + ay * ay + az * az;
+  if (len2 < 1) return false;
+  const slack = radius / Math.sqrt(len2);
+  let t = (rx * ax + ry * ay + rz * az) / len2;
+  if (t + slack <= 0 || t - slack >= 1) return false;
+  t = Math.min(1, Math.max(0, t));
+  const ox = rx - ax * t, oy = ry - ay * t, oz = rz - az * t;
+  const off = Math.sqrt(ox * ox + oy * oy + oz * oz);
+  return off - radius < UNIFORMS.uOccWide.value * Math.min(1, t + slack);
+}
+
+/**
+ * Does a vertical capsule — a tree, standing on the ground — reach into either
+ * shape? (x, z) is its axis, y0..y1 its extent, `radius` its widest reach.
+ *
+ * Stepped as a chain of spheres rather than solved, because the cone's radius
+ * grows along its own axis and the nearest point of the capsule to that axis
+ * is therefore not the point of deepest engagement. Each sphere is inflated by
+ * half the step so the chain covers the capsule with nothing between the
+ * beads, which is what makes a coarse step safe: at most it costs a swap on a
+ * tree whose bark turns out not to fade.
+ */
+export function occlusionTouchesColumn(x, z, y0, y1, radius) {
+  if (UNIFORMS.uOccAmount.value <= 0) return false;
+  // One horizontal reject before any of it. The volume lives within `far` of
+  // the lens and a column outside that in plan cannot be inside it at any
+  // height.
+  const far = Math.sqrt(UNIFORMS.uOccFar2.value) + radius;
+  const dx = x - _cam.x, dz = z - _cam.z;
+  if (dx * dx + dz * dz > far * far) return false;
+
+  const span = Math.max(y1 - y0, 0.001);
+  const n = Math.min(24, Math.max(1, Math.ceil(span / 2)));
+  const step = span / n;
+  const r = radius + step * 0.5;
+  for (let i = 0; i < n; i++) {
+    if (occlusionTouchesSphere(x, y0 + step * (i + 0.5), z, r)) return true;
+  }
+  return false;
 }
 
 // ── the shape, for any shader stage ──────────────────────────────────────────

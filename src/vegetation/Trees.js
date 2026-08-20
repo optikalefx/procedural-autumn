@@ -26,6 +26,9 @@ import { buildBarkGeometry, buildLeafGeometry, buildImpostorGeometry } from './t
 import {
   makeSharedUniforms, createLeafMaterial, createBarkMaterial, createImpostorMaterial,
 } from './tree_material.js';
+// OCCLUDE. Bark ships two programs and this file owns the choice between them;
+// see `_gateOcclusion` and the note at the top of tree_material.js.
+import { occlusionActive, occlusionTouchesColumn } from '../render/Occlusion.js';
 
 // Which species carry the red sixth of the wheel. Read off the `autumnRed`
 // flag in the species table rather than by index, so adding a species cannot
@@ -105,6 +108,14 @@ const FAR_UPLOAD_CHUNK = 4096;
 //
 // ultra and high are 1.0 — the shipped look at those tiers is untouched.
 const LOD_TIER_SCALE = { ultra: 1, high: 1, medium: 0.76, low: 0.55 };
+
+// OCCLUDE. Metres of slack added to a prototype's bark extents by the frustum
+// gate, covering the wind displacement the CPU does not evaluate. `windSway`
+// gives a trunk vertex at most `uWindStrength * aBark.y * aWind.y * 0.55` of
+// travel and the gust envelope tops out near 0.54, so a metre is comfortably
+// over it — and erring wide here costs a program swap on a tree that turns out
+// not to fade, while erring narrow costs a solid trunk across the camper.
+const OCC_SWAY = 1.0;
 
 
 // VEG.treeDensity is the per-hectare figure the whole game shares; trees want a
@@ -239,6 +250,11 @@ export class Trees extends System {
     // otherwise makes mid-LOD crowns visibly thin out as you back away.
     this.leafMid = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.26, atlasTexels: texels });
     this.bark = createBarkMaterial(this.shared);
+    // OCCLUDE. The same program with the screen-door dither in it, swapped onto
+    // a bark mesh only while that mesh has a trunk between the lens and the
+    // camper. It costs early-Z, which is why it is a second material rather
+    // than a uniform — see tree_material.js.
+    this.barkOcc = createBarkMaterial(this.shared, { occlude: true });
     this.leafBake = createLeafMaterial(this.atlas, this.shared, { alphaTest: 0.40, bake: true, atlasTexels: texels });
     this.barkBake = createBarkMaterial(this.shared, { bake: true });
     // Impostor material is created later in _bakeImpostors; it appends itself.
@@ -294,12 +310,36 @@ export class Trees extends System {
 
     // ── impostors: one draw call for the entire far field ────────────────────
     this.farSlot = this._makeSlot(Math.ceil(CFG.capFar * this.treeMul), true);
+
+    // OCCLUDE. Every slot that draws real bark, near and mid together. Mid is
+    // in the list and is not a formality: at the medium tier the near radius
+    // falls to 64 m while the chase boom still reaches 68, so a mid trunk can
+    // stand inside the cone there. The gate costs nothing on a slot that has
+    // nothing in the volume, which at ultra is every mid slot every frame.
+    this._barkSlots = [...this.slots.near, ...this.slots.mid].filter(Boolean);
+    // Frames of program warm-up left. See `_gateOcclusion`.
+    this._occWarm = 2;
+    this._occAny = false;
   }
 
   /** Build the bark + leaf InstancedMesh pair that share one instance block. */
   _attachNear(geoms, slot, leafMat, kind) {
     const barkGeom = geoms.bark;
     const leafGeom = geoms.leaf;
+
+    // OCCLUDE. The prototype's own bark extents, in local units, so the
+    // per-frame gate can ask "is any of this instance in the frustum" without
+    // touching a vertex. The BOX and not the trunk: every branch tube in the
+    // crown is bark too, and a bough across the lens is the frame this feature
+    // was asked for. Read off the geometry so a prototype that changes shape
+    // cannot leave a stale number behind here.
+    if (!barkGeom.boundingBox) barkGeom.computeBoundingBox();
+    const bb = barkGeom.boundingBox;
+    slot.occY0 = bb.min.y;
+    slot.occY1 = bb.max.y;
+    slot.occR = Math.max(Math.abs(bb.min.x), Math.abs(bb.max.x),
+                         Math.abs(bb.min.z), Math.abs(bb.max.z));
+    slot.occOn = false;
 
     barkGeom.setAttribute('aColA', slot.barkCol);
     barkGeom.setAttribute('aWind', slot.wind);
@@ -1140,6 +1180,43 @@ export class Trees extends System {
 
   // ── frame ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Trunks standing within `r` of a point, as [{ x, z, radius }].
+   *
+   * Added for the Camp system, which has to refuse to pitch a tent inside a
+   * tree — the one failure in that feature nobody would forgive. Uses the
+   * placement bucket grid rather than scanning the whole population, so it is
+   * cheap enough to call every frame while the player is aiming: a 5 m query
+   * touches at most four 32 m buckets and typically returns in under 40 tests.
+   *
+   * `radius` is the trunk radius at the base, not the crown. A camp under a
+   * canopy is a good camp; a camp inside a bole is not.
+   */
+  trunksNear(x, z, r) {
+    const T = this.trees;
+    if (!T) return [];
+    const out = [];
+    const { px, pz, pscale, pspec, BW, BS, half } = T;
+    const gx0 = Math.max(0, Math.floor((x - r + half) / BS));
+    const gx1 = Math.min(BW - 1, Math.floor((x + r + half) / BS));
+    const gz0 = Math.max(0, Math.floor((z - r + half) / BS));
+    const gz1 = Math.min(BW - 1, Math.floor((z + r + half) / BS));
+    const r2 = r * r;
+    for (let gz = gz0; gz <= gz1; gz++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const b = gz * BW + gx;
+        for (let i = T.bucketStart[b]; i < T.bucketStart[b + 1]; i++) {
+          const t = T.order[i];
+          const dx = px[t] - x, dz = pz[t] - z;
+          if (dx * dx + dz * dz > r2) continue;
+          const sp = SPECIES?.[pspec[t]];
+          out.push({ x: px[t], z: pz[t], radius: (sp?.trunkRadiusK ?? 0.05) * pscale[t] * 3.2 });
+        }
+      }
+    }
+    return out;
+  }
+
   update(dt, elapsed) {
     const { camera, lighting } = this.ctx;
     const u = this.shared;
@@ -1210,6 +1287,72 @@ export class Trees extends System {
 
   lateUpdate() {
     // After Atmosphere has had its say for this frame.
+    this._gateOcclusion();
+  }
+
+  /**
+   * OCCLUDE — pick the bark program for each instanced mesh, once a frame.
+   *
+   * Runs in lateUpdate and that is load-bearing: main.js calls
+   * `setOcclusionTarget` at the END of the update pass, so a gate in `update()`
+   * would be aiming at where the camper was last frame. lateUpdate is after
+   * every updater and before the render, so this reads the same volume the
+   * shader is about to.
+   *
+   * Per MESH, not per instance, because a program is a property of a draw call:
+   * one trunk in the frustum puts that slot's whole near band — one species,
+   * one prototype, inside 84 m, typically a couple of dozen trunks — on the
+   * discarding program for as long as it is in the way. That is the unit of
+   * granularity this system can offer without a second instance block, and it
+   * is 50x finer than the alternative of switching all bark at once.
+   *
+   * The scan itself is a plan-distance reject on every drawn instance, and the
+   * volume never reaches past the chase boom, so in open country it rejects
+   * everything on the first compare and in a forest it stops at the first
+   * instance that qualifies.
+   */
+  _gateOcclusion() {
+    const slots = this._barkSlots;
+    if (!slots) return;
+
+    // Program warm-up. The occluding variant is a second program and it compiles
+    // the first time something is drawn with it; discovering that at the moment
+    // a trunk crosses in front of the camper would put the compile stall exactly
+    // where the player is looking. So the first rendered frame draws all bark
+    // through it — one frame, behind the loading fade, alongside every other
+    // first-frame compile — and the second frame hands it back.
+    if (this._occWarm > 0) {
+      const on = this._occWarm === 2;
+      for (const s of slots) { s.occOn = on; s.meshes[0].material = on ? this.barkOcc.mat : this.bark.mat; }
+      this._occWarm--;
+      return;
+    }
+
+    const active = occlusionActive();
+    if (!active && !this._occAny) return;      // nothing on, nothing to turn off
+
+    let any = false;
+    for (const s of slots) {
+      let on = false;
+      if (active && s.count) {
+        const m = s.matrix.array;
+        for (let k = 0; k < s.count; k++) {
+          const o = k * 16;
+          // Uniform scale, written straight into the matrix by _push.
+          const sc = m[o + 5];
+          const y = m[o + 13];
+          if (occlusionTouchesColumn(m[o + 12], m[o + 14],
+                                     y + s.occY0 * sc, y + s.occY1 * sc,
+                                     s.occR * sc + OCC_SWAY)) { on = true; break; }
+        }
+      }
+      if (on !== s.occOn) {
+        s.occOn = on;
+        s.meshes[0].material = on ? this.barkOcc.mat : this.bark.mat;
+      }
+      any = any || on;
+    }
+    this._occAny = any;
   }
 
   /**
@@ -1236,7 +1379,7 @@ export class Trees extends System {
     this.farMesh?.geometry.dispose();
     this._impostorRT?.dispose();
     this.atlas?.dispose();
-    for (const k of ['leafNear', 'leafMid', 'bark', 'leafBake', 'barkBake']) {
+    for (const k of ['leafNear', 'leafMid', 'bark', 'barkOcc', 'leafBake', 'barkBake']) {
       this[k]?.mat?.dispose(); this[k]?.depth?.dispose();
     }
     this.impostorMat?.mat?.dispose();

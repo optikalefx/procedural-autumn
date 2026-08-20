@@ -67,6 +67,11 @@ const P = (path) => (rig, v) => {
   if (node && typeof node === 'object' && 'value' in node) node.value = v;
 };
 
+// One-shots have no live AudioParam to write — they build their graph at
+// trigger time — so a splash slider parks its value on the model and the next
+// trigger picks it up.
+const SP = (key) => (rig, v) => { (rig.audio.vehicle.splashPatch ??= {})[key] = v; };
+
 /**
  * Shorthand for the tyre model's `tune` block.
  *
@@ -652,12 +657,12 @@ export const SOUNDS = [
     params: [
       cond('depth', 'Water depth', 0, 1, 0.4, { unit: 'm', step: 0.01, src: 'vehicle_audio.js:306 — normalised by 0.8 m' }),
       cond('speed', 'Road speed', 0, 30, 4, { unit: 'm/s', step: 0.1 }),
-      range('waterHz', 'ford band centre', 400, 5000, 1600, { unit: 'Hz', step: 10, src: 'vehicle_audio.js:147', apply: P('vehicle.waterBand.frequency') }),
-      range('waterQ', 'ford band Q', 0.1, 3, 0.5, { step: 0.01, src: 'vehicle_audio.js:147', apply: P('vehicle.waterBand.Q') }),
-      range('waterRate', 'ford noise rate', 0.5, 2, 1.07, { step: 0.01, src: 'vehicle_audio.js:146', apply: (r, v) => { r.audio.vehicle.waterSrc.playbackRate.value = v; } }),
+      range('waterHz', 'ford band centre', 400, 5000, 900, { unit: 'Hz', step: 10, src: 'vehicle_audio.js:150', apply: P('vehicle.waterBand.frequency') }),
+      range('waterQ', 'ford band Q', 0.1, 3, 0.9, { step: 0.01, src: 'vehicle_audio.js:150 — below ~0.7 the band leaks its source', apply: P('vehicle.waterBand.Q') }),
+      range('waterRate', 'ford noise rate', 0.5, 2, 0.85, { step: 0.01, src: 'vehicle_audio.js:149', apply: (r, v) => { r.audio.vehicle.waterSrc.playbackRate.value = v; } }),
       range('vehicleBus', 'vehicle bus gain', 0, 2, 0.75, { step: 0.01, group: 'Mix', src: 'Audio.js:131', apply: P('buses.vehicle.gain') }),
     ],
-    needs: ['vehicle_audio.js:307 — ford level depth·(0.04 + speedN·0.12).'],
+    needs: ['vehicle_audio.js:309 — ford level depth·(0.06 + speedN·0.18).'],
   },
   {
     id: 'vehicle.knock',
@@ -687,10 +692,17 @@ export const SOUNDS = [
     layers: [],
     trigger: (rig, v) => rig.audio.vehicle.splash(v.strength),
     params: [
-      cond('strength', 'Strength', 0, 1, 0.6, { step: 0.01, src: 'vehicle_audio.js:377' }),
+      cond('strength', 'Strength', 0, 1, 0.6, { step: 0.01, src: 'vehicle_audio.js:379' }),
+      // These three were the reason a player could not tune the splash: it is
+      // the sound you hear on entry, but every slider on this page moved the
+      // continuous bed instead. `splashPatch` is read by `splash()` on the next
+      // trigger, so a one-shot does not need a live AudioParam to be tunable.
+      range('splashHz', 'sweep from', 300, 3000, 1400, { unit: 'Hz', step: 10, src: 'vehicle_audio.js:389', apply: SP('f0') }),
+      range('splashTo', 'sweep to', 150, 1200, 380, { unit: 'Hz', step: 10, src: 'vehicle_audio.js:390', apply: SP('f1') }),
+      range('splashPeak', 'peak level', 0, 1, 0.4, { step: 0.01, src: 'vehicle_audio.js:395', apply: SP('peak') }),
+      range('splashAttack', 'attack', 0.002, 0.08, 0.022, { unit: 's', step: 0.001, src: 'vehicle_audio.js:395', apply: SP('attack') }),
       range('vehicleBus', 'vehicle bus gain', 0, 2, 0.75, { step: 0.01, group: 'Mix', src: 'Audio.js:131', apply: P('buses.vehicle.gain') }),
     ],
-    needs: ['vehicle_audio.js:381-386 — the 3000 → 700 Hz sweep over 0.42 s and the 0.22 peak level.'],
   },
   {
     id: 'vehicle.ratchet',
