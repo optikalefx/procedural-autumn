@@ -356,7 +356,7 @@ function renderLayers() {
     trim.className = 'trim';
     trim.min = -36; trim.max = 12; trim.step = 0.5;
     trim.value = state.rig.trimDb[L.name] ?? 0;
-    const tout = el('output', 'ro', '0.0 dB');
+    const tout = el('output', 'ro', `${(+(state.rig.trimDb[L.name] ?? 0)).toFixed(1)} dB`);
     trim.addEventListener('input', () => {
       state.rig.setTrim(L.name, +trim.value);
       tout.textContent = `${(+trim.value).toFixed(1)} dB`;
@@ -392,7 +392,12 @@ function renderLayerStates() {
  */
 async function zeroTest() {
   const s = state.sound;
-  const list = s.meterLayers ?? [];
+  // Every layer the sound plays, not just the ones with a row in the strip.
+  // The waterfall's strip shows one entry, `falls`, whose trim sits *after* the
+  // fallBus tap — muting only that would leave the tap reading full level and
+  // the test would report a routing fault that is not there. The voice trims
+  // are the ones upstream of the analyser.
+  const list = (s.layers ?? []).filter((n) => state.rig.trims[n]);
   if (!state.rig.audio || !list.length) return note('Nothing to zero on this sound.');
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const meanRms = async (ms) => {
@@ -407,11 +412,11 @@ async function zeroTest() {
   };
   $('#zeroTest').disabled = true;
   const before = await meanRms(1200);
-  const saved = list.map((L) => !!state.rig.muted[L.name]);
-  for (const L of list) state.rig.setMute(L.name, true);
+  const saved = list.map((n) => !!state.rig.muted[n]);
+  for (const n of list) state.rig.setMute(n, true);
   await wait(250);
   const after = await meanRms(1200);
-  list.forEach((L, i) => state.rig.setMute(L.name, saved[i]));
+  list.forEach((n, i) => state.rig.setMute(n, saved[i]));
   renderLayerStates();
   $('#zeroTest').disabled = false;
   const drop = 20 * Math.log10(Math.max(after, 1e-9) / Math.max(before, 1e-9));
@@ -419,7 +424,8 @@ async function zeroTest() {
     ? 'the bus was already silent — nothing was playing'
     : drop < -30 ? 'clean: the mixer owns this bus'
       : `only ${(-drop).toFixed(1)} dB — something is reaching the bus around the layer gains`;
-  note(`Zero test on ${s.bus}: ${fmtDb(20 * Math.log10(Math.max(before, 1e-9)))} → `
+  note(`Zero test on ${s.bus} (${list.length} layer${list.length === 1 ? '' : 's'}): `
+    + `${fmtDb(20 * Math.log10(Math.max(before, 1e-9)))} → `
     + `${fmtDb(20 * Math.log10(Math.max(after, 1e-9)))} dBFS. ${verdict}`, drop > -30 && before >= 1e-5);
 }
 

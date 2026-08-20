@@ -210,6 +210,27 @@ async function main() {
     `grass ${f(dB(tyres.grass))} dBFS, rock ${f(dB(tyres.rock))} dBFS ` +
     `(${f(dB(tyres.rock) - dB(tyres.grass))} dB)`);
 
+  // ── 4c. the zero test itself ────────────────────────────────────────────
+  // The button exists to prove the mixer owns a bus. Drive the real UI path and
+  // read its verdict, because a routing check that reports "clean" on a bus it
+  // cannot actually reach is worse than not having one.
+  for (const id of ['ambience.bed', 'water.waterfall']) {
+    const z = await page.evaluate(async (id) => {
+      const lab = window.__lab;
+      lab.select(id);
+      await new Promise((r) => setTimeout(r, 200));
+      await lab.play();
+      await new Promise((r) => setTimeout(r, 1200));
+      document.querySelector('#zeroTest').click();
+      // 1.2 s before + 0.25 s settle + 1.2 s after, plus slack.
+      await new Promise((r) => setTimeout(r, 3600));
+      const note = document.querySelector('#note').textContent;
+      lab.stop();
+      return { note, restored: Object.values(lab.trims()).length > 0 };
+    }, id);
+    check(`zero test on ${id} proves the mixer owns the bus`, /clean:/.test(z.note), z.note);
+  }
+
   // ── 5. config round-trip ────────────────────────────────────────────────
   const trip = await page.evaluate(async () => {
     const lab = window.__lab;
