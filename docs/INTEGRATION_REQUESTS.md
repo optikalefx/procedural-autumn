@@ -4302,3 +4302,123 @@ which is what says the p95 band was hitch behaviour rather than per-pixel cost.
 I should have re-read the health gate before recording three runs against it,
 and X1's own rule — verify the tree is coherent before believing the number —
 says so in as many words.
+
+## T11–T14. Trees — 2026-08-20 (round 052)
+
+Two critic pass 6 items closed on my side, one integration request answered, one
+handed on, and one correction to something I wrote myself an hour ago.
+
+### T11. To the LOOK author: `stylizeRim()` — adopted, and its local boost moved
+
+No action needed; this is so you are not surprised by a number.
+
+T5 adopted `stylizeRim()` and set the canopy's local `uRimBoost` to 6.0. It is
+**3.0 now**, and gated on the new optical-depth term as well as on AO. The
+reason is that at 6.0 the rim was carrying the whole of what the backlit frame
+had *instead* of translucency: AO on a conifer is BOUGH-local — 0.35 at the
+trunk to 1.14 at the tip of every whorl, including whorls buried in the middle
+of the spire — so an AO-gated rim is a per-frond fringe and not a silhouette.
+That is exactly the orientation-independent pale sage tip gradient critic pass 6
+photographed and measured at +35–48% with only +12% of it moving with the sun.
+
+There is a real transmission term now, so the rim goes back to the job you
+priced it for. Your caution — never multiply it by albedo — was the important
+part and it holds for both terms. If the global 0.22 moves, mine is still one
+uniform (`Trees.shared.uRimBoost`) and I will re-sweep rather than have us both
+compensate. **The request in your section is answered; it can be closed.**
+
+### T12. To the LOOK / GRADE author: `forest` is over plate 3 on VALUE, and I made that worse
+
+I fixed `forest`'s colour and I owe you the cost.
+
+Moving conifer preference off wet valley floor took `forest` from 24.5% to 7.8%
+yellow + yellow-green (plate 3: 2.6%) and from `chromaMean` 0.248 to 0.274
+(plate 3: 0.307). But removing a near dark mass raises a frame:
+
+|              | before | after | plate 3 |
+|---           |---     |---    |---      |
+| `lumaMean`   | 0.414  | 0.476 | 0.372   |
+| `lumaP95`    | 0.794  | 0.835 | 0.604   |
+| `neutralPct` | 6.7    | 10.8  | 1.9     |
+
+It was already over the plate on both before I touched it — the frame is a third
+brighter than its reference and its P95 is a quarter of a stop high — and I have
+pushed it a further 0.06. This is the same shape as critic blocker #4 on the
+vistas ("the black-lift correction overshot"), measured at an eye-level view.
+
+I am deliberately not answering it with foliage. I could darken the canopy and
+land `lumaMean`, and it would be the wrong fix: our needle hue and our crown hue
+both match the plate, so a value correction belongs in the grade where it can
+see the whole frame. **Flagging, not requesting a specific change.**
+
+### T13. To the ROCKS author and the INTEGRATOR: `waterfall`'s frame-wide numbers in blocker #2 are stale, and the reason is foliage
+
+Critic pass 6 blocker #2 closes on `waterfall` being "the least autumnal frame in
+an autumn game (`chromaMean` 0.181, `neutralPct` 36.8 frame-wide)". Please do
+not carry those two frame-wide numbers forward, because they were not measuring
+the rock.
+
+The `waterfall` pose's near-field clearing raycast was parking the camera
+against a spruce that stood on wet ground at the plunge pool, and that one tree
+was rendering as a pale mint mass across essentially the entire frame. The
+conifer-placement change in `fca30e7` moves it. Same pose, same res, one line of
+`_pickSpecies` different:
+
+|              | before | after |
+|---           |---     |---    |
+| `chromaMean` | 0.165  | 0.288 |
+| `vividPct`   | 6.1    | 46.1  |
+| y-grn        | 50.5%  | 6.2%  |
+| red          | 9.8%   | 55%   |
+
+Half the chromatic pixels in that frame were one conifer. The rock findings in
+blocker #2 are rect-measured on the massif and stand untouched; it is only the
+frame-wide pair that needs re-taking on a current build.
+
+### T14. CORRECTION to my own commit message in `fca30e7`
+
+`fca30e7` closes by saying the residual yellow in `forest` "is the acid-gold
+grass, which is not mine to move". **That is wrong and I should not have written
+it without measuring it.** Split by band on the same frame:
+
+|                       | ground (lower 45%) | canopy (upper 55%) |
+|---                    |---                 |---                 |
+| yellow + y-grn, before| —                  | 37.8%              |
+| yellow + y-grn, after | **4.2%**           | **11.8%**          |
+| orange, after         | 78.6%              | 20.9%              |
+
+The ground band is 4.2% and reads orange, not yellow. **All of the residual
+yellow-green is canopy — conifer needles — and therefore mine.** No request to
+the grass or ground-cover authors; withdrawn before it cost anyone a round.
+
+It is also not a tint problem, for the reason pass 6 established with its fog-off
+test: plate 3's conifer measured tight on the needles is `1 : 1.13 : 0.63` and
+ours is `1 : 1.14 : 0.62`. Plate 3 has 0.3% y-grn not because its conifers are a
+different colour but because it has far fewer conifer pixels. So the remaining
+headroom is more of the same lever I just pulled, and it is quantity, not hue.
+I stopped where I did because 7.8% puts `forest` back inside the 0–12% band
+every other view in the game already occupies — the finding was that it was
+"the most out-of-family measurement in the project", and it is now in family —
+and because the previous author has already documented what over-pulling this
+lever does (raise maple 0.60 → 0.92 and the forest goes 56% maple: the same
+monoculture in a different colour).
+
+### Gate, this tree
+
+`node tools/dprtest.mjs --dpr 2 --w 1170 --h 870 --seconds 26 --gate`
+
+```
+p50 18.7   p95 40.9   fps50 53.5   settled_p50 17.3   settled 57.8 fps   PASS
+```
+
+`git status` at gate time: nothing dirty under `src/`, so this is attributable
+to HEAD — but HEAD includes other authors' work landed today, and the tree also
+carried their uncommitted `tools/_scratch` files. Against the last recorded
+dpr-2 run on a healthy tree (`p50 19.1 / p95 41.7 / settled 53.5 fps`), the p95
+line is being straddled in the same place it has been all round. Neither commit
+here adds a triangle, a draw call or a texture fetch: transmission is arithmetic
+inside an existing branch of `canopyShade()`, and the placement change is one
+multiply in a load-time argmax.
+
+`lint.mjs` clean (77 files), `health.mjs` `ok:true` / `shaderFailures:0`,
+`winding.mjs` clean, `nanhunt.mjs` 0 non-finite pixels in 1287 frames.
