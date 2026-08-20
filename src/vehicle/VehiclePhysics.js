@@ -64,7 +64,8 @@ const HOLD_LATCH_T = 0.75;      // s
 // skidding on two wheels and the three-wheel gate never came true. After this
 // long under a continuous handbrake, a camper that still has not got three
 // wheels down is not settling — it is sliding — and sliding is the thing the
-// player asked to be impossible. One wheel is enough to say it is not airborne.
+// player asked to be impossible. One wheel is enough to say it is not airborne;
+// none at all is airborne and never latches at any age.
 const HOLD_LATCH_SKID = 2.2;    // s
 // Wheel-brake gain while the hold is armed but not yet latched. This is what
 // gets the camper *to* the latch, and it is a "pedal on the floor" number by
@@ -399,21 +400,30 @@ export class VehiclePhysics {
     // a decision about whether the camper has stopped.
     let contact = 0;
     for (let i = 0; i < 4; i++) if (this.vc.wheelIsInContact(i)) contact++;
-    // Three wheels down is "on the ground and not still landing". Below that,
-    // only the skid fallback can latch — and only once it is clear the camper
-    // is not going to settle on its own. See HOLD_LATCH_SKID.
-    if (contact < 3) {
-      if (contact >= 1 && this._armedFor >= HOLD_LATCH_SKID) {
-        const lv0 = this.body.linvel();
-        this._latchV = Math.hypot(lv0.x, lv0.y, lv0.z);
-        this._holdLatch();
-      }
-      return;
-    }
+    if (contact < 1) return;                   // airborne; nothing to hold onto
 
     const lv = this.body.linvel(), av = this.body.angvel();
     const v = Math.hypot(lv.x, lv.y, lv.z);
     const w = Math.hypot(av.x, av.y, av.z);
+
+    // The ceiling, and it is the rule that keeps every other gate honest: the
+    // lock never closes above the speed the hold was allowed to arm at. A
+    // camper bouncing down a 39-degree face was measured latching at 5.2 m/s —
+    // 19 km/h stopped dead in one frame, which is not a parking brake, it is an
+    // invisible wall. Below this the worst bite is 2.36 m/s and in practice it
+    // is a few centimetres per second. Above it the hold simply keeps braking
+    // and waits, which is the right answer: a handbrake does not catch a car
+    // that is falling down a mountain, and pretending otherwise looks worse
+    // than the fall.
+    if (v > HOLD_SPEED) return;
+
+    // Three wheels down is "on the ground and not still landing", and the
+    // ordinary latch waits for it. One or two wheels means bouncing or tipped,
+    // and freezing there would be the mid-bounce freeze this must not do — so
+    // that only latches after HOLD_LATCH_SKID has made it clear the camper is
+    // sliding rather than settling.
+    if (contact < 3 && this._armedFor < HOLD_LATCH_SKID) return;
+
     this._latchV = v;
     const settled = v < HOLD_LATCH_V && w < HOLD_LATCH_W;
     if (settled || this._armedFor >= HOLD_LATCH_T) this._holdLatch();

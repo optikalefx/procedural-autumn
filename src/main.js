@@ -109,6 +109,22 @@ function pickQuality() {
 }
 
 /**
+ * Where the .pab bakes are served from.
+ *
+ * Empty by default, which yields exactly the URLs this file used before —
+ * same-origin `/bakes/...` off the dev server's public/ directory. Local dev
+ * and every headless tool in tools/ therefore behave identically to before.
+ *
+ * A deployed build sets VITE_BAKE_BASE_URL to an absolute origin (the R2
+ * public bucket URL or a custom domain in front of it) because the 1536 bake
+ * is 32 MB and Cloudflare Pages/Workers refuse any single asset over 25 MiB.
+ * Vite inlines this at build time; see docs/DEPLOY.md. Cross-origin means the
+ * bucket needs CORS — a bake that is blocked or 404s presents as a game stuck
+ * on the loading screen, so the failure is logged explicitly below.
+ */
+const BAKE_BASE = (import.meta.env?.VITE_BAKE_BASE_URL ?? '').replace(/\/+$/, '');
+
+/**
  * Load a pre-baked world if one exists, otherwise bake in a worker.
  *
  * Baking costs ~25 s of CPU. During development that is paid on every reload
@@ -120,7 +136,7 @@ async function loadCachedBake(seed, res) {
   if (new URLSearchParams(location.search).has('nocache')) return null;
   try {
     const t0 = performance.now();
-    let url = `/${bakeFilename(seed, res, GEN_HASH)}`;
+    let url = `${BAKE_BASE}/${bakeFilename(seed, res, GEN_HASH)}`;
     let stale = false;
     let r = await fetch(url, { cache: 'force-cache' });
 
@@ -128,10 +144,10 @@ async function loadCachedBake(seed, res) {
       // Exact generator hash missing — most likely someone is mid-edit on
       // TerrainGen.js. Fall back to the newest bake for this (seed, res) so
       // other authors keep fast captures, but flag it loudly.
-      const man = await fetch('/bakes/manifest.json', { cache: 'no-store' }).then((x) => x.ok ? x.json() : null).catch(() => null);
+      const man = await fetch(`${BAKE_BASE}/bakes/manifest.json`, { cache: 'no-store' }).then((x) => x.ok ? x.json() : null).catch(() => null);
       const alt = man?.entries?.find((e) => e.seed === seed && e.res === res);
       if (!alt) return null;
-      url = `/bakes/${alt.file}`;
+      url = `${BAKE_BASE}/bakes/${alt.file}`;
       stale = true;
       r = await fetch(url, { cache: 'force-cache' });
       if (!r.ok) return null;
@@ -145,6 +161,12 @@ async function loadCachedBake(seed, res) {
     return { data, ms: performance.now() - t0, cached: true, stale };
   } catch (e) {
     console.warn('[world] cached bake unusable, baking live:', e.message);
+    if (BAKE_BASE) {
+      console.warn(`[world] bakes are being fetched cross-origin from ${BAKE_BASE}. ` +
+                   `A network/TypeError here is almost always missing CORS on the bucket ` +
+                   `(it needs Access-Control-Allow-Origin for this site's origin) or a ` +
+                   `missing object. See docs/DEPLOY.md.`);
+    }
     return null;
   }
 }

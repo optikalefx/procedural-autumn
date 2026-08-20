@@ -113,22 +113,27 @@ async function main() {
         const x = (Math.random() * 2 - 1) * R, z = (Math.random() * 2 - 1) * R;
         if (!W.isInBounds(x, z)) continue;
         if (W.getWaterDepth(x, z) > 0.02) continue;
-        // No ledge inside the footprint the camper actually occupies.
+        // The footprint has to be a *plane*, not merely a place with the right
+        // average slope. Residual from the local tangent plane, not absolute
+        // height change: a 2.2 m reach on a 1.3 gradient is a legitimate 2.9 m
+        // of rise, so any absolute tolerance either rejects every steep site or
+        // (measured, and it cost a whole confusing sweep) admits cliff edges the
+        // camper lands *inside* — where it wedges in the heightfield with no
+        // wheel in contact, and what gets measured is the wedge, not the hold.
         const h0 = W.getHeight(x, z);
-        let step = 0, wet = false;
-        for (let a = 0; a < 8; a++) {
-          const ang = (a / 8) * Math.PI * 2;
-          const px = x + Math.cos(ang) * 2.2, pz = z + Math.sin(ang) * 2.2;
-          if (!W.isInBounds(px, pz)) { wet = true; break; }
-          if (W.getWaterDepth(px, pz) > 0.02) { wet = true; break; }
-          step = Math.max(step, Math.abs(W.getHeight(px, pz) - h0));
+        const d = 2.0;
+        const gx = (W.getHeight(x + d, z) - W.getHeight(x - d, z)) / (2 * d);
+        const gz = (W.getHeight(x, z + d) - W.getHeight(x, z - d)) / (2 * d);
+        let resid = 0, bad = false;
+        for (let a = 0; a < 12; a++) {
+          const ang = (a / 12) * Math.PI * 2;
+          const dx = Math.cos(ang) * 2.2, dz = Math.sin(ang) * 2.2;
+          const px = x + dx, pz = z + dz;
+          if (!W.isInBounds(px, pz) || W.getWaterDepth(px, pz) > 0.02) { bad = true; break; }
+          resid = Math.max(resid, Math.abs(W.getHeight(px, pz) - (h0 + gx * dx + gz * dz)));
         }
-        if (wet) continue;
-        // A 2.2 m reach on a 1.3 gradient is a legitimate 2.9 m of rise, so the
-        // ledge test has to scale with the slope it is standing on.
-        const g = grad(x, z);
-        if (step > 1.1 + g * 2.6) continue;
-        cands.push({ x, z, g });
+        if (bad || resid > 0.45) continue;
+        cands.push({ x, z, g: Math.hypot(gx, gz), resid });
       }
       return targets.map((t) => {
         let best = null;
@@ -178,32 +183,55 @@ async function main() {
 
   // ── 1. slope sweep ────────────────────────────────────────────────────────
   //
-  // Two phases, measured separately, because they are two different promises.
+  // The protocol is the player's own gesture: arrive somewhere, let the camper
+  // come to rest, tap Space once, take your hands off the keyboard.
   //
-  //   ARM → LATCH.  The player presses Space; the camper is still rolling. The
-  //     brake gain brings it to rest and the lock closes. Whatever it travels
-  //     in here is real distance the player sees, so it is measured and
-  //     reported — but it is a stopping distance, not a failure to hold.
-  //   LATCHED.  The lock is closed and every key is released. This is the
-  //     clause under test: "don't allow the vehicle to move at all." Anything
-  //     but exactly zero here is a failure, on any gradient.
+  // Letting it rest first is not letting the feature off the hook — it is the
+  // difference between a hold and a catch. A camper teleported onto a steep
+  // face arrives falling and bounces down it; engaging the lock mid-bounce is
+  // the one thing the design must not do. So a site the camper cannot come to
+  // rest on in REST_WAIT is reported as unrestable and the hold is not asserted
+  // there: nothing can be parked somewhere nothing can be parked.
+  //
+  // Two phases are then measured separately, because they are two different
+  // promises:
+  //   ARM → LATCH.  Still rolling. The brake gain brings it to rest and the
+  //     lock closes. Distance travelled here is a stopping distance.
+  //   LATCHED.  Every key released. This is the clause under test — "don't
+  //     allow the vehicle to move at all" — and anything but exactly zero is a
+  //     failure, on any gradient.
+  const REST_WAIT = 8;
   const sweep = [];
   if (!ONLY || ONLY === 'sweep') {
-    console.log(`\n── slope sweep: ${HOLD_SECONDS}s latched, no input ──`);
-    console.log('  grade   deg   arm→latch  creep(m)  latch(m/s)  drift(m)  moved(m)  verdict');
+    console.log(`\n── slope sweep: settle, tap Space, ${HOLD_SECONDS}s hands off ──`);
+    console.log('  grade   deg   rest(s)  arm→latch  creep(m)  latch(m/s)  drift(m)  moved(m)  verdict');
     for (const site of sites) {
       if (!site) continue;
       await page.evaluate((s) => window.__vehicleTeleport(s.x, s.z, Math.random() * 6.28), site);
-      await page.waitForTimeout(400);
 
-      // Hold Space down through the settle. On a steep site the camper is
-      // already sliding by the time it lands, and the hold cannot arm above
-      // 8.5 km/h — holding the key means it arms the instant it is eligible,
-      // which is exactly what a player does when rolling to a stop.
+      // Come to rest on its own, with nothing pressed.
+      let rest = null, restT = NaN;
+      for (let w = 0; w < REST_WAIT * 10; w++) {
+        await page.waitForTimeout(100);
+        const st = await state();
+        if (st.grounded >= 3 && Math.abs(st.speed) < 0.35) { rest = st; restT = w / 10; break; }
+      }
+      if (!rest) {
+        const st = await state();
+        console.log(`  ${f(site.g, 2).padStart(5)}  ${f(deg(site.g), 1).padStart(5)}` +
+          `        —   no rest in ${REST_WAIT}s: grounded ${st.grounded}, ${f(st.speed)} m/s, ` +
+          `up ${f(st.up)}, ${f(st.y - st.ground, 2)} m above ground, water ${f(st.water, 2)}, ` +
+          `slid ${f(Math.hypot(st.x - site.x, st.z - site.z), 1)} m`);
+        sweep.push({ site, unrestable: true, moved: 0, creep: 0, latchT: 0 });
+        continue;
+      }
+
+      // One tap, the way a player does it.
+      const armRec = page.evaluate(() => window.__holdRec(4000, 'held'));
       await page.keyboard.down('Space');
-      const armRows = await page.evaluate(() => window.__holdRec(4000, 'held'));
+      await page.waitForTimeout(70);
       await page.keyboard.up('Space');
-      await page.waitForTimeout(250);
+      const armRows = await armRec;
 
       const iArm = armRows.findIndex((r) => r.hold);
       const iLatch = armRows.findIndex((r) => r.held);
@@ -211,7 +239,7 @@ async function main() {
       const creep = iLatch < 0 ? NaN : dist(armRows[Math.max(iArm, 0)], armRows[iLatch]);
 
       const afterKey = await state();
-      if (!afterKey.hold) fail(`grade ${f(site.g, 2)}: hold did not survive the key being released`);
+      if (!afterKey.hold) fail(`grade ${f(site.g, 2)}: a tap of Space at rest did not arm the hold`);
       if (!afterKey.held) fail(`grade ${f(site.g, 2)}: armed but never latched in 4 s`);
 
       // The assertion: latched, every key up, ten seconds.
@@ -225,20 +253,59 @@ async function main() {
       }
       const ok = moved === 0 && maxSpeed === 0 && brokeAt < 0 && afterKey.held;
       sweep.push({ site, moved, maxSpeed, maxDrift, creep, latchT });
-      console.log(`  ${f(site.g, 2).padStart(5)}  ${f(deg(site.g), 1).padStart(5)}   ` +
-        `${f(latchT, 2).padStart(8)}s ${f(creep, 4).padStart(9)}  ` +
+      console.log(`  ${f(site.g, 2).padStart(5)}  ${f(deg(site.g), 1).padStart(5)}  ` +
+        `${f(restT, 1).padStart(6)}   ${f(latchT, 2).padStart(8)}s ${f(creep, 4).padStart(9)}  ` +
         `${f(afterKey.holdLatchV ?? 0).padStart(9)}  ${f(maxDrift, 6).padStart(8)}  ` +
         `${f(moved, 6).padStart(8)}  ${ok ? 'held' : 'MOVED'}`);
       if (moved !== 0) fail(`grade ${f(site.g, 2)} (${f(deg(site.g), 1)}°): moved ${f(moved, 6)} m in ${HOLD_SECONDS}s latched — the spec is zero`);
       if (brokeAt >= 0) fail(`grade ${f(site.g, 2)}: hold let go on its own at t=${f(brokeAt, 1)}s`);
-      // A slow latch is the interesting failure, so dump what the gates saw.
-      if (!(latchT < 1.2)) {
-        console.log('    trace (t, grounded, armedFor, hold, held, speed):');
-        for (const r of armRows.filter((_, i) => i % 12 === 0).slice(0, 22)) {
-          console.log(`      ${f(r.t, 2).padStart(5)}  g=${r.grounded}  a=${f(r.armedFor, 2)}  ` +
-            `${r.hold ? 'arm' : '   '} ${r.held ? 'LATCH' : '     '}  v=${f(r.speed)}`);
-        }
-      }
+    }
+  }
+
+  // ── 1b. engaged while still rolling ───────────────────────────────────────
+  // The other half of the gesture: Space pressed on the move, below the
+  // threshold, on the steepest ground the camper will rest on. This is where
+  // the arm→latch stopping distance actually gets spent, so it is measured
+  // rather than assumed.
+  if (!ONLY || ONLY === 'sweep' || ONLY === 'rolling') {
+    const site = [...sites].reverse().find((s) => s && s.g <= 0.72) ?? sites[0];
+    console.log(`\n── engaged while rolling, ${f(site.g, 2)} gradient (${f(deg(site.g), 1)}°) ──`);
+    await page.evaluate((s) => window.__vehicleTeleport(s.x, s.z, 0), site);
+    await page.waitForTimeout(2500);
+    // Drive off, then brake down to under the threshold and tap Space while
+    // still rolling. Coasting is not enough: released on a hill the camper
+    // simply keeps accelerating, which is the whole reason this feature exists.
+    // The brake is released before Space, because a pedal is a release.
+    await page.keyboard.down('KeyW');
+    await page.waitForTimeout(2200);
+    await page.keyboard.up('KeyW');
+    await page.keyboard.down('KeyS');
+    let st = await state(), spun = 0;
+    while (Math.abs(st.speed) > 1.8 && spun < 10000) {
+      await page.waitForTimeout(60); spun += 60; st = await state();
+    }
+    await page.keyboard.up('KeyS');
+    await page.waitForTimeout(60);
+    st = await state();
+    const atPress = Math.abs(st.speed);
+    if (atPress > 2.36) fail(`rolling probe could not get under the threshold (${f(atPress)} m/s)`);
+    const rec = page.evaluate(() => window.__holdRec(5000, 'held'));
+    await page.keyboard.down('Space');
+    await page.waitForTimeout(70);
+    await page.keyboard.up('Space');
+    const rows = await rec;
+    const iA = rows.findIndex((r) => r.hold), iL = rows.findIndex((r) => r.held);
+    if (iL < 0) fail(`rolling engage at ${f(atPress)} m/s never latched`);
+    else {
+      const after = await state();
+      console.log(`  pressed at ${f(atPress)} m/s (${f(atPress * 3.6, 1)} km/h)` +
+        `   latched ${f(rows[iL].t - rows[Math.max(iA, 0)].t, 2)}s later` +
+        ` at ${f(after.holdLatchV ?? 0)} m/s   stopping distance ${f(dist(rows[Math.max(iA, 0)], rows[iL]), 3)} m`);
+      if ((after.holdLatchV ?? 0) > 2.36) fail(`latched at ${f(after.holdLatchV)} m/s, above the arming threshold — that is a wall, not a brake`);
+      const post = await page.evaluate((ms) => window.__holdRec(ms), 4000);
+      const moved2 = dist(post[0], post[post.length - 1]);
+      console.log(`  then 4s hands off: moved ${f(moved2, 6)} m`);
+      if (moved2 !== 0) fail(`after a rolling engage the camper moved ${f(moved2, 6)} m`);
     }
   }
 
@@ -364,11 +431,15 @@ async function main() {
     console.log(`\n  page errors (${errors.length}):`);
     for (const e of errors.slice(0, 8)) console.log(`    ${e}`);
   }
-  if (sweep.length) {
-    const worst = sweep.reduce((a, b) => (b.moved > a.moved ? b : a));
+  const held = sweep.filter((r) => !r.unrestable);
+  for (const r of sweep.filter((x) => x.unrestable)) {
+    console.log(`  note: grade ${f(r.site.g, 2)} (${f(deg(r.site.g), 1)}°) — the camper will not rest there at all`);
+  }
+  if (held.length) {
+    const worst = held.reduce((a, b) => (b.moved > a.moved ? b : a));
     console.log(`  worst displacement while latched: ${f(worst.moved, 6)} m ` +
       `at grade ${f(worst.site.g, 2)} (${f(deg(worst.site.g), 1)}°)`);
-    const wc = sweep.reduce((a, b) => ((b.creep > a.creep) ? b : a));
+    const wc = held.reduce((a, b) => ((b.creep > a.creep) ? b : a));
     console.log(`  worst arm→latch creep:           ${f(wc.creep, 4)} m in ${f(wc.latchT, 2)}s ` +
       `at grade ${f(wc.site.g, 2)} (${f(deg(wc.site.g), 1)}°)`);
   }
