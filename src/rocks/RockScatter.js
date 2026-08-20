@@ -113,6 +113,100 @@ const MAX_PLANT = 1.0;
 /** Used until `Rocks` hands over the real per-variant bounds. */
 const FOOT_FALLBACK = { rx: 1.3, rz: 1.3, lo: new Array(9).fill(-0.5) };
 
+// ── road clearance ───────────────────────────────────────────────────────────
+//
+// Nothing in this file used to know where the roads are, and it showed. The
+// audit (`tools/_scratch/rockroad.mjs`) measured every instance in the world
+// against the road network and found **537 of the 3839 road centreline points
+// standing inside a rock's own footprint** — one road point in seven with a
+// boulder drawn through it. That is the defect reported as INTEGRATION_REQUESTS
+// P2: at road anchor 18 a `cliff` block of 15.6 m radius had its nearest face
+// 1.7 m from the chase camera and filled half the frame with one flat facet.
+// Two of the forty road anchors reproduced it at full strength.
+//
+// The rule is deliberately expressed in units of the rock's own size rather
+// than as a fixed corridor, because those are two different requirements that
+// happen to share a mechanism:
+//
+//   ROAD_TRACK     the bare wheel ruts. Nothing may stand in them whatever its
+//                  size. 3.2 m is just inside the 3.6 m that `RoadMask` in
+//                  grass_scatter.js already parts the grass for, so a stone at
+//                  the edge of the track still sits in grass and not on bare
+//                  dirt.
+//   ROAD_STANDOFF  how far a rock stands back, as a multiple of its own
+//                  horizontal reach. This is the part that fixes the wedge: a
+//                  rock whose centre is 2 reaches away can never subtend more
+//                  than about 30 degrees from the road however large it is, so
+//                  a crag beside a mountain road stays a crag beside a mountain
+//                  road and never becomes an unscaled grey plane across the
+//                  lens. It is also self-scaling in the right direction —
+//                  cobbles line the verge at 4 m, a 20 m wall stands 43 m off.
+//
+// Measured over the whole world at res 768 (`--sweep`, in the same tool): 2.0
+// removes 7.0% of all instances and takes the count of road points inside a
+// rock from 537 to 0, and the worst angular size seen from anywhere on the road
+// network from 17.96 down to 0.47. 1.6 was tried and leaves 55 road points with
+// a rock over half a radian across; 2.5 costs another 1.2% of the world's rock
+// and moves nothing that can be seen.
+const ROAD_TRACK = 3.2;
+const ROAD_STANDOFF = 2.0;
+
+/**
+ * "Is there a road within r metres of here?" — a bucketed radius query over the
+ * road polylines, which is all the clearance test needs.
+ *
+ * Not a raster like `RoadMask`: that one answers a fixed 3.6 m question and
+ * quantises to a 4 m grid, and this one has to answer out to ~90 m (the reach
+ * of the largest crag block times the standoff) without quantisation error at
+ * the small end, where the threshold is only 4 m and a 2.8 m grid error would
+ * decide it. Buckets are exact, cost ~30 kB for the whole network, and are
+ * built once per RockScatter.
+ */
+class RoadProximity {
+  constructor(roads, cell = 64) {
+    this.cell = cell;
+    this.buckets = new Map();
+    for (const line of roads ?? []) {
+      for (const p of line) {
+        // Densify: road points are ~9 m apart, so the segment between two of
+        // them can pass 4.5 m closer to a rock than either endpoint does. At
+        // the small end of the threshold that is the whole margin.
+        this._add(p.x, p.z);
+      }
+      for (let i = 1; i < line.length; i++) {
+        const a = line[i - 1], b = line[i];
+        this._add((a.x + b.x) * 0.5, (a.z + b.z) * 0.5);
+      }
+    }
+  }
+
+  _add(x, z) {
+    const k = (Math.floor(x / this.cell) * 65536 + Math.floor(z / this.cell)) | 0;
+    let arr = this.buckets.get(k);
+    if (!arr) this.buckets.set(k, arr = []);
+    arr.push(x, z);
+  }
+
+  /** True if any road point lies within `r` metres of (x, z). */
+  anyWithin(x, z, r) {
+    if (!(r > 0) || this.buckets.size === 0) return false;
+    const c = this.cell, r2 = r * r;
+    const i0 = Math.floor((x - r) / c), i1 = Math.floor((x + r) / c);
+    const j0 = Math.floor((z - r) / c), j1 = Math.floor((z + r) / c);
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        const arr = this.buckets.get((i * 65536 + j) | 0);
+        if (!arr) continue;
+        for (let k = 0; k < arr.length; k += 2) {
+          const dx = arr[k] - x, dz = arr[k + 1] - z;
+          if (dx * dx + dz * dz < r2) return true;
+        }
+      }
+    }
+    return false;
+  }
+}
+
 export class RockScatter {
   constructor(world, seed) {
     this.world = world;
@@ -133,6 +227,13 @@ export class RockScatter {
     // is built (see `archFootprints`). Placement needs them to know how far a
     // block reaches from its origin before it can decide how deep to plant it.
     this._foot = {};
+
+    // Where the player actually drives. Built once; the query is a bucket scan
+    // and costs nothing at stream time, and nothing at all at runtime — this is
+    // a placement rule, so it is paid when a cell is generated and never again.
+    this._roads = new RoadProximity(world?.roads);
+    /** Set false to A/B the clearance rule without a second page load. */
+    this.roadClearance = true;
   }
 
   /**
@@ -1295,19 +1396,47 @@ export class RockScatter {
     // the rest of the cell.
     if (depth > 0.4) return;
 
+    // The per-axis jitter, drawn here rather than inside the push so that the
+    // road veto below can drop this instance without disturbing anything else
+    // in the cell. The rng is shared by every rock in a 64 m cell, so a veto
+    // that skips draws reshuffles its neighbours — which is exactly the kind of
+    // "the before and after are not the same place" comparison this project has
+    // already lost time to twice. Consume first, decide after.
+    const jx = size * (0.86 + rng() * 0.30);
+    const jy = size * (0.84 + rng() * 0.34);
+    const jz = size * (0.86 + rng() * 0.30);
+    const jTint = rng() * 2 - 1;
+    const jRnd = rng();
+
+    // ── road clearance ───────────────────────────────────────────────────────
+    //
+    // See ROAD_TRACK / ROAD_STANDOFF above. `rx`/`rz` are the same local
+    // half-extents `_probeBase` plants the block against, and 1.18 is the same
+    // upper bound on the per-axis jitter, so "reach" here is the furthest this
+    // instance can actually extend from its origin in plan — the quantity that
+    // decides whether it is standing in the road, rather than a nominal size.
+    //
+    // Late, after the crag shrink loop, because a block that shrank to fit a
+    // ridge needs less clearance than the one that was requested.
+    if (this.roadClearance) {
+      const fpr = this._foot[arch]?.[variant] ?? FOOT_FALLBACK;
+      const reach = Math.max(fpr.rx, fpr.rz) * size * 1.18;
+      if (this._roads.anyWithin(x, z, ROAD_TRACK + reach * ROAD_STANDOFF)) return;
+    }
+
     out.push({
       x, y: minH - size * sink, z,
       qx: q.x, qy: q.y, qz: q.z, qw: q.w,
-      sx: size * (0.86 + rng() * 0.30),
-      sy: size * (0.84 + rng() * 0.34),
-      sz: size * (0.86 + rng() * 0.30),
+      sx: jx,
+      sy: jy,
+      sz: jz,
       arch,
       kind: this._kind,
       variant,                          // clamped to the library by the caller
       size,
       wet: clamp01(depth * 1.4 + river * 0.30),
       moisture: W.getMoisture(x, z),
-      tint: rng() * 2 - 1,
+      tint: jTint,
       waterY: waterY === null ? -9999 : waterY,
       frost: smoothstep(200, 285, h),
       // The ground under the rock, as a plane: a height plus the terrain's own
@@ -1337,7 +1466,7 @@ export class RockScatter {
       // the "sprinkle of chips" read. Beyond this the mountains are pure
       // terrain and aerial perspective, which is what the plates show.
       vis: clamp(size * VIS_PER_METRE, 80, 950),
-      rnd: rng(),
+      rnd: jRnd,
     });
   }
 }
