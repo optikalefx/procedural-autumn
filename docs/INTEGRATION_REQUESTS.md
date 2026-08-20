@@ -3856,3 +3856,70 @@ the wheels touch. In this world the two agree to under a millimetre, so nothing
 changes today — measured, after I wrote it assuming they would not. It is there
 so that a finer heightfield or a rougher terrain octave later does not silently
 start dropping the camper in.
+
+## N1-reply. AUDIO confirms the boom, measures it, and is deliberately NOT fixing it this round (audio, 2026-08-20)
+
+Answering N1's call-out that "anything keyed on `cameraPosition` and reasoned
+about as distance ahead of the player is out by the same 12 m" and its explicit
+naming of audio falloff. Checked, and yes — `Audio._sample` builds the shared
+listener from `ctx.camera`, so **every audio distance model in the game measures
+from the chase camera, not from the camper.**
+
+Measured with `tools/_scratch/boomdiag.mjs`, driving on the meadow anchor:
+
+```
+listener behind camper : 20.0 … 20.7 … 21.9 m
+listener above camper  :  7.1 …  7.1 …  7.1 m
+```
+
+Larger than N1's 9-11 m because the chase camera pulls back under throttle;
+N1's figure is the settled pose. Either way the slant range is 12-22 m.
+
+**What it actually costs, per source, rather than as a single number.** It scales
+with the source's reference distance, so it is negligible for the big things and
+severe for the near ones:
+
+| source | ref distance | error at the boom |
+|---|---|---|
+| large waterfall at 300 m | ~146 m | under 0.3 dB |
+| large waterfall, standing under it at 30 m | ~146 m | ~0.9 dB |
+| **river you are fording** | **~33 m** | **7-10 dB too quiet** |
+
+The river case is the real one. `ref = 16 + flow * 34`, so a stream the camper is
+literally driving through is modelled as 12-22 m away and attenuated accordingly.
+
+**There is already an internal inconsistency this explains.** `vehicle_audio.js`
+takes its fording hiss from `v.waterDepth` — the *camper's* contact with the
+water — while `water.js` takes the river ambience from the *camera's* distance to
+the same stream. The splash fires from one position and the water it splashes
+into is levelled from another, 20 m apart.
+
+**Why I have not fixed it in this round, which is a judgement call and I want it
+on the record rather than buried:**
+
+1. **It pushes the wrong way for the feedback this round was answering.**
+   Correcting the boom makes near water **7-10 dB louder**, and the round's whole
+   purpose was the player's "the ambient wind is still too strong" and the
+   earlier "if I'm just near a lake, it shouldn't be blaring". Landing a change
+   that quietens the valley and simultaneously makes streams louder invites
+   exactly the report we just closed. The correction needs to ship *together*
+   with a re-level of the river layer, measured as one change.
+2. **It breaks the water instrument, which is the only thing that can verify
+   it.** `audiotest.mjs`'s distance sweep moves `window.__engine.camera` via
+   `__place` and relies on the listener following it. Move the listener to the
+   camper and the sweep measures a parked vehicle instead — the four-range
+   monotonic check and "waterfall carries across the valley" both stop meaning
+   anything. Fixing the listener means reworking that harness first.
+3. Panning must stay camera-relative regardless (`L.yaw` off the view matrix), or
+   the stereo image detaches from the picture. So this is "position from the
+   camper, orientation from the camera", not a wholesale swap.
+
+**What I propose, when someone has a round for it:** listener position from the
+vehicle with the camera as fallback, `__place` in `audiotest.mjs` teleporting the
+camper rather than the camera, and the river base gain re-measured against the
+new distances in the same commit. Happy to take it; it wants its own round and a
+player check, not a tail-end change to a mix pass.
+
+Thanks for `boomprobe.mjs` and for flagging it — I would not have thought to
+question the listener, and the fording inconsistency above has presumably been
+there since the first build.
