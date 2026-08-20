@@ -224,22 +224,29 @@ uniform float uOccSoft;
 uniform float uOccTaper;
 uniform float uOccAmount;
 
-// 1.0 = untouched, 0.0 = fully out of the way. wp is a world-space position.
+// 1.0 = untouched, 0.0 = fully out of the way. wp is a world-space position;
+// the radius argument is the caller's own extent, subtracted from the
+// near-sphere test so a several-metre billboard clump the camera is standing
+// inside is treated as being in your face rather than as a point two metres
+// away. Pass 0.0 for a surface small enough to be a point, which is what
+// occludeFade() below does.
 //
 // Two shapes, combined with max(): a sphere around the camera for near clutter
 // and a cone to the subject for what the camper is actually parked behind. See
 // the note beside nearFull in the JS — neither one alone clears the frame the
 // player photographed.
 //
-// Every division in here is guarded, and that is not decoration: a fade built
-// on a divide is this project's classic source of non-finite pixels, and
+// The cone's radial test is done in SQUARED distance. It is the one place a
+// second square root could hide, this runs per vertex on the two largest
+// geometry populations in the game, and squaring only reshapes the feather —
+// which is a soft band whose exact profile nothing depends on. The sphere keeps
+// its root because the radius has to be subtracted in linear units.
+//
+// Every division is guarded, and that is not decoration: a fade built on a
+// divide is this project's classic source of non-finite pixels, and
 // tools/nanhunt.mjs is run against it. len2 is rejected below 1; the smoothstep
 // edges are forced apart by construction, so the degenerate edge0 == edge1 case
 // cannot arise however the parameters are tuned at runtime.
-// The radius argument is the caller's own extent, subtracted from the near-sphere test so
-// a several-metre billboard clump the camera is standing inside is treated as
-// being in your face rather than as a point two metres away. Pass 0.0 for a
-// surface small enough to be a point, which is what occludeFade() below does.
 float occludeFadeAt( vec3 wp, float radius ) {
   if ( uOccAmount <= 0.0 ) return 1.0;
   vec3 rel = wp - cameraPosition;
@@ -259,7 +266,8 @@ float occludeFadeAt( vec3 wp, float radius ) {
       float r  = uOccWide * t * ( 1.0 - smoothstep( uOccTaper, 1.0, t ) );
       float r1 = max( r, 1e-3 );
       float r0 = r1 * ( 1.0 - max( uOccSoft, 0.02 ) );
-      m = max( m, 1.0 - smoothstep( r0, r1, length( rel - axis * t ) ) );
+      vec3  off = rel - axis * t;
+      m = max( m, 1.0 - smoothstep( r0 * r0, r1 * r1, dot( off, off ) ) );
     }
   }
   return 1.0 - uOccAmount * m;
@@ -285,9 +293,18 @@ float occBayer4( vec2 p ) {
   vec2 l = mod( q, 2.0 );
   return ( 4.0 * occBayer2( l.x, l.y ) + occBayer2( h.x, h.y ) ) * 0.0625;
 }
-// The threshold tops out at 15/16, so a fade of 1.0 can never discard and a
-// material that is switched off is bit-identical to one that never had this.
+// The early-out is the important line, not a tidiness. In any given frame the
+// overwhelming majority of canopy fragments are nowhere near the frustum and
+// carry fade == 1.0 exactly, and the canopy is the heaviest fill in the game;
+// without this every one of them evaluated the Bayer threshold to discover it
+// had nothing to do. It also means a switched-off build pays a single compare
+// rather than the whole pattern.
+//
+// The threshold tops out at 15/16, so a fade of 1.0 could never discard anyway
+// — the early-out changes cost, not behaviour, and a material that is switched
+// off stays bit-identical to one that never had this.
 void occludeCut( float fade ) {
+  if ( fade >= 1.0 ) return;
   if ( fade <= occBayer4( gl_FragCoord.xy ) ) discard;
 }
 #endif`;

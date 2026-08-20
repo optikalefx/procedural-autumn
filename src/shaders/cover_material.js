@@ -171,13 +171,20 @@ const COVER_DISPLACE = /* glsl */`
     // its shadow the moment the camera came up behind it and the ground would
     // flicker as you drove.
     //
-    // Evaluated at the vertex rather than at coverOrigin: the cone is under a
-    // metre wide at the camera, and a 1.5 m shrub whose root is below the axis
-    // but whose crown is squarely across it is the common case, not the rare
-    // one. mat3 rather than a second mat4 multiply, since coverOrigin is
-    // already the transformed origin.
-    coverFade *= occludeFade(
-      coverOrigin + mat3( modelMatrix ) * ( mat3( COVER_IMAT ) * transformed ) );
+    // Evaluated ONCE at the plant's root, with the plant's own size handed to
+    // the near-sphere test, rather than per vertex at the transformed position.
+    // The first version did the latter — two mat3 constructions and two matrix
+    // multiplies per vertex, on one of the two largest geometry populations in
+    // the game — to answer a question the root plus a radius answers just as
+    // well. It also fixes a real defect: a per-vertex fade scales each vertex by
+    // a different amount, so a shrub straddling the edge of the cone did not
+    // shrink, it sheared.
+    //
+    // aCov.w is the instance's visibility radius, which the scatter sets in
+    // proportion to how big the prop is — 130 m for a full swathe, 44 m for a
+    // small mat — so it is already a size signal and no new attribute is needed.
+    // The constant turns those into roughly 1.6 m and 0.5 m of plant.
+    coverFade *= occludeFadeAt( coverOrigin, aCov.w * 0.012 );
   #endif
   transformed *= coverFade;
   float coverPh = aCov.y + uTime * uWindSpeed;

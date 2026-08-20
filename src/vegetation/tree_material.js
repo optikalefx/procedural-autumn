@@ -350,9 +350,13 @@ varying vec3 vColA;
 varying vec3 vColB;
 varying float vTone;
 varying float vAO;
-varying vec3 vN;
+// OCCLUDE rides in vN.w rather than in a varying of its own. Under GLSL ES 3.00
+// — which is what three compiles for WebGL2 — every declared varying takes a
+// whole vec4 location whatever its type, so a lone 'varying float' costs a full
+// interpolator across the largest fill in the game. vN had three of four
+// components spare.
+varying vec4 vN;
 varying vec3 vWorld;
-varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <shadowmap_pars_vertex>
@@ -389,7 +393,7 @@ void main() {
   // back as a 50% halftone over everything — better than a wall of green, and
   // not what this is for. Subtracting the radius makes the sphere test ask
   // 'is any part of this clump in my face', which is the question.
-  vOcc = occludeFadeAt(worldPosition.xyz, max(aSize.x, aSize.y) * scale);
+  float occ = occludeFadeAt(worldPosition.xyz, max(aSize.x, aSize.y) * scale);
 
   // Billboard in the *current* camera's basis. In the shadow pass that camera
   // is the sun, so each clump presents its full disc to the light and the
@@ -407,7 +411,7 @@ void main() {
   vColB = aColB;
   vTone = aData.y;
   vAO = aData.x;
-  vN = wn;
+  vN = vec4(wn, occ);
   vWorld = worldPosition.xyz;
 
   #ifdef USE_FOG
@@ -430,9 +434,8 @@ varying vec3 vColA;
 varying vec3 vColB;
 varying float vTone;
 varying float vAO;
-varying vec3 vN;
+varying vec4 vN;           // xyz normal, w the OCCLUDE fade — see LEAF_VERT
 varying vec3 vWorld;
-varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <packing>
@@ -447,7 +450,7 @@ void main() {
   // OCCLUDE, first: this is the cheapest discard in the shader and it saves the
   // atlas fetch as well as the shading. Inert during the impostor bake, where
   // uOccAmount is unbound and reads 0.
-  occludeCut(vOcc);
+  occludeCut(vN.w);
   vec4 t = texture2D(uAtlas, vUv);
   if (t.a < cutoutThreshold(uAlphaTest, vUv)) discard;
 
@@ -473,7 +476,7 @@ void main() {
   }
 
   vec3 albedo = mix(vColA, vColB, vTone) * jitter;
-  vec3 N = normalize(vN);
+  vec3 N = normalize(vN.xyz);
   vec3 V = normalize(vWorld - cameraPosition);
   vec3 col = canopyShade(albedo, N, V, ao, mix(1.28, 0.40, core), canopyShadow());
 
