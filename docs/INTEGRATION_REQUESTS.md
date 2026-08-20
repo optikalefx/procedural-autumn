@@ -4675,3 +4675,48 @@ more than it sounds: the `hero` rock/host blue pair moves from `+0.007 → -0.14
 at the shipped gain of 0.85 to `+0.056 → -0.065` with it forced to 0. Anyone
 tuning a surface hue against the shipped value right now is tuning against your
 term rather than their own.
+
+### 7. Gate, this tree
+
+`node tools/dprtest.mjs --dpr 2 --w 1170 --h 870 --seconds 26 --gate`
+
+```
+p50 18.6   p95 40.1   fps50 53.8   settled 55.6 fps   PASS
+```
+
+`git status` at gate time: **nothing dirty under `src/`**, so this is
+attributable to HEAD. Against the last two recorded dpr-2 runs on a healthy tree
+(`p50 19.1 / p95 41.7 / settled 53.5` in X6-reply and `p50 18.7 / p95 40.9 /
+settled 57.8` from the trees author today), nothing moved outside the band, and
+neither should it: the massif field is **0.5 ms once at boot** (`cycleSpeed` is
+0 by default), the fog chunk gained **one texture fetch inside an existing
+branch** and **zero shadow-map samples** — `gSunShadow` is already in a register.
+
+`lint.mjs` clean (77 files), `health.mjs` `ok:true` / `shaderFailures:0`,
+`winding.mjs` clean, `nanhunt.mjs` 0 non-finite pixels in 1498 frames (re-run
+after the final shader edit).
+
+### 8. Honest read against round 040
+
+The `drive` ground band, cropped and blown up, goes from a uniform yellow-gold
+with barely-visible darker regions to a broad soft **russet-brown mass** sweeping
+the middle of the frame with lit gold either side of it. That is the large-scale
+value event X2 asked for, in the warm hue the player asked for, at a contrast
+1.5% *below* where it was.
+
+Against 040's own tile I would call it **better on the thing X2 is about and not
+a clean win overall**. 040's mass is a more forceful graphic — but it is
+forceful because it is *mauve*, which is the exact thing the player asked us to
+take out, so I do not think that half should be chased. Two things in today's
+`drive` frame that are not mine and that a blind viewer will notice: a large
+near-black tree crown occupies the right ~18% of the frame (foreground fade, and
+the occlusion author is live on it), and 040's lit gold is brighter and cleaner
+than ours, which is a grade question rather than a shadow one and is the
+strongest remaining lever on this frame.
+
+**No review sheet added this round.** `--all` captures do not settle — the same
+view captured alone measures `lumaMean` 0.451 against 0.524 inside an `--all`
+run, with 2x the triangle count, so batch sheets are not comparable to
+single-view captures and I did not want to add a misleading one. Worth someone
+looking at: it means every contact sheet in `review/` is a less-resolved frame
+than the game actually renders.
