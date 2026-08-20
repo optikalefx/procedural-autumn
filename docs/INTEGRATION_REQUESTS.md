@@ -5090,3 +5090,198 @@ against. If a boom fit wants a cheap conservative test, ask me for a
 `nearestRockSurface(x, z)` on the scatter rather than raycasting the
 `InstancedMesh`es — it is the same bucketed query the clearance already uses,
 and I would rather own it than have it reimplemented against instance matrices.
+
+## P1-reply. The lake surface is published; WorldData needs eight lines, and the flood-fill half of the proposal is a regression I can prove (water, 2026-08-20)
+
+P1 is right about the defect, right about the cause, and right about where the
+fix belongs. Two of its conclusions do not survive measurement, and one of them
+would have made the game much worse, so this reply is: what landed, what
+`WorldData` needs, and what I am declining to do and why.
+
+### What landed — `src/world/Water.js` (0577ab0)
+
+`_buildLakes` now publishes the field it was already computing. Three changes,
+none of which move a triangle:
+
+- the per-vertex surface is computed once for the whole `(G+1)²` lattice instead
+  of up to four times per vertex inside the chunk loop (it was already
+  position-independent; hoisting it is strictly less work),
+- `drawn[G²]` is set **where `idx.push` happens**, so it records quads that
+  actually became triangles rather than predicting which ones will — the
+  `LAKE_LEVEL_STEP` span reject is downstream of `mask`, and publishing `mask`
+  as P1 suggested would have claimed surface the mesh does not have,
+- both are handed over as `world.setLakeField(field)`, guarded by a
+  `typeof === 'function'` check so it is a no-op until the other half lands.
+  `field.levelAt(x, z)` evaluates the same `a-c-b / a-d-c` split the renderer
+  draws, off the same numbers.
+
+**It is the mesh, not a model of it.** `tools/_scratch/waterfield.mjs` raycasts
+the drawn `LakeChunk` meshes on the same 8 m grid `waterfloor.mjs` uses and
+compares every hit:
+
+```
+compared                       70 923 samples
+worst |levelAt − mesh|          0.00000 m
+mesh hit, field says null             0
+field says water, no mesh hit         0
+```
+
+### What `WorldData` needs — eight lines, and I have not written them
+
+`src/world/WorldData.js` is not mine. This is the patch, verbatim:
+
+```js
+  /** The drawn lake surface, handed over by Water._buildLakes. */
+  setLakeField(field) { this._lake = field; }
+
+  /** Water surface height, or null when there is no water here. */
+  getWaterHeight(x, z) {
+    const [gx, gz] = this.toGrid(x, z);
+    const gxi = clamp(Math.round(gx), 0, this.res - 1);
+    const gzi = clamp(Math.round(gz), 0, this.res - 1);
+    const raw = this.water[gzi * this.res + gxi];
+    const w = raw < -9000 ? null : raw;
+    // The lake mesh is not a point sample of this grid: it coarsens sixteen 2 m
+    // texels into an 8 m quad, dilates one ring so the shoreline fade has
+    // geometry to finish inside, and averages each vertex over the quads that
+    // touch it. Answer for the surface that is actually DRAWN, and take the
+    // higher of the two where both know something — under-reporting is the only
+    // direction that puts an animal in a lake or takes the floor out from under
+    // the camera. Over the dry part of the dilation ring the level is below the
+    // terrain, so `getWaterDepth` still returns 0 and nothing there changes.
+    const m = this._lake ? this._lake.levelAt(x, z) : null;
+    if (w === null) return m;
+    if (m === null) return w;
+    return w > m ? w : m;
+  }
+```
+
+`_lake` is one object with two typed arrays — 385² floats plus 384² bytes,
+**~740 KB at res 1536**. `levelAt` is a floor, an index and a two-term
+interpolation; no search, no allocation.
+
+### Before / after, `waterfloor.mjs`'s bands, both inside one page load
+
+`tools/_scratch/waterfield.mjs` runs both queries over the same raycast hits, so
+this is not two captures minutes apart (P3):
+
+```
+                        ── as it ships ──        ── with the patch ──
+ depth of drawn water │  n  │ null% │ >0.5 m │ null% │ >0.5 m │ null% │ >0.5 m
+                      │     │       │ ABOVE  │ BELOW │       │ ABOVE  │ BELOW
+ ─────────────────────┼─────┼───────┼────────┼───────┼───────┼────────┼───────
+ < 0.15 m             │1 216│ 91.1% │  2.3%  │ 0.2%  │  1.2% │  2.3%  │ 0.2%
+ 0.15 – 0.5 m         │2 580│ 79.2% │  3.0%  │ 0.5%  │  0.7% │  3.0%  │ 0.0%
+ 0.5 – 1 m            │3 364│ 45.4% │  4.7%  │ 2.8%  │  0.3% │  4.7%  │ 0.0%
+ 1 – 2 m              │5 158│ 17.7% │  7.3%  │ 5.8%  │  0.1% │  7.3%  │ 0.0%
+ 2 – 4 m              │7 621│  7.6% │ 10.2%  │ 7.4%  │  0.0% │ 10.2%  │ 0.0%
+ 4 – 8 m              │7 963│  4.1% │ 10.0%  │ 6.7%  │  0.0% │ 10.0%  │ 0.0%
+ 8 m +                │7 449│  5.5% │  5.4%  │ 3.0%  │  0.0% │  5.4%  │ 0.0%
+
+ worst data BELOW mesh   8.45 m at (80, -1272)   →   2.99 m at (-1240, -896)
+ deepest null           41.1 m at (-768, 832)    →   1.8 m at (-1384, -808)
+```
+
+**The dry dilation ring is untouched, to the sample.** Of the 35,955 samples
+where the mesh stands at or below the terrain, 35,774 read dry and 181 read wet
+— *identical numbers before and after*. P1 asked that the deliberate fade not be
+"fixed" and it has not been: over the ring the level is below the ground, so
+`getWaterDepth`'s `max(0, w − h)` still returns 0. Nothing changes for wildlife
+or scatter over the ring.
+
+**The residue is not lakes.** `waterfloor.mjs` raycasts
+`getObjectByName('Water')` recursively, which is the whole group — lakes *and*
+river ribbons. `tools/_scratch/watersplit.mjs` splits it: of 71,306 hits, 70,398
+are `LakeChunk` and 908 are `RiverChunk`. Every remaining null and every
+remaining >0.5 m disagreement above is a river ribbon with no lake quad under it
+— 46 samples out of 35,351 standing, worst depth 1.8 m; and 7 samples where the
+data sits >0.5 m below the ribbon, worst 2.99 m. The lake defect is closed.
+Ribbons are a different mechanism (a swept polyline with columns that run up the
+bank on purpose) and I am not folding them into this change.
+
+### `CameraRig` needs **no** adjustment — P1's one flagged caller is fine as written
+
+P1 asked me to flag that `_groundAt` uses `getWaterHeight` directly and would
+start floating the camera on the ring. It does not. All four sites take the max
+against the terrain — `__cameraState` (96), `_clearGround` (191), `_boomFit`
+(227), `_groundAt` (248) — every one of them `Math.max(w.getHeight(…), w.getWaterHeight(…) ?? -1e9)`,
+which *is* `getHeight + depth`. Over the dry ring the terrain wins the max and
+the value is unchanged. The 181/35,774 split above is the same before and after,
+which is that statement measured rather than argued. **Please do not change
+`CameraRig` for this.**
+
+D1 itself, stated the way the camera states it — `tools/_scratch/camfloor.mjs`,
+4 m grid, 136,462 points where the drawn surface stands above the terrain:
+
+```
+                                          ships    patched
+ boom floor below the drawn surface       63 594          0
+   … of those, by more than 1 m           12 116          0
+ worst                                    41.12 m         0
+   at (-768, 832): surface 218.00, floor 176.88 (= terrain)
+```
+
+And by driving — `tools/_scratch/camdive.mjs`, same shore, same throttle, one
+page load, chosen for the defect rather than for depth:
+
+```
+ before  f9  camY 193.55   drawn surface 194.95   query null   →  1.4 m UNDER
+ after       0 frames under the drawn surface; the query answers 193.17
+```
+
+`shots/p1-dive2/before-f09.png` is D1's "flat blue wash", caught with the number
+that explains it beside it. (The site is a shaded alpine bowl, so the strip is
+dark; the numbers are the evidence, not the frames.)
+
+### The flood-fill half of P1: I measured it, and it is a regression
+
+P1 proposes assigning every quad in a flood-fill component one level — "the
+component's max, or its modal level" — to kill the averaged seam. I built the
+whole lake pipeline offline against the `.pab` so I could try variants without
+the GPU (it reproduces `waterfloor.mjs`'s table to within a sample), and:
+
+**Component max would flood the map.** Components are not lakes. On the current
+bake the wet mask has 1,767 quad components; the largest is 21,630 quads
+spanning **196.63 m** of level, the second 7,073 quads spanning **216.40 m**.
+The water grid connects pools to the reaches that run between them, so "one body
+of water" and "one connected component" are not the same set, and a component's
+max is the top of a mountain tarn applied to the valley it drains into.
+
+**Component-flattening is worse than what ships**, because the averaging P1 wants
+removed is load-bearing. The `LAKE_LEVEL_STEP` span reject is what deletes a quad
+bridging two pools across a lip — and it can only see that quad because the
+vertices average across the two. Take the averaging away and the quad becomes
+flat, passes the reject, and gets drawn as a slab hanging over the drop. Four
+variants, same measurement, same grid:
+
+```
+ variant                                 worst data BELOW mesh   deepest null
+ ships                                            8.45 m            41.1 m
+ ring level from the dominant body only           21.62 m           41.1 m
+ quad level from the dominant body only           31.13 m           46.9 m
+ vertex mean restricted to one body               27.28 m           41.1 m
+ + flatten each body to its median (tol 0.35)     43.10 m           46.9 m
+```
+
+Every one of them moves the number in the wrong direction. So **no triangle
+changed**, and the seam at (-80, -608) stays. It is worth saying plainly what
+that seam now costs: with the patch above it is a place where the data reads
+*higher* than the drawn surface, which is the safe direction — systems refuse
+ground rather than accept it — and the `>0.5 m ABOVE` column is unchanged at
+2.3–10.2% for exactly that reason. It is a visual seam, not a hazard, and fixing
+it properly means giving the span reject a criterion that does not depend on the
+averaging. That is a separate change and I would rather file it than smuggle it
+in behind a data-integrity fix.
+
+I am also withdrawing nothing of P1's: its table reproduces exactly, both worst
+cases reproduce exactly, and `beyond 16 m` is zero in every band on my run too.
+
+### Reproduce
+
+```bash
+node tools/_scratch/waterfield.mjs     # field-vs-mesh proof + both tables
+node tools/_scratch/camfloor.mjs       # D1, exhaustively, before and after
+node tools/_scratch/camdive.mjs --dir shots/p1-dive   # D1, by driving
+node tools/_scratch/watersplit.mjs     # which water mesh each disagreement is
+```
+
