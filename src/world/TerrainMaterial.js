@@ -113,6 +113,19 @@ export function createTerrainMaterial(world, opts = {}) {
     // somewhere, and the plates say it is paid on the meadow.
     uGrassSat:    { value: 0.19 },
 
+    // How much of the massif's value-zone field is taken triplanar rather than
+    // planar. 0 restores d451616 exactly — the zone field is the planar 240 m
+    // selector, which has no variation at all on a vertical face — and 1 reads
+    // the same octave through the surface's own projection. Kept as a uniform
+    // so the A/B is re-runnable inside one page load without a rebuild:
+    //   node tools/_scratch/massifab.mjs waterfall peaks --states \
+    //     '[{"tag":"planar","u":{"uZoneTP":0}},{"tag":"tri","u":{"uZoneTP":1}}]'
+    // On this repo a before/after taken as two separate runs is worthless —
+    // two captures 34 minutes apart with one system changed differed in 50% of
+    // their pixels — so every dial worth arguing about needs to be reachable
+    // from the harness.
+    uZoneTP:      { value: 1.0 },
+
     uSnowLine:    { value: 268.0 },
 
     // Plane breaks on bare rock. See the block in the fragment shader.
@@ -136,7 +149,11 @@ export function createTerrainMaterial(world, opts = {}) {
     // capture harness to false-colour the surface masks:
     //   window.__terrain.material.userData.uniforms.uDebugMask.value = 1
     // 1 = rock(red) / grass(green) / scree(blue), 2 = curvature, 3 = talus /
-    // hardness / slope, 4 = olive / dry / litter, 5 = steep / rockM / rim band.
+    // hardness / slope, 4 = olive / dry / litter, 5 = steep / rockM / rim band,
+    // 6 = albedo with no light on it, 7 = bed / scree / shelf, 8 = far apron /
+    // outside / rockM, 9 = plane-break budget, 10 = macro / valueZones(macro) /
+    // macro2 (the strata read-out), 11 = ownership paint, terrain rock red and
+    // terrain non-rock green, for building a measurement mask by hue.
     // Blitted over the lit colour, so what you see is the mask and not the mask
     // times the light.
     // Working out which of six overlapping masks owns a grey hillside by
@@ -177,6 +194,7 @@ export function createTerrainMaterial(world, opts = {}) {
       uniform vec3 uRockCastLit, uRockCastShade;
       uniform float uRockDesat, uRockGain, uRockLift, uGrassSat;
       uniform float uBedRelief, uBedLevels, uBedAlbedo;
+      uniform float uZoneTP;
       uniform float uSnowLine;
       uniform float uDebugMask;
 
@@ -568,6 +586,87 @@ export function createTerrainMaterial(world, opts = {}) {
         float macro2 = fbmTP(vWorldPos * 0.0155 + 31.4, 3, tpw) * 0.5 + 0.5; // ~65 m
         float meso   = mix(0.5, fbmTP(vWorldPos * 0.062 + 7.7, 3, tpw) * 0.5 + 0.5, fMeso);
         float fine   = mix(0.5, fbmTP(vWorldPos * 0.47, 3, tpw) * 0.5 + 0.5, fFine);
+
+        // ── the massif's ZONE field, which is not the regional selector ────
+        // THE SENTENCE ABOVE ABOUT macro IS CORRECT AND IT IS ALSO THE BUG.
+        // "At that wavelength the projection cannot streak anything — 240 m
+        // across a 300 m face is a single soft gradient" is exactly right for
+        // a selector, and it is fatal once the same field is asked to decide a
+        // massif's value zones, because a field that is a single soft gradient
+        // across a face has ONE VALUE on that face.
+        //
+        // d451616 quantised macro into three zones and the critic confirmed
+        // that peaks "finally has strata". It did nothing whatever to
+        // waterfall, and measured through uDebugMask 10 the reason is not a
+        // tuning question:
+        //
+        //   view        macro spread over the massif    valueZones(macro)
+        //   waterfall            0.035                  50% of the mask in ONE bin
+        //   peaks                0.227                  spread over the full range
+        //
+        // 96% of the waterfall massif sits in two adjacent histogram bins of
+        // macro. That massif is a WALL: its whole visible face projects onto a
+        // few tens of metres of XZ, so a planar XZ field is constant on it and
+        // the "three zones" resolve to one. peaks is ground seen from above,
+        // where XZ sweeps kilometres across the frame, so the same field works.
+        // That is the whole of why blocker #6 closed on one view and not the
+        // other, and it is arithmetic, not styling.
+        //
+        // This is the identical defect the triplanar block at the top of this
+        // file was written to fix — "every procedural octave in this shader
+        // used to be indexed by world XZ alone ... on a face steeper than about
+        // 60 degrees a metre of surface travels only centimetres in XZ" — and
+        // macro is the one octave that never got the treatment, because at the
+        // time it was only a selector.
+        //
+        // So: macro stays planar and stays the selector. Nothing keyed on it
+        // moves, and a cliff still agrees with the meadow at its foot. What the
+        // zones read is the SAME 240 m octave sampled triplanar, which on any
+        // surface inside the projection cutoff is bit-identical to macro and on
+        // a wall varies with height instead of not varying at all.
+        //
+        // RENORMALISED, and that is not decoration. A weighted sum of
+        // decorrelated fields has variance sum(w*w) times theirs, so a 45
+        // degree face averages two planar samples and comes out 23% narrower —
+        // which would depopulate the zones on exactly the faces peaks shows.
+        // Measured (tools/_scratch/terrain/zonecal.mjs, 60k samples per
+        // surface, spread over one 300 m face):
+        //
+        //   surface    macro   macroS   zones/face today   zones/face with this
+        //   gentle     0.174   0.174          3.98                3.97
+        //   45 deg     0.174   0.187          3.64                3.61
+        //   wall       0.175   0.197          3.18                3.97
+        //
+        // Gentle and diagonal ground do not move. The wall gains the zones.
+        //
+        // Safe from the contour class. Below the projection cutoff this IS
+        // macro, whose safety argument d451616 already made. Above it the field
+        // is a 2-D noise in a vertical plane, and a level set of a 2-D noise is
+        // a wandering curve; it is a function of two coordinates, not of height
+        // alone, so no level set of it can be a level curve of height. On a
+        // diagonal face it is a blend of three decorrelated such fields.
+        //
+        // Weights from Nm, not from tpw. tpw comes from the mesh normal, which
+        // is sampled with an epsilon that scales with the LOD grid step; the
+        // terms tpw drives are worth a few percent of value each and a wobble
+        // in them is invisible, but this term carries the massif's ENTIRE
+        // large-scale value and is the one thing in the file that must not pop
+        // on an LOD ring. Nm is read from the data texture at a screen-sized
+        // stencil and is identical across every LOD.
+        //
+        // Feathered rather than branched on a threshold. An early-out here
+        // would draw a hard line across every hillside at whatever angle the
+        // cut sat at — this file has shipped that artefact before — so the
+        // weight goes to zero before the branch is skipped and the two agree by
+        // construction.
+        vec3 tpwS = tpWeights(Nm);
+        float zoneTP = smoothstep(0.995, 0.90, tpwS.y) * uZoneTP;
+        float macroS = macro;
+        if (zoneTP > 0.002) {
+          float mS = fbmTP(vWorldPos * 0.0042, 4, tpwS)
+                   * 0.5 * inversesqrt(max(dot(tpwS, tpwS), 1e-4));
+          macroS = mix(macro, clamp(0.5 + mS, 0.0, 1.0), zoneTP);
+        }
 
         // ── bedded hardness, sampled defensively ───────────────────────────
         // The bake dips its bedding planes, so outcrop traces already cut
@@ -986,7 +1085,12 @@ export function createTerrainMaterial(world, opts = {}) {
         // massif does not get brighter or darker on average, and the shade end
         // does not get deeper. What changes is that the variation is now spent
         // as three flat plateaus instead of smeared over the whole flank.
-        vec3 rock = mix(uRockMid, uRockLit, 0.34 + 0.66 * valueZones(macro, 3.0));
+        //
+        // Reading macroS and not macro — see the zone-field block above. On
+        // gentle ground the two are the same number, so nothing d451616 landed
+        // on peaks or on the apron moves; on a wall macro is constant and
+        // this is the difference between one zone and three.
+        vec3 rock = mix(uRockMid, uRockLit, 0.34 + 0.66 * valueZones(macroS, 3.0));
         // Only a whisper of warm. At 0.30 the massifs came out peach and read
         // as sand dunes rather than rock, which the palette forbids outright.
         // The lavender has to survive a warm key light, so the albedo stays
@@ -1591,8 +1695,27 @@ export function createTerrainMaterial(world, opts = {}) {
           // red = the surviving weight, green = the pixel footprint over 20 m,
           // blue = camera distance over 3 km. Guessing at these three numbers
           // is what produced two rounds of wrong amplitude.
-          else                       gDebug = vec3(fBed, footM / 20.0,
+          else if (uDebugMask < 9.5) gDebug = vec3(fBed, footM / 20.0,
                                                   camDist / 3000.0);
+          // 10 is the strata read-out, and it is the one that answers whether
+          // d451616 reaches a given face at all. red = the raw macro field,
+          // green = the same field after valueZones, blue = macro2. If green
+          // is ONE flat value over a whole massif then that massif has one
+          // zone, not three, and no amount of retuning the zone count will
+          // change it — the field itself is not varying there.
+          else if (uDebugMask < 10.5) gDebug = vec3(macro,
+                                                   valueZones(macro, 3.0), macro2);
+          // 11 is the ownership paint, and it is the terrain equivalent of the
+          // rocks author's rock paint. Terrain rock is drawn pure red, terrain
+          // non-rock pure green, everything else in the scene is untouched —
+          // so a mask taken by hue names exactly the pixels this material's
+          // rock branch owns. Three of the last four reference targets on this
+          // project were wrong because they sampled the wrong pixels; a rect
+          // drawn by eye over a massif also contains the trees, the water and
+          // the sky in front of it.
+          else                       gDebug = mix(vec3(0.0, 4.0, 0.0),
+                                                  vec3(4.0, 0.0, 0.0),
+                                                  step(0.5, gRockM));
         }
 
         diffuseColor.rgb *= albedo;
