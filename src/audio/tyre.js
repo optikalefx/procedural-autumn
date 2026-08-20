@@ -58,11 +58,19 @@
 //  from `layers()`, which is what the lab's per-layer trims and its zero test
 //  drive — force one to zero and the bus has to move.
 // ─────────────────────────────────────────────────────────────────────────────
-import { clamp, clamp01, lerp, smoothstep, damp, mulberry32 } from '../core/MathUtils.js';
+import { clamp, clamp01, smoothstep, damp, mulberry32 } from '../core/MathUtils.js';
 import { noiseBuffer, noiseSource, filter, gain, Smooth, panner } from './synth.js';
 
-/** How many impacts can be sounding at once. */
-const CHANNELS = 8;
+/** How many impacts can be sounding at once.
+ *
+ *  Twelve, not eight. A channel that is retriggered while it is still ringing
+ *  has its tail cut off, and the tail is the part that makes a stone read as a
+ *  struck object rather than as a tick. On the slowest-decaying surfaces a
+ *  grain runs ~60 ms against a per-channel interval of 30 ms at eight channels,
+ *  so most grains were being truncated at exactly the surfaces whose character
+ *  is the ring. These are persistent nodes built once, so the cost is 48 nodes
+ *  standing still, not 48 more per second. */
+const CHANNELS = 12;
 /** Scheduler lookahead. Long enough to survive a dropped frame, short enough
  *  that a speed change is not audibly late. */
 const LOOKAHEAD = 0.12;
@@ -314,9 +322,19 @@ export class TyreContact {
       const decay = c.decay * this.tune.decayScale * (0.65 + size * 1.6);
       const attack = Math.min(0.0006 + decay * 0.05, 0.004);
 
+      // Retriggering a channel that is still ringing.
+      //
+      // `cancelScheduledValues(t)` on its own is a click, and not a small one:
+      // per spec it removes the in-flight exponential ramp *entirely*, so the
+      // param snaps back to the value it held when that ramp was scheduled —
+      // a jump upward, mid-decay. Channels do overlap here (on snow, grains run
+      // to 60 ms against a 30 ms per-channel interval at speed), so it would
+      // fire constantly. `cancelAndHoldAtTime` cancels the future and keeps the
+      // present value, and the linear ramp then starts from wherever the decay
+      // had got to — continuous, no discontinuity to click.
       const g = ch.env.gain;
-      g.cancelScheduledValues(t);
-      g.setValueAtTime(0.0001, t);
+      if (g.cancelAndHoldAtTime) g.cancelAndHoldAtTime(t);
+      else { g.cancelScheduledValues(t); g.setValueAtTime(Math.max(g.value, 1e-4), t); }
       g.linearRampToValueAtTime(amp, t + attack);
       g.exponentialRampToValueAtTime(0.0001, t + attack + decay);
       ch.bp.frequency.setValueAtTime(hz, t);
@@ -407,7 +425,6 @@ export class TyreContact {
     this.state.tread = tread;
     this.state.body = body;
     this.state.surface = c.grain > 0.7 ? 'loose' : c.grain > 0.45 ? 'mixed' : 'soft';
-    void lerp;
   }
 
   /** Silence, without tearing the graph down. Used when there is no vehicle. */

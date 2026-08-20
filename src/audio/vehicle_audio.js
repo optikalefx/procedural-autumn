@@ -21,6 +21,7 @@ import { VEHICLE } from '../world/WorldConfig.js';
 import {
   noiseBuffer, noiseSource, filter, gain, Smooth, ping, stopLater, tanhCurve, panner,
 } from './synth.js';
+import { TyreContact } from './tyre.js';
 
 const IDLE_RPM = 760;
 const MAX_RPM = 4200;
@@ -104,9 +105,6 @@ export class VehicleAudio {
     // ── intake / induction ──────────────────────────────────────────────────
     const pink = noiseBuffer(actx, 4, 'pink', 0x44c1);
     const white = noiseBuffer(actx, 4, 'white', 0xb3e2);
-    // A second, uncorrelated pink bed for the tyres. Sharing one buffer between
-    // two layers makes them sum coherently and comb.
-    const pink3 = noiseBuffer(actx, 4, 'pink', 0x6d19);
     this.intakeSrc = noiseSource(actx, pink);
     this.intakeBand = filter(actx, 'bandpass', 220, 2.6);
     this.gIntake = gain(actx, 0);
@@ -119,28 +117,26 @@ export class VehicleAudio {
     this.overSrc.connect(this.overLP).connect(this.gOver).connect(this.bus);
 
     // ── tyres ───────────────────────────────────────────────────────────────
-    // Two bands: a soft roll under the vehicle, and a grit layer that only
-    // exists on loose surfaces. Grass is nearly all roll; scree is nearly all
-    // grit; a dirt track sits between and is where the game spends its time.
-    // Pink, not white. A Q 0.8 bandpass rolls off at 6 dB/oct, and white noise
-    // carries 3 dB more energy per octave as you go up, so the two cancel to a
-    // 3 dB/oct skirt — which is barely a rolloff at all, and reads as hiss
-    // rather than as a tyre. Pink under the same filter falls at a real
-    // 6 dB/oct. The extra lowpass takes it to 18.
-    this.tyreSrc = noiseSource(actx, pink3, 0.9);
-    this.tyreBand = filter(actx, 'bandpass', 360, 0.8);
-    this.tyreLP = filter(actx, 'lowpass', 1500, 0.6);
-    this.gTyre = gain(actx, 0);
-    this.tyreSrc.connect(this.tyreBand).connect(this.tyreLP).connect(this.gTyre).connect(this.bus);
-
-    // Grit is meant to be the bright layer — it is loose stone — but a highpass
-    // with no ceiling above it runs to Nyquist, and on white noise that is a
-    // rising shelf into the most fatiguing octave in the spectrum.
-    this.gritSrc = noiseSource(actx, pink3, 1.31);
-    this.gritHP = filter(actx, 'highpass', 2000, 0.7);
-    this.gritCap = filter(actx, 'lowpass', 6500, 0.6);
-    this.gGrit = gain(actx, 0);
-    this.gritSrc.connect(this.gritHP).connect(this.gritCap).connect(this.gGrit).connect(this.bus);
+    // Delegated in full to `TyreContact`, which is four layers of which only
+    // one is a noise bed.
+    //
+    // What used to be here was two filtered noise beds — a `tyreBand` roll and
+    // a `gritHP` bright layer — and the player drove the sound lab and reported
+    // that the result "sounds like wind. Not an offroad rubber tire with treads
+    // rolling." They were right, and it was not a setting: filtered continuous
+    // noise *is* wind, it is the same signal the ambience layer is built from,
+    // and the lab's sliders could only move it between kinds of wind. Measured,
+    // the old bed's crest factor over 2.7 ms blocks was 4.1-4.8 dB on rock and
+    // dirt — Gaussian noise to two decimal places — and its transient density
+    // was flat to ×1.02 across a ×5.5 change in speed, so the only thing speed
+    // did was raise the gain. That is the definition of wind getting louder.
+    //
+    // The replacement is granular: a scheduled stream of stone impacts whose
+    // *rate* is proportional to wheel rotation, a tread hum at the block-passing
+    // frequency, a struck carcass resonance, and a much smaller continuous bed
+    // that is now the sliding-contact residual rather than the whole tyre. See
+    // the header of `tyre.js` for why each of the four exists.
+    this.tyres = new TyreContact(actx, this.bus, VEHICLE.wheelRadius);
 
     // ── fording ─────────────────────────────────────────────────────────────
     this.waterSrc = noiseSource(actx, white, 1.07);
@@ -157,9 +153,6 @@ export class VehicleAudio {
       intake: new Smooth(this.gIntake.gain, 0.08, 0.002),
       intakeF: new Smooth(this.intakeBand.frequency, 0.09, 4),
       over: new Smooth(this.gOver.gain, 0.10, 0.002),
-      tyre: new Smooth(this.gTyre.gain, 0.09, 0.002),
-      tyreF: new Smooth(this.tyreBand.frequency, 0.12, 6),
-      grit: new Smooth(this.gGrit.gain, 0.09, 0.002),
       water: new Smooth(this.gWater.gain, 0.10, 0.003),
     };
 
@@ -187,8 +180,8 @@ export class VehicleAudio {
       // No camper yet (or it failed to init): make sure we are silent rather
       // than holding an idle drone over a system that does not exist.
       this.sm.eng.set(0, actx); this.sm.intake.set(0, actx);
-      this.sm.tyre.set(0, actx); this.sm.grit.set(0, actx);
       this.sm.over.set(0, actx); this.sm.water.set(0, actx);
+      this.tyres.silence();
       return;
     }
 
@@ -283,24 +276,24 @@ export class VehicleAudio {
     this.sm.over.set(over * 0.017, actx);
 
     // ── tyres ───────────────────────────────────────────────────────────────
+    // The surface mix goes to `TyreContact` whole rather than being collapsed
+    // to `loose`/`soft` scalars first. The granular model interpolates its own
+    // per-surface character table by the same weights, so a tyre crossing from
+    // grass onto scree crosses instead of switching, and each surface keeps a
+    // stone size, a ring pitch and a decay rather than just a filter centre.
     const s = this.ctx.world.getSurfaceWeights(v.position.x, v.position.z, this._surf);
-    const loose = clamp01((s.rock ?? 0) * 1.1 + (s.dirt ?? 0) * 0.8 + (s.sand ?? 0) * 0.5);
-    const soft = clamp01((s.grass ?? 0) + (s.litter ?? 0) * 1.2 + (s.snow ?? 0));
     const speedN = clamp01(speed / 22);
     let slipSum = 0;
     for (const w of v.wheels) slipSum += w.slip ?? 0;
     const scrub = clamp01(slipSum / 4);
 
+    // `roll` stays here and stays exactly as it was: it is the one place the
+    // speed/level relationship for the whole contact patch is decided, and it
+    // was tuned against the mix. What changed underneath it is that level is no
+    // longer the *only* thing speed does — impact rate is proportional to wheel
+    // rotation, which is the difference between gravel and wind getting louder.
     const roll = smoothstep(0.4, 5, speed) * (0.016 + speedN * 0.026);
-    // Soft ground is now the *quietest* surface, not the loudest. This term ran
-    // lerp(0.7, 1.15, soft), which made grass 4.3 dB louder than bare rock —
-    // precisely backwards, and precisely what the player heard as "driving
-    // through grass should be softer". Grass gives way under a tyre; scree
-    // does not, and the loud one should be the hard one.
-    this.sm.tyre.set(roll * lerp(1.0, 0.62, soft) * (1 + scrub * 0.5), actx);
-    // Soft ground rolls low and dull; loose stone rattles high.
-    this.sm.tyreF.set(260 + speedN * 380 + loose * 420 - soft * 90, actx);
-    this.sm.grit.set(roll * loose * 0.55 * (1 + scrub * 0.8), actx);
+    this.tyres.update(dt, { speed, weights: s, scrub, roll });
 
     // ── fording ─────────────────────────────────────────────────────────────
     const depth = clamp01((v.waterDepth ?? 0) / 0.8);
@@ -337,7 +330,7 @@ export class VehicleAudio {
     this.state.f0 = f0;
     this.state.load = this._loadSm;
     this.state.tyre = roll;
-    this.state.surface = loose > soft ? 'loose' : 'soft';
+    this.state.surface = this.tyres.state.surface;
     void L;
   }
 

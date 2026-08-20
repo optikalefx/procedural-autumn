@@ -67,6 +67,18 @@ const P = (path) => (rig, v) => {
   if (node && typeof node === 'object' && 'value' in node) node.value = v;
 };
 
+/**
+ * Shorthand for the tyre model's `tune` block.
+ *
+ * These are plain numbers rather than AudioParams because most of them are
+ * *model* terms — an impact rate, a stone-size distribution, a count of tread
+ * blocks — that feed arithmetic in `update()` rather than settings on a node.
+ * `P` cannot reach them, and faking them with a node would break rule 1 at the
+ * top of this file. The path a pasted config names is the real one:
+ * `vehicle.tyres.tune.<key>`.
+ */
+const T = (key) => (rig, v) => { rig.audio.vehicle.tyres.tune[key] = v; };
+
 // ── shared condition sets ───────────────────────────────────────────────────
 
 const WIND = cond('wind', 'Weather wind / gust', 0.35, 2.2, 1.0, {
@@ -183,8 +195,14 @@ const VEH_LAYERS = [
   { name: 'engine', label: 'combustion', model: null, param: (a) => a.gEngine.gain },
   { name: 'intake', label: 'intake', model: null, param: (a) => a.gIntake.gain },
   { name: 'overrun', label: 'overrun', model: null, param: (a) => a.gOver.gain },
-  { name: 'tyres', label: 'tyre roll', model: null, param: (a) => a.gTyre.gain },
-  { name: 'grit', label: 'grit', model: null, param: (a) => a.gGrit.gain },
+  // The contact patch, four layers. `model` is filled in here because the tyre
+  // model publishes the gain it *asked* for beside the AudioParam it wrote it
+  // to — the same quantity on both sides, which is exactly the comparison that
+  // catches a layer whose parameter is being written while nothing reaches it.
+  { name: 'tyreGrain', label: 'stone impacts', model: (a) => a.tyres.state.grain, param: (a) => a.tyres.gGrain.gain },
+  { name: 'tyreBed', label: 'contact bed', model: (a) => a.tyres.state.bed, param: (a) => a.tyres.gBed.gain },
+  { name: 'tyreTread', label: 'tread hum', model: (a) => a.tyres.state.tread, param: (a) => a.tyres.gTread.gain },
+  { name: 'tyreBody', label: 'carcass', model: (a) => a.tyres.state.body, param: (a) => a.tyres.gBody.gain },
   { name: 'ford', label: 'fording', model: null, param: (a) => a.gWater.gain },
 ];
 const vehLayer = (...names) => VEH_LAYERS.filter((l) => names.includes(l.name))
@@ -503,36 +521,120 @@ export const SOUNDS = [
     kind: 'bed',
     bus: 'vehicle',
     module: 'src/audio/vehicle_audio.js',
-    blurb: 'Two bands: a soft roll under the van and a grit layer that only '
-      + 'exists on loose ground. Switch between grass and rock at a fixed speed '
-      + 'and compare the A-weighted total — grass should be the quieter one.',
-    layers: ['tyres', 'grit'],
-    meterLayers: vehLayer('tyres', 'grit'),
+    blurb: 'Four layers, of which only one is a noise bed: a stream of scheduled '
+      + 'stone impacts whose *rate* follows wheel rotation, the tread-block hum '
+      + 'at speed·blocks/circumference, the struck carcass, and the sliding '
+      + 'contact residual. Drag "Road speed" and listen to the impacts get '
+      + 'closer together, not just louder — that is the whole difference between '
+      + 'gravel and wind. Solo one layer at a time to hear what each contributes. '
+      + 'Grass should still be the quieter surface than rock at a fixed speed.',
+    layers: ['tyreGrain', 'tyreBed', 'tyreTread', 'tyreBody'],
+    meterLayers: vehLayer('tyreGrain', 'tyreBed', 'tyreTread', 'tyreBody'),
     frame: vehicleFrame,
     params: [
       select('surface', 'Surface under the wheels', SURFACES, 'dirt', { src: 'WorldData.getSurfaceWeights' }),
       cond('speed', 'Road speed', 0, 30, 10, { unit: 'm/s', step: 0.1 }),
-      cond('slip', 'Wheel slip (scrub)', 0, 1, 0, { step: 0.01, src: 'vehicle_audio.js:291' }),
-      readout('roll', 'roll model', (r) => r.audio.vehicle.state.tyre, { src: 'vehicle_audio.js:294' }),
-      readout('tyreF', 'tyreBand centre', (r) => r.audio.vehicle.tyreBand.frequency.value, { unit: 'Hz', src: 'vehicle_audio.js:302' }),
+      cond('slip', 'Wheel slip (scrub)', 0, 1, 0, { step: 0.01, src: 'vehicle_audio.js — scrub, adds impact rate as well as gain' }),
+
+      // ── what the model is doing right now ──────────────────────────────────
+      readout('roll', 'roll model', (r) => r.audio.vehicle.state.tyre, { src: 'vehicle_audio.js — smoothstep(0.4,5,speed)·(0.016+speedN·0.026)' }),
+      readout('impactRate', 'impact rate', (r) => r.audio.vehicle.tyres.state.rate, { unit: '/s', src: 'tyre.js:370 — wheelRps · stonesPerRev · surface.rate' }),
+      readout('scheduled', 'grains scheduled last frame', (r) => r.audio.vehicle.tyres.state.scheduled, { src: 'tyre.js:_schedule' }),
+      readout('treadHz', 'tread block rate', (r) => r.audio.vehicle.tyres.state.treadHz, { unit: 'Hz', src: 'tyre.js:406 — wheelRps · treadBlocks' }),
+      readout('grainHz', 'impact ring centre', (r) => r.audio.vehicle.tyres.state.grainHz, { unit: 'Hz', src: 'tyre.js:421 — surface.hz · hzScale' }),
       readout('surfClass', 'surface class', (r) => r.audio.vehicle.state.surface),
-      range('tyreQ', 'tyreBand Q', 0.1, 4, 0.8, { step: 0.01, src: 'vehicle_audio.js:131', apply: P('vehicle.tyreBand.Q') }),
-      range('tyreLP', 'tyre lowpass', 300, 6000, 1500, { unit: 'Hz', step: 10, src: 'vehicle_audio.js:132', apply: P('vehicle.tyreLP.frequency') }),
-      range('tyreLPQ', 'tyre lowpass Q', 0.1, 3, 0.6, { step: 0.01, src: 'vehicle_audio.js:132', apply: P('vehicle.tyreLP.Q') }),
-      range('tyreRate', 'tyre noise rate', 0.4, 1.6, 0.9, { step: 0.01, src: 'vehicle_audio.js:130', apply: (r, v) => { r.audio.vehicle.tyreSrc.playbackRate.value = v; } }),
-      range('gritHP', 'grit highpass', 500, 8000, 2000, { unit: 'Hz', step: 10, src: 'vehicle_audio.js:140', apply: P('vehicle.gritHP.frequency') }),
-      range('gritHPQ', 'grit highpass Q', 0.1, 3, 0.7, { step: 0.01, src: 'vehicle_audio.js:140', apply: P('vehicle.gritHP.Q') }),
-      range('gritCap', 'grit lowpass cap', 2000, 16000, 6500, { unit: 'Hz', step: 50, src: 'vehicle_audio.js:141', apply: P('vehicle.gritCap.frequency') }),
-      range('gritCapQ', 'grit lowpass Q', 0.1, 3, 0.6, { step: 0.01, src: 'vehicle_audio.js:141', apply: P('vehicle.gritCap.Q') }),
-      range('gritRate', 'grit noise rate', 0.5, 2, 1.31, { step: 0.01, src: 'vehicle_audio.js:139', apply: (r, v) => { r.audio.vehicle.gritSrc.playbackRate.value = v; } }),
+
+      // ── the granular layer: the fix ────────────────────────────────────────
+      range('stonesPerRev', 'stones per wheel revolution', 4, 140, 46, {
+        step: 1, group: 'Grain', src: 'tyre.js:127 — vehicle.tyres.tune.stonesPerRev',
+        apply: T('stonesPerRev'),
+      }),
+      range('rateScale', 'impact density ×', 0.1, 3, 1, {
+        step: 0.01, group: 'Grain', src: 'tyre.js:128 — vehicle.tyres.tune.rateScale',
+        apply: T('rateScale'),
+      }),
+      range('maxRate', 'impact rate ceiling', 60, 900, 460, {
+        unit: '/s', step: 10, group: 'Grain', src: 'tyre.js:129 — vehicle.tyres.tune.maxRate (frame budget)',
+        apply: T('maxRate'),
+      }),
+      range('sizeSkew', 'stone size skew', 0.5, 8, 3.0, {
+        step: 0.05, group: 'Grain', src: 'tyre.js:130 — vehicle.tyres.tune.sizeSkew; higher = mostly small stones, and it is the long tail that *is* the crest factor',
+        apply: T('sizeSkew'),
+      }),
+      range('jitter', 'spacing irregularity', 0, 1, 0.55, {
+        step: 0.01, group: 'Grain', src: 'tyre.js:134 — vehicle.tyres.tune.jitter; 0 is a metronome',
+        apply: T('jitter'),
+      }),
+      range('hzScale', 'impact brightness ×', 0.25, 3, 1, {
+        step: 0.01, group: 'Grain', src: 'tyre.js:131 — vehicle.tyres.tune.hzScale',
+        apply: T('hzScale'),
+      }),
+      range('qScale', 'impact resonance ×', 0.2, 4, 1, {
+        step: 0.01, group: 'Grain', src: 'tyre.js:132 — vehicle.tyres.tune.qScale; how pitched each stone is',
+        apply: T('qScale'),
+      }),
+      range('decayScale', 'impact ring length ×', 0.2, 4, 1, {
+        step: 0.01, group: 'Grain', src: 'tyre.js:133 — vehicle.tyres.tune.decayScale',
+        apply: T('decayScale'),
+      }),
+      range('spread', 'impact stereo width', 0, 1, 0.55, {
+        step: 0.01, group: 'Grain', src: 'tyre.js:142 — vehicle.tyres.tune.spread',
+        apply: (r, v) => { r.audio.vehicle.tyres.tune.spread = v; r.audio.vehicle.tyres._spreadPan(); },
+      }),
+
+      // ── the tread: what makes it knobbly rather than a road tyre ───────────
+      range('treadBlocks', 'tread blocks round the tyre', 4, 48, 17, {
+        step: 1, group: 'Tread', src: 'tyre.js:139 — vehicle.tyres.tune.treadBlocks; hum = wheelRps · blocks',
+        apply: T('treadBlocks'),
+      }),
+      range('treadDrive', 'tread level', 0, 1.2, 0.30, {
+        step: 0.005, group: 'Tread', src: 'tyre.js:137 — vehicle.tyres.tune.treadDrive',
+        apply: T('treadDrive'),
+      }),
+
+      // ── the carcass ────────────────────────────────────────────────────────
+      range('bodyHz', 'carcass resonance', 30, 220, 68, {
+        unit: 'Hz', step: 1, group: 'Carcass', src: 'tyre.js:140 — vehicle.tyres.tune.bodyHz',
+        apply: T('bodyHz'),
+      }),
+      range('bodyQ', 'carcass Q', 0.4, 12, 3.0, {
+        step: 0.05, group: 'Carcass', src: 'tyre.js:141 — vehicle.tyres.tune.bodyQ',
+        apply: T('bodyQ'),
+      }),
+      range('bodyDrive', 'carcass level', 0, 2, 0.55, {
+        step: 0.005, group: 'Carcass', src: 'tyre.js:138 — vehicle.tyres.tune.bodyDrive',
+        apply: T('bodyDrive'),
+      }),
+      range('bodyLP', 'carcass lowpass', 90, 800, 220, {
+        unit: 'Hz', step: 5, group: 'Carcass', src: 'tyre.js — bodyLP',
+        apply: P('vehicle.tyres.bodyLP.frequency'),
+      }),
+
+      // ── the layer balance ──────────────────────────────────────────────────
+      range('grainDrive', 'impact level', 0, 2, 0.62, {
+        step: 0.005, group: 'Balance', src: 'tyre.js:135 — vehicle.tyres.tune.grainDrive',
+        apply: T('grainDrive'),
+      }),
+      range('bedDrive', 'contact bed level', 0, 1.5, 0.42, {
+        step: 0.005, group: 'Balance', src: 'tyre.js:136 — vehicle.tyres.tune.bedDrive; the only continuous layer left, and it is most of the sound on grass and snow',
+        apply: T('bedDrive'),
+      }),
+      range('bedQ', 'contact bed Q', 0.1, 4, 0.8, {
+        step: 0.01, group: 'Balance', src: 'tyre.js — bedBand.Q', apply: P('vehicle.tyres.bedBand.Q'),
+      }),
+      range('bedLP', 'contact bed lowpass', 300, 6000, 1500, {
+        unit: 'Hz', step: 10, group: 'Balance', src: 'tyre.js — bedLP', apply: P('vehicle.tyres.bedLP.frequency'),
+      }),
+
       range('vehicleBus', 'vehicle bus gain', 0, 2, 0.75, { step: 0.01, group: 'Mix', src: 'Audio.js:131', apply: P('buses.vehicle.gain') }),
     ],
     needs: [
-      'vehicle_audio.js:294 — roll = smoothstep(0.4, 5, speed)·(0.016 + speedN·0.026).',
-      'vehicle_audio.js:300 — the soft-ground term lerp(1.0, 0.62, soft), which used to be lerp(0.7, 1.15, soft) and made grass 4.3 dB louder than rock.',
-      'vehicle_audio.js:302 — tyreF = 260 + speedN·380 + loose·420 - soft·90.',
-      'vehicle_audio.js:303 — grit level 0.55.',
-      'vehicle_audio.js:287-288 — the loose/soft surface weightings.',
+      'vehicle_audio.js — roll = smoothstep(0.4, 5, speed)·(0.016 + speedN·0.026), the one place the speed/level relationship for the whole contact patch is decided.',
+      'tyre.js:98-107 — SURFACE_CHARACTER, the per-surface table (rate, ring Hz, Q, decay, and the four layer levels). Seven surfaces × eight numbers is a spreadsheet, not a slider; the per-layer trims plus the surface selector are how it gets judged.',
+      'tyre.js:292 — _rateComp exponent 0.35, which divides out the sqrt(rate) incoherent-sum rise so that density and loudness stay two separate controls.',
+      'tyre.js:383 — the tread fade smoothstep(4, 9, speed): below a walking pace the block rate is a flutter rather than a pitch.',
+      'tyre.js:317-322 — the grain size→amplitude/pitch/decay mapping constants (0.10+size·0.90, 1.45-size·0.85, 0.65+size·1.6).',
+      'tyre.js:73 — CHANNELS = 12, the impact voice pool size.',
     ],
   },
   {

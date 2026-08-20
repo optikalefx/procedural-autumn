@@ -205,8 +205,12 @@ export class Rig {
     add('engine', v.gEngine, v.bus);
     add('intake', v.gIntake, v.bus);
     add('overrun', v.gOver, v.bus);
-    add('tyres', v.gTyre, v.bus);
-    add('grit', v.gGrit, v.bus);
+    // The contact patch is four layers now, and it names them itself. Taking
+    // the list from `TyreContact.layers()` rather than restating it here means
+    // the mixer strip cannot drift out of step with the model: a layer the
+    // model adds gets a trim, and a trim that exists is provably a node the
+    // audio passes through, because inserting it is what routes the layer.
+    for (const [name, node] of Object.entries(v.tyres.layers())) add(name, node, v.bus);
     add('ford', v.gWater, v.bus);
 
     add('wildlife', a.wildlife.bus, bus.wildlife);
