@@ -42,7 +42,7 @@ import { WorldData } from '../../src/world/WorldData.js';
 import { RockScatter } from '../../src/rocks/RockScatter.js';
 import { buildRockLibrary, archFootprints } from '../../src/rocks/RockForms.js';
 import { SEED } from '../../src/world/WorldConfig.js';
-import { RockBoom } from '../../src/vehicle/RockBoom.js';
+import { RockField } from '../../src/vehicle/BoomClearance.js';
 import { chaseDesired, boomFree, camClearance, restPitch } from '../../src/vehicle/CameraRig.js';
 
 const argv = process.argv.slice(2);
@@ -166,7 +166,7 @@ const residual = [];
 
 function run(domeP) {
   residual.length = 0;
-  const rb = new RockBoom();
+  const rb = new RockField();
   rb.domeP = domeP;
   const tally = () => ({ shots: 0, inside: 0, graze: 0, wedge: 0, worstSub: 0, lift: 0, frac: 0, worst: null });
   const off = tally(), on = tally();

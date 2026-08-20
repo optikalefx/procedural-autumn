@@ -21,14 +21,14 @@
 //  All of it is frame-rate independent exponential damping (`damp`), never
 //  `lerp(a, b, 0.1)` — that would change feel with framerate.
 //
-//  The boom's floor is `_floorAt`, and it is the *whole* world, not the
-//  heightfield: terrain, then water, then rock. Every one of those was added
-//  after a frame the player was shown. See `RockBoom.js` for the last of them.
+//  The boom is fitted against the *whole* world, not the heightfield: terrain,
+//  then water, then rock, then the trunks it must not end inside. Every one of
+//  those was added after a frame the player was shown. See `BoomClearance.js`.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { clamp, clamp01, lerp, smoothstep, damp, dampAngle, wrapAngle } from '../core/MathUtils.js';
-import { RockBoom } from './RockBoom.js';
+import { RockField, TrunkField, TRUNK_KEEP } from './BoomClearance.js';
 
 // Cockpit is built (see `_cockpit`) but not in the player-facing cycle: the
 // body panels are single-sided, so from the driver's seat you see straight out
@@ -69,8 +69,10 @@ export const camClearance = (zoom) => lerp(1.6, 4.0, clamp01((zoom - 12) / (ZOOM
  * this exact function and only swaps the `floorAt` it is given.
  *
  * `floorAt(x, z)` is the top of the world at a column — see `CameraRig._floorAt`.
+ * `clearAt(anchor, desired, maxT)` is the optional second pass: the standing
+ * solids that are too thin to be a floor. It only ever shortens further.
  */
-export function boomFree(anchor, desired, zoom, floorAt) {
+export function boomFree(anchor, desired, zoom, floorAt, clearAt) {
   const dx = desired.x - anchor.x, dy = desired.y - anchor.y, dz = desired.z - anchor.z;
   const run = Math.hypot(dx, dz);
   const steps = clamp(Math.ceil(run / 2.0), 6, 30);
@@ -84,6 +86,9 @@ export function boomFree(anchor, desired, zoom, floorAt) {
     const g = floorAt(anchor.x + dx * t, anchor.z + dz * t);
     if (anchor.y + dy * t < g + clr(t)) { free = (i - 1) / steps; break; }
   }
+  // Trunks second, and inwards from whatever the floor left: a bole is 0.7 m
+  // across and the 2 m march above would step over most of them.
+  if (clearAt) free = Math.min(free, clearAt(anchor, desired, free));
   // Never collapse all the way onto the camper — past this the shot is just
   // the roof rack, and lifting takes over instead.
   return Math.max(free, 0.34);
@@ -148,10 +153,12 @@ export class CameraRig extends System {
     this._boomFrac = 1;            // how much of the boom the world allows
     this._teleportSeq = 0;         // last vehicle teleport this rig has seen
 
-    // The rock term in `_floorAt`. Bound once: `boomFree` takes the floor as a
-    // callback and this is on the render path 30+ times a frame.
-    this.rockBoom = new RockBoom();
+    // The two standing-solid fields. Bound once: `boomFree` takes both as
+    // callbacks and the floor is on the render path 30+ times a frame.
+    this.rockBoom = new RockField();
+    this.trunks = new TrunkField();
     this._floor = (x, z) => this._floorAt(x, z);
+    this._clear = (a, d, maxT) => this.trunks.retract(a, d, TRUNK_KEEP, maxT);
   }
 
   async init() {
@@ -172,8 +179,9 @@ export class CameraRig extends System {
         // stays alongside it — a rig that is being held up by rock and one that
         // is being held up by a hill look identical without it.
         terrain, rockLift: g - terrain, boomFrac: this._boomFrac,
-        rockCandidates: this.rockBoom.n,
+        rockCandidates: this.rockBoom.n, trunkCandidates: this.trunks.n,
         insideRock: inside ? `${inside.arch} size ${inside.size.toFixed(1)}` : null,
+        inTrunk: this.trunks.hit(p.x, p.y, p.z, TRUNK_KEEP) >= 0,
         limits: { zoomMin: ZOOM_MIN, zoomMax: ZOOM_MAX, pitchMin: PITCH_MIN, pitchMax: PITCH_MAX },
       };
     };
@@ -215,6 +223,7 @@ export class CameraRig extends System {
     // the boom, so the cut lands against the rock at the new place, not the old.
     const boom = Math.max(this.zoom, this.zoomTarget) * 1.12;
     this.rockBoom.attach(this.ctx.systems?.rocks).prime(v.position.x, v.position.z, boom + 6);
+    this.trunks.attach(this.ctx.systems?.trees).prime(v.position.x, v.position.z, boom + 4);
 
     if (this.mode === 'chase') this._chase(dt, v);
     else if (this.mode === 'orbit') this._orbit(dt, v);
@@ -321,7 +330,7 @@ export class CameraRig extends System {
    * is the part that has state and feel in it.
    */
   _boomFit(anchor, desired, dt) {
-    const free = boomFree(anchor, desired, this.zoom, this._floor);
+    const free = boomFree(anchor, desired, this.zoom, this._floor, this._clear);
     // Snap in hard (being inside a hill is a hard failure), ease back out slowly
     // so cresting a rise does not fling the camera backwards.
     this._boomFrac = free < this._boomFrac
