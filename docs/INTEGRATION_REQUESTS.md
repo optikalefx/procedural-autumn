@@ -5607,3 +5607,77 @@ stubs at all and the modules would be testable without a world bake.
 bugs.** Keep them. The lab shows model-vs-realised for every layer gain for the
 same reason, and its "zero test" button mutes every layer of a rig and reports
 what the bus did — which is the measurement that proved the ambience LFO bug.
+
+## G1. The `river` near hillside is 32% of the frame and its TERRAIN albedo is a flat field: luma 0.251, spread 0.089, sd 0.031, 99% one hue (ground cover → terrain, 2026-08-20)
+
+This is a numbers hand-off, not a complaint, and it comes with the instrument.
+
+**Where the frame actually is.** `tools/_scratch/cover/rivermap.mjs` ray-marches
+the baked heightfield through every pixel of the *real* `VIEWS.river` pose
+(height 6, dist 30, pitch -0.18, fov 54, yawOffset 0.42 — the pose the contact
+sheet photographs, which is not the pose `hillprobe.mjs` beside it was probing)
+and writes a PNG mask of "terrain hit nearer than D and steeper than S", plus
+distance-banded copies. On `river`:
+
+| band | share of the WHOLE 1280x720 frame |
+|---|---|
+| 0-7 m | 0.02% — nothing is closer; the camera stands 6 m above a 46° slope |
+| **7-12 m** | **32.0%** |
+| 12-20 m | 12.4% |
+| 20-40 m | 10.7% |
+| 40-90 m | 16.1% |
+
+So one distance band, 7 to 12 metres, is a third of the picture. Everything
+below is quoted over that band's mask only.
+
+**What is in it.** `tools/_scratch/covermask.mjs` takes a base frame plus frames
+with one system's group hidden and reports each system's true screen ownership
+and the plate metrics over those pixels alone. Captured interleaved inside one
+page load (`tools/_scratch/coverab.mjs`), before my changes this round:
+
+```
+REGION(all)   100.0%  luma 0.300 [0.209..0.530] sd 0.103  chroma 0.301  vivid 15.6%
+groundCover    24.4%  luma 0.434 [0.228..0.656] sd 0.127  chroma 0.364  vivid 61.4%
+UNOWNED        75.6%  luma 0.256 [0.208..0.295] sd 0.031  chroma 0.281  vivid  0.8%
+```
+
+`UNOWNED` is terrain — three quarters of that third of the frame. Against
+DESIGN_BRIEF.md's eye-level band (plates 3/4/5): `lumaMean` 0.37-0.68,
+`lumaRange` 0.41-0.71, `vividPct` 31-79%.
+
+- luma **0.256** against a floor of 0.37
+- p95 − p05 = **0.087** against a floor of 0.41 — a fifth of the minimum
+- luma sd **0.031**
+- `vividPct` **0.8%** against a floor of 31%
+- **98% of its chromatic pixels sit in one 30° hue bin**
+
+That is not a dark surface, it is a *flat* one: one value, one hue, no
+gradient, over 24% of the whole picture.
+
+**It is not the cloud shadow.** Every state above was also captured with
+`atmosphere.params.cloudShadowGain` forced to 0 in the same page load. Every
+number moves by ≤ 0.02. The pass-3 critic reading — "an ochre hillside under
+the cloud shadow" — does not survive re-measurement; that term has moved twice
+since and is not what is happening here.
+
+**Why I cannot close it from my side.** With terrain at 0.251, ground cover
+would have to own 48% of the band at luma 0.50 to bring the band's mean to the
+0.37 floor — i.e. bury a 46° dirt bank in pale straw, which is not what the
+plates show either (plate 2's cut bank is dressed *and* still visibly a bank).
+I have taken cover ownership of that band from 24.4% to 35.0% this round at no
+instance cost, and the band's mean moved 0.300 → 0.297. Coverage is not the
+lever left; the substrate's own value and hue range is.
+
+**What I would ask for.** Some vertical/aspect term in the near hillside albedo
+— anything that gives it more than 0.087 of luma range and more than one hue
+bin. It does not need to be brighter so much as it needs to stop being one
+number. The mask, the bands and the reader are all committed; point
+`covermask.mjs --mask shots/cover/x4/h-d7_12.png` at any frame pair and the
+same table comes out.
+
+```bash
+node tools/_scratch/cover/rivermap.mjs --out shots/cover/hill --bands 0-7,7-12,12-20,20-40
+node tools/_scratch/coverab.mjs river --out shots/cover/ab
+node tools/_scratch/covermask.mjs --base shots/cover/ab-river-base.png \
+  --mask shots/cover/hill-d7_12.png --hidden groundCover=shots/cover/ab-river-nocover.png
+```
