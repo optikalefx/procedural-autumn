@@ -806,9 +806,49 @@ export class Trees extends System {
     // Spruce is the value anchor of the palette — the only deep, cool, dark
     // mass in a frame that is otherwise entirely hot. Confining it to the
     // treeline (which the altitude term alone does) leaves the valley with
-    // nothing to read against, so it gets a substantial floor at every height
-    // and wins outright wherever its regional bias is strong.
-    w[4] = (0.72 + 1.15 * high + smoothstep(0.5, 1.0, slope) * 0.55) * (0.55 + wet * 0.7);
+    // nothing to read against, so it keeps a floor at every height and wins
+    // outright wherever its regional bias is strong.
+    //
+    // What moved is the *moisture* term, and this is where the forest view's
+    // problem actually lives. At (0.55 + wet * 0.7) spruce got its single
+    // largest boost from wet ground — which is the same ground the density
+    // field turns into closed canopy, which is where the `forest` anchor
+    // resolves. So the one framing in the game that exists to photograph a
+    // forest interior was guaranteed to be the most conifer-heavy place in the
+    // world. The plates do not do that: their conifers stand on slopes,
+    // ridgelines and the treeline, and their valley floors are deciduous. The
+    // altitude and slope terms come up to compensate, so a spruce stand at
+    // height is slightly *stronger* than before and the wet valley floor is
+    // about a quarter weaker.
+    //
+    // Measured, `forest` at res 1024, this line and nothing else changed. The
+    // frame it fixes had a single near spruce standing in the wet valley floor
+    // directly in front of the camera, occluding most of the right half — that
+    // one tree is the bulk of the number the critic filed:
+    //
+    //                     before   after   plate 3
+    //     yellow + y-grn    24.5%    7.8%     2.6%
+    //     red               22.5%   29.5%    37.3%
+    //     chromaMean        0.248   0.274    0.307
+    //     vividPct           25.1    35.4     31.2
+    //
+    // In-frustum species census on the same framing, spruce as a share of the
+    // trees the frame actually contains: 0-40 m 57% -> 46%, 90-200 m 33% ->
+    // 28%, 200-600 m 45% -> 35%. (The two inner bands hold ~10 trees each, so
+    // only the outer two carry any weight; note also that species and spacing
+    // are coupled — `_canPlace` uses the species' crown radius — so the band
+    // totals shift by a tree or two as well.)
+    //
+    // `backlit` was captured in the same pair as a regression check and moved
+    // the same way, not the opposite way: red 58.9% -> 70.3% against plate 4's
+    // 100%, yellow 7.8% -> 3.5%, chromaMean 0.375 -> 0.380.
+    //
+    // What this does NOT do is re-tint anything. Critic pass 6 killed the
+    // 'conifers are green-led where the reference is red-led' diagnosis with a
+    // fog-off test: plate 3's conifer measured tight on the needles is
+    // 1 : 1.13 : 0.63 and ours is 1 : 1.14 : 0.62. The needle hue matches. The
+    // fault was only ever how many of them stood in this particular valley.
+    w[4] = (0.62 + 1.35 * high + smoothstep(0.5, 1.0, slope) * 0.75) * (0.72 + wet * 0.34);
 
     let best = -1, bi = 0, redBest = -1, ri = -1;
     for (let s = 0; s < S; s++) {
