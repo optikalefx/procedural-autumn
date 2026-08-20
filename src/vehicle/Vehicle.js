@@ -422,7 +422,9 @@ export class Vehicle extends System {
     const m = this.materials;
     m.lensHead.emissiveIntensity = lerp(0.30, 2.4, k);
     m.lensTail.emissiveIntensity = lerp(0.45, 1.7, k) +
-      (this.ctx.input.axes.brake > 0.05 ? 1.6 : 0);
+      // The pedal still lights them, as before; `phys.braking` adds the one
+      // case the pedal cannot see — the throttle being used to stop a reverse.
+      (this.ctx.input.axes.brake > 0.05 || this.phys?.braking ? 1.6 : 0);
     m.lensAmber.emissiveIntensity = lerp(0.25, 0.9, k);
   }
 

@@ -27,6 +27,13 @@ const ROWS_PER_FRAME = 14;    // incremental sampling budget
 // ── suspension geometry ─────────────────────────────────────────────────────
 // Spring rate in Bullet/Rapier's per-unit-mass units.  Static sag is then
 // g/4 / SPRING_K metres, which fixes the loaded ride height below.
+// Wheel-brake gain applied when the throttle is held against a reversing
+// camper (see the drivetrain block in `step`).  The service brake runs at
+// `brakeForce * 0.02`; this is deliberately a shade softer, because it fires
+// without the player having asked for a brake and a cozy camper should settle
+// onto its nose rather than stand on it.
+const REV_BRAKE = 0.017;
+
 const SPRING_K = 26.0;
 const CONNECT_Y = 0.04;                                   // hard point, body local
 const STATIC_SAG = 9.81 / 4 / SPRING_K;                   // ~0.094 m
@@ -280,7 +287,16 @@ export class VehiclePhysics {
     const waterFade = 1 - wade * 0.55;
     let engine = 0, brake = 0;
 
-    if (ctrl.throttle > 0.02 && this.speed > -0.4) {
+    // ── which way are we actually travelling? ────────────────────────────────
+    // 0 while rolling forwards or standing still, 1 once genuinely reversing at
+    // 1.6 m/s.  A pedal pressed *against* this is a request to stop, not a
+    // request for thrust — see the brake block below.  It is a ramp rather than
+    // a test so the hand-over is a crossfade: right at the reversal point the
+    // wheels are part braking and part driving, which is what stops the change
+    // of direction reading as a jolt.
+    const backward = clamp01((-this.speed - 0.25) / 1.35);
+
+    if (ctrl.throttle > 0.02) {
       // ── low-range crawl ───────────────────────────────────────────────────
       // Standing in for a first gear: extra torque from rest, gone by ~9 m/s.
       // Without it the extra power only shows up as wheelspin on the flat,
@@ -297,12 +313,30 @@ export class VehiclePhysics {
       const assist = 1 + 1.15 * grade;
 
       engine = ctrl.throttle * VEHICLE.engineForce
-             * (0.45 + 0.55 * fade) * waterFade * crawl * assist;
+             * (0.45 + 0.55 * fade) * waterFade * crawl * assist * (1 - backward);
     } else if (reversing) {
       engine = -ctrl.brake * VEHICLE.engineForce * 0.42 * waterFade;
     }
     if (ctrl.brake > 0.02 && this.speed > 0.7) brake = ctrl.brake * VEHICLE.brakeForce * 0.02;
+    // ── forward pedal while still rolling backwards ─────────────────────────
+    // This used to do *nothing at all*: the drive branch was gated on
+    // `this.speed > -0.4`, and the service brake on `this.speed > 0.7`, so
+    // between those two the throttle neither drove nor braked.  Backing out of
+    // a ditch at 5 m/s and asking to go forwards left the player coasting on
+    // linear damping alone — 5.5 seconds of nothing, which is why it read as
+    // sticky and why they were braking by hand first.  A real car's brake pedal
+    // does this for you; here the accelerator has to, because it is the only
+    // "forwards" the player has.  Scaled by `backward` so it lets go smoothly
+    // as the camper arrives at rest rather than slamming into the stop.
+    if (ctrl.throttle > 0.02 && backward > 0) {
+      brake = Math.max(brake, ctrl.throttle * VEHICLE.brakeForce * REV_BRAKE * backward);
+    }
     if (ctrl.throttle < 0.02 && ctrl.brake < 0.02) brake = 220 * 0.02;   // engine braking
+
+    // Anything above engine braking is the player actually slowing down, and
+    // the tail lamps should say so — including the throttle-as-brake case
+    // above, which is otherwise the one time the camper stops with no light on.
+    this.braking = brake > 60;
 
     const hb = ctrl.handbrake > 0.5;
 
