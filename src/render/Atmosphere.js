@@ -146,6 +146,13 @@ const FOG_FRAG = /* glsl */`
   // is nearly flat, fogFactor is ~0 and the term is untouched.
   float cloudFade = clamp(1.0 - fogFactor * 1.6, 0.0, 1.0);
   float mShade = 0.0;
+  // The massif mask kept as a 0..1 geometric term as well as an absorption, so
+  // the hue rotation at the bottom of this block can treat it as what it is:
+  // the same physical event as the sun's own cast shadow, arriving from a
+  // caster the shadow camera cannot hold. The cloud mask is deliberately NOT
+  // folded in there - it is a different occluder with its own authored tint,
+  // and at the river view it covers the whole frame.
+  float gMassif = 0.0;
   if (uCloudShadow * cloudFade > 0.001) {
     float sy = max(uFogSunDir.y, 0.16);
     float climb = clamp((uCloudAltitude - vFogWorldPos.y) / sy, 0.0, 4200.0);
@@ -176,7 +183,8 @@ const FOG_FRAG = /* glsl */`
     // Outside the heightfield there is no terrain to be shadowed by, and the
     // clamped sampler would otherwise smear the border texel across the sky.
     vec2 edge = step(vec2(0.0), muv) * step(muv, vec2(1.0));
-    float mMassif = uMassifShadow * cloudFade * texture2D(uMassifMap, muv).r * edge.x * edge.y;
+    gMassif = texture2D(uMassifMap, muv).r * edge.x * edge.y * cloudFade;
+    float mMassif = uMassifShadow * gMassif;
     // UNIONED, not added. Two large soft masses multiplied together is how a
     // shadow becomes a hole, and X2 is explicit that this must not raise
     // contrast. max() keeps the deepest single mass and no more.
@@ -270,7 +278,7 @@ const FOG_FRAG = /* glsl */`
   // having been aimed at it, and X2's instruction not to deepen is respected to
   // within one and a half percent.
   if (uSunShadeWarm > 0.0) {
-    float w = uSunShadeWarm * sunShade * (1.0 - blueLed);
+    float w = uSunShadeWarm * max(sunShade, gMassif) * (1.0 - blueLed);
     gl_FragColor.rgb *= mix(vec3(1.0), uSunShadeMul, w);
   }
 
