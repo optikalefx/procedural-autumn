@@ -160,7 +160,39 @@ export function createRockMaterial() {
     // this system has hit from the other direction twice before. 0.60 lands the
     // same facets at 0.88–1.08, i.e. stone of the same body as the massif, with
     // the brightest tops still the brightest thing on the rock.
-    uRockRamp:   { value: new THREE.Vector4(0.0265, 0.397, 0.170, 0.600) },
+    //
+    // ── 0.170/0.600 -> 0.130/0.560: the necklace is a value offset ───────────
+    //
+    // "0.88–1.08, mean 1.08" was measured on facets picked by eye. Measured
+    // instead against *exactly the pixels each rock covers* — capture the frame
+    // with the rock group hidden and difference the two, so every rock is
+    // compared with the hillside behind that rock and nothing else — the block
+    // chain on `hero` (region 0.46,0.50,0.16,0.16) sat at:
+    //
+    //     rock/host luma   dark third 1.068   lit third 1.096
+    //
+    // i.e. uniformly 7-10% brighter than the face it is bedded in, at every
+    // value band. Its *hue* over the same pixels is 1:0.765:0.671 against the
+    // host's 1:0.769:0.671 — a match to 0.004 and 0.000. So the necklace is not
+    // the hue mismatch pass 6 diagnosed; it is a value offset, and a hard-edged
+    // block 9% brighter than its hill with no contact shadow is exactly the
+    // "pasted chip" read. Sweeping the two dials that could produce a uniform
+    // offset, same page load, same rock pixels:
+    //
+    //     dial                          dark   lit
+    //     base 0.170/0.600 anchor 0.85  1.068  1.096
+    //     uRockAnchor 0.70              1.039  1.041
+    //     uRockAnchor 0.55              0.987  0.978
+    //     uRockFloorL 0.045             1.097  1.113   (wrong direction)
+    //     ramp 0.130/0.560              1.013  1.010
+    //
+    // The ramp wins over uRockAnchor: it seats the whole ladder 0.04 lower
+    // without weakening the remap that closed the near-black-rock blocker, and
+    // it lands the blocks at parity with their hill instead of overshooting
+    // dark. Frame-wide on `hero` rock luma is 0.399 -> 0.409, so nothing went
+    // dark; 0.130 linear is ~0.27 display, still well clear of the brief's
+    // 0.16 black point.
+    uRockRamp:   { value: new THREE.Vector4(0.0265, 0.397, 0.130, 0.560) },
     // How much of the ramp to believe. Below 1 the surface keeps some of the
     // light rig's own response, so a rock still dims at dawn and still darkens
     // going into a cast shadow rather than being pinned to a constant.
