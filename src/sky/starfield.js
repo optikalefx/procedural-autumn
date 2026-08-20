@@ -155,8 +155,8 @@ vec2 skMilkyWay(vec3 dir) {
   float lane = b - 0.038 - 0.070 * (skFBM(along * 1.6 + 31.0) - 0.5);
   float rift = 1.0 - 0.62 * exp(-(lane * lane) / (2.0 * 0.042 * 0.042));
 
-  float dens = band * (0.30 + 1.00 * lobes) * (0.50 + 0.85 * clump) * rift;
-  dens = pow(clamp(dens, 0.0, 1.0), 0.85) * 1.30;
+  float dens = band * (0.20 + 1.20 * lobes) * (0.45 + 0.95 * clump) * rift;
+  dens = pow(clamp(dens, 0.0, 1.0), 0.78) * 1.30;
   return vec2(dens, clamp(band * (0.35 + 1.00 * lobes) * rift, 0.0, 1.0));
 }
 
@@ -188,15 +188,27 @@ vec2 skMilkyWay(vec3 dir) {
 // produces both the plates' low p50 and their x8 spread, and it is why this is
 // the one number here that does not need re-tuning when the night level moves.
 //
-// Euclidean star counts give alpha = 1.5. 2.2 is steeper than the universe on
-// purpose: the plates are art, and their faint population is denser than the
-// sky's.
+// Euclidean star counts give alpha = 1.5, and the slope is the one knob that
+// trades the two ends of the distribution against each other. Measured at a
+// correctly-exposed night sky (zenith luma 0.054):
+//
+//   alpha 2.2   p90 0.047   p50 0.060   max 0.192   spread x4.1
+//   plate       p90 0.048   p50 0.085   max 0.394   spread x8.2
+//
+// The faint end is exact and the bright end has gone, because the brightest
+// star in a frame is not set by SK_MAG_MAX — it is set by the slope. Draw N
+// stars from a power law and the brightest sits at T * N^(1/alpha): at alpha
+// 2.2 with the ~250 stars a frame holds that is 12x the visibility threshold,
+// at alpha 1.7 it is 26x. Raising SK_MAG_MAX alone did nothing, because almost
+// nothing was reaching the cap. 1.7 is close to the Euclidean 1.5 and gives
+// both ends: the median visible star still sits at 1.5x the threshold, and one
+// or two stars a frame reach the cap and bloom, which is what the plates show.
 // The faintest star the field draws, and the slope of the magnitude
 // distribution. See skStars() for what the slope is and why it is not a
 // smoothstep or a power of a uniform hash.
-#define SK_MAG_MIN 0.052
-#define SK_MAG_SLOPE 2.2
-#define SK_MAG_MAX 1.05
+#define SK_MAG_MIN 0.048
+#define SK_MAG_SLOPE 1.7
+#define SK_MAG_MAX 1.35
 
 vec3 skStars(vec3 dir, float t, float mwBoost) {
   vec3 fuv = skFaceUV(dir);
@@ -269,6 +281,12 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       // colour", and the histogram agreed. Capping the fade at 0.55 keeps the
       // whole warm fifth visibly warm.
       float ci = fract(hb.z * 7.31 + ha.x * 3.17);
+      // Skew the bright end warm. This is not a cheat to make the colour show:
+      // the amber naked-eye stars — Betelgeuse, Antares, Arcturus, Aldebaran —
+      // really are among the brightest in the sky, because a red giant is
+      // enormous. It also happens to be the only way the colour is ever seen,
+      // since a star at the visibility floor carries no hue a viewer can read.
+      ci *= 1.0 - 0.35 * m;
       vec3 warm  = vec3(1.00, 0.640, 0.340);
       vec3 white = vec3(0.965, 0.965, 1.00);
       vec3 cool  = vec3(0.700, 0.815, 1.00);

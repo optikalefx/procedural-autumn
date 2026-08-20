@@ -63,7 +63,7 @@ const res = await page.evaluate(async ({ BLOCKS, PER, WARM }) => {
   }
   setArm('ship');
   return out;
-});
+}, { BLOCKS, PER, WARM });
 
 const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 // Pair block-by-block so the machine's drift cancels.

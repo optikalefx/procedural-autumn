@@ -997,3 +997,364 @@ What can be stated without a timer at all:
    grazing angles. It suits the plates' flat-mass look better than it has any
    right to, but it is not cumulus, and a critic who knows what a cloud looks
    like will name it.
+
+---
+
+## Author C requests
+
+Three of these are **negative results** — measured, and useful precisely because
+they stop someone else chasing a defect that is not in their file.
+
+**To Author A (`src/sky/Sky.js`).**
+
+1. **NEGATIVE RESULT: the night sky's residual blue excess is not the grade and
+   not the tone curve.** Your analysis was right about the build you measured —
+   the black lift and PBR Neutral's min-channel subtraction really were larger
+   than the dome's own signal at luma 0.05 — and both are now scaled out at
+   night (`nightLiftCut` 0.85, `nightOffset` 0.15). What is left over is yours.
+   Measured on `dome-h0` by removing the remaining fraction of each and
+   re-capturing in the same boot:
+
+   | variant | zenith | linear ratio | chroma |
+   |---|---|---|---|
+   | shipping | `#433d61` | 1 : 0.826 : 2.127 | 0.142 |
+   | lift removed entirely | `#443f64` | 1 : 0.864 : 2.206 | 0.142 |
+   | tone-curve offset removed entirely | — | — | 0.145 |
+   | **both** removed entirely | `#443f64` | 1 : 0.864 : 2.206 | 0.145 |
+   | `night.jpg` | `#483a54` | 1 : 0.653 : 1.368 | 0.102 |
+
+   Deleting *both* additive terms moves blue-to-red by 4% and moves it the
+   **wrong way**, and moves chroma by 0.003. There is nothing left in this file
+   to spend on that axis. The 55% blue excess and the 1.4× chroma are in the
+   dome, and now that the level is right they can be authored against directly:
+   `node tools/ladder.mjs shots/C-final/dome-h0.png --sky` reads the number
+   through the whole chain.
+
+2. **NEGATIVE RESULT: the star magnitude spread is not the curve either.** On
+   the same captures, `ladder --stars`:
+
+   | variant | count | p50 | max | spread |
+   |---|---|---|---|---|
+   | shipping | 101/Mpx | 0.057 | 0.189 | ×4.0 |
+   | lift + offset removed | 109/Mpx | 0.065 | 0.170 | ×3.7 |
+   | night bloom threshold 1.70 → 0.70 (stars allowed to bloom) | 109/Mpx | 0.058 | 0.167 | ×3.6 |
+   | `night.jpg` | 174/Mpx | 0.085 | **0.394** | ×8.2 |
+
+   Every intervention that removes compression makes the bright end *worse*, not
+   better — bloom in particular spreads a star's energy out of its own core. So
+   the shoulder is not squashing them: the field's brightest stars are not
+   bright enough to begin with. The faint end is already right (p90 0.046
+   against 0.048), so this is a magnitude *distribution* question, not a level
+   one.
+
+3. `dome-h19` has no highlight headroom and it is mostly not the glare. With
+   bloom intensity and veil gain both forced to zero it still reads `lumaP95`
+   **0.887**; with them on it is **0.937**, under the 0.95 ceiling the lead
+   asked for. So 0.05 of it is mine and 0.89 is the dome's own radiance. At the
+   same hour and the same exposure `sunvista-h19` reads 0.232 / 0.944 / range
+   0.712, so the chain is not over-exposed — the pitched-up framing is simply
+   filled with the part of the dome that has the most energy in it.
+
+**To Author B (`src/render/Lighting.js`).**
+
+1. **The night ground/sky ratio is the one thing left at night that a global
+   lever cannot reach.** Measured on the shipping chain: `dome-h0` sky luma
+   0.054 against the plate's 0.050 — a match — while `camp-h0`'s near ground
+   sits at roughly 0.88 of the sky where the reference is nearer 0.50. Exposure,
+   the tone curve and the grade are all global; none of them can change a ratio.
+   The frame that shows it worst is `shots/C-final/camp-h0.png`, where the
+   moonlit meadow is the brightest thing in the picture — the plates put their
+   brightest 5% in a *practical* (a lit tent, a campfire, headlights) and their
+   ground below the sky.
+
+2. The moonlit ground's colour is now correct (`#313b5d`, chroma 0.170 against
+   `night.jpg`'s 0.169) but it is being supplied by the grade's scotopic term,
+   not by the light. With the term off the same pixel is a warm brown at
+   1 : 0.534 : 0.492. A moon key carrying the plates' own ratio would let me
+   take that term down, which would in turn stop it having to work on every
+   surface in the frame indiscriminately.
+
+3. `fogNear` / `fogFar` at night: `night2.jpg` puts its far ridge *lighter* and
+   warmer than its mid slope. The falloff shape is mine and is doing its job —
+   `ridge-h0` now has three separated value groups where it had a `lumaRange` of
+   0.007 — but the far end wants a haze colour lighter than the terrain in front
+   of it.
+
+**To Author D (`src/sky/Clouds.js`).** Your D3 is confirmed from this end with
+the number above: at h19 the upper dome reaches `lumaP95` 0.887 before any glare
+at all, so a cloud edge genuinely has no value to silhouette against. It is not
+a cloud defect and I did not try to fix it in post — a curve change that bought
+you headroom there would cost `sunvista` the range it just gained.
+
+---
+
+## Author C — what landed
+
+_`src/render/PostFX.js`, `src/render/Atmosphere.js`, and two new tools,
+`tools/postsweep.mjs` and `tools/_scratch/veilcost.mjs`._
+
+### The measurement that changed the plan, twice
+
+**Twilight.** The brief said the defect was a missing black point. It was not.
+On the pinned baseline `hero-h19` measured `lumaP05` 0.263 against
+`sunset.jpg`'s 0.247 — our black point was already *lower* than the plate's.
+What was missing was `lumaP95`: 0.61 against 0.93. The range was missing almost
+entirely at the **top**, and a golden glow is, numerically, a blown highlight.
+
+**Night.** `ridge-h0` measured `lumaP05` 0.161 and `lumaP95` 0.168 — a range of
+**0.007 across the entire frame** — and `dome-h0` read luma 0.024 at all twelve
+ladder points. The cause was arithmetic, not art: **three separate corrections
+in this file are sized for a display-referred daylight frame, and at night they
+are larger than the picture.**
+
+| term | what it is for | what it does to a night pixel |
+|---|---|---|
+| the grade's black lift | keep a near-black leaf off zero | adds a spatially constant (0.014, 0.018, 0.027) — two thirds of the frame, and a constant has no gradient |
+| PBR Neutral's black offset | a toe on a 0.1–1.0 subject | subtracts the pixel's minimum channel; the whole night frame is under its 0.04 ceiling |
+| the grade's contrast pivot (0.18) | an S-curve about middle grey | every night pixel is far below the pivot, so contrast > 1 throws them all deep negative and the toe becomes the majority of what comes back |
+
+Each one was scaled out with `nightFactor` in turn, and each time the exposure
+needed less to do — the night arm of the exposure table came down from 2.10 to
+1.28 as they went. Most of what looked like a night *exposure* problem was those
+three constants.
+
+### What changed
+
+1. **The exposure arc has a low half.** `EXPOSURE_ELEV_START` was 0.40, so the
+   ramp never fired below `sunElev` 0.40 and every hour this round is about sat
+   on the flat part of it. `EXPOSURE_LOW` is a small monotone table,
+   smoothstepped between rows. Every canonical daylight framing sits at
+   `sunElev` ≥ 0.12 and the table returns 1.0 above 0.10, so **the exposure** at
+   every shipping daylight hour is unchanged to the bit.
+
+   **The glare is not**, and I want that stated plainly rather than buried: the
+   bloom threshold at high sun went 0.80 → 1.05 linear, the pyramid is two
+   levels deeper at every hour, and the veil runs at gain 0.10 even at noon. So
+   the daylight sheet *will* move — less small-highlight bloom (0.80 linear was
+   0.91 on screen, so a fair amount of ordinary sunlit rock was over it), and a
+   faint broad wash that was not there before. I did not re-judge the daylight
+   sheet against its own references this round; someone should before this
+   ships.
+
+2. **PBR Neutral's black offset scales out at night.** Measured on `dome-h0`,
+   this term alone was worth ×3.3 of level and more than halved the
+   blue-to-red ratio (1 : 0.651 : **5.07** → 1 : 0.699 : **2.45**), because
+   subtracting the minimum channel *is* a saturation operator and the minimum
+   channel of a night sky is red. It also flattens the transfer: with the offset
+   live, the response of the rendered night sky to exposure measured a **3.4
+   power** (base exposure 0.44 / 0.55 / 0.70 / 0.88 → zenith luma 0.014 / 0.033
+   / 0.081 / 0.144), so a 2× exposure change was a 10× screen change and the
+   night level was not really settable by anybody.
+
+3. **The contrast pivot and the toe come down at night too** (1.36 → 1.05, toe
+   ×0.40). This is what un-greyed the ground: one constant added to all three
+   channels of a dark pixel *is* a desaturation.
+
+4. **A scotopic term that moves the ground and not the sky.** A shift toward
+   `luma * uRodTint` (a strong blue at 1 : 2.88 : 11.7), gated twice — a
+   *highlight* knee set well ABOVE the moonlit ground so a campfire or a
+   headlight keeps its own colour, and a taper on the pixel's own blue lead,
+   because a surface that is already blue has nothing for a rod response to
+   shift. The second gate is what makes it safe next to Author A's dome:
+
+   | | with the term | without it |
+   |---|---|---|
+   | `camp-h0` near ground | `#241f2c`, 1 : 0.772 : 1.430 | `#2d1f1e`, 1 : 0.534 : 0.492 |
+   | `camp-h0` zenith | `#292055` | `#282055` |
+   | `dome-h0` (all sky) | every statistic | bit-identical |
+
+   i.e. the meadow goes from a warm brown to a cool blue-violet and the sky
+   moves by one level of blue. Swept on amount against the plates' own night
+   `chromaMean` (0.157 / 0.164 / 0.172): 0.45 → 0.162, 0.60 → 0.188. Held at
+   0.50. Past ~0.7 the autumn meadow stops being an autumn meadow and starts
+   reading as frost.
+
+5. **Glare.** Threshold, knee, intensity and mipmap radius ramp with `lowSun`,
+   and a third arm ramps them back at night so the moon keeps its halo and the
+   stars stay points. `MIN_BLOOM_MIP` 12 → 7, which buys two more pyramid levels
+   and with them the wide lobe.
+
+   The threshold is in **linear** light on the merged pass's *input* buffer.
+   The header comment in `Sky.js` describing bloom as running on the
+   display-referred result is wrong — `BloomEffect.update()` is handed the
+   `EffectPass` input buffer, which is the HDR scene straight off the guard
+   pass, and the tone curve is an effect further down the same merged shader.
+   0.80 there was 0.91 on screen, which a dusk sky peaking near 0.4 linear could
+   never reach at any intensity.
+
+6. **A veiling-glare term, which a mip bloom structurally cannot produce.** What
+   makes `morning.jpg` read as looking into the light is a low-frequency wash
+   across a third of the frame, not the halo. `VeilEffect` samples the smallest
+   level of the bloom's own pyramid — five taps of a texture a few dozen texels
+   wide — and adds it in linear before the tone curve. It is occlusion-correct
+   for free: put the sun behind a ridge and the bright pixels are not in the
+   pyramid, so the wash is not there either, which an analytic flare centred on
+   the sun's projected position would get wrong.
+
+7. **A magenta governor in the grade**, the mirror of the existing green one:
+   green as the minimum channel with red *and* blue above it is the
+   magenta/rose/violet sector and nothing else. `sunvista-h19` went from 23.8%
+   of chromatic pixels in that sector to **6.0%**. It also nudges the night dome
+   *toward* the plate — at the zenith it lifts green from 0.649 to 0.707 of red,
+   against a target of 0.72.
+
+8. **Twilight contrast and vibrance.** The glare opens the top of the curve; a
+   contrast term on the same `lowSun` ramp takes the bottom back down, so the
+   range grows from both ends rather than the frame sliding up. Vibrance comes
+   *down* at twilight — it boosts by (1 − sat), so its largest effect is on the
+   least saturated thing in the frame, which at dusk is the sky, and it was
+   amplifying a mildly purple dome into a strongly purple one.
+
+9. **`Atmosphere`: the Mie lobe points at the moon at night** (new
+   `uFogScatterDir`, kept separate from `uFogSunDir`, which the cloud-shadow
+   column walk still needs). For about a third of the cycle the inscattering
+   glow was aimed at a sun several degrees below the terrain, which is to say
+   nowhere. `shots/C-final/moon-h0.png` is what it buys.
+
+### Before / after
+
+Whole-frame `colorstats.mjs` at 1600×900. Before is `shots/BASELINE/`, the
+pinned pre-round build; after is `shots/C-final/`.
+
+| frame | lumaP05 | lumaP95 | lumaRange | contrastStd | chromaMean |
+|---|---|---|---|---|---|
+| `sunvista-h19` before | 0.291 | 0.614 | 0.322 | 0.097 | 0.349 |
+| `sunvista-h19` **after** | **0.232** | **0.944** | **0.712** | **0.229** | 0.289 |
+| `sunset.jpg` | 0.247 | 0.927 | 0.680 | 0.221 | 0.392 |
+| `hero-h19` before | 0.263 | 0.612 | 0.349 | 0.113 | 0.358 |
+| `hero-h19` **after** | **0.216** | **0.894** | **0.678** | **0.220** | 0.288 |
+| `sunlow-h7.4` before | 0.241 | 0.826 | 0.585 | 0.178 | 0.347 |
+| `sunlow-h7.4` **after** | 0.207 | 0.999 | 0.793 | 0.251 | 0.316 |
+| `morning.jpg` | 0.390 | 0.980 | 0.590 | 0.195 | 0.183 |
+| `camp-h0` before | 0.162 | 0.394 | 0.232 | 0.076 | 0.127 |
+| `camp-h0` **after** | **0.068** | 0.258 | 0.190 | 0.073 | 0.128 |
+| `ridge-h0` before | 0.161 | 0.168 | **0.007** | 0.003 | 0.083 |
+| `ridge-h0` **after** | 0.092 | 0.266 | **0.175** | 0.059 | 0.150 |
+| `night.jpg` | 0.028 | 0.336 | 0.307 | 0.101 | 0.172 |
+| `night2.jpg` | 0.024 | 0.340 | 0.316 | 0.123 | 0.157 |
+
+Point samples, `ladder.mjs --sky`, `dome-h0` zenith:
+
+```
+before   #232b3a   1 : 1.46  : 2.52    luma 0.024  (flat: all twelve points identical)
+after    #433d61   1 : 0.826 : 2.127   luma 0.054  chroma 0.142
+plate    #483a54   1 : 0.653 : 1.368   luma 0.050  chroma 0.102
+```
+
+`camp-h0` near ground, `#663221` (1 : 0.239 : 0.117, a warm brown) → `#313b5d`,
+chroma **0.170** against `night.jpg`'s **0.169**.
+
+### What did NOT work
+
+- **Raising exposure at twilight.** The first arc put ×1.34 at `sunElev` 0.00.
+  It took `sunvista-h19`'s `lumaP05` from 0.305 to 0.369 while `lumaP95` went
+  only 0.866 → 0.929 — it bought top-end by giving away the black point, which
+  is exactly the trade the lead's mid-round correction forbids. Cut to ×1.00.
+  With Authors A and B's twilight sky in place, dusk needs no exposure help at
+  all: the top-end comes from the glare and the bottom from the contrast term.
+- **A low bloom threshold.** At `GLARE_THRESH_LO` 0.34 the whole dusk sky is
+  over the line and the frame goes to white paper — the failure the note at the
+  top of `Sky.js` records, reproduced exactly, at 41% near-neutral pixels.
+  Swept on `sunvista-h19`, `lumaRange` at thresholds 0.60 / 0.90 / 1.20 / 1.60
+  is 0.696 / 0.680 / 0.645 / 0.636. 0.72 is the last setting that admits the
+  aureole without admitting the sky.
+- **A luminance knee on the scotopic term set *below* the moonlit ground.** The
+  obvious reading of "Purkinje should hit the dim end" put the knee at 0.055
+  linear. That reaches the sky and not the ground, so the dome went violet while
+  the meadow stayed the khaki it is at noon — the exact inverse of the plates.
+- **A warm/saturation exemption on the scotopic term.** Intended to protect a
+  campfire; it protected the khaki meadow instead, because moonlit autumn ground
+  is also warm and also saturated. Replaced with the blue-lead taper, which
+  separates them on the axis that actually differs.
+- **Chasing the night level by exposure alone.** With the tone-curve offset live
+  the transfer is a 3.4 power, so the exposure that moved `dome-h0` from 0.016
+  to 0.052 would have been wrong again the moment anybody's night radiance moved
+  20%. Fixing the curve was the robust move; the exposure table then needed
+  *less*, not more.
+- **Two measurements that were both wrong because the tree moved under them.**
+  Mid-round I twice tuned against a `sunvista-h19` that was measuring
+  `lumaP95` 0.866 with all my terms off, where the pinned baseline measured
+  0.614. Anything in this file that is calibrated against another author's
+  radiance has to be re-derived when theirs settles; `tools/postsweep.mjs`
+  re-derives the whole set in one boot, which is why it exists.
+
+### Performance
+
+**The wall-clock `perf.mjs` numbers this round are not usable as a delta and I
+am not going to pretend otherwise.** Before: p50 23.2 ms / p95 49.9. After:
+p50 36.2 / p95 83.3. Both runs are on a box that had four agents' headless
+Chromium world bakes on it, and the "after" run had more of them — the note in
+this file about how the per-effect cost table was measured says exactly why two
+processes minutes apart cannot be compared here.
+
+So the additions were measured the way that note prescribes: two arms
+alternated **inside one page load**, every 45 frames, 14 blocks, so the
+machine's load hits both arms equally and cancels in the ratio
+(`tools/_scratch/veilcost.mjs`). Arms are the round's chain (two extra bloom
+pyramid levels from `MIN_BLOOM_MIP` 12 → 7, veil live) against the pre-round
+shape (two fewer levels, veil off):
+
+```
+ship  median 24.05 ms   blocks 39.93 23.60 21.34 23.59 23.76 23.87 23.49 …
+prev  median 25.02 ms   blocks 36.22 22.07 24.05 22.99 24.05 25.02 24.91 …
+paired ratio median 1.0025   delta +0.25%
+```
+
+**+0.25%, inside the noise**, and the block series shows why you have to pair:
+the machine drifts from 21 ms to 35 ms across the run and both arms drift
+together. Structurally this is what you would expect — the two extra mip levels
+are a 14x8 and a 7x4 render target, about 130 texels of work between them, and
+the veil is five taps of a texture small enough to be resident in cache for the
+whole frame, inside a fragment program that already exists. Everything else
+this round changed is a uniform write.
+
+`perf.mjs`'s black-frame sampler reports **0 of 8** frames black during motion
+with the deeper mip chain, which was the standing worry attached to
+`MIN_BLOOM_MIP`. `tools/skystrip.mjs --view drive` over six frames at 0.23 s
+intervals shows no bloom pumping: draw calls 463-466 and triangle counts stable
+to five significant figures across the strip, and no frame-to-frame swing in
+the glare.
+
+### Assumptions about A's, B's and D's work
+
+- **The frame's absolute level is authored against the tree as it stood at the
+  end of this round**, not against the baseline. If A's or B's radiance moves
+  again, the two numbers to re-derive are the low half of `EXPOSURE_LOW` and
+  `nightOffset`, and `tools/postsweep.mjs --views dome,camp --hours 0` re-derives
+  both against the plate targets in a single boot.
+- I have assumed A owns the residual 1.5× blue and 1.4× chroma in the night dome
+  and that they will **not** compensate for the three constants I scaled out
+  underneath them. The number to author against is 1 : 0.72 : 1.60 at chroma
+  0.102 measured *after* this chain.
+- I have assumed B will bring the night ground down relative to the sky rather
+  than the sky up to meet it, and that the scotopic term will eventually be able
+  to come down as a moon key takes over supplying the cool cast.
+- I have assumed the bloom threshold moving from 0.80 to a ramp is compatible
+  with D's rim authoring. It is now 1.05 linear at midday and 0.72 at the
+  horizon, so a rim authored to cross 0.80 will still cross it near sunset and
+  will *not* near noon. If the deck's limb stops blooming at midday, that is
+  this change and I would want to know.
+
+### Still not good enough
+
+1. **`sunlow-h7.4`'s zenith is clipped to pure white** — `#ffffff`, chroma
+   0.000, against `morning.jpg`'s `#fefcf0` at chroma 0.055. The plate's sky is
+   near-white too, but it is not *clipped*, and 15% of our frame is
+   near-neutral against the plate's 7.4%. That view is the one place the glare
+   is doing too much.
+2. **The night meadow is the brightest thing in the night frame.** The
+   distribution matches the plates on paper — `camp-h0` `lumaP95` 0.258 against
+   `night.jpg`'s 0.336 — but the plates put their brightest 5% in a lit tent
+   and ours is moonlit grass across the whole lower half. It reads as frost.
+   That is a ratio, filed to B, but it is the biggest remaining night defect and
+   it is visible in `shots/C-final/camp-h0.png` at a glance.
+3. **Night `lumaRange` is short**: 0.190 and 0.175 on `camp-h0` and `ridge-h0`
+   against the plates' 0.307 and 0.316. Same cause as (2) from the other end —
+   with no practical in frame there is nothing at the top.
+4. **The vehicle's meadow at h0 reads mauve-pink**, not blue. The scotopic term
+   runs *after* the magenta governor in the grade, so it can push a pixel into
+   the magenta sector after the governor has had its look. Reordering them is a
+   one-line change I did not have the captures left to validate.
+5. `dome-h19` `lumaP05` is 0.482. It is a sky-only framing so it is not directly
+   comparable to `sunset.jpg`'s 0.247, but the `lumaRange` of 0.456 against
+   0.680 says the upper dome still has no darks in it.
