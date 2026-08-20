@@ -2003,8 +2003,8 @@ export const COVER_ARCHETYPES = [
   { key: 'scrubDry',    variants: 3, card: true,  cap: 700, vis: 55,  band: 2, recv: false, wind: 0.075, shadow: false, build: buildScrubDry },
   { key: 'thicket',     variants: 2, card: true,  cap: 120, vis: 250, band: 3, recv: false, wind: 0.055, shadow: true,  build: buildThicket },
   { key: 'fern',        variants: 2, card: true,  cap: 950, vis: 44,  band: 1, recv: false, wind: 0.045, shadow: false, build: buildFern },
-  { key: 'broadleaf',   variants: 2, card: true,  cap: 1700, vis: 44, visSpread: 1.30, band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
-  { key: 'moss',        variants: 2, card: true,  cap: 1300, vis: 42, visSpread: 1.35, band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss, conform: 0.95 },
+  { key: 'broadleaf',   variants: 2, card: true,  cap: 1700, vis: 46, visSpread: 1.30, band: 0, recv: false, wind: 0.030, shadow: false, build: buildBroadleaf },
+  { key: 'moss',        variants: 2, card: true,  cap: 1300, vis: 45, visSpread: 1.35, band: 0, recv: false, wind: 0.000, shadow: false, build: buildMoss, conform: 0.95 },
   { key: 'flowerAster', variants: 2, card: true,  cap: 220, vis: 42,  band: 0, recv: false, wind: 0.055, shadow: false, build: buildFlowerAster },
   { key: 'goldenrod',   variants: 1, card: true,  cap: 200, vis: 44,  band: 0, recv: false, wind: 0.065, shadow: false, build: buildGoldenrod },
   { key: 'seedHead',    variants: 1, card: true,  cap: 240, vis: 44,  band: 0, recv: false, wind: 0.085, shadow: false, build: buildSeedHead },
@@ -2039,11 +2039,11 @@ export const COVER_ARCHETYPES = [
   //
   // Lead time in front of the bumper at 13 m/s, before and after:
   //
-  //             old vis   first seen      new vis (mean/max)  first seen
-  //   deadTuft    23 m     0.9 s            42 / 58.8 m        2.3 / 3.6 s
-  //   leafScatter 22 m     0.8 s            40 / 56 m          2.2 / 3.4 s
-  //   moss        26 m     1.1 s            42 / 56.7 m        2.3 / 3.4 s
-  //   broadleaf   32 m     1.5 s            44 / 57.2 m        2.5 / 3.5 s
+  //             old vis   first seen      new vis (base/max)  first seen
+  //   deadTuft    23 m     0.9 s            46 / 64.4 m        2.6 / 4.0 s
+  //   leafScatter 22 m     0.8 s            44 / 61.6 m        2.5 / 3.8 s
+  //   moss        26 m     1.1 s            45 / 60.8 m        2.5 / 3.8 s
+  //   broadleaf   32 m     1.5 s            46 / 59.8 m        2.6 / 3.7 s
   //   pebble      24 m     0.9 s            30 / 39 m          1.4 / 2.1 s
   //
   // MEASURED before shipping — `tools/_scratch/lodab.mjs`, both arms in one
@@ -2101,8 +2101,8 @@ export const COVER_ARCHETYPES = [
   // stuck to it.
   { key: 'pebble',      variants: 2, card: false, cap: 4400, vis: 30, visSpread: 1.30, band: 0, recv: false, wind: 0.000, shadow: false, build: buildPebble },
   { key: 'cobble',      variants: 2, card: false, cap: 1050, vis: 74, band: 2, recv: false, wind: 0.000, shadow: false, build: buildCobble },
-  { key: 'leafScatter', variants: 2, card: true,  cap: 5200, vis: 40, visSpread: 1.40, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter, conform: 0.95 },
-  { key: 'deadTuft',    variants: 2, card: true,  cap: 9000, vis: 42, visSpread: 1.40, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft, conform: 0.95 },
+  { key: 'leafScatter', variants: 2, card: true,  cap: 5200, vis: 44, visSpread: 1.40, band: 0, recv: false, wind: 0.004, shadow: false, build: buildLeafScatter, conform: 0.95 },
+  { key: 'deadTuft',    variants: 2, card: true,  cap: 9600, vis: 46, visSpread: 1.40, band: 0, recv: false, wind: 0.020, shadow: false, build: buildDeadTuft, conform: 0.95 },
   // The mid-range ground dressing. `conform: 1` takes it to the full terrain
   // tilt (every other archetype leans only 55% with the ground, which is right
   // for a plant standing on a slope and wrong for a three-metre mat lying on

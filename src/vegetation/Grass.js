@@ -48,14 +48,18 @@ const RINGS = [
   // visibly thickening just ahead of the car.
   //
   // So the fix is not only further out, it is *longer*: the near ring now
-  // tapers from 18 m to 42 m instead of 20 m to 30 m. Coverage still falls
-  // 1.71 -> 0.53, but over 26 m instead of 12 — a gradient 2.6x gentler, with
-  // its steepest point 19 m ahead of the bumper (1.5 s) instead of 13 m
-  // (1.0 s), and the last near blade going out at 30 m ahead (2.3 s).
+  // tapers from 20 m to 45 m instead of 20 m to 30 m. Coverage still falls
+  // 1.71 -> 0.53, but over 25 m instead of 10 — and measured together with the
+  // ground cover by `tools/_scratch/lodprofile.mjs`, which bins drawn footprint
+  // per m2 of ground into 4 m rings, the steepest fall in the COMBINED profile
+  // goes from 0.218 per metre 12 m ahead of the bumper (0.92 s) to 0.13 per
+  // metre 26 m ahead (2.0 s). That profile is the pop-in, as a number: a ladder
+  // that pops has a cliff in it.
   //
   // `tileSize` has to grow with it: the assert below only guarantees
-  // 2 x tileSize of coverage from a 4x4 grid, so a 42 m fadeOut needs 22 m
-  // tiles and 24 gives it margin. `maxBlades` scales with tile AREA
+  // 2 x tileSize of coverage from a 4x4 grid, so a 45 m fadeOut needs 24 m
+  // tiles, which is what it has (46 m guaranteed, 1 m of margin).
+  // `maxBlades` scales with tile AREA
   // (24/16)^2 = 2.25 to hold density; changing one without the other is a
   // silent density change.
   //
@@ -94,7 +98,7 @@ const RINGS = [
     // inside the "ground cover, not a wheat crop" bound in grass_scatter.js:
     // typical stand goes ~0.34 m to ~0.39 m against a 2 m vehicle.
     width: 0.052, height: 0.44, salt: 0x1111, floor: 0.46,
-    fadeIn: [-20, -10], fadeOut: [18, 42], widthGain: 0.0, aoScale: 1.0,
+    fadeIn: [-20, -10], fadeOut: [20, 45], widthGain: 0.0, aoScale: 1.0,
   },
   // Mid ring: two rows still cannot carry a curl, but at 20–70 m the blade is a
   // few pixels wide and only its *lean* survives, so it gets the extra row that
@@ -107,7 +111,7 @@ const RINGS = [
   {
     tileSize: 40, segments: 3, tipBias: 0.78, maxBlades: 18500, perClump: 30, clumpRadius: 1.20,
     width: 0.115, height: 0.40, salt: 0x2222, floor: 0.40,
-    fadeIn: [16, 40], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
+    fadeIn: [18, 43], fadeOut: [58, 76], widthGain: 0.40, aoScale: 0.70,
   },
   {
     tileSize: 96, segments: 1, maxBlades: 16000, perClump: 34, clumpRadius: 3.2,

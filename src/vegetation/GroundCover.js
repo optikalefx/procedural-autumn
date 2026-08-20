@@ -226,15 +226,24 @@ export class GroundCover extends System {
    * cell only ever adds things that were invisible from where they were added.
    */
   _bandFor(d) {
-    // Boundary 0 RAISED from 50 to 68. It is a hard ceiling on how far the
+    // Boundary 0 RAISED from 50 to 84. It is a hard ceiling on how far the
     // substrate can be seen, and it was the thing that made the substrate's
     // 22-24 m radii look like a free choice: nothing in `_layerGround` could
     // reach past 50 m however generous its radius, because no cell beyond that
     // ever generates it. With the substrate now carrying 30-59 m radii (see
     // `visSpread` in cover_forms.js) it has to sit clear of the largest of
     // them — deadTuft tops out at 42 * 1.40 = 58.8 — with room for the
-    // half-cell of slack `_refreshQueue` allows.
-    if (d < 68) return 0;          // ground substrate, flowers  (vis <= 59)
+    // largest of them — deadTuft tops out at 46 * 1.40 = 64.4 — with room for
+    // the slack `_refreshQueue` allows (12 m) and for the streamer's own
+    // fill-in latency on top of that.
+    //
+    // What it costs is streaming, not frame time: the band-0 disc goes from
+    // ~10 cells to ~19, so the rate at which substrate cells have to be
+    // generated while driving rises about 40% (2*pi*R*v / CELL^2 — perimeter,
+    // not area). At 13 m/s that is 4.2 cells per second against a 1.6 ms per
+    // frame budget, i.e. 25 ms of work per second of driving. It is the
+    // *generation* budget this spends, and it has the room.
+    if (d < 84) return 0;          // ground substrate, flowers  (vis <= 64.4)
     if (d < 134) return 1;         // ferns, branches            (vis <= 88)
     if (d < 196) return 2;         // scrub, berries, litter     (vis <= 155)
     return 3;                      // shrubs, thickets, deadfall (vis <= 250)
@@ -511,10 +520,10 @@ export class GroundCover extends System {
     // at all) inside the radius at which its substrate should be visible. The
     // symptom would be a wedge of undressed ground appearing at speed, which
     // is exactly the class of defect this whole change exists to remove.
-    // A refresh is a 15x15 scan of integers; running it every 20 m of travel
-    // costs nothing and bounds the error at 20 m instead of 68.
+    // A refresh is a 15x15 scan of integers; running it every 12 m of travel
+    // costs nothing and bounds the error at 12 m instead of 68.
     const travelled = this._lastRefresh.distanceToSquared(cam);
-    if (ccx !== this._lastCell.x || ccz !== this._lastCell.z || travelled > 400) {
+    if (ccx !== this._lastCell.x || ccz !== this._lastCell.z || travelled > 144) {
       this._lastCell.x = ccx; this._lastCell.z = ccz;
       this._lastRefresh.copy(cam);
       this._refreshQueue(cam);
