@@ -462,6 +462,21 @@ export const SKY_STATE = {
   sunElev: 0,          // sin(elevation), -1..1
   dayFactor: 0,        // 0 night … 1 full day, useful for fading effects
   hour: TOD.hour,
+  // ── the night half of the record — see docs/SKY_NIGHT_BRIEF.md ───────────
+  // Added as a contract so Sky and Clouds can be built against it. Lighting is
+  // the only writer. Values may be re-authored; fields may not be removed.
+  moonDir: new THREE.Vector3(0, -1, 0),
+  moonElev: -1,
+  moonPhase: 0.32,     // 0 new … 0.5 full … 1 new. 0.32 is the plates' crescent.
+  moonColor: new THREE.Color(0.82, 0.86, 1.0),
+  moonIntensity: 0,    // 0 while the moon is down or the sun is up
+  // Stars need their own ramp. Driving them off `1 - dayFactor` put a full
+  // starfield over the salmon sky of `sunvista-h19`, because dayFactor reaches
+  // 0 the moment the sun touches the horizon and civil twilight is another
+  // forty minutes of bright sky after that.
+  starAmount: 0,
+  milkyWay: 0,
+  nightFactor: 0,
   zenith: new THREE.Color(),
   horizon: new THREE.Color(),
   sunHorizon: new THREE.Color(),
@@ -674,6 +689,34 @@ export class Lighting {
     return this._tmp.set(Math.cos(az) * cosE, elev, Math.sin(az) * cosE).normalize();
   }
 
+  /**
+   * The moon's direction.
+   *
+   * Deliberately NOT exactly anti-solar: a moon locked 180 deg from the sun is
+   * always full and always rises at the instant the sun sets, which reads as a
+   * mechanism rather than as a sky. Offsetting the arc by a fixed fraction of a
+   * day gives a moon that is up for part of the night, at a believable angle to
+   * the sun, and whose phase follows from that angle the way the real one does.
+   */
+  computeMoonDir(hour) {
+    // Lags the anti-solar point by ~2.4 h, which is what puts the crescent
+    // where the plates have it — high and to one side, not opposite the camera.
+    const mh = (hour + 12 + 2.4) % 24;
+    const span = this.sunset - this.sunrise;
+    const t = (mh - this.sunrise) / span;
+    let elev;
+    if (t < 0 || t > 1) {
+      const below = t < 0 ? -t : t - 1;
+      elev = -0.06 - Math.min(below * 1.6, 1) * 0.24;
+    } else {
+      elev = Math.pow(Math.sin(t * Math.PI), 1.6) * 0.95 - 0.015;
+    }
+    const az = this.azimuth + (clamp(t, -0.15, 1.15) - 0.5) * 2.4;
+    const cosE = Math.sqrt(Math.max(1 - elev * elev, 0));
+    return (this._moonTmp ??= new THREE.Vector3())
+      .set(Math.cos(az) * cosE, elev, Math.sin(az) * cosE).normalize();
+  }
+
   // ── shadows ────────────────────────────────────────────────────────────────
 
   _setShadowExtent(e) {
@@ -807,6 +850,25 @@ export class Lighting {
     s.sunElev = elev;
     s.dayFactor = day;
     s.hour = this.hour;
+
+    // ── moon and stars ──────────────────────────────────────────────────────
+    // A placeholder arc that is *correct in kind*: the moon rides roughly
+    // opposite the sun, so it is up when the sun is not, and it is a real
+    // direction that a light and a disc can both be hung off. The author who
+    // owns this file re-authors the numbers; the field contract is what the
+    // dome is being built against right now.
+    const md = this.computeMoonDir(this.hour);
+    s.moonDir.copy(md);
+    s.moonElev = md.y;
+    // Up, and only once the sun is far enough down that it would actually read.
+    const moonUp = smoothstep(-0.02, 0.12, md.y);
+    const sunGone = 1 - smoothstep(-0.14, 0.02, elev);
+    s.moonIntensity = moonUp * sunGone;
+    // Astronomical rather than civil twilight: the sky is still bright enough
+    // to wash out all but the brightest stars well after `dayFactor` hits 0.
+    s.starAmount = 1 - smoothstep(-0.16, -0.03, elev);
+    s.milkyWay = 1 - smoothstep(-0.20, -0.07, elev);
+    s.nightFactor = 1 - day;
     s.zenith.copy(k.zen);
     s.horizon.copy(k.hor);
     s.sunHorizon.copy(k.sunHor);
