@@ -236,6 +236,49 @@ async function main() {
     check(`zero test on ${id} proves the mixer owns the bus`, /clean:/.test(z.note), z.note);
   }
 
+  // ── 4d. solo ────────────────────────────────────────────────────────────
+  // Soloing the only row a sound offers must not silence it. The waterfall's
+  // rig carries voice trims that have no row, and grouping them with the row by
+  // name meant solo killed the voice feeding the layer it was soloing.
+  const soloWater = await page.evaluate(async () => {
+    const lab = window.__lab;
+    lab.select('water.waterfall');
+    document.querySelector('#resetAll').click();
+    await new Promise((r) => setTimeout(r, 200));
+    await lab.play();
+    await new Promise((r) => setTimeout(r, 1600));
+    const before = (await window.__peakRms('falls', 1200)).mean;
+    window.__soundlab.setSolo('falls');
+    await new Promise((r) => setTimeout(r, 900));
+    const after = (await window.__peakRms('falls', 1200)).mean;
+    window.__soundlab.setSolo('falls');
+    lab.stop();
+    return { before, after };
+  });
+  const soloDelta = Math.abs(dB(soloWater.after) - dB(soloWater.before));
+  check('solo on a single-row sound leaves it playing', soloDelta < 3,
+    `${f(dB(soloWater.before))} → ${f(dB(soloWater.after))} dBFS (${f(soloDelta)} dB)`);
+
+  // And soloing one layer of a five-layer bed does silence the other four.
+  const soloBed = await page.evaluate(async () => {
+    const lab = window.__lab;
+    lab.select('ambience.bed');
+    document.querySelector('#resetAll').click();
+    await new Promise((r) => setTimeout(r, 200));
+    await lab.play();
+    await new Promise((r) => setTimeout(r, 1600));
+    const before = (await window.__peakRms('ambience', 1200)).mean;
+    window.__soundlab.setSolo('cricket');       // silent at midday
+    await new Promise((r) => setTimeout(r, 900));
+    const after = (await window.__peakRms('ambience', 1200)).mean;
+    window.__soundlab.setSolo('cricket');
+    lab.stop();
+    return { before, after };
+  });
+  check('solo on a five-layer bed silences the other four',
+    dB(soloBed.before) - dB(soloBed.after) > 20,
+    `${f(dB(soloBed.before))} → ${f(dB(soloBed.after))} dBFS soloing crickets at midday`);
+
   // ── 5. config round-trip ────────────────────────────────────────────────
   const trip = await page.evaluate(async () => {
     const lab = window.__lab;

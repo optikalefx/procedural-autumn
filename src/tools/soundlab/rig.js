@@ -51,6 +51,7 @@ export class Rig {
     this.trimDb = {};            // name -> dB
     this.muted = {};             // name -> bool
     this.solo = null;            // name | null
+    this.soloScope = new Set();  // the layers solo is allowed to silence
     this.active = new Set();     // layers the selected sound is currently playing
     this._extra = {};            // name -> extra multiplier (distance overrides)
 
@@ -265,7 +266,7 @@ export class Rig {
       if (!node) continue;
       const off = !this.active.has(n)
         || this.muted[n]
-        || (this.solo && this.solo !== n && this._sibling(n));
+        || (this.solo && this.solo !== n && this.soloScope.has(n));
       const v = off ? 0 : 10 ** ((this.trimDb[n] ?? 0) / 20) * (this._extra[n] ?? 1);
       node.gain.setTargetAtTime(v, t, 0.02);
     }
@@ -278,17 +279,19 @@ export class Rig {
   }
 
   /**
-   * Solo only silences layers in the same rig — soloing the grass bed should
-   * not silence the waterfall you deliberately have running beside it.
+   * Which layers solo is allowed to silence: exactly the ones with a row in the
+   * strip, which is what solo means on a mixer.
+   *
+   * This was a group table keyed off the layer names, and it was wrong. The
+   * waterfall shows one row, `falls`, while its rig also carries three voice
+   * trims — plumbing, so the distance-curve override has somewhere to land.
+   * Grouping by name put those in the same group, so soloing the only row the
+   * page offers silenced the voice feeding it and the fall went quiet.
    */
-  _sibling(name) {
-    const groupOf = (n) => {
-      if (['grass', 'conifer', 'hush', 'cricket', 'birds'].includes(n)) return 'ambience';
-      if (n.startsWith('fall') || n.startsWith('river')) return 'water';
-      if (['engine', 'intake', 'overrun', 'tyres', 'grit', 'ford'].includes(n)) return 'vehicle';
-      return n;
-    };
-    return groupOf(name) === groupOf(this.solo);
+  setSoloScope(names) {
+    this.soloScope = new Set(names);
+    if (this.solo && !this.soloScope.has(this.solo)) this.solo = null;
+    this.applyTrims();
   }
 
   /** Extra multipliers a sound applies on top of the trim (distance overrides). */

@@ -329,6 +329,8 @@ function renderLayers() {
   const host = $('#layers');
   host.textContent = '';
   const list = s.meterLayers ?? [];
+  // Solo silences the other visible rows and nothing else.
+  state.rig.setSoloScope(list.map((L) => L.name));
   $('#layerPanel').hidden = list.length === 0;
   if (!list.length) return;
 
