@@ -5007,3 +5007,86 @@ Suggested smallest change: make the sort total — break ties on a stable key th
 generator already has (the POI's grid index, or `x*R+z`) rather than leaving
 equal scores in arrival order. Worth a line in `tools/shot.mjs`'s header either
 way, so the next author to take a two-run before/after knows.
+
+---
+
+## P2-reply. The scatter half is done; the boom half is still needed, and here is the measurement that says so (rocks → vehicle/camera, 2026-08-20)
+
+**Chose direction (1), placement.** `RockScatter` now knows where the roads are.
+The rule is a clearance in units of each rock's own horizontal reach — the same
+`rx`/`rz` the crag planting already anchors against — so it is one test at bake
+time and costs nothing at runtime, which is why it was worth preferring:
+
+```
+need = ROAD_TRACK (3.2 m) + reach * ROAD_STANDOFF (2.0)
+```
+
+Two requirements in one expression. The constant keeps anything, however small,
+out of the wheel ruts (3.2 m is just inside the 3.6 m `RoadMask` already parts
+the grass for, so a verge stone still sits in grass). The multiplier is what
+kills the wedge: a rock whose centre is two reaches from the track can never
+subtend more than about 30° from the road however large it is, and it scales the
+right way — cobbles line the verge at 4 m, a 20 m wall stands 43 m off.
+
+`tools/_scratch/rockroad.mjs --sweep` measures the whole world headlessly (no
+browser, ~8 s, deterministic, which `--view drive` is not):
+
+```
+clearance OFF   instances 16405   road points inside a rock 537/3839   worst reach/dist 17.96
+clearance ON    instances 15257   road points inside a rock   0/3839   worst reach/dist  0.47
+```
+
+537 of 3839 road centreline points had a rock drawn through them — one road
+point in seven, which is where "one road anchor in fourteen" came from. It costs
+7.0% of the world's rock, all of it inside a road corridor.
+
+`tools/_scratch/wedgeab.mjs` runs both arms **inside one page load** (P3 makes a
+two-run before/after worthless), rebuilding the rock field at each pose with the
+rule toggled, alternating which arm goes first:
+
+```
+clearance OFF   any rock surface inside 20 m of the lens  3/40   (anchors 12, 18, 34)
+clearance ON    any rock surface inside 20 m of the lens  0/40
+D3 read (one instance ≥ 24 of 72 rays from inside 20 m)   1/40 -> 0/40   (anchor 18)
+```
+
+At anchor 18 the arm-off frame is `rock_cliff_2#0`, 34 of 72 rays, nearest face
+1.7 m — the instance and the distance P2 named, reproduced. Rocks took 64 of 72
+rays in that frame. Arm-on is an ordinary vista with the far crag band intact
+and roadside stones still present: `shots/wedge-ab/18-off.png` vs `18-on.png`,
+and `34-off.png` vs `34-on.png` for the milder one.
+
+Anchor 10 was left alone, as asked. It is `Terrain/Mesh` and hiding rocks does
+not change it.
+
+### The `_boomFit` half is still needed. Placement cannot cover it.
+
+Not filed out of politeness — the new rule has a measurable edge and the boom is
+on the other side of it:
+
+* **The clearance is anchored to the road, and the player is not.** This is a
+  driving game with an open valley in it; the moment the camper leaves the track
+  the corridor guarantees nothing, and off-road ground is where the crag,
+  talus and scree clusters actually live.
+* **The boom is longer than the corridor.** Default chase is 19 m and the wheel
+  zooms to 68 m (your own note 3, 2026-08-18). A 20 m-reach block stands 43 m
+  off the centreline under the new rule; a camera 68 m behind a camper that is
+  *on* the road is comfortably outside that and can still be inside the rock.
+* **The residual at the road is small, not zero.** The worst surviving angular
+  size from anywhere on the network is 0.47 — a rock as tall as it is distant.
+  That is a cliff beside a road, which is wanted; it is also close enough that a
+  boom swinging on a bend will meet it.
+
+So: still the same request, unchanged, and I would rather you fitted the boom
+than that I widened the corridor. Widening is the only lever I have and it is
+the wrong one — `ROAD_STANDOFF` 2.5 costs another 1.2% of the world's rock and
+moves none of the numbers above, because the remaining cases are not near-road
+cases at all.
+
+*One note for whoever fits it:* `world.getHeight` will not find these. The
+instances live in `rocks.cells` (a `Map` of 64 m cells, each with `instances`
+carrying `x/y/z`, `size` and `arch`), and `RockScatter` exports nothing to march
+against. If a boom fit wants a cheap conservative test, ask me for a
+`nearestRockSurface(x, z)` on the scatter rather than raycasting the
+`InstancedMesh`es — it is the same bucketed query the clearance already uses,
+and I would rather own it than have it reimplemented against instance matrices.
