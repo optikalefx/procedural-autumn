@@ -24,8 +24,15 @@ const anchor = cached ?? (
 );
 yaw = (anchor.yaw ?? 0) + (v.yawOffset ?? 0);
 if (v.faceSun) { const sd = window.__lighting.sunDir; yaw = Math.atan2(sd.x, sd.z); }
-if (v.faceMoon && window.__lighting.moonDir) {
-  const md = window.__lighting.moonDir; yaw = Math.atan2(md.x, md.z);
+if (v.faceMoon) {
+  // Lighting does not keep a moonDir field on the instance the way it keeps
+  // sunDir — the moon is published on SKY_STATE, which is a module export and
+  // not on window. Ask the instance to compute it; fall back to anti-solar so
+  // a faceMoon view is never silently the same shot as a faceSun one.
+  const L = window.__lighting;
+  const md = L.moonDir ?? (L.computeMoonDir ? L.computeMoonDir(L.hour) : null);
+  if (md) yaw = Math.atan2(md.x, md.z);
+  else { const sd = L.sunDir; yaw = Math.atan2(-sd.x, -sd.z); }
 }
 
 if (v.subject) {
