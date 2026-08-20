@@ -35,6 +35,14 @@ uniform float uWarmSatSlope;
 uniform float uBlueFloor;
 uniform float uGreenTame;
 uniform float uGreenTameMax;
+uniform float uMgntTame;
+uniform float uMgntTameMax;
+uniform float uNight;
+uniform float uRodAmount;
+uniform float uRodKnee;
+uniform float uRodCoolLo;
+uniform float uRodCoolHi;
+uniform vec3  uRodTint;
 uniform float uGrain;
 uniform float uTime;
 
@@ -356,6 +364,98 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
     c = mix(c, vec3(luma(c)), min(grnLead * uGreenTame, uGreenTameMax));
   }
 
+  // ── Magenta governor — the candy-pink distance, from the other side ────────
+  //
+  // The green governor above catches a pixel whose green LEADS. This catches the
+  // opposite: green as the minimum channel with red *and* blue both above it,
+  // which is the magenta / rose / violet sector and nothing else. A red-led
+  // autumn pixel has G > B and is untouched; a blue-led sky pixel has G > R and
+  // is untouched; only a pixel that has given up its middle channel is inside
+  // this term.
+  //
+  // Measured at twilight (BASELINE, share of chromatic pixels): sunvista-h19 is
+  // 23.8% magenta + rose + violet against morning.jpg's 1.7% and plate 1's 0.1%,
+  // and the ladder puts the zenith at linear 1 : 0.425 : 0.881 — blue *above*
+  // green over a peach horizon. That is a straight RGB lerp between a blue
+  // zenith key and a peach horizon key passing through magenta, which is the
+  // dome's business and is filed as a request to Author A. This is the backstop
+  // for whatever survives it, and for the same crossing in the haze ramp.
+  //
+  // Raising green toward min(r, b) is the one move that cannot make things
+  // worse: it walks magenta to a warm neutral, rose to a duller red and violet
+  // to a blue-grey, and every step is toward the channel ordering the pixel
+  // already has. Bounded well short of full, because a real violet twilight
+  // zenith is a colour the plates do have — night.jpg's sky is 1 : 0.72 : 1.60,
+  // which is inside this sector — and flattening it entirely would take the
+  // night dome to navy, which is the exact defect the brief opens with.
+  {
+    float mid = min(c.r, c.b);
+    float mgntLead = clamp((mid - c.g) / max(mid, 1e-4), 0.0, 1.0);
+    float w = min(mgntLead * uMgntTame, uMgntTameMax);
+    c.g = mix(c.g, mid, w);
+  }
+
+  // ── Scotopic response — the night frame's own tone curve ───────────────────
+  //
+  // THE NIGHT FRAME WAS THE BLACK LIFT AND NOTHING ELSE. Measured on the
+  // baseline: ridge-h0 runs lumaP05 0.161 to lumaP95 0.168 — a range of 0.007
+  // across the whole frame — and dome-h0 reads luma 0.024 at all twelve
+  // ladder points, zenith and horizon alike. Traced back through this pass, a
+  // rendered night sky of srgb(35,43,58) is linear (0.016, 0.024, 0.043), and
+  // the lift above adds (0.014, 0.018, 0.027) of that: two thirds of every
+  // night pixel in the game was a spatially constant term added by this shader.
+  // A constant has no gradient, which is why the dome measured flat. The other
+  // half of the fix is exposure (see EXPOSURE_ELEV) — the scene has to outrun
+  // the lift before any of this is worth applying.
+  //
+  // What the plates do at night is NOT a desaturation. night.jpg's sky is
+  // 1 : 0.72 : 1.60 and its moonlit ground is srgb(14,47,88), chroma 0.29 — a
+  // strongly chromatic cool blue, not a grey. Meanwhile the tent beside it is a
+  // saturated orange and the fire keeps its ember. So a global saturation cut at
+  // night is wrong twice over: it greys the cool mass the plate makes its
+  // picture out of, and it kills the warm accent that picture is composed
+  // around.
+  //
+  // Purkinje is a shift toward the rods' response. Mixing toward
+  // luma * uRodTint rather than toward vec3(luma) is what keeps the chroma —
+  // it rotates hue, it does not remove it, which is the same argument the lift
+  // tint above is built on.
+  //
+  // TWO gates, and the second one is the interesting half.
+  //
+  // uRodKnee is a HIGHLIGHT gate in linear light. Above it a pixel is a real
+  // light source — a campfire, a headlight pool, a lit window — bright enough
+  // for cones, and it keeps its own colour completely. This is what stops the
+  // operator from eating the warm accent that night.jpg composes its whole
+  // picture around. It is deliberately set well ABOVE the moonlit ground, not
+  // below it, which is the opposite of the first version of this block: with
+  // the knee under the ground the term reached only the sky, and the moonlit
+  // meadow stayed the khaki it is at noon.
+  //
+  // The second gate is the pixel's own coolness, and it is what protects the
+  // dome without an explicit exclusion. Rods peak near 500 nm, so a surface
+  // that is already blue looks the same to rods and to cones and has nothing
+  // to shift; a warm surface is what a rod response changes. So taper the term
+  // out as the pixel's blue lead rises. This falls out as: the khaki meadow,
+  // the brown trunk and the orange leaf litter — the whole "daytime ground,
+  // dimmed" mass the baseline note names — are moved, and the violet sky,
+  // the blue snow and the blue distance, which are Author A's and Author B's
+  // authored colours, are left exactly as authored.
+  //
+  // Without it this term and the sky dome fight: measured on dome-h0, a
+  // full-strength rod shift with no coolness taper took the frame from 42% to
+  // 81% of chromatic pixels in the violet/magenta sector, i.e. it was
+  // re-authoring the dome from the grade.
+  if (uNight > 0.001) {
+    float ln = luma(c);
+    float dim = 1.0 - smoothstep(uRodKnee * 0.35, uRodKnee, ln);
+    float coolLead2 = clamp((c.b - max(c.r, c.g)) / max(c.b, 1e-4), 0.0, 1.0);
+    float already = 1.0 - smoothstep(uRodCoolLo, uRodCoolHi, coolLead2);
+    float w = uRodAmount * uNight * dim * already;
+    vec3 rod = vec3(ln) * uRodTint;
+    c = mix(c, rod, clamp(w, 0.0, 1.0));
+  }
+
   // Fine grain, luminance-weighted so it stays out of the highlights.
   float n = fract(sin(dot(uv * (1.0 + uTime * 0.0001), vec2(12.9898, 78.233))) * 43758.5453);
   c += (n - 0.5) * uGrain * (1.0 - smoothstep(0.5, 1.0, luma(c)));
@@ -369,13 +469,49 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
 // here instead of buried in a dependency.
 const TONEMAP_FRAG = /* glsl */`
 uniform float uExposure;
+uniform float uOffsetScale;
 
 vec3 pbrNeutral( vec3 c ) {
   const float startCompression = 0.8 - 0.04;
   const float desaturation = 0.15;
 
+  // ── THE BLACK OFFSET IS A DAYLIGHT ASSUMPTION, AND AT NIGHT IT IS FALSE ────
+  //
+  // PBR Neutral subtracts the pixel's own minimum channel, up to a ceiling of
+  // 0.04. In a daylight frame that is a small toe on a picture whose subject
+  // sits between 0.1 and 1.0. At night the ENTIRE frame is below 0.04, so the
+  // subtraction is not a toe — it is most of the image.
+  //
+  // Worked through with a measured night sky, linear (0.006, 0.008, 0.020):
+  //   x = 0.006, offset = 0.00578, result (0.00022, 0.00222, 0.01422)
+  // Two things happen and both are defects the round has been chasing.
+  //
+  //   · The pixel loses two thirds of its luminance. That is the "night is 4x
+  //     too dark" reading, and no exposure setting fixes it cleanly because the
+  //     subtraction is of a quantity that itself scales with exposure — which
+  //     is why the measured transfer from exposure to rendered night sky is a
+  //     3.4 POWER rather than a linear one. Swept on dome-h0:
+  //       base exposure  0.44   0.55   0.70   0.88
+  //       zenith luma    0.014  0.033  0.081  0.144
+  //     A 2x change in exposure is a 10x change on screen. Every author's
+  //     night radiance lands on that curve, so the night level is not really
+  //     anybody's to own until this is flattened.
+  //
+  //   · Subtracting the minimum channel is, exactly, a saturation operator. It
+  //     takes the red channel of a night sky to nearly zero, so a dome authored
+  //     at a plausible 1 : 0.9 : 1.5 arrives at 1 : 0.7 : 6.4 — the blue excess
+  //     reported against Author B's night keys. Part of that number is this
+  //     line and not their keys, and chasing it in the keyframe table means
+  //     authoring a colour that this curve then re-breaks.
+  //
+  // So scale the offset out as night falls. It is not a change to the curve's
+  // shape where the curve has a job to do: uOffsetScale is 1.0 for every
+  // daylight and twilight hour and only falls once the frame is genuinely below
+  // the offset's own ceiling. The black point at night is then set by the
+  // grade's toe, which is a term authored for the purpose and is measured in
+  // the frame it is applied to.
   float x = min( c.r, min( c.g, c.b ) );
-  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  float offset = ( x < 0.08 ? x - 6.25 * x * x : 0.04 ) * uOffsetScale;
   c -= offset;
 
   float peak = max( c.r, max( c.g, c.b ) );
@@ -397,11 +533,86 @@ class ToneMapEffect extends Effect {
   constructor(exposure = 1.0) {
     super('AutumnToneMap', TONEMAP_FRAG, {
       blendFunction: BlendFunction.NORMAL,
-      uniforms: new Map([['uExposure', new THREE.Uniform(exposure)]]),
+      uniforms: new Map([
+        ['uExposure', new THREE.Uniform(exposure)],
+        ['uOffsetScale', new THREE.Uniform(1.0)],
+      ]),
     });
   }
   get exposure() { return this.uniforms.get('uExposure').value; }
   set exposure(v) { this.uniforms.get('uExposure').value = v; }
+  get offsetScale() { return this.uniforms.get('uOffsetScale').value; }
+  set offsetScale(v) { this.uniforms.get('uOffsetScale').value = v; }
+}
+
+// ── Veiling glare ───────────────────────────────────────────────────────────
+//
+// A mipmap bloom is a *scattering* kernel: its energy falls off fast, so it
+// draws a tight halo and nothing else. What makes morning.jpg read as looking
+// INTO the light is not that halo — it is the low-frequency wash that lifts the
+// entire upper-left quadrant of the frame, mountains included, most of a
+// frame-width away from the disc. sunset2.jpg is the same operator at full
+// strength: the canyon walls either side of the sun are washed pale for
+// hundreds of pixels. No amount of bloom intensity produces that, because
+// raising intensity brightens the core long before it reaches the corner.
+//
+// So take it from the broadest thing already in the chain. The bloom's mipmap
+// pyramid computes a heavily-filtered, luminance-thresholded copy of the frame
+// on its way down; the smallest upsampling level is that copy at roughly a
+// hundredth of the frame's width, which as a screen-space field is exactly the
+// wash. Adding it back at its own gain — separately from the bloom, which keeps
+// its own tighter radius — gives two independent knobs for two different
+// optical effects instead of one knob that has to be both.
+//
+// It costs five taps of a texture a few dozen texels wide, i.e. nothing: it is
+// resident in cache for the whole frame. And it is occlusion-correct for free,
+// which an analytic screen-space flare centred on the sun's projected position
+// is not — put the sun behind a ridge and the bright pixels are not in the
+// pyramid, so the wash is not there either.
+//
+// Five taps rather than one because a texture this small is being magnified
+// ~64x, and bilinear magnification is only C0: the gradient breaks at every
+// texel boundary, which on a smooth low-amplitude wash shows up as faint
+// diamond facets. Four half-texel diagonal taps plus the centre is a tent over
+// the interpolant and removes them.
+//
+// Runs in linear HDR *before* the tone curve, which is where glare belongs —
+// it is light arriving at the sensor, so the curve must compress it. Added
+// after the curve it would simply raise the black level of the whole frame.
+const VEIL_FRAG = /* glsl */`
+uniform sampler2D uVeilTex;
+uniform vec2  uVeilTexel;
+uniform float uVeilGain;
+uniform vec3  uVeilTint;
+
+void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+  vec3 v = texture2D(uVeilTex, uv).rgb * 0.3333;
+  v += texture2D(uVeilTex, uv + uVeilTexel * vec2( 0.75,  0.75)).rgb * 0.1667;
+  v += texture2D(uVeilTex, uv + uVeilTexel * vec2(-0.75,  0.75)).rgb * 0.1667;
+  v += texture2D(uVeilTex, uv + uVeilTexel * vec2( 0.75, -0.75)).rgb * 0.1667;
+  v += texture2D(uVeilTex, uv + uVeilTexel * vec2(-0.75, -0.75)).rgb * 0.1667;
+  outputColor = vec4(max(v, 0.0) * uVeilGain * uVeilTint, inputColor.a);
+}`;
+
+class VeilEffect extends Effect {
+  constructor() {
+    super('AutumnVeil', VEIL_FRAG, {
+      blendFunction: BlendFunction.ADD,
+      uniforms: new Map([
+        ['uVeilTex',   new THREE.Uniform(null)],
+        ['uVeilTexel', new THREE.Uniform(new THREE.Vector2(1 / 32, 1 / 18))],
+        ['uVeilGain',  new THREE.Uniform(0.0)],
+        // Slightly warm, and only slightly. The plates' glare core is
+        // `#fefcf0` — a neutral white — and only turns peach several degrees
+        // out, so the wash must not arrive pre-tinted orange or the frame
+        // never produces a near-neutral pixel. The peach comes from the
+        // *source* being peach, not from this.
+        ['uVeilTint',  new THREE.Uniform(new THREE.Vector3(1.04, 1.00, 0.94))],
+      ]),
+    });
+  }
+  get gain() { return this.uniforms.get('uVeilGain').value; }
+  set gain(v) { this.uniforms.get('uVeilGain').value = v; }
 }
 
 class GradeEffect extends Effect {
@@ -430,6 +641,24 @@ class GradeEffect extends Effect {
         ['uBlueFloor',     new THREE.Uniform(0.160)],
         ['uGreenTame',     new THREE.Uniform(0.50)],
         ['uGreenTameMax',  new THREE.Uniform(0.45)],
+        ['uMgntTame',      new THREE.Uniform(0.55)],
+        ['uMgntTameMax',   new THREE.Uniform(0.40)],
+        // Written every frame by PostFX.render() from SKY_STATE. See _night().
+        ['uNight',         new THREE.Uniform(0.0)],
+        ['uRodAmount',     new THREE.Uniform(0.70)],
+        // Linear light. Above this a pixel is a light source and keeps its own
+        // colour — see the block in the grade. Set ABOVE the moonlit ground.
+        ['uRodKnee',       new THREE.Uniform(0.60)],
+        ['uRodCoolLo',     new THREE.Uniform(0.18)],
+        ['uRodCoolHi',     new THREE.Uniform(0.55)],
+        // Luminance-normalised (luma 0.999), so this sets a hue and never a
+        // brightness. One axis has to serve two plate samples that are not the
+        // same colour — night.jpg's sky is 1 : 0.72 : 1.60 (violet) and its
+        // moonlit snow is srgb(14,47,88), effectively 1 : 13 : 46 (blue) — so
+        // this sits between them at 1 : 0.95 : 2.10, a blue-violet. Pulled to
+        // the snow end it takes the dome to navy, which is the defect the brief
+        // opens with; pulled to the sky end the ground stays brown.
+        ['uRodTint',       new THREE.Uniform(new THREE.Vector3(0.958, 0.910, 2.012))],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
       ]),
@@ -488,7 +717,17 @@ class GradeEffect extends Effect {
 // `pow(vT, uTipBias)` in the grass albedo with `vT` a hair below zero (see
 // src/shaders/grass_material.js). With that clamped, six levels measures zero
 // black frames, so the floor stays where the look wants it.
-const MIN_BLOOM_MIP = 12;
+//
+// 7, down from 12, and it is a look change bought with the headroom that note
+// describes. The widest lobe a mipmap bloom can draw is set by its smallest
+// level: at a 12 px floor a 900 px frame gets 6 levels and the broadest kernel
+// is ~1/64 of the frame, which cannot reach the halo `morning.jpg` puts across
+// a third of its width. At 7 px it gets 7 levels. The two extra targets are
+// 14x8 and 7x4 — about 130 texels of render work between them, which is not a
+// measurable cost, and the black-frame table above is not a reason to refuse
+// them now that its actual cause is fixed. Checked with perf.mjs's
+// black-frame sampler after the change: 0 of 8 sampled during motion.
+const MIN_BLOOM_MIP = 7;
 
 // Raised to 0.94 with the toe and lift pulled back (0.040/0.042 -> 0.026/0.030)
 // and contrast to 1.30. The old numbers were set while the shadow clamp bug was
@@ -555,6 +794,154 @@ const EXPOSURE = 0.88;
 const EXPOSURE_ELEV_START = 0.40;   // sin(elev) at which stopping down begins
 const EXPOSURE_ELEV_END   = 0.92;   // …and reaches full
 const EXPOSURE_ELEV_MIN   = 0.66;   // multiplier at the top of the arc
+
+// ── …AND THE OTHER HALF OF THE ARC, WHICH HAD NEVER BEEN WRITTEN ────────────
+//
+// The ramp above is one-sided. It clamps at `sunElev` 0.40, so from the
+// horizon down to midnight the exposure was a constant, and every hour this
+// round is about — twilight and night — sat on the flat part of a curve whose
+// whole argument is that exposure is where a photographer absorbs a change in
+// scene radiance. A photographer opens up at dusk. This did not.
+//
+// What that cost, measured on the pinned baseline at 1600x900:
+//
+//   frame          lumaP05  lumaP95  range    plate            P05    P95
+//   sunvista-h19    0.291    0.614   0.322    sunset.jpg      0.247  0.927
+//   hero-h19        0.263    0.612   0.349    sunset2.jpg     0.204  0.703
+//   ridge-h0        0.161    0.168   0.007    night.jpg       0.028  0.336
+//   dome-h0         0.161    0.167   0.005    night3.jpg      0.072  0.282
+//
+// Two different failures and they want opposite corrections.
+//
+// TWILIGHT is missing its TOP. Our black point is already at the plate's — 0.26
+// against 0.247 — and we reach lumaP95 0.61 where the plate reaches 0.93. There
+// is no blown pixel anywhere in the frame, which is the numeric form of "no
+// golden glow": a glow IS a blown highlight. So open up. The bottom is held by
+// raising twilight contrast in the same ramp (see _lowSun in render), which
+// pushes the toe down as fast as the exposure lifts the top, so the range grows
+// from both ends instead of the whole frame sliding up.
+//
+// NIGHT is missing EVERYTHING, and the reason is arithmetic rather than art.
+// `ridge-h0` spans 0.007 of luma across the entire frame. Traced back through
+// the grade, srgb(41,42,42) is linear ~(0.021,0.023,0.024) and the grade's own
+// black lift contributes (0.014,0.018,0.027) of it — so upward of two thirds of
+// every night pixel in the game was a spatially constant term this file adds,
+// and a constant has no gradient. The scene has to outrun the lift before any
+// night grading is worth doing, and a 3.4x open-up is what puts the dome at the
+// plates' 0.050 linear with the lift then a minority of it. The lift is also
+// cut at night (uNight, see render) so the two moves do not fight.
+//
+// Written as a small monotone table rather than a second smoothstep because it
+// is three joined ramps and a formula with three more constants in it is harder
+// to read than the shape it makes. Interpolated with smoothstep between rows,
+// so it is C1 in `sunElev`, which is itself continuous — this cannot flicker,
+// and photo mode's slider still composes with it because it multiplies
+// `_baseExposure` rather than writing it.
+//
+// The table below is authored against the tree as it stands, and the top of it
+// is deliberately flat: with Authors A and B's twilight sky in place,
+// `sunvista-h19` reaches lumaP95 0.866 with every term in this file disabled,
+// so dusk needs no exposure help at all and an earlier version that gave it
+// 1.34x bought top-end by moving lumaP05 from 0.305 to 0.369 — the wrong
+// trade. Everything below the horizon does need it.
+//
+//   sin(elev)   x     what
+//     0.40+    1.00   day: handed to the EXPOSURE_ELEV ramp above, untouched
+//     0.10     1.00   dawn/golden hour: the shipping sheet, bit-identical
+//     0.00     1.00   sun on the horizon — the sunset plates, and already there
+//    -0.09     1.28   civil twilight
+//    -0.22     1.80   astronomical twilight into night
+//    -0.45     2.10   deep night
+const EXPOSURE_LOW = [
+  [ 0.10, 1.00 ],
+  [ 0.00, 1.00 ],
+  [-0.09, 1.28 ],
+  [-0.22, 1.80 ],
+  [-0.45, 2.10 ],
+];
+
+/** Interpolate EXPOSURE_LOW at `e`, smoothstepped between rows. */
+function exposureLow(e) {
+  if (e >= EXPOSURE_LOW[0][0]) return EXPOSURE_LOW[0][1];
+  const last = EXPOSURE_LOW.length - 1;
+  if (e <= EXPOSURE_LOW[last][0]) return EXPOSURE_LOW[last][1];
+  for (let i = 0; i < last; i++) {
+    const [e0, v0] = EXPOSURE_LOW[i];
+    const [e1, v1] = EXPOSURE_LOW[i + 1];
+    if (e > e1) {
+      let t = (e0 - e) / (e0 - e1);
+      t = t * t * (3 - 2 * t);
+      return v0 + (v1 - v0) * t;
+    }
+  }
+  return EXPOSURE_LOW[last][1];
+}
+
+// ── The glare ramp ──────────────────────────────────────────────────────────
+//
+// Bloom and veil both key off "how low is the sun", for the reason the note at
+// the top of Sky.js gives from the other side: a sky sitting near the tone
+// curve's knee blooms *everywhere*, and at midday the whole dome is there. A
+// low sun is when a broad, hot lobe reads as glare and a high sun is when the
+// same lobe reads as white paper, so the threshold has to move with it.
+//
+// `lowSun` below is 1 with the sun at or under the horizon and 0 by the time it
+// is 20 deg up, which puts h7.4 (sin 0.12) at 0.62 and h17.1 at about 0.35 —
+// i.e. the two golden-hour framings get most of it and noon gets none.
+//
+// Threshold is in LINEAR light, which is the trap in this block and the reason
+// the header comment above once described this pass as running on the
+// display-referred result. BloomEffect's luminance pass reads the merged pass's
+// *input buffer*, which is the HDR scene straight off the guard pass — the tone
+// curve is an effect further down the same merged shader and has not run. So
+// 0.80 here is 0.91 on screen, not 0.80, and a dusk sky peaking at 0.4 linear
+// was never within reach of it at any intensity.
+const GLARE_THRESH_HI  = 1.05;   // linear luma the bloom starts at, sun high
+const GLARE_THRESH_LO  = 0.72;   // …and with the sun on the horizon
+                                 //
+                                 // Swept on sunvista and sunlow at h7.4 and
+                                 // h19 (tools/postsweep.mjs), lumaRange at
+                                 // h19: 0.60 -> 0.696, 0.90 -> 0.680,
+                                 // 1.20 -> 0.645, 1.60 -> 0.636. Below ~0.6
+                                 // the whole dusk sky is over the line and the
+                                 // frame goes to white paper — the failure the
+                                 // note at the top of Sky.js records — while
+                                 // above ~1.2 only the disc is admitted and
+                                 // there is no aureole to spread. 0.72 sits
+                                 // just under the dusk sky's own peak, so the
+                                 // sky contributes weakly and the aureole
+                                 // strongly, which is the shape the plates
+                                 // have.
+const GLARE_SMOOTH_HI  = 0.45;   // knee width, sun high
+const GLARE_SMOOTH_LO  = 0.30;   // …and low: a narrower knee, so the broad
+                                 // low-amplitude aureole is admitted rather
+                                 // than being smoothed away to nothing
+const GLARE_INTENS_HI  = 0.34;
+const GLARE_INTENS_LO  = 0.86;
+const GLARE_RADIUS_HI  = 0.68;
+const GLARE_RADIUS_LO  = 0.84;   // wider upsample tent: each level contributes
+                                 // more of the level above it, which is what
+                                 // carries the halo out past the disc
+const VEIL_GAIN_HI     = 0.10;
+const VEIL_GAIN_LO     = 0.25;
+
+// ── …and a third arm, for night ─────────────────────────────────────────────
+//
+// `lowSun` is 1 all night, so without this the dusk glare settings run at
+// midnight too — and at midnight the only things over a 0.72 threshold are the
+// moon and the brightest stars. The moon SHOULD have a halo: night.jpg draws
+// one about ten disc-radii across and it is a large part of why that plate
+// reads as moonlit rather than as dark. The stars should not. Measured on
+// dome-h0 at the dusk settings, the brightest stars came back with visible
+// halos tens of pixels across against a plate whose stars are points.
+//
+// The two are separated by brightness and nothing else, so raise the threshold
+// at night until only the moon is over it, and take the intensity down with it.
+// The veil follows for free — it reads the same thresholded pyramid, so a star
+// that is no longer in the source is no longer in the wash either.
+const GLARE_THRESH_NIGHT = 1.70;
+const GLARE_INTENS_NIGHT = 0.42;
+const VEIL_GAIN_NIGHT    = 0.30;
 
 // ── HDR sanity gate ──────────────────────────────────────────────────────────
 //
@@ -688,14 +1075,47 @@ export class PostFX {
     this.mainPass = null;
 
     this.bloom = new BloomEffect({
-      intensity: 0.38,
-      luminanceThreshold: 0.80,
-      luminanceSmoothing: 0.45,
+      intensity: GLARE_INTENS_HI,
+      luminanceThreshold: GLARE_THRESH_HI,
+      luminanceSmoothing: GLARE_SMOOTH_HI,
       mipmapBlur: true,
-      radius: 0.68,
+      radius: GLARE_RADIUS_HI,
       kernelSize: KernelSize.HUGE,
       blendFunction: BlendFunction.ADD,
     });
+    this.veil = new VeilEffect();
+
+    // Every time-of-day look number in one writable record, so a decision can
+    // be swept in ONE browser boot instead of one boot per candidate — the
+    // same pattern, and the same reason, as Lighting.ambientScale and
+    // Lighting.fogScale. The module constants above remain the authored
+    // shipping values; this is a copy of them that tools/postsweep.mjs writes.
+    this.look = {
+      threshHi: GLARE_THRESH_HI, threshLo: GLARE_THRESH_LO,
+      smoothHi: GLARE_SMOOTH_HI, smoothLo: GLARE_SMOOTH_LO,
+      intensHi: GLARE_INTENS_HI, intensLo: GLARE_INTENS_LO,
+      radiusHi: GLARE_RADIUS_HI, radiusLo: GLARE_RADIUS_LO,
+      veilHi:   VEIL_GAIN_HI,    veilLo:   VEIL_GAIN_LO,
+      threshNight: GLARE_THRESH_NIGHT,
+      intensNight: GLARE_INTENS_NIGHT,
+      veilNight:   VEIL_GAIN_NIGHT,
+      // Multipliers on the low half of the exposure arc and on the two
+      // twilight grade terms. 1.0 is the authored curve.
+      exposureLow: 1.0,
+      twiContrast: 0.30,
+      twiVibrance: 0.34,
+      nightLiftCut: 0.85,
+      // How much of PBR Neutral's black offset survives at full night. See the
+      // note in TONEMAP_FRAG — at 1.0 the curve eats two thirds of the night
+      // frame and inflates its blue-to-red ratio fourfold.
+      nightOffset: 0.15,
+      rodAmount: 0.70,
+      // The scotopic axis, luminance-normalised. Written every frame so a
+      // sweep can move it; see the note in the grade.
+      rodTint: [0.958, 0.910, 2.012],
+      // Where `lowSun` reaches 0, in sin(elev). 0.34 is ~20 deg.
+      lowSunEnd: 0.34,
+    };
 
     // Depth of field. `focusDistance` is a fraction of camera.far, so the
     // default has to be derived from it rather than hard-coded — 0.02 put the
@@ -900,7 +1320,10 @@ export class PostFX {
   _rebuildMainPass() {
     const effects = [];
     if (this.dof) effects.push(this.dof);
-    effects.push(this.bloom, this.tone, this.vignette, this.grade, this.smaa);
+    // Veil directly after bloom and before the tone curve: it is light arriving
+    // at the sensor, so the curve has to compress it. Added after the curve it
+    // would only raise the whole frame's black level.
+    effects.push(this.bloom, this.veil, this.tone, this.vignette, this.grade, this.smaa);
     if (this.mainPass) {
       this.composer.removePass(this.mainPass);
       this.mainPass.setEffects([]);
@@ -956,13 +1379,102 @@ export class PostFX {
   }
 
   render(dt) {
-    // Stop down as the sun climbs. See EXPOSURE_ELEV_*.
+    this._driveTimeOfDay();
+    this.composer.render(dt);
+  }
+
+  /**
+   * Everything in this chain that is a function of where the sun is.
+   *
+   * All of it is a smooth function of `SKY_STATE.sunElev`, which is itself
+   * smooth, so nothing here can flicker or pop between frames — the same
+   * argument the original elevation ramp was written on. Nothing here
+   * reallocates: `levels` is fixed by resolution and tier, and only uniforms
+   * are written.
+   */
+  _driveTimeOfDay() {
     const e = SKY_STATE.sunElev;
+    const L = this.look;
+
+    // ── exposure ────────────────────────────────────────────────────────────
     let t = (e - EXPOSURE_ELEV_START) / (EXPOSURE_ELEV_END - EXPOSURE_ELEV_START);
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     t = t * t * (3 - 2 * t);
-    this.tone.exposure = this._baseExposure * (1 + (EXPOSURE_ELEV_MIN - 1) * t);
-    this.composer.render(dt);
+    const high = 1 + (EXPOSURE_ELEV_MIN - 1) * t;
+    // The low half, scaled so a sweep can move twilight and night together.
+    const low = 1 + (exposureLow(e) - 1) * L.exposureLow;
+    this.tone.exposure = this._baseExposure * high * low;
+
+    // ── how low is the sun ──────────────────────────────────────────────────
+    // 1 at and below the horizon, 0 by ~20 deg up.
+    let s = e / L.lowSunEnd;
+    s = s < 0 ? 0 : s > 1 ? 1 : s;
+    const lowSun = 1 - s * s * (3 - 2 * s);
+
+    // ── night ───────────────────────────────────────────────────────────────
+    // Its own ramp, later than `dayFactor` and later than `lowSun`: the frame
+    // is still a bright twilight when the sun touches the horizon, and a rod
+    // response applied there would put a blue cast over the sunset wedge.
+    let n = (-0.045 - e) / 0.115;
+    n = n < 0 ? 0 : n > 1 ? 1 : n;
+    const night = n * n * (3 - 2 * n);
+
+    // ── glare ───────────────────────────────────────────────────────────────
+    const lm = this.bloom.luminanceMaterial;
+    const thresh = L.threshHi + (L.threshLo - L.threshHi) * lowSun;
+    const intens = L.intensHi + (L.intensLo - L.intensHi) * lowSun;
+    lm.threshold = thresh + (L.threshNight - thresh) * night;
+    lm.smoothing = L.smoothHi + (L.smoothLo - L.smoothHi) * lowSun;
+    this.bloom.intensity = intens + (L.intensNight - intens) * night;
+    this.bloom.mipmapBlurPass.radius = L.radiusHi + (L.radiusLo - L.radiusHi) * lowSun;
+
+    // ── veil ────────────────────────────────────────────────────────────────
+    // The source texture is the smallest level of the bloom's own pyramid, so
+    // it is re-read every frame rather than cached: `levels` changes with the
+    // window size and with the quality tier, and a stale texture here would be
+    // a disposed render target.
+    const mm = this.bloom.mipmapBlurPass;
+    const us = mm.upsamplingMipmaps, ds = mm.downsamplingMipmaps;
+    const rt = (us && us.length >= 2) ? us[us.length - 1]
+             : (ds && ds.length ? ds[ds.length - 1] : null);
+    const vu = this.veil.uniforms;
+    if (rt && rt.texture) {
+      vu.get('uVeilTex').value = rt.texture;
+      vu.get('uVeilTexel').value.set(1 / Math.max(1, rt.width), 1 / Math.max(1, rt.height));
+      const vg = L.veilHi + (L.veilLo - L.veilHi) * lowSun;
+      this.veil.gain = vg + (L.veilNight - vg) * night;
+    } else {
+      this.veil.gain = 0;
+    }
+
+    // ── the twilight / night grade ──────────────────────────────────────────
+    const u = this.grade.uniforms;
+    u.get('uNight').value = night;
+    // Contrast up at twilight. The exposure ramp above lifts the top of the
+    // curve; this takes the bottom back down, so the range opens from both ends
+    // rather than the whole frame sliding up — measured, exposure alone moved
+    // lumaP05 up almost as much as lumaP95. The pivot is 0.18 linear, which is
+    // above every dark mass in a dusk frame, so a contrast above 1 is a
+    // darkening there and a brightening only on the sky and the glare.
+    //
+    // Twilight-only, and that matters: the archive records a global 1.30 with
+    // the toe cut turning every shaded shrub into a black hole at eye level in
+    // daylight, and the art director rejecting it. `lowSun` is 0 at noon and
+    // 0.35 at h17.1, so the daylight sheet moves by a third of this at most.
+    u.get('uContrast').value = 1.36 + L.twiContrast * lowSun;
+    // Vibrance down at twilight. It is a chroma *compressor* — it boosts by
+    // (1 - sat), so it does its largest work on the least saturated pixels in
+    // the frame, and at dusk those are the sky and the haze. Measured on the
+    // baseline, sunvista-h19 came back 23.8% magenta/rose/violet with zero
+    // near-neutral pixels; this is the term that was amplifying a mildly purple
+    // dome into a strongly purple one.
+    u.get('uVibrance').value = 0.90 - L.twiVibrance * lowSun;
+    // …and the lift down at night, so the scene outruns it. See the scotopic
+    // block in the grade for the measurement.
+    u.get('uLift').value = 0.020 * (1 - L.nightLiftCut * night);
+    u.get('uRodAmount').value = L.rodAmount;
+    u.get('uRodTint').value.set(L.rodTint[0], L.rodTint[1], L.rodTint[2]);
+    this.tone.offsetScale = 1 - (1 - L.nightOffset) * night;
   }
 
   /** Scene exposure applied immediately before the tone curve. */

@@ -22,6 +22,7 @@
 import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
 import { injectUniforms, verifyUniforms, captureShader } from './uniformPatch.js';
+import { SKY_STATE } from './Lighting.js';
 import { MassifShadow, neutralMassifMap } from './MassifShadow.js';
 
 const FOG_PARS = /* glsl */`
@@ -29,7 +30,8 @@ const FOG_PARS = /* glsl */`
   uniform vec3  fogColor;          // near / ground haze colour
   uniform vec3  uFogFarColor;      // distant colour (cooler, bluer)
   uniform vec3  uFogSunColor;      // inscattered sunlight
-  uniform vec3  uFogSunDir;
+  uniform vec3  uFogSunDir;        // sun, for the cloud-shadow column walk
+  uniform vec3  uFogScatterDir;    // what the Mie lobe points at — see update()
   uniform float uFogDensity;       // extinction at base height, per metre
   uniform float uFogHeightFalloff; // 1 / scale-height
   uniform float uFogBaseHeight;
@@ -282,8 +284,15 @@ const FOG_FRAG = /* glsl */`
     gl_FragColor.rgb *= mix(vec3(1.0), uSunShadeMul, w);
   }
 
-  // ── Mie inscattering: the haze glows around the sun ─────────────────────
-  float cosT = dot(dir, uFogSunDir);
+  // ── Mie inscattering: the haze glows around the light ───────────────────
+  // uFogScatterDir, not uFogSunDir. They are the same vector all day; after
+  // sunset the sun is under the horizon and the only thing in the sky bright
+  // enough to build a forward-scatter lobe out of is the moon, so this swings
+  // to it as it rises. Pointed at a buried sun instead, the term put its lobe
+  // *below* the ground for a third of the cycle, which is not a glow anywhere.
+  // The cloud-shadow column walk above keeps the real sun: it is a projection
+  // of a shadow, not a scatter.
+  float cosT = dot(dir, uFogScatterDir);
   float g = uFogAnisotropy;
   float hg = (1.0 - g * g) / (4.0 * 3.14159265 * pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5));
 
@@ -709,6 +718,12 @@ const DEFAULTS = {
   // chunk). Luma 0.960, so a full-strength shadow gives up 4% of its value to
   // buy the hue, and that is the entire depth cost of this term.
   sunShadeMul: new THREE.Vector3(1.15, 0.90, 1.00),
+
+  // Amplitude of the moon's inscatter colour — see Atmosphere._moonScatter().
+  // The night keys put the haze at linear luma ~0.013; this lands the halo's
+  // own colour a little over that, which is a lift you can see against the sky
+  // and nowhere near a fog bank.
+  moonScatter: 0.055,
 };
 
 let patched = false;
@@ -739,6 +754,7 @@ export function patchFogChunks() {
     uFogFarColor:      { value: PALETTE.fogFar.clone() },
     uFogSunColor:      { value: PALETTE.sunDisc.clone() },
     uFogSunDir:        { value: new THREE.Vector3(0, 1, 0) },
+    uFogScatterDir:    { value: new THREE.Vector3(0, 1, 0) },
     uFogDensity:       { value: DEFAULTS.density },
     uFogHeightFalloff: { value: DEFAULTS.heightFalloff },
     uFogBaseHeight:    { value: DEFAULTS.baseHeight },
@@ -844,6 +860,21 @@ export class Atmosphere {
     });
   }
 
+  /**
+   * The moon's contribution to the inscatter colour.
+   *
+   * `moonScatter` is the amplitude, and it is small on purpose: the haze around
+   * a moon is a *halo*, and a halo that reaches the value of the moonlit ground
+   * is a fog bank. Held at roughly a fifth of the night sky's own luminance,
+   * scaled by how far up the moon is, so it fades in with the moon rather than
+   * switching on.
+   */
+  _moonScatter(moonColor, mi) {
+    const c = (this._moonScatterCol ??= new THREE.Color());
+    c.copy(moonColor ?? { r: 0.82, g: 0.86, b: 1.0 });
+    return c.multiplyScalar(this.params.moonScatter * mi);
+  }
+
   update(sunDir, sunColor, elevation01) {
     const p = this.params;
     this.scene.fog.color.copy(p.nearColor);
@@ -884,6 +915,38 @@ export class Atmosphere {
     const si = globalThis.__lighting?.sun?.shadow?.intensity;
     this._sunShadeNorm = (Number.isFinite(si) && si > 0.05) ? 1 / si : 1 / 0.62;
 
+    // ── what the Mie lobe points at, and what colour it is ──────────────────
+    //
+    // All day: the sun, unchanged. After it sets there is no sun to
+    // forward-scatter and the lobe was still aimed at one, several degrees
+    // under the terrain — so for roughly a third of the cycle this term drew
+    // its glow below the ground, which is to say nowhere. The moon is the only
+    // source left, and night.jpg is explicit that it wants this: the plate has
+    // a soft halo around its crescent perhaps ten disc-radii across, sitting in
+    // the sky rather than on the dome, which is what an inscattering haze looks
+    // like around a light.
+    //
+    // Swung by `moonIntensity`, which Lighting already ramps to 0 whenever the
+    // moon is down or the sun is up, so the crossover is smooth by
+    // construction and there is no hour at which both are claimed.
+    //
+    // The colour has to move with the direction. `fogSun` is authored for
+    // sunlight and at h0 it is 0x2a3358, a dark blue — mixing the haze toward
+    // that around the moon is a hole, not a halo. Moonlight is the moon's own
+    // colour at a small fraction of daylight, so this is moonColor scaled to
+    // sit just above the night haze rather than at daylight amplitude.
+    const s = SKY_STATE;
+    const mi = Math.min(1, Math.max(0, s.moonIntensity ?? 0));
+    (this._scatterDir ??= new THREE.Vector3()).copy(sunDir);
+    (this._scatterColor ??= new THREE.Color());
+    if (mi > 0.001 && s.moonDir) {
+      this._scatterDir.lerp(s.moonDir, mi).normalize();
+      this._scatterColor.copy(p.sunColor).lerp(
+        this._moonScatter(s.moonColor, mi), mi);
+    } else {
+      this._scatterColor.copy(p.sunColor);
+    }
+
     for (const m of this._materials) {
       const u = m.userData?.shader?.uniforms ?? m.uniforms;
       if (!u || !u.uFogDensity) continue;
@@ -898,6 +961,8 @@ export class Atmosphere {
       u.uFogFarColor.value.copy(p.farColor);
       u.uFogSunColor.value.copy(p.sunColor);
       u.uFogSunDir.value.copy(sunDir);
+      if (u.uFogScatterDir) u.uFogScatterDir.value.copy(this._scatterDir);
+      if (this._scatterColor) u.uFogSunColor.value.copy(this._scatterColor);
       if (u.uFogInscatterMax) u.uFogInscatterMax.value = p.inscatterMax;
       if (u.uFogDesat) u.uFogDesat.value = p.desat;
       if (u.uCloudShadow) {

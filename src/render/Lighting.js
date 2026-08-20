@@ -108,30 +108,130 @@ const C = (hex) => new THREE.Color().setHex(hex, THREE.SRGBColorSpace);
 //  rather than pink. The blue-hour and twilight keys (6.3, 19.8 and the night
 //  block) keep B above G — at those hours the distance genuinely is blue and
 //  the plates say nothing about it.
+//  THE NIGHT BLOCK — RE-AUTHORED 2026-08-20, AND WHAT IT IS UP AGAINST.
+//
+//  The old night keys were navy and an eighth of the plates' value: zen
+//  0x0d1226 is linear 1 : 1.42 : 4.7 at luma 0.006, against night.jpg's
+//  1 : 0.72 : 1.60 at 0.050. Two separate errors — green above red where the
+//  plates put red above green, and eight stops of missing value — and the
+//  second one turns out to matter far more than it looks, because of where the
+//  grade's contrast pivot sits.
+//
+//  MEASURED, and this is the whole reason the old night frame had no structure
+//  at all: PostFX applies contrast 1.36 about a 0.18 linear pivot *before* its
+//  soft toe, so any scene value under
+//
+//      0.18 - 0.18 / 1.36  =  0.0476 linear
+//
+//  arrives at the toe negative, and the toe maps every negative to within a
+//  thousandth of the same number. The entire old night — sky 0.006, ground
+//  0.02 — sat under that crossing, which is why all twelve ladder points on
+//  `dome-h0` came back at luma 0.024: zenith, horizon, both edges, near ground
+//  and far ground, one identical value. It was not a flat gradient, it was a
+//  constant. Nothing authored below ~0.05 linear can produce a visible
+//  difference of any kind, so a night that is *dark on the screen* has to be
+//  authored *bright in the scene* and let the grade do the darkening.
+//
+//  So the night sky keys below are authored at roughly *nine times* their old
+//  luminance. The starting point was the plate's own hex — every colour in
+//  this table is authored display-referred (see the note at the top of the
+//  file), and `night.jpg`'s zenith is #483a54 — and that was then measured
+//  through the shipping chain and came back at luma 0.012 against the plate's
+//  0.050. The transfer through this part of the curve is steep: swept in one
+//  boot (tools/_scratch/nightsweep.mjs --skysweep, which pokes Sky.js's night
+//  override to zero so the dome shows the published key), display luma goes as
+//  roughly the *cube* of the authored value —
+//
+//     authored zen   scene luma   dome luma
+//     #2a2438          0.0198       0.0094
+//     #38304a          0.0330       0.0145
+//     #463b58          0.0512       0.0447
+//     #564a68          0.0740       0.134
+//     #6e5a80          0.1226       0.297
+//
+//  — so landing the plate's 0.050 wants about 1.6x the plate's own scene value,
+//  which is what #5a4d68 is. IF THE EXPOSURE MOVES, THIS MOVES: the honest
+//  authored value is #483a54, the shipping value is that times 1.6 in linear,
+//  and the multiplier is here so the next person can undo it in one step
+//  rather than re-deriving the table above.
+//
+//  Hue: red above green, blue highest — a violet, not a navy.
+//
+//  MEASURED AND NOT REACHED, so that the next author does not re-derive it:
+//  the dome comes back at a linear ratio near 1 : 0.70 : 3.2, not the authored
+//  1 : 0.70 : 1.62. The cause is downstream and is not something a key colour
+//  can answer — PostFX's Purkinje term mixes 70% of every dim pixel toward a
+//  fixed axis of 1 : 0.95 : 2.10, which is bluer than the plate's sky, and the
+//  grade's contrast expands what is left. Authoring the blue channel down to
+//  compensate would mean publishing a mauve-brown and calling it a night sky,
+//  which is a lie about the scene that the next person to open this file would
+//  have to reverse-engineer. The request is logged for Author C instead.
+//
+//  Value: the *relative* radiance is what this table owns — the sky against
+//  the ground, and the key against the fill. `hemiI` and MOON_INTENSITY below
+//  are set so an up-facing moonlit surface comes back at roughly half the
+//  dome's luminance, which is where both plates put it. The absolute level of
+//  the frame belongs to the exposure and the grade.
 const KEYS = [
-  { h: 0.0,  sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x5c6892, hemiGnd: 0x3a3c52, hemiI: 0.42,
-    zen: 0x0d1226, hor: 0x1c2440, sunHor: 0x2e3050, glow: 0x2a3358, glowI: 0.12,
-    fogNear: 0x1e2740, fogFar: 0x151b30, fogSun: 0x2a3358, fogD: 0.0030,
-    cloudLit: 0x3a4468, cloudDark: 0x131a2e, cover: 0.35 },
+  { h: 0.0,  sun: 0x3f6ec8, sunI: 0.05, hemiSky: 0x3162c4, hemiGnd: 0x2a3a60, hemiI: 0.38,
+    zen: 0x4e415b, hor: 0x4e425e, sunHor: 0x504260, glow: 0x423b52, glowI: 0.10,
+    fogNear: 0x334670, fogFar: 0x4e425e, fogSun: 0x47405c, fogD: 0.0052,
+    cloudLit: 0x656384, cloudDark: 0x2a2940, cover: 0.11 },
 
-  { h: 5.2,  sun: 0x3f5080, sunI: 0.12, hemiSky: 0x606c96, hemiGnd: 0x3c3e54, hemiI: 0.46,
-    zen: 0x111834, hor: 0x2a3352, sunHor: 0x4b4468, glow: 0x50486e, glowI: 0.22,
-    fogNear: 0x2a3350, fogFar: 0x1d2440, fogSun: 0x4b4468, fogD: 0.0031,
-    cloudLit: 0x4a5074, cloudDark: 0x191f36, cover: 0.37 },
+  // `cover` at the night keys is D1 in docs/SKY_NIGHT_BRIEF.md, actioned here.
+  // The cloud author measured that 0.35-0.39 puts the top fifth of the coverage
+  // field over the sky, and because every view ray crosses the deck at a
+  // grazing angle the *visible* fraction is far higher than the areal one —
+  // 50.7% areal reads as 84-99% of visible sky. Both night plates are
+  // essentially clear and `night2.jpg` has cloud over about a fifth, and a
+  // third of the dome under opaque deck deletes the stars, the Milky Way and
+  // the moon, which is the whole round. 0.11-0.13 through the night, ramping
+  // back to the authored daylight values by 19.0 and 6.3 where cloud is the
+  // event rather than the obstruction.
+  { h: 5.2,  sun: 0x5474b4, sunI: 0.16, hemiSky: 0x3f6cbe, hemiGnd: 0x30406a, hemiI: 0.55,
+    zen: 0x504868, hor: 0x5a506f, sunHor: 0x6b5368, glow: 0x695370, glowI: 0.26,
+    fogNear: 0x3e527b, fogFar: 0x5a506f, fogSun: 0x695367, fogD: 0.0050,
+    cloudLit: 0x736f92, cloudDark: 0x2f2e48, cover: 0.13 },
 
-  // Blue hour — the sun is still under the horizon, the sky does the lighting.
-  { h: 6.3,  sun: 0x9a7ea0, sunI: 0.55, hemiSky: 0x8d96b2, hemiGnd: 0x776a76, hemiI: 0.84,
-    zen: 0x25407e, hor: 0xb59aa4, sunHor: 0xe0a088, glow: 0xf0ac82, glowI: 0.50,
-    fogNear: 0x9c8a94, fogFar: 0x8a82a0, fogSun: 0xe0a088, fogD: 0.0036,
-    cloudLit: 0xc9a8b0, cloudDark: 0x584f6e, cover: 0.34 },
+  // Blue hour. The sun now crosses the horizon at 6.2 exactly (see
+  // computeSunDir), so at 6.3 it is a fraction of a degree up and the dome has
+  // a real disc in it for the first time.
+  //
+  // Every magenta-led key in this row was re-authored: `sun` was 0x9a7ea0, a
+  // literal magenta key light, `hor` 0xb59aa4 and `fogFar` 0x8a82a0 both had
+  // blue above green with green *below* red, which is the candy-pink the
+  // critic keeps naming. The rule applied to every twilight key below is that
+  // a colour may be warm (R > G > B) or blue-violet (G >= R, B highest), and
+  // may not be the third thing — B above G with G below R.
+  { h: 6.3,  sun: 0xb08e88, sunI: 0.72, hemiSky: 0x92a0c4, hemiGnd: 0x776a76, hemiI: 0.88,
+    zen: 0x2b4a88, hor: 0x9aa2c0, sunHor: 0xe4a284, glow: 0xffb086, glowI: 0.90,
+    fogNear: 0x94969e, fogFar: 0x8a94b2, fogSun: 0xe4a084, fogD: 0.0034,
+    cloudLit: 0xc8ada6, cloudDark: 0x5a5474, cover: 0.34 },
 
   // Cool dawn — long low light, pale horizon. Cool is a *relative* statement:
   // the zenith is the bluest of the day, but the haze itself stays peach, or
   // the frame measures out at a fifth of the reference's chroma.
-  { h: 7.4,  sun: 0xffcc9c, sunI: 2.60, hemiSky: 0xb8bcd0, hemiGnd: 0xd0a482, hemiI: 1.14,
-    zen: 0x76abdc, hor: 0xf4d4b4, sunHor: 0xffc794, glow: 0xffd4ab, glowI: 0.95,
-    fogNear: 0xe6b79c, fogFar: 0xd4b8ac, fogSun: 0xffcc96, fogD: 0.0024,
-    cloudLit: 0xffe0c4, cloudDark: 0xa8968e, cover: 0.30 },
+  //
+  // THE MISSING HIGHLIGHT IS THE AUREOLE, NOT THE DOME — 2026-08-20.
+  //
+  // `morning.jpg` measures zenith luma 0.970, mid sky 0.945, and a hard warm
+  // wedge at 0.541 under it. Ours measured 0.765 / 0.790, and whole-frame
+  // lumaP95 0.61 against the plate's 0.980. The obvious reading is "pale the
+  // dome", and it is wrong twice over: the note at the top of this table
+  // records the zenith keys being paled once and reverted because `waterfall`
+  // lost its blue, and a plate that white at the *top* of frame is a plate
+  // shot straight into a low sun with the aureole covering a third of the
+  // frame width. It is the glow, not the gradient.
+  //
+  // So `glowI` carries it: 0.95 -> 1.85 at 7.4 and 1.32 -> 1.60 at 19.0. The
+  // three aureole lobes in Sky.js are tight (~20 deg, ~7 deg, and the flare),
+  // so this buys a blown highlight around the disc without the broad lift that
+  // file's comment warns turns the upper frame to white paper. `hor` goes up
+  // by about a tenth of a stop with it; the zenith keys are left alone.
+  { h: 7.4,  sun: 0xffcc9c, sunI: 2.60, hemiSky: 0xb0bcdc, hemiGnd: 0xd0a482, hemiI: 1.14,
+    zen: 0x7fb0de, hor: 0xf8e2ce, sunHor: 0xffc08a, glow: 0xffd8b0, glowI: 1.85,
+    fogNear: 0xe6bda4, fogFar: 0xd6bcb0, fogSun: 0xffcc96, fogD: 0.0022,
+    cloudLit: 0xffe4cc, cloudDark: 0xa89a96, cover: 0.30 },
 
   { h: 9.5,  sun: 0xffdfae, sunI: 3.10, hemiSky: 0xb6c0e4, hemiGnd: 0xdcb072, hemiI: 0.96,
     zen: 0x63a0dc, hor: 0xf2e2d6, sunHor: 0xf8ead8, glow: 0xffeed6, glowI: 0.72,
@@ -154,31 +254,128 @@ const KEYS = [
     fogNear: 0xe0b296, fogFar: 0xdcbcae, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0xb49688, cover: 0.22 },
 
-  { h: 18.3, sun: 0xffb47e, sunI: 2.05, hemiSky: 0xb4a8cc, hemiGnd: 0xcc9060, hemiI: 1.16,
-    zen: 0x5b83c2, hor: 0xf4d2b0, sunHor: 0xf8ac74, glow: 0xffae66, glowI: 1.20,
-    fogNear: 0xe2a888, fogFar: 0xdab0a2, fogSun: 0xffa860, fogD: 0.0035,
-    cloudLit: 0xffcc9c, cloudDark: 0xa8867a, cover: 0.32 },
+  { h: 18.3, sun: 0xffb47e, sunI: 2.05, hemiSky: 0xaab6de, hemiGnd: 0xcc9060, hemiI: 1.16,
+    zen: 0x5b83c2, hor: 0xf6d4b0, sunHor: 0xf8ac74, glow: 0xffb268, glowI: 1.40,
+    fogNear: 0xe2a888, fogFar: 0xd8b4a6, fogSun: 0xffa860, fogD: 0.0030,
+    cloudLit: 0xffcc9c, cloudDark: 0x8e94a8, cover: 0.32 },
 
-  { h: 19.0, sun: 0xff9a6a, sunI: 1.50, hemiSky: 0xb49eac, hemiGnd: 0xb27a58, hemiI: 1.14,
-    zen: 0x4a6bb4, hor: 0xeaae90, sunHor: 0xf28a4c, glow: 0xff9450, glowI: 1.32,
-    fogNear: 0xd88a62, fogFar: 0xc09084, fogSun: 0xff8a48, fogD: 0.0040,
-    cloudLit: 0xffb078, cloudDark: 0x94706a, cover: 0.34 },
+  // THE VALUE RANGE IS THE FINDING, AND THE HAZE IS WHERE IT WENT.
+  //
+  // `sunset.jpg` runs sky 0.63 to ground 0.07 — a x9 spread. `sunvista-h19`
+  // ran 0.55 to 0.30, x1.8, which is exactly why it reads as mush. The note
+  // beside FOG_DENSITY_SCALE already established that on a vista nothing else
+  // in the chain has this much authority over the black point: the haze eats
+  // the darks several hundred metres before the grade ever sees the pixel.
+  // These two hours had the *highest* fogD in the table (0.0040 / 0.0043,
+  // against 0.0015 at noon) on the reasoning that dusk is hazy — and dusk is
+  // hazy, but the frames it produced had no ground left. Cut to 0.0034 /
+  // 0.0038, which is still above the daylight keys and no longer above golden
+  // hour's.
+  //
+  // `fogFar` is the other half. It was 0xc09084 at 19.0 and 0x92849e at 19.8 —
+  // pink and violet-pink, and past `farStart * 5` the haze is *entirely*
+  // fogFar, so that was the colour of every distant ridge in the frame. Now a
+  // warm-neutral with blue under green, so the distance is dusty rather than
+  // candy. The cool half of the picture does not live here; it lives in
+  // `hemiSky`, which is where a cast shadow gets its colour, and both of these
+  // rows had it drifting warm (0xb49eac, 0x8a92ae). Pulled back to a real
+  // blue.
+  { h: 19.0, sun: 0xffa878, sunI: 1.40, hemiSky: 0x92a6d4, hemiGnd: 0xb07c5a, hemiI: 1.10,
+    zen: 0x4a6ebc, hor: 0xf0b892, sunHor: 0xff9450, glow: 0xffa254, glowI: 1.60,
+    fogNear: 0xdc9468, fogFar: 0xc0a89c, fogSun: 0xff8c46, fogD: 0.0034,
+    cloudLit: 0xffb884, cloudDark: 0x86889e, cover: 0.34 },
 
-  { h: 19.8, sun: 0x9c5a76, sunI: 0.32, hemiSky: 0x8a92ae, hemiGnd: 0x7a6672, hemiI: 0.72,
-    zen: 0x33508e, hor: 0xb890a0, sunHor: 0xd0756e, glow: 0xe07a62, glowI: 0.66,
-    fogNear: 0xa8808e, fogFar: 0x92849e, fogSun: 0xd8756e, fogD: 0.0043,
-    cloudLit: 0xd09aa0, cloudDark: 0x6a5468, cover: 0.36 },
+  { h: 19.8, sun: 0xa87a70, sunI: 0.30, hemiSky: 0x7d8cc0, hemiGnd: 0x6e5c62, hemiI: 0.88,
+    zen: 0x55639c, hor: 0xb09a92, sunHor: 0xd8785a, glow: 0xe08a58, glowI: 0.90,
+    fogNear: 0xa88e84, fogFar: 0x9c9490, fogSun: 0xcc7a5c, fogD: 0.0038,
+    cloudLit: 0xc09a90, cloudDark: 0x5a5a80, cover: 0.36 },
 
-  { h: 21.0, sun: 0x4a4a80, sunI: 0.12, hemiSky: 0x64709a, hemiGnd: 0x40425a, hemiI: 0.48,
-    zen: 0x151c3a, hor: 0x35395c, sunHor: 0x53476c, glow: 0x54486e, glowI: 0.22,
-    fogNear: 0x333a58, fogFar: 0x232a48, fogSun: 0x53476c, fogD: 0.0034,
-    cloudLit: 0x4a5074, cloudDark: 0x191f36, cover: 0.39 },
+  { h: 21.0, sun: 0x4568c0, sunI: 0.07, hemiSky: 0x3564c6, hemiGnd: 0x2c3c64, hemiI: 0.42,
+    zen: 0x4e435c, hor: 0x504661, sunHor: 0x5b4761, glow: 0x55465c, glowI: 0.18,
+    fogNear: 0x364872, fogFar: 0x504661, fogSun: 0x554760, fogD: 0.0051,
+    cloudLit: 0x676589, cloudDark: 0x2b2a42, cover: 0.12 },
 
-  { h: 24.0, sun: 0x3b4a7a, sunI: 0.10, hemiSky: 0x5c6892, hemiGnd: 0x3a3c52, hemiI: 0.42,
-    zen: 0x0d1226, hor: 0x1c2440, sunHor: 0x2e3050, glow: 0x2a3358, glowI: 0.12,
-    fogNear: 0x1e2740, fogFar: 0x151b30, fogSun: 0x2a3358, fogD: 0.0030,
-    cloudLit: 0x3a4468, cloudDark: 0x131a2e, cover: 0.35 },
+  { h: 24.0, sun: 0x3f6ec8, sunI: 0.05, hemiSky: 0x3162c4, hemiGnd: 0x2a3a60, hemiI: 0.38,
+    zen: 0x4e415b, hor: 0x4e425e, sunHor: 0x504260, glow: 0x423b52, glowI: 0.10,
+    fogNear: 0x334670, fogFar: 0x4e425e, fogSun: 0x47405c, fogD: 0.0052,
+    cloudLit: 0x656384, cloudDark: 0x2a2940, cover: 0.11 },
 ];
+
+// ── THE MOON ────────────────────────────────────────────────────────────────
+//
+// There was no moon light source in this file at all. At midnight `sunI` was
+// 0.10 aimed at a sun 14 deg under the horizon and `hemiI` was 0.42, so the
+// world was lit by a weak, near-neutral ambient and nothing else — no key, no
+// shadow, no form, and the autumn ground albedo surviving the multiply
+// unchanged, which is what made `camp-h0` read as "orange grass, dimmed".
+//
+// Colour. Real moonlight is sunlight and is not blue; every plate here renders
+// it blue-white, and that is the art direction, so it is measured off the
+// plates rather than off physics. `night3.jpg`'s moonlit snow is srgb(9,48,91)
+// — a near-neutral albedo coming back at linear 1 : 6.5 : 22, i.e. the light
+// itself is overwhelmingly cool.
+//
+// We cannot reach that number and it is worth writing down why rather than
+// chasing it: the plates' ground is *snow*, a neutral high albedo, and ours is
+// an autumn meadow. Probed under a known white hemisphere
+// (tools/_scratch/nightdiag.mjs), our terrain comes back 1 : 0.257 : 0.101 and
+// the grass 1 : 0.55 : 0.157. Landing a 1 : 6.5 : 22 pixel on that albedo needs
+// a light at 1 : 25 : 218, which is not a colour. So the split is:
+//
+//   * the KEY is cool-white with a real blue lean (1 : 1.61 : 3.10). It is the
+//     light that *shapes* — it makes the terminator, it casts the shadow, and
+//     it lands mostly on slopes rather than on the flat.
+//   * the AMBIENT does the hue. A hemisphere fill is what the up-facing ground
+//     actually sees at night, and `hemiSky` at 0x3162c4 is linear
+//     1 : 5.5 : 29, which multiplied by the terrain albedo above lands the
+//     ground cool-led instead of orange. Saturating the *ambient* is safe in a
+//     way that saturating a key is not — the note beside KEY_TINT is about a
+//     key light performing a hue replacement on four different albedos in
+//     daylight, and at night the plates replace the hue on purpose.
+//
+// The key is deliberately NOT run through tintKey/KEY_SAT_MAX. That machinery
+// exists to stop a daylight key collapsing crimson maple, gold grass and green
+// conifer into one band; at night the reference collapses them on purpose and
+// scotopic vision does the same thing, so neutralising the moon would be
+// undoing the effect rather than protecting it.
+const MOON_KEY = 0x6a9df2;
+// Peak intensity, at a high moon in a fully dark sky. Everything below it is
+// the elevation and sun-depression gate in update(). Swept with `moonScale`.
+//
+// Derived, not guessed, and the derivation is the useful part. What the brief
+// asks for is a *ratio* — moonlit ground at about half the dome's luminance —
+// so both terms are written in the same units and solved:
+//
+//   up-facing radiance  =  hemiSky_luma * hemiI * AMBIENT_SCALE
+//                       +  MOON_KEY_luma * MOON_INTENSITY * sin(moonElev)
+//                       =  0.145 * hemiI * 0.72  +  0.529 * M * 0.657
+//
+// Swept against the dome in one boot (tools/_scratch/nightsweep.mjs, which
+// scales `ambientScale` and `moonScale` together), the ground lands at 0.45x
+// the dome when that sum is about 0.11 against a dome authored at scene luma
+// 0.123 — i.e. when it is 0.39 of the sky's own value. The night zenith is now
+// authored at 0.052, so the sum wants to be 0.048.
+//
+// Split 60 / 40 in favour of the key, because the key is the half that makes
+// form: an ambient-dominated night has the right value and no shape in it, and
+// both plates get their whole read from a terminator and a cast shadow.
+//
+// Both halves then move with the dome — the target is a *ratio*, so when the
+// sky keys were lifted by 1.6x in linear to land on the plate (see the note
+// above the KEYS table), `hemiI` and this went up by the same 1.6x. That
+// coupling is the point: 0.18 -> 0.29 and 0.085 -> 0.137 leaves the ground at
+// the same fraction of the sky it was measured at.
+const MOON_INTENSITY = 0.285;
+// The disc and halo colour, published on SKY_STATE for Sky.js. Paler than the
+// key: a crescent disc is the brightest thing in the frame and reads white.
+const MOON_DISC = 0xe8f0ff;
+// 0 new … 0.5 full … 1 new. Authored, not derived. The plates all show a thin
+// crescent throwing enough light to navigate by, which is not something the
+// geometry can produce — a moon that lights the ground this well is near full.
+// Deriving the phase from the sun-moon angle would give 0.5 every night and
+// contradict the reference, so this stays an art number and the arc below is
+// chosen for the light rather than to justify it.
+const MOON_PHASE = 0.32;
 
 // ── THE MIDDAY GROUND IS BLEACHED BY GEOMETRY, NOT BY THE KEY ───────────────
 //
@@ -445,6 +642,27 @@ const AMBIENT_SCALE = 0.72;
 // Shadow normal offset, expressed in shadow-map texels. See _setShadowExtent().
 const SHADOW_NORMAL_BIAS_TEXELS = 5.5;
 
+const MOON_KEY_C = C(MOON_KEY);
+const MOON_DISC_C = C(MOON_DISC);
+
+/**
+ * Override fields on a sampled keyframe in place. See `keyOverride`.
+ * Silently ignores names that are not keyframe fields, so a sweep script can
+ * hand it a bag of settings without knowing the schema.
+ */
+function applyKeyOverride(k, ov) {
+  for (const f of COLOR_FIELDS) {
+    const v = ov[f];
+    if (v == null) continue;
+    if (typeof v === 'number') k[f].setHex(v, THREE.SRGBColorSpace);
+    else k[f].copy(v);
+  }
+  for (const f of SCALAR_FIELDS) {
+    const v = ov[f];
+    if (typeof v === 'number') k[f] = v;
+  }
+}
+
 // Pre-convert the table once; per-frame we only lerp.
 const BAKED = KEYS.map((k) => {
   const o = { h: k.h };
@@ -513,6 +731,22 @@ export class Lighting {
     this.keyTint = null;
     // Same, for the chroma ceiling. Null means "use KEY_SAT_MAX".
     this.keySatMax = null;
+    // Same, for the moon key's peak intensity.
+    this.moonScale = 1.0;
+    // A general sweep hatch on the keyframe table itself, and the reason the
+    // night re-authoring took three browser boots instead of thirty. Set it to
+    // an object of keyframe field names — `{ zen: 0x6e5a80, hemiI: 1.4 }` —
+    // and those fields are overridden after the table is sampled, for every
+    // hour, until it is set back to null. Colour fields take an sRGB hex or a
+    // THREE.Color; scalar fields take a number. Unknown names are ignored.
+    //
+    // The existing ambientScale / fogScale knobs each answer exactly one
+    // question, and every value note in this file that has three data points
+    // instead of fifteen has that shape because the thing being decided had no
+    // knob. This one is general: any authored value in the table can be swept
+    // in one page load, which is what a night key needs, because the grade's
+    // response down there is steep enough that guessing is hopeless.
+    this.keyOverride = null;
 
     // Sunrise / sunset in hours. The elevation curve is shaped so that the
     // canonical golden-hour views (16.4 … 17.9) sit between 5° and 18° — a
@@ -642,6 +876,35 @@ export class Lighting {
     this.fill = new THREE.DirectionalLight(0xffffff, 0.34);
     scene.add(this.fill);
 
+    // ── the moon key ────────────────────────────────────────────────────────
+    // A second directional light, hung off computeMoonDir, with its own shadow
+    // map. It casts, because moonlight casts: both night plates show hard
+    // legible shadow shapes off tents, vehicles and ridges, and a key with no
+    // shadow reads as ambient however bright it is.
+    //
+    // Two maps is not two maps' worth of cost, because the two lights are
+    // never both casting: the sun's `castShadow` is gated on `sunI > 0.35`,
+    // which no night key reaches, and the moon's is gated on the sun being
+    // down. The map is half the sun's resolution anyway — a night frame has
+    // nothing like the contrast to show the difference, and the extent is the
+    // same, so a moon texel is 1.2 m at the vista extent and 15 cm at eye
+    // level. Allocated lazily by three on first use, so a game that never runs
+    // at night never pays for it at all.
+    this.moon = new THREE.DirectionalLight(0xffffff, 0);
+    this.moon.castShadow = true;
+    const MS = Math.max(1024, S >> 1);
+    this.moon.shadow.mapSize.set(MS, MS);
+    this.moon.shadow.camera.near = 1;
+    this.moon.shadow.camera.far = 1400;
+    this.moon.shadow.bias = -0.0004;
+    // A moon shadow is a *shape*, not a hole — same argument as the sun's, and
+    // more so, because at night there is much less ambient to fill it and the
+    // reference night plates never show a true black shadow on snow. Lighter
+    // than the sun's 0.62 for that reason.
+    this.moon.shadow.intensity = 0.52;
+    scene.add(this.moon);
+    scene.add(this.moon.target);
+
     // Fog is owned by Atmosphere (height-based aerial perspective).
 
     this._tmp = new THREE.Vector3();
@@ -672,49 +935,141 @@ export class Lighting {
    * Sun direction from hour-of-day. Returns a shared temporary — copy it if
    * you need to keep it.
    */
+  /**
+   * THE ARC HAD A 0.045 STEP IN IT AT SUNRISE AND AT SUNSET — 2026-08-20.
+   *
+   * The day branch ended at `0.95 * 0 - 0.015 = -0.015` and the night branch
+   * *started* at `-0.06 - 0 = -0.06`, so crossing t = 1 moved the sun 2.6 deg
+   * in one frame. `dayFactor = smoothstep(-0.08, 0.10, elev)` jumped 0.30 ->
+   * 0.03 across that step, and dayFactor drives the fill intensity, the star
+   * gate and Sky.js's whole night blend — a visible pop at exactly the two
+   * hours this round is about. It also put the sun 3.6 deg under the horizon
+   * at 19.0, which is why `sunvista-h19` had nothing in it: the disc gate in
+   * Sky.js needs elev > -0.01 and the aureole was centred below the skyline.
+   *
+   * One curve now, signed through zero, so there is no seam to step across:
+   * `sign(s) * |s|^p`, with the day and night halves differing only in the
+   * exponent and the amplitude. The daylight half is the same shape it always
+   * was (the -0.015 offset is gone, which is under a degree at every hour the
+   * table keys); the night half descends faster than a raw sine so midnight
+   * lands at a real astronomical depression instead of the old -14 deg, which
+   * is what the star ramp needs to be able to distinguish civil twilight from
+   * night at all.
+   *
+   *   h      19.0    19.8    21.0     0.0     5.2     6.3
+   *   was   -3.61   -5.01   -7.09  -14.31   -5.17   -0.72   deg
+   *   now   -0.79   -4.60  -10.15  -18.65   -5.55   +0.15
+   *
+   * Returns a shared temporary — copy it if you need to keep it.
+   */
   computeSunDir(hour) {
     const span = this.sunset - this.sunrise;
     const t = (hour - this.sunrise) / span;
+    const s = Math.sin(t * Math.PI);
+    const a = Math.abs(s);
     // pow > 1 flattens the ends of the arc, so "late afternoon" is genuinely
-    // low-angle light rather than the 45° a plain sine would give.
-    let elev;
-    if (t < 0 || t > 1) {
-      const night = t < 0 ? -t : t - 1;
-      elev = -0.06 - Math.min(night * 1.6, 1) * 0.24;
-    } else {
-      elev = Math.pow(Math.sin(t * Math.PI), 1.6) * 0.95 - 0.015;
-    }
-    const az = this.azimuth + (clamp(t, -0.15, 1.15) - 0.5) * 2.4;
+    // low-angle light rather than the 45° a plain sine would give. Under the
+    // horizon a *smaller* exponent is wanted for the opposite reason: the sun
+    // has to get properly down, not linger.
+    const elev = s >= 0 ? Math.pow(a, 1.6) * 0.95 : -Math.pow(a, 0.85) * 0.32;
+    const az = this._sunAz(hour, span);
     const cosE = Math.sqrt(Math.max(1 - elev * elev, 0));
     return this._tmp.set(Math.cos(az) * cosE, elev, Math.sin(az) * cosE).normalize();
   }
 
   /**
+   * ...AND THE AZIMUTH FLIPPED 180 DEG AT MIDNIGHT.
+   *
+   * `az = azimuth + (clamp(t, -0.15, 1.15) - 0.5) * 2.4` pins the azimuth at
+   * the *upper* clamp from 20:48 to 24:00 and at the *lower* one from 00:00 to
+   * 04:18, so the sun's azimuth stepped 3.12 rad across the midnight wrap. It
+   * is a quiet defect — at midnight the wedge is the same colour as the rest of
+   * the horizon and `glowI` is 0.10 — but it also flips the counter-key, and
+   * this round is specifically about the night being continuous.
+   *
+   * The daylight window (and the 15% margin the old clamp allowed either side
+   * of it) is untouched, value for value. Across the remaining 7.5 h the
+   * azimuth now sweeps *forward*, the long way round the north, and arrives
+   * back at the dawn clamp exactly one turn later — which is both what the real
+   * thing does and, since the azimuth only ever reaches the world through a
+   * cos and a sin, seamless.
+   */
+  _sunAz(hour, span) {
+    const h = ((hour % 24) + 24) % 24;
+    const hA = this.sunrise - 0.15 * span;
+    const hB = this.sunset + 0.15 * span;
+    if (h >= hA && h <= hB) {
+      return this.azimuth + ((h - this.sunrise) / span - 0.5) * 2.4;
+    }
+    const nightSpan = 24 - (hB - hA);
+    const q = ((((h - hB) % 24) + 24) % 24) / nightSpan;
+    return this.azimuth + 1.56 + q * (2 * Math.PI - 3.12);
+  }
+
+  /**
    * The moon's direction.
    *
-   * Deliberately NOT exactly anti-solar: a moon locked 180 deg from the sun is
-   * always full and always rises at the instant the sun sets, which reads as a
-   * mechanism rather than as a sky. Offsetting the arc by a fixed fraction of a
-   * day gives a moon that is up for part of the night, at a believable angle to
-   * the sun, and whose phase follows from that angle the way the real one does.
+   * The placeholder ran the moon on the *sun's* window offset by 14.4 h, and
+   * the arithmetic of that put the moon under the horizon at 5.2 — one of the
+   * four night keyframes — so a player out before dawn had a moonless, and
+   * therefore unlit, world, and the frame changed character somewhere between
+   * midnight and 05:00 for no reason a viewer could see. It also inherited the
+   * step at the branch seam described in computeSunDir.
+   *
+   * The moon now gets its own window, sized to the night rather than to the
+   * day: it clears the ridge shortly before the sun goes and sets shortly
+   * after the sun returns, so *every* hour a player can be out in the dark has
+   * a key light in it. It peaks around 00:20 at about 41 deg, which is where
+   * both plates put it.
+   *
+   * It is close to anti-solar in time, which the predecessor comment argued
+   * against on the grounds that it makes the moon always full. That objection
+   * is answered by MOON_PHASE being authored rather than derived — see the
+   * note there — and the alternative it recommended is the thing that left
+   * 05:00 dark. The azimuth sweeps at a different rate from the sun's (2.1 rad
+   * against 2.4) so the two are not mirror images and moonrise is not simply
+   * sunset reflected.
+   *
+   *   h        18.3   19.0   19.8   21.0    0.0    5.2    6.3    7.4
+   *   moonElev  0.6    6.5   13.5   23.9   41.1   10.8    2.1   down
    */
   computeMoonDir(hour) {
-    // Lags the anti-solar point by ~2.4 h, which is what puts the crescent
-    // where the plates have it — high and to one side, not opposite the camera.
-    const mh = (hour + 12 + 2.4) % 24;
-    const span = this.sunset - this.sunrise;
-    const t = (mh - this.sunrise) / span;
-    let elev;
-    if (t < 0 || t > 1) {
-      const below = t < 0 ? -t : t - 1;
-      elev = -0.06 - Math.min(below * 1.6, 1) * 0.24;
-    } else {
-      elev = Math.pow(Math.sin(t * Math.PI), 1.6) * 0.95 - 0.015;
-    }
-    const az = this.azimuth + (clamp(t, -0.15, 1.15) - 0.5) * 2.4;
+    const rise = this.sunset - 0.9;                    // clears the ridge before the sun goes
+    const set = this.sunrise + 0.5;                    // and lingers past sunrise
+    const up = (set - rise + 24) % 24;                 // 12.7 h above the horizon
+    const noon = (rise + up * 0.5) % 24;               // 00:20, the moon's culmination
+    // A single turn of a circle rather than a piecewise arc, which is what
+    // makes this continuous *and* periodic: the phase wraps at +-pi, and a 2pi
+    // step in an angle that only ever reaches the world through a cos and a sin
+    // is not a step at all.
+    const signed = ((((hour - noon) % 24) + 24) % 24 + 12) % 24 - 12;
+    const phase = (signed / 24) * 2 * Math.PI;
+    // Rescale cos so that it is exactly 0 at moonrise and moonset and 1 at
+    // culmination; below the horizon it keeps going negative on its own.
+    const c0 = Math.cos((up * 0.5 / 24) * 2 * Math.PI);
+    const x = (Math.cos(phase) - c0) / (1 - c0);
+    const elev = x >= 0 ? Math.pow(x, 1.15) * 0.66 : -Math.pow(-x, 0.9) * 0.30;
+    const az = this.azimuth + Math.PI + phase;
     const cosE = Math.sqrt(Math.max(1 - elev * elev, 0));
     return (this._moonTmp ??= new THREE.Vector3())
       .set(Math.cos(az) * cosE, elev, Math.sin(az) * cosE).normalize();
+  }
+
+  /**
+   * How far into the night we are, in hours since sunset, or -1 in daylight.
+   *
+   * Star visibility cannot be driven off the sun's elevation, and that is not
+   * a stylistic preference — this world's night is only 11.3 h long against a
+   * 12.7 h day, so the sun's *depression* runs from 0 to 18 deg and back in a
+   * curve whose useful part is a few hundredths of a unit wide. An hour count
+   * is the quantity the astronomy is actually stated in ("civil twilight is
+   * about forty minutes"), it is monotone, and it cannot be confused by the
+   * shallow part of the arc.
+   */
+  _nightHours(hour) {
+    const nightLen = 24 - this.sunset + this.sunrise;
+    const since = ((((hour - this.sunset) % 24) + 24) % 24);
+    return since <= nightLen ? since : -1;
   }
 
   // ── shadows ────────────────────────────────────────────────────────────────
@@ -741,6 +1096,16 @@ export class Lighting {
     // this is 0.59 m against the old 0.35.
     this.sun.shadow.normalBias =
       SHADOW_NORMAL_BIAS_TEXELS * (2 * e / this.preset.shadowMapSize);
+    // The moon's map is half the resolution, so its texel is twice as wide and
+    // the same reasoning gives it twice the offset. Deriving it from the sun's
+    // number instead would put the moon shadow inside its own caster.
+    // (The constructor sizes the sun's frustum before the moon exists.)
+    if (!this.moon) return;
+    const mc = this.moon.shadow.camera;
+    mc.left = -e; mc.right = e; mc.top = e; mc.bottom = -e;
+    mc.updateProjectionMatrix();
+    this.moon.shadow.normalBias =
+      SHADOW_NORMAL_BIAS_TEXELS * (2 * e / this.moon.shadow.mapSize.x);
   }
 
   /**
@@ -805,18 +1170,59 @@ export class Lighting {
     this.sunDir.copy(dir);
 
     const k = this.sampleKeys(this.hour, this._keys ??= {});
+    if (this.keyOverride) applyKeyOverride(k, this.keyOverride);
     const elev = dir.y;
     // 0 while the sun is under the horizon, 1 once it is properly up.
     const day = smoothstep(-0.08, 0.10, elev);
+
+    // ── the night ramps ─────────────────────────────────────────────────────
+    // All three run off hours-since-sunset rather than off sun elevation. See
+    // _nightHours for why elevation cannot carry this. `nightLen` is 11.3 h
+    // here, so the two ends never overlap.
+    //
+    //   h        19.0   19.8   20.4   21.0    0.0    4.6    5.2    5.6
+    //   star     0.00   0.12   0.44   0.86   1.00   0.86   0.20   0.02
+    //   milky    0.00   0.00   0.09   0.35   1.00   0.35   0.01   0.00
+    //   night    0.00   0.29   0.83   1.00   1.00   1.00   0.29   0.03
+    //
+    // Civil twilight in this world is the ~40 min after 18.9; astronomical
+    // twilight is roughly an hour beyond that, which is where `star` reaches
+    // full. Sky.js cubes this before using it, which moves the knee later
+    // again — their note argues for that and it is a shaping of this curve,
+    // not a replacement, so both ends still agree.
+    const nh = this._nightHours(this.hour);
+    const nightLen = 24 - this.sunset + this.sunrise;
+    const ramp = (a, b) => (nh < 0 ? 0
+      : Math.min(smoothstep(a, b, nh), smoothstep(a, b, nightLen - nh)));
+    // `nightFactor` used to be `1 - dayFactor`, which on the new continuous arc
+    // would read 0.69 at 19:00 — and Sky.js multiplies its whole night-key
+    // override by it, so a sunset would have been 69% lerped to the violet
+    // night dome. It is now its own ramp reaching 1 about ninety minutes after
+    // sunset, per the table above. Computed here rather than in the publish
+    // block below because the key tint needs it.
+    const nightF = ramp(0.40, 1.80);
 
     // The key illuminates as a tint of a neutral, not as its authored hue. See
     // the note beside KEY_TINT. Applied here and not to the baked table so the
     // sun *disc* and the sky glow, published below from the same key, keep the
     // authored colour — a low sun looks orange because the disc is orange, not
     // because everything it touches is.
+    // ...AND THE TINT IS A DAYLIGHT CORRECTION, SO IT LETS GO AT NIGHT.
+    //
+    // KEY_TINT exists to stop a daylight key performing a hue *replacement* on
+    // four different albedos at once. At night the reference does that
+    // replacement on purpose — a moonlit frame is one hue plus a warm accent —
+    // and leaving the tint on has a measured cost, because the grass shader
+    // multiplies `sun.color` into the field without any intensity term at all:
+    // at h0 the authored key 0x3f6ec8 was arriving at 18% of its own hue, i.e.
+    // as a neutral grey, and the meadow came back a grey-mauve at chroma 0.056
+    // against the plate's 0.29. The tint amount therefore lerps to 1.0 (the
+    // authored hue, untouched) across the same night ramp everything else
+    // uses. Daylight is bit-identical: `nightF` is 0 from 6.3 through 19.0.
     this.sun.color.copy(k.sun);
-    tintKey(this.sun.color,
-      keyTintAmount(k.sun, this.keyTint ?? KEY_TINT, this.keySatMax ?? KEY_SAT_MAX));
+    tintKey(this.sun.color, lerp(
+      keyTintAmount(k.sun, this.keyTint ?? KEY_TINT, this.keySatMax ?? KEY_SAT_MAX),
+      1.0, nightF));
     this.sun.intensity = k.sunI;
     this.sun.castShadow = k.sunI > 0.35;
 
@@ -852,23 +1258,33 @@ export class Lighting {
     s.hour = this.hour;
 
     // ── moon and stars ──────────────────────────────────────────────────────
-    // A placeholder arc that is *correct in kind*: the moon rides roughly
-    // opposite the sun, so it is up when the sun is not, and it is a real
-    // direction that a light and a disc can both be hung off. The author who
-    // owns this file re-authors the numbers; the field contract is what the
-    // dome is being built against right now.
     const md = this.computeMoonDir(this.hour);
     s.moonDir.copy(md);
     s.moonElev = md.y;
-    // Up, and only once the sun is far enough down that it would actually read.
-    const moonUp = smoothstep(-0.02, 0.12, md.y);
-    const sunGone = 1 - smoothstep(-0.14, 0.02, elev);
+    s.moonPhase = MOON_PHASE;
+    s.moonColor.copy(MOON_DISC_C);
+    // Up, and only once the sun is far enough down that it would actually
+    // read. The sun gate used to open at elev > -0.14, which on the old arc was
+    // reached the moment the branch stepped — the moon came on at half strength
+    // at 19:00 over a salmon sky. Held off until civil twilight is genuinely
+    // finishing.
+    const moonUp = smoothstep(-0.015, 0.10, md.y);
+    const sunGone = 1 - smoothstep(-0.20, -0.045, elev);
     s.moonIntensity = moonUp * sunGone;
-    // Astronomical rather than civil twilight: the sky is still bright enough
-    // to wash out all but the brightest stars well after `dayFactor` hits 0.
-    s.starAmount = 1 - smoothstep(-0.16, -0.03, elev);
-    s.milkyWay = 1 - smoothstep(-0.20, -0.07, elev);
-    s.nightFactor = 1 - day;
+
+    s.starAmount = ramp(0.55, 2.00);
+    s.milkyWay = ramp(1.10, 2.90);
+    s.nightFactor = nightF;
+
+    // The moon key. Not tinted toward neutral and not capped by KEY_SAT_MAX —
+    // see the note beside MOON_KEY for why that machinery is the wrong tool
+    // here. Intensity rides the same gate as the published moonIntensity so
+    // the light and the disc can never disagree about whether the moon is out.
+    this.moon.color.copy(MOON_KEY_C);
+    this.moon.intensity = MOON_INTENSITY * s.moonIntensity * this.moonScale;
+    // Never both. The sun's own gate is `sunI > 0.35`, which no night key
+    // reaches, so in practice this is "day or night", not a race.
+    this.moon.castShadow = !this.sun.castShadow && s.moonIntensity > 0.22;
     s.zenith.copy(k.zen);
     s.horizon.copy(k.hor);
     s.sunHorizon.copy(k.sunHor);
@@ -984,6 +1400,22 @@ export class Lighting {
       // bias is kept small so ridgelines do not peter-pan.
       this.sun.shadow.normalBias = clamp(texelWorld * 1.7, 0.12, 0.90);
       this.sun.shadow.bias = -0.00018 - texelWorld * 0.0004;
+
+      // The moon rides the same snapped target and the same extent — a night
+      // frame wants its shadow texels exactly where the day frame wants them,
+      // and sharing the snap means the two never disagree by half a texel at
+      // the hour they hand over. Its own texel is twice as wide (half the map),
+      // so both biases are derived from that and not copied from the sun's.
+      this.moon.target.position.copy(this.sun.target.position);
+      this.moon.position.copy(this.moon.target.position)
+        .addScaledVector(md, Math.max(this.shadowExtent * 2.4, 420));
+      this.moon.target.updateMatrixWorld();
+      const mShadow = this.moon.shadow;
+      mShadow.camera.far = Math.max(this.shadowExtent * 2.4, 420) + this.shadowExtent * 2;
+      mShadow.camera.updateProjectionMatrix();
+      const moonTexel = (this.shadowExtent * 2) / this.moon.shadow.mapSize.x;
+      mShadow.normalBias = clamp(moonTexel * 1.7, 0.12, 1.60);
+      mShadow.bias = -0.00018 - moonTexel * 0.0004;
     }
   }
 
@@ -1009,6 +1441,15 @@ export class Lighting {
     this.sun.shadow.map = null;
     this.sun.shadow.needsUpdate = true;
 
+    // The moon's map tracks the tier too, at half resolution — same reasoning,
+    // and the same trap: without the dispose it would keep whatever size it
+    // booted with, and both of its biases are derived from that size.
+    const MS = Math.max(1024, S >> 1);
+    this.moon.shadow.mapSize.set(MS, MS);
+    this.moon.shadow.map?.dispose();
+    this.moon.shadow.map = null;
+    this.moon.shadow.needsUpdate = true;
+
     // Both biases are derived from texel width, and a texel just changed width
     // by up to 4x. `_setShadowExtent` memoises on the extent and would early-
     // return, leaving the normal offset sized for the old map — that exact
@@ -1020,6 +1461,8 @@ export class Lighting {
   }
 
   dispose() {
-    this.scene.remove(this.sun, this.sun.target, this.hemi, this.fill);
+    this.scene.remove(this.sun, this.sun.target, this.hemi, this.fill,
+                      this.moon, this.moon.target);
+    this.moon.shadow.map?.dispose();
   }
 }
