@@ -258,6 +258,74 @@
 .pa-readout-value .pa-leaf { color: var(--gold); margin-right: 0.34em; vertical-align: -0.08em; }
 .pa-readout-value .pa-leaf svg { width: 0.82em; height: 0.82em; display: inline-block; }
 
+/* ── minimap ──────────────────────────────────────────────────────────────
+   Bottom right, diagonally opposite the dash, so the two instruments bracket
+   the camper rather than crowding it. Square because the world is square: a
+   circular frame would have to crop four corners of a map whose whole selling
+   point is that it shows you everything.
+
+   No backdrop-filter here, unlike every other panel. The canvas underneath is
+   opaque, so a blur would be a full-size compositing pass every frame that
+   nobody could ever see — and this HUD has to survive a performance gate. */
+.pa-map {
+  position: absolute;
+  right: 2.2vw;
+  bottom: 2.6vh;
+  width: 11.4em;
+  height: 11.4em;
+  padding: 0.34em;
+  border-radius: 18px;
+  background: var(--scrim-solid);
+  border: 1px solid var(--edge);
+  box-shadow: var(--drop), inset 0 1px 0 rgba(255, 246, 234, 0.09);
+  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+}
+.pa-map.pa-gone { opacity: 0; transform: translateY(10px) scale(0.97); }
+
+.pa-map-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 13px;
+  /* The bake is a downscaled raster of a smooth field; letting the browser
+     filter it is what keeps the contour lines from crawling. */
+  image-rendering: auto;
+}
+
+/* North is up and never moves, so it is stated once, small, and then forgotten
+   — a rotating rose would be a second moving thing to read. */
+.pa-map-north {
+  position: absolute;
+  top: 0.22em;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.54em;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--ink-dim);
+  text-shadow: 0 0 3px rgba(46, 18, 28, 0.95), 0 1px 4px rgba(46, 18, 28, 0.8);
+  pointer-events: none;
+}
+
+/* The player. Positioned entirely by transform — see the note in hud_map.js. */
+.pa-map-me {
+  position: absolute;
+  top: 0.34em;
+  left: 0.34em;
+  width: 1.05em;
+  height: 1.05em;
+  will-change: transform;
+  filter: drop-shadow(0 1px 3px rgba(46, 18, 28, 0.75));
+  pointer-events: none;
+}
+.pa-map-me svg { width: 100%; height: 100%; display: block; }
+
+/* Two instruments in the bottom corners of a 900 px-tall window is one too
+   many; the map is the one that can wait. */
+@media (max-height: 620px), (max-width: 780px) {
+  .pa-map { display: none; }
+}
+
 /* ── corner chips (settings, mute) ────────────────────────────────────── */
 .pa-corner {
   position: absolute;

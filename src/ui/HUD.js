@@ -27,6 +27,7 @@ import { Compass } from './hud_compass.js';
 import { Dash } from './hud_dash.js';
 import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
+import { MiniMap } from './hud_map.js';
 
 const STORE = 'pa.hud';
 // How many of each landmark kind go on the compass. Weighted toward water:
@@ -42,6 +43,7 @@ export class HUD extends System {
 
     this.quality = ctx.quality ?? 'high';
     this.invertY = false;
+    this.showMap = true;
     this.hudOpacity = 1;
     this.trip = 0;
     this.found = 0;
@@ -57,6 +59,7 @@ export class HUD extends System {
       if (s) {
         this.invertY = !!s.invertY;
         this.hudOpacity = typeof s.hudOpacity === 'number' ? s.hudOpacity : 1;
+        this.showMap = s.showMap !== false;
         this._seenHint = !!s.seenHint;
       }
     } catch { /* defaults are fine */ }
@@ -72,6 +75,10 @@ export class HUD extends System {
 
     this.compass = new Compass(root);
     this.dash = new Dash(root);
+    // Baked here, inside the awaited init, so the ~40 ms raster lands under the
+    // loading screen rather than as a hitch on the player's first frame.
+    this.map = new MiniMap(root, this.ctx.world ?? globalThis.__world ?? null);
+    this.map.setVisible(this.showMap);
 
     // ── corner chips ───────────────────────────────────────────────────────
     const corner = el('div', 'pa-corner pa-game-only');
@@ -154,6 +161,7 @@ export class HUD extends System {
         case 'KeyG': if (this.photo.active) this.photo.toggleGrid(); break;
         case 'KeyP': if (this.photo.active) this.photo.capture(); break;
         case 'KeyH': this.applyHudMode(this.hudOpacity > 0 ? 0 : 1); break;
+        case 'KeyN': this.applyMap(!this.showMap); break;
         default: return;
       }
       e.preventDefault();
@@ -215,6 +223,13 @@ export class HUD extends System {
   applyCycle(v) { if (this.ctx.lighting) this.ctx.lighting.cycleSpeed = v; }
 
   applyInvert(v) { this.invertY = !!v; this._save(); }
+
+  applyMap(v) {
+    this.showMap = !!v;
+    this.map?.setVisible(this.showMap);
+    this._save();
+    this.settings?.sync();
+  }
 
   applyHudMode(v) {
     this.hudOpacity = v;
@@ -292,7 +307,8 @@ export class HUD extends System {
   _save() {
     try {
       localStorage.setItem(STORE, JSON.stringify({
-        invertY: this.invertY, hudOpacity: this.hudOpacity, seenHint: !!this._seenHint,
+        invertY: this.invertY, hudOpacity: this.hudOpacity, showMap: this.showMap,
+        seenHint: !!this._seenHint,
       }));
     } catch { /* nothing important lost */ }
   }
@@ -344,6 +360,21 @@ export class HUD extends System {
       const heading = (Math.atan2(-e[8], e[10]) * 180) / Math.PI;
       this.compass.update(heading, this.marks);
     }
+
+    // The map arrow follows the *camper*, not the camera: free-look swings the
+    // compass strip, but the question the map answers is which way the vehicle
+    // is pointed. `vehicle.heading` is measured from +Z; the map, like the
+    // compass, works clockwise from north, which is -Z.
+    if (this.showMap) {
+      const p = veh?.position ?? ctx.camera.position;
+      let bearing;
+      if (veh) bearing = 180 - (veh.heading * 180) / Math.PI;
+      else {
+        const m = ctx.camera.matrixWorld.elements;
+        bearing = (Math.atan2(-m[8], m[10]) * 180) / Math.PI;
+      }
+      this.map.update(p.x, p.z, bearing);
+    }
     this.dash.update(speed, this.trip, this.found, this.total);
     this._gamepad();
   }
@@ -351,6 +382,7 @@ export class HUD extends System {
   dispose() {
     window.removeEventListener('keydown', this._onKey);
     clearTimeout(this._toastT);
+    this.map?.dispose();
     this.root?.remove();
   }
 }

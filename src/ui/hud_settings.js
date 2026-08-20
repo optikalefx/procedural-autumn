@@ -53,12 +53,14 @@ export class Settings {
     // under Camera.
     this.node.appendChild(this._group('View', [
       this._toggle('Invert look', () => hud.invertY, (v) => hud.applyInvert(v)),
+      this._toggle('Valley map', () => hud.showMap, (v) => hud.applyMap(v)),
       this._seg('Interface', HUD_MODES, () => hud.hudOpacity, (v) => hud.applyHudMode(v)),
     ]));
 
     const foot = el('div', 'pa-foot',
       '<b>WASD</b> drive &nbsp;·&nbsp; <b>Space</b> handbrake &nbsp;·&nbsp; <b>C</b> camera<br>' +
-      '<b>F</b> photo mode &nbsp;·&nbsp; <b>M</b> mute &nbsp;·&nbsp; <b>Esc</b> close');
+      '<b>F</b> photo mode &nbsp;·&nbsp; <b>N</b> map &nbsp;·&nbsp; <b>M</b> mute<br>' +
+      '<b>H</b> hide interface &nbsp;·&nbsp; <b>Esc</b> close');
     this.node.appendChild(foot);
     root.appendChild(this.node);
 

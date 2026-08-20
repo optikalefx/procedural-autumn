@@ -182,6 +182,10 @@ async function main() {
   if (compassBox) await shot('compass', compassBox);
   const dashBox = await box('.pa-dash');
   if (dashBox) await shot('dash', dashBox);
+  // The minimap is judged on whether you could pick a direction from it alone,
+  // which needs it enlarged — 170 px of contour is not reviewable in situ.
+  const mapBox = await box('.pa-map');
+  if (mapBox) await shot('map', mapBox);
 
   // ── settings ────────────────────────────────────────────────────────────
   await page.evaluate(() => window.__hud.toggleSettings());
