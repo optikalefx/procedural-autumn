@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sound Lab — Procedural Autumn</title>
+<style>
+  /* The game's palette, and nothing else from it. This is a utility: clarity
+     beats decoration, so the only borrowed things are the colours, the rounded
+     face and the autumn accent. */
+  :root {
+    color-scheme: dark;
+    --bg:#1b1420;
+    --panel:#241a2b;
+    --panel2:#2c2034;
+    --line:rgba(255,246,234,.12);
+    --ink:#fff6ea;
+    --dim:rgba(255,246,234,.62);
+    --faint:rgba(255,246,234,.38);
+    --accent:#f3b077;
+    --hot:#d1687a;
+    --good:#8fd1a0;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { min-height:100%; background:var(--bg); color:var(--ink); }
+  body {
+    font-family: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-size:14px; line-height:1.45;
+  }
+  h1 { font-size:1.05rem; font-weight:800; letter-spacing:-.01em; }
+  h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.18em; color:var(--faint); font-weight:700; }
+  h3 { font-size:.7rem; text-transform:uppercase; letter-spacing:.16em; color:var(--accent);
+       font-weight:700; margin:14px 0 6px; opacity:.85; }
+  a { color:var(--accent); }
+
+  /* ── gate ──────────────────────────────────────────────────────────────── */
+  #gate {
+    position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:18px; text-align:center;
+    background:
+      radial-gradient(130% 100% at 50% 115%, #2b1c33 0%, rgba(43,28,51,0) 58%),
+      radial-gradient(120% 90% at 60% 24%, #f3b077 0%, #d1687a 42%, #5b3350 74%, #241a2b 100%);
+    transition: opacity .5s cubic-bezier(.22,.61,.36,1);
+  }
+  #gate.gone { opacity:0; pointer-events:none; }
+  #gate h1 { font-size:clamp(1.8rem,5vw,3rem); }
+  #gate p { max-width:44ch; color:rgba(27,20,32,.86); font-weight:600; }
+  #start {
+    font:inherit; font-weight:800; font-size:1rem; padding:14px 30px; border:0; cursor:pointer;
+    border-radius:999px; background:#1b1420; color:var(--ink);
+    box-shadow:0 10px 30px rgba(60,24,40,.45);
+  }
+  #start:hover { background:#31213a; }
+  #gateMsg { min-height:1.2em; font-weight:700; color:#3a2030; }
+  #gateMsg.bad { color:#4a0f1c; background:rgba(255,246,234,.75); padding:6px 12px; border-radius:8px; }
+
+  /* ── frame ─────────────────────────────────────────────────────────────── */
+  header {
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    padding:12px 20px; border-bottom:1px solid var(--line); background:var(--panel);
+    position:sticky; top:0; z-index:5;
+  }
+  header .sub { color:var(--faint); font-size:.78rem; }
+  header .spacer { flex:1; }
+  #note { font-size:.78rem; color:var(--dim); font-family:var(--mono); }
+  #note.bad { color:var(--hot); }
+
+  main { display:grid; grid-template-columns: minmax(0,1fr) 420px; gap:0; align-items:start; }
+  @media (max-width: 1080px) { main { grid-template-columns:1fr; } aside { position:static !important; } }
+
+  .pane { padding:16px 20px 40px; }
+  aside { position:sticky; top:53px; border-left:1px solid var(--line); background:var(--panel);
+          max-height:calc(100vh - 53px); overflow:auto; }
+
+  /* ── controls ──────────────────────────────────────────────────────────── */
+  select, input[type=text], textarea, button {
+    font:inherit; color:var(--ink); background:var(--panel2);
+    border:1px solid var(--line); border-radius:8px; padding:7px 10px;
+  }
+  select { max-width:100%; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); color:#241a2b; font-weight:700; border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  .primary { font-weight:700; }
+
+  .strip { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .tag { font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--faint);
+         border:1px solid var(--line); border-radius:99px; padding:2px 9px; }
+  #blurb { color:var(--dim); max-width:78ch; margin:6px 0 4px; }
+  #moduleName { font-family:var(--mono); font-size:.76rem; color:var(--accent); opacity:.8; }
+
+  .grp { border-top:1px solid var(--line); }
+  .grp:first-child { border-top:0; }
+  .row {
+    display:grid; grid-template-columns: minmax(190px, 260px) minmax(120px,1fr) 76px 84px;
+    align-items:center; gap:10px; padding:3px 0;
+  }
+  .row.condition { background:linear-gradient(90deg, rgba(243,176,119,.07), transparent 62%); }
+  .row.readout { color:var(--dim); }
+  .row.changed .name { color:var(--accent); font-weight:700; }
+  .lab { display:flex; align-items:baseline; gap:6px; min-width:0; }
+  .lab .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lab .unit { color:var(--faint); font-size:.72rem; font-family:var(--mono); }
+  .lab .flag { font-size:.6rem; text-transform:uppercase; letter-spacing:.1em;
+               color:var(--hot); border:1px solid rgba(209,104,122,.5); border-radius:99px; padding:0 6px; }
+  .ro { font-family:var(--mono); font-size:.78rem; text-align:right; color:var(--ink); }
+  .def { font-family:var(--mono); font-size:.68rem; color:var(--faint); }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
+
+  #needs { margin-top:22px; border-top:1px solid var(--line); padding-top:6px; }
+  #needs ul { margin:4px 0 0 18px; }
+  #needs li { font-family:var(--mono); font-size:.74rem; color:var(--dim); margin:3px 0; }
+  .hint { font-size:.76rem; color:var(--faint); margin-top:8px; max-width:70ch; }
+
+  /* ── meter ─────────────────────────────────────────────────────────────── */
+  .card { border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:14px; background:var(--panel2); }
+  .card h2 { margin-bottom:8px; }
+  #spectrum { width:100%; height:190px; display:block; }
+  .nums { display:grid; grid-template-columns:repeat(2, 1fr); gap:2px 14px; margin-top:8px; }
+  .nums div { display:flex; justify-content:space-between; font-size:.78rem; }
+  .nums span:first-child { color:var(--faint); }
+  .nums span:last-child { font-family:var(--mono); }
+  .nums .bad { color:var(--hot); font-weight:700; }
+  #silence {
+    margin-top:8px; padding:6px 10px; border-radius:8px; font-size:.8rem; font-weight:700;
+    background:rgba(209,104,122,.18); color:#ffc6d0; border:1px solid rgba(209,104,122,.5);
+  }
+
+  .lrow { display:grid; grid-template-columns:auto auto minmax(90px,1fr) minmax(70px,110px) 56px;
+          align-items:center; gap:6px; padding:3px 0; }
+  .lrow .lname { font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lrow .lnums { grid-column:1 / -1; font-family:var(--mono); font-size:.7rem; color:var(--faint);
+                 padding-left:2px; }
+  .lrow .lnums.bad { color:var(--hot); }
+  .mini { padding:1px 7px; font-size:.72rem; border-radius:6px; line-height:1.5; }
+
+  textarea#json {
+    width:100%; height:230px; font-family:var(--mono); font-size:.72rem; line-height:1.4;
+    resize:vertical; white-space:pre; overflow:auto;
+  }
+  .btns { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <h1>Sound Lab</h1>
+  <p>Browsers will not start audio without a gesture, so this is that gesture.
+     Nothing is loaded until you click — no renderer, no world bake, no game.</p>
+  <button id="start">Start audio</button>
+  <div id="gateMsg"></div>
+</div>
+
+<header>
+  <h1>Sound Lab</h1>
+  <span class="sub">Procedural Autumn · every generated sound, live</span>
+  <span class="spacer"></span>
+  <span id="note"></span>
+  <button id="panic">Stop everything</button>
+</header>
+
+<main>
+  <div class="pane">
+    <div class="strip">
+      <select id="soundSelect" aria-label="Sound"></select>
+      <span class="tag" id="kind">bed</span>
+      <button id="play" class="primary">Play</button>
+      <button id="trigger" class="primary" hidden>Trigger</button>
+      <label id="autoWrap" class="tag" hidden>
+        <input type="checkbox" id="auto" /> repeat every
+        <input type="range" id="autoEvery" min="0.4" max="8" step="0.1" value="2.5" style="width:80px;vertical-align:middle" /> s
+      </label>
+    </div>
+    <p id="blurb"></p>
+    <p id="moduleName"></p>
+
+    <div id="params"></div>
+    <div id="needs"></div>
+  </div>
+
+  <aside class="pane">
+    <div class="card">
+      <h2>Meter</h2>
+      <div class="strip">
+        <select id="meterBus" aria-label="Metering tap">
+          <option value="master">master</option>
+          <option value="ambience">ambience</option>
+          <option value="falls">falls</option>
+          <option value="rivers">rivers</option>
+          <option value="vehicle">vehicle</option>
+          <option value="wildlife">wildlife</option>
+          <option value="music">music</option>
+        </select>
+        <button id="meterReset" class="mini">Reset window</button>
+      </div>
+      <canvas id="spectrum"></canvas>
+      <div class="nums">
+        <div><span>rms</span><span id="nRms">—</span></div>
+        <div><span>peak hold</span><span id="nPeak">—</span></div>
+        <div><span>A-weighted</span><span id="nDba">—</span></div>
+        <div><span>tilt (dBA − flat)</span><span id="nTilt">—</span></div>
+        <div><span>bite ≥2 kHz</span><span id="nBite">—</span></div>
+        <div><span>centroid</span><span id="nCentroid">—</span></div>
+        <div><span>floor (p02)</span><span id="nFloor">—</span></div>
+        <div><span>median (p50)</span><span id="nP50">—</span></div>
+        <div><span>p90</span><span id="nP90">—</span></div>
+        <div><span>range</span><span id="nRange">—</span></div>
+        <div><span>context</span><span id="nState">—</span></div>
+      </div>
+      <div id="silence" hidden>No signal on this bus. It is playing and measuring silence.</div>
+    </div>
+
+    <div class="card" id="layerPanel">
+      <h2>Layers</h2>
+      <div id="layers"></div>
+      <div class="btns"><button id="zeroTest" class="mini">Zero test (prove the mixer owns this bus)</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Config</h2>
+      <textarea id="json" spellcheck="false"></textarea>
+      <div class="btns">
+        <button id="copyJson" class="primary">Copy</button>
+        <button id="applyJson">Apply pasted</button>
+        <button id="resetAll">Reset to defaults</button>
+      </div>
+      <p class="hint">Only what differs from the shipped defaults is emitted, plus
+        what the meter read while you were listening. Paste one back and press
+        Apply to restore it.</p>
+    </div>
+  </aside>
+</main>
+
+<script type="module" src="/src/tools/soundlab/main.js"></script>
+</body>
+</html>
