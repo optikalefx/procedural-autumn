@@ -1125,13 +1125,36 @@ export class Trees extends System {
       u.uAmbient.value = (lighting.hemi.intensity + lighting.fill.intensity * 0.5) / Math.PI;
       // Backlight glow rides the sun's own colour, hottest near the horizon.
       const lowSun = 1 - smoothstep(0.05, 0.42, Math.max(0, lighting.sunDir.y));
-      // Down from 1.10 / 2.40, and the drop is a unit change, not a taste
-      // change. Transmitted light is no longer multiplied by the leaf's albedo
-      // (see the transmission block in tree_material.js), so the colour it is
-      // multiplying is about eight times brighter on a conifer and about twice
-      // on a gold aspen. Same delivered radiance at the crown fringe, an
-      // enormously larger one on the dark species — which is the entire point.
-      u.uTransStrength.value = lerp(0.45, 0.95, lowSun);
+      // The unit changed, so this number is not comparable to the 1.10 / 2.40
+      // it replaces: transmitted light is no longer multiplied by the leaf's
+      // albedo (see the transmission block in tree_material.js), so the colour
+      // it scales is about eight times brighter on a conifer and about twice on
+      // a gold aspen.
+      //
+      // Set by sweep on the `backlit` crowns, transmission+rim on minus off,
+      // interleaved inside one page load. Re-run rather than inherited, because
+      // the table this replaces was quoted at a depth that also moved; these
+      // are at the shipped uTransDepth 0.7. Mean luma over the near maple crown
+      // (floor, transmission+rim off, = 0.3192) and over the mid-ground crowns
+      // (floor 0.4112). A repeat of the 1.75 step landed at 0.4436 against
+      // 0.4432, so 0.09% is the noise on these numbers:
+      //
+      //     strength      0.95    1.40    1.75    2.30
+      //     near crown   +16.5%  +31.4%  +38.8%  +50.1%
+      //     brightest
+      //     crown pixel   0.774   0.772   0.825   0.921
+      //
+      // The sky in this frame maxes at 0.868, so 2.30 puts crown pixels ABOVE
+      // the sky behind them — a crown that has stopped being a silhouette, and
+      // in the picture the stand starts dissolving into the haze. 1.75 is the
+      // top of the range that holds the relationship plate 3 holds, and it is
+      // where the previous author landed; this reproduces their choice on
+      // numbers I took myself, and finds the ceiling half a stop lower than
+      // they quoted it.
+      //
+      // 0.95 — what HEAD shipped — delivers 16.5%, well under half. That is the
+      // difference between a crown that glows and one that is merely not black.
+      u.uTransStrength.value = lerp(0.85, 1.75, lowSun);
     }
 
     const p = camera.position;

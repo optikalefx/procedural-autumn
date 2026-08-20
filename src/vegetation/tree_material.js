@@ -387,7 +387,7 @@ export function makeSharedUniforms() {
     // Overwritten every frame from Trees.update(), which ramps it with the
     // sun's elevation. The value here is only what the impostor bake sees.
     uTransStrength: { value: 1.0 },
-    // Beer-Lambert scale on the optical depth. 0.8 passes ~100% on a crown's
+    // Beer-Lambert scale on the optical depth: it passes ~100% on a crown's
     // fringe and ~10% on a card buried in an interior whorl and in the crown's
     // own shadow. Swept rather than picked: measured on the near maple crown in
     // `backlit`, transmission on minus transmission off, everything else held
@@ -400,7 +400,13 @@ export function makeSharedUniforms() {
     // at 0.34 however many leaves are in the way), so a self-shadowed backlit
     // crown — every crown this effect exists for — was cut fivefold before the
     // two continuous depth signals were even consulted.
-    uTransDepth:    { value: 0.8 },
+    //
+    // 0.8 -> 0.7 re-measured at the delivered uTransStrength (1.75, below), and
+    // the sweep above was not: it was taken at the old strength, so it is kept
+    // for the shape of the curve and not for its absolute numbers. Near maple
+    // crown, mean luma, one page load, transmission+rim off = 0.3192 —
+    //     depth 0.80  0.4244  (+33.0%)     depth 0.70  0.4432  (+38.8%)
+    uTransDepth:    { value: 0.7 },
     // How far the transmitted colour takes the leaf's own hue. 1.0 is the full
     // chromaticity of the albedo; below that it is pulled toward white. Kept
     // under 1 because a crimson maple at full chromaticity transmits a red
