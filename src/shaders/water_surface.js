@@ -577,7 +577,29 @@ void main() {
   // hands over: white first, because a cascade on stone is whitewater and never
   // a blue line, then out of existence. Only where there IS a current — a lake
   // dammed against a cliff must not delete itself.
-  float cliff = smoothstep(0.58, 1.15, (bed - bedAhead) / max(length(aheadV), 1e-3)) * coh;
+  //
+  // The current is a GATE on the hand-off, never a SCALE on it, and getting
+  // that wrong is what this round shipped. coh is a coherence, not a flag: it
+  // is the length of a blurred mean direction, so it reads well under one even
+  // on water that is unambiguously moving — MEASURED at 0.67 on the curtain of
+  // the main fall, where two box passes over a pinched, turning reach average
+  // neighbouring texels that disagree. Multiplied in, that capped the hand-off
+  // at 0.67 and left a THIRD of the surface's alpha painted down the rock face:
+  // rendering alpha to the frame put it at 0.20-0.23 over the whole curtain.
+  // That is the failure the note at the alpha multiply below predicts, and it
+  // is what the blind A/B saw — hard-edged slabs of half-transparent water
+  // lying on the fall, striped where the two nearly-coplanar surfaces beat
+  // against each other, plus the same film on the perched shelves beside it
+  // reading as a plate detached from the fall entirely.
+  //
+  // So: threshold it. The bake writes velocity times (1 - lake), so standing
+  // water is an exact zero and the dammed lake the factor exists for is still
+  // safe, while anything with a real current gets the whole hand-off. Low and
+  // tight, because everything between "no current" and "a current" here is the
+  // blur's few-metre skirt into the body a reach arrives at, and that skirt is
+  // flat water whose drop term is zero anyway.
+  float moving = smoothstep(0.03, 0.14, coh);
+  float cliff = smoothstep(0.58, 1.15, (bed - bedAhead) / max(length(aheadV), 1e-3)) * moving;
 
   // 1. against the banks — the water piles up and aerates on the edge, but only
   //    within a fraction of a channel width of it.
@@ -768,6 +790,16 @@ void main() {
   // shows up as dark blotches chopping the white water into segments, which is
   // worse than either surface on its own.
   alpha *= 1.0 - cliff;
+  // ...and the multiply on its own is not that hand-off, which is the other
+  // half of what shipped. One-minus-cliff only reaches zero when cliff reaches
+  // exactly one, so the whole leading half of the ramp is spent drawing water
+  // at a third, a fifth, a tenth of alpha over a curtain — the range where this
+  // surface contributes nothing but a stain, and where being nearly coplanar
+  // with the falls mesh is free to stripe. So the tail is taken to nothing
+  // outright: past a bit over half committed, the pixel is the falls system's
+  // and this one is not there at all. The leading edge keeps the smoothstep so
+  // the lip of a drop is still antialiased rather than a stair.
+  alpha *= 1.0 - smoothstep(0.34, 0.60, cliff);
   if (alpha < 0.012) discard;
 
   // ── the damp band, over dry ground ───────────────────────────────────────
