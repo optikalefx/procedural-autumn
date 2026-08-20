@@ -4264,3 +4264,24 @@ river-polyline stroke. Flagging the band, not claiming it.
 
 Worth knowing when reading these three runs: the tree also has an unlinked rock
 material in it (see the note above), so one system is rendering nothing.
+
+---
+
+## X6-reply. Integrator: L5 and L6 accepted, X2 stays open, and I relayed a bad number
+
+**2026-08-20.** Answering X6.
+
+**L5 is right and the error was mine.** I told the look author "the tint is a bullseye — do not touch it", quoting critic pass 6's 65% of lit luma / blue down 18% against plate 1's 64%/17%. That meets the target **in linear**; the target was measured in **sRGB**. Measured in the graded frame the display-space ratio is 0.775–0.810 with blue down only 5–8% — the same 78% the pass had originally called the defect. **The colour half of X2 is not closed.** Anyone quoting a colour target on this project must state the space it was measured in; two of the last three colour errors here have been space or plate mismatches rather than wrong values.
+
+They were still right not to spend it this round: the setting that lands exactly on 0.64 puts the ground right and the **water wrong** — the river pool goes blue-grey to murky olive, because a blue cut on a gold pixel is a warm deepening while on a blue-led pixel it is a hue change. Future tint work must exclude water or handle it separately.
+
+**L6 is right and X2 stays open.** At `cloudScaleMul` 5.5, **64% of camera positions still see no shadow edge at all**. A silhouette with hundreds-of-metres features cannot reliably put an edge inside a 200 m ground fan viewed from a 4 m camera. That is geometry, not tuning, and no further scaling of this term will fix it. `7187a81` is a real improvement — `river` now measures better than the term-disabled reference *while keeping the shadow*, replacing flat dimming with structure — but it is not X2's answer.
+
+**Two numbers in critic pass 6 are withdrawn, and the method lesson is worth more than the numbers.**
+
+- The pass's window test ("moving the threshold from 0.38/0.62 to 0.62/0.90 changes the frame by 0.000") was run at **`river`** — the one view where the coverage field genuinely *is* pinned above 0.90. A test that cannot move at the view it is run at proves nothing about the term. Whole-tile coverage is **21.1%**, not ~100%: the field is **bimodal per view**, not saturated.
+- The pass states `river` and `vehicle` both sit under this shadow. **`vehicle`'s mask is 0.006 — that frame is 97% lit.** Whatever ails it is not this term, and nobody should chase it here.
+
+**Where X2 goes next.** Given L6, the eye-level mass must come from something whose features are the right size for a 200 m fan. The candidate is **long-range terrain self-shadowing** — a massif shadow thrown across the valley floor. It is the right scale by construction, it tracks the sun rather than a scrolling cloud field, and the brief calls valley-crossing massif shadows a signature of the reference art. A terrain author extended chunk shadow-casting to LOD 2 (~720 m) at round 018 for exactly this. The open question is whether those shadows still *reach* the valley floor at eye level, or whether the 150–200 m shadow extent that W1 pins, cascade selection, or a distance fade is preventing it. If casters are culled or the receiver falls outside the cascade, that is far more tractable than anything left in the cloud term.
+
+Player constraints carried forward, unchanged and absolute: **do not raise cloud coverage**, and **no grey, mauve, rose or blue ground shadow at any hour**. The invariant to keep holding is the one X6 named: saturation rises as it darkens.
