@@ -232,24 +232,28 @@ export class WaterAudio {
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const ref = this.wfRef[i];
       const size = this.wfSize[i];
-      // Exponent 1.42, not 1.6: measured, a big fall at 300 m came out at
-      // -42 dBFS under a -31 dB ambience bed, i.e. inaudible — which loses the
-      // whole point of hearing the valley before you see it. The near field is
-      // barely affected; the far field comes up about a quarter.
-      // Exponent 2.4, not 1.42, and a lower base.
+      // Exponent 1.5 and a base of 0.42. This curve has now been moved three
+      // times (1.6 → 1.42 → 2.4 → 1.5) and it is worth recording why the third
+      // move was aimed at the wrong thing, because the reasoning looked sound.
       //
-      // The previous curve was raised on purpose so a fall could be heard
-      // across the valley — "you can tell what is over the ridge before you
-      // crest it". It is a lovely idea and it is wrong for this game. The
-      // player's report: "the water or wind sound is very loud. Not calming at
-      // all. It should only sound the way it does now if I'm literally under a
-      // waterfall. But if I'm just near a lake, it shouldn't be blaring."
+      // The player's report was: "it should only sound the way it does now if
+      // I'm literally under a waterfall. But if I'm just near a lake, it
+      // shouldn't be blaring." The answer was to steepen the falloff to 2.4 so
+      // the mid field fell away. That did not work, and the reason is that the
+      // mid field was never being set by this curve at all: every voice had an
+      // LFO of depth 0.09 summed into `out.gain`, and this expression drops
+      // below 0.09 well before a fall is meant to be inaudible. Near a lake the
+      // model was asking for about 0.015 and the LFO was delivering 0.09. The
+      // curve was being overruled by a constant, so steepening it changed
+      // almost nothing the player could hear.
       //
-      // This is a cozy driving game. Calm is the product. A steeper curve keeps
-      // the near field intact — stand under a fall and it still roars — while
-      // the mid field drops away fast enough that water is somewhere you arrive
-      // at rather than something you are subjected to.
-      const g = 0.44 * size * Math.pow(ref / (ref + d), 2.4);
+      // With that floor removed (see the swell node above) distance genuinely
+      // controls water again, and 2.4 became far too steep: a 92 m fall
+      // measured -53.7 dBFS at 300 m, which is inaudible, and the valley lost
+      // the thing that makes it feel mapped by ear. 1.5 restores the carry
+      // while leaving the near field within about 1 dB of where the steep curve
+      // had it — stand under a fall and it still roars.
+      const g = 0.42 * size * Math.pow(ref / (ref + d), 1.5);
 
       v.level = g;
       fallSum += g;
