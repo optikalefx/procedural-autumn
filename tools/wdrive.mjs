@@ -103,7 +103,7 @@ const out = await page.evaluate(async (P) => {
 
         pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
         fr.setFromProjectionMatrix(pm);
-        let close = 0, mid = 0, far = 0, nearest = 1e9, fleeing = 0;
+        let close = 0, mid = 0, far = 0, nearest = 1e9, fleeing = 0, moving = 0;
         for (const key of Object.keys(wl.pool)) {
           for (const per of wl.pool[key]) {
             for (const A of per) {
@@ -115,10 +115,17 @@ const out = await page.evaluate(async (P) => {
               nearest = Math.min(nearest, d);
               if (d < 70) close++; else if (d < 140) mid++; else far++;
               if (A.brain.state === 4 /* ST.FLEE */) fleeing++;
+              // Added 2026-08-19 by the wildlife author, alongside the four
+              // fields above and changing none of them. Apparent size is not
+              // the only thing that decides whether an eye finds a sixteen
+              // pixel animal in gold grass — motion decides it first. This
+              // counts an animal inside 140 m that is actually walking or
+              // running, which is the thing peripheral vision picks up.
+              if (d < 140 && A.brain.speed > 0.25) moving++;
             }
           }
         }
-        frames.push({ close, mid, far, fleeing, boundary,
+        frames.push({ close, mid, far, fleeing, moving, boundary,
                       nearest: nearest > 1e8 ? -1 : Math.round(nearest) });
         boundary = false;
         driven += P.SPEED * dt;
@@ -156,6 +163,8 @@ const out = await page.evaluate(async (P) => {
     fractionNoticeable: frac((f) => f.close + f.mid > 0),          // inside 140 m
     fractionAnyInView:  frac((f) => f.close + f.mid + f.far > 0),
     fractionFleeingInView: frac((f) => f.fleeing > 0),
+    fractionMovingInView:  frac((f) => f.moving > 0),             // inside 140 m and in motion
+    gapSecondsMoving:      gapStats((f) => f.moving > 0),
     gapSecondsClose:      gapStats((f) => f.close > 0),
     gapSecondsNoticeable: gapStats((f) => f.close + f.mid > 0),
     closestApproachMedian: nearestSeen.length ? nearestSeen[Math.floor(nearestSeen.length / 2)] : -1,

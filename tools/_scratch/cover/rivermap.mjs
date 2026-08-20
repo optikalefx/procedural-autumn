@@ -38,6 +38,8 @@ const W = parseInt(arg('w', '1280'), 10), H = parseInt(arg('h', '720'), 10);
 const STEP = parseInt(arg('step', '4'), 10);      // march every Nth pixel, box-fill
 const MAXD = Number(arg('maxd', '140'));
 const MINSLOPE = Number(arg('minslope', '0.60'));
+const BANDS = String(arg('bands', '0-15,15-40,40-80,80-140')).split(',')
+  .map((b) => b.split('-').map(Number));
 
 mkdirSync(dirname(OUT), { recursive: true });
 
@@ -50,7 +52,7 @@ page.on('pageerror', (e) => console.error('page error:', String(e)));
 await page.goto(arg('url', 'http://localhost:5178') + '/', { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 300000, polling: 250 });
 
-const res = await page.evaluate(async ({ v, W, H, STEP, MAXD, MINSLOPE }) => {
+const res = await page.evaluate(async ({ v, W, H, STEP, MAXD, MINSLOPE, BANDS }) => {
   const THREE = window.__THREE;
   const e = window.__engine, wd = window.__world;
   const frozen = await (await fetch('/review/anchors.json')).json();
@@ -79,7 +81,6 @@ const res = await page.evaluate(async ({ v, W, H, STEP, MAXD, MINSLOPE }) => {
   // the slope" is a question about metres, and a screen-space grid row cannot
   // answer it — the ground under one row of pixels spans 8 m at the bottom of
   // the frame and 300 m at the horizon.
-  const BANDS = [[0, 15], [15, 40], [40, 80], [80, 140]];
   const bandMasks = BANDS.map(() => new Uint8Array(W * H));
   const acc = { n: 0, slope: 0, grass: 0, rock: 0, dirt: 0, sand: 0, snow: 0, dry: 0,
     moist: 0, ground: 0, tiny: 0, d: 0, groundZero: 0, tinyZero: 0 };
@@ -147,6 +148,14 @@ const res = await page.evaluate(async ({ v, W, H, STEP, MAXD, MINSLOPE }) => {
     }
   }
 
+  // Cap pressure. A slot drawing at exactly its capacity is being truncated,
+  // and a truncated layer is a coverage number that no placement change can
+  // move — worth knowing before spending a round on placement.
+  const caps = {};
+  for (const s of gc.slots) {
+    if (!s.mesh.count) continue;
+    caps[s.mesh.name] = `${s.mesh.count}/${s.mesh.instanceMatrix.count}`;
+  }
   const mean = (k) => acc.n ? +(acc[k] / acc.n).toFixed(3) : null;
   return {
     cam: [+gx.toFixed(1), +gy.toFixed(1), +gz.toFixed(1)], yaw: +yaw.toFixed(3),
@@ -162,6 +171,7 @@ const res = await page.evaluate(async ({ v, W, H, STEP, MAXD, MINSLOPE }) => {
     slopeHist, terrainDistBand: dband, coverDistBand: distBand,
     bands: BANDS.map((b2, i) => ({ band: b2.join('-') + 'm',
       pxPct: +(100 * bandMasks[i].reduce((s2, v) => s2 + (v ? 1 : 0), 0) / (W * H)).toFixed(2) })),
+    caps,
     cover: { onScreen, inMask, byArch, distBand: distBand },
     maskB64: btoa(String.fromCharCode(...new Uint8Array(mask.buffer.slice(0, 0)))) || null,
     mask: Array.from(mask).join('') ? null : null,
@@ -170,7 +180,7 @@ const res = await page.evaluate(async ({ v, W, H, STEP, MAXD, MINSLOPE }) => {
     bandArrs: bandMasks.map((m2) => Array.from(new Uint8Array(m2))),
     bandNames: BANDS.map((b2) => b2.join('_')),
   };
-}, { v: VIEWS[VIEW], W, H, STEP, MAXD, MINSLOPE });
+}, { v: VIEWS[VIEW], W, H, STEP, MAXD, MINSLOPE, BANDS });
 
 // ── write the mask as a greyscale PNG ────────────────────────────────────────
 const px = Buffer.from(res.maskArr);

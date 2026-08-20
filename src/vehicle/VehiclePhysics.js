@@ -58,7 +58,24 @@ const HOLD_LATCH_W = 0.60;      // rad/s — and not still rocking on its spring
 // cannot be the case where the hold silently never engages. After this long
 // armed and grounded, it latches regardless of the residual creep.
 const HOLD_LATCH_T = 0.75;      // s
-const HOLD_BRAKE = 0.06;        // x brakeForce — the same gain the park brake uses
+// And a second, longer fallback for the case that gate does not cover: not
+// slow-but-creeping, but *bouncing*. Measured on a 45-degree face, the camper
+// slid 10 m with the hold armed the whole way and never latched, because it was
+// skidding on two wheels and the three-wheel gate never came true. After this
+// long under a continuous handbrake, a camper that still has not got three
+// wheels down is not settling — it is sliding — and sliding is the thing the
+// player asked to be impossible. One wheel is enough to say it is not airborne.
+const HOLD_LATCH_SKID = 2.2;    // s
+// Wheel-brake gain while the hold is armed but not yet latched. This is what
+// gets the camper *to* the latch, and it is a "pedal on the floor" number by
+// design — a parking request is not a moment to be gentle. Four wheels at this
+// gain is 12.3 kN against a 1850 kg camper, which is 0.68 g and holds any
+// gradient up to 34 degrees on torque alone; past that the latch does it.
+//
+// It replaces the rescue park brake's 0.06, which was 5.3 kN — almost exactly
+// the 0.30-gradient case that work measured, which is why it held there and
+// nowhere steeper. It is not what holds the camper either way; the lock is.
+const HOLD_BRAKE = 0.14;
 // How far the body may drift from its latched pose before the pose is restored
 // outright. The translation lock should make this unreachable; it is measured
 // and reported on __vehicleState as `holdDrift` precisely so that "should" is
@@ -382,14 +399,24 @@ export class VehiclePhysics {
     // a decision about whether the camper has stopped.
     let contact = 0;
     for (let i = 0; i < 4; i++) if (this.vc.wheelIsInContact(i)) contact++;
-    if (contact < 3) return;                   // in the air, or still landing
+    // Three wheels down is "on the ground and not still landing". Below that,
+    // only the skid fallback can latch — and only once it is clear the camper
+    // is not going to settle on its own. See HOLD_LATCH_SKID.
+    if (contact < 3) {
+      if (contact >= 1 && this._armedFor >= HOLD_LATCH_SKID) {
+        const lv0 = this.body.linvel();
+        this._latchV = Math.hypot(lv0.x, lv0.y, lv0.z);
+        this._holdLatch();
+      }
+      return;
+    }
 
     const lv = this.body.linvel(), av = this.body.angvel();
     const v = Math.hypot(lv.x, lv.y, lv.z);
     const w = Math.hypot(av.x, av.y, av.z);
+    this._latchV = v;
     const settled = v < HOLD_LATCH_V && w < HOLD_LATCH_W;
-    if (!settled && this._armedFor < HOLD_LATCH_T) return;
-    this._holdLatch();
+    if (settled || this._armedFor >= HOLD_LATCH_T) this._holdLatch();
   }
 
   _holdLatch() {
@@ -407,6 +434,10 @@ export class VehiclePhysics {
     for (let i = 0; i < 4; i++) this._holdSpin[i] = this.wheels[i]?.spin ?? 0;
     this.holding = true;
     this.holdDrift = 0;
+    // The speed it was doing when the lock closed. Zero for every gradient the
+    // camper can be driven on; non-zero only where the skid fallback fired, and
+    // then it is the size of the bite you feel. Surfaced on __vehicleState.
+    this.holdLatchV = this._latchV ?? 0;
   }
 
   /**

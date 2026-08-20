@@ -53,3 +53,7 @@ same places are photographed every round and the sheets are directly comparable.
 | 045 | 2026-08-19 | perf fixed, sky pinned, clouds thinned, warm ground | [045](045-2026-08-19-perf-fixed-sky-pinned-clouds-thinned-warm-ground.png) |
 | 046 | 2026-08-19 | after four authors died mid-edit | [046](046-2026-08-19-after-four-authors-died-mid-edit.png) |
 | 047 | 2026-08-19 | water: plunge bloom, curtain off the rock, shoreline exemption | [047](047-2026-08-19-water-plunge-bloom-curtain-off-the-rock-shorelin.png) |
+| 048 | 2026-08-19 | coherent tree: water restored, cover+terrain+wildlife landed | [048](048-2026-08-19-coherent-tree-water-restored-cover-terrain-wildl.png) |
+| 049 | 2026-08-20 | pop-in fixed, reverse fixed, camera pan out, rescue, minimap, audio | [049](049-2026-08-20-pop-in-fixed-reverse-fixed-camera-pan-out-rescue.png) |
+| 050 | 2026-08-20 | conifer placement fixed, backlit transmission, wedge named | [050](050-2026-08-20-conifer-placement-fixed-backlit-transmission-wed.png) |
+| 051 | 2026-08-20 | first sheet with settle and anchors both fixed | [051](051-2026-08-20-first-sheet-with-settle-and-anchors-both-fixed.png) |

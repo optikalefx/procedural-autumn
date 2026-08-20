@@ -1773,7 +1773,26 @@ function buildGroundMat(rng, variant) {
   // inside. That tolerance is what lets the footprint come back up from the
   // first pass at this: the constraint is not the mat's overall size, it is the
   // size of any single planar mark inside it.
-  const R = broad ? 1.55 + rng() * 0.60 : 0.56 + rng() * 0.28;
+  //
+  // THE SMALL TIER IS THE 7-12 m TIER, and that band is a third of the `river`
+  // frame. Ray-marching the heightfield through every pixel of the real
+  // VIEWS.river pose (tools/_scratch/cover/rivermap.mjs) says the near hillside
+  // sits at 7-12 m for 32.0% of the whole picture, with nothing at all closer
+  // than 7 m — the camera stands 6 m above a 46-degree slope. The near fade in
+  // shaders/cover_material.js is a fraction of the instance's own radius, so at
+  // visMul 1 (130 m) a broad mat is 0% grown at 8 m and 28% at 12 m: across
+  // that entire third of the frame the ONLY mat present is this tier. It was
+  // built as the "ragged margin" tier and it is in fact the near-field tier,
+  // so its footprint is set by what it has to cover rather than by what edges
+  // a swathe.
+  //
+  // Up from 0.56-0.84 m, which is 1.85x the area for zero extra instances —
+  // the near-field LOD work established that reach and footprint are nearly
+  // free where instance count is not. The deviation table above is the bound
+  // and it is not reached: the pads inside run to R*0.66 = 0.78 m, whose buried
+  // rim tolerates 0.11 + 0.34*0.78 = 0.38 m of terrain moving through it,
+  // against a measured p90 deviation of ~0.18 m at that radius.
+  const R = broad ? 1.55 + rng() * 0.60 : 0.78 + rng() * 0.40;
 
   // The pads: SEVERAL SMALL ONES, OVERLAPPING, not one big one.
   //
@@ -1788,7 +1807,11 @@ function buildGroundMat(rng, variant) {
   // re-entrant corners, which is what a patch of matted growth looks like from
   // any distance. It is also the cheaper shape: two rings each instead of
   // three, so four small pads cost less than one big one did.
-  const pads = broad ? 3 + ((rng() * 2) | 0) : 2;
+  // Three for the small tier as well, up from two. Two overlapping discs have
+  // a union outline that is still recognisably two discs; three is where the
+  // re-entrant corners start. It matters more here than on the broad tier
+  // because this is the tier the player is 8 m from.
+  const pads = broad ? 3 + ((rng() * 2) | 0) : 3;
   for (let pI = 0; pI < pads; pI++) {
     const pa = rng() * TAU, pr = pI === 0 ? 0 : R * 0.52 * Math.sqrt(rng());
     groundPad(b, R * (broad ? 0.40 + rng() * 0.22 : 0.46 + rng() * 0.20), rng, {
@@ -1796,7 +1819,14 @@ function buildGroundMat(rng, variant) {
       // Staggered vertically as well as laterally, so the group is a rumpled
       // drift rather than a plateau with a lobed edge.
       y: (rng() - 0.5) * 0.05,
-      sect: broad ? 8 : 7,
+      // Sector count is a legibility number, not a cost number, and it scales
+      // with how close the tier is drawn. A 0.55 m pad at 8 m is ~70 px across;
+      // at 7 sectors its chords are 30 px of dead-straight edge, which is what
+      // makes shots/cover/x3/a-river-base.png show clean heptagons lying on the
+      // hill. Eleven sectors puts the chords under the radius jitter, where an
+      // outline stops resolving as a polygon at all. The broad tier is never
+      // nearer than 20 m and keeps 8.
+      sect: broad ? 8 : 11,
       crest: 0.04 + rng() * 0.03,
       // DEEP half of the palette pair. The pad is ground colour — it is there
       // to lift the substrate's value and hue, not to be seen. Everything the
@@ -1828,8 +1858,19 @@ function buildGroundMat(rng, variant) {
   // under the legibility threshold, which is where every mark in this layer
   // needs to be. What the reference plates never show at this range is a
   // single identifiable leaf.
+  // …and that "wider and shorter" argument was made for 40 m and is wrong at
+  // 8 m, which is where this form now does most of its work. A strand at
+  // w 0.050-0.106 and len up to 0.47, on an instance scaled to 1.20, is a
+  // 13 cm x 56 cm flat quad; at 8 m in a 54-degree frame that is 17 x 73 px of
+  // hard-edged pale card. `shots/cover/x3/a-river-base.png` against
+  // `-nomat.png` isolates them exactly: every pale lath scattered over the near
+  // hillside disappears with this archetype, and they are the loudest marks in
+  // that third of the picture. Halving the width and taking a third off the
+  // length puts a strand back under the legibility threshold at the range it is
+  // actually seen at; the count goes up to hold the coverage, and a frond is
+  // two triangles whatever its size so that is the cheap half of the trade.
   const courses = broad ? 3 : 2;
-  const perCourse = broad ? 24 : 12;
+  const perCourse = broad ? 26 : 19;
   const lay0 = rng() * TAU;
   for (let c = 0; c < courses; c++) {
     const lay = lay0 + c * (1.9 + rng() * 0.9);
@@ -1850,7 +1891,7 @@ function buildGroundMat(rng, variant) {
         // than running parallel to it. Past vertical it would lie flat at
         // whatever height it started, which is the floating case again.
         tilt: 0.95 + rng() * 0.42,
-        len: 0.17 + t * t * 0.30, w: 0.050 + rng() * 0.056,
+        len: 0.13 + t * t * 0.21, w: 0.024 + rng() * 0.028,
         segs: 1, droop: 0.20, taper: 0.70,
         // Base in the deep half of the pair, tip in the lit half: a strand
         // that is one flat colour end to end is a painted stripe. The tip stops
@@ -1858,6 +1899,12 @@ function buildGroundMat(rng, variant) {
         // rendered within a few percent of `matDryLit`, which is a near-white
         // against ground that measures srgb(97,73,29) on this hillside, and a
         // near-white mark on dark brown is legible however small it is.
+        // Held where it was, and that is a decision rather than an oversight.
+        // The first version of this pass pulled the tips down as well as
+        // halving the width, and the two together took the layer's rendered
+        // luma on the hillside from 0.434 to 0.368 — a mat that had stopped
+        // being a lift at all. Narrowing the mark is what makes a pale tip
+        // safe: the value was never the defect, thirteen centimetres of it was.
         chanA: 0.08 + rng() * 0.22, chanB: 0.50 + rng() * 0.34,
         aoA: 0.74, aoB: 0.98, swayA: 0.25, trans: 0.85,
       });

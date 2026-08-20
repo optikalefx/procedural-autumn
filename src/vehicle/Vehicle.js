@@ -210,6 +210,7 @@ export class Vehicle extends System {
       revBrake: this.phys.revBrakeTime ?? 0,
       hold: this.phys.holdArmed, held: this.phys.holding,
       holdDrift: this.phys.holdDrift ?? 0,
+      holdArmedFor: this.phys._armedFor, holdLatchV: this.phys.holdLatchV ?? 0,
       nan: this.phys.nanEvents ?? 0,
       ground: world.getHeight(this.position.x, this.position.z),
     });

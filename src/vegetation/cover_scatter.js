@@ -159,7 +159,33 @@ const PAL = {
   // reference's ground has and the flat pair did not.
   matDry:      C(0xa87f3a), matDryLit:   C(0xecc478),
   matHerb:     C(0x6f7238), matHerbLit:  C(0xc0c66a),
-  matRust:     C(0x9a6330), matRustLit:  C(0xe0a75c),
+  // The rust pair, and it is now the pair that has to work, because it is the
+  // one that lands on the `river` hillside — see the choice below in
+  // `_layerMat`, which used to hand that hillside the GOLD pair five times in
+  // eight. Both ends came down. The rule the whole block above states — a mat
+  // sits half a value step over the surface it dresses — was calibrated on the
+  // meadow, where the ground is sunlit gold; measured with the region masked
+  // from world data rather than by rect (tools/_scratch/cover/rivermap.mjs plus
+  // covermask.mjs), the near hillside's raw terrain is srgb(103,58,34) at luma
+  // 0.257, and the mats lying on it rendered at luma 0.395. That is 1.54x the
+  // ground, at every instance, which is the "pale decal" reading and it is the
+  // same defect the deep ends were pulled down for last round, one surface
+  // further out.
+  //
+  // …and then HALF WAY BACK UP, because the first attempt at this overshot and
+  // the capture says so. At #8c5a30 / #cf9350 the mats on that hillside
+  // rendered at luma 0.297 against the ground's 0.251 — 1.18x, which is not a
+  // mat lying on the ground, it is the ground. The band's own mean went DOWN
+  // (0.300 -> 0.286) and its vivid share with it (15.6% -> 12.8%), both away
+  // from the plate floor of 0.37 / 31%. A mat has to be a lift; the defect was
+  // that it was a 1.54x lift in the wrong hue, not that it was a lift.
+  //
+  // So: the hue correction stays and the value comes back to about 1.3x, which
+  // is what the block above means by "half a step up in value and a step up in
+  // chroma". The lit end goes back up too — it now only ever appears on 2-5 cm
+  // strand tips (see `buildGroundMat`), where the pale end is texture rather
+  // than the 13 cm laths it used to paint.
+  matRust:     C(0xa56a39), matRustLit:  C(0xe3aa62),
 };
 
 // Fixed leaf-drift direction. Litter piles downwind of a crown, and the whole
@@ -848,9 +874,18 @@ export class CoverScatter {
           // paper confetti at 2 m; the reference's litter is always a step
           // down in value from the ground and a step round toward red.
           const warm = rng();
+          // …and the pale end of that pair has to follow the ground too. The
+          // rule above is stated against "the meadow it lies on", and on the
+          // meadow `litterGold` is indeed a step down from sunlit gold. On the
+          // open clay of the `river` bank the ground measures srgb(103,58,34)
+          // and `litterGold` (232,180,85) is nearly three times its luma — the
+          // paper-confetti reading the rule exists to prevent, arrived at by
+          // applying the rule to the wrong surface. Under a crown, and out in
+          // the gold meadow, the gold end is still right; `bare` is the term
+          // that separates the two and it is already computed above.
           n = this._emit(out, n, cap, 'leafScatter', mx, mz, rng, {
             colA: warm < 0.82 ? PAL.litterWarm : PAL.litterRed,
-            colB: warm < 0.22 ? PAL.litterRed : PAL.litterGold,
+            colB: warm < 0.22 || bare > 0.55 ? PAL.litterRed : PAL.litterGold,
             sink: 0.01, scale: 0.65 + rng() * rng() * 1.10,
             tone: 0.90 + rng() * 0.24, hue: 0.028, flat: true, nx: cn.nx, nz: cn.nz,
           });
@@ -1030,7 +1065,19 @@ export class CoverScatter {
       // shots/cover/a10/drive.png shows. Herb is for genuinely damp shaded
       // ground under a canopy, and 1.06 is where that starts.
       if (herb > 1.06) { colA = PAL.matHerb; colB = PAL.matHerbLit; }
-      else if (rust > 0.78 && rng() < 0.38) { colA = PAL.matRust; colB = PAL.matRustLit; }
+      // The rust share is drawn from `rust` itself rather than from a flat
+      // coin, and that is the single cheapest thing in this pass.
+      //
+      // `rust` is already the right field — dry, sloped, dirty ground — and on
+      // the `river` hillside it saturates at 1.0 (moist 0.68, slope 1.06,
+      // dirt 0.69). But it was only used as a gate, with a 0.38 coin after it,
+      // so five mats in eight on a rust-brown clay bank came out of the GOLD
+      // pair. Gold on rust is a hue break as well as a value break, and a
+      // ground mat is the one thing in this layer that must never be either:
+      // its whole job is to be the ground, worked over. Where the field is
+      // ambiguous the gold pair still leads, which is what keeps the meadow —
+      // low slope, low dirt, damp — exactly as it was.
+      else if (rng() < clamp01((rust - 0.46) * 1.7)) { colA = PAL.matRust; colB = PAL.matRustLit; }
       else { colA = PAL.matDry; colB = PAL.matDryLit; }
 
       // Two or three swathes per accepted site on genuinely bare ground, one on
@@ -1052,7 +1099,21 @@ export class CoverScatter {
       // member only runs on a site that already passed `_ground`, which on the
       // meadow is one candidate in eight, so the meadow pays almost nothing for
       // it and the bald slope the layer exists for gets all of it.
-      const drift = 1 + ((rng() * (0.9 + bare * 6.2)) | 0);
+      // STEEP AND BARE GETS MORE STILL, and the reason is the near fade rather
+      // than ecology. On a slope this camera stands 6 m above, the ground in
+      // front of it is 7-12 m away for a third of the frame, and a broad mat
+      // (visMul 1, radius 130 m) is 0% grown at 8 m and 28% at 12 m — so every
+      // mat that comes out of the broad tier is spent somewhere the player
+      // cannot see it from here, and on this hillside two thirds of them do
+      // (`cover_groundMat_1` 168 instances inside the world-data hillside mask
+      // against `_0`'s 85). The small tier carries the whole near field alone,
+      // and it sits at 185/1200 of its cap, so the headroom is free.
+      //
+      // Bought in the drift rather than in `sites` for the reason stated above:
+      // a site costs `_ground`, a member does not, and on the meadow `bare` is
+      // near zero so this term is exactly zero there.
+      const steepBare = smoothstep(0.55, 1.20, slope) * bare;
+      const drift = 1 + ((rng() * (0.9 + bare * 6.2 + steepBare * 3.2)) | 0);
       for (let mI = 0; mI < drift && n < cap; mI++) {
         let mx = x, mz = z;
         if (mI > 0) {

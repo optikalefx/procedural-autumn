@@ -49,6 +49,21 @@ const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist', '--enable-webgl'],
 });
 const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+// Kill vite's HMR socket. A save anywhere in the project — including a save to
+// this file, and five other authors are saving constantly — triggers a full
+// page reload mid-run, which destroys the execution context and, worse, would
+// silently re-boot the world between two arms of an A/B that exists precisely
+// to hold everything else still.
+await page.addInitScript(() => {
+  const R = window.WebSocket;
+  window.WebSocket = function (u, p) {
+    if (typeof u === 'string' && /[?&]token=|vite-hmr|__vite/.test(u)) {
+      return { readyState: 3, url: u, close() {}, send() {}, addEventListener() {}, removeEventListener() {}, set onopen(_) {}, set onclose(_) {}, set onerror(_) {}, set onmessage(_) {} };
+    }
+    return new R(u, p);
+  };
+  window.WebSocket.prototype = R.prototype; Object.assign(window.WebSocket, R);
+});
 page.on('console', (m) => { const t = m.text(); if (t.startsWith('COVER')) console.log(t); });
 page.on('pageerror', (e) => console.error('page error:', String(e)));
 await page.goto(arg('url', 'http://localhost:5178') + '/', { waitUntil: 'domcontentloaded' });
@@ -88,9 +103,13 @@ const applyState = (st, cloudGain) => page.evaluate(async ({ st, cloudGain, sett
     window.__coverArchRe = null;
     window.__coverArchHook = window.__engine.onLateUpdate(() => {
       const re = window.__coverArchRe;
-      if (!re) return;
-      for (const sl of window.__systems.groundCover.slots)
-        if (re.test(sl.mesh.name)) sl.mesh.visible = false;
+      for (const sl of window.__systems.groundCover.slots) {
+        // Restore as well as hide. A hook that only ever clears `visible`
+        // makes every state cumulative with the ones before it, which is a
+        // silent failure: the last state in a run then reads as the whole
+        // layer hidden and every attribution in between is a running total.
+        sl.mesh.visible = (re && re.test(sl.mesh.name)) ? false : sl.mesh.count > 0;
+      }
     });
   }
   window.__coverArchRe = st.archHide ? new RegExp(st.archHide) : null;
