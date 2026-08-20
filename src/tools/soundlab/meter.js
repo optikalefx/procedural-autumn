@@ -166,8 +166,10 @@ export class Meter {
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     c.clearRect(0, 0, w, h);
 
-    const padL = 6, padR = 6, padT = 8;
-    const barsH = h - 42;
+    // A gutter on the left for the dB scale, so the grid labels never sit on
+    // top of the 63 Hz bar, and room under the bars for the band labels.
+    const padL = 28, padR = 6, padT = 10;
+    const barsH = h - 56;
     const n = BAND_LABELS.length;
     const bw = (w - padL - padR) / n;
 
@@ -178,11 +180,13 @@ export class Meter {
     c.fillStyle = 'rgba(255,246,234,.34)';
     c.font = '9px ui-monospace, Menlo, monospace';
     c.lineWidth = 1;
+    c.textAlign = 'right';
     for (let v = 0; v >= BOT; v -= 15) {
       const yy = Math.round(y(v)) + 0.5;
       c.beginPath(); c.moveTo(padL, yy); c.lineTo(w - padR, yy); c.stroke();
-      c.fillText(String(v), padL + 1, yy - 2);
+      c.fillText(String(v), padL - 4, yy + 3);
     }
+    c.textAlign = 'left';
 
     for (let i = 0; i < n; i++) {
       const p = this.bands[i];
@@ -203,26 +207,22 @@ export class Meter {
       }
       c.fillStyle = 'rgba(255,246,234,.45)';
       c.textAlign = 'center';
-      c.fillText(BAND_LABELS[i], x0 + bw / 2, h - 26);
+      c.fillText(BAND_LABELS[i], x0 + bw / 2, h - 32);
       c.textAlign = 'left';
     }
 
-    // Level bar: rms fill, held peak as a tick.
-    const bx = padL, bw2 = w - padL - padR, by = h - 18;
+    // Level bar: rms fill, held peak as a tick. It is labelled by the rms and
+    // peak-hold figures directly under the canvas, so it carries no text of its
+    // own — the scale legend used to collide with the 16 kHz band label.
+    const bx = padL, bw2 = w - padL - padR, by = h - 20;
     c.fillStyle = 'rgba(255,246,234,.08)';
-    c.fillRect(bx, by, bw2, 12);
+    c.fillRect(bx, by, bw2, 14);
     const norm = (v) => Math.max(0, Math.min(1, (v + 90) / 90));
     const rw = bw2 * norm(dB(this.rms));
     c.fillStyle = dB(this.peakHold) > -1 ? '#d1687a' : '#8fd1a0';
-    c.fillRect(bx, by, rw, 12);
+    c.fillRect(bx, by, rw, 14);
     const px = bx + bw2 * norm(dB(this.peakHold));
     c.fillStyle = '#fff6ea';
-    c.fillRect(px - 1, by, 2, 12);
-    c.fillStyle = 'rgba(255,246,234,.5)';
-    c.font = '9px ui-monospace, Menlo, monospace';
-    c.fillText('-90', bx + 1, by - 2);
-    c.textAlign = 'right';
-    c.fillText('0 dBFS', bx + bw2 - 1, by - 2);
-    c.textAlign = 'left';
+    c.fillRect(px - 1, by, 2, 14);
   }
 }

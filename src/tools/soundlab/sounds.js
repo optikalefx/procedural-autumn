@@ -95,12 +95,20 @@ const ambienceFrame = (rig, dt, v) => {
 };
 
 // The ambience bed's five layers, as the mixer names them.
+//
+// `model` is only ever filled in where the module's state field is *the same
+// quantity* as the AudioParam beside it — the gain the mixer asked for. That is
+// the comparison that catches an LFO eating a layer's level, and it is worth
+// nothing if it is allowed to compare a call rate or a load fraction to a gain
+// and cry wolf. Where they are different quantities the layer carries `null`
+// and the reading is the meter's job.
 const AMB_LAYERS = [
   { name: 'grass', label: 'wind / dry grass', model: (a) => a.state.grass, param: (a) => a.grassGain.gain },
   { name: 'conifer', label: 'wind / conifers', model: (a) => a.state.conifer, param: (a) => a.coniferGain.gain },
   { name: 'hush', label: 'altitude hush', model: (a) => a.state.hush, param: (a) => a.hushGain.gain },
   { name: 'cricket', label: 'crickets', model: (a) => a.state.cricket, param: (a) => a.cricketGain.gain },
-  { name: 'birds', label: 'birdsong', model: (a) => a.state.birdRate, param: (a) => a.birdBus.gain },
+  // state.birdRate is calls per second, not a gain — see the note above.
+  { name: 'birds', label: 'birdsong (bus)', model: null, param: (a) => a.birdBus.gain },
 ];
 
 const ambLayer = (n) => AMB_LAYERS.filter((l) => (n ? l.name === n : true))
@@ -172,10 +180,10 @@ const vehicleFrame = (rig, dt, v) => {
 };
 
 const VEH_LAYERS = [
-  { name: 'engine', label: 'combustion', model: (a) => a.state.load, param: (a) => a.gEngine.gain },
+  { name: 'engine', label: 'combustion', model: null, param: (a) => a.gEngine.gain },
   { name: 'intake', label: 'intake', model: null, param: (a) => a.gIntake.gain },
   { name: 'overrun', label: 'overrun', model: null, param: (a) => a.gOver.gain },
-  { name: 'tyres', label: 'tyre roll', model: (a) => a.state.tyre, param: (a) => a.gTyre.gain },
+  { name: 'tyres', label: 'tyre roll', model: null, param: (a) => a.gTyre.gain },
   { name: 'grit', label: 'grit', model: null, param: (a) => a.gGrit.gain },
   { name: 'ford', label: 'fording', model: null, param: (a) => a.gWater.gain },
 ];
@@ -758,7 +766,7 @@ export const SOUNDS = [
       + 'one that spent a while connected to nothing: pull the duck slider with '
       + 'the bed playing and the meter should move.',
     layers: ['soundtrack'],
-    meterLayers: [{ name: 'soundtrack', label: 'bed (out · duck)', get: (rig) => rig.audio.soundtrack, model: (s) => s.level, param: (s) => s.out.gain }],
+    meterLayers: [{ name: 'soundtrack', label: 'bed (out · duck)', get: (rig) => rig.audio.soundtrack, model: null, param: (s) => s.out.gain }],
     lazy: true,
     start: async (rig, v) => {
       const st = await rig.loadSoundtrack();
