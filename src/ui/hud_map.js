@@ -36,7 +36,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el } from './hud_dom.js';
 
-const BAKE = 512;              // offscreen raster size; downscaled to fit
+// The raster is baked at the size it will actually be *displayed*, in device
+// pixels, rather than at a fixed high resolution that gets scaled down. A one
+// pixel contour line does not survive a 3x downscale: the first version baked
+// 512 px and drew it into 165, and every contour dissolved into a faint tonal
+// smudge — a shaded relief map where the player had asked for a topographic
+// one. Bounded, because the bake is O(N²) and this runs during the load screen.
+const BAKE_MIN = 192;
+const BAKE_MAX = 512;
 const SMOOTH_PASSES = 2;       // 3×3 box blurs applied to the height field
 const CONTOUR_STEPS = [5, 10, 20, 25, 50, 100, 200, 500];
 const TARGET_CONTOURS = 9;
@@ -281,14 +288,16 @@ export class MiniMap {
     this._size = 0;
     this._last = '';
     this.off = null;
+    this._bakeN = 0;
+    this._hasWorld = !!(this.world?.height && this.world?.water);
 
-    if (this.world?.height && this.world?.water) {
-      try { this._bake(); } catch (e) { console.warn('[hud] minimap bake failed', e); }
-    }
+    // Appending forced a layout, so the element already has its size — which is
+    // what decides the bake resolution.
+    this._ensureBake();
 
     // Resize is the only thing that redraws the canvas, and it fires on window
     // resize and on the font-size clamp changing — never during play.
-    this._ro = new ResizeObserver(() => this._blit());
+    this._ro = new ResizeObserver(() => this._ensureBake());
     this._ro.observe(this.node);
   }
 
@@ -297,9 +306,23 @@ export class MiniMap {
     this.node.classList.toggle('pa-gone', !this.visible);
   }
 
-  _bake() {
+  /** Bake if we have not yet, or if the element has outgrown the raster. */
+  _ensureBake() {
+    if (!this._hasWorld) return;
+    const css = this.canvas.clientWidth;
+    if (!css) return;
+    const want = Math.round(css * Math.min(2, window.devicePixelRatio || 1));
+    const N = Math.max(BAKE_MIN, Math.min(BAKE_MAX, want));
+    // Re-bake only when the map has grown enough that the shortfall would show.
+    // Shrinking never needs one: downscaling a raster that is already close to
+    // the target is exactly what the blit does well.
+    if (this.off && N <= this._bakeN * 1.25) { this._blit(); return; }
+    try { this._bake(N); } catch (e) { console.warn('[hud] minimap bake failed', e); }
+  }
+
+  _bake(N) {
     const w = this.world;
-    const N = BAKE;
+    this._bakeN = N;
     const f = sampleWorld(w, N);
     const off = document.createElement('canvas');
     off.width = off.height = N;
@@ -326,8 +349,13 @@ export class MiniMap {
     const half = this.world.worldSize / 2;
     g.lineCap = 'round';
     g.lineJoin = 'round';
-    g.strokeStyle = 'rgba(104,158,192,0.85)';
-    g.lineWidth = Math.max(1, N / 512);
+    // Faint on purpose. These are a *repair* to the raster, not a layer of
+    // their own: at full strength a one-pixel polyline is the loudest thing on
+    // the map, and rivers are not the loudest thing in the valley. Some of them
+    // also leave the map in dead-straight runs, which reads as a drawing error
+    // rather than as a river the moment the line is bright enough to follow.
+    g.strokeStyle = 'rgba(112,164,197,0.5)';
+    g.lineWidth = Math.max(1, N / 400);
     g.beginPath();
     for (const line of lines) {
       if (!line || line.length < 2) continue;
