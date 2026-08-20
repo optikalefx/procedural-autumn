@@ -100,8 +100,32 @@ const DEFAULTS = {
   // screen is three or four metres off-axis in world units and only centimetres
   // from your eye. Distance from the camera is the honest criterion for that
   // half of the problem, and it is also the cheap one.
-  nearFull: 1.50,
-  nearNone: 3.40,
+  // 1.80 / 4.20, widened from 1.50 / 3.40 on a measurement that came out the
+  // opposite way round to the prediction and is worth writing down, because it
+  // inverts how this feature should be tuned.
+  //
+  // Interleaved A/B inside one page load (tools/_scratch/cost2.mjs, 8 blocks),
+  // both arms with the feature ON, varying only the sphere:
+  //
+  //   cone only (sphere ~off)  vs  cone + sphere      p50 -0.60 ms, p95 -2.60
+  //   sphere 1.5/3.4           vs  sphere 2.2/5.0     p50 -6.80 ms, p95 -10.20
+  //
+  // The near sphere does not cost frame time, it BUYS it. It discards
+  // near-camera canopy overdraw, which is the single most expensive fill in the
+  // game, and that outweighs the extra world it exposes behind the bough. The
+  // cone is the half that costs: it dithers mid-field canopy and what it
+  // uncovers is more scene rather than less.
+  //
+  // (The second row was taken on a badly contended machine — 34.7 ms frames
+  // against ~21 on a quiet one — so read it as a ratio, not as milliseconds.
+  // That is why this lands at 1.80 / 4.20 rather than at the 2.20 / 5.00 the
+  // number would justify: the direction is well established across two tests,
+  // the magnitude is not, and a 5 m clearing sphere against a 5.5 m minimum
+  // chase distance would dissolve almost everything between the camera and the
+  // camper at full zoom-in. Anyone re-measuring this on a quiet machine should
+  // feel free to take the rest of it.)
+  nearFull: 1.80,
+  nearNone: 4.20,
 
   // ── (2) the cone to the subject ──────────────────────────────────────────
   // Radius at the subject, in metres. The camper's silhouette from behind is
@@ -147,6 +171,11 @@ const DEFAULTS = {
   enabled: true,
 };
 
+// The largest extent any caller hands to occludeFadeAt, in metres. Leaf clumps
+// are the big ones. Generous, because getting it wrong pops geometry rather
+// than costing time.
+const CLUMP_MARGIN = 8.0;
+
 /** Runtime-tunable copy. Reachable as `window.__occlusion.params`. */
 const PARAMS = { ...DEFAULTS };
 
@@ -162,6 +191,10 @@ const UNIFORMS = {
   uOccWide:   { value: DEFAULTS.wide },
   uOccSoft:   { value: DEFAULTS.soft },
   uOccTaper:  { value: DEFAULTS.taper },
+  // Squared radius beyond which nothing can be in either shape, so the shaders
+  // can reject the overwhelming majority of the world with one dot product.
+  // See the note where it is used.
+  uOccFar2:   { value: 0 },
   // Starts at zero, and that is the off switch: every occludeFade() below
   // returns 1.0 on it before touching anything else. A material that opts in
   // but is never handed a subject — the impostor bake programs, anything
@@ -206,6 +239,21 @@ export function setOcclusionTarget(camera, pos) {
   UNIFORMS.uOccSoft.value  = PARAMS.soft;
   UNIFORMS.uOccTaper.value = PARAMS.taper;
   UNIFORMS.uOccAmount.value = PARAMS.amount;
+
+  // ── the early rejection radius ───────────────────────────────────────────
+  // Both shapes are small and both are near the camera; the forest is not. A
+  // point inside the cone has along-axis depth below the subject distance and
+  // radial offset below `wide`, so it cannot be further than
+  // sqrt(dist^2 + wide^2) from the camera — a hair over `dist`. A point inside
+  // the sphere cannot be further than nearNone plus its own extent, and the
+  // largest extent any caller passes is a leaf clump of a few metres.
+  //
+  // So one squared-distance compare at the top of occludeFadeAt rejects
+  // essentially every tree and shrub in the frame, which at a 19 m chase and a
+  // 900 m draw distance is almost all of them. This is where the vertex cost of
+  // the feature went.
+  const far = Math.max(dist + 1.0, PARAMS.nearNone + CLUMP_MARGIN);
+  UNIFORMS.uOccFar2.value = far * far;
 }
 
 // ── the shape, for any shader stage ──────────────────────────────────────────
@@ -223,6 +271,7 @@ uniform float uOccWide;
 uniform float uOccSoft;
 uniform float uOccTaper;
 uniform float uOccAmount;
+uniform float uOccFar2;
 
 // 1.0 = untouched, 0.0 = fully out of the way. wp is a world-space position;
 // the radius argument is the caller's own extent, subtracted from the
@@ -251,8 +300,16 @@ float occludeFadeAt( vec3 wp, float radius ) {
   if ( uOccAmount <= 0.0 ) return 1.0;
   vec3 rel = wp - cameraPosition;
 
+  // Reject everything past both shapes with one dot product, before any root or
+  // smoothstep. Both shapes live within a few metres of a subject that is
+  // itself only a chase length away, and the forest runs to 900 m, so this
+  // rejects almost every vertex it is asked about. See the note beside
+  // uOccFar2 in setOcclusionTarget.
+  float d2 = dot( rel, rel );
+  if ( d2 > uOccFar2 ) return 1.0;
+
   // (1) near-camera sphere.
-  float m = 1.0 - smoothstep( uOccNear.x, uOccNear.y, max( length( rel ) - radius, 0.0 ) );
+  float m = 1.0 - smoothstep( uOccNear.x, uOccNear.y, max( sqrt( d2 ) - radius, 0.0 ) );
 
   // (2) cone to the subject.
   vec3 axis = uOccTarget - cameraPosition;
