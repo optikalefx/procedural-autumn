@@ -369,6 +369,42 @@ async function boot() {
     requestAnimationFrame(tick);
   });
 
+  // A fixed frame count is not a settle, and believing it was has quietly
+  // corrupted every contact sheet in review/.
+  //
+  // Streaming systems — grass rings, ground-cover cells, terrain LOD, tree
+  // tiles — rebuild on a per-frame millisecond budget, so the time they need
+  // depends on how far the camera just jumped. `shot.mjs --all` teleports ten
+  // times in one page load and gave each view 60 frames. Measured by the X2
+  // author: the same view captured ALONE comes back with roughly twice the
+  // triangles and lumaMean 0.451 against the batch's 0.524. So every sheet in
+  // review/ is a less-resolved frame than the game actually renders, and a
+  // batch sheet cannot be compared against a single-view capture at all.
+  //
+  // Settle on a convergence condition instead — hold until the drawn triangle
+  // and draw-call counts stop moving, which is what "streaming has caught up"
+  // actually means — with a hard cap so a genuinely animated scene still
+  // returns rather than hanging the harness.
+  window.__settleStable = (maxFrames = 1500, stableFor = 30) => new Promise((res) => {
+    let n = 0, stable = 0, lastT = -1, lastC = -1;
+    const tick = () => {
+      const info = engine.renderer.info.render;
+      const t = info.triangles, c = info.calls;
+      // Foliage sway and particle systems jitter the count by a handful of
+      // triangles per frame. 0.2% sits well under one streaming step and well
+      // over that noise.
+      const settled = lastT > 0 && c === lastC
+                   && Math.abs(t - lastT) <= Math.max(64, lastT * 0.002);
+      stable = settled ? stable + 1 : 0;
+      lastT = t; lastC = c;
+      n++;
+      if (stable >= stableFor || n >= maxFrames) {
+        res({ frames: n, triangles: t, calls: c, converged: stable >= stableFor });
+      } else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+
   // Always-on perf readout (F3 toggles, Shift+F3 cycles detail). Kept out of
   // the HUD deliberately — the HUD hides itself during captures, and this needs
   // to be visible precisely when the player is judging how the game feels.

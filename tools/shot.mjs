@@ -278,8 +278,11 @@ await acquire('shot');
       // something" and sends you hunting the wrong bug.
       window.dispatchEvent(new Event('resize'));
 
-      // Let streaming, LOD and any temporal effects settle.
-      if (window.__settle) await window.__settle(60);
+      // Let streaming, LOD and any temporal effects settle. Convergence, not a
+      // frame count — see __settleStable in main.js. A fixed 60 frames left
+      // every batch view at roughly half its triangles.
+      if (window.__settleStable) window.__settleReport = await window.__settleStable();
+      else if (window.__settle) await window.__settle(60);
       void name;
     }, { v, name, posStr: arg('pos'), lookStr: arg('look'), hourArg: arg('hour'), frozen, dynamicAnchors: [...DYNAMIC_ANCHORS] });
 
