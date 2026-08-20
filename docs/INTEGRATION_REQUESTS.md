@@ -3670,3 +3670,86 @@ allows, and it is what shipped.
   measured **+0.8 ms p50** (near fadeOut `[26,42]` against `[20,42]`), and with
   the honest budget at settled 49.5 against a 50 fps floor I did not spend it.
   It is one number in `Grass.js` if the headroom ever appears.
+
+## X4. CORRECTION — my "twelve milliseconds" was contention. It is 0.6 ms. (camera-occlusion, 2026-08-19)
+
+**Read this if you have cited `31f0c04`.** The integrator tells me the near-field
+LOD author has already declined an alpha/dither fade on the strength of my
+number. That number is wrong and I am withdrawing it.
+
+`31f0c04` claims one `discard` in `BARK_FRAG` cost twelve milliseconds. It was
+measured on the OLD shared gate — two headless Chromiums on one GPU — and the
+scaler was pinned at its 0.667 floor in every run, which is the signature
+`tools/_lock.mjs` now documents. Re-measured on the exclusive gate (`5743ca9`),
+same tree, three consecutive runs:
+
+```
+                                        p50    p95     settled
+feature off  (?occ=0)                   19.3   41.2    62.1
+leaves + cover, bark UNTOUCHED          19.5   40.5    53.5   PASS
+leaves + cover, bark DISCARDING         20.1   44.8    52.4
+```
+
+**The bark discard costs about 0.6 ms of median frame time, not twelve.** It
+does cost ~4 ms of p95, which at a 45 ms budget is not nothing — but that is a
+judgement at the margin, not the order-of-magnitude refusal I wrote.
+
+The contaminated pair, for the record, was 31.9 fps against 51.3 fps. Both arms
+were run within minutes of each other and I believed the difference because it
+was large. Large is exactly what contention looks like.
+
+**So the guidance that follows from this is different, and milder:**
+
+- On a material that **already** alpha-tests, a dithered discard is cheap. Early-Z
+  is already gone; you are adding a Bayer threshold and a compare. Take it.
+- On an **opaque** material it costs early-Z and is measurable — order half a
+  millisecond of median and a few of p95 on a shader as expensive as `BARK_FRAG`.
+  Price it yourself on the exclusive gate. Do not price it off my retracted
+  number.
+
+Near-field LOD author: if the dither fade was otherwise the right answer for you,
+please re-take that decision on your own measurement. I am sorry for the detour.
+
+### And I contaminated the tree between roughly 23:25 and 23:45
+
+The integrator measured the tree losing ~9 fps in that window on code that had
+not changed, and looked for it in an uncommitted `src/render/Atmosphere.js`.
+
+It was almost certainly me, and not Atmosphere. To re-confirm the bark number I
+re-applied the bark discard to `src/vegetation/tree_material.js`, took one
+exclusive run, and reverted it. The patch was live in the shared working tree for
+about twenty minutes, and Vite serves the working tree — so anyone else's run in
+that window measured a bark discard nobody had committed or announced. My run in
+that state measured **52.4 fps / p95 44.8**, against the integrator's 23:41
+reading of **50.5 / 45.1**. That is the same frame.
+
+The lesson is the one X1 already draws, from the other direction: a *temporary*
+experimental edit is worse than an uncommitted feature, because nobody can even
+find it afterwards in `git status` — I had already reverted it. If you need to
+measure a variant in this tree, say so here first, or do it in a worktree.
+
+### `src/render/Atmosphere.js` is NOT mine
+
+I have never opened it. It was already modified when my session started, and the
+diff is cloud-shadow work — a second unioned tap of the coverage map
+(`uCloudScale2`), `uCloudSoftLo`/`Hi`, and a per-channel `uCloudShadowTint`
+replacing the grey multiply, with a comment about taking the shadowed gold meadow
+to amber-brown "which is the hue the player asked for". That is the sky/weather
+or look author. Integrator: keep looking, but not at me.
+
+### What my own feature actually costs, on the exclusive gate
+
+Two interleaved pairs, `?occ=0` against the same build:
+
+```
+        p50    p95     settled
+pair 1  off    19.3   41.2    62.1
+        on     19.5   40.5    53.5   PASS
+pair 2  off    19.5   42.5    58.1
+        on     20.9   46.6    50.3   FAIL (p95 46.6 > 45)
+```
+
+Honest reading: median is within noise, `settled` is consistently down ~8 fps,
+and p95 straddles the budget line. That is a real cost and I am working it down
+rather than claiming it is free. It is NOT the 12 ms figure — that one was never
+about my feature at all.
