@@ -59,6 +59,7 @@ export class Settings {
 
     const foot = el('div', 'pa-foot',
       '<b>WASD</b> drive &nbsp;·&nbsp; <b>Space</b> handbrake &nbsp;·&nbsp; <b>C</b> camera<br>' +
+      '<b>R</b> rescue — moves you to clear ground nearby<br>' +
       '<b>F</b> photo mode &nbsp;·&nbsp; <b>N</b> map &nbsp;·&nbsp; <b>M</b> mute<br>' +
       '<b>H</b> hide interface &nbsp;·&nbsp; <b>Esc</b> close');
     this.node.appendChild(foot);

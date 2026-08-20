@@ -94,7 +94,8 @@ export class HUD extends System {
     // ── first-run hint ─────────────────────────────────────────────────────
     this.hint = el('div', 'pa-hint pa-panel pa-game-only',
       '<span><kbd>WASD</kbd>drive</span><span><kbd>Drag</kbd>look</span>' +
-      '<span><kbd>C</kbd>camera</span><span><kbd>F</kbd>photo</span><span><kbd>Esc</kbd>settings</span>');
+      '<span><kbd>C</kbd>camera</span><span><kbd>R</kbd>rescue</span>' +
+      '<span><kbd>F</kbd>photo</span><span><kbd>Esc</kbd>settings</span>');
     if (this._seenHint) this.hint.classList.add('pa-gone');
     else this._hintTimer = 13;
     root.appendChild(this.hint);
