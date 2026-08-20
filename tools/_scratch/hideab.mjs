@@ -25,6 +25,12 @@ const VIEWS = {
 };
 const hide = process.argv[2] || 'water';
 const name = process.argv[3] || 'mouth';
+// A free camera, for defects that do not sit in a canonical framing:
+//   node tools/_scratch/hideab.mjs water free --pos x,y,z --look x,y,z
+const argv = process.argv.slice(2);
+const argOf = (n) => { const i = argv.indexOf('--' + n); return i === -1 ? null : argv[i + 1]; };
+const POS = argOf('pos'), LOOK = argOf('look');
+if (POS && LOOK) VIEWS[name] = { free: true, pos: POS.split(',').map(Number), look: LOOK.split(',').map(Number), fov: 54, hour: 16.7 };
 const V = VIEWS[name];
 if (!V) { console.error(`unknown view: ${name}`); process.exit(1); }
 
@@ -41,6 +47,15 @@ await p.waitForFunction(() => window.__ready === true, null, { timeout: 300000, 
 await p.evaluate(async ({ v, cached }) => {
   const THREE = window.__THREE, wd = window.__world;
   window.__lighting.hour = v.hour; window.__lighting.cycleSpeed = 0;
+  if (v.free) {
+    window.__forceCamera = true;
+    const c = window.__engine.camera;
+    c.fov = v.fov; c.updateProjectionMatrix();
+    c.position.set(v.pos[0], v.pos[1], v.pos[2]);
+    c.lookAt(v.look[0], v.look[1], v.look[2]);
+    await window.__settleStable(1500, 30);
+    return;
+  }
   const api = window.__cameraAnchors || {};
   const anchor = cached ?? ((v.index && window.__anchorAt)
     ? window.__anchorAt(v.anchor, v.index)

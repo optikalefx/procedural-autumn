@@ -650,13 +650,34 @@ void main() {
   // pinches to a hairline between them.
   float laceWide = mix(0.11, 0.5, smoothstep(0.5, 2.4, foot));
   float scallop = wSteps(smoothstep(0.30, 0.70, wDrift(p, T, 0.30, ph)), 3.0, laceWide);
+  // How wide the band is allowed to be, in METRES OF GROUND, and that is the
+  // number docs/WATER_ART_SPEC.md 3.1-3.2 actually states: 0.3-0.4 m, on a
+  // channel twenty to forty-five metres across. The old reach was
+  // max(shoreBand * 0.80, laceFoot * 1.6) * (0.12 + 1.25 * scallop) — on a lake
+  // shoreBand is at its 1.6 cap, so the floor alone was 1.28 m and the scallop
+  // took it to 1.75, and at a grazing footprint the other branch reached 4 m
+  // before the scallop touched it. An order of magnitude over the plate.
+  //
+  // The footprint term stays, because a band narrower than a pixel is a dotted
+  // line rather than a waterline, but it is a FLOOR under a width that is
+  // otherwise about half a metre — never a multiplier on it — and it is capped,
+  // because foot divides by cos(incidence) floored at 0.035 and runs to tens of
+  // metres on exactly the grazing geometry a shoreline is usually seen at.
+  float laceReach = min(max(0.42, laceFoot * 1.1), 1.7) * (0.35 + 0.85 * scallop);
   float laceD = smoothstep(0.015, 0.10 + laceDepthPad, depth)
               * (1.0 - smoothstep(0.09 + laceDepthPad, 0.36 + laceDepthPad * 2.0, depth));
-  float laceW = 1.0 - smoothstep(shoreBand * 0.8, shoreBand * 3.2, shoreIn);
-  float laceReach = max(shoreBand * 0.80, laceFoot * 1.6) * (0.12 + 1.25 * scallop);
-  float laceM = (1.0 - smoothstep(laceReach * 0.20, laceReach, shoreIn))
+  // ...and the metre reach is a CEILING on the depth placement, not a taper on
+  // it. This is where the pack ice actually came from, and the arithmetic is
+  // worth writing down: laceD closes at 0.36 m of DEPTH, grad is floored at
+  // 0.02, so on any gentle bank the window is 19 m of GROUND wide. Rendered at
+  // 'river' that is a 30-50 px unbroken pale ribbon on both banks for the full
+  // width of frame — measured #626270, C 0.053, and it is F6 exactly. The old
+  // metre term only faded the band to 0.42 of itself over shoreBand * 3.2,
+  // which for a lake is five metres, so it never cut anything.
+  float laceW = 1.0 - smoothstep(laceReach, laceReach * 2.4, shoreIn);
+  float laceM = (1.0 - smoothstep(laceReach * 0.25, laceReach, shoreIn))
               * smoothstep(0.012, 0.04 + laceDepthPad * 0.7, depth);
-  float lace = max(laceD * mix(0.42, 1.0, laceW) * (0.20 + 0.80 * scallop), laceM);
+  float lace = max(laceD * laceW * (0.20 + 0.80 * scallop), laceM);
   // ...and it is ABSENT on some banks. docs/WATER_ART_SPEC.md 3.3 measures
   // plate 3's far bank and finds no lace at all on it while the near bank in
   // the same frame carries a bright one; F6 fails a near-white band that is
@@ -664,7 +685,22 @@ void main() {
   // body of water in the map is pack ice. This is the one term that rations
   // COVERAGE rather than width or value, which is what the measurement says is
   // actually wrong when it goes wrong.
-  lace *= smoothstep(0.22, 0.46, wFbm2(p * 0.016 + 11.3) * 0.5 + 0.5);
+  //
+  // MEASURED: this term had never fired. wFbm2 * 0.5 + 0.5 is a bell that
+  // rarely leaves the middle third — the trap already written down at the depth
+  // perturbation above, where a nominal 3.4 m of jitter delivered under a metre
+  // — so it sat near 0.5 nearly everywhere and smoothstep(0.22, 0.46, ·) came
+  // back 1.0 nearly everywhere. Rendering vec3(lace, foam, mirror) to the frame
+  // showed the band unbroken along both banks across the whole of 'river'. The
+  // one term that rations coverage was a no-op.
+  //
+  // Stretched to a real 0..1 first, then thresholded, so the cut can actually
+  // land: roughly a third of bank length off, a third on, a third in between.
+  // The field is isotropic in world space at a ~90 m period, so it takes the
+  // lace off whole stretches of one bank while leaving the other — which is
+  // what §3.3 measures P3 doing — and breaks what is left into segments.
+  float laceCov = smoothstep(0.38, 0.62, wFbm2(p * 0.011 + 11.3) * 0.5 + 0.5);
+  lace *= smoothstep(0.28, 0.72, laceCov);
   // A trickle gets a hint of a waterline; a river gets the full mark. On a
   // 1.5 m brook the depth window the line lives in is the whole creek, so the
   // line on each bank meets in the middle and the stream reads as a white cord
@@ -729,19 +765,40 @@ void main() {
   // at cool 1.12 and half a stop below the meadow. That is failure F1 drawn
   // across the whole foreground, and this gate is what drew it.
   float shallowMirror = mix(0.30, 1.0, smoothstep(0.05, 1.4, depth));
-  float sheen = uSheen * (0.10 + 0.90 * mass) * shallowMirror
-              * (1.0 - foam * 0.9) * (1.0 - turb * 0.45);
-  // The ceiling matters as much as the floor. At 0.88 a surface at a grazing
-  // angle is 88% environment, the march over open water usually clears the far
-  // ridge, and what comes back is the lifted sky — pale, neutral, brighter than
-  // the gold meadow beside it and completely immune to the body colour. That
-  // was a second flat pale slab in the 'mouth' foreground. 0.52 keeps the
-  // grazing sheet that gives distant water its glare and stops it owning the
-  // near field. The mass scaling stays: without it max() discards the sheen's
-  // whole value range, which is measured and is why a first pass at this came
-  // back with the lace fixed and the body still one flat tint.
-  float mirror = clamp(max(fres * 0.90 * (0.36 + 0.64 * mass), sheen), 0.0, 0.52)
-               * shallowMirror;
+  // How mirror-like this pixel is at all, before anything rations it: Fresnel,
+  // with the roughness floor under it that keeps water from being a dark hole.
+  float mirrorT = max(fres * 0.90, uSheen * 0.88);
+  // ...and the MASS is what turns that single number into the plate's value
+  // masses. This is where item 1 was being lost, and the arithmetic is the
+  // whole finding: the old line was
+  //     clamp(max(fres * 0.90 * (0.36 + 0.64 * mass), sheen), 0.0, 0.52)
+  // and at a grazing angle fres * 0.90 is about 0.81, so the product passed
+  // 0.52 at mass = 0.44. mass is wSteps(·, 3), i.e. FOUR levels {0, ⅓, ⅔, 1},
+  // and the top TWO of them both landed on the ceiling. Measured that way the
+  // mirror ran {0.29, 0.46, 0.52, 0.52} — a four-mass field flattened to
+  // three, with the two brightest merged, over every grazing pixel in the
+  // frame, which is most of the water. The ceiling was clipping the range
+  // instead of bounding it.
+  //
+  // So the ceiling bounds the TOP of the range and the mass spans the whole of
+  // it. The SPAN is the change, not the level: grazing, this runs
+  // {0.13, 0.36, 0.58, 0.72} against the old {0.29, 0.46, 0.52, 0.52} — four
+  // separated levels instead of three, over a two-and-a-half-stop range
+  // instead of one — and its mean over the mass field's own distribution
+  // (measured 7.5 / 42.5 / 42.5 / 7.5 across the four levels) is 0.46 against
+  // the old 0.45. That matters: a first attempt at this used mass*mass to keep
+  // the bright level small, and it moved the whole distribution DOWN rather
+  // than widening it — measured, the river view's brightest mass fell from
+  // +0.59 to +0.04 stops over its meadow and mouth's p98 from -0.44 to -0.63, i.e.
+  // item 2 got worse in two frames while item 3 got better in all four.
+  // Uniformly darker water is not the fix; the span is.
+  mirrorT *= 0.16 + 0.84 * mass;
+  // The withdrawals are unchanged and now apply once rather than twice —
+  // shallowMirror used to multiply both the sheen and the result, so a shelf
+  // got 0.09 of a mirror where it was meant to get 0.30, which is the squared
+  // form of the gate the note above says must NOT go to zero.
+  float mirror = min(mirrorT, 0.72)
+               * shallowMirror * (1.0 - foam * 0.9) * (1.0 - turb * 0.45);
   // A river is broken up and half aerated and never mirrors as hard as a lake
   // does; letting it try buries the body under a sheet of reflected sky at
   // every grazing angle, which is most of a channel.

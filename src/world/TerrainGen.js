@@ -57,6 +57,39 @@ const LAKE_MIN_AREA = 400;
 // channel runs *through* a pond, it does not end at one.
 const LAKE_MAJOR_AREA = 3000;
 const LAKE_MAJOR_DEPTH = 1.5;
+// ── the drawdown ─────────────────────────────────────────────────────────────
+// Metres the DRAWN water surface of a body sits below the elevation the
+// priority flood filled it to.
+//
+// The flood fills every basin to its spill cell, and that is the right place to
+// route from — but it is not where a lake's surface is, for two reasons that
+// both point the same way. The spill is the lowest cell on the rim of a 2 m
+// raster, which is an upper bound on the true col; and a real outlet is an
+// incised channel, so the pool behind it stands at the channel's invert, not at
+// the ridge. Drawn at the raw spill, a basin floods every hollow that is level
+// with its rim.
+//
+// MEASURED, and this is the whole of the mud-apron defect. Along the `mouth`
+// framing's own sight line the ground runs 18.66, 18.75, 18.96, 18.94, 18.76 m
+// over the first twenty metres against a fill level of 19.33 — a sheet of water
+// 40 cm deep over forty metres of near-level meadow, with the camera standing
+// in it — and then the bed breaks 18.25 -> 16.90 in four metres. There is a real
+// bank in this terrain; the flood had simply drowned it. Because the drawdown is
+// a constant subtracted from a LEVEL surface, the waterline retreats in exact
+// proportion to how flat the ground is: a metre moves it 1-2 m on a 1:2 bank and
+// thirty on a 1:30 apron, which is precisely the discrimination wanted.
+//
+// One metre, and the reason it is not more: this is subtracted from the surface
+// a river's mouth is anchored to as well as from the lake, so it is also the
+// height of the step a channel has to climb down at its delta. A metre is inside
+// what the mouth ramp and the backwater pass already absorb; two is not.
+//
+// NOT applied to `level`. Which cells belong to a body, whether a body is major,
+// and where it spills are decisions about the FILL, and every one of them feeds
+// the river network — `_traceRivers` clips a reach at a major body, and the note
+// on LAKE_MAJOR_AREA above records what happens to the trunk count when that
+// changes. Only the height the water is drawn at moves.
+const LAKE_DRAWDOWN = 1.0;
 // Metres of channel over which a reach hands over to standing water, and over
 // which one is born again at a spill point. Long enough that the flare reads as
 // a delta from a moving vehicle, short enough that a 150 m tributary is not all
@@ -1299,9 +1332,14 @@ export class TerrainGen {
         for (let k = 0; k < n; k++) id[cells[k]] = -1;
         continue;
       }
+      const level = sum / n;
       bodies.push({
-        level: sum / n, cells: n, spill, spillH, deepest,
+        level, cells: n, spill, spillH, deepest,
         major: n >= majorCells && deepest >= LAKE_MAJOR_DEPTH,
+        // Where the water is DRAWN — see LAKE_DRAWDOWN. Two numbers on the body
+        // rather than one, so that nothing routing-shaped can accidentally read
+        // the artistic one and nothing artistic can read the routing one.
+        surface: level - LAKE_DRAWDOWN,
       });
     }
 
@@ -1550,9 +1588,17 @@ export class TerrainGen {
     const half = this.worldSize / 2;
 
     // Standing water first: one flat level per body.
+    //
+    // `surface`, not `level` — see LAKE_DRAWDOWN. And a cell the drawdown has
+    // left above the water is DRY, not water with a negative depth: the mesh in
+    // Water.js is contoured on (surface - bed) and would otherwise carry the
+    // whole drained apron as dilation ring, which is the same slab drawn from
+    // the other side.
     for (let i = 0; i < N; i++) {
       const b = this.lakeId[i];
-      if (b >= 0) water[i] = this.lakeBodies[b].level;
+      if (b < 0) continue;
+      const lv = this.lakeBodies[b].surface;
+      if (h[i] < lv) water[i] = lv;
     }
 
     // Then the channels, over a footprint a little wider than the ribbon so the
@@ -2334,12 +2380,15 @@ export class TerrainGen {
       for (let k = 1; k < sta.length; k++) {
         if (sta[k].surf > sta[k - 1].surf) sta[k].surf = sta[k - 1].surf;
       }
+      // `surface`, not `level`: this is the height a mouth's water is ramped
+      // ONTO, so it has to be the height the lake is drawn at or the delta ends
+      // in a step the drawdown put there. See LAKE_DRAWDOWN.
       if (endBody >= 0) {
-        const lv = bodies[endBody].level;
+        const lv = bodies[endBody].surface;
         for (const p of sta) if (p.lkM > 0) p.surf = lerp(p.surf, lv, p.lkM);
       }
       if (startBody >= 0) {
-        const lv = bodies[startBody].level;
+        const lv = bodies[startBody].surface;
         for (const p of sta) if (p.lkO > 0) p.surf = lerp(p.surf, lv, p.lkO);
       }
 

@@ -1,0 +1,20 @@
+import { chromium } from 'playwright';
+import { readFileSync, writeFileSync } from 'node:fs';
+const [file, geo, out, zoomS] = process.argv.slice(2);
+const zoom = parseFloat(zoomS ?? '2');
+const [x,y,w,h] = geo.split(',').map(Number);
+const b = await chromium.launch();
+const p = await b.newPage({ viewport: { width: 64, height: 64 } });
+const b64 = readFileSync(file).toString('base64');
+const d = await p.evaluate(async ({b64,x,y,w,h,zoom})=>{
+  const img=new Image(); img.src='data:image/png;base64,'+b64; await img.decode();
+  const c=new OffscreenCanvas(w*zoom,h*zoom); const g=c.getContext('2d');
+  g.imageSmoothingEnabled=false;
+  g.drawImage(img,x,y,w,h,0,0,w*zoom,h*zoom);
+  const bl=await c.convertToBlob({type:'image/png'});
+  const buf=await bl.arrayBuffer();
+  return Array.from(new Uint8Array(buf));
+},{b64,x,y,w,h,zoom});
+writeFileSync(out, Buffer.from(d));
+await b.close();
+console.log(out);
