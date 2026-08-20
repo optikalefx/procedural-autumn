@@ -1069,3 +1069,39 @@ listed because the killed ones are the evidence that the rest were checked:
 And one of pass 5's own findings is withdrawn on evidence rather than opinion —
 the conifer hue diagnosis for `forest` (§3), including the reference measurement
 it rested on.
+
+---
+
+## Integrator spot-check, 2026-08-20 — three defects a driven capture found that ten still frames did not
+
+Found by driving with `tools/_scratch/motionstrip.mjs` rather than capturing the
+ten canonical poses. All three are player-visible and none is in the review set.
+
+**D1. The camera goes underwater with no treatment.** `shots/wedge/f6.png`: the
+camper drives into a lake and the frame becomes a flat blue wash — no depth
+tint, no surface plane above, no fog change, no indication of what happened. The
+HUD still reads 39 km/h. This is not an edge case: the UI author measured **21%
+of the world as standing water with a median depth of 4 m**, and the valley
+floor is largely marsh, so an ordinary drive finds it. Either the camera should
+not submerge, or submerging needs to look deliberate.
+
+**D2. The occlusion fade reads as a halftone screen door.** `shots/wedge/f9.png`:
+several crowns left and centre carry an obvious regular dot pattern. Dithered
+discard is the right technique — it survives alpha-testing and the existing
+render order, and it measured *negative* cost — but at this dot scale it reads
+as an artifact rather than as a fade. It also appears to be engaging on trees
+that are not between the camera and the camper. Two things to check: the dither
+pattern's screen-space frequency (a finer or blue-noise pattern hides far
+better than a coarse Bayer), and whether the near-camera sphere is too generous
+now that it is doing most of the work.
+
+**D3. A large flat grey wedge occludes half the frame.** `shots/ui/map7/full.png`,
+upper right: an enormous unshaded triangle with two straight edges meeting at a
+point, covering the sky and the far landscape. It is not in any canonical
+capture, so it is positional. **Not yet identified.** A scene scan
+(`scratchpad/wedge.mjs`) finds `TerrainApron` segment meshes at world radius
+~3353 m as the largest real geometry — the apron's seam skirt drops 40 m at
+`r === 0` and the profile subtracts 900 m behind the crest, so a camera high on
+a massif near the boundary is the first thing to test. The particle systems
+reporting radius 1e6-1e7 are `frustumCulled = false` sentinels and are normal.
+Reproduce by driving, not by posing.
