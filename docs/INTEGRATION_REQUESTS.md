@@ -3524,3 +3524,149 @@ lines, flagged here. The tidier home is `CameraRig`, which already computes the
 camera-to-camper distance for `postfx.setFocus`; if the CameraRig author would
 rather own it, move the call into `CameraRig._focus()` and delete the block in
 `main.js`. Either way it wants to run after the vehicle has been stepped.
+
+---
+
+## N1. NEAR-FIELD LOD — the fade radii were right, the camera was 12 m behind where they assumed (grass / ground cover, 2026-08-19)
+
+The player raised this twice: *"the pop-in of grass and rocks is basically right
+in front of the car. Like directly in front of it"*, then *"keep working on that
+pop-in. Rocks and grass should not pop-in right in front of me."*
+
+**The number nobody had measured is the boom.** Every fade in both systems is
+keyed on distance from the **camera**. `tools/_scratch/boomprobe.mjs` drives and
+samples: the chase camera sits **9-11 m behind and 5-9 m above the camper**, so
+the front bumper is about **12 m nearer everything than the numbers read**. That
+turns a `deadTuft` with a 23 m visibility radius into a mat that first appears
+11 m in front of the bumper and is at full size 6 m in front of it — a third of
+a second at 13 m/s. Every "this is a comfortable distance" argument in either
+file was written as if the camera stood on the ground.
+
+**This is not only our problem.** Anything keyed on `cameraPosition` and
+reasoned about as "distance ahead of the player" is out by the same 12 m:
+particle spawn radii, wildlife activation, audio falloff, LOD swaps, the tree
+impostor cross-over. If you own one of those, subtract the boom before deciding
+a radius is generous. `boomprobe.mjs` is four lines of `page.evaluate` and will
+tell you what it is under your own driving conditions.
+
+### What is in these two systems now
+
+| | before | after |
+|---|---|---|
+| grass near ring | tile 16 m, hands over 20-30 m | tile 22 m, hands over 20-42 m |
+| grass mid ring | fades in 18-28 m | fades in 18-40 m |
+| substrate radii | 22-26 m, one per archetype | 24-46 m base, per **instance**, tail to 64 m |
+| substrate density | 720 clumps/cell | 620 clumps/cell |
+| band-0 streaming | 50 m | 84 m |
+
+The per-instance part matters more than the distance. `visSpread` in
+`cover_forms.js` widens an archetype's single radius into a distribution
+(`rng()*rng()` weighted, so the near field stays dense and a thin tail carries
+the far one), because with one radius per archetype what approaches the player
+is a **coherent ring** of props inflating out of the ground together. Sweeping
+the disappearance distance across a range turns that ring into a density
+gradient with no edge in it anywhere.
+
+### The instrument, and please reuse it rather than the gate
+
+`tools/_scratch/lodprofile.mjs` reports **drawn footprint per m² of ground,
+binned into 4 m rings** — the substrate per instance with the shader's own
+`coverFade` applied verbatim, the grass analytically from each ring's fade
+ladder. Pop-in is a cliff in that profile and its steepest gradient is where a
+driver sees detail arrive. Old ladder against new, meadow anchor, chase pose:
+
+```
+             steepest fall     where           lead time at 13 m/s
+  before     0.218 per metre   24 m from cam   12 m ahead of bumper   0.92 s
+  after      0.104 per metre   36 m from cam   24 m ahead of bumper   1.85 s
+```
+
+Half the gradient, twice the lead, and both systems' transitions now sit in the
+same 20-46 m band — which was the point of one author owning both, since a
+player cannot tell a substrate prop from a grass blade.
+
+`tools/_scratch/approach.mjs` walks the camera backwards along one sight-line at
+the chase camera's real pose, so the same ground is photographed from 8, 16,
+24 … metres. Both tools take `--cover/--near/--mid`, so the **old** ladder can
+be profiled and photographed from the **same build and viewpoint** as the new
+one.
+
+### Reach is nearly free; density is not. Do not confuse them.
+
+Measured with `tools/_scratch/lodab.mjs` (both arms in one page load, ABBA
+blocks, adaptive resolution frozen, static pose — a null A/B reads 0.00 ms):
+
+```
+  cover, flat multiplier on every instance radius, `meadow` pose
+    1.0 -> 1.3   6,885 -> 10,093 instances   p50 +0.4   p95 +0.2 ms
+    1.0 -> 1.6   6,885 -> 13,708 instances   p50 +0.4   p95 +0.6 ms
+    1.0 -> 1.9   6,885 -> 17,971 instances   p50 +0.6   p95 +0.9 ms
+  cover, shipped old radii -> shipped new
+                 7,539 -> 22,538 instances   p50 +0.2   p95 -0.7 ms
+  grass, near [20,30] mid [18,28] -> [26,42] / [24,40]   p50 +0.8  p95 -0.1 ms
+  grass, near [20,30] mid [18,28] -> [12,42] / [10,40]   p50 +0.0  p95 +1.3 ms
+```
+
+**Three times the ground-cover instance count for two tenths of a millisecond.**
+The perf author's finding is why, and it generalises to any scatter layer:
+reach is bought in an annulus where the number of props grows as `r dr` while
+the pixels each covers fall as `1/r²`, so the pixel cost of extending outward
+grows only as `dr/r` — while the near field, which extending does not touch,
+goes on paying for all of it. **Pulling a radius in to save frame time is a
+large art loss for a rounding error.** Several comments in `cover_forms.js`
+argued the opposite for four rounds; they have been corrected in place.
+
+The corollary is the trade that paid for this: `groundSites` 720 → 620. Density
+and reach both cost instances, but not the *same* instances.
+
+### Two costs that were real, and neither was the geometry
+
+1. **`_repack` did five `getAttribute` lookups per instance inside its hot
+   loop** — 130,000 string lookups in a pass that is neither budgeted nor
+   resumable. Cached on the slot at init.
+2. **Every completed cell forced a full repack.** `_dirty` is set by each cell
+   and each substrate slice, so a full rewrite of every drawn instance ran
+   several times a second while driving. Affordable at 7,000 instances (~4 ms),
+   not at 26,000 (measured 12-16 ms). Now coalesced at 200 ms — a cell that has
+   just finished building is 84 m away at the nearest, so nothing is lost.
+   **If you stream anything on a `_dirty` flag, check how often it actually
+   fires while driving.** It fires far more often than the travel threshold you
+   probably think governs it.
+
+Also, grass tile size is not a free parameter: every blade in a *visible tile*
+runs the vertex shader whether or not the fade has collapsed it to zero area,
+and the tile cull is per tile. 16 → 24 m tiles put **0.93 M submitted triangles
+into the frame that draw nothing**. 22 m is the smallest tile a 42 m fadeOut
+allows, and it is what shipped.
+
+### To the camera-occlusion author — three answers
+
+- **I did not touch the fade form, and your note is why.** My brief asked me to
+  consider an alpha/dither fade for the small substrate tiers instead of the
+  scale fade, on the grounds that shrinking makes props sprout out of the
+  ground. Your "twelve-millisecond discard" section settles it: cover is opaque
+  and still has early-Z, and one `discard` costs the whole program. The vertex
+  shrink stays. What removes the sprouting read is the per-instance radius
+  spread, which costs nothing.
+- **Your `grass_material.js` one-liner still applies unchanged.** `cover` and
+  `grow` are the same hooks; only the `uFadeIn`/`uFadeOut` values moved. The
+  near ring's `cover` now reaches zero at 42 m rather than 30, so
+  `min(cover, occludeFade(basePos))` gates a slightly larger population — still
+  vertex-only.
+- **`aCov.w` is now per-instance-jittered rather than per-archetype.** If
+  anything you add reads it as "this archetype's radius", it is not one any more.
+
+### Still open
+
+- `shrubDark` packs at its cap (285 per variant, all three) in an open meadow
+  frame, as do `leafDrift` (260) and `groundMat` variant 1 (1200). Instances
+  past the cap are dropped, nearest cell first, so what goes is the far field —
+  a silent, distance-dependent thinning of the *large* shapes, which is the
+  opposite of what the far field wants. Not raised here because it is a
+  different budget from the one this task was given; flagging it for whoever
+  next has headroom.
+- The strict reading of "two seconds of lead" wants the steepest gradient at
+  26 m ahead of the bumper rather than 24. Moving the grass knee out that far
+  measured **+0.8 ms p50** (near fadeOut `[26,42]` against `[20,42]`), and with
+  the honest budget at settled 49.5 against a 50 fps floor I did not spend it.
+  It is one number in `Grass.js` if the headroom ever appears.
