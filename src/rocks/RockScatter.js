@@ -411,8 +411,35 @@ export class RockScatter {
       const big = t * t;
       const roll = rng();
       let arch, size;
-      if (roll < 0.14 + big * 0.24) { arch = 'talus'; size = powSize(rng, 0.7, 1.1 + big * 2.4, 1.4); }
-      else if (roll < 0.32) { arch = 'slab'; size = powSize(rng, 0.5, 1.0 + big * 1.6, 1.6); }
+      if (roll < 0.14 + big * 0.24) {
+        size = powSize(rng, 0.7, 1.1 + big * 2.4, 1.4);
+        // ── a frost block is a small thing, and the form says so ───────────
+        //
+        // RockForms.talus is a deliberate three-plane cuboid: `fill: 3`,
+        // `erode: 0.05`, `lump: 0.09`, "boxy, sharp, no rounding at all". That
+        // is exactly right for a metre-wide block seen among fifty of them on
+        // a scree run-out, and it is a concrete crate at five metres seen alone
+        // on a grass bank — which is what the untreated grey plate in `river`
+        // turned out to be. Two of these, at size 2.1 and 2.3, overlapping into
+        // one 8 m plate at 52 m from the camera, with nothing else its own size
+        // within thirty metres.
+        //
+        // Worth recording because the working hypothesis was wrong and cost an
+        // hour: the review had it as the `maxDrop = size * 3.0` overhang. It is
+        // not. The bank there is slope 0.52-0.73 (27-36 degrees), the ring
+        // minimum sits about 1.8 m below the centre against a 6.6 m allowance,
+        // so the clamp never binds and the block's own base probes come back
+        // 1.4-2.6 m INSIDE the hill. Nothing is hanging. The form is wrong for
+        // the size. (Isolated by capture: `shots/rocks/before-river.png` against
+        // `before-river-norocks.png` — the plate is the only thing that goes.)
+        //
+        // The fan's biggest blocks are also its most exposed: `big` grows with
+        // distance down the fan, so the largest talus lands where the slope
+        // eases and there is least around it. Past the size where a block stops
+        // being one stone among many, hand it to `boulder`, which is built with
+        // nine planes, edge erosion and lumps — a broken silhouette.
+        arch = size > 1.6 ? 'boulder' : 'talus';
+      } else if (roll < 0.32) { arch = 'slab'; size = powSize(rng, 0.5, 1.0 + big * 1.6, 1.6); }
       else { arch = 'rubble'; size = powSize(rng, 0.14, 0.42 + big * 0.4, 1.7); }
       if (size * 2 < minSize) continue;
       this._place(px, pz, arch, size, rng, 0.55, 0.55, out);
@@ -692,6 +719,12 @@ export class RockScatter {
     // it. So a course that dies early is discarded rather than left as a stub.
     const startAt = out.length;
     const MIN_COURSE = 3;
+    // The largest member this course can produce is `scale * 1.0 * 1.46`. If
+    // even that is under the cell's visibility cutoff the course cannot be
+    // drawn as a wall at this range at all, and rounding every member up to the
+    // cutoff would give a line of identical blocks — the bead read arrived at
+    // from the opposite direction. Leave the mountain bare instead.
+    if (scale * 1.46 * 2 < minSize) return;
     // Blocks are about two scales wide and land two thirds of a scale apart, so
     // each overlaps its neighbours by most of its length. The union is the
     // cliff; no single block is ever meant to read on its own, and any block
@@ -714,21 +747,37 @@ export class RockScatter {
       // the course — it is the whole band crossing the face, so a chain runs up
       // to eleven blocks in each direction, 300 m a side.
       const n = Math.max(2, Math.round((4 + rng() * 7) * lenMul));
-      // ── the turn budget ──────────────────────────────────────────────────
+      // ── the bed is a plane, and a plane cannot close ──────────────────────
       //
-      // This is what stops a course becoming the necklace. Walking
-      // perpendicular to the local gradient follows a contour, and on a
-      // conical massif — which is what our peaks are, with rocks hidden — a
-      // contour is a *closed ring*. The chain therefore does exactly what it
-      // is told, circles the peak, and comes out as forty near-identical
-      // blocks strung on one isoline with sky under the far side of the ring.
+      // The necklace has now come back twice, and both previous attempts read
+      // it as "this particular ring needs breaking up". It is not. Look at what
+      // the walk below used to do: it recomputed `-up.z, up.x` — the local
+      // strike — at *every step*. Perpendicular to the local gradient is not
+      // the strike, it is the contour, and on a conical massif a contour is a
+      // closed ring. So the rule produced a ring **by construction**, and any
+      // fix that only perturbs the positions lets it re-form the moment the
+      // cone is clean enough. That is exactly what happened between `82cc330`
+      // and now.
       //
-      // A real resistant bed crossing a face is an arc, not a circle: it is
-      // cut off by the spurs and gullies either side of the face it outcrops
-      // on. Budgeting the total heading change enforces that directly, and it
-      // is the only rule here that can tell an arc from a ring, because
-      // locally the two are identical.
-      let hx = 0, hz = 0, turned = 0;
+      // A resistant bed is a *plane in the rock*. Its outcrop is where that
+      // plane cuts the topography: straight in plan, bending only as far as the
+      // bed is folded, and cut off by the spurs and gullies either side of the
+      // face it crops out on. So seed the strike once and CARRY it — which is
+      // what `_cragCrest` was already fixed to do, for this same failure, on
+      // the crest walk. The altitude correction further down then does the rest
+      // on its own: hold a straight plan line at one bed altitude and the chain
+      // hugs the face and dies where the ground stops meeting the bed.
+      //
+      // The old cumulative turn budget is kept, but as a backstop and measured
+      // against the *seed line* rather than summed step to step. A sum cannot
+      // tell a bed that wanders and comes back from one that circles the peak,
+      // and at 1.95 rad it was 112 degrees per direction — 224 across both,
+      // three fifths of a ring, before it bound at all.
+      this._uphill(px, pz, up);
+      if (Math.abs(up.x) + Math.abs(up.z) < 0.05) continue;
+      let hx = -up.z * dir, hz = up.x * dir;
+      { const L = Math.hypot(hx, hz) || 1; hx /= L; hz /= L; }
+      const seedX = hx, seedZ = hz;
       // Gaps. A bed is not continuously exposed along its whole outcrop; it is
       // buried under scree, cut by a gully, weathered away. Without this the
       // course is a solid line of touching blocks whatever else varies, and a
@@ -737,15 +786,22 @@ export class RockScatter {
       for (let i = 0; i < n; i++) {
         this._uphill(px, pz, up);
         if (Math.abs(up.x) + Math.abs(up.z) < 0.05) break;
-        const sx = -up.z * dir, sz = up.x * dir;
-        if (i > 0) {
-          const dot = clamp(sx * hx + sz * hz, -1, 1);
-          turned += Math.acos(dot);
-          // ~110 degrees: enough for a bed to wrap a broad spur, far short of
-          // the 360 a ring needs.
-          if (turned > 1.95) break;
+        // Blend a little of the local strike back into the carried heading, so
+        // a bed can follow a broad fold — and only while the two still broadly
+        // agree, so a spur that swings the gradient through ninety degrees
+        // cannot drag the chain around with it. Same guard shape as the crest
+        // walk, tighter, because a bed on a face has less excuse to bend than
+        // an arete does.
+        const tx = -up.z * dir, tz = up.x * dir;
+        if (tx * hx + tz * hz > 0.88) {
+          hx = hx * 0.80 + tx * 0.20; hz = hz * 0.80 + tz * 0.20;
+          const L = Math.hypot(hx, hz) || 1; hx /= L; hz /= L;
         }
-        hx = sx; hz = sz;
+        // ~32 degrees off the seed line — 64 across both directions, so the
+        // longest arc this can draw is a sixth of a circle whatever the shape
+        // of the mountain under it.
+        if (Math.acos(clamp(hx * seedX + hz * seedZ, -1, 1)) > 0.55) break;
+        const sx = hx, sz = hz;
         // Taper. A course is thickest where the bed is best exposed and thins
         // toward both ends; blocks of one size laid end to end are what makes a
         // chain read as beads however long it is. Evaluated here, before the
@@ -785,8 +841,25 @@ export class RockScatter {
         if (gap > 0) { gap--; continue; }
         if (i > 1 && rng() < 0.13) { gap = 1 + ((rng() * 2) | 0); continue; }
 
-        const size = scale * env * (0.86 + rng() * 0.60);
-        if (size * 2 < minSize) continue;
+        // ── the chain is the unit that has to read, not the block ─────────
+        //
+        // `minSize` is the per-cell visibility cutoff, and dropping a member
+        // that falls under it punches a hole in a wall whose entire design is
+        // that neighbours overlap into one mass. Measured on the `peaks`
+        // massif at 700-950 m, where the cutoff is 14.5-21 m: 16% of the crag
+        // blocks a course generates were being deleted, and they were deleted
+        // out of the *middle* of chains, because the taper puts the small ones
+        // there as well as at the ends. What is left is a dotted line of
+        // separate pale blocks — which is the other half of the necklace. The
+        // wall is in the scatter; only its gaps are drawn.
+        //
+        // At that range the difference between a block at the cutoff and one
+        // just under it is well under a pixel. The hole is not. So round the
+        // member up to the cutoff instead of dropping it. The whole course is
+        // dropped up front when even its largest member cannot clear the
+        // cutoff — bare mountain is a far cheaper mistake than a dotted line.
+        let size = scale * env * (0.86 + rng() * 0.60);
+        if (size * 2 < minSize) size = minSize * 0.5;
 
         // Local +Z faces downhill, local +X runs along the strike, so the
         // block's long axis merges with its neighbours and its stepped shoulder

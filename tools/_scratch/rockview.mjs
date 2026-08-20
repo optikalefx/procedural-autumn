@@ -8,7 +8,7 @@
 // heightfield vertically (which is all the old rockfloat.mjs measured).
 //
 //   node tools/_scratch/rockview.mjs [view] [bakeRes]
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import * as THREE from 'three';
 import { decodeBake } from '../../src/world/bakeFormat.js';
 import { WorldData } from '../../src/world/WorldData.js';
@@ -22,6 +22,8 @@ const VIEWS = {
   dawn:   { anchor: 'vista', height: 48, dist: 130, pitch: -0.13, fov: 46 },
   meadow: { anchor: 'meadow', height: 1.6, dist: 6, pitch: -0.05, fov: 58 },
   drive:  { anchor: 'road',  height: 4.2, dist: 12, pitch: -0.10, fov: 55, standOff: 16 },
+  river:  { anchor: 'river', height: 6.0, dist: 30, pitch: -0.18, fov: 54, yawOffset: 0.42, index: 3 },
+  waterfall: { anchor: 'waterfall', height: 11, dist: 58, pitch: 0.08, fov: 50, yawOffset: -0.55 },
 };
 
 const viewName = process.argv[2] || 'peaks';
@@ -34,7 +36,11 @@ const world = new WorldData(data, SEED);
 const sc = new RockScatter(world, SEED);
 const lib = buildRockLibrary(SEED);
 sc.setFootprints(archFootprints(lib));
-const anchors = JSON.parse(readFileSync(new URL('../../shots/_anchors.json', import.meta.url), 'utf8'));
+// review/anchors.json is the tracked pin file; shots/_anchors.json was the old
+// location and is gitignored scratch that gets pruned mid-run.
+const anchors = JSON.parse(readFileSync(new URL(
+  existsSync(new URL('../../review/anchors.json', import.meta.url))
+    ? '../../review/anchors.json' : '../../shots/_anchors.json', import.meta.url), 'utf8'));
 
 const v = VIEWS[viewName];
 const a = anchors[v.anchor];
@@ -158,6 +164,11 @@ console.log(`lowest vertex above its own ground >0m: ${pc((r) => r.footClear > 0
 console.log(`no contact at all (minClear>0): ${pc((r) => r.minClear > 0)}`);
 console.log(`isolated (no neighbour within 2.4 sizes): ${pc((r) => r.near === 0)}   only one: ${pc((r) => r.near === 1)}`);
 console.log('worst:', det.slice(0, 12).map((r) => `${r.arch} base+${r.baseClear.toFixed(1)} px${r.px},${r.py} d${r.d | 0} sz${r.size.toFixed(0)} @${r.x | 0},${r.z | 0}`));
+if (process.env.ROCKDUMP) {
+  for (const r of rows.slice().sort((a, b) => a.px - b.px)) {
+    console.log(`${r.arch}/${r.kind} px${r.px},${r.py} d${r.d | 0} sz${r.size.toFixed(1)} buried${r.buried.toFixed(2)} base${r.baseClear.toFixed(1)} near${r.near} @${r.x | 0},${r.y | 0},${r.z | 0}`);
+  }
+}
 // What is at a given pixel? node ... peaks 768 <px> <py>
 const qx = Number(process.argv[4]), qy = Number(process.argv[5]);
 if (Number.isFinite(qx) && Number.isFinite(qy)) {

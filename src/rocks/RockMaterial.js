@@ -328,6 +328,12 @@ export function createRockMaterial() {
         // 5 m band is under two pixels and its only contribution is aliasing.
         float camD = distance( vWPos, cameraPosition );
         float detailFade = 1.0 - smoothstep( 130.0, 340.0, camD / max( bedLambda * 0.35, 1.0 ) );
+        // The facet hash is a whole plane rather than a pattern inside one, so
+        // it survives much further than the three above and is measured against
+        // the block, not against the bedding wavelength: a facet is of order
+        // 'size' metres. At camD/size = 28 a 12 m block is ~50 px and its
+        // planes read as planes; by 75 it is under 20 px and they are noise.
+        float facetFade = 1.0 - smoothstep( 28.0, 75.0, camD / max( size, 1.0 ) );
 
         // ── weathering on horizontal faces ────────────────────────────────
         // Both terms above are multiplied by (1 - |N.y|), i.e. they exist only
@@ -366,7 +372,28 @@ export function createRockMaterial() {
         // weighted at 0.06 before and the boulders came out uniform.
         float val = 0.13
                   + up * 0.17                 // sky exposure: tops, not sides
-                  + facet * 0.24              // per-facet tone, the main split
+                  // Per-facet tone, the main split — but faded toward its own
+                  // mean at range. 'bed', 'joint' and 'wear' are all faded
+                  // because unmipped procedural detail crawls once it is
+                  // sub-pixel; this one was left in at full strength and it is
+                  // the largest of the four. On the 'peaks' massif a crag block
+                  // is ~18 px across at 800 m and its facets are 4-6 px, so
+                  // what a *random* per-plane value does there is give every
+                  // block in a chain a different tone — which is precisely the
+                  // "spilled polystyrene" read, and it is why the blocks carry
+                  // more internal contrast than the entire mountain behind
+                  // them. Aerial perspective compresses local contrast as well
+                  // as lifting value, and a term that never fades escapes it.
+                  //
+                  // Faded toward 0.5, NOT toward 0: 'facet' is fract(), so its
+                  // mean is a half, and fading it to zero would darken every
+                  // distant rock by a tenth of the albedo ramp. The mean is
+                  // exactly preserved at every distance, which is what keeps
+                  // this out of the colour half of blocker #1 — the sky-
+                  // exposure step above is geometric and stays at full weight
+                  // at any range, so a far block still has a light top and a
+                  // dark side.
+                  + mix( 0.5, facet, facetFade ) * 0.24
                   + bed * 0.075 * detailFade
                   + joint * 0.13 * detailFade
                   + wear * 0.085 * detailFade
@@ -440,6 +467,31 @@ export function createRockMaterial() {
         // centimetres and a crag block gets a couple of metres.
         float contact = 1.0 - smoothstep( 0.0, 0.45 + size * 0.55, max( vAbove, 0.0 ) );
         rock *= mix( 1.0, 0.76, contact );
+
+        // ── the exposed underside of a block that stands out of the hill ──
+        //
+        // The band above is about the ground *line*: it reaches half a block
+        // up and no further, which is right for the join and useless for the
+        // face over it. A block seated on a bank presents a downward-facing
+        // facet metres clear of the hillside plane, and until now that facet
+        // got nothing at all — no baked AO (which knows about the rock and not
+        // about the hill it sits in), no contact band, and the meadow bounce
+        // below it was *added*, so the one plane on the block that should be
+        // its darkest came out its flattest and lightest. That is the untreated
+        // grey facet the review keeps finding in 'river'.
+        //
+        // A plane pointing down at a hillside a few metres under it is looking
+        // at the hill, not at the sky, and that is occlusion. Keyed on -N.y so
+        // a vertical or upward facet at the same height is untouched, and it
+        // reaches several block-heights up because that is how far the hill
+        // keeps subtending most of the hemisphere below a downturned plane.
+        // How much of this plane's hemisphere the hillside takes: none for a
+        // face turned up at the sky, a share of it for a vertical face, all of
+        // it for a face turned down at the slope.
+        float underG = clamp( 0.30 - 0.85 * N.y, 0.0, 1.0 );
+        float under = underG
+                    * ( 1.0 - smoothstep( 0.0, 1.2 + size * 2.4, max( vAbove, 0.0 ) ) );
+        rock *= mix( 1.0, 0.60, under );
 
         diffuseColor.rgb *= rock;
       }`)
