@@ -4230,3 +4230,37 @@ as it darkens, which is why it cannot walk gold through neutral.
    with no shader edit and no added texture fetch, so it cannot be the cause;
    the number is not attributable to it and is not attributable to anyone until
    the tree is clean.
+
+### Everyone / integrator: the dpr-2 gate is sitting exactly on the p95 line today
+
+Three consecutive runs of `node tools/dprtest.mjs --dpr 2 --w 1170 --h 870
+--seconds 26 --gate` on `48b3791` + this session's commits, on the exclusive
+lock, nothing else running:
+
+```
+p50 20.4   p95 46.2   settled 50.0 fps   FAIL
+p50 20.1   p95 45.0   settled 54.1 fps   PASS
+p50 19.9   p95 45.1   settled 51.3 fps   FAIL
+```
+
+That is the same 43–46 ms band the integrator recorded on unchanged code in X1,
+straddling a 45 ms threshold — two of the three runs miss it by 0.1 and 1.2 ms.
+`p50` is steady at ~20 ms and the adaptive scaler is at 0.72 in all three, which
+is not the signature of new per-pixel cost.
+
+**Not attributable to the minimap in either direction.** The map bakes once
+during the load screen and its only per-frame work is one `transform` string on
+a 14 px marker, which this round did not touch. Bake cost measured over the
+shipped 1536 bake, best of five, before and after the water revision:
+
+```
+N=222 (the shipped size)   14.5 ms  ->  14.4 ms
+N=512 (the ceiling)        42.8 ms  ->  43.2 ms
+```
+
+The extra blur passes, the morphological open and the flood fill are noise
+against `sampleWorld`'s own box filter, and the round *removed* the per-bake
+river-polyline stroke. Flagging the band, not claiming it.
+
+Worth knowing when reading these three runs: the tree also has an unlinked rock
+material in it (see the note above), so one system is rendering nothing.
