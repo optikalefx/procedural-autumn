@@ -286,7 +286,7 @@ export class MiniMap {
     root.appendChild(this.node);
 
     this._size = 0;
-    this._last = '';
+    this._mx = this._my = this._mb = NaN;
     this.off = null;
     this._bakeN = 0;
     this._hasWorld = !!(this.world?.height && this.world?.water);
@@ -383,28 +383,38 @@ export class MiniMap {
     g.imageSmoothingQuality = 'high';
     g.clearRect(0, 0, p, p);
     g.drawImage(this.off, 0, 0, p, p);
-    this._last = '';                       // force the marker to re-place
+    this._mx = NaN;                        // force the marker to re-place
   }
 
   /**
    * `bearing` is degrees clockwise from north, matching the compass strip.
+   *
    * The only per-frame work in this file, and deliberately transform-only:
    * writing `left`/`top` would invalidate layout sixty times a second for a
-   * marker that is fourteen pixels wide.
+   * marker fourteen pixels wide.
+   *
+   * It also mostly does nothing, which is the point. One map pixel is 19 m, so
+   * a camper at 60 km/h crosses one about once a second — quantising to a third
+   * of a pixel and a degree of heading means the string is built and the style
+   * written only when the marker would actually move somewhere different.
+   * Measured against the interleaved A/B in tools/_scratch/postab.mjs, writing
+   * it unconditionally cost 0.8 ms a frame at dpr 2, for a change nobody could
+   * see.
    */
   update(x, z, bearing) {
     const s = this._size;
-    if (!s) { this._blit(); return; }
+    if (!s) { this._ensureBake(); return; }
     const w = this.world;
     if (!w) return;
     const half = w.worldSize / 2;
-    const u = clamp01((x + half) / w.worldSize);
-    const v = clamp01((z + half) / w.worldSize);
-    const t = `translate(${(u * s).toFixed(1)}px, ${(v * s).toFixed(1)}px) `
-            + `translate(-50%, -50%) rotate(${bearing.toFixed(1)}deg)`;
-    if (t === this._last) return;
-    this._last = t;
-    this.marker.style.transform = t;
+    const px = Math.round(clamp01((x + half) / w.worldSize) * s * 3);
+    const py = Math.round(clamp01((z + half) / w.worldSize) * s * 3);
+    const pb = Math.round(bearing);
+    if (px === this._mx && py === this._my && pb === this._mb) return;
+    this._mx = px; this._my = py; this._mb = pb;
+    this.marker.style.transform =
+      `translate(${(px / 3).toFixed(2)}px, ${(py / 3).toFixed(2)}px) `
+      + `translate(-50%, -50%) rotate(${pb}deg)`;
   }
 
   dispose() {
