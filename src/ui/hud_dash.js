@@ -18,6 +18,13 @@ const LEAF = '<span class="pa-leaf"><svg viewBox="0 0 24 24" fill="none" stroke=
   'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
   '<path d="M5 19c0-7 5-12 14-13 1 9-4 14-11 14z"/><path d="M5 19c3-3 6-5 9-6"/></svg></span>';
 
+// The brake-hold lamp. A disc with two pads on it: the one shape that says
+// "brake" without a word, and it survives being drawn at nine pixels because it
+// is two arcs and a circle rather than anything with an inside.
+const HOLD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  'stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="6.2"/>' +
+  '<path d="M3.4 8.2a9.6 9.6 0 0 0 0 7.6M20.6 8.2a9.6 9.6 0 0 1 0 7.6"/></svg>';
+
 const MAX_KMH = 120;
 // Degrees clockwise from 12 o'clock. The gap belongs at the *bottom* — the
 // first version started the sweep at 148° and the needle sat pointing at the
@@ -70,6 +77,21 @@ export class Dash {
         </defs>
       </svg>
       `;
+    // ── brake-hold lamp ────────────────────────────────────────────────────
+    // In the gap at the bottom of the dial, because that is where a car puts
+    // its warning lamps and because the sweep starts at 225° specifically to
+    // leave that gap empty. Absolutely positioned inside the dial rather than
+    // added to the readout column, so a hold appearing and disappearing never
+    // reflows the cluster — a speed number that jumps sideways when you park is
+    // a worse tell than no lamp at all.
+    //
+    // No separate capture handling is needed: it lives inside #pa-hud, which
+    // takes `.pa-capture-hidden` when the harness poses the camera. A review
+    // sheet with a HOLD badge burned into ten tiles would be a regression.
+    this.hold = el('div', 'pa-hold', `${HOLD_ICON}<span>Hold</span>`);
+    this.hold.setAttribute('role', 'status');
+    speedo.appendChild(this.hold);
+
     this.node.appendChild(speedo);
     this.node.appendChild(el('div', 'pa-dash-divider'));
 
@@ -103,13 +125,21 @@ export class Dash {
     this.node.appendChild(reads);
     root.appendChild(this.node);
 
-    this._shown = { kmh: -1, trip: -1, found: -1, total: -1 };
+    this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null };
   }
 
-  update(speedMs, tripM, found, total) {
+  update(speedMs, tripM, found, total, hold = false) {
     const kmh = Math.abs(speedMs) * 3.6;
     const a = START + Math.min(1, kmh / MAX_KMH) * SWEEP;
     this.needle.style.transform = `rotate(${(a).toFixed(1)}deg)`;
+
+    // Only on a change: this runs every frame and a class toggle is a style
+    // recalculation whether or not the class actually differs.
+    const held = !!hold;
+    if (held !== this._shown.hold) {
+      this._shown.hold = held;
+      this.hold.classList.toggle('pa-on', held);
+    }
 
     const shown = Math.round(kmh);
     if (shown !== this._shown.kmh) {

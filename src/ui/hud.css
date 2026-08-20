@@ -245,6 +245,37 @@
   font-weight: 600;
 }
 
+/* Brake-hold lamp, in the gap at the bottom of the dial sweep. Amber, because
+   that is the palette's one warning colour and because a real cluster lights
+   this one amber; it glows rather than fills, so a parked camper reads as
+   "held" and never as "something is wrong". */
+.pa-hold {
+  position: absolute;
+  left: 50%;
+  bottom: -0.25em;
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.18em 0.5em 0.18em 0.4em;
+  border-radius: 999px;
+  background: var(--scrim-solid);
+  border: 1px solid rgba(240, 173, 70, 0.42);
+  color: var(--amber);
+  font-size: 0.56em;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 0 0.9em rgba(240, 173, 70, 0.28);
+  /* Off-state and on-state differ only in opacity and a 3 px rise, so the lamp
+     coming on never moves anything around it. */
+  opacity: 0;
+  transform: translate(-50%, 0.34em);
+  transition: opacity 0.22s var(--ease), transform 0.22s var(--ease);
+}
+.pa-hold.pa-on { opacity: 1; transform: translate(-50%, 0); }
+.pa-hold svg { width: 1.15em; height: 1.15em; flex: none; }
+
 .pa-readouts { display: flex; flex-direction: column; gap: 0.55em; }
 .pa-readout { display: flex; flex-direction: column; gap: 0.12em; }
 .pa-readout-value {

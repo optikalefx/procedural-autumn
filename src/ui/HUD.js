@@ -376,7 +376,7 @@ export class HUD extends System {
       }
       this.map.update(p.x, p.z, bearing);
     }
-    this.dash.update(speed, this.trip, this.found, this.total);
+    this.dash.update(speed, this.trip, this.found, this.total, veh?.brakeHold ?? false);
     this._gamepad();
   }
 

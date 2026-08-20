@@ -31,6 +31,40 @@ const ROWS_PER_FRAME = 14;    // incremental sampling budget
 // onto its nose rather than stand on it.
 const REV_BRAKE = 0.017;
 
+// ── brake hold ───────────────────────────────────────────────────────────────
+// The player's spec: "it should have a break HOLD when you're below 5 mph …
+// Simply moving the car removes break hold. When break hold is on, don't allow
+// the vehicle to move at all. Even if it's on a hill."
+//
+// THE THRESHOLD IS 8.5 KM/H, NOT 5 MPH. 5 mph is 8.05 km/h, and the dial the
+// player is actually looking at is graduated in km/h and prints a *rounded*
+// integer. A threshold of 8.05 would arm at a readout of "8" and decline at
+// another readout of "8", which reads as a bug however correct the conversion
+// is. 8.5 km/h is the rounding boundary: every speed the speedo shows as 8 or
+// less arms, every speed it shows as 9 or more does not. That is 5.3 mph —
+// within a rounding error of what was asked for, and unambiguous on the
+// instrument the player judges it by.
+const HOLD_SPEED = 2.36;        // m/s = 8.5 km/h; see above
+
+// The hold *arms* at HOLD_SPEED but only *latches* — locks the body solid —
+// once the camper is genuinely stopped and on its wheels. Latching at 8 km/h
+// would freeze it mid-roll, which is a handbrake turn into a wall, not a hold.
+// Between arming and latching the wheels get the park-brake gain, which brings
+// it to rest in about a fifth of a second from the threshold.
+const HOLD_LATCH_V = 0.30;      // m/s — settled enough to lock with no visible snap
+const HOLD_LATCH_W = 0.60;      // rad/s — and not still rocking on its springs
+// …except on a gradient steep enough that brake torque alone never quite gets
+// there. That is the case the player named ("Even if it's on a hill"), so it
+// cannot be the case where the hold silently never engages. After this long
+// armed and grounded, it latches regardless of the residual creep.
+const HOLD_LATCH_T = 0.75;      // s
+const HOLD_BRAKE = 0.06;        // x brakeForce — the same gain the park brake uses
+// How far the body may drift from its latched pose before the pose is restored
+// outright. The translation lock should make this unreachable; it is measured
+// and reported on __vehicleState as `holdDrift` precisely so that "should" is
+// not the last word on it. See `_holdPin`.
+const HOLD_DRIFT = 1e-3;        // m
+
 // ── suspension geometry ─────────────────────────────────────────────────────
 // Spring rate in Bullet/Rapier's per-unit-mass units.  Static sag is then
 // g/4 / SPRING_K metres, which fixes the loaded ride height below.
@@ -65,6 +99,17 @@ export class VehiclePhysics {
     this._invertedFor = 0;
     this._stuckFor = 0;
     this.recoveries = 0;
+
+    // ── brake hold ──────────────────────────────────────────────────────────
+    // `holdArmed` is what the player asked for and what the HUD lamp reports;
+    // `holding` is the body actually locked. See `_hold`.
+    this.holdArmed = false;
+    this.holding = false;
+    this.holdDrift = 0;
+    this._armedFor = 0;
+    this._holdSpin = [0, 0, 0, 0];
+    this._holdT = null;
+    this._holdR = null;
   }
 
   async init(startX, startZ, heading = 0) {
@@ -278,9 +323,131 @@ export class VehiclePhysics {
     }
   }
 
+  // ── brake hold ────────────────────────────────────────────────────────────
+  //
+  //  This is the rescue park brake, finished.
+  //
+  //  The park brake added with the rescue button held the camper with *brake
+  //  torque* — `brakeForce * 0.06` on all four wheels — because that is the
+  //  lever a raycast vehicle hands you. It was a large improvement on nothing
+  //  (a rescued camper had been rolling a median 3.0 m in three seconds) but
+  //  torque is a rate, not a constraint: it fights gravity, it does not forbid
+  //  it. Gravity down a 0.3 gradient is 2.7 m/s² and the drivetrain has 4.4 of
+  //  engine braking to argue with it, so "held" was always going to mean
+  //  "creeping slowly" on ground steep enough to matter.
+  //
+  //  The player asked for something stronger than that, in as many words:
+  //  "don't allow the vehicle to move at all. Even if it's on a hill." No
+  //  brake gain delivers *at all*. So the hold is a constraint instead —
+  //  `lockTranslations` + `lockRotations`, which zero the body's inverse mass
+  //  and inverse inertia, after which no force in the world (gravity, the
+  //  suspension, a collision, the vehicle controller's own friction impulses)
+  //  can produce a velocity. The brake gain is still applied on top, but only
+  //  so the *wheels* read as braked; the chassis is held by the lock.
+  //
+  //  Both entry points come through here — `ctrl.hold` (the player, below
+  //  HOLD_SPEED) and `ctrl.park` (a rescue landing) — so there is one hold, one
+  //  release path, and one thing to test.
+  //
+  //  Three things this has to get right beyond simply not moving:
+  //
+  //   · It must not freeze the camper mid-air or mid-bounce. Arming is
+  //     instant, latching waits for three wheels on the ground and a settled
+  //     velocity — with the HOLD_LATCH_T escape hatch for the steep case.
+  //   · Release must not jolt. It cannot: the body has been at rest, no user
+  //     force has accumulated (`step` resets forces every frame), and the
+  //     unlock re-zeroes velocity as it goes. The camper starts rolling from
+  //     zero exactly as if it had been standing on its brakes.
+  //   · Sleeping must not change anything. The chassis is created with
+  //     `setCanSleep(false)` so it never sleeps in the first place, but every
+  //     call below passes `wakeUp: true` anyway, so the behaviour would be
+  //     identical if that ever changed.
+
+  /**
+   * Decide, once per frame, whether the hold is armed and whether it latches.
+   * @param want {boolean} the player (or a rescue) is asking for the hold
+   */
+  _hold(dt, want) {
+    if (!want) {
+      this.holdRelease();
+      this.holdArmed = false;
+      this._armedFor = 0;
+      return;
+    }
+    this.holdArmed = true;
+    if (this.holding) return;
+
+    this._armedFor += dt;
+    // Contact from the previous step: one frame stale, and a frame is 8 ms of
+    // a decision about whether the camper has stopped.
+    let contact = 0;
+    for (let i = 0; i < 4; i++) if (this.vc.wheelIsInContact(i)) contact++;
+    if (contact < 3) return;                   // in the air, or still landing
+
+    const lv = this.body.linvel(), av = this.body.angvel();
+    const v = Math.hypot(lv.x, lv.y, lv.z);
+    const w = Math.hypot(av.x, av.y, av.z);
+    const settled = v < HOLD_LATCH_V && w < HOLD_LATCH_W;
+    if (!settled && this._armedFor < HOLD_LATCH_T) return;
+    this._holdLatch();
+  }
+
+  _holdLatch() {
+    this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.lockTranslations(true, true);
+    this.body.lockRotations(true, true);
+    const t = this.body.translation(), r = this.body.rotation();
+    this._holdT = { x: t.x, y: t.y, z: t.z };
+    this._holdR = { x: r.x, y: r.y, z: r.z, w: r.w };
+    // Freeze the rendered wheel angle too. With the body pinned the controller
+    // has nothing to roll them with, but the drivetrain's reversal brake and
+    // the friction solver both still run, and a wheel that ticks over by a
+    // degree on a stationary camper is the kind of detail that reads as broken.
+    for (let i = 0; i < 4; i++) this._holdSpin[i] = this.wheels[i]?.spin ?? 0;
+    this.holding = true;
+    this.holdDrift = 0;
+  }
+
+  /**
+   * Let go. Safe to call at any time from anywhere — the player driving away,
+   * a teleport, an auto-recovery, the NaN guard — and a no-op if not held.
+   */
+  holdRelease() {
+    if (!this.holding) return;
+    this.body.lockTranslations(false, true);
+    this.body.lockRotations(false, true);
+    this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.holding = false;
+  }
+
+  /**
+   * Belt and braces, run every substep while latched.
+   *
+   * The locks alone should make this a no-op, and measured over the slope
+   * sweep in tools/_scratch/holdtest.mjs they do — `holdDrift` comes back
+   * exactly 0 on every gradient. It is kept because the locks are the *only*
+   * thing standing between the player and a camper that rolls off a mountain,
+   * and because a Rapier upgrade could change what a lock means without
+   * changing what it is called.
+   */
+  _holdPin() {
+    this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    const t = this.body.translation();
+    const d = Math.hypot(t.x - this._holdT.x, t.y - this._holdT.y, t.z - this._holdT.z);
+    if (d > this.holdDrift) this.holdDrift = d;
+    if (d > HOLD_DRIFT) {
+      this.body.setTranslation(this._holdT, true);
+      this.body.setRotation(this._holdR, true);
+    }
+  }
+
   // ── control ───────────────────────────────────────────────────────────────
   /**
-   * @param ctrl {steer, throttle, brake, handbrake} all 0..1 (steer -1..1)
+   * @param ctrl {steer, throttle, brake, handbrake, hold, park}
+   *   all 0..1 (steer -1..1); `hold` and `park` are booleans — see `_hold`.
    */
   step(dt, ctrl) {
     if (!this.ready) return;
@@ -399,20 +566,21 @@ export class VehiclePhysics {
     // above, which is otherwise the one time the camper stops with no light on.
     this.braking = brake > 60;
 
-    // ── park brake ──────────────────────────────────────────────────────────
-    // Set after a rescue and released the moment the player touches a control.
-    // Without it a rescue is only half of what was asked for: the camper is put
-    // somewhere fine and then freewheels off it, because the only thing holding
-    // it on a hill is the 4.4 of engine braking. Measured over 24 rescues with
-    // no input at all, on ground whose worst footprint slope was under 0.5, the
-    // median landing rolled 3.0 m in three seconds and the worst rolled 7.2 —
-    // several of them into water the site check had specifically avoided.
-    // Gravity down a 0.3 gradient is 2.7 m/s²; nothing in the drivetrain was
-    // ever going to argue with that.
-    if (ctrl.park) {
+    // ── brake hold / park brake ─────────────────────────────────────────────
+    // Two requests, one mechanism: `hold` is the player pressing the handbrake
+    // below 8.5 km/h, `park` is a rescue landing. Both want the same thing —
+    // the camper exactly where it is until it is driven away — so both go
+    // through `_hold`, which locks the body once it has settled. See the block
+    // comment above `_hold` for why brake torque was never going to be enough.
+    //
+    // The gain here is what stops the camper *reaching* the latch, and what
+    // keeps the wheels reading as braked once it is there. It is not what holds
+    // it: the lock is.
+    this._hold(dt, !!(ctrl.hold || ctrl.park));
+    if (this.holdArmed) {
       engine = 0;
-      brake = Math.max(brake, VEHICLE.brakeForce * 0.06);
-      this.braking = false;      // parked is not braking; no tail lamps for it
+      brake = Math.max(brake, VEHICLE.brakeForce * HOLD_BRAKE);
+      this.braking = false;      // held is not braking; no tail lamps for it
     }
     this.parked = !!ctrl.park;
 
@@ -488,8 +656,13 @@ export class VehiclePhysics {
     this._accum += Math.min(dt, 0.1);
     let steps = 0;
     while (this._accum >= this.P.timestep && steps < 12) {
+      // `updateVehicle` still runs while held: the suspension raycasts are what
+      // keep the wheel positions and contact points current, so the camper is
+      // sitting on its springs rather than on a stale pose when it lets go.
+      // Its impulses are inert against a locked body.
       this.vc.updateVehicle(this.P.timestep, RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC);
       this.P.step();
+      if (this.holding) this._holdPin();
       this._accum -= this.P.timestep;
       steps++;
     }
@@ -509,7 +682,7 @@ export class VehiclePhysics {
       w.compression = clamp01((VEHICLE.suspensionRest - len) / VEHICLE.suspensionRest);
       w.load = Math.abs(this.vc.wheelSuspensionForce(i) ?? 0);
       w.steer = this.vc.wheelSteering(i) ?? 0;
-      w.spin = this.vc.wheelRotation(i) ?? 0;
+      w.spin = this.holding ? this._holdSpin[i] : (this.vc.wheelRotation(i) ?? 0);
       const fi = this.vc.wheelForwardImpulse(i) ?? 0;
       const si = this.vc.wheelSideImpulse(i) ?? 0;
       w.slip = clamp01((Math.abs(fi) * 0.0016 + Math.abs(si) * 0.0022));
@@ -531,7 +704,11 @@ export class VehiclePhysics {
 
     const trying = ctrl.throttle > 0.4 || ctrl.brake > 0.4;
     const crawling = Math.abs(this.speed) < 0.45;
-    this._stuckFor = (trying && crawling && !this.airborne) ? this._stuckFor + dt : 0;
+    // A held camper is standing still on purpose, which is the exact signature
+    // the stuck detector looks for. Either pedal releases the hold before this
+    // runs, so `holdArmed` here can only mean "deliberately parked".
+    this._stuckFor = (trying && crawling && !this.airborne && !this.holdArmed)
+      ? this._stuckFor + dt : 0;
 
     // Below the terrain means a tunnelling failure — put it straight back.
     const ground = this.world.getHeight(t.x, t.z);
@@ -539,6 +716,9 @@ export class VehiclePhysics {
 
     if (this._invertedFor > 1.6 || this._stuckFor > 4.5 || buried) {
       this.righting = 1;
+      // Let go before repositioning: `setTranslation` on a locked body is a
+      // pose the pin would immediately undo.
+      this.holdRelease();
       this._invertedFor = 0;
       this._stuckFor = 0;
       this.recoveries++;
@@ -556,6 +736,7 @@ export class VehiclePhysics {
   _guardNaN() {
     const t = this.body.translation();
     if (Number.isFinite(t.x) && Number.isFinite(t.y) && Number.isFinite(t.z)) return;
+    this.holdRelease();
     const x = this._patchCX, z = this._patchCZ;
     this.body.setTranslation({ x, y: this.world.getHeight(x, z) + RIDE_HEIGHT + 0.1, z }, true);
     this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -566,6 +747,13 @@ export class VehiclePhysics {
 
   teleport(x, z, heading = 0) {
     if (!this.ready) return;
+    // A held body cannot be moved — that is the whole point of it — so the hold
+    // comes off before the teleport rather than fighting it. A rescue re-arms
+    // it on the far side through `ctrl.park`, and re-latches once the landing
+    // has settled.
+    this.holdRelease();
+    this.holdArmed = false;
+    this._armedFor = 0;
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading);
     // Ground first, then place on it: the body has to be set against the patch
     // it is about to stand on, not the one it is leaving. Height comes off the

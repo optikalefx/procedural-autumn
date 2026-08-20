@@ -67,6 +67,27 @@ const RESCUE_STEP = 1.1;        // m of height change across a footprint = a led
 const RESCUE_SLOPE = 0.42;      // ideal: flat enough to be a nice place to stop
 const RESCUE_SLOPE_OK = 0.65;   // acceptable: still holds, measured (see above)
 
+// ── brake hold (Space) ───────────────────────────────────────────────────────
+// The player's spec: "Space bar is breaking, but it should have a break HOLD
+// when you're below 5 mph … Simply moving the car removes break hold."
+//
+// Space keeps its handbrake job unchanged. What is new is that below the
+// threshold it *latches*: let go of the key and the camper stays put, exactly
+// like the auto-hold on a modern automatic. VehiclePhysics owns the mechanism
+// (and the 8.5 km/h-not-5 mph argument); this file owns the policy — when it
+// arms, and what makes it let go.
+//
+// Threshold matched to VehiclePhysics.HOLD_SPEED, and deliberately compared
+// against `this.speed`, which is the number the speedo prints. A player who
+// reads 8 and presses Space gets a hold; a player who reads 9 does not.
+const HOLD_KMH = 8.5;
+const HOLD_SPEED = HOLD_KMH / 3.6;          // 2.36 m/s
+const HOLD_GROUNDED = 3;                    // wheels on the ground to arm at all
+// A pedal is "moving the car". Steering deliberately is not: the player was
+// specific that *moving* releases the hold, and turning the wheel on a parked
+// camper is not moving it — it is lining up the shot you stopped to take.
+const HOLD_PEDAL = 0.02;
+
 export class Vehicle extends System {
   constructor(ctx) {
     super(ctx);
@@ -100,6 +121,8 @@ export class Vehicle extends System {
     this._invQuat = new THREE.Quaternion();
     this._rescueCool = 0;
     this._rescueHold = false;
+    this._brakeHold = false;
+    this.brakeHold = false;      // what the HUD lamp reads
     this.rescues = 0;
     this.teleportSeq = 0;      // CameraRig watches this and re-primes its boom
   }
@@ -185,6 +208,8 @@ export class Vehicle extends System {
       water: this.waterDepth, recoveries: this.phys.recoveries,
       rescues: this.rescues, slope: world.getSlope(this.position.x, this.position.z),
       revBrake: this.phys.revBrakeTime ?? 0,
+      hold: this.phys.holdArmed, held: this.phys.holding,
+      holdDrift: this.phys.holdDrift ?? 0,
       nan: this.phys.nanEvents ?? 0,
       ground: world.getHeight(this.position.x, this.position.z),
     });
@@ -223,18 +248,40 @@ export class Vehicle extends System {
       ctx.systems.hud?.toast?.('Stuck? Press R');
     }
 
+    // ── brake hold ──────────────────────────────────────────────────────────
+    // A pedal — either pedal — is the player moving the camper, and it lets go
+    // of everything. Checked *first* so that holding Space and W together is a
+    // request to drive rather than a fight: the hold cannot re-arm on the same
+    // frame it was released, and by the next frame the camper is over the
+    // threshold. Without that ordering the two inputs deadlock and the camper
+    // sits there with the throttle open.
+    const driving = ax.throttle > HOLD_PEDAL || ax.brake > HOLD_PEDAL;
+    if (driving) this._brakeHold = false;
+    else if (ax.handbrake > 0.5 && this._holdEligible()) this._brakeHold = true;
+
     // A rescue leaves the park brake on. Any deliberate input releases it —
     // the player has taken over and the camper should behave normally from
-    // that instant, with no "press again to release" ceremony.
-    if (ax.throttle > 0.02 || ax.brake > 0.02 || Math.abs(ax.steer) > 0.05) this._rescueHold = false;
+    // that instant, with no "press again to release" ceremony. Steering counts
+    // here, unlike the brake hold above, because a rescue was not something the
+    // player chose and any sign of life should hand the camper back.
+    if (driving || Math.abs(ax.steer) > 0.05) this._rescueHold = false;
 
     this.phys.step(dt, {
       throttle: ax.throttle,
       brake: ax.brake,
       steer: ax.steer,
       handbrake: ax.handbrake,
+      hold: this._brakeHold,
       park: this._rescueHold,
     });
+    this.brakeHold = this.phys.holdArmed;
+    // Once per session, the first time it engages: a latching handbrake is not
+    // what Space does in any other driving game, and a player who does not know
+    // it latched will read it as the camper having jammed.
+    if (this.brakeHold && !this._toldAboutHold) {
+      this._toldAboutHold = true;
+      ctx.systems.hud?.toast?.('Brake hold on — press W to drive away');
+    }
 
     this._syncTransform();
     this._groundSettle(dt);
@@ -250,6 +297,23 @@ export class Vehicle extends System {
     this.contactShadow.update(this.position.x, this.position.z, this.heading,
       onGround / Math.max(1, this.wheels.length));
     this._patchAnchor();
+  }
+
+  /**
+   * May the handbrake latch right now?
+   *
+   * Two gates, and they cover different failures. The speed gate is the
+   * player's ("below 5 mph") and is measured against `this.speed` because that
+   * is what the dial prints. The grounded gate is the one that stops a hold
+   * being engaged in mid-air or mid-bounce — the physics will not *latch*
+   * until it has settled either way, but arming a hold on a camper that is
+   * still falling would light the lamp several seconds before anything held.
+   */
+  _holdEligible() {
+    if (Math.abs(this.speed) > HOLD_SPEED) return false;
+    let onGround = 0;
+    for (let i = 0; i < this.wheels.length; i++) if (this.wheels[i].grounded) onGround++;
+    return onGround >= HOLD_GROUNDED;
   }
 
   // ── rescue ────────────────────────────────────────────────────────────────
@@ -313,6 +377,10 @@ export class Vehicle extends System {
     this.tracks?.cut();
 
     this._rescueHold = true;      // park brake on until the player drives away
+    // The rescue's own hold supersedes the player's: they are the same latch,
+    // but the rescue one also releases on steering, and leaving both set would
+    // mean a steer released one and not the other.
+    this._brakeHold = false;
     this._rescueCool = RESCUE_COOLDOWN;
     this.rescues++;
     this.teleportSeq++;
