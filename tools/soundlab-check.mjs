@@ -218,12 +218,17 @@ async function main() {
     const z = await page.evaluate(async (id) => {
       const lab = window.__lab;
       lab.select(id);
+      // Back to defaults first. The distance assertion above leaves the
+      // waterfall at 500 m, and starting a routing check 25 dB down means the
+      // largest drop it can possibly observe is 25 dB — the test would be
+      // measuring the previous test rather than the mixer.
+      document.querySelector('#resetAll').click();
       await new Promise((r) => setTimeout(r, 200));
       await lab.play();
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, 1600));
       document.querySelector('#zeroTest').click();
-      // 1.2 s before + 0.25 s settle + 1.2 s after, plus slack.
-      await new Promise((r) => setTimeout(r, 3600));
+      // 1.2 s before + 0.7 s settle + 1.2 s after, plus slack.
+      await new Promise((r) => setTimeout(r, 4400));
       const note = document.querySelector('#note').textContent;
       lab.stop();
       return { note, restored: Object.values(lab.trims()).length > 0 };

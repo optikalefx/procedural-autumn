@@ -400,22 +400,30 @@ async function zeroTest() {
   const list = (s.layers ?? []).filter((n) => state.rig.trims[n]);
   if (!state.rig.audio || !list.length) return note('Nothing to zero on this sound.');
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const meanRms = async (ms) => {
+  // The median, not the mean. The taps are 16384-point analysers, so every read
+  // is a 341 ms window: for a third of a second after the mute lands, each read
+  // still contains pre-mute samples. Averaged linearly those few loud reads
+  // dominate — measured, they put a healthy bus at -72 dBFS instead of -110 and
+  // the test reported a routing fault on a mixer that was working perfectly.
+  // A median ignores them, and the settle below is longer than the window.
+  const medianRms = async (ms) => {
     const t0 = performance.now();
-    let sum = 0, n = 0;
+    const xs = [];
     while (performance.now() - t0 < ms) {
       const m = state.rig.audio.measure(s.bus);
-      if (m) { sum += m.rms; n++; }
+      if (m) xs.push(m.rms);
       await wait(16);
     }
-    return n ? sum / n : 0;
+    if (!xs.length) return 0;
+    xs.sort((a, b) => a - b);
+    return xs[xs.length >> 1];
   };
   $('#zeroTest').disabled = true;
-  const before = await meanRms(1200);
+  const before = await medianRms(1200);
   const saved = list.map((n) => !!state.rig.muted[n]);
   for (const n of list) state.rig.setMute(n, true);
-  await wait(250);
-  const after = await meanRms(1200);
+  await wait(700);                       // > the analyser's own 341 ms window
+  const after = await medianRms(1200);
   list.forEach((n, i) => state.rig.setMute(n, saved[i]));
   renderLayerStates();
   $('#zeroTest').disabled = false;
