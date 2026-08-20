@@ -27,6 +27,16 @@ import {
   makeSharedUniforms, createLeafMaterial, createBarkMaterial, createImpostorMaterial,
 } from './tree_material.js';
 
+// Which species carry the red sixth of the wheel. Read off the `autumnRed`
+// flag in the species table rather than by index, so adding a species cannot
+// silently leave it out of the admixture in _pickSpecies(). It is a declared
+// flag and not a hue test on the palettes because 'red' here means the 0-30
+// degree bucket tools/colorstats.mjs measures the plates in, and the gold and
+// amber entries several species carry sit at 34-48 degrees — inside the same
+// warm family, but they are precisely the colours the forest view already has
+// too much of.
+const RED_SPECIES = SPECIES.map((sp) => !!sp.autumnRed);
+
 const CFG = {
   // Five prototypes per species, not three. Three is what produced the "12+
   // near-identical conifer silhouettes in a single view" the critic counted:
@@ -746,22 +756,53 @@ export class Trees extends System {
     const high = smoothstep(55, 155, h);
     const w = this._w ?? (this._w = new Float32Array(S));
 
-    // Birch and aspen carry every gold and lime note in the game. Under the old
-    // weights spruce out-competed them almost everywhere below the treeline and
-    // the eye-level frames measured 0.0% yellow against the plates' 7.9%, which
-    // is why every deciduous canopy in a view read as the same orange. They now
-    // win their own stands, and birch is sharpened like the conifer so those
-    // stands have edges instead of being one birch salted through a maple wood.
-    // The river bonus used to be birch 1.5 / aspen 0.9 against base weights near
-    // 0.4, which meant that anywhere the river field approached 1 — the whole of
-    // the waterfall and river anchors — birch simply won, and those frames came
-    // back as a single gold species. Riparian species still lead on a bank, but
-    // by a margin the other weights can argue with, and maple gets its own
-    // riverbank term because it is the crimson in the plates' bank planting.
-    w[0] = (0.72 * (0.35 + wet) * (1 - smoothstep(150, 225, h))) + river * 0.85;       // birch
-    w[1] = (0.58 * (0.30 + wet) * (1 - smoothstep(140, 205, h))) + river * 0.50;       // aspen
-    w[2] = 0.46 * (0.45 + wet * 0.85) * (1 - smoothstep(105, 180, h)) + river * 0.55;  // maple
-    w[3] = 0.38 * (1.05 - wet * 0.45) * (1 - smoothstep(85, 155, h));                  // oak
+    // ── the mix, re-based on critic pass 6 §3 ────────────────────────────────
+    //
+    // The previous set of weights was written to fix "the eye-level frames
+    // measured 0.0% yellow against the plates' 7.9%". It fixed it and then some.
+    // Measured on the shipped `forest` frame, 28.6% of chromatic pixels are
+    // yellow or yellow-green; on the archived full-resolution round it is 43%.
+    // Against the plates *individually* — which is what the brief asks for, and
+    // the averaging error is exactly how the 7.9% figure was arrived at:
+    //
+    //     plate    red   orange  yellow  y-grn
+    //       1     51.8    38.4     4.8    3.1
+    //       2     37.7    47.6     6.7    1.4
+    //       3     37.3    24.5     2.3    0.3     <- eye-level reference
+    //       5     47.6    39.2     0.1    0.0
+    //     ours     8.6    48.5     8.3   20.3
+    //
+    // So the error is not really the yellow. It is that **red is missing**:
+    // 8.6% against plate 3's 37.3%, in an autumn game. Every reference plate
+    // puts crimson and rust crowns in its near field; a census of the `forest`
+    // framing found maple at 4% of trees and oak at 0.4%, i.e. the only two
+    // species in the set that carry any red are together 5% of the forest.
+    // Birch and aspen — which between them carry every gold and lime note —
+    // were 47%, and spruce 48%.
+    //
+    // Birch and aspen come down, the two red species come up, and the two
+    // riparian bonuses stay because they are what plants a bank.
+    // The numbers below are the SECOND pass. The first raised maple to 0.92 and
+    // measured the result: maple went from 4% of the trees in the forest
+    // framing to 56%, birch fell 27% -> 6% and aspen 29% -> 6%. That is not a
+    // fix, it is the same monoculture in a different colour, and it is exactly
+    // the shape of the overshoot that produced the 43% yellow in the first
+    // place. Red comes up by about a third, not by double, and the admixture
+    // below does the rest of the work.
+    w[0] = (0.60 * (0.35 + wet) * (1 - smoothstep(150, 225, h))) + river * 0.78;       // birch
+    w[1] = (0.48 * (0.30 + wet) * (1 - smoothstep(140, 205, h))) + river * 0.46;       // aspen
+    // Maple is the crimson. Its altitude window was the tightest of the five and
+    // it had no business being so: a maple at 150 m is an ordinary thing and
+    // three of our ten views stand above 100 m.
+    w[2] = 0.60 * (0.45 + wet * 0.85) * (1 - smoothstep(130, 205, h)) + river * 0.62;  // maple
+    // Oak carries the rusts and bronzes and was effectively absent from every
+    // frame — 0.4% of trees in the forest census, and 1% of the far field. It
+    // genuinely prefers drier ground, but at (1.05 - wet * 0.45) that preference
+    // was strong enough to exclude it from closed canopy entirely, which is
+    // where the plates put their bronze crowns. It also needs its own regional
+    // sharpening (below) or maple simply outbids it everywhere at once and the
+    // whole red family collapses onto a single palette.
+    w[3] = 0.88 * (0.98 - wet * 0.26) * (1 - smoothstep(105, 180, h));                 // oak
     // Spruce is the value anchor of the palette — the only deep, cool, dark
     // mass in a frame that is otherwise entirely hot. Confining it to the
     // treeline (which the altitude term alone does) leaves the valley with
@@ -769,19 +810,43 @@ export class Trees extends System {
     // and wins outright wherever its regional bias is strong.
     w[4] = (0.72 + 1.15 * high + smoothstep(0.5, 1.0, slope) * 0.55) * (0.55 + wet * 0.7);
 
-    let best = -1, bi = 0;
+    let best = -1, bi = 0, redBest = -1, ri = -1;
     for (let s = 0; s < S; s++) {
       // Regional preference, squared for the clonal species so aspen forms the
       // pure single-colour groves it does in life.
       let b = bias[dfIdx * S + s];
       if (SPECIES[s].clonal) b = b * b * 1.6;
       if (SPECIES[s].key === 'birch') b = b * b * 1.5;
+      if (SPECIES[s].key === 'oak') b = b * b * 1.4;
       // Conifer stands are large and near-pure in the reference plates, never
       // one spruce salted through a birch wood. Sharpening the bias turns the
       // regional field into a hard stand boundary.
       if (SPECIES[s].conifer) b = b * b * 1.75;
       const v = w[s] * (0.18 + 1.9 * b) * (0.8 + 0.4 * rng());
       if (v > best) { best = v; bi = s; }
+      // Best red-bearing runner-up, for the admixture below. Maple and oak are
+      // the only two species whose palettes reach the red sixth of the wheel.
+      if (RED_SPECIES[s] && v > redBest) { redBest = v; ri = s; }
+    }
+
+    // ── admixture ────────────────────────────────────────────────────────────
+    //
+    // The argmax above is winner-take-all, and the conifer's b*b*1.75 makes its
+    // stands not merely large but *pure*: the `forest` framing came back 100%
+    // spruce inside 40 m and 40% spruce at 90-200 m with one crimson crown in
+    // the whole frame. A pure conifer stand has no autumn in it by construction,
+    // and no grade or shading change can put colour in that the scatter did not.
+    //
+    // Plate 3 does not show a pure conifer stand. It shows conifers as dark
+    // punctuation *inside* a warm canopy. So a fraction of the trees a conifer
+    // stand would have taken go to the best red-bearing species instead. The
+    // fraction is driven by maple's own regional field, so some stands stay
+    // pure dark spruce — that mass is the palette's only cool anchor and losing
+    // it would trade one systematic error for another — while others read as a
+    // genuinely mixed wood.
+    if (ri >= 0 && SPECIES[bi].conifer) {
+      const admix = 0.40 * smoothstep(0.22, 0.86, bias[dfIdx * S + 2]);
+      if (rng() < admix) bi = ri;
     }
     return bi;
   }
@@ -1060,14 +1125,13 @@ export class Trees extends System {
       u.uAmbient.value = (lighting.hemi.intensity + lighting.fill.intensity * 0.5) / Math.PI;
       // Backlight glow rides the sun's own colour, hottest near the horizon.
       const lowSun = 1 - smoothstep(0.05, 0.42, Math.max(0, lighting.sunDir.y));
-      // Down from 1.40 / 3.20. With uTransTint no longer supplying a third
-      // warm multiplier the transmitted term arrives much *whiter*, so the same
-      // strength reads far hotter than it did — the near crowns in `backlit`
-      // measured srgb(156,81,53) against grass at srgb(206,118,84), i.e. the
-      // same hue at a lower value, and simply vanished into the meadow. The
-      // glow is meant to separate a crown from what is behind it, not to bleach
-      // it to the background.
-      u.uTransStrength.value = lerp(1.10, 2.40, lowSun);
+      // Down from 1.10 / 2.40, and the drop is a unit change, not a taste
+      // change. Transmitted light is no longer multiplied by the leaf's albedo
+      // (see the transmission block in tree_material.js), so the colour it is
+      // multiplying is about eight times brighter on a conifer and about twice
+      // on a gold aspen. Same delivered radiance at the crown fringe, an
+      // enormously larger one on the dark species — which is the entire point.
+      u.uTransStrength.value = lerp(0.45, 0.95, lowSun);
     }
 
     const p = camera.position;

@@ -92,6 +92,9 @@ uniform vec3  uGroundColor;
 uniform float uAmbient;
 uniform vec3  uTransTint;
 uniform float uTransStrength;
+uniform float uTransDepth;      // Beer-Lambert scale on the optical depth
+uniform float uTransChroma;     // how far transmitted light takes the leaf's hue
+uniform float uTransSpread;     // dot(V, sunDir) at which forward scatter starts
 uniform float uBands;
 uniform float uCanopyGain;
 uniform float uCanopyAmbient;
@@ -192,25 +195,80 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
             * (0.92 + 0.36 * clamp(N.y, 0.0, 1.0));
   direct *= mix(1.0, 0.80, backFace);
 
-  // Transmission. The money shot: at golden hour the far side of every crown
-  // lights up like stained glass. Strongest where we look into the sun, where
-  // the surface faces away from it, and where the clump is thin.
-  float toward = clamp(dot(V, uSunDir), 0.0, 1.0);
+  // ── Transmission ──────────────────────────────────────────────────────────
+  //
+  // Rewritten. What was here before was measured by critic pass 6 and found to
+  // be a tip gradient rather than a translucency: the frond tips ran +35 to
+  // +48% over the crown body, only +12% of that varied with the sun, the
+  // brightest needle reached 72% of the sky behind it, and the crown interior
+  // was opaque at the same value as its shaded side. Three separate causes,
+  // all of them in these dozen lines, all fixed here.
+  //
+  // 1. THE TRANSMITTED LIGHT WAS MULTIPLIED BY THE ALBEDO. This is the exact
+  //    mistake the look author warned about for the rim, one term further down
+  //    the same function: a spruce needle's albedo is the darkest thing in the
+  //    frame (linear luma ~0.12), so multiplying the glow by it left 12% of the
+  //    light on the species whose whole job in this frame is to glow. A leaf's
+  //    transmittance is not its reflectance — chlorophyll passes far more light
+  //    than it bounces — so transmitted light takes the leaf's HUE and not its
+  //    VALUE. That is what the normalisation below does, and it is worth about
+  //    six stops on a conifer and about one on a gold aspen, which is the right
+  //    ratio: the dark species is the one that has somewhere to go.
+  //
+  // 2. THERE WAS NO OPTICAL DEPTH. The old term keyed thickness off 'thin',
+  //    which is a per-brush-mark texture channel — high at the edge of every
+  //    dab, everywhere in the crown, dead centre included. So the glow fired
+  //    just as hard three metres inside the crown as it did on the silhouette.
+  //    A backlit crown reads the way it does because it THINS toward its edge;
+  //    that is the whole effect. Three depth signals go into a Beer-Lambert
+  //    exponent now, and the third of them is the honest one: the shadow map
+  //    already answers 'how much leaf is between the sun and this card' by
+  //    actually tracing it, and near-LOD canopy casts, so a near crown
+  //    genuinely self-shadows.
+  //
+  // 3. IT WAS NOT SUN-DEPENDENT. (0.46 + 0.54 * ...) x (0.30 + 0.70 * ...)
+  //    floors at 13.8% of peak, so the term fired in every frame in the game
+  //    whether the sun was behind the foliage or in front of the camera. The
+  //    smoothstep below reaches zero for a sun behind the viewer while keeping
+  //    a broad lobe, which is what the old comment about the base term was
+  //    really after: a backlit STAND glows across its whole width, but a
+  //    front-lit one must not glow at all.
+  //
+  // Forward scatter: light that entered the far side of the crown, bounced
+  // around inside the leaf and carried on toward the camera. It peaks when the
+  // camera is looking along the sun's own direction of travel, which is
+  // dot(V, sunDir) with V pointing camera -> surface.
+  float toward = dot(V, uSunDir);
+  float fwd = smoothstep(uTransSpread, 0.92, toward);
+  // ...and it is seen on the face turned AWAY from the sun. The crown normal
+  // points out of the crown, so this is the honest 'am I on the shaded side of
+  // this tree' question rather than a billboard-facing artefact.
   float back = clamp(-ndl, 0.0, 1.0);
-  // The base term matters more than the peak. A canopy with the sun behind it
-  // glows everywhere, not only where you are staring into the disc; keying
-  // transmission purely off "toward" lights one tree and leaves the rest of the
-  // backlit stand as brown cardboard.
-  float trans = (0.46 + 0.54 * pow(toward, 1.3)) * (0.30 + 0.70 * back) * uTransStrength;
-  trans *= mix(0.45, 1.0, shadow) * thin;
-  // Normalise by the leaf's own brightness. A crimson maple reflects almost
-  // nothing and needs the full glow; a gold aspen is already near white, and
-  // boosting it the same amount drives it through the top of the tone curve —
-  // which reads as washed-out cream, not as light. This is what keeps a distant
-  // gold stand *coloured* instead of turning it into popcorn.
-  float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-  trans /= 1.0 + lum * 1.5;
-  vec3 transC = uSunColor * albedo * uTransTint;
+
+  // Optical depth: how much leaf material the light had to cross to get here.
+  //   · (1.12 - ao)     radial depth in the crown. ao runs ~0.35 at the trunk
+  //                     to ~1.14 at a bough tip.
+  //   · (1.28 - thin)   depth inside the individual brush mark. thin is 1.28 at
+  //                     a mark's edge and 0.40 at its core.
+  //   · (1.0 - shadow)  measured occlusion. shadow arrives in 0.34..1 carrying
+  //                     the light's own shadowIntensity; a card buried in the
+  //                     crown is the one the sun did not reach.
+  float depth = uTransDepth * (
+        clamp(1.12 - ao, 0.0, 1.0)
+      + 0.90 * clamp(1.28 - thin, 0.0, 1.0)
+      + 1.60 * clamp(1.0 - shadow, 0.0, 1.0));
+  float through = exp(-depth);
+
+  float trans = uTransStrength * fwd * (0.12 + 0.88 * back) * through;
+
+  // Transmitted light carries the leaf's hue at unit luminance. Mixing two
+  // unit-luminance vectors keeps the result at unit luminance, so this is a
+  // pure hue rotation with no value in it: every species transmits the same
+  // amount of light and a different colour of it. uTransTint stays a nudge
+  // (see makeSharedUniforms) rather than a fourth warm multiplier.
+  float lum = max(dot(albedo, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+  vec3 chroma = mix(vec3(1.0), albedo / lum, uTransChroma);
+  vec3 transC = uSunColor * uTransTint * chroma;
 
   // Rim — the shared golden-hour edge from Stylize, which every
   // MeshStandardMaterial in the game gets through the patched direct-lighting
@@ -237,10 +295,18 @@ vec3 canopyShade(vec3 albedo, vec3 N, vec3 V, float ao, float thin, float shadow
   // outward and horizontally, so on the left and right thirds of a spire the
   // fresnel is near its peak even for cards buried well inside the crown —
   // ungated, the rim lit the whole tree pale cream and the spire stopped being
-  // the dark mass the palette needs from it. ao runs from ~0.4 at the trunk
-  // to ~1.1 at a bough tip, which is exactly the gradient wanted: the tips
-  // blaze and the interior stays where it was.
-  rim *= mix(0.55, 1.0, shadow) * clamp(ao * ao * 1.05, 0.0, 1.25);
+  // the dark mass the palette needs from it.
+  //
+  // The ao gate is now multiplied by 'through' as well, and uRimBoost has come
+  // down from 6.0. ao is BOUGH-local on a conifer — it runs 0.35 at the trunk
+  // to 1.14 at the tip of every whorl, including the whorls buried in the
+  // middle of the spire — so on its own it is a per-frond fringe and not a
+  // silhouette. That is precisely the orientation-independent pale sage tip
+  // gradient critic pass 6 photographed and measured at +35-48% with only +12%
+  // of it moving with the sun. 'through' is the term that knows the difference
+  // between a bough tip on the outside of the crown and one three metres in.
+  rim *= mix(0.55, 1.0, shadow) * clamp(ao * ao * 1.05, 0.0, 1.25)
+       * mix(0.30, 1.0, through);
 
   vec3 col = albedo * (direct + hemi) + transC * trans + uSunColor * rim;
 
@@ -318,7 +384,32 @@ export function makeSharedUniforms() {
     // does pick up a little of the leaf's own warmth beyond its reflectance,
     // but it is a nudge now rather than a hue replacement.
     uTransTint:     { value: new THREE.Color(1.30, 1.13, 0.95) },
-    uTransStrength: { value: 1.9 },
+    // Overwritten every frame from Trees.update(), which ramps it with the
+    // sun's elevation. The value here is only what the impostor bake sees.
+    uTransStrength: { value: 1.0 },
+    // Beer-Lambert scale on the optical depth. 0.8 passes ~100% on a crown's
+    // fringe and ~10% on a card buried in an interior whorl and in the crown's
+    // own shadow. Swept rather than picked: measured on the near maple crown in
+    // `backlit`, transmission on minus transmission off, everything else held
+    // inside one page load —
+    //     depth 1.5  +7.6%      depth 0.9  +48%
+    //     depth 0.6  +41%       depth 0.0  +110%
+    // 1.5 was the first guess and it was wrong by an order of magnitude: it
+    // spent nearly all of the exponent on the shadow term, which on foliage is
+    // very nearly binary (the light's shadowIntensity pins the occluded value
+    // at 0.34 however many leaves are in the way), so a self-shadowed backlit
+    // crown — every crown this effect exists for — was cut fivefold before the
+    // two continuous depth signals were even consulted.
+    uTransDepth:    { value: 0.8 },
+    // How far the transmitted colour takes the leaf's own hue. 1.0 is the full
+    // chromaticity of the albedo; below that it is pulled toward white. Kept
+    // under 1 because a crimson maple at full chromaticity transmits a red
+    // three times its own luminance and clips before the tone curve sees it.
+    uTransChroma:   { value: 0.85 },
+    // dot(V, sunDir) at which forward scatter begins. Slightly negative so a
+    // stand a little to the side of the sun still glows across its whole width,
+    // and hard zero once the sun is behind the camera.
+    uTransSpread:   { value: -0.12 },
     uBands:         { value: 4.0 },
     uCanopyGain:    { value: 1.34 },
     uCanopyAmbient: { value: 1.42 },
@@ -327,8 +418,14 @@ export function makeSharedUniforms() {
     // fresnel is near 1 across the whole field and a rim strong enough to draw
     // a tree edge lifts the entire meadow instead. A crown has a real
     // silhouette and is the subject of the backlit view, so it is allowed more.
-    // Set from Trees.update() so it can follow the sun's elevation.
-    uRimBoost:      { value: 6.0 },
+    //
+    // Down from 6.0. At 6.0 this was carrying the whole of what the backlit
+    // frame had instead of translucency, and carrying it as an
+    // orientation-independent pale sage fringe on every frond in the tree —
+    // measured, not guessed (critic pass 6 §3). Now that transmission is a real
+    // term the rim goes back to the job the look author priced it for: a
+    // defined edge on the true grazing band.
+    uRimBoost:      { value: 3.0 },
   };
 }
 

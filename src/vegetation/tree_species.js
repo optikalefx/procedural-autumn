@@ -101,6 +101,10 @@ export const SPECIES = [
   },
   {
     key: 'maple',
+    // Carries the 0-30 degree red bucket the reference plates run at 37-52% of
+    // their chromatic pixels and our `forest` frame ran at 8.6%. Read by
+    // Trees._pickSpecies() to decide what to salt a conifer stand with.
+    autumnRed: true,
     height: [11, 17],
     maxHeight: 21,
     trunkFrac: 0.58,            // short bole, then it forks
@@ -143,6 +147,7 @@ export const SPECIES = [
   },
   {
     key: 'oak',
+    autumnRed: true,          // rusts and bronzes — see maple above
     height: [10, 16],
     maxHeight: 20,
     trunkFrac: 0.46,
