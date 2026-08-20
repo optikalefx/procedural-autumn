@@ -1161,3 +1161,159 @@ The necklace was on `waterfall`, not `hero`, and did not reproduce as a hue
 mismatch on `hero` at all.
 
 `hero` regresses slightly and the author flagged it rather than burying it.
+
+---
+
+## Terrain reply to pass 6 blocker #2 — the third number in that blocker was gold grass too
+
+**Filed by the terrain author, 2026-08-20.** Answering the correction at
+`7739caa`, which reassigned the grey mass in `waterfall` from the rock system to
+`TerrainMaterial` and reopened pass-3 blocker #6.
+
+### 1. The rect was honest; the attribution was not — and now the structure number goes too
+
+Painted through a new `uDebugMask 11` (terrain rock pure red, terrain non-rock
+pure green, rest of scene untouched) and measured over that mask,
+`waterfall`'s massif at the critic's own rect (25–55% across, 10–55% down)
+reproduces their colour to two units: **`srgb(159,150,160)` = 1:0.945:1.012**
+against their `srgb(161,153,163)` = 1:0.95:1.01. The mask covers **87% of the
+rect**, and the numbers barely move when the rock system is hidden
+(`neutralPct` 76.3 either way). So the rect really was aimed at rock. It was
+aimed at **my** rock: terrain rock owns **46.1%** of that frame.
+
+**Pass 6's `contrastStd 0.093` target is from the same wrong region as its
+colour target, and I withdraw it.** The tell is in the blocker's own text: the
+"plate 5 equivalent rock mass" is quoted as `srgb(206,167,130)` = **1:0.81:0.63**.
+No rock in plate 5 goes below a blue ratio of 0.90 — the rocks author's four
+rects run 0.902 to 0.975. A blue ratio of 0.63 is gold grass. Both halves of
+blocker #2, the hue and the structure, were measured on grass.
+
+Measured on plate rock instead, as re-runnable fractional rects (plate 5 =
+`10.30.57 AM`, plate 3 = `10.29.49 AM`, `tools/_scratch/massifstat.mjs`):
+
+| rect | `contrastStd` | `stdCoarse` | `edgeShare` | `flatPct` | `zoneSpread` |
+|---|---|---|---|---|---|
+| p5 cliff, left `0.005,0.55,0.09,0.30` | 0.050 | 0.033 | 21.8 | 15.0 | 0.098 |
+| p5 rock, top-left `0.02,0.02,0.20,0.11` | 0.017 | 0.014 | 20.8 | 20.0 | 0.049 |
+| p5 boulder, right `0.635,0.62,0.11,0.20` | 0.041 | 0.041 | 37.1 | 50.0 | 0.173 |
+| p3 massif, top-right `0.68,0.02,0.30,0.13` | 0.073 | 0.056 | 21.9 | 11.9 | 0.168 |
+| p3 massif, top-centre `0.40,0,0.22,0.10` | 0.042 | 0.029 | 22.4 | 21.4 | 0.114 |
+| **ours, `waterfall` massif, before** | **0.055** | **0.039** | **22.2** | **15.7** | **0.133** |
+
+`edgeShare` is the share of the total coarse luma gradient carried by the
+steepest tenth of blocks — a linear ramp scores 10 by construction however
+steep it is, and flat masses with definite boundaries score high. It is the
+quantity the brief's "broad flat masses separated by soft edges" is actually
+about, and `contrastStd` is not.
+
+**On every structure statistic I can construct, our massif was already inside
+the plates' band before I touched it.** Anyone who fixes this by chasing a
+number will be chasing one that is already met. What is wrong is visible and
+not scalar, and §2 is what it is.
+
+### 2. `d451616`'s strata cannot reach a wall, and the reason is arithmetic
+
+`d451616` quantised `macro` into three value zones and the critic confirmed
+`peaks` "finally has strata". Read through a new `uDebugMask 10` (zone field in
+red, `valueZones` of it in green), over the painted massif mask:
+
+| view | spread of `macro` over the massif | `valueZones(macro)` |
+|---|---|---|
+| `waterfall` | **0.035** — 96% of the mask in two adjacent bins | 50% of the mask in **one** bin |
+| `peaks` | **0.227** | spread over the full range |
+
+`macro` is `fbm(vWorldPos.xz * 0.0042, 4)` — **planar, no y term**.
+`waterfall`'s massif is a *wall*: its whole visible face projects onto a few
+tens of metres of XZ, so the field is constant on it and "three zones" resolve
+to one. `peaks` is ground seen from above, where XZ sweeps kilometres across the
+frame. That is the entire reason blocker #6 closed on one view and not the
+other. It is not a tuning question and no retune of the zone count reaches it.
+
+The file states the bug without noticing it, in the comment that keeps `macro`
+planar: *"at that wavelength the projection cannot streak anything — 240 m
+across a 300 m face is a single soft gradient"*. Correct for a regional
+selector; fatal the moment the same field is asked to decide a massif's value
+zones, because a field that is a single soft gradient across a face **has one
+value on that face**. It is the identical defect the triplanar block at the top
+of the file was written to remove from every other octave, and `macro` is the
+one octave that never got the treatment.
+
+**Also measured, and it is why the albedo could not compensate:** the
+`waterfall` massif sits at camDist p05 225 m / p50 **540 m** / p95 790 m
+(`uDebugMask 9`). `fFine` is zero past 130 m and `fMeso` past 520 m, so the
+weathering grain and both jointing sets are faded to their means there.
+`uDebugMask 6` — the albedo with no light on it — shows the wall as near-uniform
+lavender with faint blotches, and the long diagonal fold that dominates the
+shipped frame **is not in the albedo at all**. The massif's entire appearance is
+light on a smooth heightfield. The file's own first question ("is the ground
+flat because the paint is flat, or because the light is flat?") answers *the
+paint is flat*.
+
+### 3. What I changed, and the interleaved A/B
+
+`macro` stays planar and stays the selector; nothing keyed on it moves and the
+far apron's call site is untouched. The zones now read the **same 240 m octave
+sampled triplanar** off `Nm` (the data-texture normal, so it cannot pop on an
+LOD ring — this term carries the massif's whole large-scale value), renormalised
+by `1/sqrt(dot(w,w))` so the blend does not narrow the distribution. Below the
+projection cutoff it is `macro` to the last bit. Live on `uZoneTP`, 0 =
+`d451616` exactly.
+
+Offline, 60k samples per surface over one 300 m face
+(`tools/_scratch/terrain/zonecal.mjs`):
+
+| surface | `macro` spread | new field | zones/face today | zones/face after |
+|---|---|---|---|---|
+| gentle | 0.174 | 0.174 | 3.98 | 3.97 |
+| 45° | 0.174 | 0.187 | 3.64 | 3.61 |
+| wall | 0.175 | 0.197 | **3.18** | **3.97** |
+
+**Interleaved A/B, both states inside one page load** (`massifab.mjs`; same
+boot, same wind phase, same cloud offset, ±2 frames apart), over the painted
+terrain-rock mask, `waterfall` massif rect:
+
+| | `contrastStd` | `stdCoarse` | `zoneSpread` | `edgeShare` | `lumaRange` |
+|---|---|---|---|---|---|
+| `uZoneTP` 0 (= `d451616`) | 0.0546 | 0.0390 | 0.133 | 22.2 | 0.170 |
+| `uZoneTP` 1 (shipped) | **0.0585** | **0.0450** | **0.169** | **26.1** | **0.198** |
+| `uZoneTP` 0, `cloudShadowGain` 0 | 0.0543 | 0.0389 | 0.134 | 22.2 | 0.169 |
+| `uZoneTP` 1, `cloudShadowGain` 0 | **0.0584** | **0.0450** | **0.169** | **26.2** | **0.198** |
+
+The cloud control is identical to three decimals, so none of this delta belongs
+to the coverage field the lighting author is live on. `zoneSpread` 0.133 → 0.169
+takes the massif from below every plate rock rect to the top of their band
+(0.049–0.173). The zone field itself, same mask: spread **0.031 → 0.090**, and
+`valueZones` of it **0.298 → 0.910**, from 50%-in-one-bin to genuinely
+multi-modal. (Channel *absolutes* in a debug frame are grade-contaminated —
+the grade mixes channels, which is why the untouched blue channel also moves —
+so only the spreads are quoted.)
+
+Cost, per plate: `hero` and `drive` do not move at all (`contrastStd` 0.1691 →
+0.1696 and 0.1208 → 0.1208 frame-wide over terrain rock). **`peaks` regresses
+slightly and I am flagging it rather than burying it**: its massif rect goes
+`contrastStd` 0.1085 → 0.1058 and `stdCoarse` 0.0901 → 0.0864, same direction at
+`cloudShadowGain` 0, visually indistinguishable in the A/B crops. That is −0.003
+on a vista massif nobody can see change, for +0.006 and +27% of zone spread on
+the wall that has been the standing blocker for six passes.
+
+`dprtest --dpr 2 --w 1170 --h 870 --seconds 26 --gate`: **PASS**, p50 18.3,
+p95 40.0, settled 59.9 fps, scale 0.72, on a tree whose only uncommitted src
+file was this one.
+
+### 4. What is still open, and it is not paintable
+
+Side by side at magnification, plate 5's rock is a set of **polygonal facets
+with straight silhouette edges and flat interiors**, and ours is one continuous
+C¹ surface with soft folds. That difference does not appear in any tone or
+gradient statistic I could build — we are in band on all of them — because it is
+a property of the *geometry*, not of the shading. The material can put value
+zones on a smooth drape and it now does; it cannot give the drape an edge.
+
+So the honest next owner of pass-3 #6 on eye-level walls is the heightfield
+bake, not `TerrainMaterial`. Two specific handles, offered as suspects and not
+as findings: the erosion bake leaves massif flanks C¹-smooth, and the
+plane-break normal set (`plateStep`, riser 0.215) deliberately keeps only the
+level sets running **down** the fall line, so a face gets fluting and nothing
+crossing it — which is precisely why it reads as drapery rather than as stone.
+Raising that anti-contour floor is the obvious experiment and it is also how
+this file produced a contour map twice, so it wants its own round.
