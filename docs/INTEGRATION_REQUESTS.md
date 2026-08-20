@@ -3405,3 +3405,87 @@ full strength — which is the whole finding. Hiding `water`, `waterfalls` and
 
 
 ---
+
+## Camera occlusion — a transparent frustum in front of the chase camera (2026-08-19)
+
+**Owner: camera-occlusion author. New shared helper: `src/render/Occlusion.js`.**
+
+The player, twice: *"transparent frustum for the camera, so that objects are not
+constantly in my view."* Their screenshot is a conifer bough filling the right
+third of the frame and a birch trunk through the middle, both between the chase
+camera and the camper. In a chase-camera game through dense forest this is the
+steady state, not an accident.
+
+`src/render/Occlusion.js` is the `stylizeUniforms()` / `fogUniforms()` pattern
+again: one shared uniform block, one function, and a **one-line opt-in** in your
+material. I have not written into anyone's shading — the three call sites below
+are a varying assignment, a discard, and a multiply.
+
+### What I changed in files I do not own
+
+| file | change |
+|---|---|
+| `src/vegetation/tree_material.js` | `vOcc = occludeFade(worldPosition.xyz)` in `LEAF_VERT` / `BARK_VERT`; `occludeCut(vOcc)` as the first statement of both `main()`s; `occlusionUniforms()` in the two `Object.assign` uniform chains. Depth/bake programs untouched. |
+| `src/shaders/cover_material.js` | one `#ifdef COVER_OCCLUDE` block inside `COVER_DISPLACE` multiplying the existing `coverFade`. Defined only on the visible material, never on the depth material. |
+| `src/main.js` | one import and one `setOcclusionTarget(cam, …)` call per frame. |
+
+Revert any of them by deleting the marked lines; the helper is inert on its own
+(`uOccAmount` is 0 until a subject is handed to it).
+
+### Three things worth knowing even if you never opt in
+
+**1. The shadow pass does not fade, deliberately.** Every one of these systems
+casts through a separate depth material and none of them opt in. A tree that
+stopped casting as you drove past would strobe its shadow across the road, which
+is far louder than the tree. So the canopy you can now see through still lays its
+dapple on the ground — and that is also most of why the effect reads as the
+*camera* getting out of the way rather than as the forest disappearing. If you
+adopt this, do NOT put `occludeFade` in your depth material.
+
+**2. Alpha-tested foliage needs dithering, not opacity.** A fade on `alphaTest`
+does nothing (there is no blending to fade into) or pops (if you ramp the
+threshold). `OCCLUDE_DITHER` is a 4x4 Bayer screen-door discard; it needs no
+sort and does not disturb the render order the rest of the game is tuned
+against. For an **opaque** material do not use it — a discard costs you early-Z
+on a surface that currently has it. Ground cover instead multiplies the
+shrink-to-root that `coverFade` already does, which is vertex-side and free.
+
+**3. Merge with `Object.assign`, never `THREE.UniformsUtils.merge`.**
+`occlusionUniforms()` returns the *same* object every call on purpose: one
+vector write per frame drives every material. `merge()` deep clones and your
+material would get a private target that nothing ever writes to — the effect
+would silently never appear on it, which is a very quiet way to lose an hour.
+
+### Captures may change if the camper is in frame
+
+The CPU gate only engages the frustum when the subject is within 80 m and inside
+~31 degrees of the view axis, so `hero`, `peaks`, `forest`, `river`, `waterfall`,
+`meadow`, `backlit` and `dawn` are unaffected — the camper is far away or well
+off-axis in all of them. **`vehicle` and possibly `drive` will change**, because
+the camper is centre-frame and near in those, which is exactly the case this
+feature exists for. That is the game working, not a regression, but if you are
+diffing `drive` across this round, that is why.
+
+### Not adopted yet, and why
+
+- **Grass** (`src/shaders/grass_material.js`) — one line, `grow *= occludeFade(basePos)`,
+  and it would be vertex-only and free of fragment cost. Held back only because
+  it is the largest vertex population in the game and I did not want to spend
+  the gate on it before measuring the two systems that actually cause the
+  complaint. Grass author: it is yours to take, and `grow` is already the right
+  hook.
+- **Rocks** (`src/rocks/`) — a boulder between the camera and the camper does the
+  same thing a trunk does, and rock is opaque, so it would want the shrink form
+  or a `dithering`-style discard you would have to price yourself. Rocks author:
+  the helper is there if you want it.
+- **Impostors** — distant trees, never inside the cone. Left alone on purpose.
+
+### One thing I could not do from here
+
+`setOcclusionTarget` is called from `src/main.js` because the subject is
+`ctx.systems.vehicle.position` and nothing else in the render layer can see it.
+That is a file system authors are told not to edit, and I edited it — three
+lines, flagged here. The tidier home is `CameraRig`, which already computes the
+camera-to-camper distance for `postfx.setFocus`; if the CameraRig author would
+rather own it, move the call into `CameraRig._focus()` and delete the block in
+`main.js`. Either way it wants to run after the vehicle has been stepped.
