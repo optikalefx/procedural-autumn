@@ -18,10 +18,16 @@ const arg = (n, d) => { const i = argv.indexOf(`--${n}`); return i === -1 ? d : 
 const W = parseInt(arg('w', '1728'), 10);
 const H = parseInt(arg('h', '1000'), 10);
 const DPR = parseFloat(arg('dpr', '2'));
+// Bisecting a moving tree has failed twice on this project: authors commit while
+// the measurement runs, so a number cannot be attributed to a commit. --port lets
+// the gate target a git worktree checked out at a fixed commit, serving its own
+// dev server, while the main tree keeps moving.
+const PORT = arg('port', '5178');
 const SECONDS = parseFloat(arg('seconds', '20'));
 const QUALITY = arg('quality', null);
 
-await acquire('dprtest');
+// Exclusive: a timing run cannot share a GPU. See acquireExclusive in _lock.mjs.
+await acquire('dprtest', { exclusive: true });
 const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist', '--disable-frame-rate-limit'],
 });
@@ -43,7 +49,7 @@ await page.addInitScript(() => {
 });
 
 const q = QUALITY ? `&quality=${QUALITY}` : '';
-await page.goto(`http://localhost:5178/?res=1536${q}`, { waitUntil: 'domcontentloaded' });
+await page.goto(`http://localhost:${PORT}/?res=1536${q}`, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 300 });
 
 const info = await page.evaluate(() => {

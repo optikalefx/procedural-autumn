@@ -43,8 +43,12 @@ function reapStale(DIR) {
  * `pool` names an independent semaphore. Captures share one pool of 2; baking
  * gets its own pool of 1, because the file watcher and an author running
  * `bake.mjs --force` will otherwise generate the same world twice at once.
+ *
+ * `exclusive: true` takes EVERY slot in the pool and is what any timing
+ * measurement must use. See `acquireExclusive` below for why.
  */
-export async function acquire(label = 'capture', { pool = 'capture', slots = DEFAULT_SLOTS } = {}) {
+export async function acquire(label = 'capture', { pool = 'capture', slots = DEFAULT_SLOTS, exclusive = false } = {}) {
+  if (exclusive) return acquireExclusive(label, { pool, slots });
   const SLOTS = slots;
   if (!SLOTS) return () => {};
   const DIR = join(ROOT, pool);
@@ -74,4 +78,60 @@ export async function acquire(label = 'capture', { pool = 'capture', slots = DEF
   process.on('SIGINT', () => { release(); process.exit(130); });
   process.on('SIGTERM', () => { release(); process.exit(143); });
   return release;
+}
+
+
+/**
+ * Take every slot in the pool, so nothing else renders while we measure.
+ *
+ * A capture can share the machine: it wants one settled frame, and a co-tenant
+ * costs it wall-clock but not correctness. **A timing run cannot.** The pool
+ * holds 2 slots, so every perf measurement ever taken on this project ran
+ * alongside another headless Chromium rendering — and the two share a GPU.
+ *
+ * That is invisible to the check everyone was told to make. `uptime` reports a
+ * CPU run-queue average; this workload is GPU-bound, and a second browser
+ * holding a GPU context does not move the load average much at all. So authors
+ * saw "load is 6, that's fine" and concluded a FAIL was real. Measured here on
+ * one unchanged commit: 54.3 fps with the machine to itself, 36.1 and then
+ * 30-32 fps with two other GPU contexts live, at a *lower* load average each
+ * time. Four separate authors independently reported the same 0.667-scaler FAIL
+ * signature today and each correctly refused to accept it; none could name the
+ * cause, because the instrument they were told to check could not see it.
+ *
+ * Acquiring exclusively is slower — a timing run now queues behind every
+ * outstanding capture — and that is the correct trade. A number that cannot be
+ * attributed is worth less than no number.
+ */
+async function acquireExclusive(label, { pool, slots }) {
+  const DIR = join(ROOT, pool);
+  mkdirSync(DIR, { recursive: true });
+  // One file per slot, all named for this pid so reapStale() can verify them
+  // and so an ordinary acquire() counting the directory sees the pool as full.
+  const mine = Array.from({ length: slots }, (_, i) => join(DIR, `${process.pid}.x${i}.lock`));
+  const drop = () => { for (const f of mine) { try { rmSync(f, { force: true }); } catch { /* raced */ } } };
+  const t0 = Date.now();
+  let announced = false;
+
+  for (;;) {
+    if (reapStale(DIR) === 0) {
+      for (const f of mine) writeFileSync(f, String(process.pid));
+      // Re-check for the race where two processes both saw an empty directory.
+      // Lowest pid wins the whole pool; anyone else drops everything and retries.
+      const holders = readdirSync(DIR).map((f) => parseInt(f, 10));
+      if (holders.every((h) => h === process.pid)) break;
+      if (Math.min(...holders) === process.pid) break;
+      drop();
+    }
+    if (!announced && Date.now() - t0 > 3000) {
+      console.error(`[${label}] waiting for the machine to itself (${pool}, ${slots} slots)…`);
+      announced = true;
+    }
+    await sleep(500 + Math.random() * 900);
+  }
+
+  process.on('exit', drop);
+  process.on('SIGINT', () => { drop(); process.exit(130); });
+  process.on('SIGTERM', () => { drop(); process.exit(143); });
+  return drop;
 }
