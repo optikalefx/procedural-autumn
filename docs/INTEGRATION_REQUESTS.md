@@ -4010,3 +4010,47 @@ measurements, in order of how much they cost to learn:
    threshold to discover it has nothing to do.
 4. **Evaluate once per instance with a radius, not per vertex.** A per-vertex
    fade multiplied into a shrink does not shrink the prop, it shears it.
+
+## UI author — 2026-08-20
+
+### Terrain: `world.riverMask` contains ruled straight diagonals in the SE
+
+**Not urgent, not a blocker, and it no longer shows on the minimap — but it is
+still a real artifact in world data and it wants an owner.**
+
+In the south-east quadrant of the shipped bake
+(`public/bakes/world-20261018-1536-7379f959.pab`), `riverMask` carries several
+dead-straight parallel diagonal channels. They run at a consistent angle,
+several hundred metres long, roughly one texel wide, and they do not follow the
+height field the way every other channel in the mask does. Rivers do not do
+this; a scanline or a stepped tracing loop does.
+
+Evidence, gathered by the previous UI author and re-confirmed here:
+
+* `world.riverPolylines` is **not** the source. 185 polylines, 13066 segments,
+  longest segment 2.8 m, none over 90 m — no long-segment cull could ever have
+  fired on them.
+* `tools/_scratch/mapbake.mjs` renders the map raster from the `.pab` in Node
+  and strokes no polylines at all. The lines were just as clear in that raster,
+  which localises them to the mask array itself.
+* They survive at every map resolution (192 → 512), which rules out a
+  downsampling alias in the minimap's own block filter.
+
+**What I did about it, and why it is not a workaround.** The map's water is now
+generalised the way a printed map generalises: a morphological open deletes any
+water feature narrower than three map pixels, then connected components under
+1 ha are dropped whole. The ruled lines fail that test the way any other
+one-texel feature fails it — they are not special-cased, named, or detected. I
+would have made exactly the same change if they had never existed, because the
+threaded marsh needed it. The lines disappearing is a consequence and I have
+said so in the commit message and in `src/ui/hud_map.js`.
+
+**So there is nothing for the terrain author to do for the minimap.** File this
+as: the mask is presumably also feeding the terrain shader's grass damping and
+the water placement, at full texel resolution, where no generalisation is
+applied. If those systems look right in the SE quadrant then the artifact is
+cosmetically harmless and can be closed; if there is a straight-line seam in the
+grass or the shoreline there, this is where it comes from.
+
+Repro: `node tools/_scratch/mapbake.mjs --res 1536 --n 200 --scale 3` on
+`48b3791^` shows them plainly; on `48b3791` it does not.
