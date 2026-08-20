@@ -7,10 +7,31 @@
 //  albedo/roughness and then applies the warm-key / cool-shadow split.
 //
 //  Art rules encoded here, in priority order:
-//    1. lavender-grey and NEUTRAL. Measured on the plates, a boulder's chroma
+//    1. WARM-grey and near-neutral. Measured on the plates, a boulder's chroma
 //       is 10/255 against a meadow's 119/255 while their luminances are within
 //       15% of each other. Chroma, not value, is what separates stone from a
 //       patch of snow in a gold field — see uRockDesat.
+//
+//       Two corrections to that rule, both measured, both of which have now
+//       cost this file a round each. First, "neutral" does not mean grey: rock
+//       in the plates is consistently RED-LED. Plate 5's boulder, left cliff
+//       and top cliff measure 1:0.981:0.975, 1:0.947:0.922 and 1:0.932:0.902;
+//       plate 3's two massifs 1:0.803:0.891 and 1:0.750:0.794. Not one of them
+//       puts blue above red. This material did, for several rounds — see
+//       uRockCast. Second, the numbers above came off plate 1, which is the
+//       hazy aerial vista the brief names as an outlier, and the brief says to
+//       judge eye-level views against plates 3/4/5 instead. The chroma the
+//       plates want on near rock is 0.05-0.07 (plate 5) to 0.11-0.15 (plate 3),
+//       not zero.
+//
+//       And a warning about how rock gets measured here, because the same
+//       mistake has now been made twice from opposite directions. A rect drawn
+//       by eye over "the rock" in a frame is worthless in this game: plate 5's
+//       rock reads srgb(206,167,130) 1:0.81:0.63 with 44.7% vivid pixels if the
+//       rect catches the gold grass around the boulder, and srgb(186,183,182)
+//       1:0.98:0.98 with 0% vivid if it does not. Those are the same boulder.
+//       Use tools/_scratch/rockpaintstats.mjs, which masks by painting the
+//       material, and quote the mask coverage with the number.
 //    2. per-facet tonal separation — each plane gets its own value, so the
 //       faceting reads even when two facets face the sun almost equally
 //    3. bedding planes, lichen and wet rock are *quiet*; the reference is
@@ -94,13 +115,54 @@ export function createRockMaterial() {
     // desaturated object reading as dead cardboard. Luma-normalised, so this
     // rotates hue without touching value.
     //
-    // Pushed further from grey than the old (0.965, 0.995, 1.085) because it is
-    // not fighting a neutral pipeline: measured on the terrain rock beside ours
-    // in `hero`, a surface the shader hands over as pure grey comes back as
-    // 1:0.837:0.813. Whatever the grade is doing costs roughly 0.16 of the blue
-    // ratio, so the material has to leave the surface bluer than the target by
-    // about that much for the *pixel* to land on it.
-    uRockCast:   { value: new THREE.Vector3(0.925, 0.985, 1.165) },
+    // ── 0.925/0.985/1.165 -> 0.95/0.924/0.888: the cast was calibrated on the
+    //    one view where rock is mostly haze ───────────────────────────────────
+    //
+    // The old value was derived at `hero` — "a surface the shader hands over as
+    // pure grey comes back as 1:0.837:0.813, so the grade costs ~0.16 of the
+    // blue ratio, so leave it bluer by that much." The compensation is sound;
+    // the *view* is the problem. `hero` is a vista, its rock is at 0.34 luma
+    // under heavy aerial perspective, and the grade's cost there is not the
+    // grade's cost on a rock 60 m away. Calibrating the material's one hue dial
+    // on the frame where the material contributes least to the pixel put every
+    // eye-level rock in the game 0.25 of blue ratio off.
+    //
+    // Measured on a paint mask (uRockDesat 1, uRockCast 6,0,0 marks rock by
+    // hue), so every number below is rock pixels only, against exactly the host
+    // pixels each rock covers, all inside one page load:
+    //
+    //   view        region              rock (base)     rock (this)     host
+    //   waterfall   crag chain on massif 1:1.007:1.139  1:0.930:0.892  1:0.925:0.893
+    //   waterfall   big near boulder     1:1.031:1.177  1:0.955:0.933  (plate 5)
+    //   drive       all rock in frame    1:0.529:0.388  1:0.526:0.357  1:0.523:0.339
+    //   hero        all rock in frame    1:0.685:0.591  1:0.670:0.519  1:0.699:0.597
+    //
+    // The `waterfall` crag chain is the necklace, and it was a hue mismatch of
+    // 0.246 in the blue ratio against the terrain massif the blocks are bedded
+    // in. This lands it at 0.001. `drive` improves from 0.049 to 0.018.
+    //
+    // Against the plates, per plate, never averaged: plate 5's actual rock —
+    // its big near boulder, its left cliff, its top cliff — measures
+    // 1:0.981:0.975, 1:0.947:0.922 and 1:0.932:0.902. Our big `waterfall`
+    // boulder was 1:1.031:1.177, outside that band by a quarter of the blue
+    // ratio and on the wrong side of neutral (blue *above* red, where every
+    // rock in every plate is red-led). It now sits at 1:0.955:0.933, inside the
+    // band on both channels.
+    //
+    // The cost, stated because it is real: `hero` regresses. Its rock/host blue
+    // agreement goes from +0.056 to -0.065 (measured with cloudShadowGain
+    // forced to 0; at the shipped 0.85 the same pair reads +0.007 and -0.149,
+    // which is why the control matters). Two eye-level views improve and one
+    // vista gets slightly worse, and the brief judges per plate: at `hero`
+    // distance rock hue is set by the haze in front of it, not by this dial —
+    // our `hero` rock is 1:0.685:0.591 against plate 1's far massif at
+    // 1:0.847:0.779 either way, which is blocker #4's missing aerial recession
+    // and is not fixable from this file.
+    //
+    // Still not pure grey, and still the brief's one licensed cool note — but
+    // the neutral is now warm-leaning, which is what every rock in every plate
+    // measures, rather than lavender.
+    uRockCast:   { value: new THREE.Vector3(0.95, 0.924, 0.888) },
     // Single exposure-match dial, applied to the surface colour *before* fog,
     // so the far field still resolves into the haze rather than glowing out of
     // it. It is above 1 because the key light reaching rock in this build is
