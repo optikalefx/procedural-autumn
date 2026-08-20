@@ -404,9 +404,15 @@ export class TrunkField {
     this.n = n;
   }
 
-  /** The trunk this point is inside, counting `keep` metres of air. -1 if none. */
-  hit(x, y, z, keep) {
-    for (let i = 0; i < this.n; i++) {
+  /**
+   * The trunk this point is inside, counting `keep` metres of air. -1 if none.
+   *
+   * `list`/`ln` narrow it to a pre-selected subset — see `retract`.
+   */
+  hit(x, y, z, keep, list = null, ln = 0) {
+    const n = list ? ln : this.n;
+    for (let k = 0; k < n; k++) {
+      const i = list ? list[k] : k;
       if (y > this.tt[i]) continue;
       const dx = x - this.tx[i], dz = z - this.tz[i];
       const r = this.tr[i] + keep;
@@ -438,9 +444,28 @@ export class TrunkField {
     // 1 m, not the fit's 2 m: a bole is thin, and a step that straddles one
     // would hand back a length that is still inside it.
     const steps = Math.min(72, Math.max(6, Math.ceil(run / 1.0)));
+
+    // Narrow to the trunks the boom could actually meet before stepping, once
+    // per fit rather than once per step. `prime` collects an 80 m disc because
+    // that is what the wheel can ask for; the boom is a line across it, and in
+    // dense wood the difference is a few hundred trees against a handful.
+    // Point-to-segment in plan, with the segment taken at full `maxT`.
+    const near = this._near ?? (this._near = new Int32Array(256));
+    const seg2 = dx * dx * maxT * maxT + dz * dz * maxT * maxT;
+    let ln = 0;
+    for (let i = 0; i < this.n && ln < near.length; i++) {
+      const ax = this.tx[i] - anchor.x, az = this.tz[i] - anchor.z;
+      let s = seg2 > 1e-6 ? (ax * dx * maxT + az * dz * maxT) / seg2 : 0;
+      s = s < 0 ? 0 : s > 1 ? 1 : s;
+      const px = ax - dx * maxT * s, pz = az - dz * maxT * s;
+      const r = this.tr[i] + keep;
+      if (px * px + pz * pz <= r * r) near[ln++] = i;
+    }
+    if (!ln) return maxT;
+
     for (let i = steps; i >= 1; i--) {
       const t = (maxT * i) / steps;
-      if (this.hit(anchor.x + dx * t, anchor.y + dy * t, anchor.z + dz * t, keep) < 0) return t;
+      if (this.hit(anchor.x + dx * t, anchor.y + dy * t, anchor.z + dz * t, keep, near, ln) < 0) return t;
     }
     return 0;
   }
