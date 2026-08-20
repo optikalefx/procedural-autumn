@@ -23,12 +23,15 @@ const POSES = parseInt(arg('poses', '4'), 10);
 const WARM = parseFloat(arg('warm', '11000'));
 const STRIDE = parseFloat(arg('stride', '5000'));
 
-// The candidate. Interleaved gradient noise: aperiodic, low-discrepancy in a
-// local neighbourhood, two multiplies and two fracts, no texture.
-const IGN = `
-float occBayer4( vec2 p ) {
-  vec2 q = mod( p, 256.0 );
-  return fract( 52.9829189 * fract( dot( q, vec2( 0.06711056, 0.00583715 ) ) ) );
+// The threshold that SHIPPED before 4c1fda7 — the ordered 4x4 Bayer — so the
+// current build can be A/B'd back against it on one frozen frame.
+const BAYER = `
+float occBayer2( float x, float y ) { return mod( 2.0 * x + 3.0 * y, 4.0 ); }
+float occThreshold( vec2 p ) {
+  vec2 q = mod( floor( p ), 4.0 );
+  vec2 h = floor( q * 0.5 );
+  vec2 l = mod( q, 2.0 );
+  return ( 4.0 * occBayer2( l.x, l.y ) + occBayer2( h.x, h.y ) ) * 0.0625;
 }`;
 
 mkdirSync(DIR, { recursive: true });
@@ -91,8 +94,14 @@ await p.evaluate(() => {
       else {
         // Replace only the threshold function; occludeCut() and everything
         // around it stay exactly as they are.
-        const start = orig.indexOf('float occBayer2(');
-        const end = orig.indexOf('\n}', orig.indexOf('float occBayer4(')) + 2;
+        // Matches either threshold: the shipped occThreshold(), or the older
+        // occBayer2()/occBayer4() pair, so this tool works either way round.
+        const first = orig.indexOf('float occBayer2(') >= 0
+          ? orig.indexOf('float occBayer2(') : orig.indexOf('float occThreshold(');
+        const last = orig.indexOf('float occBayer4(') >= 0
+          ? orig.indexOf('float occBayer4(') : orig.indexOf('float occThreshold(');
+        const start = first;
+        const end = orig.indexOf('\n}', last) + 2;
         if (start < 0 || end < 2) return 'MARKER-NOT-FOUND';
         m.fragmentShader = orig.slice(0, start) + glsl.trim() + orig.slice(end);
       }
@@ -143,15 +152,33 @@ for (let k = 0; k < POSES; k++) {
   const coneFrac = await p.evaluate(([a, c]) => window.__diff(a, c), [off, coneOnly]);
   const sphereFrac = await p.evaluate(([a, c]) => window.__diff(a, c), [off, sphereOnly]);
 
-  const rep = await p.evaluate((g) => window.__setDither(g), IGN);
-  const ign = await shot();
-  const patternDelta = await p.evaluate(([a, c]) => window.__diff(a, c), [bayer, ign]);
+  const rep = await p.evaluate((g) => window.__setDither(g), BAYER);
+  const other = await shot();
+  const patternDelta = await p.evaluate(([a, c]) => window.__diff(a, c), [bayer, other]);
   await p.evaluate(() => window.__setDither(null));
 
-  writeFileSync(`${DIR}/p${k}-bayer.png`, Buffer.from(bayer, 'base64'));
-  writeFileSync(`${DIR}/p${k}-ign.png`, Buffer.from(ign, 'base64'));
+  writeFileSync(`${DIR}/p${k}-shipped.png`, Buffer.from(bayer, 'base64'));
+  writeFileSync(`${DIR}/p${k}-oldbayer.png`, Buffer.from(other, 'base64'));
   writeFileSync(`${DIR}/p${k}-off.png`, Buffer.from(off, 'base64'));
   console.log(`pose ${k} chase ${info.dist} m  mats ${rep}  engaged ${engaged} (cone ${coneFrac}, sphere ${sphereFrac})  pattern-delta ${patternDelta}`);
+
+  // ── is the near sphere too generous? (CRITIC_FINDINGS D2, second half) ────
+  // Same frozen frame, so these are like for like.
+  if (engaged > 0.004) {
+    for (const v of [
+      { n: 'near-1.80-4.20 (shipped)', p: {} },
+      { n: 'near-1.40-3.20', p: { nearFull: 1.4, nearNone: 3.2 } },
+      { n: 'near-1.00-2.40', p: { nearFull: 1.0, nearNone: 2.4 } },
+      { n: 'near-off',       p: { nearFull: 0.01, nearNone: 0.02 } },
+    ]) {
+      await p.evaluate(([b, o]) => Object.assign(window.__occlusion.params, b, o), [base, v.p]);
+      const img = await shot();
+      const f = await p.evaluate(([a, c]) => window.__diff(a, c), [off, img]);
+      writeFileSync(`${DIR}/p${k}-${v.n.split(' ')[0]}.png`, Buffer.from(img, 'base64'));
+      console.log(`    ${v.n.padEnd(24)} engaged ${f}`);
+    }
+    await p.evaluate((b) => Object.assign(window.__occlusion.params, b), base);
+  }
 
   if (k < POSES - 1) {
     await p.evaluate(() => {
