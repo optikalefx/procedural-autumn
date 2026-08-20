@@ -4720,3 +4720,290 @@ run, with 2x the triangle count, so batch sheets are not comparable to
 single-view captures and I did not want to add a misleading one. Worth someone
 looking at: it means every contact sheet in `review/` is a less-resolved frame
 than the game actually renders.
+
+## P1. The water the game draws and the water the game *knows about* are two different fields (player-experience, 2026-08-20)
+
+**This started as CRITIC_FINDINGS D1 ("the camera goes underwater") and is not a
+camera bug.** `CameraRig` already floors every boom sample at
+`max(getHeight(x,z), getWaterHeight(x,z) ?? -1e9)` — `_clearGround` (191),
+`_boomFit` (227), `_groundAt` (248). The clamp is correct. Its **input** is
+wrong, in places, and the camera is only the system that happened to show us.
+
+Every gameplay query about water goes through the same two functions:
+
+| consumer | call |
+| --- | --- |
+| chase camera boom floor | `CameraRig._groundAt` → `getWaterHeight` |
+| wildlife spawn rejection | `getWaterDepth > 0.15` |
+| grass / ground-cover scatter | `getWaterDepth` |
+| vehicle fording drag (`waterFade`) | `Vehicle.js:666` → `getWaterHeight` |
+| fording audio | camper `waterDepth` |
+| rock scatter | `RockScatter.js:1284` → `getWaterHeight` |
+
+### The measurement
+
+`node tools/_scratch/waterfloor.mjs` — raycasts the **drawn** `Water` meshes
+straight down on an 8 m grid over the world, keeps only the points where the
+mesh stands **above the terrain** (water the player can actually see and drive
+into — a mesh triangle over dry ground is faded out by the shader and is not
+evidence of anything), and compares each against `getWaterHeight` at the same
+point. 71,306 hits, 35,351 of them standing water.
+
+```
+ depth of drawn water │ samples │ getWaterHeight │ within │ beyond │ data >0.5 m │ data >0.5 m
+                      │         │   returns null │   16 m │   16 m │  ABOVE mesh │  BELOW mesh
+ ─────────────────────┼─────────┼────────────────┼────────┼────────┼─────────────┼────────────
+ < 0.15 m             │   1 216 │          91.1% │  1 108 │      0 │        2.3% │       0.2%
+ 0.15 – 0.5 m         │   2 580 │          79.2% │  2 044 │      0 │        3.0% │       0.5%
+ 0.5 – 1 m            │   3 364 │          45.4% │  1 527 │      0 │        4.7% │       2.8%
+ 1 – 2 m              │   5 158 │          17.7% │    914 │      0 │        7.3% │       5.8%
+ 2 – 4 m              │   7 621 │           7.6% │    583 │      0 │       10.2% │       7.4%
+ 4 – 8 m              │   7 963 │           4.1% │    330 │      0 │       10.0% │       6.7%
+ 8 m +                │   7 449 │           5.5% │    407 │      0 │        5.4% │       3.0%
+```
+
+**First, the good news, and I want it read before the rest: `beyond 16 m` is
+zero in every band.** Every single disagreement is within 16 m of a baked wet
+texel. The bake is sound. This is entirely `Water.js`'s coarsening and dilation
+disagreeing with `WorldData`'s point sample, and it is therefore fixable in one
+place without touching the world generator.
+
+I also want to withdraw a number I gave the integrator earlier today. I first
+measured "`getWaterHeight` is null under **59.7%** of the points where water is
+drawn". That figure counted mesh over dry ground, which `_buildLakes` puts there
+on purpose and the shader fades out. It is not wrong but it is not the defect,
+and the table above replaces it.
+
+### Three effects, in increasing severity
+
+**(a) The dilation ring, working as designed.** `_buildLakes` (`Water.js:1275`)
+marks an 8 m quad wet if **any** of its sixteen baked 2 m texels is wet, then
+dilates one further ring. Up to ~16 m of mesh hangs past the last wet texel.
+That is what the 91% and 79% in the shallow bands are, and the shader fades
+them out, so the player rarely sees them. But **the gameplay queries still say
+"dry"** across that ring — and 0.5 m of standing water is knee-deep for a deer,
+which is what `wcensus` asserts can never happen.
+
+**(b) The ring hanging over a drop — the real hole.** Where a lake meets a
+steep face the same 16 m ring extends over ground that falls away, and then the
+mesh is visibly above the terrain by a lot. Worst case measured:
+
+```
+(-768, 832)   drawn surface 218.00, terrain 176.88  →  41.1 m of standing water
+              nearest baked wet texel: 16 m away, getWaterHeight() === null
+```
+
+Forty-one metres of water the player can see, that the world reports as dry
+ground. That is where the camera's floor vanishes, and it is D1.
+
+**(c) Quad averaging across two lake levels — the largest systematic error.**
+`level[quad] = mean of the wet texels in the quad`, and the dilation ring then
+takes `mean of its wet neighbours' levels`. Where two basins at different levels
+are adjacent the drawn surface is an average that matches neither. Five distinct
+baked levels inside one 96 m window — 122.52, 123.06, 123.49, 124.29, 125.60 —
+at `(-80,-608)`; `node tools/_scratch/watermap.mjs` prints that window texel by
+texel and the seam shows up as a one-texel diagonal line of disagreement running
+right through the middle of the water. 7–10% of drawn water 1–8 m deep has a
+data height more than 0.5 m **above** the drawn mesh, and 6–7% more than 0.5 m
+**below** it. Worst in the dangerous direction:
+
+```
+(80, -1272)   data says 39.67, mesh is at 48.11, terrain 37.62
+              →  the drawn surface is 8.45 m above what every system believes
+```
+
+### Smallest correct change — `src/world/Water.js` + `src/world/WorldData.js`
+
+I have deliberately not touched either file. Two options, in my order of
+preference.
+
+**Preferred: publish the field the mesh was built from, and let the query read
+it.** `_buildLakes` already computes exactly the right answer and then throws it
+away: `level[G*G]` (the per-quad surface) and `mask[G*G]` (which quads the mesh
+covers), on a `G = R/S` grid — 384² at res 1536, ~590 KB as a `Float32Array`.
+Hand it to `WorldData` at the end of `_buildLakes`:
+
+```js
+world.setLakeField(level, mask, G, quadM);      // one line, end of _buildLakes
+```
+
+and in `WorldData.getWaterHeight`, fall back to it when the point sample is dry:
+
+```js
+  getWaterHeight(x, z) {
+    const [gx, gz] = this.toGrid(x, z);
+    const w = this.water[clamp(Math.round(gz), 0, this.res - 1) * this.res
+                       + clamp(Math.round(gx), 0, this.res - 1)];
+    if (w >= -9000) return w;
+    // The lake mesh is built on an 8 m quad grid dilated one ring, so the
+    // surface the player sees reaches up to ~16 m past the last wet texel.
+    // Answer for the surface that is DRAWN; getWaterDepth() below already
+    // subtracts the terrain, so the ring over dry ground still reports dry.
+    return this._lake ? this._lake.levelAt(x, z) : null;
+  }
+```
+
+This is O(1), it cannot drift from the mesh because it *is* the mesh's own
+field, and it needs no bake change. `getWaterDepth`'s existing
+`max(0, w - getHeight(x,z))` then does the right thing everywhere: **0 across the
+dry part of the ring** (so wildlife and grass placement over dry ring ground is
+unchanged — this is not a behaviour change for them), and **41.1 m at
+(-768,832)** instead of nothing.
+
+One caller needs a matching adjustment, and it is in my brief's list rather than
+yours, so flag it rather than fixing it: `CameraRig._groundAt` uses
+`getWaterHeight` *directly* as a floor, so over the dry part of the ring it
+would start floating the camera on an invisible surface. It should ask for depth
+instead — `const d = w.getWaterDepth(x, z); const g = w.getHeight(x, z) + (d > 0 ? d : 0);`
+— which is the same value everywhere water is real and the terrain everywhere
+else.
+
+**Also fix (c) while you are in there, in the flood fill you already run.**
+`_buildLakes` flood-fills connected components to drop specks (`MIN_CELLS = 3`).
+That loop already knows which quads belong to one body of water. Assigning every
+quad in a component a single level — the component's max, or its modal level —
+costs nothing extra and removes the averaged seam between adjacent basins
+entirely. A body of water has one surface; the mean of two basins is a surface
+neither of them has.
+
+**Fallback if you would rather not add a field:** build the lake mask at the
+baked 2 m resolution instead of coarsening to 8 m and dilating. Correct, but 16×
+the vertices, and the 8 m quad is there for a reason — I am not recommending it.
+
+### Reproduce
+
+```bash
+node tools/_scratch/waterfloor.mjs                       # the table above
+node tools/_scratch/watermap.mjs --x -80 --z -608        # texel map of one window
+node tools/_scratch/waterdrive.mjs --dir shots/d1-before # drive a camper into a lake
+```
+
+**Please do not fix this by clamping the camera harder.** My own measurement
+says the clamp is right and its input is wrong, and every earlier attempt on this
+project to paper over a structural defect made the structure harder to find.
+
+
+## P2. The D3 grey wedge is a ROCK, not the apron — and it is on 3 of 40 road anchors (player-experience → rocks, 2026-08-20)
+
+**CRITIC_FINDINGS D3**: "an enormous unshaded triangle, two straight edges
+meeting at a point, covering the sky and the far landscape",
+`shots/ui/map7/full.png`, upper right. Not identified at the time. The standing
+guess was `TerrainApron` — the largest real geometry in the scene at ~3353 m
+world radius. **It is not the apron.** "Largest bounding sphere" was the wrong
+question: a 15.6 m cliff rock 10.2 m from the lens fills far more of the frame
+than a 3.3 km apron a kilometre away.
+
+### How it was found
+
+`shots/ui/map7/full.png` came from `tools/hudshot.mjs`'s `drive` view, which
+poses at `poi.anchor('road')`. That anchor **does not come back the same across
+page loads** (see P3 below), so the evidence frame is one member of a family of
+poses rather than a reproducible one — two runs of `hudshot.mjs` minutes apart
+put the camera on two different massifs, and neither carried the wedge.
+
+`tools/_scratch/wedgeroad.mjs` walks all 40 road anchors at that pose.
+**Two of them reproduce the defect at full strength** — anchors 12 and 18, where
+one rock facet covers half the frame or more — and anchor 14 is a milder case of
+the same thing (a boulder over roughly a sixth of the frame). Anchor 10 looks
+similar in the contact sheet and is **not** this defect: raycasting names it
+`Terrain/Mesh` at 8.8 m, and hiding `rocks` leaves it unchanged. Every one of
+these had to be checked rather than eyeballed, which is the whole point.
+`tools/_scratch/wedgeid.mjs --idx 12,10,18` raycasts a grid over each frame
+and hides one system at a time, which is the elimination recipe from §1 of this
+document:
+
+```
+road[18]  (-837, 162, 612)
+  Rocks/rock_cliff_2#0     34 of 72 rays   nearest  1.7 m   (radius 15.6 m at 10.2 m)
+  Rocks/rock_cliff_0#1     25 of 72 rays   nearest  2.8 m   (radius 12.4 m at 11.5 m)
+  Terrain/Mesh              6 of 72 rays   nearest 45.5 m
+  sky                       2 of 72 rays
+```
+
+`shots/wedge-id/18-no-rocks.png` versus `18-base.png`: setting
+`window.__systems.rocks.group.visible = false` takes the entire wedge with it
+and leaves an ordinary vista. Colour confirms the identification independently —
+sampled at the same frame fraction, `srgb(87,88,106)` in the repro against
+`srgb(87,89,105)` in `shots/ui/map7/full.png`, and three samples across the
+evidence wedge run `srgb(78,73,90)` … `srgb(91,93,109)`.
+
+### What it actually is, and why it reads as "unshaded"
+
+It is one facet of a crag boulder standing between 1.7 m and 11 m from the lens.
+At that range a 15 m rock subtends more than the frame, so the player sees a
+single flat-shaded polygon with two straight edges meeting at a vertex, and
+nothing to give it scale. It is not a material bug — the same rock at 40 m looks
+right in the same frame.
+
+### Scale, because this decides the triage
+
+**2 of 40 road anchors** — 5% — put a 12–16 m radius cliff rock inside ~11 m of
+the chase camera's resting position and fill half the frame or more with one
+facet; a third is a milder version of the same. This is not one freak
+screenshot. Road anchors are where the player drives.
+
+### For the ROCKS author — and this is *not* your current brief
+
+Your round is about rock hue, and this is placement, so please treat it as a
+note rather than as work: `RockScatter.classify()` has no road or track
+avoidance at all (`grep -n "road" src/rocks/RockScatter.js` returns three
+comments and nothing else), and the `crag` branch is free to put house-sized
+blocks along a mountain road at `slope > 0.62 && h > 95`. The comment at line
+222 already reasons about exactly this failure at 200 m from the road; the same
+argument applies at 0 m.
+
+### For the VEHICLE & CAMERA author
+
+There is a second, cheaper half to this that does not need the scatter to
+change. The chase camera has a boom-fit against **terrain and water** and none
+against **rocks**: `_boomFit` marches `max(getHeight, getWaterHeight)` and a
+15 m boulder is neither. So even with perfect scatter, driving past a crag puts
+the lens inside it. That is the same defect class as P1 — the boom is fitted
+against the world the *data* describes, not the world that is *drawn*.
+
+I own `src/render/Occlusion.js`, which exists to get things out from between the
+camera and the camper, and I want to say explicitly why it is **not** the answer
+here: rocks are opaque and have early-Z, and the file's own reasoning (see the
+`coverFade` note) is that adding a discard to an opaque surface spends early-Z
+on the heaviest geometry in the frame to fix a rarer problem than the canopy's.
+Dithering a cliff would also look worse than moving the camera. If you want it
+anyway I will wire it, but I would rather you fitted the boom.
+
+Reproduce:
+
+```bash
+node tools/_scratch/wedgeroad.mjs                 # 40 road anchors, one shot each
+node tools/_scratch/wedgeid.mjs --idx 12,18       # name it, then hide each system
+# then compare shots/wedge-id/18-base.png with 18-no-rocks.png
+```
+
+
+## P3. `poi.anchor()` is not stable across page loads, and every capture posed on it is comparing two different places (player-experience, 2026-08-20)
+
+Found while trying to reproduce D3. `tools/hudshot.mjs --view drive` poses at
+`window.__cameraAnchors.road()` → `poi.anchor('road')`. Two runs of the *same
+command* against the *same bake* (`world-20261018-…-7379f959.pab`, hash
+unchanged) put the camera on two different massifs, ~1.4 km apart, at two
+different headings — the compass strip in the two frames differs by about 45°.
+
+`PointsOfInterest.anchor()` itself is deterministic given `this.list[kind]`
+(`PointsOfInterest.js:249`), and `best()` just indexes it, so the instability is
+upstream in how `list[kind]` is built and ordered — `_thin()` and the `sort` by
+score at line 221 are the places I would look, most likely a tie in `score`
+resolved differently depending on the order candidates arrive from the worker.
+
+Why it matters beyond my defect: **`shot.mjs`, `hudshot.mjs` and `vshot.mjs` all
+pose on anchors.** A before/after taken at `--view drive`, `--view meadow`,
+`--view river` or `--view forest` in two separate runs may be photographing two
+different places, and nothing in the output says so. This project has already
+lost time twice to comparisons that were not comparing what they claimed, and
+this is a third mechanism for it.
+
+`--view hero`, `dawn` and `peaks` use `vista`, which I have not tested; the
+failure is in the list, not in the kind, so I would assume all of them until
+someone checks.
+
+Suggested smallest change: make the sort total — break ties on a stable key the
+generator already has (the POI's grid index, or `x*R+z`) rather than leaving
+equal scores in arrival order. Worth a line in `tools/shot.mjs`'s header either
+way, so the next author to take a two-run before/after knows.
