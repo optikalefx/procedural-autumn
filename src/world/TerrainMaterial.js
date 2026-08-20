@@ -1698,13 +1698,16 @@ export function createTerrainMaterial(world, opts = {}) {
           else if (uDebugMask < 9.5) gDebug = vec3(fBed, footM / 20.0,
                                                   camDist / 3000.0);
           // 10 is the strata read-out, and it is the one that answers whether
-          // d451616 reaches a given face at all. red = the raw macro field,
-          // green = the same field after valueZones, blue = macro2. If green
-          // is ONE flat value over a whole massif then that massif has one
-          // zone, not three, and no amount of retuning the zone count will
-          // change it — the field itself is not varying there.
-          else if (uDebugMask < 10.5) gDebug = vec3(macro,
-                                                   valueZones(macro, 3.0), macro2);
+          // the zones reach a given face at all. red = the zone field as
+          // shipped (macroS), green = the same field after valueZones, blue =
+          // the planar selector macro it is compared against. If green is ONE
+          // flat value over a whole massif then that massif has one zone, not
+          // three, and no amount of retuning the zone count will change it —
+          // the field itself is not varying there. Set uZoneTP 0 and red goes
+          // back to blue, which is how the waterfall/peaks split was found:
+          // macro spread 0.035 there against 0.227 here.
+          else if (uDebugMask < 10.5) gDebug = vec3(macroS,
+                                                   valueZones(macroS, 3.0), macro);
           // 11 is the ownership paint, and it is the terrain equivalent of the
           // rocks author's rock paint. Terrain rock is drawn pure red, terrain
           // non-rock pure green, everything else in the scene is untouched —
