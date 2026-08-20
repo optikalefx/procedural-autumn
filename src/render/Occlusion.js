@@ -334,35 +334,78 @@ float occludeFade( vec3 wp ) { return occludeFadeAt( wp, 0.0 ); }
 #endif`;
 
 // ── screen-door transparency, for alpha-tested materials ─────────────────────
-// An ordered 4x4 Bayer threshold. Written as arithmetic on the wrapped
-// coordinate rather than the usual fract(x*0.5 + y*y*0.75) one-liner, because
-// that form squares the raw fragment coordinate: at 4K the y term reaches 3e6,
-// where a float32 has a spacing of 0.25 and the pattern it is supposed to
-// reproduce has a step of exactly 0.25. Taking the mod first keeps every
-// intermediate under 16 and costs nothing.
+//
+// The threshold used to be an ordered 4x4 Bayer matrix, and the critic caught
+// it: "the occlusion fade reads as a halftone screen door… several crowns left
+// and centre carry an obvious regular dot pattern" (CRITIC_FINDINGS D2,
+// shots/wedge/f9.png). They were right, and the interesting part is WHY,
+// because the obvious diagnosis is wrong.
+//
+// The obvious diagnosis is that the dots are too big. They are not. Magnified
+// 7x, the pattern in f9 is a 2 px checkerboard — a 4x4 Bayer evaluated at one
+// device pixel per cell, which is already the finest an ordered matrix can be.
+// Making it finer is not available.
+//
+// What makes it read as a screen door is that it is ORDERED, and two properties
+// of an ordered matrix that are virtues in a print halftone are defects here:
+//
+//   · It is periodic. Every 4 px the same sixteen thresholds come round again,
+//     so a region at a constant fade is a perfect lattice — and at fade 0.5, a
+//     perfect checkerboard, which is the single most visible pattern a screen
+//     can hold. The fade IS constant over large regions: tree_material.js
+//     evaluates it once per clump centre, deliberately (see its note), so a
+//     whole billboard quad dithers at one level and the eye gets an unbroken
+//     field of lattice several hundred pixels across to lock on to.
+//   · It has sixteen levels. A fade that varies smoothly across a frame lands
+//     in sixteen discrete densities, so the feather bands.
+//
+// So: keep the ordered-dither IDEA — it is still the right technique, it still
+// survives alpha testing and the render order, and it still measures negative
+// (X5: -1.10 ms p50, -3.70 ms p95) — and replace the ordered matrix with an
+// aperiodic threshold of the same cost.
+//
+// Interleaved gradient noise (Jimenez 2014). Two multiplies, two fracts, no
+// texture, no table. It is not white noise: it is low-discrepancy over a local
+// neighbourhood, so a region at fade 0.5 still gets very close to half its
+// pixels rather than clumping into holes the way a hash does — which is the
+// whole reason to prefer it to `fract(sin(dot(…)))`. And it is continuous
+// rather than sixteen-valued, so the feather no longer bands.
+//
+// Measured against the Bayer inside ONE page load with the clock stopped
+// (tools/_scratch/occdither.mjs: drive, engine.stop(), hot-swap this function in
+// the already-compiled material, render the same frozen frame again — camera,
+// wind, sun and every clump bit-identical, and a two-identical-frames control
+// that comes back at exactly 0.0000). At the one canopy pose of three where the
+// effect engaged at all, it changed 0.0050 of the frame out of 0.0217 engaged.
+// The lattice is gone; see shots/occdither/p2-bayer.png against p2-ign.png.
+//
+// The wrap is the same guard the Bayer carried and it is kept for the same
+// reason: at 4K the raw coordinate reaches ~3840, and every intermediate here
+// would carry it into a part of float32 where `fract` has thrown away half its
+// mantissa — and on a mediump fragment stage, all of it. mod first, and the dot
+// product stays under 19. 256 px is orders of magnitude beyond any period the
+// eye can find in noise, so the wrap is free.
 export const OCCLUDE_DITHER = /* glsl */`
 #ifndef OCCLUDE_DITHER_DECLARED
 #define OCCLUDE_DITHER_DECLARED
-float occBayer2( float x, float y ) { return mod( 2.0 * x + 3.0 * y, 4.0 ); }
-float occBayer4( vec2 p ) {
-  vec2 q = mod( floor( p ), 4.0 );
-  vec2 h = floor( q * 0.5 );
-  vec2 l = mod( q, 2.0 );
-  return ( 4.0 * occBayer2( l.x, l.y ) + occBayer2( h.x, h.y ) ) * 0.0625;
+float occThreshold( vec2 p ) {
+  vec2 q = mod( p, 256.0 );
+  return fract( 52.9829189 * fract( dot( q, vec2( 0.06711056, 0.00583715 ) ) ) );
 }
 // The early-out is the important line, not a tidiness. In any given frame the
 // overwhelming majority of canopy fragments are nowhere near the frustum and
 // carry fade == 1.0 exactly, and the canopy is the heaviest fill in the game;
-// without this every one of them evaluated the Bayer threshold to discover it
-// had nothing to do. It also means a switched-off build pays a single compare
+// without this every one of them evaluated the threshold to discover it had
+// nothing to do. It also means a switched-off build pays a single compare
 // rather than the whole pattern.
 //
-// The threshold tops out at 15/16, so a fade of 1.0 could never discard anyway
-// — the early-out changes cost, not behaviour, and a material that is switched
-// off stays bit-identical to one that never had this.
+// fract() is strictly below 1.0, so a fade of 1.0 could never discard anyway —
+// the early-out changes cost, not behaviour, and a material that is switched
+// off stays bit-identical to one that never had this. That was true of the
+// Bayer (it topped out at 15/16) and it is still true here.
 void occludeCut( float fade ) {
   if ( fade >= 1.0 ) return;
-  if ( fade <= occBayer4( gl_FragCoord.xy ) ) discard;
+  if ( fade <= occThreshold( gl_FragCoord.xy ) ) discard;
 }
 #endif`;
 
