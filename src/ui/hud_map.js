@@ -81,6 +81,15 @@ const WET_BLUR = 2;
 const WET_LO = 0.30;
 const WET_HI = 0.72;
 
+// Everything on the land ramp is knocked back toward the panel's own plum
+// before it is drawn. Full strength, the map was the loudest thing in the
+// frame — two quiet instruments and one saturated postage stamp — which is not
+// what "part of the same cluster" means. Water is deliberately exempt: the
+// knock-back widens the gap between it and the land, which is the one contrast
+// on this map that has to survive a glance.
+const SIT_BACK = 0.15;
+const SCRIM = [43, 28, 51];
+
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 function rampAt(t) {
@@ -89,10 +98,16 @@ function rampAt(t) {
     if (t > RAMP[i][0] && i < RAMP.length - 1) continue;
     const a = RAMP[i - 1], b = RAMP[i];
     const k = (t - a[0]) / (b[0] - a[0]);
-    return [a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k, a[3] + (b[3] - a[3]) * k];
+    return [
+      lerpBack(a[1] + (b[1] - a[1]) * k, SCRIM[0]),
+      lerpBack(a[2] + (b[2] - a[2]) * k, SCRIM[1]),
+      lerpBack(a[3] + (b[3] - a[3]) * k, SCRIM[2]),
+    ];
   }
-  return RAMP[RAMP.length - 1].slice(1);
+  return RAMP[RAMP.length - 1].slice(1).map((c, i) => lerpBack(c, SCRIM[i]));
 }
+
+const lerpBack = (c, to) => c + (to - c) * SIT_BACK;
 
 /** 1st–99.5th percentile of the height field, via a coarse histogram. */
 function heightRange(H) {
@@ -356,6 +371,14 @@ export class MiniMap {
     // rather than as a river the moment the line is bright enough to follow.
     g.strokeStyle = 'rgba(112,164,197,0.5)';
     g.lineWidth = Math.max(1, N / 400);
+    // NOT the source of the ruled diagonal lines in the south-east corner. I
+    // added a long-segment cull here on the assumption that it was, then
+    // measured: 185 polylines, 13066 segments, longest 2.8 m, none over 90 m.
+    // Those lines are in `world.riverMask` itself, and the mask-only raster
+    // rendered by tools/_scratch/mapbake.mjs — which strokes no polylines at
+    // all — shows them just as clearly. They are channels leaving the eroded
+    // region in a straight run, which is terrain data, not a drawing bug, and
+    // not mine to paper over.
     g.beginPath();
     for (const line of lines) {
       if (!line || line.length < 2) continue;
