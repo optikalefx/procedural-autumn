@@ -236,12 +236,16 @@ uniform float uOccAmount;
 // tools/nanhunt.mjs is run against it. len2 is rejected below 1; the smoothstep
 // edges are forced apart by construction, so the degenerate edge0 == edge1 case
 // cannot arise however the parameters are tuned at runtime.
-float occludeFade( vec3 wp ) {
+// The radius argument is the caller's own extent, subtracted from the near-sphere test so
+// a several-metre billboard clump the camera is standing inside is treated as
+// being in your face rather than as a point two metres away. Pass 0.0 for a
+// surface small enough to be a point, which is what occludeFade() below does.
+float occludeFadeAt( vec3 wp, float radius ) {
   if ( uOccAmount <= 0.0 ) return 1.0;
   vec3 rel = wp - cameraPosition;
 
   // (1) near-camera sphere.
-  float m = 1.0 - smoothstep( uOccNear.x, uOccNear.y, length( rel ) );
+  float m = 1.0 - smoothstep( uOccNear.x, uOccNear.y, max( length( rel ) - radius, 0.0 ) );
 
   // (2) cone to the subject.
   vec3 axis = uOccTarget - cameraPosition;
@@ -260,6 +264,8 @@ float occludeFade( vec3 wp ) {
   }
   return 1.0 - uOccAmount * m;
 }
+
+float occludeFade( vec3 wp ) { return occludeFadeAt( wp, 0.0 ); }
 #endif`;
 
 // ── screen-door transparency, for alpha-tested materials ─────────────────────
@@ -285,6 +291,25 @@ void occludeCut( float fade ) {
   if ( fade <= occBayer4( gl_FragCoord.xy ) ) discard;
 }
 #endif`;
+
+// ── measurement switch ──────────────────────────────────────────────────────
+// `?occ=0` switches the whole feature off for the life of the page, which makes
+// the build bit-identical to one that never had it (every occludeFade returns
+// 1.0 on uOccAmount before touching anything else, and the Bayer threshold tops
+// out at 15/16 so a fade of 1.0 cannot discard).
+//
+// It exists because tools/dprtest.mjs has no eval hook, and a dozen authors are
+// editing this tree at once: an absolute frame time measured here is a
+// measurement of everyone's uncommitted work, not of mine. Two runs of the same
+// build minutes apart, one with this and one without, is the only honest way to
+// price a feature in a shared tree. Reach it through --quality, which is
+// concatenated into the query string:
+//
+//   node tools/dprtest.mjs --quality 'ultra&occ=0' --dpr 2 …
+if (typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('occ') === '0') {
+  PARAMS.enabled = false;
+}
 
 // Runtime handle, so the shape can be swept from a capture without a rebuild:
 //   node tools/shot.mjs --view … --eval "window.__occlusion.params.wide = 5.0"

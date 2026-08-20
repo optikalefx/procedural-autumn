@@ -3425,7 +3425,7 @@ are a varying assignment, a discard, and a multiply.
 
 | file | change |
 |---|---|
-| `src/vegetation/tree_material.js` | `vOcc = occludeFade(worldPosition.xyz)` in `LEAF_VERT` / `BARK_VERT`; `occludeCut(vOcc)` as the first statement of both `main()`s; `occlusionUniforms()` in the two `Object.assign` uniform chains. Depth/bake programs untouched. |
+| `src/vegetation/tree_material.js` | `vOcc = occludeFadeAt(...)` in `LEAF_VERT`, `occludeCut(vOcc)` as the first statement of `LEAF_FRAG`'s `main()`, `occlusionUniforms()` in the leaf uniform chain. **The bark material is untouched — see "the twelve-millisecond discard" below.** Depth and bake programs untouched. |
 | `src/shaders/cover_material.js` | one `#ifdef COVER_OCCLUDE` block inside `COVER_DISPLACE` multiplying the existing `coverFade`. Defined only on the visible material, never on the depth material. |
 | `src/main.js` | one import and one `setOcclusionTarget(cam, …)` call per frame. |
 
@@ -3466,9 +3466,44 @@ the camper is centre-frame and near in those, which is exactly the case this
 feature exists for. That is the game working, not a regression, but if you are
 diffing `drive` across this round, that is why.
 
+### The twelve-millisecond discard — read this before you add one
+
+Bark was built with the same dithered discard the canopy has, measured, and
+backed out. Gate configuration, same tree, three runs:
+
+```
+feature off                            46.3 fps
+leaves + cover, bark discarding        31.9 fps
+leaves + cover, bark untouched         51.3 fps
+```
+
+`BARK_FRAG` is opaque and it is one of the most expensive shaders in the game —
+multi-octave value noise, lenticels, chevron scars, all per pixel. **One
+`discard` anywhere in a fragment shader turns early-Z off for the whole
+program**, so every trunk fragment in a forest then runs that shader even when a
+nearer trunk already owns the pixel. Twelve milliseconds, for the smaller half
+of the complaint.
+
+Note the third row: on leaves and cover the feature is a **net win**, because
+the canopy is alpha-tested and had given early-Z up long ago, and the discard
+throws away near-camera overdraw that was being shaded and then covered.
+
+So the rule for anyone adopting this: **if your material does not already
+discard, do not make it start.** Use the vertex-side shrink.
+
+The obvious shrink for bark was also built and photographed
+(`shots/occlude/bark-on.png`) and is wrong for a different reason: branch tubes
+are modelled offset from the trunk axis, so scaling `local.xz` drags every
+branch toward the centre and the per-vertex fade shears them into long diagonal
+streaks across the frame. A real fix wants a per-branch axis the material does
+not carry. Trees author: if you want trunks in, that is the shape of the
+problem.
+
 ### Not adopted yet, and why
 
-- **Grass** (`src/shaders/grass_material.js`) — one line, `grow *= occludeFade(basePos)`,
+- **Bark / trunks** — see above. Not a cost I can pay, and not one I can fix
+  from outside the material.
+- **Grass** (`src/shaders/grass_material.js`) — one line, `cover = min(cover, occludeFade(basePos))`,
   and it would be vertex-only and free of fragment cost. Held back only because
   it is the largest vertex population in the game and I did not want to spend
   the gate on it before measuring the two systems that actually cause the

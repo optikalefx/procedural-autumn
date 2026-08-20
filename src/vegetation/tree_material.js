@@ -16,9 +16,34 @@ import * as THREE from 'three';
 import { fogUniforms } from '../render/Atmosphere.js';
 import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 // Camera occlusion: the transparent frustum between the chase camera and the
-// camper. Opt-in only — three call sites in this file, all marked OCCLUDE.
-// The depth materials below deliberately do NOT take it, so a canopy you can
-// see through still casts its shadow. See src/render/Occlusion.js.
+// camper. Opt-in only — three call sites in this file, all marked OCCLUDE, and
+// all three are in the LEAF material. The depth materials deliberately do not
+// take it, so a canopy you can see through still casts its shadow.
+//
+// BARK DOES NOT OPT IN, AND IT IS NOT AN OVERSIGHT. Measured on the gate
+// configuration, same tree, three runs:
+//
+//   feature off                                46.3 fps
+//   leaves + cover, bark discarding            31.9 fps
+//   leaves + cover, bark untouched             51.3 fps
+//
+// Bark is opaque and BARK_FRAG is one of the most expensive shaders in the game
+// — multi-octave value noise, lenticels, chevron scars, all per pixel. One
+// 'discard' anywhere in it turns early-Z off for the whole program, so every
+// trunk fragment in a forest runs that shader even when a nearer trunk already
+// owns the pixel. Twelve milliseconds, for the smaller half of the problem.
+// (The canopy pays nothing for its discard: it is alpha-tested and had given
+// early-Z up long ago, which is why the feature is a net WIN there — it throws
+// away near-camera overdraw.)
+//
+// The obvious alternative, shrinking the trunk toward its own axis in the
+// vertex shader, was built and photographed: shots/occlude/bark-on.png. It is
+// free, and it is wrong. Branch tubes are modelled offset from the trunk axis,
+// so scaling local.xz drags every branch toward the centre and the per-vertex
+// fade shears them into long diagonal streaks across the frame. Any real fix
+// wants a per-branch axis this material does not carry.
+//
+// See src/render/Occlusion.js.
 import { occlusionUniforms, OCCLUDE_PARS, OCCLUDE_DITHER } from '../render/Occlusion.js';
 import { PALETTE } from '../world/WorldConfig.js';
 
@@ -357,7 +382,14 @@ void main() {
   // also the better read: a clump is one brush stroke, and half a stroke
   // dissolving looks like an error rather than like the camera getting out of
   // the way.
-  vOcc = occludeFade(worldPosition.xyz);
+  //
+  // The clump's own radius goes with it. A clump the camera is INSIDE has its
+  // centre two or three metres away and still owns the whole screen, so tested
+  // as a point it lands in the middle of the near feather and the frame comes
+  // back as a 50% halftone over everything — better than a wall of green, and
+  // not what this is for. Subtracting the radius makes the sphere test ask
+  // 'is any part of this clump in my face', which is the question.
+  vOcc = occludeFadeAt(worldPosition.xyz, max(aSize.x, aSize.y) * scale);
 
   // Billboard in the *current* camera's basis. In the shadow pass that camera
   // is the sun, so each clump presents its full disc to the light and the
@@ -551,13 +583,11 @@ varying float vStyle;
 varying vec3 vN;
 varying vec3 vWorld;
 varying float vHeight;
-varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <shadowmap_pars_vertex>
 #include <fog_pars_vertex>
 ${WIND}
-${OCCLUDE_PARS}
 
 void main() {
   float scale = length(instanceMatrix[0].xyz);
@@ -576,7 +606,6 @@ void main() {
   vN = wn;
   vWorld = worldPosition.xyz;
   vHeight = position.y * scale;
-  vOcc = occludeFade(worldPosition.xyz);   // OCCLUDE
 
   #ifdef USE_FOG
     vFogWorldPos = worldPosition.xyz;
@@ -602,14 +631,12 @@ varying float vStyle;
 varying vec3 vN;
 varying vec3 vWorld;
 varying float vHeight;
-varying float vOcc;        // OCCLUDE
 
 #include <common>
 #include <packing>
 #include <shadowmap_pars_fragment>
 #include <fog_pars_fragment>
 ${SHADOW_SAMPLE}
-${OCCLUDE_DITHER}
 
 float h21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -681,7 +708,6 @@ float chevronScar(vec2 uv, vec2 freq, float density) {
 }
 
 void main() {
-  occludeCut(vOcc);        // OCCLUDE — before the bark noise, which is not cheap
   // pat is the bark *pattern*, kept separate from the base colour so the
   // impostor bake can store shading without baking a species hue into it.
   // (Named pat, not mod: mod() is a GLSL builtin and shadowing it is illegal.)
@@ -844,8 +870,7 @@ export function createBarkMaterial(shared, opts = {}) {
   const bake = !!opts.bake;
   const mat = new THREE.ShaderMaterial({
     uniforms: Object.assign(
-      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(),
-      bake ? {} : occlusionUniforms(), shared,        // OCCLUDE
+      bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(), shared,
       { uBake: { value: bake ? 1 : 0 } }),
     vertexShader: BARK_VERT,
     fragmentShader: BARK_FRAG,
