@@ -5451,3 +5451,159 @@ node tools/_scratch/camrock.mjs --poses 60 --why # what the residual actually is
 node tools/_scratch/camtree.mjs                  # trunk A/B, both arms, one page load
 node tools/_scratch/camtree.mjs --keep           # why TRUNK_KEEP is 1.2 and not 2.4
 ```
+
+## Sound Lab author — 2026-08-20
+
+`/sound.html` (`src/tools/soundlab/*`) is a standalone page: a dropdown of every
+generated sound, every parameter it can reach on the running graph, a live
+meter, per-layer solo/mute, and a JSON config out and back in. It never loads
+the renderer, the world bake or physics, it does not touch `src/audio/*`, and it
+does not write the `pa.audio` localStorage key the game reads its volume from.
+
+Run `node tools/soundlab-check.mjs` to prove the page still makes sound; it
+asserts on the meter rather than on the absence of an error.
+
+### 1. A world with fewer waterfalls than voices is silent (water author)
+
+Not urgent for the game — there are 28 falls — but it cost me an hour and it is
+a real edge in `WaterAudio._assign` (`src/audio/water.js:187-197`):
+
+```js
+const want = this.soloFall >= 0 ? [this.soloFall, -1, -1] : [b0, b1, b2];
+const held = new Set();
+for (const v of this.falls) if (want.includes(v.target)) held.add(v.target);
+```
+
+A voice that is not assigned to anything has `target === -1`. When the world has
+fewer than three falls, `want` contains `-1` — either from the `soloFall` branch
+or because `b1`/`b2` were never filled — so *every idle voice matches* and all
+three are "held" on nothing. The assignment loop then `continue`s past all of
+them and no voice is ever pointed at the fall that is there. Measured: with one
+waterfall in the world the falls bus reads **-inf dBFS** at 10 m.
+
+To be exact about the blast radius, because a wrong bug report costs more than
+it saves: on the shipping 28-fall world `want` is always three real indices and
+this never fires, and I traced `soloFall` through a full cycle from a settled
+pool and it re-points correctly. The one way it can reach the game is the same
+expression from the other end — if `soloFall` is set while any voice is still
+unassigned (all three are `-1` until the first `_assign`, which runs on tick 4),
+`want` contains `-1`, every idle voice matches, and the pool never starts. So
+this is a latent trap in the test hook rather than a live fault.
+
+Suggested fix, one line — exclude the unassigned sentinel from the held set:
+
+```js
+for (const v of this.falls) if (v.target >= 0 && want.includes(v.target)) held.add(v.target);
+```
+
+*Workaround in place:* the lab hands `WaterAudio` a world containing the fall
+you are listening to plus two decoy falls 4.2 km away (height 1 m, discharge 0,
+measured -110 dBFS), so `want` never contains `-1`. `Rig._decoyFalls()`,
+deletable the moment the line above lands.
+
+### 2. Constants the page cannot reach
+
+Everything below is a hard-coded number inside a module I do not own. The page
+marks each control "not exposed" and emits it under `needsExposing` in the
+config, so a config handed back to an author says exactly which line it means.
+None of it blocks the tool; this is a list of what would make it complete.
+
+The general shape of the request: these are *tuning* numbers — most of them have
+already been moved two or three times, with the reasoning recorded in comments
+beside them — and every one of them currently requires an edit, a save and a
+capture to hear. A module-level `const` object per file, or a plain exported
+`TUNING` record the constructor reads, would let all of them be swept live.
+
+**`src/audio/ambience.js`**
+- `:191, :195, :199, :210` — the layer level constants `0.235` (grass), `0.165`
+  (conifer), `0.180` (hush), `0.075` (cricket), inline in `update()`. These are
+  the four numbers a mix pass actually changes.
+- `:185-186` — the breeze curve, `clamp01((wind - 0.32) / 0.94)` then
+  `0.26 + 0.88·b²`. The 18 dB span the comment describes is the whole dynamic
+  range of the weather and it cannot be auditioned.
+- `:104, :120, :132` — the swell rates and depths (0.037/0.55, 0.029/0.58,
+  0.023/0.48). **`synth.js:117 swell()` returns only the gain node and drops the
+  `lfo()` handle on the floor**, so the oscillator and its depth gain are
+  unreachable from anywhere once constructed. Returning `{ node, osc, depth }`
+  (or stashing them on the node) would expose every swell in the game at once —
+  water's per-voice swell at `water.js:54` has the same problem.
+- `:108, :124, :135` — likewise the filter LFOs; `lfo()` *does* return its
+  handles, but all three call sites discard the return value.
+- `:20-25` — the `BIRDS` species table, and `:233` the call-rate curve.
+- `:43-49` — `cricketBed()`'s nine individuals: pitch spread, period, pulse
+  count and length are all local.
+
+**`src/audio/water.js`**
+- `:256` — `0.42 * size * (ref/(ref+d))^1.5`. This curve has been moved four
+  times (1.6 → 1.42 → 2.4 → 1.5) and it is the single most-argued number in the
+  audio system. `:282` is the river's equivalent, `0.20` and `2.6`.
+- `:263, :287` — air absorption, `17000·e^(-d/210)` and `16000·e^(-d/70)`.
+- `:127-130` — `wfSize` and `wfRef` from height and discharge. The lab mirrors
+  these two expressions (commented at both ends, `Rig.refreshWater`) because
+  they are computed once in the constructor from world data; exporting them as
+  two small functions would remove the only piece of arithmetic on the page that
+  can drift from the module.
+- `:22-23` — `FALL_VOICES` / `RIVER_VOICES`.
+
+*Workaround in place for the distance curves:* the lab does not reimplement the
+model. It puts a trim node after the voice carrying
+`(base/0.42) · (ref/(ref+d))^(exp-1.5)`, which is algebraically the signal the
+module would produce with those constants, so the slider is honest and the DSP
+stays single-sourced.
+
+**`src/audio/vehicle_audio.js`**
+- `:273` — `0.0105 + rpmN·0.021 + load·0.030`, the engine level curve, and the
+  comment above it is the best explanation in the tree of *why* it is uneven.
+  `:278` intake `0.016`, `:283` overrun `0.017`, `:303` grit `0.55`.
+- `:294, :300, :302` — the tyre roll curve, the `lerp(1.0, 0.62, soft)` that was
+  backwards until this morning, and the band-centre expression. The lab has a
+  surface selector precisely so that term can be A/B'd; it can be *heard* but
+  not *changed*.
+- `:25-29` — `IDLE_RPM`, `MAX_RPM` and the `GEARS` table are module-private.
+- `:205-206` — the 3050 / 1250 rpm shift points.
+- `:41-47` — `engineWave()`'s 16 harmonics at `1/h^1.9` with even orders ×1.5.
+  The one-line change from `1.15/26` to `1.9/16` is what stopped it buzzing;
+  there is no way to hear the next step of that argument without an edit.
+
+**`src/audio/wildlife_audio.js`**
+- `:82-91` — pitch, duration and level for both animals, and `:95` the breath
+  band. `:73-74` the 26-81 s cooldown and the 240 m radius.
+- `:132-142` — wingbeat start rate 11 Hz, deceleration 0.28 Hz/beat, floor 6.5.
+
+**`src/audio/music.js`**
+- `:18-22` — `ROOT`, `STEPS`, `MIN_GAP` are module-private, so the scale cannot
+  be changed or even read from outside.
+- `:132, :139` — note levels; `:152, :157` the per-note tone filter and partial
+  table, both built inside `_note()`.
+
+**`src/audio/soundtrack.js`**
+- `:22` — `TRACK`; `:26-32` — `PLAY_MIN/MAX`, `REST_MIN/MAX`, `FADE_IN/OUT`.
+- Minor: `_load()` fires from the constructor, so anything that builds a
+  `Soundtrack` eats a 5 MB fetch it may not want. The lab defers it by refusing
+  `/audio/` fetches during `Audio._start()` and constructing a fresh
+  `Soundtrack` when its sound is selected, which is not a nice thing to have to
+  do. An explicit `await st.load()` would be cleaner for everyone.
+
+**`src/audio/Audio.js`**
+- `:128-134` — the five bus default gains, inline in `_start()`; `:213` the 0.71
+  master ceiling. The limiter and the reverb return *are* reachable and are
+  exposed on the page.
+- `:119` — the reverb impulse is rebuildable from outside (`valleyImpulse` is
+  exported and `convolver.buffer` is writable), so reverb length and decay are
+  live on the page. Nothing needed.
+
+### 3. Two things I would ask for that are not constants
+
+**A `setListener()` seam on the layer modules.** `Ambience.update(dt, L)` is
+already pure — it takes the listener sample and nothing else — which is why the
+lab can drive it directly and why the wind bed is the easiest thing in the game
+to audition. `WaterAudio`, `VehicleAudio` and `WildlifeAudio` reach back into
+`ctx.systems.*` and `ctx.world` instead, so driving them means building a fake
+world and a fake camper (`Rig`, ~90 lines of stubs). If those three took what
+they need through the `L` sample the way `Ambience` does, the lab would need no
+stubs at all and the modules would be testable without a world bake.
+
+**`Soundtrack.duck` and `Music.state.since` are the two hooks that caught real
+bugs.** Keep them. The lab shows model-vs-realised for every layer gain for the
+same reason, and its "zero test" button mutes every layer of a rig and reports
+what the bus did — which is the measurement that proved the ambience LFO bug.
