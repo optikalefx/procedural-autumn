@@ -212,6 +212,31 @@ async function main() {
     console.log(`    hush    ${r.hush.min.toFixed(4)} … ${r.hush.max.toFixed(4)}`);
   }
 
+  // ── parked under canopy ──────────────────────────────────────────────────
+  // The control for the whole ambience fix. The bed is supposed to be mixed by
+  // *exclusion* — open meadow means grass and birds, forest means conifer hiss
+  // — and before the swell fix it was not, because the gains the model wrote to
+  // were being drowned by the LFOs summed into them. So the conifer layer
+  // played at full depth in open meadow while its own model read 0.0000. If
+  // this scenario and the meadow scenario now report different spectra, the
+  // model is genuinely driving the mix again; if they match, it is not.
+  if (want('forest')) {
+    await page.evaluate(() => {
+      window.__lighting.hour = 13.0; window.__lighting.cycleSpeed = 0;
+      const q = window.__poi.best('forest') ?? window.__poi.best('meadow');
+      window.__vehicleTeleport?.(q.x, q.z, 0);
+    });
+    await page.waitForTimeout(4000);        // let the 1.5 s biome damping settle
+    const wood = await page.evaluate((ms) => window.__prof(ms, ['ambience']),
+                                     Math.min(SECONDS, 45) * 1000);
+    const st = await page.evaluate(() => ({ ...window.__audio.debugState().ambience,
+                                            open: window.__audio.L.open,
+                                            forest: window.__audio.L.forest }));
+    report('parked under canopy', wood);
+    console.log(`  model: grass=${st.grass.toFixed(4)} conifer=${st.conifer.toFixed(4)} ` +
+                `L.open=${st.open.toFixed(2)} L.forest=${st.forest.toFixed(2)}`);
+  }
+
   // ── driving across grass ─────────────────────────────────────────────────
   if (want('drive')) {
     // Re-seat the camper on the same meadow every few seconds. A free 40 s
