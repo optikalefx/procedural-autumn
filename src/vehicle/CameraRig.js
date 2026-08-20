@@ -6,7 +6,9 @@
 //
 //   · it follows a *damped* heading, not the instantaneous one, so the world
 //     swings through frame on a turn instead of snapping;
-//   · it aims at a look-ahead point that leads the vehicle into the corner;
+//   · it aims at a look-ahead point straight down the camper's own nose — it
+//     does NOT lead sideways off the steering angle, which is a panning
+//     motion the player asked to have removed;
 //   · height and FOV open up with speed, which is most of the sensation of
 //     going fast;
 //   · drag the mouse to orbit and roll the wheel to zoom, over a range that
@@ -309,9 +311,15 @@ export class CameraRig extends System {
     const composed = clamp01(1 - (1 - frac) * 1.6) * clamp01(1 - lifted * 0.25);
     const trail = clamp01(Math.cos(this.orbitYaw)) * composed;
     const lead = lerp(3.0, 9.5, fast) * (1 - wide * 0.85) * (1 - close * 0.8) * trail;
+    // NOTE: there was a second term here, a *lateral* offset driven straight
+    // off `phys.steerAngle`, which swung the aim point up to 9 m sideways the
+    // instant the wheel moved — before the camper had changed heading at all.
+    // The player: "when we go left and right, the camera does this panning
+    // thing first. I don't like that. just take that bit out." Removed. The
+    // camera now only follows where the camper actually goes; the damped
+    // `followYaw` still lets the world swing through frame on a turn.
     const target = this._t2.copy(anchor)
       .addScaledVector(v.forward, lead)
-      .addScaledVector(v.right, -(v.phys.steerAngle ?? 0) * lerp(2.0, 9.0, fast) * (1 - wide) * trail)
       .addScaledVector(this._up, lerp(0.35, -0.15, fast));
     this.lookAt.x = damp(this.lookAt.x, target.x, 6.5, dt);
     this.lookAt.y = damp(this.lookAt.y, target.y, 5.0, dt);
@@ -374,7 +382,10 @@ export class CameraRig extends System {
       this.camPos.x + fx * 22,
       this.camPos.y + 22 * Math.tan(clamp(this.orbitPitch - PITCH_REST_NEAR, -0.5, 0.5)) - 1.0,
       this.camPos.z + fz * 22,
-    ).addScaledVector(v.right, -(v.phys.steerAngle ?? 0) * 9);
+    );
+    // No steer-driven lateral lead here either — same reason as `_chase`.
+    // Cockpit is behind `window.__cockpitCam`, but if it is ever turned on it
+    // should not reintroduce the pan the player rejected.
     this.lookAt.x = damp(this.lookAt.x, look.x, 9, dt);
     this.lookAt.y = damp(this.lookAt.y, look.y, 9, dt);
     this.lookAt.z = damp(this.lookAt.z, look.z, 9, dt);
