@@ -1393,21 +1393,49 @@ export class Water extends System {
     const vmap = new Int32Array((perChunk + 1) * (perChunk + 1));
     let quadCount = 0, tris = 0;
 
+    // ── the vertex field, computed once for the whole lattice ───────────────
     // Vertex value = mean over the (up to four) mesh cells touching it, so the
     // surface is continuous across chunk borders.
-    const vertexAt = (vx, vz, out) => {
-      let n = 0, lv = 0, w = 0, sh = 0;
-      for (let dz = -1; dz <= 0; dz++) {
-        const cz = vz + dz; if (cz < 0 || cz >= G) continue;
-        for (let dx = -1; dx <= 0; dx++) {
-          const cx = vx + dx; if (cx < 0 || cx >= G) continue;
-          const k = cz * G + cx;
-          if (!mask[k]) continue;
-          n++; lv += level[k]; w += wet[k]; sh += Math.min(dist[k], 12) * quadM;
+    //
+    // This used to be recomputed inside the chunk loop, up to four times per
+    // vertex. It is hoisted out because it is no longer only the mesh's own
+    // business: this grid, plus `drawn` below, IS the lake surface — nothing
+    // else about the geometry decides where the water is or how high it sits.
+    // Handing exactly these two arrays to WorldData at the end of the build is
+    // what stops `getWaterHeight` from deriving a second, different water
+    // surface from the same bake (docs/INTEGRATION_REQUESTS.md, P1). Anything
+    // computed here a second time somewhere else can drift; this cannot.
+    const VG = G + 1;
+    const vLevel = new Float32Array(VG * VG);
+    const vWet = new Float32Array(VG * VG);
+    const vShore = new Float32Array(VG * VG);
+    const vOk = new Uint8Array(VG * VG);
+    for (let vz = 0; vz < VG; vz++) {
+      for (let vx = 0; vx < VG; vx++) {
+        let n = 0, lv = 0, w = 0, sh = 0;
+        for (let dz = -1; dz <= 0; dz++) {
+          const cz = vz + dz; if (cz < 0 || cz >= G) continue;
+          for (let dx = -1; dx <= 0; dx++) {
+            const cx = vx + dx; if (cx < 0 || cx >= G) continue;
+            const k = cz * G + cx;
+            if (!mask[k]) continue;
+            n++; lv += level[k]; w += wet[k]; sh += Math.min(dist[k], 12) * quadM;
+          }
         }
+        if (!n) continue;
+        const vi = vz * VG + vx;
+        vOk[vi] = 1; vLevel[vi] = lv / n; vWet[vi] = w / n; vShore[vi] = sh / n;
       }
-      if (!n) return false;
-      out[0] = lv / n; out[1] = w / n; out[2] = sh / n;
+    }
+
+    // Which quads actually became triangles. Set in the emit loop below rather
+    // than predicted here, so it can never claim surface the mesh does not have.
+    const drawn = new Uint8Array(G * G);
+
+    const vertexAt = (vx, vz, out) => {
+      const vi = vz * VG + vx;
+      if (!vOk[vi]) return false;
+      out[0] = vLevel[vi]; out[1] = vWet[vi]; out[2] = vShore[vi];
       return true;
     };
 
@@ -1458,6 +1486,7 @@ export class Water extends System {
             const span = Math.max(ya, yb, yc, yd) - Math.min(ya, yb, yc, yd);
             if (span > LAKE_LEVEL_STEP) continue;
             idx.push(a, c, b, a, d, c);
+            drawn[cz * G + cx] = 1;
             quadCount++;
           }
         }
@@ -1483,6 +1512,64 @@ export class Water extends System {
     }
     this.lakeQuads = quadCount;
     this.lakeTriangles = tris;
+
+    // ── publish the surface, so nothing has to guess at it ──────────────────
+    // Every gameplay query about water — the chase boom floor, wildlife spawn
+    // rejection, grass and cover scatter, the camper's fording drag and its
+    // audio — goes through `WorldData.getWaterHeight`, which was a nearest-texel
+    // point sample of the raw bake. This mesh is not a point sample of the raw
+    // bake: it coarsens sixteen 2 m texels into an 8 m quad, dilates one ring so
+    // the shoreline fade has geometry to finish inside, and averages each vertex
+    // over the quads that touch it. Two derivations of one field, and they
+    // disagreed under 91% of drawn water shallower than 15 cm and under 41 m of
+    // it at (-768, 832) — measured in P1.
+    //
+    // So hand over the field the mesh was actually built from. `levelAt` below
+    // evaluates the same triangles the renderer draws, from the same numbers, so
+    // it cannot drift: there is now one water surface, not two.
+    //
+    // ~740 KB at res 1536 (385² floats + 384² bytes).
+    const origin = -half;
+    const field = {
+      level: vLevel,          // (G+1)² lattice, metres
+      drawn,                  // G², 1 where the mesh emitted this quad
+      G, quadM, origin,
+      /**
+       * Height of the drawn lake surface at world (x, z), or null where no
+       * lake quad is drawn. Evaluates the emitted triangles exactly: the quad
+       * is split a-c-b / a-d-c, and a downward ray takes the highest surface it
+       * meets, so on a quad boundary any drawn quad touching the point answers.
+       */
+      levelAt(x, z) {
+        const fx = (x - origin) / quadM, fz = (z - origin) / quadM;
+        if (!(fx >= 0 && fz >= 0 && fx <= G && fz <= G)) return null;
+        const cx0 = Math.min(G - 1, Math.floor(fx)), cz0 = Math.min(G - 1, Math.floor(fz));
+        // On a lattice line up to four quads share the point; they share the
+        // vertices that decide it too, so this is a lookup, not a search.
+        const bx = fx - cx0 < 1e-6 ? -1 : 0, bz = fz - cz0 < 1e-6 ? -1 : 0;
+        let best = null;
+        for (let ix = bx; ix <= 0; ix++) {
+          const cx = cx0 + ix; if (cx < 0) continue;
+          for (let iz = bz; iz <= 0; iz++) {
+            const cz = cz0 + iz; if (cz < 0) continue;
+            if (!drawn[cz * G + cx]) continue;
+            const u = fx - cx, v = fz - cz;
+            const ya = vLevel[cz * VG + cx], yb = vLevel[cz * VG + cx + 1];
+            const yc = vLevel[(cz + 1) * VG + cx + 1], yd = vLevel[(cz + 1) * VG + cx];
+            const y = u >= v ? ya * (1 - u) + yb * (u - v) + yc * v
+                             : ya * (1 - v) + yd * (v - u) + yc * u;
+            if (best === null || y > best) best = y;
+          }
+        }
+        return best;
+      },
+    };
+    this.lakeField = field;
+    // WorldData is another author's file and does not implement the receiving
+    // side yet — the exact patch is filed as P1-reply in
+    // docs/INTEGRATION_REQUESTS.md. Until it lands this is a no-op and the mesh
+    // is identical either way; `this.lakeField` is readable from tools meanwhile.
+    if (typeof world.setLakeField === 'function') world.setLakeField(field);
   }
 
   // ── per frame ──────────────────────────────────────────────────────────────
