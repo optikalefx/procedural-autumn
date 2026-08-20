@@ -25,11 +25,17 @@ const TAU = Math.PI * 2;
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));   // 2.39996…
 
 // ── how far from the camper the player may put a camp ────────────────────────
+//
 // Near enough that the camper is in the same frame as the fire — the shot the
-// whole feature exists to produce — and far enough that the tent is not
-// touching the tailgate. 4.7 m of camper plus 2.5 m of tent means anything
-// under about 6 m is a collision.
-export const SITE_MIN = 6.0;
+// whole feature exists to produce — and far enough that the camper is not
+// standing in the middle of the site.
+//
+// 8 m is arithmetic, not taste: the clearing's radius is 6.4 m and the camper
+// is 4.7 m long, so at the first pass's 6 m the camper sat two and a half
+// metres INSIDE the dirt, with its front axle on ground the camp had
+// supposedly just cleared. At 8 m its nose just touches the fringe, which
+// reads as parked at the edge of the site — which is what you actually do.
+export const SITE_MIN = 8.0;
 export const SITE_MAX = 18.0;
 
 // The clearing's radius, and therefore the size of the camp.
@@ -106,7 +112,7 @@ export function scoreSite(world, x, z, opts = {}) {
   const out = { ok: false, reason: '', score: 0, x, z, y: world.getHeight(x, z) };
 
   if (!Number.isFinite(x) || !Number.isFinite(z)) { out.reason = 'nowhere'; return out; }
-  if (Math.abs(x) > 900 || Math.abs(z) > 900) { out.reason = 'out of bounds'; return out; }
+  if (!world.isInBounds(x, z)) { out.reason = 'out of bounds'; return out; }
 
   let minY = Infinity, maxY = -Infinity, slopeSum = 0, slopeMax = 0, wet = 0, n = 0;
   for (const rr of [0, R * 0.55, R]) {
@@ -129,12 +135,37 @@ export function scoreSite(world, x, z, opts = {}) {
 
   // Water first: it is the only hard, obvious, unarguable no.
   if (wet > 0) { out.reason = 'in the water'; return out; }
-  // Then the two that actually decide whether a tent can be pitched. The limits
-  // are the vehicle's own rescue numbers (RESCUE_SLOPE 0.42 ideal, 0.65
-  // acceptable), narrowed a little: a camper can be parked on ground a person
-  // would not choose to sleep on.
-  if (slopeMax > 0.62) { out.reason = 'too steep'; return out; }
-  if (relief > 1.55) { out.reason = 'too uneven'; return out; }
+
+  // ── slope and relief ──────────────────────────────────────────────────────
+  //
+  // These limits are set from a sweep rather than from taste, for exactly the
+  // reason the rescue button's are (see RESCUE_SLOPE in Vehicle.js — a limit
+  // chosen by feel declined from 57% of the ground where the button was most
+  // needed and nobody noticed until someone counted).
+  //
+  // `tools/_scratch/campdiag.mjs` samples the whole annulus the player may aim
+  // into, from five parking places. Measured, p10/p50/p90 of the disc:
+  //
+  //            slopeMean          slopeMax           relief (m over 12.8 m)
+  //   meadow   0.03/0.03/0.04     0.04/0.05/0.05     0.42/0.65/0.83
+  //   river    0.03/0.09/0.12     0.05/0.12/0.17     0.46/1.16/1.63
+  //   forest   0.17/0.32/0.45     0.36/0.59/0.69     1.99/4.03/6.16
+  //   vista    0.45/0.94/1.59     0.69/1.44/1.92     4.78/10.53/20.42
+  //   road     0.76/1.11/2.00     1.12/2.00/2.29     7.81/13.87/26.50
+  //
+  // The first pass used slopeMax > 0.62 and relief > 1.55 and rejected 100% of
+  // the ground near the road and the vista — which is CORRECT, those are a
+  // mountain road cut and a ridge lookout and you cannot pitch a tent on
+  // either — but it also threw away 19% of the river bank, which is flat
+  // ground at a 9% grade and is one of the nicest places in the valley to
+  // camp. The limits below keep the road and the vista out and let the bank in.
+  //
+  // slopeMax alone is not enough: it is a max over 33 samples of a bilinear
+  // field, so one texel of noise on otherwise flat ground can trip it. Both
+  // statistics have to agree that the ground is bad.
+  if (slopeMean > 0.42 && slopeMax > 1.10) { out.reason = 'too steep'; return out; }
+  if (slopeMax > 1.55) { out.reason = 'too steep'; return out; }
+  if (relief > 2.1) { out.reason = 'too uneven'; return out; }
 
   // Anything solid standing in the middle of the site. Trees are the real case
   // — a tent inside a trunk is the single worst thing this feature could ship —
@@ -204,7 +235,13 @@ export function clampToSite(px, pz, vx, vz) {
  * @param rnd    seeded RNG
  * @param world  WorldData, for standing each prop on the actual ground
  * @param cx,cz  the fire, in world XZ
- * @param opts   { windDir: THREE.Vector2, radius, chairs }
+ * @param opts   { windDir: THREE.Vector2, radius, chairs, obstacles }
+ *
+ * `obstacles` are the trunks and boulders the valley already put inside the
+ * clearing, as [{ x, z, r }]. They are seeded into the separation test exactly
+ * like an already-placed prop, so a camp pitched under a birch simply arranges
+ * itself around the birch. That is a better picture than a camp that refuses
+ * to exist anywhere a tree is standing, which is what the first pass did.
  * @returns array of { kind, x, z, y, yaw, tilt, scale, opts }
  */
 export function layoutCamp(rnd, world, cx, cz, opts = {}) {
@@ -216,14 +253,20 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
 
   const out = [];
   const placed = [];   // { x, z, r } for separation tests
+  for (const o of opts.obstacles ?? []) placed.push({ x: o.x, z: o.z, r: o.r });
 
   // Reject a candidate that lands on top of something already placed, or on
   // ground the prop cannot stand on. Ten tries then give up: a camp that is one
   // chair short is a camp, and a camp with a chair inside the cooler is a bug.
-  const tryPlace = (kind, angle, radius, foot, make, tries = 10) => {
+  const tryPlace = (kind, angle, radius, foot, make, tries = 14) => {
     for (let i = 0; i < tries; i++) {
-      const a = angle + (rnd() - 0.5) * (i * 0.16);
-      const r = radius * (1 + (rnd() - 0.5) * (0.10 + i * 0.03));
+      // The search widens with each failure, and it has to: the obstacles
+      // seeded into `placed` are trunks and boulders the valley put there, and
+      // a camp pitched beside a birch has to be able to walk a chair most of
+      // the way round the fire to get past it. The first version jittered by
+      // 0.16 rad per try and could not clear a single trunk.
+      const a = angle + (rnd() - 0.5) * (i * 0.42);
+      const r = radius * (1 + (rnd() - 0.5) * (0.10 + i * 0.05));
       const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
       let clash = false;
       for (const p of placed) {

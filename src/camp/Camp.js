@@ -58,10 +58,27 @@ const STRIKE_TIME = 0.55;
 const CLICK_SLOP = 6;      // px of travel that still counts as a click
 const CLICK_TIME = 0.55;   // s held that still counts as a click
 
-// A tree trunk or a boulder inside the site. Radius in metres that has to be
-// clear around the camp centre; trees are checked against their own trunk
-// radius on top of this.
-const TRUNK_CLEAR = 1.1;
+// How much grass survives inside the ring while the player is only aiming.
+// High enough that the meadow is obviously still there and nothing has been
+// committed to; low enough that the reticle stops being buried in it. See the
+// note on `uCampFloor` in camp_clearing.js.
+const AIM_FLOOR = 0.42;
+
+// The clearing's soft edge, in metres.
+const CLEARING_FEATHER = 1.7;
+
+// The fraction of the clearing radius that things actually stand on, and
+// therefore the fraction that has to be clear of trunks and boulders.
+//
+// `layoutCamp` keeps every prop inside 0.72 R, and the tent's own footprint is
+// 1.45 m, so 0.78 R covers the occupied ground with a margin. The rest of the
+// clearing may contain whatever the valley put there — see `_blocked`.
+const OCCUPIED = 0.78;
+
+// The radius that must be genuinely empty: the fire ring plus room to stand
+// round it. Everything outside this is handed to the layout as an obstacle
+// rather than refused — see `_blocked` for the measurement that forced this.
+const CENTRE_CLEAR = 2.3;
 
 export class Camp extends System {
   constructor(ctx) {
@@ -105,6 +122,9 @@ export class Camp extends System {
     // moves and clicks to photograph a tent is a harness that breaks every time
     // the input mapping is touched.
     window.__camp = this;
+    // The site maths, so tools/_scratch/campdiag.mjs can sweep it without
+    // reaching through a bundler that has already renamed everything.
+    window.__campSiteMod = { scoreSite, clampToSite, layoutCamp, groundRay, CAMP_RADIUS };
   }
 
   // ── the one thing the rest of the game asks this system ────────────────────
@@ -123,7 +143,14 @@ export class Camp extends System {
         break;
 
       case STATE.AIMING: {
-        if (!holding) { this.state = STATE.IDLE; this.prompt.set(''); break; }
+        if (!holding) {
+          this.state = STATE.IDLE;
+          this.prompt.set('');
+          // Retract the preview. Without this, releasing the brake and driving
+          // away leaves a ghost-thinned disc of meadow behind you forever.
+          setCampSite(0, 0, 0, 1);
+          break;
+        }
         this._aimAt(veh);
         if (this._aim.ok && (this._click || input.justPressed('KeyE'))) this._pitch();
         break;
@@ -194,6 +221,13 @@ export class Camp extends System {
     this._aim.ok = s.ok; this._aim.score = s.score; this._aim.reason = s.reason;
 
     this.reticle.place(c.x, c.z, s.ok, s.score);
+
+    // Ghost the clearing open under the reticle. Only where the site is
+    // actually buildable: a preview that appears over a lake or a cliff is
+    // promising something that will not happen, and the whole job of this
+    // affordance is to be trustworthy.
+    setCampSite(c.x, c.z, CAMP_RADIUS, CLEARING_FEATHER, s.ok ? AIM_FLOOR : 1);
+
     this.prompt.set(s.ok
       ? '<b>Click</b> or <b>E</b>&nbsp; make camp here'
       : `no camp here — ${s.reason}`);
@@ -202,24 +236,79 @@ export class Camp extends System {
   /**
    * Anything solid standing where the camp would go.
    *
-   * Trees are the case that matters. `Trees` keeps its instances in tiles and
-   * does not publish a point query, so this walks the trunk positions of the
-   * tiles near the site — a few hundred tests at most, run once per frame while
-   * aiming and never otherwise.
+   * The first version of this asked for a clear radius of the whole clearing
+   * plus 0.8 m, and the result was that the feature could not be used at all:
+   * driven through the real input path in a meadow at the forest edge, EVERY
+   * aim point in reach of the camper came back "trees in the way", because in
+   * this valley there is nearly always a trunk within seven metres of anywhere.
+   * A rule that never lets you camp is worse than no rule.
+   *
+   * The clear radius the camp actually needs is not the clearing — it is the
+   * part of the clearing things stand on. `layoutCamp` keeps every prop inside
+   * 0.72 R and the tent's own footprint is 1.45 m, so OCCUPIED is what has to
+   * be clear. A trunk at 5.5 m is standing at the *edge* of the clearing, and
+   * that is not a defect: a camp pitched under the lee of a birch is a better
+   * frame than a camp in the middle of an empty field, and it is the picture
+   * the reference plates are full of.
+   *
+   * Trunks between OCCUPIED and the clearing edge are handed to the layout
+   * instead, which walks its props around them.
    */
   _blocked(x, z, r) {
+    const occupied = r * OCCUPIED;
     const trees = this.ctx.systems?.trees;
-    // The trunk query is generous by the trunk's own radius plus a metre: a
-    // guy line pegged into a root buttress is not a camp, and the tent sits at
-    // 0.72 of the clearing radius, so a trunk anywhere inside r is a collision
-    // with something.
-    const near = trees?.trunksNear?.(x, z, r + 0.8);
-    if (near && near.length) return 'trees in the way';
+    const near = trees?.trunksNear?.(x, z, occupied) ?? [];
+    // Only the fire's own ground has to be genuinely empty. A trunk at four
+    // metres is standing at the edge of the clearing, the layout is told about
+    // it and walks the props around it, and a camp pitched in the lee of a
+    // birch is a better picture than a camp in the middle of an empty field —
+    // it is the picture the reference plates are full of.
+    //
+    // Measured before this was relaxed: vetoing any trunk inside the occupied
+    // ring refused 74% of a dead-flat meadow whose median was ONE tree within
+    // five metres. The player could not build anywhere.
+    for (const t of near) {
+      if (Math.hypot(t.x - x, t.z - z) < CENTRE_CLEAR + t.radius) return 'trees in the way';
+    }
+    // …but a thicket is still a thicket. Four trunks inside the clearing is a
+    // stand of trees, not a clearing with a tree in it, and the layout would
+    // spend its whole search budget failing to place a tent.
+    if (near.length >= 4) return 'too crowded';
+
+    // Rocks are held to a much higher bar than trees. A half-metre cobble
+    // inside a camp clearing is not an obstacle, it is a seat, and the layout
+    // is already told about it. Only something genuinely in the way refuses.
     const rocks = this.ctx.systems?.rocks;
-    if (rocks?.boulderNear?.(x, z, r * 0.92)) return 'rocks in the way';
+    if (rocks?.boulderNear?.(x, z, CENTRE_CLEAR, 0.8)) return 'rocks in the way';
+
     const veh = this.ctx.systems?.vehicle;
     if (veh && Math.hypot(veh.position.x - x, veh.position.z - z) < SITE_MIN - 0.5) return 'too close';
     return null;
+  }
+
+  /**
+   * Everything the layout has to walk around: trunks and boulders standing
+   * inside or just outside the clearing, as [{ x, z, r }].
+   */
+  _obstacles(x, z) {
+    const out = [];
+    const R = CAMP_RADIUS * 1.15;
+    for (const t of this.ctx.systems?.trees?.trunksNear?.(x, z, R) ?? []) {
+      // Generous by half a metre: a prop touching a trunk still reads as
+      // clipping into it, and root flare is wider than the bole.
+      out.push({ x: t.x, z: t.z, r: t.radius + 0.5 });
+    }
+    const rocks = this.ctx.systems?.rocks;
+    if (rocks?.cells) {
+      for (const c of rocks.cells.values()) {
+        for (const inst of c.instances) {
+          if (inst.size < 0.30) continue;
+          if (Math.hypot(inst.x - x, inst.z - z) > R + inst.size) continue;
+          out.push({ x: inst.x, z: inst.z, r: inst.size * 0.8 });
+        }
+      }
+    }
+    return out;
   }
 
   /** Press-and-release-in-place, told apart from a camera look drag. */
@@ -252,7 +341,7 @@ export class Camp extends System {
     // Publish the clearing first: the dirt mesh reads it back to shape its own
     // alpha, so the two are the same edge by construction rather than by two
     // authors agreeing on a formula.
-    setCampSite(x, z, CAMP_RADIUS, 1.7);
+    setCampSite(x, z, CAMP_RADIUS, CLEARING_FEATHER);
     this.ground.build(x, z, CAMP_RADIUS, rnd);
 
     // The fire is the origin of the arrangement, so it is placed first and
@@ -264,7 +353,9 @@ export class Camp extends System {
               ?? this.ctx.systems?.grass?.windDir
               ?? new THREE.Vector2(0.86, 0.51);
 
-    const items = layoutCamp(rnd, world, x, z, { radius: CAMP_RADIUS, windDir: wind });
+    const items = layoutCamp(rnd, world, x, z, {
+      radius: CAMP_RADIUS, windDir: wind, obstacles: this._obstacles(x, z),
+    });
     const BUILD = {
       tent: buildTent, chair: buildChair, cooler: buildCooler,
       table: buildTable, woodpile: buildWoodpile,
@@ -316,7 +407,7 @@ export class Camp extends System {
   _applyRaise() {
     const k = this.raise;
     const clear = smoothstep(0, 0.55, k);
-    if (this.site) setCampSite(this.site.x, this.site.z, CAMP_RADIUS * clear, 1.7);
+    if (this.site) setCampSite(this.site.x, this.site.z, CAMP_RADIUS * clear, CLEARING_FEATHER);
     this.ground?.setReveal(smoothstep(0.02, 0.62, k));
     this.fire?.setReveal(smoothstep(0.30, 0.95, k));
 

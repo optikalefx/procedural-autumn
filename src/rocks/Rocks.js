@@ -328,9 +328,16 @@ export class Rocks extends System {
    * — because a program is a property of a draw call. That is coarse: one crag
    * block against the lens puts every drawn block of that shape on the
    * discarding program. It is still the right trade, because the frames where
-   * ANY of them qualifies are rare (the volume ends at the camper, ~19 m
-   * behind the lens on the default chase) and the alternative is paying for it
-   * in every frame of the game.
+   * ANY of them qualifies are rare — 17.5% of a 2075-frame drive through wood
+   * (tools/_scratch/occgate.mjs), against bark's 61.7% — and the alternative is
+   * paying for it in every frame of the game. On the frozen crag pose in
+   * tools/_scratch/occsolid.mjs the swap costs 0.00 ms of a 17.7 ms frame.
+   *
+   * Like the tree gate, this one is deliberately conservative — a bounding
+   * sphere about the instance origin, which contains everything the shader can
+   * fade — so the program is always on before the volume reaches the stone and
+   * still on after it leaves. At either swap both programs draw the same pixels
+   * and there is nothing to see. See the longer note in Trees.js.
    */
   _gateOcclusion() {
     // Program warm-up: one frame drawn through the occluding variant so its

@@ -29,6 +29,7 @@ import { Ambience } from './ambience.js';
 import { WaterAudio } from './water.js';
 import { VehicleAudio } from './vehicle_audio.js';
 import { WildlifeAudio } from './wildlife_audio.js';
+import { CampAudio } from './camp_audio.js';
 import { Music } from './music.js';
 import { Soundtrack } from './soundtrack.js';
 
@@ -139,6 +140,12 @@ export class Audio extends System {
       this.water = new WaterAudio(actx, this.buses.water, this.ctx.world);
       this.vehicle = new VehicleAudio(actx, this.buses.vehicle, this.ctx);
       this.wildlife = new WildlifeAudio(actx, this.buses.wildlife, this.reverb, this.ctx);
+      // The camp fire rides the ambience bus rather than getting its own. It
+      // IS ambience — a bed you stop hearing plus occasional punctuation — and
+      // more importantly it has to duck with the rest of the world's floor
+      // rather than sitting on top of it. A fire that stays loud while the
+      // wind bed is turned down is a fire in a different mix.
+      this.camp = new CampAudio(actx, this.buses.ambience, this.reverb, this.ctx);
       this.music = new Music(actx, this.buses.music, this.reverb, this.ctx);
       // The authored bed shares the music bus, so one volume control governs
       // both and the mix meter already accounts for it.
@@ -156,6 +163,13 @@ export class Audio extends System {
         ambience: this.buses.ambience,
         wildlife: this.buses.wildlife,
         music: this.buses.music,
+        // The camp fire shares the ambience BUS but gets its own TAP. Without
+        // one it cannot be measured: the ambience bus carries a wind bed that
+        // swells over tens of seconds and birds that fire at random, and in a
+        // back-to-back test those swamped a fire that was audibly there — one
+        // reading even came back with the lit camp QUIETER than the unlit one.
+        // A layer you cannot measure is a layer nobody can tune.
+        camp: this.camp.bus,
       };
       for (const [name, node] of Object.entries(tapPoints)) {
         const a = actx.createAnalyser();
@@ -265,6 +279,7 @@ export class Audio extends System {
     try { this.water.update(dt, L); } catch (e) { this._layerFail('water', e); }
     try { this.vehicle.update(dt, L); } catch (e) { this._layerFail('vehicle', e); }
     try { this.wildlife.update(dt, L); } catch (e) { this._layerFail('wildlife', e); }
+    try { this.camp.update(dt, L); } catch (e) { this._layerFail('camp', e); }
     try { this.music.update(dt, L); } catch (e) { this._layerFail('music', e); }
     // The bed ducks while a generative phrase is sounding, so the two layers
     // never occupy the same moment.

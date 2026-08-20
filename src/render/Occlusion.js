@@ -66,7 +66,10 @@
 //      this volume further down the file. The bill arrives only on the frames
 //      that are actually hiding the camper, and only on the meshes doing the
 //      hiding; every other frame is bit-identical to a build without this.
-//      See `_gateOcclusion` in vegetation/Trees.js and rocks/Rocks.js.
+//      Measured over a frozen pose with a trunk squarely across the camper,
+//      18.1 ms -> 18.2 ms; over a crag doing the same, 17.7 -> 17.7. See
+//      `_gateOcclusion` in vegetation/Trees.js and rocks/Rocks.js, and
+//      tools/_scratch/occsolid.mjs and occgate.mjs for both measurements.
 //
 //  ── what it must NOT touch ───────────────────────────────────────────────
 //

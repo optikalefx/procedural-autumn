@@ -45,11 +45,20 @@ import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 // what shipped before. Trees.js owns the choice and makes it per instanced
 // mesh per frame, from a CPU-side copy of the same volume — see
 // `_gateOcclusion` there, and `occlusionTouchesColumn` in render/Occlusion.js.
-// A near slot holds one species-variant's trunks inside 84 m, a handful of
-// instances, and in the overwhelming majority of frames NO slot has anything
-// in the frustum and every mesh keeps the cheap program. The 12 ms is a bill
-// that now arrives only on the frames that are actually hiding the camper, and
-// only for the one slot that is doing the hiding.
+//
+// What that buys, measured (tools/_scratch/occgate.mjs, 2075 frames of driving
+// through wood, and tools/_scratch/occsolid.mjs for the frozen frame):
+//
+//   bark meshes on the discarding program        38 instances of 1176 drawn
+//   the gate itself                              p50 0.0 ms, p95 0.1 ms
+//   the frame that needs it, plain -> occluding  18.1 ms -> 18.2 ms
+//
+// 3% of the trunk population, in the frames that are hiding the camper, is what
+// the 12 ms turns into. The gate fires in 62% of forest frames and that is not
+// a failure of it: it is deliberately conservative (a prototype's whole bark
+// bounding box plus a metre of wind slack), so it always turns the program on
+// BEFORE the fade has anything to do — which is exactly why the swap itself is
+// invisible and there is no pop at the boundary.
 //
 // The obvious alternative, shrinking the trunk toward its own axis in the
 // vertex shader, was built and photographed: shots/occlude/bark-on.png. It is

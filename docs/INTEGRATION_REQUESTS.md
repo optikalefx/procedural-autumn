@@ -6011,3 +6011,90 @@ Note for the grass author: the first version multiplied `cover` before the
 zero — the camp was pitched in full-height grass and the capture said so. The
 clearing now draws against `aShape.w` instead, with the threshold remapped past
 both ends of [0,1]. Worth knowing if anything else ever wants to suppress grass.
+
+---
+
+## Camera occlusion round 2 — bark and rock adopted (2026-08-20)
+
+**Owner: camera-occlusion author. Answers the two "not adopted yet" items in
+"Camera occlusion — a transparent frustum in front of the chase camera".**
+
+The player's frame this round is the one that section predicted: a trunk floor
+to ceiling down the middle, the camper a sliver behind it, the near foliage
+around it fading correctly. Their words: *"we have an effect where branches fade
+away so they don't get in my camera view. We need to do that with rocks and
+trees as well."* Both are now in.
+
+### The rule that section wrote is still right; it just needed a third option
+
+> **if your material does not already discard, do not make it start.**
+
+That is a rule about a PROGRAM, not about a material or a surface. Bark and rock
+cannot be shrunk (a trunk pulled toward its own axis shears its branches off it,
+`shots/occlude/bark-on.png`; a boulder pulled toward its centre is a boulder
+visibly deflating), so they have to dither, so they have to discard. What they
+do not have to do is discard in the program that draws the other 97% of them.
+
+So each ships **two programs**, and the system that owns the meshes swaps
+between them per instanced mesh per frame:
+
+| file | change |
+|---|---|
+| `src/render/Occlusion.js` | `occlusionActive()`, `occlusionFadeAt()`, `occlusionTouchesSphere()`, `occlusionTouchesColumn()` — the same volume, on the CPU, so a gate can ask "is anything I draw in there" without a readback. Kept beside the GLSL because the one thing that must not happen to those two is that they drift. |
+| `src/vegetation/tree_material.js` | `createBarkMaterial(shared, { occlude: true })`. The plain variant does not so much as declare the uniform block — its shader string is byte-for-byte what shipped. |
+| `src/vegetation/Trees.js` | `_gateOcclusion()` in `lateUpdate`, per near and mid slot. |
+| `src/rocks/RockMaterial.js` | `createRockMaterial({ occlude, uniforms })`. `uniforms` lets the two variants share one block so `Rocks.update` still writes the sun once. |
+| `src/rocks/Rocks.js` | `_gateOcclusion()` in `lateUpdate`, per archetype/variant mesh. |
+
+Depth and bake programs are untouched, as before: a tree you can see through
+still casts its shadow.
+
+### What it costs
+
+`tools/_scratch/occgate.mjs`, 2075 frames driving through wood:
+
+| | |
+|---|---|
+| the gate itself, both systems | p50 **0.0 ms**, p95 **0.1 ms**, worst 0.2 ms |
+| bark instances on the discarding program | **38** of 1176 drawn |
+| frames where any bark mesh is swapped | 61.7% |
+| frames where any rock mesh is swapped | 17.5% |
+
+`tools/_scratch/occsolid.mjs`, engine stopped, camera placed so the obstacle is
+squarely on the sight line to the camper, plain programs vs occluding programs
+in the same frozen frame:
+
+| pose | plain | occluding | bark+rock's own share of the frame |
+|---|---|---|---|
+| trunk across the camper | 18.1 ms | **18.2 ms** | 0.020 |
+| crag across the camper | 17.7 ms | **17.7 ms** | 0.010 |
+
+That is what the twelve milliseconds turns into once it is only charged on the
+meshes doing the hiding. Interleaved A/B over a full drive
+(`cost2.mjs`, 8 and 12 blocks) puts it inside the noise on a contended machine —
+p50 -0.10 then +2.60, p95 +2.50 then -4.40 — which is the honest way to report
+it: too small for that harness to resolve.
+
+### The property that makes a per-frame material swap safe
+
+Both gates test a volume that **contains** everything the shader can fade — a
+prototype's whole bark bounding box plus a metre of wind slack, and a bounding
+sphere about the rock's instance origin. So the expensive program is always
+switched on strictly *before* the frustum touches any geometry and off strictly
+*after* it has left. At the instant of either swap `occludeFadeAt` returns 1.0
+over the whole instance, `occludeCut` discards nothing, and the two programs
+draw identical pixels. **There is no pop at the boundary, and the price of that
+is that the gate fires more often than the fade does** — 62% of forest frames
+against 3% of the trunks. Anyone tempted to tighten the test to fire less often
+should understand that they are trading the guarantee for it.
+
+If you adopt this on a third opaque surface, that is the pattern: a second
+material, a containing test, and the swap in `lateUpdate` (not `update` —
+`main.js` aims the frustum at the *end* of the update pass, so a gate in
+`update` is aiming one frame behind the camper).
+
+### Still not adopted
+
+- **Grass** — unchanged from round 1: vertex-only and free, and still the grass
+  author's to take.
+- **Impostors** — distant trees, never inside the cone.

@@ -130,7 +130,13 @@ async function main() {
         nodes ? `buses=${nodes.buses} fallVoices=${nodes.fallVoices} riverVoices=${nodes.riverVoices}` : 'no nodes');
 
   const taps = await page.evaluate(() => Object.keys(window.__audio.taps ?? {}));
-  check('metering taps present', taps.length === 7, taps.join(','));
+  // >= rather than ==: the intent of this check is "the taps got built", and
+  // an exact count turns every new audio layer into a failing test for a
+  // reason that has nothing to do with what the test is for. The named taps
+  // below are the ones this file actually measures.
+  check('metering taps present', taps.length >= 7 &&
+        ['water', 'falls', 'rivers', 'vehicle', 'ambience', 'wildlife', 'music'].every((k) => taps.includes(k)),
+        taps.join(','));
 
   // Chromium's audio thread does not start rendering the instant the context
   // is created — the clock legitimately reads 0 for the first second or so, so

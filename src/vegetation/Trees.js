@@ -1309,7 +1309,21 @@ export class Trees extends System {
    * The scan itself is a plan-distance reject on every drawn instance, and the
    * volume never reaches past the chase boom, so in open country it rejects
    * everything on the first compare and in a forest it stops at the first
-   * instance that qualifies.
+   * instance that qualifies. Measured over 2075 frames of driving through wood
+   * (tools/_scratch/occgate.mjs): p50 0.0 ms, p95 0.1 ms, worst 0.2 ms, with a
+   * mean of 38 instances of 1176 drawn on the expensive program.
+   *
+   * ── why the swap itself cannot pop ──────────────────────────────────────
+   *
+   * The test is the prototype's whole bark BOUNDING BOX, inflated by the wind
+   * slack, and the box contains every vertex the shader will fade. So the gate
+   * turns the occluding program on strictly BEFORE the volume touches any
+   * geometry, and off strictly after it has left — at the moment of either
+   * swap, `occludeFadeAt` returns 1.0 over the whole instance and `occludeCut`
+   * discards nothing. The two programs render the same pixels there. That is
+   * what makes a per-frame material swap safe on a surface the player is
+   * looking straight at, and it is why the test must stay conservative even
+   * though a tighter one would fire less often.
    */
   _gateOcclusion() {
     const slots = this._barkSlots;

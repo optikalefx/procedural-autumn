@@ -35,11 +35,31 @@ import * as THREE from 'three';
  */
 export const campSite = {
   uCampSite: { value: new THREE.Vector4(0, 0, 0, 1) },
+  // How much vegetation survives at the very centre of the clearing.
+  //
+  // 0 while a camp is pitched — the ground is bare. It exists for the *aiming*
+  // state, and that turned out to matter more than it sounds. The placement
+  // reticle is a 13 cm ribbon lying 6 cm off the ground, and the first time the
+  // feature was driven through the real input path the ribbon was completely
+  // invisible: the meadow's grass canopy is half a metre tall, so the ring was
+  // simply inside it. Brightening it or lifting it clear are both fixes that
+  // turn a diegetic mark on the ground into a UI overlay floating in the air.
+  //
+  // Thinning the grass a little where the player is aiming fixes the
+  // legibility, and it is also just a better idea: the ground *ghosts* clear
+  // under the reticle, so what the player sees before they commit is the shape
+  // of the thing they are about to make.
+  uCampFloor: { value: 0 },
 };
 
-/** Set the clearing. Radius 0 clears it. */
-export function setCampSite(x, z, radius, feather = 2.6) {
+/**
+ * Set the clearing. Radius 0 clears it.
+ * `floor` is how much vegetation survives at the centre — 0 when pitched,
+ * ~0.6 while aiming. See the note on `uCampFloor` above.
+ */
+export function setCampSite(x, z, radius, feather = 2.6, floor = 0) {
   campSite.uCampSite.value.set(x, z, radius, Math.max(0.35, feather));
+  campSite.uCampFloor.value = floor;
 }
 
 export function getCampSite() {
@@ -62,10 +82,11 @@ export function getCampSite() {
  * position-noise version would do at grazing angles.
  */
 export const CAMP_CLEARING_GLSL = /* glsl */`
-uniform vec4 uCampSite;   // x, z, radius, feather
+uniform vec4  uCampSite;    // x, z, radius, feather
+uniform float uCampFloor;   // vegetation surviving at the centre: 0 pitched, ~0.6 aiming
 
 float campCover( vec2 wxz ) {
-  if ( uCampSite.z <= 0.0 ) return 1.0;
+  if ( uCampSite.z <= 0.0 || uCampFloor >= 1.0 ) return 1.0;
   vec2 d = wxz - uCampSite.xy;
   float r = length( d );
   // Cheap early-out for the whole valley outside the camp.
@@ -75,7 +96,7 @@ float campCover( vec2 wxz ) {
             + sin( a * 3.0 - 0.6 ) * 0.075
             + sin( a * 7.0 + 2.3 ) * 0.038;
   float R = uCampSite.z * ( 1.0 + wob );
-  return smoothstep( R - uCampSite.w, R, r );
+  return mix( uCampFloor, 1.0, smoothstep( R - uCampSite.w, R, r ) );
 }
 `;
 
@@ -100,7 +121,9 @@ export function campCoverAt(x, z) {
   const R = s.z * (1 + wob);
   const t = (r - (R - s.w)) / Math.max(s.w, 1e-4);
   const k = t < 0 ? 0 : t > 1 ? 1 : t;
-  return k * k * (3 - 2 * k);
+  const e = k * k * (3 - 2 * k);
+  const f = campSite.uCampFloor.value;
+  return f + (1 - f) * e;
 }
 
 /** The clearing's outer radius including the wobble — for culling and layout. */

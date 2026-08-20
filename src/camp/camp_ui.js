@@ -83,7 +83,7 @@ export class CampReticle {
           float chase = 0.62 + 0.38 * sin( vUv.x * 18.0 - uTime * 2.4 );
           float dashes = mix( chase, 1.0, uFirm );
           vec3 col = mix( uCool, uWarm, uFirm );
-          gl_FragColor = vec4( col * dashes * ( 0.55 + 0.75 * uFirm ), across * uFade );
+          gl_FragColor = vec4( col * dashes * ( 0.95 + 1.25 * uFirm ), across * uFade );
         }`,
     });
 
@@ -93,6 +93,30 @@ export class CampReticle {
     this.mesh.renderOrder = 3;
     this.mesh.visible = false;
     scene.add(this.mesh);
+
+    // ── the occluded pass ─────────────────────────────────────────────────
+    //
+    // The same ring again, much fainter, with the depth test off, sharing the
+    // same geometry. It is what you see of the ring where a grass blade, a
+    // shrub or the camper's flank is in front of it.
+    //
+    // The clearing already ghosts open under the reticle (see uCampFloor in
+    // camp_clearing.js) and that does most of the work — but "most" is not
+    // enough for a targeting affordance. The far arc of a six-metre ring on
+    // sloping ground genuinely goes behind a hummock, and a ring that
+    // disappears into the terrain reads as broken rather than as occluded.
+    // Drawing the hidden part at a fifth of the strength is the standard
+    // answer and it costs one extra draw call while the player is aiming and
+    // nothing at all otherwise.
+    this.matBehind = this.mat.clone();
+    this.matBehind.depthTest = false;
+    this.matBehind.uniforms = THREE.UniformsUtils.clone(this.mat.uniforms);
+    this.behind = new THREE.Mesh(g, this.matBehind);
+    this.behind.name = 'camp_reticle_occluded';
+    this.behind.frustumCulled = false;
+    this.behind.renderOrder = 2;
+    this.behind.visible = false;
+    scene.add(this.behind);
   }
 
   /** Move the ring to a site and reshape it to the ground under it. */
@@ -100,7 +124,7 @@ export class CampReticle {
     this.ok = ok;
     this.score = score;
     const p = this.geo.attributes.position.array;
-    const W = 0.13;
+    const W = 0.22;
     for (let i = 0; i <= SEGS; i++) {
       const a = (i / SEGS) * TAU;
       // The ring is the *clearing's* outline, wobble and all, so what the
@@ -135,12 +159,20 @@ export class CampReticle {
     this.mat.uniforms.uFade.value = this._fade;
     this.mat.uniforms.uFirm.value = this._firm;
     this.mesh.visible = this._fade > 0.01;
+
+    const b = this.matBehind.uniforms;
+    b.uTime.value = t;
+    b.uFade.value = this._fade * 0.20;
+    b.uFirm.value = this._firm;
+    this.behind.visible = this.mesh.visible;
   }
 
   dispose() {
     this.scene.remove(this.mesh);
+    this.scene.remove(this.behind);
     this.geo.dispose();
     this.mat.dispose();
+    this.matBehind.dispose();
   }
 }
 

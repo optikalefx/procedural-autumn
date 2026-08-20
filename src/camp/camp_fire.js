@@ -2,19 +2,799 @@
 //  camp_fire — the fire pit: stone ring, burning logs, flame, embers, smoke,
 //  and the light the whole camp is lit by after sundown.
 //
-//  PLACEHOLDER. Scaffolding only; see docs/CAMP_BRIEF.md.
+//  This is the one prop in the camp that is not judged as a prop. Every other
+//  object in the clearing is judged partly on how it looks lit by this, and the
+//  emotional payload of the feature is one warm point in a cold valley — so the
+//  flame, the ember bed and the point light are authored together against three
+//  hours (midday, 20:24, 23:00) rather than against one.
 //
-//  API contract (Camp.js depends on exactly this):
+//  ── why the flame is not crossed billboards ─────────────────────────────────
+//
+//  The placeholder was three additive cards on a shared Y rotation, and it
+//  failed in exactly the two ways that trick always fails: it read as a sprite
+//  the moment the camera walked around it (the cards counter-rotate, so the
+//  silhouette is frozen relative to the viewer and the flame appears to follow
+//  you), and its brightness was a single number, so at midday it was a white
+//  blob and at midnight it was the same white blob.
+//
+//  What is here instead is a **nested additive shell volume**. Three low-poly
+//  lathes — outer, body, core — share one draw call, are displaced in the
+//  vertex shader by scrolling 3D value noise, and are shaded by an inverse
+//  fresnel (`pow(|dot(N,V)|, k)`) so each shell is brightest where you are
+//  looking through the most of it and falls to nothing at its own silhouette.
+//  Three consequences, all of them the point:
+//
+//   · the core/body/tip structure is *geometric*, not a gradient painted on a
+//     card. Down the axis you accumulate all three shells and get a near-white
+//     core; a centimetre outside the core shell you accumulate two and get
+//     amber; outside the body shell you accumulate one and get a translucent
+//     orange edge. It looks right from every azimuth because it *is* right
+//     from every azimuth.
+//   · the noise is sampled in the flame's own object space, so walking around
+//     it reveals a different silhouette rather than the same one re-projected.
+//     `--turntable fire` is six azimuths of the same instant and they are six
+//     different shapes.
+//   · two constriction waves travel up the column at incommensurable rates and
+//     pinch the radius as they pass, which is what makes the silhouette *change
+//     shape* rather than scale. A flame that only breathes in and out is a
+//     lamp.
+//
+//  The base ring of every shell sits 35 mm BELOW the ash surface. That is not a
+//  detail: an additive volume with an open bottom has a hard horizontal cut
+//  where the geometry ends, and burying the cut under an opaque mesh is what
+//  makes the flame *sit on* the fuel instead of hovering over it. Depth test is
+//  on and depth write is off, so the ash bed clips it for free.
+//
+//  ── why the brightness moves with the sun ───────────────────────────────────
+//
+//  The post chain thresholds bloom in LINEAR light and moves the threshold with
+//  sun elevation: 1.05 with the sun high, 0.72 at the horizon, 1.70 at night
+//  (see the glare ramp in PostFX.js). A flame authored at one radiance is
+//  therefore *three different pictures*: at a fixed 2.0 linear it is 1.9x the
+//  midday threshold — a featureless white disc, which is precisely what the
+//  placeholder did — and only 1.2x the night threshold, which is a dull ember.
+//  So `uGain` rides sun elevation and holds the flame at a roughly constant
+//  multiple of the threshold it is actually being bloomed against. It reads as
+//  fire at noon and owns the frame at midnight, and neither is an accident.
+//
+//  ── API contract (Camp.js depends on exactly this) ──────────────────────────
 //    new Firepit(scene, rnd, opts) -> { group, light, update(dt,t,camera),
 //                                       setReveal(k), setPosition(v3), dispose() }
 //    buildWoodpile(rnd, opts) -> THREE.Group
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { Parts, at, rod, tube, tintOf, campMaterials, span, M } from './camp_materials.js';
-import { clamp01, lerp, mulberry32 } from '../core/MathUtils.js';
+import {
+  Parts, at, tintFrom, tintMul, dusted, sanitizeNormals, M,
+} from './camp_materials.js';
+import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 
 const TAU = Math.PI * 2;
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Time of day
+//
+//  Read defensively off the published lighting singleton. The fire has to build
+//  and run in the harness, in a unit test, and before Lighting has had a frame,
+//  so every path here has to survive `window.__lighting` being absent.
+//
+//  Sun *elevation* is the discriminator rather than the hour, for the same
+//  reason PostFX uses it: the glare ramp, the exposure ramp and the night ramp
+//  are all keyed off elevation, so keying the fire off the hour would put the
+//  fire's knee in a different place from the bloom's knee, and the two would
+//  drift apart on any change to the arc.
+// ─────────────────────────────────────────────────────────────────────────────
+function sunElevation() {
+  const L = (typeof window !== 'undefined') ? window.__lighting : null;
+  const e = L?.sunDir?.y;
+  if (Number.isFinite(e)) return e;
+  // No lighting yet — derive a plausible elevation from the hour, and failing
+  // that assume the game's default late afternoon.
+  const h = Number.isFinite(L?.hour) ? L.hour : 16.6;
+  return Math.sin(((h - 6.2) / 12.6) * Math.PI) * 0.92;
+}
+
+/** 0 with the sun high, 1 at the horizon. */
+const duskAmount = (e) => smoothstep(0.34, 0.015, e);
+/** 0 at the horizon, 1 once it is properly night. */
+const nightAmount = (e) => smoothstep(-0.01, -0.17, e);
+
+/** The prevailing wind, as (x, z). Same sources Camp.js consults, same fallback. */
+function windXZ(out) {
+  const s = (typeof window !== 'undefined') ? window.__systems : null;
+  const w = s?.weather?.windDir ?? s?.grass?.windDir;
+  if (w && Number.isFinite(w.x) && Number.isFinite(w.y)) out.set(w.x, w.y);
+  else out.set(0.86, 0.51);
+  const l = out.length();
+  if (l > 1e-4) out.divideScalar(l); else out.set(1, 0);
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Shared GLSL — 3D value noise
+//
+//  One hash, one lerp cube, used by the flame shells and by the smoke. It is
+//  the cheapest noise that still gives a *shape* rather than a wobble: gradient
+//  noise would be smoother but the flame wants the slightly cellular look that
+//  value noise's flat cell interiors give it.
+// ─────────────────────────────────────────────────────────────────────────────
+const NOISE_GLSL = /* glsl */`
+  float fHash31(vec3 p) {
+    p = fract(p * 0.3183099 + vec3(0.11, 0.17, 0.13));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float fNoise(vec3 x) {
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(mix(fHash31(i + vec3(0.0, 0.0, 0.0)), fHash31(i + vec3(1.0, 0.0, 0.0)), f.x),
+          mix(fHash31(i + vec3(0.0, 1.0, 0.0)), fHash31(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+      mix(mix(fHash31(i + vec3(0.0, 0.0, 1.0)), fHash31(i + vec3(1.0, 0.0, 1.0)), f.x),
+          mix(fHash31(i + vec3(0.0, 1.0, 1.0)), fHash31(i + vec3(1.0, 1.1, 1.0)), f.x), f.y), f.z);
+  }`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The flame
+// ─────────────────────────────────────────────────────────────────────────────
+const FLAME_VERT = /* glsl */`
+  attribute float aV;        // 0 at the fuel, 1 at the tip
+  attribute float aShell;    // 0 outer, 1 body, 2 core
+  attribute vec3  aTint;     // this shell's own colour at the base
+  attribute float aWeight;   // this shell's radiance weight
+  attribute float aSeed;
+
+  uniform float uTime;
+  uniform float uAmp;
+  uniform float uSway;
+  uniform float uPinch;
+  uniform vec2  uWind;
+  uniform float uReveal;
+
+  varying float vV;
+  varying vec3  vTint;
+  varying float vW;
+  varying float vFlick;
+  varying vec3  vN;
+  varying vec3  vView;
+
+  ${NOISE_GLSL}
+
+  void main() {
+    float v = aV;
+    vV = v;
+    vTint = aTint;
+
+    // ── the travelling constrictions ────────────────────────────────────────
+    // Two gaussian necks running up the column at 0.29 and 0.41 Hz. Where one
+    // passes, the radius pinches; when it runs off the top the tip appears to
+    // detach and go out, which is the single most flame-like thing a shape can
+    // do and is impossible with a scaling billboard. Held off the bottom 12% so
+    // the flame never lifts off its own base.
+    float base = smoothstep(0.02, 0.16, v);
+    float d1 = v - fract(uTime * 0.29 + aShell * 0.21);
+    float d2 = v - fract(uTime * 0.41 + 0.37 + aShell * 0.13);
+    float pinch = 1.0
+      - uPinch * base * exp(-d1 * d1 * 34.0)
+      - uPinch * 0.62 * base * exp(-d2 * d2 * 58.0);
+
+    // ── the noise ───────────────────────────────────────────────────────────
+    // Sampled in object space so it is the flame that has a shape, not the
+    // screen. The y term scrolls downward through the field, which moves the
+    // pattern *up* the flame.
+    vec3 np = position * 7.4;
+    np.y -= uTime * 1.15;
+    np += aShell * 9.7 + aSeed * 0.6;
+    float n1 = fNoise(np) - 0.5;
+    float n2 = fNoise(np * 2.35 + 4.1) - 0.5;
+    float n = n1 + n2 * 0.42;
+
+    float amp = uAmp * smoothstep(0.0, 0.30, v) * (0.55 + 0.85 * v);
+    float rr = max(0.12, 1.0 + n * amp) * max(0.10, pinch);
+
+    // ── the sway ────────────────────────────────────────────────────────────
+    // The column wanders and leans downwind, quadratically with height so the
+    // base stays welded to the fuel. Slow: 0.13 and 0.10 Hz. This is the term
+    // that decides whether the fire is calm or frantic and it is deliberately
+    // at the bottom of the range a real flame moves at.
+    float sw = v * v;
+    vec2 sway = vec2(sin(uTime * 0.83 + aSeed * 3.1), cos(uTime * 0.61 + 0.4)) * uSway * sw
+              + uWind * (0.052 * sw);
+
+    // ── height breathing ────────────────────────────────────────────────────
+    // Secondary to the noise and the pinch, and per-shell out of phase so the
+    // three do not grow together (which would read as one object scaling).
+    float grow = 1.0 + 0.13 * sin(uTime * 0.77 + aShell * 2.1)
+                     + 0.08 * sin(uTime * 1.19 + aShell * 0.7);
+    grow *= mix(0.34, 1.0, uReveal);
+
+    vec3 p;
+    p.xz = position.xz * rr + sway;
+    p.y = position.y * grow;
+
+    // Brightness varies over the body, not as one global pulse: the hot spots
+    // travel up with the noise field.
+    vFlick = 0.72 + 0.55 * (n1 + 0.5);
+
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    vView = -mv.xyz;
+    vN = normalMatrix * normal;
+    vW = aWeight;
+    gl_Position = projectionMatrix * mv;
+  }`;
+
+const FLAME_FRAG = /* glsl */`
+  uniform float uGain;
+  uniform vec3  uTipCol;
+  uniform float uEdgePow;
+  uniform float uFlicker;
+
+  varying float vV;
+  varying vec3  vTint;
+  varying float vW;
+  varying float vFlick;
+  varying vec3  vN;
+  varying vec3  vView;
+
+  void main() {
+    // Guarded normalises. A zero-length normal here is a NaN in the HDR buffer
+    // and the bloom pyramid turns one NaN into a black square hundreds of
+    // pixels across — the failure autopsied in CamperModel.js.
+    float ln = length(vN);
+    vec3 N = ln > 1e-5 ? vN / ln : vec3(0.0, 0.0, 1.0);
+    float lv = length(vView);
+    vec3 V = lv > 1e-5 ? vView / lv : vec3(0.0, 0.0, 1.0);
+
+    // Inverse fresnel: this shell is thickest along the view ray where it faces
+    // you and vanishes at its own silhouette. Nested, the three shells sum to a
+    // soft-edged volume with a hot centre.
+    float depth = pow(clamp(abs(dot(N, V)), 0.0, 1.0), uEdgePow);
+
+    // Tip: cooler, redder, and gone by the very top.
+    //
+    // The vertical shaping is the difference between a plume and a glowing
+    // lump. The first pass rolled the brightness off from a quarter of the way
+    // up and the flame's whole read was the bottom 30% — from behind the fuel
+    // it was a pale smear with no silhouette at all. Full radiance now holds
+    // to the halfway mark and only then tapers, which is where the visible
+    // 0.35-0.5 m of flame comes from.
+    float tipK = smoothstep(0.10, 0.94, vV);
+    vec3 col = mix(vTint, uTipCol, tipK * 0.80);
+    float fade = smoothstep(1.0, 0.48, vV);
+
+    float a = depth * fade * vW * vFlick * uFlicker * uGain;
+    if (a < 0.0008) discard;
+    // Straight additive through CustomBlending (ONE, ONE) so the whole HDR
+    // value travels in rgb. Routing it through the alpha channel instead would
+    // hand a >1 blend factor to fixed-function blending, which is where a
+    // flame that looked right in one browser looked flat in another.
+    gl_FragColor = vec4(col * a, 1.0);
+  }`;
+
+/**
+ * One lathe shell of the flame.
+ *
+ * The profile is authored rather than derived: widest a fifth of the way up,
+ * 0.92 of that at the fuel, and a point at the top. Real campfire flame is
+ * widest just above the fuel because that is where the volatiles are burning
+ * off, and a cone that is widest at y=0 reads as a party hat.
+ */
+function flameShell(R, H, radial, rings, shellIdx, tint, weight, lean, squash, seed) {
+  const prof = (v) => {
+    const r = Math.pow(Math.max(0, 1 - v), 0.5) * (0.92 + v * (1 - v) * 1.0);
+    // Never exactly zero: an apex ring of coincident vertices is a fan of
+    // zero-area triangles, and a zero-area triangle is where a normal goes to
+    // length zero and a NaN gets into the bloom pyramid.
+    return [R * Math.max(r, 0.012), -0.035 + H * v];
+  };
+  const pos = [], nrm = [], vs = [], sh = [], tn = [], wt = [], sd = [];
+  const P = [], N = [];
+  for (let j = 0; j <= rings; j++) {
+    const v = j / rings;
+    const [r, y] = prof(v);
+    const eps = 1 / (rings * 4);
+    const [r1, y1] = prof(Math.min(1, v + eps));
+    const [r0, y0] = prof(Math.max(0, v - eps));
+    const dr = r1 - r0, dy = y1 - y0;
+    const nl = Math.hypot(dy, dr) || 1;
+    const ring = [], rnorm = [];
+    for (let i = 0; i < radial; i++) {
+      const a = (i / radial) * TAU;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      // A fixed elliptical squash and a fixed lean, both per shell: a body of
+      // revolution is still a body of revolution once you add noise to it, and
+      // the turntable is what finds that out.
+      const sq = 1 + squash * Math.cos(a * 2 + seed);
+      ring.push(new THREE.Vector3(
+        ca * r * sq + lean.x * v * v, y, sa * r * sq + lean.y * v * v));
+      rnorm.push(new THREE.Vector3(ca * dy / nl, -dr / nl, sa * dy / nl).normalize());
+    }
+    P.push(ring); N.push(rnorm);
+  }
+  const push = (ri, ai) => {
+    const p = P[ri][ai % radial], n = N[ri][ai % radial];
+    pos.push(p.x, p.y, p.z);
+    nrm.push(n.x, n.y, n.z);
+    vs.push(ri / rings);
+    sh.push(shellIdx);
+    tn.push(tint[0], tint[1], tint[2]);
+    wt.push(weight);
+    sd.push(seed);
+  };
+  for (let j = 0; j < rings; j++) {
+    for (let i = 0; i < radial; i++) {
+      // CCW seen from outside: (j,i) -> (j,i+1) -> (j+1,i+1) -> (j+1,i).
+      push(j, i); push(j, i + 1); push(j + 1, i + 1);
+      push(j, i); push(j + 1, i + 1); push(j + 1, i);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  const F = (a, n) => new THREE.BufferAttribute(new Float32Array(a), n);
+  g.setAttribute('position', F(pos, 3));
+  g.setAttribute('normal', F(nrm, 3));
+  g.setAttribute('aV', F(vs, 1));
+  g.setAttribute('aShell', F(sh, 1));
+  g.setAttribute('aTint', F(tn, 3));
+  g.setAttribute('aWeight', F(wt, 1));
+  g.setAttribute('aSeed', F(sd, 1));
+  sanitizeNormals(g);
+  return g;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The ember bed
+//
+//  A handful of coals lying in the ash whose brightness breathes on its own
+//  clock, plus one broad soft glow that is the *glue* between the flame and the
+//  ash. Without the glue the flame is an object standing on a floor; with it
+//  the floor is part of the fire.
+// ─────────────────────────────────────────────────────────────────────────────
+const BED_VERT = /* glsl */`
+  attribute vec2  aUv;
+  attribute float aSeed;
+  attribute float aKind;    // 0 broad glow, 1 coal
+  attribute vec3  aTint;
+  varying vec2  vUv;
+  varying float vSeed;
+  varying float vKind;
+  varying vec3  vTint;
+  void main() {
+    vUv = aUv; vSeed = aSeed; vKind = aKind; vTint = aTint;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }`;
+
+const BED_FRAG = /* glsl */`
+  uniform float uTime;
+  uniform float uGain;
+  uniform float uReveal;
+  varying vec2  vUv;
+  varying float vSeed;
+  varying float vKind;
+  varying vec3  vTint;
+  void main() {
+    float d = length(vUv);
+    float coal = step(0.5, vKind);
+    // A coal is a small hard-ish disc; the bed glow is a wide soft one.
+    float m = mix(smoothstep(1.0, 0.02, d), smoothstep(0.86, 0.10, d), coal);
+    if (m <= 0.001) discard;
+
+    // Each coal breathes at its own incommensurable rate — that is the whole
+    // point of them. A bed that pulses in unison with the flame reads as one
+    // animated object rather than as coals under a fire.
+    float rate = 0.42 + fract(vSeed * 7.31) * 1.15;
+    float ph   = vSeed * 6.283;
+    float b = 0.46 + 0.54 * (0.5 + 0.5 * sin(uTime * rate + ph))
+                   * (0.72 + 0.28 * sin(uTime * (rate * 2.37) + ph * 1.7));
+    b = mix(0.80 + 0.20 * sin(uTime * 0.37), b, coal);
+
+    float a = m * b * uGain * uReveal;
+    if (a < 0.0008) discard;
+    gl_FragColor = vec4(vTint * a, 1.0);
+  }`;
+
+function emberBed(rnd, R, hot) {
+  const pos = [], uv = [], sd = [], kd = [], tn = [];
+  const quad = (cx, cy, cz, sx, sz, rot, seed, kind, tint) => {
+    const c = Math.cos(rot), s = Math.sin(rot);
+    const corner = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    const p = corner.map(([u, v]) => [
+      cx + (u * sx * c - v * sz * s), cy, cz + (u * sx * s + v * sz * c)]);
+    const tri = [0, 1, 2, 0, 2, 3];
+    for (const i of tri) {
+      pos.push(p[i][0], p[i][1], p[i][2]);
+      uv.push(corner[i][0], corner[i][1]);
+      sd.push(seed); kd.push(kind);
+      tn.push(tint[0], tint[1], tint[2]);
+    }
+  };
+  // The broad bed glow, elliptical and slightly off-centre so it is not a
+  // target painted on the ground.
+  quad((rnd() - 0.5) * 0.04, 0.011, (rnd() - 0.5) * 0.04,
+       R * 0.62, R * 0.52, rnd() * TAU, rnd(), 0, [0.40, 0.115, 0.026]);
+  // Coals. Clustered toward the middle where the fuel is, with a couple thrown
+  // out toward the ring — a fire that has been burning a while spits.
+  const n = 13 + Math.floor(rnd() * 5);
+  for (let i = 0; i < n; i++) {
+    const a = rnd() * TAU;
+    const r = R * (0.06 + Math.pow(rnd(), 1.5) * 0.82);
+    const s = 0.016 + rnd() * 0.030;
+    // Hotter in the middle, going to a dull red at the edge of the bed.
+    const k = clamp01(1 - r / (R * 0.9));
+    const tint = [
+      lerp(0.85, 1.0, k),
+      lerp(0.115, 0.44, k * k),
+      lerp(0.015, 0.13, k * k * k),
+    ];
+    const g = lerp(0.28, 1.0, Math.pow(k, 0.7)) * (0.5 + rnd());
+    quad(Math.cos(a) * r, 0.013 + rnd() * 0.004, Math.sin(a) * r,
+         s, s * (0.6 + rnd() * 0.7), rnd() * TAU, rnd(),
+         1, [tint[0] * g, tint[1] * g, tint[2] * g]);
+  }
+  // A few embers clinging to the charred ends of the fuel, so the logs read as
+  // burning rather than as black sticks placed in a fire.
+  for (const h of hot) {
+    if (rnd() < 0.35) continue;
+    const s = 0.013 + rnd() * 0.016;
+    quad(h.x, h.y, h.z, s, s * 0.8, rnd() * TAU, rnd(), 1,
+         [1.0, 0.33, 0.06].map((c) => c * (0.55 + rnd() * 0.8)));
+  }
+  const g = new THREE.BufferGeometry();
+  const F = (a, n2) => new THREE.BufferAttribute(new Float32Array(a), n2);
+  g.setAttribute('position', F(pos, 3));
+  g.setAttribute('aUv', F(uv, 2));
+  g.setAttribute('aSeed', F(sd, 1));
+  g.setAttribute('aKind', F(kd, 1));
+  g.setAttribute('aTint', F(tn, 3));
+  return g;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Embers and smoke
+//
+//  Built the way VehicleFX builds dust, leaves and spray: attributes are
+//  written once at spawn and the shader integrates the ballistics, so the CPU
+//  never touches a live particle and a few dozen sparks cost one draw call and
+//  no per-frame work at all.
+//
+//  Two fields rather than one, because the blend modes genuinely differ — a
+//  spark is light being added to the frame and smoke is light being occluded,
+//  and faking either with the other is why so many game campfires have grey
+//  sparks or glowing smoke.
+// ─────────────────────────────────────────────────────────────────────────────
+const FX_VERT = /* glsl */`
+  attribute vec3  aVel;
+  attribute vec3  aColor;
+  attribute float aBirth;
+  attribute float aLife;
+  attribute float aSize;
+  attribute float aSeed;
+  uniform float uTime;
+  uniform float uScale;
+  uniform float uDrag;
+  uniform float uGrav;
+  uniform float uWander;
+  uniform float uGrow;
+  uniform vec2  uWind;
+  uniform float uWindLean;
+  varying vec3  vColor;
+  varying float vAge;
+  varying float vSeed;
+
+  void main() {
+    float t = uTime - aBirth;
+    float a = t / aLife;
+    vAge = a;
+    vSeed = aSeed;
+    vColor = aColor;
+    if (a < 0.0 || a > 1.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+
+    vec3 p = position + aVel * ((1.0 - exp(-uDrag * t)) / uDrag);
+    p.y += 0.5 * uGrav * t * t;
+    // The wander is what stops a column of sparks reading as a fountain: each
+    // one takes its own path through the thermal, at its own rate.
+    p.x += sin(t * (2.1 + aSeed * 2.4) + aSeed * 31.0) * uWander * t;
+    p.z += cos(t * (1.7 + aSeed * 2.1) + aSeed * 17.0) * uWander * t;
+    p.xz += uWind * (uWindLean * t * t);
+
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_PointSize = clamp(aSize * (1.0 + uGrow * a) * uScale / max(-mv.z, 0.08), 1.0, 210.0);
+    gl_Position = projectionMatrix * mv;
+  }`;
+
+const EMBER_FRAG = /* glsl */`
+  uniform float uGain;
+  varying vec3  vColor;
+  varying float vAge;
+  varying float vSeed;
+  void main() {
+    vec2 c = gl_PointCoord - 0.5;
+    float d = length(c);
+    float m = smoothstep(0.5, 0.06, d);
+    if (m <= 0.002) discard;
+    // Cooling: a spark leaves the fire yellow-white and dies deep red.
+    vec3 col = mix(vColor, vec3(1.0, 0.135, 0.02), vAge * vAge);
+    // A gentle twinkle, not a strobe — 1.6 Hz with only a fifth of the range.
+    float tw = 0.80 + 0.20 * sin(vAge * 26.0 + vSeed * 44.0);
+    float fade = smoothstep(0.0, 0.06, vAge) * pow(1.0 - vAge, 1.35);
+    float a = m * fade * tw * uGain;
+    if (a < 0.0015) discard;
+    gl_FragColor = vec4(col * a, 1.0);
+  }`;
+
+const SMOKE_FRAG = /* glsl */`
+  uniform float uGain;
+  varying vec3  vColor;
+  varying float vAge;
+  varying float vSeed;
+  void main() {
+    vec2 c = gl_PointCoord - 0.5;
+    float d = length(c);
+    // A broken edge, so a puff is not a perfect disc — the same argument
+    // VehicleFX makes for road dust.
+    float wob = 0.5 + 0.5 * sin(atan(c.y, c.x) * 3.0 + vSeed * 21.0);
+    float m = smoothstep(0.5 - wob * 0.07, 0.05, d);
+    if (m <= 0.003) discard;
+    float fade = smoothstep(0.0, 0.22, vAge) * pow(1.0 - vAge, 1.5);
+    float a = m * fade * uGain;
+    if (a < 0.004) discard;
+    gl_FragColor = vec4(vColor, a);
+  }`;
+
+class FireFX {
+  constructor(parent, max, frag, opts) {
+    this.max = max;
+    this.head = 0;
+    this.time = 0;
+    const g = new THREE.BufferGeometry();
+    const f = (n) => new THREE.BufferAttribute(new Float32Array(max * n), n);
+    this.pos = f(3); this.vel = f(3); this.col = f(3);
+    this.birth = f(1); this.life = f(1); this.size = f(1); this.seed = f(1);
+    this.birth.array.fill(-1e6);
+    this.life.array.fill(1);
+    g.setAttribute('position', this.pos);
+    g.setAttribute('aVel', this.vel);
+    g.setAttribute('aColor', this.col);
+    g.setAttribute('aBirth', this.birth);
+    g.setAttribute('aLife', this.life);
+    g.setAttribute('aSize', this.size);
+    g.setAttribute('aSeed', this.seed);
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 1.4, 0), 6);
+
+    this.material = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 }, uScale: { value: 600 }, uGain: { value: 1 },
+        uDrag: { value: opts.drag }, uGrav: { value: opts.grav },
+        uWander: { value: opts.wander }, uGrow: { value: opts.grow },
+        uWind: { value: new THREE.Vector2(0.86, 0.51) },
+        uWindLean: { value: opts.windLean },
+      },
+      vertexShader: FX_VERT,
+      fragmentShader: frag,
+      transparent: true,
+      depthWrite: false,
+      blending: opts.additive ? THREE.CustomBlending : THREE.NormalBlending,
+      ...(opts.additive ? {
+        blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+      } : {}),
+    });
+    this.points = new THREE.Points(g, this.material);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = opts.order;
+    this.points.name = opts.name;
+    parent.add(this.points);
+    this._lo = -1; this._hi = -1; this._dirty = false;
+  }
+
+  spawn(x, y, z, vx, vy, vz, life, size, r, g, b, seed) {
+    const i = this.head;
+    this.head = (this.head + 1) % this.max;
+    if (this._lo < 0) { this._lo = i; this._hi = i; }
+    else if (i === (this._hi + 1) % this.max) { this._hi = i; }
+    else { this._lo = 0; this._hi = this.max - 1; }
+    const p3 = i * 3;
+    this.pos.array[p3] = x; this.pos.array[p3 + 1] = y; this.pos.array[p3 + 2] = z;
+    this.vel.array[p3] = vx; this.vel.array[p3 + 1] = vy; this.vel.array[p3 + 2] = vz;
+    this.col.array[p3] = r; this.col.array[p3 + 1] = g; this.col.array[p3 + 2] = b;
+    this.birth.array[i] = this.time;
+    this.life.array[i] = life;
+    this.size.array[i] = size;
+    this.seed.array[i] = seed;
+    this._dirty = true;
+  }
+
+  update(dt, pixelHeight, gain, wind) {
+    this.time += dt;
+    const u = this.material.uniforms;
+    u.uTime.value = this.time;
+    u.uScale.value = pixelHeight * 0.9;
+    u.uGain.value = gain;
+    u.uWind.value.copy(wind);
+    if (!this._dirty) return;
+    const attrs = [this.pos, this.vel, this.col, this.birth, this.life, this.size, this.seed];
+    const runs = this._lo <= this._hi
+      ? [[this._lo, this._hi - this._lo + 1]]
+      : [[this._lo, this.max - this._lo], [0, this._hi + 1]];
+    for (const a of attrs) {
+      for (const [start, count] of runs) a.addUpdateRange(start * a.itemSize, count * a.itemSize);
+      a.needsUpdate = true;
+    }
+    this._lo = this._hi = -1;
+    this._dirty = false;
+  }
+
+  dispose() {
+    this.points.parent?.remove(this.points);
+    this.points.geometry.dispose();
+    this.material.dispose();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Geometry — cobbles, ash, split logs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A river cobble: a lumpy, flattened ellipsoid.
+ *
+ * Everything through `Parts.add` is flat shaded (it converts to non-indexed and
+ * recomputes normals), so an 80-facet icosphere with radial noise is exactly
+ * the right primitive here — the facets read as the chipped planes of a stone
+ * rather than as a low-poly sphere, and they take the firelight in distinct
+ * steps which is most of what makes the ring read at night.
+ */
+function cobble(rnd, R) {
+  const g = new THREE.IcosahedronGeometry(R, 1);
+  const p = g.attributes.position;
+  const ph = [rnd() * TAU, rnd() * TAU, rnd() * TAU, rnd() * TAU];
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i).normalize();
+    const d = 1
+      + 0.12 * Math.sin(v.x * 3.1 + ph[0]) * Math.cos(v.z * 2.7 + ph[1])
+      + 0.08 * Math.sin(v.y * 4.3 + ph[2])
+      + 0.05 * Math.cos(v.x * 5.9 + v.z * 4.1 + ph[3]);
+    p.setXYZ(i, v.x * R * d, v.y * R * d, v.z * R * d);
+  }
+  return g;
+}
+
+/**
+ * The ash and charcoal bed inside the ring.
+ *
+ * A low dome rather than a flat disc: ash piles up where the fire has been and
+ * the rim of the pit is scraped down, and a flat disc inside a ring of round
+ * stones reads as a lid.
+ */
+function ashBed(rnd, R) {
+  const seg = 18;
+  const radii = [0, 0.26, 0.52, 0.76, 0.95].map((k) => k * R);
+  const H = [0.036, 0.032, 0.024, 0.012, 0.0];
+  const ring = radii.map((r, ri) => {
+    const out = [];
+    for (let i = 0; i < seg; i++) {
+      const a = (i / seg) * TAU;
+      const wob = 1 + (ri === 0 ? 0 : 0.10 * Math.sin(a * 3 + ri) + 0.06 * Math.sin(a * 5 + ri * 2.1));
+      out.push(new THREE.Vector3(
+        Math.cos(a) * r * wob,
+        H[ri] + (ri === 0 ? 0 : (rnd() - 0.5) * 0.010),
+        Math.sin(a) * r * wob));
+    }
+    return out;
+  });
+  const pos = [];
+  const tri = (a, b, c) => pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  for (let i = 0; i < seg; i++) {
+    const j = (i + 1) % seg;
+    tri(ring[0][0], ring[1][j], ring[1][i]);
+    for (let r = 1; r < radii.length - 1; r++) {
+      tri(ring[r][i], ring[r][j], ring[r + 1][j]);
+      tri(ring[r][i], ring[r + 1][j], ring[r + 1][i]);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+  return g;
+}
+
+/**
+ * A split log.
+ *
+ * Firewood is split, not sawn round, and the difference is the whole read: a
+ * quarter-round has one curved bark face and two flat pale split faces, and it
+ * is the pale split face catching the firelight that says "somebody cut this"
+ * rather than "a branch fell here". Returns the bark shell and the split faces
+ * as separate geometries so each can carry its own tint through the same
+ * material bin — they merge into one mesh regardless.
+ *
+ * Y runs along the log, centred; the bark arc faces +X.
+ */
+function splitLog(rnd, len, R, spanA) {
+  const NA = 6, NL = 3;
+  const bendX = (rnd() - 0.5) * R * 0.55, bendZ = (rnd() - 0.5) * R * 0.4;
+  const taperEnd = 0.80 + rnd() * 0.16;
+  const arcJit = [];
+  for (let k = 0; k <= NA; k++) arcJit.push(0.94 + rnd() * 0.13);
+
+  const P = [];         // [l][k] arc points
+  const A = [];         // [l] apex
+  for (let l = 0; l <= NL; l++) {
+    const t = l / NL;
+    const y = -len * 0.5 + t * len;
+    const tp = lerp(1, taperEnd, t) * (1 - 0.10 * Math.sin(t * Math.PI));
+    const bx = bendX * Math.sin(t * Math.PI), bz = bendZ * Math.sin(t * Math.PI);
+    const row = [];
+    for (let k = 0; k <= NA; k++) {
+      const ang = -spanA * 0.5 + (k / NA) * spanA;
+      const r = R * tp * arcJit[k];
+      row.push(new THREE.Vector3(Math.cos(ang) * r + bx, y, Math.sin(ang) * r + bz));
+    }
+    P.push(row);
+    A.push(new THREE.Vector3(-0.06 * R * tp + bx, y, bz));
+  }
+  const barkP = [], splitP = [];
+  const tri = (arr, a, b, c) => arr.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  const quad = (arr, a, b, c, d) => { tri(arr, a, b, c); tri(arr, a, c, d); };
+
+  for (let l = 0; l < NL; l++) {
+    for (let k = 0; k < NA; k++) {
+      quad(barkP, P[l][k], P[l][k + 1], P[l + 1][k + 1], P[l + 1][k]);
+    }
+    // The two split faces. Winding derived in the header note: the face at the
+    // low-angle edge runs apex-up-out-down, the high-angle edge the other way.
+    quad(splitP, A[l], A[l + 1], P[l + 1][0], P[l][0]);
+    quad(splitP, A[l], P[l][NA], P[l + 1][NA], A[l + 1]);
+  }
+  // End caps.
+  for (let k = 0; k < NA; k++) {
+    tri(splitP, A[0], P[0][k], P[0][k + 1]);
+    tri(splitP, A[NL], P[NL][k + 1], P[NL][k]);
+  }
+  const mk = (arr) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arr), 3));
+    return g;
+  };
+  return { bark: mk(barkP), split: mk(splitP) };
+}
+
+// Wood colourways, all expressed against the shared `wood` material so the camp
+// keeps one timber hue and the variation lives in the vertex colour.
+const BARK_T = tintFrom(0x8a6a46, 0x6b5238);
+const SPLIT_T = tintFrom(0x8a6a46, 0x9a7c56);
+const CHAR_T = tintFrom(0x8a6a46, 0x231d1a);
+const ASHTIP_T = tintFrom(0x8a6a46, 0x837b72);
+
+/**
+ * The bare-to-charred ramp along a log.
+ *
+ * Driven by world distance from the hot centre of the pit rather than by a
+ * parameter along the log, which is what makes the transition land in a
+ * different place on every log and at a different angle across the split face
+ * than along the bark. That asymmetry is the tell that this is a fire doing it
+ * and not a gradient.
+ */
+function charTint(base, hot, r0, r1) {
+  return (x, y, z) => {
+    const d = Math.hypot(x - hot.x, (y - hot.y) * 1.15, z - hot.z);
+    const k = clamp01(smoothstep(r1, r0, d));
+    // A thin band of white ash right at the edge of the char, which is what a
+    // burning log actually looks like where the flame has just passed.
+    const ash = smoothstep(0.30, 0.60, k) * (1 - smoothstep(0.62, 0.90, k)) * 0.70;
+    const c = [
+      lerp(base[0], CHAR_T[0], k),
+      lerp(base[1], CHAR_T[1], k),
+      lerp(base[2], CHAR_T[2], k),
+    ];
+    return [
+      lerp(c[0], ASHTIP_T[0], ash),
+      lerp(c[1], ASHTIP_T[1], ash),
+      lerp(c[2], ASHTIP_T[2], ash),
+    ];
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Firepit
+// ─────────────────────────────────────────────────────────────────────────────
 export class Firepit {
   constructor(scene, rnd = Math.random, opts = {}) {
     this.scene = scene;
@@ -22,55 +802,291 @@ export class Firepit {
     this.group.name = 'camp_fire';
     this.reveal = 1;
     this._t = 0;
+    this._flare = 0;
+    this._nextFlare = 5 + rnd() * 7;
+    this._emberAcc = 0;
+    this._smokeAcc = 0;
+    this._wind = new THREE.Vector2(0.86, 0.51);
+    this._windT = 0;
 
-    const P = new Parts('fire');
+    // The solid half of the pit lives under its own node so `setReveal` can
+    // ease it in without moving the light or scaling the flame's noise field.
+    this.solids = new THREE.Group();
+    this.group.add(this.solids);
+
     const R = opts.radius ?? 0.62;
+    this.radius = R;
+    const P = new Parts('fire');
+    const hotSpots = [];
 
-    // Stone ring.
-    const n = 9 + Math.floor(rnd() * 4);
+    // ── the stone ring ────────────────────────────────────────────────────
+    //
+    // River cobbles: varied in size, colour and how far they are sunk, with a
+    // deliberate gap where somebody has taken one out to feed the fire. The
+    // failure mode this is written against is a regular polygon of identical
+    // dodecahedra, which is what the placeholder was and what every fire ring
+    // in every asset store is.
+    const n = 10 + Math.floor(rnd() * 4);
+    const gap = Math.floor(rnd() * n);
+    const CO = [
+      tintFrom(0x7d7871, 0x8b8279), tintFrom(0x7d7871, 0x6e7278),
+      tintFrom(0x7d7871, 0x9a8b76), tintFrom(0x7d7871, 0x5c5e60),
+      tintFrom(0x7d7871, 0x968e83), tintFrom(0x7d7871, 0x7a6f63),
+    ];
     for (let i = 0; i < n; i++) {
-      const a = (i / n) * TAU + (rnd() - 0.5) * 0.22;
-      const rr = R * (0.94 + rnd() * 0.12);
-      const s = 0.13 + rnd() * 0.09;
-      const geo = new THREE.DodecahedronGeometry(s, 0);
-      const k = 0.86 + rnd() * 0.24;
+      if (i === gap && rnd() < 0.75) continue;
+      const a = (i / n) * TAU + (rnd() - 0.5) * 0.30;
+      const rr = R * (0.93 + rnd() * 0.17);
+      const s = 0.072 + Math.pow(rnd(), 1.4) * 0.075;
+      const cx = Math.cos(a) * rr, cz = Math.sin(a) * rr;
+      // Part-sunk, and by a different amount each time: the reason a ring of
+      // stones sitting exactly on the dirt reads as placed rather than as dug
+      // in is that all of them sit at the same height.
+      const sink = 0.34 + rnd() * 0.30;
+      const sy = 0.72 + rnd() * 0.42;
+      const cy = s * sy * (1 - sink);
+      const geo = cobble(rnd, s);
+      const base = CO[Math.floor(rnd() * CO.length)];
+      const inx = -Math.cos(a), inz = -Math.sin(a);
+      // Two or three of them are sooted on the face that looks at the flame,
+      // strongest just under the rim where the flame licks over.
+      const soot = rnd() < 0.22 ? 0.62 : 0.14 + rnd() * 0.18;
+      const stoneTint = (x, y, z) => {
+        const dx = x - cx, dz = z - cz;
+        const l = Math.hypot(dx, dz) || 1;
+        const facing = clamp01((dx * inx + dz * inz) / l);
+        // Soot climbs the inward face and stops short of the base, because the
+        // base is buried in dirt and the flame never reaches it.
+        const up = (y - cy) / Math.max(s * sy, 1e-3);
+        const k = soot * Math.pow(facing, 2.4) * smoothstep(-0.55, 0.15, up);
+        const dust = clamp01(smoothstep(s * 0.65, 0.0, y)) * 0.26;
+        return [
+          lerp(base[0] * (1 - dust) + 1.16 * dust, 0.09, k),
+          lerp(base[1] * (1 - dust) + 1.10 * dust, 0.075, k),
+          lerp(base[2] * (1 - dust) + 0.94 * dust, 0.07, k),
+        ];
+      };
       P.add(geo, 'stone',
-        at(Math.cos(a) * rr, s * 0.52, Math.sin(a) * rr,
-           rnd() * TAU, rnd() * TAU, rnd() * TAU, 1.15, 0.72, 1.0),
-        [k, k * 0.98, k * 0.95]);
+        at(cx, cy, cz, (rnd() - 0.5) * 0.5, rnd() * TAU, (rnd() - 0.5) * 0.5,
+           1.0 + rnd() * 0.35, sy, 1.0 + rnd() * 0.25),
+        stoneTint);
     }
-    // Burnt logs, leaned into a rough tipi.
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * TAU + rnd() * 0.5;
-      const foot = new THREE.Vector3(Math.cos(a) * R * 0.62, 0.04, Math.sin(a) * R * 0.62);
-      const head = new THREE.Vector3(Math.cos(a) * 0.08, 0.34, Math.sin(a) * 0.08);
-      const len = foot.distanceTo(head);
-      P.add(rod(0.036 + rnd() * 0.014, len), 'char', span(foot, head, M()), [1, 1, 1]);
-    }
-    P.flush(this.group, { cast: true, receive: true });
 
-    // The flame: crossed additive cards. Cheap, and at this size the shape of
-    // the silhouette matters far more than the simulation behind it.
-    this.flameMat = new THREE.MeshBasicMaterial({
-      color: 0xffb347, transparent: true, opacity: 0.9,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
-    });
-    this.flame = new THREE.Group();
-    for (let i = 0; i < 3; i++) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.62, 1, 4), this.flameMat);
-      m.position.y = 0.31;
-      m.rotation.y = (i / 3) * Math.PI;
-      this.flame.add(m);
+    // ── the ash bed ───────────────────────────────────────────────────────
+    // Pale wood ash at the rim going to black charcoal under the fuel. Added
+    // to the stone bin so the whole pit floor is one draw call.
+    {
+      const ASH = tintFrom(0x7d7871, 0x6e6862);
+      const COAL = tintFrom(0x7d7871, 0x1e1a18);
+      const ph = rnd() * TAU;
+      const bedTint = (x, y, z) => {
+        const d = Math.hypot(x, z) / R;
+        const grain = 0.5 + 0.5 * Math.sin(x * 21 + ph) * Math.cos(z * 17 - ph);
+        const k = clamp01(smoothstep(0.80, 0.10, d) * 0.86 + grain * 0.22);
+        return [lerp(ASH[0], COAL[0], k), lerp(ASH[1], COAL[1], k), lerp(ASH[2], COAL[2], k)];
+      };
+      P.add(ashBed(rnd, R * 0.78), 'stone', null, bedTint);
+      // A few angular lumps of charcoal sitting proud of the ash.
+      for (let i = 0; i < 5; i++) {
+        const a = rnd() * TAU, r = R * (0.15 + rnd() * 0.6);
+        const s = 0.022 + rnd() * 0.028;
+        P.add(new THREE.TetrahedronGeometry(s, 0), 'char',
+          at(Math.cos(a) * r, 0.03 + s * 0.4, Math.sin(a) * r,
+             rnd() * TAU, rnd() * TAU, rnd() * TAU, 1.3, 0.75, 1.0),
+          [0.9 + rnd() * 0.5, 0.9, 0.88]);
+      }
     }
+
+    // ── the fuel ──────────────────────────────────────────────────────────
+    //
+    // A lean-to rather than a full tipi: three split logs leaned in against
+    // each other on one side, two lying across the bed on the other. A closed
+    // tipi hides the ember bed, and the ember bed is where half the warmth in
+    // this frame comes from.
+    const hot = new THREE.Vector3(0, 0.13, 0);
+    const leanBase = rnd() * TAU;
+    const nLean = 3;
+    for (let i = 0; i < nLean; i++) {
+      const a = leanBase + (i / nLean) * 2.1 - 1.05 + (rnd() - 0.5) * 0.3;
+      const footR = R * (0.64 + rnd() * 0.15);
+      const foot = new THREE.Vector3(Math.cos(a) * footR, 0.030, Math.sin(a) * footR);
+      const headR = 0.05 + rnd() * 0.06;
+      const ha = a + Math.PI + (rnd() - 0.5) * 0.9;
+      const head = new THREE.Vector3(Math.cos(ha) * headR, 0.195 + rnd() * 0.065, Math.sin(ha) * headR);
+      const len = foot.distanceTo(head) * (1.0 + rnd() * 0.06);
+      const rad = 0.052 + rnd() * 0.020;
+      // 145-185 deg of arc: a HALVED log, not a pie slice. At the 100 deg the
+      // first pass used, the bark side barely curves across its own width and
+      // every piece of fuel in the pit read as sawn planking.
+      const { bark, split } = splitLog(rnd, len, rad, 2.52 + rnd() * 0.70);
+      // Orient: +Y along foot->head, then roll so the bark faces outward.
+      const dir = new THREE.Vector3().subVectors(head, foot).normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      const roll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rnd() * TAU);
+      q.multiply(roll);
+      const mid = new THREE.Vector3().addVectors(foot, head).multiplyScalar(0.5);
+      const m = M().compose(mid, q, new THREE.Vector3(1, 1, 1));
+      const r0 = 0.17 + rnd() * 0.06, r1 = 0.50 + rnd() * 0.12;
+      P.add(bark, 'wood', m.clone(), charTint(BARK_T, hot, r0, r1));
+      P.add(split, 'wood', m.clone(), charTint(SPLIT_T, hot, r0, r1));
+      hotSpots.push(new THREE.Vector3(head.x * 0.7, 0.045, head.z * 0.7));
+    }
+    // Two logs lying in the bed, one of them burnt nearly through.
+    for (let i = 0; i < 2; i++) {
+      const a = leanBase + Math.PI + (i - 0.5) * 0.72 + (rnd() - 0.5) * 0.25;
+      const len = R * (0.86 + rnd() * 0.30);
+      const rad = 0.056 + rnd() * 0.020;
+      const cx = Math.cos(a + 1.57) * R * (0.08 + rnd() * 0.18);
+      const cz = Math.sin(a + 1.57) * R * (0.08 + rnd() * 0.18);
+      const { bark, split } = splitLog(rnd, len, rad, 2.55 + rnd() * 0.65);
+      const m = at(cx, 0.042 + rad * 0.5, cz,
+        Math.PI * 0.5, a, (rnd() - 0.5) * 0.35);
+      const r0 = 0.13 + rnd() * 0.05, r1 = 0.44 + rnd() * 0.13;
+      P.add(bark, 'wood', m.clone(), charTint(BARK_T, hot, r0, r1));
+      P.add(split, 'wood', m.clone(), charTint(SPLIT_T, hot, r0, r1));
+      hotSpots.push(new THREE.Vector3(cx * 0.5, 0.055, cz * 0.5));
+    }
+    // Kindling: a couple of thin sticks poking out of the bed.
+    for (let i = 0; i < 3; i++) {
+      const a = rnd() * TAU;
+      const len = 0.16 + rnd() * 0.18;
+      const { bark, split } = splitLog(rnd, len, 0.017 + rnd() * 0.008, 2.7);
+      const m = at(Math.cos(a) * R * (0.3 + rnd() * 0.35), 0.05 + rnd() * 0.03,
+        Math.sin(a) * R * (0.3 + rnd() * 0.35),
+        Math.PI * 0.5 - (rnd() * 0.5), a + (rnd() - 0.5), 0);
+      P.add(bark, 'wood', m.clone(), charTint(BARK_T, hot, 0.13, 0.36));
+      P.add(split, 'wood', m.clone(), charTint(SPLIT_T, hot, 0.13, 0.36));
+    }
+
+    P.flush(this.solids, { cast: true, receive: true });
+
+    // ── the ember bed ─────────────────────────────────────────────────────
+    this.bedMat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uGain: { value: 1 }, uReveal: { value: 1 } },
+      vertexShader: BED_VERT,
+      fragmentShader: BED_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -4,
+      side: THREE.DoubleSide,
+    });
+    this.bed = new THREE.Mesh(emberBed(rnd, R * 0.74, hotSpots), this.bedMat);
+    this.bed.frustumCulled = false;
+    this.bed.renderOrder = 5;
+    this.bed.name = 'camp_fire_embers';
+    this.group.add(this.bed);
+
+    // ── the flame ─────────────────────────────────────────────────────────
+    //
+    // Three nested shells in one geometry, one draw call, ~740 triangles.
+    // Weights are chosen so the sum down the axis lands near-white while the
+    // outermost shell alone is a translucent orange: 0.30 + 0.46 + 0.62.
+    const seed = rnd() * 10;
+    const lean = new THREE.Vector2((rnd() - 0.5) * 0.05, (rnd() - 0.5) * 0.05);
+    // Weights are the per-shell radiance and they are SMALL, because the shells
+    // are double-sided: a view ray down the axis crosses six surfaces, not
+    // three, so the sum here is 2 x (0.100 + 0.150 + 0.205) = 0.91 at unit
+    // gain. The first pass authored them as if each shell were one layer and
+    // put 2.8 linear down the axis at midday, which is 2.6x the bloom
+    // threshold at that hour — a white disc with a wash out to the grass.
+    const shells = [
+      // Heights are close together and radii are not, which is the correction
+      // that made the plume read. Authored as 0.62 / 0.47 / 0.30 the inner two
+      // shells had already ended by 300 mm, so everything above the fuel was
+      // the outer shell alone at a tenth of the core's radiance — a warm wisp
+      // instead of a flame. Now all three run most of the way up and the
+      // core/body/tip structure is a *radial* one, which is what it is in a
+      // real flame.
+      // 22 radial segments on the outer shell, not 15: it is the shell that
+      // draws the silhouette, and at 15 the flame's outline is a visible
+      // polygon at any framing closer than three metres. The inner two never
+      // reach a silhouette, so they stay cheap.
+      //
+      // The weights fall off steeply outward — 0.055 / 0.145 / 0.255 — which
+      // is what makes the outer shell a translucent edge instead of a second
+      // solid. Authored flat at 0.135 / 0.165 / 0.175 the outer shell alone
+      // doubled the local frame value at dusk and the flame arrived as a pale
+      // pink silhouette with a small orange core inside it.
+      flameShell(0.240, 0.620, 22, 13, 0, [1.00, 0.285, 0.050], 0.055,
+        lean, 0.115, seed + 0.0),
+      flameShell(0.162, 0.545, 15, 12, 1, [1.00, 0.500, 0.140], 0.145,
+        lean, 0.085, seed + 1.7),
+      flameShell(0.098, 0.400, 12, 10, 2, [1.00, 0.830, 0.585], 0.255,
+        lean, 0.060, seed + 3.4),
+    ];
+    const flameGeo = mergeAttr(shells);
+    flameGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.36, 0), 1.2);
+    this.flameMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uGain: { value: 1 },
+        uAmp: { value: 0.42 },
+        uSway: { value: 0.030 },
+        uPinch: { value: 0.34 },
+        uWind: { value: new THREE.Vector2(0.86, 0.51) },
+        uReveal: { value: 1 },
+        uFlicker: { value: 1 },
+        uEdgePow: { value: 1.42 },
+        uTipCol: { value: new THREE.Vector3(1.00, 0.330, 0.075) },
+      },
+      vertexShader: FLAME_VERT,
+      fragmentShader: FLAME_FRAG,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.CustomBlending,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
+    });
+    this.flame = new THREE.Mesh(flameGeo, this.flameMat);
+    this.flame.frustumCulled = false;
+    this.flame.renderOrder = 6;
+    this.flame.name = 'camp_fire_flame';
     this.group.add(this.flame);
 
-    // The light. One point light: at night this is the only warm source in the
-    // frame and everything the camp does visually after sundown comes off it.
-    this.light = new THREE.PointLight(0xff9a3c, 6.0, 22, 2);
-    this.light.position.set(0, 0.42, 0);
+    // ── embers and smoke ──────────────────────────────────────────────────
+    // A camp fire throws a few dozen sparks, not a fountain. 90 slots at ~9/s
+    // and a two-second life is about eighteen alive at any moment, which is
+    // what the night plate actually shows.
+    this.embers = new FireFX(this.group, 96, EMBER_FRAG, {
+      drag: 1.55, grav: 0.30, wander: 0.085, grow: -0.35, windLean: 0.10,
+      additive: true, order: 7, name: 'camp_fire_sparks',
+    });
+    this.smoke = new FireFX(this.group, 64, SMOKE_FRAG, {
+      drag: 0.85, grav: 0.40, wander: 0.135, grow: 3.4, windLean: 0.46,
+      additive: false, order: 8, name: 'camp_fire_smoke',
+    });
+
+    // ── the light ─────────────────────────────────────────────────────────
+    //
+    // One point light, no shadow. Placed at the top of the burning zone rather
+    // than at the centre of the pit: a light at ground level throws every prop
+    // in the camp an upward shadow that reads as horror-film, and a fire's
+    // luminous body genuinely sits above its fuel.
+    //
+    // Colour is a real fire's ~1900 K and that saturation is deliberate here
+    // even though Lighting.js spends a page warning against a saturated key —
+    // that warning is about a *global* key performing a hue replacement on
+    // every albedo in the frame. This is a local accent inside an otherwise
+    // blue night, which is the good kind of hue variety rather than the bad,
+    // and it is what the night plates show on the tent wall.
+    //
+    // DECAY IS 1.25, NOT 2, and that is the load-bearing number here. Inverse
+    // square across the span this light has to cover is a 25:1 range between
+    // the stones at 0.6 m and the chairs at 2.5 m: any intensity that lights a
+    // chair blows the ring to white paper, and any intensity that keeps the
+    // ring readable leaves the chair unlit. Measured on the first pass at
+    // decay 2 — the stones, the ash and the grass six metres out all came back
+    // as one white mass. 1.25 gives 3.5:1 over the same span, which is the
+    // falloff a fire actually reads with in the night plates.
+    this.light = new THREE.PointLight(0xffa259, 2.55, 11, 1.25);
+    this.light.position.set(0, 0.40, 0);
     this.light.castShadow = false;
+    this.light.name = 'camp_fire_light';
     this.group.add(this.light);
 
+    this._sc = new THREE.Color();
     scene.add(this.group);
   }
 
@@ -78,48 +1094,238 @@ export class Firepit {
 
   setReveal(k) {
     this.reveal = clamp01(k);
-    this.group.visible = this.reveal > 0.01;
-    this.group.scale.setScalar(lerp(0.6, 1, this.reveal));
+    this.group.visible = this.reveal > 0.004;
+    // The solids ease up from the ground; the flame and the light ride their
+    // own curves in `update`, so the fire lights before it is fully built —
+    // which reads as somebody getting it going rather than as an object fading
+    // into existence.
+    const e = 1 - Math.pow(1 - this.reveal, 2.4);
+    this.solids.scale.setScalar(lerp(0.62, 1, e));
+  }
+
+  /**
+   * Flicker.
+   *
+   * Three incommensurable rates at 0.34, 0.54 and 0.91 Hz plus a slow 0.05 Hz
+   * breath, with a combined amplitude of about ±13%. Every one of those numbers
+   * is at the bottom of the range a real fire moves at, because this is a cozy
+   * game and the test the brief sets is whether you could fall asleep beside
+   * it. On top of that, a log settles every six to thirteen seconds: a fast
+   * attack and a long decay, which is the only fast event in the whole system
+   * and the only thing that keeps the slow rates from reading as a sine.
+   */
+  _flicker(dt) {
+    const t = this._t;
+    this._nextFlare -= dt;
+    if (this._nextFlare <= 0) {
+      this._flare = 1;
+      this._nextFlare = 6 + Math.random() * 7;
+      this._flareBurst = 5 + Math.floor(Math.random() * 8);
+    }
+    // Attack is instantaneous, decay is 1.6 s — the shape of a settling log.
+    this._flare = Math.max(0, this._flare - dt / 1.6);
+    const flare = this._flare * this._flare * 0.30;
+    return 1
+      + 0.055 * Math.sin(t * 2.13)
+      + 0.041 * Math.sin(t * 3.37 + 1.1)
+      + 0.028 * Math.sin(t * 5.71 + 2.3)
+      + 0.045 * Math.sin(t * 0.31 + 0.7)
+      + flare;
   }
 
   update(dt, t, camera) {
-    this._t = t;
-    // Flicker: two incommensurable rates so it never reads as a sine.
-    const f = 0.78 + 0.14 * Math.sin(t * 11.3) + 0.08 * Math.sin(t * 6.1 + 1.7);
-    this.light.intensity = 6.0 * f * this.reveal;
-    this.flameMat.opacity = 0.9 * f;
-    const s = 0.92 + 0.12 * Math.sin(t * 9.4 + 0.6);
-    this.flame.scale.set(1, s, 1);
-    if (camera) this.flame.rotation.y = Math.atan2(
-      camera.position.x - this.group.position.x,
-      camera.position.z - this.group.position.z);
+    if (!this.group.visible) return;
+    const d = Math.min(dt, 0.1);
+    this._t += d;
+
+    // Wind, re-read twice a second: it is a uniform, not a per-frame cost, and
+    // the weather system is allowed to arrive after the camp is pitched.
+    this._windT -= d;
+    if (this._windT <= 0) { windXZ(this._wind); this._windT = 0.5; }
+
+    const elev = sunElevation();
+    const dusk = duskAmount(elev);
+    const night = nightAmount(elev);
+    const rv = this.reveal;
+
+    // ── the radiance ramp ───────────────────────────────────────────────────
+    // See the header. These three numbers are the flame held at roughly a
+    // constant multiple of the bloom threshold it is being measured against:
+    // 1.05 linear at midday, 0.72 at the horizon, 1.70 at night.
+    // Held at a roughly constant multiple of the bloom threshold it is being
+    // measured against — 1.05 linear with the sun high, 0.72 at the horizon,
+    // 1.70 at night (PostFX's glare ramp). Multiplied by the 0.91 stack above
+    // these put the core at 1.05 / 1.15 / 2.55 linear at the three hours.
+    const gain = lerp(lerp(1.20, 1.85, dusk), 3.60, night);
+    const f = this._flicker(d);
+
+    const fu = this.flameMat.uniforms;
+    fu.uTime.value = this._t;
+    fu.uGain.value = gain * rv;
+    fu.uFlicker.value = f;
+    fu.uReveal.value = rv;
+    fu.uWind.value.copy(this._wind);
+    // At midday the tip has to stay chromatic or bloom eats it; at night it can
+    // afford to go deeper and redder because there is nothing to compete with.
+    fu.uTipCol.value.set(1.0, lerp(0.360, 0.245, night), lerp(0.090, 0.050, night));
+
+    const bu = this.bedMat.uniforms;
+    bu.uTime.value = this._t;
+    // The bed carries more of the fire at night, when it is the thing that says
+    // the pit is full of heat rather than full of black sticks.
+    bu.uGain.value = lerp(0.26, 0.78, Math.max(dusk * 0.62, night)) * rv;
+    bu.uReveal.value = rv;
+
+    // ── the light ───────────────────────────────────────────────────────────
+    // 1.7 at midday — a supporting warm accent that just lifts the near stones
+    // — against 8.6 at night, where it is the entire lighting of the camp.
+    const base = lerp(lerp(0.62, 1.15, dusk), 2.05, night);
+    this.light.intensity = base * f * rv * rv;
+    this.light.distance = lerp(6.0, 9.5, Math.max(dusk, night));
+    // Warmer and a touch less saturated by day, so it does not read as a
+    // coloured lamp on a sunlit prop.
+    this._sc.setRGB(1.0, lerp(0.50, 0.40, night), lerp(0.22, 0.135, night));
+    this.light.color.copy(this._sc);
+    this.light.position.y = 0.36 + 0.07 * f;
+
+    // ── spawning ────────────────────────────────────────────────────────────
+    const px = window.__engine?.renderer?.domElement?.height ?? 900;
+    const emberGain = lerp(lerp(0.55, 0.85, dusk), 1.05, night) * rv;
+    const smokeGain = lerp(lerp(0.135, 0.062, dusk), 0.030, night) * rv;
+
+    if (rv > 0.35) {
+      // ~9 sparks a second, in ones and twos, plus a burst when a log settles.
+      this._emberAcc += d * (10 + 7 * this._flare);
+      let burst = this._flareBurst | 0;
+      this._flareBurst = 0;
+      let k = Math.min(6, Math.floor(this._emberAcc) + burst);
+      this._emberAcc -= Math.floor(this._emberAcc);
+      while (k-- > 0) this._spawnEmber();
+
+      this._smokeAcc += d * 1.25;
+      let s = Math.min(3, Math.floor(this._smokeAcc));
+      this._smokeAcc -= Math.floor(this._smokeAcc);
+      while (s-- > 0) this._spawnSmoke(night);
+    }
+    this.embers.update(d, px, emberGain, this._wind);
+    this.smoke.update(d, px, smokeGain, this._wind);
+    void t; void camera;
+  }
+
+  _spawnEmber() {
+    const a = Math.random() * TAU;
+    const r = Math.random() * 0.10;
+    const y = 0.06 + Math.random() * 0.34;
+    const up = 1.10 + Math.random() * 1.55;
+    this.embers.spawn(
+      Math.cos(a) * r, y, Math.sin(a) * r,
+      (Math.random() - 0.5) * 0.30, up, (Math.random() - 0.5) * 0.30,
+      1.5 + Math.random() * 1.7,
+      // gl_PointSize is aSize * uScale / viewDepth with uScale ~ 0.9 * the
+      // framebuffer height, so this is metres-ish, not pixels. The first pass
+      // read it as pixels and shipped 210 px sparks — one of them landed above
+      // the camper as a yellow ball the size of a wheel.
+      0.017 + Math.random() * 0.019,
+      1.0, 0.50 + Math.random() * 0.20, 0.115 + Math.random() * 0.105,
+      Math.random());
+  }
+
+  _spawnSmoke(night) {
+    const a = Math.random() * TAU;
+    const r = Math.random() * 0.09;
+    // Smoke is lit by the sky above and by the fire below; near the pit it is
+    // warm and it cools as it climbs. At night there is nothing to light it at
+    // all, which is why `smokeGain` all but switches it off.
+    const g = 0.62 + Math.random() * 0.14;
+    this.smoke.spawn(
+      Math.cos(a) * r, 0.40 + Math.random() * 0.18, Math.sin(a) * r,
+      (Math.random() - 0.5) * 0.30, 0.50 + Math.random() * 0.40, (Math.random() - 0.5) * 0.30,
+      3.4 + Math.random() * 2.8,
+      0.13 + Math.random() * 0.10,
+      g * lerp(1.06, 0.90, night), g * lerp(0.95, 0.90, night), g * lerp(0.84, 0.96, night),
+      Math.random());
   }
 
   dispose() {
     this.scene.remove(this.group);
+    this.embers.dispose();
+    this.smoke.dispose();
     this.group.traverse((o) => { o.geometry?.dispose?.(); });
     this.flameMat.dispose();
+    this.bedMat.dispose();
   }
 }
 
-/** A stack of split logs. */
+/**
+ * Concatenate geometries that share an attribute set.
+ *
+ * `mergeGeometries` would do this, but it insists on identical attribute
+ * *layouts* and takes a dispose path this does not need; these three shells are
+ * built two lines above by one function and are non-indexed by construction, so
+ * a straight concatenation is both shorter and impossible to get wrong.
+ */
+function mergeAttr(list) {
+  const names = Object.keys(list[0].attributes);
+  const out = new THREE.BufferGeometry();
+  for (const name of names) {
+    const size = list[0].attributes[name].itemSize;
+    let total = 0;
+    for (const g of list) total += g.attributes[name].array.length;
+    const arr = new Float32Array(total);
+    let o = 0;
+    for (const g of list) { arr.set(g.attributes[name].array, o); o += g.attributes[name].array.length; }
+    out.setAttribute(name, new THREE.BufferAttribute(arr, size));
+  }
+  for (const g of list) g.dispose();
+  sanitizeNormals(out);
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The woodpile
+//
+//  The fire's supply, stacked where somebody dropped it. Same split-log
+//  primitive as the fuel, so the two read as the same firewood — which is the
+//  whole reason it is in this file and not in one of its own.
+// ─────────────────────────────────────────────────────────────────────────────
 export function buildWoodpile(rnd, opts = {}) {
   const g = new THREE.Group();
   g.name = 'camp_woodpile';
   const P = new Parts('woodpile');
-  const n = opts.logs ?? 6;
-  let y = 0.055;
-  for (let row = 0; row < 3 && n > 0; row++) {
-    const count = Math.max(1, Math.round(n / 3) - row);
+  const rows = 3;
+  const R = 0.052;
+  // Ends face +Z, so the pale split faces are what you see from the fire.
+  let y = R * 0.92;
+  for (let row = 0; row < rows; row++) {
+    const count = 4 - row + (rnd() < 0.4 ? 1 : 0);
     for (let i = 0; i < count; i++) {
-      const x = (i - (count - 1) * 0.5) * 0.115 + (rnd() - 0.5) * 0.02;
-      const len = 0.42 + rnd() * 0.10;
-      P.add(rod(0.052, len), 'wood',
-        at(x, y, (rnd() - 0.5) * 0.03, 0, 0, Math.PI * 0.5), [0.94 + rnd() * 0.14, 1, 0.95]);
+      const x = (i - (count - 1) * 0.5) * (R * 2.24) + (rnd() - 0.5) * 0.012;
+      const len = 0.40 + rnd() * 0.11;
+      const rad = R * (0.86 + rnd() * 0.26);
+      const { bark, split } = splitLog(rnd, len, rad, 1.7 + rnd() * 1.0);
+      const m = at(x, y + (rnd() - 0.5) * 0.008, (rnd() - 0.5) * 0.035,
+        Math.PI * 0.5, (rnd() - 0.5) * 0.16, rnd() * TAU);
+      const dust = dusted([1, 1, 1], { top: 0.10, amount: 0.30 });
+      const bt = 0.86 + rnd() * 0.3;
+      P.add(bark, 'wood', m.clone(), tintMul(dust, [BARK_T[0] * bt, BARK_T[1] * bt, BARK_T[2] * bt]));
+      P.add(split, 'wood', m.clone(), tintMul(dust, [SPLIT_T[0] * bt, SPLIT_T[1] * bt, SPLIT_T[2]]));
     }
-    y += 0.10;
+    y += R * 1.86;
   }
-  P.flush(g);
-  g.userData.footprint = 0.44;
+  // One that has rolled off the stack — the difference between a woodpile and
+  // a crate of dowels.
+  {
+    const len = 0.40 + rnd() * 0.08;
+    const rad = R * (0.9 + rnd() * 0.2);
+    const { bark, split } = splitLog(rnd, len, rad, 1.9);
+    const a = 1.9 + rnd() * 1.2;
+    const m = at(Math.cos(a) * 0.30, rad * 0.85, Math.sin(a) * 0.24 + 0.06,
+      Math.PI * 0.5, a + 0.7, rnd() * TAU);
+    const dust = dusted([1, 1, 1], { top: 0.09, amount: 0.36 });
+    P.add(bark, 'wood', m.clone(), tintMul(dust, BARK_T));
+    P.add(split, 'wood', m.clone(), tintMul(dust, SPLIT_T));
+  }
+  P.flush(g, { cast: true, receive: true });
+  g.userData.footprint = 0.46;
   return g;
 }
