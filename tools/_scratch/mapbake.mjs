@@ -5,9 +5,15 @@
  *   node tools/_scratch/mapbake.mjs --res 1536 --out shots/ui/mapbake.png --scale 3
  *
  * It imports `sampleWorld` / `paintMap` from src/ui/hud_map.js, so what comes
- * out is exactly what the game draws (minus the river polyline stroke, which
- * needs a canvas). No browser, no capture slot, ~1 s per iteration — which is
- * the only reason the palette got more than two attempts.
+ * out is exactly what the game draws — as of the water revision that is now
+ * literally pixel for pixel, because the canvas-only river polyline stroke is
+ * gone. No browser, no capture slot, ~1 s per iteration, which is the only
+ * reason the palette and the water thresholds got more than two attempts each.
+ *
+ * To judge it, render at the size it is actually displayed (`--n 200 --scale 1`
+ * on a dpr-2 screen) and look at *that*. `--scale 3` is for diagnosis only: an
+ * enlarged review copy hides exactly the class of mistake this map has already
+ * made twice.
  */
 import { decodeBake } from '../../src/world/bakeFormat.js';
 import { sampleWorld, paintMap } from '../../src/ui/hud_map.js';

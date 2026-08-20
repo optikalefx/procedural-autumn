@@ -60,10 +60,40 @@ const RAMP = [
   [0.85, 238, 189, 110],
   [1.00, 252, 235, 205],
 ];
-// Water is the one thing you cannot drive across, so it gets the only cool hue
-// on the map and therefore separates from every stop of the ramp above.
-const WATER_SHALLOW = [124, 176, 205];
-const WATER_DEEP = [37, 82, 120];
+// ── water ────────────────────────────────────────────────────────────────────
+//  Water on this map has exactly one sentence to say — "there is a lake there,
+//  do not drive into it" — and the first version let it say a great deal more.
+//  It was the only thing on the map exempted from the palette knock-back, so it
+//  was also the most saturated and highest-contrast thing in the whole
+//  instrument cluster; and because 21% of this world stands under water, mostly
+//  as a basin where the flood threads between hummocks, it carried nearly all
+//  the high-frequency detail in the frame. At 15 m per pixel that does not read
+//  as lakes and rivers. It reads as marbling. The player asked for "not much
+//  detail" and got a map whose most detailed element was the one thing they can
+//  already see through the windscreen.
+//
+//  So water is now treated the same way the height field is: knocked back into
+//  the panel's palette, and *generalised* rather than reproduced.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Cool enough to separate from every stop of the land ramp, and otherwise the
+// quietest thing on the map. It takes the same knock-back toward the panel plum
+// that the land does — measured over the shipped bake, that puts water at a
+// median chroma of 33 against the land's 44 (it was 81, the highest on the map)
+// and at a median luminance of 74 against the land's 77 (it was 89, the
+// brightest on the map). Water is now dimmer and duller than the terrain it
+// sits in, which is the whole point: it is no longer competing.
+//
+// What still makes it read as water at a glance is *flatness*, not saturation.
+// A body carries no hillshade and no contour, so a smooth untextured pool in a
+// map that is otherwise all banding and grain is unmistakable, at a fraction of
+// the visual cost of a cyan one.
+const WATER_SHALLOW = [92, 108, 130];
+const WATER_DEEP = [60, 74, 98];
+// Depth at which a body is drawn at the far end of that ramp. Set well past the
+// world's 4 m median so the ordinary flooded basin lands mid-ramp and only a
+// genuinely deep lake goes dark — the cue is meant to be a whisper.
+const DEEP_AT = 8;
 
 // The river mask is a wide, soft falloff — the terrain shader uses its skirts
 // to damp grass near water, so it feathers out across most of the valley floor.
@@ -71,22 +101,54 @@ const WATER_DEEP = [37, 82, 120];
 // of the channel is water you would have to drive around.
 const RIVER_LO = 0.42;
 const RIVER_HI = 0.72;
-// Lakes come from the wet *fraction* of each block, softened first. The valley
-// floor of this world is a flooded basin where water threads between hummocks,
-// and thresholding it texel by texel produced a two-pixel dither of blue across
-// a third of the map — visually it read as static, and it answered no question
-// a driver has. Blurring the fraction before thresholding turns that dither
-// into the thing it actually is: a marsh, drawn as one soft mass.
-const WET_BLUR = 2;
+// Lakes come from the wet *fraction* of each block, softened first. Blurring
+// before thresholding is what turns a texel-by-texel dither into one soft mass;
+// four passes rather than two, because two still resolved the threading between
+// the hummocks and drew every strand of it.
+const WET_BLUR = 4;
 const WET_LO = 0.30;
 const WET_HI = 0.72;
+
+// Generalisation. Everything above produces a *field*; these three numbers turn
+// it into a small number of water bodies and throw the rest away.
+//
+//  · OPEN removes anything narrower than three map pixels — an erode followed
+//    by a dilate, the standard cartographic open. A two-pixel wisp of marsh
+//    tells a driver nothing at this size and costs the map its calm.
+//  · MIN_WATER_M2 then drops whole bodies too small to be worth steering
+//    around. One hectare is roughly forty map pixels at 15 m per pixel — a
+//    blob about six pixels across. Below that it is a puddle, and a puddle
+//    drawn here is a smudge, not information. Stated in m² rather than pixels
+//    so the same bodies survive at every bake resolution: measured over 192,
+//    200, 336 and 512, this keeps 23–26 bodies covering 15.2–16.2% of the map.
+//  · EDGE_SOFT blurs the surviving binary back into an alpha so the shorelines
+//    are not a stencil.
+//
+// This is also what suppresses the ruled diagonal lines in the south-east.
+// Those are in `world.riverMask` itself, not in anything this file draws — the
+// previous author proved it (185 polylines, longest segment 2.8 m, so no
+// long-segment cull could ever have fired, and the mask-only offline raster
+// shows them just as clearly) and correctly declined to paper over another
+// system's artifact with a special case. This is not that special case: it is
+// the same width-and-area generalisation applied to every water body on the
+// map, and one-texel ruled channels simply fail it the way any other one-texel
+// feature does. A map is a generalisation; suppressing a source artifact as a
+// *consequence* of generalising honestly is cartography. The artifact is still
+// real and still wrong, and it is filed against the terrain system in
+// docs/INTEGRATION_REQUESTS.md.
+const OPEN = 1;                 // structuring element radius, in map pixels
+const MIN_WATER_M2 = 10000;
+const EDGE_SOFT = 1;
 
 // Everything on the land ramp is knocked back toward the panel's own plum
 // before it is drawn. Full strength, the map was the loudest thing in the
 // frame — two quiet instruments and one saturated postage stamp — which is not
-// what "part of the same cluster" means. Water is deliberately exempt: the
-// knock-back widens the gap between it and the land, which is the one contrast
-// on this map that has to survive a glance.
+// what "part of the same cluster" means. Water is knocked back with it: it was
+// exempted in the first version on the theory that the gap between water and
+// land was the one contrast that had to survive a glance, and that was true of
+// the contrast and false of the chroma. Widening a gap that was already the
+// widest on the map is how the subject of the map ended up losing to its
+// background.
 const SIT_BACK = 0.15;
 const SCRIM = [43, 28, 51];
 
@@ -165,9 +227,12 @@ function blur(H, N, passes) {
  * because this needs a box filter over each block and a readback would cost
  * more than the arithmetic.
  *
- * Height is box-averaged, but water and river are taken as the *maximum* over
- * each block. A river eight metres wide is under a pixel at this scale, and
- * averaging it away is exactly how a minimap ends up with no rivers on it.
+ * Height is box-averaged; water is kept as the wet *fraction* of the block and
+ * river as the block *maximum*, so a channel narrower than a map pixel still
+ * registers rather than being averaged into nothing. Whether it then survives
+ * to be drawn is `waterBodies`' decision, not this function's — sampling and
+ * generalising are kept apart so the second can be retuned without disturbing
+ * the first.
  */
 export function sampleWorld(world, N) {
   const R = world.res;
@@ -207,15 +272,133 @@ export function sampleWorld(world, N) {
 }
 
 /**
+ * Turn the soft wet/river fields into a small number of *water bodies*.
+ *
+ * Pure, and deliberately so — this is the judgement call the whole revision
+ * turns on, and it has to be tunable from `tools/_scratch/mapbake.mjs` without
+ * a browser. Returns a 0..1 alpha per map pixel.
+ *
+ * Four steps, each throwing information away on purpose:
+ *   1. threshold the softened fields into a binary "wet" mask;
+ *   2. **open** it — erode by OPEN then dilate by OPEN — which deletes every
+ *      feature narrower than 2·OPEN+1 pixels outright while leaving the outline
+ *      of anything wider essentially where it was;
+ *   3. drop connected components smaller than MIN_WATER_M2;
+ *   4. blur the survivors back into an alpha so the shoreline is a soft edge
+ *      rather than a stair.
+ *
+ * Depth is returned per *body*, not per pixel. A per-pixel depth ramp puts a
+ * mottle inside every lake, which is precisely the sort of detail this revision
+ * exists to remove; one tone per body still tells you a deep lake from a shallow
+ * flood, which is the only thing depth was ever answering here.
+ *
+ * Returns `{ A, D }`: alpha and mean body depth in metres, both N×N.
+ */
+export function waterBodies(WET, RIV, DEP, N, cell) {
+  const bin = new Uint8Array(N * N);
+  for (let i = 0; i < N * N; i++) {
+    const lake = (WET[i] - WET_LO) / (WET_HI - WET_LO);
+    const river = (RIV[i] - RIVER_LO) / (RIVER_HI - RIVER_LO);
+    bin[i] = (lake > 0.5 || river > 0.5) ? 1 : 0;
+  }
+
+  morph(bin, N, OPEN, 0);        // erode
+  morph(bin, N, OPEN, 1);        // dilate — together, an open
+
+  // Area cull. Flood fill with an explicit stack: N is at most 512, so this is
+  // a quarter of a million cells once, during the load screen.
+  const minPx = Math.max(1, Math.round(MIN_WATER_M2 / (cell * cell)));
+  const seen = new Uint8Array(N * N);
+  const stack = new Int32Array(N * N);
+  const body = new Int32Array(N * N);
+  const D = new Float32Array(N * N);
+  for (let start = 0; start < N * N; start++) {
+    if (!bin[start] || seen[start]) continue;
+    let sp = 0, count = 0;
+    stack[sp++] = start; seen[start] = 1;
+    while (sp > 0) {
+      const i = stack[--sp];
+      body[count++] = i;
+      const x = i % N, y = (i / N) | 0;
+      if (x > 0 && bin[i - 1] && !seen[i - 1]) { seen[i - 1] = 1; stack[sp++] = i - 1; }
+      if (x < N - 1 && bin[i + 1] && !seen[i + 1]) { seen[i + 1] = 1; stack[sp++] = i + 1; }
+      if (y > 0 && bin[i - N] && !seen[i - N]) { seen[i - N] = 1; stack[sp++] = i - N; }
+      if (y < N - 1 && bin[i + N] && !seen[i + N]) { seen[i + N] = 1; stack[sp++] = i + N; }
+    }
+    if (count < minPx) { for (let k = 0; k < count; k++) bin[body[k]] = 0; continue; }
+    let ds = 0;
+    for (let k = 0; k < count; k++) ds += DEP[body[k]];
+    const mean = ds / count;
+    for (let k = 0; k < count; k++) D[body[k]] = mean;
+  }
+
+  const A = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) A[i] = bin[i];
+  blur(A, N, EDGE_SOFT);
+  // The alpha blur feathers a pixel or two past the binary edge; without this
+  // those pixels would blend toward the *shallow* end of the ramp and put a
+  // pale rim around every deep lake.
+  spread(D, bin, N, EDGE_SOFT + 1);
+  return { A, D };
+}
+
+/** Push a per-body value outward into the zero pixels around it. */
+function spread(D, bin, N, passes) {
+  for (let p = 0; p < passes; p++) {
+    const src = D.slice();
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const i = y * N + x;
+        if (src[i] > 0) continue;
+        let v = 0;
+        if (x > 0 && src[i - 1] > v) v = src[i - 1];
+        if (x < N - 1 && src[i + 1] > v) v = src[i + 1];
+        if (y > 0 && src[i - N] > v) v = src[i - N];
+        if (y < N - 1 && src[i + N] > v) v = src[i + N];
+        D[i] = v;
+      }
+    }
+  }
+  return D;
+}
+
+/** Erode (`grow` 0) or dilate (`grow` 1) a binary mask by a square radius. */
+function morph(bin, N, radius, grow) {
+  if (radius <= 0) return bin;
+  const tmp = new Uint8Array(N * N);
+  const pass = (src, dst, stride, limit) => {
+    for (let a = 0; a < N; a++) {
+      for (let b = 0; b < N; b++) {
+        const i = stride === 1 ? a * N + b : b * N + a;
+        let v = grow ? 0 : 1;
+        for (let k = -radius; k <= radius; k++) {
+          const bb = b + k;
+          // Clamp at the border. For an erode that means the world edge does
+          // not eat a lake that runs off the map.
+          const j = i + (bb < 0 ? -b : bb > limit ? limit - b : k) * stride;
+          v = grow ? (v | src[j]) : (v & src[j]);
+        }
+        dst[i] = v;
+      }
+    }
+  };
+  pass(bin, tmp, 1, N - 1);      // horizontal
+  pass(tmp, bin, N, N - 1);      // vertical
+  return bin;
+}
+
+/**
  * Paint the block summary into an RGBA byte array. Returns the contour interval
  * it chose, in metres.
  */
 export function paintMap(fields, N, worldSize, out) {
-  const { RIV } = fields;
   // The blurs are destructive, and that is fine — nothing else reads these.
   const H = blur(fields.H, N, SMOOTH_PASSES);
   const WET = blur(fields.WET, N, WET_BLUR);
-  const DEP = blur(fields.DEP, N, 1);
+  const RIV = blur(fields.RIV, N, WET_BLUR);
+  // DEP is not blurred: it is only ever read as a mean over a whole body,
+  // and blurring would drag dry-land zeros into that mean.
+  const DEP = fields.DEP;
 
   // Percentile clip rather than min/max: one 320 m spire would otherwise squash
   // the whole valley into the bottom third of the ramp, and the valley is the
@@ -224,6 +407,7 @@ export function paintMap(fields, N, worldSize, out) {
   const span = Math.max(1e-3, hi - lo);
   const iv = CONTOUR_STEPS.find((s) => span / s <= TARGET_CONTOURS) ?? 500;
   const cell = worldSize / N;          // metres per map pixel
+  const { A: WATER, D: WDEPTH } = waterBodies(WET, RIV, DEP, N, cell);
 
   for (let py = 0; py < N; py++) {
     for (let px = 0; px < N; px++) {
@@ -256,15 +440,14 @@ export function paintMap(fields, N, worldSize, out) {
       }
 
       // Water last: it overrides both the tint and the contour, because a
-      // contour drawn across a lake is a lie about a flat surface.
-      const lake = clamp01((WET[o] - WET_LO) / (WET_HI - WET_LO));
-      const river = clamp01((RIV[o] - RIVER_LO) / (RIVER_HI - RIVER_LO));
-      const wt = Math.max(lake, river);
-      if (wt > 0.002) {
-        const dt = clamp01(DEP[o] / 5.5) * lake;
-        const wr = WATER_SHALLOW[0] + (WATER_DEEP[0] - WATER_SHALLOW[0]) * dt;
-        const wg = WATER_SHALLOW[1] + (WATER_DEEP[1] - WATER_SHALLOW[1]) * dt;
-        const wb = WATER_SHALLOW[2] + (WATER_DEEP[2] - WATER_SHALLOW[2]) * dt;
+      // contour drawn across a lake is a lie about a flat surface — and because
+      // that flatness is now the main thing telling you it is water at all.
+      const wt = clamp01(WATER[o]);
+      if (wt > 0.004) {
+        const dt = clamp01(WDEPTH[o] / DEEP_AT);
+        const wr = lerpBack(WATER_SHALLOW[0] + (WATER_DEEP[0] - WATER_SHALLOW[0]) * dt, SCRIM[0]);
+        const wg = lerpBack(WATER_SHALLOW[1] + (WATER_DEEP[1] - WATER_SHALLOW[1]) * dt, SCRIM[1]);
+        const wb = lerpBack(WATER_SHALLOW[2] + (WATER_DEEP[2] - WATER_SHALLOW[2]) * dt, SCRIM[2]);
         r += (wr - r) * wt; g += (wg - g) * wt; b += (wb - b) * wt;
       }
 
@@ -346,49 +529,15 @@ export class MiniMap {
     this.contourInterval = paintMap(f, N, w.worldSize, img.data);
     g.putImageData(img, 0, 0);
 
-    // The river mask gives every pixel its colour but not its continuity:
-    // eroded channels drop below the threshold for a texel here and there and
-    // the raster breaks into dashes. The polylines are the same rivers as a
-    // curve, so stroking them welds the dashes back into one thread. Only a
-    // canvas can do this, which is why it is not part of the pure raster.
-    this._strokeRivers(g, N);
-
+    // The polyline stroke that used to happen here is gone. It existed to weld
+    // a raster that broke into dashes back into a continuous thread — a good
+    // repair to a problem this revision no longer has, because a thread that
+    // thin is now deliberately *not* drawn. Stroking the rivers back in after
+    // culling them by width and area would have been a cull with a cheat behind
+    // it. Losing it also means the offline raster from
+    // tools/_scratch/mapbake.mjs is now exactly, pixel for pixel, what ships.
     this.off = off;
     this._blit();
-  }
-
-  _strokeRivers(g, N) {
-    const lines = this.world.riverPolylines;
-    if (!lines?.length) return;
-    const s = N / this.world.worldSize;
-    const half = this.world.worldSize / 2;
-    g.lineCap = 'round';
-    g.lineJoin = 'round';
-    // Faint on purpose. These are a *repair* to the raster, not a layer of
-    // their own: at full strength a one-pixel polyline is the loudest thing on
-    // the map, and rivers are not the loudest thing in the valley. Some of them
-    // also leave the map in dead-straight runs, which reads as a drawing error
-    // rather than as a river the moment the line is bright enough to follow.
-    g.strokeStyle = 'rgba(112,164,197,0.5)';
-    g.lineWidth = Math.max(1, N / 400);
-    // NOT the source of the ruled diagonal lines in the south-east corner. I
-    // added a long-segment cull here on the assumption that it was, then
-    // measured: 185 polylines, 13066 segments, longest 2.8 m, none over 90 m.
-    // Those lines are in `world.riverMask` itself, and the mask-only raster
-    // rendered by tools/_scratch/mapbake.mjs — which strokes no polylines at
-    // all — shows them just as clearly. They are channels leaving the eroded
-    // region in a straight run, which is terrain data, not a drawing bug, and
-    // not mine to paper over.
-    g.beginPath();
-    for (const line of lines) {
-      if (!line || line.length < 2) continue;
-      for (let i = 0; i < line.length; i++) {
-        const p = line[i];
-        const x = (p.x + half) * s, y = (p.z + half) * s;
-        if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-      }
-    }
-    g.stroke();
   }
 
   // ── presentation ──────────────────────────────────────────────────────────
