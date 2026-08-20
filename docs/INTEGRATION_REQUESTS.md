@@ -4285,3 +4285,20 @@ They were still right not to spend it this round: the setting that lands exactly
 **Where X2 goes next.** Given L6, the eye-level mass must come from something whose features are the right size for a 200 m fan. The candidate is **long-range terrain self-shadowing** — a massif shadow thrown across the valley floor. It is the right scale by construction, it tracks the sun rather than a scrolling cloud field, and the brief calls valley-crossing massif shadows a signature of the reference art. A terrain author extended chunk shadow-casting to LOD 2 (~720 m) at round 018 for exactly this. The open question is whether those shadows still *reach* the valley floor at eye level, or whether the 150–200 m shadow extent that W1 pins, cascade selection, or a distance fade is preventing it. If casters are culled or the receiver falls outside the cascade, that is far more tractable than anything left in the cloud term.
 
 Player constraints carried forward, unchanged and absolute: **do not raise cloud coverage**, and **no grey, mauve, rose or blue ground shadow at any hour**. The invariant to keep holding is the one X6 named: saturation rises as it darkens.
+
+**Correction, same session, one hour later.** The rocks author renamed `cast`
+and the material links again. `tools/health.mjs` is `ok:true,
+shaderFailures:0`, `tools/lint.mjs` is clean, and the gate on that tree:
+
+```
+p50 19.1   p95 41.7   settled 53.5 fps   PASS
+```
+
+So the 43–46 ms band above was measured with a rock material that was not
+linking, and it is not the reading anyone should quote. It is left in place
+because the useful part survives the correction: `p50` and the scaler barely
+moved between the broken tree and the healthy one (20.1 → 19.1, 0.72 → 0.72),
+which is what says the p95 band was hitch behaviour rather than per-pixel cost.
+I should have re-read the health gate before recording three runs against it,
+and X1's own rule — verify the tree is coherent before believing the number —
+says so in as many words.
