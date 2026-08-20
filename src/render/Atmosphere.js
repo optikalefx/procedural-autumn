@@ -22,6 +22,7 @@
 import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
 import { injectUniforms, verifyUniforms, captureShader } from './uniformPatch.js';
+import { MassifShadow, neutralMassifMap } from './MassifShadow.js';
 
 const FOG_PARS = /* glsl */`
 #ifdef USE_FOG
@@ -48,6 +49,9 @@ const FOG_PARS = /* glsl */`
   uniform float uCloudSoftLo;     // coverage where the shadow starts
   uniform float uCloudSoftHi;     // coverage where it reaches full strength
   uniform float uCloudScale2;     // second tap's scale, relative to the first
+  uniform sampler2D uMassifMap;   // world-space terrain sun-visibility field
+  uniform float uMassifShadow;    // 0 = off
+  uniform float uMassifScale;     // 1 / worldSize
   varying vec3  vFogWorldPos;
   varying vec3  vFogCamPos;
 #endif`;
@@ -126,6 +130,7 @@ const FOG_FRAG = /* glsl */`
   // read as. Near ground, where the shadow belongs and where the projection
   // is nearly flat, fogFactor is ~0 and the term is untouched.
   float cloudFade = clamp(1.0 - fogFactor * 1.6, 0.0, 1.0);
+  float mShade = 0.0;
   if (uCloudShadow * cloudFade > 0.001) {
     float sy = max(uFogSunDir.y, 0.16);
     float climb = clamp((uCloudAltitude - vFogWorldPos.y) / sy, 0.0, 4200.0);
@@ -140,14 +145,49 @@ const FOG_FRAG = /* glsl */`
     float cov = max(texture2D(uCloudMap, cuv).r, texture2D(uCloudMap, cuv2).r);
     // Soft, wide edges: a hard-edged cloud shadow at this scale reads as a
     // texture crawling over the ground rather than as weather.
-    float m = uCloudShadow * cloudFade * smoothstep(uCloudSoftLo, uCloudSoftHi, cov);
+    mShade = uCloudShadow * cloudFade * smoothstep(uCloudSoftLo, uCloudSoftHi, cov);
+  }
+
+  // ── massif shadow ───────────────────────────────────────────────────────
+  // A world-space field of terrain sun-visibility, built on the CPU by
+  // MassifShadow.js and gated there to occluders BEYOND the sun shadow
+  // camera's own reach — so this only draws the valley-crossing mass that the
+  // 150-200 m eye-level shadow extent structurally cannot contain, and never
+  // re-darkens a contact shadow the shadow map already drew. Faded by optical
+  // depth on the same argument as the cloud term above: a mass two kilometres
+  // out is behind two kilometres of haze.
+  if (uMassifShadow * cloudFade > 0.001) {
+    vec2 muv = vFogWorldPos.xz * uMassifScale + 0.5;
+    // Outside the heightfield there is no terrain to be shadowed by, and the
+    // clamped sampler would otherwise smear the border texel across the sky.
+    vec2 edge = step(vec2(0.0), muv) * step(muv, vec2(1.0));
+    float mMassif = uMassifShadow * cloudFade * texture2D(uMassifMap, muv).r * edge.x * edge.y;
+    // UNIONED, not added. Two large soft masses multiplied together is how a
+    // shadow becomes a hole, and X2 is explicit that this must not raise
+    // contrast. max() keeps the deepest single mass and no more.
+    mShade = max(mShade, mMassif);
+  }
+
+  if (mShade > 0.0) {
     // Per-channel absorption, not a grey multiply. uCloudShadowTint is how much
-    // of 'm' each channel pays; vec3(1.0) is the old neutral darkening. Biasing
-    // it toward blue takes the shadowed gold meadow to a deeper amber-brown
-    // instead of a darker grey-gold, which is the hue the player asked for and
-    // the hue plates 2 and 3 actually put under their big ground masses. The
-    // triple is authored at luma 1.0 so hue and depth stay independent knobs.
-    gl_FragColor.rgb *= max(vec3(0.0), vec3(1.0) - m * uCloudShadowTint);
+    // of 'mShade' each channel pays; vec3(1.0) is the old neutral darkening.
+    // Biasing it toward blue takes the shadowed gold meadow to a deeper
+    // amber-brown instead of a darker grey-gold, which is the hue the player
+    // asked for and the hue plates 2 and 3 actually put under their big ground
+    // masses. The triple is authored at luma 1.0 so hue and depth stay
+    // independent knobs.
+    //
+    // Blue-led pixels take the darkening neutrally. Recorded as L5 and in
+    // X6-reply: a blue cut on a gold pixel is a warm deepening, and the same
+    // cut on a blue-led pixel is a hue change — it is what took the river pool
+    // to murky olive when the tint was deepened to hit its target. Ground is
+    // R > G > B at every hour of the cycle (the table beside cloudShadowTint),
+    // so this can never fire on the surface the tint is authored for; it fires
+    // on water and on anything else the shadow lands on that is not gold.
+    float chMax = max(gl_FragColor.r, gl_FragColor.g);
+    float blueLed = smoothstep(0.0, 0.25, (gl_FragColor.b - chMax) / max(gl_FragColor.b, 1e-4));
+    vec3 absorb = mix(uCloudShadowTint, vec3(1.0), blueLed);
+    gl_FragColor.rgb *= max(vec3(0.0), vec3(1.0) - mShade * absorb);
   }
 
   // ── Mie inscattering: the haze glows around the sun ─────────────────────
@@ -540,10 +580,28 @@ const DEFAULTS = {
   // now, and it costs no depth because the depth is set by the gain.
   cloudSoftLo: 0.38,
   cloudSoftHi: 0.62,
+
+  // ── THE VALLEY-CROSSING MASSIF SHADOW (X2, and it is the one that reaches) ─
+  //
+  // Peak absorption of the terrain sun-visibility field MassifShadow.js builds.
+  // Shares uCloudShadowTint, so the hue argument recorded above it — hold red
+  // and green together, take the darkening out of blue, which cannot walk gold
+  // through neutral at any strength — covers this term too, and the two masks
+  // are unioned rather than stacked so a pixel can never pay both.
+  //
+  // 0.30, against the cloud term's 0.357 at full strength, and DELIBERATELY the
+  // shallower of the two. This mass is much larger and much softer — its
+  // penumbra takes 90 m of ground to close — so it is doing its work by area
+  // rather than by depth, which is exactly the distinction X2 asks for and the
+  // player's "too much contrast" note forbids getting wrong. Swept 0.22 / 0.30 /
+  // 0.40 on `drive` and `meadow`; see the ladder in
+  // docs/INTEGRATION_REQUESTS.md X7.
+  massifShadow: 0.30,
 };
 
 let patched = false;
 let sharedCloudMap = null;
+let sharedMassifMap = null;
 
 export function patchFogChunks() {
   if (patched) return;
@@ -554,6 +612,7 @@ export function patchFogChunks() {
   THREE.ShaderChunk.fog_vertex = FOG_VERT;
 
   sharedCloudMap = neutralCloudMap();
+  sharedMassifMap = neutralMassifMap();
 
   // Register the extra uniforms so three uploads them for every fogged
   // material, and so fogUniforms() hands opt-in ShaderMaterials the same set.
@@ -587,8 +646,12 @@ export function patchFogChunks() {
     uCloudSoftLo:      { value: DEFAULTS.cloudSoftLo },
     uCloudSoftHi:      { value: DEFAULTS.cloudSoftHi },
     uCloudScale2:      { value: DEFAULTS.cloudScale2 },
+    uMassifMap:        { value: sharedMassifMap },
+    uMassifShadow:     { value: 0.0 },
+    uMassifScale:      { value: 1 / 3072 },
   });
-  verifyUniforms('Atmosphere', ['uFogDensity', 'uFogFarColor', 'uFogSunDir', 'uCloudMap']);
+  verifyUniforms('Atmosphere', ['uFogDensity', 'uFogFarColor', 'uFogSunDir', 'uCloudMap',
+                                'uMassifMap', 'uMassifShadow']);
 }
 
 /**
@@ -614,8 +677,14 @@ export class Atmosphere {
       cloudMap: sharedCloudMap,
       cloudOffset: new THREE.Vector2(),
       cloudShadowTint: DEFAULTS.cloudShadowTint.clone(),
+      massifMap: sharedMassifMap,
+      massifScale: 1 / 3072,
     };
     this._materials = new Set();
+    // Built lazily: Atmosphere is constructed before the world bake finishes,
+    // and main.js is not ours to add a setter to. Same defensive late bind
+    // Lighting uses for the renderer.
+    this.massif = new MassifShadow();
   }
 
   /**
@@ -662,6 +731,37 @@ export class Atmosphere {
     const p = this.params;
     this.scene.fog.color.copy(p.nearColor);
 
+    // The massif field is world-space and sun-driven only, so it rebuilds when
+    // the sun moves and not per frame. cycleSpeed is 0 by default, so in a
+    // shipped run and in every capture this is one 0.5 ms build at boot.
+    if (!this.massif.ready) {
+      if (this.massif.bind(globalThis.__world)) {
+        p.massifMap = this.massif.texture;
+        p.massifScale = 1 / this.massif.worldSize;
+      }
+    }
+    this.massif.update(sunDir, (typeof performance !== 'undefined') ? performance.now() : 0);
+    // ── hand the frame back to the shadow map when the shadow map can hold it ─
+    //
+    // The field is gated to occluders 170-300 m away because that is what an
+    // eye-level sun shadow camera (150-200 m of half-extent, W1) structurally
+    // cannot contain. A vista camera is a different animal: Lighting ramps the
+    // extent to 726 m at `dawn` and 894 m at `hero` and `peaks` precisely so the
+    // distant ridge casters land, and measured, they do — `hero`'s ground fan is
+    // 41.7% terrain-shadowed with 0% of its occluders outside the frustum. Drawn
+    // there as well, this term would be a second copy of a shadow that is
+    // already on screen. Fade it out over the range where the real map takes
+    // over, and the two never both draw the same mass.
+    //
+    // Read off the debug global rather than passed in, because main.js owns the
+    // Atmosphere.update() call signature and is not ours to change. Filed in
+    // docs/INTEGRATION_REQUESTS.md; with no Lighting this falls back to full
+    // strength, which is the eye-level case and the common one.
+    const ext = globalThis.__lighting?.shadowExtent;
+    const handover = Number.isFinite(ext)
+      ? 1 - Math.min(1, Math.max(0, (ext - 200) / 220)) : 1;
+    this._massifFade = handover * handover * (3 - 2 * handover);
+
     for (const m of this._materials) {
       const u = m.userData?.shader?.uniforms ?? m.uniforms;
       if (!u || !u.uFogDensity) continue;
@@ -696,6 +796,11 @@ export class Atmosphere {
           u.uCloudSoftHi.value = p.cloudSoftHi;
           u.uCloudScale2.value = p.cloudScale2;
         }
+      }
+      if (u.uMassifShadow) {
+        u.uMassifShadow.value = this.massif.ready ? p.massifShadow * (this._massifFade ?? 1) : 0.0;
+        u.uMassifScale.value = p.massifScale;
+        if (u.uMassifMap.value !== p.massifMap) u.uMassifMap.value = p.massifMap;
       }
       if (u.fogColor) u.fogColor.value.copy(p.nearColor);
     }
