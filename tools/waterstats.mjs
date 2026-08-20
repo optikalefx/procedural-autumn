@@ -901,6 +901,31 @@ async function analyse({ b64, ext, rule, opt, wantMask }) {
     maskPng = btoa(bin);
   }
 
+  // An empty mask is a RESULT, not a crash.
+  //
+  // Every percentile below is taken over the masked pixels, and `q()` on a
+  // zero-length array returns undefined, so `r3(undefined)` threw
+  // "Cannot read properties of undefined (reading 'toFixed')" on any frame
+  // containing no water. Two independent blind critics hit it on six frames of
+  // one review — backlit, meadow, drive and vehicle, none of which have water
+  // in them — and both had to stop and work out whether they were looking at a
+  // broken instrument or a real finding. That is the worst failure mode an
+  // instrument has: a stack trace and an empty mask are indistinguishable, so
+  // the correct reading ("no water in this framing") presents as a tool bug.
+  //
+  // Return early with the mask evidence intact. The caller's own warning
+  // already draws the distinction that matters — a framing with no water,
+  // versus water gone so warm that a blue rule cannot see it, which is failure
+  // F1 and a genuine defect rather than an absence.
+  if (!maskN) {
+    return {
+      W, H, rule, maskN: 0, maskPct: 0, degenerate, empty: true,
+      comps: comps.slice(0, 10).map((c) => ({ rank: c.rank, n: c.n, pct: +(c.n / N * 100).toFixed(2), box: c.box, why: c.why })),
+      compsTotal: comps.length, kept: keep.size,
+      med: null, meadow, meadowSrc, maskPng,
+    };
+  }
+
   return {
     W, H, rule, maskN, maskPct: +(maskN / N * 100).toFixed(2), degenerate,
     comps: comps.slice(0, 10).map((c) => ({ rank: c.rank, n: c.n, pct: +(c.n / N * 100).toFixed(2), box: c.box, why: c.why })),
@@ -982,6 +1007,29 @@ function report(file, note, r) {
     console.log(`         Nothing below is trustworthy. Re-run with --box over the water.`);
   }
   console.log(`       check it: --dump-mask <path>   (magenta = mask, green = shoreline scan rays)`);
+
+  // An empty mask is a RESULT, not a crash.
+  //
+  // Everything below indexes into percentile objects the analyser only builds
+  // when it has pixels, so on a frame with no water the next line threw
+  // "Cannot read properties of undefined (reading 'toFixed')". Two independent
+  // blind critics hit it on six frames in one review — backlit, meadow, drive
+  // and vehicle, all of which genuinely contain no water — and both had to stop
+  // and work out whether they were looking at a broken tool or a real finding.
+  // That is the worst thing an instrument can do to a judge: a stack trace and
+  // an empty mask are indistinguishable, so the honest reading ("no water in
+  // this framing") looks like a bug in the measurement.
+  //
+  // Report it and stop. The distinction the caller needs is preserved above:
+  // the warning already separates "this framing has no water" from "the water
+  // has gone warm enough that a blue rule cannot see it", which is failure F1
+  // and is a genuine defect rather than an absence.
+  if (!r.med || !r.C || !r.Y || !r.cool) {
+    console.log(`\nNO WATER IN FRAME — the mask is empty, so every checklist item SKIPs.`);
+    console.log(`       This is a result, not an error. If you expected water here, the mask rule`);
+    console.log(`       could not see it: re-run with --box over the water, or --rule any.`);
+    return;
+  }
 
   if (m) console.log(`\nANCHOR gold meadow ${m.hex}  Y ${m.Y.toFixed(3)}  C ${m.C}  S ${m.S}  cool ${Number(m.cool).toFixed(2)}\n       ${r.meadowSrc}`);
   else console.log('\nANCHOR gold meadow — NOT FOUND; items 2 / 5 / 7 / 8 / 10 will SKIP. Pass --meadow.');
