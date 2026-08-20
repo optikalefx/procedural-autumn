@@ -146,6 +146,7 @@ export class TerrainGen {
     this._flowAccumulation();  this.onProgress(0.76, 'Routing rivers');
     this._carveChannels();     this.onProgress(0.85, 'Cutting riverbeds');
     this._waterSurface();      this.onProgress(0.92, 'Pooling water');
+    this._flowField();         this.onProgress(0.95, 'Setting the current');
     this._climate();           this.onProgress(0.98, 'Seeding biomes');
 
     return {
@@ -163,6 +164,10 @@ export class TerrainGen {
       waterfalls: this.waterfalls,
       lakes: this.lakes,
       riverPolylines: this.riverPolylines,
+      flowVX: this.flowVX,
+      flowVZ: this.flowVZ,
+      flowQ: this.flowQ,
+      flowT: this.flowT,
       minHeight: this.minHeight,
       maxHeight: this.maxHeight,
     };
@@ -1343,12 +1348,35 @@ export class TerrainGen {
     const hOrig = Float32Array.from(h);
     const bedTarget = new Float32Array(N).fill(Infinity);
 
-    const splat = (wx, wz, m, lk, surf, wdep, dcarve) => {
-      // Same footprint the mask splat used — (1 + m*7.5) texels — so the
-      // valley the carve cuts is the one the terrain has always had, widened
-      // where the channel spreads into a delta.
-      const radT = (1.0 + m * 7.5) * (1 + lk * 0.6);
+    const splat = (wx, wz, m, lk, surf, wdep, dcarve, base) => {
       const bedC = surf - wdep;
+      // How much deeper than a nominal incision this station has to cut before
+      // it holds its own water. `base` is the fill surface the centreline was
+      // traced over; `bedC` is where the bed has to end up. They agree — to the
+      // metre — down an ordinary reach, because `surf` was DERIVED as
+      // `base - dcarve + wdep`. They come apart wherever a later pass moved the
+      // surface: the forward monotone clamp drags a reach's surface down to its
+      // lowest upstream station, a lake anchor pulls a mouth down onto the lake
+      // level, and both are correct. What was not correct is what the carve did
+      // about it.
+      //
+      // MEASURED, res 768, and it is the largest single defect in the water
+      // system: at 21.2% of all channel stations the bed after the carve stood
+      // ABOVE the water surface the same station published — a dry gap in the
+      // middle of a river. Median shortfall 0.98 m, p90 3.09 m, p99 6.83 m.
+      // The cause is one comparison: `tgt` took the *shallower* of a fixed
+      // `dcarve` incision and the U-profile toward `bedC`, so the incision was
+      // capped at dcarve (0.8-6.8 m) however far below the ground the surface
+      // had been pushed. A channel that does not hold water is not a channel,
+      // and with one surface drawn from the water grid those gaps are now holes
+      // in the river rather than a ribbon floating over dry ground.
+      const deep = Math.max(0, (base ?? bedC + dcarve) - bedC);
+      // Widen with depth, or a deep cut is a slot. The U profile reaches the
+      // natural ground at radT, so the bank slope is (cut depth)/(radT*texel):
+      // a 3 m cut into a 1.1-texel radius is 54 degrees, which is a canyon in
+      // the middle of a meadow. 0.9 texels of extra radius per metre of extra
+      // cut holds the bank near 1:2 however deep the channel has to go.
+      const radT = (1.0 + m * 7.5 + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
       const gx = (wx + half) / texel, gz = (wz + half) / texel;
       const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
       const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
@@ -1365,7 +1393,12 @@ export class TerrainGen {
           const ho = hOrig[ni];
           const lowered = ho - dcarve * p2;
           const shaped = bedC + (ho - bedC) * (1 - p2);
-          const tgt = lowered > shaped ? lowered : shaped;
+          // The DEEPER of the two, not the shallower. Down an ordinary reach
+          // the two are the same number (see `deep` above) so nothing changes;
+          // where they differ, the U-profile toward bedC is the one that leaves
+          // the channel able to hold its own water, and it still relaxes to the
+          // untouched ground at d = 1 so no bank gets a step in it.
+          const tgt = lowered < shaped ? lowered : shaped;
           if (tgt < bedTarget[ni]) bedTarget[ni] = tgt;
         }
       }
@@ -1383,7 +1416,7 @@ export class TerrainGen {
           splat(lerp(a.x, b.x, u), lerp(a.z, b.z, u),
                 lerp(a.m, b.m, u), lerp(a.lake, b.lake, u),
                 lerp(a.surf, b.surf, u), lerp(a.wdep, b.wdep, u),
-                lerp(a.dcarve, b.dcarve, u));
+                lerp(a.dcarve, b.dcarve, u), lerp(a.base, b.base, u));
         }
       }
     }
@@ -1639,6 +1672,180 @@ export class TerrainGen {
 
     this.water = water;
     this.waterfalls = kept;
+  }
+
+  // ── 6b. The flow field ─────────────────────────────────────────────────────
+  /**
+   * Velocity, discharge and turbulence as a *field* over the whole grid, so a
+   * single water surface can be a lake in one place and a river in another
+   * without being two meshes and two shaders.
+   *
+   * This is what replaces the swept ribbon. The ribbon carried everything that
+   * made water look like it was going somewhere in vertex attributes — distance
+   * downstream, the channel tangent, discharge, turbulence — which meant a
+   * river had to be a different piece of geometry from a lake, drawn with a
+   * different material. They could never agree where they met, and every jagged
+   * seam in this project's history is at that join. Sampled from a texture
+   * instead, the same shader advects its ripples, streaks and foam downstream in
+   * a channel and stands still on a lake, because standing water is simply
+   * velocity zero and the field is continuous between the two.
+   *
+   * Four channels:
+   *   VX, VZ  flow direction, times a COHERENCE in 0..1. It is not a unit
+   *           vector: the magnitude falls off where neighbouring water
+   *           disagrees about which way it is going, which is exactly what
+   *           happens as a channel opens into a lake, and is what makes the
+   *           hand-over a fade rather than a switch.
+   *   Q       discharge, 0..1, matching `flow` on the published polylines.
+   *   T       turbulence, 0..1 — steep, pinched or fast water.
+   *
+   * Direction comes from the SMOOTHED, MEANDERED CENTRELINE, not from `flowDir`.
+   * Raw D8 is eight directions on a 2 m grid, and a flow map built from it reads
+   * as eight-way banding — the same staircase defect the centreline smoothing
+   * exists to remove, arriving in a new place. The centrelines are already
+   * guaranteed smooth by docs/WATER_CONTRACT.md, so taking tangents off them
+   * costs nothing and cannot band.
+   */
+  _flowField() {
+    const R = this.res, N = R * R;
+    const texel = this.worldSize / R, half = this.worldSize / 2;
+    const vx = new Float32Array(N), vz = new Float32Array(N);
+    const q = new Float32Array(N), t = new Float32Array(N);
+    const wsum = new Float32Array(N);
+
+    for (const sta of this.channels) {
+      const n = sta.length;
+      if (n < 3) continue;
+      // Tangent and turbulence per station. Surface gradient is the honest
+      // signal for whitewater: a reach that drops fast is a rapid, one that
+      // does not is a pool, however much water is in it. Calibration matters
+      // more than the formula — a 2% surface gradient is a lazy meander and a
+      // 20% one is a genuine rapid, and a linear ramp saturates every mountain
+      // creek in the map at "full whitewater".
+      const tx = new Float32Array(n), tz = new Float32Array(n), tb = new Float32Array(n);
+      for (let k = 0; k < n; k++) {
+        const a = sta[Math.max(0, k - 1)], b = sta[Math.min(n - 1, k + 1)];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const len = Math.hypot(dx, dz) || 1;
+        tx[k] = dx / len; tz[k] = dz / len;
+        const ds = Math.max(b.s - a.s, 1e-3);
+        const grad = Math.max(0, (a.surf - b.surf) / ds);
+        const steep = smoothstep(0.015, 0.20, grad);
+        // Discharge squeezed through a narrow channel is fast, and fast water
+        // over a rough bed aerates even where it is not steep.
+        const pinch = clamp01(sta[k].m * 5 / Math.max(sta[k].w, 1.5));
+        tb[k] = clamp01(steep * 0.85 + pinch * 0.25) * (1 - sta[k].lake);
+      }
+      // Foam does not switch on per-station.
+      const sm = Float32Array.from(tb);
+      for (let k = 0; k < n; k++) {
+        const a = sm[Math.max(0, k - 2)], b = sm[Math.max(0, k - 1)];
+        const c = sm[k], d = sm[Math.min(n - 1, k + 1)], e = sm[Math.min(n - 1, k + 2)];
+        tb[k] = (a + b * 2 + c * 3 + d * 2 + e) / 9;
+      }
+
+      // Splat over the same footprint the water surface itself was rasterised
+      // on, plus a texel, so every wet texel of a channel carries a current and
+      // the dilated rim of the mesh does too.
+      const put = (x, z, hw, m, lk, dirX, dirZ, turb) => {
+        const radT = Math.max(1.6, (hw * 1.35) / texel + 1.0);
+        const gx = (x + half) / texel, gz = (z + half) / texel;
+        const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
+        const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
+        const invR = 1 / radT;
+        // Trunks win at a confluence: a 12 m river does not change direction
+        // because a brook joined it.
+        const strength = 0.25 + m;
+        for (let iy = z0; iy <= z1; iy++) {
+          const dz = iy + 0.5 - gz;
+          for (let ix = x0; ix <= x1; ix++) {
+            const dx = ix + 0.5 - gx;
+            const d = Math.sqrt(dx * dx + dz * dz) * invR;
+            if (d > 1) continue;
+            const prof = Math.cos(d * Math.PI * 0.5);
+            const wgt = prof * prof * strength;
+            const ni = iy * R + ix;
+            // Standing water has no current, and the mouth ramp is the whole
+            // hand-over: `lake` runs 0 -> 1 over the last 34 m of a reach, so
+            // the vector, the discharge and the foam all fade out together and
+            // the field is continuous into the body it arrives at.
+            const moving = 1 - lk;
+            vx[ni] += dirX * wgt * moving;
+            vz[ni] += dirZ * wgt * moving;
+            q[ni] += m * moving * wgt;
+            t[ni] += turb * wgt;
+            wsum[ni] += wgt;
+          }
+        }
+      };
+
+      for (let k = 0; k < n - 1; k++) {
+        const a = sta[k], b = sta[k + 1];
+        const seg = Math.hypot(b.x - a.x, b.z - a.z);
+        const sub = Math.max(1, Math.ceil(seg / (texel * 0.7)));
+        for (let s = 0; s < sub; s++) {
+          const u = s / sub;
+          put(lerp(a.x, b.x, u), lerp(a.z, b.z, u),
+              lerp(a.w, b.w, u) * 0.5, lerp(a.m, b.m, u), lerp(a.lake, b.lake, u),
+              lerp(tx[k], tx[k + 1], u), lerp(tz[k], tz[k + 1], u),
+              lerp(tb[k], tb[k + 1], u));
+        }
+      }
+    }
+
+    for (let i = 0; i < N; i++) {
+      const w = wsum[i];
+      if (w <= 0) continue;
+      const iw = 1 / w;
+      vx[i] *= iw; vz[i] *= iw; q[i] *= iw; t[i] *= iw;
+    }
+
+    // Blur. Two box passes of radius 2 texels — 4 m, so the effective support
+    // is about 9 m, which is one channel width on a trunk and several on a
+    // brook. It does three jobs: it removes the splat's own footprint from the
+    // field, it carries a decaying current a few metres out into the standing
+    // water a channel arrives at (which is what a real inflow does and is why
+    // the join has no edge in it), and it lets two limbs of a tight meander
+    // partially cancel, leaving slack water in the neck rather than two
+    // full-speed currents a few metres apart.
+    const blur = (a) => {
+      const tmp = new Float32Array(N);
+      const RAD = 2;
+      for (let pass = 0; pass < 2; pass++) {
+        for (let y = 0; y < R; y++) {
+          const row = y * R;
+          for (let x = 0; x < R; x++) {
+            let s = 0, c = 0;
+            for (let k = -RAD; k <= RAD; k++) {
+              const nx = x + k; if (nx < 0 || nx >= R) continue;
+              s += a[row + nx]; c++;
+            }
+            tmp[row + x] = s / c;
+          }
+        }
+        // Row-major on the vertical pass too. Walking columns strides R floats
+        // per step and misses cache on every one of them; at res 1536 that is
+        // the difference between a blur that costs a second and one that costs
+        // ten.
+        for (let y = 0; y < R; y++) {
+          const row = y * R;
+          const y0 = Math.max(0, y - RAD), y1 = Math.min(R - 1, y + RAD);
+          const c = y1 - y0 + 1;
+          for (let x = 0; x < R; x++) a[row + x] = 0;
+          for (let ny = y0; ny <= y1; ny++) {
+            const nrow = ny * R;
+            for (let x = 0; x < R; x++) a[row + x] += tmp[nrow + x];
+          }
+          for (let x = 0; x < R; x++) a[row + x] /= c;
+        }
+      }
+    };
+    blur(vx); blur(vz); blur(q); blur(t);
+
+    this.flowVX = vx;
+    this.flowVZ = vz;
+    this.flowQ = q;
+    this.flowT = t;
   }
 
   /**
@@ -2096,6 +2303,10 @@ export class TerrainGen {
         sta.push({
           s, x: tmpP.x, z: tmpP.z, m, lake: lk, lkM, lkO,
           dcarve, wdep,
+          // The fill surface the centreline was traced over, kept because the
+          // carve needs to know how far the passes below moved `surf` away
+          // from it. See `deep` in `_carveChannels`.
+          base: tmpP.b,
           surf: tmpP.b - dcarve + wdep,
           w: 0,
         });

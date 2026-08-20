@@ -26,6 +26,12 @@ export class WorldData {
     this.slopeMap = baked.slope;
     this.waterfalls = baked.waterfalls;
     this.riverPolylines = baked.riverPolylines;
+    // The flow field. See TerrainGen._flowField: this is what lets ONE water
+    // surface be a lake in one place and a river in another.
+    this.flowVX = baked.flowVX;
+    this.flowVZ = baked.flowVZ;
+    this.flowQ = baked.flowQ;
+    this.flowT = baked.flowT;
     this.minHeight = baked.minHeight;
     this.maxHeight = baked.maxHeight;
 
@@ -83,9 +89,8 @@ export class WorldData {
     return bilinear(this.riverMask, this.res, this.res, gx, gz);
   }
 
-  /** Water surface height, or null when there is no water here. */
-  /** The drawn lake surface, handed over by Water._buildLakes. */
-  setLakeField(field) { this._lake = field; }
+  /** The drawn water surface, handed over by Water._buildSurface. */
+  setWaterField(field) { this._water = field; }
 
   getWaterHeight(x, z) {
     const [gx, gz] = this.toGrid(x, z);
@@ -93,13 +98,13 @@ export class WorldData {
     const gzi = clamp(Math.round(gz), 0, this.res - 1);
     const raw = this.water[gzi * this.res + gxi];
     const w = raw < -9000 ? null : raw;
-    // The lake mesh is not a point sample of this grid: it coarsens sixteen 2 m
-    // texels into an 8 m quad, dilates one ring so the shoreline fade has
+    // The drawn mesh is not a point sample of this grid: it coarsens the 2 m
+    // texels into a 4 m quad, dilates outward so the shoreline fade has
     // geometry to finish inside, and averages each vertex over the quads that
     // touch it. So the two derivations disagreed, and this query — the one every
     // other system trusts — was the wrong one: it returned null under 4-5% of
     // water over four metres deep, and at (-768, 832) reported dry ground under
-    // 41.1 m of drawn lake. That is somewhere an animal can stand, grass can
+    // 41.1 m of drawn water. That is somewhere an animal can stand, grass can
     // grow, and the chase camera sinks with no floor under it.
     //
     // Answer for the surface that is actually DRAWN, and take the higher of the
@@ -108,7 +113,7 @@ export class WorldData {
     // Over the dry part of the dilation ring the level is below the terrain, so
     // getWaterDepth still returns 0 and nothing there changes: measured, the
     // ring splits 35 774 dry / 181 wet, identical before and after.
-    const m = this._lake ? this._lake.levelAt(x, z) : null;
+    const m = this._water ? this._water.levelAt(x, z) : null;
     if (w === null) return m;
     if (m === null) return w;
     return w > m ? w : m;
@@ -228,6 +233,40 @@ export class WorldData {
     auxTex.wrapS = auxTex.wrapT = THREE.ClampToEdgeWrapping;
     auxTex.needsUpdate = true;
     this.auxTexture = auxTex;
+
+    // ── the flow field ───────────────────────────────────────────────────────
+    // R,G = flow direction times coherence, encoded to 0..1; B = discharge;
+    // A = turbulence. See TerrainGen._flowField for what each one means.
+    //
+    // Eight bits and not a float texture, deliberately. The two float RGBA
+    // textures above are 37 MB each at res 1536; a third would be a third of a
+    // gigabyte of world data for a field whose direction is smoothed over 9 m
+    // and whose other two channels only ever scale a scroll rate and a foam
+    // drive. u8 is 9.4 MB and resolves the bearing to half a degree.
+    const flow = new Uint8Array(R * R * 4);
+    const enc = (v) => {
+      const b = (v * 0.5 + 0.5) * 255;
+      return b < 0 ? 0 : b > 255 ? 255 : b | 0;
+    };
+    const u8 = (v) => {
+      const b = v * 255;
+      return b < 0 ? 0 : b > 255 ? 255 : b | 0;
+    };
+    const vX = this.flowVX, vZ = this.flowVZ, fQ = this.flowQ, fT = this.flowT;
+    for (let i = 0; i < R * R; i++) {
+      // A bake written before the field existed decodes without it. Still
+      // water everywhere is the right fallback: the surface then draws as a
+      // lake, which is what this build did before the unification.
+      flow[i * 4 + 0] = vX ? enc(vX[i]) : 128;
+      flow[i * 4 + 1] = vZ ? enc(vZ[i]) : 128;
+      flow[i * 4 + 2] = fQ ? u8(fQ[i]) : 0;
+      flow[i * 4 + 3] = fT ? u8(fT[i]) : 0;
+    }
+    const flowTex = new THREE.DataTexture(flow, R, R, THREE.RGBAFormat, THREE.UnsignedByteType);
+    flowTex.minFilter = flowTex.magFilter = THREE.LinearFilter;
+    flowTex.wrapS = flowTex.wrapT = THREE.ClampToEdgeWrapping;
+    flowTex.needsUpdate = true;
+    this.flowTexture = flowTex;
   }
 
   /**
@@ -270,5 +309,6 @@ export class WorldData {
   dispose() {
     this.dataTexture?.dispose();
     this.auxTexture?.dispose();
+    this.flowTexture?.dispose();
   }
 }

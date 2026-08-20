@@ -32,6 +32,15 @@ export const U8_FIELDS = [
   // step function, on at 0.992 inside the river mask and off at 0.004
   // outside it, with no gradient anywhere and no knowledge of lakes at all.
   { name: 'distToWaterM', min: 0, max: 48 },
+  // The flow field — see TerrainGen._flowField. VX/VZ are a direction times a
+  // coherence, so they live in -1..1 and u8 resolves them to 1/128, which is
+  // half a degree of bearing at full coherence and finer than the field's own
+  // 9 m smoothing can justify. Q and T are 0..1 and are only ever used to scale
+  // a scroll rate and a foam drive.
+  { name: 'flowVX', min: -1, max: 1 },
+  { name: 'flowVZ', min: -1, max: 1 },
+  { name: 'flowQ',  min: 0,  max: 1 },
+  { name: 'flowT',  min: 0,  max: 1 },
 ];
 
 /** flow spans many orders of magnitude, so it is stored log-compressed. */

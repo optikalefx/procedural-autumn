@@ -1,64 +1,98 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Water — river ribbons and lake surfaces.
+//  Water — ONE surface, everywhere.
 //
-//  Two very different characters share one shader library:
+//  There used to be two: a swept ribbon along the baked centrelines for rivers,
+//  and a mesh contoured from the baked water grid for lakes. Two meshes, two
+//  materials, two noise fields, two foam models, two shoreline rules — and so
+//  they could never agree where they met. Every jagged transition this project
+//  has logged was at that seam, and a long list of machinery existed only to
+//  paper over it: a RIVER_LIFT constant so the two surfaces would not z-fight
+//  where they overlapped, an aLake attribute that flared the ribbon and dived it
+//  under the lake mesh so the depth test would hide the join, an 'airborne'
+//  guard on one and a perched-lake guard on the other. All of that is gone with
+//  the second surface.
 //
-//    RIVERS  swept ribbons along the baked polylines. Everything the shader
-//            needs to make water look like it is *going somewhere* lives in
-//            vertex attributes: distance downstream drives the flow scroll, the
-//            channel tangent rotates the ripple basis, discharge and surface
-//            gradient drive foam. Nothing is a global scroll.
+//  A river is not a different kind of thing from a lake. It is the same water,
+//  in a narrower channel, moving faster. So this file builds one mesh, contoured
+//  from (water - bed) over the baked grid, and the thing that used to be the
+//  difference between the two — flow — is a FIELD the shader samples from a
+//  texture rather than a set of vertex attributes on a special mesh. Standing
+//  water is velocity zero. See TerrainGen._flowField and shaders/water_surface.js.
 //
-//    LAKES   a mesh built cell-by-cell from the baked water grid, one vertex
-//            every ~8 m, each carrying the *local* baked surface height. Calm,
-//            near-mirror at grazing angles, gentle wind ripple. The polygon
-//            only ever has to be roughly right: the visible edge is a per-pixel
-//            depth fade against the terrain, so the shoreline comes from the
-//            ground, not from where the mesh happens to stop.
+//  What this file still owns: the geometry, the two distances it carries, and
+//  the uniforms. src/shaders/water_surface.js owns the pixels.
 //
-//  The shoreline in both cases is a depth fade computed from the data texture,
-//  so the water edge is soft and follows the carved bank rather than reading as
-//  a cut polygon against the ground.
+//  The centreline polylines are NOT built into anything here any more. They stay
+//  in the bake because audio emitters, wildlife patrol walks and
+//  tools/riverplan.mjs read them (docs/WATER_CONTRACT.md).
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { PALETTE, WORLD } from './WorldConfig.js';
 import { fogUniforms } from '../render/Atmosphere.js';
-import { clamp01, smoothstep } from '../core/MathUtils.js';
+import { clamp01 } from '../core/MathUtils.js';
 
-// Cross-channel profile, in half-widths. Denser near the banks where the foam
-// and the shoreline fade need the resolution; the outer ±1.5 columns run up the
-// bank and are hidden by the terrain, which is what makes the edge crisp.
-const COLS = [-1.5, -1.05, -0.72, -0.36, 0, 0.36, 0.72, 1.05, 1.5];
-const RIVER_BUCKET = 1024;   // metres; coarse spatial split so culling can work
-const LAKE_QUAD = 8;         // metres per lake quad — fine enough that the surface
-                             // follows the baked water instead of averaging it
-const LAKE_CHUNK = 768;      // metres per lake draw call
-// Metres a single lake quad's four corners may disagree about the surface
-// height before the quad is thrown away. Standing water is level; anything
-// steeper than this is the mesh bridging two different bodies across a lip,
-// and it draws as a vertical wall of water down the rock between them.
-const LAKE_LEVEL_STEP = 2.5;
-// Depth, in metres, at which the lake mesh is cut. Negative: the boundary sits
-// on the DRY side of the waterline, far enough out that the shoreline fade and
-// the damp band both finish inside geometry and neither can ever end on a cell
-// edge. Just past uWetBand (3.1), which is the widest thing LAKE_FRAG draws.
-const LAKE_ISO = -1.4;
-// ...and the most 8 m rings the mesh may grow to go looking for that contour.
-// Four is 32 m, which reaches LAKE_ISO on any bank steeper than about 1:10.
-// Gentler than that and the mesh stops early — but a damp margin 32 m wide is
-// already past anything the eye reads as a shoreline.
-const LAKE_DILATE = 4;
-// A ribbon and a lake covering the same flooded reach are coplanar and would
-// z-fight. Six centimetres is far more than depth precision at these ranges and
-// far less than anything the eye can read as a step.
-const RIVER_LIFT = 0.06;
+// ── the lattice ──────────────────────────────────────────────────────────────
+// Metres per quad. MEASURED, because the choice is a triangle budget and not a
+// taste. The water grid is 2 m per texel and channels in this map run 5-20 m
+// wide, so the ideal is to contour at the native grid resolution — but water is
+// not the small fraction of the map that assumption needs. It is 22.9% of it:
+// 539 321 texels of the 1536 grid have positive depth, mostly in a handful of
+// very large basins. Counting the cells a contour would actually emit, with the
+// dilation ring included:
+//
+//     2 m quads   901 888 cells   1.80 M triangles
+//     4 m quads   259 871 cells   0.52 M triangles
+//     8 m quads    74 827 cells   0.15 M triangles   (what this replaces)
+//
+// The scene is 5.36 M triangles, so native resolution is a 34% increase on the
+// whole frame for a transparent, double-sided, ray-marching surface. 4 m is four
+// times finer than the lattice it replaces, resolves the narrowest channel the
+// bake can produce (the water splat has a floor of 1.2 texels of radius, so no
+// channel is under about 5 m across), and costs 0.37 M triangles more than the
+// lake mesh alone did — which is roughly what the river ribbons cost.
+//
+// Merging flat interior blocks into coarse quads was measured too: it takes the
+// 2 m case to 0.89 M triangles, which is still worse than 4 m and buys a class
+// of T-junction crack that only stays invisible while every merged body is
+// exactly level. Not worth it.
+const SURF_QUAD = 4;
+const SURF_CHUNK = 512;      // metres per draw call, for frustum culling
+// Depth, in metres, at which the mesh is cut. Negative: the boundary sits on the
+// DRY side of the waterline, far enough out that the shoreline fade and the damp
+// band both finish inside geometry and neither can ever end on a cell edge.
+const SURF_ISO = -1.4;
+// ...and how far out, in metres of ground, the mesh may grow looking for that
+// contour. The walk stops early wherever the terrain has already climbed past
+// SURF_ISO, which on any bank steeper than about 1:6 is the first ring, so this
+// only costs anything on a genuinely flat apron — and a flat apron is exactly
+// where a mesh that stops short leaves the shoreline fade unfinished on a
+// straight cell edge. Measured over the whole map, taking it from 8 m to 16 m
+// moves the cell count by 8%.
+const SURF_DILATE_M = 12;
+// Metres a single quad's four corners may disagree about the surface height
+// before the quad is thrown away. Standing water is level and a channel drops a
+// few percent per metre; anything steeper is the mesh bridging two bodies across
+// a lip, and it draws as a vertical wall of water down the rock between them.
+// Scaled to the quad, because the old fixed 2.5 m was calibrated for 8 m quads:
+// at 4 m it would let a 60% chute through, which is a waterfall.
+// RAISED, from a value calibrated for a surface that was only ever standing
+// water. A lake is level; a channel is not, and the unified surface is both. At
+// 2 m per quad a reach dropping 50% — which the carve makes wherever a river
+// runs off a bench — trips a test written to catch a mesh bridging two pools
+// sixty metres apart in height, and every quad it throws away is a hole in the
+// middle of a river with the bed showing through. The case it was written for
+// is caught per-pixel now, and better: the shader's 'perched' guard reads the
+// baked water grid, so a surface hanging down a cliff between two bodies has no
+// baked water under it and goes to zero alpha whatever the mesh does. This
+// stays only as a backstop against the sixty-metre case, which no channel can
+// reach.
+const SURF_LEVEL_STEP = 8.0;
+// Signed shore distance is capped here, in metres. Past this the shader only
+// wants to know "open water", and a u8-sized number keeps the attribute small.
+const SHORE_CAP = 32;
 
-// ── surface shaders ──────────────────────────────────────────────────────────
-// The two surface shaders live in src/shaders/. This file owns the *geometry*
-// they run on and the attributes it feeds them; those files own the pixels.
-import { RIVER_VERT, RIVER_FRAG } from '../shaders/water_river.js';
-import { LAKE_VERT,  LAKE_FRAG  } from '../shaders/water_lake.js';
+import { SURFACE_VERT, SURFACE_FRAG } from '../shaders/water_surface.js';
 
 export class Water extends System {
   constructor(ctx) {
@@ -69,18 +103,21 @@ export class Water extends System {
     this.group.name = 'Water';
     this._meshes = [];
     this._materials = [];
-    this._tmpC = new THREE.Color();
   }
 
   async init() {
     const { world, scene, preset } = this.ctx;
     if (!world) return;
 
-    // Uniforms shared by every water material — one object, updated once.
+    // Uniforms — one object, updated once per frame. There is one material now,
+    // so there is nothing left for two of them to disagree about.
     const reflectSteps = preset?.reflections ? 24 : 0;
     this.shared = {
       uTime:         { value: 0 },
       uDataTex:      { value: world.dataTexture },
+      // The flow field. This is what replaces the ribbon's per-vertex distance
+      // downstream, tangent, discharge and turbulence.
+      uFlowTex:      { value: world.flowTexture },
       uWorldSize:    { value: world.worldSize },
       uDataTexel:    { value: 1 / world.res },
       uSunDir:       { value: new THREE.Vector3(0.4, 0.5, 0.3) },
@@ -95,460 +132,356 @@ export class Water extends System {
       uReflectSteps: { value: reflectSteps },
       uShallow:      { value: PALETTE.waterShallow.clone() },
       // The palette's deep blue is the colour of a *sample* of deep water, not
-      // of a lake seen under a bright sky. Taken literally it makes every basin
+      // of a body seen under a bright sky. Taken literally it makes every basin
       // in the map a dark hole, which fails the brief's lifted-blacks target;
       // lifting it a quarter of the way to the shallow tone keeps the hue and
       // gets the value back.
       uDeep:         { value: PALETTE.waterDeep.clone().lerp(PALETTE.waterShallow, 0.26) },
       uFoam:         { value: PALETTE.waterFoam.clone() },
       uSubsurface:   { value: PALETTE.waterSubsurface.clone() },
-      // Shallow water at 3.1 clipped every channel past 1.0 — the surface then
-      // has no structure left to see, which is how a pond two metres from the
-      // camera ends up reading as flat turquoise vinyl.
-      //
-      // Re-measured against the current grade (the flat-shadow clamp is gone,
-      // AMBIENT_SCALE is 0.72) and against the new tint model, which no longer
-      // multiplies the light by the body colour and so no longer needs a gain
-      // to put back the value that the double filter took out.
       uBodyGain:     { value: 1.30 },
       // How much of the water's own hue is imposed on the light coming back out
       // of it. 1.0 is a literal multiply by the body colour; below that the
       // illuminant shows through, which is the whole point.
       uAbsorb:       { value: 1.0 },
-      // Chroma of the absorption tint. See the shader: 1.0 is literal, above
-      // that the water holds its blue against a hard amber key the way the
-      // reference plates do.
+      // Chroma of the absorption tint. 1.0 is literal, above that the water
+      // holds its blue against a hard amber key the way the plates do.
       uAbsorbPow:    { value: 1.60 },
       // How far the surface reflection is rotated toward the water's hue. The
       // reflection is physically neutral, so this is pure art direction: enough
-      // that a lake stays the cool note in a hot frame, little enough that a
-      // dawn sky still lands on it.
+      // that water stays the cool note in a hot frame, little enough that a dawn
+      // sky still lands on it.
       uEnvTint:      { value: 0.25 },
       // How much of the sky a *rough* surface hands back regardless of angle.
-      // See the sheen block in LAKE_FRAG: physical Fresnel at anything but a
-      // grazing angle is 5-8%, which measured two and a half stops under the
-      // reference plates. This is the floor under it, and it is the single
-      // dial that decides whether a basin reads as water or as a dark hole.
-      // Raised with the widening of sheenMass: the mass now averages 0.57 of
-      // full rather than 0.76, and this is the whole *value* of the water at
-      // anything but a grazing angle, so the mean has to be held where it was
-      // measured or the widening reads as a darker lake rather than as a lake
-      // with structure in it.
-      // 0.88, not 0.80: the mass averages 0.57 of full where it used to average
-      // 0.76, so holding the *mean* reflectance where it was measured takes
-      // 0.50/0.57. Measured on the river anchor the 0.80 arm came back 8% dark
-      // against the arm it replaced, which is the widening reading as a dimmer
-      // river rather than as a river with structure in it.
-      //
-      // CHECKED AGAINST CRITIC PASS 4, WHICH RECORDS THE OPPOSITE OF WHAT THIS
-      // DIAL DOES. Pass 4 has `peaks` losing its lake colour between 045 and
-      // 048 — cyan 4.7% -> 0.1%, "045's read as water; this reads as slate" —
-      // and 048 is the round this raise landed in, so the obvious next move is
-      // to put it back. Do not. Measured, same framing, back to back, lake
-      // patch only:
+      // Physical Fresnel at anything but a grazing angle is 5-8%, which measured
+      // two and a half stops under the plates; this is the floor under it, and
+      // it is the single dial that decides whether a basin reads as water or as
+      // a dark hole. Measured, same framing, back to back, lake patch only:
       //
       //   uSheen 0.88  srgb(117,123,125)  1:1.05:1.07
       //   uSheen 0.66  srgb(110,115,116)  1:1.05:1.05
       //   uSheen 0.00  srgb( 91, 93, 91)  1:1.02:1.00
       //
-      // The sheen is what *supplies* the blue. Take it away and the lake goes
-      // three stops down and dead neutral — a dark hole, which is the failure
-      // this dial exists to prevent. Turning it back down to chase the slate
-      // measurement would make the slate worse.
-      //
-      // Which means the greying is somewhere else, and at this range the
-      // candidate is not in this file: `peaks` frames its lake at 420 m, where
-      // marchOn has already faded the landscape reflection out and aerial
-      // perspective owns most of the pixel. Whoever holds Atmosphere and the
-      // grade should have this measurement before anyone reaches for a water
-      // dial to fix it.
+      // The sheen is what SUPPLIES the blue. Take it away and water goes three
+      // stops down and dead neutral. A critic pass recorded distant lakes going
+      // slate in the round this was raised in and the obvious move is to put it
+      // back: do not. At 420 m the landscape reflection has already faded out
+      // and aerial perspective owns most of the pixel, so that measurement
+      // belongs to Atmosphere and the grade, not to this dial.
       uSheen:        { value: 0.88 },
-      // Metres of damp margin drawn on the dry side of the waterline. The
-      // reference never shows water meeting dry ground on a line; there is
-      // always a band of wet substrate between the two, and its absence is
-      // what makes a shoreline read as a cut-out however well antialiased the
-      // alpha edge is.
-      // MEASURED DOWN from 3.1. Two authors reached the same conclusion from
-      // opposite directions this round. The banks author hid one system at a
-      // time inside a single page load and showed that the pale slab filling
-      // the foreground of the 'mouth' framing is THIS BAND: hiding every
-      // scatter layer moves those pixels under 1%, hiding the water moves
-      // blue by 16 points and hands back ordinary warm meadow. The ground
-      // under it was never sand — the lake surface was rasterising metres
-      // inland of its own waterline. And docs/WATER_ART_SPEC.md 3.5, sampling
-      // the plates independently, put their damp band at 0.7-1.1 m on an
-      // ordinary bank and reached 3.1 m only on the very shallowest, flagging
-      // our value as sitting at the TOP of the plate range rather than in it.
+      // Metres of damp margin on the dry side of the waterline, measured in
+      // NEGATIVE DEPTH. The reference never shows water meeting dry ground on a
+      // line; there is always a band of wet substrate between the two, and its
+      // absence is what makes a shoreline read as a cut-out however well
+      // antialiased the alpha edge is.
       //
-      // The band is measured in metres of NEGATIVE depth, so on a shallow
-      // bank 3.1 m of it is tens of metres of ground. That is the whole
-      // defect: it is a depth, and it reads as an area.
-      uWetBand:      { value: 1.1 },
+      // MEASURED DOWN from 3.1. docs/WATER_ART_SPEC.md 3.5 puts the plates' damp
+      // band at 0.7-1.1 m on an ordinary bank and reaches 3.1 m only on the very
+      // shallowest, and the banks author reached the same number from the other
+      // direction by rasterising how far inland of its own waterline the surface
+      // was drawing. It is a DEPTH and it reads as an AREA, which is why the
+      // shader also caps it in metres of ground.
+      uWetBand:      { value: 1.0 },
+      // How dark the damp band lands, as a fraction of the lit gold the bank is
+      // made of. docs/WATER_ART_SPEC.md 3.5: against blue water the band is
+      // 0.8-1.9 stops below the meadow with the meadow's hue held. MEASURED
+      // rather than derived: uRefGround is the palette gold multiplied by the
+      // key and the sun's intensity and comes out about 2.8x the luminance of
+      // the ground actually rendered under it, so the arithmetic has to be run
+      // backwards from a capture. At 0.80 alpha, 0.15 of it composites to 0.55
+      // of the ground, which is 0.86 stops down — the middle of the plate's
+      // range. The previous shader drew this band PALE, on the strength
+      // of plate 5 where the water beside it is white; every frame in this map
+      // except the foot of a fall has blue water beside it, and a pale fringe
+      // there is one of the two sources of the flat pale slab in 'mouth'.
+      uDampDark:     { value: 0.20 },
       uCoolTint:     { value: new THREE.Vector3(0.96, 1.00, 1.03) },
-      // Strength of the cool governor (see wCoolGovern). 0 disables it and
-      // water goes the colour of the light; 1 holds it hard against any warm
-      // key at all. Half is enough to keep a river blue-violet through a
-      // golden hour without it looking painted on at noon.
+      // Strength of the cool governor (see wCoolGovern). 0 disables it and water
+      // goes the colour of the light; 1 holds it hard against any warm key at
+      // all. Half is enough to keep a river blue-violet through a golden hour
+      // without it looking painted on at noon.
       uCoolGain:     { value: 0.55 },
-      // Radians of view angle per output pixel. Everything that has to be
-      // band-limited — ripple scales, the specular lobe, the reflection march —
-      // is measured against the footprint this implies.
+      // Radians of view angle per output pixel. Everything band-limited — ripple
+      // scales, the specular lobe, the reflection march — is measured against the
+      // footprint this implies.
       uPixelScale:   { value: 0.0016 },
       // Shared with the falls: the one dial for every aerated surface. See
       // wFoamLight in water_common.js for why foam gets its own illuminant.
       uFoamGain:     { value: 1.55 },
+      uFoamCut:      { value: 0.74 },
+      uWind:         { value: new THREE.Vector2(0.62, 0.36) },
     };
 
-    this.riverMaterial = new THREE.ShaderMaterial({
+    this.material = new THREE.ShaderMaterial({
       lights: true,
       uniforms: Object.assign(THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
-                              fogUniforms(), this.shared, {
-        uFoamCut: { value: 0.74 },
-      }),
-      vertexShader: RIVER_VERT,
-      fragmentShader: RIVER_FRAG,
+                              fogUniforms(), this.shared),
+      vertexShader: SURFACE_VERT,
+      fragmentShader: SURFACE_FRAG,
       transparent: true,
       depthWrite: true,
       side: THREE.DoubleSide,
       fog: true,
     });
+    this._materials.push(this.material);
 
-    this.lakeMaterial = new THREE.ShaderMaterial({
-      lights: true,
-      uniforms: Object.assign(THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
-                              fogUniforms(), this.shared, {
-        uWind: { value: new THREE.Vector2(0.62, 0.36) },
-      }),
-      vertexShader: LAKE_VERT,
-      fragmentShader: LAKE_FRAG,
-      transparent: true,
-      depthWrite: true,
-      side: THREE.DoubleSide,
-      fog: true,
-    });
-    this._materials.push(this.riverMaterial, this.lakeMaterial);
-
-    this._buildLakes();
-    this._buildRivers();
+    this._buildSurface();
 
     scene.add(this.group);
   }
 
-  // ── rivers ─────────────────────────────────────────────────────────────────
-  _buildRivers() {
-    const world = this.ctx.world;
-    const polys = world.riverPolylines ?? [];
-    const buckets = new Map();
-
-    const bucketOf = (x, z) =>
-      (Math.floor((x + world.half) / RIVER_BUCKET) << 4) | Math.floor((z + world.half) / RIVER_BUCKET);
-
-    const getBucket = (k) => {
-      let b = buckets.get(k);
-      if (!b) {
-        b = { pos: [], side: [], dist: [], flow: [], turb: [], wid: [], lake: [], tan: [], idx: [], n: 0 };
-        buckets.set(k, b);
-      }
-      return b;
-    };
-
-    for (const poly of polys) {
-      if (!poly || poly.length < 6) continue;
-
-      // ── smooth the channel profile ───────────────────────────────────────
-      // This used to open with a windowed *maximum* over ±5 points, repairing
-      // the dropouts where the D8 trace strayed a texel off the channel core.
-      // TerrainGen now does that repair exactly, with a running maximum, before
-      // it carves — the bed and the ribbon have to agree about how wide the
-      // channel is, and only the bake can make that true. Repeating it here
-      // would also drag the mouth's flare and its decay 40 m upstream of the
-      // waterline, which is the one place the profile is deliberately not
-      // monotone. So: a box blur only, over what the bake published.
-      const n0 = poly.length;
-      const wSm = new Float32Array(n0), fSm = new Float32Array(n0), kSm = new Float32Array(n0);
-      const BLUR = 4;
-      for (let i = 0; i < n0; i++) {
-        let sw = 0, sf = 0, sk = 0, c = 0;
-        for (let k = Math.max(0, i - BLUR); k <= Math.min(n0 - 1, i + BLUR); k++) {
-          sw += poly[k].w; sf += poly[k].flow; sk += poly[k].lake ?? 0; c++;
-        }
-        wSm[i] = sw / c; fSm[i] = sf / c; kSm[i] = sk / c;
-      }
-
-      // ── resample: station spacing scales with the channel, so a 12 m trunk
-      // is not tessellated at the same density as a 1.5 m brook.
-      const stations = [];
-      let maxW = 0;
-      const push = (i, d) => {
-        stations.push({ x: poly[i].x, y: poly[i].y, z: poly[i].z, w: wSm[i], flow: fSm[i], lake: kSm[i], d });
-        if (wSm[i] > maxW) maxW = wSm[i];
-      };
-      let travelled = 0, sinceStation = 0;
-      push(0, 0);
-      for (let i = 1; i < poly.length; i++) {
-        const seg = Math.hypot(poly[i].x - poly[i - 1].x, poly[i].z - poly[i - 1].z);
-        travelled += seg;
-        sinceStation += seg;
-        // Tighter through the mouth: the flare, the surface convergence and
-        // the dive under the lake all happen inside 34 m, and at a 12 m
-        // station spacing that is two quads to do all three in.
-        const stepM = Math.min(12, Math.max(4, wSm[i] * 0.9)) * (1 - kSm[i] * 0.55);
-        if (sinceStation >= stepM || i === poly.length - 1) {
-          push(i, travelled);
-          sinceStation = 0;
-        }
-      }
-      if (stations.length < 3 || maxW < 1.5) continue;
-
-      // Tangents + turbulence. Surface gradient is the honest signal for
-      // whitewater: a reach that drops fast is a rapid, one that does not is a
-      // pool, regardless of how much water is in it.
-      const n = stations.length;
-      for (let k = 0; k < n; k++) {
-        const a = stations[Math.max(0, k - 1)];
-        const b = stations[Math.min(n - 1, k + 1)];
-        const dx = b.x - a.x, dz = b.z - a.z;
-        const len = Math.hypot(dx, dz) || 1;
-        stations[k].tx = dx / len;
-        stations[k].tz = dz / len;
-        const ds = Math.max(b.d - a.d, 1e-3);
-        const grad = Math.max(0, (a.y - b.y) / ds);
-        // Calibration matters more than the formula here. A 2 % surface
-        // gradient is a lazy meander and a 20 % one is a genuine rapid; a
-        // linear ramp saturates every mountain creek in the map at "full
-        // whitewater" and renders the whole river network as white paint.
-        const steep = smoothstep(0.015, 0.20, grad);
-        // Discharge squeezed through a narrow channel is fast, and fast water
-        // over a rough bed aerates even where it is not steep.
-        const pinch = clamp01(stations[k].flow * 5 / Math.max(stations[k].w, 1.5));
-        // Standing water is not turbulent, and a delta is the slowest water in
-        // the whole reach: the same discharge over three times the area.
-        stations[k].turb = clamp01(steep * 0.85 + pinch * 0.25) * (1 - stations[k].lake);
-      }
-      // Smooth turbulence along the reach — foam does not switch on per-vertex.
-      const sm = stations.map((s) => s.turb);
-      for (let k = 0; k < n; k++) {
-        const a = sm[Math.max(0, k - 2)], b = sm[Math.max(0, k - 1)];
-        const c = sm[k], d = sm[Math.min(n - 1, k + 1)], e = sm[Math.min(n - 1, k + 2)];
-        stations[k].turb = (a + b * 2 + c * 3 + d * 2 + e) / 9;
-      }
-
-      // ── emit into spatial buckets. A station that straddles two buckets is
-      // duplicated into both; a few thousand extra vertices is a cheaper price
-      // than losing frustum culling on a 3 km river network.
-      const placed = new Map();   // `${bucket}:${station}` -> first vertex index
-      const put = (bk, si) => {
-        const key = bk * 100000 + si;
-        const hit = placed.get(key);
-        if (hit !== undefined) return hit;
-        const b = getBucket(bk);
-        const s = stations[si];
-        const base = b.n;
-        const hw = s.w * 0.5;
-        // ── hand over to the lake, in height ────────────────────────────────
-        // The mouth's y already converges onto the lake surface in the bake, so
-        // free-flowing reaches keep RIVER_LIFT and the last third of the mouth
-        // passes *under* the standing water. That is the handover: the lake
-        // mesh has renderOrder 4 against the ribbon's 6 and writes depth, so
-        // once the ribbon is below it the depth test discards it and the lake
-        // is what you see. No hard quad edge in mid-air, and no coplanar
-        // double-draw either — the ribbon is either 6 cm clear above the lake
-        // or 45 cm clear below it, and the crossing takes one station over
-        // water metres deep.
-        const lift = RIVER_LIFT * (1 - s.lake) - 0.45 * smoothstep(0.62, 1.0, s.lake);
-        for (let c = 0; c < COLS.length; c++) {
-          const off = COLS[c] * hw;
-          b.pos.push(s.x - s.tz * off, s.y + lift, s.z + s.tx * off);
-          b.side.push(COLS[c]);
-          b.dist.push(s.d);
-          b.flow.push(s.flow);
-          b.turb.push(s.turb);
-          b.wid.push(s.w);
-          b.lake.push(s.lake);
-          b.tan.push(s.tx, s.tz);
-        }
-        b.n += COLS.length;
-        placed.set(key, base);
-        return base;
-      };
-
-      for (let k = 0; k < n - 1; k++) {
-        const s = stations[k];
-        const bk = bucketOf(s.x, s.z);
-        const a = put(bk, k);
-        const c = put(bk, k + 1);
-        const b = getBucket(bk);
-        for (let q = 0; q < COLS.length - 1; q++) {
-          b.idx.push(a + q, c + q, a + q + 1);
-          b.idx.push(a + q + 1, c + q, c + q + 1);
-        }
-      }
-    }
-
-    let tris = 0;
-    for (const [, b] of buckets) {
-      if (!b.idx.length) continue;
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
-      geo.setAttribute('aSide', new THREE.Float32BufferAttribute(b.side, 1));
-      geo.setAttribute('aDist', new THREE.Float32BufferAttribute(b.dist, 1));
-      geo.setAttribute('aFlow', new THREE.Float32BufferAttribute(b.flow, 1));
-      geo.setAttribute('aTurb', new THREE.Float32BufferAttribute(b.turb, 1));
-      geo.setAttribute('aWidth', new THREE.Float32BufferAttribute(b.wid, 1));
-      // 0 free-flowing, 1 standing. Nothing in water_river.js reads it yet —
-      // the shader is another author's file this round and the request to
-      // consume it (fold foam and the flow scroll out, and take alpha to zero
-      // rather than relying on the ribbon sinking under the lake) is filed as
-      // C1 in docs/INTEGRATION_REQUESTS.md. Supplied now so that landing it is
-      // one declaration and no geometry change; an attribute the program does
-      // not use is never bound.
-      geo.setAttribute('aLake', new THREE.Float32BufferAttribute(b.lake, 1));
-      geo.setAttribute('aTan', new THREE.Float32BufferAttribute(b.tan, 2));
-      geo.setIndex(b.idx);
-      geo.computeBoundingSphere();
-      geo.boundingSphere.radius *= 1.1;
-      const mesh = new THREE.Mesh(geo, this.riverMaterial);
-      mesh.receiveShadow = true;
-      mesh.renderOrder = 6;
-      mesh.matrixAutoUpdate = false;
-      mesh.updateMatrix();
-      mesh.name = 'RiverChunk';
-      this.group.add(mesh);
-      this._meshes.push(mesh);
-      tris += b.idx.length / 3;
-    }
-    this.riverTriangles = tris;
-  }
-
-  // ── lakes ──────────────────────────────────────────────────────────────────
   /**
-   * The lake surface is a mesh over the baked water grid, not a set of flat
-   * tiles laid on top of it.
+   * The water surface: a mesh over the baked water grid, cut on a contour of
+   * (water - bed).
    *
-   * The previous build averaged the water height over a 48 m tile and drew one
-   * quad at that level. Over the near-flat valley floors this map is full of,
-   * a neighbouring tile averaging 0.4 m differently moves the waterline by tens
-   * of metres — which is precisely why the lakes read as hard-edged slabs
-   * floating over the ground, with dead-straight tile seams through the middle
-   * of a single body of water.
-   *
-   * Instead: one vertex every ~8 m carrying the *local* baked surface height,
-   * cells emitted only where there is water, the whole thing dilated so the
-   * per-pixel depth fade has geometry to finish inside. The polygon boundary is
-   * then always well outside the visible waterline, and the waterline itself is
-   * decided by the terrain.
+   * Everything here is a statement about ONE field. The cells that get geometry,
+   * the height each vertex sits at, the two distances the vertices carry and the
+   * field handed to WorldData at the end are all derived from the same depth
+   * raster, so nothing downstream can disagree about where the water is.
    *
    * ── the boundary is a contour, not a cell edge ──────────────────────────────
-   * Two things were still quantising the shoreline to the 8 m lattice, and
-   * between them they are the straight polygonal segments in the baseline
-   * capture:
+   * Cells wholly inside emit a plain quad; the rim is cut by marching squares on
+   * the depth field at SURF_ISO with the crossing point interpolated along each
+   * lattice edge, so the boundary polyline follows a terrain contour and its
+   * vertices land anywhere on an edge rather than only on lattice points. The
+   * visible waterline is not this boundary in any case — it is a per-pixel depth
+   * fade against the terrain, and the boundary sits metres outside it on the dry
+   * side so the fade always finishes inside geometry.
    *
-   *   1. The mesh stopped on cell edges. It is now cut on the marching-squares
-   *      contour of (water − terrain) at LAKE_ISO, with the crossing point
-   *      interpolated along each lattice edge, so the boundary polyline follows
-   *      a terrain contour and its vertices land anywhere on an edge rather
-   *      than only on lattice points. Cells wholly inside still emit a plain
-   *      quad — the interior never needed fixing, only the rim.
-   *   2. `aWet` was the fraction of the (up to four) touching cells that held
-   *      water: 0, ¼, ½, ¾ or 1. LAKE_FRAG gates alpha on it, so the alpha edge
-   *      inherited a five-level, grid-aligned staircase however good the
-   *      per-pixel depth fade underneath it was. It is now a smooth function of
-   *      the vertex's own depth, which leaves that fade — which reads the
-   *      terrain per pixel — as the only thing deciding where the water ends.
+   * ── the two distances ───────────────────────────────────────────────────────
+   * aShore is a SIGNED chamfer, in metres, positive inside the water. It is what
+   * lets the shader ration a shoreline term by a real horizontal distance
+   * instead of by depth-over-gradient, which is exact on a bank and explodes on
+   * a flat apron — and this map is mostly flat apron. Two of the shipped pale
+   * slabs were terms rationed by that quantity running unrationed.
    *
-   * The dilation also had to grow. LAKE_FRAG draws a damp band out to
-   * `uWetBand` metres of *negative* depth on the dry side; one 8 m ring reaches
-   * −0.5 m on a gentle bank, so the band was being cut off mid-fade on a
-   * straight cell edge. It now grows outward until the contour has somewhere to
-   * land, capped at LAKE_DILATE rings.
-   *
-   * ── and the level-step cull no longer punches notches ───────────────────────
-   * Quads spanning more than LAKE_LEVEL_STEP are still refused, for the reason
-   * recorded at the constant. What changed is that they are far rarer: the bake
-   * now gives every body one flat level instead of a per-cell surface that
-   * domed with the priority flood's epsilon, so a legitimate lake no longer
-   * trips the test at all and only a genuine lip between two bodies does.
+   * aSpan is how open the water is here: the local maximum of the inside
+   * chamfer, so it is the half-width of a channel and the cap on a lake. It is
+   * what the ribbon's aWidth attribute was, derived from the grid instead of
+   * from a polyline, and it is why a 1.5 m brook and a 60 m river can share one
+   * set of shoreline constants.
    */
-  _buildLakes() {
+  _buildSurface() {
     const world = this.ctx.world;
     const R = world.res;
     const half = world.half;
     const texel = world.texel ?? (world.worldSize / R);
 
-    const S = Math.max(1, Math.round(LAKE_QUAD / texel));  // grid cells per quad
+    const S = Math.max(1, Math.round(SURF_QUAD / texel));   // grid texels per quad
     const quadM = S * texel;
-    const G = Math.floor(R / S);                           // quads per side
+    const G = Math.floor(R / S);                            // quads per side
     const DRY = -9999;
 
     // ── coarse pass: is there water in this quad, and at what level? ─────────
+    //
+    // TWO masks, and the difference between them is a defect that has now been
+    // shipped twice in two different colours.
+    //
+    //   hasW  the baked grid says something about the water surface here. It is
+    //         what the mesh is built over, because a cell whose surface is a
+    //         few centimetres under its own bed still has to carry the right
+    //         level for its neighbours to interpolate against.
+    //   wet   there is actually water standing here: surface above bed. This is
+    //         the one the shore chamfer is measured from, so that a distance to
+    //         the waterline is a distance to where the water visibly ENDS.
+    //
+    // 19 121 texels of this bake are the first and not the second — the shallow
+    // aprons the fill leaves round every basin. Measuring the chamfer off hasW
+    // hands those a POSITIVE shore distance while their depth is negative,
+    // which is a contradiction, and every shoreline term that rations itself by
+    // "how far out on the dry side am I" then reads zero and runs unrationed
+    // across the whole apron. That is a slab in the foreground of 'mouth',
+    // whatever colour the band happens to be painted.
     const level = new Float32Array(G * G).fill(DRY);
+    const hasW = new Uint8Array(G * G);
     const wet = new Uint8Array(G * G);
+    // The deepest texel under each quad. Used only to decide how far the
+    // dilation may grow — see the note at the vertex field for why the CONTOUR
+    // may not be cut on a quantity gathered this widely.
+    const bedLo = new Float32Array(G * G).fill(Infinity);
     for (let cz = 0; cz < G; cz++) {
       for (let cx = 0; cx < G; cx++) {
-        let n = 0, sum = 0;
+        let n = 0, sum = 0, lo = Infinity, standing = 0;
         for (let j = 0; j < S; j++) {
           const row = (cz * S + j) * R;
           for (let i = 0; i < S; i++) {
-            const v = world.water[row + cx * S + i];
+            const gi = row + cx * S + i;
+            const h = world.height[gi];
+            if (h < lo) lo = h;
+            const v = world.water[gi];
             if (v < -9000) continue;
             n++; sum += v;
+            if (v > h) standing = 1;
           }
         }
+        const k = cz * G + cx;
+        bedLo[k] = lo;
         if (!n) continue;
-        wet[cz * G + cx] = 1;
-        level[cz * G + cx] = sum / n;
+        hasW[k] = 1;
+        wet[k] = standing;
+        level[k] = sum / n;
       }
     }
 
     // ── drop stray specks ───────────────────────────────────────────────────
-    // The baked water grid leaves isolated single cells scattered across the
-    // valley wherever the fill algorithm caught a local pit. Each one becomes
-    // an 8 m slab of water sitting in the middle of dry meadow, and a critic
-    // pass logged three of them in one frame as evidence of a broken mask.
-    // A body of water this small has no shoreline, no depth and no reflection
-    // to speak of — it is a puddle-shaped bug. Flood-fill and discard anything
-    // under three quads.
+    // The baked water grid leaves isolated cells wherever the fill caught a
+    // local pit. Each one becomes a slab of water sitting in dry meadow, and a
+    // critic pass logged three in one frame as evidence of a broken mask. A body
+    // that small has no shoreline, no depth and no reflection — it is a
+    // puddle-shaped bug.
+    //
+    // On area ALONE it would also delete channels, which is new: at 8 m quads a
+    // 5 m channel was never resolved in the first place, and at 4 m a 30 m reach
+    // of one is 8 cells. So the test is area AND compactness — a puddle is small
+    // in both axes, a channel fragment is long in one. Anything elongated
+    // survives whatever its area.
     {
-      const MIN_CELLS = 3;
+      const MIN_CELLS = Math.max(3, Math.round(120 / (quadM * quadM)));
+      const MIN_EXTENT = Math.round(24 / quadM);
       const seen = new Uint8Array(G * G);
       const stack = new Int32Array(G * G);
       const comp = new Int32Array(G * G);
+      // Walked over hasW, judged on wet. A component is thrown away if it holds
+      // no standing water at all — an apron the fill flagged and then left dry,
+      // which would otherwise draw a ring of damp band in the middle of a
+      // meadow — or if it is a puddle.
       for (let k0 = 0; k0 < G * G; k0++) {
-        if (!wet[k0] || seen[k0]) continue;
-        let sp = 0, n = 0;
+        if (!hasW[k0] || seen[k0]) continue;
+        let sp = 0, n = 0, standing = 0;
+        let xlo = G, xhi = -1, zlo = G, zhi = -1;
         stack[sp++] = k0; seen[k0] = 1;
         while (sp > 0) {
           const k = stack[--sp];
           comp[n++] = k;
+          if (wet[k]) standing++;
           const cx = k % G, cz = (k / G) | 0;
-          if (cx > 0 && wet[k - 1] && !seen[k - 1]) { seen[k - 1] = 1; stack[sp++] = k - 1; }
-          if (cx < G - 1 && wet[k + 1] && !seen[k + 1]) { seen[k + 1] = 1; stack[sp++] = k + 1; }
-          if (cz > 0 && wet[k - G] && !seen[k - G]) { seen[k - G] = 1; stack[sp++] = k - G; }
-          if (cz < G - 1 && wet[k + G] && !seen[k + G]) { seen[k + G] = 1; stack[sp++] = k + G; }
+          if (cx < xlo) xlo = cx; if (cx > xhi) xhi = cx;
+          if (cz < zlo) zlo = cz; if (cz > zhi) zhi = cz;
+          if (cx > 0 && hasW[k - 1] && !seen[k - 1]) { seen[k - 1] = 1; stack[sp++] = k - 1; }
+          if (cx < G - 1 && hasW[k + 1] && !seen[k + 1]) { seen[k + 1] = 1; stack[sp++] = k + 1; }
+          if (cz > 0 && hasW[k - G] && !seen[k - G]) { seen[k - G] = 1; stack[sp++] = k - G; }
+          if (cz < G - 1 && hasW[k + G] && !seen[k + G]) { seen[k + G] = 1; stack[sp++] = k + G; }
         }
-        if (n < MIN_CELLS) {
-          for (let i = 0; i < n; i++) { wet[comp[i]] = 0; level[comp[i]] = DRY; }
+        const extent = Math.max(xhi - xlo, zhi - zlo) + 1;
+        if (!standing || (n < MIN_CELLS && extent < MIN_EXTENT)) {
+          for (let i = 0; i < n; i++) {
+            wet[comp[i]] = 0; hasW[comp[i]] = 0; level[comp[i]] = DRY;
+          }
         }
       }
     }
 
+    // ── distance to the nearest dry cell, in metres (two-pass chamfer) ───────
+    // Computed on the undilated wet mask, so it is a real distance to the
+    // waterline. Signed: the second sweep runs the same chamfer outward over the
+    // dry side, which is what gives the damp band a horizontal reach it cannot
+    // derive from depth.
+    const FAR = 1e6;
+    const din = new Float32Array(G * G);
+    const dout = new Float32Array(G * G);
+    for (let k = 0; k < G * G; k++) {
+      din[k] = wet[k] ? FAR : 0;
+      dout[k] = wet[k] ? 0 : FAR;
+    }
+    const chamfer = (d) => {
+      for (let cz = 0; cz < G; cz++) {
+        for (let cx = 0; cx < G; cx++) {
+          const k = cz * G + cx;
+          let v = d[k];
+          if (cx > 0) v = Math.min(v, d[k - 1] + 1);
+          if (cz > 0) v = Math.min(v, d[k - G] + 1);
+          if (cx > 0 && cz > 0) v = Math.min(v, d[k - G - 1] + 1.41);
+          if (cx < G - 1 && cz > 0) v = Math.min(v, d[k - G + 1] + 1.41);
+          d[k] = v;
+        }
+      }
+      for (let cz = G - 1; cz >= 0; cz--) {
+        for (let cx = G - 1; cx >= 0; cx--) {
+          const k = cz * G + cx;
+          let v = d[k];
+          if (cx < G - 1) v = Math.min(v, d[k + 1] + 1);
+          if (cz < G - 1) v = Math.min(v, d[k + G] + 1);
+          if (cx < G - 1 && cz < G - 1) v = Math.min(v, d[k + G + 1] + 1.41);
+          if (cx > 0 && cz < G - 1) v = Math.min(v, d[k + G - 1] + 1.41);
+          d[k] = v;
+        }
+      }
+    };
+    chamfer(din);
+    chamfer(dout);
+    const cap = SHORE_CAP / quadM;
+    const shore = new Float32Array(G * G);
+    for (let k = 0; k < G * G; k++) {
+      const v = wet[k] ? Math.min(din[k], cap) : -Math.min(dout[k], cap);
+      shore[k] = v * quadM;
+    }
+
+    // ── how open the water is: a local maximum of the inside chamfer ─────────
+    // Sampled on a coarse grid and read back bilinearly. A running max over a
+    // wide neighbourhood at full resolution is two million cells times fifty
+    // taps at load time; a block maximum plus its eight neighbours is O(N) and
+    // is more than smooth enough for a quantity that only ever scales a band
+    // width by a factor of two.
+    const CB = Math.max(1, Math.round(16 / quadM));         // block, in cells
+    const SG = Math.ceil(G / CB);
+    const blockMax = new Float32Array(SG * SG);
+    for (let k = 0; k < G * G; k++) {
+      if (!wet[k]) continue;
+      const cx = (k % G) / CB | 0, cz = ((k / G) | 0) / CB | 0;
+      const bi = cz * SG + cx;
+      const v = Math.min(din[k], cap) * quadM;
+      if (v > blockMax[bi]) blockMax[bi] = v;
+    }
+    const span = new Float32Array(SG * SG);
+    for (let bz = 0; bz < SG; bz++) {
+      for (let bx = 0; bx < SG; bx++) {
+        let m = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          const z = bz + dz; if (z < 0 || z >= SG) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const x = bx + dx; if (x < 0 || x >= SG) continue;
+            const v = blockMax[z * SG + x];
+            if (v > m) m = v;
+          }
+        }
+        span[bz * SG + bx] = m;
+      }
+    }
+    const spanAt = (cx, cz) => {
+      const fx = Math.min(SG - 1.001, Math.max(0, cx / CB - 0.5));
+      const fz = Math.min(SG - 1.001, Math.max(0, cz / CB - 0.5));
+      const x0 = fx | 0, z0 = fz | 0, tx = fx - x0, tz = fz - z0;
+      const a = span[z0 * SG + x0], b = span[z0 * SG + x0 + 1];
+      const c = span[(z0 + 1) * SG + x0], d = span[(z0 + 1) * SG + x0 + 1];
+      return (a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz;
+    };
+
     // ── dilate outward, carrying the water level with it ────────────────────
-    // These cells are never *seen* as water unless the ground genuinely lies
-    // below the lake there; they exist so neither the shoreline fade nor the
-    // damp band on the dry side of it ever coincides with the edge of the mesh.
-    //
-    // One ring was not enough for the second of those. LAKE_FRAG draws the damp
-    // margin out to uWetBand metres of negative depth, and on a 1:16 bank a
-    // single 8 m ring reaches half a metre — so the band was being cut off
-    // mid-fade on a straight cell edge, which is a polygonal shoreline drawn in
-    // damp grey instead of in blue. A breadth-first walk carries the level out
-    // as far as the contour needs, and no further: a ring stops growing where
-    // the ground has already climbed past LAKE_ISO.
-    const mask = Uint8Array.from(wet);
+    // These cells are never SEEN as water unless the ground genuinely lies below
+    // the surface there; they exist so neither the shoreline fade nor the damp
+    // band on the dry side of it ever coincides with the edge of the mesh. The
+    // walk stops growing where the ground has already climbed past SURF_ISO, so
+    // a steep bank costs one ring and a flat apron gets what it needs.
+    const mask = Uint8Array.from(hasW);
     {
+      const rings = Math.max(1, Math.round(SURF_DILATE_M / quadM));
+      // ...of which the first SURF_MIN_RINGS are UNCONDITIONAL, and that is not
+      // a detail. Two things eat into the ring before it becomes geometry: the
+      // emit loop refuses any cell one of whose four corners touches no mask
+      // cell, which erodes the mask by one; and the contour then cuts inside
+      // what is left. So a ring that stops as soon as the ground has climbed
+      // past the iso value — which on a steep bank is after ONE ring — leaves
+      // the mesh boundary sitting on the cell edges of the water itself, and
+      // the shoreline fade never gets to run: the visible edge of the water is
+      // then the polygon, at a full quad of resolution, complete with its
+      // 45-degree corners. Measured by rendering coverage with the discards
+      // removed: the last mesh pixel on the far bank in 'river' still had two
+      // metres of water under it. That is the sawtooth along every incised
+      // channel in the frame.
+      const minRings = Math.max(2, Math.round(8 / quadM));
       let frontier = [];
-      for (let k = 0; k < G * G; k++) if (wet[k]) frontier.push(k);
-      for (let ring = 0; ring < LAKE_DILATE && frontier.length; ring++) {
+      for (let k = 0; k < G * G; k++) if (hasW[k]) frontier.push(k);
+      for (let ring = 0; ring < rings && frontier.length; ring++) {
         const next = [];
         for (const k of frontier) {
           const cx = k % G, cz = (k / G) | 0;
@@ -560,12 +493,7 @@ export class Water extends System {
               if (mask[nk]) continue;
               mask[nk] = 1;
               level[nk] = level[k];
-              // Stop growing once the terrain here is already well above the
-              // water: past that the contour has landed and further rings are
-              // geometry nothing will ever draw on.
-              const gx = Math.min(R - 1, x * S + (S >> 1));
-              const gz = Math.min(R - 1, z * S + (S >> 1));
-              if (level[k] - world.height[gz * R + gx] > LAKE_ISO) next.push(nk);
+              if (ring < minRings || level[k] - bedLo[nk] > SURF_ISO) next.push(nk);
             }
           }
         }
@@ -573,110 +501,110 @@ export class Water extends System {
       }
     }
 
-    // ── distance to the nearest dry cell, in metres (two-pass chamfer) ───────
-    // Fetch, not depth, is what decides whether water is glassy or textured.
-    const FAR = 1e6;
-    const dist = new Float32Array(G * G);
-    for (let k = 0; k < G * G; k++) dist[k] = wet[k] ? FAR : 0;
-    for (let cz = 0; cz < G; cz++) {
-      for (let cx = 0; cx < G; cx++) {
-        const k = cz * G + cx;
-        let d = dist[k];
-        if (cx > 0) d = Math.min(d, dist[k - 1] + 1);
-        if (cz > 0) d = Math.min(d, dist[k - G] + 1);
-        if (cx > 0 && cz > 0) d = Math.min(d, dist[k - G - 1] + 1.41);
-        if (cx < G - 1 && cz > 0) d = Math.min(d, dist[k - G + 1] + 1.41);
-        dist[k] = d;
-      }
-    }
-    for (let cz = G - 1; cz >= 0; cz--) {
-      for (let cx = G - 1; cx >= 0; cx--) {
-        const k = cz * G + cx;
-        let d = dist[k];
-        if (cx < G - 1) d = Math.min(d, dist[k + 1] + 1);
-        if (cz < G - 1) d = Math.min(d, dist[k + G] + 1);
-        if (cx < G - 1 && cz < G - 1) d = Math.min(d, dist[k + G + 1] + 1.41);
-        if (cx > 0 && cz < G - 1) d = Math.min(d, dist[k + G - 1] + 1.41);
-        dist[k] = d;
-      }
-    }
-
-    // ── emit, chunked for frustum culling ───────────────────────────────────
-    const perChunk = Math.max(8, Math.round(LAKE_CHUNK / quadM));
-    const chunks = Math.ceil(G / perChunk);
-    const vmap = new Int32Array((perChunk + 1) * (perChunk + 1));
-    let quadCount = 0, tris = 0;
-
     // ── the vertex field, computed once for the whole lattice ───────────────
     // Vertex value = mean over the (up to four) mesh cells touching it, so the
-    // surface is continuous across chunk borders.
-    //
-    // This used to be recomputed inside the chunk loop, up to four times per
-    // vertex. It is hoisted out because it is no longer only the mesh's own
-    // business: this grid, plus `drawn` below, IS the lake surface — nothing
-    // else about the geometry decides where the water is or how high it sits.
-    // Handing exactly these two arrays to WorldData at the end of the build is
-    // what stops `getWaterHeight` from deriving a second, different water
-    // surface from the same bake (docs/INTEGRATION_REQUESTS.md, P1). Anything
-    // computed here a second time somewhere else can drift; this cannot.
+    // surface is continuous across chunk borders. Hoisted out of the chunk loop
+    // because it is not only the mesh's own business: this grid, plus `drawn`
+    // below, IS the water surface. Handing exactly these arrays to WorldData at
+    // the end is what stops getWaterHeight deriving a second, different surface
+    // from the same bake.
     const VG = G + 1;
     const vLevel = new Float32Array(VG * VG);
-    const vWet = new Float32Array(VG * VG);
     const vShore = new Float32Array(VG * VG);
+    const vSpan = new Float32Array(VG * VG);
     const vDepth = new Float32Array(VG * VG).fill(-1e9);
     const vOk = new Uint8Array(VG * VG);
-    // Metres of negative depth over which aWet lets go. It has to reach past
-    // uWetBand or the damp band is throttled off before the depth gate in the
-    // shader — which is the bug the previous author measured on the far shore
-    // of the big lake — and it has to stay short of a cliff, which is the case
-    // the gate exists for.
-    const wetSpan = (this.shared?.uWetBand?.value ?? 3.1) + 0.4;
     for (let vz = 0; vz < VG; vz++) {
       for (let vx = 0; vx < VG; vx++) {
-        let n = 0, lv = 0, sh = 0;
+        // REAL WATER WINS. A vertex takes its level from the wet cells touching
+        // it if there are any, and only falls back to the dilation ring when
+        // there are none.
+        //
+        // This is the whole of the missing-quad defect. A ring cell's level is a
+        // fiction: the flood that grew the ring copied it from whichever wet
+        // cell the walk reached it from. That is fine in open country and wrong
+        // wherever two limbs of a meander pass within a couple of ring widths of
+        // each other, which on a sinuous river is constantly — the two rings
+        // overlap, and a vertex that averages a ring cell fed by the upstream
+        // limb with the real water of the downstream one lands metres between
+        // them. Averaged in, that fiction drags the surface DOWN below the bed
+        // in mid-channel, so the terrain covers the quad and a flat wedge of
+        // riverbed appears lying across the water with water on both sides of
+        // it; and where it drags two corners apart by more than the level-step
+        // cull allows, the quad is thrown away and the wedge is a hole instead.
+        // Both were visible in the same frame from a chase camera over a
+        // meandering reach, and neither is terrain: hiding the water in one page
+        // load leaves a smooth, continuous, unbroken channel behind.
+        let n = 0, lv = 0, sh = 0, wn = 0, wlv = 0;
         for (let dz = -1; dz <= 0; dz++) {
           const cz = vz + dz; if (cz < 0 || cz >= G) continue;
           for (let dx = -1; dx <= 0; dx++) {
             const cx = vx + dx; if (cx < 0 || cx >= G) continue;
             const k = cz * G + cx;
             if (!mask[k]) continue;
-            n++; lv += level[k]; sh += Math.min(dist[k], 12) * quadM;
+            n++; lv += level[k]; sh += shore[k];
+            if (wet[k]) { wn++; wlv += level[k]; }
           }
         }
         if (!n) continue;
         const vi = vz * VG + vx;
-        vOk[vi] = 1; vLevel[vi] = lv / n; vShore[vi] = sh / n;
-        // Depth at the vertex against the terrain under it, sampled at the
-        // texel the vertex actually sits on. This is the field the contour is
-        // cut on and the field aWet is derived from, so the mesh boundary, the
-        // alpha gate and the per-pixel shoreline fade in the shader are all
-        // statements about the same surface.
-        const gx = Math.min(R - 1, vx * S), gz = Math.min(R - 1, vz * S);
-        const dep = vLevel[vi] - world.height[gz * R + gx];
-        vDepth[vi] = dep;
-        // Smooth in depth, not a count of wet cells. The old form took five
-        // discrete values on an 8 m lattice and LAKE_FRAG gates alpha on it,
-        // so the waterline inherited a grid-aligned staircase no matter how
-        // good the per-pixel fade underneath it was.
-        vWet[vi] = dep <= -wetSpan ? 0
-                 : 0.25 + 0.75 * clamp01((dep + 0.05) / 0.5);
+        vOk[vi] = 1;
+        vLevel[vi] = wn ? wlv / wn : lv / n;
+        vShore[vi] = sh / n;
+        vSpan[vi] = spanAt(vx, vz);
+        // Depth at the vertex, against the LOWEST GROUND WITHIN ONE QUAD of it.
+        // The contour is cut on this field and the shader's per-pixel shoreline
+        // fade is cut on the same difference sampled per pixel, so the two have
+        // to be statements about the same surface — and the window this is
+        // gathered over is exactly how far they are allowed to disagree.
+        //
+        // A little generosity is right and free: the visible waterline is the
+        // per-pixel fade, so a mesh a metre too big costs nothing while a mesh a
+        // metre too small cuts the water off inside its own edge, and on a 5 m
+        // channel crossing a 4 m lattice a point sample can land on the bank and
+        // delete the channel.
+        //
+        // MEASURED, and this is where the generosity has to stop: taken over the
+        // four QUADS touching a vertex — an 8 m box, each quad already a minimum
+        // over its own texels — a vertex on a bank beside a 3 m channel reports
+        // three metres of depth. The contour then never crosses the iso value
+        // anywhere near the bank, every cell in the dilation ring emits a full
+        // quad, and the mesh ends on a straight cell edge with the shoreline
+        // fade still saturated. That is the row of hard pale wedges along the
+        // far bank in the 'river' framing: not a foam term, not a colour — the
+        // polygon itself, uncut. One quad, centred on the vertex, is 4 m of
+        // slack and holds the disagreement inside the fade.
+        const tx0 = Math.max(0, vx * S - (S >> 1)), tx1 = Math.min(R - 1, vx * S + (S >> 1));
+        const tz0 = Math.max(0, vz * S - (S >> 1)), tz1 = Math.min(R - 1, vz * S + (S >> 1));
+        let lo = Infinity;
+        for (let tz = tz0; tz <= tz1; tz++) {
+          const row = tz * R;
+          for (let tx = tx0; tx <= tx1; tx++) {
+            const h = world.height[row + tx];
+            if (h < lo) lo = h;
+          }
+        }
+        vDepth[vi] = vLevel[vi] - lo;
       }
     }
 
-    // Which quads actually became triangles. Set in the emit loop below rather
-    // than predicted here, so it can never claim surface the mesh does not have.
+    // Which quads actually became triangles. Set in the emit loop rather than
+    // predicted here, so it can never claim surface the mesh does not have.
     const drawn = new Uint8Array(G * G);
 
-    // ── marching squares over the lattice ───────────────────────────────────
-    // Corners are walked 00 → 01 → 11 → 10, which is the reverse of the natural
-    // order and is what the quad emission below always used; keep it, or every
-    // lake triangle faces down. Inside corners contribute themselves, and every
-    // edge whose two ends disagree contributes the point where the depth field
-    // crosses LAKE_ISO. Fanned from the first vertex, so a wholly-inside cell
-    // is exactly the two triangles it was before.
+    // ── emit, chunked for frustum culling ───────────────────────────────────
+    const perChunk = Math.max(8, Math.round(SURF_CHUNK / quadM));
+    const chunks = Math.ceil(G / perChunk);
+    const vmap = new Int32Array((perChunk + 1) * (perChunk + 1));
+    let quadCount = 0, tris = 0;
+
+    // Corners are walked 00 -> 01 -> 11 -> 10, which is the reverse of the
+    // natural order and is what the quad emission always used; keep it, or every
+    // triangle faces down. Inside corners contribute themselves, and every edge
+    // whose two ends disagree contributes the point where the depth field
+    // crosses SURF_ISO. Fanned from the first vertex, so a wholly-inside cell is
+    // exactly the two triangles it would have been.
     const CX = [0, 0, 1, 1], CZ = [0, 1, 1, 0];
-    // Edge identity, so the two cells either side of one lattice edge land on
-    // the same interpolated point and the surface does not split along it.
     const edgeMap = new Map();
     const poly = new Int32Array(8);
 
@@ -686,7 +614,7 @@ export class Water extends System {
         const cz1 = Math.min(G, cz0 + perChunk), cx1 = Math.min(G, cx0 + perChunk);
         vmap.fill(-1);
         edgeMap.clear();
-        const pos = [], wetA = [], shoreA = [], idx = [];
+        const pos = [], shoreA = [], spanA = [], idx = [];
 
         const vert = (vx, vz) => {
           const li = (vz - cz0) * (perChunk + 1) + (vx - cx0);
@@ -696,17 +624,17 @@ export class Water extends System {
           if (!vOk[vi]) return -1;
           const id = pos.length / 3;
           pos.push(-half + vx * quadM, vLevel[vi], -half + vz * quadM);
-          wetA.push(vWet[vi]);
           shoreA.push(vShore[vi]);
+          spanA.push(vSpan[vi]);
           vmap[li] = id;
           return id;
         };
 
-        // The point on the lattice edge (ax,az)→(bx,bz) where depth crosses the
-        // iso value, with everything the vertex carries interpolated to it.
+        // The point on the lattice edge where depth crosses the iso value, with
+        // everything the vertex carries interpolated to it. Canonicalised, so
+        // the two cells sharing an edge produce one vertex from one arithmetic
+        // rather than two that nearly agree and split the surface along it.
         const cross = (ax0, az0, bx0, bz0) => {
-          // Canonical direction, so the two cells sharing this edge produce one
-          // vertex from one arithmetic rather than two that nearly agree.
           const swap = bz0 < az0 || (bz0 === az0 && bx0 < ax0);
           const ax = swap ? bx0 : ax0, az = swap ? bz0 : az0;
           const bx2 = swap ? ax0 : bx0, bz2 = swap ? az0 : bz0;
@@ -715,14 +643,14 @@ export class Water extends System {
           const hit = edgeMap.get(key);
           if (hit !== undefined) return hit;
           const fa = vDepth[ai], fb = vDepth[bi];
-          let t = (LAKE_ISO - fa) / (fb - fa);
+          let t = (SURF_ISO - fa) / (fb - fa);
           t = t < 0.03 ? 0.03 : t > 0.97 ? 0.97 : t;
           const id = pos.length / 3;
           pos.push(-half + (ax + (bx2 - ax) * t) * quadM,
                    vLevel[ai] + (vLevel[bi] - vLevel[ai]) * t,
                    -half + (az + (bz2 - az) * t) * quadM);
-          wetA.push(vWet[ai] + (vWet[bi] - vWet[ai]) * t);
           shoreA.push(vShore[ai] + (vShore[bi] - vShore[ai]) * t);
+          spanA.push(vSpan[ai] + (vSpan[bi] - vSpan[ai]) * t);
           edgeMap.set(key, id);
           return id;
         };
@@ -735,40 +663,26 @@ export class Water extends System {
                         (cz + 1) * VG + cx + 1, cz * VG + cx + 1];
             if (!vOk[ci[0]] || !vOk[ci[1]] || !vOk[ci[2]] || !vOk[ci[3]]) continue;
 
-            // A lake surface is level. Reject any cell whose corners disagree
-            // about where the surface is by more than a step.
-            //
-            // This is the bug behind everything a critic pass logged against
-            // the waterfall view. The baked water grid marks the pool above a
-            // lip and the pool below it as water, sixty metres apart in
-            // height; the mesh then joins them with one 8 m quad, which is a
-            // near-vertical wall of "lake" hanging down the cliff face. Two of
-            // them across one gorge is the floating pale-blue X with no source
-            // and no ground contact. One of them in front of a fall is the
-            // "flat pale rectangle with horizontal pencil streaking" — the
-            // pencil streaking is the *lake's* wind ripple seen edge on, and
-            // an isolation capture (lake chunks hidden, everything else on)
-            // shows the falls system's curtain behind it, correctly white and
-            // fully streaked, having been covered up the whole time.
-            //
-            // It used to punch notches out of a perfectly good rim as well,
-            // because a lake's baked surface domed with the priority flood's
-            // epsilon and a steep-banked cell could trip the test on its own.
-            // The bake hands over one flat level per body now, so this fires
-            // only where there really are two bodies with a lip between them.
+            // A water surface does not stand on end. Reject any cell whose
+            // corners disagree about where the surface is by more than a step:
+            // the baked grid marks the pool above a lip and the pool below it as
+            // water, sixty metres apart in height, and one quad joining them is
+            // a near-vertical wall of water hanging down a cliff face. Two of
+            // them across one gorge is the floating pale-blue X a critic pass
+            // logged in the waterfall view.
             let lo = Infinity, hi = -Infinity;
             for (let q = 0; q < 4; q++) {
               const L = vLevel[ci[q]];
               if (L < lo) lo = L;
               if (L > hi) hi = L;
             }
-            if (hi - lo > LAKE_LEVEL_STEP) continue;
+            if (hi - lo > SURF_LEVEL_STEP) continue;
 
             let np = 0;
             for (let q = 0; q < 4; q++) {
               const qn = (q + 1) & 3;
-              const inA = vDepth[ci[q]] > LAKE_ISO;
-              const inB = vDepth[ci[qn]] > LAKE_ISO;
+              const inA = vDepth[ci[q]] > SURF_ISO;
+              const inB = vDepth[ci[qn]] > SURF_ISO;
               if (inA) poly[np++] = vert(cx + CX[q], cz + CZ[q]);
               if (inA !== inB) {
                 poly[np++] = cross(cx + CX[q], cz + CZ[q], cx + CX[qn], cz + CZ[qn]);
@@ -784,59 +698,51 @@ export class Water extends System {
 
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-        geo.setAttribute('aWet', new THREE.Float32BufferAttribute(wetA, 1));
         geo.setAttribute('aShore', new THREE.Float32BufferAttribute(shoreA, 1));
+        geo.setAttribute('aSpan', new THREE.Float32BufferAttribute(spanA, 1));
         geo.setIndex(idx);
         geo.computeBoundingSphere();
         geo.boundingSphere.radius *= 1.05;
-        const mesh = new THREE.Mesh(geo, this.lakeMaterial);
+        const mesh = new THREE.Mesh(geo, this.material);
         mesh.receiveShadow = true;
         mesh.renderOrder = 4;
         mesh.matrixAutoUpdate = false;
         mesh.updateMatrix();
-        mesh.name = 'LakeChunk';
+        mesh.name = 'WaterChunk';
         this.group.add(mesh);
         this._meshes.push(mesh);
         tris += idx.length / 3;
       }
     }
-    this.lakeQuads = quadCount;
-    this.lakeTriangles = tris;
+    this.surfaceQuads = quadCount;
+    this.surfaceTriangles = tris;
 
     // ── publish the surface, so nothing has to guess at it ──────────────────
     // Every gameplay query about water — the chase boom floor, wildlife spawn
     // rejection, grass and cover scatter, the camper's fording drag and its
-    // audio — goes through `WorldData.getWaterHeight`, which was a nearest-texel
+    // audio — goes through WorldData.getWaterHeight, which was a nearest-texel
     // point sample of the raw bake. This mesh is not a point sample of the raw
-    // bake: it coarsens sixteen 2 m texels into an 8 m quad, dilates outward so
-    // the shoreline fade has geometry to finish inside, cuts its rim on a depth
-    // contour, and averages each vertex over the quads that touch it. Two
-    // derivations of one field, and they
-    // disagreed under 91% of drawn water shallower than 15 cm and under 41 m of
-    // it at (-768, 832) — measured in P1.
+    // bake: it coarsens the grid into quads, dilates outward so the shoreline
+    // fade has geometry to finish inside, cuts its rim on a depth contour, and
+    // averages each vertex over the quads that touch it. Two derivations of one
+    // field disagreed under 91% of drawn water shallower than 15 cm and under
+    // 41 m of it at (-768, 832).
     //
-    // So hand over the field the mesh was actually built from. `levelAt` below
-    // evaluates the same triangles the renderer draws, from the same numbers, so
-    // it cannot drift: there is now one water surface, not two.
-    //
-    // ~740 KB at res 1536 (385² floats + 384² bytes).
+    // So hand over the field the mesh was actually built from. levelAt evaluates
+    // the same triangles the renderer draws, from the same numbers, so it cannot
+    // drift.
     const origin = -half;
-    const iso = LAKE_ISO;
+    const iso = SURF_ISO;
     const field = {
-      level: vLevel,          // (G+1)² lattice, metres
-      depth: vDepth,          // (G+1)² lattice, water minus terrain
-      drawn,                  // G², 1 where the mesh emitted anything here
+      level: vLevel,
+      depth: vDepth,
+      drawn,
       G, quadM, origin, iso,
       /**
-       * Height of the drawn lake surface at world (x, z), or null where the
-       * mesh does not cover the point.
-       *
-       * Two tests, matching the two things the emit loop does: the cell has to
-       * have emitted geometry at all, and the point has to be on the inside of
-       * the contour. The second is bilinear where marching squares is linear
-       * along each edge, so the two disagree only inside a saddle cell — a few
-       * centimetres of a boundary that is itself three metres out on the dry
-       * side of the waterline, where the answer is `no water here` either way.
+       * Height of the drawn water surface at world (x, z), or null where the
+       * mesh does not cover the point. Two tests, matching the two things the
+       * emit loop does: the cell has to have emitted geometry at all, and the
+       * point has to be on the inside of the contour.
        */
       levelAt(x, z) {
         const fx = (x - origin) / quadM, fz = (z - origin) / quadM;
@@ -865,12 +771,9 @@ export class Water extends System {
         return best;
       },
     };
-    this.lakeField = field;
-    // WorldData is another author's file and does not implement the receiving
-    // side yet — the exact patch is filed as P1-reply in
-    // docs/INTEGRATION_REQUESTS.md. Until it lands this is a no-op and the mesh
-    // is identical either way; `this.lakeField` is readable from tools meanwhile.
-    if (typeof world.setLakeField === 'function') world.setLakeField(field);
+    this.waterField = field;
+    if (typeof world.setWaterField === 'function') world.setWaterField(field);
+    void clamp01;
   }
 
   // ── per frame ──────────────────────────────────────────────────────────────
@@ -916,7 +819,8 @@ export class Water extends System {
     else if (lighting?.fogNear) u.uSkyHorizon.value.copy(lighting.fogNear);
 
     // Reflected land is lit by the same sun; tie it to the key so a dawn lake
-    // does not reflect a golden-hour hillside.
+    // does not reflect a golden-hour hillside. This is also the colour the damp
+    // band is drawn from, so the band warms and cools with the bank beside it.
     if (sun) {
       const k = Math.min(1.6, 0.35 + sun.intensity * 0.22);
       u.uRefGround.value.copy(PALETTE.grassGoldDeep).multiply(sun.color).multiplyScalar(k * 0.9);

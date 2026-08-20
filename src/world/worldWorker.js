@@ -15,6 +15,7 @@ self.onmessage = (e) => {
     data.height.buffer, data.water.buffer, data.riverMask.buffer,
     data.flow.buffer, data.moisture.buffer, data.hardness.buffer,
     data.sediment.buffer, data.slope.buffer, data.distToWaterM.buffer,
+    data.flowVX.buffer, data.flowVZ.buffer, data.flowQ.buffer, data.flowT.buffer,
   ];
   self.postMessage({ type: 'done', data, ms }, transfer);
 };
