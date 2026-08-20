@@ -52,8 +52,23 @@ const FOG_PARS = /* glsl */`
   uniform sampler2D uMassifMap;   // world-space terrain sun-visibility field
   uniform float uMassifShadow;    // 0 = off
   uniform float uMassifScale;     // 1 / worldSize
+  uniform float uSunShadeNorm;    // 1 / sun.shadow.intensity
+  uniform float uSunShadeWarm;    // hue push inside the sun's own cast shadow
+  uniform float uSunShadeDeep;    // extra absorption inside it
+  uniform vec3  uSunShadeMul;     // the hue axis, as a multiplier at w = 1
   varying vec3  vFogWorldPos;
   varying vec3  vFogCamPos;
+#endif
+
+// gSunShadow is Stylize's capture of the sun's shadow factor out of
+// lights_fragment_begin, declared in <common>. Guarded exactly as Stylize
+// guards it, and for the same reason: a custom ShaderMaterial that opts into
+// the fog chunks without including <common> would fail to link without it, and
+// one that includes both would redeclare it. Whichever chunk the preprocessor
+// reaches first wins and the other is skipped, in either order.
+#ifndef STYLIZE_SUN_SHADOW
+#define STYLIZE_SUN_SHADOW
+float gSunShadow = 1.0;
 #endif`;
 
 const FOG_VERT_PARS = /* glsl */`
@@ -168,6 +183,42 @@ const FOG_FRAG = /* glsl */`
     mShade = max(mShade, mMassif);
   }
 
+  // -- the sun's OWN cast shadow, reached from here -------------------------
+  // The lead a predecessor left when a usage limit killed them: the fog chunk
+  // is the one hook that lands after every material has finished shading, so it
+  // is the only place a cast shadow can be given a hue that survives to the
+  // final pixel. L3 is why that matters - stylizeShadowCool() runs at
+  // lights_fragment_end and grass then adds translucency, sky fill, wrapped
+  // diffuse and sheen on top of it in its own tonemapping hook, so on an
+  // eye-level meadow the tint reaches a minority of the pixel. Measured there:
+  // re-authoring shadowCool warm moved ground rects inside a cast shadow by
+  // srgb(180,143,65) -> srgb(177,144,63). Nothing.
+  //
+  // And it costs no texture fetch. Stylize already patches
+  // lights_fragment_begin to stash the shadow factor in gSunShadow, so the
+  // value is in a register by the time this runs. Sampling the shadow map a
+  // second time here would have been a full PCF_SOFT kernel on every fogged
+  // fragment in the game.
+  //
+  // This is where the AREA is. X2's diagnosis, measured tile against tile, is
+  // that round 040's mass was not larger than today's cast shadows - it was the
+  // same shapes in a different HUE. These are those shapes.
+  float sunShade = clamp((1.0 - gSunShadow) * uSunShadeNorm, 0.0, 1.0) * cloudFade;
+
+  // Blue-led pixels are exempt from the hue treatment entirely. Recorded as L5
+  // and in X6-reply: a blue cut on a gold pixel is a warm deepening, and the
+  // same cut on a blue-led pixel is a hue change - it is what took the river
+  // pool to murky olive when the tint was deepened toward its target, and it is
+  // why X6 declined to spend the tint at all. Ground is R > G > B at every hour
+  // of the cycle (the table beside cloudShadowTint), so this cannot fire on the
+  // surface the tint is authored for. It fires on water.
+  float chMax = max(gl_FragColor.r, gl_FragColor.g);
+  float blueLed = smoothstep(0.0, 0.25, (gl_FragColor.b - chMax) / max(gl_FragColor.b, 1e-4));
+
+  // Unioned into the same mask, so a pixel that is both cloud-shadowed and
+  // sun-shadowed pays once and not twice.
+  mShade = max(mShade, uSunShadeDeep * sunShade);
+
   if (mShade > 0.0) {
     // Per-channel absorption, not a grey multiply. uCloudShadowTint is how much
     // of 'mShade' each channel pays; vec3(1.0) is the old neutral darkening.
@@ -176,18 +227,51 @@ const FOG_FRAG = /* glsl */`
     // asked for and the hue plates 2 and 3 actually put under their big ground
     // masses. The triple is authored at luma 1.0 so hue and depth stay
     // independent knobs.
-    //
-    // Blue-led pixels take the darkening neutrally. Recorded as L5 and in
-    // X6-reply: a blue cut on a gold pixel is a warm deepening, and the same
-    // cut on a blue-led pixel is a hue change — it is what took the river pool
-    // to murky olive when the tint was deepened to hit its target. Ground is
-    // R > G > B at every hour of the cycle (the table beside cloudShadowTint),
-    // so this can never fire on the surface the tint is authored for; it fires
-    // on water and on anything else the shadow lands on that is not gold.
-    float chMax = max(gl_FragColor.r, gl_FragColor.g);
-    float blueLed = smoothstep(0.0, 0.25, (gl_FragColor.b - chMax) / max(gl_FragColor.b, 1e-4));
     vec3 absorb = mix(uCloudShadowTint, vec3(1.0), blueLed);
     gl_FragColor.rgb *= max(vec3(0.0), vec3(1.0) - mShade * absorb);
+  }
+
+  // The hue rotation, on its OWN axis, and the axis was found by measurement
+  // rather than taken from the critic's numbers - which do not transfer here.
+  //
+  // Measured on the drive view in one boot, shadow.intensity forced to 0 and
+  // then back to ship, over the near-field ground the cast shadow moves (21% of
+  // the frame), all in DISPLAY space:
+  //
+  //                          luma vs lit   green vs red   blue vs red
+  //     shipping                 0.650        -3.9%          -3.0%
+  //     critic's plate target    0.640         held          -17%
+  //     +green axis, w = 1.6     0.689        +5.2%          -0.1%
+  //     -green axis, w = 0.8     0.636       -14.5%          -4.1%
+  //
+  // Two things fell out of that and both are worth the space.
+  //
+  // FIRST: THE BLUE HALF OF THE TARGET IS UNREACHABLE FROM A MULTIPLY HERE.
+  // A 22% linear cut on blue moved the rendered blue by nothing - it sits at
+  // 36 to 38 in every row above. Shadowed gold's blue is already down at the
+  // grade's floor, where a multiply is swamped by the lift applied after it.
+  // That is very likely why every attempt to move this hue by scaling blue,
+  // from Stylize's cool tint onward, has measured as almost nothing. Anyone
+  // quoting the -17% target should know it cannot be bought this way.
+  //
+  // SECOND: HOLDING GREEN, WHICH IS THE CRITIC'S OTHER AXIS, GOES THE WRONG WAY
+  // ON OUR GROUND. Row three is that target met almost exactly, and the
+  // shadowed meadow arrives olive - a step toward the grey the player's
+  // constraint forbids - because on gold, lifting green against red is a move
+  // toward yellow-green. Their plate's shadow is a different pigment from ours
+  // and the ratio does not carry across.
+  //
+  // What does work is the opposite: take green DOWN against red, and a shadowed
+  // gold meadow goes to srgb(117,78,38), a warm russet brown, against lit
+  // srgb(164,128,56). That is hue separation on the axis gold actually has, it
+  // is the player's own words for what they asked for, and it cannot approach
+  // grey or mauve or rose from any direction because every step is toward red.
+  // Luma goes 0.650 to 0.636, so it lands on the critic's depth target without
+  // having been aimed at it, and X2's instruction not to deepen is respected to
+  // within one and a half percent.
+  if (uSunShadeWarm > 0.0) {
+    float w = uSunShadeWarm * sunShade * (1.0 - blueLed);
+    gl_FragColor.rgb *= mix(vec3(1.0), uSunShadeMul, w);
   }
 
   // ── Mie inscattering: the haze glows around the sun ─────────────────────
@@ -597,6 +681,26 @@ const DEFAULTS = {
   // 0.40 on `drive` and `meadow`; see the ladder in
   // docs/INTEGRATION_REQUESTS.md X7.
   massifShadow: 0.30,
+
+  // -- THE CAST SHADOW'S OWN HUE, APPLIED WHERE IT SURVIVES (X2) ------------
+  //
+  // A pure hue rotation inside the sun's cast shadow, at constant luminance, on
+  // the same axis as cloudShadowTint. See the note in the fog chunk for why it
+  // has to be applied there and not in Stylize (L3), and for why it is free.
+  // 1.0. Swept 0 / 0.8 / 1.4 / 2.2 on drive, and checked at nine views and six
+  // hours. Below 0.8 the mass is present but not yet a shape; at 1.4 the
+  // shadowed meadow is unmistakable and the frame as a whole has begun to go
+  // red. 1.0 is the last setting at which only the shadow moves.
+  sunShadeWarm: 1.0,
+  // Extra absorption inside the cast shadow, unioned with the cloud and massif
+  // masks. Held at 0 unless the ladder earns it: the shadow already carries
+  // sun.shadow.intensity 0.62 and X2 forbids raising contrast.
+  sunShadeDeep: 0.0,
+  // The multiplier the cast shadow is mixed toward, at w = 1. Red up, green
+  // down, blue untouched - blue cannot be moved from here at all (see the fog
+  // chunk). Luma 0.960, so a full-strength shadow gives up 4% of its value to
+  // buy the hue, and that is the entire depth cost of this term.
+  sunShadeMul: new THREE.Vector3(1.15, 0.90, 1.00),
 };
 
 let patched = false;
@@ -649,6 +753,10 @@ export function patchFogChunks() {
     uMassifMap:        { value: sharedMassifMap },
     uMassifShadow:     { value: 0.0 },
     uMassifScale:      { value: 1 / 3072 },
+    uSunShadeNorm:     { value: 1 / 0.62 },
+    uSunShadeWarm:     { value: DEFAULTS.sunShadeWarm },
+    uSunShadeDeep:     { value: DEFAULTS.sunShadeDeep },
+    uSunShadeMul:      { value: DEFAULTS.sunShadeMul.clone() },
   });
   verifyUniforms('Atmosphere', ['uFogDensity', 'uFogFarColor', 'uFogSunDir', 'uCloudMap',
                                 'uMassifMap', 'uMassifShadow']);
@@ -677,6 +785,7 @@ export class Atmosphere {
       cloudMap: sharedCloudMap,
       cloudOffset: new THREE.Vector2(),
       cloudShadowTint: DEFAULTS.cloudShadowTint.clone(),
+      sunShadeMul: DEFAULTS.sunShadeMul.clone(),
       massifMap: sharedMassifMap,
       massifScale: 1 / 3072,
     };
@@ -761,6 +870,11 @@ export class Atmosphere {
     const handover = Number.isFinite(ext)
       ? 1 - Math.min(1, Math.max(0, (ext - 200) / 220)) : 1;
     this._massifFade = handover * handover * (3 - 2 * handover);
+    // getShadow() folds sun.shadow.intensity in, so a fully shadowed pixel
+    // reads 1 - intensity rather than 0. Normalise with the live value and not
+    // a constant: Lighting owns that number and has moved it three times.
+    const si = globalThis.__lighting?.sun?.shadow?.intensity;
+    this._sunShadeNorm = (Number.isFinite(si) && si > 0.05) ? 1 / si : 1 / 0.62;
 
     for (const m of this._materials) {
       const u = m.userData?.shader?.uniforms ?? m.uniforms;
@@ -796,6 +910,12 @@ export class Atmosphere {
           u.uCloudSoftHi.value = p.cloudSoftHi;
           u.uCloudScale2.value = p.cloudScale2;
         }
+      }
+      if (u.uSunShadeWarm) {
+        u.uSunShadeWarm.value = p.sunShadeWarm;
+        u.uSunShadeMul.value.copy(p.sunShadeMul);
+        u.uSunShadeDeep.value = p.sunShadeDeep;
+        u.uSunShadeNorm.value = this._sunShadeNorm ?? (1 / 0.62);
       }
       if (u.uMassifShadow) {
         u.uMassifShadow.value = this.massif.ready ? p.massifShadow * (this._massifFade ?? 1) : 0.0;
