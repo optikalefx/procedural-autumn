@@ -84,12 +84,34 @@ export class WorldData {
   }
 
   /** Water surface height, or null when there is no water here. */
+  /** The drawn lake surface, handed over by Water._buildLakes. */
+  setLakeField(field) { this._lake = field; }
+
   getWaterHeight(x, z) {
     const [gx, gz] = this.toGrid(x, z);
     const gxi = clamp(Math.round(gx), 0, this.res - 1);
     const gzi = clamp(Math.round(gz), 0, this.res - 1);
-    const w = this.water[gzi * this.res + gxi];
-    return w < -9000 ? null : w;
+    const raw = this.water[gzi * this.res + gxi];
+    const w = raw < -9000 ? null : raw;
+    // The lake mesh is not a point sample of this grid: it coarsens sixteen 2 m
+    // texels into an 8 m quad, dilates one ring so the shoreline fade has
+    // geometry to finish inside, and averages each vertex over the quads that
+    // touch it. So the two derivations disagreed, and this query — the one every
+    // other system trusts — was the wrong one: it returned null under 4-5% of
+    // water over four metres deep, and at (-768, 832) reported dry ground under
+    // 41.1 m of drawn lake. That is somewhere an animal can stand, grass can
+    // grow, and the chase camera sinks with no floor under it.
+    //
+    // Answer for the surface that is actually DRAWN, and take the higher of the
+    // two where both know something — under-reporting is the only direction that
+    // puts an animal in a lake or takes the floor out from under the camera.
+    // Over the dry part of the dilation ring the level is below the terrain, so
+    // getWaterDepth still returns 0 and nothing there changes: measured, the
+    // ring splits 35 774 dry / 181 wet, identical before and after.
+    const m = this._lake ? this._lake.levelAt(x, z) : null;
+    if (w === null) return m;
+    if (m === null) return w;
+    return w > m ? w : m;
   }
 
   /** Depth of water above the bed; <= 0 means dry. */
