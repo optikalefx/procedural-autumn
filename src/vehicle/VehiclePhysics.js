@@ -326,7 +326,31 @@ export class VehiclePhysics {
     // a test so the hand-over is a crossfade: right at the reversal point the
     // wheels are part braking and part driving, which is what stops the change
     // of direction reading as a jolt.
-    const backward = clamp01((-this.speed - 0.25) / 1.35);
+    //
+    // The guards on it were all paid for, in `drive.mjs`'s free scenario going
+    // from 0.0-0.4 s inverted and no auto-recoveries to 6.6 s and three:
+    //
+    //  · `this.speed` is velocity projected on the *body's* forward axis, which
+    //    on a nose-up jump swings through zero and goes negative while the
+    //    camper is still travelling forwards at 20 m/s. Measure along the
+    //    heading in the HORIZONTAL plane instead.
+    //  · In a handbrake drift the body rotates past 90 degrees to its own
+    //    travel, so even the horizontal projection reads negative while the
+    //    camper is sliding forwards at speed. Require the motion to be roughly
+    //    straight back (`align`), not merely rearward of a spinning body.
+    //  · Airborne, there is nothing to brake, and locking the wheels in the air
+    //    means landing on locked wheels — which is how it ended up on its roof.
+    //  · Reversing is a low-speed manoeuvre by nature. Nothing above 12 m/s is
+    //    a reversal; everything up there is a jump or a slide.
+    const fh = Math.hypot(this._fwd.x, this._fwd.z);
+    const groundSpeed = fh > 1e-3
+      ? (this.velocity.x * this._fwd.x + this.velocity.z * this._fwd.z) / fh
+      : this.speed;
+    const vHoriz = Math.hypot(this.velocity.x, this.velocity.z);
+    const align = vHoriz > 0.25 ? -groundSpeed / vHoriz : 1;   // 1 = straight back
+    const backward = (this.airborne || ctrl.handbrake > 0.5 || vHoriz > 12)
+      ? 0
+      : clamp01((-groundSpeed - 0.25) / 1.35) * smoothstep(0.45, 0.8, align);
 
     if (ctrl.throttle > 0.02) {
       // ── low-range crawl ───────────────────────────────────────────────────
