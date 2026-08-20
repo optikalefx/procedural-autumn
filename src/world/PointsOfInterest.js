@@ -9,7 +9,7 @@ export class PointsOfInterest {
   constructor(world, seed = 20261018) {
     this.world = world;
     this.rng = mulberry32(seed ^ 0x1eaf);
-    this.list = { vista: [], meadow: [], forest: [], river: [], waterfall: [], peak: [], road: [] };
+    this.list = { vista: [], meadow: [], forest: [], river: [], waterfall: [], peak: [], road: [], mouth: [] };
     this._scan();
   }
 
@@ -126,6 +126,51 @@ export class PointsOfInterest {
               x, z, y: h, yaw: byaw,
               score: nearRiver * 100 - moist * 35 - slope * 45,
             });
+
+            // River mouth: a bank that can see *both* a flowing channel and
+            // standing water. There was no canonical framing for the junction
+            // between the two, which is unfortunate, because every defect the
+            // water round exists to fix lives exactly there — the ribbon that
+            // used to cross the lake as a dead pale stripe, the step where a
+            // channel surface meets a lake surface, the polygonal rim. The
+            // `river` anchor scores *against* standing water (it wants a dry
+            // level bank on a flowing reach) and the `hero` and `peaks` views
+            // are too far off to read a waterline at all, so the junction was
+            // being judged, when it was judged, by accident.
+            //
+            // The yaw cannot be the riverbank's. `byaw` maximises river mask
+            // over 12-60 m, which on a bank beside a junction points *up* the
+            // channel — away from the water it is arriving at. Aimed that way
+            // the first anchor this found was a ridge with a mountain filling
+            // the frame and two lakes in the corners.
+            //
+            // So score a yaw on what the shot has to contain: channel in the
+            // near field, standing water behind it. That is the composition —
+            // you look along the last reach of the river and watch it arrive.
+            let myaw = byaw, bestM = -1, nearLake = 0;
+            for (let a = 0; a < 24; a++) {
+              const ang = (a / 24) * Math.PI * 2;
+              let riv = 0, lak = 0;
+              for (const d of [10, 18, 28]) {
+                riv = Math.max(riv, W.getRiver(x + Math.sin(ang) * d, z + Math.cos(ang) * d));
+              }
+              for (const d of [30, 45, 65, 90]) {
+                lak = Math.max(lak, W.getWaterDepth(x + Math.sin(ang) * d, z + Math.cos(ang) * d));
+              }
+              nearLake = Math.max(nearLake, lak);
+              // Both, multiplicatively: a yaw with only one of them is a view
+              // we already have.
+              const acc = Math.min(riv, 0.5) * Math.min(lak, 3.0);
+              if (acc > bestM) { bestM = acc; myaw = ang; }
+            }
+            // A junction is by construction on the valley floor. Anything high
+            // is a perched tarn on a shoulder, and it frames as alpine rock.
+            if (bestM > 0.05 && h < W.maxHeight * 0.32) {
+              this.list.mouth.push({
+                x, z, y: h, yaw: myaw,
+                score: bestM * 60 + Math.min(nearLake, 3.5) * 12 - slope * 60 - h * 0.25,
+              });
+            }
           }
         }
       }

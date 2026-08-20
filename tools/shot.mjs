@@ -56,6 +56,11 @@ export const VIEWS = {
   // Sits on a shoreline, which is exactly where the grass system grows its
   // tallest reed fringe — at 5 m the camera was inside the reeds.
   river:     { anchor: 'river',    height: 6.0, dist: 30, pitch: -0.18, fov: 54, hour: 16.9, yawOffset: 0.42, index: 3 },
+  // The junction: a channel arriving at standing water. The framing this round
+  // is actually about, and the one no other view covers — `river` scores dry
+  // flowing bank and scores lakes *down*, and hero/peaks are too far off to
+  // read a waterline.
+  mouth:     { anchor: 'mouth',    height: 5.0, dist: 26, pitch: -0.16, fov: 54, hour: 16.9 },
   // The tallest waterfall, framed from below.
   waterfall: { anchor: 'waterfall',height: 11,  dist: 58,  pitch: 0.08,  fov: 50, hour: 16.2, yawOffset: -0.55 },
   // High peaks and aerial perspective.

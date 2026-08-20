@@ -33,7 +33,6 @@ npm-debug.log*
 .vscode/
 *.swp
 *~
-review/
 
 # ── scratch ───────────────────────────────────────────────────────────────────
 # tools/_scratch/ holds one-off diagnostic instruments and IS tracked — several

@@ -77,8 +77,41 @@ node tools/winding.mjs       # triangle winding vs normals
 node tools/shot.mjs --view river --out shots/<you>/river.png --w 1600 --h 900
 ```
 
-The canonical framings for this round are `river`, `waterfall`, `hero` and
-`drive`. `tools/shot.mjs` takes a lock, so captures from three authors
-serialise rather than fighting; a capture may sit waiting for a minute.
+The canonical framings for this round are **`mouth`**, `river`, `waterfall`,
+`hero` and `drive`. `tools/shot.mjs` takes a lock, so captures from three
+authors serialise rather than fighting; a capture may sit waiting for a minute.
+
+## `--view mouth` — read this before you capture anything else
+
+`mouth` is a new framing added for this round: a bank looking along the last
+reach of a river into the standing water it arrives at. Nothing else in the
+harness covered the junction — `river` scores standing water *down* because it
+wants a dry flowing bank, and `hero` and `peaks` are far too distant to read a
+waterline — so the junction was only ever judged by accident.
+
+Capture it and look at `shots/w-base/mouth.png` first. It is much harsher than
+the `river` framing and it is where this round will be judged. What it shows
+today, which no other view made obvious:
+
+1. The water is a **pale, near-neutral grey-blue slab** — in places *brighter
+   than the sky*, and brighter than the land. In every reference plate water is
+   the darkest and coolest note in the frame. This is the "wet dirt" failure
+   the comments in `water_common.js` already describe, arriving anyway.
+2. The shoreline is a **hard cut against a wide flat brown mud band**. The
+   plates have gold grass overhanging a bright broken waterline; there is no
+   mud band in them at all.
+3. **No lace waterline anywhere in the frame.** Not weak — absent.
+4. A **hard-edged brown blob floats in the middle of the water** with a dark
+   shadow under it, reading as a stain rather than as a rock in a lake.
+5. Straight polygon segments where the water meets the bank, bottom-left and
+   mid-right.
+6. Dark smudges over the open water, which look like the reflection march
+   returning banded results rather than anything on the surface.
+
+Note the anchor cache. `review/anchors.json` pins the resolved framings so a
+before/after comparison measures the change and not a different patch of map,
+and **concurrent `shot.mjs` runs race on writing it** — if a framing moves
+under you mid-round, that is why. Do not pass `--refresh-views`; it re-resolves
+every anchor and invalidates the whole review archive.
 
 Do not commit. The integrator commits, so that a bad round is one revert.
