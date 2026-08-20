@@ -126,6 +126,17 @@ export class GroundCover extends System {
     this._qy = new THREE.Quaternion();
     this._s = new THREE.Vector3();
     this._tilt = new THREE.Vector3();
+    // ── near-field LOD instrument ────────────────────────────────────────
+    // A multiplier on every instance's own visibility radius, applied in
+    // `_repack` to BOTH the cull test and the `aCov.w` the shader fades
+    // against, so the two can never disagree. It exists because the only
+    // trustworthy way to price reach on a machine five other authors are
+    // capturing on is an A/B *within one page load* — see
+    // `tools/_scratch/lodab.mjs` and the perf author's note in
+    // INTEGRATION_REQUESTS ("A/B'd within one page load ... so machine
+    // contention hits both arms equally"). Ships at 1; nothing reads it unless
+    // a harness sets it.
+    this.visMul = 1;
     this._lastPack = new THREE.Vector3(1e9, 1e9, 1e9);
     this._lastCell = { x: 1e9, z: 1e9 };
     this._catchup = 0;
@@ -363,6 +374,7 @@ export class GroundCover extends System {
     list.sort((a, b) => a.d - b.d);
 
     const m = this._m, p = this._p, q = this._q, qy = this._qy, s = this._s, tilt = this._tilt;
+    const vm = this.visMul;
     let total = 0, tris = 0;
 
     for (let ci = 0; ci < list.length; ci++) {
@@ -384,7 +396,7 @@ export class GroundCover extends System {
           const i = k * COVER_STRIDE;
           const x = data[i], z = data[i + 2];
           const dx = x - cam.x, dz = z - cam.z;
-          const vis = data[i + 16];
+          const vis = data[i + 16] * vm;
           if (dx * dx + dz * dz > vis * vis) continue;
 
           const slot = this._byArch[data[i + 17]][data[i + 18]];
