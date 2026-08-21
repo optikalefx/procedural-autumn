@@ -311,6 +311,30 @@ async function main() {
       if (window.__settleStable) await window.__settleStable(600, 24);
     }, { f: job.f, kind: job.kind, site, hour: job.hour ?? HOUR });
     await page.waitForTimeout(600);
+
+    // ── is any UI in the frame? ─────────────────────────────────────────────
+    //
+    // A prompt or a reticle in a contact sheet is close to invisible when you
+    // are reading the sheet for art — you see a camp, not a caption — and it
+    // silently corrupts a blind A/B, because the two sides differ by a band of
+    // text as well as by the thing under judgement. One dusk frame in this
+    // round shipped with "E pack up this camp" across the middle of it.
+    //
+    // Borrowed from procedural-fall-73's scopelab, which added it for the same
+    // reason. Cheap, and it turns a defect that hides in a sheet into one line
+    // of console output.
+    const ui = await page.evaluate(() => {
+      const p = document.querySelector('.pa-camp-prompt');
+      const r = window.__camp?.reticle;
+      return {
+        prompt: p && getComputedStyle(p).opacity !== '0' ? p.textContent.trim() : '',
+        reticle: !!(r?.mesh?.visible && r._fade > 0.01),
+        aim: (window.__THREE && window.__camp) ? null : null,
+      };
+    });
+    if (ui.prompt) console.log(`  !! prompt visible in ${job.name}: ${JSON.stringify(ui.prompt)}`);
+    if (ui.reticle) console.log(`  !! placement reticle visible in ${job.name}`);
+
     const out = resolve(DIR, `${job.name}.png`);
     await page.screenshot({ path: out });
     console.log(`shot: ${out}`);

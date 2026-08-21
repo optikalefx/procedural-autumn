@@ -437,7 +437,16 @@ export class Camp extends System {
     }
 
     this._updateFocus(veh);
-    this.reticle.update(dt, t, this.state === STATE.AIMING && !this.scope?.active);
+    // The reticle's visibility is driven from HERE, not from `_interact`, so
+    // suppressing the aim in `_interact` was not enough on its own: the ring
+    // simply stayed wherever it last was, lit, through every frame of a
+    // capture. A shared assertion in campshot.mjs found it in the first two
+    // frames it ever ran on, having been present in every dusk sheet this
+    // round. Borrowed from procedural-fall-73, who added the same check to
+    // their own harness for the same reason.
+    const aimVisible = this.state === STATE.AIMING && !this.scope?.active
+                    && (!window.__forceCamera || !!window.__campForceAim);
+    this.reticle.update(dt, t, aimVisible);
     this._carryFireLight(dt, t, camera);
   }
 
