@@ -114,6 +114,7 @@ export class Vehicle extends System {
     this._w = {};
     this._exhaustAcc = 0;
     this._headlightMix = 0;
+    this._parkDip = 0;         // headlights dipped because the park brake is on
     this._lastSpeed = 0;
     this._accelSmooth = 0;
     this._lateralSmooth = 0;
@@ -775,9 +776,33 @@ export class Vehicle extends System {
     const want = 1 - smoothstep(-0.02, 0.20, sunY);
     this._headlightMix = damp(this._headlightMix, want, 2.2, dt);
     const k = this._headlightMix;
-    for (const l of this.headlights) l.intensity = k * 190;
+
+    // ── dip on the park brake ────────────────────────────────────────────
+    //
+    // Two 190-intensity spots reaching 68 m are the right headlights for
+    // driving and the wrong ones for standing still. A peer session measuring
+    // the camp telescope's dusk values found a pool 8-10 m across in which the
+    // MEADOW ITSELF clipped to pure white, and spent two rounds darkening a
+    // white telescope by a full stop before building an instrument good enough
+    // to see that the hotspot owned fourteen of the seventeen points of
+    // clipping they were chasing. It was this. Anything pale standing in that
+    // beam reads blown out, and the camp brief's hardest rule is that after
+    // sundown nothing may out-value the fire.
+    //
+    // Latching the park brake is the player saying they have stopped here, so
+    // the lamps drop to a sidelight. It is also just what a person does at a
+    // campsite: you do not sit around a fire with your high beams on. Any
+    // deliberate input releases the hold and they come straight back up, so
+    // there is nothing to switch and nothing to learn.
+    //
+    // Dipped, not extinguished. A camper parked at night with its lamps dead
+    // reads as broken down rather than as camped, and the fire only lights the
+    // few metres around itself.
+    this._parkDip = damp(this._parkDip, this.brakeHold ? 1 : 0, 1.5, dt);
+    const beam = k * lerp(1, 0.06, this._parkDip);
+    for (const l of this.headlights) l.intensity = beam * 190;
     const m = this.materials;
-    m.lensHead.emissiveIntensity = lerp(0.30, 2.4, k);
+    m.lensHead.emissiveIntensity = lerp(0.30, 2.4, k) * lerp(1, 0.42, this._parkDip);
     m.lensTail.emissiveIntensity = lerp(0.45, 1.7, k) +
       // The pedal still lights them, as before; `phys.braking` adds the one
       // case the pedal cannot see — the throttle being used to stop a reverse.
