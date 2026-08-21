@@ -84,7 +84,8 @@ export class HUD extends System {
     const corner = el('div', 'pa-corner pa-game-only');
     this.muteChip = button('pa-chip', ICON.sound, () => this.applyMute(!this.isMuted()), 'Mute');
     this.photoChip = button('pa-chip', ICON.camera, () => this.togglePhoto(), 'Photo mode');
-    this.gearChip = button('pa-chip', ICON.gear, () => this.toggleSettings(), 'Settings');
+    // `pa-gear` marks the one chip that survives "Interface: Off" — see hud.css.
+    this.gearChip = button('pa-chip pa-gear', ICON.gear, () => this.toggleSettings(), 'Settings');
     corner.append(this.muteChip, this.photoChip, this.gearChip);
     root.appendChild(corner);
 
@@ -234,13 +235,18 @@ export class HUD extends System {
 
   applyHudMode(v) {
     this.hudOpacity = v;
+    // "Off" is not the same as "faded to nothing". Turning the whole root
+    // transparent takes the gear chip with it, and a player who hid the
+    // interface from the settings sheet then has nothing on screen telling them
+    // how to get it back — only the H key, which is written down in the panel
+    // they just made invisible. So Off leaves the root opaque and hands the
+    // hiding to `.pa-hud-off` in hud.css, which spares the gear and the sheet.
+    const off = v <= 0;
+    this.root.classList.toggle('pa-hud-off', off);
     // A custom property, not `style.opacity`: an inline opacity outranks every
     // stylesheet rule, including the one that hides the HUD for other authors'
     // captures. See the note at the top of hud.css.
-    this.root.style.setProperty('--hud-op', String(v));
-    // At zero the HUD must also stop taking clicks, or an invisible gear chip
-    // still eats a drag on the canvas.
-    this.root.style.pointerEvents = v > 0 ? '' : 'none';
+    this.root.style.setProperty('--hud-op', String(off ? 1 : v));
     this._save();
   }
 

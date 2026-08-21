@@ -47,6 +47,7 @@
 import * as THREE from 'three';
 import {
   Parts, M, at, span, rbox, tube, rod, fabricPanel, sweptArc,
+  patch, fan, ribbon, orient, lanternMaterial,
   tintOf, sanitizeNormals,
 } from './camp_materials.js';
 import { lerp, clamp, clamp01, smoothstep } from '../core/MathUtils.js';
@@ -63,24 +64,6 @@ const QUARTER = Math.PI / 4;
 // a crown patch: a real tent has a reinforcement panel exactly there, where the
 // poles meet, so the fix and the feature are the same thing.
 const V_MAX = 0.97;
-
-/**
- * The lantern hanging inside the tent.
- *
- * The one material this module owns, and the reason for the exception is that
- * the shared kit has nothing unlit in it. At dusk the fire is meant to be the
- * only bright thing in the camp and it still is — this is a 75 mm object at
- * roughly a quarter of the flame's value, seen through a door — but it turns
- * the aperture from a black hole into a lit room, and at midday it is a small
- * warm dot inside a dark interior, which is exactly what a real one looks like
- * in daylight. Module-level and lazy, so re-pitching a camp does not leak one
- * material per pitch the way a per-build material would.
- */
-let _lanternMat = null;
-const lanternMaterial = () => (_lanternMat ??= new THREE.MeshBasicMaterial({
-  color: new THREE.Color().setHex(0xffc478, THREE.SRGBColorSpace),
-  toneMapped: true,
-}));
 
 // How far the crown is stretched into a RIDGE. See `profRZ`.
 const RIDGE_P = 0.62;
@@ -149,116 +132,6 @@ export const TENT_COLORWAYS = [
     vest: 0.26, doorOpen: true, sideGuys: true,
   },
 ];
-// ─────────────────────────────────────────────────────────────────────────────
-//  Grid emitters
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Emit a parametric patch `S(u, v) -> Vector3` as a non-indexed triangle soup.
- *
- * Winding is not assumed. For every cell the geometric normal is compared
- * against a reference direction supplied by the caller and the two triangles
- * are emitted in whichever order agrees with it. A displaced membrane folds
- * back on itself wherever a wrinkle is deep relative to the cell size, and the
- * parametrisation's own handedness stops being a reliable guide exactly there —
- * which is the failure `tools/winding.mjs` was written to catch.
- *
- * @param S     (u, v, out:Vector3) => Vector3
- * @param NU,NV cell counts
- * @param ref   (p:Vector3, out:Vector3) => Vector3 — outward direction at p
- */
-function patch(S, NU, NV, ref) {
-  const pts = new Array((NU + 1) * (NV + 1));
-  for (let j = 0; j <= NV; j++) {
-    for (let i = 0; i <= NU; i++) pts[j * (NU + 1) + i] = S(i / NU, j / NV, new THREE.Vector3());
-  }
-  const arr = new Float32Array(NU * NV * 18);
-  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
-  const nn = new THREE.Vector3(), rf = new THREE.Vector3();
-  let o = 0;
-  const tri = (a, b, c) => {
-    arr[o++] = a.x; arr[o++] = a.y; arr[o++] = a.z;
-    arr[o++] = b.x; arr[o++] = b.y; arr[o++] = b.z;
-    arr[o++] = c.x; arr[o++] = c.y; arr[o++] = c.z;
-  };
-  for (let j = 0; j < NV; j++) {
-    for (let i = 0; i < NU; i++) {
-      const a = pts[j * (NU + 1) + i];
-      const b = pts[j * (NU + 1) + i + 1];
-      const c = pts[(j + 1) * (NU + 1) + i + 1];
-      const d = pts[(j + 1) * (NU + 1) + i];
-      e1.subVectors(b, a); e2.subVectors(d, a);
-      nn.crossVectors(e1, e2);
-      ref(a, rf);
-      // `nn` is cross(b-a, d-a), which carries the same sense as the normal
-      // three will derive from triangle (a, b, c). Agreeing with the outward
-      // reference therefore means dot > 0 — get this backwards and the whole
-      // shell renders as its own dark interior, which is exactly what round 1
-      // shipped.
-      if (nn.dot(rf) > 0) { tri(a, b, c); tri(a, c, d); }
-      else { tri(a, c, b); tri(a, d, c); }
-    }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-  g.computeVertexNormals();
-  sanitizeNormals(g);
-  return g;
-}
-
-/**
- * Place a +Z-facing primitive (a flat patch, a torus) at `p` with its +Z along
- * `dir`. `at()` takes Euler angles, which is the wrong tool for "lie this patch
- * against a curved fly": the surface normal is what is known and the Euler
- * triple that produces it is not.
- */
-function orient(p, dir) {
-  return new THREE.Matrix4().compose(
-    p,
-    new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize()),
-    new THREE.Vector3(1, 1, 1),
-  );
-}
-
-/** A triangle fan from `c` out to a closed ring — the crown patch and the floor. */
-function fan(c, ring, outwardUp = true) {
-  const n = ring.length;
-  const arr = new Float32Array(n * 9);
-  let o = 0;
-  // The ring's total signed area about +Y decides the order ONCE. Deciding it
-  // per triangle is what round 1 did, and a ring with 17 mm of pole ridge in it
-  // at an 85 mm radius has segments whose individual sign disagrees with the
-  // ring's — which came out as a crown patch made of holes.
-  let area = 0;
-  for (let i = 0; i < n; i++) {
-    const a = ring[i], b = ring[(i + 1) % n];
-    area += (a.x - c.x) * (b.z - c.z) - (a.z - c.z) * (b.x - c.x);
-  }
-  const flip = (area < 0) !== outwardUp;
-  for (let i = 0; i < n; i++) {
-    const a = ring[i], b = ring[(i + 1) % n];
-    const q = flip ? [c, b, a] : [c, a, b];
-    for (const v of q) { arr[o++] = v.x; arr[o++] = v.y; arr[o++] = v.z; }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-  g.computeVertexNormals();
-  sanitizeNormals(g);
-  return g;
-}
-
-/**
- * A ribbon along a polyline of (centre, left, right) triples — pole sleeves,
- * seam tape, the zip track, the door reveal. Two-sided callers use `fabricIn`.
- */
-function ribbon(l, r, ref) {
-  const n = l.length;
-  return patch((u, v, out) => {
-    const i = Math.min(n - 1, Math.round(u * (n - 1)));
-    return out.lerpVectors(l[i], r[i], v);
-  }, n - 1, 1, ref);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 //  buildTent
 // ─────────────────────────────────────────────────────────────────────────────

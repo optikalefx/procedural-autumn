@@ -54,6 +54,30 @@
 #pa-hud.pa-hidden { opacity: 0; pointer-events: none; }
 #pa-hud.pa-photo .pa-game-only { opacity: 0; transform: translateY(10px); pointer-events: none; }
 
+/* "Interface: Off" hides the widgets, not the way back. The gear chip stays
+   lit and clickable, because with the compass, the dash and the hint gone it is
+   the only thing left on screen that says the interface can return — H is
+   written down in the sheet the player just made invisible.
+
+   That is why Off fades these rules rather than the root: opacity on #pa-hud
+   groups the whole subtree, and a child cannot out-paint a transparent parent.
+   The sheet is deliberately absent from the list — the panel you use to turn
+   the interface back on has to be readable while you use it. */
+#pa-hud.pa-hud-off .pa-compass,
+#pa-hud.pa-hud-off .pa-dash,
+#pa-hud.pa-hud-off .pa-map,
+#pa-hud.pa-hud-off .pa-hint,
+#pa-hud.pa-hud-off .pa-toast,
+#pa-hud.pa-hud-off .pa-chip:not(.pa-gear) {
+  opacity: 0;
+  /* Hidden, not merely transparent: an invisible mute chip that still takes
+     Tab or a click is worse than a visible one. Zero-duration visibility on a
+     delay, per the note by .pa-sheet. */
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.45s var(--ease), visibility 0s linear 0.45s;
+}
+
 #pa-hud * { box-sizing: border-box; margin: 0; }
 
 /* Small-caps label, used everywhere a word appears next to a number.
@@ -384,7 +408,10 @@
   place-items: center;
   cursor: pointer;
   transition: color 0.25s var(--ease), border-color 0.25s var(--ease),
-              background 0.25s var(--ease), transform 0.25s var(--ease);
+              background 0.25s var(--ease), transform 0.25s var(--ease),
+              /* so the mute and photo chips fade back in with the rest of the
+                 HUD when the interface comes off Off, instead of popping */
+              opacity 0.45s var(--ease);
   padding: 0;
 }
 .pa-chip svg { width: 1.05em; height: 1.05em; display: block; }

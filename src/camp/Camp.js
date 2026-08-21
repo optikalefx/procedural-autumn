@@ -134,6 +134,7 @@ export class Camp extends System {
     this.camps = [];
     this._pool = [];           // idle { fire, ground } pairs, built at boot
     this._packTarget = null;   // the camp the pack-up prompt would strike
+    this._suppressAim = false; // parked at a camp: no placement affordance at all
     this.root = null;
 
     this.reticle = null;
@@ -445,6 +446,7 @@ export class Camp extends System {
     // round. Borrowed from procedural-fall-73, who added the same check to
     // their own harness for the same reason.
     const aimVisible = this.state === STATE.AIMING && !this.scope?.active
+                    && !this._suppressAim
                     && (!window.__forceCamera || !!window.__campForceAim);
     this.reticle.update(dt, t, aimVisible);
     this._carryFireLight(dt, t, camera);
@@ -484,13 +486,33 @@ export class Camp extends System {
       return;
     }
 
-    // The telescope, if the player is pointing at one. Found FIRST and then
-    // checked against the distance to its OWN camp, rather than the other way
-    // round: gating on "near any camp" would let a player parked at camp A
-    // click a telescope forty metres away in camp B and send the camera across
-    // the valley.
+    // The telescope, if the player is pointing at one.
+    //
+    // Three conditions, and the third is the one that makes it feel deliberate.
+    //
+    //  1. The pointer is on a telescope. Found FIRST and then checked against
+    //     its OWN camp, rather than the other way round: gating on "near any
+    //     camp" would let a player parked at camp A click a telescope forty
+    //     metres away in camp B and send the camera across the valley.
+    //  2. They are parked at that telescope's camp.
+    //  3. **The camera is already looking at that camp, not at the camper.**
+    //
+    // Rule 3 costs one comparison and buys the whole feel of the interaction.
+    // The camera's focus is the game's existing statement of what the player is
+    // paying attention to — clicking the camper takes it back, clicking the camp
+    // gives it away, and driving takes it back always. Offering the eyepiece
+    // while the shot is still on the camper means the click both swings the
+    // focus and drops the player inside a telescope, which is two moves for one
+    // input and reads as the game grabbing the camera. Requiring the camp to
+    // have focus first makes it a sequence the player performed: look at the
+    // camp, then step up to the telescope.
+    //
+    // It also removes a real trap. The camper and the camp are both click
+    // targets and `_updateFocus` picks between them by which one the click is
+    // CENTRED on; a telescope standing between the two could otherwise take a
+    // click that was meant to bring the camera back to the car.
     const scope = this._scopeUnderPointer();
-    if (scope && veh &&
+    if (scope && veh && this._focusCamp === scope.camp &&
         Math.hypot(veh.position.x - scope.camp.x, veh.position.z - scope.camp.z) < SITE_MAX + 6) {
       this.prompt.set('<b>click</b>&nbsp; look through the telescope');
       if (this._click) {
@@ -517,6 +539,48 @@ export class Camp extends System {
       this.prompt.set('');
       return;
     }
+
+    // ── you are AT a camp; you are not shopping for another one ─────────────
+    //
+    // The player: "I know we can allow another camp without packing up, but
+    // that needs to be when you're farther away. Right now, I can't reselect
+    // the fire because my cursor is 'make another campsite'."
+    //
+    // The separation rule existed already, but it was about the AIM POINT —
+    // it refused ground that overlapped a camp and allowed everything else. So
+    // parked ten metres from your own fire, most of the screen was still
+    // offering to build, the placement ring was drawn over the meadow beside
+    // the camp, and the one thing the player actually wanted to do there — put
+    // the camera back on the fire — was competing with it.
+    //
+    // The honest rule is about where the CAMPER is, not where the pointer is.
+    // Parked at a camp, you are using that camp: the pointer belongs to the
+    // fire, the telescope and the pack-up. Making another one is something you
+    // do somewhere else, and driving there is how you say so.
+    const home = this._homeCamp(veh);
+    if (home) {
+      this._suppressAim = true;
+      this._packTarget = this._campUnderPointer();
+      clearCampAim();
+      this._aim.ok = false;
+      if (this._packTarget) {
+        this.prompt.set('<b>E</b>&nbsp; pack up this camp');
+        if (input.justPressed('KeyE')) this._strike(this._packTarget);
+      } else {
+        // Nothing. No ring, no label, no cursor state — the absence IS the
+        // answer, and a permanent "you cannot build here" caption parked over
+        // your own camp is exactly the kind of chore list this game does not
+        // have.
+        this.prompt.set('');
+        // …except when they ask. Pressing the build key is the moment, and the
+        // only moment, that a player wants to know why it did nothing.
+        if (input.justPressed('KeyE')) {
+          this.ctx.systems?.hud?.toast?.('Too close to your camp — drive on to make another');
+        }
+      }
+      return;
+    }
+    this._suppressAim = false;
 
     this._aimAt(veh);
 
@@ -562,6 +626,72 @@ export class Camp extends System {
     // cannot be argued with.
     const onCar = this._click && this._pointerOnCamper();
     if (this._aim.ok && ((this._click && !onCar) || input.justPressed('KeyE'))) this._pitch();
+  }
+
+  /**
+   * The camp the camper is parked AT, or null.
+   *
+   * `radius + SITE_MAX + 4`, because that is the geometry of the feature read
+   * backwards: a camp is built between SITE_MIN and SITE_MAX from wherever the
+   * camper stood, so any camp within SITE_MAX of you is one you could have just
+   * made from here — which is exactly the sense of "this is my camp". About
+   * 28 m for a full camp, so driving thirty metres up the track gives the
+   * placement affordance back.
+   */
+  _homeCamp(veh) {
+    if (!veh) return null;
+    let best = null, bestD = Infinity;
+    for (const c of this.camps) {
+      if (c.striking) continue;
+      const d = Math.hypot(veh.position.x - c.x, veh.position.z - c.z);
+      if (d < c.radius + SITE_MAX + 4 && d < bestD) { best = c; bestD = d; }
+    }
+    return best;
+  }
+
+  /**
+   * The camp the pointer is on, by the same centred-on test the camera focus
+   * uses — nearest miss as a fraction of each camp's own radius.
+   *
+   * Deliberately NOT `_packTarget` from the placement scorer. That is set as a
+   * side effect of scoring a site, and once placement is suppressed no site is
+   * scored, so the pack-up affordance would have vanished along with the ring.
+   * Pointing at a camp to strike it has to work on its own terms.
+   */
+  _campUnderPointer() {
+    // Where the pointer meets the GROUND, and then which camp that point is
+    // inside. Not "does the ray pass near the camp's centre in 3D", which was
+    // the first version and was wrong in a way that made the fix nearly
+    // pointless: from a chase camera behind the camper, a ray to almost any
+    // patch of lower screen passes within five metres of a camp eight metres
+    // away, so every pointer position on the meadow claimed to be on the camp
+    // and "E pack up this camp" replaced the build prompt everywhere instead
+    // of leaving the neutral state the player asked for.
+    //
+    // The ground point cannot be argued with, and it costs the same
+    // heightfield march `_aimAt` was doing before placement was suppressed.
+    const g = this._pointerGround();
+    if (!g) return null;
+    let best = null, bestD = Infinity;
+    for (const c of this.camps) {
+      if (c.striking) continue;
+      const d = Math.hypot(c.x - g.x, c.z - g.z);
+      if (d < c.radius && d < bestD) { best = c; bestD = d; }
+    }
+    return best;
+  }
+
+  /** Where the pointer meets the heightfield, or null for the sky. */
+  _pointerGround() {
+    const { input, camera, world } = this.ctx;
+    const o = this._ray.o.copy(camera.position);
+    const d = this._ray.d;
+    if (input.mouse && Number.isFinite(input.mouse.x) && !window.__forceCamera) {
+      d.set(input.mouse.x, input.mouse.y, 0.5).unproject(camera).sub(o).normalize();
+    } else {
+      camera.getWorldDirection(d);
+    }
+    return groundRay(world, o, d, 220);
   }
 
   // ── where the camera looks ────────────────────────────────────────────────

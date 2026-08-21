@@ -221,7 +221,13 @@ export class CampPrompt {
     if (text === this._text && forced === this._forced) return;
     this._text = text;
     this._forced = forced;
-    if (text) this.el.innerHTML = text;
+    // Clear the text as well as hiding the element. Leaving the old innerHTML
+    // behind is invisible to a player and a trap for everything else: a test
+    // reading `textContent` is told the prompt still says whatever it last
+    // said, and this one cost two runs of a placement test insisting that
+    // "E pack up this camp" was showing at every pointer position while the
+    // element sat at opacity 0. A screen reader would have the same problem.
+    this.el.innerHTML = text || '';
     const on = !!text && !forced;
     this.el.style.opacity = on ? '1' : '0';
     this.el.style.transform = `translate(-50%, ${on ? '0' : '8px'})`;

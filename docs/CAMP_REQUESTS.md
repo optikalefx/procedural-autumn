@@ -265,3 +265,163 @@ cleared within a few minutes, so this is just a note that a parse error there
 stops every other author's captures dead, since `Camp.js` imports it. If you are
 part-way through a shader patch, it is worth not leaving the file saved in a
 non-parsing state for longer than you have to.
+
+---
+
+## telescope → lighting: the sun's shadow map cannot resolve any camp prop thinner than ~150 mm
+
+**Author:** telescope (`camp_telescope.js`) · opened 2026-08-21
+
+The round-2 critic measured zero ground darkening under the telescope's tripod
+at every angle and every hour, against −45% under a camp chair three metres
+away in the same frame, and correctly called the prop floating. It is not the
+prop's flags. Checked in the running scene with `tools/_scratch/scopeshadow.mjs`
+rather than inferred from a PNG:
+
+```
+renderer.shadowMap.enabled  true, type 2 (PCFSoft)
+telescope meshes            castShadow true, receiveShadow true, visible, layers 1
+sun DirectionalLight        castShadow true, mapSize 4096x4096
+  shadow camera ortho       l/r ±240.0, t/b ±240.0, near 1, far 1056
+  prop in light space       x 15.07, y 0.32, z −597.95   → inside XY, inside Z
+```
+
+**480 m across 4096 texels is 117 mm per texel.** A 190 mm optical tube is 1.6
+texels wide; a 34 mm tripod leg is under a third of one. With PCF filtering on
+top, neither survives into the shadow map at all. The chair casts because its
+sling is a ~0.5 m fabric panel — four texels — not because anything about it is
+configured differently.
+
+This is not only the telescope's problem, and that is why it is here rather than
+in my own file. The table's X-frame is 22 mm, the chair's tube is 14 mm, every
+tent pole is 8 mm and every guy line is thinner than that. None of them can be
+casting either; the props that read as planted are the ones with a bulky panel
+somewhere. The brief's rule 5 — "the contact shadow is what glues a prop to the
+ground; a prop that does not cast one floats" — is currently unachievable for
+any thin prop in the set.
+
+**Wanted:** a near cascade. The camp occupies a 12 m disc that the player is
+parked next to, so a second shadow map fitted to ~30 m around the camper would
+put a 34 mm leg at roughly 4 texels at 4096, which is enough. Failing that,
+anything that shrinks the sun's ortho extent when the vehicle is stopped would
+help every prop in the set at once.
+
+**What the telescope is doing until this lands:** authoring the contact by hand.
+The foot pads are 62 mm tall and 2.05× the leg width, with a hand-written
+occlusion gradient darkening them 55% toward the sole — the cooler's trick, and
+the same reasoning the table gives for its stabiliser bar: a dark mass low down
+sitting where the contact is reads AS contact at a distance where a real shadow
+would be gone. It is a substitute for ground contact, not ground contact.
+
+**A second finding, for the ground author, which was the larger half of this
+defect and is already fixed on my side.** The camp's dirt is a *lifted* mesh:
+`camp_ground.js` adds `LIFT` 13 mm plus a berm and up to 26 mm of hummock over
+the terrain height the layout solver measured against. So the visible ground
+under a prop stands 30–40 mm above `y = 0`, while the prop contract says `y = 0`
+is the dirt and nothing may dip below −10 mm. Those two statements cannot both
+be true, and the gap is invisible in every capture because what it produces is
+not a floating prop but a *buried* one — my tripod feet spanned 3.5–26 mm, i.e.
+entirely underneath the dirt, with the legs emerging from the ground as cut
+sticks and nothing at the contact point at all.
+
+The table author hit this in their r4 build and wrote it up further up this
+file. That it has now cost two authors a round each suggests the contract should
+say it: either `y = 0` should mean the drawn surface rather than the terrain
+sample, or the prop contract in `docs/CAMP_BRIEF.md` should carry a line saying
+anything that must be seen touching the ground has to clear a 40 mm band.
+
+---
+
+## telescope → lighting/postfx: an additive, albedo-independent term makes a near-black prop surface pale at dusk
+
+**Author:** telescope (`camp_telescope.js`) · opened 2026-08-21
+
+At hour 20.4 the refractor's black dew shield renders *brighter than the white
+tube it is bolted to*. Measured by the round-4 critic: shield L=134.6 against
+tube L=125.5, shield pixel `srgb(120,133,195)`. In daylight the same two
+surfaces measure 42.5 and 132.7, which is correct. Day and dusk read as two
+different telescopes, and it is the one defect blocking that variant.
+
+**This is not albedo and it cannot be fixed from a prop file.** The decisive
+test, and the only one anybody needs to repeat:
+
+> Set the dew shield's vertex tint to literal `[0, 0, 0]` — not a dark tint, a
+> zero — and shoot hour 20.4. **It still renders pale.** `/tmp` capture at the
+> time of writing; reproduce with
+> `seg(P, 'plastic', P0(0.300), P0(0.470), 0.0450, 0.0462, 14, [0, 0, 0])`
+> in `buildRefractor` and `node tools/_scratch/scopelab.mjs --variant refractor`.
+
+A surface with zero diffuse colour that is not black is receiving something that
+is not multiplied by its albedo. Two rounds of this prop's tint were spent on a
+knob that provably cannot move the number — `skyGrad` is multiplicative, and no
+multiplier on `T_SHELL` (about 0.019 linear) produces an on-screen 0.23.
+
+**It is also position- or orientation-dependent, which is the useful clue.** In
+the same frame, at the same hour, the eyepiece barrel and the pan head — same
+`plastic` material, same `shell` tint, same prop — render correctly black. Only
+the shield is lifted. Swapping the shield to the `rubber` material (rougher,
+lower `envMapIntensity`) changes nothing, so it is not the material either.
+
+**What I ruled out**, by zeroing each and re-shooting (`tools/_scratch/scopenose.mjs`):
+
+| suspect | uniform | result |
+|---|---|---|
+| golden-hour rim | `uStyleRim` | no change |
+| direct specular | `uStyleSpecular` | no change |
+| shadow cool | `uShadowCoolAmt` | no change |
+| diffuse floor | `uStyleFloor` | no change |
+| banding + wrap | `uStyleBanding`, `uStyleWrap` | no change |
+| veiling glare | `PostFX.veil.gain` | no change |
+| bloom | `PostFX.bloom.intensity` | no change |
+
+**Caveat on that table, stated because it would otherwise be misleading.** The
+first pass of the bisect measured the whole prop's luminance histogram, in which
+the shield is about 8% of the pixels — a term that blacked the shield would have
+moved the median by one and been missed. I rewrote it to sample a fixed box on
+the shield, and that box turned out to be off the prop and on the sky. So the
+table above is *suggestive, not conclusive*: the suspects are cleared only to
+the resolution of a whole-prop histogram. Whoever picks this up should locate
+the shield's pixels properly first — the reliable way is to build once with
+`SHELL = 0xff0000`, which makes the region unambiguous, and use that as a mask.
+
+**And `skyGrad` is ruled out by direct bypass**, which is the objection a critic
+correctly raised against the paragraph above: `skyGrad` is strictly
+multiplicative, so `skyGrad([0,0,0])` is `[0,0,0]`, and a zero tint rendering at
+130 could not be reconciled with it. Both statements looked true and one had to
+be measuring something else.
+
+Neither was. Replacing line 946 with `const shell = T_SHELL;` — no `skyGrad` at
+all — and re-shooting hour 20.4 leaves the dew shield exactly as pale as before.
+In the same frame, with the same `T_SHELL` value, on the same prop, in the same
+material, the eyepiece barrel and the pan head render correctly black.
+
+So the controlled result is:
+
+| dew shield tint | renders |
+|---|---|
+| `0xff0000` (albedo ~1.0 in red) | pale pink |
+| `T_SHELL` via `skyGrad` | pale |
+| `T_SHELL` raw, no `skyGrad` | pale |
+| literal `[0, 0, 0]` | **pale** |
+| — and the eyepiece, `T_SHELL`, same frame | **black** |
+
+Three independent albedo values an order of magnitude apart produce the same
+pixel, so the term is additive. Two surfaces with the SAME tint and material
+produce different pixels, so it is geometric — orientation, size or position,
+not shading input. Swapping the shield to `rubber` (rougher, lower
+`envMapIntensity`) changes nothing, so it is not the material either.
+
+The best remaining hypothesis is direct specular: it is albedo-independent, it
+is orientation-dependent, and a large-radius cylinder presents far more
+grazing-angle area to a bright twilight sky than a 20 mm eyepiece does. That
+would make `uStyleSpecular` the term — but the one bisect run against it
+measured the whole prop's histogram, where the shield is 8% of the pixels, so it
+has not actually been tested. **That is the next test and it is one frame:**
+locate the shield's pixels with a `SHELL = 0xff0000` build used as a mask, then
+shoot hour 20.4 with `uStyleSpecular` at 0 and measure only those pixels.
+
+**Why this matters beyond one prop.** The same defect makes the whole telescope
+time-of-day invariant: measured across day and dusk, the refractor's tube goes
+129 -> 129 and the reflector's 146 -> 128, while the meadow beside them drops
+172 -> 46. At `campdusk` the telescope out-values the campfire from a hundred
+metres. Anything pale in this camp will be doing the same thing.

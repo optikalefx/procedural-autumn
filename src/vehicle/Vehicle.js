@@ -41,12 +41,32 @@ const MAX_SETTLE = 0.14;
 // than one that moves you 30 m. In practice the first ring wins almost always
 // — see the ring histogram in tools/_scratch/rescuetest.mjs.
 const RESCUE_RINGS = [20, 30, 42];
-const RESCUE_TRIES = 28;        // random bearings sampled on each ring
+// And when even 42 m holds nothing. A camper wedged at the bottom of a gorge,
+// or boxed in by boulders since the rocks were made solid, can have every one
+// of the near rings land on a cliff face — measured at 4% of all reachable
+// ground and 13% of the steep or wet ground where the button actually gets
+// pressed (tools/_scratch/rescuediag.mjs). Those presses used to decline, and
+// a decline there means the player closes the tab. The wide rings walk out to
+// a third of the map, which is further than any pocket this terrain makes.
+const RESCUE_WIDE = [60, 85, 120, 170, 240, 340];
+const RESCUE_TRIES = 28;        // bearings sampled on the 20 m ring
+// Wider rings get proportionally more of them: 28 samples on a 340 m ring is
+// one every 76 m, which would step over whole meadows. Sampling at a fixed arc
+// instead keeps the resolution of the search constant no matter how far out it
+// has had to reach. The cap is what stops the outer rings dominating the cost.
+const RESCUE_ARC = 4.5;         // m between samples along a ring
+const RESCUE_TRIES_MAX = 200;
 const RESCUE_COOLDOWN = 1.0;    // s between presses; see `rescue()`
 const RESCUE_WATER = 0.05;      // m — anything deeper is standing water
 const RESCUE_FOOT = 2.2;        // m — footprint radius the checks are run over
 const RESCUE_CLEAR = 2.8;       // m of clear ground the camper needs around it
 const RESCUE_STEP = 1.1;        // m of height change across a footprint = a ledge
+// How far out the openness probes look, and how many of the four have to come
+// back drivable. This is the check that stops a rescue solving nothing: a 6 m
+// shelf halfway up a gorge passes every footprint test there is and is still
+// somewhere you press R again from.
+const RESCUE_OPEN = 12;         // m
+const RESCUE_OPEN_MIN = 2;      // of 4 probes, for an ideal site
 // Slope limits, and these are measured numbers rather than taste.
 //
 // `init` picks the camper's *spawn* with `getSlope > 0.42`. Reusing that alone
@@ -66,6 +86,15 @@ const RESCUE_STEP = 1.1;        // m of height change across a footprint = a led
 // comes from the ring stepping outward instead. (tools/_scratch/rescuetest.mjs)
 const RESCUE_SLOPE = 0.42;      // ideal: flat enough to be a nice place to stop
 const RESCUE_SLOPE_OK = 0.65;   // acceptable: still holds, measured (see above)
+// The last resort, and it is not a fourth opinion about what good ground is —
+// it is the answer to "there is no good ground". These loosen the two checks
+// that are about comfort rather than about staying put (a tighter squeeze
+// between boulders, a bigger step across the footprint) and the slope only as
+// far as the measurements above still support. A site here is somewhere you
+// have to drive carefully away from. That beats a button that does nothing.
+const RESCUE_SLOPE_LAST = 0.75;
+const RESCUE_CLEAR_LAST = 2.5;  // m — chassis half-diagonal is 2.4
+const RESCUE_STEP_LAST = 1.6;
 
 // ── brake hold (Space) ───────────────────────────────────────────────────────
 // The player's spec: "Space bar is breaking, but it should have a break HOLD

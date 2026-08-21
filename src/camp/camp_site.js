@@ -17,6 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, smoothstep, mulberry32 } from '../core/MathUtils.js';
+import { FIRE_RING } from './camp_fire.js';
 
 const TAU = Math.PI * 2;
 // The golden angle. Successive multiples of it never repeat and never clump,
@@ -81,6 +82,60 @@ export const CAMP_RADIUS = 5.8;
 // and is the only part of the arithmetic that is a judgement rather than a
 // constraint. Going smaller starts putting the door in the grass instead.
 export const CAMP_RADIUS_SMALL = 3.4;
+
+// ── how close the tent may come to the fire ──────────────────────────────────
+//
+// The player: *"make sure the fire cannot be too close to the tent when we make
+// camp."* They were looking at a compact camp, and they were right — in 30 of
+// 32 pitched compact camps the tent's geometry was INSIDE the stone ring, the
+// nearest fabric sitting 0.23 m from the middle of a fire whose cobbles are at
+// 0.58. See `tools/_scratch/tentreach.mjs`, which measures the built tent
+// rather than the number the layout thought it was placing.
+//
+// Two separate faults put it there, and both are fixed below rather than
+// papered over with a bigger nominal radius:
+//
+//   · The fire was never in the layout's own separation test. `placed` is
+//     seeded from `opts.obstacles` alone, so the one object every prop is
+//     arranged around was the one object nothing was tested against. The
+//     nominal radius was the only thing holding the tent out of the flames,
+//     and a nominal radius is a suggestion — `tryPlace` moves off it freely.
+//
+//   · The tent's `insist` sweep started INSIDE its nominal radius and biased
+//     inward (`0.80 + …`, so try 0 was always 0.80x). Try 0 almost always
+//     succeeds, because nothing else is placed yet, so *every* camp took the
+//     0.80. The full camp's tent sat at 2.88 m and not the 3.6 m this file's
+//     own comments describe; the compact camp's at 1.63 m and not 2.04.
+//
+// The number itself. The tent's half-extent was assumed to be 1.15 m — half of
+// a 2.3 m tent — and it is not: measured over both styles it reaches 1.40 m
+// from its centre, because the guy lines and the vestibule reach past the fly.
+// So the floor is the ring, plus that reach, plus a gap you can see:
+//
+//     0.58 (stone) + 1.40 (tent reach) + 0.22 (gap) = 2.20 m
+//
+// The gap is the only part of that which is judgement, and it is bought from
+// the far end of the compact camp rather than found lying around. The tent's
+// fly — cords and pegs excluded, since nobody minds a guy line in the grass —
+// reaches 1.26 m out the back, so at a 2.20 m centre the back hem lands at
+// 3.46 m against a 3.40 m rim and full cover that ended at 2.72 m.
+//
+// So this does NOT close with room to spare, and the first draft of this note
+// claimed it did. Measured over 32 compact pitches: every one of them has its
+// back hem in the clearing's fringe, and six of the 32 carry it 1-6 cm past
+// the rim into standing grass. That is the cost, it is paid on the compact
+// camp only, and it is worth paying — `CAMP_RADIUS_SMALL` already describes a
+// back corner in the fringe as the correct picture for a hillside pitch,
+// whereas fabric inside the stone ring is not a picture of anything.
+//
+// The gap could be 0.16 instead, which keeps every hem inside the rim. It is
+// not, because 0.16 m is close enough to the cobbles that the clearance stops
+// reading as deliberate, and the thing being protected here is the one the
+// player actually asked for.
+//
+// The full camp never reaches this bound: its tent sits at 3.60 m, a metre and
+// a half outside the floor. This number is set entirely by the compact camp.
+export const TENT_FIRE_CLEAR = FIRE_RING + 1.40 + 0.22;
 
 /**
  * March the mouse ray against the heightfield.
@@ -402,6 +457,23 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
 
   const out = [];
   const placed = [];   // { x, z, r } for separation tests
+  // The fire, first, as an obstacle like any other.
+  //
+  // It is the origin of every polar coordinate below, which is exactly why it
+  // was missed: it did not feel like a thing in the camp, it felt like the
+  // frame the camp is drawn in. But it is a ring of stones with a fire in it
+  // and nothing may stand on it, so it belongs in the same list as a trunk.
+  // Seeded here rather than special-cased per prop, so a future prop is
+  // separated from the fire by construction and not by whoever adds it
+  // remembering to.
+  //
+  // This costs the other props nothing — it is a guard, not a re-tune, and the
+  // census either side of it says so: every other kind's closest approach to
+  // the fire moved by at most 3 cm, and no camp lost a prop it used to have.
+  // The tightest is the compact camp's single chair, which lands at 1.11 m
+  // against a required (0.58 + 0.42) * 1.04 = 1.04; the woodpile, telescope,
+  // cooler and table are all further out. See `tools/_scratch/firegap.mjs`.
+  placed.push({ x: cx, z: cz, r: FIRE_RING });
   for (const o of opts.obstacles ?? []) placed.push({ x: o.x, z: o.z, r: o.r });
 
   // Reject a candidate that lands on top of something already placed, or on
@@ -414,7 +486,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   // the search sweeps the FULL circle at several radii and, if even that finds
   // nothing, takes the least-bad candidate rather than returning nothing.
   const tryPlace = (kind, angle, radius, foot, make,
-                    { tries = 14, insist = false, swing = 0.5 } = {}) => {
+                    { tries = 14, insist = false, swing = 0.5, rMin = 0 } = {}) => {
     let best = null, bestPenalty = Infinity;
     if (insist) tries = 64;
     for (let i = 0; i < tries; i++) {
@@ -449,8 +521,25 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       // unexpected bearing is just a tent.
       const a = insist ? angle + i * GOLDEN
                        : angle + (rnd() - 0.5) * Math.min(swing, 0.12 + i * 0.14);
-      const r = insist ? radius * (0.80 + 0.30 * ((i * 7) % 5) / 4)
-                       : radius * (1 + (rnd() - 0.5) * 0.10 + i * 0.055);
+      // ── the sweep widens OUTWARD, from the nominal radius ───────────────
+      //
+      // `((i * 7) % 5) / 4` cycles 0, 0.5, 1, 0.25, 0.75 — radius variety
+      // spread across the bearing sweep so the insisted prop is not tried at
+      // one distance on 64 bearings. What it multiplies is the part that was
+      // wrong: it used to run 0.80 -> 1.10, so the sweep both started inside
+      // the nominal radius and spent three of its five steps there. Try 0 is
+      // the one that nearly always succeeds, and try 0 was the innermost.
+      //
+      // Now it runs 1.00 -> 1.30. A prop that cannot fit where it was asked to
+      // go moves AWAY from the fire, which is the only direction that is ever
+      // an improvement — the fire is the hot thing in the middle, and "it did
+      // not fit, so it was moved closer to the flames" is not a recovery.
+      const rRaw = insist ? radius * (1.00 + 0.30 * ((i * 7) % 5) / 4)
+                          : radius * (1 + (rnd() - 0.5) * 0.10 + i * 0.055);
+      // The floor. Nothing — not the jitter, not the sweep, and not the
+      // least-bad fallback below, which is the one that actually put tents in
+      // the fire — may take a prop inside this.
+      const r = Math.max(rRaw, rMin);
       const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
       // How far this candidate overlaps the worst thing it touches, so an
       // insisted placement can pick the least-bad rather than the first.
@@ -486,13 +575,24 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   {
     const side = rnd() < 0.5 ? 1 : -1;
     const a = seatCentre + side * lerp(1.75, 2.45, rnd());
+    // Which of the two tents. The dome is the common one — it is what almost
+    // everybody actually owns — but a valley where every camp has the same tent
+    // is a valley with one camper in it, seen four times. Drawn here rather than
+    // in the builder because the RNG is shared with the rest of the layout and a
+    // draw made conditionally would desync every prop placed after this one.
+    const style = rnd() < 0.34 ? 'ridge' : 'dome';
     // 0.62 R on a full camp; 0.60 on a compact one, which is 2.04 m.
     //
-    // The tent does not scale with the clearing — it is the same 2.3 m tent —
-    // so on the compact camp the fraction is pinned from BELOW rather than
-    // above: 2.04 m is the fire ring's 0.62 plus the tent's 1.15 half-length
-    // plus a hand's width, and any closer is a tent touching a fire. The
-    // clearing is sized around that number rather than the other way round.
+    // The tent does not scale with the clearing — it is the same tent — so on
+    // the compact camp this fraction lands very near the floor, and the floor
+    // is what actually governs there. `TENT_FIRE_CLEAR` is passed as `rMin`
+    // rather than folded into this fraction on purpose: a fraction of the
+    // clearing is a preference and gets jittered and swept off, and the
+    // distance from a tent to a fire is not a preference. See the note on
+    // `TENT_FIRE_CLEAR` for how far off the two had drifted.
+    //
+    // A hand's width was the old margin, and "a hand's width from a fire" is
+    // the wrong unit for the thing it was measuring.
     tryPlace('tent', a, R * (small ? 0.60 : 0.62), 1.45, (x, z, ang) => ({
       kind: 'tent', x, z, y: world.getHeight(x, z),
       // The door turns toward the fire, then backs off 15–35 degrees. Facing a
@@ -500,8 +600,10 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       // pitched across the slope with the door wherever that leaves it.
       yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.62,
       tilt: 0.55,      // how much of the ground normal it takes
-      opts: { colorway: Math.floor(rnd() * 4), wear: rnd() },
-    }), { insist: true });
+      // Both tables are four long, so the same draw is uniform whichever
+      // builder `style` sends this to. See RIDGETENT_COLORWAYS.
+      opts: { style, colorway: Math.floor(rnd() * 4), wear: rnd() },
+    }), { insist: true, rMin: TENT_FIRE_CLEAR });
   }
 
   // ── the chairs ─────────────────────────────────────────────────────────────
@@ -632,8 +734,14 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       // came back with a 1.5 m instrument standing in half-metre meadow grass
       // with its tripod feet invisible. A telescope is the thinnest-legged
       // thing in the set and it is the one that can least afford that.
-      tryPlace('telescope', a, R * (small ? lerp(0.48, 0.58, rnd()) : lerp(0.50, 0.60, rnd())),
-        big ? 0.52 : 0.36, (x, z) => ({
+      //
+      // Pulled in again after the second round: at 0.50-0.60 R the reflector's
+      // 1.0 m foot circle still had one leg in the fringe, and a two-pixel
+      // silver leg silhouetted against high-frequency yellow grass is the worst
+      // backdrop available for it. The scope's own footprint grew with the
+      // splay, so the CENTRE has to come in by more than the footprint did.
+      tryPlace('telescope', a, R * (small ? lerp(0.44, 0.52, rnd()) : lerp(0.46, 0.55, rnd())),
+        big ? 0.58 : 0.40, (x, z) => ({
           kind: 'telescope', x, z, y: world.getHeight(x, z),
           // The tube swings off the fire bearing by up to 40 degrees. Every
           // telescope in every camp aiming at exactly the same bearing is the

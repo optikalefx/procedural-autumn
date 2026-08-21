@@ -949,6 +949,14 @@ function charTint(base, hot, r0, r1) {
   };
 }
 
+// The stone ring, in metres, measured to the middle of the cobbles.
+//
+// Exported because `camp_site.js` has to keep the tent out of it, and a fire
+// whose size only one of those two files knows is a fire the layout will
+// eventually be wrong about. It already was: the layout reasoned about a
+// "0.62 fire ring" that this file has never built.
+export const FIRE_RING = 0.58;
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Firepit
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1044,7 +1052,7 @@ export class Firepit {
    * session-scoped, the geometry is not.
    */
   _build(rnd, opts) {
-    const R = opts.radius ?? 0.58;
+    const R = opts.radius ?? FIRE_RING;
     this.radius = R;
     const P = new Parts('fire');
     const hotSpots = [];

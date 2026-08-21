@@ -150,6 +150,7 @@ export class CameraRig extends System {
     this._axis = new THREE.Vector3(0, 0, 1);
     this._primed = false;
     this._shake = 0;
+    this._takeover = null;   // see takeCamera()
 
     // ── what the boom is pointed at ───────────────────────────────────────
     //
@@ -215,8 +216,27 @@ export class CameraRig extends System {
       this.mode = modes[(modes.indexOf(this.mode) + 1) % modes.length];
       if (this.mode === 'cockpit') this._primed = false;
     }
-    // The capture harness poses the camera itself; do not fight it.
     this.active = true;
+
+    // A system that has been handed the camera outranks EVERYTHING, including
+    // `__forceCamera`. See `takeCamera` below.
+    //
+    // The order of these two checks is load-bearing and was wrong first time.
+    // `camp_scope_view.js` raises `__forceCamera` while the player is at an
+    // eyepiece — that global is what the HUD, the perf overlay and the camp
+    // prompt all read to get out of the frame, and a modal first-person view is
+    // exactly the case they should get out of the frame for. With the capture
+    // check first, raising it made the rig return before ever reaching the
+    // takeover, the eyepiece view stopped being driven, and the camera froze
+    // wherever it happened to be.
+    if (this._takeover) {
+      this._primed = false;
+      this._subjPrimed = false;
+      this._takeover(dt);
+      return;
+    }
+
+    // The capture harness poses the camera itself; do not fight it.
     if (window.__forceCamera) { this._primed = false; return; }
 
     // A rescue moves the camper 20 m in one frame. Damping toward that would
@@ -572,6 +592,30 @@ export class CameraRig extends System {
    * property of the rig, not of the caller, and a caller that could ask for a
    * cut would eventually ask for one in the middle of a drive.
    */
+  /**
+   * Hand the camera to another system entirely.
+   *
+   * `setFocus` is enough for anything that wants the boom pointed somewhere
+   * else, and it is the right tool for almost everything — it keeps the rig's
+   * collision, its dolly and its idle recentring. This is for the case
+   * `setFocus` cannot express: a system that wants to BE the camera for a
+   * while, on its own path, with its own field of view. `camp_scope_view.js`
+   * looking through the camp's telescope is the only caller.
+   *
+   * Why a hook here rather than the caller writing `camera.position` in its own
+   * update: this rig's `lateUpdate` runs after every system update and writes
+   * the camera outright, so a pose set anywhere else is simply overwritten on
+   * the same frame. That is by design and worth keeping — a camera with two
+   * authors is how a rig ends up with an unexplained jitter nobody can bisect.
+   * So there is exactly one way to take it, it is explicit, and it is
+   * reversible: pass `null` and the rig picks the shot back up, cut rather than
+   * damped, which is correct because the thing that took it has by then put the
+   * camera wherever it wants to hand it back from.
+   *
+   * @param fn  fn(dt) called once per frame in place of the rig, or null.
+   */
+  takeCamera(fn) { this._takeover = fn ?? null; }
+
   setFocus(target) {
     if (target && this.focus && this.focus.distanceToSquared(target) < 1e-6) return;
     this.focus = target ? (this.focus ? this.focus.copy(target) : target.clone()) : null;
