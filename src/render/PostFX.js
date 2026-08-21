@@ -11,6 +11,7 @@ import {
 import { N8AOPostPass } from 'n8ao';
 import { QUALITY_PRESETS } from '../world/WorldConfig.js';
 import { SKY_STATE } from './Lighting.js';
+import { HEARTH } from './Hearth.js';
 
 // ── Custom grade: aerial perspective, warm/cool split-tone, film curve ───────
 const GRADE_FRAG = /* glsl */`
@@ -43,6 +44,18 @@ uniform float uRodKnee;
 uniform float uRodCoolLo;
 uniform float uRodCoolHi;
 uniform vec3  uRodTint;
+// ── the hearth ──────────────────────────────────────────────────────────────
+// Where the camp fire is, in VIEW space, and how far its warmth is allowed to
+// hold the night grade off. Written every frame from HEARTH by _driveHearth().
+// View space rather than world space so the reconstruction below needs no
+// inverse-view matrix — the view transform is rigid, so a distance measured in
+// it is the same metre distance as one measured in the world.
+uniform vec3  uHearthPos;
+uniform vec2  uHearthRange;   // x: full protection out to here, y: none past here
+uniform float uHearthAmt;
+// tan(fov/2) in x and y, so a depth sample can be turned back into a view-space
+// position without a matrix.
+uniform vec2  uTanHalf;
 uniform float uGrain;
 uniform float uTime;
 
@@ -446,12 +459,59 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   // full-strength rod shift with no coolness taper took the frame from 42% to
   // 81% of chromatic pixels in the violet/magenta sector, i.e. it was
   // re-authoring the dome from the grade.
+  //
+  // ── AND THE THIRD GATE IS THE FIRE, WHICH IS NOT A BRIGHTNESS TEST ────────
+  //
+  // uRodKnee above is the highlight gate, and its note names a campfire as one
+  // of the things it protects. It does not protect one, and it cannot: the knee
+  // sits at 0.60 linear because it has to stay clear of the moonlit ground, and
+  // a camp fire's POOL — as opposed to its flame, which passes easily — runs an
+  // order of magnitude under that. So the ground, the chairs and the tent went
+  // to the rod axis while the flame in the middle of them kept its ember, and
+  // the camp read as lavender lit by an orange light, which is not a thing.
+  //
+  // This has been paid for elsewhere for a long time. camp_fire.js's light
+  // block records three sweeps that all found the same wall — "4.2 put the
+  // whole clearing in pale lavender out to six metres" — and resolved it by
+  // turning the fire down until it lit almost nothing, tightening its falloff,
+  // and giving the warmth to an emissive flame that cannot light a chair. That
+  // is this operator's bill, paid by the art.
+  //
+  // The gate is spatial, and that is the honest form of it rather than a
+  // convenient one. Purkinje is a fact about the eye, not about a pixel: a
+  // person sitting inside a fire's light is not dark-adapted, their cones are
+  // working, and the shift belongs to the trees BEYOND the fire. So take the
+  // pixel's world distance from the flame and hold the operator off inside it.
+  //
+  // Reconstruction is two multiplies: getViewZ() gives the view-space depth,
+  // and the frustum's tangent half-angles turn the screen position into the
+  // other two axes. Distance is then measured against the fire's own view-space
+  // position, which PostFX writes each frame — a rigid transform, so this is
+  // metres in the world.
+  //
+  // uHearthAmt is zero whenever there is no lit fire, which is almost always,
+  // and the branch on it keeps the depth fetch out of every frame that has no
+  // camp in it. Nothing is gated on this at the CPU: one uniform write per
+  // frame is cheaper than a pass rebuild, and a pass rebuild relinks the merged
+  // shader, which is the freeze this whole chain is arranged to avoid.
   if (uNight > 0.001) {
     float ln = luma(c);
     float dim = 1.0 - smoothstep(uRodKnee * 0.35, uRodKnee, ln);
     float coolLead2 = clamp((c.b - max(c.r, c.g)) / max(c.b, 1e-4), 0.0, 1.0);
     float already = 1.0 - smoothstep(uRodCoolLo, uRodCoolHi, coolLead2);
-    float w = uRodAmount * uNight * dim * already;
+
+    float hearth = 0.0;
+    if (uHearthAmt > 0.001) {
+      // readDepth() and getViewZ() are the effect prelude's, declared for every
+      // merged pass whether or not anything asked for depth — which is what
+      // makes this legal without the attribute. See the note in GradeEffect.
+      float vz = getViewZ(readDepth(uv));
+      vec3 vpos = vec3((uv * 2.0 - 1.0) * uTanHalf * -vz, vz);
+      float hd = distance(vpos, uHearthPos);
+      hearth = uHearthAmt * (1.0 - smoothstep(uHearthRange.x, uHearthRange.y, hd));
+    }
+
+    float w = uRodAmount * uNight * dim * already * (1.0 - hearth);
     vec3 rod = vec3(ln) * uRodTint;
     c = mix(c, rod, clamp(w, 0.0, 1.0));
   }
@@ -615,6 +675,32 @@ class VeilEffect extends Effect {
   set gain(v) { this.uniforms.get('uVeilGain').value = v; }
 }
 
+// ── THE GRADE MUST NOT DECLARE EffectAttribute.DEPTH, AND IT WANTS TO ───────
+//
+// Its hearth mask reads the depth buffer, and `EffectAttribute.DEPTH` is the
+// documented way for an effect to ask for one. Setting it here silently
+// re-orders the whole post chain and destroys the grade.
+//
+// EffectPass.setEffects() sorts: `effects.sort((a, b) => b.attributes -
+// a.attributes)`. DEPTH is bit 0, so ANY effect that declares it is moved ahead
+// of every effect that declares nothing. This effect is handed to the pass last
+// on purpose — a grade grades a finished frame — and with the attribute set it
+// jumped from slot 6 to slot 2, in front of bloom, the veil, the tone curve and
+// the vignette. Confirmed by dumping the merged fragment shader both ways: the
+// grade's uniforms went from e6* to e2*.
+//
+// What that failure looks like is worth writing down, because it looks like
+// nothing to do with the change. There is no error, no warning, and no night in
+// it: the daylight hero vista simply came back more saturated and more
+// contrasty, 39% of its pixels moved by more than 8 levels, from a diff whose
+// every new line of shader code sits inside `if (uNight > 0.001)`.
+//
+// So take the depth the other way. `readDepth()`, `getViewZ()`, the
+// `depthBuffer` sampler and the PERSPECTIVE_CAMERA define are in the effect
+// prelude unconditionally — every merged pass gets them whether or not any
+// effect asked for depth — so the grade just calls them. The other half of what
+// the attribute would have done, making the composer bind a depth texture, is
+// done explicitly in _rebuildMainPass.
 class GradeEffect extends Effect {
   constructor() {
     super('AutumnGrade', GRADE_FRAG, {
@@ -659,6 +745,14 @@ class GradeEffect extends Effect {
         // the snow end it takes the dome to navy, which is the defect the brief
         // opens with; pulled to the sky end the ground stays brown.
         ['uRodTint',       new THREE.Uniform(new THREE.Vector3(0.958, 0.910, 2.012))],
+        // All four written every frame by _driveHearth(), so these values are
+        // only what the shader links against. Amount 0 is "no fire", which is
+        // the state all day and almost everywhere at night; the block is
+        // branched on it, so the other three are never read until there is one.
+        ['uHearthPos',     new THREE.Uniform(new THREE.Vector3(0, 0, -1e4))],
+        ['uHearthRange',   new THREE.Uniform(new THREE.Vector2(3.2, 8.6))],
+        ['uHearthAmt',     new THREE.Uniform(0.0)],
+        ['uTanHalf',       new THREE.Uniform(new THREE.Vector2(0.577, 0.414))],
         ['uGrain',         new THREE.Uniform(0.005)],
         ['uTime',          new THREE.Uniform(0)],
       ]),
@@ -1145,6 +1239,9 @@ export class PostFX {
       lowSunEnd: 0.34,
     };
 
+    // Scratch for the hearth transform. One vector, reused — see _driveHearth.
+    this._hv = new THREE.Vector3();
+
     // Depth of field. `focusDistance` is a fraction of camera.far, so the
     // default has to be derived from it rather than hard-coded — 0.02 put the
     // focal plane at a fixed ~60 m, which is wrong at every chase distance and
@@ -1358,6 +1455,18 @@ export class PostFX {
       this.mainPass.dispose();
     }
     this.mainPass = new EffectPass(this.engine.camera, ...effects);
+    // The grade samples the depth buffer for the hearth mask but must not
+    // declare EffectAttribute.DEPTH to get it — that attribute is also the
+    // pass's sort key, and declaring it moves the grade to the front of the
+    // chain (see GradeEffect). EffectPass derives this flag from its effects'
+    // attributes, so with none of them asking, say so directly: the composer
+    // reads it in addPass and binds the shared depth texture.
+    //
+    // It matters most on the tiers that have neither depth of field nor SSAO,
+    // which are the only ones where nothing else would have asked. Without it
+    // `depthBuffer` is an unbound sampler there, every pixel reads depth 0, and
+    // the mask would sit at the near plane covering the whole frame.
+    this.mainPass.needsDepthTexture = true;
     this.composer.addPass(this.mainPass);
   }
 
@@ -1408,7 +1517,48 @@ export class PostFX {
 
   render(dt) {
     this._driveTimeOfDay();
+    this._driveHearth();
     this.composer.render(dt);
+  }
+
+  /**
+   * Put the camp fire into the grade's frame of reference.
+   *
+   * The mask is a world-space distance and the grade only has a depth buffer,
+   * so one of the two has to move. Moving the FIRE is the cheap direction:
+   * transforming one point by the view matrix here costs nothing, where giving
+   * the shader an inverse-view matrix would make every pixel reconstruct a
+   * world position to compare against a point that never moves within a frame.
+   *
+   * `uTanHalf` goes with it, and it is read off the camera every frame rather
+   * than cached on resize: the game changes its own field of view — the chase
+   * camera widens with speed and the scope view narrows hard — so a value
+   * cached at construction would put the mask in the wrong place for exactly
+   * the shots the player is looking closely at.
+   */
+  _driveHearth() {
+    const u = this.grade.uniforms;
+    const amt = HEARTH.strength;
+    u.get('uHearthAmt').value = amt;
+    if (amt <= 0.001) return;
+
+    // This runs BEFORE composer.render(), so `matrixWorldInverse` still holds
+    // last frame's camera — a one-frame lag that shows up as the warm pool
+    // sliding on the ground while the camera swings. Refresh it here; the
+    // renderer will redo the same work a moment later and one 4x4 invert per
+    // frame is not a cost worth reasoning about.
+    const cam = this.engine.camera;
+    cam.updateMatrixWorld();
+    cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+    this._hv.set(HEARTH.x, HEARTH.y, HEARTH.z).applyMatrix4(cam.matrixWorldInverse);
+    u.get('uHearthPos').value.copy(this._hv);
+    // Inner radius is a fixed fraction of the outer rather than a second
+    // published number: the fire has one size, and two independent radii is an
+    // invitation to author a hard edge by setting them close together.
+    u.get('uHearthRange').value.set(HEARTH.radius * 0.38, HEARTH.radius);
+
+    const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) * 0.5);
+    u.get('uTanHalf').value.set(tanY * cam.aspect, tanY);
   }
 
   /**

@@ -1,0 +1,12 @@
+{
+ "hearth-base": {
+  "fireI": 2.13,
+  "fireD": 8.6,
+  "rod": 0.5
+ },
+ "tentside-base": {
+  "fireI": 2.238,
+  "fireD": 8.6,
+  "rod": 0.5
+ }
+}

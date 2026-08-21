@@ -70,10 +70,43 @@ import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 
 const TAU = Math.PI * 2;
 
+// ── how far the fire's light goes, and how fast it gives up ─────────────────
+//
+// 1.4 and 8.6 m, from 2.0 and 6.6 m. Read the light block in the constructor
+// first: the old pair was not chosen to make a fire look like a fire, it was
+// chosen to keep a grading defect off the screen, and now that the defect is
+// fixed (Hearth.js) the pair can be chosen for the reason it should have been.
+//
+// DECAY is the lever and intensity is not, which is worth stating because
+// intensity is the obvious one and it does not work. The complaint this round
+// answers is that the chairs, the tent and the near grass take no warmth after
+// dark. Those stand three to five metres out, the ring stands at half a metre,
+// and inverse square is 100 : 1 across that span — so any intensity that lights
+// the tent turns the ring into a flat clipped orange sheet, which is exactly
+// what the sweep showed (l22d16, fireside: no value structure left in the dirt
+// inside two metres). Flattening the falloff instead moves the mid field
+// without touching the near field: at 1 m the two decays are identical by
+// definition, at 4 m 1.4 delivers 2.3x what 2.0 does, and the close framing
+// comes back reading as the same picture while the tent lights up.
+//
+// Both knobs are swept through FIRE_TUNE below (`dist`, `decay`) rather than by
+// editing these constants, which is why they are there — the pair above is one
+// row of a ladder that `tools/_scratch/hearthlab.mjs` shoots in a single page
+// load.
+//
+// The REACH goes with it for a plain reason: three's cutoff window is
+// pow2(1 - pow4(d/D)), which is still passing a third of the light at 0.8 D, so
+// a 6.6 m cutoff was visibly squeezing the pool off at about five. 8.6 m puts
+// the fade past the chairs and inside the meadow. Swept at 6.6 / 8.6 / 10.6:
+// the last one reaches the camper's flank, and the frames read as a camp under
+// a lamp rather than a camp around a fire — the night stops being the subject.
+const NIGHT_DECAY = 1.4;
+const NIGHT_REACH = 8.6;
+
 // Neutral tuning. `window.__fireTune` may override any field at runtime; that
 // is how tools/_scratch/firesweep.mjs shoots a parameter ladder in one page
 // load instead of one capture-pool slot per guess.
-const FIRE_TUNE = { gain: 1, light: 1, bed: 1, ember: 1, smoke: 1, knee: 1, elev: NaN };
+const FIRE_TUNE = { gain: 1, light: 1, dist: 1, decay: NaN, bed: 1, ember: 1, smoke: 1, knee: 1, elev: NaN };
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Time of day
@@ -1008,29 +1041,44 @@ export class Firepit {
     // blue night, which is the good kind of hue variety rather than the bad,
     // and it is what the night plates show on the tent wall.
     //
-    // DECAY IS INVERSE SQUARE WITH A TIGHT CUTOFF, and the reason is Stylize
-    // rather than physics. A slow falloff (1.25) was tried first, on the
-    // argument that inverse square is a 25:1 range between the ring and the
-    // chairs. It measured terribly, and the frame that proved it was a night
-    // capture with this light switched off entirely: deep navy dirt, the tent
-    // a dark shape, one warm rim on the moonlit grass — the reference plate,
-    // essentially. Turn the light back on at any intensity that lit the ring
-    // and the whole clearing went pale lavender out to six metres and the
-    // night was gone.
+    // ── THE FALLOFF, AND THE DIAGNOSIS THIS BLOCK USED TO CARRY ─────────────
     //
-    // The cause is the stylised direct term: it wraps the N.L, quantises it,
-    // and then floors it so nothing is ever unlit. At a grazing angle three
-    // metres out that turns a real 0.13 of cosine into more than 0.4, so a
-    // point light in this engine reaches roughly three times as far as its
-    // falloff says it does. Inverse square plus a ~6.6 m cutoff window brings
-    // the lit pool back to the size a fire's actually is, and the *emissive*
-    // flame and ember bed carry the warmth the light no longer sprays across
-    // the camp.
+    // What stood here was a case for inverse square with a tight cutoff, and it
+    // was built on one observation, quoted intact because it is still true and
+    // it is still the most useful sentence in this file:
+    //
+    //     "Turn the light back on at any intensity that lit the ring and the
+    //      whole clearing went pale lavender out to six metres and the night
+    //      was gone."
+    //
+    // The reading was that the stylised direct term over-reaches — it wraps the
+    // N.L, quantises it, and floors it, so at a grazing angle three metres out a
+    // real 0.13 of cosine arrives as more than 0.4 — and that the fix was to cut
+    // the light's range until the pool was the size a fire's actually is. That
+    // reading is half right and the half it got wrong is the important half.
+    //
+    // Stylize explains why the pool is BIG. It does not explain why the pool is
+    // LAVENDER, and lavender was the actual complaint: over-reach makes too much
+    // warm light, not violet light. The violet came from the night grade's
+    // scotopic shift, which rotates warm pixels below a highlight knee onto a
+    // blue-violet axis and cannot tell a firelit chair from moonlit khaki (see
+    // Hearth.js, and the third gate in PostFX's rod block). So three sweeps
+    // measured a post-processing defect through the lighting, concluded the
+    // lighting was too strong, and turned the fire down until it stopped
+    // triggering it — leaving a fire that lights the stones it sits in and
+    // nothing else, with the emissive flame and ember bed asked to carry warmth
+    // they cannot put on a tent.
+    //
+    // With the grade fixed, the falloff is free to be chosen for the picture
+    // again: see NIGHT_DECAY / NIGHT_REACH at the top of this file for what it
+    // was chosen to be and what was swept to get there. The over-reach note
+    // above still stands and is still worth knowing — it is why the reach only
+    // had to go to 8.6 m to cover a camp.
     this.ownsLight = !opts.light;
-    this.light = opts.light ?? new THREE.PointLight(0xffa259, 1.6, 6.5, 2.0);
+    this.light = opts.light ?? new THREE.PointLight(0xffa259, 1.6, NIGHT_REACH, NIGHT_DECAY);
     this.light.color.setHex(0xffa259, THREE.SRGBColorSpace);
-    this.light.distance = 6.6;
-    this.light.decay = 2.0;
+    this.light.distance = NIGHT_REACH;
+    this.light.decay = NIGHT_DECAY;
     this.light.castShadow = false;
     this.light.name = 'camp_fire_light';
     if (this.ownsLight) scene.add(this.light);
@@ -1396,15 +1444,23 @@ export class Firepit {
     bu.uReveal.value = rv;
 
     // ── the light ───────────────────────────────────────────────────────────
-    // 1.7 at midday — a supporting warm accent that just lifts the near stones
-    // — against 8.6 at night, where it is the entire lighting of the camp.
-    // Swept at 23:00 against a control frame with the light switched off. 4.2
-    // put the whole clearing in pale lavender out to six metres; 1.15 left the
-    // tent dark. 2.1 keeps the lit pool inside about three metres, which is
-    // where the night plates put the edge of a camp fire's reach.
+    // A supporting warm accent by day that just lifts the near stones; after
+    // dark it is the entire lighting of the camp.
+    //
+    // The night value is UNCHANGED at 2.10, and that is a result rather than an
+    // oversight. The sweep that set it — "4.2 put the whole clearing in pale
+    // lavender out to six metres; 1.15 left the tent dark" — was measuring the
+    // grade's scotopic shift rather than the light, so it was reasonable to
+    // expect the number to move once that was fixed. Re-swept at 23:00 against
+    // the same framings with the hearth mask in place, it does not: at 1.4 the
+    // near stones lose the heat the close framing is for, and every value past
+    // about 2.5 clips the dirt inside two metres to a flat orange with no form
+    // in it. The reach was the thing that was wrong, and the reach is where the
+    // fix went (NIGHT_DECAY / NIGHT_REACH).
     const base = lerp(lerp(0.85, 1.45, dusk), 2.10, night);
     this.light.intensity = base * f * rv * rv * T.light;
-    this.light.distance = lerp(4.6, 6.6, Math.max(dusk, night));
+    this.light.distance = lerp(NIGHT_REACH * 0.70, NIGHT_REACH, Math.max(dusk, night)) * (T.dist ?? 1);
+    this.light.decay = Number.isFinite(T.decay) ? T.decay : NIGHT_DECAY;
     // Warmer and a touch less saturated by day, so it does not read as a
     // coloured lamp on a sunlit prop.
     this._sc.setRGB(1.0, lerp(0.50, 0.40, night), lerp(0.22, 0.135, night));

@@ -32,6 +32,7 @@ import { System } from '../core/System.js';
 import { clamp, clamp01, lerp, smoothstep, damp } from '../core/MathUtils.js';
 import { setCampSlots, setCampAim, clearCampAim, CAMP_SLOTS } from './camp_clearing.js';
 import { campMaterials, disposeCampMaterials } from './camp_materials.js';
+import { setHearth, clearHearth } from '../render/Hearth.js';
 import {
   groundRay, scoreSite, bestSite, clampToSite, layoutCamp, standOn, groundLift, siteRng,
   SITE_MIN, SITE_MAX, CAMP_RADIUS, CAMP_RADIUS_SMALL,
@@ -111,6 +112,30 @@ const MAX_CAMPS = 4;
 // that their clearings never touch, so the ground between them stays meadow and
 // the two read as two places rather than as one sprawl.
 const CAMP_GAP = 3.0;
+
+// ── the hearth mask, published to the grade ─────────────────────────────────
+//
+// The mask's radius is READ OFF THE LIGHT rather than authored here, and that
+// is the whole of its tuning. It was a constant first — 7 m, a camp's own
+// radius, which sounds like the right size for "by the fire" — and the frames
+// said otherwise the moment the light was opened up to reach the tent: the
+// grade then un-purpled a 7 m disc inside a 10 m pool, so the outer ring of lit
+// ground kept the violet and the boundary drew itself across the dirt as a
+// visible arc. Two numbers that have to agree and are edited in different files
+// will not agree for long.
+//
+// So the fire's own cutoff IS the radius — `fireLight.distance`, passed
+// straight through with no factor on it. Outside that the point light
+// contributes exactly nothing, so there is no warmth there to protect and the
+// night is simply the night, which is the whole of "the purple is fine away
+// from the campfire". Inside it, whatever the light reaches the mask covers,
+// however the light is later retuned.
+//
+// The intensity a fire burning normally after dark reaches, used only to
+// normalise the published strength — see `_carryFireLight`. Under it the mask
+// eases in with the build-in; at or above it the mask is simply on. Set below
+// the night peak on purpose, so an ordinary flicker never modulates it.
+const HEARTH_FULL = 1.6;
 
 // How many engine frames the pre-warm props are held in the scene. Enough for
 // the main pass and the shadow cascade to have drawn every one of them, and
@@ -192,6 +217,9 @@ export class Camp extends System {
     this.fireLight.name = 'camp_fire_light';
     this.fireLight.position.set(0, -1000, 0);      // parked below the world
     scene.add(this.fireLight);
+
+    // The damped hearth strength that rides on it. See `_carryFireLight`.
+    this._hearthS = 0;
 
     this._prewarm();
 
@@ -369,6 +397,8 @@ export class Camp extends System {
     for (const slot of this._pool) this._adoptFireLight(slot.fire);
     this.fireLight.intensity = 0;
     this.fireLight.position.set(0, -1000, 0);
+    this._hearthS = 0;
+    clearHearth();
     console.log(`[camp] prewarm released, ` +
                 `${this.ctx.renderer.info.programs?.length ?? '?'} programs cached`);
   }
@@ -1297,6 +1327,30 @@ export class Camp extends System {
       c.fire?.update(dt, t, camera);
     }
     if (!near) this.fireLight.intensity = 0;
+
+    // ── tell the grade where the fire is ────────────────────────────────────
+    //
+    // The night grade rotates warm pixels onto a blue-violet axis, and without
+    // this it does it to the firelight too — see the header of Hearth.js for
+    // why that is the defect and not the fix. The record is published from
+    // here rather than from Firepit because THIS is the method that already
+    // knows which of several fires is the one the viewer is standing at, which
+    // is the same question the mask has to answer.
+    //
+    // Strength rides on the light's own intensity, normalised against a fire
+    // burning normally after dark, so it eases up with the build-in and dies
+    // with the fire. It is damped rather than read raw: the intensity carries
+    // the flame's flicker, and a mask edge that flickers is a ring of colour
+    // pulsing on the ground several metres from anything that is moving. The
+    // fire may flicker; the fact that there IS a fire may not.
+    const want = near ? clamp01(this.fireLight.intensity / HEARTH_FULL) : 0;
+    this._hearthS = damp(this._hearthS, want, 6, dt);
+    if (this._hearthS > 0.002) {
+      const p = this.fireLight.position;
+      setHearth(p.x, p.y, p.z, this.fireLight.distance, this._hearthS);
+    } else {
+      clearHearth();
+    }
   }
 
   /**
@@ -1423,6 +1477,12 @@ export class Camp extends System {
     if (!this.fireLight.parent) this.ctx.scene.add(this.fireLight);
     this.fireLight.position.set(0, -1000, 0);
     clearCampAim();
+    // Not left to the damped follower in `_carryFireLight`: a teardown may be
+    // the last thing that happens before update() stops being called, and a
+    // hearth mask that outlives every fire is a warm hole in the night grade
+    // sitting over an empty meadow.
+    this._hearthS = 0;
+    clearHearth();
     this._publishSlots();
   }
 
