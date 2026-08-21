@@ -32,6 +32,13 @@ await page.goto('http://localhost:5178?res=768', { waitUntil: 'domcontentloaded'
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
 
 const log = [];
+// Print as we go. This script died mid-run twice with its whole log buffered
+// for the end, which told me nothing about where it had got to.
+const say = (e) => {
+  console.log(`STEP ${String(e.label).padEnd(46)} camps=${e.camps} state=${e.state} ` +
+              `pack=${e.packTarget} reason=${JSON.stringify(String(e.reason ?? '').slice(0, 28))}`);
+  return e;
+};
 const snap = (label) => page.evaluate((l) => ({
   label: l,
   state: window.__camp.state,
@@ -43,6 +50,9 @@ const snap = (label) => page.evaluate((l) => ({
   promptShown: window.__camp.prompt.el.style.opacity,
   raise: +window.__camp.raise.toFixed(2),
   props: window.__camp.props.length,
+  camps: window.__camp.camps.length,
+  packTarget: !!window.__camp._packTarget,
+  reason: window.__camp._aim.reason,
   focusCamp: !!window.__camp._focusCamp,
   // How far the camera's subject is from the camper: ~0 means it is looking at
   // the car, ~the site distance means it has drifted to the fire.
@@ -56,21 +66,21 @@ await page.evaluate(() => {
   window.__vehicleTeleport?.(p.x, p.z, p.yaw ?? 0.9);
 });
 await page.waitForTimeout(2500);
-log.push(await snap('parked, no input'));
+log.push(say(await snap('parked, no input')));
 
 // Latch the park brake the way a player does: hold Space while stopped.
 await page.keyboard.down('Space');
 await page.waitForTimeout(900);
-log.push(await snap('space held'));
+log.push(say(await snap('space held')));
 await page.keyboard.up('Space');
 await page.waitForTimeout(700);
-log.push(await snap('space released — hold should have latched'));
+log.push(say(await snap('space released — hold should have latched')));
 
 // Aim: move the pointer across the canvas and see the reticle follow.
 for (const [x, y] of [[700, 560], [560, 600], [900, 520]]) {
   await page.mouse.move(x, y);
   await page.waitForTimeout(320);
-  log.push(await snap(`aim at ${x},${y}`));
+  log.push(say(await snap(`aim at ${x},${y}`)));
 }
 
 // A look-drag must NOT place a camp.
@@ -79,27 +89,38 @@ await page.mouse.down();
 for (let i = 0; i < 8; i++) { await page.mouse.move(700 + i * 14, 500 + i * 3); await page.waitForTimeout(30); }
 await page.mouse.up();
 await page.waitForTimeout(400);
-log.push(await snap('after a look-drag (must still be aiming)'));
+log.push(say(await snap('after a look-drag (must still be aiming)')));
 
 await page.screenshot({ path: 'shots/camp/play-aiming.png' });
 
-// A real click must place one.
-await page.mouse.move(720, 560);
-await page.waitForTimeout(250);
-await page.mouse.down();
-await page.waitForTimeout(80);
-await page.mouse.up();
+// A real click must place one — on OPEN GROUND. The fixed (720,560) this used
+// to click is squarely on the camper in the chase framing, so once Camp learned
+// to tell a click on the camper from a click past it, this test was faithfully
+// clicking the car and then reporting that camps could not be made.
+let clicked = null;
+for (const [x, y] of [[980, 600], [430, 610], [1080, 520], [330, 540], [720, 660]]) {
+  await page.mouse.move(x, y);
+  await page.waitForTimeout(240);
+  const st = await page.evaluate(() => ({
+    ok: window.__camp._aim.ok, onCar: window.__camp._pointerOnCamper(),
+  }));
+  if (!st.ok || st.onCar) continue;
+  await page.mouse.down(); await page.waitForTimeout(80); await page.mouse.up();
+  clicked = [x, y];
+  break;
+}
+console.log('clicked open ground at', JSON.stringify(clicked));
 await page.waitForTimeout(350);
-log.push(await snap('just after click'));
+log.push(say(await snap('just after click')));
 await page.waitForTimeout(1600);
-log.push(await snap('after the raise'));
+log.push(say(await snap('after the raise')));
 
 await page.screenshot({ path: 'shots/camp/play-pitched.png' });
 
 // Pack up.
 // The camera should have walked over to the fire by now.
 await page.waitForTimeout(2200);
-log.push(await snap('2 s after the raise — camera should be on the fire'));
+log.push(say(await snap('2 s after the raise — camera should be on the fire')));
 await page.screenshot({ path: 'shots/camp/play-focus-fire.png' });
 
 // Clicking the camper takes focus back.
@@ -119,20 +140,62 @@ if (carPx.z < 1) {
     return {
       click: c._click, justPitched: c._justPitched, speed: +v.speed.toFixed(2),
       throttle: window.__ctx.input.axes.throttle,
-      missCar: c._rayMiss(v.position, 2.8),
-      missCamp: c._rayMiss({ x: c.site.x, y: c.site.y + 0.4, z: c.site.z }, 5.22),
+      onCar: c._pointerOnCamper(),
+      camps: c.camps.length,
       mouse: { x: +window.__ctx.input.mouse.x.toFixed(3), y: +window.__ctx.input.mouse.y.toFixed(3) },
     };
   })));
-  log.push(await snap('after clicking the camper'));
+  log.push(say(await snap('after clicking the camper')));
   await page.screenshot({ path: 'shots/camp/play-focus-car.png' });
 } else {
   log.push({ label: 'camper is off-screen; click test skipped', state: '-', aim: {}, props: -1, raise: -1 });
 }
 
-await page.keyboard.press('KeyE');
-await page.waitForTimeout(1200);
-log.push(await snap('after E — packed up'));
+// ── a SECOND camp, without packing the first up ─────────────────────────────
+// The player: "if I forget to pack up camp, I can't make a new camp elsewhere."
+await page.evaluate(() => {
+  const v = window.__systems.vehicle;
+  window.__vehicleTeleport?.(v.position.x + 46, v.position.z + 20, 1.1);
+});
+await page.waitForTimeout(2600);
+await page.keyboard.down('Space');
+await page.waitForTimeout(900);
+await page.keyboard.up('Space');
+await page.waitForTimeout(600);
+log.push(say(await snap('parked somewhere new — first camp must still stand')));
+
+for (const [x, y] of [[980, 600], [430, 610], [1080, 520], [330, 540], [720, 660]]) {
+  await page.mouse.move(x, y);
+  await page.waitForTimeout(240);
+  const st = await page.evaluate(() => ({
+    ok: window.__camp._aim.ok, onCar: window.__camp._pointerOnCamper(),
+  }));
+  if (!st.ok || st.onCar) continue;
+  await page.mouse.down(); await page.waitForTimeout(80); await page.mouse.up();
+  break;
+}
+await page.waitForTimeout(1900);
+log.push(say(await snap('after making a SECOND camp')));
+await page.screenshot({ path: 'shots/camp/play-two-camps.png' });
+
+// Pointing at a camp is how you pack it up — no mode, no menu.
+const campPx = await page.evaluate(() => {
+  const cs = window.__camp.camps;
+  const c = cs[cs.length - 1];
+  if (!c) return null;
+  const p = new window.__THREE.Vector3(c.x, c.y + 0.4, c.z).project(window.__engine.camera);
+  return { x: (p.x * 0.5 + 0.5) * window.innerWidth, y: (-p.y * 0.5 + 0.5) * window.innerHeight, z: p.z };
+});
+if (campPx && campPx.z < 1) {
+  await page.mouse.move(campPx.x, campPx.y);
+  await page.waitForTimeout(320);
+  log.push(say(await snap('pointing at the newest camp')));
+  await page.keyboard.press('KeyE');
+  await page.waitForTimeout(1500);
+  log.push(say(await snap('after E — that camp packed up, the other stays')));
+} else {
+  console.log('camp off-screen; pack-up-by-pointing not exercised');
+}
 
 console.log(JSON.stringify(log, null, 1));
 if (errs.length) console.log('page-errors:', JSON.stringify(errs.slice(0, 8), null, 1));

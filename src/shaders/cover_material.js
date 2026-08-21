@@ -41,8 +41,9 @@ export function makeCoverUniforms() {
   return {
     // Shared by reference with camp_clearing.js; see the note there on why the
     // clearing is a shader fact rather than a re-scatter.
-    uCampSite:     campSite.uCampSite,
-    uCampFloor:     campSite.uCampFloor,
+    uCampSites:    campSite.uCampSites,
+    uCampAim:      campSite.uCampAim,
+    uCampAimFloor: campSite.uCampAimFloor,
     uTime:         { value: 0 },
     uSunDir:       { value: new THREE.Vector3(0.4, 0.7, 0.3) },
     uSunColor:     { value: new THREE.Color(1, 1, 1) },

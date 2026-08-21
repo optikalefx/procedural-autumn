@@ -64,8 +64,9 @@ export function makeGrassUniforms() {
     uTime:        { value: 0 },
     // Shared by reference with camp_clearing.js — Camp.js writes it, every ring
     // reads it, and there is deliberately only one clearing in the world.
-    uCampSite:    campSite.uCampSite,
-    uCampFloor:    campSite.uCampFloor,
+    uCampSites:    campSite.uCampSites,
+    uCampAim:      campSite.uCampAim,
+    uCampAimFloor: campSite.uCampAimFloor,
     uSunDir:      { value: new THREE.Vector3(0.4, 0.6, 0.3) },
     uSunColor:    { value: new THREE.Color(1, 0.88, 0.72) },
 

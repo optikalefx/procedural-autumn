@@ -30,7 +30,7 @@
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { clamp, clamp01, lerp, smoothstep, damp } from '../core/MathUtils.js';
-import { setCampSite, campOuterRadius } from './camp_clearing.js';
+import { setCampSlots, setCampAim, clearCampAim, CAMP_SLOTS } from './camp_clearing.js';
 import { campMaterials, disposeCampMaterials } from './camp_materials.js';
 import {
   groundRay, scoreSite, bestSite, clampToSite, layoutCamp, standOn, siteRng,
@@ -38,8 +38,10 @@ import {
 } from './camp_site.js';
 import { CampGround } from './camp_ground.js';
 import { CampReticle, CampPrompt } from './camp_ui.js';
+import { ScopeView } from './camp_scope_view.js';
 import { Firepit, buildWoodpile } from './camp_fire.js';
 import { buildTent } from './camp_tent.js';
+import { buildRidgeTent } from './camp_tent_ridge.js';
 import { buildChair } from './camp_chair.js';
 import { buildCooler } from './camp_cooler.js';
 import { buildTable } from './camp_table.js';
@@ -85,6 +87,31 @@ const OCCUPIED = 0.78;
 // rather than refused — see `_blocked` for the measurement that forced this.
 const CENTRE_CLEAR = 2.3;
 
+// How many camps may stand in the world at once.
+//
+// The player: "if I forget to pack up camp, I can't make a new camp elsewhere.
+// Let's not make that a requirement. I can make as many camps as I want as long
+// as they aren't right next to each other." The single camp was an
+// implementation detail wearing a design decision's clothes — see the note at
+// the top of camp_clearing.js for what actually forced it.
+//
+// Four is not a taste limit either, it is the fire pool. Every Firepit
+// allocates its own materials, and a material built at runtime is a shader
+// program linked at runtime — which is what froze the game for two seconds the
+// first time a camp was ever pitched. So the fires are built during the boot
+// pre-warm, under the loading screen, and there is a fixed number of them.
+//
+// Nothing is ever refused for hitting this. Pitching a fifth camp strikes the
+// one FURTHEST from it, which is the one the player is least able to see and
+// least likely to be thinking about. A cap that blocks you is the thing they
+// asked to have removed; a cap that quietly recycles the far end is not.
+const MAX_CAMPS = 4;
+
+// How far apart two camps must stand: the sum of their radii plus this. Enough
+// that their clearings never touch, so the ground between them stays meadow and
+// the two read as two places rather than as one sprawl.
+const CAMP_GAP = 3.0;
+
 // How many engine frames the pre-warm props are held in the scene. Enough for
 // the main pass and the shadow cascade to have drawn every one of them, and
 // few enough to finish under the loading screen. See `_prewarm`.
@@ -103,14 +130,15 @@ export class Camp extends System {
     this.loadLabel = 'Unpacking the camp';
 
     this.state = STATE.IDLE;
-    this.site = null;          // { x, z, y } once pitched
-    this.raise = 0;            // 0..1 build-in
-    this.props = [];
+    // Every pitched camp, newest last. See `_makeCamp` for a record's shape.
+    this.camps = [];
+    this._pool = [];           // idle { fire, ground } pairs, built at boot
+    this._packTarget = null;   // the camp the pack-up prompt would strike
     this.root = null;
-    this.fire = null;
-    this.ground = null;
+
     this.reticle = null;
     this.prompt = null;
+    this.scope = null;       // the telescope eyepiece view, when one is open
 
     this._aim = { x: 0, z: 0, y: 0, ok: false, score: 0, reason: '' };
     this._holdT = 0;
@@ -118,9 +146,6 @@ export class Camp extends System {
     this._downAt = { x: 0, y: 0, t: 0 };
     this._click = false;
     this._focusCamp = false; // is the camera looking at the camp or the camper?
-    this._queue = [];        // props still to be built; see `_pitch`
-    this._queueN = 0;
-    this._rnd = null;
     this._ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
     this._q = new THREE.Quaternion();
     this._v = new THREE.Vector3();
@@ -133,9 +158,15 @@ export class Camp extends System {
     this.root.name = 'camp';
     scene.add(this.root);
 
-    this.ground = new CampGround(scene, world);
+    // The pool. One { fire, ground } pair per camp slot, all of them built
+    // during `_prewarm` so their shaders link under the loading screen — see
+    // MAX_CAMPS for why that matters more than it sounds.
+    for (let i = 0; i < MAX_CAMPS; i++) {
+      this._pool.push({ fire: null, ground: new CampGround(scene, world) });
+    }
     this.reticle = new CampReticle(scene, world, CAMP_RADIUS);
     this.prompt = new CampPrompt();
+    this.scope = new ScopeView(this.ctx);
 
     // ── the fire's light, created once and never removed ──────────────────
     //
@@ -206,9 +237,14 @@ export class Camp extends System {
     warm.scale.setScalar(PREWARM_SCALE);
     scene.add(warm);
 
+    // `buildRidgeTent` is deliberately NOT in this list, and the omission is not
+    // an oversight. This warms PROGRAMS, and a program is keyed on the material
+    // and the geometry's attributes, neither of which the A-frame differs in:
+    // it draws out of the same `campMaterials()` set, with the same
+    // position/normal/uv/color attributes, as the dome above it. Adding it would
+    // cost a 37 000-triangle build under the loading screen and link nothing.
     const builders = [buildTent, buildChair, buildCooler, buildTable, buildWoodpile,
                         (r) => buildTelescope(r, { variant: 'reflector' })];
-    let fire = null;
     try {
       // Every colourway, because a colourway is a vertex-colour change and not
       // a material change — one of each builder is enough for the programs.
@@ -216,11 +252,19 @@ export class Camp extends System {
         const o = build(rnd, {});
         if (o) warm.add(o);
       }
-      // Built ONCE, into the scene, and kept for the whole session. See the
-      // note on `this.fire` below.
-      fire = new Firepit(scene, rnd, { light: this.fireLight, prewarm: true });
-      // The dirt has its own material with its own onBeforeCompile.
-      this.ground.build(0, 0, CAMP_RADIUS, rnd);
+      // The whole pool, built here and kept for the session.
+      //
+      // Every Firepit allocates its own materials, and a material built at
+      // runtime is a program linked at runtime — the thing that froze the game
+      // for two seconds the first time a camp was pitched. Building all of
+      // them now costs a few tens of milliseconds under the loading screen and
+      // means the fourth camp of a session is as cheap as the first.
+      for (const slot of this._pool) {
+        slot.fire = new Firepit(scene, rnd, { light: this.fireLight, prewarm: true });
+        // The dirt has its own material with its own onBeforeCompile. One
+        // build is enough to link it — the material is shared across the pool.
+        slot.ground.build(0, 0, CAMP_RADIUS, rnd);
+      }
 
       // HARVEST BEFORE COMPILING. This line is the difference between a
       // pre-warm that works and one that looks like it does.
@@ -261,13 +305,14 @@ export class Camp extends System {
     // `update()` takes it out again after a handful of frames — all of it
     // still under the loading screen.
     warm.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
-    if (this.ground?.mesh) this.ground.mesh.frustumCulled = false;
-    if (fire) {
-      fire.group?.traverse?.((o) => { if (o.isMesh) o.frustumCulled = false; });
-      fire.setPosition(new THREE.Vector3(0, -900, 0));
-      fire.setReveal(1);              // reveal 0 may hide it, and hidden does not compile
+    for (const slot of this._pool) {
+      if (slot.ground?.mesh) slot.ground.mesh.frustumCulled = false;
+      if (!slot.fire) continue;
+      slot.fire.group?.traverse?.((o) => { if (o.isMesh) o.frustumCulled = false; });
+      slot.fire.setPosition(new THREE.Vector3(0, -900, 0));
+      slot.fire.setReveal(1);         // reveal 0 may hide it, and hidden does not compile
     }
-    this._warm = { group: warm, fire, frames: 0 };
+    this._warm = { group: warm, frames: 0 };
     console.log(`[camp] prewarm built in ${(performance.now() - t0).toFixed(0)} ms; ` +
                 `holding for ${PREWARM_FRAMES} frames`);
   }
@@ -294,34 +339,33 @@ export class Camp extends System {
       camera.position.y + d.y * 6 - 3.5,
       camera.position.z + d.z * 6,
     );
-    w.fire?.setPosition?.(w.group.position);
-    if (this.ground?.mesh) this.ground.mesh.position.copy(w.group.position);
+    for (const slot of this._pool) {
+      slot.fire?.setPosition?.(w.group.position);
+      if (slot.ground?.mesh) slot.ground.mesh.position.copy(w.group.position);
+    }
 
     if (++w.frames < PREWARM_FRAMES) return;
     this._warm = null;
-    // ── the fire is KEPT ──────────────────────────────────────────────────
+
+    // ── the pool is KEPT ──────────────────────────────────────────────────
     //
-    // One Firepit for the session, moved to wherever the camp is, rather than
-    // one per camp. `Firepit`'s constructor allocates its own materials —
-    // four ShaderMaterials and three standard ones — and a material built
-    // fresh is a program built fresh however thoroughly it was pre-warmed,
-    // because the pre-warmed program belonged to an object that has since been
-    // thrown away. Measured: with the fire rebuilt per camp, the second frame
-    // after a pitch was 485 ms.
+    // Fires and dirt meshes are built once, here, and then moved to wherever a
+    // camp is pitched — never rebuilt. `Firepit`'s constructor allocates its
+    // own materials, four ShaderMaterials and three standard ones, and a
+    // material built fresh is a program built fresh however thoroughly it was
+    // pre-warmed, because the pre-warmed program belonged to an object that has
+    // since been thrown away. Measured: with the fire rebuilt per camp, the
+    // second frame after a pitch was 485 ms.
     //
-    // The cost is that the stone ring is the same ring at every camp. That is
-    // a real loss and a small one — you see one camp at a time — and it goes
-    // away the moment Firepit either hoists its materials to module scope or
-    // grows a `rebuild(rnd)`, which `_pitch` already calls when it exists.
-    this.fire = w.fire ?? null;
-    if (this.fire) {
-      this.fire.setReveal(0);
-      this.fire.setPosition(this._v.set(0, -900, 0));
-      this._adoptFireLight();
+    // The cost is that every camp's stone ring is the same ring. That goes away
+    // the moment Firepit either hoists its materials to module scope or grows a
+    // `rebuild(rnd)`, which `_pitch` already calls when it exists.
+    for (const slot of this._pool) {
+      slot.fire?.setReveal(0);
+      slot.fire?.setPosition(this._v.set(0, -900, 0));
+      slot.ground?.dispose();
     }
-    this.ground.dispose();
-    this.ctx.scene.remove(w.group);
-    w.group.traverse((o) => { if (o.isMesh) o.geometry?.dispose?.(); });
+    for (const slot of this._pool) this._adoptFireLight(slot.fire);
     this.fireLight.intensity = 0;
     this.fireLight.position.set(0, -1000, 0);
     console.log(`[camp] prewarm released, ` +
@@ -329,80 +373,167 @@ export class Camp extends System {
   }
 
   // ── the one thing the rest of the game asks this system ────────────────────
-  get pitched() { return this.state === STATE.PITCHED || this.state === STATE.RAISING; }
+  get pitched() { return this.camps.length > 0; }
+
+  /**
+   * The newest camp, as `{ x, z, y, radius, small }`.
+   *
+   * Kept because every capture tool and every scratch harness in this round
+   * reads `__camp.site`, and because "the camp" still means something to a
+   * caller who pitched exactly one. Anything that cares about all of them
+   * should walk `camps` instead.
+   */
+  get site() { return this.camps.length ? this.camps[this.camps.length - 1] : null; }
+
+  /** The newest camp's props — same reasoning as `site`. */
+  get props() { return this.camps.length ? this.camps[this.camps.length - 1].props : []; }
+
+  /** The newest camp's build-in, 0..1. */
+  get raise() { return this.camps.length ? this.camps[this.camps.length - 1].raise : 0; }
 
   update(dt, t) {
-    const { input, camera, world } = this.ctx;
+    const { input, camera } = this.ctx;
     const veh = this.ctx.systems?.vehicle;
     if (this._warm) this._finishPrewarm();
     this._pollClick(dt);
 
     const holding = !!veh?.enabled && !!veh.brakeHold;
 
-    switch (this.state) {
-      case STATE.IDLE:
-        if (holding) this.state = STATE.AIMING;
-        break;
-
-      case STATE.AIMING: {
-        if (!holding) {
-          this.state = STATE.IDLE;
-          this.prompt.set('');
-          // Retract the preview. Without this, releasing the brake and driving
-          // away leaves a ghost-thinned disc of meadow behind you forever.
-          setCampSite(0, 0, 0, 1);
-          break;
-        }
-        this._aimAt(veh);
-        if (this._aim.ok && (this._click || input.justPressed('KeyE'))) this._pitch();
-        break;
+    // ── every camp advances on its own clock ────────────────────────────────
+    // Raising and striking are per-camp now, not states of the player. The
+    // player is only ever doing one of two things — aiming, or not — and a camp
+    // three hundred metres away finishing its build-in is none of their
+    // business.
+    for (const c of this.camps.slice()) {
+      if (c.striking) {
+        c.raise = Math.max(0, c.raise - dt / STRIKE_TIME);
+        this._applyRaise(c);
+        if (c.raise <= 0) { this._strike(c, true); continue; }
+      } else if (c.raise < 1) {
+        // ONE per frame. Eight props over a 1.15 s raise leaves enormous
+        // headroom even at 20 fps, and two per frame was measurably worse for
+        // no benefit: the frames straddling a pitch measured 92 and 74 ms
+        // against a 20 ms baseline, which is two prop builds landing together.
+        if (c.queue.length) this._buildNext(c);
+        c.raise = Math.min(1, c.raise + dt / RAISE_TIME);
+        this._applyRaise(c);
       }
+    }
+    if (this.camps.length) this._publishSlots();
 
-      case STATE.RAISING:
-        // Two per frame while raising: seven props over 1.15 s at 60 fps has
-        // enormous headroom, and finishing the queue early means the last prop
-        // is standing well before its own reveal reaches it.
-        if (this._queue.length) { this._buildNext(); this._buildNext(); }
-        this.raise = Math.min(1, this.raise + dt / RAISE_TIME);
-        this._applyRaise();
-        if (this.raise >= 1) { this.state = STATE.PITCHED; this.prompt.set(''); }
-        break;
-
-      case STATE.PITCHED:
-        // Packing up is offered only while parked, and only while parked *at*
-        // the camp — a "pack up camp" prompt visible from across the valley is
-        // a chore list, and this game does not have one.
-        if (holding && veh && this.site &&
-            Math.hypot(veh.position.x - this.site.x, veh.position.z - this.site.z) < SITE_MAX + 6) {
-          this.prompt.set('<b>E</b>&nbsp; pack up camp');
-          if (input.justPressed('KeyE')) { this.state = STATE.STRIKING; this.prompt.set(''); }
-        } else this.prompt.set('');
-        break;
-
-      case STATE.STRIKING:
-        this.raise = Math.max(0, this.raise - dt / STRIKE_TIME);
-        this._applyRaise();
-        if (this.raise <= 0) { this._teardown(); this.state = holding ? STATE.AIMING : STATE.IDLE; }
-        break;
+    // ── the player ──────────────────────────────────────────────────────────
+    if (!holding) {
+      if (this.state !== STATE.IDLE) {
+        this.state = STATE.IDLE;
+        this.prompt.set('');
+        // Retract the preview. Without this, releasing the brake and driving
+        // away leaves a ghost-thinned disc of meadow behind you forever.
+        clearCampAim();
+      }
+      if (this.scope?.active) this.scope.leave();
+    } else {
+      this.state = STATE.AIMING;
+      this._interact(dt, veh);
     }
 
     this._updateFocus(veh);
-    this.reticle.update(dt, t, this.state === STATE.AIMING);
-    // The fire exists for the whole session now and is parked below the world
-    // when no camp is pitched, so this is gated on the SITE and not on the
-    // fire. Getting that wrong threw a null deref every frame from boot, and
-    // because main.js disables a system that throws, the camp silently stopped
-    // existing — including in the perf harness, which then cheerfully reported
-    // that pitching a camp linked no shaders at all.
-    if (this.fire && this.site) {
-      // The light is not parented to the fire's group (it outlives it), so it
-      // has to be carried. Half a metre up: at the fuel line it lights the
-      // stone ring's inner faces and almost nothing else.
-      this.fireLight.position.set(this.site.x, this.site.y + 0.45, this.site.z);
-      this.fire.update(dt, t, camera);
-    } else if (this.fireLight.intensity !== 0) {
-      this.fireLight.intensity = 0;
+    this.reticle.update(dt, t, this.state === STATE.AIMING && !this.scope?.active);
+    this._carryFireLight(dt, t, camera);
+  }
+
+  /**
+   * Everything the player can do while parked: look through a telescope, make
+   * a camp, or pack one up.
+   *
+   * These used to be separate states because there was one camp and it either
+   * existed or it did not. With several, they are all live at once and the
+   * pointer is what chooses between them — which is better anyway, and gives
+   * `E` an unambiguous meaning it did not have before: **point at open ground
+   * to make a camp, point at a camp to pack it up.**
+   */
+  _interact(dt, veh) {
+    const { input } = this.ctx;
+
+    // Inside the telescope, nothing else in the camp is listening. In
+    // particular E must NOT reach the pack-up branch below: a player who
+    // reaches for a key to get out of a view they have just entered would
+    // otherwise strike the whole camp, which is the worst possible answer to
+    // "how do I leave".
+    if (this.scope?.active) {
+      // Driving takes the camera back, always — the same rule `_updateFocus` is
+      // built around, and it is about the VEHICLE, not about any camp. A player
+      // who touches the throttle wants to be behind the wheel, not at an
+      // eyepiece three metres away.
+      if (Math.abs(veh?.speed ?? 0) > 0.6 || (input.axes.throttle ?? 0) > 0.05) {
+        this.scope.leave();
+      }
+      this.scope.update(dt);
+      this.prompt.set(this.scope.closing ? ''
+        : 'drag to sweep the sky&nbsp; ·&nbsp; scroll to magnify' +
+          '&nbsp; ·&nbsp; <b>Esc</b> step back');
+      return;
     }
+
+    // The telescope, if the player is pointing at one. Found FIRST and then
+    // checked against the distance to its OWN camp, rather than the other way
+    // round: gating on "near any camp" would let a player parked at camp A
+    // click a telescope forty metres away in camp B and send the camera across
+    // the valley.
+    const scope = this._scopeUnderPointer();
+    if (scope && veh &&
+        Math.hypot(veh.position.x - scope.camp.x, veh.position.z - scope.camp.z) < SITE_MAX + 6) {
+      this.prompt.set('<b>click</b>&nbsp; look through the telescope');
+      if (this._click) {
+        this._click = false;      // do not also read as a click on the camp
+        this.scope.enter(scope.obj);
+      }
+      return;
+    }
+
+    this._aimAt(veh);
+
+    // Pointing at a camp is how you pack it up. `scoreSite` refuses a site that
+    // overlaps an existing camp, and `_blocked` hands back which one — so the
+    // rule falls out of the placement test rather than needing its own.
+    if (this._packTarget) {
+      this.prompt.set('<b>E</b>&nbsp; pack up this camp');
+      // E only. A CLICK on a camp means "look at that one" and is handled by
+      // `_updateFocus`; giving it a second meaning here would make packing up
+      // something you could do by accident while choosing what to look at.
+      if (input.justPressed('KeyE')) this._strike(this._packTarget);
+      return;
+    }
+
+    // A click that is centred on the CAMPER is the player choosing what the
+    // camera looks at — see `_updateFocus` — and must not also build a camp.
+    //
+    // It did. With one camp the pitch branch could only run when no camp
+    // existed, so this could not arise; now that a camp can always be made,
+    // the click that takes the camera back to the car was landing on ground
+    // eight metres beside it and pitching there. The interaction test caught
+    // it: `after clicking the camper` came back with two camps.
+    //
+    // Only the click is gated, not E. A gamepad player has no pointer and aims
+    // down the camera's own axis, which in the chase view very often passes
+    // through the camper — gating E as well would take the feature away from
+    // them entirely.
+    // …and no sphere can answer that question. Two were tried and both were
+    // wrong in opposite directions:
+    //
+    //  · "is the click centred on the camper" — in the chase view the camper
+    //    sits near the middle of the screen and a 2.8 m sphere swallows most of
+    //    the lower frame. This blocked the FIRST camp of the session outright.
+    //  · "is the camper between the lens and the ground" — it almost always
+    //    is. A camp must stand at least 8 m from the camper and the camera is
+    //    behind the camper, so nearly every valid placement click passes it on
+    //    the way. This blocked every camp.
+    //
+    // The camper is a specific object and the honest test is whether the
+    // pointer is on it, so: raycast its actual geometry. It runs on the frame
+    // of a click and nowhere else, against about fifteen merged meshes, and it
+    // cannot be argued with.
+    const onCar = this._click && this._pointerOnCamper();
+    if (this._aim.ok && ((this._click && !onCar) || input.justPressed('KeyE'))) this._pitch();
   }
 
   // ── where the camera looks ────────────────────────────────────────────────
@@ -428,13 +559,21 @@ export class Camp extends System {
   _updateFocus(veh) {
     const rig = this.ctx.systems?.cameraRig;
     if (!rig?.setFocus || !veh) return;
+    // The eyepiece view owns the camera outright while it is open; moving the
+    // boom's subject under it would have the rig cut to a different shot on the
+    // frame the player steps back out.
+    if (this.scope?.active) return;
 
-    if (!this.site || this.state === STATE.STRIKING) { rig.setFocus(null); this._focusCamp = false; return; }
+    // `_focusCamp` is a camp record now, not a flag. A struck camp clears it in
+    // `_strike`, so a camera cannot be left pointing at ground where a camp
+    // used to be.
+    const focus = this._focusCamp;
+    if (!focus || focus.striking) { rig.setFocus(null); this._focusCamp = null; return; }
 
     // Rule 3, and it comes first so nothing below can override it.
     const moving = Math.abs(veh.speed) > 1.2 || (this.ctx.input.axes.throttle ?? 0) > 0.05;
-    const far = Math.hypot(veh.position.x - this.site.x, veh.position.z - this.site.z) > SITE_MAX + 8;
-    if (moving || far) this._focusCamp = false;
+    const far = Math.hypot(veh.position.x - focus.x, veh.position.z - focus.z) > SITE_MAX + 8;
+    if (moving || far) { this._focusCamp = null; rig.setFocus(null); return; }
 
     // Rule 2. Both are tested as spheres rather than against geometry: a 2.8 m
     // sphere is every pixel of a 4.7 m camper from any angle the player clicks
@@ -460,16 +599,58 @@ export class Camp extends System {
     // sphere (0.9 of that one). It is also just what the player means.
     if (this._click && !moving && !this._justPitched) {
       const car = this._rayMiss(veh.position, 2.8);
-      const camp = this._rayMiss(
-        this._v.set(this.site.x, this.site.y + 0.4, this.site.z), this.site.radius * 0.9);
-      if (car < camp) this._focusCamp = false;
-      else if (camp < Infinity) this._focusCamp = true;
+      // Every camp competes, not just the focused one, so clicking a second
+      // camp walks the camera over to it — the same affordance in both
+      // directions, which is the rule this whole method is built on.
+      let best = null, bestMiss = car;
+      for (const c of this.camps) {
+        const m = this._rayMiss(this._v.set(c.x, c.y + 0.4, c.z), c.radius * 0.9);
+        if (m < bestMiss) { bestMiss = m; best = c; }
+      }
+      if (bestMiss < Infinity) this._focusCamp = best;   // null = the camper won
     }
     this._justPitched = false;
 
-    rig.setFocus(this._focusCamp
-      ? this._v.set(this.site.x, this.site.y + 0.55, this.site.z)
-      : null);
+    const f = this._focusCamp;
+    rig.setFocus(f ? this._v.set(f.x, f.y + 0.55, f.z) : null);
+  }
+
+  /**
+   * The telescope the player is pointing at, if any.
+   *
+   * The same perpendicular-miss test `_updateFocus` uses to choose between the
+   * camper and the camp, at a much smaller radius: 0.62 m is a little wider
+   * than the tripod and a little narrower than the tube, which makes the whole
+   * object clickable without the click reaching past it to the ground behind.
+   * A generous sphere is the right shape here for the same reason it is there —
+   * an affordance that can be defeated by aiming at the gap between two tripod
+   * legs is an affordance most players will never find.
+   *
+   * Returns the prop's Object3D, because that is what `ScopeView.enter` needs:
+   * the eyepiece is published in the prop's own space and only its world matrix
+   * can carry it out.
+   */
+  _scopeUnderPointer() {
+    let best = null, bestMiss = 1;
+    // Across every camp. It is a pointer test, not a camp test — which camp a
+    // telescope belongs to is not something the player is expressing when they
+    // click on it. Whether they are close enough to ITS camp is a separate
+    // question, asked by the caller.
+    for (const camp of this.camps) {
+    for (const p of camp.props) {
+      if (p.item.kind !== 'telescope' || !p.obj?.userData?.telescope) continue;
+      const d = p.obj.userData.telescope;
+      // Centred on the eyepiece's own height rather than on a constant: the two
+      // variants are 0.75 m and 1.5 m tall, and a sphere sized for one of them
+      // either floats over the small scope or clips through the big one's tube.
+      const big = d.variant === 'reflector';
+      const miss = this._rayMiss(
+        this._v.set(p.item.x, p.item.y + (d.eye?.y ?? 0.7) * 0.86, p.item.z),
+        big ? 0.70 : 0.50);
+      if (miss < bestMiss) { bestMiss = miss; best = { obj: p.obj, camp }; }
+    }
+    }
+    return best;
   }
 
   /**
@@ -477,6 +658,34 @@ export class Camp extends System {
    * sphere's radius: 0 is dead on, 1 is grazing the rim, Infinity is a miss or
    * behind the lens. Used to pick between click targets — see `_updateFocus`.
    */
+  /**
+   * Is the pointer actually on the camper's geometry?
+   *
+   * The one place in this system that does a real scene raycast. Everywhere
+   * else it would be the wrong tool — the reticle marches the heightfield
+   * rather than raycasting because the first thing a scene ray hits in this
+   * world is a grass blade — but here the question really is "did the player
+   * click THIS object", and only its triangles can answer it.
+   *
+   * Cheap because of when it runs: on the frame of a click, against the
+   * camper's own rig and nothing else.
+   */
+  _pointerOnCamper() {
+    const veh = this.ctx.systems?.vehicle;
+    const rig = veh?.rig;
+    if (!rig) return false;
+    const { input, camera } = this.ctx;
+    const o = this._ray.o.copy(camera.position);
+    const d = this._ray.d;
+    if (input.mouse && Number.isFinite(input.mouse.x) && !window.__forceCamera) {
+      d.set(input.mouse.x, input.mouse.y, 0.5).unproject(camera).sub(o).normalize();
+    } else camera.getWorldDirection(d);
+    const ray = (this._caster ??= new THREE.Raycaster());
+    ray.set(o, d);
+    ray.far = 60;
+    return ray.intersectObject(rig, true).length > 0;
+  }
+
   _rayMiss(centre, r) {
     const { input, camera } = this.ctx;
     const o = this._ray.o.copy(camera.position);
@@ -522,6 +731,8 @@ export class Camp extends System {
     const px = hit ? hit.x : o.x + d.x * 30;
     const pz = hit ? hit.z : o.z + d.z * 30;
 
+    // Cleared before scoring, not inside `_blocked` — see the note there.
+    this._packTarget = null;
     const c = clampToSite(px, pz, vx, vz);
     // `bestSite` falls back to a compact camp where a full one will not fit,
     // so the ring the player is holding is already the size they will get.
@@ -530,6 +741,9 @@ export class Camp extends System {
     this._aim.x = c.x; this._aim.z = c.z; this._aim.y = s.y;
     this._aim.ok = s.ok; this._aim.score = s.score; this._aim.reason = s.reason;
     this._aim.radius = s.radius; this._aim.small = s.small;
+    // How far along the ray the ground is, so `_interact` can tell a click on
+    // open meadow from a click on the camper standing in front of it.
+    this._aim.dist = hit ? hit.dist : Infinity;
 
     // The ring shrinks to the camp that actually fits. That is the only signal
     // the player gets that this pitch will be a small one, and it is enough —
@@ -540,8 +754,13 @@ export class Camp extends System {
     // actually buildable: a preview that appears over a lake or a cliff is
     // promising something that will not happen, and the whole job of this
     // affordance is to be trustworthy.
-    setCampSite(c.x, c.z, s.radius, featherFor(s.radius), s.ok ? AIM_FLOOR : 1);
+    if (s.ok) setCampAim(c.x, c.z, s.radius, featherFor(s.radius), AIM_FLOOR);
+    else clearCampAim();
 
+    // `_packTarget` is set by `_blocked` while scoring, and `_interact` turns
+    // it into the pack-up prompt — so nothing is said here about a site the
+    // player is only pointing at because their own camp is on it.
+    if (this._packTarget) return;
     this.prompt.set(s.ok
       ? '<b>Click</b> or <b>E</b>&nbsp; make camp here'
       : `no camp here — ${s.reason}`);
@@ -569,6 +788,29 @@ export class Camp extends System {
    * instead, which walks its props around them.
    */
   _blocked(x, z, r) {
+    // An existing camp first, because it is the one refusal that is also an
+    // OFFER: `_interact` reads `_packTarget` and turns "you cannot build here"
+    // into "press E to pack this up". Pointing at a camp is how you strike it,
+    // and that affordance falls out of the placement test rather than needing a
+    // rule of its own.
+    //
+    // The gap is the two radii plus CAMP_GAP, so two camps' clearings never
+    // touch and the meadow between them survives — which is what makes them
+    // read as two places rather than one sprawl.
+    //
+    // `_packTarget` is cleared by `_aimAt`, NOT here: this function is only
+    // reached once a site has already passed the water, slope and bumpiness
+    // tests, so clearing it here would leave a stale target — and therefore a
+    // live pack-up prompt — every time the player swung the reticle from their
+    // own camp onto a cliff.
+    for (const c of this.camps) {
+      if (c.striking) continue;
+      if (Math.hypot(c.x - x, c.z - z) < c.radius + r + CAMP_GAP) {
+        this._packTarget = c;
+        return 'a camp is already here';
+      }
+    }
+
     const occupied = r * OCCUPIED;
     const trees = this.ctx.systems?.trees;
     const near = trees?.trunksNear?.(x, z, occupied) ?? [];
@@ -644,43 +886,68 @@ export class Camp extends System {
 
   // ── raising ───────────────────────────────────────────────────────────────
 
+  /**
+   * Pitch a camp. Returns its record, or null if there was no free slot and
+   * nothing could be recycled.
+   */
   _pitch(x = this._aim.x, z = this._aim.z) {
-    const { world, scene } = this.ctx;
-    this._teardown();
+    const { world } = this.ctx;
+
+    // At the cap, strike the camp FURTHEST from the new one. Never refuse:
+    // being blocked is the exact thing the player asked to have removed, and
+    // the far end of the valley is the part of it they are least able to see.
+    if (this.camps.length >= MAX_CAMPS) {
+      let far = null, bestD = -1;
+      for (const c of this.camps) {
+        const d = (c.x - x) ** 2 + (c.z - z) ** 2;
+        if (d > bestD) { bestD = d; far = c; }
+      }
+      if (far) {
+        this._strike(far, true);
+        this.ctx.systems?.hud?.toast?.('Your furthest camp was packed up');
+      }
+    }
+    const slot = this._pool.find((sl) => !sl.busy);
+    if (!slot) { console.warn('[camp] no free slot'); return null; }
+    slot.busy = true;
 
     const y = world.getHeight(x, z);
     // Re-scored rather than trusting the aim: `pitchAt` is also called by the
     // harness, which never aimed at anything.
     const fit = bestSite(world, x, z, { blocked: (bx, bz, br) => this._blocked(bx, bz, br) });
     const R = fit.radius ?? CAMP_RADIUS;
-    this.site = { x, z, y, radius: R, small: !!fit.small };
     const rnd = siteRng(x, z, this.ctx.world?.seed ?? 0);
 
-    // Publish the clearing first: the dirt mesh reads it back to shape its own
-    // alpha, so the two are the same edge by construction rather than by two
-    // authors agreeing on a formula.
-    setCampSite(x, z, R, featherFor(R));
-    this.ground.build(x, z, R, rnd);
+    const camp = {
+      x, z, y, radius: R, small: !!fit.small, feather: featherFor(R),
+      slot, fire: slot.fire, ground: slot.ground,
+      props: [], queue: [], queueN: 0, rnd,
+      raise: 0, striking: false,
+      root: new THREE.Group(),
+    };
+    camp.root.name = 'camp_props';
+    this.root.add(camp.root);
+    this.camps.push(camp);
 
-    // The fire is the origin of the arrangement, so it is placed first and
-    // everything else is placed relative to it. It is the session's one
-    // Firepit, moved — see `_finishPrewarm` for why.
-    if (!this.fire) {
-      this.fire = new Firepit(scene, rnd, { light: this.fireLight });
-      this._adoptFireLight();
-    } else if (typeof this.fire.rebuild === 'function') {
+    // Publish the clearing BEFORE building the dirt: the mesh reads
+    // `campCoverAt` back to shape its own alpha, so the two are the same edge
+    // by construction rather than by two authors agreeing on a formula.
+    this._publishSlots();
+    camp.ground.build(x, z, R, rnd, camp.feather);
+
+    if (typeof camp.fire?.rebuild === 'function') {
       // Optional and additive: a Firepit that can re-roll its stones for a new
       // site gets to, and one that cannot is simply reused as it is.
-      try { this.fire.rebuild(rnd); } catch (e) { console.warn('[camp] fire.rebuild threw', e); }
+      try { camp.fire.rebuild(rnd); } catch (e) { console.warn('[camp] fire.rebuild threw', e); }
     }
-    this.fire.setPosition(new THREE.Vector3(x, y + 0.02, z));
+    camp.fire?.setPosition(new THREE.Vector3(x, y + 0.02, z));
 
     const wind = this.ctx.systems?.weather?.windDir
               ?? this.ctx.systems?.grass?.windDir
               ?? new THREE.Vector2(0.86, 0.51);
 
     const items = layoutCamp(rnd, world, x, z, {
-      radius: R, small: this.site.small, windDir: wind,
+      radius: R, small: camp.small, windDir: wind,
       obstacles: this._obstacles(x, z),
     });
 
@@ -699,42 +966,46 @@ export class Camp extends System {
     // build cost in the same order as the reveal, so each prop is constructed
     // just before it is needed.
     let tents = 0;
-    this._queue = items
-      // One tent. The layout only ever emits one, and this is the belt to that
-      // braces: a second tent in a camp this size is the difference between
-      // "somebody is staying here" and "this is a campground".
+    camp.queue = items
+      // One tent PER CAMP. The layout only ever emits one, and this is the belt
+      // to that braces: a second tent in a camp this size is the difference
+      // between "somebody is staying here" and "this is a campground".
       .filter((it) => !(it.kind === 'tent' && tents++ > 0))
-      .sort((a, b) => Math.hypot(a.x - x, a.z - z) - Math.hypot(b.x - x, b.z - z));
-    this._queueN = this._queue.length;
+      .sort((p, q) => Math.hypot(p.x - x, p.z - z) - Math.hypot(q.x - x, q.z - z));
+    camp.queueN = camp.queue.length;
 
     // The payoff shot. Set before the raise so the camera is already drifting
     // across as the camp assembles rather than starting to move once it is
     // finished — the two motions read as one event.
-    this._focusCamp = true;
+    this._focusCamp = camp;
     // The click that pitched the camp must not also be read as a click on
     // something. See `_updateFocus`.
     this._justPitched = true;
-    this._rnd = rnd;
-    this.raise = 0;
-    this.state = STATE.RAISING;
-    this._applyRaise();
+    this._applyRaise(camp);
     this.ctx.systems?.hud?.toast?.('Camp made');
+    return camp;
   }
 
   /**
    * Build the next queued prop. One per frame; see the note in `_pitch`.
    */
-  _buildNext() {
-    const it = this._queue.shift();
+  _buildNext(camp) {
+    const it = camp.queue.shift();
     if (!it) return;
     const BUILD = {
-      tent: buildTent, chair: buildChair, cooler: buildCooler,
+      // Two tents behind one kind. The layout decides which — see the `style`
+      // draw in camp_site — and everything downstream of here (the one-tent
+      // filter in `_pitch`, the 0.55 tilt, the reticle's footprint) is about a
+      // TENT and does not care which shape it turns out to be. A second `kind`
+      // would have had to be taught to all three.
+      tent: (r, o) => (o.style === 'ridge' ? buildRidgeTent(r, o) : buildTent(r, o)),
+      chair: buildChair, cooler: buildCooler,
       table: buildTable, woodpile: buildWoodpile, telescope: buildTelescope,
     };
     const build = BUILD[it.kind];
     if (!build) { console.warn('[camp] no builder for', it.kind); return; }
     let obj;
-    try { obj = build(this._rnd, it.opts ?? {}); }
+    try { obj = build(camp.rnd, it.opts ?? {}); }
     catch (e) { console.error(`[camp] ${it.kind} builder threw`, e); return; }
     if (!obj) return;
     obj.position.set(it.x, it.y, it.z);
@@ -742,50 +1013,92 @@ export class Camp extends System {
     obj.quaternion.copy(this._q);
     obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     obj.userData.campItem = it;
-    this.root.add(obj);
+    camp.root.add(obj);
     // The delay is computed from the prop's place in the ORIGINAL queue, not
     // from how many have been built, so the reveal timing is identical whether
     // the build was spread over frames or not.
-    const i = this._queueN - this._queue.length - 1;
-    this.props.push({
+    const i = camp.queueN - camp.queue.length - 1;
+    camp.props.push({
       obj, item: it,
-      delay: 0.06 + (i / Math.max(1, this._queueN - 1)) * 0.42,
+      delay: 0.06 + (i / Math.max(1, camp.queueN - 1)) * 0.42,
     });
-    this._applyRaise();
+    this._applyRaise(camp);
   }
 
   /**
-   * Make sure the world contains exactly one point light, always, whatever
-   * Firepit did.
+   * Which clearings the vegetation shaders are told about.
    *
-   * `opts.light` asks Firepit to use the persistent one; this does not trust
-   * it to. The measured cost of getting this wrong is the whole reason the
-   * light exists at boot — a scene going from one point light to two relinks
-   * every lit material in the valley just as surely as going from zero to one,
-   * and the player feels it as the game freezing on the frame they clicked.
-   *
-   * Swapping in the same frame the fire is built means the count three sees at
-   * render time never changes: the fire's own light leaves the scene before it
-   * has ever been rendered.
+   * There can be more camps than the shader has slots, and that is fine —
+   * a clearing only has to suppress vegetation that exists, and grass stops at
+   * about a hundred metres. So the nearest few win and the rest simply are not
+   * uploaded: their dirt is still drawn, there is just no grass left out there
+   * for them to hide.
    */
-  _adoptFireLight() {
-    const f = this.fire;
-    if (!f?.light || f.light === this.fireLight) return;
+  _publishSlots() {
+    const p = this.ctx.camera.position;
+    const near = this.camps
+      .map((c) => ({ c, d: (c.x - p.x) ** 2 + (c.z - p.z) ** 2 }))
+      .sort((a2, b2) => a2.d - b2.d)
+      .slice(0, CAMP_SLOTS)
+      // The published radius follows the build-in, which is what makes the
+      // ground sweep open ahead of the props rather than appearing under them.
+      .map(({ c }) => ({
+        x: c.x, z: c.z, feather: c.feather,
+        radius: c.radius * smoothstep(0, 0.55, c.raise),
+      }));
+    setCampSlots(near);
+  }
+
+  _adoptFireLight(fire) {
+    if (!fire?.light || fire.light === this.fireLight) return;
     if (!this._warnedLight) {
       this._warnedLight = true;
       console.warn('[camp] Firepit created its own light instead of using opts.light; ' +
                    'adopting it. See the note on this.fireLight in Camp.init().');
     }
     // Copy whatever the author tuned, then take their light out of the scene
-    // and hand them mine. Their update() writes `this.light.intensity`, so it
-    // drives the persistent one from here on without knowing anything changed.
-    const src = f.light;
+    // and hand them the shared one. Their update() writes `this.light.intensity`
+    // so it drives the shared light without knowing anything changed.
+    const src = fire.light;
     this.fireLight.color.copy(src.color);
     this.fireLight.distance = src.distance;
     this.fireLight.decay = src.decay;
     src.parent?.remove(src);
     src.dispose?.();
-    f.light = this.fireLight;
+    fire.light = this.fireLight;
+  }
+
+  /**
+   * One point light in the world, always, wherever the nearest fire is.
+   *
+   * Every camp's Firepit writes to the SAME light — see `_adoptFireLight` — so
+   * with several camps lit at once the last one to update would win, and the
+   * light would sit at whichever fire that happened to be. Carrying it to the
+   * nearest fire instead is both correct and free: a fire's light reaches about
+   * 24 m, camps stand at least ten metres apart, and a light belonging to the
+   * second-nearest fire could not have reached the viewer anyway.
+   *
+   * A second light is not an option. The scene has exactly one point light on
+   * purpose; a second changes NUM_POINT_LIGHTS and relinks every lit material
+   * in the valley, which is the two-second freeze this whole design exists to
+   * avoid.
+   */
+  _carryFireLight(dt, t, camera) {
+    let near = null, bestD = Infinity;
+    for (const c of this.camps) {
+      if (c.raise <= 0.02) continue;
+      const d = (c.x - camera.position.x) ** 2 + (c.z - camera.position.z) ** 2;
+      if (d < bestD) { bestD = d; near = c; }
+    }
+    // Every fire is stepped — they all animate, and a fire that stops flickering
+    // because it is not the nearest is a fire that visibly freezes when you walk
+    // past it. Only the nearest gets to own the light.
+    for (const c of this.camps) {
+      if (c.raise <= 0.02) continue;
+      if (c === near) this.fireLight.position.set(c.x, c.y + 0.45, c.z);
+      c.fire?.update(dt, t, camera);
+    }
+    if (!near) this.fireLight.intensity = 0;
   }
 
   /**
@@ -796,17 +1109,12 @@ export class Camp extends System {
    * rather than as a group fading in. Props scale up from their own base, with
    * a small overshoot — a prop that settles is a prop that was set down.
    */
-  _applyRaise() {
-    const k = this.raise;
-    const clear = smoothstep(0, 0.55, k);
-    if (this.site) {
-      const R = this.site.radius;
-      setCampSite(this.site.x, this.site.z, R * clear, featherFor(R));
-    }
-    this.ground?.setReveal(smoothstep(0.02, 0.62, k));
-    this.fire?.setReveal(smoothstep(0.30, 0.95, k));
+  _applyRaise(camp) {
+    const k = camp.raise;
+    camp.ground?.setReveal(smoothstep(0.02, 0.62, k));
+    camp.fire?.setReveal(smoothstep(0.30, 0.95, k));
 
-    for (const p of this.props) {
+    for (const p of camp.props) {
       const t = clamp01((k - p.delay) / Math.max(0.08, 1 - p.delay));
       // Back-ease with a gentle overshoot; never below zero, because a prop
       // that inverts for one frame is a flash of inside-out geometry.
@@ -816,26 +1124,65 @@ export class Camp extends System {
     }
   }
 
-  _teardown() {
-    for (const p of this.props) {
-      this.root.remove(p.obj);
+  /**
+   * Take a camp down.
+   *
+   * `now` skips the animation, which is what the cap-recycle and the harness
+   * want; the player's own pack-up runs `camp.striking` and comes back here
+   * once the raise has eased to zero.
+   */
+  _strike(camp, now = false) {
+    if (!now) { camp.striking = true; return; }
+
+    // Never leave the player inside a prop that has been packed away. The
+    // eyepiece view owns the camera outright, so if the geometry goes the view
+    // has to go with it — and only if the open telescope was in THIS camp.
+    if (this.scope?.active && camp.props.some((p) => p.obj === this.scope.subject)) {
+      this.scope.leave();
+    }
+
+    for (const p of camp.props) {
+      camp.root.remove(p.obj);
       p.obj.traverse((o) => { if (o.isMesh) o.geometry?.dispose?.(); });
     }
-    this.props.length = 0;
-    this._queue = [];
-    // The fire is NOT disposed — there is one for the session and it is parked
-    // out of sight instead. Only Camp.dispose() ends it.
-    if (this.fire) {
-      this.fire.setReveal(0);
-      this.fire.setPosition(this._v.set(0, -900, 0));
-    }
+    camp.props.length = 0;
+    camp.queue.length = 0;
+    this.root.remove(camp.root);
+
+    // The fire and the dirt are NOT disposed — they are pool slots, built once
+    // at boot and parked out of sight between camps. Only Camp.dispose() ends
+    // them. See MAX_CAMPS.
+    camp.fire?.setReveal(0);
+    camp.fire?.setPosition(this._v.set(0, -900, 0));
+    camp.ground?.dispose();
+    camp.slot.busy = false;
+
+    const i = this.camps.indexOf(camp);
+    if (i >= 0) this.camps.splice(i, 1);
+    if (this._focusCamp === camp) this._focusCamp = null;
+    if (this._packTarget === camp) this._packTarget = null;
+    this._publishSlots();
+  }
+
+  /** Every camp, gone. */
+  _teardown() {
+    for (const c of this.camps.slice()) this._strike(c, true);
     this.fireLight.intensity = 0;
     if (!this.fireLight.parent) this.ctx.scene.add(this.fireLight);
     this.fireLight.position.set(0, -1000, 0);
-    this.ground?.dispose();
-    setCampSite(0, 0, 0, 1);
-    this.site = null;
-    this.raise = 0;
+    clearCampAim();
+    this._publishSlots();
+  }
+
+  /** The camp the player is parked at, if any. */
+  _campAt(veh, reach = SITE_MAX + 6) {
+    if (!veh) return null;
+    let best = null, bestD = reach * reach;
+    for (const c of this.camps) {
+      const d = (c.x - veh.position.x) ** 2 + (c.z - veh.position.z) ** 2;
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best;
   }
 
   // ── harness surface ───────────────────────────────────────────────────────
@@ -851,16 +1198,16 @@ export class Camp extends System {
    * costs more than it saves. `shot.mjs` learned this twice already.
    */
   pitchAt(x, z, { instant = true } = {}) {
-    this._pitch(x, z);
-    if (instant) {
+    const camp = this._pitch(x, z);
+    if (camp && instant) {
       // Drain the build queue in one go. The staged build exists to keep the
       // *player's* frame budget; a capture wants the finished camp now.
-      while (this._queue.length) this._buildNext();
-      this.raise = 1;
-      this.state = STATE.PITCHED;
-      this._applyRaise();
+      while (camp.queue.length) this._buildNext(camp);
+      camp.raise = 1;
+      this._applyRaise(camp);
+      this._publishSlots();
     }
-    return this.site;
+    return camp;
   }
 
   /** Pitch a camp on decent ground near a point — used by the harness. */
@@ -887,14 +1234,19 @@ export class Camp extends System {
     return this.pitchAt(best.x, best.z, { instant });
   }
 
+  /** Strike every camp. The harness resets with this between captures. */
   strike() { this._teardown(); this.state = STATE.IDLE; }
 
   dispose() {
     this._teardown();
-    try { this.fire?.dispose(); } catch { /* already gone */ }
-    this.fire = null;
+    for (const slot of this._pool) {
+      try { slot.fire?.dispose(); } catch { /* already gone */ }
+      slot.ground?.dispose();
+    }
+    this._pool.length = 0;
     this.reticle?.dispose();
     this.prompt?.dispose();
+    this.scope?.dispose();
     this.ctx.scene.remove(this.root);
     disposeCampMaterials();
   }

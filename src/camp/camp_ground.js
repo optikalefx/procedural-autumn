@@ -64,7 +64,7 @@
 //  indistinguishable; the frame time is not.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { campCoverAt, getCampSite } from './camp_clearing.js';
+import { campCoverAt } from './camp_clearing.js';
 import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 import { C, sanitizeNormals } from './camp_materials.js';
 
@@ -680,12 +680,16 @@ export class CampGround {
 
   // ── build ──────────────────────────────────────────────────────────────────
 
-  build(x, z, radius, rnd = Math.random) {
+  build(x, z, radius, rnd = Math.random, edge = radius * 0.20) {
+    this.feather = edge;
     this.dispose();
     this._lat.clear();
 
-    const site = getCampSite();
-    const feather = Math.max(0.35, site.w);
+    // The feather comes from the caller now, not from a global. There can be
+    // several camps in the world at once (see camp_clearing.js) and reading
+    // "the" clearing would have every dirt mesh built to whichever camp
+    // happened to be published last.
+    const feather = Math.max(0.35, this.feather ?? radius * 0.20);
 
     // Draw a fixed, small number of values from the shared stream and seed a
     // local generator from them. The shared `rnd` is consumed by the layout
@@ -799,12 +803,29 @@ export class CampGround {
     sanitizeNormals(g);
     g.computeBoundingSphere();
 
-    this.u.uCentre.value.set(x, z);
     this.mesh = new THREE.Mesh(g, this.mat);
     this.mesh.name = 'camp_ground';
     this.mesh.position.set(x, 0, z);
     this.mesh.receiveShadow = true;
     this.mesh.renderOrder = 1;
+
+    // ── per-mesh values on a shared material ──────────────────────────────
+    //
+    // `uCentre` and `uReveal` live in the ONE shared uniform block, because a
+    // per-instance material is a per-instance shader program and pitching a
+    // camp already cost the player a two-second freeze once. But there can now
+    // be several camps in the world, and they do not share a centre or a
+    // reveal — the second camp's build would simply overwrite the first's, and
+    // both discs would draw against the wrong one.
+    //
+    // three calls `onBeforeRender` and THEN uploads the material's uniforms for
+    // that draw, so writing them here gives every mesh its own values with one
+    // material, one program and no extra draw calls. It is the standard answer
+    // and it is exact rather than approximate.
+    this.mesh.onBeforeRender = () => {
+      this.u.uCentre.value.set(x, z);
+      this.u.uReveal.value = this.reveal;
+    };
     this.scene.add(this.mesh);
   }
 
@@ -1023,7 +1044,8 @@ export class CampGround {
 
   setReveal(k) {
     this.reveal = clamp01(k);
-    this.u.uReveal.value = this.reveal;
+    // NOT written to the shared uniform here — see the onBeforeRender hook in
+    // `build`. Writing it here would make the last camp to animate win.
     if (this.mesh) this.mesh.visible = this.reveal > 0.004;
     if (this.props) this.props.visible = this.reveal > 0.02;
   }
