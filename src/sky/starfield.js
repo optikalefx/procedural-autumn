@@ -351,22 +351,41 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       // found without spending the feature to buy it.
       float air = mix(1.0, 0.72, clamp(abs(dir.y), 0.0, 1.0));
 
-      float rate = 1.10 + 4.20 * hb.y;
+      // Rate, and it is half of why the first version of this could measure as
+      // twinkling and be seen as still. At 1.10..5.30 rad/s the slow end has a
+      // 5.7-second period, and a brightness that takes three seconds to rise is
+      // not read as a flicker at any depth — it is read as the scene drifting,
+      // or as nothing. 2.2..8.2 puts the primary between 0.8 and 2.9 seconds
+      // and the second harmonic below half a second, which is the band where
+      // the eye calls it twinkling. Not faster: past about 4 Hz it stops being
+      // a star and becomes a bad pixel.
+      float rate = 2.20 + 6.00 * hb.y;
       float ph   = hb.z * 51.0;
 
       // 1. The shimmer. Two incommensurate sines, so no star has a period an
-      //    eye can lock onto — but gated on a hash that lets only about a third
-      //    of the field in, and ramped, so even those arrive at every depth
-      //    from nothing up to full. The 0.055 floor is what everyone else
-      //    keeps: the sky is never perfectly still, it is just quiet.
+      //    eye can lock onto — but gated on a hash that lets about half of the
+      //    field in, and ramped, so even those arrive at every depth from
+      //    nothing up to full. The 0.100 floor is what everyone else keeps: the
+      //    sky is never perfectly still, it is just quiet.
       //
-      //    Bright stars shimmer less. They anchor the frame, and a bright point
-      //    visibly pumping reads as a dropped pixel rather than as a star —
-      //    which is also why the flare below, not the shimmer, is what the
-      //    bright end is allowed to do.
-      float shim  = smoothstep(0.62, 1.00, hc.x);
+      //    The gate was 0.62, i.e. 38% of stars, and it was widened to 0.49 —
+      //    51% — on the art direction's read of the frame. Widening the GATE
+      //    rather than raising the depth is the right lever for "a few more
+      //    twinkling": it recruits stars at the shallow end of the ramp, so the
+      //    extra ones come in barely moving and the field gains restlessness
+      //    without gaining amplitude.
+      //
+      //    Bright stars shimmer a LITTLE less, and the number used to be 0.45.
+      //    That was inherited reasoning — a bright point pumping reads as a
+      //    dropped pixel — applied without asking who it was costing, and the
+      //    answer is: the only stars anyone can see do it. Through the eyepiece
+      //    a faint star's whole contrast is 0.06 display luma, so a fifth of it
+      //    is 0.012 and invisible however deep the fraction sounds; the field's
+      //    visible twinkle lives entirely on the bright end. 0.15 keeps the
+      //    brightest slightly steadier than the rest without gutting them.
+      float shim  = smoothstep(0.49, 1.00, hc.x);
       float wob   = 0.62 * sin(t * rate + ph) + 0.38 * sin(t * rate * 1.83 + ph * 2.7);
-      float depth = (0.055 + 0.235 * shim) * (1.0 - 0.45 * m) * air;
+      float depth = (0.100 + 0.550 * shim) * (1.0 - 0.15 * m) * air;
 
       // 2. The flare, and the quiet between is the point of it. Two slow pulses
       //    that only spike where they COINCIDE: each star fires on the beat
@@ -379,11 +398,18 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       //    at all and because it is true — the naked-eye scintillators are the
       //    bright ones. A frame holds a handful of eligible stars and they
       //    never fire together.
-      float f1    = 0.5 + 0.5 * sin(t * rate * 0.49 + ph * 1.30);
-      float f2    = 0.5 + 0.5 * sin(t * rate * 0.29 + ph * 2.10);
-      float spark = pow(f1 * f2, 7.0) * smoothstep(0.90 - 0.10 * m, 0.96, hc.y) * air;
+      // The two rates are close together on purpose: their DIFFERENCE sets how
+      // often the coincidence comes round, at 2*PI/(0.12*rate), which is 24
+      // seconds for the slowest star and 6 for the quickest. Spread over the
+      // dozen or so eligible stars a field stop holds, that is a sparkle every
+      // second or two somewhere in the circle — often enough to be caught
+      // inside the few seconds someone actually spends looking, rare enough per
+      // star that each one still reads as an event.
+      float f1    = 0.5 + 0.5 * sin(t * rate * 0.31 + ph * 1.30);
+      float f2    = 0.5 + 0.5 * sin(t * rate * 0.19 + ph * 2.10);
+      float spark = pow(f1 * f2, 7.0) * smoothstep(0.86 - 0.12 * m, 0.94, hc.y) * air;
 
-      float tw = 1.0 + depth * wob + 0.55 * spark;
+      float tw = 1.0 + depth * wob + 0.85 * spark;
 
       // Colour. The plates are mostly blue-white with a clear minority of amber
       // stars — look at night.jpg, there are half a dozen distinctly orange
@@ -419,7 +445,7 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       // a fog, not a sparkle, and it also keeps the term down to 0.3% of the
       // core's peak by the 8-radii cull above, where a wider one would step to
       // zero at the cut and draw a faint disc edge around every flaring star.
-      float glow = exp(-r / (radE * 1.8)) * spark * 0.30;
+      float glow = exp(-r / (radE * 1.8)) * spark * 0.45;
 
       acc += tint * (amp * (tw * (core + halo) + glow));
     }

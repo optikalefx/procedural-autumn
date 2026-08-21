@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { mulberry32 } from '/Users/sean/htdocs/procedural-fall/src/core/MathUtils.js';
 import { buildTelescope } from '/Users/sean/htdocs/procedural-fall/src/camp/camp_telescope.js';
 
-for (const variant of ['refractor', 'reflector']) {
+for (const variant of ['refractor', 'travel', 'reflector']) {
   for (const seed of [1, 7, 99]) {
     const g = buildTelescope(mulberry32(seed), { variant, wear: 0.5 });
     g.updateMatrixWorld(true);

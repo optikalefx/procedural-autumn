@@ -729,7 +729,20 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   {
     const chance = 0.20;
     if (rnd() < chance) {
-      const variant = small ? 'refractor' : (rnd() < 0.55 ? 'reflector' : 'refractor');
+      // Which telescope. Three now, and the compact camp can only have two of
+      // them for the same reason it only gets one chair: a 1.5 m equatorial rig
+      // in a 4.2 m clearing stands taller than the tent and eats a third of the
+      // ground. The two small ones are 0.87 m and 1.09 m and both sit in a
+      // compact pitch without crowding it.
+      //
+      // The roll is not uniform on a full camp. The Newtonian is the rarest of
+      // the three because it is the biggest event — a player who has seen one
+      // twice should still not expect the third — and the travel scope is the
+      // commonest because it is the one somebody actually throws in a truck.
+      const r3 = rnd();
+      const variant = small
+        ? (r3 < 0.55 ? 'travel' : 'refractor')
+        : (r3 < 0.34 ? 'reflector' : r3 < 0.66 ? 'travel' : 'refractor');
       const big = variant === 'reflector';
       const flank = rnd() < 0.5 ? 1 : -1;
       // Behind the seats and off to one side: a quarter turn or more past the

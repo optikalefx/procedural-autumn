@@ -164,7 +164,7 @@ mkdirSync(resolve(DIR), { recursive: true });
 // bug existed. Somebody else was shipping contact sheets with a cyan ring
 // through the middle of them the whole time.
 
-const F = VARIANT === 'refractor' ? SMALL_P : P;
+const F = VARIANT === 'reflector' ? P : SMALL_P;
 const AZ = [
   ['front', 0.00, F.elev], ['fq', 0.75, F.elev], ['side', 1.57, F.elev],
   ['bq', 2.35, F.elev], ['back', 3.14, F.elev], ['high', 0.90, F.elev + F.dist * 0.75],

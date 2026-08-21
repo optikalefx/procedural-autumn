@@ -67,6 +67,7 @@ import { PALETTE } from '../world/WorldConfig.js';
 import { SKY_STATE } from '../render/Lighting.js';
 import { STAR_GLSL } from './starfield.js';
 import { MOON_GLSL } from './moon.js';
+import { PLANET_GLSL } from './planets.js';
 
 const VERT = /* glsl */`
 varying vec3 vDir;
@@ -112,6 +113,7 @@ uniform float uMoonHaloI;
 
 ${STAR_GLSL}
 ${MOON_GLSL}
+${PLANET_GLSL}
 
 float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
@@ -282,6 +284,12 @@ void main() {
     // read as a star cloud goes with it.
     col += vec3(0.86, 0.83, 0.95) * mw.x * mwVis * 0.058 * ext;
     col += skStars(dir, uTime, mw.y * mwVis) * starVis * ext;
+    // The planets ride the same night visibility and the same horizon
+    // extinction as the stars, so they rise and set with the field rather than
+    // hanging in a dawn sky. They are drawn AFTER the stars and simply add:
+    // a planet sitting on a star is brighter, which is correct and is what a
+    // conjunction looks like.
+    col += plPlanets(dir, pxAng, uTime) * starVis * ext;
   }
 
   if (uMoonDiscI > 0.0001 || uMoonHaloI > 0.0001) {

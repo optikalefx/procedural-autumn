@@ -347,6 +347,14 @@
   image-rendering: auto;
 }
 
+/* Debug warp — double-click the map to move the camper there. The panel
+   inherits the HUD root's `pointer-events: none`; this turns it back on for the
+   whole frame, so the raster, its border and the N all answer the gesture. No
+   cursor change: the map is not a button, and a hover affordance would be
+   promising a single click that deliberately does nothing.
+   `user-select` because otherwise the second click of the pair selects the N. */
+.pa-map.pa-map-pick { pointer-events: auto; user-select: none; }
+
 /* North is up and never moves, so it is stated once, small, and then forgotten
    — a rotating rose would be a second moving thing to read. */
 .pa-map-north {

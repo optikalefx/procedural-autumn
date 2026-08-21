@@ -459,8 +459,16 @@ export function paintMap(fields, N, worldSize, out) {
 }
 
 export class MiniMap {
-  constructor(root, world) {
+  /**
+   * `onPick(x, z)` — optional. When given, the map becomes clickable and
+   * reports the world point under the pointer. The map does not know or care
+   * what the caller does with it; see `HUD` for the debug warp that consumes
+   * it. Everything else in this file is still read-only and still per-frame
+   * free — a click handler costs nothing until it is clicked.
+   */
+  constructor(root, world, onPick = null) {
     this.world = world ?? null;
+    this.onPick = onPick;
     this.visible = true;
 
     this.node = el('div', 'pa-map pa-game-only');
@@ -481,6 +489,8 @@ export class MiniMap {
       'fill="#e8622a" stroke="#fff6ea" stroke-width="1.9" stroke-linejoin="round"/></svg>');
     this.node.appendChild(this.marker);
 
+    if (this.onPick) this._bindPick();
+
     root.appendChild(this.node);
 
     this._size = 0;
@@ -497,6 +507,44 @@ export class MiniMap {
     // resize and on the font-size clamp changing — never during play.
     this._ro = new ResizeObserver(() => this._ensureBake());
     this._ro.observe(this.node);
+  }
+
+  /**
+   * Double-click the map to go there — a debug shortcut, see `HUD._warp`.
+   *
+   * A *double* click, and bound to the whole panel rather than to the raster.
+   * A single click was the first version and it is the wrong gesture for
+   * something that moves you 2 km: the map sits under the corner of the screen
+   * you flick the mouse toward, and one stray click should not end the drive
+   * you were on. Double-click is the standard "I meant that" and costs nothing
+   * to make.
+   *
+   * The panel takes the pointer, not just the canvas, so the 0.34em frame and
+   * the N are live too — `toWorld` clamps, so a hit on the frame lands on the
+   * nearest edge of the world rather than doing nothing. `pa-map` inherits the
+   * HUD root's `pointer-events: none`, which is what this class turns back on.
+   */
+  _bindPick() {
+    this.node.classList.add('pa-map-pick');
+    this.node.addEventListener('dblclick', (e) => {
+      if (!this.visible) return;
+      const p = this.toWorld(e.clientX, e.clientY);
+      if (!p) return;
+      e.preventDefault();
+      this.onPick(p.x, p.z);
+    });
+  }
+
+  /** Client pixel → world metres, or null if the map cannot answer. */
+  toWorld(clientX, clientY) {
+    const w = this.world;
+    if (!w) return null;
+    const r = this.canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const u = clamp01((clientX - r.left) / r.width);
+    const v = clamp01((clientY - r.top) / r.height);
+    const half = w.worldSize / 2;
+    return { x: u * w.worldSize - half, z: v * w.worldSize - half };
   }
 
   setVisible(v) {

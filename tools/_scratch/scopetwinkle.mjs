@@ -208,7 +208,7 @@ const res = await page.evaluate(async ({ b64s, tip }) => {
     return s / n;
   };
   const stars = [];
-  for (let y = 4; y < Hp - 4; y++) for (let x = 4; x < Wp - 4; x++) {
+  for (let y = 8; y < Hp - 8; y++) for (let x = 8; x < Wp - 8; x++) {
     if ((x - cx) ** 2 + (y - cy) ** 2 > rad * rad) continue;
     if (tip && x >= tip.x0 && x <= tip.x1 && y >= tip.y0 && y <= tip.y1) continue;
     const v = l0[y * Wp + x];
@@ -217,7 +217,21 @@ const res = await page.evaluate(async ({ b64s, tip }) => {
       if (!dx && !dy) continue;
       if (l0[(y + dy) * Wp + (x + dx)] > v) { lm = false; break; }
     }
-    if (lm && v - ring(l0, x, y) > 0.012) stars.push([x, y]);
+    if (!lm || v - ring(l0, x, y) <= 0.012) continue;
+    // Reject birds.
+    //
+    // There is wildlife over this valley and it flies through the field stop.
+    // A bird is a big solid bright shape crossing the frame, so it lights up
+    // every metric here: it is a local maximum, its "swing" is the full
+    // contrast of the sky behind it, and the swingmap picture of this run is
+    // mostly birds. A star is a handful of pixels. Anything with a large bright
+    // area around the peak is not a star, whatever else it is.
+    let big = 0;
+    for (let dy = -7; dy <= 7; dy++) for (let dx = -7; dx <= 7; dx++) {
+      if (l0[(y + dy) * Wp + (x + dx)] > v - 0.05) big++;
+    }
+    if (big > 26) continue;
+    stars.push([x, y]);
   }
   const rows = [];
   for (const [x, y] of stars) {
@@ -230,6 +244,12 @@ const res = await page.evaluate(async ({ b64s, tip }) => {
       mn = Math.min(mn, best); mx = Math.max(mx, best);
     }
     peak0 = mx;
+    // And reject the ones a bird flew over mid-run: if the pixel's own
+    // surround jumps, that is not the star changing, it is something passing
+    // in front of it.
+    let ringMin = Infinity, ringMax = -Infinity;
+    for (const l of lums) { const rr = ring(l, x, y); ringMin = Math.min(ringMin, rr); ringMax = Math.max(ringMax, rr); }
+    if (ringMax - ringMin > 0.03) continue;
     rows.push({ peak: peak0, swing: mx - mn });   // ABSOLUTE display luma
   }
   rows.sort((a, b) => a.swing - b.swing);

@@ -57,6 +57,10 @@ const RESCUE_TRIES = 28;        // bearings sampled on the 20 m ring
 const RESCUE_ARC = 4.5;         // m between samples along a ring
 const RESCUE_TRIES_MAX = 200;
 const RESCUE_COOLDOWN = 1.0;    // s between presses; see `rescue()`
+// Debug warp only: how far inside the world edge a click is allowed to land.
+// The physics patch is built *around* the arrival point, so a landing on the
+// very edge stands on a patch that is half off the map.
+const WARP_MARGIN = 24;
 const RESCUE_WATER = 0.05;      // m — anything deeper is standing water
 const RESCUE_FOOT = 2.2;        // m — footprint radius the checks are run over
 const RESCUE_CLEAR = 2.8;       // m of clear ground the camper needs around it
@@ -407,7 +411,30 @@ export class Vehicle extends System {
     // because the player asked for that; spinning them as well would make an
     // already-disorienting jump worse, and the site checks have already
     // guaranteed there is nothing to be pointed into.
-    this.phys.teleport(site.x, site.z, this.heading);
+    this._land(site.x, site.z, this.heading);
+    this._rescueCool = RESCUE_COOLDOWN;
+    this.rescues++;
+    // A 20 m hop needs no explanation; a 300 m one does, or the player reads
+    // the jump as the game having lost them. The distance is the honest thing
+    // to say — it is the cost of having been somewhere with no way out.
+    this.ctx.systems.hud?.toast?.(
+      site.landmark ? 'Moved you back to the road'
+        : moved > 60 ? `Moved you ${Math.round(moved)} m to clear ground`
+          : site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
+    return site;
+  }
+
+  /**
+   * Put the camper down at a point that has already been chosen, and clear
+   * everything on this side that belonged to where it came from.
+   *
+   * Shared by the rescue and by the debug warp, which differ only in how the
+   * destination was arrived at: once a place has been picked, landing on it is
+   * the same act either way, and the list of state that has to be cut is long
+   * enough that keeping two copies of it is how one of them goes stale.
+   */
+  _land(x, z, heading) {
+    this.phys.teleport(x, z, heading);
     // The physics teleport zeroes linear and angular velocity; these are the
     // things on this side that would otherwise carry the old motion across.
     this.phys._stuckFor = 0;
@@ -428,17 +455,30 @@ export class Vehicle extends System {
     // but the rescue one also releases on steering, and leaving both set would
     // mean a steer released one and not the other.
     this._brakeHold = false;
-    this._rescueCool = RESCUE_COOLDOWN;
-    this.rescues++;
     this.teleportSeq++;
-    // A 20 m hop needs no explanation; a 300 m one does, or the player reads
-    // the jump as the game having lost them. The distance is the honest thing
-    // to say — it is the cost of having been somewhere with no way out.
-    this.ctx.systems.hud?.toast?.(
-      site.landmark ? 'Moved you back to the road'
-        : moved > 60 ? `Moved you ${Math.round(moved)} m to clear ground`
-          : site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
-    return site;
+  }
+
+  /**
+   * Debug: drop the camper on an arbitrary point, no questions asked.
+   *
+   * Deliberately *not* `rescue()` with a destination. The rescue's whole job is
+   * to find somewhere the camper can stand — dry, flat, clear — and moving the
+   * player somewhere they did not point at is the correct answer to being
+   * stuck. This is the opposite request: someone clicking a lake on the minimap
+   * to see what the lake looks like is asking to be put in the lake, and
+   * quietly nudging them onto the nearest beach would make the tool useless for
+   * the thing it exists for. The only thing enforced is the world boundary,
+   * because outside it there is no terrain patch to stand on at all.
+   *
+   * @returns {{x:number,z:number}|null} where it actually landed
+   */
+  warpTo(x, z) {
+    if (!this.phys?.ready) return null;
+    const half = this.ctx.world.worldSize / 2 - WARP_MARGIN;
+    const wx = Math.max(-half, Math.min(half, x));
+    const wz = Math.max(-half, Math.min(half, z));
+    this._land(wx, wz, this.heading);
+    return { x: wx, z: wz };
   }
 
   /**

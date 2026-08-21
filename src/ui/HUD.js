@@ -77,7 +77,8 @@ export class HUD extends System {
     this.dash = new Dash(root);
     // Baked here, inside the awaited init, so the ~40 ms raster lands under the
     // loading screen rather than as a hitch on the player's first frame.
-    this.map = new MiniMap(root, this.ctx.world ?? globalThis.__world ?? null);
+    this.map = new MiniMap(root, this.ctx.world ?? globalThis.__world ?? null,
+      (x, z) => this._warp(x, z));
     this.map.setVisible(this.showMap);
 
     // ── corner chips ───────────────────────────────────────────────────────
@@ -109,6 +110,22 @@ export class HUD extends System {
     this.applyHudMode(this.hudOpacity);
 
     window.__hud = this;
+  }
+
+  /**
+   * Debug: click the map, go there.
+   *
+   * Temporary by request — it is a way to get to a piece of terrain without
+   * driving twenty minutes to it, not a mechanic. It is deliberately blunt: no
+   * confirmation, no site search, and no refusal to land in a lake, because
+   * being able to click the lake is most of the point. `Vehicle.warpTo` clamps
+   * to the world and does the rest.
+   */
+  _warp(x, z) {
+    const v = this.ctx.systems?.vehicle ?? globalThis.__vehicle;
+    if (!v?.warpTo) return;
+    const p = v.warpTo(x, z);
+    if (p) this.toast(`Warped to ${Math.round(p.x)}, ${Math.round(p.z)}`);
   }
 
   // ── landmarks ─────────────────────────────────────────────────────────────

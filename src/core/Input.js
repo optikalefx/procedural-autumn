@@ -33,7 +33,13 @@ export class Input {
     // a real control — a slider being scrubbed, a chip being clicked — and that
     // gesture belongs to the control, not to the look. Without this, dragging
     // the time-of-day slider also swings the camera behind the sheet.
-    const onWorld = (e) => e.target instanceof HTMLCanvasElement;
+    // The type test alone is not enough now that the HUD has a canvas of its
+    // own that takes clicks: the minimap is an HTMLCanvasElement, so a click
+    // placing a warp point also read as a grab on the world and swung the
+    // camera. `#pa-hud` is the one root the HUD ever appends to, so anything
+    // inside it is interface by definition.
+    const onWorld = (e) => e.target instanceof HTMLCanvasElement
+      && !e.target.closest('#pa-hud');
 
     window.addEventListener('mousedown', (e) => { if (onWorld(e)) this.mouse.down = true; });
     window.addEventListener('mouseup', () => (this.mouse.down = false));
