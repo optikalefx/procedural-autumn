@@ -39,9 +39,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { PALETTE } from '../world/WorldConfig.js';
-// Camera occlusion: the transparent frustum between the chase camera and the
-// camper (src/render/Occlusion.js). Opt-in, and only on the second material —
-// see the note on `opts.occlude` below. Call sites are marked OCCLUDE.
+// Camera occlusion: the volume that takes away whatever the camera is standing
+// inside (src/render/Occlusion.js). Opt-in, and only on the second material —
+// see the note on `opts.occlude` below. Call sites are marked OCCLUDE. The fade
+// is the INSTANCE's, computed once in the vertex shader, so a rock goes whole
+// rather than opening a porthole in the middle of itself.
 import { occlusionUniforms, OCCLUDE_PARS, OCCLUDE_DITHER } from '../render/Occlusion.js';
 
 /**
@@ -52,7 +54,7 @@ import { occlusionUniforms, OCCLUDE_PARS, OCCLUDE_DITHER } from '../render/Occlu
  *   noise, and one `discard` anywhere in a program turns early-Z off for all of
  *   it — so every rock behind the crag in front of you would start shading
  *   itself. Rocks.js swaps a mesh onto this one only while one of its instances
- *   is actually in the frustum, which in most frames is none of them.
+ *   is actually inside the volume, which in most frames is none of them.
  * @param opts.uniforms  share another rock material's uniform block, so the two
  *   variants cannot drift and `Rocks.update` still writes the sun once.
  */
@@ -65,6 +67,10 @@ export function createRockMaterial(opts = {}) {
     dithering: true,
     flatShading: false,   // normals are already exact per facet
   });
+  // OCCLUDE. A define rather than a second string, because three puts it in the
+  // prefix of BOTH stages and the varying that carries the instance's fade has
+  // to be declared in step in the two of them or the program will not link.
+  if (occlude) mat.defines = { ROCK_OCCLUDE: '' };
 
   const uniforms = opts.uniforms ?? {
     uRockLit:    { value: PALETTE.rockLit.clone() },
@@ -296,11 +302,11 @@ export function createRockMaterial(opts = {}) {
 
   mat.onBeforeCompile = (shader) => {
     // Object.assign, never UniformsUtils.merge — merge() deep clones, and the
-    // occlusion block has to arrive by reference or the frustum never moves.
+    // occlusion block has to arrive by reference or the volume never engages.
     Object.assign(shader.uniforms, uniforms, occlude ? occlusionUniforms() : {});   // OCCLUDE
     mat.userData.shader = shader;
 
-    shader.vertexShader = /* glsl */`
+    shader.vertexShader = (occlude ? OCCLUDE_PARS : '') + /* glsl */`
       attribute vec3 aBake;      // ao, upward exposure, height in rock
       attribute vec4 aRockA;     // wetness, moisture, tint jitter, size
       attribute vec3 aRockB;     // water surface Y, frost factor, ground Y
@@ -312,6 +318,9 @@ export function createRockMaterial(opts = {}) {
       varying vec3 vWNrm;
       varying vec3 vLPos;
       varying float vAbove;      // metres above the hillside plane under the rock
+      #ifdef ROCK_OCCLUDE
+      varying float vOcc;        // OCCLUDE — one value for the whole rock
+      #endif
     ` + shader.vertexShader
       .replace('#include <beginnormal_vertex>', /* glsl */`
         #include <beginnormal_vertex>
@@ -346,6 +355,25 @@ export function createRockMaterial(opts = {}) {
           vAbove = vWPos.y - ( aRockB.z
                  + aRockC.x * ( vWPos.x - iw.x )
                  + aRockC.y * ( vWPos.z - iw.z ) );
+          #ifdef ROCK_OCCLUDE
+            // OCCLUDE. Once per INSTANCE, at the rock's own origin, so a rock
+            // the camera has been backed into leaves the frame whole. The first
+            // build did it per fragment off vWPos, which takes a soft-edged
+            // bite out of the middle of a boulder and leaves the rest of it
+            // standing — the porthole this round removed. See the header of
+            // render/Occlusion.js.
+            //
+            // aRockA.w is the instance's own size in metres, which the scatter
+            // already writes for the shading, so the test can ask "is any of
+            // this stone in my face" rather than "is its centre". Halved to
+            // read as a radius, and CAPPED, which is the load-bearing part: a
+            // crag block is house-sized, and a house-sized rock that dissolves
+            // because the camera brushed one corner of it is a cliff going
+            // transparent. Past the cap a big rock only goes when the camera is
+            // properly inside it, which is the one case where seeing through it
+            // beats seeing its backfaces.
+            vOcc = occludeFadeAt( iw, min( aRockA.w * 0.5, 2.0 ) );
+          #endif
         }`)
       // Atmosphere's `fog_vertex` chunk now applies `instanceMatrix` itself, so
       // the local workaround that used to overwrite `vFogWorldPos` here is gone.
@@ -354,7 +382,9 @@ export function createRockMaterial(opts = {}) {
       // albedo tuning moved the rendered pixel by ~2%.
       ;
 
-    shader.fragmentShader = (occlude ? OCCLUDE_PARS + OCCLUDE_DITHER : '') + /* glsl */`
+    // OCCLUDE. The fragment stage is handed the instance's fade as a varying and
+    // only needs the dither; the shape itself lives in the vertex shader above.
+    shader.fragmentShader = (occlude ? `${OCCLUDE_DITHER}\nvarying float vOcc;\n` : '') + /* glsl */`
       uniform vec3 uRockLit, uRockMid, uRockShadow, uRockDeep, uRockWarm, uRockSun, uLichen, uMoss, uBounce;
       uniform vec3 uSunDir, uShadowTint, uSunTint, uRockCast;
       uniform vec4 uRockRamp;
@@ -385,16 +415,14 @@ export function createRockMaterial(opts = {}) {
       // OCCLUDE. First thing in main(), before the noise and before the
       // lighting: this program has already given up early-Z by containing a
       // discard at all, so the only thing left to save is the rest of the
-      // shader, and every fragment the frustum takes out skips all of it.
+      // shader, and every fragment the volume takes out skips all of it.
       //
-      // Per fragment, off vWPos, rather than per vertex. A rock is a convex
-      // polytope — a crag block face can be twenty metres of flat wall between
-      // four vertices — so a vertex-side fade would spread the feather linearly
-      // across the whole facet instead of putting it where the volume's edge
-      // actually crosses the stone.
+      // The fade is the instance's, constant over the whole rock, so nothing is
+      // interpolated across a facet and a twenty-metre crag face carries one
+      // dither density rather than a gradient.
       ? shader.fragmentShader.replace('#include <clipping_planes_fragment>', /* glsl */`
         #include <clipping_planes_fragment>
-        occludeCut( occludeFadeAt( vWPos, 0.0 ) );`)
+        occludeCut( vOcc );`)
       : shader.fragmentShader)
       .replace('#include <roughnessmap_fragment>', /* glsl */`
         #include <roughnessmap_fragment>

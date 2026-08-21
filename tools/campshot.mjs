@@ -5,6 +5,7 @@
  *   node tools/campshot.mjs --dir shots/camp/r1
  *   node tools/campshot.mjs --dir shots/camp/r1 --only chair,tent
  *   node tools/campshot.mjs --dir shots/camp/r1 --turntable chair   # 7 angles, one load
+ *   node tools/campshot.mjs --dir shots/camp/r1 --small        # the compact camp
  *   node tools/campshot.mjs --dir shots/camp/r1 --hour 20.4
  *   node tools/campshot.mjs --dir shots/camp/r1 --studio        # props only, in situ
  *   node tools/campshot.mjs --dir shots/camp/r1 --reticle       # the placement UI
@@ -145,10 +146,12 @@ async function main() {
   }, PARK === true ? 'meadow' : PARK);
   await page.waitForTimeout(1600);          // springs settle, streaming catches up
 
+  if (has('small')) await page.evaluate(() => { window.__campSmall = true; });
   const site = await page.evaluate((seed) => {
     const v = window.__systems.vehicle;
     if (seed !== null) window.__camp.__seed = parseInt(seed, 10);
-    const s = window.__camp.pitchNear(v.position.x, v.position.z, { instant: true, radius: 14 });
+    const s = window.__camp.pitchNear(v.position.x, v.position.z,
+      { instant: true, radius: 14, small: window.__campSmall === true });
     if (!s) return null;
     // The seating axis, so every framing below is relative to the camp's own
     // orientation rather than to whichever way the world happens to face.
@@ -156,14 +159,16 @@ async function main() {
     let ax = 0, az = 0;
     for (const c of chairs) { ax += c.item.x - s.x; az += c.item.z - s.z; }
     const axis = chairs.length ? Math.atan2(ax, az) : 0;
-    return { ...s, axis,
+    return { ...s, radius: window.__camp.site?.radius ?? 5.8,
+      small: !!window.__camp.site?.small, axis,
       vehAxis: Math.atan2(v.position.x - s.x, v.position.z - s.z),
       props: window.__camp.props.map((p) => ({
       kind: p.item.kind, x: p.item.x, y: p.item.y, z: p.item.z, yaw: p.item.yaw })) };
   }, SEED);
 
   if (!site) {
-    console.error('camp: pitchNear found no valid site near the camper. ' +
+    console.error((has('small') ? 'camp: no COMPACT-only site near the camper — try another --park. '
+                                : 'camp: pitchNear found no valid site near the camper. ') +
                   'Try --park road, or --park vista.');
     await browser.close(); release(); process.exit(2);
   }
@@ -238,6 +243,12 @@ async function main() {
       const THREE = window.__THREE, e = window.__engine;
       if (hour !== null) { window.__lighting.hour = parseFloat(hour); window.__lighting.cycleSpeed = 0; }
 
+      // Site framings are quoted against the full 5.8 m camp. A compact camp
+      // is 4.2 m across the same furniture, so a fixed 8.5 m boom stands
+      // outside its clearing — the first compact capture was a photograph of
+      // knee-high grass with the camp somewhere behind it. Scale the boom with
+      // the camp, floored so a close framing does not end up inside the tent.
+      const K = Math.max(0.62, (site.radius ?? 5.8) / 5.8);
       let cx, cy, cz, base;
       if (kind && kind !== 'fire') {
         const p = window.__camp.props.find((q) => q.item.kind === kind)?.item;
@@ -248,8 +259,14 @@ async function main() {
       }
       const a = base + f.az;
       const centre = new THREE.Vector3(cx, cy + f.aim, cz);
+      // DISTANCE scales with the camp; HEIGHT does not. Scaling both put the
+      // lens at 1.1 m, which is inside a half-metre meadow's grass canopy once
+      // you allow for the blades nearest the camera — the compact capture came
+      // back as a photograph of grass with a camp somewhere behind it. The eye
+      // stays above the canopy and only the boom comes in.
+      const dist = f.dist * (kind ? 1 : K);
       const pos = new THREE.Vector3(
-        cx + Math.sin(a) * f.dist, cy + f.elev, cz + Math.cos(a) * f.dist);
+        cx + Math.sin(a) * dist, cy + f.elev, cz + Math.cos(a) * dist);
       e.camera.fov = f.fov;
       e.camera.updateProjectionMatrix();
       e.camera.position.copy(pos);

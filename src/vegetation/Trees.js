@@ -109,13 +109,15 @@ const FAR_UPLOAD_CHUNK = 4096;
 // ultra and high are 1.0 — the shipped look at those tiers is untouched.
 const LOD_TIER_SCALE = { ultra: 1, high: 1, medium: 0.76, low: 0.55 };
 
-// OCCLUDE. Metres of slack added to a prototype's bark extents by the frustum
-// gate, covering the wind displacement the CPU does not evaluate. `windSway`
-// gives a trunk vertex at most `uWindStrength * aBark.y * aWind.y * 0.55` of
-// travel and the gust envelope tops out near 0.54, so a metre is comfortably
-// over it — and erring wide here costs a program swap on a tree that turns out
-// not to fade, while erring narrow costs a solid trunk across the camper.
-const OCC_SWAY = 1.0;
+// OCCLUDE. Metres of slack added to the gate's test, in the only direction it
+// is safe to err. The gate and the shader now ask the same question of the same
+// number — both measure from the instance origin, one out of the matrix array
+// and one out of the matrix — so this is no longer covering a difference in
+// SHAPE, only in arithmetic: a tree that lands within a float of the boundary
+// must not be left on the plain program while the shader is fading it by an
+// epsilon. Erring wide costs a program swap on a tree that turns out not to
+// fade; erring narrow costs a speckled trunk in the middle of the frame.
+const OCC_SLACK = 0.25;
 
 
 // VEG.treeDensity is the per-hectare figure the whole game shares; trees want a
@@ -327,18 +329,11 @@ export class Trees extends System {
     const barkGeom = geoms.bark;
     const leafGeom = geoms.leaf;
 
-    // OCCLUDE. The prototype's own bark extents, in local units, so the
-    // per-frame gate can ask "is any of this instance in the frustum" without
-    // touching a vertex. The BOX and not the trunk: every branch tube in the
-    // crown is bark too, and a bough across the lens is the frame this feature
-    // was asked for. Read off the geometry so a prototype that changes shape
-    // cannot leave a stale number behind here.
-    if (!barkGeom.boundingBox) barkGeom.computeBoundingBox();
-    const bb = barkGeom.boundingBox;
-    slot.occY0 = bb.min.y;
-    slot.occY1 = bb.max.y;
-    slot.occR = Math.max(Math.abs(bb.min.x), Math.abs(bb.max.x),
-                         Math.abs(bb.min.z), Math.abs(bb.max.z));
+    // OCCLUDE. The prototype's bark extents used to be read off here for the
+    // per-frame gate, which tested the whole bounding BOX. The volume is a
+    // trunk-shaped column now and the gate tests the instance origin against it
+    // directly (see `_gateOcclusion`), so there is nothing per-prototype left
+    // to cache — only which program this slot is currently on.
     slot.occOn = false;
 
     barkGeom.setAttribute('aColA', slot.barkCol);
@@ -1315,15 +1310,14 @@ export class Trees extends System {
    *
    * ── why the swap itself cannot pop ──────────────────────────────────────
    *
-   * The test is the prototype's whole bark BOUNDING BOX, inflated by the wind
-   * slack, and the box contains every vertex the shader will fade. So the gate
-   * turns the occluding program on strictly BEFORE the volume touches any
-   * geometry, and off strictly after it has left — at the moment of either
-   * swap, `occludeFadeAt` returns 1.0 over the whole instance and `occludeCut`
-   * discards nothing. The two programs render the same pixels there. That is
-   * what makes a per-frame material swap safe on a surface the player is
-   * looking straight at, and it is why the test must stay conservative even
-   * though a tighter one would fire less often.
+   * The gate and the shader ask the identical question — `occlusionTouchesColumn`
+   * against the instance origin, which is what `occludeFadeColumn` measures from
+   * in BARK_VERT — so the program turns on at the exact distance the fade starts
+   * having something to do. At the moment of either swap the tree sits at
+   * `nearNone`, where the fade is 1.0 and `occludeCut` discards nothing, so the
+   * two programs render the same pixels there. That is what makes a per-frame
+   * material swap safe on a surface the player is looking straight at, and it is
+   * why the slack in OCC_SLACK is spent outward and never inward.
    */
   _gateOcclusion() {
     const slots = this._barkSlots;
@@ -1352,12 +1346,11 @@ export class Trees extends System {
         const m = s.matrix.array;
         for (let k = 0; k < s.count; k++) {
           const o = k * 16;
-          // Uniform scale, written straight into the matrix by _push.
-          const sc = m[o + 5];
-          const y = m[o + 13];
-          if (occlusionTouchesColumn(m[o + 12], m[o + 14],
-                                     y + s.occY0 * sc, y + s.occY1 * sc,
-                                     s.occR * sc + OCC_SWAY)) { on = true; break; }
+          // The instance's foot, straight out of the matrix — the same three
+          // numbers the vertex shader gets from `instanceMatrix`, which is what
+          // makes this an exact mirror rather than a conservative one.
+          if (occlusionTouchesColumn(m[o + 12], m[o + 13], m[o + 14],
+                                     OCC_SLACK)) { on = true; break; }
         }
       }
       if (on !== s.occOn) {

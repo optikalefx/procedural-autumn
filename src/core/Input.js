@@ -28,9 +28,18 @@ export class Input {
       this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
       this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
     });
-    window.addEventListener('mousedown', () => (this.mouse.down = true));
+    // A drag or a wheel only reaches the camera when it starts on the world.
+    // The HUD root is pointer-events:none, so anything else under the cursor is
+    // a real control — a slider being scrubbed, a chip being clicked — and that
+    // gesture belongs to the control, not to the look. Without this, dragging
+    // the time-of-day slider also swings the camera behind the sheet.
+    const onWorld = (e) => e.target instanceof HTMLCanvasElement;
+
+    window.addEventListener('mousedown', (e) => { if (onWorld(e)) this.mouse.down = true; });
     window.addEventListener('mouseup', () => (this.mouse.down = false));
-    window.addEventListener('wheel', (e) => { this.mouse.wheel += e.deltaY; }, { passive: true });
+    window.addEventListener('wheel', (e) => {
+      if (onWorld(e)) this.mouse.wheel += e.deltaY;
+    }, { passive: true });
   }
 
   key(code) { return this.keys.has(code); }

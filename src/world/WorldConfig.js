@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 
 // export const SEED = 20261018;
-export const SEED = 20241018;
+export const SEED = 20261018;
 
 // ── World extents ────────────────────────────────────────────────────────────
 export const WORLD = {

@@ -6098,3 +6098,69 @@ material, a containing test, and the swap in `lateUpdate` (not `update` —
 - **Grass** — unchanged from round 1: vertex-only and free, and still the grass
   author's to take.
 - **Impostors** — distant trees, never inside the cone.
+
+## Camera occlusion round 3 — the cone is gone, and a tree now fades as ONE object (2026-08-20)
+
+**Owner: camera-occlusion author. Shared helper: `src/render/Occlusion.js`.**
+
+The player looked at round 2 and rejected the shape:
+
+> "It should hide entire objects when they are basically on top of the camera.
+> Not if they are far away but in front of the car, and not with a little circle
+> window like its doing now. […] We should only occlude the trees directly in
+> front of the camera."
+
+Both halves of that are the same defect seen at two scales, and both are fixed.
+
+### 1. The camera-to-subject cone is deleted
+
+It fired on distance from the view AXIS rather than distance from the LENS, so
+it dissolved canopy fifteen and twenty metres out — trees that were never in
+anyone's way — and what it left behind was a round hole punched through a crown
+at partial dither, following the camper around. Nothing in the picture is shaped
+like that.
+
+Gone with it: the `wide`, `soft` and `taper` params, the `uOccTarget` /
+`uOccWide` / `uOccSoft` / `uOccTaper` / `uOccFar2` uniforms, and the `minFacing`
+/ `minDist` engagement gates (there is no axis to be near any more, and refusing
+to clear a bough while the player looks sideways was a bug waiting to be filed).
+The uniform block is now `uOccNear`, `uOccSpan`, `uOccAmount`.
+
+### 2. The fade is per INSTANCE, not per fragment
+
+A fade evaluated per fragment off a world position is a sphere of clear air
+around the camera, and what it cuts out of a solid trunk is a soft-edged
+porthole — the player's "little circle window", at trunk scale. Every consumer
+now evaluates the volume ONCE, in the vertex stage, at its own object's origin,
+and carries the one value across the whole instance.
+
+| file | change |
+|---|---|
+| `src/render/Occlusion.js` | `occludeFadeAt(origin, radius)` keeps its signature and loses the cone. New `occludeFadeColumn(origin, radius)` for anything that STANDS: distance to a vertical segment through the instance origin, `spanBelow` under the foot to `spanAbove` over it. CPU mirrors: `occlusionFadeColumn`, and `occlusionTouchesColumn(x, y, z, radius)` — **note the signature change**, it takes the foot rather than an explicit y-span. `setOcclusionTarget` is now `setOcclusionSubject` (old name still exported, `window.__occlusion.setTarget` still works) — it is the "we are in the chase camera" switch and nothing aims at it any more. |
+| `src/vegetation/tree_material.js` | Bark computes `occludeFadeColumn(worldOrigin)` in `BARK_VERT` and passes `vOcc` down; the canopy takes `min(` that same column `, ` the clump's own near-sphere `)`. Both read the same instance origin, so a trunk and every clump of its crown carry the identical fade and the tree leaves the frame whole. The clump test stays because a low bough can lie on the lens while its trunk is six metres away. |
+| `src/rocks/RockMaterial.js` | `vOcc = occludeFadeAt(instanceOrigin, min(aRockA.w * 0.5, 2.0))` in the vertex stage. The cap is load-bearing: a house-sized crag that dissolves because the camera brushed one corner is a cliff going transparent, so past the cap a big rock only goes when the camera is properly inside it. |
+| `src/shaders/cover_material.js` | Unchanged — it was already per-plant at the root, which is the pattern the rest of the tree has now adopted. |
+| `src/vegetation/Trees.js`, `src/rocks/Rocks.js` | The gates now ask the shader's own question of the same instance origin instead of a conservative superset, so they fire in strictly fewer frames than round 2 measured. The per-prototype `occY0/occY1/occR` caches are deleted. Rocks' cell scan drops from two rings to one — the volume is a few metres of air around the lens, and a cell is 64 m. |
+
+The no-pop guarantee survives the change of shape: gate and shader now switch at
+the same distance, and at that distance the fade is exactly 1.0 and `occludeCut`
+discards nothing, so both programs draw the same pixels. `OCC_SLACK` (0.25 m,
+was `OCC_SWAY` 1.0 m) covers float and nothing else.
+
+### If you opt in on a new surface
+
+Call it in the VERTEX stage, at your object's origin, and pass one value down as
+a varying. Do not evaluate it per fragment off the world position — that is the
+porthole, and it is the artifact this round exists to remove.
+
+### Captured
+
+`tools/_scratch/occdrive.mjs` shoots the live chase view only in the frames
+where a trunk is actually inside the volume, and writes the same frozen frame
+with it switched off for the pair (`shots/occdrive/near*-{on,off}.png`): the
+bough sprawling across the corner of the frame is gone in the ON frame and
+**nothing else in the picture has moved** — every mid-field conifer between the
+lens and the camper is untouched, which is precisely what the old cone could not
+say. `occnear.mjs` and `occrock.mjs` pose the camera at a set distance off one
+chosen trunk or boulder for the dissolve ramp: gone at 1 m, an even half-dither
+over the whole object at 2.4 m, untouched at 5 m.

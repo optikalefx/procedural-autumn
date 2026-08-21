@@ -48,6 +48,14 @@ const UP = new THREE.Vector3(0, 1, 0);
  * under ~15 m past a kilometre.
  */
 export const VIS_PER_METRE = 88;
+// Floor and ceiling on that radius, and they are exported because the
+// *generation* gate has to be the exact inverse of this rule — see
+// Rocks._minSizeFor. A cobble is drawn out to VIS_FLOOR however small it is,
+// so a cell that could contain one within VIS_FLOOR must generate every size
+// it has; get that wrong and rocks exist on screen only after you have driven
+// close enough to trigger the regeneration that creates them.
+export const VIS_FLOOR = 80;
+export const VIS_CAP = 950;
 
 /**
  * Crag siting grid, as a power of two in scatter cells. At CELL = 64 m,
@@ -1819,7 +1827,7 @@ export class RockScatter {
       // crag chain is a row of five-pixel dots on a hazed hillside, which is
       // the "sprinkle of chips" read. Beyond this the mountains are pure
       // terrain and aerial perspective, which is what the plates show.
-      vis: clamp(size * VIS_PER_METRE, 80, 950),
+      vis: clamp(size * VIS_PER_METRE, VIS_FLOOR, VIS_CAP),
       rnd: jRnd,
     });
   }

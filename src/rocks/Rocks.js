@@ -19,18 +19,42 @@ import { System } from '../core/System.js';
 import { SEED } from '../world/WorldConfig.js';
 import { buildRockLibrary, archFootprints, ARCHETYPES } from './RockForms.js';
 import { createRockMaterial } from './RockMaterial.js';
-import { RockScatter, VIS_PER_METRE } from './RockScatter.js';
+import { RockScatter, VIS_PER_METRE, VIS_FLOOR, VIS_CAP } from './RockScatter.js';
 // OCCLUDE. Rock ships two programs and this file owns the choice between them;
 // see `_gateOcclusion` below and the note on `opts.occlude` in RockMaterial.js.
 import { occlusionActive, occlusionTouchesSphere } from '../render/Occlusion.js';
 
 const CELL = 64;              // metres per scatter cell
-// Metres. Matches the largest instance vis radius in RockScatter, which caps
-// crag mass at ~950 m: past a kilometre a chain of blocks is a row of
-// five-pixel dots on a hazed hillside, and the mountains are better served by
-// terrain and aerial perspective alone.
-const STREAM_RADIUS = 1000;
+// Metres, and it IS the largest instance vis radius rather than a round number
+// near it: past that nothing is drawn, so generating it is pure cost. A chain
+// of blocks at a kilometre is a row of five-pixel dots on a hazed hillside, and
+// the mountains are better served by terrain and aerial perspective alone.
+const STREAM_RADIUS = VIS_CAP;
 const REPACK_MOVE = 14;       // metres of camera travel before we repack
+// Metres of camera travel before the *wanted set* is recomputed. This used to
+// happen only when the camera crossed a cell boundary, which is a 64 m stride:
+// a cell 90 m ahead was assessed once, at 90 m, and then not reassessed until
+// the camera had driven a whole cell further — by which time it could be
+// underfoot. Everything it had declined to generate then arrived in one batch,
+// which is the "a rock popped in on top of me" report. See `_minSizeFor`.
+const REFRESH_MOVE = 6;
+// Centre to corner of a cell. A cell's contents can be this much nearer the
+// camera than the cell's own centre is, and the detail floor has to be chosen
+// for the nearest thing in the cell, not the middle of it.
+const CELL_REACH = CELL * Math.SQRT1_2;   // 45.25 m
+// How far ahead of the exact answer the detail floor is chosen, in metres.
+//
+// The gate below answers "could this rock be drawn from anywhere in this cell
+// *right now*", and that is one refresh and one build-queue drain too late to
+// be useful: refining a cell only puts it in a queue, the queue is worked at
+// 2.2 ms a frame, and the camera keeps moving the whole time. Measured over a
+// 45 s drive (tools/_scratch/rockpopdrive.mjs) the exact gate alone still had
+// rocks arriving 38 m from the lens — not the 3 m the old gate managed, but
+// close enough to notice. The lead buys REFRESH_MOVE plus about a second and a
+// half of drain at speed, and it is the only fudge factor in this file: it is
+// paying for latency, not for geometry, which is why it is a separate number
+// rather than folded into CELL_REACH.
+const STREAM_LEAD = 34;
 
 // Per-variant instance capacity, and whether the archetype casts shadows.
 // Rubble does not: a 40 cm stone's shadow is invisible at any range where the
@@ -74,6 +98,11 @@ export class Rocks extends System {
     this._q = new THREE.Quaternion();
     this._s = new THREE.Vector3();
     this._lastPack = new THREE.Vector3(1e9, 1e9, 1e9);
+    this._lastRefresh = new THREE.Vector3(1e9, 1e9, 1e9);
+    // Test hook, and the only reason it exists: tools/_scratch/rockpopdrive.mjs
+    // walks the same ground twice to compare this streamer against the one it
+    // replaced, and the old one reassessed cells on a cell crossing only.
+    this.__forceCellOnly = false;
     this._lastCell = { x: 1e9, z: 1e9 };
     this._catchup = 0;
     this._dirty = true;
@@ -133,12 +162,11 @@ export class Rocks extends System {
         mesh.frustumCulled = false;
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         mesh.userData.arch = arch;
-        // OCCLUDE. A bounding radius about the INSTANCE ORIGIN rather than
-        // about the geometry's own centre, so the frustum gate does not have to
-        // rotate the centre offset per instance. Conservative by exactly that
-        // offset, which is what a gate wants to be.
-        if (!g.boundingSphere) g.computeBoundingSphere();
-        mesh.userData.occR = g.boundingSphere.center.length() + g.boundingSphere.radius;
+        // OCCLUDE. The gate used to carry a per-prototype bounding radius here.
+        // The volume is a small sphere about the lens now and the shader tests
+        // each rock at its own origin with its own instance size, so the gate
+        // asks the identical question in `_gateOcclusion` and there is nothing
+        // per-prototype left to cache — only which program this mesh is on.
         mesh.userData.occOn = false;
         this.group.add(mesh);
         this.meshes.push(mesh);
@@ -162,30 +190,55 @@ export class Rocks extends System {
   // ── streaming ──────────────────────────────────────────────────────────────
 
   /**
-   * Detail floor for a cell at distance `d`, in metres of rock *width*.
-   * Derived from the visibility rule rather than guessed: a rock of radius r
-   * is drawn out to r * VIS_PER_METRE, so anything narrower than 2d/V could
-   * never be seen from here and generating it is pure waste. Quantised into
-   * bands so a metre of camera drift does not trigger a regeneration.
+   * Detail floor for a cell whose centre is `d` from the camera, in metres of
+   * rock *width*: rocks narrower than this are not generated for that cell.
+   *
+   * This has to be the exact inverse of the rule that decides whether an
+   * instance is DRAWN, which lives in `_place`:
+   *
+   *     vis = clamp(size * VIS_PER_METRE, VIS_FLOOR, VIS_CAP)
+   *
+   * and the two used to disagree, in the one direction that is visible to the
+   * player. The old rule was `minSize = 2d / VIS_PER_METRE`, which is that
+   * inverse with the floor dropped and a factor of two standing in for the
+   * cell's own size. Both of those are wrong, and they compound:
+   *
+   *  · A cell is 64 m across, so its nearest corner is CELL_REACH = 45 m
+   *    closer to the camera than its centre. The floor has to be chosen for
+   *    that corner. A factor of two only covers it past ~90 m.
+   *  · Below VIS_FLOOR every rock is drawn *whatever its size*, so inside that
+   *    range there is no detail floor at all — the correct answer is zero.
+   *
+   * Together they meant the camera's OWN cell (centre up to ~50 m away, since
+   * the camera trails the camper) generated nothing under 0.8 m, while the
+   * draw rule was willing to draw a 0.2 m cobble at 80 m. Measured over 18
+   * random spots (tools/_scratch/rockpop.mjs): a median of 96 rocks per spot
+   * were inside their own draw radius and did not exist, 7 of them within
+   * 40 m, and the nearest came to 3.2 m of the camera. They appeared, en
+   * masse, at whatever moment the cell was finally regenerated — which is the
+   * pop-in, and with rock now solid it is also an invisible obstacle.
+   *
+   * So: measure to the nearest point of the cell, and return zero wherever the
+   * floor would draw everything anyway — plus STREAM_LEAD, which is what makes
+   * the answer arrive before it is needed rather than as it is needed.
    */
   _minSizeFor(d) {
-    const need = (2 * d) / VIS_PER_METRE;
-    if (need < 0.9) return 0;
-    if (need < 2.2) return 0.8;
-    if (need < 4.0) return 2.0;
-    if (need < 6.5) return 3.8;
-    // The bands used to stop at 6.2 m, which meant every cell from 300 m to the
-    // 920 m stream radius still generated three-metre blocks. They are culled
-    // again at pack time by their own `vis`, so they cost only CPU — but the
-    // ones right on the edge of that cutoff *are* drawn, at four or five pixels
-    // each, and en masse that is the "white chips sprinkled on the massif" read
-    // in the peaks view. Carrying the bands out to the stream radius means the
-    // far field is composed of crag-scale mass only, which is what the plates
-    // show.
-    if (need < 10.0) return 6.2;
-    if (need < 15.0) return 9.6;
-    if (need < 22.0) return 14.5;
-    if (need < 30.0) return 21.0;
+    const near = Math.max(0, d - CELL_REACH - STREAM_LEAD);
+    // Inside the floor, every size is drawn: generate the lot.
+    if (near <= VIS_FLOOR) return 0;
+    // Past it, the smallest rock that could be seen from anywhere in this cell.
+    const need = near / VIS_PER_METRE;
+    // Quantised into bands, so a metre of camera drift cannot trigger a
+    // regeneration. The bands are the old ones — they were chosen against the
+    // far field's "white chips sprinkled on the massif" read and that judgement
+    // still holds; what changed is which cells land in which band.
+    if (need < 2.0) return 0.9;
+    if (need < 3.8) return 2.0;
+    if (need < 6.2) return 3.8;
+    if (need < 9.6) return 6.2;
+    if (need < 14.5) return 9.6;
+    if (need < 21.0) return 14.5;
+    if (need < 29.0) return 21.0;
     return 29.0;
   }
 
@@ -200,7 +253,9 @@ export class Rocks extends System {
         const cx = ccx + dx, cz = ccz + dz;
         const mx = (cx + 0.5) * CELL, mz = (cz + 0.5) * CELL;
         const d = Math.hypot(mx - cam.x, mz - cam.z);
-        if (d > STREAM_RADIUS) continue;
+        // Nearest corner again, matching `_minSizeFor`: a cell whose centre is
+        // just outside the radius still has 45 m of itself inside it.
+        if (d - CELL_REACH > STREAM_RADIUS) continue;
         const key = cx * 100003 + cz;
         cellsWanted.add(key);
         const minSize = this._minSizeFor(d);
@@ -320,9 +375,9 @@ export class Rocks extends System {
   /**
    * OCCLUDE — pick the rock program for each instanced mesh, once a frame.
    *
-   * In lateUpdate, not update: main.js aims the frustum at the end of the
-   * update pass, so this is the first place in the frame that can read where it
-   * actually points. See the same note in Trees.js.
+   * In lateUpdate, not update: main.js switches the volume on at the end of the
+   * update pass, so this is the first place in the frame that can read it with
+   * this frame's camera in it. See the same note in Trees.js.
    *
    * Per MESH means per archetype and variant — `rock_cliff_2`, `rock_boulder_0`
    * — because a program is a property of a draw call. That is coarse: one crag
@@ -333,11 +388,12 @@ export class Rocks extends System {
    * paying for it in every frame of the game. On the frozen crag pose in
    * tools/_scratch/occsolid.mjs the swap costs 0.00 ms of a 17.7 ms frame.
    *
-   * Like the tree gate, this one is deliberately conservative — a bounding
-   * sphere about the instance origin, which contains everything the shader can
-   * fade — so the program is always on before the volume reaches the stone and
-   * still on after it leaves. At either swap both programs draw the same pixels
-   * and there is nothing to see. See the longer note in Trees.js.
+   * Like the tree gate, this one now asks the shader's own question rather than
+   * a conservative superset of it: the same instance origin, the same radius off
+   * the same instance size. The program therefore turns on at the exact distance
+   * the fade starts having something to do, and at either swap both programs
+   * draw the same pixels — the fade is 1.0 there. See the longer note in
+   * Trees.js.
    */
   _gateOcclusion() {
     // Program warm-up: one frame drawn through the occluding variant so its
@@ -359,12 +415,12 @@ export class Rocks extends System {
     if (active) {
       const cam = this.ctx.camera.position;
       const ccx = Math.floor(cam.x / CELL), ccz = Math.floor(cam.z / CELL);
-      // Two cells of reach. The volume ends at the camper and the chase wheel
-      // tops out at 68 m, and a cell is 64 m, so one ring is not quite enough
-      // once the camera sits near a cell edge. The per-cell reject below means
-      // the extra ring costs a distance compare each.
-      for (let dz = -2; dz <= 2; dz++) {
-        for (let dx = -2; dx <= 2; dx++) {
+      // One cell of reach. The volume used to run all the way to the camper and
+      // wanted two rings; it is a few metres of air around the lens now, and a
+      // cell is 64 m, so the ring around the camera's own cell covers it many
+      // times over however close to an edge the camera sits.
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
           const c = this.cells.get((ccx + dx) * 100003 + (ccz + dz));
           if (!c) continue;
           for (const inst of c.instances) {
@@ -372,7 +428,11 @@ export class Rocks extends System {
             if (ix * ix + iz * iz > inst.vis * inst.vis) continue;   // not drawn at all
             const mesh = this.byArch[inst.arch]?.[inst.variant];
             if (!mesh || hit.has(mesh)) continue;
-            const r = mesh.userData.occR * Math.max(inst.sx, inst.sy, inst.sz);
+            // The same radius the vertex shader uses — half the instance's own
+            // size, capped, see RockMaterial — so the gate turns the discarding
+            // program on exactly when the fade has something to do and not one
+            // rock earlier.
+            const r = Math.min(inst.size * 0.5, 2.0);
             if (occlusionTouchesSphere(inst.x, inst.y, inst.z, r)) hit.add(mesh);
           }
         }
@@ -438,9 +498,15 @@ export class Rocks extends System {
     const moved = this._lastPack.distanceTo(cam);
     if (moved > 180) this._catchup = 40;
 
+    // Reassess which cells want which detail. On travel as well as on a cell
+    // crossing: a cell only ever refines when this runs, so gating it on the
+    // 64 m cell stride alone is what let a cell arrive underfoot still holding
+    // the detail it was assigned from 90 m away. See REFRESH_MOVE.
     const ccx = Math.floor(cam.x / CELL), ccz = Math.floor(cam.z / CELL);
-    if (ccx !== this._lastCell.x || ccz !== this._lastCell.z) {
+    if (ccx !== this._lastCell.x || ccz !== this._lastCell.z
+        || (!this.__forceCellOnly && this._lastRefresh.distanceTo(cam) > REFRESH_MOVE)) {
       this._lastCell.x = ccx; this._lastCell.z = ccz;
+      this._lastRefresh.copy(cam);
       this._refreshQueue(cam);
     }
 

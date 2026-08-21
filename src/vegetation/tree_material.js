@@ -15,10 +15,18 @@
 import * as THREE from 'three';
 import { fogUniforms } from '../render/Atmosphere.js';
 import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
-// Camera occlusion: the transparent frustum between the chase camera and the
-// camper. Opt-in only — every call site in this file is marked OCCLUDE. The
+// Camera occlusion: the volume that takes away whatever the camera is standing
+// inside. Opt-in only — every call site in this file is marked OCCLUDE. The
 // depth materials deliberately do not take it, so a canopy you can see through
 // still casts its shadow.
+//
+// A TREE FADES AS ONE OBJECT. The bark program and the leaf program both
+// measure `occludeFadeColumn` from the same instance origin, so a trunk and
+// every clump of its canopy carry the identical number and the tree dissolves
+// whole. The build before this one evaluated the fade per fragment on the bark
+// and per clump in the canopy, which opened a soft-edged porthole through a
+// solid trunk — the artifact the player rejected on sight. See the header of
+// render/Occlusion.js.
 //
 // BARK TAKES IT THROUGH A SECOND PROGRAM, AND THE SECOND PROGRAM IS THE WHOLE
 // POINT. The player's frame that opened this round is a trunk floor to ceiling
@@ -53,12 +61,14 @@ import { stylizeUniforms, STYLIZE_PARS } from '../render/Stylize.js';
 //   the gate itself                              p50 0.0 ms, p95 0.1 ms
 //   the frame that needs it, plain -> occluding  18.1 ms -> 18.2 ms
 //
-// 3% of the trunk population, in the frames that are hiding the camper, is what
-// the 12 ms turns into. The gate fires in 62% of forest frames and that is not
-// a failure of it: it is deliberately conservative (a prototype's whole bark
-// bounding box plus a metre of wind slack), so it always turns the program on
-// BEFORE the fade has anything to do — which is exactly why the swap itself is
-// invisible and there is no pop at the boundary.
+// 3% of the trunk population, in the frames that are hiding a trunk, is what the
+// 12 ms turns into. Those numbers were taken against the old two-shape volume,
+// which reached all the way to the camper; the volume is a few metres of clear
+// air around the lens now and the gate fires in strictly fewer frames than it
+// did — nothing here needs re-measuring in the direction of worse. The gate and
+// the shader ask the same question of the same instance origin, so the program
+// turns on exactly as the fade starts having something to do, which is why the
+// swap is invisible and there is no pop at the boundary.
 //
 // The obvious alternative, shrinking the trunk toward its own axis in the
 // vertex shader, was built and photographed: shots/occlude/bark-on.png. It is
@@ -504,15 +514,26 @@ void main() {
   vec3 local = position + disp / max(scale, 1e-4);
   vec4 worldPosition = modelMatrix * instanceMatrix * vec4(local, 1.0);
 
-  // OCCLUDE. Evaluated HERE, at the clump's centre, and deliberately not at the
-  // billboard corner four lines down. A clump quad is several metres across, so
-  // a corner-evaluated fade interpolates to roughly the mean of the corners
-  // across the middle of the quad — and the middle is exactly the part lying
-  // over the camper. Measured on the frame: boughs squarely across the vehicle
-  // came back at half fade because their corners were outside the cone. It is
-  // also the better read: a clump is one brush stroke, and half a stroke
-  // dissolving looks like an error rather than like the camera getting out of
-  // the way.
+  // OCCLUDE. Two questions, and the tree's own is the important one:
+  //
+  //   · Is the CAMERA STANDING IN THIS TREE — measured off the trunk, at
+  //     worldOrigin, which the bark program measures too. Every clump of one
+  //     tree gets the identical number out of it, so the tree dissolves as one
+  //     object rather than opening a hole around the lens. That is the whole
+  //     point of the round; see the header of render/Occlusion.js.
+  //   · Is THIS CLUMP lying on the lens — a low bough can be centimetres from
+  //     the glass while the trunk it hangs off is six metres away, and that
+  //     bough was the frame the player photographed when this feature was
+  //     first asked for.
+  //
+  // min(), because a fade of 0 is gone: whichever of the two says "take this
+  // away" wins.
+  //
+  // The clump test is evaluated HERE, at the clump's centre, and deliberately
+  // not at the billboard corner four lines down. A clump quad is several metres
+  // across, so a corner-evaluated fade interpolates to roughly the mean of the
+  // corners across the middle of the quad. It is also the better read: a clump
+  // is one brush stroke, and half a stroke dissolving looks like an error.
   //
   // The clump's own radius goes with it. A clump the camera is INSIDE has its
   // centre two or three metres away and still owns the whole screen, so tested
@@ -520,7 +541,8 @@ void main() {
   // back as a 50% halftone over everything — better than a wall of green, and
   // not what this is for. Subtracting the radius makes the sphere test ask
   // 'is any part of this clump in my face', which is the question.
-  float occ = occludeFadeAt(worldPosition.xyz, max(aSize.x, aSize.y) * scale);
+  float occ = min(occludeFadeColumn(worldOrigin, 0.0),
+                  occludeFadeAt(worldPosition.xyz, max(aSize.x, aSize.y) * scale));
 
   // Billboard in the *current* camera's basis. In the shadow pass that camera
   // is the sun, so each clump presents its full disc to the light and the
@@ -713,6 +735,11 @@ varying float vStyle;
 varying vec3 vN;
 varying vec3 vWorld;
 varying float vHeight;
+// OCCLUDE. Declared only in the occluding variant, so the plain program is the
+// shader that shipped down to the byte — see createBarkMaterial.
+#ifdef BARK_OCCLUDE
+varying float vOcc;
+#endif
 
 #include <common>
 #include <shadowmap_pars_vertex>
@@ -722,6 +749,20 @@ ${WIND}
 void main() {
   float scale = length(instanceMatrix[0].xyz);
   vec3 worldOrigin = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+  // OCCLUDE. Once per INSTANCE, off the foot of the trunk, so the whole tree —
+  // trunk, boughs, and every clump of canopy the leaf program draws from the
+  // same origin — carries one fade and leaves the frame as one object. The
+  // first build did this per fragment off the world position, which is a sphere
+  // of clear air around the lens and cuts a soft-edged porthole out of a solid
+  // trunk. That artifact is what this round exists to remove; see the header of
+  // render/Occlusion.js.
+  //
+  // A trunk is five-sided and its rings are up to a metre apart, so a fade that
+  // VARIED over it would have to be per fragment to avoid banding. This one
+  // does not vary, which is what makes the vertex stage the right place for it.
+  #ifdef BARK_OCCLUDE
+    vOcc = occludeFadeColumn(worldOrigin, 0.0);
+  #endif
   // Trunks bend, they do not flutter — half the weight of the foliage.
   vec3 disp = windSway(worldOrigin, aBark.y * aWind.y * 0.55, aWind.x);
   vec3 local = position + disp / max(scale, 1e-4);
@@ -761,6 +802,9 @@ varying float vStyle;
 varying vec3 vN;
 varying vec3 vWorld;
 varying float vHeight;
+#ifdef BARK_OCCLUDE
+varying float vOcc;        // the whole tree's fade — see BARK_VERT
+#endif
 
 #include <common>
 #include <packing>
@@ -839,14 +883,13 @@ float chevronScar(vec2 uv, vec2 freq, float density) {
 
 void main() {
   // OCCLUDE, first, and only in the occluding variant of this program — see the
-  // note at the top of the file for why there are two. Per FRAGMENT rather than
-  // per vertex: a trunk is a five-sided tube with rings up to a metre apart, so
-  // a vertex-side fade would carry the feather across the bark in flat bands,
-  // and this program has already given up early-Z by containing the discard at
-  // all. Being first is what makes that bearable — every discarded fragment
-  // skips the noise, the lenticels and the scars below.
+  // note at the top of the file for why there are two. The value is the whole
+  // instance's, computed once in the vertex shader off the trunk, so it is a
+  // constant across every fragment of this tree and the dither dissolves the
+  // tree evenly. Being first is what makes the lost early-Z bearable — every
+  // discarded fragment skips the noise, the lenticels and the scars below.
   #ifdef BARK_OCCLUDE
-    occludeCut(occludeFadeAt(vWorld, 0.0));
+    occludeCut(vOcc);
   #endif
   // pat is the bark *pattern*, kept separate from the base colour so the
   // impostor bake can store shading without baking a species hue into it.
@@ -1010,8 +1053,8 @@ void main() {
  * @param opts.bake     impostor-bake variant: no lights, no fog, no occlusion.
  * @param opts.occlude  the discarding variant. Costs early-Z on the whole
  *                      program — see the note at the top of this file — so a mesh
- *                      is only swapped onto it while something it draws is
- *                      actually between the lens and the camper.
+ *                      is only swapped onto it while one of the trees it draws
+ *                      is close enough to the lens to be fading.
  */
 export function createBarkMaterial(shared, opts = {}) {
   const bake = !!opts.bake;
@@ -1021,12 +1064,18 @@ export function createBarkMaterial(shared, opts = {}) {
       bake ? {} : lightUniforms(), bake ? {} : fogUniforms(), bake ? {} : stylizeUniforms(),
       occlude ? occlusionUniforms() : {}, shared,          // OCCLUDE
       { uBake: { value: bake ? 1 : 0 } }),
-    vertexShader: BARK_VERT,
-    // OCCLUDE. The pars and the dither are concatenated in only for the
-    // occluding variant, so the plain program does not so much as declare the
-    // uniform block and stays byte-for-byte the shader that shipped.
+    // OCCLUDE. The pars, the define and the dither are concatenated in only for
+    // the occluding variant, so the plain program does not so much as declare
+    // the uniform block and stays byte-for-byte the shader that shipped. The
+    // vertex stage needs them now as well: the fade is one value per instance
+    // and it is computed there — see BARK_VERT.
+    vertexShader: (occlude
+      ? `#define BARK_OCCLUDE\n${OCCLUDE_PARS}\n`
+      : '') + BARK_VERT,
+    // The fragment stage wants the dither and nothing else — it is handed a
+    // fade rather than computing one, so the uniform block stays out of it.
     fragmentShader: (occlude
-      ? `${OCCLUDE_PARS}\n${OCCLUDE_DITHER}\n#define BARK_OCCLUDE\n`
+      ? `#define BARK_OCCLUDE\n${OCCLUDE_DITHER}\n`
       : '') + BARK_FRAG_BODY,
     lights: !bake,
     fog: !bake,

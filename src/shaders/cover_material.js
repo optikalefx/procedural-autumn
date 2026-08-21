@@ -26,8 +26,8 @@
 //  and the fade rather than ghosting the un-swayed pose.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-// Camera occlusion — the transparent frustum between the chase camera and the
-// camper (src/render/Occlusion.js). Two call sites here, both marked OCCLUDE.
+// Camera occlusion — the volume that takes away whatever the camera is standing
+// inside (src/render/Occlusion.js). Two call sites here, both marked OCCLUDE.
 // Note this material takes the *shrink* form, not the dithered discard the
 // tree canopy takes: cover is opaque, and a discard would cost it early-Z on a
 // surface that currently has it. Shrinking toward the root is free, it is
@@ -183,8 +183,9 @@ const COVER_DISPLACE = /* glsl */`
     // multiplies per vertex, on one of the two largest geometry populations in
     // the game — to answer a question the root plus a radius answers just as
     // well. It also fixes a real defect: a per-vertex fade scales each vertex by
-    // a different amount, so a shrub straddling the edge of the cone did not
-    // shrink, it sheared.
+    // a different amount, so a shrub straddling the edge of the volume did
+    // not shrink, it sheared. Every other consumer has since been moved onto
+    // this same per-instance shape — see the header of render/Occlusion.js.
     //
     // aCov.w is the instance's visibility radius, which the scatter sets in
     // proportion to how big the prop is — 130 m for a full swathe, 44 m for a

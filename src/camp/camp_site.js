@@ -55,6 +55,26 @@ export const SITE_MAX = 18.0;
 // the fringe, which is what a real pitch looks like.
 export const CAMP_RADIUS = 5.8;
 
+// The compact camp: a fire, a tent, one chair, on ground that will not take a
+// full one.
+//
+// The player, looking at a "no camp here — too steep" prompt on an ordinary
+// grassy ridge: "I should be able to camp on a less uneven slope with
+// half-sized camping area. It should have just the tent and fire, and maybe 1
+// chair." They are right, and the rule that refused them is not wrong so much
+// as it only knew one answer. Slope and relief are measured ACROSS THE DISC,
+// so most of what made that ridge fail was simply that the disc was twelve
+// metres wide — the same ground under a smaller footprint is fine, and a
+// backpacker's pitch on a hillside is a better picture than a refusal.
+//
+// 4.2 m is half the area of the full camp (4.2/5.8 squared = 0.52), which is
+// what "half-sized" means when you are looking at it from above. It is also the
+// smallest radius that actually holds the contents: the tent sits 2.4 m from
+// the fire and is 2.3 m long, so its far corner lands at 3.5 m against full
+// cover to 3.3 — its guy lines are in the fringe and nothing is standing in
+// grass. Anything smaller and the tent is pitched in the meadow again.
+export const CAMP_RADIUS_SMALL = 4.2;
+
 /**
  * March the mouse ray against the heightfield.
  *
@@ -194,6 +214,37 @@ export function scoreSite(world, x, z, opts = {}) {
 }
 
 /**
+ * The best camp that will fit here: a full one if the ground allows, a compact
+ * one if it does not, and nothing if even that will not stand.
+ *
+ * Returns the winning `scoreSite` result with `radius` and `small` on it.
+ *
+ * Retrying at the smaller radius is the whole mechanism, and it is deliberately
+ * NOT a second, looser set of thresholds. The same rule is applied to a smaller
+ * footprint, so a compact camp is one that genuinely passes the same test —
+ * ground that is bad enough to fail at 4.2 m is ground you cannot pitch a tent
+ * on at all, and it still refuses. Water, bounds and trees are properties of
+ * the place rather than of the disc, so a site that fails on those is not
+ * retried; there is no smaller camp that is less in a lake.
+ */
+export function bestSite(world, x, z, opts = {}) {
+  const full = scoreSite(world, x, z, { ...opts, radius: CAMP_RADIUS });
+  if (full.ok) { full.radius = CAMP_RADIUS; full.small = false; return full; }
+  if (full.reason === 'in the water' || full.reason === 'out of bounds' ||
+      full.reason === 'nowhere' || full.reason === 'too close') { full.radius = CAMP_RADIUS; full.small = false; return full; }
+
+  const small = scoreSite(world, x, z, { ...opts, radius: CAMP_RADIUS_SMALL });
+  small.radius = CAMP_RADIUS_SMALL;
+  small.small = true;
+  if (!small.ok) return small;
+  // A compact camp never scores as confidently as a full one. The reticle
+  // reads `score` for how settled to look, and a pitch you had to shrink to
+  // make fit should look like what it is — found, not chosen.
+  small.score = clamp01(small.score * 0.78);
+  return small;
+}
+
+/**
  * Clamp a point into the annulus around the camper the player may build in.
  * Returns the clamped point and whether it had to move — the reticle draws
  * itself differently when it is being held at the limit, so the rule is
@@ -253,6 +304,13 @@ export function clampToSite(px, pz, vx, vz) {
  */
 export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   const R = opts.radius ?? CAMP_RADIUS;
+  // A compact camp is not a full camp with things deleted — it is a different
+  // camp. One tent, one chair, a fire, and a good chance of a woodpile: the
+  // pitch of somebody who stopped on a hillside for the night rather than the
+  // pitch of somebody who is staying. Adding a table and two coolers to a 4 m
+  // clearing does not read as cosy, it reads as crowded, and crowded is the
+  // opposite of what this whole feature is for.
+  const small = !!opts.small;
   const wind = opts.windDir ?? new THREE.Vector2(0.86, 0.51);
   // The direction the smoke leaves in. Chairs sit opposite it.
   const downwind = Math.atan2(wind.y, wind.x);
@@ -344,7 +402,16 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   {
     const side = rnd() < 0.5 ? 1 : -1;
     const a = seatCentre + side * lerp(1.75, 2.45, rnd());
-    tryPlace('tent', a, R * 0.62, 1.45, (x, z, ang) => ({
+    // 0.62 R on a full camp; 0.50 on a compact one.
+    //
+    // The tent does not scale with the clearing — it is the same 2.3 m tent —
+    // so the fraction has to shrink faster than the radius does or its far
+    // corner walks out past the dirt. At 0.57 R it did exactly that and the
+    // first compact capture came back with the tent's foot in the meadow, the
+    // same defect the full camp had at 5.2 m. 0.50 R is 2.1 m, putting the far
+    // corner at 3.25 m against full cover to 3.2 — and 2.1 m from a fire is
+    // still further than most people pitch.
+    tryPlace('tent', a, R * (small ? 0.50 : 0.62), 1.45, (x, z, ang) => ({
       kind: 'tent', x, z, y: world.getHeight(x, z),
       // The door turns toward the fire, then backs off 15–35 degrees. Facing a
       // tent door dead at the fire is what a level editor does; a real one is
@@ -361,17 +428,22 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   // chairs at exactly ±0.6 rad is a pair of parentheses; two at +0.45 and −0.78
   // is two people who sat down.
   {
-    // 2, 3 or occasionally 4. Never 1: a single chair by a fire is a lonely
-    // image, and this feature's whole job is the opposite of that.
+    // 2, 3 or occasionally 4. Never 1 on a full camp: a single chair by a big
+    // fire is a lonely image, and this feature's whole job is the opposite of
+    // that. A compact camp is the exception, and it is not lonely for the same
+    // reason a one-person tent is not — the whole pitch is sized for one, so
+    // one chair reads as complete rather than as missing three.
     const rc = rnd();
-    const n = opts.chairs ?? (rc < 0.50 ? 2 : rc < 0.86 ? 3 : 4);
+    const n = opts.chairs ?? (small ? 1 : rc < 0.50 ? 2 : rc < 0.86 ? 3 : 4);
     // Total arc widens with the number of chairs but sub-linearly, so three
     // chairs sit closer together than two chairs spread apart would.
     const span = lerp(0.85, 1.85, (n - 2) / 2.2) + rnd() * 0.25;
     for (let i = 0; i < n; i++) {
       const frac = n === 1 ? 0.5 : i / (n - 1);
       const a = seatCentre + (frac - 0.5) * span + (rnd() - 0.5) * 0.22;
-      const r = R * lerp(0.30, 0.38, rnd());
+      // Same argument as the tent: a chair is 0.55 m wide whatever the
+      // clearing is, so a compact camp seats it proportionally closer in.
+      const r = R * (small ? lerp(0.26, 0.32, rnd()) : lerp(0.30, 0.38, rnd()));
       // A chair may drift 0.28 rad — sixteen degrees — and no further. Beyond
       // that it has left the group it belongs to.
       tryPlace('chair', a, r, 0.42, (x, z) => ({
@@ -397,7 +469,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   // difference between "every camp has exactly one of everything" and "this
   // camp is a bit different from the last one" is worth more than another prop
   // type would be. The second one is smaller and is often the one left open.
-  {
+  if (!small) {
     const flank = rnd() < 0.5 ? 1 : -1;
     const cw = Math.floor(rnd() * 3);
     const a = seatCentre + flank * lerp(0.95, 1.35, rnd());
@@ -425,7 +497,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   // Between two chairs, at the same radius, which is where a small folding
   // table actually ends up. Skipped one time in five: a camp that always has
   // exactly one of everything is a checklist.
-  if (rnd() < 0.82) {
+  if (!small && rnd() < 0.82) {
     const flank = rnd() < 0.5 ? -1 : 1;
     const a = seatCentre + flank * lerp(0.35, 0.72, rnd());
     tryPlace('table', a, R * lerp(0.34, 0.42, rnd()), 0.40, (x, z) => ({
@@ -439,11 +511,16 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   // ── firewood ───────────────────────────────────────────────────────────────
   // A stack of split logs, downwind-ish of the fire and well back from it.
   // Small, but it is the prop that says somebody is *staying*.
-  {
+  if (!small || rnd() < 0.55) {
     const a = downwind + (rnd() - 0.5) * 1.1;
     tryPlace('woodpile', a, R * lerp(0.42, 0.52, rnd()), 0.44, (x, z) => ({
       kind: 'woodpile', x, z, y: world.getHeight(x, z),
-      yaw: rnd() * TAU, tilt: 1.0, opts: { logs: 5 + Math.floor(rnd() * 4), wear: rnd() },
+      // `logs` is the number of pieces on the stack, and it is now read: the
+      // builder used to ignore it and always lay 9-12, so this range keeps the
+      // mass the layout was tuned against while letting camps differ. Three to
+      // a row and a split piece only half as tall as it is wide, so this is
+      // four to six courses — knee-high at most, which is what a camp keeps.
+      yaw: rnd() * TAU, tilt: 1.0, opts: { logs: 12 + Math.floor(rnd() * 6), wear: rnd() },
     }), { swing: 0.85 });
   }
 

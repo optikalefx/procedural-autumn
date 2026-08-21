@@ -1,41 +1,70 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Occlusion — the transparent frustum in front of the chase camera.
+//  Occlusion — whatever the camera is standing inside gets out of the way.
 //
-//  The player's words, given twice:
+//  The player's words, twice, a round apart:
 //
 //    "transparent frustum for the camera, so that objects are not constantly
 //     in my view."
 //
-//  In a chase-camera driving game through dense forest, the thing between you
-//  and the camper is almost never the thing you came to look at. A conifer
-//  bough half a metre from the lens fills a third of the screen; a birch trunk
-//  cuts the camper in two. The frame is not wrong — that IS what standing
-//  behind a camper in a wood looks like — it is simply not playable, and the
-//  difference between a cozy drive and fighting the camera is entirely this.
+//    "It should hide entire objects when they are basically on top of the
+//     camera. Not if they are far away but in front of the car, and not with a
+//     little circle window like its doing now. […] We should only occlude the
+//     trees directly in front of the camera."
 //
-//  ── the shape: BOTH of the two standard answers, because each alone fails ─
+//  In a chase-camera driving game through dense forest, the camera regularly
+//  ends up INSIDE something — a conifer bough half a metre from the lens fills
+//  a third of the screen, a birch trunk the boom has backed into fills all of
+//  it. That is the whole problem, and the answer is small: measure how close
+//  the OBJECT is to the lens, and if it is essentially touching it, take the
+//  object away. All of it, at once.
 //
-//    · A near-camera sphere (the cheap answer) clears the bough in your face,
-//      and does nothing about the trunk the camper is parked behind fifteen
-//      metres out.
-//    · A camera-to-subject cone (the correct answer) clears that trunk, and
-//      sails straight past the bough — because a bough owning the right third
-//      of the frame is three or four metres off the view AXIS in world units
-//      even while it is centimetres from the lens.
+//  ── what this used to be, and why it is not that any more ────────────────
 //
-//  Both were built and both were photographed before this settled. The first
-//  version tried to be tidy and express the near half as a floor under the cone
-//  radius; the player's own conifer bough went straight through it, for the
-//  reason above. So it is a max() of two shapes, which costs one extra
-//  length() and is the thing that actually clears the frame:
+//  The first build of this file was two shapes: the near-camera sphere below,
+//  and a camera-to-subject cone that dissolved anything between the lens and
+//  the camper at any range. The cone is the standard answer to "keep the
+//  subject visible" and it is the thing the player rejected on sight, for two
+//  reasons that are worth keeping written down:
 //
-//    max( sphere of radius `nearFull..nearNone` about the camera,
-//         cone of radius `wide * t` from the camera to the subject )
+//    · It fires on distance-from-the-view-axis, not distance-from-the-lens, so
+//      it dissolves canopy fifteen and twenty metres out — trees that were
+//      never in anyone's way — and it does it in the exact middle of the frame.
+//    · It is a cone through a scattered medium, so what it leaves behind is a
+//      ROUND HOLE punched through a crown, at partial dither, that follows the
+//      camper around. Nothing in the picture is shaped like that. It reads as a
+//      lens artifact rather than as the forest making room.
 //
-//  The cone's radius being linear in t makes it a *constant angular* cone, i.e.
-//  a fixed hole in screen space — literally the transparent frustum that was
-//  asked for — and it closes before the subject so nothing beside or behind
-//  the camper is touched.
+//  So the cone is gone, along with `wide`, `soft`, `taper` and the subject
+//  vector the shader used to carry. What is left is one distance and one
+//  smoothstep. The subject is still handed in once a frame, but only as the
+//  switch that says "we are behind the camper" — see setOcclusionSubject.
+//
+//  ── the shape: how far is the OBJECT from the lens ───────────────────────
+//
+//  Not the fragment, not the vertex: the object. A fade computed per fragment
+//  from a world position is a sphere of clear air around the camera, and what
+//  it cuts out of a solid trunk is a soft-edged porthole — the same artifact
+//  the player rejected in the cone, at a different scale. Every consumer
+//  therefore evaluates this ONCE per instance, at the instance's own origin,
+//  and carries the one value across the whole of it:
+//
+//    · a tree      — `occludeFadeColumn`, off the trunk axis (both the bark and
+//                    every clump of its canopy, so a tree leaves as one thing)
+//    · a leaf clump — `occludeFadeAt`, off the clump centre with its own radius,
+//                    ALSO, because a low bough can lie on the lens while the
+//                    trunk it belongs to is six metres away
+//    · a rock      — `occludeFadeAt`, off the instance origin with its own size
+//    · a cover plant — `occludeFadeAt`, off the root, which is what it already did
+//
+//  A tree is a COLUMN and not a point, which is the one place this needs more
+//  than a distance. Its origin is at its foot, twenty metres below the crown
+//  and often several metres below the camera, so a plain distance to that
+//  origin would hide a tree only once you were standing on its roots. The test
+//  is therefore the distance to a vertical segment through the trunk, spanning
+//  `spanBelow` under the foot to `spanAbove` over it — a window sized for where
+//  a chase camera actually rides, so that a tree on the hillside twelve metres
+//  below the road is not "on top of the camera" however close its axis passes
+//  in plan.
 //
 //  ── how it fades ─────────────────────────────────────────────────────────
 //
@@ -64,12 +93,13 @@
 //      with the dither and one without, and the system that owns the meshes
 //      swaps between them per instanced mesh per frame using the CPU copy of
 //      this volume further down the file. The bill arrives only on the frames
-//      that are actually hiding the camper, and only on the meshes doing the
+//      that are actually hiding something, and only on the meshes doing the
 //      hiding; every other frame is bit-identical to a build without this.
-//      Measured over a frozen pose with a trunk squarely across the camper,
-//      18.1 ms -> 18.2 ms; over a crag doing the same, 17.7 -> 17.7. See
-//      `_gateOcclusion` in vegetation/Trees.js and rocks/Rocks.js, and
-//      tools/_scratch/occsolid.mjs and occgate.mjs for both measurements.
+//      See `_gateOcclusion` in vegetation/Trees.js and rocks/Rocks.js.
+//
+//  Because the fade is now one value per instance rather than a field over the
+//  surface, the dither is a whole-object dissolve: the tree thins out evenly
+//  and vanishes. That is also why the feather has to stay wide — see nearFull.
 //
 //  ── what it must NOT touch ───────────────────────────────────────────────
 //
@@ -90,8 +120,12 @@
 //      from '../render/Occlusion.js';
 //
 //    uniforms: Object.assign( { …yours }, occlusionUniforms() )
-//    vertexShader:   OCCLUDE_PARS   + `… vOcc = occludeFade( worldPos ); …`
+//    vertexShader:   OCCLUDE_PARS   + `… vOcc = occludeFadeAt( origin, r ); …`
 //    fragmentShader: OCCLUDE_DITHER + `… occludeCut( vOcc ); …`
+//
+//  Evaluate it at YOUR OBJECT'S ORIGIN, in the vertex shader, and pass the one
+//  value down as a varying. Do not evaluate it per fragment off the world
+//  position: that is the porthole, and it is the artifact this round removed.
 //
 //  If your surface is OPAQUE and its shader is not already discarding, do not
 //  opt in like that. Build a second material with the three lines in it, leave
@@ -100,123 +134,83 @@
 //  every frame of the game to buy a fade that engages in very few of them.
 //
 //  MERGE WITH Object.assign, NOT THREE.UniformsUtils.merge(). merge() deep
-//  clones, which would give your material a private copy of the target vector
+//  clones, which would give your material a private copy of the uniform block
 //  that nothing ever writes to, and the effect would silently never appear on
 //  it. Everything in this game that opts in uses Object.assign already.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 
 const DEFAULTS = {
-  // ── (1) the near-camera sphere ───────────────────────────────────────────
-  // Everything within `nearFull` metres of the lens is gone; nothing past
-  // `nearNone` is touched.
+  // ── the one distance ─────────────────────────────────────────────────────
+  // An object whose body comes within `nearFull` metres of the lens is gone;
+  // one that stays outside `nearNone` is untouched; in between it dissolves.
   //
-  // This is a SPHERE and not the near end of the cone, and the frames are what
-  // decided that. The first build put a floor under the cone radius instead, on
-  // the reasoning that one expression is tidier than two — and the conifer
-  // bough in the top corner of the frame, the exact thing the player
-  // photographed, sailed straight through it. A world-space radius around the
-  // view axis is the wrong test for near clutter, because at a metre from the
-  // lens EVERYTHING is in your face: a bough owning the right third of the
-  // screen is three or four metres off-axis in world units and only centimetres
-  // from your eye. Distance from the camera is the honest criterion for that
-  // half of the problem, and it is also the cheap one.
-  // 1.80 / 4.20, widened from 1.50 / 3.40 on a measurement that came out the
-  // opposite way round to the prediction and is worth writing down, because it
-  // inverts how this feature should be tuned.
-  //
-  // Interleaved A/B inside one page load (tools/_scratch/cost2.mjs, 8 blocks),
-  // both arms with the feature ON, varying only the sphere:
-  //
-  //   cone only (sphere ~off)  vs  cone + sphere      p50 -0.60 ms, p95 -2.60
-  //   sphere 1.5/3.4           vs  sphere 2.2/5.0     p50 -6.80 ms, p95 -10.20
-  //
-  // The near sphere does not cost frame time, it BUYS it. It discards
+  // 1.80 / 4.20. The inner number is "the camera is inside this" — the chase
+  // boom's own clearance is about that, so a trunk at 1.8 m is one the boom has
+  // backed into. The outer one is what makes the dissolve a dissolve: an object
+  // crossing 2.4 m of feather at driving speed takes a third of a second to go,
+  // and the brief for this feature is explicit that a tree which blinks out is
+  // worse than one you can see past. It is also, measured, the half of this
+  // feature that BUYS frame time rather than costing it — it discards
   // near-camera canopy overdraw, which is the single most expensive fill in the
-  // game, and that outweighs the extra world it exposes behind the bough. The
-  // cone is the half that costs: it dithers mid-field canopy and what it
-  // uncovers is more scene rather than less.
+  // game (X5: p50 -0.60 ms, p95 -2.60 ms against the near sphere switched off).
   //
-  // (The second row was taken on a badly contended machine — 34.7 ms frames
-  // against ~21 on a quiet one — so read it as a ratio, not as milliseconds.
-  // That is why this lands at 1.80 / 4.20 rather than at the 2.20 / 5.00 the
-  // number would justify: the direction is well established across two tests,
-  // the magnitude is not, and a 5 m clearing sphere against a 5.5 m minimum
-  // chase distance would dissolve almost everything between the camera and the
-  // camper at full zoom-in. Anyone re-measuring this on a quiet machine should
-  // feel free to take the rest of it.)
+  // Widening it further is tempting and is a trap: the fade is now per OBJECT,
+  // so every metre added here takes whole trees out of the frame rather than
+  // trimming the twigs in front of the lens.
   nearFull: 1.80,
   nearNone: 4.20,
 
-  // ── (2) the cone to the subject ──────────────────────────────────────────
-  // Radius at the subject, in metres. The camper's silhouette from behind is
-  // about 1.2 m half-width and 1.3 m half-height; this is that plus enough
-  // margin that the vehicle sits inside the *fully* cleared core rather than
-  // in the feather, which is the difference between seeing it and seeing a
-  // halftone of it.
+  // ── the trunk window, for occludeFadeColumn ──────────────────────────────
+  // How much of the vertical line through a tree's foot counts as "the tree",
+  // measured from the foot: `spanBelow` under it, `spanAbove` over it.
   //
-  // Price it against the subject and nothing else. The cone contributes a
-  // CONSTANT fraction of the screen at every depth — wide / (D * tan(fov/2)) —
-  // so a value picked for comfort rather than for the camper is a permanent
-  // hole through the middle of the picture at every range. The first pass used
-  // 3.40 and that is 55% of the half-height at a 12 m chase; the frame came
-  // back looking screen-printed.
-  wide: 2.40,
-  // Width of the feather, as a fraction of the radius, shared by both shapes.
-  // The brief for this feature is explicit that a tree which blinks out is
-  // worse than one you can see past, so this is a band and not a line — but at
-  // the 0.55 it started on, more than half the cone's area was in partial
-  // dither at once. 0.35 still crosses a near trunk over a couple of
-  // centimetres of screen.
-  soft: 0.35,
-  // Where the cone starts closing, as a fraction of the camera-to-subject
-  // distance. Without it the cone carries on through the camper and dissolves
-  // the cover immediately around the vehicle, which puts a bare patch under it
-  // wherever it stands. 0.92 rather than the 0.86 of the first pass: at 0.86 a
-  // bough half a metre in front of the camper was already outside the closing
-  // cone and stayed drawn across the windscreen, which is the one thing this
-  // must not do.
-  taper: 0.92,
-  // How far a fully-enclosed fragment goes. 1.0 is fully transparent.
+  // This exists because an instance origin is at the FOOT and the thing in your
+  // way is the ten metres of trunk above it. Without a window the test would be
+  // a distance to the foot, and a tree would only hide once the camera was down
+  // at its roots. With an unbounded column it would be a distance in plan, and
+  // every tree on a hillside below a ridge road would dissolve as you drove
+  // over it, twelve metres beneath the camera.
+  //
+  // 9.0 is a chase camera's working height over the ground the tree stands on
+  // (the boom rides 2-5 m up, more when it is looking down a slope) plus enough
+  // margin that cresting a rise does not flicker. 1.5 below the foot covers a
+  // camera in a dip beside a tree that stands on the lip of it.
+  spanBelow: 1.5,
+  spanAbove: 9.0,
+
+  // How far a fully-enclosed object goes. 1.0 is fully transparent.
   amount: 1.0,
 
-  // ── engagement gates, applied on the CPU ─────────────────────────────────
-  // The effect exists to keep one subject visible, so it has no business
-  // running when that subject is not on screen. These also keep every
-  // landscape capture in tools/shot.mjs (hero, peaks, forest, river …) bit
-  // identical to what it was: the camper is either far away or well off the
-  // view axis in all of them, and the frustum simply switches off.
+  // ── engagement gate, applied on the CPU ──────────────────────────────────
+  // The chase camera is the only camera this is for. Handing in the camper's
+  // position once a frame is what says "we are driving"; the fly camera and
+  // every capture in tools/shot.mjs hand in nothing and the whole feature
+  // switches off, exactly as it did before.
+  //
+  // The old build also refused to engage unless the camper was near the view
+  // AXIS, because the cone had to point at something. There is no axis any
+  // more and that gate is gone with it: a bough on the lens is a bough on the
+  // lens whichever way the player has swung the camera, and refusing to clear
+  // it while they look sideways was a bug waiting to be filed.
   maxDist: 80.0,     // the chase wheel tops out at 68 m
-  minDist: 2.0,
-  minFacing: 0.86,   // cos ~31 deg off the view axis
   enabled: true,
 };
-
-// The largest extent any caller hands to occludeFadeAt, in metres. Leaf clumps
-// are the big ones. Generous, because getting it wrong pops geometry rather
-// than costing time.
-const CLUMP_MARGIN = 8.0;
 
 /** Runtime-tunable copy. Reachable as `window.__occlusion.params`. */
 const PARAMS = { ...DEFAULTS };
 
 // ONE uniform block, shared by reference across every material that opts in,
-// so driving the subject each frame is a single vector write rather than a
-// walk over a material set. This is why occlusionUniforms() hands back the
-// same object every call instead of a clone.
+// so switching the effect on and off each frame is a single scalar write rather
+// than a walk over a material set. This is why occlusionUniforms() hands back
+// the same object every call instead of a clone.
 const UNIFORMS = {
-  uOccTarget: { value: new THREE.Vector3() },
   // x: nearFull, y: nearNone. Packed because these two are only ever read
   // together and a uniform slot is a uniform slot on the low tiers.
   uOccNear:   { value: new THREE.Vector2(DEFAULTS.nearFull, DEFAULTS.nearNone) },
-  uOccWide:   { value: DEFAULTS.wide },
-  uOccSoft:   { value: DEFAULTS.soft },
-  uOccTaper:  { value: DEFAULTS.taper },
-  // Squared radius beyond which nothing can be in either shape, so the shaders
-  // can reject the overwhelming majority of the world with one dot product.
-  // See the note where it is used.
-  uOccFar2:   { value: 0 },
-  // Starts at zero, and that is the off switch: every occludeFade() below
+  // x: spanBelow, y: spanAbove — the trunk window of occludeFadeColumn.
+  uOccSpan:   { value: new THREE.Vector2(DEFAULTS.spanBelow, DEFAULTS.spanAbove) },
+  // Starts at zero, and that is the off switch: every occludeFade* below
   // returns 1.0 on it before touching anything else. A material that opts in
   // but is never handed a subject — the impostor bake programs, anything
   // compiled during warm-up — therefore behaves exactly as it did before.
@@ -230,57 +224,42 @@ const UNIFORMS = {
 export function occlusionUniforms() { return UNIFORMS; }
 
 const _d = new THREE.Vector3();
-const _f = new THREE.Vector3();
 const _cam = new THREE.Vector3();
 
 /**
- * Point the frustum at the thing that must stay visible, once per frame.
+ * Tell the effect that the chase camera is live, once per frame.
+ *
+ * The subject is no longer a target to aim a cone at — nothing in the shape
+ * depends on where the camper is any more. It is the switch: a frame that is
+ * following the camper gets the volume, a frame that is not (the fly camera,
+ * every landscape capture, the impostor bake) gets `uOccAmount = 0` and is
+ * bit-identical to a build without this file.
  *
  * @param {THREE.Camera} camera  the camera being rendered
  * @param {THREE.Vector3|null} pos  the subject's world position, or null/absent
  *                                  to switch the effect off for this frame
  */
-export function setOcclusionTarget(camera, pos) {
+export function setOcclusionSubject(camera, pos) {
   if (!pos || !camera || !PARAMS.enabled) { UNIFORMS.uOccAmount.value = 0; return; }
-  // The CPU mirror below needs the same lens the shader gets it from three's
-  // own `cameraPosition`. Copied on every engaged frame, and never read while
+
+  // The CPU mirror below needs the same lens the shader gets from three's own
+  // `cameraPosition`. Copied on every engaged frame, and never read while
   // uOccAmount is 0.
   _cam.copy(camera.position);
 
-  // Nothing to keep visible if the subject is not in front of us. Cheap, and
-  // it is what makes this safe to leave switched on in every capture and in
-  // the developer fly camera.
   _d.copy(pos).sub(camera.position);
-  const dist = _d.length();
-  if (dist < PARAMS.minDist || dist > PARAMS.maxDist) {
+  if (_d.lengthSq() > PARAMS.maxDist * PARAMS.maxDist) {
     UNIFORMS.uOccAmount.value = 0;
     return;
   }
-  camera.getWorldDirection(_f);
-  if (_d.dot(_f) / dist < PARAMS.minFacing) { UNIFORMS.uOccAmount.value = 0; return; }
 
-  UNIFORMS.uOccTarget.value.copy(pos);
   UNIFORMS.uOccNear.value.set(PARAMS.nearFull, Math.max(PARAMS.nearNone, PARAMS.nearFull + 0.01));
-  UNIFORMS.uOccWide.value  = PARAMS.wide;
-  UNIFORMS.uOccSoft.value  = PARAMS.soft;
-  UNIFORMS.uOccTaper.value = PARAMS.taper;
+  UNIFORMS.uOccSpan.value.set(PARAMS.spanBelow, PARAMS.spanAbove);
   UNIFORMS.uOccAmount.value = PARAMS.amount;
-
-  // ── the early rejection radius ───────────────────────────────────────────
-  // Both shapes are small and both are near the camera; the forest is not. A
-  // point inside the cone has along-axis depth below the subject distance and
-  // radial offset below `wide`, so it cannot be further than
-  // sqrt(dist^2 + wide^2) from the camera — a hair over `dist`. A point inside
-  // the sphere cannot be further than nearNone plus its own extent, and the
-  // largest extent any caller passes is a leaf clump of a few metres.
-  //
-  // So one squared-distance compare at the top of occludeFadeAt rejects
-  // essentially every tree and shrub in the frame, which at a 19 m chase and a
-  // 900 m draw distance is almost all of them. This is where the vertex cost of
-  // the feature went.
-  const far = Math.max(dist + 1.0, PARAMS.nearNone + CLUMP_MARGIN);
-  UNIFORMS.uOccFar2.value = far * far;
 }
+
+/** Old name, kept so nothing outside this file has to change at once. */
+export const setOcclusionTarget = setOcclusionSubject;
 
 // ── the same shape, on the CPU ───────────────────────────────────────────────
 //
@@ -294,17 +273,16 @@ export function setOcclusionTarget(camera, pos) {
 //  where switching the bark program to a discarding one cost 19 fps. So each of
 //  them ships TWO programs, one with the dither and one without, and swaps
 //  between them per mesh per frame. In the overwhelming majority of frames
-//  nothing is in the frustum, every mesh keeps the discard-free program, and
-//  the build is bit-identical to one that never had this. The swap is what
-//  makes the answer to the player's request affordable, and these three
-//  functions are what decide it.
+//  nothing is in the volume, every mesh keeps the discard-free program, and the
+//  build is bit-identical to one that never had this.
 //
-//  All three are CONSERVATIVE: they may say yes where the shader's own fade
-//  turns out to be 1.0 everywhere on the surface, and that costs a program
-//  swap and nothing else. They must never say no where the shader would fade,
-//  because that is a solid trunk in the middle of the frame — so every margin
-//  here is spent in the same direction, and the cone test drops the taper (a
-//  term that only ever narrows the cone) for the same reason.
+//  These mirror the shader EXACTLY now rather than conservatively, because both
+//  sides ask the same question of the same per-instance origin: the gate reads
+//  the instance matrix, the shader reads the same matrix. At the moment of
+//  either swap the object sits at `nearNone`, where the smoothstep returns 1.0
+//  and `occludeCut` discards nothing, so the two programs render the same
+//  pixels there and a per-frame material swap is invisible. The small margin
+//  each caller adds is for float, not for shape.
 
 /** GLSL smoothstep, so the mirror below reads like the shader it mirrors. */
 function sstep(e0, e1, x) {
@@ -313,14 +291,13 @@ function sstep(e0, e1, x) {
 }
 
 /**
- * Is the frustum switched on this frame at all? False in every capture, in the
- * fly camera, and whenever the camper is off-axis or out of range — which is
- * the cheap first line of every gate.
+ * Is the volume switched on this frame at all? False in every capture and in
+ * the fly camera — which is the cheap first line of every gate.
  */
 export function occlusionActive() { return UNIFORMS.uOccAmount.value > 0; }
 
 /**
- * `occludeFadeAt` from the GLSL above, in JS. 1.0 = untouched.
+ * `occludeFadeAt` from the GLSL below, in JS. 1.0 = untouched.
  *
  * Kept alongside the shader string rather than in the consumers, because the
  * one thing that must not happen to these two is that they drift.
@@ -329,160 +306,117 @@ export function occlusionFadeAt(x, y, z, radius = 0) {
   const amt = UNIFORMS.uOccAmount.value;
   if (amt <= 0) return 1;
   const rx = x - _cam.x, ry = y - _cam.y, rz = z - _cam.z;
-  const d2 = rx * rx + ry * ry + rz * rz;
-  if (d2 > UNIFORMS.uOccFar2.value) return 1;
-
-  const n = UNIFORMS.uOccNear.value;
-  let m = 1 - sstep(n.x, n.y, Math.max(Math.sqrt(d2) - radius, 0));
-
-  const t3 = UNIFORMS.uOccTarget.value;
-  const ax = t3.x - _cam.x, ay = t3.y - _cam.y, az = t3.z - _cam.z;
-  const len2 = ax * ax + ay * ay + az * az;
-  if (len2 >= 1) {
-    const t = (rx * ax + ry * ay + rz * az) / len2;
-    if (t > 0 && t < 1) {
-      const r = UNIFORMS.uOccWide.value * t * (1 - sstep(UNIFORMS.uOccTaper.value, 1, t));
-      const r1 = Math.max(r, 1e-3);
-      const r0 = r1 * (1 - Math.max(UNIFORMS.uOccSoft.value, 0.02));
-      const ox = rx - ax * t, oy = ry - ay * t, oz = rz - az * t;
-      m = Math.max(m, 1 - sstep(r0 * r0, r1 * r1, ox * ox + oy * oy + oz * oz));
-    }
-  }
-  return 1 - amt * m;
+  const d = Math.sqrt(rx * rx + ry * ry + rz * rz) - radius;
+  return 1 - amt * (1 - sstep(UNIFORMS.uOccNear.value.x, UNIFORMS.uOccNear.value.y, Math.max(d, 0)));
 }
 
-/**
- * Does a sphere reach into either shape?
- *
- * Not `occlusionFadeAt(centre) < 1`: a rock whose centre is fifteen metres away
- * can still have a face against the lens, and that face is the whole reason
- * this feature exists. The sphere's own radius is therefore subtracted from
- * both tests, the cone is measured at the furthest `t` the sphere can reach
- * rather than at its centre's, and the taper is ignored.
- */
+/** Is this object's body inside the volume at all? The gate form of the above. */
 export function occlusionTouchesSphere(x, y, z, radius) {
   if (UNIFORMS.uOccAmount.value <= 0) return false;
   const rx = x - _cam.x, ry = y - _cam.y, rz = z - _cam.z;
-  const d2 = rx * rx + ry * ry + rz * rz;
-  const far = Math.sqrt(UNIFORMS.uOccFar2.value) + radius;
-  if (d2 > far * far) return false;
-  if (Math.sqrt(d2) - radius < UNIFORMS.uOccNear.value.y) return true;
-
-  const t3 = UNIFORMS.uOccTarget.value;
-  const ax = t3.x - _cam.x, ay = t3.y - _cam.y, az = t3.z - _cam.z;
-  const len2 = ax * ax + ay * ay + az * az;
-  if (len2 < 1) return false;
-  const slack = radius / Math.sqrt(len2);
-  let t = (rx * ax + ry * ay + rz * az) / len2;
-  if (t + slack <= 0 || t - slack >= 1) return false;
-  t = Math.min(1, Math.max(0, t));
-  const ox = rx - ax * t, oy = ry - ay * t, oz = rz - az * t;
-  const off = Math.sqrt(ox * ox + oy * oy + oz * oz);
-  return off - radius < UNIFORMS.uOccWide.value * Math.min(1, t + slack);
+  const lim = UNIFORMS.uOccNear.value.y + radius;
+  return rx * rx + ry * ry + rz * rz < lim * lim;
 }
 
 /**
- * Does a vertical capsule — a tree, standing on the ground — reach into either
- * shape? (x, z) is its axis, y0..y1 its extent, `radius` its widest reach.
- *
- * Stepped as a chain of spheres rather than solved, because the cone's radius
- * grows along its own axis and the nearest point of the capsule to that axis
- * is therefore not the point of deepest engagement. Each sphere is inflated by
- * half the step so the chain covers the capsule with nothing between the
- * beads, which is what makes a coarse step safe: at most it costs a swap on a
- * tree whose bark turns out not to fade.
+ * Squared distance from the lens to a standing object's trunk — the geometry of
+ * `occludeFadeColumn`, shared by the fade and the gate below. (x, y, z) is the
+ * foot. Squared, because the gate runs this over every drawn tree instance in
+ * the frame and wants its answer without a root.
  */
-export function occlusionTouchesColumn(x, z, y0, y1, radius) {
-  if (UNIFORMS.uOccAmount.value <= 0) return false;
-  // One horizontal reject before any of it. The volume lives within `far` of
-  // the lens and a column outside that in plan cannot be inside it at any
-  // height.
-  const far = Math.sqrt(UNIFORMS.uOccFar2.value) + radius;
+function columnDist2(x, y, z) {
   const dx = x - _cam.x, dz = z - _cam.z;
-  if (dx * dx + dz * dz > far * far) return false;
+  // How far the camera is outside the trunk window, and zero while it is
+  // inside it — the same max() the shader runs.
+  const span = UNIFORMS.uOccSpan.value;
+  const dy = Math.max(y - span.x - _cam.y, _cam.y - (y + span.y), 0);
+  return dx * dx + dz * dz + dy * dy;
+}
 
-  const span = Math.max(y1 - y0, 0.001);
-  const n = Math.min(24, Math.max(1, Math.ceil(span / 2)));
-  const step = span / n;
-  const r = radius + step * 0.5;
-  for (let i = 0; i < n; i++) {
-    if (occlusionTouchesSphere(x, y0 + step * (i + 0.5), z, r)) return true;
-  }
-  return false;
+/** `occludeFadeColumn` from the GLSL below, in JS. (x, y, z) is the foot. */
+export function occlusionFadeColumn(x, y, z, radius = 0) {
+  const amt = UNIFORMS.uOccAmount.value;
+  if (amt <= 0) return 1;
+  const n = UNIFORMS.uOccNear.value;
+  const d = Math.max(Math.sqrt(columnDist2(x, y, z)) - radius, 0);
+  return 1 - amt * (1 - sstep(n.x, n.y, d));
+}
+
+/**
+ * Is a standing object — a tree, on its foot at (x, y, z) — inside the volume?
+ * The gate form of occludeFadeColumn, and what Trees.js swaps bark programs on.
+ *
+ * This is the hot one: it runs over every drawn trunk in the frame, so it is
+ * written as one squared compare and nothing else. Everything it rejects — in
+ * open country, all of it — costs three subtractions and three multiplies.
+ */
+export function occlusionTouchesColumn(x, y, z, radius) {
+  if (UNIFORMS.uOccAmount.value <= 0) return false;
+  const lim = UNIFORMS.uOccNear.value.y + radius;
+  return columnDist2(x, y, z) < lim * lim;
 }
 
 // ── the shape, for any shader stage ──────────────────────────────────────────
 // Usable in a vertex or a fragment shader; `cameraPosition` is in three's own
-// prefix for both. Guarded because a material may reach this string twice
-// (once itself, once through a chunk that also carries it) and a redefinition
-// is a link failure, not a warning — see the block comment in Stylize.js about
-// the day that took grass, bark and the canopy off the air at once.
+// prefix for both — but see the note in the header: call these from the VERTEX
+// stage, at your object's origin, and carry the one value down as a varying.
+// Guarded because a material may reach this string twice (once itself, once
+// through a chunk that also carries it) and a redefinition is a link failure,
+// not a warning — see the block comment in Stylize.js about the day that took
+// grass, bark and the canopy off the air at once.
 export const OCCLUDE_PARS = /* glsl */`
 #ifndef OCCLUDE_DECLARED
 #define OCCLUDE_DECLARED
-uniform vec3  uOccTarget;
 uniform vec2  uOccNear;    // x: fully gone inside this, y: untouched outside it
-uniform float uOccWide;
-uniform float uOccSoft;
-uniform float uOccTaper;
+uniform vec2  uOccSpan;    // x: below the foot, y: above it — occludeFadeColumn
 uniform float uOccAmount;
-uniform float uOccFar2;
 
-// 1.0 = untouched, 0.0 = fully out of the way. wp is a world-space position;
-// the radius argument is the caller's own extent, subtracted from the
-// near-sphere test so a several-metre billboard clump the camera is standing
-// inside is treated as being in your face rather than as a point two metres
-// away. Pass 0.0 for a surface small enough to be a point, which is what
-// occludeFade() below does.
+/** Shared tail: a distance from the lens to a body, in metres, to a fade. */
+float occludeRamp( float dist ) {
+  return 1.0 - uOccAmount * ( 1.0 - smoothstep( uOccNear.x, uOccNear.y, max( dist, 0.0 ) ) );
+}
+
+// 1.0 = untouched, 0.0 = fully out of the way.
 //
-// Two shapes, combined with max(): a sphere around the camera for near clutter
-// and a cone to the subject for what the camper is actually parked behind. See
-// the note beside nearFull in the JS — neither one alone clears the frame the
-// player photographed.
+// origin is the OBJECT's own origin and radius its own extent — a leaf
+// clump's half-size, a boulder's size, zero for something small enough to be a
+// point. Subtracting the radius is what makes this ask "is any part of this
+// thing in my face" rather than "is its centre two metres away", which for a
+// several-metre clump the camera is standing inside is the difference between
+// it going and it sitting there at half dither owning the screen.
 //
-// The cone's radial test is done in SQUARED distance. It is the one place a
-// second square root could hide, this runs per vertex on the two largest
-// geometry populations in the game, and squaring only reshapes the feather —
-// which is a soft band whose exact profile nothing depends on. The sphere keeps
-// its root because the radius has to be subtracted in linear units.
-//
-// Every division is guarded, and that is not decoration: a fade built on a
-// divide is this project's classic source of non-finite pixels, and
-// tools/nanhunt.mjs is run against it. len2 is rejected below 1; the smoothstep
-// edges are forced apart by construction, so the degenerate edge0 == edge1 case
-// cannot arise however the parameters are tuned at runtime.
-float occludeFadeAt( vec3 wp, float radius ) {
+// The early-out is a compare against the only distance that can matter, and it
+// rejects essentially every instance in the frame before the sqrt: the volume
+// is a few metres across and the forest runs to 900 m. Written against the
+// radius rather than against a precomputed cap so a twenty-metre crag cannot
+// slip through it.
+float occludeFadeAt( vec3 origin, float radius ) {
   if ( uOccAmount <= 0.0 ) return 1.0;
-  vec3 rel = wp - cameraPosition;
+  vec3 rel = origin - cameraPosition;
+  float lim = uOccNear.y + radius;
+  if ( dot( rel, rel ) > lim * lim ) return 1.0;
+  return occludeRamp( length( rel ) - radius );
+}
 
-  // Reject everything past both shapes with one dot product, before any root or
-  // smoothstep. Both shapes live within a few metres of a subject that is
-  // itself only a chase length away, and the forest runs to 900 m, so this
-  // rejects almost every vertex it is asked about. See the note beside
-  // uOccFar2 in setOcclusionTarget.
-  float d2 = dot( rel, rel );
-  if ( d2 > uOccFar2 ) return 1.0;
-
-  // (1) near-camera sphere.
-  float m = 1.0 - smoothstep( uOccNear.x, uOccNear.y, max( sqrt( d2 ) - radius, 0.0 ) );
-
-  // (2) cone to the subject.
-  vec3 axis = uOccTarget - cameraPosition;
-  float len2 = dot( axis, axis );
-  if ( len2 >= 1.0 ) {
-    float t = dot( rel, axis ) / len2;         // 0 at the camera, 1 at the subject
-    if ( t > 0.0 && t < 1.0 ) {                // behind us, or past the subject
-      // Linear in t, i.e. a fixed hole in screen space — literally the frustum
-      // that was asked for — shut down by the taper before it reaches the
-      // subject so the ground the camper stands on keeps its cover.
-      float r  = uOccWide * t * ( 1.0 - smoothstep( uOccTaper, 1.0, t ) );
-      float r1 = max( r, 1e-3 );
-      float r0 = r1 * ( 1.0 - max( uOccSoft, 0.02 ) );
-      vec3  off = rel - axis * t;
-      m = max( m, 1.0 - smoothstep( r0 * r0, r1 * r1, dot( off, off ) ) );
-    }
-  }
-  return 1.0 - uOccAmount * m;
+// The same, for something that STANDS: a tree, whose origin is at its foot and
+// whose body is the column above it. Distance to a vertical segment through
+// (origin.xz) spanning uOccSpan.x under the foot to uOccSpan.y over it.
+//
+// Every part of one tree — the bark, and every clump of its canopy — calls this
+// with the same instance origin and therefore carries the same fade, which is
+// what makes a tree leave the frame as one object instead of as a hole punched
+// through itself. See the header.
+float occludeFadeColumn( vec3 origin, float radius ) {
+  if ( uOccAmount <= 0.0 ) return 1.0;
+  vec3 rel = origin - cameraPosition;
+  // Outside the window, and exactly zero anywhere inside it — so the whole
+  // trunk is as near as its nearest point and the fade does not depend on how
+  // tall the tree happens to be.
+  float dy = max( rel.y - uOccSpan.x, -rel.y - uOccSpan.y );
+  vec3 body = vec3( rel.x, max( dy, 0.0 ), rel.z );
+  float lim = uOccNear.y + radius;
+  if ( dot( body, body ) > lim * lim ) return 1.0;
+  return occludeRamp( length( body ) - radius );
 }
 
 float occludeFade( vec3 wp ) { return occludeFadeAt( wp, 0.0 ); }
@@ -584,7 +518,12 @@ if (typeof location !== 'undefined'
 }
 
 // Runtime handle, so the shape can be swept from a capture without a rebuild:
-//   node tools/shot.mjs --view … --eval "window.__occlusion.params.wide = 5.0"
+//   node tools/shot.mjs --view … --eval "window.__occlusion.params.nearNone = 6.0"
+// setTarget is the old name of setSubject, kept because the scratch benches in
+// tools/_scratch drive the effect through it.
 if (typeof window !== 'undefined') {
-  window.__occlusion = { params: PARAMS, uniforms: UNIFORMS, setTarget: setOcclusionTarget };
+  window.__occlusion = {
+    params: PARAMS, uniforms: UNIFORMS,
+    setSubject: setOcclusionSubject, setTarget: setOcclusionSubject,
+  };
 }

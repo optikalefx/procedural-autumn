@@ -1506,44 +1506,154 @@ function mergeAttr(list) {
 //  primitive as the fuel, so the two read as the same firewood — which is the
 //  whole reason it is in this file and not in one of its own.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lay a log down: `+Y along the log` becomes `+Z`, yawed by `yaw` about world
+ * up, and rolled by `roll` about the log's OWN length.
+ *
+ * This exists because `at()` cannot express it. `at()` takes an XYZ Euler,
+ * which three.js composes as RX·RY·RZ — so the Z term is applied FIRST, before
+ * the X term has tipped the log over, and a roll written as `at(..., PI/2, yaw,
+ * rnd() * TAU)` is not a roll at all: it spins the log's long axis around while
+ * it is still standing up, and comes out the far side as a full random yaw.
+ * That is what turned this stack into a heap of crossed sticks that read as an
+ * unlit fire — every log parallel on paper, every log pointing somewhere else
+ * on screen. The fire's own lean logs sidestep it with `setFromUnitVectors` and
+ * an explicit roll quaternion; this does the same thing for the flat-laid case.
+ */
+function layLog(x, y, z, yaw, roll) {
+  const q = new THREE.Quaternion()
+    .setFromEuler(new THREE.Euler(Math.PI * 0.5, yaw, 0, 'YXZ'))
+    .multiply(new THREE.Quaternion()
+      .setFromAxisAngle(new THREE.Vector3(0, 1, 0), roll));
+  return M().compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, 1, 1));
+}
+
+/**
+ * How far a laid log reaches below and above its own origin, exactly.
+ *
+ * A split log is a WEDGE, and how tall it is depends entirely on which way it
+ * was rolled: bark-down it hangs a full radius below the axis, bark-up it hangs
+ * 0.06 of one — the apex — and stands a radius proud instead. Seating a course
+ * on a nominal radius therefore floats half of it and buries the other half,
+ * which is what left the bottom course of the woodpile hovering 4 cm over its
+ * own shadow.
+ *
+ * Transforming the points is exact where `Box3.applyMatrix4` is not: that
+ * inflates the box to the axis-aligned bound of an already axis-aligned bound,
+ * and under a 90 degree roll the error is the whole radius. It is ~180 vertices
+ * per log and this runs once, when the camp is pitched.
+ */
+function spanY(geos, m) {
+  const v = new THREE.Vector3();
+  let lo = Infinity, hi = -Infinity;
+  for (const g of geos) {
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m);
+      if (v.y < lo) lo = v.y;
+      if (v.y > hi) hi = v.y;
+    }
+  }
+  return { lo, hi };
+}
+
 export function buildWoodpile(rnd, opts = {}) {
   const g = new THREE.Group();
   g.name = 'camp_woodpile';
   const P = new Parts('woodpile');
-  const rows = 3;
   const R = 0.052;
-  // Ends face +Z, so the pale split faces are what you see from the fire.
-  let y = R * 0.92;
-  for (let row = 0; row < rows; row++) {
-    const count = 4 - row + (rnd() < 0.4 ? 1 : 0);
-    for (let i = 0; i < count; i++) {
-      const x = (i - (count - 1) * 0.5) * (R * 2.24) + (rnd() - 0.5) * 0.012;
-      const len = 0.40 + rnd() * 0.11;
-      const rad = R * (0.86 + rnd() * 0.26);
+  const wear = clamp01(opts.wear ?? 0.5);
+
+  // Three to a row, stacked until the wood runs out, and the top row is however
+  // much is left — somebody has been taking from this. `logs` comes from the
+  // site layout; it was accepted and ignored for the whole of the last round,
+  // which is why every camp had a stack of exactly the same mass.
+  //
+  // The row width is what decides whether this reads as *stacked*, and it is
+  // worth measuring rather than eyeballing. Narrowing each row by one spread
+  // eleven logs over 0.43 x 0.45 m and gave only 0.25 m of height — a slab, and
+  // indistinguishable from firewood tipped out on the ground. Four to a row was
+  // no better for the same reason. Three puts twelve to seventeen pieces into
+  // four to six courses, 0.31 m wide and 0.24-0.34 m tall, which is a rick.
+  const W = 3;
+  const N = Math.max(W, Math.round(opts.logs ?? 11));
+  const counts = [];
+  for (let left = N; left > 0; left -= W) counts.push(Math.min(left, W));
+
+  // The spacing has to come from the cross-section `splitLog` actually makes,
+  // and that is a WEDGE, not a round: the bark arc runs from -0.06R to +R
+  // across the bark direction, and 1.5R to 1.95R across the split plane. So a
+  // piece laid bark-up is about R tall and 2R wide — half as tall as it is
+  // broad. Spacing it as though it were a round (2R across, sqrt(3)·R up) is
+  // what produced a stack of planks hanging in mid-air with daylight between
+  // every course. Rows sit a hair under a piece-height apart so they settle
+  // into each other instead.
+  const pitch = R * 1.98;
+  // The ends facing +Z are flush; the far ends are ragged, because the logs are
+  // not the same length and nobody trims a woodpile.
+  const zFace = 0.17;
+  // Each course is seated on the mean top of the one below, less a couple of
+  // millimetres so it has settled into it rather than balanced on it. Mean
+  // rather than max: the tallest piece in a course should be pressed into the
+  // next, not hold it up over a gap.
+  const SETTLE = 0.003;
+
+  let base = -0.005;                       // the ground course, a little bedded in
+  for (let row = 0; row < counts.length; row++) {
+    const c = counts[row];
+    let topSum = 0;
+    for (let i = 0; i < c; i++) {
+      const len = 0.34 + rnd() * 0.08;
+      const rad = R * (0.90 + rnd() * 0.18);
       const { bark, split } = splitLog(rnd, len, rad, 1.7 + rnd() * 1.0);
-      const m = at(x, y + (rnd() - 0.5) * 0.008, (rnd() - 0.5) * 0.035,
-        Math.PI * 0.5, (rnd() - 0.5) * 0.16, rnd() * TAU);
-      const dust = dusted([1, 1, 1], { top: 0.10, amount: 0.30 });
+      // Split faces land against their neighbours, bark up or down: the way a
+      // quarter-round settles when it is stacked rather than thrown.
+      const roll = (rnd() < 0.5 ? 1 : -1) * Math.PI * 0.5 + (rnd() - 0.5) * 0.45;
+      const x = (i - (c - 1) * 0.5) * pitch + (row % 2 ? 1 : -1) * pitch * 0.12
+        + (rnd() - 0.5) * 0.006;
+      const z = zFace - len * 0.5 + (rnd() - 0.5) * 0.014;
+      const yaw = (rnd() - 0.5) * 0.05;
+      // Measure at zero, then drop it onto the course below.
+      const { lo, hi } = spanY([bark, split], layLog(x, 0, z, yaw, roll));
+      const y = base - lo + (rnd() - 0.5) * 0.004;
+      topSum += y + hi;
+      const m = layLog(x, y, z, yaw, roll);
+      const dust = dusted([1, 1, 1], { top: 0.10, amount: 0.20 + wear * 0.22 });
       const bt = 0.86 + rnd() * 0.3;
       P.add(bark, 'wood', m.clone(), tintMul(dust, [BARK_T[0] * bt, BARK_T[1] * bt, BARK_T[2] * bt]));
       P.add(split, 'wood', m.clone(), tintMul(dust, [SPLIT_T[0] * bt, SPLIT_T[1] * bt, SPLIT_T[2]]));
     }
-    y += R * 1.86;
+    base = topSum / c - SETTLE;
   }
+
   // One that has rolled off the stack — the difference between a woodpile and
-  // a crate of dowels.
+  // a crate of dowels. Beside the stack and turned out of line with it, so it
+  // reads as one that got away rather than as the stack itself going wrong.
+  const halfW = W * pitch * 0.5;
   {
-    const len = 0.40 + rnd() * 0.08;
+    const len = 0.34 + rnd() * 0.07;
     const rad = R * (0.9 + rnd() * 0.2);
     const { bark, split } = splitLog(rnd, len, rad, 1.9);
-    const a = 1.9 + rnd() * 1.2;
-    const m = at(Math.cos(a) * 0.30, rad * 0.85, Math.sin(a) * 0.24 + 0.06,
-      Math.PI * 0.5, a + 0.7, rnd() * TAU);
-    const dust = dusted([1, 1, 1], { top: 0.09, amount: 0.36 });
+    const side = rnd() < 0.5 ? 1 : -1;
+    const x = side * (halfW + 0.07 + rnd() * 0.05);
+    const z = 0.14 + rnd() * 0.09;
+    const yaw = side * (0.90 + rnd() * 0.30), roll = rnd() * TAU;
+    const { lo } = spanY([bark, split], layLog(x, 0, z, yaw, roll));
+    const m = layLog(x, -0.004 - lo, z, yaw, roll);
+    const dust = dusted([1, 1, 1], { top: 0.09, amount: 0.26 + wear * 0.22 });
     P.add(bark, 'wood', m.clone(), tintMul(dust, BARK_T));
     P.add(split, 'wood', m.clone(), tintMul(dust, SPLIT_T));
   }
   P.flush(g, { cast: true, receive: true });
-  g.userData.footprint = 0.46;
+  // Measured, not asserted — the log lying beside the stack is what sets this,
+  // and a hand-written constant went stale the moment the stack changed shape.
+  // Every other prop in the set publishes the same field; the site's own
+  // spacing radius is passed to `tryPlace` separately.
+  const bb = new THREE.Box3().setFromObject(g);
+  g.userData.footprint = Math.max(
+    Math.abs(bb.min.x), Math.abs(bb.max.x),
+    Math.abs(bb.min.z), Math.abs(bb.max.z),
+  );
   return g;
 }

@@ -6,9 +6,13 @@
 //  Two things make it work:
 //
 //   · **Size, not distance, sets the character.** A big fall is mostly low
-//     rumble and takes 600 m to disappear; a step in a creek is all hiss and is
-//     gone in eighty. That difference is what makes the valley feel mapped by
-//     ear — you can tell what is over the ridge before you crest it.
+//     rumble and takes 600 m to disappear; a creek is a brighter, mid-focused
+//     burble and is gone in eighty. That difference is what makes the valley
+//     feel mapped by ear — you can tell what is over the ridge before you
+//     crest it. "Brighter" is a band centre and an air ceiling, not an open
+//     top end: the creek voice spent a while as literal hiss (see the noise
+//     beds below) and a listener a metre from the water called it exactly
+//     that.
 //   · **Air eats the top end.** Distance is modelled as a moving lowpass as
 //     well as a gain. Without it a distant fall is a quiet near fall, which
 //     reads as a volume slider rather than as somewhere else.
@@ -17,7 +21,7 @@
 //  five voices whether the player is beside one fall or twelve.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, lerp } from '../core/MathUtils.js';
-import { noiseBuffer, noiseSource, filter, gain, swell, Smooth, panner } from './synth.js';
+import { noiseBuffer, noiseSource, filter, gain, lfo, swell, Smooth, panner } from './synth.js';
 
 const FALL_VOICES = 3;
 const RIVER_VOICES = 2;
@@ -27,12 +31,12 @@ class WaterVoice {
   constructor(actx, bus, buf, rate, isFall) {
     this.actx = actx;
     this.src = noiseSource(actx, buf, rate);
-    this.low = filter(actx, 'lowpass', 190, 0.9);
-    this.body = filter(actx, 'bandpass', isFall ? 620 : 1150, isFall ? 0.5 : 0.7);
-    this.hiss = filter(actx, 'highpass', isFall ? 2600 : 3400, 0.6);
-    this.gLow = gain(actx, isFall ? 0.9 : 0.12);
-    this.gBody = gain(actx, 0.8);
-    this.gHiss = gain(actx, 0.5);
+    this.low = filter(actx, 'lowpass', isFall ? 190 : 300, 0.9);
+    this.body = filter(actx, 'bandpass', isFall ? 620 : 900, isFall ? 0.5 : 0.5);
+    this.hiss = filter(actx, 'highpass', isFall ? 2600 : 2300, 0.6);
+    this.gLow = gain(actx, isFall ? 0.9 : 0.38);
+    this.gBody = gain(actx, isFall ? 0.8 : 1.45);
+    this.gHiss = gain(actx, isFall ? 0.5 : 0.22);
     this.air = filter(actx, 'lowpass', 16000, 0.6);
     this.out = gain(actx, 0);
     this.pan = panner(actx, 0);
@@ -53,6 +57,13 @@ class WaterVoice {
     // it, and silence is reachable again.
     this.swell = swell(actx, 0.043 + Math.random() * 0.02, 0.34);
     this.air.connect(this.swell).connect(this.out).connect(this.pan).connect(bus);
+
+    // A creek gurgles: the pitch of the burble wanders as the water finds
+    // different ways through the same stones. Without this the river voice is
+    // a *stationary* band of noise, and stationary noise is what the ear files
+    // under "hiss" no matter where its energy sits. On the filter's cutoff a
+    // summing LFO is the right tool (see synth.lfo) — the swing is in hertz.
+    if (!isFall) lfo(actx, 0.09 + Math.random() * 0.06, 240, this.body.frequency);
 
     this.sm = {
       out: new Smooth(this.out.gain, 0.35, 0.0015),
@@ -92,8 +103,17 @@ export class WaterAudio {
     this.fallBus.connect(this.bus);
     this.riverBus.connect(this.bus);
 
+    // Both beds are pink. The river bed used to be white, on the theory that a
+    // creek is brighter than a fall — which is true, but white noise rises at
+    // +3 dB/octave and there is nothing above the band to stop it, so what
+    // came out was a 9 kHz spectral centroid with 90% of its energy above
+    // 3 kHz. That is the spectrum of tape hiss, not of water, and it was
+    // measured at the wheels of a parked camper. A creek is still the brighter
+    // of the two here — it gets a higher body band, a lower air ceiling and a
+    // much smaller top band — but it is built from a bed that falls away with
+    // frequency the way moving water does.
     const bufA = noiseBuffer(actx, 4, 'pink', 0x2277);
-    const bufB = noiseBuffer(actx, 4, 'white', 0x91ab);
+    const bufB = noiseBuffer(actx, 4, 'pink', 0x91ab);
 
     this.falls = [];
     for (let i = 0; i < FALL_VOICES; i++) {
@@ -186,8 +206,13 @@ export class WaterAudio {
     this.state.nearestFall = nearest;
     const want = this.soloFall >= 0 ? [this.soloFall, -1, -1] : [b0, b1, b2];
     // Voices that are still on a wanted fall keep it; the rest are re-pointed.
+    // `want` is padded with -1 when fewer than three falls are wanted (a solo,
+    // or a world with only one). Without the `>= 0` an idle voice's -1 target
+    // matches that padding, every voice is treated as already-held, and no
+    // voice is ever assigned — silence. Harmless in the 28-fall valley, fatal
+    // in the lab and in any measurement rig with one fall in it.
     const held = new Set();
-    for (const v of this.falls) if (want.includes(v.target)) held.add(v.target);
+    for (const v of this.falls) if (v.target >= 0 && want.includes(v.target)) held.add(v.target);
     let k = 0;
     for (const v of this.falls) {
       if (held.has(v.target)) continue;
@@ -284,8 +309,18 @@ export class WaterAudio {
       riverSum += g;
       if (g > 0.004) active++;
       v.sm.out.set(g, actx);
-      v.sm.air.set(clamp(16000 * Math.exp(-d / 70), 900, 15000), actx);
-      v.sm.hiss.set(lerp(0.08, 0.9, clamp01(1 - d / 30)) * (0.3 + flow), actx);
+      // The air ceiling starts at 7.2 kHz rather than 16 kHz. 16 kHz is not an
+      // absorption figure, it is "no filter at all" — and an unfiltered noise
+      // bed is the sizzle the player was hearing. Real water does have energy
+      // up there, but it arrives as splash transients, not as a continuous
+      // shelf, and a continuous shelf is all a noise bed can offer.
+      v.sm.air.set(clamp(7200 * Math.exp(-d / 90), 900, 7200), actx);
+      // Close in, a creek is a burble you feel in the low-mid, not a sizzle:
+      // the low band comes up as you approach and the top band is a garnish
+      // (peak 0.21 at flow 1.0, where it used to be 0.9 — nearly the whole
+      // voice).
+      v.sm.low.set(lerp(0.12, 0.44, clamp01(1 - d / 40)) * (0.45 + flow), actx);
+      v.sm.hiss.set(lerp(0.04, 0.24, clamp01(1 - d / 30)) * (0.3 + flow), actx);
       const rel = Math.atan2(dx, dz) - L.yaw;
       v.sm.pan.set(clamp(Math.sin(rel) * clamp01((d - 4) / 14), -0.9, 0.9), actx);
     }

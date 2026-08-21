@@ -33,8 +33,8 @@ import { clamp, clamp01, lerp, smoothstep, damp } from '../core/MathUtils.js';
 import { setCampSite, campOuterRadius } from './camp_clearing.js';
 import { campMaterials, disposeCampMaterials } from './camp_materials.js';
 import {
-  groundRay, scoreSite, clampToSite, layoutCamp, standOn, siteRng,
-  SITE_MIN, SITE_MAX, CAMP_RADIUS,
+  groundRay, scoreSite, bestSite, clampToSite, layoutCamp, standOn, siteRng,
+  SITE_MIN, SITE_MAX, CAMP_RADIUS, CAMP_RADIUS_SMALL,
 } from './camp_site.js';
 import { CampGround } from './camp_ground.js';
 import { CampReticle, CampPrompt } from './camp_ui.js';
@@ -64,8 +64,12 @@ const CLICK_TIME = 0.55;   // s held that still counts as a click
 // note on `uCampFloor` in camp_clearing.js.
 const AIM_FLOOR = 0.42;
 
-// The clearing's soft edge, in metres.
-const CLEARING_FEATHER = 1.4;
+// The clearing's soft edge, as a fraction of its radius rather than a fixed
+// distance. A 1.4 m feather on a 5.8 m clearing is a quarter of it; the same
+// 1.4 m on the compact camp's 4.2 m would be a third, so the small camp would
+// be almost all fringe and would never look like cleared ground at all.
+const CLEARING_FEATHER_K = 0.24;
+const featherFor = (r) => Math.max(0.55, r * CLEARING_FEATHER_K);
 
 // The fraction of the clearing radius that things actually stand on, and
 // therefore the fraction that has to be clear of trunks and boulders.
@@ -165,7 +169,10 @@ export class Camp extends System {
     window.__camp = this;
     // The site maths, so tools/_scratch/campdiag.mjs can sweep it without
     // reaching through a bundler that has already renamed everything.
-    window.__campSiteMod = { scoreSite, clampToSite, layoutCamp, groundRay, CAMP_RADIUS };
+    window.__campSiteMod = {
+      scoreSite, bestSite, clampToSite, layoutCamp, groundRay,
+      CAMP_RADIUS, CAMP_RADIUS_SMALL,
+    };
   }
 
   /**
@@ -452,7 +459,7 @@ export class Camp extends System {
     if (this._click && !moving && !this._justPitched) {
       const car = this._rayMiss(veh.position, 2.8);
       const camp = this._rayMiss(
-        this._v.set(this.site.x, this.site.y + 0.4, this.site.z), CAMP_RADIUS * 0.9);
+        this._v.set(this.site.x, this.site.y + 0.4, this.site.z), this.site.radius * 0.9);
       if (car < camp) this._focusCamp = false;
       else if (camp < Infinity) this._focusCamp = true;
     }
@@ -514,18 +521,24 @@ export class Camp extends System {
     const pz = hit ? hit.z : o.z + d.z * 30;
 
     const c = clampToSite(px, pz, vx, vz);
-    const s = scoreSite(world, c.x, c.z, { blocked: (x, z, r) => this._blocked(x, z, r) });
+    // `bestSite` falls back to a compact camp where a full one will not fit,
+    // so the ring the player is holding is already the size they will get.
+    const s = bestSite(world, c.x, c.z, { blocked: (x, z, r) => this._blocked(x, z, r) });
 
     this._aim.x = c.x; this._aim.z = c.z; this._aim.y = s.y;
     this._aim.ok = s.ok; this._aim.score = s.score; this._aim.reason = s.reason;
+    this._aim.radius = s.radius; this._aim.small = s.small;
 
-    this.reticle.place(c.x, c.z, s.ok, s.score);
+    // The ring shrinks to the camp that actually fits. That is the only signal
+    // the player gets that this pitch will be a small one, and it is enough —
+    // it is the shape of the thing, drawn on the ground they are choosing.
+    this.reticle.place(c.x, c.z, s.ok, s.score, s.radius);
 
     // Ghost the clearing open under the reticle. Only where the site is
     // actually buildable: a preview that appears over a lake or a cliff is
     // promising something that will not happen, and the whole job of this
     // affordance is to be trustworthy.
-    setCampSite(c.x, c.z, CAMP_RADIUS, CLEARING_FEATHER, s.ok ? AIM_FLOOR : 1);
+    setCampSite(c.x, c.z, s.radius, featherFor(s.radius), s.ok ? AIM_FLOOR : 1);
 
     this.prompt.set(s.ok
       ? '<b>Click</b> or <b>E</b>&nbsp; make camp here'
@@ -591,7 +604,7 @@ export class Camp extends System {
    */
   _obstacles(x, z) {
     const out = [];
-    const R = CAMP_RADIUS * 1.15;
+    const R = CAMP_RADIUS * 1.15;   // the widest a camp can be; obstacles are cheap to over-collect
     for (const t of this.ctx.systems?.trees?.trunksNear?.(x, z, R) ?? []) {
       // Generous by half a metre: a prop touching a trunk still reads as
       // clipping into it, and root flare is wider than the bole.
@@ -634,14 +647,18 @@ export class Camp extends System {
     this._teardown();
 
     const y = world.getHeight(x, z);
-    this.site = { x, z, y };
+    // Re-scored rather than trusting the aim: `pitchAt` is also called by the
+    // harness, which never aimed at anything.
+    const fit = bestSite(world, x, z, { blocked: (bx, bz, br) => this._blocked(bx, bz, br) });
+    const R = fit.radius ?? CAMP_RADIUS;
+    this.site = { x, z, y, radius: R, small: !!fit.small };
     const rnd = siteRng(x, z, this.ctx.world?.seed ?? 0);
 
     // Publish the clearing first: the dirt mesh reads it back to shape its own
     // alpha, so the two are the same edge by construction rather than by two
     // authors agreeing on a formula.
-    setCampSite(x, z, CAMP_RADIUS, CLEARING_FEATHER);
-    this.ground.build(x, z, CAMP_RADIUS, rnd);
+    setCampSite(x, z, R, featherFor(R));
+    this.ground.build(x, z, R, rnd);
 
     // The fire is the origin of the arrangement, so it is placed first and
     // everything else is placed relative to it. It is the session's one
@@ -661,7 +678,8 @@ export class Camp extends System {
               ?? new THREE.Vector2(0.86, 0.51);
 
     const items = layoutCamp(rnd, world, x, z, {
-      radius: CAMP_RADIUS, windDir: wind, obstacles: this._obstacles(x, z),
+      radius: R, small: this.site.small, windDir: wind,
+      obstacles: this._obstacles(x, z),
     });
 
     // ── the props are built one per frame, not all at once ──────────────────
@@ -779,7 +797,10 @@ export class Camp extends System {
   _applyRaise() {
     const k = this.raise;
     const clear = smoothstep(0, 0.55, k);
-    if (this.site) setCampSite(this.site.x, this.site.z, CAMP_RADIUS * clear, CLEARING_FEATHER);
+    if (this.site) {
+      const R = this.site.radius;
+      setCampSite(this.site.x, this.site.z, R * clear, featherFor(R));
+    }
     this.ground?.setReveal(smoothstep(0.02, 0.62, k));
     this.fire?.setReveal(smoothstep(0.30, 0.95, k));
 
@@ -841,7 +862,8 @@ export class Camp extends System {
   }
 
   /** Pitch a camp on decent ground near a point — used by the harness. */
-  pitchNear(x, z, { instant = true, radius = 12 } = {}) {
+  pitchNear(x, z, opts = {}) {
+    const { instant = true, radius = 12 } = opts;
     const { world } = this.ctx;
     let best = null;
     for (let i = 0; i < 96; i++) {
@@ -850,9 +872,14 @@ export class Camp extends System {
       const a = i * 2.39996;
       const r = SITE_MIN + (radius - SITE_MIN) * Math.sqrt(i / 96);
       const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
-      const s = scoreSite(world, px, pz, { blocked: (bx, bz, br) => this._blocked(bx, bz, br) });
-      if (s.ok && (!best || s.score > best.score)) best = s;
-      if (best && best.score > 0.86) break;
+      const s = bestSite(world, px, pz, { blocked: (bx, bz, br) => this._blocked(bx, bz, br) });
+      // `small` sites score lower by construction, so preferring the higher
+      // score already prefers a full camp and falls back to a compact one only
+      // where nothing better exists — which is the behaviour wanted here and
+      // needs no special case. `opts.small` forces the compact one, for the
+      // harness, which otherwise could never photograph it.
+      if (s.ok && (!opts.small || s.small) && (!best || s.score > best.score)) best = s;
+      if (best && best.score > 0.86 && !opts.small) break;
     }
     if (!best) return null;
     return this.pitchAt(best.x, best.z, { instant });

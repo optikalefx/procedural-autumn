@@ -32,7 +32,7 @@ import { clamp, clamp01, lerp, mulberry32 } from '../core/MathUtils.js';
 // in metres: a golden eagle is ~2.0 m, a raven ~1.2 m, a crow ~0.9 m. Anything
 // above ~2 m is not a bird, it is a hang-glider, and that is what 2.1× of a
 // 0.85–1.35 jitter was producing.
-const FLOCK_SPECIES = [
+export const FLOCK_SPECIES = [
   // High, sparse, slow — the one you actually notice.
   { count: [2, 4],  scale: [1.30, 1.95], alt: [62, 104], spread: 26, radius: [30, 86], rate: [0.85, 1.30], amp: [0.40, 0.62], turn: [0.09, 0.15] },
   // Lower, looser, quicker — the background texture.
@@ -54,7 +54,7 @@ const BURST_MAX = 11;        // birds per burst
 // warm-grey mark that the haze is supposed to be able to eat. These are dark
 // enough to silhouette against a bright sky and light enough that the shared
 // atmosphere has something to work on.
-const PLUMAGE = [
+export const PLUMAGE = [
   [0x6a5b49, 0x54473a, 0x7d6d58],   // high flock: buteo browns
   [0x4e4438, 0x3d352c, 0x655847],   // low flock: corvid grey-browns
 ];
@@ -65,7 +65,7 @@ const BURST_PLUMAGE = [0x5d5140, 0x746550, 0x8a7a63];
  * the wing sheets; the vertex shader rotates the wing verts about the body
  * axis, which is the entire animation.
  */
-function birdGeometry() {
+export function birdGeometry() {
   const pos = [], nor = [], wing = [], col = [];
   const push = (x, y, z, nx, ny, nz, w) => {
     pos.push(x, y, z); nor.push(nx, ny, nz); wing.push(w);
@@ -130,7 +130,7 @@ function birdGeometry() {
  * custom work is the wingbeat. Per-instance phase and rate ride in on an
  * instanced attribute so one mesh can hold a whole flock out of sync.
  */
-function birdMaterial(shared) {
+export function birdMaterial(shared) {
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 1.0,

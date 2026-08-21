@@ -186,6 +186,10 @@ export class Vehicle extends System {
     this.phys = new VehiclePhysics(world);
     await this.phys.init(start.x, start.z, heading);
     this.wheels = this.phys.wheels;
+    // Rocks are solid. `rocks` is built before the camper (see SYSTEMS in
+    // main.js) so it is here to hand, but this is deliberately tolerant of its
+    // absence — the capture harness and the sky tools run without it.
+    this.phys.setRockSource(ctx.systems.rocks ?? null);
 
     // ── fx ──────────────────────────────────────────────────────────────────
     const budget = ctx.preset?.grassMul >= 0.8 ? 1100 : 550;
@@ -212,6 +216,7 @@ export class Vehicle extends System {
       holdDrift: this.phys.holdDrift ?? 0,
       holdArmedFor: this.phys._armedFor, holdLatchV: this.phys.holdLatchV ?? 0,
       nan: this.phys.nanEvents ?? 0,
+      rockColliders: this.phys.rocks?.count ?? 0,
       ground: world.getHeight(this.position.x, this.position.z),
     });
     window.__vehicleTeleport = (x, z, h = 0) => this.phys.teleport(x, z, h);
@@ -603,7 +608,10 @@ export class Vehicle extends System {
       this._tmp.copy(w.pos).sub(this.position).applyQuaternion(this._invQuat);
       n.hub.position.copy(this._tmp);
       n.hub.rotation.y = w.steer;
-      n.spin.rotation.x = -w.spin;
+      // Rapier's wheel rotation grows as the wheel rolls forward, and the axle
+      // was registered as -X, which is the same as +rotation about +X here: a
+      // positive angle carries the top of the tyre toward +Z, the way it rolls.
+      n.spin.rotation.x = w.spin;
       void dt;
     }
   }

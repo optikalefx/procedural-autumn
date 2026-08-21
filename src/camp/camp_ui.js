@@ -119,10 +119,18 @@ export class CampReticle {
     scene.add(this.behind);
   }
 
-  /** Move the ring to a site and reshape it to the ground under it. */
-  place(x, z, ok, score) {
+  /**
+   * Move the ring to a site and reshape it to the ground under it.
+   *
+   * `radius` is per-call, not fixed at construction: a site that will only take
+   * a compact camp hands back a smaller one, and the ring shrinking IS how the
+   * player is told. No label, no second colour — the mark on the ground is the
+   * size of the thing they are about to make.
+   */
+  place(x, z, ok, score, radius = this.radius) {
     this.ok = ok;
     this.score = score;
+    this.radius = radius;
     const p = this.geo.attributes.position.array;
     const W = 0.22;
     for (let i = 0; i <= SEGS; i++) {

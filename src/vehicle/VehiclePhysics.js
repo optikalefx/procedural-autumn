@@ -13,10 +13,16 @@
 //  2. The patch is rebuilt incrementally (a few rows per frame) into a spare
 //     buffer and swapped in when complete.  A 129² patch costs ~6 ms to sample
 //     in one go, which is a visible hitch every few seconds otherwise.
+//
+//  3. Rocks are solid, and are the only thing in the world besides the ground
+//     that is.  They arrive as their own streamed set of static hulls — see
+//     RockColliders.js, which also explains why "drive over the small ones,
+//     stop at the big ones" is not a rule anybody wrote down here.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { VEHICLE } from '../world/WorldConfig.js';
+import { RockColliders } from './RockColliders.js';
 import { clamp, clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 
 const PATCH_SIZE = 176;       // metres across the collider patch
@@ -124,6 +130,10 @@ export class VehiclePhysics {
     this.holdArmed = false;
     this.holding = false;
     this.holdDrift = 0;
+    // Solid rock, streamed. Null until `setRockSource` is called: the Rocks
+    // system is built before the camper but the capture harness runs without
+    // it, and physics must be complete either way.
+    this.rocks = null;
     this._armedFor = 0;
     this._holdSpin = [0, 0, 0, 0];
     this._holdT = null;
@@ -223,6 +233,14 @@ export class VehiclePhysics {
     this.steerAngle = 0;
     this.syncBasis();
     this.ready = true;
+  }
+
+  /**
+   * Hand over the Rocks system, once it exists. Read live every frame and
+   * never held past one, so a rock cell that restreams is picked up for free.
+   */
+  setRockSource(rocks) {
+    this.rocks = rocks ? new RockColliders(this.P, rocks) : null;
   }
 
   /** Refresh the cached body basis + velocity. Safe to call before the first step. */
@@ -495,6 +513,7 @@ export class VehiclePhysics {
 
     const t = this.body.translation();
     this._streamGround(t.x, t.z);
+    this.rocks?.update(t.x, t.z);
 
     // Cache the basis once per frame.
     this.syncBasis();
@@ -802,6 +821,12 @@ export class VehiclePhysics {
     this._sampleAll(this._heights, x, z);
     this._makeGround(x, z, this._heights);
     this._fillRow = PATCH_DIV + 1;
+    // The rock hulls belong to the place being left, and one of them may be
+    // standing exactly where the camper is about to arrive. Drop the set and
+    // let it rebuild around the landing — `RockColliders` will not build a
+    // collider the camper is already inside, which is the whole reason this
+    // has to happen before the body is placed rather than after.
+    this.rocks?.clear();
     const y = this._patchHeight(x, z) + RIDE_HEIGHT + 0.02;
     this.body.setTranslation({ x, y, z }, true);
     this.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);

@@ -52,10 +52,13 @@ for (const kind of SPOTS) {
           sm.push(ssum / cnt); sx.push(smax); rel.push(hi - lo);
           trees.push((window.__systems.trees?.trunksNear?.(x, z, 5.0) ?? []).length);
         }
-        const s = S.scoreSite(window.__world, x, z, { blocked: (bx, bz, br) => camp._blocked(bx, bz, br) });
+        const s = S.bestSite(window.__world, x, z, { blocked: (bx, bz, br) => camp._blocked(bx, bz, br) });
         n++;
-        if (s.ok) { ok++; if (s.score > bestScore) bestScore = s.score; }
-        else reasons[s.reason] = (reasons[s.reason] ?? 0) + 1;
+        if (s.ok) {
+          ok++;
+          if (s.small) reasons['(compact)'] = (reasons['(compact)'] ?? 0) + 1;
+          if (s.score > bestScore) bestScore = s.score;
+        } else reasons[s.reason] = (reasons[s.reason] ?? 0) + 1;
       }
     }
     const q = (arr, p) => { const a = arr.slice().sort((x2, y2) => x2 - y2); return +a[Math.floor(a.length * p)].toFixed(2); };
