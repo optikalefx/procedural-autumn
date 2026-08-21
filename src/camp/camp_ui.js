@@ -208,13 +208,21 @@ export class CampPrompt {
     document.body.appendChild(el);
     this.el = el;
     this._text = '';
+    this._forced = false;
   }
 
   set(text) {
-    if (text === this._text) return;
+    // Both halves, not just the text. This used to early-out on an unchanged
+    // string, so a prompt that was already showing when a capture began stayed
+    // on screen through every frame of it: the harness sets `__forceCamera`
+    // and the prompt never asked again. "E pack up this camp" is legible in
+    // the middle of a dusk contact sheet because of it.
+    const forced = !!window.__forceCamera;
+    if (text === this._text && forced === this._forced) return;
     this._text = text;
+    this._forced = forced;
     if (text) this.el.innerHTML = text;
-    const on = !!text && !window.__forceCamera;
+    const on = !!text && !forced;
     this.el.style.opacity = on ? '1' : '0';
     this.el.style.transform = `translate(-50%, ${on ? '0' : '8px'})`;
   }

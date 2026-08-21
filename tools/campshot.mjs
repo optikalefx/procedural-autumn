@@ -150,6 +150,32 @@ async function main() {
   }, PARK === true ? 'meadow' : PARK);
   await page.waitForTimeout(1600);          // springs settle, streaming catches up
 
+  // ── latch the park brake before pitching ────────────────────────────────
+  //
+  // Not decoration. The camper's headlights ramp on at dusk at intensity 190
+  // and reach 68 m, and a camp stands 8-18 m in front of it — so every dusk
+  // contact sheet ever taken through this tool was shot under a floodlight the
+  // player cannot possibly have had on, because latching the brake is the ONLY
+  // way to make a camp and latching it dips them. Measured on the telescope by
+  // procedural-fall-73: 16.8% of the prop's pixels clipped before, 0.00% after,
+  // and two rounds of art were spent chasing it.
+  //
+  // A real keypress, because `brakeHold` is driven by the physics and assigning
+  // it from an evaluate survives exactly one frame.
+  await page.keyboard.down('Space');
+  await page.waitForTimeout(1000);
+  await page.keyboard.up('Space');
+  await page.waitForTimeout(2400);        // the dip eases in over ~1.5 s
+  const held = await page.evaluate(() => ({
+    brakeHold: !!window.__systems.vehicle?.brakeHold,
+    beam: +(window.__systems.vehicle?.headlights?.[0]?.intensity ?? -1).toFixed(1),
+  }));
+  if (!held.brakeHold) {
+    console.warn('[campshot] park brake did NOT latch — the camper was probably ' +
+                 'still rolling. Dusk frames will be under full headlights.');
+  }
+  console.log(`brake: held=${held.brakeHold} beam=${held.beam}`);
+
   if (has('small')) await page.evaluate(() => { window.__campSmall = true; });
   const site = await page.evaluate((seed) => {
     const v = window.__systems.vehicle;
@@ -157,17 +183,20 @@ async function main() {
     const s = window.__camp.pitchNear(v.position.x, v.position.z,
       { instant: true, radius: 14, small: window.__campSmall === true });
     if (!s) return null;
-    // The seating axis, so every framing below is relative to the camp's own
-    // orientation rather than to whichever way the world happens to face.
+    // Explicit fields, never a spread of the camp record. `pitchAt` returns
+    // the live record now — it carries `root`, `fire` and `ground`, all of
+    // which are Object3Ds with parent pointers, and JSON.stringify on that is
+    // a circular-structure throw rather than a site file.
     const chairs = window.__camp.props.filter((p) => p.item.kind === 'chair');
     let ax = 0, az = 0;
     for (const c of chairs) { ax += c.item.x - s.x; az += c.item.z - s.z; }
-    const axis = chairs.length ? Math.atan2(ax, az) : 0;
-    return { ...s, radius: window.__camp.site?.radius ?? 5.8,
-      small: !!window.__camp.site?.small, axis,
+    return {
+      x: s.x, z: s.z, y: s.y, radius: s.radius, small: !!s.small,
+      axis: chairs.length ? Math.atan2(ax, az) : 0,
       vehAxis: Math.atan2(v.position.x - s.x, v.position.z - s.z),
       props: window.__camp.props.map((p) => ({
-      kind: p.item.kind, x: p.item.x, y: p.item.y, z: p.item.z, yaw: p.item.yaw })) };
+        kind: p.item.kind, x: p.item.x, y: p.item.y, z: p.item.z, yaw: p.item.yaw })),
+    };
   }, SEED);
 
   if (!site) {
@@ -302,6 +331,9 @@ async function main() {
       e.camera.position.set(v.position.x - Math.sin(a) * 9, v.position.y + 4.2, v.position.z - Math.cos(a) * 9);
       e.camera.lookAt(v.position.x + Math.sin(a) * 10, v.position.y - 1.4, v.position.z + Math.cos(a) * 10);
       window.__forceCamera = true;
+      // This capture IS of the placement UI, so it opts back in to the aim
+      // that `Camp._interact` suppresses for every other framing.
+      window.__campForceAim = true;
       camp.state = 'aiming';
       for (let i = 0; i < 40; i++) { camp.update(1 / 60, i / 60); await new Promise(requestAnimationFrame); }
       if (window.__settleStable) await window.__settleStable(400, 20);

@@ -468,9 +468,10 @@ export class Camp extends System {
         this.scope.leave();
       }
       this.scope.update(dt);
-      this.prompt.set(this.scope.closing ? ''
-        : 'drag to sweep the sky&nbsp; ·&nbsp; scroll to magnify' +
-          '&nbsp; ·&nbsp; <b>Esc</b> step back');
+      // The eyepiece draws its own prompt. It has to: the view raises
+      // `window.__forceCamera` so the HUD leaves the frame, and `CampPrompt`
+      // hides itself under that global along with the rest of the UI.
+      this.prompt.set('');
       return;
     }
 
@@ -487,6 +488,24 @@ export class Camp extends System {
         this._click = false;      // do not also read as a click on the camp
         this.scope.enter(scope.obj);
       }
+      return;
+    }
+
+    // ── the harness has the camera; do not aim with it ────────────────────
+    //
+    // Every capture tool poses the camera itself and sets `__forceCamera`, and
+    // `_aimAt` falls back to the camera's own forward ray when there is no
+    // usable pointer. So a harness that holds the park brake — which it now
+    // must, or it photographs a lighting condition no player ever sees — would
+    // silently publish a placement preview wherever it happened to be looking,
+    // and thin a disc of grass out of the middle of every frame.
+    //
+    // Same rule and same reason as the HUD hiding itself under a capture, and
+    // the same escape hatch: `__campForceAim` for the one capture that is OF
+    // the placement UI.
+    if (window.__forceCamera && !window.__campForceAim) {
+      clearCampAim();
+      this.prompt.set('');
       return;
     }
 
