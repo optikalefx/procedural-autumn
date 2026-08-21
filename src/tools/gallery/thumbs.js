@@ -136,8 +136,21 @@ export class Thumbs {
     const renderer = this.stage.renderer;
     const gl = renderer.domElement;
     const dpr = renderer.getPixelRatio();
-    const tw = Math.min(gl.width, Math.round(THUMB_W * Math.min(dpr, 2)));
-    const th = Math.min(gl.height, Math.round(THUMB_H * Math.min(dpr, 2)));
+
+    // CSS PIXELS IN, DEVICE PIXELS OUT, and mixing them up is a bug that hides
+    // completely on a dpr-1 display — which is what the capture harness runs at
+    // and what a Retina laptop does not. `setViewport` and `setScissor` take
+    // CSS pixels and multiply by the renderer's pixel ratio themselves, so
+    // passing device pixels rendered the thumbnail at twice the size of the
+    // rectangle then copied out of it: every card showed the bottom-left
+    // quarter of its object, which reads as the subject sitting in the corner.
+    // `cw/ch` are what the viewport is told; `dw/dh` are the device-pixel rect
+    // that lands on the canvas and therefore what drawImage must read.
+    const fit = Math.min(1, gl.width / dpr / THUMB_W, gl.height / dpr / THUMB_H);
+    const cw = Math.max(16, Math.floor(THUMB_W * fit));
+    const ch = Math.max(12, Math.floor(THUMB_H * fit));
+    const dw = Math.min(gl.width, Math.round(cw * dpr));
+    const dh = Math.min(gl.height, Math.round(ch * dpr));
 
     // Borrow the object. It goes straight back afterwards — the same instance
     // is what the stage shows on click, so nothing is built twice.
@@ -145,7 +158,7 @@ export class Thumbs {
     this.holder.add(built.root);
 
     const box = boundsOf(this.holder);
-    const f = framing(box, this.camera.fov, tw / th);
+    const f = framing(box, this.camera.fov, cw / ch);
     const { target } = f;
     const dist = f.dist * 1.16;
 
@@ -159,7 +172,7 @@ export class Thumbs {
       target.z + Math.cos(yaw) * cp * dist,
     );
     this.camera.lookAt(target);
-    this.camera.aspect = tw / th;
+    this.camera.aspect = cw / ch;
     this.camera.updateProjectionMatrix();
 
     this.key.position.copy(this.stage.key.position);
@@ -168,8 +181,8 @@ export class Thumbs {
 
     const prevScissor = renderer.getScissorTest();
     renderer.setScissorTest(true);
-    renderer.setViewport(0, 0, tw, th);
-    renderer.setScissor(0, 0, tw, th);
+    renderer.setViewport(0, 0, cw, ch);
+    renderer.setScissor(0, 0, cw, ch);
     renderer.render(this.scene, this.camera);
     renderer.setScissorTest(prevScissor);
     renderer.setViewport(0, 0, gl.width / dpr, gl.height / dpr);
@@ -180,7 +193,7 @@ export class Thumbs {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, THUMB_W, THUMB_H);
     try {
-      ctx.drawImage(gl, 0, gl.height - th, tw, th, 0, 0, THUMB_W, THUMB_H);
+      ctx.drawImage(gl, 0, gl.height - dh, dw, dh, 0, 0, THUMB_W, THUMB_H);
     } catch { /* context lost mid-draw; the card simply stays blank */ }
 
     this.holder.remove(built.root);

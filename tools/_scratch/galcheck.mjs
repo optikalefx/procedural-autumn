@@ -20,7 +20,11 @@ const PICK = arg('pick', null);
 const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist', '--enable-webgl'],
 });
-const page = await browser.newPage({ viewport: { width: 1600, height: 950 }, deviceScaleFactor: 1 });
+// deviceScaleFactor 2, deliberately. The thumbnail path mixes CSS and device
+// pixels and a dpr-1 harness cannot see the difference — see docs/STATE.md on
+// the last time a capture ran at a pixel ratio the player does not have.
+const DPR = parseInt(arg('dpr', '2'), 10);
+const page = await browser.newPage({ viewport: { width: 1600, height: 950 }, deviceScaleFactor: DPR });
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', (e) => errors.push(String(e)));

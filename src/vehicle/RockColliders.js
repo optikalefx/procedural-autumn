@@ -36,6 +36,20 @@
 //  forms are already convex-ish polytopes of 12–82 unique vertices (they are
 //  built by plane-clipping a box), so the hull is both cheap and honest: what
 //  you hit is the silhouette you were looking at.
+//
+//  What comes out the other end, driven at from 18 m on a clean lane
+//  (tools/_scratch/rockover.mjs), counting whether the camper finished on the
+//  far side of the rock:
+//
+//      protrudes 0.15–0.35 m    3 of 3 driven over
+//      protrudes 0.35–0.55 m    2 of 2 driven over
+//      protrudes 0.55–0.80 m    4 of 5 driven over
+//      protrudes 0.80–1.50 m    6 of 7 driven over
+//      protrudes 1.50 m +       5 of 8 driven over, 3 stopped dead
+//
+//  The crossover is a slope rather than a line, which is the honest answer: a
+//  metre-high boulder taken square is a climb and taken on the corner is a
+//  wall, and which one you got depends on your line. That is a driving game.
 // ─────────────────────────────────────────────────────────────────────────────
 import RAPIER from '@dimforge/rapier3d-compat';
 

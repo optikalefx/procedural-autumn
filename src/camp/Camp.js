@@ -43,6 +43,7 @@ import { buildTent } from './camp_tent.js';
 import { buildChair } from './camp_chair.js';
 import { buildCooler } from './camp_cooler.js';
 import { buildTable } from './camp_table.js';
+import { buildTelescope } from './camp_telescope.js';
 
 const STATE = { IDLE: 'idle', AIMING: 'aiming', RAISING: 'raising', PITCHED: 'pitched', STRIKING: 'striking' };
 
@@ -68,8 +69,8 @@ const AIM_FLOOR = 0.42;
 // distance. A 1.4 m feather on a 5.8 m clearing is a quarter of it; the same
 // 1.4 m on the compact camp's 4.2 m would be a third, so the small camp would
 // be almost all fringe and would never look like cleared ground at all.
-const CLEARING_FEATHER_K = 0.24;
-const featherFor = (r) => Math.max(0.55, r * CLEARING_FEATHER_K);
+const CLEARING_FEATHER_K = 0.20;
+const featherFor = (r) => clamp(r * CLEARING_FEATHER_K, 0.45, 1.25);
 
 // The fraction of the clearing radius that things actually stand on, and
 // therefore the fraction that has to be clear of trunks and boulders.
@@ -205,7 +206,8 @@ export class Camp extends System {
     warm.scale.setScalar(PREWARM_SCALE);
     scene.add(warm);
 
-    const builders = [buildTent, buildChair, buildCooler, buildTable, buildWoodpile];
+    const builders = [buildTent, buildChair, buildCooler, buildTable, buildWoodpile,
+                        (r) => buildTelescope(r, { variant: 'reflector' })];
     let fire = null;
     try {
       // Every colourway, because a colourway is a vertex-colour change and not
@@ -727,7 +729,7 @@ export class Camp extends System {
     if (!it) return;
     const BUILD = {
       tent: buildTent, chair: buildChair, cooler: buildCooler,
-      table: buildTable, woodpile: buildWoodpile,
+      table: buildTable, woodpile: buildWoodpile, telescope: buildTelescope,
     };
     const build = BUILD[it.kind];
     if (!build) { console.warn('[camp] no builder for', it.kind); return; }

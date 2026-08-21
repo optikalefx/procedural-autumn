@@ -375,13 +375,21 @@ function frond(b, o) {
   // after the final ring is never drawn. `lx/ly/lz` is the last ring itself,
   // i.e. the actual tip of the geometry.
   //
-  // Both are kept because the existing callers want the overshoot: `goldenrod`
-  // and `seedHead` stack a second frond on the first and rely on the gap to
-  // space the flower head off the stem. Anything that wants to sit ON the tip —
-  // a cattail head — must use `l*`, or it hangs a visibly detached mark in the
-  // air a whole segment above the plant. At `segs: 2` that overshoot is half
-  // the culm length, which on the tall reed measured 0.8 m of clear sky between
-  // the culm and its own seed head.
+  // Anything that sits ON the tip must use `l*`. `x/y/z` hangs it a whole
+  // segment above the plant, and the advance is exactly `step` long because
+  // the direction vector is unit — so the detachment is `len/segs` of clear
+  // air, every time, no matter how the frond is angled.
+  //
+  // The first pass at this fixed the cattail and left `flowerAster`,
+  // `goldenrod` and `seedHead` on `x/y/z`, on the theory that they wanted the
+  // overshoot to space the flower head off the stem. They did not. That theory
+  // was calibrated on the cattail's `segs: 2`, where the gap is half the culm —
+  // 0.8 m on the tall reed, and the reason the reed was fixed. All three
+  // flowers run at `segs: 1`, where the gap is the ENTIRE stem: an aster head
+  // is a 4-7 cm quad floating 17-58 cm above a stem of exactly that length,
+  // which is what the gallery shows — violet flecks in clear air with bare
+  // stems underneath. Deliberate spacing, if a form ever wants it, belongs in
+  // the caller as a fraction of `h`, not in the shape of this loop.
   return { x: px, y: py, z: pz, lx, ly, lz, yaw: o.yaw, ang };
 }
 
@@ -1177,10 +1185,10 @@ function buildFlowerAster(rng) {
       chanA: 0.0, chanB: 0.0, aoA: 0.5, aoB: 1.0, swayA: 0.3, trans: 0.8,
     });
     const hw = 0.020 + rng() * 0.014;
-    const c0 = b.vert(tip.x - hw, tip.y, tip.z - hw, 0, 1, 0, 1, 1, 1, 0.5);
-    const c1 = b.vert(tip.x + hw, tip.y, tip.z - hw, 0, 1, 0, 1, 1, 1, 0.5);
-    const c2 = b.vert(tip.x + hw, tip.y + hw * 0.5, tip.z + hw, 0, 1, 0, 1, 1, 1, 0.5);
-    const c3 = b.vert(tip.x - hw, tip.y + hw * 0.5, tip.z + hw, 0, 1, 0, 1, 1, 1, 0.5);
+    const c0 = b.vert(tip.lx - hw, tip.ly, tip.lz - hw, 0, 1, 0, 1, 1, 1, 0.5);
+    const c1 = b.vert(tip.lx + hw, tip.ly, tip.lz - hw, 0, 1, 0, 1, 1, 1, 0.5);
+    const c2 = b.vert(tip.lx + hw, tip.ly + hw * 0.5, tip.lz + hw, 0, 1, 0, 1, 1, 1, 0.5);
+    const c3 = b.vert(tip.lx - hw, tip.ly + hw * 0.5, tip.lz + hw, 0, 1, 0, 1, 1, 1, 0.5);
     b.quad(c3, c2, c1, c0);            // face up, to match the (0,1,0) normals
   }
   return b.finish(h);
@@ -1201,7 +1209,7 @@ function buildGoldenrod(rng) {
       chanA: 0.0, chanB: 0.1, aoA: 0.5, aoB: 0.95, swayA: 0.35, trans: 0.9,
     });
     frond(b, {
-      x: tip.x, y: tip.y, z: tip.z,
+      x: tip.lx, y: tip.ly, z: tip.lz,
       yaw: a + 0.4, tilt: 0.05 + rng() * 0.18, len: h * (0.24 + rng() * 0.16), w: 0.030,
       segs: 2, droop: 0.16, taper: 0.95,
       chanA: 0.6, chanB: 1.0, aoA: 0.9, aoB: 1.0, swayA: 0.8, trans: 1.0,
@@ -1225,7 +1233,7 @@ function buildSeedHead(rng) {
       chanA: 0.0, chanB: 0.2, aoA: 0.55, aoB: 1.0, swayA: 0.4, trans: 0.95,
     });
     frond(b, {
-      x: tip.x, y: tip.y, z: tip.z,
+      x: tip.lx, y: tip.ly, z: tip.lz,
       yaw: a, tilt: 0.20 + rng() * 0.35, len: h * 0.13, w: 0.019,
       segs: 1, droop: 0.30, taper: 0.85,
       chanA: 0.8, chanB: 1.0, aoA: 1.0, aoB: 1.0, swayA: 0.9, trans: 1.0,

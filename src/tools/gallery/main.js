@@ -208,6 +208,11 @@ function showStats(entry, built) {
   row('size', `${s.size.x.toFixed(2)} × ${s.size.y.toFixed(2)} × ${s.size.z.toFixed(2)} m`);
   row('height', `${s.size.y.toFixed(2)} m`);
   if (entry.seeded) row('seed', String(want(entry.id).seed));
+  if (entry.allOptions?.length) {
+    // Every option the builder reads, including the ones this page could not
+    // work out how to offer. A control nobody can render is still a fact.
+    row('options', entry.allOptions.map((o) => o.name + (o.kind === 'unknown' ? '?' : '')).join(', '));
+  }
   for (const n of built.notes ?? []) {
     const d = el('div', 'note', n);
     box.append(d);
@@ -223,13 +228,65 @@ function buildOptionBar(entry) {
 
   if (entry.colorways) {
     const sel = el('select');
-    for (let i = 0; i < entry.colorways.count; i++) sel.append(new Option(`Colourway ${i + 1}`, String(i)));
+    const labels = entry.colorways.labels;
+    for (let i = 0; i < entry.colorways.count; i++) {
+      sel.append(new Option(labels?.[i] ?? `Colourway ${i + 1}`, String(i)));
+    }
     sel.value = String(s.opts.colorway ?? 0);
     sel.addEventListener('change', () => {
       s.opts = { ...s.opts, colorway: +sel.value };
       select(entry.id);
     });
     bar.append(labelled(entry.colorways.key, sel));
+  }
+
+  // Options read out of the builder itself (see readOptions in registry.js).
+  // These are the axes the card did NOT expand over — flags and numbers — so
+  // every option a builder accepts is reachable from somewhere.
+  for (const o of entry.options ?? []) {
+    if (o.kind === 'bool') {
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = !!s.opts[o.name];
+      cb.addEventListener('change', () => {
+        s.opts = { ...s.opts, [o.name]: cb.checked };
+        select(entry.id);
+      });
+      bar.append(labelled(o.name, cb));
+    } else if (o.kind === 'number') {
+      // Range from the builder's own default: a 0..1 factor stays 0..1, and
+      // anything larger gets a band either side of what it ships with.
+      const unit = o.def <= 1;
+      const r = el('input');
+      r.type = 'range';
+      r.min = '0';
+      r.max = String(unit ? 1 : Math.max(2, Math.round(o.def * 2)));
+      r.step = unit ? '0.02' : '1';
+      r.value = String(s.opts[o.name] ?? o.def);
+      const read = el('span', 'val', r.value);
+      let timer = null;
+      r.addEventListener('input', () => {
+        read.textContent = r.value;
+        s.opts = { ...s.opts, [o.name]: +r.value };
+        clearTimeout(timer);
+        timer = setTimeout(() => select(entry.id), 140);   // rebuilds; don't do it per pixel
+      });
+      const w = labelled(o.name, r);
+      w.append(read);
+      bar.append(w);
+    } else if (o.kind === 'enum' || o.kind === 'index') {
+      const sel = el('select');
+      const values = o.kind === 'index'
+        ? o.labels.map((l, i) => [l, String(i)])
+        : o.values.map((v) => [v, v]);
+      for (const [label, value] of values) sel.append(new Option(label, value));
+      sel.value = String(s.opts[o.name] ?? values[0][1]);
+      sel.addEventListener('change', () => {
+        s.opts = { ...s.opts, [o.name]: o.kind === 'index' ? +sel.value : sel.value };
+        select(entry.id);
+      });
+      bar.append(labelled(o.name, sel));
+    }
   }
 
   if (entry.poses) {

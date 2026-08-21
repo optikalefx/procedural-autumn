@@ -89,6 +89,10 @@ const PROP = {
   cooler:   { az: 0.65, dist: 1.35, elev: 0.55, fov: 34, aim: 0.24 },
   table:    { az: 0.70, dist: 1.55, elev: 0.72, fov: 34, aim: 0.30 },
   woodpile: { az: 0.85, dist: 1.45, elev: 0.62, fov: 34, aim: 0.20 },
+  // Further out and higher than the other props, because this one is 1.4 m
+  // tall and its silhouette runs diagonally across the frame — framed as
+  // tightly as the cooler it loses the tube's angle, which is the whole prop.
+  telescope:{ az: 0.85, dist: 2.90, elev: 1.30, fov: 36, aim: 0.72 },
   fire:     { az: 0.60, dist: 1.90, elev: 0.75, fov: 36, aim: 0.30 },
 };
 

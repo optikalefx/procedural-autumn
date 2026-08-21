@@ -67,13 +67,20 @@ export const CAMP_RADIUS = 5.8;
 // metres wide — the same ground under a smaller footprint is fine, and a
 // backpacker's pitch on a hillside is a better picture than a refusal.
 //
-// 4.2 m is half the area of the full camp (4.2/5.8 squared = 0.52), which is
-// what "half-sized" means when you are looking at it from above. It is also the
-// smallest radius that actually holds the contents: the tent sits 2.4 m from
-// the fire and is 2.3 m long, so its far corner lands at 3.5 m against full
-// cover to 3.3 — its guy lines are in the fringe and nothing is standing in
-// grass. Anything smaller and the tent is pitched in the meadow again.
-export const CAMP_RADIUS_SMALL = 4.2;
+// 3.4 m, and it started at 4.2. The player, on seeing the first one pitched:
+// "you can go smaller on the compact camp site. It's probably a little too big
+// still for hillside camping." They were right — the capture shows an 8.4 m
+// disc with about 5 m of camp on it and a bare crescent of dirt doing nothing.
+//
+// 3.4 m is a third of the full camp's area and the floor set by its own
+// contents rather than by taste. The fire ring is 0.62 m, the tent is 2.3 m
+// long, and the two must not touch: the tent's centre can come no closer than
+// about 2.0 m, which puts its far corner at 3.15 m. The clearing's full cover
+// reaches 2.7 m, so the tent's BACK corner sits in the fringe with grass
+// against it — which is what a tent pitched on a hillside actually looks like,
+// and is the only part of the arithmetic that is a judgement rather than a
+// constraint. Going smaller starts putting the door in the grass instead.
+export const CAMP_RADIUS_SMALL = 3.4;
 
 /**
  * March the mouse ray against the heightfield.
@@ -141,58 +148,100 @@ export function scoreSite(world, x, z, opts = {}) {
   if (!Number.isFinite(x) || !Number.isFinite(z)) { out.reason = 'nowhere'; return out; }
   if (!world.isInBounds(x, z)) { out.reason = 'out of bounds'; return out; }
 
-  let minY = Infinity, maxY = -Infinity, slopeSum = 0, slopeMax = 0, wet = 0, n = 0;
+  // Sample the disc, and keep the offsets: the statistic that matters here is
+  // not the raw spread of heights, it is the spread AFTER the ground's own
+  // tilt has been taken out. See the note below.
+  const sxs = [], szs = [], hs = [];
+  let slopeSum = 0, slopeMax = 0, wet = 0, n = 0;
   for (const rr of [0, R * 0.55, R]) {
     const count = rr === 0 ? 1 : 16;
     for (let i = 0; i < count; i++) {
       const a = (i / count) * TAU;
-      const sx = x + Math.cos(a) * rr, sz = z + Math.sin(a) * rr;
-      const h = world.getHeight(sx, sz);
-      const s = world.getSlope(sx, sz);
+      const dx = Math.cos(a) * rr, dz = Math.sin(a) * rr;
+      const h = world.getHeight(x + dx, z + dz);
+      const sl = world.getSlope(x + dx, z + dz);
       if (!Number.isFinite(h)) { out.reason = 'nowhere'; return out; }
-      if (h < minY) minY = h;
-      if (h > maxY) maxY = h;
-      slopeSum += s; if (s > slopeMax) slopeMax = s;
-      if (world.getWaterDepth(sx, sz) > 0.02) wet++;
+      sxs.push(dx); szs.push(dz); hs.push(h);
+      slopeSum += sl; if (sl > slopeMax) slopeMax = sl;
+      if (world.getWaterDepth(x + dx, z + dz) > 0.02) wet++;
       n++;
     }
   }
   const slopeMean = slopeSum / n;
-  const relief = maxY - minY;
+
+  // ── the plane, and what is left over ──────────────────────────────────────
+  //
+  // Fit h = a*dx + b*dz + c by least squares, then measure the peak-to-peak of
+  // the residual. Because the samples are concentric rings the cross terms
+  // vanish and this is three sums, not a matrix solve.
+  //
+  // THIS IS THE FIX FOR "too uneven" ON A PERFECTLY SMOOTH HILLSIDE.
+  //
+  // The previous version tested raw peak-to-peak height across the disc, which
+  // on any slope is dominated by the tilt: a dead-smooth 20-degree hillside has
+  // 3.4 m of relief across 8.4 m and nothing uneven about it whatsoever. The
+  // player was told "no camp here — too uneven" while looking at a grassy
+  // ridge with no bumps on it at all, and they were right to disbelieve it.
+  //
+  // The two questions are genuinely different and now have genuinely different
+  // tests. `grade` is how tilted the ground is — you cannot sleep on a steep
+  // slope, and no amount of levelling fixes it. `bumpiness` is what is left
+  // after the tilt: a boulder-sized hump, a lip, a gully crossing the site —
+  // and that is what actually stops a tent going down, because it is what you
+  // cannot level a pad against.
+  let Sxx = 0, Szz = 0, Sxh = 0, Szh = 0, Sh = 0;
+  for (let i = 0; i < n; i++) {
+    Sxx += sxs[i] * sxs[i]; Szz += szs[i] * szs[i];
+    Sxh += sxs[i] * hs[i];  Szh += szs[i] * hs[i];
+    Sh += hs[i];
+  }
+  const pa = Sxx > 1e-6 ? Sxh / Sxx : 0;
+  const pb = Szz > 1e-6 ? Szh / Szz : 0;
+  const pc = Sh / n;
+  let rLo = Infinity, rHi = -Infinity, hLo = Infinity, hHi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const r = hs[i] - (pa * sxs[i] + pb * szs[i] + pc);
+    if (r < rLo) rLo = r;
+    if (r > rHi) rHi = r;
+    if (hs[i] < hLo) hLo = hs[i];
+    if (hs[i] > hHi) hHi = hs[i];
+  }
+  const grade = Math.hypot(pa, pb);      // rise over run of the best-fit plane
+  const bumpiness = rHi - rLo;           // metres of hump left after the tilt
+  const relief = hHi - hLo;              // kept for the score and for reporting
+
+  // Published BEFORE the tests, not after, so a refused site can still be
+  // measured. Setting them only on success is how the first sweep of this came
+  // back reporting nothing at all about the 86% it was rejecting — which is
+  // precisely the population whose distribution decides where the limits go.
+  out.grade = grade;
+  out.bumpiness = bumpiness;
+  out.relief = relief;
+  out.slope = slopeMean;
 
   // Water first: it is the only hard, obvious, unarguable no.
   if (wet > 0) { out.reason = 'in the water'; return out; }
 
-  // ── slope and relief ──────────────────────────────────────────────────────
+  // ── how steep, and how bumpy ──────────────────────────────────────────────
   //
-  // These limits are set from a sweep rather than from taste, for exactly the
+  // Both limits are set from a sweep rather than from taste, for exactly the
   // reason the rescue button's are (see RESCUE_SLOPE in Vehicle.js — a limit
   // chosen by feel declined from 57% of the ground where the button was most
   // needed and nobody noticed until someone counted).
   //
-  // `tools/_scratch/campdiag.mjs` samples the whole annulus the player may aim
-  // into, from five parking places. Measured, p10/p50/p90 of the disc:
+  // `maxGrade` comes from the caller because it is the one number that should
+  // differ between a full camp and a compact one: a whole furnished camp wants
+  // ground you could put a table on, and one tent and a chair does not. A
+  // backpacker pitches on ground a dinner party would not.
   //
-  //            slopeMean          slopeMax           relief (m over 12.8 m)
-  //   meadow   0.03/0.03/0.04     0.04/0.05/0.05     0.42/0.65/0.83
-  //   river    0.03/0.09/0.12     0.05/0.12/0.17     0.46/1.16/1.63
-  //   forest   0.17/0.32/0.45     0.36/0.59/0.69     1.99/4.03/6.16
-  //   vista    0.45/0.94/1.59     0.69/1.44/1.92     4.78/10.53/20.42
-  //   road     0.76/1.11/2.00     1.12/2.00/2.29     7.81/13.87/26.50
-  //
-  // The first pass used slopeMax > 0.62 and relief > 1.55 and rejected 100% of
-  // the ground near the road and the vista — which is CORRECT, those are a
-  // mountain road cut and a ridge lookout and you cannot pitch a tent on
-  // either — but it also threw away 19% of the river bank, which is flat
-  // ground at a 9% grade and is one of the nicest places in the valley to
-  // camp. The limits below keep the road and the vista out and let the bank in.
-  //
-  // slopeMax alone is not enough: it is a max over 33 samples of a bilinear
-  // field, so one texel of noise on otherwise flat ground can trip it. Both
-  // statistics have to agree that the ground is bad.
-  if (slopeMean > 0.42 && slopeMax > 1.10) { out.reason = 'too steep'; return out; }
+  // `slopeMax` survives as a separate guard on the sampled gradient field,
+  // because the plane fit is a smooth average and cannot see a single cliff
+  // edge clipping the rim of the disc.
+  const maxGrade = opts.maxGrade ?? MAX_GRADE_FULL;
+  if (grade > maxGrade) { out.reason = 'too steep'; return out; }
   if (slopeMax > 1.55) { out.reason = 'too steep'; return out; }
-  if (relief > 2.1) { out.reason = 'too uneven'; return out; }
+  const maxBump = opts.maxBump ?? MAX_BUMP_FULL;
+  if (bumpiness > maxBump) { out.reason = 'too uneven'; return out; }
 
   // Anything solid standing in the middle of the site. Trees are the real case
   // — a tent inside a trunk is the single worst thing this feature could ship —
@@ -203,13 +252,13 @@ export function scoreSite(world, x, z, opts = {}) {
   out.ok = true;
   // Flat, level and dry scores 1. The score decays over the acceptable band
   // rather than at its edge, so the reticle firms up as the player finds the
-  // nice spot instead of switching from bad to good at a threshold.
+  // nice spot instead of switching from bad to good at a threshold. It is
+  // scored on the same two things it is judged on, so a site that only just
+  // passes visibly only just passes.
   out.score = clamp01(
-    (1 - smoothstep(0.10, 0.55, slopeMean)) * 0.55 +
-    (1 - smoothstep(0.25, 1.35, relief)) * 0.45
+    (1 - smoothstep(0.02, maxGrade, grade)) * 0.60 +
+    (1 - smoothstep(0.10, maxBump, bumpiness)) * 0.40
   );
-  out.slope = slopeMean;
-  out.relief = relief;
   return out;
 }
 
@@ -227,13 +276,48 @@ export function scoreSite(world, x, z, opts = {}) {
  * the place rather than of the disc, so a site that fails on those is not
  * retried; there is no smaller camp that is less in a lake.
  */
+// ── the two limits, read off a sweep of the valley ───────────────────────────
+//
+// `grade` is rise over run of the best-fit plane through the site; `bump` is
+// what is left after that plane is subtracted. They are different questions and
+// they get different numbers (see the long note in `scoreSite`).
+//
+// tools/_scratch/campsmall.mjs, 774 dry samples, measured on the 4.2 m disc.
+// Deciles of the whole dry population:
+//
+//   grade   0.11 0.16 0.20 0.26 0.33 0.45 0.77 1.10 1.52
+//   bump    0.44 0.57 0.67 0.76 0.89 1.04 1.22 1.52 2.37
+//
+// The median of this valley is a 0.33 grade, which is simply what a mountain
+// valley is — most of it is mountainside, and most of it should refuse.
+//
+// A full camp wants ground you could stand a table on. One tent and a chair
+// does not: a backpacker pitches on ground a dinner party would not, and 0.42
+// is about 23 degrees. That is a stretch to sleep on in life and exactly right
+// for a game with no fail state whose whole proposition is stopping wherever
+// you like.
+//
+// The bump limits are the part that had to be measured rather than guessed. The
+// first pass used 0.62 for both, which is around the 25th percentile — it cut
+// straight through the middle of the distribution and refused 295 of 774
+// samples as "too uneven", taking the full camp down to 1.4% of the valley.
+export const MAX_GRADE_FULL = 0.22;
+export const MAX_GRADE_SMALL = 0.42;
+export const MAX_BUMP_FULL = 0.80;
+export const MAX_BUMP_SMALL = 0.95;
+
 export function bestSite(world, x, z, opts = {}) {
-  const full = scoreSite(world, x, z, { ...opts, radius: CAMP_RADIUS });
+  const full = scoreSite(world, x, z, {
+    ...opts, radius: CAMP_RADIUS, maxGrade: MAX_GRADE_FULL, maxBump: MAX_BUMP_FULL,
+  });
   if (full.ok) { full.radius = CAMP_RADIUS; full.small = false; return full; }
   if (full.reason === 'in the water' || full.reason === 'out of bounds' ||
       full.reason === 'nowhere' || full.reason === 'too close') { full.radius = CAMP_RADIUS; full.small = false; return full; }
 
-  const small = scoreSite(world, x, z, { ...opts, radius: CAMP_RADIUS_SMALL });
+  const small = scoreSite(world, x, z, {
+    ...opts, radius: CAMP_RADIUS_SMALL,
+    maxGrade: MAX_GRADE_SMALL, maxBump: MAX_BUMP_SMALL,
+  });
   small.radius = CAMP_RADIUS_SMALL;
   small.small = true;
   if (!small.ok) return small;
@@ -402,16 +486,14 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   {
     const side = rnd() < 0.5 ? 1 : -1;
     const a = seatCentre + side * lerp(1.75, 2.45, rnd());
-    // 0.62 R on a full camp; 0.50 on a compact one.
+    // 0.62 R on a full camp; 0.60 on a compact one, which is 2.04 m.
     //
     // The tent does not scale with the clearing — it is the same 2.3 m tent —
-    // so the fraction has to shrink faster than the radius does or its far
-    // corner walks out past the dirt. At 0.57 R it did exactly that and the
-    // first compact capture came back with the tent's foot in the meadow, the
-    // same defect the full camp had at 5.2 m. 0.50 R is 2.1 m, putting the far
-    // corner at 3.25 m against full cover to 3.2 — and 2.1 m from a fire is
-    // still further than most people pitch.
-    tryPlace('tent', a, R * (small ? 0.50 : 0.62), 1.45, (x, z, ang) => ({
+    // so on the compact camp the fraction is pinned from BELOW rather than
+    // above: 2.04 m is the fire ring's 0.62 plus the tent's 1.15 half-length
+    // plus a hand's width, and any closer is a tent touching a fire. The
+    // clearing is sized around that number rather than the other way round.
+    tryPlace('tent', a, R * (small ? 0.60 : 0.62), 1.45, (x, z, ang) => ({
       kind: 'tent', x, z, y: world.getHeight(x, z),
       // The door turns toward the fire, then backs off 15–35 degrees. Facing a
       // tent door dead at the fire is what a level editor does; a real one is
@@ -443,7 +525,10 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       const a = seatCentre + (frac - 0.5) * span + (rnd() - 0.5) * 0.22;
       // Same argument as the tent: a chair is 0.55 m wide whatever the
       // clearing is, so a compact camp seats it proportionally closer in.
-      const r = R * (small ? lerp(0.26, 0.32, rnd()) : lerp(0.30, 0.38, rnd()));
+      // 0.34–0.42 of 3.4 m is 1.16–1.43 m from the fire, which is close enough
+      // to put your boots near it — the right distance for one chair and a
+      // small fire on a hillside.
+      const r = R * (small ? lerp(0.34, 0.42, rnd()) : lerp(0.30, 0.38, rnd()));
       // A chair may drift 0.28 rad — sixteen degrees — and no further. Beyond
       // that it has left the group it belongs to.
       tryPlace('chair', a, r, 0.42, (x, z) => ({
@@ -508,36 +593,122 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
     }), { swing: 0.40 });
   }
 
+  // ── the telescope ──────────────────────────────────────────────────────────
+  //
+  // Uncommon on purpose. This is the one object in the camp that is somebody's
+  // hobby rather than their kit, and the whole value of it is that a player who
+  // has pitched twenty camps still gets a small jolt from the twenty-first. One
+  // camp in five, on a full pitch and on a compact one alike.
+  //
+  // Where it goes is the more interesting decision. A telescope does not belong
+  // in the seating arc, because the fire is the one thing that ruins night
+  // vision — real observers set up well away from it and behind the seats. So
+  // it is placed on the flank *behind* the chairs, at 0.62-0.72 R, near the lip
+  // of the clearing where the sky opens up. `Camp.js` yaws every prop's +Z at
+  // the fire, and this prop is authored with +Z as the eyepiece side, so that
+  // rule leaves it aimed out of the camp at the dark — which is both correct
+  // and the better picture: a bright tube raking up and away out of the frame.
+  //
+  // The compact camp gets one too, at half the rate. A 4.2 m hillside pitch
+  // will not take the 1.4 m equatorial rig — it would stand taller than the
+  // tent and eat a third of the clearing — so a small camp always gets the
+  // little refractor, and a full camp rolls between the two. That is also the
+  // only way both plates are ever reachable in play.
+  {
+    const chance = 0.20;
+    if (rnd() < chance) {
+      const variant = small ? 'refractor' : (rnd() < 0.55 ? 'reflector' : 'refractor');
+      const big = variant === 'reflector';
+      const flank = rnd() < 0.5 ? 1 : -1;
+      // Behind the seats and off to one side: a quarter turn or more past the
+      // last chair, which puts it outside the group without putting it across
+      // the fire from it.
+      const a = seatCentre + flank * lerp(1.45, 2.05, rnd());
+      // Inside the bare ground, and that bound is arithmetic rather than taste.
+      // `camp_clearing.js` feathers the dirt over `0.20 R`, and the edge wobble
+      // takes the disc in to `0.77 R` on its worst bearing, so ground that is
+      // fully bare on EVERY bearing ends at `0.57 R` — about 3.3 m on a full
+      // camp. The first build placed the scope at 0.62-0.74 R and the capture
+      // came back with a 1.5 m instrument standing in half-metre meadow grass
+      // with its tripod feet invisible. A telescope is the thinnest-legged
+      // thing in the set and it is the one that can least afford that.
+      tryPlace('telescope', a, R * (small ? lerp(0.48, 0.58, rnd()) : lerp(0.50, 0.60, rnd())),
+        big ? 0.52 : 0.36, (x, z) => ({
+          kind: 'telescope', x, z, y: world.getHeight(x, z),
+          // The tube swings off the fire bearing by up to 40 degrees. Every
+          // telescope in every camp aiming at exactly the same bearing is the
+          // Stonehenge problem the chairs already solved.
+          yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 1.4,
+          // A tripod is the one thing in a camp somebody deliberately levelled,
+          // so it takes very little of the ground normal. Not zero: at zero it
+          // reads as pasted onto a slope, and a hand-levelled tripod on rough
+          // ground is still a couple of degrees out.
+          tilt: 0.22,
+          opts: { variant, wear: rnd() },
+        }), { swing: 0.75 });
+    }
+  }
+
   // ── firewood ───────────────────────────────────────────────────────────────
   // A stack of split logs, downwind-ish of the fire and well back from it.
   // Small, but it is the prop that says somebody is *staying*.
   if (!small || rnd() < 0.55) {
     const a = downwind + (rnd() - 0.5) * 1.1;
-    tryPlace('woodpile', a, R * lerp(0.42, 0.52, rnd()), 0.44, (x, z) => ({
+    // 0.50 rather than 0.44: the stack is 0.46 wide and the piece lying beside
+    // it reaches past that, and the builder now measures and publishes the real
+    // figure rather than asserting one.
+    tryPlace('woodpile', a, R * lerp(0.42, 0.52, rnd()), 0.50, (x, z) => ({
       kind: 'woodpile', x, z, y: world.getHeight(x, z),
       // `logs` is the number of pieces on the stack, and it is now read: the
-      // builder used to ignore it and always lay 9-12, so this range keeps the
-      // mass the layout was tuned against while letting camps differ. Three to
-      // a row and a split piece only half as tall as it is wide, so this is
-      // four to six courses — knee-high at most, which is what a camp keeps.
-      yaw: rnd() * TAU, tilt: 1.0, opts: { logs: 12 + Math.floor(rnd() * 6), wear: rnd() },
+      // builder used to ignore it and always laid 9-12, so this range keeps the
+      // mass the layout was tuned against while letting camps differ. Pieces
+      // are quarters, halves and whole rounds of varying size and the builder
+      // packs courses by measured width, so this comes out three or four
+      // courses — shin-high, which is what a camp keeps by a fire.
+      yaw: rnd() * TAU, tilt: 1.0, opts: { logs: 12 + Math.floor(rnd() * 4), wear: rnd() },
     }), { swing: 0.85 });
   }
 
   return out;
 }
 
-/** Peak-to-peak height across a prop's footprint. */
+/**
+ * How BUMPY the ground under a prop's footprint is, with the local tilt taken
+ * out — the same distinction `scoreSite` draws, one level down, and it was
+ * wrong here for exactly as long.
+ *
+ * This used to return raw peak-to-peak height, and on a slope that is dominated
+ * by the tilt: a 1.45 m tent footprint on a smooth 15-degree hillside has
+ * 0.77 m of raw spread and nothing wrong with it at all. So on any sloping site
+ * every prop failed its placement test, the tent fell through to `insist` and
+ * swept off to an arbitrary bearing, and the chair and the woodpile were never
+ * placed at all. The first hillside capture came back with a camp consisting of
+ * one tent, sitting on its own.
+ *
+ * A prop stands on three or four feet and can bridge a tilt; what it cannot do
+ * is bridge a hump. So: fit the plane, return what is left.
+ */
 function footprintRelief(world, x, z, r) {
-  let lo = Infinity, hi = -Infinity;
+  const c = world.getHeight(x, z);
+  let Sxx = 0, Szz = 0, Sxh = 0, Szh = 0, Sh = c, n = 1;
+  const dxs = [0], dzs = [0], hs = [c];
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * TAU;
-    const h = world.getHeight(x + Math.cos(a) * r, z + Math.sin(a) * r);
-    if (h < lo) lo = h;
-    if (h > hi) hi = h;
+    const dx = Math.cos(a) * r, dz = Math.sin(a) * r;
+    const h = world.getHeight(x + dx, z + dz);
+    dxs.push(dx); dzs.push(dz); hs.push(h);
+    Sxx += dx * dx; Szz += dz * dz; Sxh += dx * h; Szh += dz * h; Sh += h; n++;
   }
-  const c = world.getHeight(x, z);
-  return Math.max(hi, c) - Math.min(lo, c);
+  const pa = Sxx > 1e-6 ? Sxh / Sxx : 0;
+  const pb = Szz > 1e-6 ? Szh / Szz : 0;
+  const pc = Sh / n;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const res = hs[i] - (pa * dxs[i] + pb * dzs[i] + pc);
+    if (res < lo) lo = res;
+    if (res > hi) hi = res;
+  }
+  return hi - lo;
 }
 
 /**

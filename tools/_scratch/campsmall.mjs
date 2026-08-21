@@ -26,6 +26,7 @@ await page.waitForFunction(() => window.__ready === true, null, { timeout: 24000
 const r = await page.evaluate(() => {
   const S = window.__campSiteMod, W = window.__world;
   const g = { full: [], compact: [], refused: [] };
+  const all = [];
   const reasons = {};
   let n = 0, wet = 0;
   const STEP = 37;
@@ -35,6 +36,10 @@ const r = await page.evaluate(() => {
       // No blocked() here: trees and rocks are a separate question and would
       // just add noise to a measurement about slope.
       const s = S.bestSite(W, x, z, {});
+      // Measure at the COMPACT footprint for every sample, pass or fail, so
+      // all three groups are described on the same disc and the thresholds can
+      // be read off one distribution.
+      const m = S.scoreSite(W, x, z, { radius: 4.2, maxGrade: 99, maxBump: 99 });
       if (s.reason === 'in the water') { wet++; continue; }
       n++;
       // Statistics of the FULL disc, so the three groups are described on the
@@ -50,7 +55,9 @@ const r = await page.evaluate(() => {
           ssum += sl; cnt++;
         }
       }
-      const rec = { slope: ssum / cnt, relief: hi - lo };
+      const rec = { slope: ssum / cnt, relief: hi - lo,
+                    grade: m.grade ?? -1, bump: m.bumpiness ?? -1 };
+      all.push(rec);
       if (s.ok && !s.small) g.full.push(rec);
       else if (s.ok) g.compact.push(rec);
       else { g.refused.push(rec); reasons[s.reason] = (reasons[s.reason] ?? 0) + 1; }
@@ -60,15 +67,23 @@ const r = await page.evaluate(() => {
   const st = (arr, k) => arr.length ? [q(arr.map((o) => o[k]), 0.1), q(arr.map((o) => o[k]), 0.5), q(arr.map((o) => o[k]), 0.9)] : null;
   return {
     n, wet,
-    full: { pct: +(100 * g.full.length / n).toFixed(1), slope: st(g.full, 'slope'), relief: st(g.full, 'relief') },
-    compact: { pct: +(100 * g.compact.length / n).toFixed(1), slope: st(g.compact, 'slope'), relief: st(g.compact, 'relief') },
-    refused: { pct: +(100 * g.refused.length / n).toFixed(1), slope: st(g.refused, 'slope'), relief: st(g.refused, 'relief'), reasons },
+    allGrade: st(all, 'grade'), allBump: st(all, 'bump'),
+    // Deciles of the whole dry population, which is what a threshold should be
+    // chosen against.
+    gradeDeciles: [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9].map((d) => q(all.map((o) => o.grade), d)),
+    bumpDeciles:  [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9].map((d) => q(all.map((o) => o.bump), d)),
+    full: { pct: +(100 * g.full.length / n).toFixed(1), grade: st(g.full, 'grade'), bump: st(g.full, 'bump'), relief: st(g.full, 'relief') },
+    compact: { pct: +(100 * g.compact.length / n).toFixed(1), grade: st(g.compact, 'grade'), bump: st(g.compact, 'bump'), relief: st(g.compact, 'relief') },
+    refused: { pct: +(100 * g.refused.length / n).toFixed(1), grade: st(g.refused, 'grade'), bump: st(g.refused, 'bump'), relief: st(g.refused, 'relief'), reasons },
   };
 });
 console.log(`${r.n} dry samples across the valley (${r.wet} in water, skipped)\n`);
 for (const k of ['full', 'compact', 'refused']) {
   const o = r[k];
-  console.log(`${k.padEnd(8)} ${String(o.pct).padStart(5)}%   slopeMean p10/50/90 ${o.slope}   relief ${o.relief}`);
+  console.log(`${k.padEnd(8)} ${String(o.pct).padStart(5)}%   grade p10/50/90 ${o.grade}   bumpiness ${o.bump}   relief ${o.relief}`);
 }
 console.log('\nrefusal reasons:', JSON.stringify(r.refused.reasons));
+console.log('\nwhole dry population, measured on the 4.2 m disc:');
+console.log('  grade     deciles', JSON.stringify(r.gradeDeciles));
+console.log('  bumpiness deciles', JSON.stringify(r.bumpDeciles));
 await browser.close();

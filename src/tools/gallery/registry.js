@@ -773,14 +773,138 @@ function probeBuilder(fn) {
 /**
  * The other convention: a module that exports `THING_COLORWAYS` beside
  * `buildThing` is telling us its colourways are enumerable, so they become
- * variants without anyone listing them here.
+ * variants without anyone listing them here. Where the table's entries carry a
+ * `name` — TENT_COLORWAYS does — the card gets it.
  */
 function colorwaysFor(mod, builderName) {
   const stem = builderName.replace(/^build/, '').toUpperCase();
   const key = `${stem}_COLORWAYS`;
   const arr = mod[key];
   if (!Array.isArray(arr) || !arr.length) return null;
-  return { key, count: arr.length };
+  return {
+    key,
+    count: arr.length,
+    labels: arr.map((c, i) => c?.name ?? `colourway ${i + 1}`),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Reading a builder's options out of the builder
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A chair is not one object. It is four colourways times two frame styles, and
+// a cooler is three colourways times two chest sizes with the lid open or shut.
+// The first version of this page showed one card per builder and hid all of
+// that behind a single dropdown, which is how a gallery of 125 objects managed
+// to under-report the camp by two thirds.
+//
+// The options cannot come from a list kept here — that list is the thing that
+// goes stale. They come from the builder's own source. `fn.toString()` on a
+// module Vite is serving in dev is the real text of the function, and every
+// builder in this project reads its options the same handful of ways:
+//
+//     opts.style === 'arm' || opts.style === 'sling'   -> an enum of two
+//     opts.colorway ?? 0                               -> an index into a table
+//     opts.size !== undefined ? !!opts.size            -> a flag
+//     if (opts.dressed)                                -> a flag
+//     clamp01(opts.wear ?? 0.4)                        -> a number, default 0.4
+//     Math.round(opts.logs ?? 11)                      -> a number, default 11
+//
+// so each one is recognised by the shape of its read. Anything that matches
+// nothing is still reported, as `unknown`, and shown on the object's info panel
+// — a control nobody can offer is at least a fact somebody can act on.
+//
+// This is a dev page and that matters here: a production build would have
+// minified the identifiers this reads. It never runs there.
+
+const OPTION_IGNORE = new Set(['light', 'order', 'name', 'prewarm']);
+
+function readOptions(fn, mod, builderName) {
+  let src = '';
+  try { src = fn.toString(); } catch { return []; }
+
+  const names = new Set([...src.matchAll(/\bopts\.([A-Za-z_]\w*)/g)].map((m) => m[1]));
+  const out = [];
+
+  for (const name of names) {
+    if (OPTION_IGNORE.has(name)) continue;
+    const esc = name.replace(/[^\w]/g, '');
+
+    // An index into a colourway table, named by the module's own export.
+    if (/^colou?rway$/i.test(name)) {
+      const cw = colorwaysFor(mod, builderName);
+      if (cw) { out.push({ name, kind: 'index', count: cw.count, labels: cw.labels, key: cw.key }); continue; }
+    }
+
+    // An enum: compared against string literals, either way round.
+    const lits = new Set();
+    for (const m of src.matchAll(new RegExp(`opts\\.${esc}\\s*[!=]==\\s*'([^']*)'`, 'g'))) lits.add(m[1]);
+    for (const m of src.matchAll(new RegExp(`'([^']*)'\\s*[!=]==\\s*opts\\.${esc}\\b`, 'g'))) lits.add(m[1]);
+    if (lits.size >= 2) { out.push({ name, kind: 'enum', values: [...lits] }); continue; }
+
+    // A number, if it has a numeric default. Checked before the flag test:
+    // `opts.wear ?? 0.4` also reads as truthy-tested and is not a flag.
+    const num = src.match(new RegExp(`opts\\.${esc}\\s*\\?\\?\\s*(-?[\\d.]+)`));
+    if (num) { out.push({ name, kind: 'number', def: parseFloat(num[1]) }); continue; }
+
+    // A flag: coerced, ternary-tested or used as a bare condition.
+    if (new RegExp(`!!\\s*opts\\.${esc}\\b`).test(src)
+      || new RegExp(`opts\\.${esc}\\s*\\?[^?]`).test(src)
+      || new RegExp(`\\(\\s*opts\\.${esc}\\s*\\)`).test(src)) {
+      out.push({ name, kind: 'bool' });
+      continue;
+    }
+
+    out.push({ name, kind: 'unknown' });
+  }
+
+  // Colourway first, then the enums, then flags, then numbers: the order the
+  // card expansion consumes them in, and the order they read in a control bar.
+  const rank = { index: 0, enum: 1, bool: 2, number: 3, unknown: 4 };
+  out.sort((a, b) => rank[a.kind] - rank[b.kind] || a.name.localeCompare(b.name));
+  return out;
+}
+
+/**
+ * How many cards one builder is allowed to occupy.
+ *
+ * Expansion is over the AUTHORED variant tables only — colourways and string
+ * enums — because those are the axes where each value is a deliberate, visually
+ * distinct thing somebody drew. Flags and numbers stay as controls on the
+ * stage: `lidOpen` and `wear` are states of one object, not two objects, and
+ * putting them on cards would quadruple the sidebar to say so.
+ */
+const CARD_CAP = 8;
+
+function expansionAxes(options) {
+  const axes = [];
+  let product = 1;
+  for (const o of options) {
+    if (o.kind !== 'index' && o.kind !== 'enum') continue;
+    const n = o.kind === 'index' ? o.count : o.values.length;
+    if (product * n > CARD_CAP) continue;
+    axes.push(o);
+    product *= n;
+  }
+  return axes;
+}
+
+/** Cartesian product of the expansion axes -> [{ opts, label }]. */
+function variantsOf(axes) {
+  let rows = [{ opts: {}, parts: [] }];
+  for (const a of axes) {
+    const next = [];
+    const values = a.kind === 'index'
+      ? a.labels.map((label, i) => ({ value: i, label }))
+      : a.values.map((v) => ({ value: v, label: v }));
+    for (const row of rows) {
+      for (const v of values) {
+        next.push({ opts: { ...row.opts, [a.name]: v.value }, parts: [...row.parts, v.label] });
+      }
+    }
+    rows = next;
+  }
+  return rows;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -835,22 +959,35 @@ export function discover() {
       if (isBuilder) {
         const probe = probeBuilder(value);
         if (!probe.ok) { notShown.push({ file: path, name, why: probe.why }); continue; }
-        const cw = colorwaysFor(mod, name);
-        entries.push({
-          id: `prop:${fileOf(path)}:${name}`,
-          label: labelFromBuilder(name),
-          sub: fileOf(path).replace(/\.js$/, ''),
-          group: groupOf(path),
-          family: `${groupOf(path)} props`,
-          file: path,
-          call: `${name}(rnd, {})`,
-          seeded: true,
-          colorways: cw,
-          async build(seed, opts = {}) {
-            const o = value(mulberry32(seed >>> 0), opts);
-            return { root: o, notes: describeUserData(o) };
-          },
-        });
+
+        // One card per authored variant, not one per builder. See readOptions.
+        const options = readOptions(value, mod, name);
+        const axes = expansionAxes(options);
+        const rest = options.filter((o) => !axes.includes(o));
+        const rows = variantsOf(axes);
+
+        for (const row of rows) {
+          const suffix = row.parts.join(' · ');
+          entries.push({
+            id: `prop:${fileOf(path)}:${name}${suffix ? `:${row.parts.join('-')}` : ''}`,
+            label: labelFromBuilder(name),
+            sub: suffix || fileOf(path).replace(/\.js$/, ''),
+            group: groupOf(path),
+            family: `${groupOf(path)} props`,
+            file: path,
+            call: `${name}(rnd, ${JSON.stringify(row.opts)})`,
+            seeded: true,
+            // The axes this card already stands for are fixed; everything else
+            // the builder accepts becomes a live control on the stage.
+            fixed: row.opts,
+            options: rest,
+            allOptions: options,
+            async build(seed, opts = {}) {
+              const o = value(mulberry32(seed >>> 0), { ...row.opts, ...opts });
+              return { root: o, notes: describeUserData(o) };
+            },
+          });
+        }
       } else if (isClassish && value.prototype) {
         // Systems and helpers. Not an error — but naming them is how somebody
         // notices that, say, `Birds` has no gallery entry.
