@@ -65,13 +65,22 @@ The pattern is the same each time: **a well-measured number attached to the
 wrong object.** None of these was a bad measurement. They were internally
 consistent, repeatable, and about something other than what the reader thought.
 
-Two habits that catch it:
+Three habits that catch it:
 
 - **Make the instrument obey the same rules as the thing it measures.** A test
   that skips the game's own validity checks is testing a different game.
 - **Assert loudly when a system is dead.** A disabled system measures
   beautifully. Any harness that reports a performance figure should also
   assert that the thing it is timing is still enabled and still has state.
+- **When a new measurement disagrees with an old one by more than it plausibly
+  could, do not average them — one of them is measuring something else.** This
+  is the one that actually resolved the telescope. Two instruments had agreed
+  that the prop was too bright; a third, built to mask the prop's own pixels,
+  disagreed by a factor too large to split the difference. Believing the third
+  over two rounds of work already committed to the first two is what found the
+  headlights. The temptation in that moment is to assume the new tool is
+  miscalibrated and meet the old numbers halfway, and halfway would have been a
+  darker telescope and a beam still blowing out the meadow.
 
 ## Checks that cannot rationalise
 

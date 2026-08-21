@@ -48,7 +48,13 @@ annulus a player can aim into).
 
 1. **The dirt out-values the grass in daylight.** It reads brighter than the
    sunlit meadow around it, which pulls the eye off the fire — the exact
-   inversion the brief forbids.
+   inversion the brief forbids. It is also the thing that will hurt the
+   telescope most once that prop is right: a pale instrument standing on a
+   clearing brighter than the meadow has nowhere left to be the light thing.
+   Whoever takes it: `shots/camp/scope/r13/reflector-camp.png` has a
+   known-neutral object standing on the dirt, and the magenta-mask instrument
+   (`tools/_scratch/scopevalue.mjs`) will give you that prop's exact pixels to
+   measure the dirt against — a reference rather than an eyeball.
 2. **`dprtest --gate` has never run with a camp pitched.** It queued behind six
    authors' captures all round and the figure was never taken.
 3. **The fire is small at midday.** It reads at dusk and at night, where it is
