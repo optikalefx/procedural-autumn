@@ -1,3 +1,72 @@
+# State — 2026-08-21, the camp round
+
+Park, hold the brake, pick a patch of ground near the camper, and a camp
+appears on it: a fire at the centre, one tent, chairs facing the flame, a
+cooler, a table, a woodpile, sometimes a telescope. The ground under it is
+scuffed to bare dirt. `src/camp/`, thirteen modules, plus a `Camp` system in
+`main.js` between `vehicle` and `cameraRig`.
+
+## What shipped
+
+| | |
+|---|---|
+| placement | park brake latched -> reticle on the ground, click to build, `E` to pack up. Point at open ground to make a camp, point at a camp to strike it. |
+| sizes | full camp on flat ground; a **compact** camp (tent, fire, one chair) at 3.4 m on slopes a full one will not take |
+| how many | up to **four** at once, separated by the sum of their radii plus 3 m. The fifth strikes the furthest. |
+| the clearing | a shader fact, not a re-scatter: an array of vec4s the grass and cover read, with an irregular edge shared by the shader, the dirt mesh and the reticle |
+| camera | walks to the fire when a camp is made; click the car to come back; any throttle takes it back |
+| audio | a fire bed plus crackles in clusters, on its own metering tap |
+
+## The numbers that decided things
+
+Every limit in `camp_site.js` came off a sweep, not off taste
+(`tools/_scratch/campsmall.mjs`, 774 dry samples; `campdiag.mjs` for the
+annulus a player can aim into).
+
+- **Buildable ground.** The first tree rule refused 74% of a dead-flat meadow
+  whose median was ONE trunk within five metres. Only the fire's own 2.3 m has
+  to be empty now; everything else is handed to the layout as an obstacle and
+  walked around. Meadow 25.9% -> 76.9%.
+- **Tilt is not bumpiness.** Both tests measured raw peak-to-peak height, which
+  on any slope is dominated by the tilt — a smooth 20-degree hillside has 3.4 m
+  of relief and nothing uneven about it. `scoreSite` fits a plane and asks the
+  two questions separately. The same bug was one level down in
+  `footprintRelief`, where it left camps consisting of one tent, alone.
+- **Perf.** Pitching a camp froze the game for 986 ms. It is 29 ms and **zero**
+  new shader programs now. Three causes: the fire's point light was the first
+  in the scene (NUM_POINT_LIGHTS 0 -> 1 relinks every lit material in the
+  valley); the camp's own materials compiled on first draw; and 160 ms of
+  geometry in one frame. The light lives from boot at zero intensity, the pool
+  of four fires and dirt meshes is built under the loading screen, and props
+  build one per frame.
+- **Headlights.** Two spots at intensity 190 reaching 68 m, and a camp stands
+  8-18 m in front of the camper. Latching the park brake dips them to 6%.
+  Measured on the telescope: 16.8% of its pixels clipped -> 0.00%, against a
+  flame peaking at 0.85.
+
+## Open, and honest about it
+
+1. **The dirt out-values the grass in daylight.** It reads brighter than the
+   sunlit meadow around it, which pulls the eye off the fire — the exact
+   inversion the brief forbids.
+2. **`dprtest --gate` has never run with a camp pitched.** It queued behind six
+   authors' captures all round and the figure was never taken.
+3. **The fire is small at midday.** It reads at dusk and at night, where it is
+   the only light; in daylight it has to win on saturation and motion and does
+   not yet.
+4. **The smoke reads as a dark dithered mass from directly overhead at dusk**
+   (`shots/camp/dusk4/plan.png`).
+
+## The lesson from this round
+
+Five instruments produced clean numbers about the wrong object — see the new
+"Instruments that are confidently wrong" section in `docs/CRITIC_PROTOCOL.md`.
+The one to remember: a chair-arc census reported a 257-degree spread because it
+sorted bearings across the ±pi seam, and 257 degrees is exactly the sort of
+figure that gets a working layout solver rewritten.
+
+---
+
 # Procedural Autumn — state at the performance pivot
 _2026-08-19, all feature work paused_
 

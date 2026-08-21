@@ -47,6 +47,55 @@ The bar is a shipping first-party Nintendo cozy title. Compare against
 - **Motion** — capture the same view twice a second apart; anything that should
   move and does not (wind, water) is a defect.
 
+## Instruments that are confidently wrong
+
+A measurement can fail in a way that looks exactly like a result. Every one of
+these produced a clean number that a reasonable person would have acted on, and
+all five happened inside a single round:
+
+| what it reported | what was actually true |
+|---|---|
+| chairs spread over 257 degrees around the fire | the census sorted raw `atan2` bearings, so two chairs 0.3 rad apart straddling the ±pi seam sorted as 6.0 apart. The layout was fine and always had been. |
+| pitching a camp links no shaders at all | a null deref had thrown every frame, `main.js` had disabled the whole system, and the harness was measuring a camp that no longer existed. |
+| this hillside has a boulder in the middle of it | the test went looking for sites *without* the blocker the game uses, so it found ground the game would never have offered. |
+| a telescope clipping 16.8% of its pixels needs a darker enamel | the prop was standing in the camper's headlight beam. Two rounds of albedo work; the hotspot owned fourteen of the seventeen points. |
+| the dirt has purple noise streaked across it | they were tree shadows, and the author was told twice to go and find them in his own file. |
+
+The pattern is the same each time: **a well-measured number attached to the
+wrong object.** None of these was a bad measurement. They were internally
+consistent, repeatable, and about something other than what the reader thought.
+
+Two habits that catch it:
+
+- **Make the instrument obey the same rules as the thing it measures.** A test
+  that skips the game's own validity checks is testing a different game.
+- **Assert loudly when a system is dead.** A disabled system measures
+  beautifully. Any harness that reports a performance figure should also
+  assert that the thing it is timing is still enabled and still has state.
+
+## Checks that cannot rationalise
+
+Three lines of assertion beat another pass of looking, because an assertion has
+no taste to be talked around.
+
+The case for this: a placement reticle was visible in **every** capture in the
+camp round. It is a faint cyan ring around the camp, and the integrator looked
+directly at it in two frames and read it as a nice selection highlight — not
+normalised, *promoted to a feature*. A pre-screenshot check that reads the
+prompt's computed opacity and the reticle's visibility found it in the first
+two frames it ever ran on.
+
+So: before every screenshot a harness takes, assert that no UI is in the frame.
+`tools/campshot.mjs` does this and prints a `!!` line. UI in a contact sheet is
+nearly invisible when you are reading the sheet for art — you see a camp, not a
+caption — and it silently corrupts a blind A/B, because the two sides then
+differ by a band of text as well as by the thing under judgement.
+
+A related trap, worth naming because it is the tempting move: **do not work
+around a shared defect inside your own harness.** Stubbing the reticle out of
+your captures removes the evidence that everyone else's captures have a ring in
+them.
+
 ## Failure modes in yourself
 
 - Praising work because it improved. Improvement is expected, not notable.
