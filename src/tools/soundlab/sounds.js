@@ -217,6 +217,110 @@ const vehLayer = (...names) => VEH_LAYERS.filter((l) => names.includes(l.name))
 //  The catalogue
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── camp helpers ────────────────────────────────────────────────────────────
+
+// `CampAudio.update` is what hands the listener sample down to the prop cues,
+// and the lab's fake world has no camp system in it — so the fire stays silent
+// and the meter shows nothing but the cue under test. Which is what you want
+// from a page for auditioning a 40 ms clack.
+const campFrame = (rig, dt, v) => {
+  applyListener(rig, v);
+  rig.audio.camp.update(dt, rig.L);
+};
+
+const CAMP_MIX = [
+  range('cueGain', 'prop cue trim', 0, 8, 3.6, { step: 0.01, group: 'Mix', src: 'camp_props.js:55 — CUE_GAIN, the one level for the whole layer', apply: P('camp.props.bus.gain') }),
+  range('campWet', 'reverb send', 0, 1, 0.16, { step: 0.01, group: 'Mix', src: 'camp_audio.js:52', apply: P('camp.wet.gain') }),
+  range('ambienceBus', 'ambience bus gain', 0, 2, 0.55, { step: 0.01, group: 'Mix', src: 'Audio.js:128 — the camp rides the ambience bus', apply: P('buses.ambience.gain') }),
+];
+
+/**
+ * One prop cue.
+ *
+ * `distance` and `out` are the two things that actually change what you hear,
+ * and both are conditions rather than parameters: one is where you are
+ * standing and the other is which half of the event this is. Neither is a
+ * setting anybody would paste into `camp_props.js`.
+ */
+const campCue = (kind, label, blurb, needs) => ({
+  id: `camp.${kind}`,
+  group: 'Camp',
+  label,
+  kind: 'oneshot',
+  bus: 'camp',
+  module: 'src/audio/camp_props.js',
+  blurb,
+  layers: [],
+  frame: campFrame,
+  trigger: (rig, v) => {
+    // Offset from wherever the listener currently IS, not from the origin. The
+    // lab's listener is shared across sounds and nothing puts it back: select
+    // the waterfall, drag its distance to 500 m, then select a camp cue, and
+    // an origin-relative trigger places the prop half a kilometre away and
+    // `CampProps.cue` correctly declines to schedule it. Which reads on the
+    // meter as a broken sound rather than as a stale condition — and did,
+    // for eight entries at once, until `soundlab-check` ran the full list.
+    const az = (v.azimuth * Math.PI) / 180;
+    const L = rig.L;
+    rig.audio.camp.cue(kind, {
+      x: L.x + Math.sin(az) * v.distance, z: L.z + Math.cos(az) * v.distance, out: !!v.out,
+    });
+  },
+  triggerLabel: 'Pop',
+  params: [
+    cond('distance', 'Distance to the prop', 0.5, 34, 10, { unit: 'm', step: 0.5, src: 'camp_props.js:41 — 30 m reach, 3 m near field, falloff exponent 1.4' }),
+    cond('azimuth', 'Bearing from the listener', -180, 180, -35, { unit: '°', step: 1 }),
+    toggle('out', 'Packing away (rather than pitching)', false, { kind: 'condition', src: 'camp_props.js:57 — pitch ×0.86, length ×0.72, level ×0.6, attack ×1.7' }),
+    ...CAMP_MIX,
+  ],
+  needs,
+});
+
+const CAMP_CUES = [
+  campCue('ground', 'Clearing opening', 
+    'Dry earth easing open under the grass. A 90 ms attack and a band falling '
+    + '700 → 215 Hz — the only cue with no transient, because the ground swells '
+    + 'open over 0.6 s rather than popping. Reverses to 420 → 150 Hz on the way out.',
+    ['camp_props.js:206-213 — the two sweep bands, the 96 → 72 Hz body and their 0.075 / 0.022 peaks.']),
+  campCue('fire', 'Fire catching',
+    'A low whoosh rising 175 → 540 Hz over half a second. Reverses AND adds a '
+    + 'hiss on the way out, because a fire going out is a different event from '
+    + 'one being lit rather than the same one backwards. Mixed under the fire '
+    + 'bed it introduces.',
+    ['camp_props.js:227-234 — the in/out sweep pairs and their 0.062 / 0.055 / 0.020 peaks.']),
+  campCue('tent', 'Tent — nylon',
+    'Three fabric ruffles 48 ms apart, each darker and quieter than the last '
+    + '(2700 → 950, 2100 → 700, 1500 → 520 Hz), over a 124 → 68 Hz thump of '
+    + 'displaced air. The thump is the only reason a tent reads as bigger than '
+    + 'a chair rather than merely as more cloth.',
+    ['camp_props.js:88-97 — the three ruffle bands, their offsets and the body sweep.']),
+  campCue('chair', 'Chair — tube and sling',
+    'Two aluminium ticks 55 ms apart at 2850 and 2050 Hz — a folding chair has '
+    + 'four legs and they never land together — with the seat taking the '
+    + "frame's shape between them.",
+    ['camp_props.js:107-112 — the two tick bands and the 1900 → 900 Hz sling sweep.']),
+  campCue('cooler', 'Cooler — hollow plastic',
+    'A triangle at 205 → 168 Hz rather than a resonant noise band: the '
+    + 'odd-harmonic series is what makes moulded plastic sound like plastic and '
+    + 'not like a small drum. The lid lands on the rim 12 ms later.',
+    ['camp_props.js:123-128 — the triangle body and the two rim bands.']),
+  campCue('table', 'Table — wood and legs',
+    'A 380 Hz band at Q 9 is the woody ring, and it is the whole difference '
+    + 'between this and the cooler — which frequently pops within 70 ms of it. '
+    + 'A leg finds the ground at 1520 Hz.',
+    ['camp_props.js:140-145 — the ring band, the 188 Hz body and the leg clack.']),
+  campCue('woodpile', 'Woodpile — logs settling',
+    'The only cue with a random shape, and the only one that needs it: a stack '
+    + 'of logs is a NUMBER of impacts. Four to six clacks, 250-770 Hz, each '
+    + 'quieter and further left or right than the last.',
+    ['camp_props.js:158-176 — the clack count, the 250 + rnd·520 Hz spread, the settling falloff and the 0.028 + rnd·0.05 s spacing.']),
+  campCue('telescope', 'Telescope — tripod and glass',
+    'Two inharmonic partials at 1180 and 1735 Hz. Deliberately not an octave '
+    + 'or a fifth: a tuned interval is a bell and a bell is a UI sound. The '
+    + 'longest cue in the camp, because it is the one prop worth something.',
+    ['camp_props.js:188-194 — the two partials, the 3200 Hz tripod tick and the 430 Hz mount.']),
+];
+
 export const SOUNDS = [
   // ── ambience ──────────────────────────────────────────────────────────────
   {
@@ -920,6 +1024,19 @@ export const SOUNDS = [
       'soundtrack.js:26-32 — PLAY_MIN/MAX 95-165 s, REST_MIN/MAX 70-130 s, FADE_IN 6 s, FADE_OUT 7.5 s.',
     ],
   },
+
+  // ── camp ──────────────────────────────────────────────────────────────────
+  //
+  // The pop-in / pop-out cues, one entry per object kind. They share a single
+  // generator because they share a single *model*: distance, bearing and a
+  // direction. What differs between them is the voice, and a voice is code in
+  // `camp_props.js` rather than a slider — so each entry says exactly which
+  // numbers it cannot reach, in `needs`, rather than offering fake ones.
+  //
+  // Everything here meters on the `camp` tap, which the fire also uses. That is
+  // deliberate: these sit on the fire's bus, and if a cue is loud enough to
+  // bury the fire it is loud enough to see it happen on one meter.
+  ...CAMP_CUES,
 
   // ── interface ─────────────────────────────────────────────────────────────
   {

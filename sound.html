@@ -196,6 +196,12 @@
           <option value="rivers">rivers</option>
           <option value="vehicle">vehicle</option>
           <option value="wildlife">wildlife</option>
+          <!-- The camp fire and the camp's pop-in cues share this tap. They
+               ride the ambience BUS, so without an option here selecting a
+               camp sound left the meter on an empty string and every reading
+               came back -inf — which is how a sound that works looks exactly
+               like a sound that does not. -->
+          <option value="camp">camp</option>
           <option value="music">music</option>
         </select>
         <button id="meterReset" class="mini">Reset window</button>

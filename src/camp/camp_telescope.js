@@ -225,6 +225,29 @@ const T_GLASS  = tintFrom(HEX_PLASTIC, 0x121620);
 // Hardware that must not become a highlight: collimation screws, small bolts on
 // a dark ground. Bright enough to be metal, dark enough not to be a dot.
 const T_CHROME_DK = tintFrom(HEX_PLASTIC, 0x5c6066);
+
+// ── the travel refractor's candy red ────────────────────────────────────────
+//
+// The third plate's whole identity. It is the only prop in this camp with a
+// large saturated surface — the cooler is a close second and it is a third the
+// area — and that is the point of adding it: every critic pass on the other two
+// variants has said the same thing about their colour story, which is that
+// there isn't one. White, grey and black in a warm desaturated valley reads as
+// concrete, and the brief is explicit that these props are meant to look like
+// somebody's kit.
+//
+// Held at 0.16 linear in red rather than pushed toward a fire-engine hue. Two
+// reasons. It has to stay under the flame at dusk like everything else in this
+// camp; and the grade is PBR Neutral, which desaturates as it compresses, so a
+// red authored near the top of the range arrives pink. 0xbe3a2c measures as a
+// saturated red through the curve where 0xff2a1c measures as salmon.
+const CANDY  = 0xbe3a2c;
+const T_CANDY = tintFrom(HEX_PLASTIC, CANDY);
+// The chromed dew shield and the mount's bright hardware. Darker than `CHROME`,
+// which is the counterweight shaft's near-white: this is polished dark chrome,
+// and on the plate it reads as a black band with one bright edge rather than as
+// a silver one.
+const T_DARKCHROME = tintFrom(HEX_PLASTIC, 0x53565c);
 // The equatorial head's castings. A mid grey: dark enough to break from the
 // tube lying above it, light enough to stay a painted casting rather than
 // becoming more hardware. See the note at the RA housing.
@@ -1088,6 +1111,191 @@ function buildRefractor(P, rnd, opts) {
 //  as a tube on a pole. Get it right and the counterweight sticking out one
 //  side is the most distinctive silhouette in the whole camp.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  Variant C — the short-tube travel refractor
+//
+//  `reference-art/telescope/red-orion.jpg`: an Orion ST70-class grab-and-go.
+//  It is in the set because it is the one that is not like the others, and
+//  every axis on which it differs is deliberate:
+//
+//   · **It is RED**, and it is the only large saturated surface in the camp.
+//   · **It is STUBBY.** 400 mm of tube on a 98 mm dew shield is about 4:1,
+//     against the white refractor's 9:1. Squinted, the white one is a line and
+//     this one is a bar. That difference survives at play distance where a
+//     colour difference alone might not.
+//   · **The tripod is short and wide.** 0.62 m to the head against the white
+//     refractor's 0.70 and the Newtonian's 0.905, with a proportionally wider
+//     splay, so the three scopes make a real size ladder rather than three
+//     copies at 90%.
+//   · **The mount is an alt-az with a geared altitude rack and a pan handle**,
+//     where the white one has a plain tilt knob and the Newtonian has an
+//     equatorial head. The handle sticking out low and back is the third
+//     silhouette this file owns.
+//
+//  Height: 0.80 m overall. The plate is a tabletop unit and this is not, and
+//  that is a decision rather than an oversight — the same one the white
+//  refractor's header records. A 0.5 m scope standing on camp dirt is at ankle
+//  height and unusable; the legs on these things extend, and a camp is the case
+//  where they are extended. What is kept from the plate is the PROPORTION: short
+//  legs, wide splay, fat little tube.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildTravel(P, rnd, opts) {
+  const wear = clamp01(opts.wear ?? 0.5);
+  // Shallower than the other two. A grab-and-go on a short tripod is usually
+  // pointed at something low — that is what it is for — and it also keeps the
+  // stubby tube reading as a bar rather than as a stick.
+  const alt = lerp(0.34, 0.56, rnd());
+  const H_HUB = 0.620;
+  const tripod = buildTripod(P, rnd, {
+    height: H_HUB, spread: 0.285, legR: 0.0115, square: false,
+    spin: Math.PI * 0.5 + (rnd() - 0.5) * 1.1,
+    tray: 'spreader', wear,
+    // Bright legs, like the white refractor's and like this plate's — the
+    // Newtonian is the only one of the three with grey mill-finish legs.
+    legHex: 0xdfe2e6,
+  });
+
+  const dir = V(0, Math.sin(alt), -Math.cos(alt));
+  const upPerp = V(0, Math.cos(alt), Math.sin(alt));
+  const side = V(1, 0, 0);
+  const pivot = V(0, H_HUB + 0.098, 0);
+  const P0 = (t, o = 0, l = 0) => pivot.clone()
+    .addScaledVector(dir, t).addScaledVector(upPerp, o).addScaledVector(side, l);
+
+  const axisUp = (ox, oy, oz) => {
+    const p = V(ox, oy, oz).sub(pivot);
+    const along = p.dot(dir);
+    p.addScaledVector(dir, -along);
+    const l = p.length();
+    return l < 1e-5 ? 0 : p.dot(upPerp) / l;
+  };
+  const candy = tintMul(
+    skyGrad(T_CANDY, 0.22, axisUp),
+    grimed([1, 1, 1], wear, [
+      [pivot.x + dir.x * -0.10, pivot.y + dir.y * -0.10, pivot.z + dir.z * -0.10, 0.09, 0.24],
+    ]),
+  );
+  const shell = skyGrad(T_SHELL, 0.18, axisUp);
+  const chrome = skyGrad(T_DARKCHROME, 0.30, axisUp);
+
+  // ── the tube ──────────────────────────────────────────────────────────────
+  const R = 0.041;
+  // Rear cell, red barrel, a black trim ring, then the chromed dew shield.
+  seg(P, 'plastic', P0(-0.148), P0(-0.104), R * 0.86, R * 0.98, 16, shell);
+  seg(P, 'plastic', P0(-0.108), P0(0.150), R, R, 16, candy);
+  // The logo band. On the plate it is white lettering on the red, which at
+  // twenty pixels is one lighter ring — so it is one lighter ring.
+  seg(P, 'plastic', P0(0.020), P0(0.036), R * 1.006, R * 1.006, 16,
+      skyGrad([T_CANDY[0] * 1.35, T_CANDY[1] * 1.9, T_CANDY[2] * 2.1], 0.22, axisUp));
+  seg(P, 'plastic', P0(0.146), P0(0.166), R * 1.02, R * 1.04, 16, shell);
+  // The dew shield: wider than the tube, which is what makes the whole object
+  // read as front-heavy, and it is the plate's strongest single shape.
+  seg(P, 'plastic', P0(0.164), P0(0.262), 0.0472, 0.0490, 18, chrome);
+  seg(P, 'plastic', P0(0.258), P0(0.266), 0.0490, 0.0455, 18, shell);
+  disc(P, 'plastic', P0(0.238), dir, 0.0430, 18, T_GLASS);
+
+  // ── the finder ────────────────────────────────────────────────────────────
+  // A miniature of the main tube — red barrel, black ends — on two posts above
+  // and outboard. Making it a small copy rather than a generic black stick is
+  // most of why the plate's finder reads as a finder.
+  {
+    const nd = side.clone().multiplyScalar(0.46).addScaledVector(upPerp, 0.89).normalize();
+    const n0 = P0(0.030).addScaledVector(nd, R + 0.050);
+    seg(P, 'plastic', n0.clone().addScaledVector(dir, -0.072),
+        n0.clone().addScaledVector(dir, 0.060), 0.0158, 0.0166, 10, candy);
+    seg(P, 'plastic', n0.clone().addScaledVector(dir, 0.056),
+        n0.clone().addScaledVector(dir, 0.084), 0.0192, 0.0188, 10, shell);
+    seg(P, 'plastic', n0.clone().addScaledVector(dir, -0.090),
+        n0.clone().addScaledVector(dir, -0.068), 0.0138, 0.0150, 10, shell);
+    disc(P, 'plastic', n0.clone().addScaledVector(dir, 0.081), dir, 0.0150, 12, T_GLASS);
+    for (const t of [-0.048, 0.032]) {
+      seg(P, 'plastic', n0.clone().addScaledVector(dir, t).addScaledVector(nd, -0.014),
+          P0(0.030 + t).addScaledVector(nd, R * 0.96), 0.0128, 0.0128, 8, T_SHELL);
+    }
+  }
+
+  // ── focuser, diagonal, eyepiece ───────────────────────────────────────────
+  const EP_OUT = V(0, 0, 0);
+  {
+    seg(P, 'plastic', P0(-0.196), P0(-0.140), 0.0296, 0.0296, 12, shell);
+    seg(P, 'plastic', P0(-0.232), P0(-0.192), 0.0224, 0.0224, 10, T_DARKCHROME);
+    // The focus wheels, both of them, and bright — the same lesson the white
+    // refractor's header records at more length: this is the second-brightest
+    // thing on the plate and shrinking it to stop it clipping killed it.
+    const kc = P0(-0.166);
+    knob(P, 'plastic', kc.clone().addScaledVector(side, 0.032), side, 0.0210, 0.015, T_DARKCHROME);
+    knob(P, 'plastic', kc.clone().addScaledVector(side, -0.032), side, 0.0210, 0.015, T_DARKCHROME);
+    seg(P, 'plastic', kc.clone().addScaledVector(side, -0.028),
+        kc.clone().addScaledVector(side, 0.028), 0.0074, 0.0074, 6, T_CHROME);
+
+    // A 90-degree diagonal: the eyepiece leaves across the barrel, and on this
+    // plate it is angled back toward the observer rather than straight up.
+    const d0 = P0(-0.252);
+    const ed = upPerp.clone().multiplyScalar(0.80).addScaledVector(dir, -0.60).normalize();
+    const db = basis(ed, side);
+    P.add(rbox(0.052, 0.048, 0.052, 0.009, 2), 'plastic',
+      M().makeBasis(db.x, db.y, db.z).setPosition(d0.clone().addScaledVector(ed, 0.010)), T_SHELL);
+    const ep0 = d0.clone().addScaledVector(ed, 0.030);
+    seg(P, 'plastic', ep0, ep0.clone().addScaledVector(ed, 0.026), 0.0250, 0.0206, 10, shell);
+    seg(P, 'plastic', ep0.clone().addScaledVector(ed, 0.020),
+        ep0.clone().addScaledVector(ed, 0.034), 0.0230, 0.0230, 10, T_DARKCHROME);
+    seg(P, 'plastic', ep0.clone().addScaledVector(ed, 0.032),
+        ep0.clone().addScaledVector(ed, 0.092), 0.0180, 0.0170, 10, shell);
+    seg(P, 'rubber', ep0.clone().addScaledVector(ed, 0.088),
+        ep0.clone().addScaledVector(ed, 0.110), 0.0186, 0.0208, 10, T_FOOT);
+    disc(P, 'plastic', ep0.clone().addScaledVector(ed, 0.108), ed, 0.0120, 12, T_GLASS);
+    EP_OUT.copy(ep0).addScaledVector(ed, 0.116);
+  }
+
+  // ── the alt-az head ───────────────────────────────────────────────────────
+  //
+  // The geared altitude rack is the mount detail worth spending triangles on.
+  // A toothed quadrant is the one shape on this plate that no other prop in the
+  // camp has, and eleven little boxes on an arc read as a rack at twenty pixels
+  // where a smooth plate reads as a lump.
+  {
+    seg(P, 'plastic', V(0, H_HUB, 0), V(0, H_HUB + 0.034, 0), 0.030, 0.027, 10, T_SHELL);
+    P.add(rbox(0.056, 0.062, 0.052, 0.010, 2), 'plastic',
+      at(0, H_HUB + 0.062, 0), T_SHELL);
+    // The saddle under the tube.
+    const sb = basis(upPerp, dir);
+    P.add(rbox(0.042, 0.030, 0.062, 0.006, 1), 'plastic',
+      M().makeBasis(sb.x, sb.y, sb.z).setPosition(P0(-0.006, -0.036)), T_SHELL);
+    seg(P, 'plastic', P0(-0.006, -0.048), V(0, H_HUB + 0.082, 0), 0.017, 0.020, 8, T_SHELL);
+
+    // The rack: an arc of teeth on the -X flank, centred on the tube's pivot.
+    const rr = 0.052;
+    for (let i = 0; i < 11; i++) {
+      const a = -0.62 + (i / 10) * 1.24;
+      const c = V(-0.040, pivot.y - 0.010, 0)
+        .add(V(0, Math.sin(a) * rr, Math.cos(a) * rr));
+      const tb = basis(V(0, Math.cos(a), -Math.sin(a)), side);
+      P.add(rbox(0.020, 0.0075, 0.0060, 0.0018, 1), 'plastic',
+        M().makeBasis(tb.x, tb.y, tb.z).setPosition(c), T_DARKCHROME);
+    }
+    seg(P, 'plastic', V(-0.052, pivot.y - 0.010, 0), V(-0.030, pivot.y - 0.010, 0),
+        rr * 0.86, rr * 0.86, 14, T_SHELL);
+    knob(P, 'plastic', V(-0.062, pivot.y - 0.010, 0), side, 0.020, 0.022, T_CANDY);
+
+    // The pan handle — long, low and back, and the third silhouette this file
+    // owns. On the plate it is nearly as long as the tube and it is what makes
+    // the object read as something a hand operates.
+    const hd = V(0.30, -0.66, 0.69).normalize();
+    const h0 = V(0.030, H_HUB + 0.058, 0.012);
+    seg(P, 'plastic', h0, h0.clone().addScaledVector(hd, 0.150), 0.0082, 0.0072, 8, T_DARKCHROME);
+    seg(P, 'plastic', h0.clone().addScaledVector(hd, 0.140),
+        h0.clone().addScaledVector(hd, 0.212), 0.0125, 0.0118, 10, T_SHELL);
+    seg(P, 'plastic', h0.clone().addScaledVector(hd, 0.208),
+        h0.clone().addScaledVector(hd, 0.220), 0.0135, 0.0100, 10, T_DARKCHROME);
+  }
+
+  return {
+    tripod,
+    top: pivot.y + 0.266 * Math.sin(alt) + 0.05,
+    view: { eye: EP_OUT.clone(), aim: dir.clone() },
+  };
+}
+
 function buildReflector(P, rnd, opts) {
   const wear = clamp01(opts.wear ?? 0.5);
   // Tube altitude, and it is now deliberately SHALLOW.
@@ -1611,7 +1819,7 @@ function buildReflector(P, rnd, opts) {
  */
 export function buildTelescope(rnd, opts = {}) {
   const g = new THREE.Group();
-  // Two literals, deliberately, and the second one is load-bearing.
+  // One literal per variant, deliberately, and they are load-bearing.
   //
   // `src/tools/gallery/registry.js` reads a builder's options out of the
   // builder's own source text and only recognises an option as an ENUM when it
@@ -1620,9 +1828,10 @@ export function buildTelescope(rnd, opts = {}) {
   // short way — `opts.variant === 'reflector' ? 'reflector' : 'refractor'` —
   // the gallery gave this file exactly one card, the default one, and the
   // 150/750 was unreachable on the page whose entire job is to let somebody
-  // look at it. Spelling both branches out costs a line and makes the gallery
-  // enumerate both telescopes on its own.
+  // look at it. Spelling every branch out costs a line each and makes the
+  // gallery enumerate all three telescopes on its own.
   const variant = opts.variant === 'reflector' ? 'reflector'
+                : opts.variant === 'travel' ? 'travel'
                 : opts.variant === 'refractor' ? 'refractor'
                 : 'refractor';
   g.name = `camp_telescope_${variant}`;
@@ -1634,9 +1843,9 @@ export function buildTelescope(rnd, opts = {}) {
   // declaration, not the value.
   const wear = clamp01(opts.wear ?? 0.45);
 
-  const info = variant === 'reflector'
-    ? buildReflector(P, rnd, { ...opts, wear })
-    : buildRefractor(P, rnd, { ...opts, wear });
+  const info = variant === 'reflector' ? buildReflector(P, rnd, { ...opts, wear })
+             : variant === 'travel' ? buildTravel(P, rnd, { ...opts, wear })
+             : buildRefractor(P, rnd, { ...opts, wear });
 
   P.flush(g, { cast: true, receive: true });
 

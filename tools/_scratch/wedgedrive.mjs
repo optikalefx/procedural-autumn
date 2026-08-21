@@ -57,7 +57,7 @@ async function main() {
       return Math.hypot(gx, gz);
     };
     /** Flat-ish launch pads that point at a steep face 20–30 m away. */
-    window.__runups = (n) => {
+    window.__crests = (n) => {
       const out = [];
       for (let i = 0; i < 200000 && out.length < n; i++) {
         const x = (Math.random() * 2 - 1) * 1400, z = (Math.random() * 2 - 1) * 1400;
@@ -65,13 +65,17 @@ async function main() {
         if (grad(x, z) > 0.35) continue;                    // must be drivable to start
         const h = Math.random() * Math.PI * 2;
         const dx = Math.sin(h), dz = Math.cos(h);
-        let ok = true, steep = 0;
+        const h0 = W.getHeight(x, z);
+        let ok = true, steep = 0, drop = 0;
         for (let d = 4; d <= 30; d += 2) {
           const px = x + dx * d, pz = z + dz * d;
           if (!W.isInBounds(px, pz) || W.getWaterDepth(px, pz) > 0.02) { ok = false; break; }
           steep = Math.max(steep, grad(px, pz));
+          drop = Math.max(drop, h0 - W.getHeight(px, pz));
         }
-        if (!ok || steep < 1.1) continue;                   // and aimed at something steep
+        // A crest with a steep face falling away past it — the thing you drive
+        // off without meaning to, which is how a camper ends up on a mountainside.
+        if (!ok || steep < 1.1 || drop < 12) continue;
         out.push({ x, z, h, steep });
       }
       return out;
@@ -99,8 +103,8 @@ async function main() {
     };
   });
 
-  const sites = await page.evaluate((n) => window.__runups(n), RUNS);
-  console.log(`\n${sites.length} run-ups: drivable ground aimed at a face steeper than 1.1\n`);
+  const sites = await page.evaluate((n) => window.__crests(n), RUNS);
+  console.log(`\n${sites.length} crests: drivable ground with a 12 m+ drop over a face steeper than 1.1\n`);
   console.log('  site         face | tilt°  wheels  air  sunk m  recov | outcome');
 
   let wedged = 0;
@@ -111,7 +115,7 @@ async function main() {
     await page.keyboard.down('KeyW');
     await page.evaluate(() => window.__rec(7000));          // charge the hill
     await page.keyboard.up('KeyW');
-    const rows = await page.evaluate(() => window.__rec(12000));   // hands off
+    const rows = await page.evaluate(() => window.__rec(20000));   // hands off, let it tumble out
     const last = rows[rows.length - 1];
     const tail = rows.filter((r) => r.t > last.t - 4);
     const span = Math.max(...tail.map((r) => Math.hypot(r.x - last.x, r.y - last.y, r.z - last.z)));

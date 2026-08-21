@@ -201,3 +201,30 @@ the backtick on it. Write prose about a hex colour or an identifier with
 everyone mid-round. It is the ninth occurrence on this project. Only
 `camp_ground.js` and `camp_fire.js` write GLSL; the prop builders use the
 shared material set and cannot hit it.
+
+### A prop on a slope lies ALONG the slope
+
+`layoutCamp` gives every item a `tilt`: how much of the ground normal it takes,
+1 for a chair whose four feet genuinely follow the terrain. Anything below 1
+leaves the prop at an angle to the ground it stands on, and the uphill side of
+its base goes under the surface.
+
+That cost is proportional to the footprint, and on a big prop it is not subtle.
+Measured on a 0.349 grade (`tools/_scratch/campsink.mjs`), the tent at its
+original `tilt: 0.55` was buried **0.275 m** on its uphill corner. The fire ring
+took no rotation at all and was buried 0.277 m. The telescope, at `tilt: 1`, was
+fine — which is what the player noticed.
+
+So:
+
+- **Default to `tilt: 1`.** A lower value needs a reason, and "the floor is
+  taut" is not one on its own — bridging is about BUMPS, and the site test
+  already caps bumpiness under a prop's footprint at 0.34 m. The tent is 0.92.
+- **`groundLift()` is a finishing touch, not a fix.** `Camp` raises every prop
+  by whatever its tilt still leaves underground, capped at 8 cm, because a lift
+  large enough to rescue a bad tilt opens a visible gap on the downhill side —
+  and a floating tent is not an improvement on a buried one. A prop that needs
+  more than 8 cm has the wrong `tilt`.
+- **Fire goes up.** `Firepit.setOrientation` rotates the stones, the logs and
+  the ember bed and leaves the flame, sparks and smoke upright. A flame leaning
+  eighteen degrees down a hillside is a blowtorch.

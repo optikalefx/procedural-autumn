@@ -57,7 +57,7 @@ export class Audio extends System {
     this._surf = {};
     this._targets = { open: 0.6, forest: 0.2, altitude: 0 };
     this._tick = 0;
-    this._probe = null;
+    this._probes = null;      // fftSize -> scratch buffer; see `measure`
     this._hidden = false;
 
     try {
@@ -360,7 +360,16 @@ export class Audio extends System {
   measure(which = 'master') {
     const a = which === 'master' ? this.analyser : this.taps?.[which];
     if (!a) return null;
-    const buf = this._probe ??= new Float32Array(a.fftSize);
+    // One probe PER SIZE, not one probe. The master analyser is 2048 and every
+    // tap is 16384, and a single shared buffer sized from whichever was read
+    // first is wrong in both directions: sized 2048, a tap read measures an
+    // eighth of its window; sized 16384, a master read fills 2048 fresh samples
+    // and leaves 14336 samples of some OTHER bus behind for the loop below to
+    // find. The second is the dangerous one — it does not look like an error,
+    // it looks like the master being louder than it is, and it made a
+    // back-to-back A/B on the master swing several dB between runs.
+    const buf = (this._probes ??= new Map()).get(a.fftSize)
+      ?? (this._probes.set(a.fftSize, new Float32Array(a.fftSize)), this._probes.get(a.fftSize));
     a.getFloatTimeDomainData(buf);
     let peak = 0, sum = 0;
     for (let i = 0; i < buf.length; i++) {

@@ -172,6 +172,10 @@ export class Vehicle extends System {
     }
     start = start ?? poi.best('meadow') ?? { x: 0, z: 0, yaw: 0 };
     const heading = start.yaw ?? 0;
+    // Kept because it is the one place in the world the game has already
+    // proved a camper can stand: the rescue search falls back to it when
+    // everything else has been refused. See `_rescueLandmark`.
+    this._home = { x: start.x, z: start.z };
 
     // ── materials + model ───────────────────────────────────────────────────
     this.env = buildEnvMap(renderer);
@@ -373,10 +377,13 @@ export class Vehicle extends System {
    *
    * Every bearing on the ring is scored and the best survivor wins, so a flat
    * clearing beats a passable-but-tilted verge. If the 20 m ring holds nothing
-   * at all — a lakeside, a gorge — the search steps out to 30 and then 42 m
-   * rather than declining, because a rescue button that does nothing is worse
-   * than one that moves you further than advertised. Only if all three rings
-   * come back empty does it decline and say so.
+   * at all — a lakeside, a gorge, a pocket walled in by boulders — the search
+   * steps outward, and keeps stepping, and if the whole neighbourhood is a
+   * trap it falls back to the road the camper spawned on. It does not decline.
+   * That is the contract: a player who is stuck has no move left except
+   * reloading the page, so the button has to work every time it is pressed,
+   * even when working means moving them further than they would have liked.
+   * See `_rescueSite` for the four passes that guarantee it.
    *
    * @returns {{x:number,z:number,range:number,relaxed:boolean}|null}
    */
@@ -385,12 +392,16 @@ export class Vehicle extends System {
 
     const site = this._rescueSite();
     if (!site) {
+      // Defensive only. `_rescueSite` runs out of options when there is no
+      // world to search — no landmarks, no spawn — which is a capture harness
+      // booting without a POI table, not a player in a gorge.
       this.ctx.systems.hud?.toast?.('Nowhere clear to move to — try again');
       // Still take the cooldown: a failed press must not let the search run
       // every frame while the key is held down.
       this._rescueCool = RESCUE_COOLDOWN;
       return null;
     }
+    const moved = Math.hypot(site.x - this.position.x, site.z - this.position.z);
 
     // Heading is preserved rather than randomised. The *place* is random
     // because the player asked for that; spinning them as well would make an
@@ -420,45 +431,138 @@ export class Vehicle extends System {
     this._rescueCool = RESCUE_COOLDOWN;
     this.rescues++;
     this.teleportSeq++;
-    this.ctx.systems.hud?.toast?.(site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
+    // A 20 m hop needs no explanation; a 300 m one does, or the player reads
+    // the jump as the game having lost them. The distance is the honest thing
+    // to say — it is the cost of having been somewhere with no way out.
+    this.ctx.systems.hud?.toast?.(
+      site.landmark ? 'Moved you back to the road'
+        : moved > 60 ? `Moved you ${Math.round(moved)} m to clear ground`
+          : site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
     return site;
   }
 
   /**
-   * Sample bearings on each rescue ring in turn and return the best landing.
+   * Find somewhere to put the camper down, and do not come back empty-handed.
    *
-   * The 20 m ring is tried first and, if it holds anything decent, wins — the
-   * wider rings exist only so that a bad neighbourhood produces a longer hop
-   * rather than a button that does nothing.
+   * Four passes, in order of how much they cost the player, and the first one
+   * that answers wins:
+   *
+   *   1. the near rings (20/30/42 m) — a short hop, which is what the button
+   *      promises. An ideal site wins outright; failing that the best merely
+   *      acceptable one across all three;
+   *   2. the wide rings (60 m … 340 m) — the same standards, further away,
+   *      for the gorge and the boulder pocket where the near rings are all
+   *      cliff face. A long hop is a bad rescue; a declined one is not a
+   *      rescue at all;
+   *   3. the last-resort tier on the nearest ring that had anything at all —
+   *      tighter clearance, a step across the footprint, steeper ground;
+   *   4. and if the terrain has somehow beaten all of that, a landmark: the
+   *      road the camper spawned on, which the game has already proved is
+   *      somewhere a camper can stand.
+   *
+   * Pass 4 is why this returns null only when there is no world to search, and
+   * why `rescue()`'s decline path is now a defensive branch rather than an
+   * outcome a player can reach.
    */
   _rescueSite() {
+    const near = this._rescueWalk(RESCUE_RINGS);
+    if (near.site) return near.site;
+    const wide = this._rescueWalk(RESCUE_WIDE);
+    if (wide.site) return wide.site;
+    // Nearest ring that produced anything at all, near rings before wide.
+    const last = near.last ?? wide.last;
+    if (last) return { ...last, relaxed: true, lastResort: true };
+    return this._rescueLandmark();
+  }
+
+  /**
+   * Sample bearings on each ring of one group in turn.
+   *
+   * Returns both the site chosen (ideal on the closest ring that has one,
+   * otherwise the best acceptable one anywhere in the group) and, separately,
+   * the best last-resort candidate on the closest ring that had one — the
+   * caller only reaches for that once every group has come back empty.
+   */
+  _rescueWalk(rings) {
     const px = this.position.x, pz = this.position.z;
-    let best = null, okBest = null;
-    for (const range of RESCUE_RINGS) {
+    let okBest = null, last = null;
+    for (const range of rings) {
       // A random start angle plus an even stride covers the ring rather than
       // clumping, which independent draws do. Still random, still one line.
+      const tries = clamp(Math.round((2 * Math.PI * range) / RESCUE_ARC),
+        RESCUE_TRIES, RESCUE_TRIES_MAX);
       const a0 = Math.random() * Math.PI * 2;
-      for (let i = 0; i < RESCUE_TRIES; i++) {
-        const a = a0 + (i / RESCUE_TRIES) * Math.PI * 2 + (Math.random() - 0.5) * 0.2;
+      let best = null, ringLast = null;
+      for (let i = 0; i < tries; i++) {
+        const a = a0 + (i / tries) * Math.PI * 2 + (Math.random() - 0.5) * 0.2;
         const x = px + Math.sin(a) * range;
         const z = pz + Math.cos(a) * range;
         const s = this._siteScore(x, z);
         if (!s) continue;
         const site = { x, z, range, ...s };
-        if (!okBest || s.score > okBest.score) okBest = site;
-        if (s.ideal && (!best || s.score > best.score)) best = site;
+        if (s.tier <= 2 && (!ringLast || s.score > ringLast.score)) ringLast = site;
+        if (s.tier <= 1 && (!okBest || s.score > okBest.score)) okBest = site;
+        if (s.tier === 0 && (!best || s.score > best.score)) best = site;
       }
+      if (!last && ringLast) last = ringLast;
       // Good enough on this ring: stop here rather than reaching further out.
-      if (best) return { ...best, relaxed: false };
+      if (best) return { site: { ...best, relaxed: false }, last };
     }
-    if (okBest) return { ...okBest, relaxed: true };
-    return null;
+    return { site: okBest ? { ...okBest, relaxed: true } : null, last };
   }
 
   /**
-   * Hard checks (bounds, water, slope) return null — those sites are never
-   * used. The comfort checks (ledge, obstacles) only clear the `clear` flag,
-   * so a site that fails them is still available to the relaxed second pass.
+   * The floor under the whole search: a place the game itself has vouched for.
+   *
+   * `init` picks the camper's spawn from the road landmarks and checks it is
+   * flat, dry and in bounds before the world is ever handed to the player, so
+   * that point is a standing proof that somewhere parkable exists. The road
+   * and meadow landmarks around it are the same kind of ground. Nearest first,
+   * because this is already a long way to be moved.
+   *
+   * The very last line returns the spawn *unchecked*. That is deliberate: at
+   * that point every scored site in the world has been refused, and putting
+   * the camper back where it started beats leaving the player wedged in a
+   * gorge with a button that shrugs.
+   */
+  _rescueLandmark() {
+    const px = this.position.x, pz = this.position.z;
+    const poi = this.ctx.poi;
+    const seen = new Set(), cands = [];
+    for (const kind of ['road', 'meadow']) {
+      for (let i = 0; i < 16; i++) {
+        const p = poi?.best?.(kind, i);
+        // `best` clamps its index, so walking past the end repeats the last.
+        if (!p) break;
+        const key = `${p.x.toFixed(1)},${p.z.toFixed(1)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cands.push(p);
+      }
+    }
+    if (this._home) cands.push(this._home);
+    cands.sort((a, b) => Math.hypot(a.x - px, a.z - pz) - Math.hypot(b.x - px, b.z - pz));
+    for (const p of cands) {
+      const s = this._siteScore(p.x, p.z);
+      if (!s) continue;
+      return { x: p.x, z: p.z, range: Math.hypot(p.x - px, p.z - pz),
+        ...s, relaxed: true, landmark: true };
+    }
+    if (!this._home) return null;
+    const { x, z } = this._home;
+    return { x, z, range: Math.hypot(x - px, z - pz), score: 0, tier: 2,
+      ideal: false, slope: 0, mean: 0, step: 0, gap: Infinity, open: 4,
+      relaxed: true, landmark: true };
+  }
+
+  /**
+   * Grade one candidate landing, or return null if it is not a landing at all.
+   *
+   * Bounds and water are absolute — no tier of desperation puts the camper in
+   * the lake or off the edge of the world. Everything else is graded into a
+   * tier: 0 is somewhere you would choose to stop, 1 is somewhere that holds,
+   * 2 is somewhere you can drive carefully away from and is only ever used
+   * when the first two came back empty across every ring.
    */
   _siteScore(x, z) {
     const W = this.ctx.world;
@@ -487,20 +591,41 @@ export class Vehicle extends System {
       step = Math.max(step, Math.abs(sh - h));
     }
     const mean = sum / 9;
-    // Hard, and in this order because each is cheaper than the next.
-    // Above RESCUE_SLOPE_OK the camper slides back down, and a rescue that
-    // does that has achieved nothing. A ledge inside the footprint is the same
-    // failure wearing a different hat.
-    if (worst > RESCUE_SLOPE_OK) return null;
-    if (step > RESCUE_STEP) return null;
+    // Hard, and in this order because each is cheaper than the next. Above
+    // RESCUE_SLOPE_LAST the camper slides back down whatever tier asked for
+    // it, and a rescue that does that has achieved nothing. A ledge inside the
+    // footprint is the same failure wearing a different hat.
+    if (worst > RESCUE_SLOPE_LAST) return null;
+    if (step > RESCUE_STEP_LAST) return null;
     // Only now is the obstacle query worth paying for.
     const gap = Math.min(this._treeGap(x, z), this._rockGap(x, z));
-    if (gap < RESCUE_CLEAR) return null;
+    if (gap < RESCUE_CLEAR_LAST) return null;
 
-    // Flatter and roomier is better; the terms are on comparable scales here so
-    // a plain weighted sum is enough and needs no tuning.
-    const score = -mean * 2 - worst * 2 - step * 0.8 + Math.min(gap, 8) * 0.3;
-    return { score, ideal: worst <= RESCUE_SLOPE, slope: worst, mean, step, gap };
+    // Is there anywhere to go *from* here? Four probes at RESCUE_OPEN metres.
+    // A shelf in a gorge passes every test above and is still a trap; what
+    // separates it from a verge is that the verge has drivable ground leading
+    // off it. Cheap terrain reads only — no obstacle query out here, because a
+    // tree in the way is something the player can steer around.
+    let open = 0;
+    for (let k = 0; k < 4; k++) {
+      const b = (k / 4) * Math.PI * 2 + Math.PI / 8;
+      const ox = x + Math.sin(b) * RESCUE_OPEN;
+      const oz = z + Math.cos(b) * RESCUE_OPEN;
+      if (!W.isInBounds(ox, oz)) continue;
+      if (W.getWaterDepth(ox, oz) > RESCUE_WATER) continue;
+      if (W.getSlope(ox, oz) > RESCUE_SLOPE_OK) continue;
+      open++;
+    }
+
+    // Flatter, roomier and more open is better; the terms are on comparable
+    // scales here so a plain weighted sum is enough and needs no tuning.
+    const score = -mean * 2 - worst * 2 - step * 0.8 + Math.min(gap, 8) * 0.3
+      + open * 0.5;
+    const tier = (worst <= RESCUE_SLOPE && step <= RESCUE_STEP
+        && gap >= RESCUE_CLEAR && open >= RESCUE_OPEN_MIN) ? 0
+      : (worst <= RESCUE_SLOPE_OK && step <= RESCUE_STEP
+        && gap >= RESCUE_CLEAR && open >= 1) ? 1 : 2;
+    return { score, tier, ideal: tier === 0, slope: worst, mean, step, gap, open };
   }
 
   /**
@@ -542,23 +667,24 @@ export class Vehicle extends System {
    * geometry is authored ~2 units across, so `sx`/`sz` are metres of radius.
    * Cobbles are ignored: the camper drives over those, and counting them would
    * reject most of a riverbed.
+   *
+   * `rocksAround` rather than the streamed cell map, because the search now
+   * asks about ground far outside the streaming radius and an unloaded cell
+   * would otherwise read as empty ground — which is a landing inside a boulder
+   * that appears a second later.
    */
   _rockGap(x, z) {
-    const cells = this.ctx.systems.rocks?.cells;
-    if (!cells?.size) return Infinity;
+    const rocks = this.ctx.systems.rocks;
+    if (!rocks?.rocksAround) return Infinity;
+    const list = rocks.rocksAround(x, z, 12, 0.8, this._rockScratch ??= []);
     let best = Infinity;
-    for (const c of cells.values()) {
-      const list = c?.instances;
-      if (!list) continue;
-      for (let i = 0; i < list.length; i++) {
-        const r = list[i];
-        if (r.size < 0.8) continue;
-        const dx = r.x - x, dz = r.z - z;
-        if (Math.abs(dx) > 12 || Math.abs(dz) > 12) continue;
-        const d = Math.hypot(dx, dz) - Math.max(r.sx ?? r.size, r.sz ?? r.size);
-        if (d < best) best = d;
-      }
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      const d = Math.hypot(r.x - x, r.z - z)
+        - Math.max(r.sx ?? r.size, r.sz ?? r.size);
+      if (d < best) best = d;
     }
+    list.length = 0;
     return best;
   }
 

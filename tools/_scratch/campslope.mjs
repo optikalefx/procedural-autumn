@@ -66,7 +66,7 @@ await page.evaluate(async (f) => {
   // Park the camper uphill of the site so the frame has it in.
   window.__vehicleTeleport?.(f.x + 9, f.z + 9, 2.2);
   await new Promise((r) => setTimeout(r, 1800));
-  window.__lighting.hour = 16.8; window.__lighting.cycleSpeed = 0;
+  window.__lighting.hour = 15.4; window.__lighting.cycleSpeed = 0;
   window.__camp.pitchAt(f.x, f.z, { instant: true });
   const y = window.__world.getHeight(f.x, f.z);
   e.camera.fov = 48; e.camera.updateProjectionMatrix();

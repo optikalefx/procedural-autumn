@@ -25,9 +25,17 @@
 //  game's ambience were "very loud. Not calming at all", and a fire is the one
 //  sound a player will sit inside for minutes at a time. It is mixed to sit
 //  under the wind, not over it.
+//
+//  This class also *owns* the camp's prop cues (`camp_props.js`) without
+//  knowing anything about them beyond where the listener is. They live on this
+//  bus rather than on a bus of their own for the same reason the fire does: a
+//  tent unfurling is a camp sound, it has to duck with the world's floor, and
+//  the `camp` metering tap already exists — a layer nobody can measure is a
+//  layer nobody can tune.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, lerp, mulberry32 } from '../core/MathUtils.js';
 import { noiseBuffer, noiseSource, filter, gain, ping, stopLater, panner } from './synth.js';
+import { CampProps } from './camp_props.js';
 
 // How far the fire carries. 26 m is generous for a camp fire in still air and
 // is chosen from the game rather than from acoustics: the player parks 8–18 m
@@ -78,11 +86,31 @@ export class CampAudio {
     this._next = 0.4;         // seconds to the next crackle
     this._t = 0;
     this.state = { crackles: 0, level: 0 };
+
+    // The props share this bus and this noise. Handing the pink buffer down
+    // rather than letting it allocate its own saves three seconds of stereo
+    // float for a layer that only ever hears it through a moving band-pass.
+    this.props = new CampProps(actx, this.bus, this.noise);
   }
+
+  /**
+   * Sound a camp prop appearing or disappearing. `Camp._applyRaise` calls this
+   * as each prop crosses its reveal threshold.
+   *
+   * Forwarded rather than exposed directly so callers only ever have to find
+   * `audio.camp` — and so this stays a no-op, not a crash, on any frame before
+   * the graph exists.
+   */
+  cue(kind, opts) { this.props.cue(kind, opts); }
 
   update(dt, L) {
     const camp = this.ctx.systems?.camp;
     const actx = this.actx;
+    // The prop cues fire from Camp.update, which runs BEFORE this one — so
+    // they read the previous frame's listener. Sixteen milliseconds of
+    // staleness on a distance and a bearing is not a thing anyone can hear,
+    // and the alternative is Camp sampling the listener for itself.
+    this.props.L = L;
     // `raise` is the camp's build-in, and using it here is free: the fire
     // fades up as it is lit rather than switching on at full volume the
     // instant the player clicks.
@@ -188,6 +216,7 @@ export class CampAudio {
   }
 
   dispose() {
+    this.props.dispose();
     try { this.bedSrc.stop(); } catch { /* already stopped */ }
     for (const n of [this.bedSrc, this.bedBp, this.bedLow, this.bedGain,
                      this.bedLowGain, this.pan, this.bus, this.wet]) {

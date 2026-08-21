@@ -33,7 +33,7 @@ import { clamp, clamp01, lerp, smoothstep, damp } from '../core/MathUtils.js';
 import { setCampSlots, setCampAim, clearCampAim, CAMP_SLOTS } from './camp_clearing.js';
 import { campMaterials, disposeCampMaterials } from './camp_materials.js';
 import {
-  groundRay, scoreSite, bestSite, clampToSite, layoutCamp, standOn, siteRng,
+  groundRay, scoreSite, bestSite, clampToSite, layoutCamp, standOn, groundLift, siteRng,
   SITE_MIN, SITE_MAX, CAMP_RADIUS, CAMP_RADIUS_SMALL,
 } from './camp_site.js';
 import { CampGround } from './camp_ground.js';
@@ -392,6 +392,25 @@ export class Camp extends System {
   /** The newest camp's build-in, 0..1. */
   get raise() { return this.camps.length ? this.camps[this.camps.length - 1].raise : 0; }
 
+  /**
+   * The newest camp's firepit — same reasoning as `site`.
+   *
+   * This was missing, and `CampAudio.update` gates its ENTIRE layer on it:
+   *
+   *     const lit = camp?.fire && camp.site ? clamp01(camp.raise) : 0;
+   *
+   * `camp.fire` was `undefined` on the system (only on each camp *record*), so
+   * `lit` was always 0, so the bed's target gain was always 0 and the crackles
+   * returned at the `_level < 0.015` guard before they were ever scheduled. The
+   * camp fire has never made a sound. Nothing caught it because the thing that
+   * would have — the `camp` metering tap, added specifically so this layer
+   * could be measured — is not read by `audiotest.mjs`, and the Sound Lab had
+   * no camp entry to select. Found by a scratch harness that expected the fire
+   * to be the loud neighbour it was levelling prop cues against, and measured
+   * -inf instead.
+   */
+  get fire() { return this.camps.length ? this.camps[this.camps.length - 1].fire : null; }
+
   update(dt, t) {
     const { input, camera } = this.ctx;
     const veh = this.ctx.systems?.vehicle;
@@ -408,7 +427,7 @@ export class Camp extends System {
     for (const c of this.camps.slice()) {
       if (c.striking) {
         c.raise = Math.max(0, c.raise - dt / STRIKE_TIME);
-        this._applyRaise(c);
+        this._applyRaise(c, true);
         if (c.raise <= 0) { this._strike(c, true); continue; }
       } else if (c.raise < 1) {
         // ONE per frame. Eight props over a 1.15 s raise leaves enormous
@@ -417,7 +436,7 @@ export class Camp extends System {
         // against a 20 ms baseline, which is two prop builds landing together.
         if (c.queue.length) this._buildNext(c);
         c.raise = Math.min(1, c.raise + dt / RAISE_TIME);
-        this._applyRaise(c);
+        this._applyRaise(c, true);
       }
     }
     if (this.camps.length) this._publishSlots();
@@ -1099,6 +1118,13 @@ export class Camp extends System {
       try { camp.fire.rebuild(rnd); } catch (e) { console.warn('[camp] fire.rebuild threw', e); }
     }
     camp.fire?.setPosition(new THREE.Vector3(x, y + 0.02, z));
+    // The pit lies along the ground; the flame does not. `setOrientation` is
+    // the fire's own split — see the note on it in camp_fire.js. Guarded so an
+    // older Firepit without it still works, just level.
+    if (camp.fire?.setOrientation) {
+      standOn(world, x, z, 0, 1, this._q);
+      camp.fire.setOrientation(this._q);
+    }
 
     const wind = this.ctx.systems?.weather?.windDir
               ?? this.ctx.systems?.grass?.windDir
@@ -1169,6 +1195,15 @@ export class Camp extends System {
     obj.position.set(it.x, it.y, it.z);
     standOn(this.ctx.world, it.x, it.z, it.yaw, it.tilt ?? 1, this._q);
     obj.quaternion.copy(this._q);
+
+    // Lift whatever the tilt still leaves under the ground. Capped at 8 cm:
+    // beyond that the cure is worse than the disease, because a lift big
+    // enough to rescue a badly-tilted prop opens a visible gap on its downhill
+    // side, and a floating tent is not an improvement on a buried one. This is
+    // a finishing touch on a tilt that is already nearly right — if a prop
+    // needs more than 8 cm, its `tilt` is wrong and that is the thing to fix.
+    const foot = obj.userData?.footprint ?? it.foot ?? 0.5;
+    obj.position.y += Math.min(groundLift(this.ctx.world, it.x, it.z, this._q, foot), 0.08);
     obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     obj.userData.campItem = it;
     camp.root.add(obj);
@@ -1179,6 +1214,11 @@ export class Camp extends System {
     camp.props.push({
       obj, item: it,
       delay: 0.06 + (i / Math.max(1, camp.queueN - 1)) * 0.42,
+      // Whether this prop was visible last frame, so `_applyRaise` can sound
+      // the edge. Explicit rather than left undefined: `shown !== p.shown`
+      // would otherwise be true on the first comparison and sound a pop-OUT
+      // for a prop that has never been seen.
+      shown: false,
     });
     this._applyRaise(camp);
   }
@@ -1266,20 +1306,74 @@ export class Camp extends System {
    * sequence read as "the ground was cleared, then things were put on it"
    * rather than as a group fading in. Props scale up from their own base, with
    * a small overshoot — a prop that settles is a prop that was set down.
+   *
+   * `sound` is off by default and passed only from the two call sites in
+   * `update` that are actually animating something. Every other caller either
+   * has no props yet (`_pitch`), has just added one that has not appeared yet
+   * (`_buildNext`), or is the harness slamming a finished camp into place
+   * (`pitchAt`) — and that last one would otherwise fire eight cues on one
+   * frame every time `campshot.mjs` took a picture.
    */
-  _applyRaise(camp) {
+  _applyRaise(camp, sound = false) {
     const k = camp.raise;
     camp.ground?.setReveal(smoothstep(0.02, 0.62, k));
     camp.fire?.setReveal(smoothstep(0.30, 0.95, k));
+    // The clearing and the fire are objects too, and they bracket the whole
+    // event: earth first, fire last on the way in, and the reverse on the way
+    // out. Their thresholds are the same numbers the reveal above uses, so the
+    // cue can never drift away from the picture it belongs to.
+    this._cueAt(camp, 'ground', k > 0.02, sound);
+    this._cueAt(camp, 'fire', k > 0.30, sound);
 
     for (const p of camp.props) {
       const t = clamp01((k - p.delay) / Math.max(0.08, 1 - p.delay));
       // Back-ease with a gentle overshoot; never below zero, because a prop
       // that inverts for one frame is a flash of inside-out geometry.
       const e = t <= 0 ? 0 : 1 - Math.pow(1 - t, 2.2) * (1 - 0.14 * Math.sin(t * Math.PI));
-      p.obj.visible = t > 0.001;
+      const shown = t > 0.001;
+      // The ease is steep at the start — a prop is at two thirds of its size
+      // within 0.15 of its own `t` — so the frame it becomes visible IS the
+      // frame it arrives, and there is no better moment to put the sound on.
+      if (sound && shown !== p.shown) {
+        this.ctx.systems?.audio?.camp?.cue(p.item.kind, { x: p.item.x, z: p.item.z, out: !shown });
+      }
+      p.shown = shown;
+      p.obj.visible = shown;
       p.obj.scale.setScalar(Math.max(0.001, e));
     }
+  }
+
+  /**
+   * Edge-trigger one non-prop cue — the clearing, or the fire.
+   *
+   * These have no per-prop record to hang a flag on, so the camp carries the
+   * last state each one was seen in. Edge-triggered rather than level-
+   * triggered because `_applyRaise` runs every frame of the raise and
+   * `k > 0.02` is true for nearly all of them.
+   *
+   * The state is tracked on EVERY call, and only *sounded* when `sound` is set.
+   * Both halves of that matter, and each was a bug on its own:
+   *
+   *  - Tracking only when sounding lost the clearing's own cue below about
+   *    30 fps. `_pitch` leaves the camp at raise 0, so the first frame the
+   *    update loop sees is already at `dt / 1.15` — which is 0.014 at 60 fps
+   *    and 0.035 at 25 fps. Above the 0.02 threshold on a slow machine, so the
+   *    first observation WAS the edge, and a first observation is never
+   *    allowed to be one. The clearing simply never spoke.
+   *  - Sounding on every call would make `pitchAt(instant)` fire the lot in
+   *    one frame, and would then have the camp it left at raise 1 announce its
+   *    fire *lighting* on the first frame of the player's strike.
+   *
+   * Tracking always, sounding selectively, gets both: the harness's instant
+   * camp records `true` silently, so striking it later reads as the falling
+   * edge it actually is.
+   */
+  _cueAt(camp, kind, on, sound) {
+    const was = (camp.sounded ??= {})[kind];
+    if (was === on) return;
+    camp.sounded[kind] = on;
+    if (!sound || was === undefined) return;
+    this.ctx.systems?.audio?.camp?.cue(kind, { x: camp.x, z: camp.z, out: !on });
   }
 
   /**

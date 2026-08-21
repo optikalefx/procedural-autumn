@@ -112,6 +112,10 @@ export class Rocks extends System {
     this._occWarm = 2;
     this._occAny = false;
     this._occHit = new Set();
+    // Cells generated for `rocksAround` that the streamer never asked for —
+    // see there. Bounded, and thrown away wholesale rather than aged, because
+    // the only caller is a button press.
+    this._probe = new Map();
     this.stats = { instances: 0, tris: 0, cells: 0 };
   }
 
@@ -477,6 +481,56 @@ export class Rocks extends System {
       }
     }
     return null;
+  }
+
+  /**
+   * Every rock of consequence within `r` of a point — including the ones that
+   * have not streamed in.
+   *
+   * `boulderNear` above deliberately walks the live cells only, and for a camp
+   * pitched at the player's feet that is right. The rescue search is the other
+   * case: it asks about ground up to 340 m away, which is well outside the
+   * streamed set, and a query that answers "no rocks" for unloaded ground will
+   * cheerfully drop the camper inside a boulder that pops in a second later.
+   * That is not hypothetical — it is what tools/_scratch/rescuetest.mjs caught
+   * the moment the search was allowed to reach past the streaming radius.
+   *
+   * The scatter is a pure function of cell coordinates and the seed, so a cell
+   * that is not resident can simply be generated and thrown in a small cache.
+   * It costs what one streamer job costs, and only a button press pays it.
+   */
+  rocksAround(x, z, r, minSize = 0.45, out = []) {
+    const cx0 = Math.floor((x - r) / CELL), cx1 = Math.floor((x + r) / CELL);
+    const cz0 = Math.floor((z - r) / CELL), cz1 = Math.floor((z + r) / CELL);
+    for (let cz = cz0; cz <= cz1; cz++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const key = cx * 100003 + cz;
+        const live = this.cells.get(key);
+        // A resident cell built at a coarser LOD than we are asking about has
+        // dropped exactly the rocks in question, so it is generated too.
+        const list = (live && live.minSize <= minSize)
+          ? live.instances : this._probeCell(cx, cz, key, minSize);
+        for (let i = 0; i < list.length; i++) {
+          const inst = list[i];
+          if (inst.size < minSize) continue;
+          const dx = inst.x - x, dz = inst.z - z;
+          if (dx * dx + dz * dz < r * r) out.push(inst);
+        }
+      }
+    }
+    return out;
+  }
+
+  _probeCell(cx, cz, key, minSize) {
+    const hit = this._probe.get(key);
+    if (hit && hit.minSize <= minSize) return hit.instances;
+    const instances = [];
+    this.scatter.generateCell(cx, cz, CELL, minSize, instances);
+    // Cleared wholesale: it is a scratch pad for one search, not a second
+    // streaming cache to keep coherent with the first.
+    if (this._probe.size > 192) this._probe.clear();
+    this._probe.set(key, { instances, minSize });
+    return instances;
   }
 
   update(dt, elapsed) {

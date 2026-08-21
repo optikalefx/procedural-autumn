@@ -38,6 +38,23 @@ const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist'],
 });
 const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+// Kill vite's HMR socket. A reload mid-run does not fail the capture, it
+// SILENTLY replaces it: the first run of this at fov 18 reloaded on frame ~12,
+// went back to the default daytime chase camera, and reported a twinkle depth
+// of 0.998 with 116x flares. Every number in it was of a hillside in daylight.
+await page.addInitScript(() => {
+  const RealWS = window.WebSocket;
+  window.WebSocket = function (url, protocols) {
+    if (typeof url === 'string' && /[?&]token=|vite-hmr|__vite/.test(url)) {
+      return { readyState: 3, url, close() {}, send() {}, addEventListener() {},
+               removeEventListener() {}, set onopen(_) {}, set onclose(_) {},
+               set onerror(_) {}, set onmessage(_) {} };
+    }
+    return new RealWS(url, protocols);
+  };
+  window.WebSocket.prototype = RealWS.prototype;
+  Object.assign(window.WebSocket, RealWS);
+});
 await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
 
@@ -61,6 +78,18 @@ for (let i = 0; i < FRAMES; i++) {
   const out = `${DIR}/f${String(i).padStart(2, '0')}.png`;
   await page.screenshot({ path: out });
   shots.push(readFileSync(out).toString('base64'));
+}
+
+// And check anyway: if the pose or the clock moved, the run is void.
+const held = await page.evaluate(() => ({
+  forced: window.__forceCamera === true,
+  hour: window.__lighting.hour,
+  speed: window.__lighting.cycleSpeed,
+}));
+if (!held.forced || Math.abs(held.hour) > 1e-6 || held.speed !== 0) {
+  console.error('[twinkle] the page moved under the capture — ' + JSON.stringify(held));
+  await browser.close();
+  process.exit(2);
 }
 
 const res = await page.evaluate(async (b64s) => {
@@ -116,6 +145,24 @@ const res = await page.evaluate(async (b64s) => {
     }
     if (mx > 0) depths.push({ mx, depth: (mx - mn) / mx });
   }
+  // Flare census: how often does a star jump well clear of its own baseline?
+  // This is the number the redesign is actually aiming at — not the average
+  // swing, but how many discrete events a viewer gets per second.
+  let events = 0, evPeak = 0;
+  for (const [x, y] of stars) {
+    const ser = lums.map((l) => {
+      let best = -Infinity;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) best = Math.max(best, con(l, x + dx, y + dy));
+      return best;
+    });
+    const med = [...ser].sort((a, b) => a - b)[ser.length >> 1];
+    if (med <= 0) continue;
+    let inEv = false;
+    for (const v of ser) {
+      if (v > med * 1.35) { if (!inEv) { events++; inEv = true; } evPeak = Math.max(evPeak, v / med); }
+      else inEv = false;
+    }
+  }
   depths.sort((a, b) => a.depth - b.depth);
   const q = (p) => depths.length ? depths[Math.min(depths.length - 1, Math.floor(p * depths.length))].depth : 0;
   const bright = depths.filter((d) => d.mx > 0.15).map((d) => d.depth).sort((a, b) => a - b);
@@ -124,6 +171,7 @@ const res = await page.evaluate(async (b64s) => {
     p10: q(0.10), p50: q(0.50), p90: q(0.90), max: q(0.999),
     brightN: bright.length,
     brightP50: bright.length ? bright[Math.floor(bright.length / 2)] : 0,
+    events, evPeak,
   };
 }, shots);
 
@@ -131,5 +179,7 @@ console.log(`stars tracked ${res.stars}   over ${FRAMES} frames ${GAP}s apart`);
 console.log(`swing depth (max-min)/max:  p10 ${res.p10.toFixed(3)}   p50 ${res.p50.toFixed(3)}` +
             `   p90 ${res.p90.toFixed(3)}   max ${res.max.toFixed(3)}`);
 console.log(`bright stars (contrast>0.15): ${res.brightN}   p50 depth ${res.brightP50.toFixed(3)}`);
+console.log(`flare events (>1.35x own baseline): ${res.events} over ${(FRAMES * GAP).toFixed(1)}s   ` +
+            `= ${(res.events / (FRAMES * GAP)).toFixed(2)}/s in frame   peak ${res.evPeak.toFixed(2)}x`);
 console.log(`frames: ${DIR}`);
 await browser.close();

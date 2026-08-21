@@ -599,7 +599,17 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       // tent door dead at the fire is what a level editor does; a real one is
       // pitched across the slope with the door wherever that leaves it.
       yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 0.62,
-      tilt: 0.55,      // how much of the ground normal it takes
+      // 0.92, not the 0.55 this started at. The old value came from "a tent
+      // floor is a taut rectangle that bridges small undulations rather than
+      // draping over them", which is true and was the wrong lever: bridging
+      // is about BUMPS, and the site test already caps bumpiness under a
+      // prop's own footprint at 0.34 m, so there is very little left to
+      // bridge. What 0.55 actually did was hold the tent half-level on a
+      // hillside, which buries its uphill edge — the player's report.
+      //
+      // A tent pitched on a slope lies along the slope. The remaining 0.08
+      // keeps a hint of a taut floor rather than a fabric draped over terrain.
+      tilt: 0.92,
       // Both tables are four long, so the same draw is uniform whichever
       // builder `style` sends this to. See RIDGETENT_COLORWAYS.
       opts: { style, colorway: Math.floor(rnd() * 4), wear: rnd() },
@@ -840,6 +850,43 @@ export function standOn(world, x, z, yaw, tilt = 1, out = new THREE.Quaternion()
   tilted.slerp(new THREE.Quaternion(), 1 - clamp01(tilt));
   return out.setFromAxisAngle(up, yaw).premultiply(tilted);
 }
+
+/**
+ * How far a prop has to be lifted so no part of its base is under the ground.
+ *
+ * `standOn` orients a prop, and any prop that takes less than the FULL ground
+ * normal is left at an angle to the terrain it stands on — so one side of its
+ * base is below the surface. That is what "cutting into the side" is, and it
+ * scales with the footprint: at tilt 0.92 on a 0.27 grade, a 1.45 m tent still
+ * buries its uphill corner by about 3 cm, and at the 0.55 it used to use it was
+ * nearly 20 cm.
+ *
+ * Samples the terrain around the footprint, expresses each sample in the prop's
+ * own rotated frame, and returns the largest amount by which the ground stands
+ * proud of the prop's base plane.
+ *
+ * Clamped by the caller. A lift big enough to fix a bad tilt is also big enough
+ * to leave a visible gap on the downhill side, and a floating tent is not an
+ * improvement on a buried one — the lift is a finishing touch on top of a tilt
+ * that is already nearly right, not a substitute for one.
+ */
+export function groundLift(world, x, z, quat, footprint) {
+  const inv = _liftQ.copy(quat).invert();
+  const y0 = world.getHeight(x, z);
+  let lift = 0;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU;
+    const dx = Math.cos(a) * footprint, dz = Math.sin(a) * footprint;
+    const h = world.getHeight(x + dx, z + dz);
+    // The sample, relative to the prop's origin, in the prop's own frame. Its
+    // y is how far above the prop's base plane the ground is at that point.
+    _liftV.set(dx, h - y0, dz).applyQuaternion(inv);
+    if (_liftV.y > lift) lift = _liftV.y;
+  }
+  return lift;
+}
+const _liftQ = new THREE.Quaternion();
+const _liftV = new THREE.Vector3();
 
 /** A seeded RNG keyed off a site's position, so the same spot builds the same camp. */
 export function siteRng(x, z, seed = 0) {

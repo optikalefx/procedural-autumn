@@ -6164,3 +6164,85 @@ lens and the camper is untouched, which is precisely what the old cone could not
 say. `occnear.mjs` and `occrock.mjs` pose the camera at a set distance off one
 chosen trunk or boulder for the dissolve ramp: gone at 1 m, an even half-dither
 over the whole object at 2.4 m, untouched at 5 m.
+
+## Rescue round — the button now answers every time, and two peer systems paid for it (vehicle → rocks, 2026-08-21)
+
+The player, with a screenshot of the camper nose-first into a gorge wall with a
+boulder behind it:
+
+> "its possible to get stuck and no ability to get unstuck. because rocks are
+> collideable now. We need the rescue function to always work, always find a
+> spot to recover from. Its not fun if you have to just refresh the game."
+
+They are right, and the number was worse than "possible". `rescuediag.mjs` over
+500 reachable origins: **4.0% of presses declined outright, and 13.0% of the
+presses made from steep or wet ground** — which is the ground the button exists
+for. A decline there is the end of the session.
+
+### What the search does now
+
+Four passes, first answer wins (`Vehicle._rescueSite`):
+
+| pass | what it is | when it fires |
+|---|---|---|
+| near rings | 20 / 30 / 42 m, ideal then acceptable — unchanged | 85% of presses land on the 20 m ring |
+| wide rings | 60, 85, 120, 170, 240, 340 m, same standards | the gorge and the boulder pocket |
+| last resort | tighter clearance (2.5 m), a 1.6 m step, slope to 0.75 | nothing above answered anywhere |
+| landmark | nearest road/meadow POI, then the camper's own spawn | there is no scored site in the world |
+
+Two other things changed with it. Ring sampling is now a fixed **arc** (4.5 m,
+capped at 200 samples) rather than 28 bearings whatever the radius — 28 samples
+on a 340 m ring steps over whole meadows. And every candidate gets four
+**openness probes** at 12 m: a shelf halfway up a gorge passes every footprint
+test there is and is still somewhere you press R again from, and the thing that
+separates it from a verge is that a verge has drivable ground leading off it.
+
+Measured, same 500 origins: **0 declines**, 93% still land on the ideal tier,
+search cost 0.39 ms mean / 2.8 ms worst (was 0.27 / 1.50). `stucklab.mjs` is
+new and samples the other end of the distribution — 120 origins with a mean of
+**15.6 of 16 bearings walled in**, which is the bug report's gorge: 0 declines,
+median hop 42 m, p90 120 m, worst 240 m.
+
+### ROCKS — `rocksAround(x, z, r, minSize, out)`, and why I could not use `boulderNear`
+
+`boulderNear` walks the live cells only, which is right for a camp pitched at
+the player's feet. The rescue now asks about ground up to 340 m out, well past
+the streaming radius, and a query that answers "no rocks" for unloaded ground
+drops the camper inside a boulder that pops in a second later. That is not
+hypothetical — `rescuetest.mjs` caught a landing at **gap −1.43 m** the moment
+the search was allowed to reach past the streamed set.
+
+So `Rocks.js` gained `rocksAround`, which reads a resident cell where there is
+one (including refusing a cell built at a coarser LOD than the query) and
+otherwise generates it through your own `scatter.generateCell` into a small
+bounded scratch cache. It costs what one streamer job costs and only a button
+press pays it. The signature is the one `cragcollide.mjs` in `_scratch` already
+assumes, so it appears to be the one you were going to build anyway — if you
+would rather own it differently, the only caller is `Vehicle._rockGap`.
+
+### PHYSICS — a teleport latched the park brake one frame later, in mid-air
+
+Not my bug and not the player's report, but it is what the harness found once
+every landing was being judged instead of a third of them being declined.
+`_hold` reads `wheelIsInContact` from the previous step. One frame after a
+rescue those flags still describe the ground the camper was taken **from**, so
+the hold saw four wheels down and zero velocity and locked the body solid at
+the arrival pose — floating 2 cm up with the suspension fully extended and two
+wheels hanging, until the player drove away. `HOLD_LAND` (0.35 s) is the gate:
+after a teleport or an auto-right, the hold arms and brakes but may not latch
+until the springs have taken the weight.
+
+The whole point of this is one line of `rescuetest.mjs` output — landings that
+came to rest on fewer than four wheels, over 60 rescues:
+
+```
+before   40 of 60
+after     4 of 60
+```
+
+### Where it stands
+
+`rescuetest.mjs --n 150`: 0 failed, 0 declined, worst slide 0.11 m in the two
+seconds after landing, tightest clearance 2.74 m, and the 120-press spam test
+clean with 0 NaN events. `holdtest.mjs` sweep unchanged: held at every gradient
+from 0.00 to 1.00, 0.000000 m of displacement.

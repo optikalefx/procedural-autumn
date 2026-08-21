@@ -1272,6 +1272,25 @@ export class Firepit {
   }
 
 
+  /**
+   * Lie the pit along the ground.
+   *
+   * Only the SOLIDS and the ember bed take the rotation. The flame, the sparks
+   * and the smoke stay upright, and that is the whole reason this is not just
+   * `group.quaternion = q`: fire goes up. A flame leaning eighteen degrees down
+   * a hillside is a blowtorch, and it is wrong in a way nobody has to think
+   * about to notice.
+   *
+   * Added because the ring took no rotation at all, so on a slope its uphill
+   * stones buried themselves and its downhill stones hung in the air — the
+   * player's report was that "the tent and fire are cutting into the side"
+   * while the telescope, which takes the full ground normal, was fine.
+   */
+  setOrientation(q) {
+    this.solids?.quaternion.copy(q);
+    this.bed?.quaternion.copy(q);
+  }
+
   setPosition(v) {
     this.group.position.copy(v);
     // The light is not a child of the group (it outlives this object), so it

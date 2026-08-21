@@ -15,7 +15,7 @@ scuffed to bare dirt. `src/camp/`, thirteen modules, plus a `Camp` system in
 | how many | up to **four** at once, separated by the sum of their radii plus 3 m. The fifth strikes the furthest. |
 | the clearing | a shader fact, not a re-scatter: an array of vec4s the grass and cover read, with an irregular edge shared by the shader, the dirt mesh and the reticle |
 | camera | walks to the fire when a camp is made; click the car to come back; any throttle takes it back |
-| audio | a fire bed plus crackles in clusters, on its own metering tap |
+| audio | a fire bed plus crackles in clusters, and a **pop cue per object kind** as each one appears and disappears — nylon, tube, plastic, wood, metal, earth. Both on the `camp` metering tap |
 
 ## The numbers that decided things
 
@@ -62,6 +62,20 @@ annulus a player can aim into).
    not yet.
 4. **The smoke reads as a dark dithered mass from directly overhead at dusk**
    (`shots/camp/dusk4/plan.png`).
+5. **The fire's crackles are ~25 dB under their own numbers, and nobody has
+   ever heard them.** `CampAudio.update` gates the entire layer on
+   `camp?.fire`, and `Camp` had no `fire` getter — only each camp *record* had
+   one — so `lit` was always 0 and the fire has never made a sound. The getter
+   is there now, which is what made the second half measurable: the crackle
+   gains in `_crackle` are nominal, not resulting amplitudes. Pink noise
+   through a Q 5.5 band loses about 25 dB before it reaches the bus, so forty
+   forced crackles at level 0.167 peak at -49.9 dBFS where the numbers imply
+   -25. `camp_props.js` corrects exactly these two losses (`bwGain`,
+   `_srcNorm`) and the same treatment would suit the crackles — but that is a
+   change to a shipped layer's mix, so it is left for whoever owns it.
+   Measured by `tools/_scratch/camppop.mjs`, which prints the figure on every
+   run. Nothing caught this earlier because `audiotest.mjs` does not read the
+   `camp` tap and the Sound Lab had no camp entry to select; both now do.
 
 ## The lesson from this round
 

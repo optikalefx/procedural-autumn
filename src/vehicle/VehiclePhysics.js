@@ -73,6 +73,18 @@ const HOLD_LATCH_T = 0.75;      // s
 // player asked to be impossible. One wheel is enough to say it is not airborne;
 // none at all is airborne and never latches at any age.
 const HOLD_LATCH_SKID = 2.2;    // s
+// One more gate, and it is not about how the camper is moving but about how
+// recently it was *moved*. Every contact test above reads the previous step,
+// so for one frame after a teleport the controller still reports the four
+// wheels resting where the camper was taken from — four wheels down and zero
+// velocity, which is a perfect latch. The camper locks solid at the arrival
+// pose, hanging a couple of centimetres up on fully extended springs with two
+// wheels off the ground, and stays there until it is driven away. Over 60
+// rescues that was 40 of the landings; with this gate it is 4, and those four
+// are ordinary articulation on uneven ground (tools/_scratch/rescuetest.mjs).
+// A settle time rather than a frame count, so it does not move with the frame
+// rate; measured, the springs take about 0.2 s to take the weight.
+const HOLD_LAND = 0.35;         // s
 // Wheel-brake gain while the hold is armed but not yet latched. This is what
 // gets the camper *to* the latch, and it is a "pedal on the floor" number by
 // design — a parking request is not a moment to be gentle. Four wheels at this
@@ -129,6 +141,9 @@ export class VehiclePhysics {
     // `holding` is the body actually locked. See `_hold`.
     this.holdArmed = false;
     this.holding = false;
+    // Time since the last teleport. Starts long ago: the camper's first frames
+    // are a spawn, not a rescue, and nothing is stale about them.
+    this._sinceTeleport = 1e3;
     this.holdDrift = 0;
     // Solid rock, streamed. Null until `setRockSource` is called: the Rocks
     // system is built before the camper but the capture harness runs without
@@ -414,6 +429,9 @@ export class VehiclePhysics {
     if (this.holding) return;
 
     this._armedFor += dt;
+    // Fresh off a teleport the contact flags below describe the ground the
+    // camper was taken *from*, so nothing may latch yet. See HOLD_LAND.
+    if (this._sinceTeleport < HOLD_LAND) return;
     // Contact from the previous step: one frame stale, and a frame is 8 ms of
     // a decision about whether the camper has stopped.
     let contact = 0;
@@ -513,7 +531,7 @@ export class VehiclePhysics {
 
     const t = this.body.translation();
     this._streamGround(t.x, t.z);
-    this.rocks?.update(t.x, t.z);
+    this.rocks?.update(t.x, t.y, t.z);
 
     // Cache the basis once per frame.
     this.syncBasis();
@@ -636,6 +654,7 @@ export class VehiclePhysics {
     // The gain here is what stops the camper *reaching* the latch, and what
     // keeps the wheels reading as braked once it is there. It is not what holds
     // it: the lock is.
+    this._sinceTeleport += dt;
     this._hold(dt, !!(ctrl.hold || ctrl.park));
     if (this.holdArmed) {
       engine = 0;
@@ -779,6 +798,9 @@ export class VehiclePhysics {
       // Let go before repositioning: `setTranslation` on a locked body is a
       // pose the pin would immediately undo.
       this.holdRelease();
+      // Same stale-contact trap as a teleport, for the same reason: the camper
+      // is about to be lifted off whatever its wheels are touching now.
+      this._sinceTeleport = 0;
       this._invertedFor = 0;
       this._stuckFor = 0;
       this.recoveries++;
@@ -814,6 +836,7 @@ export class VehiclePhysics {
     this.holdRelease();
     this.holdArmed = false;
     this._armedFor = 0;
+    this._sinceTeleport = 0;
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading);
     // Ground first, then place on it: the body has to be set against the patch
     // it is about to stand on, not the one it is leaving. Height comes off the

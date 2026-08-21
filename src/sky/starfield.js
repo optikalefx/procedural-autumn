@@ -74,6 +74,17 @@ export const STAR_GLSL = /* glsl */`
 // stars/Mpx on the sky-filling framing against the old 82. That is no longer a
 // naked-eye sky and it is not meant to be — it is the sky this game wants over
 // its valley. Do not "correct" it back toward the plates without asking.
+//
+// ── one caution about every count in this comment ─────────────────────────
+// They are all CONTRAST counts, so they include the scintillation, and the
+// scintillation changed. When the twinkle was a +-0.34 sine on every star
+// (see skStars) the census caught faint stars at the top of their swing that
+// are below the floor the rest of the time, and it counted them. With most of
+// the field now quiet, the same framing measures 448 where it measured 484 —
+// about 7% fewer, on an unchanged SK_FILL. No star was removed and the mean
+// light of the field is the same to within the flare's small positive bias;
+// the instrument was counting twinkle and now it is not. Do not raise SK_FILL
+// to get the old number back.
 #define SK_FILL 0.210
 // Extra fill inside the Milky Way. The band is *made* of stars we cannot
 // resolve plus a scatter of ones we can.
@@ -299,15 +310,80 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       // into a grey wash.
       float halo = exp(-r / (radE * 3.4)) * m * m * 0.10;
 
-      // Scintillation. Rate, phase and depth are all per-star: a field driven
-      // by one global sin() reads as the whole sky having a fault. Two
-      // incommensurate terms so no star has an obvious period. Bright stars
-      // twinkle less deeply — they are the anchors of the frame and a bright
-      // point flicking on and off reads as a dropped pixel.
-      float rate = 0.55 + 2.45 * hb.y;
+      // ── Scintillation ───────────────────────────────────────────────────
+      //
+      // What this replaces twinkled EVERY star in the sky, by +-0.34 of its own
+      // amplitude, as a sum of two sines. Measured on screen with
+      // tools/_scratch/twinkle.mjs — camera nailed down, only time moving —
+      // that came back at a 0.375 median swing over ten seconds, which is an
+      // enormous amount of modulation. Asked from the eyepiece whether the sky
+      // twinkled at all, the answer was no. Both of those are true at once, and
+      // the three reasons are the whole design of this block:
+      //
+      //   * a swing spread evenly over 500 points is not an event anywhere.
+      //     Twinkle is read as a CONTRAST — this star is restless, that one is
+      //     fixed — and if every star breathes there is no contrast to read,
+      //     only a field that is faintly unstable everywhere.
+      //   * a sine is the wrong shape. Scintillation is a brief flare with
+      //     quiet either side of it; a sine spends most of its time halfway
+      //     between its ends, moving slowest exactly where it is largest, which
+      //     is the one place nothing can be noticed from.
+      //   * at 0.55..3.0 rad/s the slowest stars had an eleven-second period.
+      //     A smooth brightness change over eleven seconds is not perceived as
+      //     flicker; it is not perceived.
+      //
+      // So the field is now three behaviours drawn per star: most stars are
+      // STEADY, a third SHIMMER, and about one in eight can FLARE. The sky's
+      // total modulation goes down and its median star is quieter than before —
+      // and it reads as twinkling for the first time, because now some stars
+      // do and most stars do not.
+      vec3 hc = skHash33(seed.yzx * 2.11 + 43.9);
+
+      // Airmass. Scintillation belongs to the sightline, not to the star: a low
+      // star is seen through several times the air the zenith is and boils,
+      // which is why Sirius is the one people notice and Polaris is not.
+      //
+      // Physically this should fall to near nothing overhead. It does not, and
+      // that is a deliberate trade rather than an oversight: the telescope
+      // pitches up to 80 degrees, so an honest airmass term would switch the
+      // effect off exactly where the player has walked over to look at it.
+      // 0.72 overhead against 1.0 at the skyline keeps the gradient there to be
+      // found without spending the feature to buy it.
+      float air = mix(1.0, 0.72, clamp(abs(dir.y), 0.0, 1.0));
+
+      float rate = 1.10 + 4.20 * hb.y;
       float ph   = hb.z * 51.0;
-      float tw   = 1.0 + (0.34 - 0.20 * m) *
-                   (0.62 * sin(t * rate + ph) + 0.38 * sin(t * rate * 1.83 + ph * 2.7));
+
+      // 1. The shimmer. Two incommensurate sines, so no star has a period an
+      //    eye can lock onto — but gated on a hash that lets only about a third
+      //    of the field in, and ramped, so even those arrive at every depth
+      //    from nothing up to full. The 0.055 floor is what everyone else
+      //    keeps: the sky is never perfectly still, it is just quiet.
+      //
+      //    Bright stars shimmer less. They anchor the frame, and a bright point
+      //    visibly pumping reads as a dropped pixel rather than as a star —
+      //    which is also why the flare below, not the shimmer, is what the
+      //    bright end is allowed to do.
+      float shim  = smoothstep(0.62, 1.00, hc.x);
+      float wob   = 0.62 * sin(t * rate + ph) + 0.38 * sin(t * rate * 1.83 + ph * 2.7);
+      float depth = (0.055 + 0.235 * shim) * (1.0 - 0.45 * m) * air;
+
+      // 2. The flare, and the quiet between is the point of it. Two slow pulses
+      //    that only spike where they COINCIDE: each star fires on the beat
+      //    between its own two rates — every 8 to 40 seconds depending on its
+      //    hash, for about a second — and sits at baseline the rest of the
+      //    time. Raised to the 7th so the coincidence is narrow; a lower power
+      //    turns the flare back into the swell it is meant not to be.
+      //
+      //    Skewed toward the bright end, because that is where it can be seen
+      //    at all and because it is true — the naked-eye scintillators are the
+      //    bright ones. A frame holds a handful of eligible stars and they
+      //    never fire together.
+      float f1    = 0.5 + 0.5 * sin(t * rate * 0.49 + ph * 1.30);
+      float f2    = 0.5 + 0.5 * sin(t * rate * 0.29 + ph * 2.10);
+      float spark = pow(f1 * f2, 7.0) * smoothstep(0.90 - 0.10 * m, 0.96, hc.y) * air;
+
+      float tw = 1.0 + depth * wob + 0.55 * spark;
 
       // Colour. The plates are mostly blue-white with a clear minority of amber
       // stars — look at night.jpg, there are half a dozen distinctly orange
@@ -333,7 +409,19 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       vec3 tint  = ci < 0.22 ? mix(warm, white, (ci / 0.22) * 0.55)
                              : mix(white, cool, ((ci - 0.22) / 0.78) * 0.85);
 
-      acc += tint * (amp * tw * (core + halo));
+      // The flare BLOOMS as well as brightens, and that is what makes it read
+      // as a glow. A core that only gets brighter reads as a value change; a
+      // star that grows a halo for a moment reads as light. It matters most on
+      // the faint stars, which carry no halo of their own — the halo above is
+      // m^2-scaled and so belongs to the bright end only.
+      //
+      // Deliberately TIGHTER than that halo (1.8 against 3.4). A wide bloom is
+      // a fog, not a sparkle, and it also keeps the term down to 0.3% of the
+      // core's peak by the 8-radii cull above, where a wider one would step to
+      // zero at the cut and draw a faint disc edge around every flaring star.
+      float glow = exp(-r / (radE * 1.8)) * spark * 0.30;
+
+      acc += tint * (amp * (tw * (core + halo) + glow));
     }
   }
   return max(acc, 0.0);

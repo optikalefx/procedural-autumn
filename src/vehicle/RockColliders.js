@@ -22,15 +22,21 @@
 //  is worth building at any moment:
 //
 //    · only rocks near the camper (ADD_R, dropped again at DROP_R),
-//    · only rocks that stand far enough out of the ground to be felt,
-//    · rebuilt only when the camper has actually moved (REFRESH_MOVE),
+//    · only rocks that stand far enough out of the ground to be felt
+//      (`protrusion`, and read that one before touching it — the obvious
+//      version of that measurement is what made the mountains hollow),
+//    · rescanned when the camper has moved (REFRESH_MOVE) or when the streamer
+//      has put more rock on the hill since the last look,
 //    · and a few per frame, never a field at once.
 //
 //  Measured over 34 random drivable spots (tools/_scratch/rockcensus.mjs), the
 //  number of rock instances inside ADD_R is a median of 2, a p90 of 10 and a
 //  worst case of 23 — so CAP is four times the worst case this world can
 //  actually present, and exists only so a future scatter cannot turn a scree
-//  slope into a thousand-collider stall.
+//  slope into a thousand-collider stall. That census sampled ground of slope
+//  under 0.9 and never saw a crag: on high, steep ground the same count is a
+//  median of 7 and a worst case of 30 (tools/_scratch/cragcollide2.mjs), which
+//  the cap still clears three times over.
 //
 //  The shape is the drawn mesh's own convex hull, scaled per instance. Rock
 //  forms are already convex-ish polytopes of 12–82 unique vertices (they are
@@ -58,6 +64,14 @@ const DROP_R = 38;            // m — and lose it out here. Hysteresis, so a
                               // camper idling on the line does not thrash.
 const REFRESH_MOVE = 4;       // m of travel before the wanted set is rescanned
 const ADD_PER_FRAME = 3;      // colliders built per frame, at most
+// Frames a streaming-triggered rescan waits behind the last one. The trigger is
+// the streamer's instance count, which changes on nearly every frame while
+// driving — this keeps that from turning into a rescan per frame, and a third
+// of a second is far below noticing. A rescan walks every streamed instance and
+// costs 0.03 ms of a 16.7 ms frame at its worst, over 3286 of them on high
+// ground (tools/_scratch/rescancost.mjs), so the throttle is thrift rather than
+// necessity.
+const SETTLE_FRAMES = 20;
 const CAP = 96;               // live colliders, nearest-first (see above)
 
 // How far a rock must stand out of the ground before it is worth colliding
@@ -68,15 +82,63 @@ const CAP = 96;               // live colliders, nearest-first (see above)
 // add a rattle the player cannot see the cause of.
 const MIN_PROTRUDE = 0.14;
 
-// Plan-view radius around the camper inside which a *new* collider is held
-// back. Nothing here is about driving: it is about a rock that is already
-// inside the camper when its collider would be built, which is what a spawn, a
-// teleport or an auto-recovery onto a boulder looks like. Rapier resolves that
-// penetration by firing the camper into the sky. Holding the collider back
-// leaves exactly today's behaviour (no collision) until the camper is clear,
-// at which point it appears. 2.9 m is the chassis half-diagonal (0.86, 2.18)
-// plus a little.
+// How close the camper may be to a rock's own box before a *new* collider for
+// it is held back. Nothing here is about driving: it is about a rock that is
+// already inside the camper when its collider would be built, which is what a
+// spawn, a teleport or an auto-recovery onto a boulder looks like. Rapier
+// resolves that penetration by firing the camper into the sky. Holding the
+// collider back leaves exactly today's behaviour (no collision) until the
+// camper is clear, at which point it appears. 2.9 m is the chassis
+// half-diagonal (0.86, 2.18) plus a little.
+//
+// Measured against the rock's own local box rather than as a disc around its
+// origin, and that distinction is the whole of the second half of the crag bug.
+// A disc has to be `SPAWN_CLEAR + max(sx, sz)` wide to cover the stone, which
+// for a 20 m cliff block is a 23 m no-build zone — so the camper could stand
+// anywhere near the block, in clear air, with the collider permanently held
+// back for being *close to the block's centre*. The box is the same test where
+// it matters (nothing can be inside the stone without being inside its box) and
+// costs a quaternion inverse per queued rock.
 const SPAWN_CLEAR = 2.9;
+
+/**
+ * How far a rock stands out of the hill it is standing in, in metres.
+ *
+ * The obvious version of this — top of the rock, minus the terrain height at
+ * the rock's own origin — is right on a meadow and badly wrong on a mountain,
+ * and it is why the biggest rock in the world was the one you could drive
+ * through. A crag block is planted as a wedge driven into the slope
+ * (RockScatter._place, the 'sag' anchor): its uphill corner ends up tens of
+ * metres inside the hill and its downhill corner reaches out over the fall
+ * line, which is what makes a cliff band a cliff band. Anchoring that block
+ * puts its ORIGIN as much as 1.3 sizes below the ground at its own centre, so
+ * `top - groundY` for a 16 m cliff standing 20 m proud of the slope below it
+ * reads as a comfortable −3 m: buried, skip it, no collider. Measured over
+ * parked positions on high ground (tools/_scratch/cragwhy.mjs) that dropped a
+ * quarter of the rock in front of the camper, and every one of the big ones.
+ *
+ * The ground under a rock is a plane, not a height, and the scatter already
+ * wrote that plane onto the instance — `groundY` with the terrain's own
+ * gradient in `groundGX`/`groundGZ` — because the shader needs it to draw the
+ * contact band. Following it out to the rock's own edge gives the lowest ground
+ * the rock is standing over, which is the face you meet coming at it from
+ * downhill. Checked against terrain actually sampled around each rock
+ * (tools/_scratch/cragcollide2.mjs) the plane is worth the trust: median error
+ * 0.07 m, p90 0.55 m, and it recovers 36 of the 37 standing rocks the old test
+ * dropped while wrongly admitting 6 buried ones — which cost nothing, being
+ * hulls sat under the heightfield where nothing can reach them.
+ *
+ * Rotation is ignored on purpose: the reach is the larger plan half-extent, so
+ * this is the fall across a disc that contains the block at any yaw. Being a
+ * little generous here is the safe direction — the budget it spends is 2 more
+ * colliders inside ADD_R at the median (5 → 7, worst case 29 → 30 against a
+ * CAP of 96).
+ */
+function protrusion(r, h) {
+  const reach = Math.max(h.bx * r.sx, h.bz * r.sz);
+  const fall = Math.hypot(r.groundGX ?? 0, r.groundGZ ?? 0) * reach;
+  return r.y + h.topY * r.sy - (r.groundY - fall);
+}
 
 /** Deduplicated local-space vertices of one built rock variant. */
 function hullPoints(geom) {
@@ -109,12 +171,14 @@ export class RockColliders {
     this._next = 0;                 // cursor into `pending`
     this._lastX = 1e9;
     this._lastZ = 1e9;
-    this._hulls = new Map();        // 'arch:variant' -> { pts, topY }
+    this._stamp = -1;               // the streamer's count at the last rescan
+    this._sinceScan = 0;            // frames since then
+    this._hulls = new Map();        // 'arch:variant' -> { pts, topY, bx, by, bz }
     this.count = 0;
     this.deferred = 0;              // held back by SPAWN_CLEAR, for diagnosis
   }
 
-  /** Local hull + local top height for one archetype variant, built once. */
+  /** Local hull, top height and plan extents for one variant, built once. */
   _hull(arch, variant) {
     const key = `${arch}:${variant}`;
     let h = this._hulls.get(key);
@@ -122,10 +186,22 @@ export class RockColliders {
     const geom = this.source?.library?.[arch]?.[variant];
     if (!geom) { this._hulls.set(key, null); return null; }
     if (!geom.boundingBox) geom.computeBoundingBox();
+    const b = geom.boundingBox;
     const pts = hullPoints(geom);
     // Four points is the minimum that bounds a volume; anything less is a
     // degenerate hull Rapier would either reject or turn into a plane.
-    h = pts.length >= 12 ? { pts, topY: geom.boundingBox.max.y } : null;
+    h = pts.length >= 12 ? {
+      pts,
+      topY: b.max.y,
+      // Local half-extents, the same numbers `archFootprints` hands the scatter
+      // to plant the block with. Used twice below: to work out how far downhill
+      // the ground under the rock has fallen by the time it reaches the rock's
+      // own edge, and to hold a collider back off the camper by the block's
+      // actual shape rather than by a radius.
+      bx: Math.max(Math.abs(b.min.x), Math.abs(b.max.x)),
+      by: Math.max(Math.abs(b.min.y), Math.abs(b.max.y)),
+      bz: Math.max(Math.abs(b.min.z), Math.abs(b.max.z)),
+    } : null;
     this._hulls.set(key, h);
     return h;
   }
@@ -151,11 +227,7 @@ export class RockColliders {
         if (d2 > ADD_R * ADD_R) continue;
         const h = this._hull(r.arch, r.variant);
         if (!h) continue;
-        // `groundY` is the terrain height the scatter measured at this rock's
-        // own origin when it planted it — the same number `_place` anchored
-        // against, so this costs no terrain sampling and cannot disagree with
-        // the placement.
-        if (r.y + h.topY * r.sy - r.groundY < MIN_PROTRUDE) continue;
+        if (protrusion(r, h) < MIN_PROTRUDE) continue;
         want.push({ r, d2, hull: h });
       }
     }
@@ -185,14 +257,40 @@ export class RockColliders {
     this.count = this.live.size;
   }
 
+  /**
+   * Is the camper inside this rock's box, plus SPAWN_CLEAR of slack on every
+   * face? Tested in the rock's own frame, so a wall lying along a hillside is
+   * tested as the wall it is rather than as a disc big enough to swallow it.
+   *
+   * The half-extents are multiplied back up by the instance scale, so both
+   * sides of each comparison are world metres and the slack is a fixed 2.9 m
+   * halo whatever the size of the block.
+   */
+  _nearBox(r, h, camX, camY, camZ) {
+    // The camper's offset, turned by the *inverse* of the instance rotation.
+    // The instance quaternion is a unit one (setFromUnitVectors and axis-angle
+    // products, see RockScatter.orient), so the conjugate is the inverse and
+    // v' = v + 2·(-q.xyz) × ((-q.xyz) × v + q.w·v) holds without normalising.
+    const dx = camX - r.x, dy = camY - r.y, dz = camZ - r.z;
+    const qx = -r.qx, qy = -r.qy, qz = -r.qz, qw = r.qw;
+    const tx = 2 * (qy * dz - qz * dy);
+    const ty = 2 * (qz * dx - qx * dz);
+    const tz = 2 * (qx * dy - qy * dx);
+    const lx = dx + qw * tx + (qy * tz - qz * ty);
+    const ly = dy + qw * ty + (qz * tx - qx * tz);
+    const lz = dz + qw * tz + (qx * ty - qy * tx);
+    return Math.abs(lx) < h.bx * r.sx + SPAWN_CLEAR
+        && Math.abs(ly) < h.by * r.sy + SPAWN_CLEAR
+        && Math.abs(lz) < h.bz * r.sz + SPAWN_CLEAR;
+  }
+
   /** Build one queued rock. Returns false if it was held back or unbuildable. */
-  _build(job, camX, camZ) {
+  _build(job, camX, camY, camZ) {
     const { r, hull } = job;
     // See SPAWN_CLEAR: never hand Rapier a collider that is already inside the
     // camper. Dropped rather than retried here — the next rescan re-queues
     // anything wanted that is not live, so it appears the moment it is safe.
-    const reach = Math.max(r.sx, r.sz);
-    if (Math.hypot(r.x - camX, r.z - camZ) < SPAWN_CLEAR + reach) {
+    if (this._nearBox(r, hull, camX, camY, camZ)) {
       this.deferred++;
       return false;
     }
@@ -231,22 +329,35 @@ export class RockColliders {
   }
 
   /** Called once a frame from VehiclePhysics.step, with the chassis position. */
-  update(x, z) {
+  update(x, y, z) {
     if (!this.source) return;
     const moved = Math.hypot(x - this._lastX, z - this._lastZ);
+    // The streamer's own count of what it is drawing. Every trigger below is a
+    // movement one, and a camper that has stopped moving does not make any of
+    // them fire again — so a rock cell that finished generating after the last
+    // scan stayed uncollided for as long as the player stood there. Parked and
+    // then nudged a few metres (tools/_scratch/cragwhy.mjs), 61 of 173 rocks
+    // inside collider range went from having no collider to having one, purely
+    // because the nudge caused a rescan. Watching the count costs nothing and
+    // settles by itself: once the streamer is done, it stops changing.
+    const stamp = (this.source.stats?.cells ?? 0) * 1e6 + (this.source.stats?.instances ?? 0);
+    this._sinceScan++;
     // Rescan on travel, and also whenever the queue has run dry — the rock
     // cells stream in over several frames after a load or a teleport, so the
     // first scan from a standing start sees a fraction of what is there.
     if (moved > REFRESH_MOVE || this._lastX === 1e9
-        || (this._next >= this.pending.length && moved > 0.5)) {
+        || (this._next >= this.pending.length && moved > 0.5)
+        || (stamp !== this._stamp && this._sinceScan > SETTLE_FRAMES)) {
       this._lastX = x; this._lastZ = z;
+      this._stamp = stamp;
+      this._sinceScan = 0;
       this._rescan(x, z);
     }
     // Front of the queue is the nearest rock, which is the one the camper is
     // about to arrive at.
     let built = 0;
     while (this._next < this.pending.length && built < ADD_PER_FRAME) {
-      if (this._build(this.pending[this._next++], x, z)) built++;
+      if (this._build(this.pending[this._next++], x, y, z)) built++;
     }
     if (this._next >= this.pending.length) { this.pending.length = 0; this._next = 0; }
     this.count = this.live.size;
@@ -260,6 +371,8 @@ export class RockColliders {
     this._next = 0;
     this._lastX = 1e9;
     this._lastZ = 1e9;
+    this._stamp = -1;
+    this._sinceScan = 0;
     this.count = 0;
   }
 }
