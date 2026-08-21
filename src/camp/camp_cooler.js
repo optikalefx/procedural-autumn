@@ -309,7 +309,7 @@ export function buildCooler(rnd, opts = {}) {
   const wallInset = (y) => {
     const t = clamp01((y - RAILTOP) / (SHOULDER - RAILTOP));
     const draft = 0.018 * Math.pow(1 - t, 1.25);
-    return draft - 0.0010 * Math.sin(Math.PI * t);
+    return draft - 0.0022 * Math.sin(Math.PI * t);
   };
   // The outer surface of the wall at a given height, for anything bolted to it.
   const faceZ = (y) => aD - wallInset(y);
@@ -657,6 +657,17 @@ export function buildCooler(rnd, opts = {}) {
     const bodyW = [0.028, 0.028, 0.030, 0.036, 0.046, 0.058, 0.060, 0.050];
     const bodyT = [0.008, 0.008, 0.009, 0.010, 0.011, 0.012, 0.013, 0.010];
 
+    // Rubber is not a decal. The strap's section is a 30 mm rounded rectangle,
+    // so its two long edges turn away from every light in the scene while its
+    // crown faces out — but the ribbon is only three segments around a corner
+    // and the shading has nowhere to put that. Darkening toward the edges and
+    // toward the foot in the colour attribute is what gives the strap a round
+    // back and stops it reading as a sticker.
+    const strapTint = (x0) => (x, y) => {
+      const e = clamp01(Math.abs(x - x0) / 0.028);
+      const k = (1 - 0.46 * e * e) * (1 - 0.20 * (1 - smoothstep(h(0.248), h(0.330), y)));
+      return [rubRGB[0] * k, rubRGB[1] * k, rubRGB[2] * k];
+    };
     if (opts.lidOpen) {
       // The latch is unhooked and lying against the raised lid — so the strap
       // *and its anchor* have to be rotated about the hinge with everything
@@ -665,14 +676,14 @@ export function buildCooler(rnd, opts = {}) {
       // showed: two black antennae above an open box.
       const tail = lidPath.concat([[h(0.2960), LID_Z + 0.0110], [h(0.2900), LID_Z + 0.0155]]);
       S.add(ribbon(x, tail, lidW.concat([0.030, 0.034]), lidT.concat([0.009, 0.011])),
-            'rubber', null, rubRGB, swing);
+            'rubber', null, strapTint(x), swing);
     } else {
       S.add(ribbon(x, lidPath.concat(bodyPath), lidW.concat(bodyW), lidT.concat(bodyT)),
-            'rubber', null, rubRGB);
+            'rubber', null, strapTint(x));
     }
     // The anchor that pins the strap to the lid — lid furniture, so it swings.
-    S.add(rbox(0.048, 0.013, 0.030, 0.005, 1), 'rubber',
-          at(x, h(0.4005), aD - 0.020), rubRGB, swing);
+    S.add(rbox(0.048, 0.013, 0.030, 0.005, 2), 'rubber',
+          at(x, h(0.4005), aD - 0.020), strapTint(x), swing);
     // …and the keeper the T hooks under, which is body furniture and stays.
     // Wider than the T on purpose: a keeper the T covers completely is a
     // keeper nobody can see the latch *engaging*.

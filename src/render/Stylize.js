@@ -805,10 +805,28 @@ export class Stylize {
       if (u.uStyleRim) u.uStyleRim.value = p.rim;
       if (u.uStyleRimPow) u.uStyleRimPow.value = p.rimPow;
       if (u.uStyleRimBack) u.uStyleRimBack.value = p.rimBack;
-      if (u.uShadowCoolAmt) u.uShadowCoolAmt.value = p.shadowCoolAmt;
+      // ── per-material shadow cooling ────────────────────────────────────
+      //
+      // `userData.shadowCool` scales the cool shadow term for one material,
+      // 1 by default. It exists because the game already makes this exception
+      // once, by hand: the grass shader carries its own warm `uShadowTint`
+      // (1.06, 0.97, 0.88) with the note that "a shadow on gold meadow is a
+      // warm semi-transparent shape", and the CORRECTION pass measured
+      // blue/violet/magenta at ~1% of the reference plates' chromatic pixels.
+      //
+      // The camp's bare dirt is the same argument arriving a second time. It
+      // is warm ground, it is pale, and a pale warm surface is where a cool
+      // shadow tint stops reading as cool and starts reading as violet — three
+      // rounds of camp captures came back with what looked like spilled wine
+      // streaked across the clearing, and it was tree shadow all along. A
+      // material that is warm ground says so here rather than reimplementing
+      // the whole stylised response to escape one term.
+      const cool = m.userData?.shadowCool;
+      const coolK = typeof cool === 'number' ? cool : 1;
+      if (u.uShadowCoolAmt) u.uShadowCoolAmt.value = p.shadowCoolAmt * coolK;
       if (u.uShadowCoolReach) u.uShadowCoolReach.value = p.shadowCoolReach;
       if (u.uShadowCoolUp) u.uShadowCoolUp.value = p.shadowCoolUp;
-      if (u.uShadowCoolLift) u.uShadowCoolLift.value = p.shadowCoolLift;
+      if (u.uShadowCoolLift) u.uShadowCoolLift.value = p.shadowCoolLift * coolK;
       if (u.uShadowCoolKeep) u.uShadowCoolKeep.value = p.shadowCoolKeep;
       if (u.uShadowCoolNear) u.uShadowCoolNear.value = p.shadowCoolNear;
       if (u.uShadowCoolFar) u.uShadowCoolFar.value = p.shadowCoolFar;

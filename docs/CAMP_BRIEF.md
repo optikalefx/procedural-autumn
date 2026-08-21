@@ -188,3 +188,16 @@ camper; null returns it. `Camp` gives the fire focus when a camp is pitched,
 hands it back when the player clicks the camper, and — this one is not
 optional — hands it back on any throttle or any real speed. A camera still
 pointed at a fire while the player is steering is not a camera.
+
+### Never put a backtick in a comment inside a GLSL template literal
+
+A `//` comment does not protect a backtick. The backtick closes the template
+literal, the rest of the shader becomes JavaScript, and the parse error is
+reported wherever the parser eventually gives up — which is never the line with
+the backtick on it. Write prose about a hex colour or an identifier with
+'single quotes' instead.
+
+`vite-plugin` guards this and names the cause, and it still broke the build for
+everyone mid-round. It is the ninth occurrence on this project. Only
+`camp_ground.js` and `camp_fire.js` write GLSL; the prop builders use the
+shared material set and cannot hit it.

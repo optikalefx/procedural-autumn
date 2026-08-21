@@ -527,7 +527,7 @@ function groundMaterials() {
           // every mask came back innocent and the stain stayed exactly where
           // the birch's shadow was.
           //
-          // Stylize.js appends SHADOW_COOL to `lights_fragment_end`, which
+          // Stylize.js appends SHADOW_COOL to lights_fragment_end, which
           // rotates a shadowed pixel's total diffuse toward a violet-blue at
           // constant luminance. On gold grass that lands as shade. On a warm
           // brown it lands on the straight line from brown to violet-blue, and
@@ -551,7 +551,17 @@ function groundMaterials() {
           vec3  d   = reflectedLight.directDiffuse + ind;
           float ld  = dot( d, LUMA );
           vec3  own = diffuseColor.rgb / max( dot( diffuseColor.rgb, LUMA ), 1e-4 );
-          reflectedLight.indirectDiffuse += mix( d, own * ld, 0.72 * shade ) - d;
+          // Two corrections beyond the hue, both measured off the probe frame.
+          // Shade is lit by the whole sky rather than by one small sun, so it
+          // is LESS saturated than the lit surface, not equally saturated in a
+          // different hue — without the pull toward white the recovered shadow
+          // came back as wet red clay. And it was landing at 0.45 of the lit
+          // dirt beside it while the shaded meadow two metres away sat at 0.87
+          // of its own lit value; a lift of a fifth puts the disc's shadow in
+          // the same key as the meadow's, which is what stops it reading as a
+          // hole cut in the ground.
+          vec3  tgt = mix( own, vec3( 1.0 ), 0.26 ) * ld * 1.20;
+          reflectedLight.indirectDiffuse += mix( d, tgt, 0.85 * shade ) - d;
         }
       `).replace('#include <dithering_fragment>', /* glsl */`
         #include <dithering_fragment>

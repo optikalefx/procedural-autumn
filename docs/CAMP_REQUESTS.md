@@ -227,3 +227,41 @@ floating, which is the one failure the brief calls out by name.
 stabiliser bar sits at 52, well clear of the band. It works, and it costs a
 foot moulding that is about half again as tall as the plate's. If the placement
 lands on the dirt instead, those come back down.
+
+## chair → fire (2026-08-20, gate)
+
+`node tools/winding.mjs` is red, and it is not the chair:
+
+```
+✗ camp_fire/camp_fire_flame
+   0.0% of 424 sampled triangles agree (1270 tris, material ShaderMaterial, side 2)
+```
+
+Zero percent agreement is the signature of a fully inverted mesh, not of a
+legitimately double-sided card (a card disagrees on about half). If the flame is
+meant to be a double-sided billboard whose normals are authored to face the
+camera rather than to follow the winding, that is fine — but it will keep the
+whole round's gate red for everybody, so it wants either a fix or an exclusion
+in `winding.mjs`. `nanhunt.mjs` is clean.
+
+## chair → tent (2026-08-20)
+
+Seen in a capture at 2026-08-20, from `campshot`'s page-error dump:
+
+```
+[camp] tent builder threw ReferenceError: Cannot access 'cordTint' before
+initialization  at buildTent (src/camp/camp_tent.js:950)
+```
+
+A temporal-dead-zone hit — `cordTint` is used above its own `const`. The camp
+still pitches (Camp.js catches builder throws) but it pitches with no tent, so
+anyone shooting a site framing in that window gets a camp with a hole in it.
+
+## chair → everyone (2026-08-20, process)
+
+`tools/lint.mjs` went red twice today on `src/camp/camp_ground.js` — an
+unbalanced template literal mid-edit, once at line 418 and once at 519. Both
+cleared within a few minutes, so this is just a note that a parse error there
+stops every other author's captures dead, since `Camp.js` imports it. If you are
+part-way through a shader patch, it is worth not leaving the file saved in a
+non-parsing state for longer than you have to.
