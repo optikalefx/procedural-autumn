@@ -2,9 +2,13 @@
 //  Photo mode — the thing players will actually share.
 //
 //  What it does:
-//   · hands the camera to CameraRig's own orbit mode (which already knows how
-//     to keep a boom out of a hillside — reimplementing that here would be a
-//     second, worse camera)
+//   · hands the camera to CameraRig's FREE mode, which continues from exactly
+//     the pose the player was looking through and then does nothing at all
+//     until they move it (`CameraRig.enterFree`). It used to hand it to the
+//     auto-orbit, which cut to a different pose on the way in and then swept
+//     around the camper on its own — two things you cannot compose a
+//     photograph through. The clearance logic is still the rig's; free mode
+//     reuses `_floorAt`, so there is no second, worse camera here either.
 //   · takes the HUD away, leaving four corner brackets and an optional
 //     rule-of-thirds grid
 //   · gives three dials that matter for a photograph — the hour, the exposure,
@@ -48,7 +52,10 @@ export class PhotoMode {
 
     this.shutterBtn = button('pa-shutter', '', () => this.capture(), 'Take photo');
     rail.appendChild(this.shutterBtn);
+    // The camera verbs come first: the two dial rows above are discoverable by
+    // looking at them, and a pan you do not know exists is a pan nobody uses.
     rail.appendChild(el('div', 'pa-rail-hint',
+      'drag&nbsp;&nbsp;look<br>middle-drag&nbsp;&nbsp;move<br>wheel&nbsp;&nbsp;zoom<br>' +
       'P&nbsp;&nbsp;save<br>G&nbsp;&nbsp;grid<br>F&nbsp;&nbsp;exit'));
     this.node.appendChild(rail);
     this.rail = rail;
@@ -118,9 +125,10 @@ export class PhotoMode {
 
     if (on) {
       this._saved = this._readGrade();
-      // Photo mode is CameraRig's orbit mode. It already handles terrain
-      // clearance, zoom and the slow sweep; this just asks for it.
-      if (rig) rig.mode = 'orbit';
+      // Photo mode is CameraRig's free mode. It takes over from wherever the
+      // camera already is — the frame the player pressed F on is the frame
+      // they get to compose from — and moves only when they move it.
+      rig?.enterFree?.();
       // The world should hold still while you compose.
       if (this.ctx.lighting) this.ctx.lighting.cycleSpeed = 0;
       this.hourEl.set(this._saved.hour);
@@ -138,7 +146,12 @@ export class PhotoMode {
           this.ctx.lighting.hour = s.hour;
           this.ctx.lighting.cycleSpeed = s.cycle;
         }
-        if (rig) rig.mode = s.mode;
+        // Back to whatever camera was driving before — as a cut, which is what
+        // `exitFree` does. `s.mode` is read rather than trusted to the rig's
+        // own memory of it so a mode changed while photo mode was open (it
+        // cannot be today; C is locked out in free mode) still loses to what
+        // the player actually had.
+        rig?.exitFree?.(s.mode === 'free' ? 'chase' : s.mode);
       }
       this._saved = null;
       if (this.node.contains(document.activeElement)) document.activeElement.blur();

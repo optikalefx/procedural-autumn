@@ -113,6 +113,27 @@ const MAX_CAMPS = 4;
 // the two read as two places rather than as one sprawl.
 const CAMP_GAP = 3.0;
 
+// ── clicking a fire ─────────────────────────────────────────────────────────
+//
+// The sphere that says "the pointer is on THIS fire". `FIRE_RING` is 0.58 m of
+// stone and the flame stands about a metre out of it, so 1.15 m is the whole
+// object with a little air — generous enough to hit without hunting for it,
+// tight enough that it is unmistakably the fire and not the camp.
+//
+// Tight matters here for a reason the camp sphere cannot give: two camps stand
+// at least their radii plus CAMP_GAP apart, which is 9.8 m at the very
+// closest, so 1.15 m spheres can never contest each other. Clicking a
+// particular fire picks that camp and no other, at any range and from any
+// angle. The camp-sized spheres in `_updateFocus` overlap generously and are
+// the coarse fallback, not the fine one.
+const FIRE_PICK_R = 1.15;
+// Centred where the camera is asked to look, so the affordance and the shot
+// agree about where the fire is.
+const FIRE_PICK_LIFT = 0.55;
+
+// The offer, when the pointer is on a fire the camera is not already on.
+const FIRE_PROMPT = '<b>click</b>&nbsp; look at the camp';
+
 // ── the hearth mask, published to the grade ─────────────────────────────────
 //
 // The mask's radius is READ OFF THE LIGHT rather than authored here, and that
@@ -171,7 +192,10 @@ export class Camp extends System {
     this._mouseDown = false;
     this._downAt = { x: 0, y: 0, t: 0 };
     this._click = false;
-    this._focusCamp = false; // is the camera looking at the camp or the camper?
+    this._focusCamp = null;  // which camp the camera is on, or null for the camper
+    this._hoverFire = null;  // the fire the pointer is on and could be sent to
+    this._ringAt = null;     // which camp the hover ring is currently shaped to
+    this._cursor = '';       // last cursor we wrote to the canvas
     this._ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
     this._q = new THREE.Quaternion();
     this._v = new THREE.Vector3();
@@ -471,6 +495,14 @@ export class Camp extends System {
     }
     if (this.camps.length) this._publishSlots();
 
+    // Which fire the pointer is on, decided ONCE and before anything reads it.
+    // `_interact` needs it to know what to say and what a click means, the
+    // reticle needs it to know what to draw, and `_updateFocus` needs it to
+    // know where a click is going; three separate answers to the same question
+    // is how an affordance ends up highlighting one thing and clicking
+    // another.
+    this._hoverFire = this._pickHoverFire(veh);
+
     // ── the player ──────────────────────────────────────────────────────────
     if (!holding) {
       if (this.state !== STATE.IDLE) {
@@ -481,12 +513,17 @@ export class Camp extends System {
         clearCampAim();
       }
       if (this.scope?.active) this.scope.leave();
+      // The brake is not latched, so `_interact` is not running and nothing
+      // else is speaking. The fire is still clickable — `_updateFocus` runs
+      // every frame — so it still has to say so.
+      this._say('');
     } else {
       this.state = STATE.AIMING;
       this._interact(dt, veh);
     }
 
     this._updateFocus(veh);
+    this._paintCursor();
     // The reticle's visibility is driven from HERE, not from `_interact`, so
     // suppressing the aim in `_interact` was not enough on its own: the ring
     // simply stayed wherever it last was, lit, through every frame of a
@@ -497,7 +534,32 @@ export class Camp extends System {
     const aimVisible = this.state === STATE.AIMING && !this.scope?.active
                     && !this._suppressAim
                     && (!window.__forceCamera || !!window.__campForceAim);
-    this.reticle.update(dt, t, aimVisible);
+
+    // The hover highlight, and it is the SAME ring rather than a second one.
+    //
+    // The camper has no hover affordance at all — clicking it works and nothing
+    // ever says so — and copying that would be copying the defect. The ring is
+    // already this game's world-space word for "this is the thing you are
+    // pointing at", it costs no new geometry and no new shader program (a
+    // second CampReticle would allocate two materials at runtime, which is the
+    // hitch the whole pre-warm above exists to avoid), and it is drawn around
+    // the camp, so the highlight names the place the click will take you rather
+    // than the object you happened to hit.
+    //
+    // Placement wins when both apply: a live placement ring is mid-gesture and
+    // the hover is not. `_pickHoverFire` already returns null under a capture,
+    // so this cannot put a ring in a contact sheet.
+    let ringOn = aimVisible;
+    if (!ringOn && this._hoverFire) {
+      // The camp does not move, so reshape only when the hovered one changes —
+      // `place` walks 194 vertices over the heightfield.
+      if (this._ringAt !== this._hoverFire) {
+        this._ringAt = this._hoverFire;
+        this.reticle.place(this._hoverFire.x, this._hoverFire.z, true, 1, this._hoverFire.radius);
+      }
+      ringOn = true;
+    } else if (aimVisible) this._ringAt = null;
+    this.reticle.update(dt, t, ringOn);
     this._carryFireLight(dt, t, camera);
   }
 
@@ -613,14 +675,14 @@ export class Camp extends System {
       clearCampAim();
       this._aim.ok = false;
       if (this._packTarget) {
-        this.prompt.set('<b>E</b>&nbsp; pack up this camp');
+        this._say('<b>E</b>&nbsp; pack up this camp');
         if (input.justPressed('KeyE')) this._strike(this._packTarget);
       } else {
         // Nothing. No ring, no label, no cursor state — the absence IS the
         // answer, and a permanent "you cannot build here" caption parked over
         // your own camp is exactly the kind of chore list this game does not
-        // have.
-        this.prompt.set('');
+        // have. (…the fire is the one exception, and `_say` is where it goes.)
+        this._say('');
         // …except when they ask. Pressing the build key is the moment, and the
         // only moment, that a player wants to know why it did nothing.
         if (input.justPressed('KeyE')) {
@@ -637,7 +699,7 @@ export class Camp extends System {
     // overlaps an existing camp, and `_blocked` hands back which one — so the
     // rule falls out of the placement test rather than needing its own.
     if (this._packTarget) {
-      this.prompt.set('<b>E</b>&nbsp; pack up this camp');
+      this._say('<b>E</b>&nbsp; pack up this camp');
       // E only. A CLICK on a camp means "look at that one" and is handled by
       // `_updateFocus`; giving it a second meaning here would make packing up
       // something you could do by accident while choosing what to look at.
@@ -673,8 +735,17 @@ export class Camp extends System {
     // pointer is on it, so: raycast its actual geometry. It runs on the frame
     // of a click and nowhere else, against about fifteen merged meshes, and it
     // cannot be argued with.
+    //
+    // `_hoverFire` is the same guard for the same reason, one target further
+    // out: a click on a fire is the player choosing what the camera looks at,
+    // and it must not also pitch a camp on the meadow behind it. E is left
+    // alone here too — a gamepad player aims down the camera axis and would
+    // otherwise lose the build key every time a fire drifted under the middle
+    // of the screen.
     const onCar = this._click && this._pointerOnCamper();
-    if (this._aim.ok && ((this._click && !onCar) || input.justPressed('KeyE'))) this._pitch();
+    if (this._aim.ok && ((this._click && !onCar && !this._hoverFire) || input.justPressed('KeyE'))) {
+      this._pitch();
+    }
   }
 
   /**
@@ -761,7 +832,33 @@ export class Camp extends System {
    *  3. **Driving takes it back, always.** A camera still pointed at a fire
    *     while the player is steering is not a camera, and nobody would think
    *     to click the car to fix it because nobody would connect the two. So
-   *     any real throttle, or leaving the camp behind, hands it straight back.
+   *     any real throttle hands it straight back.
+   *
+   * ── the bug rule 2 had, and the two lines that were causing it ─────────────
+   *
+   * Rule 2 was written down, commented, and did not work in the direction that
+   * mattered. The method returned at the top the moment `_focusCamp` was null:
+   *
+   *     if (!focus || focus.striking) { rig.setFocus(null); ...; return; }
+   *
+   * — so once the camera was back on the car, the click test below it was
+   * unreachable and there was no way to send it back to the camp. The very
+   * trap the comment above warns about, guarded against in prose and then let
+   * in by control flow. The click test now runs whether or not anything
+   * currently has focus, which is the whole of the fix; everything else here
+   * is about making the fire an honest target.
+   *
+   * The other line that had to go was rule 3's second half, a distance test
+   * that dropped focus once the camper was more than `SITE_MAX + 8` (26 m)
+   * from the camp. Three things wrong with it. It fired INSIDE the camp's own
+   * home range — `_homeCamp` calls anything within `radius + SITE_MAX + 4`
+   * (about 28 m) "your camp", so parking on the far side of your own fire let
+   * the camera go while the game still thought you were standing in it. It
+   * made "click the fire" a lie at exactly the distance a player who had
+   * rolled a few car-lengths on would try it from. And it was doing, worse, a
+   * job `moving` already does: you cannot leave a camp behind without going
+   * faster than 1.2 m/s, and the frame you do, focus is handed back. So
+   * distance is gone and driving is the whole of rule 3.
    */
   _updateFocus(veh) {
     const rig = this.ctx.systems?.cameraRig;
@@ -771,16 +868,13 @@ export class Camp extends System {
     // frame the player steps back out.
     if (this.scope?.active) return;
 
-    // `_focusCamp` is a camp record now, not a flag. A struck camp clears it in
-    // `_strike`, so a camera cannot be left pointing at ground where a camp
-    // used to be.
-    const focus = this._focusCamp;
-    if (!focus || focus.striking) { rig.setFocus(null); this._focusCamp = null; return; }
-
-    // Rule 3, and it comes first so nothing below can override it.
+    // Rule 3, first so nothing below can override it.
     const moving = Math.abs(veh.speed) > 1.2 || (this.ctx.input.axes.throttle ?? 0) > 0.05;
-    const far = Math.hypot(veh.position.x - focus.x, veh.position.z - focus.z) > SITE_MAX + 8;
-    if (moving || far) { this._focusCamp = null; rig.setFocus(null); return; }
+    if (moving) this._focusCamp = null;
+    // `_focusCamp` is a camp record, not a flag. A struck camp clears it in
+    // `_strike` too; this is the belt to that brace, so a camera cannot be left
+    // pointing at ground where a camp used to be.
+    if (this._focusCamp?.striking) this._focusCamp = null;
 
     // Rule 2. Both are tested as spheres rather than against geometry: a 2.8 m
     // sphere is every pixel of a 4.7 m camper from any angle the player clicks
@@ -805,21 +899,126 @@ export class Camp extends System {
     // (0.1 of its radius) even while it passes through the edge of the camp's
     // sphere (0.9 of that one). It is also just what the player means.
     if (this._click && !moving && !this._justPitched) {
-      const car = this._rayMiss(veh.position, 2.8);
-      // Every camp competes, not just the focused one, so clicking a second
-      // camp walks the camera over to it — the same affordance in both
-      // directions, which is the rule this whole method is built on.
-      let best = null, bestMiss = car;
-      for (const c of this.camps) {
-        const m = this._rayMiss(this._v.set(c.x, c.y + 0.4, c.z), c.radius * 0.9);
-        if (m < bestMiss) { bestMiss = m; best = c; }
+      // The fire first, and it beats everything.
+      //
+      // The camp spheres below are 5.2 m across and overlap the camper's, so
+      // with several camps in sight "which camp did they mean" is decided by a
+      // margin of a metre or two — fine for a shrug, wrong for an affordance
+      // the player was shown. A 1.15 m sphere on the fire itself cannot be
+      // ambiguous: the nearest two fires in this world are 9.8 m apart. If the
+      // player was pointing at a fire, that fire is the answer, and the coarse
+      // test never gets to disagree.
+      const fire = this._fireUnderPointer();
+      if (fire) this._focusCamp = fire;
+      else {
+        const car = this._rayMiss(veh.position, 2.8);
+        // Every camp competes, not just the focused one, so clicking a second
+        // camp walks the camera over to it — the same affordance in both
+        // directions, which is the rule this whole method is built on.
+        let best = null, bestMiss = car;
+        for (const c of this.camps) {
+          if (c.striking) continue;
+          const m = this._rayMiss(this._v.set(c.x, c.y + 0.4, c.z), c.radius * 0.9);
+          if (m < bestMiss) { bestMiss = m; best = c; }
+        }
+        if (bestMiss < Infinity) this._focusCamp = best;   // null = the camper won
       }
-      if (bestMiss < Infinity) this._focusCamp = best;   // null = the camper won
     }
     this._justPitched = false;
 
     const f = this._focusCamp;
     rig.setFocus(f ? this._v.set(f.x, f.y + 0.55, f.z) : null);
+  }
+
+  /**
+   * The fire the pointer is on, or null.
+   *
+   * A tight sphere on the fire itself rather than the camp — see `FIRE_PICK_R`
+   * for why tight is what makes "clicking a particular fire picks that camp"
+   * true rather than usually true.
+   *
+   * A striking camp is not a target: the click would land, focus would be
+   * taken, and `_strike` would hand it straight back a moment later.
+   */
+  _fireUnderPointer() {
+    let best = null, bestMiss = 1;
+    for (const c of this.camps) {
+      if (c.striking) continue;
+      const miss = this._rayMiss(this._v.set(c.x, c.y + FIRE_PICK_LIFT, c.z), FIRE_PICK_R);
+      if (miss < bestMiss) { bestMiss = miss; best = c; }
+    }
+    return best;
+  }
+
+  /**
+   * The fire to OFFER, which is not the same question as the one above.
+   *
+   * A fire the camera is already on is not an offer — the click would do
+   * nothing and highlighting it would promise something. Neither is any fire
+   * while the player is driving, because `_updateFocus` would refuse the click
+   * (rule 3) and an affordance that lights up for a click that will be thrown
+   * away is worse than no affordance.
+   *
+   * Null under a capture, for the reason the whole reticle is: eleven authors
+   * judge art through the harness and none of them asked for a ring around the
+   * camp. `campshot.mjs`'s assertion is what found the last one of these.
+   *
+   * Null in photo mode for the same reason with a different audience. The
+   * player is composing a photograph; a ring drawn on the ground around the
+   * camp would be in it, and the camera in photo mode is the free camera, so
+   * pointing at a fire is how you AIM, not how you choose a subject.
+   */
+  _pickHoverFire(veh) {
+    if (window.__forceCamera) return null;
+    if (this.ctx.systems?.hud?.photo?.active) return null;
+    if (this.scope?.active || !this.camps.length) return null;
+    const moving = Math.abs(veh?.speed ?? 0) > 1.2 || (this.ctx.input.axes.throttle ?? 0) > 0.05;
+    if (moving) return null;
+    const c = this._fireUnderPointer();
+    return c && c !== this._focusCamp ? c : null;
+  }
+
+  /**
+   * Say something, unless the fire has something better to say.
+   *
+   * Every prompt in this system goes through here so exactly one line of text
+   * is chosen per frame. The alternative — `_interact` writing its line and
+   * this feature writing over it afterwards — makes the two alternate every
+   * frame, because `_interact` runs again next frame and puts its own line
+   * back. One writer, decided from `_hoverFire`, which was decided once at the
+   * top of `update`.
+   *
+   * The fire wins over the pack-up hint on purpose. It is a 1.15 m target
+   * inside a 5.8 m camp, so the hint is one small mouse movement away, and of
+   * the two things you can do to a camp you are pointing at, looking at it is
+   * the reversible one.
+   */
+  _say(text) {
+    this.prompt.set(this._hoverFire ? FIRE_PROMPT : text);
+  }
+
+  /**
+   * The pointer's own affordance.
+   *
+   * The camper has never had one — clicking it has worked since the camp
+   * shipped and nothing on screen has ever said so — so there was no existing
+   * behaviour here to copy, only a gap to stop widening. The fire gets the
+   * three signals this game can afford: the ring around the camp, the line of
+   * text, and this.
+   *
+   * Deliberately not extended to the camper in the same change. The only
+   * honest "is the pointer on the camper" test is the geometry raycast in
+   * `_pointerOnCamper` — the spheres were tried and both failed, see
+   * `_interact` — and that runs on the frame of a click today. Running it every
+   * frame for a cursor is a different cost with a different measurement behind
+   * it, and it is not this change's to make.
+   */
+  _paintCursor() {
+    const want = this._hoverFire ? 'pointer' : '';
+    if (want === this._cursor) return;
+    this._cursor = want;
+    const el = this.ctx.renderer?.domElement;
+    if (el) el.style.cursor = want;
   }
 
   /**
@@ -968,7 +1167,7 @@ export class Camp extends System {
     // it into the pack-up prompt — so nothing is said here about a site the
     // player is only pointing at because their own camp is on it.
     if (this._packTarget) return;
-    this.prompt.set(s.ok
+    this._say(s.ok
       ? '<b>Click</b> or <b>E</b>&nbsp; make camp here'
       : `no camp here — ${s.reason}`);
   }

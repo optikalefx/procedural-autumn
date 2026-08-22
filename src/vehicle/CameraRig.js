@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  CameraRig — chase / photo-orbit / cockpit.
+//  CameraRig — chase / free (photo) / auto-orbit / cockpit.
 //
 //  The chase camera is the single thing the player looks through for hours, so
 //  it is built like a camera operator rather than a boom arm:
@@ -24,6 +24,26 @@
 //  The boom is fitted against the *whole* world, not the heightfield: terrain,
 //  then water, then rock, then the trunks it must not end inside. Every one of
 //  those was added after a frame the player was shown. See `BoomClearance.js`.
+//
+//  ── the free camera (`_free`) ───────────────────────────────────────────────
+//
+//  Photo mode used to be the auto-orbit below, and that was the wrong tool for
+//  it in two ways at once: entering photo mode CUT to a different pose, and
+//  then the camera kept sweeping on its own. Neither is something you can
+//  compose a photograph with. `_free` is a tripod instead of a boom:
+//
+//   · `enterFree` reads the pose straight off the live camera — position,
+//     orientation (roll included), fov — and reproduces it exactly. The first
+//     frame of photo mode is the last frame before it, to float precision.
+//   · nothing moves it but the player. No sweep, no easing, no recentring, no
+//     damping on the dolly.
+//   · left drag orbits, at the chase camera's own sensitivity, so the gesture
+//     is the one players already have in their hands.
+//   · middle drag translates, in the camera's own right/up plane, at exactly
+//     one world unit per screen unit — the point under the cursor stays under
+//     the cursor. The DCC-tool pan.
+//   · the wheel dollies along the view axis, same multiplicative feel as the
+//     chase zoom.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
@@ -36,6 +56,10 @@ import { RockField, TrunkField, TRUNK_KEEP } from './BoomClearance.js';
 // means double-siding the shell — a triangle cost the whole game pays for one
 // optional camera — so it stays behind a flag until someone wants it enough.
 // `window.__cockpitCam = true` before boot to get it back.
+//
+// The C-key cycle. `free` is deliberately NOT in it: it is a mode a UI hands
+// the rig and takes back (`enterFree`/`exitFree`), and a player cycling into it
+// with C would get a camera with no way of returning to the vehicle.
 const MODES = ['chase', 'orbit'];
 
 // Boom length limits. The low end lets you inspect the roof rack; the high end
@@ -47,6 +71,25 @@ export const ZOOM_DEFAULT = 19;  // deliberately wide: the camper is a figure in
 const PITCH_MIN = -0.20;         // just under the sill, looking up into the trees
 const PITCH_MAX = 1.30;          // near-vertical, looking straight down
 const RECENTER_DELAY = 2.0;      // seconds of no mouse before easing back
+
+// ── free camera ─────────────────────────────────────────────────────────────
+//
+// How far up and down a free camera may look. `PITCH_MAX` above is a *chase*
+// limit — it exists because the boom must keep the camper in frame — and
+// reusing it here would mean a photo camera that cannot point at the treetops
+// or at the sky, which is half of what people photograph in this game. Just
+// short of the poles, because the look matrix has no up vector at them.
+const FREE_PITCH_LIMIT = Math.PI / 2 - 0.03;
+
+// How much air the free camera keeps under it. Flat, and small.
+//
+// `camClearance` scales 1.6 m -> 4.0 m with boom length, and it is right to:
+// a 68 m boom sweeping a hillside needs room or it clips through every ridge
+// it passes. A free camera is not swept, it is aimed — the only thing it needs
+// is to not be inside the ground. Four metres of forced lift would make a
+// grass-level shot impossible, and a grass-level shot is the best photograph
+// this game has. 0.45 m is about a hand above the blades.
+const FREE_CLEARANCE = 0.45;
 
 /**
  * Where the camera settles when the player is not steering it. Close in you
@@ -140,7 +183,21 @@ export class CameraRig extends System {
     this.orbitPitch = restPitch(ZOOM_DEFAULT);
     this._idle = 99;               // seconds since the player last touched it
 
-    this.orbitAngle = 0.7;         // photo mode's own slow sweep
+    this.orbitAngle = 0.7;         // the auto-orbit's own slow sweep
+
+    // ── free camera state ────────────────────────────────────────────────
+    // A pivot in front of the lens and a spherical arm to it. The eye is
+    // derived, never stored: that is what makes the ground clamp below able to
+    // lift the camera without the lift ever accumulating into the pose.
+    this.freePivot = new THREE.Vector3();
+    this.freeYaw = 0;
+    this.freePitch = 0;
+    this.freeDist = ZOOM_DEFAULT;
+    this._freeEye = new THREE.Vector3();
+    this._freeDir = new THREE.Vector3();
+    this._freeRight = new THREE.Vector3();
+    this._freeUp = new THREE.Vector3();
+    this._prevMode = 'chase';
     this._up = new THREE.Vector3(0, 1, 0);
     this._t = new THREE.Vector3();
     this._t2 = new THREE.Vector3();
@@ -201,6 +258,11 @@ export class CameraRig extends System {
         rockCandidates: this.rockBoom.n, trunkCandidates: this.trunks.n,
         insideRock: inside ? `${inside.arch} size ${inside.size.toFixed(1)}` : null,
         inTrunk: this.trunks.hit(p.x, p.y, p.z, TRUNK_KEEP) >= 0,
+        // The free camera's own pose, so a harness can assert that photo mode
+        // did not move it rather than eyeballing two screenshots.
+        freeDist: this.freeDist, freeYaw: this.freeYaw, freePitch: this.freePitch,
+        roll: this.roll,
+        pivot: { x: this.freePivot.x, y: this.freePivot.y, z: this.freePivot.z },
         limits: { zoomMin: ZOOM_MIN, zoomMax: ZOOM_MAX, pitchMin: PITCH_MIN, pitchMax: PITCH_MAX },
       };
     };
@@ -211,7 +273,10 @@ export class CameraRig extends System {
     if (!v?.phys?.ready) return;
     this.vehicle = v;
 
-    if (this.ctx.input.justPressed('KeyC')) {
+    // C cycles the driving cameras. Not while photo mode holds the rig: that
+    // mode is entered and left by the UI that owns it, and cycling out of it
+    // from under that UI leaves photo mode on with a chase camera behind it.
+    if (this.ctx.input.justPressed('KeyC') && this.mode !== 'free') {
       const modes = window.__cockpitCam ? [...MODES, 'cockpit'] : MODES;
       this.mode = modes[(modes.indexOf(this.mode) + 1) % modes.length];
       if (this.mode === 'cockpit') this._primed = false;
@@ -262,18 +327,31 @@ export class CameraRig extends System {
       this.subject.z = damp(this.subject.z, want.z, 2.2, dt);
     }
 
+    // Photo mode's free camera reads its own input and poses itself. It shares
+    // this rig's floor — `_floorAt`, and therefore the rock field, primed
+    // around its own eye rather than around the camper — and nothing else.
+    if (this.mode === 'free') { this._free(dt); return; }
+
     this._readLook(dt, v);
 
-    // Gather the rock near the camper once, before anything queries the floor.
+    // Gather the rock near the SUBJECT once, before anything queries the floor.
     // After `_readLook` because that is where the wheel has just moved `zoom`,
     // and the disc has to cover the boom the player asked for rather than the
     // one it has damped to yet — a fast flick out to 68 m must not fit itself
     // against a 19 m disc for the half-second the dolly takes.
     // A teleport needs nothing extra here: this runs before `_chase` re-primes
     // the boom, so the cut lands against the rock at the new place, not the old.
+    //
+    // Around the subject, not around `v.position`, because the subject is what
+    // the boom pivots on. The two are the same point whenever nothing has
+    // focus, which is most of the time — but a camp can hold the camera from
+    // tens of metres away (see `Camp._updateFocus`), and a disc centred on the
+    // camper then stops short of the boom it is supposed to be fitting. The
+    // symptom would be the camera clipping a boulder at the camp while the
+    // rock field reported no candidates at all.
     const boom = Math.max(this.zoom, this.zoomTarget) * 1.12;
-    this.rockBoom.attach(this.ctx.systems?.rocks).prime(v.position.x, v.position.z, boom + 6);
-    this.trunks.attach(this.ctx.systems?.trees).prime(v.position.x, v.position.z, boom + 4);
+    this.rockBoom.attach(this.ctx.systems?.rocks).prime(this.subject.x, this.subject.z, boom + 6);
+    this.trunks.attach(this.ctx.systems?.trees).prime(this.subject.x, this.subject.z, boom + 4);
 
     if (this.mode === 'chase') this._chase(dt, v);
     else if (this.mode === 'orbit') this._orbit(dt, v);
@@ -491,7 +569,208 @@ export class CameraRig extends System {
     this._apply();
   }
 
-  /** Photo mode: a slow sweep at whatever distance the player has dialled in. */
+  // ── the free camera ────────────────────────────────────────────────────────
+
+  /**
+   * Take the camera over for photo mode, from exactly where it is.
+   *
+   * Everything here is read off the LIVE camera rather than off this rig's own
+   * `camPos`/`lookAt`/`fov`. They are nearly the same and the difference is
+   * exactly the part that matters: `_apply` adds the landing shake to the
+   * position and the bank to the orientation on its way out, so `camPos` is
+   * where the rig wanted the camera and `ctx.camera` is where the player's last
+   * frame actually was. Photo mode has to continue the frame the player saw.
+   *
+   * The pose is decomposed into pivot / yaw / pitch / roll and rebuilt by
+   * `_free`, and the round trip is exact to float precision — the eye is
+   * `pivot - dir * dist` with the same `dir` that produced the pivot, and the
+   * roll is recovered against the same reference basis `_apply` rolls away
+   * from. Measured rather than assumed, on the frame either side of the
+   * switch: position identical to the bit, quaternion within 2e-15 per
+   * component, fov and the depth-of-field plane identical. Then nine further
+   * frames with no input, all four identical again — which is the second half
+   * of the contract and the half the old auto-orbit broke worst.
+   */
+  enterFree() {
+    if (this.mode === 'free') return;
+    this._prevMode = this.mode;
+    const cam = this.ctx.camera;
+
+    // Where the arm points, straight off the camera's own matrix.
+    const dir = this._freeDir.set(0, 0, -1).applyQuaternion(cam.quaternion).normalize();
+
+    // How long the arm is. The distance to the SUBJECT, not `zoom`: the depth
+    // of field plane is `distance(eye, subject)` (see `_focus`) and matching it
+    // is what keeps the first photo-mode frame identical in blur as well as in
+    // framing. It also puts the pivot at the depth of whatever the player was
+    // looking at, which is the thing they will want to orbit around.
+    this.freeDist = Math.max(0.5, this.camPos.distanceTo(this.subject));
+
+    this.freePivot.copy(cam.position).addScaledVector(dir, this.freeDist);
+    this.freePitch = clamp(Math.asin(clamp(-dir.y, -1, 1)), -FREE_PITCH_LIMIT, FREE_PITCH_LIMIT);
+    this.freeYaw = Math.atan2(-dir.x, -dir.z);
+
+    // Recover the roll. `_apply` builds `lookAt(eye, target, +Y)` and then
+    // multiplies a rotation about the view axis onto it, so the camera's own
+    // right vector is the unrolled right turned through that angle.
+    const right = this._freeRight.copy(dir).cross(this._up);
+    if (right.lengthSq() < 1e-8) this.roll = 0;      // straight up or down: no reference
+    else {
+      right.normalize();
+      const up = this._freeUp.copy(right).cross(dir);
+      const camRight = this._t.set(1, 0, 0).applyQuaternion(cam.quaternion);
+      this.roll = Math.atan2(camRight.dot(up), camRight.dot(right));
+    }
+
+    this.fov = cam.fov;
+    this.camPos.copy(cam.position);
+    // The shake is already baked into the pose that was just read; adding it
+    // again on top would be a wobble nobody asked for.
+    this._shake = 0;
+    this._idle = 99;
+    this.mode = 'free';
+  }
+
+  /**
+   * Hand the camera back, as a cut.
+   *
+   * Not a drift. The player may have flown sixty metres up a hillside to take
+   * a photograph, and easing back from there is a long ride through terrain
+   * that the boom fit was never meant to compose. `_primed = false` is this
+   * rig's existing word for "put the camera where it belongs, now" — the same
+   * thing a vehicle teleport does, for the same reason.
+   */
+  exitFree(mode) {
+    if (this.mode !== 'free') return;
+    this.mode = mode ?? this._prevMode ?? 'chase';
+    this._primed = false;
+    this._subjPrimed = false;
+  }
+
+  /**
+   * The free camera itself. Nothing in here moves without an input.
+   *
+   * ── what holds it out of the hillside, and what deliberately does not ──────
+   *
+   * The rig has two mechanisms for that (see `_boomFit`): SHORTEN the boom past
+   * anything solid, and LIFT whatever is left clear of the ground. This uses
+   * the lift — `_floorAt`, the whole world's floor, terrain over water over
+   * rock, the same query every other camera in this file is fitted against —
+   * and deliberately does not use the shorten.
+   *
+   * Shortening exists to keep a SUBJECT in frame: when a bank rises behind the
+   * camper the boom slides in so the camper does not end up in a corner. A free
+   * camera has no subject to protect, and sliding it along its own view axis
+   * because of geometry the player can see and has already composed around is
+   * precisely the "collision yanks the camera" failure. So the shot is never
+   * pulled in; it is only ever pushed up, and only when it would otherwise be
+   * underground.
+   *
+   * And the lift NEVER writes back into the pose. The pivot, yaw, pitch and
+   * distance are the player's; the floor clamp edits the derived eye on its way
+   * to the camera and nothing else. Walk the camera into a hill and out again
+   * and it comes back to the exact height it left, with no hysteresis and no
+   * accumulated creep — which a clamp that edited `freePivot` would have.
+   *
+   * The clamp translates rather than rotates: the look point is carried up with
+   * the eye, so being lifted slides the frame instead of tilting it.
+   */
+  _free(dt) {
+    const input = this.ctx.input;
+    const m = input.mouse;
+    let touched = false;
+
+    // Basis, from the pose the player is holding.
+    const cp = Math.cos(this.freePitch), sp = Math.sin(this.freePitch);
+    const dir = this._freeDir.set(-Math.sin(this.freeYaw) * cp, -sp, -Math.cos(this.freeYaw) * cp);
+    const right = this._freeRight.copy(dir).cross(this._up);
+    if (right.lengthSq() < 1e-8) right.set(Math.cos(this.freeYaw), 0, -Math.sin(this.freeYaw));
+    right.normalize();
+    const up = this._freeUp.copy(right).cross(dir).normalize();
+
+    if (m.mid) {
+      // ── middle drag: translate, the DCC pan ─────────────────────────────
+      // One world unit per screen unit at the pivot's depth, so the point under
+      // the cursor stays under the cursor. Anything else (a fixed metres-per-
+      // pixel, or a constant scaled by distance alone) drifts away from the
+      // cursor as the fov or the viewport changes, and the gesture stops
+      // feeling like grabbing the world.
+      touched = true;
+      if (m.dx || m.dy) {
+        const h = this.ctx.renderer?.domElement?.clientHeight || window.innerHeight || 900;
+        const mpp = 2 * this.freeDist * Math.tan((this.fov * Math.PI / 180) * 0.5) / h;
+        this.freePivot.addScaledVector(right, -m.dx * mpp).addScaledVector(up, m.dy * mpp);
+      }
+    } else if (m.down) {
+      // ── left drag: orbit, at the chase camera's own sensitivity ──────────
+      // The same 0.0042 / 0.0032 and the same signs `_readLook` uses, so the
+      // gesture the player has spent hours with does not change under them
+      // when they press F.
+      touched = true;
+      if (m.dx || m.dy) {
+        this.freeYaw = wrapAngle(this.freeYaw - m.dx * 0.0042);
+        this.freePitch = clamp(this.freePitch + m.dy * 0.0032, -FREE_PITCH_LIMIT, FREE_PITCH_LIMIT);
+      }
+    }
+
+    const ax = input.axes;
+    if (ax.lookX || ax.lookY) {
+      this.freeYaw = wrapAngle(this.freeYaw - ax.lookX * 1.6 * dt);
+      this.freePitch = clamp(this.freePitch + ax.lookY * 1.1 * dt, -FREE_PITCH_LIMIT, FREE_PITCH_LIMIT);
+      ax.lookX = 0; ax.lookY = 0;
+      touched = true;
+    }
+
+    if (m.wheel) {
+      // Undamped, unlike the chase dolly. A damped dolly keeps travelling for
+      // half a second after the notch, and "the camera does not move unless
+      // the player moves it" is the whole contract of this mode.
+      //
+      // The limits are the chase boom's, with one concession: photo mode can
+      // be entered from further out than ZOOM_MAX (the chase eye sits a little
+      // beyond its own boom once the ground has lifted it), and clamping to 68
+      // on the first notch would be a snap on the one input that is supposed to
+      // be a nudge. So the range only ever tightens toward the real limits.
+      const lo = Math.min(ZOOM_MIN, this.freeDist), hi = Math.max(ZOOM_MAX, this.freeDist);
+      this.freeDist = clamp(this.freeDist * Math.exp(m.wheel * 0.0016), lo, hi);
+      touched = true;
+    }
+
+    this._idle = touched ? 0 : this._idle + dt;
+
+    // Level the horizon, but only under the player's hand. The pose is entered
+    // with whatever bank the chase camera had, because the first frame has to
+    // be the last frame; a permanent two-degree tilt that nothing can remove
+    // would be a defect. Composing is the moment to take it out, and it costs
+    // nothing when there was no bank to begin with — which, parked, there never
+    // is.
+    if (touched && this.roll) this.roll = damp(this.roll, 0, 4, dt);
+
+    // Recompute the basis if the drag moved it, then place the eye.
+    if (touched) {
+      const cp2 = Math.cos(this.freePitch), sp2 = Math.sin(this.freePitch);
+      dir.set(-Math.sin(this.freeYaw) * cp2, -sp2, -Math.cos(this.freeYaw) * cp2);
+    }
+    const eye = this._freeEye.copy(this.freePivot).addScaledVector(dir, -this.freeDist);
+
+    // The floor. Primed around the eye's own column rather than the camper's —
+    // this camera can be anywhere — and a small disc, because unlike the boom
+    // there is exactly one point to test.
+    this.rockBoom.attach(this.ctx.systems?.rocks).prime(eye.x, eye.z, 12);
+    const floor = this._floorAt(eye.x, eye.z) + FREE_CLEARANCE;
+    if (eye.y < floor) eye.y = floor;
+
+    this.camPos.copy(eye);
+    this.lookAt.copy(eye).addScaledVector(dir, this.freeDist);
+
+    // Depth of field on the pivot: it is the thing the player is composing
+    // around, and at entry it is at the exact distance the chase camera's
+    // subject was, so the blur does not change on the frame photo mode opens.
+    this.ctx.postfx?.setFocus?.(this.freeDist * 1.15 + 4);
+    this._apply();
+  }
+
+  /** The auto-orbit: a slow sweep at whatever distance the player has dialled in. */
   _orbit(dt, v) {
     this.orbitAngle += dt * 0.11;
     const r = clamp(this.zoom, 6, ZOOM_MAX);

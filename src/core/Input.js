@@ -5,7 +5,11 @@ export class Input {
     this.keys = new Set();
     this.axes = { throttle: 0, brake: 0, steer: 0, handbrake: 0, lookX: 0, lookY: 0, zoom: 0 };
     this.pressed = new Set();
-    this.mouse = { x: 0, y: 0, dx: 0, dy: 0, down: false, wheel: 0 };
+    // `down` is the look drag (left, and historically right — see `_bind`);
+    // `mid` is the middle button on its own, which the free photo camera pans
+    // with. They are separate flags rather than a button mask because every
+    // reader of this asks a yes/no question about one gesture.
+    this.mouse = { x: 0, y: 0, dx: 0, dy: 0, down: false, mid: false, wheel: 0 };
     this.suppressed = false;
     this._bind();
   }
@@ -41,8 +45,31 @@ export class Input {
     const onWorld = (e) => e.target instanceof HTMLCanvasElement
       && !e.target.closest('#pa-hud');
 
-    window.addEventListener('mousedown', (e) => { if (onWorld(e)) this.mouse.down = true; });
-    window.addEventListener('mouseup', () => (this.mouse.down = false));
+    window.addEventListener('mousedown', (e) => {
+      if (!onWorld(e)) return;
+      // Button 1 is the middle wheel-click. It is kept out of `down` so the
+      // look drag and the free camera's pan are never both live on the same
+      // gesture, and buttons 0 and 2 both still set `down` — right-drag has
+      // orbited since this file was written and nothing here needs to change
+      // that.
+      if (e.button === 1) {
+        this.mouse.mid = true;
+        // Chrome starts its autoscroll on middle mousedown and the scrolling
+        // cursor then sits over the game for the whole drag. Cancelling it
+        // here is the only place that works; `auxclick` below stops the paste
+        // /new-tab default that fires on release.
+        e.preventDefault();
+      } else {
+        this.mouse.down = true;
+      }
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 1) this.mouse.mid = false;
+      else this.mouse.down = false;
+    });
+    // A drag that ends off the canvas (or over the HUD) still has to release.
+    window.addEventListener('blur', () => { this.mouse.down = false; this.mouse.mid = false; });
+    window.addEventListener('auxclick', (e) => { if (e.button === 1 && onWorld(e)) e.preventDefault(); });
     window.addEventListener('wheel', (e) => {
       if (onWorld(e)) this.mouse.wheel += e.deltaY;
     }, { passive: true });
