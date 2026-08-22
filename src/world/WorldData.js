@@ -39,8 +39,63 @@ export class WorldData {
     this.noise = new NoiseField(seed ^ 0xbeef);
     this._v = new THREE.Vector3();
     this.hydro = buildHydroField(this.height, this.water, this.res, this.worldSize);
+    this._repairWaterfalls();
     this._buildTextures();
     this._buildRoadNetwork();
+  }
+
+  /**
+   * The plunge point of a waterfall is a WATER SURFACE sample, and the water
+   * grid's "no water here" sentinel is -9999.
+   *
+   * `TerrainGen._waterfalls` walks downstream from the lip until the drop per
+   * cell falls under 0.9 m and writes `water[cur]` as the bottom. That walk
+   * follows `flowDir`, which does not stop at the river mask, so the terminus
+   * is very often a dry cell — and the sentinel is then written into the record
+   * as a height in metres. Measured on the shipped bake: **8 of 28 falls, and
+   * all four of the tallest**, including the one every canonical camera anchor
+   * is built on. Nothing downstream range-checked it:
+   *
+   *   - `Waterfalls._buildPaths` clamps its last path point to `bottom[1]+0.4`,
+   *     so the curtain's final vertex sat at -9998.6 m and the 1-2-1 smoothing
+   *     dragged the last few rows of the sheet thousands of metres with it.
+   *   - The impact burst and the mist are both spawned from that same last
+   *     point, so the biggest falls in the map had **no spray, no mist and no
+   *     churn at their feet at all** — the "bottom of the waterfall looks
+   *     horrible" defect, in one number.
+   *   - `audio/water.js` puts each fall's emitter a third of the way up the
+   *     drop, i.e. at -6714 m, so they were inaudible too.
+   *
+   * Repairing it here rather than in `TerrainGen` is deliberate: the bake cache
+   * key is an FNV hash of `TerrainGen.js` alone, so fixing it there would
+   * invalidate every `.pab` on disk and leave the shipped bakes still carrying
+   * the sentinel. Here it fixes the world every consumer sees, on the bakes
+   * that exist. The generator should still stop writing it — filed in
+   * `docs/INTEGRATION_REQUESTS.md`.
+   */
+  _repairWaterfalls() {
+    const list = this.waterfalls;
+    if (!list?.length) return;
+    let fixed = 0;
+    for (const wf of list) {
+      const [bx, , bz] = wf.bottom;
+      const ground = this.getHeight(bx, bz);
+      const surf = this.getWaterHeight(bx, bz);
+      const level = surf !== null && surf > ground ? surf : ground;
+      // Repair anything outside the map's own vertical range, not just the
+      // exact sentinel: a NaN or a wild value has to be caught by the same
+      // gate or this is a guard against one literal rather than against bad
+      // data. Stated positively — keep the value only if it is provably sane —
+      // so a NaN fails the test instead of surviving it.
+      const sane = (v) => Number.isFinite(v) && v > this.minHeight - 50 && v < this.maxHeight + 50;
+      if (!sane(wf.bottom[1])) { wf.bottom[1] = level; fixed++; }
+      if (!sane(wf.top[1])) wf.top[1] = this.getHeight(wf.top[0], wf.top[2]);
+      // A plunge above its own lip is the same class of defect and reads as a
+      // fall running backwards; keep the pair ordered.
+      if (wf.bottom[1] > wf.top[1] - 0.5) wf.bottom[1] = wf.top[1] - Math.max(1, wf.height * 0.5);
+    }
+    if (fixed) console.warn(`[world] repaired ${fixed}/${list.length} waterfall plunge points ` +
+                            `carrying the water grid's -9999 sentinel`);
   }
 
   // World XZ -> heightmap texel space

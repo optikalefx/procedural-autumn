@@ -40,7 +40,7 @@ if (v.subject) {
   const gz = anchor.z - Math.cos(yaw) * v.dist;
   const gy = wd.getHeight(gx, gz) + v.height;
   pos = new THREE.Vector3(gx, gy, gz);
-  const ty = wd.getHeight(anchor.x, anchor.z) + (anchor.lookY ?? 1.4);
+  const ty = wd.getHeight(anchor.x, anchor.z) + (v.lookY ?? anchor.lookY ?? 1.4);
   look = new THREE.Vector3(anchor.x, ty, anchor.z);
 } else {
   const back = v.standOff ?? 0;

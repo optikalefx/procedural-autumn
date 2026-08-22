@@ -56,6 +56,11 @@ import { clamp, clamp01, mulberry32 } from '../core/MathUtils.js';
 // error against the frame budget (28 falls x 48 x 7 verts) and the outline
 // reads as a curve.
 const PATH_STEPS = 48;                       // texels along each fall
+// Rows of channel prepended ABOVE the lip, carrying u from -1 to just under 0.
+// Six is enough for the tongue to bend over the edge without a corner in the
+// silhouette; the crest is only a few metres long, so more of them buys
+// nothing but vertices.
+const CREST_STEPS = 6;
 // Out to +/-1.25 rather than +/-1: the alpha falloff and the noise erosion that
 // chews the silhouette both finish around 1.27 half-widths, and they need mesh
 // to finish *inside* or the curtain ends on a dead-straight polygon edge.
@@ -157,13 +162,60 @@ void main() {
   // them read as lumps rather than as combed pinstripes. Without it the sheet
   // is a printed gradient and there is nothing for the eye to hold on to at
   // two metres, which is the range the reference plate shows it at.
-  // Its coordinate compensates for the advection stretch: flight time spreads
-  // out as the water accelerates, so a noise sampled in flight time alone is
-  // lumpy at the lip and drawn out into infinite pinstripes by the time it
-  // reaches the pool. Winding the frequency up with vU keeps parcels the same
-  // physical size all the way down — and, as a free consequence, makes them
-  // travel visibly faster the further they have fallen.
-  vec2 cp = vec2(xm * 0.95, ph * (0.55 + 1.30 * vU));
+  //
+  // ── THIS IS WHY THE FALLS RAN UPWARDS. Read before touching it. ──────────
+  //
+  // The coordinate was ph * (0.55 + 1.30 * vU): the advection phase MULTIPLIED
+  // by a function of position. That is not a warp of the pattern, it is a
+  // different transport equation, and it runs backwards.
+  //
+  // ph is 3.4*(flight - t). Flight time is a few seconds; t is the wall
+  // clock and grows without bound, so ph ~ -3.4t. Write the octave's
+  // coordinate as c = 3.4(flight(u) - t)k(u) and follow one feature (c held
+  // constant); implicit differentiation gives
+  //
+  //     du/dt = k / ( flight'(u) k(u) + (flight(u) - t) k'(u) )
+  //
+  // The second term in the denominator is about -1.3t, so once t passes roughly
+  // 0.77 flight' k the denominator changes sign and **every feature on the
+  // sheet reverses**. After that |du/dt| decays as 1/t, so the fall slows to a
+  // crawl, and the same t multiplies the coordinate's gradient along u — at one
+  // minute the octave is running hundreds of cycles down the curtain and
+  // aliases into fizz.
+  //
+  // Measured on the 71 m fall with tools/fallflow.mjs (frozen engine, two hand
+  // rendered frames 0.1 s apart at a chosen wall clock, vertical NCC, converted
+  // to m/s through the projection):
+  //
+  //     t =   6 s   -3.72 m/s  DOWN   correlation peak 0.78
+  //     t =  45 s   +3.01 m/s  UP     peak 0.55
+  //     t = 150 s   +0.05 m/s  --     peak 0.25   (decorrelated)
+  //     t = 420 s   -0.14 m/s  --     peak 0.22   (decorrelated)
+  //
+  // A player sees the correct thing for the first few seconds after load and a
+  // fall running up the cliff for the rest of the session. That is the defect,
+  // and it is not a sign error anywhere — flipping any sign in this file leaves
+  // the time dependence exactly where it was.
+  //
+  // The fix keeps the author's intent (parcels that do not stretch into
+  // pinstripes at the foot) but expresses it ADDITIVELY. Any coordinate of the
+  // form A*ph + f(u) with f' >= 0 transports at
+  //
+  //     du/dt = 3.4A / ( 3.4A flight'(u) + f'(u) )
+  //
+  // which is positive — downstream — for all t, because t has left the
+  // expression entirely.
+  //
+  // The coefficient on that f(u) is **zero**, and that is a decision, not an
+  // omission. A term of 4.0 u^2 was tried first and measured: it slows this
+  // octave to 40% of the water's own speed (-7.1 m/s against the -18 m/s the
+  // streaks travel at), so the sheet carries two different velocities and the
+  // eye reads the slower, higher-contrast one as the speed of the fall. The
+  // stretch it was compensating for is also no longer a defect — the path
+  // integration used to run every chute at a constant 3.7 m/s, so nothing on
+  // the sheet accelerated at all; now that it does, lumps that draw out into
+  // streaks as they fall are the thing the reference plate actually shows.
+  vec2 cp = vec2(xm * 0.95, ph * 0.55);
   float chunk  = wFbm3(cp + 23.0) * 0.5 + 0.5;
   float fine   = wFbm2(vec2(xm * 3.10, ph * 0.70) + 11.0) * 0.5 + 0.5;
   float hair   = wFbm2(vec2(xm * 6.40, ph * 1.30) + 41.0) * 0.5 + 0.5;
@@ -200,6 +252,10 @@ void main() {
   // 74 m fall into a bootlace; the reference shows a solid white column with
   // structure inside it, so the noise modulates the density and never the
   // existence of the sheet.
+  // The crest is the rows with vU < 0: a few metres of channel lying flat on
+  // the water above the lip. glass is 0 there and 1 as soon as the water is
+  // in the air, and every "is this broken water" rule below rides on it.
+  float glass = smoothstep(-0.85, 0.03, vU);
   float shred = smoothstep(0.16, 0.95, vU);
   float body = mix(1.0, 0.62 + 0.38 * smoothstep(0.30, 0.62, streak), shred);
   body = max(body, smoothstep(0.55, 0.72, fine) * shred * 0.55);
@@ -229,7 +285,12 @@ void main() {
   // of metres of drop, the taper finishes inside a few pixels, and the curtain
   // begins on a dead-flat horizontal edge — the exact painted-rectangle top the
   // taper exists to prevent. Widened until the neck is a neck.
-  float endTaper = min(smoothstep(0.0, 0.16, vU), 1.0 - smoothstep(0.90, 1.0, vU));
+  // ...and it now starts on the CREST rather than at the lip. The upstream end
+  // of the tongue is where the sheet has to disappear into the channel; the lip
+  // is the middle of the shape, not the beginning of it, so tapering there was
+  // narrowing the water exactly where a real fall is at full width and going
+  // over an edge.
+  float endTaper = min(smoothstep(-1.0, -0.30, vU), 1.0 - smoothstep(0.90, 1.0, vU));
   sideN += (1.0 - endTaper) * 0.72;
   // Widened from 0.72-1.06. The brief asks for a *soft* white ribbon and the
   // plates draw one: plate 5's curtain has no hard boundary anywhere along it,
@@ -262,6 +323,37 @@ void main() {
   // critic logged. It holds full strength to the waterline now, and the boil
   // and the burst take over there, where the water actually is.
   alpha *= 1.0 - smoothstep(0.955, 1.0, vU);
+  // ...and the crest has to arrive out of the river rather than begin. The
+  // tongue lies on the drawn water surface, so fading its upstream end to
+  // nothing hands the eye over to the river ribbon with no seam. Without this
+  // the fix for the lip just moves the flat cap three metres upstream.
+  // ...over the WHOLE crest, not its upstream third. The tongue lies flat, so
+  // from anywhere below the lip its six rows foreshorten into a handful of
+  // pixels and a fade that finishes at u = -0.42 finishes inside two of them —
+  // which draws exactly the hard straight blue-grey bar across the curtain
+  // that this was meant to prevent, just three metres further up. Spread over
+  // the full crest it is a gradient in screen space too.
+  alpha *= smoothstep(-1.0, -0.05, vU);
+  // ...and the tongue is a highlight ON the river surface, not a second
+  // opaque surface over it. Water.js is already drawing that water.
+  alpha *= mix(0.55, 1.0, glass);
+  // ...and it has to vanish when it is seen EDGE ON, which is the defect the
+  // crest introduced before this line existed. The tongue lies flat on the
+  // water; from a camera below the lip all six of its rows foreshorten into a
+  // few pixels, and because it is the blue unaerated end of the ramp that
+  // reads as a hard, dead-straight blue-grey bar drawn across the white
+  // curtain. Caught by cropping the sheet in isolation — at 1:1 it is a
+  // 3-pixel band and easy to look past.
+  //
+  // A flat sheet of water seen edge on has no thickness to draw, so this is
+  // the honest rule rather than a patch: the river surface underneath is
+  // already drawing that water. Gated on glass, so nothing on the falling
+  // curtain — which is a volume and is bright from every angle — is touched.
+  {
+    vec3 Ve = normalize(cameraPosition - vWPos);
+    float faceOn = abs(dot(normalize(vNrm), Ve));
+    alpha *= mix(smoothstep(0.05, 0.55, faceOn), 1.0, glass);
+  }
   // Pay back a little of the width the LOD borrowed. Not all of it: a fall on
   // a far ridge is a *bright* thread in the reference, not a grey one, so the
   // exponent is well under the 1.0 that would conserve energy exactly.
@@ -292,11 +384,33 @@ void main() {
   // 70 m fall ended up reading as a pale blue rectangle. A fall is white water
   // within a couple of metres of the lip; only the unbroken glassy tongue at
   // the very top keeps any of the channel's blue at all.
-  float aer = clamp(0.42 + 0.50 * smoothstep(0.0, 0.22, vU)
+  // ...and on the crest it is 0: the tongue above a lip is unbroken water, and
+  // it is the one part of a fall that is genuinely the channel's colour. That
+  // contrast — a blue-green tongue drawing down into white — is what says
+  // "this water is accelerating over an edge" rather than "a white strip
+  // starts here".
+  // 0.30 + 0.38, not 0.42 + 0.50. At the old constants a typical parcel came
+  // out at aer 0.92 before the noise, i.e. pinned to white, and the two noise
+  // terms then had almost no range left to work in. docs/WATER_ART_SPEC §1.4
+  // measured the consequence from the other end: plate 5's falling curtain has
+  // a cool spread of 0.38 from top to bottom of the drop and ours has 0.07 —
+  // "our curtain has a cool spread of 0.07 across its whole height". The
+  // aeration ramp is where that spread has to come from, because aeration is
+  // the only thing on a fall that varies between blue and white. Lowered until
+  // the noise actually swings it: a parcel now runs roughly 0.35 to 1.0.
+  float aer = glass * clamp(0.30 + 0.38 * smoothstep(0.0, 0.22, vU)
                          + 0.45 * (c1 - 0.5) + 0.22 * (s1 - 0.5), 0.0, 1.0);
   // The glassy end of the ramp is the shallow tone taken most of the way to
   // white, not the shallow tone itself: even the lip of a fall is aerated.
-  vec3 tint = mix(mix(uShallow, uFoam, 0.55), uFoam, aer);
+  // On the crest proper it IS the shallow tone — see glass.
+  // 0.28, not 0.55. The plates put the curtain at 1:1.12:1.21 and the plunge
+  // at 1:1.02:1.06 — TWO surfaces — and we were drawing both out of uFoam
+  // (1:1.02:1.04) through one illuminant, so they measured 0.00 apart on every
+  // axis. This is a partial move toward the plate, not a claim to have landed
+  // on it: a previous round drove the curtain to 1:1.14:1.31 at half the
+  // plate's value and it read as a pale blue rectangle, and the safe direction
+  // out of that is a step, not a jump. Measure before going further.
+  vec3 tint = mix(mix(uShallow, uFoam, mix(0.18, 0.28, glass)), uFoam, aer);
   // The torn edges of a curtain are the most aerated part of it.
   tint = mix(tint, uFoam, smoothstep(0.55, 1.0, abs(vSide)) * 0.5 * shred);
 
@@ -332,12 +446,18 @@ void main() {
   // rock behind it is nearly black. Driving it off the surface normal put the
   // whole sheet at 0.58 whenever the fall faced away from the sun, which in a
   // north-south gorge is most of the day.
-  vec3 col = tint * lanes * wFoamLight(mix(shadow, 1.0, 0.55)) * (0.86 + 0.14 * ndl);
+  // 0.92: the other half of the curtain/plunge split. The plate puts the
+  // curtain 0.32 stops under the plunge; the plunge material took +0.08 and
+  // this takes -0.08, which is most of that separation without moving either
+  // surface far from the level each was already tuned to.
+  vec3 col = tint * lanes * wFoamLight(mix(shadow, 1.0, 0.55)) * (0.86 + 0.14 * ndl) * 0.92;
 
   // Backlight: a curtain of white water in front of a low sun glows. Through
   // the same desaturated illuminant, or a backlit fall turns into orange neon.
   float back = pow(max(dot(-V, uSunDir), 0.0), 2.0);
-  col += uFoam * wFoamLight(1.0) * back * 0.42 * shadow * (0.4 + 0.6 * vU);
+  // max(vU, 0): the crest rows carry a negative u, and (0.4 + 0.6*vU) goes
+  // NEGATIVE there — a light term that subtracts is a black tongue on the lip.
+  col += uFoam * wFoamLight(1.0) * back * 0.42 * shadow * (0.4 + 0.6 * max(vU, 0.0));
 
   // A specular sliver on the unbroken lip reads as glass. Kept small: a hard
   // ungraded hotspot is on the brief's list of things that get work rejected.
@@ -582,7 +702,7 @@ void main() {
   // twenty-five of them stacked before the plume exists at all, and the
   // density field only ever puts three or four along a view ray. Fog and
   // depth-of-field then finished off what was left.
-  gl_FragColor = vec4(col, a * 0.58);
+  gl_FragColor = vec4(col, a * 0.60);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -701,13 +821,25 @@ void main() {
   // Pay back most of the area the pixel floor borrowed, so a burst seen from
   // far away is a faint haze of spray rather than a cloud that grows as it
   // recedes. Not all of it: the reference keeps a distant plunge bright.
-  a *= pow(1.0 / vGrow, 1.45);
+  // 1.20, not 1.45. Conserving the area exactly is 2.0 (the sprite is grown
+  // on both axes); the reference keeps a distant plunge bright, so this has
+  // always deliberately given some back. It was giving back too little to
+  // survive the pixel floor at the range the plunge is framed from.
+  a *= pow(1.0 / vGrow, 1.20);
   // 0.62 was an opacity you can see a single sprite through nothing of. A
   // cloud of water droplets is *individually* almost transparent and reads only
   // where several overlap; that overlap is what makes the mass look like it has
   // volume, and a per-sprite alpha high enough to read alone destroys it by
   // painting the first sprite the ray meets and nothing behind it.
-  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.34 * vDist);
+  // 0.48, not 0.34. Isolating this mesh at the foot of the 94 m fall in the
+  // plunge framing (tools/falliso.mjs) came back as a frame you could not
+  // tell from one with the burst hidden — three or four faint specks. The
+  // reasoning behind 0.34 is right and is kept: a single sprite must not be
+  // legible, the cloud is the read. But a cloud that composites to nothing is
+  // not a cloud, and the sprites here are 2-3 px at the range the plunge is
+  // actually judged from, so the per-sprite alpha has to carry further than it
+  // does at two metres.
+  gl_FragColor = vec4(col, clamp(a, 0.0, 1.0) * 0.48 * vDist);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -828,6 +960,36 @@ void main() {
   float surge = sin(rImp * 2.6 - uTime * 1.5) * 0.5 + 0.5;
   float churn = n * 0.54 + n2 * 0.30 + surge * 0.16;
 
+  // ── the ring of foam spreading off the impact ────────────────────────────
+  //
+  // The one thing every reference plunge has that nothing here drew: white
+  // water thrown outward in crests that travel away from the boil and die.
+  // The surge above is a single broad pulse and reads as a slow brightening,
+  // not as spreading.
+  //
+  // A ring train was tried before and drew a hurricane symbol. The note on
+  // that is right about the cause and worth restating, because this is the
+  // same ingredient: the failure was that BOTH terms — the ring and the noise
+  // it was added to — were polar functions of one origin, so the pair
+  // multiplied out into a rosette. Three things keep this one honest:
+  //
+  //   1. its radius is broken by a metre-scale planar noise before the sine
+  //      sees it, so no crest is ever a circle;
+  //   2. it is squashed along the flow (the crest is an oval leaning
+  //      downstream, which is what a plunge in a current actually throws);
+  //   3. it decays hard with radius, so it exists in the inner third of the
+  //      apron and is gone by the rim — a ring you can follow to the edge is a
+  //      target, not a plunge.
+  float lobesRing = wFbm2(vLocal * 0.62 + 31.7) * 0.5 + 0.5;
+  float ringR = rImp * (0.88 + 0.30 * lobesRing) + q.x * 0.12;
+  float ring = sin((ringR * 2.3 - uTime * 0.95) * 6.2831853);
+  ring = pow(max(ring, 0.0), 1.9) * (1.0 - smoothstep(0.06, 0.70, rImp));
+  // 0.10, not 0.15. At 0.15 the crest won the threshold often enough to draw a
+  // brighter annulus with a duller middle — a smoke ring, which is the old
+  // rosette defect wearing a different hat. The ring has to be something the
+  // boil is modulated BY, never something that outvotes it.
+  churn += ring * 0.10;
+
   // ── the shape ────────────────────────────────────────────────────────────
   // Two masses, not one disc. A hard white boil under the curtain, and a tail
   // of broken foam dragged off it downstream. The tail is gated on the
@@ -872,7 +1034,10 @@ void main() {
   // and can never leave it, so the boil is where foam wins most often, not
   // where the test stops being a test.
   float cut = mix(0.62, 0.28, clamp(density / 1.35, 0.0, 1.0));
-  float foam = smoothstep(cut, cut + 0.13, churn) * smoothstep(1.06, 0.52, rEff);
+  // 0.92/0.45, not 1.06/0.52. The foam now stops short of the disc's own rim,
+  // because the outer band of the apron belongs to the WET ROCK below and a
+  // soaked margin that the foam covers to the edge is not a margin.
+  float foam = smoothstep(cut, cut + 0.13, churn) * smoothstep(0.92, 0.45, rEff);
   // The white core under the impact, chewed by the same churn so it is a
   // painted shape rather than a printed disc — and it is a *high* threshold on
   // the churn, not a floor under it. Forcing 0.58 across the core was the
@@ -917,9 +1082,17 @@ void main() {
   // blue, which is what made the plunge read as a pale blue wash lying on the
   // ground rather than as churn. A trough between crests of foam is still
   // aerated water; only the water outside the pool is the channel colour.
+  // ...and the plunge is the one surface in the game that is NOT the same
+  // white as the curtain. docs/WATER_ART_SPEC §4 F4: plate 5 separates them by
+  // 0.15 in B/R, 0.10 in chroma and 0.30 in cool, and puts the curtain 0.32
+  // stops DARKER than the plunge; we separated them by 0.00 on every axis
+  // because both were uFoam through one wFoamLight. Two surfaces, two levels:
+  // the plunge is the brighter, more neutral one (plate 1:1.03:1.06 at chroma
+  // 0.054) and the curtain keeps the blue (1:1.12:1.21 at 0.151). 0.94 rather
+  // than 0.86 is that 0.32 stops, taken here and given back in the sheet.
   vec3 poolLow = mix(uShallow, uFoam, 0.52);
-  vec3 col = mix(poolLow, uFoam, foam) * trough
-           * wFoamLight(mix(wSunShadow(vWPos), 1.0, 0.5)) * 0.86;
+  vec3 lit = wFoamLight(mix(wSunShadow(vWPos), 1.0, 0.5));
+  vec3 col = mix(poolLow, uFoam, foam) * trough * lit * 0.94;
 
   // The outline was a 0.6-wide radial airbrush — more than half the pool's
   // radius spent on a smooth gradient, which draws an ellipse whatever the
@@ -929,10 +1102,69 @@ void main() {
   // The plunge is the loudest white shape in plate 5. Measured, this material
   // was reaching an alpha of about 0.2 at its strongest — a wash that fog then
   // finished off, which is why hiding the sheet left no pool visible at all.
-  float alpha = clamp(foam * 1.45, 0.0, 1.0) * smoothstep(1.05, 0.86, rEff);
-  if (!(alpha >= 0.02)) discard;
+  // ...times a geometric kill at the disc's own rim. The rEff fade alone is a
+  // fade in a NOISE-WARPED radius, so wherever the lobe noise runs high it is
+  // still returning 0.2 at r = 1 and the mesh's 32-gon boundary is drawn as a
+  // straight-sided edge — clearly visible on any pool seen at a grazing angle,
+  // which at the foot of a chute is most of them.
+  float alpha = clamp(foam * 1.45, 0.0, 1.0) * smoothstep(0.94, 0.74, rEff)
+              * smoothstep(1.0, 0.86, r);
 
-  gl_FragColor = vec4(col, alpha);
+  // ── wet rock ─────────────────────────────────────────────────────────────
+  //
+  // The thing that was missing and that costs nothing: rock at the foot of a
+  // fall is SOAKED, and soaked rock is darker and a little more saturated than
+  // dry rock over a margin wider than the foam itself. Without it the white
+  // patch sits on the hillside like a sticker, because there is no transition
+  // between "water" and "not water" — the eye reads a cut-out.
+  //
+  // It is drawn by this same material, in the same draw call, as a second
+  // layer underneath the foam: a dark, low-alpha colour composited over the
+  // rock DARKENS it, which is what a wet surface does. The two layers are
+  // resolved into one RGBA below rather than costing a second pass — a plunge
+  // apron already overdraws the curtain, the burst and the mist, and
+  // docs/PERF_FINDINGS.md is unambiguous that this frame is fragment-bound.
+  //
+  // Its outline gets the same torn treatment as the foam's, at a different
+  // scale and phase, so the wet margin is never concentric with the white.
+  // ── and it has to be THRESHOLDED against a noise, not ramped ─────────────
+  //
+  // First attempt was a smooth radial falloff times bench, and bench is a
+  // smooth function of the heightfield — which is a contour generator, the
+  // same class of artifact the note above climbN already describes. The foam
+  // gets away with a smooth mask because the churn threshold tears it up
+  // afterwards; a wet band does not, and the result was a large flat
+  // translucent polygon with four dead-straight sides lying across the
+  // hillside beside the fall. Isolating this mesh in fallbase found it —
+  // in the composite it looked like a bit of haze.
+  //
+  // So the wet margin is cut out of a static, metre-scale noise of world
+  // position, biased by the radial shape, exactly the way the foam is cut out
+  // of the churn. Static because wet rock does not shimmer, and world-space
+  // because the mark belongs to the rock rather than to the decal.
+  float wetN = wFbm2(vWPos.xz * 0.30 + 61.3) * 0.5 + 0.5;
+  float rWet = r / mix(0.62, 1.00, lobes2 * 0.55 + lobesRing * 0.45);
+  float wetShape = (1.0 - smoothstep(0.45, 0.98, rWet))
+                 * (0.34 + 0.66 * (1.0 - smoothstep(0.10, 1.15, rImp)));
+  // Spray keeps a downstream apron damp well past the foam.
+  wetShape = max(wetShape, tail * 0.42);
+  float wetCut = mix(0.68, 0.16, clamp(wetShape, 0.0, 1.0));
+  // ...and it is killed outright at the mesh's own rim. Anything the disc's
+  // 32-gon boundary can draw, it will draw.
+  float wet = smoothstep(wetCut, wetCut + 0.18, wetN) * bench
+            * smoothstep(1.0, 0.80, r);
+  // Darkest where it is wettest; a value, not a hue — the rock's own colour
+  // has to survive, or a plunge basin reads as a hole cut in the hillside.
+  vec3 wetCol = mix(uShallow, vec3(0.0), 0.72) * lit;
+  float wetA = clamp(wet, 0.0, 1.0) * 0.34 * vPower;
+
+  // Resolve foam-over-wet into a single premultiplied result. Doing it here
+  // rather than with two meshes is what keeps this free.
+  float outA = alpha + wetA * (1.0 - alpha);
+  if (!(outA >= 0.02)) discard;
+  vec3 outC = (col * alpha + wetCol * wetA * (1.0 - alpha)) / max(outA, 1e-4);
+
+  gl_FragColor = vec4(outC, outA);
   #include <fog_fragment>
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -1014,7 +1246,7 @@ export class Waterfalls extends System {
       const sideX = -dirZ, sideZ = dirX;
 
       const pts = [];
-      let y = top[1], vy = 0, flight = 0;
+      let y = top[1], vy = 0, vh = v0, flight = 0;
       const dsH = hor / (PATH_STEPS - 1);
       const seed = rng();
 
@@ -1028,9 +1260,10 @@ export class Waterfalls extends System {
         if (i > 0) {
           let dt;
           if (hor > 0.6) {
-            dt = dsH / v0;
-            vy -= G * dt;
-            let yNext = y + vy * dt;
+            // ── free flight ───────────────────────────────────────────────
+            dt = dsH / Math.max(vh, 0.4);
+            const vyT = vy - G * dt;
+            let yNext = y + vyT * dt;
             // 0.9, not 0.35. This samples the *baked* heightfield, and the
             // terrain mesh adds up to half a metre of micro-detail on top of
             // it — so at 0.35 the rock pokes through the curtain wherever the
@@ -1042,10 +1275,43 @@ export class Waterfalls extends System {
             // one side is against the wall.
             const ground = world.getHeight(x, z) + 0.9;
             if (yNext < ground) {
+              // ── sliding on rock, and this is where the old integration was
+              // wrong in a way that owned the whole look of the fall.
+              //
+              // It clamped y to the rock and recomputed vy — but left the
+              // HORIZONTAL speed at the lip's `v0` for the entire descent. A
+              // chute is by definition clamped from its first step, so a fall
+              // with 51 m of horizontal run was integrated at 3.7 m/s all the
+              // way down and its recorded time of flight came out at 13.7 s
+              // for a 74 m drop that really takes about 5. Time of flight is
+              // the sheet's advection coordinate and the spray's loop rate, so
+              // everything on the fall crawled at a third of the speed it
+              // should — the "flat streaked sheet" note in the critic log, and
+              // the reason the file's own claim that flight time "accelerates
+              // and stretches exactly like falling water" was not true of any
+              // fall in the map that touches its rock.
+              //
+              // Water on rock is not in free flight, but it is not at rest
+              // either: it accelerates under the along-slope component of
+              // gravity, minus friction and the energy it spends aerating.
+              // Torricelli with an efficiency term is the honest one-line
+              // model — speed from the drop so far, not from the lip — and it
+              // needs no per-fall tuning.
+              //
+              // ETA 0.45: measured against the drop this produces 26 m/s at
+              // the foot of the 74 m fall, i.e. the ~5 s descent above. At 1.0
+              // (frictionless) it is 38 m/s and the streaks strobe; at 0.2 the
+              // fall is back to reading as a slow smear.
               yNext = ground;
-              // Landed on rock: the water now slides, so its vertical speed is
-              // whatever the slope gives it.
+              const ETA = 0.45, VMAX = 34;
+              const drop = Math.max(0, top[1] - yNext);
+              const vAlong = Math.min(Math.sqrt(v0 * v0 + 2 * G * ETA * drop), VMAX);
+              const ds3 = Math.hypot(dsH, yNext - y);
+              dt = ds3 / vAlong;
+              vh = dsH / dt;
               vy = (yNext - y) / dt;
+            } else {
+              vy = vyT;
             }
             y = yNext;
           } else {
@@ -1089,19 +1355,67 @@ export class Waterfalls extends System {
         }
       }
 
+      // ── the crest ────────────────────────────────────────────────────────
+      //
+      // A few metres of the channel ABOVE the lip, lying flat on the water,
+      // necking as it gathers into the drop. Prepended to the same path, with
+      // `u` running negative, so every rule the sheet shader already has for
+      // the falling part is untouched and the crest is simply "u < 0".
+      //
+      // This is the whole of the lip fix and it is geometry, not shading. The
+      // sheet used to begin at the lip texel at 77% opacity across its full
+      // width — measured out of the alpha, not guessed: at u = 0 the end taper
+      // pushes the side coordinate to 0.72 and `edge` still returns 0.77 in the
+      // middle of the curtain. So the water switched on along a dead-flat
+      // horizontal line with rock above it, which is exactly what `falllip`
+      // showed: a white strip appearing out of a boulder. No alpha ramp fixes
+      // that, because the defect is that there is nothing there to ramp from.
+      // A real crest has a glassy tongue that is continuous with the river,
+      // narrows as it accelerates over the edge, and only turns white once it
+      // is in the air.
+      const crestLen = clamp(2.5 + wf.width * 0.9, 3.0, 11.0);
+      const crest = [];
+      for (let i = CREST_STEPS; i >= 1; i--) {
+        const t = i / CREST_STEPS;                 // 1 = furthest upstream
+        const back = crestLen * t;
+        const cx = top[0] - dirX * back, cz = top[2] - dirZ * back;
+        const surf = world.getWaterHeight(cx, cz);
+        const g = world.getHeight(cx, cz);
+        // Never below the lip (water does not run uphill into a fall) and
+        // never more than a metre above it (the channel is a channel, not a
+        // ramp): a plain surface sample here walks straight up the valley side
+        // on any fall whose lip sits in a notch.
+        const cy = clamp(Math.max(surf !== null && surf > g ? surf : g, top[1]) + 0.08,
+                         top[1], top[1] + 1.1);
+        // The stream gathers and NECKS: wider and slower upstream, drawn down
+        // to the fall's own width at the edge. The narrowing is what reads as
+        // acceleration.
+        const cw = wf.width * (0.85 + 0.55 * t);
+        // Approach speed is the lip speed slowed by the same ratio the channel
+        // is widened by — continuity, so the tongue's advection is continuous
+        // with the sheet's rather than jumping at the lip.
+        const vApp = Math.max(v0 * (wf.width / cw) * 0.85, 0.6);
+        crest.push({ x: cx, y: cy, z: cz, w: cw, u: -t, flight: -back / vApp, crest: true });
+      }
+      const fallPts = pts;
+      const all = crest.concat(pts);
+
       this.falls.push({
-        wf, pts, sideX, sideZ, dirX, dirZ, hor,
+        wf, pts: all, fallPts, sideX, sideZ, dirX, dirZ, hor,
         height: H,
         disc: clamp01(wf.discharge),
         width: wf.width,
+        tof: fallPts[fallPts.length - 1].flight,
       });
     }
 
     // Bake the paths into a float texture so spray and mist ride the same curve.
+    // The FALLING part only: spray, burst and mist all address it with u in
+    // 0..1 from lip to foot, and there is no spray on the glassy crest.
     const N = this.falls.length;
     const data = new Float32Array(PATH_STEPS * N * 4);
     for (let f = 0; f < N; f++) {
-      const pts = this.falls[f].pts;
+      const pts = this.falls[f].fallPts;
       for (let i = 0; i < PATH_STEPS; i++) {
         const o = (f * PATH_STEPS + i) * 4;
         data[o] = pts[i].x; data[o + 1] = pts[i].y; data[o + 2] = pts[i].z; data[o + 3] = pts[i].w;
@@ -1148,13 +1462,25 @@ export class Waterfalls extends System {
         // the rock a fall hangs in front of is by construction the thing it
         // just left.
         if (nx * f.dirX + nz * f.dirZ < 0.0) { nx = -nx; ny = -ny; nz = -nz; }
+        // The crest is a tongue lying ON the water, not a curtain hanging in
+        // front of a wall, so it gets the one normal that is true of a flat
+        // sheet of water and almost no stand-off. Without this the generic
+        // cross-product resolves to straight DOWN on a horizontal tangent
+        // (ny = -|t| for a side axis built as (-dirZ, dirX)) and the tongue is
+        // pushed most of a metre into the rock it is supposed to be lying on.
+        if (p.crest) { nx = 0; ny = 1; nz = 0; }
         // Stand the sheet off the rock along its own normal. A curtain of
         // water is a *volume* — a metre or so of it on a fall this size — and
         // it hangs in front of the wall rather than being painted on it. The
         // path clamp above keeps the sheet's centreline off the baked ground;
         // this keeps the near face of the curtain off the faceted mesh, which
         // is what the eye actually sees intersecting.
-        const stand = Math.min(0.25 + p.w * 0.06, 0.9);
+        // Ramped in over the first tenth of the drop so the tongue and the
+        // curtain are one surface: a step from 0.06 to 0.9 m at the lip is a
+        // visible ledge in the silhouette from the bank.
+        const standFull = Math.min(0.25 + p.w * 0.06, 0.9);
+        const stand = p.crest ? 0.06
+                    : 0.06 + (standFull - 0.06) * clamp01(p.u / 0.10);
         for (let c = 0; c < C; c++) {
           const off = SHEET_COLS[c] * p.w * 0.5;
           pos.push(p.x + f.sideX * off + nx * stand,
@@ -1225,7 +1551,7 @@ export class Waterfalls extends System {
       const row = (f + 0.5) / N;
       // Time of flight sets the loop rate: a 60 m fall must take much longer
       // to traverse than a 6 m one or the scale reads wrong.
-      const tof = Math.max(fl.pts[fl.pts.length - 1].flight, 0.6);
+      const tof = Math.max(fl.tof, 0.6);
       for (let i = 0; i < count; i++) {
         const burst = rng() < 0.42;
         rows.push(row);
@@ -1392,7 +1718,12 @@ export class Waterfalls extends System {
         // minimum pixel size — a fall with no spray at its foot reads as a
         // painted strip, which is what every distant fall in peaks looked like.
         uCullDist: { value: 2600 },
-        uMinPx:    { value: 2.4 },
+        // 3.4, not 2.4, and see the payback exponent in BURST_FRAG with it.
+        // At 2.4 px with a 1.45 payback the burst composited to nothing in the
+        // `plunge` framing — isolating the mesh (tools/falliso.mjs) gave a
+        // frame indistinguishable from one with the burst hidden, three specks
+        // in it. The plunge is judged at 40-90 m, not at two.
+        uMinPx:    { value: 3.4 },
       }),
       vertexShader: BURST_VERT,
       fragmentShader: BURST_FRAG,
@@ -1421,7 +1752,16 @@ export class Waterfalls extends System {
       // density field, and a dozen 19 m discs is a density field with three
       // samples in it. Raising the count and halving the size costs about the
       // same fill rate and reads as vapour instead of as sprites.
-      const count = Math.round(clamp(18 + energy * 76, 18, 96));
+      // 24 + 104, from 18 + 76. Isolated (tools/falliso.mjs, `plunge`) the
+      // plume at the foot of the 94 m fall came back as a loose scatter of
+      // separable white discs rather than as vapour — 94 puffs over a ball
+      // ten metres across is three or four samples along any view ray, which
+      // is a density field with no density in it. Count is the cheap axis
+      // here: the leave-one-out table in docs/PERF_FINDINGS.md puts all three
+      // particle layers together at -1.6% of the frame against an iqr of
+      // 3.3%, i.e. inside the noise, so a third more puffs at the same size
+      // is not measurable and the plume is the whole read at the base.
+      const count = Math.round(clamp(44 + energy * 186, 44, 230));
       // Tightened from 3 + energy*16. A 19 m spread with another half of that
       // in drift on top puts puffs forty metres from the fall, where they are
       // no longer part of a plume — they are single soft discs hanging over
@@ -1445,11 +1785,19 @@ export class Waterfalls extends System {
         // The veil is confined to the bottom 18% of the path. It used to run
         // from 0.62, which on a 65 m fall starts twenty-five metres up a bare
         // cliff, where there is nothing for a puff to belong to.
+        // Weighted toward the bloom, and the plume pulled in. The mass that
+        // reads at the foot of a fall is the one sitting ON the water; the
+        // wide, thin half of the old split is what separated into discs.
         const roll = rng();
-        const kind = roll < 0.34 ? 0 : roll < 0.84 ? 1 : 2;
-        const t = kind === 2 ? 0.82 + rng() * 0.17 : 1.0;
-        const p = fl.pts[Math.min(fl.pts.length - 1, Math.round(t * (fl.pts.length - 1)))];
-        const lat = kind === 0 ? 0.34 : kind === 1 ? 0.60 : 0.22;
+        const kind = roll < 0.44 ? 0 : roll < 0.86 ? 1 : 2;
+        // The veil is the last 10% of the drop, not the last 18%. Thirty-odd
+        // puffs strung over eighteen metres of curtain are eighteen metres
+        // apart, and separable soft discs against rock read as sleet — the
+        // exact failure the file already logs for the spray sprites.
+        const t = kind === 2 ? 0.90 + rng() * 0.09 : 1.0;
+        const src = fl.fallPts ?? fl.pts;
+        const p = src[Math.min(src.length - 1, Math.round(t * (src.length - 1)))];
+        const lat = kind === 0 ? 0.28 : kind === 1 ? 0.40 : 0.30;
         centre.push(
           p.x + (rng() * 2 - 1) * spread * lat,
           p.y + rng() * (kind === 0 ? 1.2 : 2.5),
@@ -1457,7 +1805,12 @@ export class Waterfalls extends System {
         );
         phase.push(rng());
         rate.push(0.045 + rng() * 0.055);
-        const sizeMul = kind === 0 ? 1.55 : kind === 1 ? 1.0 : 0.62;
+        // 0.70x the linear size, at 1.8x the count: the same fill rate (area
+        // goes as the square) for three times the samples along a view ray.
+        // This is the trade the note above already describes and it is the one
+        // that turns eight separable white discs into vapour. Isolating the
+        // mesh is the only way to see which of the two you have.
+        const sizeMul = (kind === 0 ? 1.55 : kind === 1 ? 1.0 : 0.62) * 0.70;
         size.push((1.7 + rng() * 3.4) * (0.5 + energy * 1.0) * sizeMul);
         // Halved. At up to 24 m of rise the last third of every puff's life
         // was spent alone against open sky, and an isolated soft disc against
@@ -1466,7 +1819,13 @@ export class Waterfalls extends System {
         // climbs; it does not travel to the top of the cliff intact.
         // The bloom barely climbs at all — it is the mass sitting on the water,
         // not the vapour leaving it.
-        rise.push((2.0 + rng() * 4.5) * (0.5 + energy) * (kind === 0 ? 0.22 : 1.0));
+        // ...and the plume's climb halved again for the same reason. At up to
+        // ten metres of rise the top third of every puff's life was spent
+        // alone above the mass, and a plume is only vapour while its members
+        // overlap. Isolating the mesh shows the difference immediately: a
+        // trail of countable dots above the bloom, or one column.
+        rise.push((2.0 + rng() * 4.5) * (0.5 + energy)
+                  * (kind === 0 ? 0.22 : kind === 1 ? 0.45 : 0.35));
         const a = rng() * Math.PI * 2;
         const dr = spread * (kind === 0 ? 0.10 : 0.32);
         drift.push(Math.cos(a) * dr, 0, Math.sin(a) * dr);

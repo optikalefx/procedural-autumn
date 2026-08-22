@@ -70,19 +70,50 @@ export const VIEWS = {
   // flowing bank and scores lakes *down*, and hero/peaks are too far off to
   // read a waterline.
   mouth:     { anchor: 'mouth',    height: 5.0, dist: 26, pitch: -0.16, fov: 54, hour: 16.9 },
-  // The tallest waterfall, framed from below.
-  waterfall: { anchor: 'waterfall',height: 11,  dist: 58,  pitch: 0.08,  fov: 50, hour: 16.2, yawOffset: -0.55 },
-  // The plunge pool, from above the canopy.
+  // ── the falls ──────────────────────────────────────────────────────────────────────
   //
-  // `waterfall` sits at 11 m and 58 m out, and after the smooth-water round
-  // moved the channels the vegetation moved with them (moisture is derived from
-  // distance-to-water), so a red maple now stands between that camera and the
-  // fall and the frame is 70% leaves. The anchor is not wrong — the fall is
-  // still there — but a framing a critic cannot judge water in is a framing
-  // that wastes a critic. Same anchor, above the canopy, looking down into the
-  // pool: this is where the round's worst defect lived and it needs a view that
-  // is not at the mercy of one tree.
-  plunge:    { anchor: 'waterfall',height: 34,  dist: 96,  pitch: -0.20, fov: 52, hour: 16.2, yawOffset: -0.55 },
+  // RETUNED, and the waterfall anchor in review/anchors.json with them. Read
+  // this before comparing anything here against review/048..051.
+  //
+  // 1. The pinned anchor had gone stale. It stood at (-787, 91); the nearest
+  //    waterfall on the shipped bake is 657 m away. --view waterfall was a
+  //    picture of a lake with no fall in it, and plunge inherited the same
+  //    anchor, so NO framing in this harness contained a waterfall. A critic
+  //    grading waterfall was grading a shoreline. This is the integrator queue
+  //    item in docs/WATER_CONTRACT.md item 3 ("the carve follows a smoothed
+  //    centreline now, so channels have moved"), never applied.
+  //
+  // 2. The anchor is no longer the POI stand-off point. It is the FALL ITSELF
+  //    — the foot of the 94 m fall at (-732, 10) on seed 20261018, with lookY
+  //    46 m so the aim point is the middle of the drop — and all four views
+  //    below are subject framings that orbit it. A landscape framing pointed
+  //    along a yaw cannot hold a subject 90 m tall and 30 m away: the old
+  //    numbers put the foot 0.48 rad up and the lip 0.91 rad up, so whatever
+  //    pitch was set to, at least one end of the fall was out of frame.
+  //    Orbiting the subject cannot have that failure mode.
+  //
+  // 3. yawOffset -0.55 is gone. The yaw already points along the fall; a
+  //    32-degree offset on top of it put the water against the left edge.
+  //
+  // Seed matters here more than anywhere else in this table, because the falls
+  // come out of the bake: capture with --seed 20261018, which is the world
+  // public/bakes/ holds and WorldConfig.SEED is not, or these anchors frame
+  // open hillside again.
+  //
+  // The whole fall from the bank below it: what a player standing at the foot
+  // sees, the drop spanning about two thirds of the frame height.
+  waterfall: { anchor: 'waterfall', height: 6,  dist: 112, fov: 45, hour: 16.2, subject: true, lookY: 36 },
+  // Down into the base from above. The one framing where the plunge — boil,
+  // foam ring, spray, wet rock — is the subject rather than a detail at the
+  // bottom of a tall thin thing.
+  plunge:    { anchor: 'waterfall', height: 30, dist: 72,  fov: 45, hour: 16.2, subject: true, lookY: 6 },
+  // Tight on the foot at eye level, at the range a player driving the valley
+  // floor actually gets.
+  fallbase:  { anchor: 'waterfall', height: 4,  dist: 34,  fov: 50, hour: 16.2, subject: true, lookY: 5 },
+  // Tight on the crest, long lens. A lip that simply switches the water on is
+  // as bad a tell as a base that simply stops, and nothing in this harness has
+  // ever framed one.
+  falllip:   { anchor: 'waterfall', height: 30, dist: 78,  fov: 20, hour: 16.2, subject: true, lookY: 76 },
   // High peaks and aerial perspective.
   peaks:     { anchor: 'peak',     height: 120, dist: 420, pitch: -0.10, fov: 42, hour: 16.0 },
   // The vehicle, three-quarter hero framing.
@@ -286,7 +317,7 @@ await acquire('shot');
           const gz = anchor.z - Math.cos(yaw) * v.dist;
           const gy = wd.getHeight(gx, gz) + v.height;
           pos = new THREE.Vector3(gx, gy, gz);
-          const ty = wd.getHeight(anchor.x, anchor.z) + (anchor.lookY ?? 1.4);
+          const ty = wd.getHeight(anchor.x, anchor.z) + (v.lookY ?? anchor.lookY ?? 1.4);
           look = new THREE.Vector3(anchor.x, ty, anchor.z);
         } else {
           // Landscape framing: stand at the landmark and look along its yaw,
