@@ -980,10 +980,29 @@ void main() {
   // Fade rather than discard, and start at 0.55 rather than 0: the terrain mesh
   // carries up to half a metre of micro-detail on top of the field this samples,
   // so the last half metre is noise, not float.
+  //
+  // ...and the threshold has to be BROKEN WITH NOISE, for the third time in
+  // this shader and for the same reason both notes above give. Written as a
+  // bare smoothstep over lift this term is another smooth function of the
+  // heightfield, and on a steep face the mesh crosses the whole 0.55-2.0 m
+  // window inside a pixel or two — so it does not draw a gradient, it draws a
+  // step, with the mesh's own triangle edges as its contours. Rendering the
+  // term on its own (tools/_scratch/poolprobe.mjs, the 'contact' variant) shows
+  // it as a binary black/white mask with dead-straight sides and sharp corners:
+  // the wedge, moved, not removed. Widening the ramp alone cannot fix it — the
+  // face is vertical at any ramp width — so the threshold is jittered by a
+  // metre-scale noise of world position, which is what turns the contour into a
+  // torn edge.
+  //
+  // Its frequency and phase are deliberately unlike climbN's (0.55, +17.3) and
+  // wetN's (0.30, +61.3): three masks cut from the same noise tear along the
+  // same lines and read as one shape with a hard outline.
   vec4 wData = wWorldData(vWPos.xz);
   float wSurfH = (wData.g > -9000.0 && wData.g > wData.r) ? wData.g : wData.r;
   float lift = vWPos.y - wSurfH - 0.55;
-  float contact = 1.0 - smoothstep(0.55, 2.0, lift);
+  float contactN = wFbm2(vWPos.xz * 0.62 + 8.7) * 0.5 + 0.5;
+  float contact = 1.0 - smoothstep(0.45 + contactN * 1.10,
+                                   2.20 + contactN * 2.40, lift);
 
   float R = max(vRadius, 0.5);
   // Pool space: x runs downstream, y across. The mesh is built as a disc here
@@ -2019,6 +2038,14 @@ export class Waterfalls extends System {
     const world = this.ctx.world;
     const pos = [], local = [], rad = [], pow = [], baseY = [], idx = [];
     let base = 0;
+    // 5 x 32 stays. Tried 11 x 48 while chasing the straight-edged apron
+    // artifact, on the theory that the mesh's chord error was clipping it
+    // against the rock. It measurably reduces the float — sunk fraction 2.6% ->
+    // 1.4%, p90 lift 0.150 m -> 0.041, p99 1.04 -> 0.60
+    // (tools/_scratch/poollift.mjs) — and it changed the frame not at all,
+    // because the artifact is drawn by the contact term's own threshold, not by
+    // the geometry. Reverted rather than kept: +12,200 triangles for no visible
+    // difference is not a trade, and the triangle count is a critic budget line.
     const RINGS = 5, SEG = 32;
 
     // Drape each vertex on whatever it lands on. A flat disc at the recorded

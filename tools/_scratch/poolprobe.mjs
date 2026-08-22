@@ -71,6 +71,15 @@ const variants = {
   flat:    (s) => s.replace('gl_FragColor = vec4(outC, outA);',
                             'gl_FragColor = vec4(1.0, 0.2, 0.9, 1.0);')
                    .replace('if (!(outA >= 0.02)) discard;', ''),
+  // the contact term itself, as a greyscale. If the straight edges are in
+  // here, the fade is a new contour generator keyed to the mesh's own
+  // tessellation and not a depth clip at all.
+  contact: (s) => s.replace('gl_FragColor = vec4(outC, outA);',
+                            'gl_FragColor = vec4(vec3(contact), 1.0);')
+                   .replace('if (!(outA >= 0.02)) discard;', '')
+                   .replace('#include <fog_fragment>', '')
+                   .replace('#include <tonemapping_fragment>', '')
+                   .replace('#include <colorspace_fragment>', ''),
   // lift, in metres, of the draped mesh above the baked bed, encoded 0..10 m
   // into red and 0..2 m into green so both scales are readable off one frame.
   lift:    (s) => s.replace('gl_FragColor = vec4(outC, outA);',
