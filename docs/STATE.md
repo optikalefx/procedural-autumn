@@ -16,7 +16,7 @@ not, and was reverted on its own evidence** — see the last section.
 | 7 | waterfalls | Flow was correct on load, **reversed by 45 s, frozen by 150 s**. Separately, **11 of 28 falls** had `bottom[1]` literally `-9999`, putting plunge points 10 km down and audio emitters at ≈ −6712 m — no spray, mist, churn or sound. The dusk apron wedge was **not** the `climb`/`bench` gate two notes had blamed: forcing the fragment opaque kept the straight edges, so it is the apron **mesh** floating over chute walls and being sliced by the depth test. |
 | 8 | harsh, flickering shadows | Two causes. The texel snap **was not snapping** — it rounded world X/Z with `focus.y` raw, and at a 16° sun the light's up axis is near vertical (mean fractional texel 0.203, where 0.25 is unsnapped). And the extent re-fit every frame, walking 414 → 433 m in twelve steps. Crawl under camera motion → **0.00%**, verified live by deliberately breaking `_holdExtent` and watching it climb back to 3.51%. Depth-pass wind is damped, not frozen: `sway 0.5` keeps dapple moving at under half of main's flicker. |
 
-## Golden hour (5) — attempted, measured, reverted
+## Golden hour (5) — attempted five times, measured, still not landed
 
 `hemiI` runs **1.16 at h18.3 against noon's 0.90** while the key falls to 60% of
 noon. That is backwards and it is why the terminator is weaker at golden hour
@@ -41,11 +41,84 @@ condemned `drive` at 18:15 in nearly the same words — "dimmer AND flatter, mud
 not moody" and "dim and muddier, the ground flattening into uniform brown."
 `drive` is the view the player spends the game inside. Reverted in `43b001c`.
 
-**For the next attempt:** the fill is what holds the eye-level ground off the
-floor once the key has dropped. Do not simply take it away — put something back.
-A warmer, lower `hemiGnd` rather than less `hemiI`, or a counter-key that
-survives to the horizon. Guards were clean on all three judges, so noon and
-night are not the constraint.
+### Round 5 — the knob is not in this file, and here is the sweep that says so
+
+Round 5 was sent to try exactly what the paragraph above proposed: a warmer and
+lower `hemiGnd`, a cooler `hemiSky`, the counter-key `fill`, and `fogD`. It
+landed nothing, because **every one of those knobs moves the eye-level
+terminator the wrong way or not at all**, and the sweep that shows it is
+`tools/_scratch/termstat.mjs` (new — it is sepdiag's frozen-instant, ground-
+masked method, but it reports the *shadowed fraction* and the class-mean
+lit/shade ratio rather than the deepest decile).
+
+`meadow`-18:25, `lit/shade` over ground pixels. Baseline is **1.084**:
+
+| setting | meadow | drive | hero |
+|---|---|---|---|
+| **as-is** | **1.084** | 1.494 | 1.553 |
+| `hemiI` → 0.001 | 0.984 | 1.632 | — |
+| `hemiI` → 0.60 | 1.019 | 1.600 | — |
+| `hemiI` → 1.45 | 1.034 | 1.447 | — |
+| `hemiSky` → dark | 0.995 | 1.638 | — |
+| `hemiGnd` → dark | 1.025 | 1.523 | — |
+| `hemiGnd` warm + `hemiI` 0.98 | 1.028 | 1.507 | — |
+| `hemiSky` warm, same luma | 1.024 | 1.440 | — |
+| `hemiSky` warm, +9% luma | 1.024 | 1.353 | — |
+| `hemiSky` → neutral | 1.029 | 1.461 | — |
+| counter-key `fill` → 0 | 1.086 | 1.504 | 1.621 |
+| counter-key `fill` × 2.2 | 1.081 | 1.437 | 1.485 |
+| `fogD` → 0.0015 | 1.056 | 1.370 | 1.633 |
+
+**The entire reachable range at `meadow` is 0.98 – 1.086 and the shipping value
+is already at the top of it.** Noon is 1.173. No combination of evening
+keyframes gets golden hour's eye-level terminator back to midday's, let alone
+past it. Note also that raising *and* lowering the fill both lower it — the
+hemisphere lights the lit class more than the shaded class at eye level, so
+attempt 4's `hemiI` cut was not a taste failure, it was moving a number that
+points the other way. `hemiGnd` in particular has almost no authority down
+there: darkening it to `0x402c1c` moved `meadow`'s lit ground by 4%, against
+19% for the same move on `hemiSky`.
+
+**Where the knob actually is.** Measured at `meadow`-18:25, same instrument,
+holding everything else fixed:
+
+| setting | lit/shade | lit ground |
+|---|---|---|
+| as-is | 1.084 | 0.492 |
+| `sun.shadow.intensity` 0.44 → 0.85 | 1.211 | 0.491 |
+| grass `uShadowSoft` 0.68 → 0.15 | **1.417** | 0.488 |
+| `sunI` +45% | 1.251 | 0.540 |
+
+The grass shader's shadow attenuation alone takes the terminator past noon's
+**with the lit ground luminance unchanged to three decimals** — which is the
+exact shape of fix this defect has been asking for and the only one measured
+that does not pay for contrast in level. `sunI` buys ratio by lifting the whole
+frame, which is what blew rounds 1–3 out to pale pink.
+
+This also explains the framing split in the table above. At eye level the frame
+is *grass*, and `grass_material.js` lights its body from `uSunColor`,
+`uShadowSoft` and its own hardcoded `uSkyCol`/`uSkyFill` — it never reads
+`hemiSky` or `hemiGnd` at all. At vista distance the frame is terrain and rock,
+which the hemisphere does light, which is why `hero` responds strongly to every
+fill move and `meadow` responds to none of them. Vistas gained a terminator in
+attempt 4 for a real reason; eye level could not have.
+
+Look at `sunlow`-18:25 and count the conifers standing in the meadow that cast
+no visible shadow on the grass. That is the defect, and it is a grass-shader
+number.
+
+**For the next attempt:** stop tuning `Lighting.js`. The candidate is grass and
+cover `uShadowSoft` at the evening hours, possibly paired with a modest lift in
+`sun.shadow.intensity`, and it must be judged on `drive` and `meadow` because
+both are already dark and the failure mode is mud. Do NOT pair it with a fill
+cut — the sweep above says a fill cut costs eye-level level for nothing.
+One caution the sweep also found: at **18:15** specifically, `meadow` is 72.8%
+shadowed and `lit/shade` is 0.979 — the shadowed class is *brighter* than the
+lit class, and `uShadowSoft` does not help there (0.979 → 0.969) because the lit
+class has shrunk to a sliver. 18:15 at that anchor is not a contrast problem,
+it is a sun-elevation/occlusion fact; judge the fix at 18:25 and later.
+Guards were clean on all three of round 4's judges, so noon and night are still
+not the constraint.
 
 ## Three instrument traps this round, all of which produced clean wrong numbers
 
