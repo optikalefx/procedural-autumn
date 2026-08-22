@@ -347,30 +347,31 @@ void main() {
   //
   // A flat sheet of water seen edge on has no thickness to draw, so this is
   // the honest rule rather than a patch: the river surface underneath is
-  // already drawing that water. Gated so that nothing on the falling curtain —
-  // which is a volume and is bright from every angle — is touched.
+  // already drawing that water. Gated on glass, so nothing on the falling
+  // curtain — which is a volume and is bright from every angle — is touched.
   //
-  // ── and the gate has to key off the TONGUE, not off glass. ───────────────
+  // ── OPEN, for whoever gets a framing that contains a lip. ────────────────
   //
-  // This was written as mix(faceOnKill, 1.0, glass), and glass is
-  // smoothstep(-0.85, 0.03, vU) — an aeration ramp that is already 0.85 by the
-  // last crest row. So the kill was 85% switched off on precisely the row that
-  // is flattest and widest, and the bar it exists to prevent was still drawn.
-  // Blind A/B against 6181c10 has it: no bar before the crest existed, a hard
-  // light-blue horizontal bar across the curtain after, at both waterfall
-  // and fallbase, sticking out past the white column on the right because
-  // the tongue is up to 1.4x the fall's own width. Isolating WaterfallSheets
-  // puts it in this mesh and no other.
+  // This gate is mostly switched off on the row it is aimed at, and that is
+  // arithmetic rather than opinion: glass is smoothstep(-0.85, 0.03, vU), the
+  // crest carries u in [-1, -1/6], and glass(-1/6) is 0.85. mix(kill, 1.0,
+  // 0.85) is 85% of no kill. The flattest, widest crest row — the one whose
+  // whole purpose here is to disappear when seen edge on — keeps most of its
+  // alpha. Keying the gate off the tongue instead (1 for every u < 0 row, 0
+  // as soon as the water is in the air) was written, captured and REVERTED:
+  // it changed nothing measurable at waterfall, plunge or fallbase, and this
+  // harness has no framing that puts a lip on screen — falllip, which was
+  // added for exactly that, comes back 70% sky. An unmeasured change to a
+  // tuned constant is worth less than a note saying where to look.
   //
-  // glass answers "has this water aerated yet", which is a ramp. The question
-  // here is "is this the flat tongue", which is not a ramp — it is true for
-  // every crest row and false the moment u goes positive, because that is how
-  // the crest is built. Two questions, two masks.
+  // Do not attribute the hard light-blue horizontal bar across the curtain to
+  // this. It was blamed on the crest and it is not the crest: it is in
+  // WaterfallSheets (isolated), it sits at a fixed position on the fall, and
+  // it is present at 6181c10, which is before the crest existed at all.
   {
     vec3 Ve = normalize(cameraPosition - vWPos);
     float faceOn = abs(dot(normalize(vNrm), Ve));
-    float tongue = 1.0 - smoothstep(-0.06, 0.02, vU);
-    alpha *= mix(1.0, smoothstep(0.05, 0.55, faceOn), tongue);
+    alpha *= mix(smoothstep(0.05, 0.55, faceOn), 1.0, glass);
   }
   // Pay back a little of the width the LOD borrowed. Not all of it: a fall on
   // a far ridge is a *bright* thread in the reference, not a grey one, so the
