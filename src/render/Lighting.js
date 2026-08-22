@@ -903,32 +903,64 @@ export class Lighting {
     // cast tree shadow on gold is srgb(148,106,47), luma 0.433, against sunlit
     // gold at 0.69-0.73 — a shaded/sunlit display-luma RATIO of 0.59-0.63.
     // Ratio, not separation, because it is invariant to where the exposure sits.
-    // Swept in one boot, seed 20261018:
+    //
+    // The table below is a RE-MEASUREMENT. The sweep that originally chose 0.44
+    // was run on a version of sepdiag.mjs with two holes in it: it let the
+    // engine run for ~500 ms between the shadow-on and shadow-off grabs, so
+    // every leaf and grass blade that moved in between fell into its
+    // "most-shadowed decile"; and it had no ground mask, so it was reading sky
+    // and distant massif as well. Both are fixed (see that file's header — it
+    // now freezes the clock and masks to ground, both borrowed from
+    // shadowcrawl.mjs) and the sweep was run again. Do not quote the old table.
+    //
+    // Frozen instant, ground pixels only, one boot, seed 20261018:
     //
     //   intensity   chase   drive  meadow    hero   peaks   <- shaded/unshadowed
-    //     0.62      0.526   0.541   0.593   0.753   0.720
-    //     0.52      0.562   0.561   0.628   0.797   0.767
-    //     0.44      0.609   0.591   0.676   0.829   0.782
-    //     0.36      0.647   0.644   0.712   0.860   0.822
+    //     0.62      0.538   0.545   0.601   0.752   0.703
+    //     0.52      0.589   0.595   0.653   0.796   0.760
+    //     0.44      0.630   0.634   0.690   0.829   0.796
+    //     0.36      0.671   0.673   0.723   0.861   0.820
     //
-    // 0.44 puts `chase` and `drive` — the two framings the report is about —
-    // exactly on the plate's band, with `meadow` a little over; 0.36 is past it
-    // everywhere. The shadow is still plainly a shape: separation 0.248 / 0.253
-    // of display luma on those two, against the 0.21-0.23 this file's own target
-    // above asks for. And the shaded pixels come back WARMER than they were,
-    // srgb(151,87,50) at chroma 0.399 against 0.367 at 0.62, because a shadow
-    // with more sun left in it has more colour in it. That is the difference
-    // between shade and a hole, and nothing here removes a cast shadow, which is
-    // the failure the note above is guarding.
+    // 0.44 puts `chase` and `drive` — the two framings the report is about — on
+    // the plate's band, with `meadow` a little over; 0.36 is past it everywhere.
+    // The shadow is still plainly a shape: separation 0.238 / 0.228 of display
+    // luma on those two, against the 0.21-0.23 this file's own target above asks
+    // for. And the shaded pixels come back WARMER than they were: on `chase`,
+    // srgb(159,92,52) at chroma 0.420 against srgb(140,77,45) at 0.375 at 0.62,
+    // because a shadow with more sun left in it has more colour in it. That is
+    // the difference between shade and a hole, and nothing here removes a cast
+    // shadow, which is the failure the note above is guarding.
+    //
+    // What fixing the instrument cost the conclusion: nothing. The old and new
+    // instruments were run back to back at 0.44 and the ratios differ by 0.019
+    // (`chase`), 0.014 (`drive`), 0.012 (`meadow`) and 0.000 (`hero`, `peaks`) —
+    // the contamination was real but small, and every arm moved the same way, so
+    // 0.44 is where 0.44 was. Re-measure before moving it, not because this
+    // table is suspect but because the numbers above it have already moved once
+    // under a downstream change and nobody noticed.
     //
     // WHAT THIS COSTS, STATED: the two vistas were never in that band and this
-    // takes them further out of it — `hero` 0.753 -> 0.829, separation 0.144 ->
-    // 0.099. That is not really a shadow-intensity quantity: at 0.62 `hero` was
-    // already 0.20 above `drive` because several hundred metres of haze has
-    // eaten the difference before the grade sees the pixel (see the sweep beside
-    // FOG_DENSITY_SCALE, which measures exactly that authority). A vista black
-    // point wants the haze or the massif term, not a darker cast shadow under
-    // the player's wheels.
+    // takes them further out of it — `hero` 0.752 -> 0.829, separation 0.145 ->
+    // 0.099. That is not a shadow-intensity quantity, and the frozen, masked
+    // instrument says so plainly: at 0.62 `hero` was ALREADY 0.21 above `drive`
+    // (0.752 vs 0.545), before this constant moved at all, because several
+    // hundred metres of haze has eaten the difference before the grade sees the
+    // pixel (see the sweep beside FOG_DENSITY_SCALE, which measures exactly that
+    // authority). A vista black point wants the haze or the massif term, not a
+    // darker cast shadow under the player's wheels.
+    //
+    // ── HOW TO LOOK AT A CHANGE TO THIS CONSTANT ────────────────────────────
+    //
+    // On a 1:1 or 2:1 crop of GROUND, labelled, one arm at a time. Not on a
+    // stitched A/B of two full frames. Two independent readers called the blind
+    // A/B of this change backwards, both picking the *after* frame as the darker
+    // and more contrasty one, when it is measurably lighter on every view. Two
+    // causes, and they compound: the stitch renders a 1600 px frame into a
+    // 1400 px panel and the result is downscaled again to be read, which
+    // destroys exactly the shadow-edge detail the judgement is about; and the
+    // shaded pixels here carry MORE chroma at lower intensity (0.420 vs 0.375
+    // above), and more chroma reads as "deeper" at reduced scale even at higher
+    // luma. On a labelled 2x ground crop the after side is unmistakable.
     this.sun.shadow.intensity = 0.44;
     // 200, not 220, purely so the boot value sits on _holdExtent's ladder: the
     // hold band is wide enough that an off-ladder start can be kept forever.
@@ -1539,17 +1571,30 @@ export class Lighting {
       // sun is very nearly world vertical — i.e. almost exactly the component
       // that was being passed through raw.
       //
-      // Measured before the change, same probe, extent held constant so only
-      // the snap is in play, offsets in texels:
+      // Measured with the extent held constant so only the snap is in play, by
+      // reverting just these three lines to the world-X/Z round and running the
+      // probe on both. Offsets in texels, 0.23 m a step:
       //
-      //                            before          after
-      //   mean |fractional texel|  right 0.011     right 0.003
-      //                            up    0.203     up    0.004
+      //                            world X/Z snap   light-basis snap
+      //   mean |fractional texel|  right 0.007      right 0.000
+      //                            up    0.202      up    0.000
       //
       // 0.25 is what a completely unsnapped quantity averages, so the map was
       // sliding along its own vertical by a random fraction of a texel every
       // frame — which is exactly the "crawl worst when zoomed out" report, the
-      // texel being 20 cm at the chase framing and 7 cm at eye level.
+      // texel being 20 cm at the chase framing and 7 cm at eye level. The right
+      // column is exact: every step moves the target by a whole number of texels
+      // along both axes.
+      //
+      // Those are re-measured numbers, and the probe had to be fixed first. It
+      // read `sun.shadow.camera.matrixWorld` without ever drawing a frame, and
+      // three only aims that camera inside WebGLShadowMap.render — so `right`
+      // and `up` came from whatever the last rendered frame's sun direction had
+      // been. The error grows with step size, because the whole measurement is a
+      // per-step delta projected onto that basis: at 4 m a step the stale basis
+      // called THIS build right 0.376 / up 0.435, i.e. worse than random, on
+      // code that snaps exactly. The probe now draws each step and reports
+      // 0.000 / 0.000 at both step sizes.
       //
       // The shadow camera looks down `dir` with three's default up of +Y, so
       // its basis is right = normalise(Y x dir), up = dir x right. `dir.y` is
