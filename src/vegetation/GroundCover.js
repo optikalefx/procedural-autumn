@@ -28,6 +28,7 @@ import { SEED } from '../world/WorldConfig.js';
 import { buildCoverLibrary, COVER_ARCHETYPES } from './cover_forms.js';
 import { CoverScatter, COVER_STRIDE } from './cover_scatter.js';
 import { makeCoverUniforms, createCoverMaterial, createCoverDepthMaterial } from '../shaders/cover_material.js';
+import { sunLevel } from '../shaders/grass_material.js';
 
 const CELL = 48;                 // metres per scatter cell
 // Must exceed the largest archetype visibility radius (thicket, 250 m) by more
@@ -518,7 +519,10 @@ export class GroundCover extends System {
     u.uTime.value = elapsed;
     const lighting = this.ctx.lighting;
     if (lighting?.sunDir) u.uSunDir.value.copy(lighting.sunDir);
-    if (lighting?.sun) u.uSunColor.value.copy(lighting.sun.color);
+    if (lighting?.sun) {
+      u.uSunColor.value.copy(lighting.sun.color);
+      u.uSunLev.value = sunLevel(lighting.sun.intensity);
+    }
 
     // A teleport (capture harness, fast travel) invalidates the whole cache;
     // spend a much bigger budget for a few frames rather than trickle in.

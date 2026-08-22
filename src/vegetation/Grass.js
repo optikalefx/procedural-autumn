@@ -18,7 +18,7 @@
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { VEG, SEED } from '../world/WorldConfig.js';
-import { createGrassMaterial, makeGrassUniforms, makeBladeGeometry } from '../shaders/grass_material.js';
+import { createGrassMaterial, makeGrassUniforms, makeBladeGeometry, sunLevel } from '../shaders/grass_material.js';
 import { fillTile, RoadMask, STRIDE } from './grass_scatter.js';
 
 // Guaranteed coverage radius of a 4×4 grid is 2 × tileSize (worst case, camera
@@ -341,7 +341,10 @@ export class Grass extends System {
 
     u.uTime.value = elapsed;
     if (lighting?.sunDir) u.uSunDir.value.copy(lighting.sunDir);
-    if (lighting?.sun) u.uSunColor.value.copy(lighting.sun.color);
+    if (lighting?.sun) {
+      u.uSunColor.value.copy(lighting.sun.color);
+      u.uSunLev.value = sunLevel(lighting.sun.intensity);
+    }
 
     // World units per pixel, per metre of distance — the minimum blade width
     // that keeps a distant meadow from crawling.

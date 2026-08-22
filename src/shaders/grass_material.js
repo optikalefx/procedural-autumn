@@ -57,6 +57,32 @@ export function makeBladeGeometry(segments, tipBias = 1.0) {
   return g;
 }
 
+/**
+ * How much key light there actually is, 0..1, from Lighting's `sun.intensity`.
+ *
+ * Grass and ground cover carry three terms that are *sunlight* — transmission
+ * through a blade, wrapped diffuse, and sheen — and until now not one of them
+ * read the sun's intensity. They were driven by `sun.color` alone, which never
+ * goes to black: at 05:45 the key is at 0.23 and casts no shadow, yet the
+ * field was still being handed a full-strength backlit glow. Worse, the glow's
+ * pigment is 65% `uGlowCol`, a hot amber that is not the sun's colour at all,
+ * so the term did not even dim as the key went blue. That is the salmon-pink
+ * meadow standing under a night sky, and it is a correctness bug, not a taste
+ * one: `Trees.js` has always scaled its own key by `sun.intensity`.
+ *
+ * The ramp is pinned to two numbers this file did not invent. It reaches zero
+ * at 0.35, which is exactly `Lighting`'s own `castShadow = sunI > 0.35` gate —
+ * below it the engine has already decided there is no key worth casting — and
+ * it reaches full at 1.40, the weakest keyframe that is still golden hour
+ * (h19.0). So every hour from 07:00 to 19:00 is bit-identical to before, and
+ * the change is confined to the twilight shoulders where the terms were
+ * inventing light that has no source.
+ */
+export function sunLevel(intensity) {
+  const t = Math.min(1, Math.max(0, (intensity - 0.35) / (1.40 - 0.35)));
+  return t * t * (3 - 2 * t);
+}
+
 // Shared art-direction uniforms — one object, referenced by every ring's
 // material, so a tweak moves the whole field at once.
 export function makeGrassUniforms() {
@@ -69,6 +95,9 @@ export function makeGrassUniforms() {
     uCampAimFloor: campSite.uCampAimFloor,
     uSunDir:      { value: new THREE.Vector3(0.4, 0.6, 0.3) },
     uSunColor:    { value: new THREE.Color(1, 0.88, 0.72) },
+    // How much sun there actually is, 0..1 — see the note beside uSunLev in
+    // the fragment source. Written from Lighting's key intensity every frame.
+    uSunLev:      { value: 1 },
 
     // Wind: a low-frequency gust envelope advected across the world, plus a
     // fast flutter that only bites where the gust is already strong.
@@ -168,6 +197,9 @@ export function makeGrassUniforms() {
     // note the brief asks for without tinting any shadow violet.
     uSkyCol:      { value: new THREE.Color().setHex(0xa9c6e8, THREE.SRGBColorSpace) },
     uSkyFill:     { value: 0.14 },
+    // Multiplier on uSkyFill when there is no key at all — see the note at the
+    // sky-fill term. Only ever in effect below sunI 1.40.
+    uSkyDawn:     { value: 2.20 },
     // Grass-only crops measure chroma ~0.60 where the reference plates measure
     // 0.35–0.54 at the same luminance, so this wants to be higher. It is not,
     // deliberately: at 0.20 the field went visibly duller than the terrain it
@@ -375,6 +407,8 @@ uniform vec3  uSkyCol;
 uniform vec3  uRootCol;
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
+uniform float uSunLev;
+uniform float uSkyDawn;
 uniform vec3  uShadowTint;
 uniform float uOliveMax;
 uniform float uRootMix;
@@ -505,17 +539,25 @@ export function createGrassMaterial(shared, ring) {
           trans *= mix( 0.30, 1.0, smoothstep( 0.02, 0.70, vT ) );   // tips are thinner
           trans *= 1.0 - 0.45 * clamp( dot( normalize( vUpN ), L ), 0.0, 1.0 );
           vec3 glowCol = mix( uGlowCol, uSunColor, 0.35 );
-          gl_FragColor.rgb += glowCol * ( trans * uTrans * sh * diffuseColor.rgb * 2.2 );
+          gl_FragColor.rgb += glowCol * ( trans * uTrans * uSunLev * sh * diffuseColor.rgb * 2.2 );
 
           // ── sky fill ────────────────────────────────────────────────────
           // A blade sees more of the sky the higher up it is; the root sees the
           // ground. That gradient doubles as a soft ambient occlusion, which is
           // why the explicit uBaseAO term can stay as shallow as it is.
           float skyAcc = 0.28 + 0.72 * smoothstep( 0.0, 0.55, vT );
+          // uSkyFill is sized for a daylit field, where the dome is a minor
+          // cool complement to a key that is doing all the work. Before dawn
+          // the key is gone and the dome is the only source there is, so at a
+          // flat 0.14 the field was left as a maroon smear under a blue sky.
+          // Weight it by how little sun there is: the field is lit by the sky
+          // exactly when the sky is what is lighting it. Full sun leaves this
+          // at 1.0, so every hour from 07:00 to 19:00 is untouched.
+          float skyW = uSkyFill * mix( uSkyDawn, 1.0, uSunLev );
           // Flattened toward neutral before tinting, so what is added really is
           // sky-coloured light and not just more of the blade's own orange.
           gl_FragColor.rgb += mix( diffuseColor.rgb, vec3( 0.60 ), 0.55 )
-                            * uSkyCol * ( uSkyFill * skyAcc );
+                            * uSkyCol * ( skyW * skyAcc );
 
           // ── wrapped diffuse ─────────────────────────────────────────────
           // A blade is a thin scatterer, not a Lambertian chip. Without this
@@ -526,18 +568,29 @@ export function createGrassMaterial(shared, ring) {
           // let shaded grass fall to a hole that the global grade then had to
           // lift the whole image to rescue.
           float wrapN = stylizeDiffuse( dot( normalize( vUpN ), L ) );
+          // NOT gated by uSunLev, and that is deliberate — see the note beside
+          // sunLevel(). This term is the field's *body*: at 05:45 it is the
+          // only thing giving the meadow any shape at all, and switching it
+          // off with the sun turned the frame into a flat black plate. It
+          // survives the twilight honestly because uSunColor is the key's
+          // colour, which Lighting already walks to a dim blue before dawn —
+          // so what this adds at 05:45 is cool ambient body, not a warm glow.
           gl_FragColor.rgb += diffuseColor.rgb * uSunColor * ( wrapN * uWrap * sh );
 
           // ── sheen: raking light picks the field out in bands ─────────────
           vec3 H = normalize( L + V );
           float sheen = pow( clamp( dot( normalize( mix( vFaceN, vUpN, 0.35 ) ), H ), 0.0, 1.0 ), 22.0 );
-          gl_FragColor.rgb += uSunColor * ( sheen * uSheen * sh * smoothstep( 0.1, 0.8, vT ) );
+          gl_FragColor.rgb += uSunColor * ( sheen * uSheen * uSunLev * sh * smoothstep( 0.1, 0.8, vT ) );
 
           // ── warm/cool split, matching the terrain's shadow tint ──────────
           float ndl = clamp( dot( normalize( vUpN ), L ), 0.0, 1.0 );
           float shade = ( 1.0 - smoothstep( 0.0, 0.40, ndl ) ) * 0.5 + ( 1.0 - shRaw ) * 0.5;
+          // Weighted by uSunLev for the same reason as everything above it:
+          // this is the warm side of a sun/shade split, and with no sun there
+          // is no split to take a side of. Ungated it was pushing the 05:45
+          // field 19% toward amber with nothing casting a shadow on it.
           gl_FragColor.rgb = mix( gl_FragColor.rgb, gl_FragColor.rgb * uShadowTint,
-                                  clamp( shade, 0.0, 1.0 ) * 0.38 );
+                                  clamp( shade, 0.0, 1.0 ) * 0.38 * uSunLev );
 
           // ── diagnostics ─────────────────────────────────────────────────
           // Driven from tools/grass_dev/*, zero cost when off (uniform branch).

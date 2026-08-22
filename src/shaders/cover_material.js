@@ -47,6 +47,9 @@ export function makeCoverUniforms() {
     uTime:         { value: 0 },
     uSunDir:       { value: new THREE.Vector3(0.4, 0.7, 0.3) },
     uSunColor:     { value: new THREE.Color(1, 1, 1) },
+    // Sun presence, 0..1. Both terms below are *transmitted or reflected
+    // sunlight*; neither may exist when there is no sun. See Grass.js.
+    uSunLev:       { value: 1 },
     uWindStrength: { value: 1.0 },
     uWindSpeed:    { value: 1.15 },
     // Backlight through a leaf. Generous, because it is only ever visible when
@@ -261,6 +264,7 @@ export function createCoverMaterial(uniforms, card = false, nearFade = false) {
     shader.fragmentShader = /* glsl */`
       uniform vec3 uSunDir;
       uniform vec3 uSunColor;
+      uniform float uSunLev;
       uniform float uTransmit;
       uniform float uRim;
       uniform float uRimPow;
@@ -294,7 +298,7 @@ export function createCoverMaterial(uniforms, card = false, nearFade = false) {
           float coverToward = clamp( dot( -coverV, uSunDir ), 0.0, 1.0 );
           float coverThru = clamp( 0.5 - 0.62 * dot( coverN, uSunDir ), 0.0, 1.0 );
           totalEmissiveRadiance += uSunColor * diffuseColor.rgb *
-            ( uTransmit * vCoverTT.x * coverThru * pow( coverToward, 1.9 ) );
+            ( uTransmit * uSunLev * vCoverTT.x * coverThru * pow( coverToward, 1.9 ) );
 
           // Silhouette rim. Added as light, never through the albedo — see the
           // note beside uRim in makeCoverUniforms. coverBack is the same gate
@@ -305,7 +309,7 @@ export function createCoverMaterial(uniforms, card = false, nearFade = false) {
           float coverBack = smoothstep( uRimBack, 1.0, coverToward );
           float coverTip = 0.25 + 0.75 * vCoverTT.y;
           totalEmissiveRadiance += uSunColor * uRimTint *
-            ( uRim * pow( coverFres, uRimPow ) * coverBack * coverTip * vCoverTT.x );
+            ( uRim * uSunLev * pow( coverFres, uRimPow ) * coverBack * coverTip * vCoverTT.x );
         }
       `);
   };
