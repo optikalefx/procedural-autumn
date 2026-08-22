@@ -68,6 +68,7 @@ import { SKY_STATE } from '../render/Lighting.js';
 import { STAR_GLSL } from './starfield.js';
 import { MOON_GLSL } from './moon.js';
 import { PLANET_GLSL } from './planets.js';
+import { GALAXY_GLSL } from './galaxies.js';
 
 const VERT = /* glsl */`
 varying vec3 vDir;
@@ -114,6 +115,7 @@ uniform float uMoonHaloI;
 ${STAR_GLSL}
 ${MOON_GLSL}
 ${PLANET_GLSL}
+${GALAXY_GLSL}
 
 float hash21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
@@ -293,6 +295,11 @@ void main() {
     // a planet sitting on a star is brighter, which is correct and is what a
     // conjunction looks like.
     col += plPlanets(dir, pxAng, uTime) * starVis * ext;
+    // The galaxies ride the same gates as the planets and the field, so they
+    // rise, set and fade with the sky rather than hanging in a dawn one. They
+    // are surfaces rather than points — see galaxies.js — so nothing here is
+    // time-dependent and nothing twinkles.
+    col += gxGalaxies(dir, pxAng) * starVis * ext;
   }
 
   if (uMoonDiscI > 0.0001 || uMoonHaloI > 0.0001) {
