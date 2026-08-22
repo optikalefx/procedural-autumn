@@ -271,19 +271,13 @@ const KEYS = [
     fogNear: 0xdcb99c, fogFar: 0xd8c2b6, fogSun: 0xffdfb4, fogD: 0.0021,
     cloudLit: 0xfff2e2, cloudDark: 0xbcaa9a, cover: 0.20 },
 
-  // THE EVENING FILL WAS BIGGER THAN NOON'S WHILE THE KEY WAS 60% OF IT.
-  //
-  // `hemiI` ran 0.98 / 1.16 / 1.10 across 17.1 / 18.3 / 19.0 against 0.90 at
-  // noon, so the hemisphere — the light that lands equally on both sides of a
-  // terminator — was strongest at exactly the hour the key was weakest. That
-  // ordering is backwards, and the ratio between the two is what decides
-  // whether a cast shadow reads at all. Brought back under noon's.
-  { h: 17.1, sun: 0xffd49c, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.88,
+  // The money frame: deep golden hour.
+  { h: 17.1, sun: 0xffd49c, sunI: 2.95, hemiSky: 0xbeb6d4, hemiGnd: 0xd2a066, hemiI: 0.98,
     zen: 0xa9c4e4, hor: 0xf2dac6, sunHor: 0xf8cd9c, glow: 0xffcf90, glowI: 1.00,
     fogNear: 0xe0b296, fogFar: 0xdcbcae, fogSun: 0xffc98c, fogD: 0.0027,
     cloudLit: 0xffe2bc, cloudDark: 0xb49688, cover: 0.22 },
 
-  { h: 18.3, sun: 0xffb47e, sunI: 2.05, hemiSky: 0xaab6de, hemiGnd: 0xcc9060, hemiI: 0.84,
+  { h: 18.3, sun: 0xffb47e, sunI: 2.05, hemiSky: 0xaab6de, hemiGnd: 0xcc9060, hemiI: 1.16,
     zen: 0x5b83c2, hor: 0xf6d4b0, sunHor: 0xf8ac74, glow: 0xffb268, glowI: 1.40,
     fogNear: 0xe2a888, fogFar: 0xd8b4a6, fogSun: 0xffa860, fogD: 0.0030,
     cloudLit: 0xffcc9c, cloudDark: 0x8e94a8, cover: 0.32 },
@@ -309,7 +303,7 @@ const KEYS = [
   // `hemiSky`, which is where a cast shadow gets its colour, and both of these
   // rows had it drifting warm (0xb49eac, 0x8a92ae). Pulled back to a real
   // blue.
-  { h: 19.0, sun: 0xffa878, sunI: 1.40, hemiSky: 0x92a6d4, hemiGnd: 0xb07c5a, hemiI: 0.86,
+  { h: 19.0, sun: 0xffa878, sunI: 1.40, hemiSky: 0x92a6d4, hemiGnd: 0xb07c5a, hemiI: 1.10,
     zen: 0x4a6ebc, hor: 0xf0b892, sunHor: 0xff9450, glow: 0xffa254, glowI: 1.60,
     fogNear: 0xdc9468, fogFar: 0xc0a89c, fogSun: 0xff8c46, fogD: 0.0034,
     cloudLit: 0xffb884, cloudDark: 0x86889e, cover: 0.34 },
