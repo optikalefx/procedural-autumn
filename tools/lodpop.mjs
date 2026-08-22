@@ -171,7 +171,13 @@ for (const anchor of ANCHORS) {
       prev = cur;
     }
     const cov = rows.reduce((a, r) => a + r.cover, 0) / rows.length;
-    if (cov < 0.002) throw new Error(`!! ${anchor} ${SLABS[s].name}: the slab is empty (${(cov * 100).toFixed(2)}%)`);
+    if (cov < 0.002) {
+      // Loud, but not fatal: an anchor whose slab happens to be empty in this
+      // world measures nothing, and killing the run loses the anchors that do
+      // have trees in it. It must never be silently averaged in, though.
+      console.log(`!! ${anchor} ${SLABS[s].name}: SLAB EMPTY (${(cov * 100).toFixed(2)}%) — skipped`);
+      continue;
+    }
     const rbF = rows.filter((r) => r.rebin), nb = rows.filter((r) => !r.rebin);
     if (!rbF.length) throw new Error(`!! ${anchor}: no re-bin happened in ${STEPS} steps — nothing was measured`);
     const mean = (xs) => xs.reduce((a, x) => a + x.change, 0) / (xs.length || 1);
