@@ -283,7 +283,10 @@ void main() {
     // haze fills the gaps between the points and the granularity that makes it
     // read as a star cloud goes with it.
     col += vec3(0.86, 0.83, 0.95) * mw.x * mwVis * 0.058 * ext;
-    col += skStars(dir, uTime, mw.y * mwVis) * starVis * ext;
+    // mwVis, not mw.y * mwVis: the band's density boost is now looked up at
+    // each star's own direction inside skStars — asking it here, at the
+    // fragment, is what cut stars in half along the fill contour.
+    col += skStars(dir, uTime, mwVis) * starVis * ext;
     // The planets ride the same night visibility and the same horizon
     // extinction as the stars, so they rise and set with the field rather than
     // hanging in a dawn sky. They are drawn AFTER the stars and simply add:

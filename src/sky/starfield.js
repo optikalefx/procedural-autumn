@@ -34,6 +34,21 @@
 //  moves stars across the screen exactly as far as the projection says and no
 //  further, and driving does not move them at all.
 //
+//  ── the population gate is a property of the STAR ─────────────────────────
+//  Whether a cell holds a star is a hash against a `fill` that the clump fbm
+//  and the Milky Way both modulate. Those are fields over DIRECTION, so the
+//  test has to be asked at the star's own direction: asked at the fragment's —
+//  one lookup shared by the 3x3 neighbourhood, which is what this did — the
+//  answer changes across a star's own disc and the field cuts it in half along
+//  the contour where it flips. See the gate in skStars for what that leaves in
+//  the frame and what it costs to do properly.
+//
+//  ── every lobe has to reach zero at the cull ──────────────────────────────
+//  Each star is culled at 8 core radii. A lobe that is still at 9.5% of its
+//  peak there does not end, it STOPS, and the step is drawn as a hard-edged
+//  disc around the star. The halo and the flare bloom both subtract their own
+//  value at the cull so they land on zero.
+//
 //  ── anti-aliasing ─────────────────────────────────────────────────────────
 //  A star smaller than a pixel that is drawn as a hard dot scintillates on its
 //  own as the camera turns, and no amount of temporal AA fixes it because the
@@ -130,14 +145,41 @@ float skFBM(vec3 p) {
   return 0.54 * skVN(p) + 0.27 * skVN(p * 2.17 + 11.3) + 0.19 * skVN(p * 4.63 + 27.1);
 }
 
-// Direction -> (equi-angular face uv, face id). See the header.
-vec3 skFaceUV(vec3 d) {
-  vec3 a = abs(d);
+// Direction -> (equi-angular face uv, face id), in the frame of ONE named
+// axis — 0 for x, 1 for y, 2 for z — whether or not that axis is the dominant
+// one. Outside that face's own quarter of the sky |u| or |v| simply passes 1,
+// which is what makes the seam pass in skStars possible: it walks a
+// neighbouring face's lattice from outside it, and the coordinate it walks is
+// still an angle (one unit is 45 deg about that face's axis, on both sides of
+// the seam, which is why a distance measured across one is continuous).
+vec3 skFaceUVAxis(vec3 d, int axis) {
   vec2 uv; float f;
-  if (a.x >= a.y && a.x >= a.z)      { uv = vec2(d.z, d.y) / max(a.x, 1e-5); f = d.x > 0.0 ? 0.0 : 1.0; }
-  else if (a.y >= a.z)               { uv = vec2(d.x, d.z) / max(a.y, 1e-5); f = d.y > 0.0 ? 2.0 : 3.0; }
-  else                               { uv = vec2(d.x, d.y) / max(a.z, 1e-5); f = d.z > 0.0 ? 4.0 : 5.0; }
+  if (axis == 0)      { uv = vec2(d.z, d.y) / max(abs(d.x), 1e-5); f = d.x > 0.0 ? 0.0 : 1.0; }
+  else if (axis == 1) { uv = vec2(d.x, d.z) / max(abs(d.y), 1e-5); f = d.y > 0.0 ? 2.0 : 3.0; }
+  else                { uv = vec2(d.x, d.y) / max(abs(d.z), 1e-5); f = d.z > 0.0 ? 4.0 : 5.0; }
   return vec3(atan(uv) * (4.0 / SK_PI), f);
+}
+
+// Which axis a direction's own face is built on.
+int skDomAxis(vec3 d) {
+  vec3 a = abs(d);
+  return (a.x >= a.y && a.x >= a.z) ? 0 : (a.y >= a.z ? 1 : 2);
+}
+
+// Direction -> (equi-angular face uv, face id). See the header.
+vec3 skFaceUV(vec3 d) { return skFaceUVAxis(d, skDomAxis(d)); }
+
+// The inverse: the direction a face-uv coordinate points at. Used to ask the
+// clump and band fields where a STAR is rather than where the eye is — see the
+// gate in skStars.
+vec3 skCellDir(vec2 uv, float face) {
+  vec2 raw = tan(uv * (SK_PI / 4.0));
+  if (face < 0.5)      return normalize(vec3( 1.0, raw.y, raw.x));
+  else if (face < 1.5) return normalize(vec3(-1.0, raw.y, raw.x));
+  else if (face < 2.5) return normalize(vec3(raw.x,  1.0, raw.y));
+  else if (face < 3.5) return normalize(vec3(raw.x, -1.0, raw.y));
+  else if (face < 4.5) return normalize(vec3(raw.x, raw.y,  1.0));
+  return normalize(vec3(raw.x, raw.y, -1.0));
 }
 
 // ── the Milky Way ───────────────────────────────────────────────────────────
@@ -153,8 +195,14 @@ vec3 skFaceUV(vec3 d) {
 // horizon, where terrain hides it and it reads as a fog bank.
 #define SK_MW_POLE normalize(vec3(0.720, 0.500, -0.480))
 
-// Returns .x = haze density (0..1+), .y = local star-density boost (0..1).
-vec2 skMilkyWay(vec3 dir) {
+// The band profile, the along-band lobes and the dust lane — everything both
+// the haze and the star-density boost are built from.
+//
+// Split out of skMilkyWay because skStars now needs the boost at a STAR's own
+// direction rather than at the eye's (see the gate there), and asking for it
+// through skMilkyWay would pay for the haze's second, higher-frequency clump
+// fbm to throw it away. Returns (band, lobes, rift).
+vec3 skMwParts(vec3 dir) {
   float b = dot(dir, SK_MW_POLE);
   vec3 along = dir - SK_MW_POLE * b;   // the in-band component, ~unit near the band
 
@@ -183,9 +231,7 @@ vec2 skMilkyWay(vec3 dir) {
   // 3.2 against 5.0 is a 1.6x stretch, which reads as "drawn out along the
   // band" without ever reading as a line.
   vec3 q1 = along * 3.20 + SK_MW_POLE * b * 5.0;
-  vec3 q2 = along * 7.50 + SK_MW_POLE * b * 13.0;
   float lobes = skFBM(q1 + 4.0);
-  float clump = skFBM(q2 + 19.0);
 
   // The dark lane. A real Milky Way is split lengthwise by dust, and it is the
   // single detail that stops this being an airbrush stroke. A narrow, deep
@@ -193,6 +239,25 @@ vec2 skMilkyWay(vec3 dir) {
   // the wander is what keeps it from reading as a drawn line.
   float lane = b - 0.038 - 0.070 * (skFBM(along * 1.6 + 31.0) - 0.5);
   float rift = 1.0 - 0.62 * exp(-(lane * lane) / (2.0 * 0.042 * 0.042));
+
+  return vec3(band, lobes, rift);
+}
+
+// The band's local star-density boost, 0..1.
+float skMwBoost(vec3 dir) {
+  vec3 p = skMwParts(dir);
+  return clamp(p.x * (0.35 + 1.00 * p.y) * p.z, 0.0, 1.0);
+}
+
+// Returns .x = haze density (0..1+), .y = local star-density boost (0..1).
+vec2 skMilkyWay(vec3 dir) {
+  vec3 p = skMwParts(dir);
+  float band = p.x, lobes = p.y, rift = p.z;
+
+  float b = dot(dir, SK_MW_POLE);
+  vec3 along = dir - SK_MW_POLE * b;
+  vec3 q2 = along * 7.50 + SK_MW_POLE * b * 13.0;
+  float clump = skFBM(q2 + 19.0);
 
   float dens = band * (0.20 + 1.20 * lobes) * (0.45 + 0.95 * clump) * rift;
   dens = pow(clamp(dens, 0.0, 1.0), 0.78) * 1.30;
@@ -256,29 +321,44 @@ vec2 skMilkyWay(vec3 dir) {
 #define SK_MAG_SLOPE 1.7
 #define SK_MAG_MAX 1.5525
 
-vec3 skStars(vec3 dir, float t, float mwBoost) {
-  vec3 fuv = skFaceUV(dir);
+/**
+ * The 3x3 cell neighbourhood of one face, accumulated.
+ *
+ * Split out of skStars so a fragment near a seam can run it a second time in
+ * the neighbouring face's frame — see the seam block there. fuv is this
+ * pass's (u, v, face); it is NOT required to be the fragment's own face, and
+ * pxCell is passed in because fwidth() may not be taken under the branch
+ * that calls this.
+ */
+vec3 skCellPass(vec3 dir, vec3 fuv, float pxCell, float t, float mwVis) {
   vec2 uv = fuv.xy * SK_CELLS;
   vec2 gi = floor(uv);
 
-  // Pixel footprint in cell units, from the direction field so it is continuous
-  // across the cube seams. One cell unit is (PI/4)/SK_CELLS radians.
-  float pxCell = clamp(length(fwidth(dir)) * SK_CELLS * 4.0 / SK_PI, 0.004, 0.9);
-
-  // See SK_CLUMP. One fbm lookup for the whole 3x3 neighbourhood, which is
-  // correct as well as cheap: a cluster is 11 deg across and a cell is 1.5, so
-  // sampling it per-cell would only add noise the eye reads as grain.
-  float clump = skFBM(dir * 5.00 + 61.0);
-  float fill = (SK_FILL + SK_FILL_MW * mwBoost)
-             * mix(1.0, 0.22 + 2.60 * clump * clump, SK_CLUMP);
+  // The widest any star in the field can be, for the reject below. The exact
+  // one needs this cell's own magnitude, and the whole point of the order this
+  // loop runs in is not to pay for that until the cell is close enough to
+  // matter.
+  float radMax  = max(0.030 + 0.075, pxCell * 0.62);
+  float cullMax = radMax * radMax * 64.0 + 0.02;
   vec3 acc = vec3(0.0);
 
   for (int j = -1; j <= 1; j++) {
     for (int i = -1; i <= 1; i++) {
       vec2 cell = gi + vec2(float(i), float(j));
+      // A face is 2*SK_CELLS cells across and the seam falls exactly on a cell
+      // boundary, so no cell straddles one. Cells past the edge are the
+      // neighbour's territory: its own pass draws the stars that live there,
+      // and drawing this face's version of them as well would both double the
+      // population in the border strip and cut every one of them at the seam,
+      // because they would only ever be drawn from this side of it.
+      if (any(lessThan(cell, vec2(-SK_CELLS))) ||
+          any(greaterThan(cell, vec2(SK_CELLS - 1.0)))) continue;
       vec3 seed = vec3(cell, fuv.z * 53.0 + 7.0);
       vec3 ha = skHash33(seed);
-      if (ha.z > fill) continue;
+
+      vec2 d = uv - (cell + 0.06 + 0.88 * ha.xy);
+      float r2 = dot(d, d);
+      if (r2 > cullMax) continue;
 
       vec3 hb = skHash33(seed.zxy * 1.37 + 21.7);
 
@@ -298,17 +378,27 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       // faint star is promoted to a bright one by rendering at 720p.
       amp *= min(1.0, rad / radE * 1.35);
 
-      vec2 d = uv - (cell + 0.06 + 0.88 * ha.xy);
-      float r2 = dot(d, d);
-      // Cheap reject: 5 core radii out there is nothing left of either lobe.
-      if (r2 > radE * radE * 64.0 + 0.02) continue;
-      float r = sqrt(r2);
+      // Cheap reject: 8 core radii out there is nothing left of either lobe.
+      float cull2 = radE * radE * 64.0 + 0.02;
+      if (r2 > cull2) continue;
+      float r = sqrt(r2), cull = sqrt(cull2);
 
       float core = exp(-r2 / (radE * radE));
       // The soft halo the plates put around their brightest stars only. Scaled
       // by m^2 so it is absent from the faint field and does not turn the sky
       // into a grey wash.
-      float halo = exp(-r / (radE * 3.4)) * m * m * 0.10;
+      //
+      // The value at the cull is subtracted so the halo REACHES zero there.
+      // Without it the lobe is still at 9.5% of its own peak where the reject
+      // drops it — 0.015 of linear light on the brightest stars, against a
+      // night sky sitting at about 0.02 — and every bright star in the field
+      // carried a hard-edged disc of halo around it, plainly visible as an
+      // ellipse in the frame. The cost is one exp; what it buys is that the
+      // lobe ends instead of stopping. The flare's bloom below gets the same
+      // treatment for the same reason, where it is smaller but transient,
+      // which is worse: an edge that appears for a second and goes.
+      float halo = max(exp(-r / (radE * 3.4)) - exp(-cull / (radE * 3.4)), 0.0)
+                 * m * m * 0.10;
 
       // ── Scintillation ───────────────────────────────────────────────────
       //
@@ -409,7 +499,76 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       float f2    = 0.5 + 0.5 * sin(t * rate * 0.19 + ph * 2.10);
       float spark = pow(f1 * f2, 7.0) * smoothstep(0.86 - 0.12 * m, 0.94, hc.y) * air;
 
+      // The flare BLOOMS as well as brightens, and that is what makes it read
+      // as a glow. A core that only gets brighter reads as a value change; a
+      // star that grows a halo for a moment reads as light. It matters most on
+      // the faint stars, which carry no halo of their own — the halo above is
+      // m^2-scaled and so belongs to the bright end only.
+      //
+      // Deliberately TIGHTER than that halo (1.8 against 3.4). A wide bloom is
+      // a fog, not a sparkle, and it also keeps the term down to a hundredth of
+      // the core's peak by the 8-radii cull above — the rest of that step is
+      // taken out by the same subtraction the halo uses.
+      float glow = max(exp(-r / (radE * 1.8)) - exp(-cull / (radE * 1.8)), 0.0)
+                 * spark * 0.45;
+
       float tw = 1.0 + depth * wob + 0.85 * spark;
+
+      // Everything this star adds to this pixel, before its colour.
+      float lobes = tw * (core + halo) + glow;
+      float light = amp * lobes;
+
+      // Below this a star cannot be seen, and the gate below is the most
+      // expensive thing in the loop — three fbm lookups — so it is not worth
+      // asking whether a star exists at all for light nobody can read. 0.0005
+      // of linear light sits under the dither Sky.js lays over the dome and an
+      // order of magnitude under the faintest star's own peak (SK_MAG_MIN is
+      // 0.055), and it is measured against the same night sky the star counts
+      // are: about 0.02. It also has to be a floor on the TOTAL, flare
+      // included, not on the core alone — a faint star's flare bloom carries
+      // ten times its core's light out at 3 radii, and cutting on the core
+      // would put a hard rim around exactly the stars that are moving.
+      //
+      // What it buys: the reject at 8 radii is a fifth of a degree of sky per
+      // star and lets ~0.26 cells per fragment through to the gate, and on a
+      // GPU one lane wanting the noise makes its whole warp pay for it. This
+      // is the same reject at the radius where the light actually dies, and it
+      // is worth 0.5 ms a frame on a sky-filling night frame at 1600x900,
+      // which is most of what the per-star gate costs. With it, this fix and
+      // the seam passes together measure +0.2 ms against the build before them
+      // on that framing (p50 6.20 -> 6.40, three interleaved pairs,
+      // tools/_scratch/skybench.mjs), and that framing is the worst case —
+      // nothing but night dome, corner to corner.
+      if (light < 0.0005) continue;
+
+      // ── does this cell hold a star at all, and WHERE that is asked ──────
+      //
+      // The fill field is sampled at the STAR, not at the fragment, and that is
+      // the whole of this block. Sampled at the fragment — one lookup for the
+      // 3x3 neighbourhood, which is what this did — the answer to "does that
+      // cell hold a star" is a function of where the EYE is pointed, because
+      // the clump fbm and the band's boost are both functions of dir. So a
+      // star whose hash sits within a whisker of the local fill is drawn over
+      // part of its own disc and not over the rest: the population gate flips
+      // along the fill contour and cuts the star along it. It is not subtle at
+      // the bright end — the shapes it leaves are a half disc with a straight
+      // edge, or, where the core lands on the dead side, a bare crescent of
+      // halo with no star in it. tools/_scratch/starcut.mjs walks the cells and
+      // finds 36 stars of m > 0.25 above the horizon with the contour running
+      // through their halo, which is a handful in any given frame.
+      //
+      // Sampling at the cell's own centre makes the gate a property of the
+      // star, so it is the same answer from every direction it is seen from and
+      // there is nothing left to cut. The cost is not what it looks like: the
+      // lookup moved BEHIND the distance reject, so it is paid for the ~0.3
+      // cells per fragment that actually cover the pixel rather than for all
+      // nine, and the fragment-wide fbm this replaces is gone. See the note on
+      // skMwParts for why the boost has its own accessor.
+      vec3 cdir = skCellDir((cell + 0.06 + 0.88 * ha.xy) / SK_CELLS, fuv.z);
+      float clump = skFBM(cdir * 5.00 + 61.0);
+      float fill = (SK_FILL + SK_FILL_MW * skMwBoost(cdir) * mwVis)
+                 * mix(1.0, 0.22 + 2.60 * clump * clump, SK_CLUMP);
+      if (ha.z > fill) continue;
 
       // Colour. The plates are mostly blue-white with a clear minority of amber
       // stars — look at night.jpg, there are half a dozen distinctly orange
@@ -435,21 +594,62 @@ vec3 skStars(vec3 dir, float t, float mwBoost) {
       vec3 tint  = ci < 0.22 ? mix(warm, white, (ci / 0.22) * 0.55)
                              : mix(white, cool, ((ci - 0.22) / 0.78) * 0.85);
 
-      // The flare BLOOMS as well as brightens, and that is what makes it read
-      // as a glow. A core that only gets brighter reads as a value change; a
-      // star that grows a halo for a moment reads as light. It matters most on
-      // the faint stars, which carry no halo of their own — the halo above is
-      // m^2-scaled and so belongs to the bright end only.
-      //
-      // Deliberately TIGHTER than that halo (1.8 against 3.4). A wide bloom is
-      // a fog, not a sparkle, and it also keeps the term down to 0.3% of the
-      // core's peak by the 8-radii cull above, where a wider one would step to
-      // zero at the cut and draw a faint disc edge around every flaring star.
-      float glow = exp(-r / (radE * 1.8)) * spark * 0.45;
-
-      acc += tint * (amp * (tw * (core + halo) + glow));
+      acc += tint * light;
     }
   }
+  return acc;
+}
+
+vec3 skStars(vec3 dir, float t, float mwVis) {
+  // Pixel footprint in cell units, from the direction field so it is continuous
+  // across the cube seams. One cell unit is (PI/4)/SK_CELLS radians.
+  //
+  // Taken here, in uniform control flow: the seam passes below are branched on
+  // and a derivative asked for inside one of them is undefined.
+  float pxCell = clamp(length(fwidth(dir)) * SK_CELLS * 4.0 / SK_PI, 0.004, 0.9);
+
+  int  ax  = skDomAxis(dir);
+  vec3 fuv = skFaceUVAxis(dir, ax);
+  vec3 acc = skCellPass(dir, fuv, pxCell, t, mwVis);
+
+  // ── across the seam ────────────────────────────────────────────────────
+  //
+  // A star belongs to exactly one face, and until this block it was drawn only
+  // for the fragments that face owns. A star's halo is up to 0.85 cells wide
+  // and the border ring of every face is one cell, so any star that lands near
+  // an edge had its light stop dead along the seam: a bright one 0.12 cells
+  // from the edge came out as a warm disc with its right-hand side sliced off
+  // by a straight vertical line, which is what tools/_scratch/starseam.mjs
+  // hunts for. It finds 12 stars of m > 0.25 above the horizon in that ring.
+  //
+  // So a fragment inside the reach of a seam runs the neighbour's lattice too.
+  // The neighbour's frame is the same equi-angular measure about a different
+  // axis, so its uv simply carries on past 1 where we are, and the cells that
+  // come back are the real ones on its side of the edge — the ownership clip
+  // in the pass throws away everything else.
+  //
+  // Which axis carries u and which carries v, from skFaceUVAxis:
+  //   x-face  u = z, v = y      y-face  u = x, v = z      z-face  u = x, v = y
+  //
+  // Not free and not fully general: it runs on the ~14% of fragments that are
+  // within 1.5 cells of an edge, and at the 8 cube CORNERS a third face meets
+  // the other two, whose cells this does not reach. A star has to land inside
+  // 0.85 cells of a corner point to notice — 0.01% of the sky — and on this
+  // sky none does: starseam.mjs checks the corners as well as the edges and
+  // finds no star of m > 0.25 near one. If a re-seed ever puts one there, the
+  // same trick works with two more passes.
+  //
+  // Measured, not assumed: tools/_scratch/seamstep.mjs walks the seams and
+  // samples the field a millionth of a face either side of them. The worst
+  // step it can find goes from 0.27 — thirteen times the night sky's own level
+  // — to 0.0006, which is the visibility floor above, and the number of
+  // samples that step by more than that floor goes from 129 in 6000 to 1.
+  float reach = 1.0 - 1.5 / SK_CELLS;
+  int axU = (ax == 0) ? 2 : 0;
+  int axV = (ax == 2) ? 1 : ((ax == 0) ? 1 : 2);
+  if (abs(fuv.x) > reach) acc += skCellPass(dir, skFaceUVAxis(dir, axU), pxCell, t, mwVis);
+  if (abs(fuv.y) > reach) acc += skCellPass(dir, skFaceUVAxis(dir, axV), pxCell, t, mwVis);
+
   return max(acc, 0.0);
 }
 `;
