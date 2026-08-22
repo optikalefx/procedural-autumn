@@ -52,6 +52,9 @@ export class TouchControls {
     // The root is a pass-through container; only the controls take pointers.
     this.root.style.cssText = 'position:fixed;inset:0;z-index:9998;pointer-events:none';
     document.body.appendChild(this.root);
+    // hud.css keys touch-device layout off this: the keyboard hint hides and
+    // the dash lifts clear of the steering strip.
+    document.body.classList.add('pa-touch');
 
     // Bottom inset: clear the hint bar and the home indicator.
     const bottom = 'calc(18px + env(safe-area-inset-bottom, 0px))';
@@ -154,5 +157,8 @@ export class TouchControls {
     }
   }
 
-  dispose() { this.root.remove(); }
+  dispose() {
+    this.root.remove();
+    document.body.classList.remove('pa-touch');
+  }
 }

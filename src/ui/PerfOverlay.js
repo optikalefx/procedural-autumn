@@ -10,10 +10,16 @@
 //
 //  Toggle with F3. Shift+F3 cycles detail.
 // ─────────────────────────────────────────────────────────────────────────────
+import { touchCapable } from './TouchControls.js';
+
 export class PerfOverlay {
   constructor(engine) {
     this.engine = engine;
-    this.visible = true;
+    // Hidden by default on touch devices: a phone has no F3 to dismiss it,
+    // and a debug readout pinned over a phone-sized frame is not "always-on
+    // where the player judges feel", it is clutter. A touchscreen laptop
+    // still has the key, so the toggle path below is unchanged.
+    this.visible = !touchCapable();
     this.detail = 1;
 
     this._times = [];
@@ -90,6 +96,9 @@ export class PerfOverlay {
     ].join(';');
     document.body.appendChild(el);
     this.el = el;
+    // The element is styled as a filled pill, so an invisible-but-displayed
+    // overlay is an empty chip in the corner. Start it matching `visible`.
+    el.style.display = this.visible ? 'block' : 'none';
 
     window.addEventListener('keydown', (e) => {
       if (e.code !== 'F3') return;

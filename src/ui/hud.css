@@ -772,3 +772,13 @@
 @media (prefers-reduced-motion: reduce) {
   #pa-hud *, #pa-hud { transition-duration: 0.01ms !important; animation: none !important; }
 }
+
+/* ── touch devices ──────────────────────────────────────────────────────────
+   ui/TouchControls.js puts `pa-touch` on <body> when its layer exists. The
+   keyboard hint is meaningless where there is no keyboard, and the dash's
+   desktop corner is exactly where the steering strip lives — lift it clear
+   rather than shrink it. */
+body.pa-touch .pa-hint { display: none; }
+body.pa-touch .pa-dash {
+  bottom: calc(118px + env(safe-area-inset-bottom, 0px));
+}
