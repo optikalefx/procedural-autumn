@@ -76,7 +76,14 @@ if (RES) params.set('res', RES);
 if (QUALITY) params.set('quality', QUALITY);
 if (SEED) params.set('seed', SEED);
 const qs = params.toString();
-const URL = (arg('url', 'http://localhost:5180')) + (qs ? `?${qs}` : '');
+// AUTUMN_URL is read here for the same reason shot.mjs reads it: every other
+// tool in this directory honours it, and a tool that silently ignores it sends
+// a capture to whatever happens to be on the default port. That is not
+// hypothetical — a whole before/after comparison was once taken against ONE
+// build because both arms exported AUTUMN_URL and this line quietly used 5180,
+// which belonged to a third worktree. The frames were internally consistent and
+// completely meaningless. --url still wins when given.
+const URL = (arg('url', process.env.AUTUMN_URL || 'http://localhost:5180')) + (qs ? `?${qs}` : '');
 const TIMEOUT = parseInt(arg('timeout', '240000'), 10);
 const DIR = resolve(arg('dir', 'shots/tod'));
 
