@@ -1,0 +1,162 @@
+{
+ "fireside-base-h65": {
+  "hour": 6.5,
+  "sunElev": 0,
+  "fireI": 2.634,
+  "fireD": 8.6,
+  "sunI": 0.884,
+  "hemiI": 0.65,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "fireside-base-h8": {
+  "hour": 8,
+  "sunElev": 0,
+  "fireI": 4.061,
+  "fireD": 8.6,
+  "sunI": 2.699,
+  "hemiI": 0.795,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "fireside-base-h12": {
+  "hour": 12,
+  "sunElev": 0,
+  "fireI": 3.753,
+  "fireD": 8.6,
+  "sunI": 3.378,
+  "hemiI": 0.651,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "fireside-base-h167": {
+  "hour": 16.7,
+  "sunElev": 0,
+  "fireI": 4.141,
+  "fireD": 8.6,
+  "sunI": 2.997,
+  "hemiI": 0.708,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "fireside-base-h185": {
+  "hour": 18.5,
+  "sunElev": 0,
+  "fireI": 2.36,
+  "fireD": 8.6,
+  "sunI": 1.921,
+  "hemiI": 0.827,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "fireside-base-h195": {
+  "hour": 19.5,
+  "sunElev": 0,
+  "fireI": 2.616,
+  "fireD": 8.6,
+  "sunI": 0.648,
+  "hemiI": 0.684,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "fireside-base-h205": {
+  "hour": 20.5,
+  "sunElev": 0,
+  "fireI": 2.099,
+  "fireD": 8.6,
+  "sunI": 0.157,
+  "hemiI": 0.427,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "fireside-base-h23": {
+  "hour": 23,
+  "sunElev": 0,
+  "fireI": 1.856,
+  "fireD": 8.6,
+  "sunI": 0.055,
+  "hemiI": 0.281,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h65": {
+  "hour": 6.5,
+  "sunElev": 0,
+  "fireI": 2.493,
+  "fireD": 8.6,
+  "sunI": 0.884,
+  "hemiI": 0.65,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h8": {
+  "hour": 8,
+  "sunElev": 0,
+  "fireI": 3.655,
+  "fireD": 8.6,
+  "sunI": 2.699,
+  "hemiI": 0.795,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h12": {
+  "hour": 12,
+  "sunElev": 0,
+  "fireI": 4.026,
+  "fireD": 8.6,
+  "sunI": 3.378,
+  "hemiI": 0.651,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h167": {
+  "hour": 16.7,
+  "sunElev": 0,
+  "fireI": 4.942,
+  "fireD": 8.6,
+  "sunI": 2.997,
+  "hemiI": 0.708,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h185": {
+  "hour": 18.5,
+  "sunElev": 0,
+  "fireI": 2.66,
+  "fireD": 8.6,
+  "sunI": 1.921,
+  "hemiI": 0.827,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h195": {
+  "hour": 19.5,
+  "sunElev": 0,
+  "fireI": 2.788,
+  "fireD": 8.6,
+  "sunI": 0.648,
+  "hemiI": 0.684,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h205": {
+  "hour": 20.5,
+  "sunElev": 0,
+  "fireI": 2.228,
+  "fireD": 8.6,
+  "sunI": 0.157,
+  "hemiI": 0.427,
+  "dayF": -1,
+  "nightF": -1
+ },
+ "hearth-base-h23": {
+  "hour": 23,
+  "sunElev": 0,
+  "fireI": 2.312,
+  "fireD": 8.6,
+  "sunI": 0.055,
+  "hemiI": 0.281,
+  "dayF": -1,
+  "nightF": -1
+ }
+}

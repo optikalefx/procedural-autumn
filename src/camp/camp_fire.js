@@ -72,6 +72,10 @@ const TAU = Math.PI * 2;
 
 // ── how far the fire's light goes, and how fast it gives up ─────────────────
 //
+// One pair for every hour — the names used to say NIGHT_ and no longer do,
+// because the reach stopped ramping with the sun when the daytime light became
+// something you can see. See the note on `distance` in `update`.
+//
 // 1.4 and 8.6 m, from 2.0 and 6.6 m. Read the light block in the constructor
 // first: the old pair was not chosen to make a fire look like a fire, it was
 // chosen to keep a grading defect off the screen, and now that the defect is
@@ -100,13 +104,61 @@ const TAU = Math.PI * 2;
 // the fade past the chairs and inside the meadow. Swept at 6.6 / 8.6 / 10.6:
 // the last one reaches the camper's flank, and the frames read as a camp under
 // a lamp rather than a camp around a fire — the night stops being the subject.
-const NIGHT_DECAY = 1.4;
-const NIGHT_REACH = 8.6;
+const FIRE_DECAY = 1.4;
+const FIRE_REACH = 8.6;
+
+// ── what the light is worth at midday, at the horizon, and after dark ───────
+//
+// The ramp is INVERTED — brightest at noon, dimmest at midnight — and that
+// looks like a bug until you follow what happens to the number, so it is worth
+// laying out. The player's ask was that the fire cast its warm light at every
+// hour rather than only after sundown; before this it was 0.85 at midday, which
+// is not a dim glow, it is no glow at all.
+//
+// Measured at the camp (tools/_scratch/hearthlab.mjs --hours 8,12,16.7,19.5,23):
+//
+//     hour      6.5    8     12    16.7   19.5    23
+//     sun      0.88   2.70  3.38   3.00   0.65   0.055
+//
+// so the key alone swings 60:1 across the day, and the fire is competing with
+// it on the same dirt. Two more things multiply that up:
+//
+//   · Exposure moves the other way. EXPOSURE_ELEV pulls the whole frame down
+//     with the sun high, so a fixed radiance renders smaller at noon before
+//     anything else touches it.
+//   · The tone curve compresses what is left. PBR Neutral starts compressing at
+//     0.76 and sunlit ground already sits near the shoulder, so an added
+//     twentieth of a stop there moves the pixel almost not at all — while the
+//     same addition on night ground, which lives two decades lower, is most of
+//     the pixel.
+//
+// A fire that emits a constant amount therefore reads as a lamp after dark and
+// as nothing at noon, which is exactly what shipped. Holding the *look* roughly
+// constant means emitting far more into a bright frame, and these three numbers
+// are that compensation curve rather than a physical claim about combustion.
+//
+// Swept at noon on the fireside framing at 0.9 / 1.5 / 2.2 / 3.0 / 4.0 / 5.5 /
+// 7.5. Under about 2.2 there is no pool, only a slightly warmer stone. Past
+// about 5.5 the dirt inside the ring washes toward pink-white and the stones
+// stop having lit and shaded faces — a fire in full sun with no form in its own
+// firepit, which is a worse lie than the one this fixes. 4.0 is where the pool
+// reads and the ring keeps its modelling.
+//
+// The dusk value is not swept independently; it is the join. `duskAmount` is
+// fully on while `nightAmount` is still off — around the horizon — so this is
+// what the fire is worth in that band, and it sits between its neighbours so
+// the three-key ramp stays monotone and nothing pulses as the sun goes down.
+//
+// The NIGHT value is untouched at 2.10. Nothing about this round changes what a
+// fire is worth in the dark; see the note on the intensity in `update`.
+const LIGHT_DAY = 4.0;
+const LIGHT_DUSK = 2.6;
+const LIGHT_NIGHT = 2.10;
 
 // Neutral tuning. `window.__fireTune` may override any field at runtime; that
 // is how tools/_scratch/firesweep.mjs shoots a parameter ladder in one page
 // load instead of one capture-pool slot per guess.
-const FIRE_TUNE = { gain: 1, light: 1, dist: 1, decay: NaN, bed: 1, ember: 1, smoke: 1, knee: 1, elev: NaN };
+const FIRE_TUNE = { gain: 1, light: 1, dist: 1, decay: NaN, dayI: NaN, duskI: NaN, nightI: NaN, bed: 1, ember: 1, smoke: 1, knee: 1, elev: NaN };
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Time of day
@@ -1070,15 +1122,15 @@ export class Firepit {
     // they cannot put on a tent.
     //
     // With the grade fixed, the falloff is free to be chosen for the picture
-    // again: see NIGHT_DECAY / NIGHT_REACH at the top of this file for what it
+    // again: see FIRE_DECAY / FIRE_REACH at the top of this file for what it
     // was chosen to be and what was swept to get there. The over-reach note
     // above still stands and is still worth knowing — it is why the reach only
     // had to go to 8.6 m to cover a camp.
     this.ownsLight = !opts.light;
-    this.light = opts.light ?? new THREE.PointLight(0xffa259, 1.6, NIGHT_REACH, NIGHT_DECAY);
+    this.light = opts.light ?? new THREE.PointLight(0xffa259, 1.6, FIRE_REACH, FIRE_DECAY);
     this.light.color.setHex(0xffa259, THREE.SRGBColorSpace);
-    this.light.distance = NIGHT_REACH;
-    this.light.decay = NIGHT_DECAY;
+    this.light.distance = FIRE_REACH;
+    this.light.decay = FIRE_DECAY;
     this.light.castShadow = false;
     this.light.name = 'camp_fire_light';
     if (this.ownsLight) scene.add(this.light);
@@ -1444,8 +1496,9 @@ export class Firepit {
     bu.uReveal.value = rv;
 
     // ── the light ───────────────────────────────────────────────────────────
-    // A supporting warm accent by day that just lifts the near stones; after
-    // dark it is the entire lighting of the camp.
+    // The camp's whole lighting after dark, and a warm pool on the dirt and the
+    // near props at every other hour. The three keys it ramps between, and why
+    // the ramp runs backwards, are at LIGHT_DAY above.
     //
     // The night value is UNCHANGED at 2.10, and that is a result rather than an
     // oversight. The sweep that set it — "4.2 put the whole clearing in pale
@@ -1456,11 +1509,19 @@ export class Firepit {
     // near stones lose the heat the close framing is for, and every value past
     // about 2.5 clips the dirt inside two metres to a flat orange with no form
     // in it. The reach was the thing that was wrong, and the reach is where the
-    // fix went (NIGHT_DECAY / NIGHT_REACH).
-    const base = lerp(lerp(0.85, 1.45, dusk), 2.10, night);
+    // fix went (FIRE_DECAY / FIRE_REACH).
+    const pick = (v, d) => (Number.isFinite(v) ? v : d);
+    const lo = pick(T.dayI, LIGHT_DAY), mid = pick(T.duskI, LIGHT_DUSK), hi = pick(T.nightI, LIGHT_NIGHT);
+    const base = lerp(lerp(lo, mid, dusk), hi, night);
     this.light.intensity = base * f * rv * rv * T.light;
-    this.light.distance = lerp(NIGHT_REACH * 0.70, NIGHT_REACH, Math.max(dusk, night)) * (T.dist ?? 1);
-    this.light.decay = Number.isFinite(T.decay) ? T.decay : NIGHT_DECAY;
+    // One reach, every hour. It used to shrink to 70% with the sun up, which
+    // was a sensible economy while the daytime light was too weak to see —
+    // there was no pool to size. Now that there is one, a cutoff that moved
+    // with the sun would breathe the pool's edge across the dirt through the
+    // afternoon, and it would also drag the hearth mask with it, since Camp.js
+    // reads the mask's radius off this very number.
+    this.light.distance = FIRE_REACH * (T.dist ?? 1);
+    this.light.decay = Number.isFinite(T.decay) ? T.decay : FIRE_DECAY;
     // Warmer and a touch less saturated by day, so it does not read as a
     // coloured lamp on a sunlit prop.
     this._sc.setRGB(1.0, lerp(0.50, 0.40, night), lerp(0.22, 0.135, night));

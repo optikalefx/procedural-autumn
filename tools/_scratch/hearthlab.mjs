@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 /**
- * Hearth lab — one camp, one night, N runtime variants.
+ * Hearth lab — one camp, N runtime variants, N framings, N hours.
+ *
+ *   node tools/_scratch/hearthlab.mjs --dir review/x --variants base,l14
+ *   node tools/_scratch/hearthlab.mjs --dir review/x --hours 8,12,16.7,20.4,23
  *
  * Exists to answer "which stage turns the fire's pool lavender" without paying
- * a 60 s page load per hypothesis. Variants are plain functions evaluated in
- * the page against window.__postfx / window.__fireTune, so this can sweep the
+ * a 60 s page load per hypothesis. Variants are plain snippets evaluated in the
+ * page against window.__postfx / window.__fireTune, so this can sweep the
  * shipping look without editing a source file.
+ *
+ * `--hours` is the second axis and it is the one that catches the failure a
+ * night-only sweep cannot see: a fire tuned until it reads at 23:00 is a fire
+ * nobody has looked at with the sun up, and the whole point of the light is
+ * that the camp has one at every hour.
  */
 import { chromium } from 'playwright';
 import { acquire } from '../_lock.mjs';
@@ -17,7 +25,9 @@ const arg = (n, d = null) => { const i = argv.indexOf(`--${n}`); if (i === -1) r
   const v = argv[i + 1]; return v && !v.startsWith('--') ? v : true; };
 
 const DIR = arg('dir', 'review/fire-night/lab');
-const HOUR = parseFloat(arg('hour', '23'));
+const HOURS = (arg('hours', null) === true || arg('hours', null) === null
+  ? [parseFloat(arg('hour', '23'))]
+  : String(arg('hours')).split(',').map(parseFloat));
 const URL = `${arg('url', 'http://localhost:5180')}?res=${arg('res', '768')}`;
 const W = parseInt(arg('w', '1280'), 10), H = parseInt(arg('h', '720'), 10);
 const VARIANTS = (arg('variants', 'base') === true ? 'base' : arg('variants', 'base')).split(',');
@@ -42,6 +52,16 @@ const V = {
   norod:     'window.__postfx.look.rodAmount = 0.0;',
   nolight:   'window.__fireTune.light = 0.0001;',
 };
+// d<I>r<R>: the DAY end of the intensity ramp at I/10, day reach at R/10 m.
+// The knob that matters with the sun up, and the one a night-only ladder never
+// touches — the fire is a fifth of the sun at noon and the tone curve is
+// already compressing the ground it would land on.
+for (const i of [9, 15, 22, 30, 40, 55, 75]) {
+  for (const r of [60, 86, 110]) {
+    V[`d${i}r${r}`] = `window.__fireTune.dayI = ${i / 10}; ` +
+      `window.__fireTune.dist = ${(r / 10) / (8.6 * 0.70)};`;
+  }
+}
 // l<N>d<D>: intensity multiplier N/10, reach multiplier D/10.
 for (const li of [10, 14, 18, 22, 28, 36]) {
   for (const di of [10, 13, 16, 20]) {
@@ -110,6 +130,7 @@ async function main() {
 
   for (const fname of FRAMINGS) {
     const f = SITE_F[fname];
+    for (const hour of HOURS) {
     for (const vname of VARIANTS) {
       if (V[vname] === undefined) { console.error(`no variant ${vname}`); continue; }
       await page.evaluate(async ({ f, site, hour, body, apply }) => {
@@ -125,16 +146,26 @@ async function main() {
         e.camera.lookAt(new THREE.Vector3(site.x, site.y + f.aim, site.z));
         window.__forceCamera = true;
         if (window.__settleStable) await window.__settleStable(600, 24);
-      }, { f, site, hour: HOUR, body: V[vname], apply: APPLY });
+      }, { f, site, hour, body: V[vname], apply: APPLY });
       await page.waitForTimeout(500);
-      const name = `${fname}-${vname}`;
+      // The hour goes in the filename only when there is more than one, so a
+      // single-hour run still pairs with tools/_scratch/pxdiff.mjs, which
+      // matches two directories by basename.
+      const tag = HOURS.length > 1 ? `-h${String(hour).replace('.', '')}` : '';
+      const name = `${fname}-${vname}${tag}`;
       await page.screenshot({ path: resolve(DIR, `${name}.png`) });
       probes[name] = await page.evaluate(() => ({
+        hour: window.__lighting?.hour ?? null,
+        sunElev: +(window.__lighting?.sunElev ?? window.__lighting?.state?.sunElev ?? 0).toFixed(3),
         fireI: +(window.__camp?.fireLight?.intensity ?? -1).toFixed(3),
         fireD: +(window.__camp?.fireLight?.distance ?? -1).toFixed(2),
-        rod: window.__postfx?.look?.rodAmount ?? null,
+        sunI: +(window.__lighting?.sun?.intensity ?? -1).toFixed(3),
+        hemiI: +(window.__lighting?.hemi?.intensity ?? -1).toFixed(3),
+        dayF: +(window.__lighting?.dayFactor ?? -1).toFixed(3),
+        nightF: +(window.__lighting?.nightFactor ?? -1).toFixed(3),
       }));
       console.log(`shot ${name}`, JSON.stringify(probes[name]));
+    }
     }
   }
   writeFileSync(resolve(DIR, 'PROBES.json'), JSON.stringify(probes, null, 1));
