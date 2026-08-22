@@ -75,22 +75,43 @@ export const VIEWS = {
   // RETUNED, and the waterfall anchor in review/anchors.json with them. Read
   // this before comparing anything here against review/048..051.
   //
-  // 1. The pinned anchor had gone stale. It stood at (-787, 91); the nearest
-  //    waterfall on the shipped bake is 657 m away. --view waterfall was a
-  //    picture of a lake with no fall in it, and plunge inherited the same
-  //    anchor, so NO framing in this harness contained a waterfall. A critic
-  //    grading waterfall was grading a shoreline. This is the integrator queue
-  //    item in docs/WATER_CONTRACT.md item 3 ("the carve follows a smoothed
+  // 1. The pinned anchor had gone stale. It stood at (-787.3, 90.8); the live
+  //    `__cameraAnchors.waterfall()` on the shipped bake resolves to
+  //    (-743.1, 37.9), seventy metres away. This is the integrator queue item
+  //    in docs/WATER_CONTRACT.md item 3 ("the carve follows a smoothed
   //    centreline now, so channels have moved"), never applied.
   //
+  //    CORRECTION, and it is the kind docs/CRITIC_PROTOCOL.md's table is
+  //    about. This note previously read "the nearest waterfall on the shipped
+  //    bake is 657 m away … a critic grading waterfall was grading a
+  //    shoreline". That is false and it was checked: on seed 20261018 the
+  //    nearest fall to the old anchor is #13 — 42.1 m tall, 4.1 m wide — at
+  //    **77.4 m**, which is a framing distance, not a miss. 657 m is what you
+  //    get by booting with no `?seed`, which bakes WorldConfig's 20262018 and
+  //    puts the falls somewhere else entirely; the tool's own header warns
+  //    about exactly that trap two screens down and the note fell into it. The
+  //    old framing was bad for reason 2 below, which is measured on the right
+  //    world. It was not empty.
+  //
   // 2. The anchor is no longer the POI stand-off point. It is the FALL ITSELF
-  //    — the foot of the 94 m fall at (-732, 10) on seed 20261018, with lookY
-  //    46 m so the aim point is the middle of the drop — and all four views
-  //    below are subject framings that orbit it. A landscape framing pointed
-  //    along a yaw cannot hold a subject 90 m tall and 30 m away: the old
-  //    numbers put the foot 0.48 rad up and the lip 0.91 rad up, so whatever
-  //    pitch was set to, at least one end of the fall was out of frame.
-  //    Orbiting the subject cannot have that failure mode.
+  //    — the foot of the 94 m fall at (-732, 10) on seed 20261018 — and all
+  //    four views below are subject framings that orbit it.
+  //
+  //    The old `waterfall` had no `subject`, so it took the landscape branch
+  //    of _pose.mjs: stand ON the anchor, look along its yaw at a fixed pitch.
+  //    That branch never reads `lookY` at all — only the subject branch does —
+  //    so the aim point was `pitch 0.08` off the horizon and had no knowledge
+  //    of where the water was, vertically or horizontally. It is a framing for
+  //    a landscape, and a fall is a 40-90 m vertical subject: on the shipped
+  //    bake the nearest fall to the old anchor is 77 m away and 46 m tall,
+  //    which at that stand-off subtends most of the vertical frame from an aim
+  //    point that is not aimed at it. Orbiting the subject cannot have that
+  //    failure mode, and the four views can then differ in what they are ABOUT
+  //    rather than in where they happen to point.
+  //
+  //    Consequence for review/anchors.json: since every view below passes its
+  //    own `lookY`, the `lookY: 46` stored on the anchor is never read. The
+  //    live change is x, z and yaw.
   //
   // 3. yawOffset -0.55 is gone. The yaw already points along the fall; a
   //    32-degree offset on top of it put the water against the left edge.
