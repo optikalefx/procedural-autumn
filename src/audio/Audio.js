@@ -366,8 +366,19 @@ export class Audio extends System {
 
   // ── measurement (used by tools/audiotest.mjs) ─────────────────────────────
 
-  /** Time-domain peak and RMS on a bus, in linear amplitude. */
-  measure(which = 'master') {
+  /**
+   * Time-domain peak and RMS on a bus, in linear amplitude.
+   *
+   * `samples` limits the reading to the most recent N samples of the analyser's
+   * window. It exists because THE ANALYSERS ARE NOT THE SAME SIZE: the master
+   * is 2048 (42.7 ms at 48 kHz) and every tap is 16384 (341 ms), so any figure
+   * that divides a tap by the master is comparing a third of a second of one
+   * bus against a twentieth of a second of another. On an identical stationary
+   * signal that is worth up to 1.1 dB of pure instrument, and more on a
+   * transient-rich master — which is exactly the size of the mix differences
+   * anybody is trying to read. Pass `2048` on a tap to compare like with like.
+   */
+  measure(which = 'master', samples = 0) {
     const a = which === 'master' ? this.analyser : this.taps?.[which];
     if (!a) return null;
     // One probe PER SIZE, not one probe. The master analyser is 2048 and every
@@ -381,14 +392,18 @@ export class Audio extends System {
     const buf = (this._probes ??= new Map()).get(a.fftSize)
       ?? (this._probes.set(a.fftSize, new Float32Array(a.fftSize)), this._probes.get(a.fftSize));
     a.getFloatTimeDomainData(buf);
+    // getFloatTimeDomainData fills oldest-first, so the most recent `samples`
+    // are the tail of the buffer.
+    const n = samples > 0 ? Math.min(samples, buf.length) : buf.length;
+    const from = buf.length - n;
     let peak = 0, sum = 0;
-    for (let i = 0; i < buf.length; i++) {
+    for (let i = from; i < buf.length; i++) {
       const v = buf[i];
       const av = v < 0 ? -v : v;
       if (av > peak) peak = av;
       sum += v * v;
     }
-    return { peak, rms: Math.sqrt(sum / buf.length) };
+    return { peak, rms: Math.sqrt(sum / n) };
   }
 
   /**

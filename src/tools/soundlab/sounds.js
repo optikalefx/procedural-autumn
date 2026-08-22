@@ -22,6 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { SURFACES } from './rig.js';
 import { tanhCurve } from '../../audio/synth.js';
+import { AMBIENCE_LEVELS } from '../../audio/ambience.js';
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 
@@ -331,24 +332,26 @@ export const SOUNDS = [
     bus: 'ambience',
     module: 'src/audio/ambience.js',
     blurb: 'Layer 1. A band around 820 Hz is the dry rustle; the shelf under it '
-      + 'is the body of moving air. Level is 0.210 · openness · strength · indoors, '
-      + 'and strength is a 4.4 dB span — this bed swells, it does not gust.',
+      + `is the body of moving air. Level is ${AMBIENCE_LEVELS.grass} · openness · `
+      + 'strength · indoors, and strength is a 4.4 dB span — this bed swells, it '
+      + 'does not gust.',
     layers: ['grass'],
     meterLayers: ambLayer('grass'),
     frame: ambienceFrame,
     params: [
       WIND, { ...OPEN, def: 0.9 }, ALT, INDOORS,
-      readout('mGrass', 'model gain', (r) => r.audio.ambience.state.grass, { src: 'ambience.js:191' }),
+      readout('mGrass', 'model gain', (r) => r.audio.ambience.state.grass, { src: 'ambience.js — AMBIENCE_LEVELS.grass x openness x strength' }),
       readout('mGrassF', 'grassLow cutoff', (r) => r.audio.ambience.grassLow.frequency.value, { unit: 'Hz', src: 'ambience.js — 760 + breeze·330' }),
-      range('grassBandHz', 'grassBand centre', 200, 2200, 820, { unit: 'Hz', step: 1, src: 'ambience.js:98', apply: P('ambience.grassBand.frequency') }),
-      range('grassBandQ', 'grassBand Q', 0.1, 4, 0.55, { step: 0.01, src: 'ambience.js:98', apply: P('ambience.grassBand.Q') }),
-      range('grassLow2Hz', 'grassLow2 cutoff', 300, 6000, 1500, { unit: 'Hz', step: 1, src: 'ambience.js:103', apply: P('ambience.grassLow2.frequency') }),
-      range('grassLow2Q', 'grassLow2 Q', 0.1, 4, 0.5, { step: 0.01, src: 'ambience.js:103', apply: P('ambience.grassLow2.Q') }),
-      range('grassLowQ', 'grassLow Q', 0.1, 4, 0.7, { step: 0.01, src: 'ambience.js:102', apply: P('ambience.grassLow.Q') }),
-      range('grassRate', 'noise playback rate', 0.4, 1.6, 1.0, { step: 0.01, src: 'ambience.js:97', apply: (r, v) => { r.audio.ambience.grassSrc.playbackRate.value = v; } }),
+      range('grassBandHz', 'grassBand centre', 200, 2200, 820, { unit: 'Hz', step: 1, src: 'ambience.js — grassBand', apply: P('ambience.grassBand.frequency') }),
+      range('grassBandQ', 'grassBand Q', 0.1, 4, 0.55, { step: 0.01, src: 'ambience.js — grassBand', apply: P('ambience.grassBand.Q') }),
+      range('grassLow2Hz', 'grassLow2 cutoff', 300, 6000, 1500, { unit: 'Hz', step: 1, src: 'ambience.js — grassLow2', apply: P('ambience.grassLow2.frequency') }),
+      range('grassLow2Q', 'grassLow2 Q', 0.1, 4, 0.5, { step: 0.01, src: 'ambience.js — grassLow2', apply: P('ambience.grassLow2.Q') }),
+      range('grassLowQ', 'grassLow Q', 0.1, 4, 0.7, { step: 0.01, src: 'ambience.js — grassLow', apply: P('ambience.grassLow.Q') }),
+      range('grassRate', 'noise playback rate', 0.4, 1.6, 1.0, { step: 0.01, src: 'ambience.js — grassSrc', apply: (r, v) => { r.audio.ambience.grassSrc.playbackRate.value = v; } }),
     ],
     needs: [
-      'ambience.js — the 0.210 grass level constant is inline in update().',
+      // (the level constant itself is exported as AMBIENCE_LEVELS.grass and read
+      //  by main.js, so a trim emitted here is against the live value)
       'ambience.js — grassSwell rate 0.037 Hz / depth 0.13: swell() discards its LFO handle.',
       'ambience.js — the 0.061 Hz / 210 Hz band LFO handle is discarded.',
       'ambience.js — the breeze curve (0.32, 0.94, 0.30 + 0.20·b).',
@@ -368,17 +371,16 @@ export const SOUNDS = [
     frame: ambienceFrame,
     params: [
       WIND, { ...FOREST, def: 0.85 }, INDOORS,
-      readout('mConifer', 'model gain', (r) => r.audio.ambience.state.conifer, { src: 'ambience.js:195' }),
-      range('coniferBandHz', 'coniferBand centre', 400, 5000, 1850, { unit: 'Hz', step: 1, src: 'ambience.js:117', apply: P('ambience.coniferBand.frequency') }),
-      range('coniferBandQ', 'coniferBand Q', 0.1, 4, 0.7, { step: 0.01, src: 'ambience.js:117', apply: P('ambience.coniferBand.Q') }),
-      range('coniferHiHz', 'coniferHi cutoff', 100, 2000, 620, { unit: 'Hz', step: 1, src: 'ambience.js:118', apply: P('ambience.coniferHi.frequency') }),
-      range('coniferHiQ', 'coniferHi Q', 0.1, 4, 0.5, { step: 0.01, src: 'ambience.js:118', apply: P('ambience.coniferHi.Q') }),
-      range('coniferCapHz', 'coniferCap cutoff', 800, 12000, 3200, { unit: 'Hz', step: 10, src: 'ambience.js:119', apply: P('ambience.coniferCap.frequency') }),
-      range('coniferCapQ', 'coniferCap Q', 0.1, 4, 0.6, { step: 0.01, src: 'ambience.js:119', apply: P('ambience.coniferCap.Q') }),
-      range('coniferRate', 'noise playback rate', 0.4, 1.6, 0.93, { step: 0.01, src: 'ambience.js:116', apply: (r, v) => { r.audio.ambience.coniferSrc.playbackRate.value = v; } }),
+      readout('mConifer', 'model gain', (r) => r.audio.ambience.state.conifer, { src: 'ambience.js — AMBIENCE_LEVELS.conifer x forest x strength' }),
+      range('coniferBandHz', 'coniferBand centre', 400, 5000, 1850, { unit: 'Hz', step: 1, src: 'ambience.js — coniferBand', apply: P('ambience.coniferBand.frequency') }),
+      range('coniferBandQ', 'coniferBand Q', 0.1, 4, 0.7, { step: 0.01, src: 'ambience.js — coniferBand', apply: P('ambience.coniferBand.Q') }),
+      range('coniferHiHz', 'coniferHi cutoff', 100, 2000, 620, { unit: 'Hz', step: 1, src: 'ambience.js — coniferHi', apply: P('ambience.coniferHi.frequency') }),
+      range('coniferHiQ', 'coniferHi Q', 0.1, 4, 0.5, { step: 0.01, src: 'ambience.js — coniferHi', apply: P('ambience.coniferHi.Q') }),
+      range('coniferCapHz', 'coniferCap cutoff', 800, 12000, 3200, { unit: 'Hz', step: 10, src: 'ambience.js — coniferCap', apply: P('ambience.coniferCap.frequency') }),
+      range('coniferCapQ', 'coniferCap Q', 0.1, 4, 0.6, { step: 0.01, src: 'ambience.js — coniferCap', apply: P('ambience.coniferCap.Q') }),
+      range('coniferRate', 'noise playback rate', 0.4, 1.6, 0.93, { step: 0.01, src: 'ambience.js — coniferSrc', apply: (r, v) => { r.audio.ambience.coniferSrc.playbackRate.value = v; } }),
     ],
     needs: [
-      'ambience.js — the 0.148 conifer level constant is inline in update().',
       'ambience.js — coniferSwell rate 0.029 Hz / depth 0.13.',
     ],
   },
@@ -396,13 +398,13 @@ export const SOUNDS = [
     frame: ambienceFrame,
     params: [
       WIND, { ...ALT, def: 0.85 }, 
-      readout('mHush', 'model gain', (r) => r.audio.ambience.state.hush, { src: 'ambience.js:199' }),
-      range('hushLowHz', 'hushLow cutoff', 80, 1200, 320, { unit: 'Hz', step: 1, src: 'ambience.js:131', apply: P('ambience.hushLow.frequency') }),
-      range('hushLowQ', 'hushLow Q', 0.1, 4, 0.8, { step: 0.01, src: 'ambience.js:131', apply: P('ambience.hushLow.Q') }),
-      range('hushRate', 'noise playback rate', 0.3, 1.4, 0.61, { step: 0.01, src: 'ambience.js:130', apply: (r, v) => { r.audio.ambience.hushSrc.playbackRate.value = v; } }),
+      readout('mHush', 'model gain', (r) => r.audio.ambience.state.hush, { src: 'ambience.js — AMBIENCE_LEVELS.hush x altitude x lerp(0.80, 1.05, breeze)' }),
+      range('hushLowHz', 'hushLow cutoff', 80, 1200, 320, { unit: 'Hz', step: 1, src: 'ambience.js — hushLow', apply: P('ambience.hushLow.frequency') }),
+      range('hushLowQ', 'hushLow Q', 0.1, 4, 0.8, { step: 0.01, src: 'ambience.js — hushLow', apply: P('ambience.hushLow.Q') }),
+      range('hushRate', 'noise playback rate', 0.3, 1.4, 0.61, { step: 0.01, src: 'ambience.js — hushSrc', apply: (r, v) => { r.audio.ambience.hushSrc.playbackRate.value = v; } }),
     ],
     needs: [
-      'ambience.js — the 0.180 hush level constant and its lerp(0.80, 1.05, breeze).',
+      'ambience.js — the hush weather term lerp(0.80, 1.05, breeze) is inline in update().',
       'ambience.js — hushSwell rate 0.023 Hz / depth 0.14.',
     ],
   },
@@ -420,15 +422,15 @@ export const SOUNDS = [
     frame: ambienceFrame,
     params: [
       { ...HOUR, def: 20.0 }, { ...OPEN, def: 1 }, FOREST, ALT, INDOORS,
-      readout('mCricket', 'model gain', (r) => r.audio.ambience.state.cricket, { src: 'ambience.js:210' }),
-      range('cricketBandHz', 'cricketBand centre', 1500, 8000, 4300, { unit: 'Hz', step: 10, src: 'ambience.js:139', apply: P('ambience.cricketBand.frequency') }),
-      range('cricketBandQ', 'cricketBand Q', 0.1, 6, 1.1, { step: 0.01, src: 'ambience.js:139', apply: P('ambience.cricketBand.Q') }),
-      range('cricketRate', 'bed playback rate', 0.6, 1.4, 1.0, { step: 0.01, src: 'ambience.js:138', apply: (r, v) => { r.audio.ambience.cricketSrc.playbackRate.value = v; } }),
+      readout('mCricket', 'model gain', (r) => r.audio.ambience.state.cricket, { src: 'ambience.js — AMBIENCE_LEVELS.cricket x dusk x habitat' }),
+      range('cricketBandHz', 'cricketBand centre', 1500, 8000, 4300, { unit: 'Hz', step: 10, src: 'ambience.js — cricketBand', apply: P('ambience.cricketBand.frequency') }),
+      range('cricketBandQ', 'cricketBand Q', 0.1, 6, 1.1, { step: 0.01, src: 'ambience.js — cricketBand', apply: P('ambience.cricketBand.Q') }),
+      range('cricketRate', 'bed playback rate', 0.6, 1.4, 1.0, { step: 0.01, src: 'ambience.js — cricketSrc', apply: (r, v) => { r.audio.ambience.cricketSrc.playbackRate.value = v; } }),
     ],
     needs: [
-      'ambience.js:210 — the 0.075 cricket level constant.',
-      'ambience.js:43-49 — cricketBed(): 9 individuals, 3900-5400 Hz, period 0.30-0.72 s.',
-      'ambience.js:204-205 — the dusk / pre-dawn smoothstep windows.',
+      'ambience.js — the dusk / habitat curve around AMBIENCE_LEVELS.cricket is inline in update().',
+      'ambience.js — cricketBed(): 9 individuals, 3900-5400 Hz, period 0.30-0.72 s.',
+      'ambience.js — update(), the dusk / pre-dawn smoothstep windows.',
     ],
   },
   {
@@ -447,15 +449,15 @@ export const SOUNDS = [
     triggerLabel: 'Trigger one call',
     params: [
       { ...HOUR, def: 6.2 }, { ...FOREST, def: 0.9 }, OPEN, ALT, INDOORS,
-      cond('chorus', 'Dawn-chorus weight (trigger)', 0, 1, 0.5, { step: 0.01, src: 'ambience.js:253 — raises the chance of a near call' }),
-      readout('mRate', 'model call rate', (r) => r.audio.ambience.state.birdRate, { unit: '/s', src: 'ambience.js:233' }),
-      range('birdBus', 'birdBus gain', 0, 2, 0.78, { step: 0.01, src: 'ambience.js:147', apply: P('ambience.birdBus.gain') }),
-      range('birdWet', 'birdWet reverb send', 0, 1, 0.34, { step: 0.01, src: 'ambience.js:149', apply: P('ambience.birdWet.gain') }),
+      cond('chorus', 'Dawn-chorus weight (trigger)', 0, 1, 0.5, { step: 0.01, src: 'ambience.js — _call(), raises the chance of a near call' }),
+      readout('mRate', 'model call rate', (r) => r.audio.ambience.state.birdRate, { unit: '/s', src: 'ambience.js — update(), rate' }),
+      range('birdBus', 'birdBus gain', 0, 2, 0.78, { step: 0.01, src: 'ambience.js — birdBus', apply: P('ambience.birdBus.gain') }),
+      range('birdWet', 'birdWet reverb send', 0, 1, 0.34, { step: 0.01, src: 'ambience.js — birdWet', apply: P('ambience.birdWet.gain') }),
     ],
     needs: [
-      'ambience.js:20-25 — the BIRDS species table (f, bend, n, dur, gap, kind).',
-      'ambience.js:233 — the call-rate curve (0.20 + chorus·1.5)·(0.35 + day·0.65).',
-      'ambience.js:255 — near/far call levels 0.16 / 0.055.',
+      'ambience.js — the BIRDS species table (f, bend, n, dur, gap, kind).',
+      'ambience.js — update(), the call-rate curve (0.20 + chorus·1.5)·(0.35 + day·0.65).',
+      'ambience.js — _call(), near/far call levels 0.16 / 0.055.',
     ],
   },
   {

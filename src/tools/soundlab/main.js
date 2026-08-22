@@ -6,13 +6,21 @@
 //  `Meter`, and everything else is a control surface over the catalogue in
 //  `sounds.js`.
 //
-//  Nothing in `src/audio/*` is edited or imported-and-copied: this page only
-//  drives it. If a value it wants is a hard-coded constant, the control is
-//  marked and the request is filed rather than the value being faked.
+//  Nothing in `src/audio/*` is edited or re-typed here: this page only drives
+//  it. If a value it wants is a hard-coded constant, the control is marked and
+//  the request is filed rather than the value being faked — and where the mix
+//  exports the constant (`AMBIENCE_LEVELS`) it is IMPORTED. A copy of someone
+//  else's constant is a copy that goes stale without telling you, and this page
+//  hands its readings back as numbers to type into that same file.
 // ─────────────────────────────────────────────────────────────────────────────
 import { Rig } from './rig.js';
 import { Meter, fmtDb } from './meter.js';
 import { SOUNDS, MASTER_PARAMS, MASTER_NEEDS, defaultsFor, byId } from './sounds.js';
+// Imported, never re-typed. See the note on AMBIENCE_LEVELS: this table used to
+// be a hand-copy here and it silently went 1 dB stale the first time the wind
+// mix was touched, so the lab told authors to type a number that would have
+// partly undone the change they were verifying.
+import { AMBIENCE_LEVELS } from '../../audio/ambience.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -31,11 +39,11 @@ const el = (tag, cls, text) => {
  * composite expression it carries the trim and says so.
  */
 const LEVEL_CONST = {
-  grass: { name: 'grass level', value: 0.235, site: 'src/audio/ambience.js:191' },
-  conifer: { name: 'conifer level', value: 0.165, site: 'src/audio/ambience.js:195' },
-  hush: { name: 'hush level', value: 0.180, site: 'src/audio/ambience.js:199' },
-  cricket: { name: 'cricket level', value: 0.075, site: 'src/audio/ambience.js:210' },
-  birds: { name: 'birdBus gain', value: 0.78, site: 'src/audio/ambience.js:147' },
+  grass: { name: 'grass level', value: AMBIENCE_LEVELS.grass, site: 'src/audio/ambience.js — AMBIENCE_LEVELS.grass' },
+  conifer: { name: 'conifer level', value: AMBIENCE_LEVELS.conifer, site: 'src/audio/ambience.js — AMBIENCE_LEVELS.conifer' },
+  hush: { name: 'hush level', value: AMBIENCE_LEVELS.hush, site: 'src/audio/ambience.js — AMBIENCE_LEVELS.hush' },
+  cricket: { name: 'cricket level', value: AMBIENCE_LEVELS.cricket, site: 'src/audio/ambience.js — AMBIENCE_LEVELS.cricket' },
+  birds: { name: 'birdBus gain', value: 0.78, site: 'src/audio/ambience.js — this.birdBus' },
   falls: { name: 'fallBus gain', value: 1.0, site: 'src/audio/water.js:97' },
   rivers: { name: 'riverBus gain', value: 0.9, site: 'src/audio/water.js:98' },
   intake: { name: 'intake level', value: 0.016, site: 'src/audio/vehicle_audio.js:278' },

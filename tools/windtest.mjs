@@ -26,6 +26,19 @@
  *   · Reports the ENVELOPE, not the mean: p5 / p50 / p95 / max of the running
  *     RMS, and the gust-peak-to-calm-floor ratio p95/p5 in dB. That ratio is
  *     the number the brief is actually about.
+ *   · Covers all THREE wind beds — grass in the meadow, conifers in a stand,
+ *     and the hush above the treeline. The altitude arm is not optional
+ *     thoroughness: the hush was sampled and never reported for one round, and
+ *     in that round it moved 0.8 dB the wrong way while every other wind layer
+ *     came down 3.3 dB. Nothing here would have caught it.
+ *   · Asserts an AUDIBILITY FLOOR as well as a ceiling. Every statistic in this
+ *     file improves monotonically as a layer approaches silence, so a tool that
+ *     only checks "not too loud" rewards deleting the wind.
+ *
+ * If the bed ever reads as too FLAT, reach for the brightness swing (the
+ * gust-linked `grassLow` sweep, currently 760 + breeze·330 Hz, halved from 540)
+ * before reaching for the level. Brightness buys weather legibility at no
+ * loudness cost, and level is the thing the player complained about.
  *   · Asserts the layer is alive before believing any of it. A muted layer has
  *     a beautiful crest factor. Each arm fails loudly if the model gain, the
  *     AudioParam and the measured RMS are not all non-zero, and if the measured
@@ -78,6 +91,7 @@ const PAGE = target.toString();
 const SECONDS = Number(arg('seconds', 260));
 const FOREST_SECONDS = Number(arg('forestSeconds', 160));
 const MIX_SECONDS = Number(arg('mixSeconds', 160));
+const ALT_SECONDS = Number(arg('altSeconds', 160));
 const LABEL = String(arg('label', 'run'));
 const OUT = arg('out', null);
 
@@ -129,6 +143,18 @@ function stats(rms, peak) {
     p95: pct(rms, 95),
     min: Math.min(...rms),
     max: Math.max(...rms),
+    swing_dB: dB(pct(rms, 95)) - dB(pct(rms, 5)),
+    fullSwing_dB: dB(Math.max(...rms)) - dB(Math.min(...rms)),
+  };
+}
+
+/** Envelope statistics where no true peak series exists (e.g. a power sum). */
+function rmsStats(rms) {
+  const meanSq = rms.reduce((a, v) => a + v * v, 0) / Math.max(rms.length, 1);
+  return {
+    n: rms.length, rms: Math.sqrt(meanSq),
+    p5: pct(rms, 5), p50: pct(rms, 50), p95: pct(rms, 95),
+    min: Math.min(...rms), max: Math.max(...rms),
     swing_dB: dB(pct(rms, 95)) - dB(pct(rms, 5)),
     fullSwing_dB: dB(Math.max(...rms)) - dB(Math.min(...rms)),
   };
@@ -205,9 +231,10 @@ async function main() {
       const a = window.__audio;
       const S = window.__windState = {
         taps, ms, done: false, t0: performance.now(),
-        t: [], wind: [], model: { grass: [], conifer: [], hush: [] }, rms: {}, peak: {},
+        t: [], wind: [], model: { grass: [], conifer: [], hush: [] },
+        rms: {}, peak: {}, short: {},
       };
-      for (const k of taps) { S.rms[k] = []; S.peak[k] = []; }
+      for (const k of taps) { S.rms[k] = []; S.peak[k] = []; S.short[k] = []; }
       S.id = setInterval(() => {
         const st = a.debugState();
         const el = performance.now() - S.t0;
@@ -220,6 +247,12 @@ async function main() {
           const m = a.measure(k);
           S.rms[k].push(m ? m.rms : 0);
           S.peak[k].push(m ? m.peak : 0);
+          // A SECOND reading of the same tap over the master analyser's own
+          // 2048-sample window. Envelope statistics want the long window; any
+          // figure that divides a tap by the master must use this one, or it
+          // carries up to ~1.1 dB of pure window mismatch. See Audio.measure.
+          const sm = a.measure(k, 2048);
+          S.short[k].push(sm ? sm.rms : 0);
         }
         if (el >= ms) { clearInterval(S.id); S.done = true; }
       }, 120);
@@ -233,7 +266,7 @@ async function main() {
     window.__windTake = () => {
       const S = window.__windState;
       clearInterval(S.id);
-      return { t: S.t, wind: S.wind, model: S.model, rms: S.rms, peak: S.peak };
+      return { t: S.t, wind: S.wind, model: S.model, rms: S.rms, peak: S.peak, short: S.short };
     };
   });
 
@@ -309,12 +342,30 @@ async function main() {
   // first can only be answered against the model, because the measured envelope
   // is the model times a swell LFO that knows nothing about the wind.
   const rModel = pearson(m1.rms.windGrass, m1.model.grass);
-  const rWind = pearson(m1.model.grass, m1.wind);
-  check('grass signal follows its mixer', grass.rms > 1e-4 && rModel > 0.3,
+  // NOT pearson(model, L.wind): `model.grass` is an affine function of a clamped
+  // `L.wind` times two slow-moving weights, so that correlation is arithmetic
+  // and printed exactly 1.00. It asserts that a line is a line. The question
+  // worth asking is whether the MEASURED signal — model times a swell LFO that
+  // knows nothing about the weather, through filters, through an analyser — is
+  // still weather-shaped. Correlate the dB envelope against `L.wind`.
+  const rWind = pearson(m1.rms.windGrass.map((v) => dB(v || 1e-9)), m1.wind);
+  check('grass signal follows its mixer', rModel > 0.3,
         `pearson(rms, model.grass) = ${f(rModel, 2)} over ${m1.t.length} samples`);
-  check('grass mixer follows the weather', rWind > 0.9,
-        `pearson(model.grass, L.wind) = ${f(rWind, 2)}`);
+  check('measured grass is still weather-shaped', rWind > 0.45,
+        `pearson(envelope dB, L.wind) = ${f(rWind, 2)} — below ~0.45 the swell LFO ` +
+        'has become the wind again');
   check('meadow window covers >2 gust cycles', SECONDS > 152, `${f(SECONDS / 75.7, 1)} cycles of 75.7 s`);
+
+  // An AUDIBILITY FLOOR, because the failure mode of this whole exercise is
+  // over-correction. `rms > 1e-4` is -80 dBFS: a bed cut 30 dB too far sails
+  // through it, and every other number on the page gets BETTER as the layer
+  // approaches silence — swing goes to zero, crest goes to zero, share goes to
+  // -inf. -54 dBFS median at the tap is ~8 dB under where the bed sits today
+  // and ~-65 dBFS once the bus and master gains are applied; below that this is
+  // no longer a game with wind in it.
+  check('grass bed has not been cut into inaudibility',
+        grass.p50 > 10 ** (-54 / 20) && grass.p95 > 10 ** (-50 / 20),
+        `p50 ${fdB(grass.p50)} dBFS (floor -54), p95 ${fdB(grass.p95)} dBFS (floor -50)`);
 
   // Wind against everything else, at ONE FIXED POINT. This is the controlled
   // masking figure; the driving arm below is not one, because the camper takes
@@ -328,13 +379,26 @@ async function main() {
     master: window.__audio.master.gain.value,
   }));
   const refM = gainsM.ambienceBus * gainsM.master;
-  const shareMeadow = m1.rms.windGrass.map((v, i) =>
-    dB(v * refM) - dB(m1.rms.master[i] || 1e-9));
+  // The denominator must EXCLUDE the numerator. Dividing wind by the master is
+  // dividing wind by a mix that contains it, so when the wind drops the master
+  // drops with it and the ratio barely moves: the first version of this metric
+  // reported -13.6 -> -13.0 dB across a change that took 12.7 dB out of the
+  // bed. Everything-else power is the master's power minus the wind's, which is
+  // valid because these sources are mutually incoherent (independent noise beds
+  // and unrelated one-shots), and both terms are read over the SAME 2048-sample
+  // window so the subtraction is not a window-mismatch artefact.
+  const windM = m1.short.windGrass.map((v, i) => Math.sqrt(
+    v * v + m1.short.windConifer[i] ** 2 + m1.short.windHush[i] ** 2) * refM);
+  const restM = m1.short.master.map((v, i) =>
+    Math.sqrt(Math.max(v * v - windM[i] ** 2, 1e-20)));
+  const shareMeadow = windM.map((v, i) => dB(v) - dB(restM[i]));
   const gi = m1.wind.indexOf(Math.max(...m1.wind));
   const masterMeadow = stats(m1.rms.master, m1.peak.master);
-  console.log(`    master here ${fdB(masterMeadow.rms)} dBFS rms; grass referred forward ` +
-              `(${f(dB(refM), 1)} dB) is ${f(pct(shareMeadow, 50), 1)} dB under it at the median, ` +
-              `${f(shareMeadow[gi], 1)} dB at the gust peak, ${f(Math.max(...shareMeadow), 1)} dB at its worst`);
+  console.log(`    master here ${fdB(masterMeadow.rms)} dBFS rms; wind referred forward ` +
+              `(${f(dB(refM), 1)} dB) against EVERYTHING ELSE (master power minus wind power, ` +
+              'matched 2048-sample windows):');
+  console.log(`      median ${f(pct(shareMeadow, 50), 1)} dB   at the gust peak ` +
+              `${f(shareMeadow[gi], 1)} dB   worst ${f(Math.max(...shareMeadow), 1)} dB`);
   results.arms.meadow = { seconds: SECONDS, grass, ambience: ambMeadow, master: masterMeadow,
                           rModel, rWind, refToMaster_dB: dB(refM),
                           shareMedian_dB: pct(shareMeadow, 50),
@@ -361,14 +425,97 @@ async function main() {
   const m2 = await run(['windGrass', 'windConifer', 'ambience'], FOREST_SECONDS);
   const conifer = stats(m2.rms.windConifer, m2.peak.windConifer);
   report('wind / conifers (tap windConifer)', conifer);
+  check('conifer bed has not been cut into inaudibility', conifer.p50 > 10 ** (-58 / 20),
+        `p50 ${fdB(conifer.p50)} dBFS (floor -58)`);
   results.arms.forest = { seconds: FOREST_SECONDS, conifer,
                           grass: stats(m2.rms.windGrass, m2.peak.windGrass) };
 
-  // ── arm 3: everything at once, driving ────────────────────────────────────
-  // "Too loud" is usually "too loud relative to everything else", so this arm
-  // measures the wind's share of the mix while the engine, the tyres, the
-  // water and the wildlife are all present — and reports that share at the
-  // moment the gust envelope peaks, not on average.
+  // ── arm 3: above the treeline, the altitude hush ──────────────────────────
+  // This arm exists because the tool SAMPLED `windHush` in two arms and never
+  // reported it, and a layer nobody reports is a layer that can move in the
+  // wrong direction unnoticed: narrowing the hush's weather term without
+  // touching its level constant made it 0.8 dB LOUDER in a round whose whole
+  // purpose was the opposite, and no number here would have shown it.
+  //
+  // It matters more than its share of playing time suggests. Above the treeline
+  // the design is "wind and nothing else" — this bed IS the ambience there, so
+  // there is nothing else in the mix for it to hide behind.
+  const alt = await page.evaluate(() => {
+    const W = window.__world;
+    // NOT `__poi.best('peak')`. That list holds the STAND-OFF VIEWPOINT the
+    // camera uses to photograph a summit — `_buildPeaks` searches the ring
+    // around the top for somewhere to look FROM, and requires it to be at
+    // least 90 m BELOW the peak. Its first entry on this seed is at ground
+    // -1 m, so asking for a peak and teleporting there put the listener on a
+    // valley floor with `L.altitude` = 0.00 and the hush layer switched off.
+    // The tap still read something (bus leakage at -76 dBFS) and every
+    // envelope statistic came out beautiful, which is precisely the shape of
+    // failure this file exists to refuse.
+    //
+    // What is wanted is high GROUND, so search for high ground. The altitude
+    // smoothstep in `Audio._sample` runs 150 … 265 m, so anything over 265 m
+    // pins `L.altitude` at 1. Coarse sweep then a local refinement, bounded by
+    // the world's own `isInBounds` so the instrument obeys the same rule the
+    // game does.
+    const scan = (cx, cz, half, step) => {
+      let best = null;
+      for (let x = cx - half; x <= cx + half; x += step) {
+        for (let z = cz - half; z <= cz + half; z += step) {
+          if (!W.isInBounds(x, z)) continue;
+          const h = W.getHeight(x, z);
+          if (!best || h > best.h) best = { x, z, h };
+        }
+      }
+      return best;
+    };
+    const coarse = scan(0, 0, 4000, 100);
+    const fine = scan(coarse.x, coarse.z, 150, 15) ?? coarse;
+    const p = fine.h > coarse.h ? fine : coarse;
+    window.__vehicleTeleport?.(p.x, p.z, 0);
+    window.__place(p.x, W.getHeight(p.x, p.z) + 2, p.z);
+    return { x: p.x, z: p.z, ground: p.h, maxHeight: W.maxHeight };
+  });
+  await page.waitForTimeout(9000);          // L.altitude damps at 1.4 /s
+
+  const live3 = await page.evaluate(() => {
+    const a = window.__audio, d = a.debugState();
+    return { model: d.ambience.hush, param: a.ambience.hushGain.gain.value, altitude: d.listener.altitude };
+  });
+  check('hush bed is actually running', live3.model > 1e-4 && live3.param > 1e-4 &&
+        live3.altitude > 0.9 && alt.ground > 265,
+        `model=${f(live3.model, 4)} gainParam=${f(live3.param, 4)} ` +
+        `L.altitude=${f(live3.altitude, 2)} at ground ${f(alt.ground, 0)} m ` +
+        `(world max ${f(alt.maxHeight, 0)} m; needs >265 m for altitude 1.0)`);
+
+  console.log(`\n── above the treeline, ${ALT_SECONDS}s ──`);
+  const m4 = await run(['windGrass', 'windConifer', 'windHush', 'ambience', 'master'], ALT_SECONDS);
+  const hush = stats(m4.rms.windHush, m4.peak.windHush);
+  report('wind / altitude hush (tap windHush)', hush);
+  // Up here the hush is supposed to BE the bed, and the grass bed is supposed
+  // to have been taken away (openness is scaled by 1 - altitude*0.75). Report
+  // the gap: if the hush is not clearly the loudest wind layer here, the
+  // exclusivity rule at the top of ambience.js is not holding.
+  const grassAlt = stats(m4.rms.windGrass, m4.peak.windGrass);
+  console.log(`    against the grass bed at the same spot: hush ${fdB(hush.rms)} vs grass ` +
+              `${fdB(grassAlt.rms)} dBFS (${f(dB(hush.rms) - dB(grassAlt.rms), 1)} dB)`);
+  check('hush has not been cut into inaudibility', hush.p50 > 10 ** (-58 / 20),
+        `p50 ${fdB(hush.p50)} dBFS (floor -58)`);
+  results.arms.altitude = { seconds: ALT_SECONDS, hush, grass: grassAlt,
+                            altitude: live3.altitude, ground: alt.ground,
+                            master: stats(m4.rms.master, m4.peak.master) };
+
+  // ── arm 4: everything at once, driving ────────────────────────────────────
+  // COLOUR, NOT EVIDENCE. Read the parked meadow arm for the masking figure and
+  // treat everything below as a smoke test that the layers still behave with a
+  // vehicle on top of them.
+  //
+  // The reason is that this arm holds W and lets the camper go where it goes,
+  // and where it goes decides the biome weights, the engine load, the birds and
+  // whether there is water nearby — so two runs of identical code measure two
+  // different scenes. Independently reproduced: this arm's "share at the gust
+  // peak" came out -8.4 dB, -34.4 dB and -22.9 dB on three runs that differed
+  // only in route. A 26 dB spread is not a measurement, and an earlier write-up
+  // quoted the first of those as a headline.
   await page.evaluate(() => {
     window.__forceCamera = false;
     window.__lighting.hour = 16.6;
@@ -406,7 +553,10 @@ async function main() {
     shareDb.push(dB(w) - dB(m3.rms.master[i] || 1e-9));
   }
   const gustIdx = m3.wind.indexOf(Math.max(...m3.wind));
-  const windDrive = stats(windRms, windRms);
+  // rmsOnly: there is no peak series for a power SUM of three taps, and passing
+  // the rms series in as the peak — which this did — silently wrote RMS into
+  // the JSON's `peak` and `crest_dB` fields, where they read like measurements.
+  const windDrive = rmsStats(windRms);
   console.log(`  wind (grass+conifer+hush, power sum, referred to master) rms ${fdB(windDrive.rms)} dBFS` +
               `   p50 ${fdB(windDrive.p50)}  p95 ${fdB(windDrive.p95)}  max ${fdB(windDrive.max)}`);
   console.log('  bus levels while driving (rms / peak, dBFS):');

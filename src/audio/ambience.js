@@ -15,6 +15,25 @@
 import { clamp, clamp01, lerp, smoothstep, mulberry32 } from '../core/MathUtils.js';
 import { noiseBuffer, noiseSource, filter, gain, lfo, swell, Smooth, ping, stopLater, panner } from './synth.js';
 
+/**
+ * The one level constant behind each continuous bed.
+ *
+ * These lived as bare literals inside `update()` and the Sound Lab kept its own
+ * hand-copy of them (`soundlab/main.js: LEVEL_CONST`) so that a trim made in the
+ * lab could be emitted as "type this number here". The copy went stale the first
+ * time anyone touched the mix: after the wind round the lab was still quoting
+ * 0.235 for a bed that had become 0.210, so a −2 dB trim came back as 0.187 when
+ * the right answer was 0.167 — 1 dB hot, in a tool whose entire purpose is to
+ * hand back a number you can trust. Exported and imported instead of copied.
+ * A constant that two files must agree on should live in one of them.
+ */
+export const AMBIENCE_LEVELS = Object.freeze({
+  grass: 0.210,
+  conifer: 0.148,
+  hush: 0.113,
+  cricket: 0.075,
+});
+
 // Bird species as (pitch, shape) recipes rather than samples. `bend` is how far
 // the note slides, in semitone-ish ratio; `n` is notes per call.
 const BIRDS = [
@@ -221,19 +240,31 @@ export class Ambience {
     // complaint is about gusts, and gusts are the `strength` curve and the
     // swell node above; a level constant cannot tell a gust from a calm and
     // pulling hard on it here is how you end up with no wind at all.
-    const grass = 0.210 * openness * strength * L.indoors;
+    const grass = AMBIENCE_LEVELS.grass * openness * strength * L.indoors;
     // Conifers: keyed off moisture/forest weight, which is what actually puts
     // the trees there. Lower than the grass bed because it is a hiss and sits
     // an octave higher, where the ear is roughly 1 dB *more* sensitive.
     // 0.165 -> 0.148, the same 1 dB trim, so the two beds keep their balance.
-    const conifer = 0.148 * clamp01(L.forest) * strength * L.indoors;
+    const conifer = AMBIENCE_LEVELS.conifer * clamp01(L.forest) * strength * L.indoors;
     // Altitude hush ramps in over the last stretch below the treeline. It is
     // nearly all sub-500 Hz, where the ear gives up 9 dB, so it carries a
     // higher number for the same loudness. Its own weather term was
     // lerp(0.55, 1.15) — 6.4 dB, wider than the whole grass curve is now — and
-    // is 0.80 … 1.05, or 2.4 dB. The 0.180 constant is untouched: this layer's
-    // absolute level was never in question, only how much it moved.
-    const hush = 0.180 * L.altitude * lerp(0.80, 1.05, breeze);
+    // is 0.80 … 1.05, or 2.4 dB.
+    //
+    // The level constant is 0.180 -> 0.113, and that is a correction to the
+    // previous round rather than a fresh opinion. Narrowing the weather term
+    // alone RAISED this bed: the old lerp averaged 0.843 over the breeze the
+    // weather actually produces and the new one averages 0.922, so the layer
+    // came out +0.8 dB where every other wind bed lost 3.3 dB. Measured
+    // A-weighted at full altitude, LAeq -51.7 -> -51.1. That was the one claim
+    // in the round nobody had measured ("its absolute level was never in
+    // question"), and it was wrong in the direction of louder — which matters
+    // more here than anywhere else, because above the treeline the design is
+    // "wind and nothing else" and this bed IS the whole ambience. 0.113 puts it
+    // 3.3 dB down, in line with grass and conifers, and back to sitting well
+    // under the meadow bed rather than within 3.5 dB of it.
+    const hush = AMBIENCE_LEVELS.hush * L.altitude * lerp(0.80, 1.05, breeze);
 
     // Crickets: dusk and the short hour before dawn, and never on bare rock or
     // snow — they live in the grass.
@@ -244,7 +275,7 @@ export class Ambience {
     // so they were only ever quiet *relative* to a wind layer that was running
     // six times louder than its own model. Left alone they would simply have
     // inherited the problem.
-    const cricket = 0.075 * Math.max(dusk, preDawn) * clamp01(L.open + L.forest * 0.4) * (1 - L.altitude) * L.indoors;
+    const cricket = AMBIENCE_LEVELS.cricket * Math.max(dusk, preDawn) * clamp01(L.open + L.forest * 0.4) * (1 - L.altitude) * L.indoors;
 
     this.sm.grass.set(grass, actx);
     this.sm.conifer.set(conifer, actx);
@@ -256,6 +287,11 @@ export class Ambience {
     // A lowpass opening from 740 to 1280 Hz over a pink bed is not only a
     // timbre change, it is level: it was part of what made a gust an event
     // rather than a swell. 760 … 1090 keeps the cue and halves what it costs.
+    //
+    // If the bed is ever judged too FLAT, this is the term to reach for, not
+    // the level and not the swell depth. Brightness buys weather legibility at
+    // no loudness cost, and loudness is what the player actually complained
+    // about — going back up the level is undoing the round.
     this.sm.grassF.set(760 + breeze * 330, actx);
 
     this.state.grass = grass;
