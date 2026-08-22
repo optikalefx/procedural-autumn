@@ -21,9 +21,10 @@
  *    are handed. Clouds, leaves, wind and the sun are bit-identical.
  * 3. Read both back out of the GL buffer, crop to the *interior* of the
  *    projected curtain (its own left and right edges are static vertical
- *    features and would pin the correlation at zero), high-pass along y to
- *    remove the static shading, and cross-correlate over vertical shifts with
- *    a parabolic subpixel fit.
+ *    features and would pin the correlation at zero), **subtract the per-pixel
+ *    temporal mean of the run** (see below), high-pass along y to remove what
+ *    static shading is left, and cross-correlate over vertical shifts with a
+ *    parabolic subpixel fit.
  * 4. Convert pixels to metres with the projection itself — project the fall's
  *    midpoint and that point one metre lower, and measure the screen distance
  *    between them — so the answer is a signed vertical world velocity and not
@@ -32,9 +33,39 @@
  * Sign convention: **negative is downward**, i.e. correct. A fall reported at
  * +1.1 m/s is flowing up the cliff at about walking pace.
  *
- * `--selftest` runs the estimator on a synthetic pair made by shifting one
- * captured frame by a known number of rows. An instrument that cannot recover
- * a shift it was handed has no business reporting one it was not.
+ * ── why the per-pixel temporal mean has to go, and what it cost ─────────────
+ *
+ * A curtain is not mostly moving. Measured on the 94 m fall in the `waterfall`
+ * framing, over the six frames of one run:
+ *
+ *     spatial std of the temporal-mean image  43.0 levels
+ *     mean per-pixel temporal std              2.7 levels
+ *
+ * Sixteen to one. The static part is the sheet's own silhouette, its end
+ * tapers, the per-row facet banding of a 54-row mesh, the aeration ramp — all
+ * functions of position, none of them water. A zero-mean NCC over the raw crop
+ * is therefore a correlation of that structure with itself, and it peaks at
+ * zero shift at **r 0.99** while the water underneath it moves several pixels.
+ *
+ * That is not a subtle bias. On the shipped build this tool reported
+ *
+ *     -0.34 m/s   r 0.98   (raw crop)
+ *     -7.0  m/s   r 0.88   (same frames, temporal mean removed)
+ *
+ * — a factor of twenty, and the wrong one is the confident one. Selecting
+ * MOVING COLUMNS, which this tool already did, cannot help: the static
+ * structure lives *inside* the moving columns, not beside them. Only a
+ * per-pixel subtraction removes it. The static/moving ratio is printed on
+ * every run so this can never be invisible again.
+ *
+ * `--selftest` runs two checks. The first shifts one captured frame by a known
+ * number of rows and asks for it back — and it passed at r 1.000 on the day
+ * this tool was reporting -0.34 m/s, because a pure translation is not the
+ * input it ever gets. The second is the one that matters: a synthetic SEQUENCE
+ * of a strong static field plus a weak translating one, at the order of ratio
+ * measured above. On that fixture the raw estimator returns 0.01 px at r 0.997
+ * when the truth is 1.70. An instrument that cannot tell those two apart has
+ * no business reporting either.
  */
 import { chromium } from 'playwright';
 import { acquire } from './_lock.mjs';
@@ -55,7 +86,14 @@ const has = (n) => argv.includes(`--${n}`);
 
 const VIEW = arg('view', 'waterfall');
 const T0S = String(arg('t0', '6,45,150,420')).split(',').map(Number);
-const DT = parseFloat(arg('dt', '0.10'));
+// 0.02, not 0.10. A curtain on a 94 m fall advects at its own physical speed —
+// tens of m/s — and the `waterfall` framing draws 6.4 px per metre of drop, so
+// 0.10 s is fifteen-plus pixels of travel through a pattern that is also
+// stretching as it accelerates. Measured on the same frames: the residual
+// correlates at r 0.88 across 0.02 s and at r 0.43 across 0.10 s, where the
+// peak has already wandered to the wrong SIGN. Sample faster than the thing
+// moves or the answer is an alias.
+const DT = parseFloat(arg('dt', '0.02'));
 const STEPS = parseInt(arg('steps', '6'), 10);      // frames per T0, dt apart
 const W = parseInt(arg('w', '900'), 10);
 const H = parseInt(arg('h', '900'), 10);
@@ -149,6 +187,64 @@ function rms(img) {
   let s = 0;
   for (let i = 0; i < img.a.length; i++) s += img.a[i] * img.a[i];
   return Math.sqrt(s / img.a.length);
+}
+
+/**
+ * Subtract the per-pixel temporal mean of a run.
+ *
+ * Everything that does not change between the frames of one run is, by
+ * construction, not water: the updaters were all run at dt = 0, so the only
+ * thing that differs frame to frame is the wall clock the water shaders were
+ * handed. Removing the mean therefore removes exactly the rock, the
+ * silhouette, the facet banding and the position-dependent shading, and leaves
+ * exactly the flow. See the header for what leaving it in cost.
+ *
+ * A translating pattern survives this: the mean of a pattern translating a
+ * pixel or two is a slightly blurred copy of it, so the residual is still that
+ * pattern (band-limited) travelling at the same velocity. What does not
+ * survive is anything standing still.
+ *
+ * Returns the residual frames plus the two amplitudes, because the RATIO is
+ * the diagnostic: a run where the static field dwarfs the moving one is a run
+ * whose raw correlation would have been about the static field.
+ */
+function removeTemporalMean(frames) {
+  const { w, h } = frames[0], n = w * h, k = frames.length;
+  const mean = new Float64Array(n);
+  for (const f of frames) for (let i = 0; i < n; i++) mean[i] += f.a[i];
+  for (let i = 0; i < n; i++) mean[i] /= k;
+  let mm = 0;
+  for (let i = 0; i < n; i++) mm += mean[i];
+  mm /= n;
+  let statVar = 0;
+  for (let i = 0; i < n; i++) statVar += (mean[i] - mm) ** 2;
+  let movVar = 0;
+  const res = frames.map((f) => {
+    const a = new Float32Array(n);
+    for (let i = 0; i < n; i++) a[i] = f.a[i] - mean[i];
+    return { w, h, a };
+  });
+  for (const r of res) for (let i = 0; i < n; i++) movVar += r.a[i] * r.a[i];
+  return {
+    res,
+    staticStd: Math.sqrt(statVar / n),
+    movingStd: Math.sqrt(movVar / (n * k)),
+  };
+}
+
+/**
+ * How localised is the peak?
+ *
+ * A second peak elsewhere is one way to be wrong; a correlation surface that
+ * is simply FLAT is the other, and the two need different words. This returns
+ * how far the peak falls two pixels either side of itself. A well-localised
+ * estimate drops a lot; a texture invariant along the direction of travel
+ * barely drops at all, and its subpixel fit is then reading noise.
+ */
+function sharpness(r) {
+  const at = (s) => r.scores.find((x) => x.s === s)?.r ?? -2;
+  const b = Math.round(r.shift);
+  return r.peak - Math.max(at(b - 2), at(b + 2));
 }
 
 // ── capture ─────────────────────────────────────────────────────────────────
@@ -398,8 +494,11 @@ for (const run of cap.runs) {
     continue;
   }
   run.cols = sel;
-  const hp = run.frames.map((fr) =>
-    highpass({ ...subCols(fr, sel.keep), a: Float32Array.from(subCols(fr, sel.keep).a) }));
+  const narrow = run.frames.map((fr) => subCols(fr, sel.keep));
+  const { res, staticStd, movingStd } = removeTemporalMean(narrow);
+  run.res = res;
+  run.staticStd = staticStd; run.movingStd = movingStd;
+  const hp = res.map((fr) => highpass(fr));
   const vs = [], peaks = [];
   for (let k = 1; k < hp.length; k++) {
     const r = shiftNCC(hp[k - 1], hp[k], SHIFT);
@@ -412,8 +511,8 @@ for (const run of cap.runs) {
               `${med < 0 ? 'DOWN' : 'UP  '}   ` +
               `[${vs.map((x) => (x >= 0 ? '+' : '') + x.toFixed(1)).join(' ')}]  ` +
               `peak r ${peaks.map((p) => p.peak.toFixed(2)).join(' ')}  ` +
-              `2nd ${peaks.map((p) => p.second.toFixed(2)).join(' ')}  ` +
-              `contrast ${rms(hp[0]).toFixed(1)}  ` +
+              `sharp ${peaks.map((p) => sharpness(p).toFixed(2)).join(' ')}  ` +
+              `static/moving ${(staticStd / Math.max(movingStd, 1e-6)).toFixed(1)}:1  ` +
               `cols ${run.cols.keep.length}/${run.frames[0].w}`);
 }
 console.log('');
@@ -435,20 +534,24 @@ console.log(`  VERDICT  ${down}/${meds.length} sampled wall clocks flow DOWN.  `
   const rows = [];
   for (const run of cap.runs) {
     const per = [];
+    // The SAME residual the headline number is computed from. Cutting bands
+    // out of the raw frames instead would reintroduce the static field one
+    // band at a time, which is how the first version of this table reported a
+    // 94 m fall's top third at -0.0 m/s with r 0.95.
+    const src = run.res;
+    if (!src) { rows.push({ T0: run.T0, per: [] }); continue; }
     for (let b = 0; b < BANDS; b++) {
       const vs = [];
       let peak = 0;
-      const keep = run.cols?.keep ?? null;
-      for (let k = 1; k < run.frames.length; k++) {
-        const cut = (fr0) => {
-          const fr = keep ? subCols(fr0, keep) : fr0;
+      for (let k = 1; k < src.length; k++) {
+        const cut = (fr) => {
           const y0 = Math.floor(fr.h * b / BANDS), y1 = Math.floor(fr.h * (b + 1) / BANDS);
           const a = new Float32Array(fr.w * (y1 - y0));
           for (let y = y0; y < y1; y++)
             for (let x = 0; x < fr.w; x++) a[(y - y0) * fr.w + x] = fr.a[y * fr.w + x];
           return highpass({ w: fr.w, h: y1 - y0, a });
         };
-        const r = shiftNCC(cut(run.frames[k - 1]), cut(run.frames[k]), SHIFT);
+        const r = shiftNCC(cut(src[k - 1]), cut(src[k]), SHIFT);
         vs.push(mps(r.shift)); peak = Math.max(peak, r.peak);
       }
       per.push({ v: [...vs].sort((a, b2) => a - b2)[vs.length >> 1], peak });
@@ -465,9 +568,10 @@ console.log(`  VERDICT  ${down}/${meds.length} sampled wall clocks flow DOWN.  `
 
 // ── self test ───────────────────────────────────────────────────────────────
 if (has('selftest')) {
+  let fails = 0;
   const fr = cap.runs[0].frames[0];
   const A = highpass({ w: fr.w, h: fr.h, a: Float32Array.from(fr.a) });
-  console.log('\n  selftest — recover a shift the estimator was handed:');
+  console.log('\n  selftest 1 — recover a shift the estimator was handed:');
   for (const k of [-7, -3, 0, 3, 7]) {
     const b = new Float32Array(fr.w * fr.h);
     for (let y = 0; y < fr.h; y++) {
@@ -475,18 +579,89 @@ if (has('selftest')) {
       for (let x = 0; x < fr.w; x++) b[y * fr.w + x] = A.a[src * fr.w + x];
     }
     const r = shiftNCC(A, { w: fr.w, h: fr.h, a: b }, SHIFT);
-    const ok = Math.abs(r.shift - k) < 0.6 ? 'ok  ' : 'FAIL';
+    const ok = Math.abs(r.shift - k) < 0.6;
+    if (!ok) fails++;
     console.log(`    injected ${String(k).padStart(3)} px -> measured ${r.shift.toFixed(2)} px  ` +
-                `(r ${r.peak.toFixed(3)})  ${ok}`);
+                `(r ${r.peak.toFixed(3)})  ${ok ? 'ok  ' : 'FAIL'}`);
   }
+
+  // ── selftest 2: the one selftest 1 cannot fail ────────────────────────────
+  //
+  // Selftest 1 hands the estimator a pure translation and it passes with
+  // r 1.000 — and passed with r 1.000 on the day the tool was reporting a 94 m
+  // waterfall at -0.34 m/s when the answer was -7. A pure translation is not
+  // the input this tool ever gets. The real input is a large STATIC field with
+  // a small moving one on top of it, and the failure mode is that the static
+  // half wins the correlation and pins it at zero.
+  //
+  // So: build exactly that. A static field with the amplitude and roughness of
+  // a real curtain crop, plus a translating field at the 16:1 amplitude ratio
+  // measured on the shipped build, moving a known number of pixels per frame.
+  // The estimator must recover the MOVING field's velocity. The raw path — the
+  // one this tool shipped with — is run alongside on the identical fixture, so
+  // the failure it used to have is visible rather than described.
+  // Broadband value noise, not sines: a periodic fixture aliases against the
+  // travel distance and would fail the tolerance for a reason that has nothing
+  // to do with the estimator.
+  const W2 = 48, H2 = 300, K = 6, TRUE = 1.7;
+  const hash = (a, b, s) => {
+    let h = (a * 374761393 + b * 668265263 + s * 2147483647) >>> 0;
+    h = (h ^ (h >>> 13)) * 1274126177 >>> 0;
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295 - 0.5;
+  };
+  const field = (x, y, s, sc) => {
+    const X = x / sc, Y = y / sc, x0 = Math.floor(X), y0 = Math.floor(Y);
+    const fx = X - x0, fy = Y - y0;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const a = hash(x0, y0, s), b = hash(x0 + 1, y0, s);
+    const c = hash(x0, y0 + 1, s), d = hash(x0 + 1, y0 + 1, s);
+    const lo = a + (b - a) * sx, hi = c + (d - c) * sx;
+    return lo + (hi - lo) * sy;
+  };
+  const stat = new Float64Array(W2 * H2);
+  for (let y = 0; y < H2; y++)
+    for (let x = 0; x < W2; x++)
+      stat[y * W2 + x] = (field(x, y, 1, 3.0) * 0.6 + field(x, y, 2, 11.0) * 1.4) * 90;
+  const seq = [];
+  for (let k = 0; k < K; k++) {
+    const a = new Float32Array(W2 * H2);
+    for (let y = 0; y < H2; y++)
+      for (let x = 0; x < W2; x++) {
+        const yy = y - k * TRUE;
+        a[y * W2 + x] = stat[y * W2 + x]
+                      + (field(x, yy, 7, 2.5) * 0.7 + field(x, yy, 8, 6.0) * 1.3) * 6.0;
+      }
+    seq.push({ w: W2, h: H2, a });
+  }
+  const raw = shiftNCC(highpass(seq[0]), highpass(seq[1]), SHIFT);
+  const { res, staticStd, movingStd } = removeTemporalMean(seq);
+  const fixed = shiftNCC(highpass(res[0]), highpass(res[1]), SHIFT);
+  const okFixed = Math.abs(fixed.shift - TRUE) < 0.35;
+  if (!okFixed) fails++;
+  console.log(`\n  selftest 2 — a static field ${(staticStd / movingStd).toFixed(0)}:1 over a ` +
+              `pattern translating ${TRUE} px/frame:`);
+  console.log(`    raw crop            -> ${raw.shift.toFixed(2)} px  (r ${raw.peak.toFixed(3)})  ` +
+              `${Math.abs(raw.shift - TRUE) < 0.35 ? 'ok' : 'WRONG, and confident — this is the bug'}`);
+  console.log(`    temporal mean gone  -> ${fixed.shift.toFixed(2)} px  (r ${fixed.peak.toFixed(3)})  ` +
+              `${okFixed ? 'ok' : 'FAIL'}`);
+  console.log(`\n  selftest: ${fails ? `${fails} FAILURE(S)` : 'all checks passed'}`);
+  if (fails) process.exitCode = 1;
 }
 
 // ── optional ROI strip, so the frames can be looked at ──────────────────────
 if (OUT) {
   const frames = cap.runs[0].frames;
+  // Two rows: the crop as captured on top, and the residual the estimator
+  // actually correlates below it, at 8x gain around mid grey. Looking at the
+  // top row alone is how the static field went unnoticed — six frames of a
+  // waterfall that are, to the eye, the same picture six times.
+  const resFr = cap.runs[0].res ?? [];
   const w = frames[0].w, h = frames[0].h, gap = 6;
-  const tw = frames.length * (w + gap) - gap;
-  const px = new Uint8Array(tw * h * 3).fill(24);
+  const rw = resFr.length ? resFr[0].w : 0;
+  const tw = Math.max(frames.length * (w + gap) - gap,
+                      resFr.length ? resFr.length * (rw + gap) - gap : 0);
+  const th = resFr.length ? h * 2 + gap : h;
+  const px = new Uint8Array(tw * th * 3).fill(24);
   frames.forEach((fr, i) => {
     const ox = i * (w + gap);
     for (let y = 0; y < h; y++) {
@@ -497,10 +672,21 @@ if (OUT) {
       }
     }
   });
+  resFr.forEach((fr, i) => {
+    const ox = i * (rw + gap), oy = h + gap;
+    for (let y = 0; y < fr.h; y++) {
+      for (let x = 0; x < rw; x++) {
+        const val = Math.max(0, Math.min(255, Math.round(128 + fr.a[y * rw + x] * 8)));
+        const o = ((oy + y) * tw + ox + x) * 3;
+        px[o] = px[o + 1] = px[o + 2] = val;
+      }
+    }
+  });
   const p = resolve(OUT);
   mkdirSync(dirname(p), { recursive: true });
-  writePNG(p, { w: tw, h, px });
-  console.log(`\n  strip: ${p}  (${frames.length} frames, ${DT}s apart, t0=${cap.runs[0].T0})`);
+  writePNG(p, { w: tw, h: th, px });
+  console.log(`\n  strip: ${p}  (${frames.length} frames, ${DT}s apart, t0=${cap.runs[0].T0}` +
+              `${resFr.length ? '; top row as captured, bottom row the residual at 8x' : ''})`);
 }
 
 if (errors.length) console.error(`\n  page errors: ${errors.slice(0, 4).join(' | ')}`);
