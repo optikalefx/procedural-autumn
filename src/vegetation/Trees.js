@@ -49,11 +49,34 @@ const CFG = {
   // budget of 120, and it costs no extra triangles because the same trees are
   // simply spread over more prototypes.
   variants: 5,           // prototypes per species
-  // Two mid prototypes, not three. Crown-shape repetition is a near-field tell:
-  // past 96 m a spruce is forty pixels wide and its outline is carried by the
-  // stand, not by the individual. Spending the extra draw calls there buys
-  // nothing visible and this system has to stay inside 120.
-  midVariants: 2,        // how many of them survive into the mid LOD
+  //
+  // EVERY variant is grown at every LOD. This used to be `midVariants: 2`,
+  // with the mid slot chosen as `pvar % 2`, and the note defending it argued
+  // that crown-shape *repetition* is invisible past 96 m — which is true, and
+  // which is about the wrong thing. The question at a LOD boundary is not
+  // whether the mid field is varied, it is whether a tree is still the same
+  // tree after it crosses. Three trees in five were handed a prototype grown
+  // from a different seed: a different height, a different lean, a different
+  // crown. Measured with `tools/lodstrip.mjs`, one tree isolated, wind frozen,
+  // framed to a constant angular size, at 83 m and then at 84 m:
+  //
+  //     silhouette IoU     1 m step, same LOD (control)     0.999
+  //     silhouette IoU     1 m step across near->mid        0.365
+  //     crown height       across near->mid                 15.5% mean, 34% worst
+  //     crown width        across near->mid                 36.6% mean, 98% worst
+  //
+  // A 12.6 m maple became a 17 m maple with a crown twice as wide, in one
+  // metre of driving, and the whole forest does that at once every
+  // `rebuildMove` metres. That is the player's "a mess of trees changing all
+  // around you", and it is not a fade problem — a cross-fade between two
+  // different trees is a dissolve, not a LOD.
+  //
+  // The cost of fixing it is draw calls, and only draw calls: 25 mid slots
+  // instead of 10, so 50 near + 50 mid + 1 far = 101 meshes at the absolute
+  // worst against the budget of 120, and typically far fewer are non-empty.
+  // No extra triangles — the same trees are spread over more prototypes — and
+  // the mid geometry of a prototype is 170-300 triangles, so the extra
+  // prototypes are ~4 kB of vertex data each.
 
   // 84 m, down from 96. The near LOD carries three times the leaf cards of the
   // mid one *and* it is the only foliage that casts, so every near instance is
@@ -61,13 +84,52 @@ const CFG = {
   // as double-sided alpha-tested quads. Shrinking the radius by an eighth drops
   // near instances by a quarter (area, not radius) and it is the cheapest
   // frame-time this system has to give: at 84 m a crown is still 80 px across
-  // and the mid prototype it hands over to is the same tree.
+  // and the mid prototype it hands over to is the same tree — which was the
+  // claim this note made before it was true, and see `variants` above for what
+  // it cost.
   nearDist: 84,          // full geometry
   midDist: 255,          // reduced geometry
   farDist: 1000,         // impostor card; past this, nothing (fog owns it)
 
   bucket: 64,            // spatial bucket size, metres
-  rebuildMove: 11,       // camera travel that forces a re-bin, metres
+  // Camera travel that forces a re-bin, metres.
+  //
+  // This number is also the reason there is no cross-fade across `nearDist`,
+  // and the next person to reach for one should read this first, because the
+  // work is a day and the answer is at the end of it.
+  //
+  // With identity fixed (see `variants`) a tree keeps its height, width, lean,
+  // rotation, species and colour across 84 m to within 0.3% and 3.6%. What is
+  // left is interior: the mid crown is a quarter as many leaf dabs at 1.7x the
+  // size, and its bark drops to `maxLevel: 0`, so the limbs go. Silhouette IoU
+  // at the boundary is 0.66 against a same-LOD control of 0.999, and only a
+  // blend can close that, because the two meshes are genuinely different
+  // meshes.
+  //
+  // A blend costs two things here and the second is the killer:
+  //
+  //  · the near and mid BARK are the same skeleton at different tessellation,
+  //    so drawing both during a fade z-fights along the trunk. Fading bark
+  //    needs a dither, and the dithering bark program gives up early-Z for the
+  //    whole draw — measured at 38 -> 31.9 fps in the OCCLUDE note in
+  //    tree_material.js. Splitting bark and leaf onto separate instance counts
+  //    is possible but they share one instance block today.
+  //  · a fade parameter cannot be written at bin time, because bin time is
+  //    only every 11 m: the fade would arrive in 11 m steps, which is the
+  //    stutter it was meant to remove. It has to be computed per fragment from
+  //    the camera distance, which means the two bands must OVERLAP in the
+  //    binning by at least `rebuildMove` on each side. That puts the near bin
+  //    radius at 84 + 11 = 95 m, i.e. 28% more near instances — the LOD that
+  //    carries three times the leaf cards and is the only foliage that casts —
+  //    in a frame PERF_FINDINGS.md measures as fragment-bound at 50%.
+  //
+  // 28% more near instances is well over the millisecond this was allowed to
+  // spend. Shrinking `rebuildMove` to buy a narrow band trades it for a
+  // 1-4 ms `_rebuild` several times a second plus continuous far-block upload
+  // traffic (see `_commitFar`), which is the periodic hitch that note exists
+  // to describe. Neither is worth it against a defect now measured at a
+  // fraction of what it was.
+  rebuildMove: 11,
 
   capNear: 700,          // instance cap per species-variant
   capMid: 1500,
@@ -78,10 +140,13 @@ const CFG = {
   // Distinct impostor silhouettes baked per species. One tile per species meant
   // every spruce past 255 m was literally the same outline pasted across a
   // hillside — the "hundreds of same-size cones" the critic counted are mostly
-  // this, not the scatter. Two tiles doubles the far-field silhouette vocabulary
-  // for one extra bake each and no runtime cost at all: the atlas is still one
-  // texture and the far field is still one draw call.
-  impVariants: 2,
+  // this, not the scatter.
+  //
+  // It is one tile per PROTOTYPE now, for the same reason the mid LOD is: with
+  // two tiles a tree changed silhouette again at 255 m, because `pvar % 2`
+  // chose a card baked from a different tree. The far field is still one draw
+  // call and one texture; the texture is 25 tiles wide instead of 10 (4800 x
+  // 288) and there are fifteen more one-off bakes under the loading screen.
 };
 
 // Instances of the far impostor block uploaded per frame. At 120 bytes an
@@ -217,7 +282,7 @@ export class Trees extends System {
             bark: buildBarkGeometry(tree, sp, { radialSegs: 4, maxLevel: 2 }),
             leaf: buildLeafGeometry(tree, { keep: 1 }),
           },
-          mid: vi < CFG.midVariants ? {
+          mid: {
             bark: buildBarkGeometry(tree, sp, { radialSegs: 3, maxLevel: 0, leaderBonus: 0 }),
             // Every third clump, not every second. Mid instances outnumber near
             // ones four to one, so their leaf quads are the single biggest
@@ -236,8 +301,19 @@ export class Trees extends System {
             // is forty pixels across: the survivors are grown by sqrt(keep) so
             // the silhouette area is held and the loss of mark *count* is not
             // resolvable at that range.
-            leaf: buildLeafGeometry(tree, { keep: 4, sizeBoost: 0.86 }),
-          } : null,
+            //
+            // `hull` is the third rule and it is what makes the decimation
+            // safe at a boundary rather than only cheap. sqrt(keep) grows the
+            // survivors to hold the crown's *area*, and area is not outline: a
+            // clump on the rim grown by 1.72 pushes the silhouette out past
+            // where the near LOD drew it, so the crown visibly inflates at
+            // 84 m. `hull` caps each survivor's growth at the full crown's own
+            // support in that clump's direction, so the interior still fills
+            // in and the outline cannot move outward. Measured on the matched
+            // prototypes, mid-vs-near crown width was -13% to +12% before and
+            // is inside 2% after.
+            leaf: buildLeafGeometry(tree, { keep: 4, sizeBoost: 0.86, hull: true }),
+          },
         });
       }
       this.protos.push(variants);
@@ -386,7 +462,7 @@ export class Trees extends System {
   _bakeImpostors() {
     const renderer = this.ctx.renderer;
     const N = SPECIES.length;
-    const IV = CFG.impVariants;
+    const IV = CFG.variants;
     const TILES = N * IV;
     const W = CFG.impostorTileW, H = CFG.impostorTileH;
 
@@ -721,10 +797,12 @@ export class Trees extends System {
           // Slender trees whip; heavy oaks and stiff conifers barely move.
           pstiff[n] = (sp.conifer ? 0.45 : lerp(1.15, 0.62, clamp01(sp.trunkRadiusK * 22))) *
                       lerp(1.15, 0.85, clamp01(scale));
-          // Which baked silhouette this tree wears in the far field. Keyed off
-          // the near-LOD variant so a tree does not change outline as it
-          // crosses the mid/far boundary.
-          const ti = si * CFG.impVariants + (vi % CFG.impVariants);
+          // Which baked silhouette this tree wears in the far field: this
+          // tree's OWN prototype, so the outline it wears past 255 m is the
+          // one it wore at 254. It used to be `vi % impVariants`, which is
+          // the same substitution the mid LOD was making and produced the
+          // same defect a hundred and seventy metres further out.
+          const ti = si * CFG.variants + vi;
           pImpT[n] = ti;
           pImpH[n] = this.impostorDims[ti].height * scale;
           pImpW[n] = this.impostorDims[ti].halfWidth * scale;
@@ -987,8 +1065,9 @@ export class Trees extends System {
           if (d2 < nearD2) {
             this._push(near[T.pspec[t] * V + T.pvar[t]], T, t);
           } else if (d2 < midD2) {
-            const slot = mid[T.pspec[t] * V + (T.pvar[t] % CFG.midVariants)];
-            this._push(slot, T, t);
+            // Same species AND the same variant as the near LOD. Anything
+            // else and the tree changes identity at 84 m — see `variants`.
+            this._push(mid[T.pspec[t] * V + T.pvar[t]], T, t);
           } else {
             const win = thinWindow(Math.sqrt(d2));
             if (win) {

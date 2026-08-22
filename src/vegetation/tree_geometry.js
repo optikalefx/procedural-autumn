@@ -213,15 +213,97 @@ export function buildBarkGeometry(tree, species, opts = {}) {
  *
  * `keep` decimates for the mid LOD; surviving clumps grow to hold the crown's
  * silhouette area roughly constant.
+ *
+ * `hull` caps that growth so the decimated crown cannot be WIDER or TALLER
+ * than the undecimated one. Holding area and holding outline are two different
+ * things, and the difference is exactly what pops at a LOD boundary: with
+ * `keep: 4` every survivor grows by 1.72, and a survivor that happened to sit
+ * on the rim then pushes the silhouette 72% of its own radius further out than
+ * the near LOD ever drew it. The cap is a support-function test — for each
+ * survivor, how far the FULL crown reaches along that survivor's own outward
+ * direction — so a clump buried in the middle still takes the whole 1.72 and
+ * fills the hole its four neighbours left, while a clump on the edge grows
+ * only into the room the full crown actually occupied. Never below 1.0: a
+ * survivor may not shrink, or the crown goes see-through instead.
+ *
+ * `hull` also decides WHICH clump of each group of `keep` survives. Taking
+ * every keep-th clump takes an arbitrary one, so the clump that actually
+ * defined the crown's widest point survived only a quarter of the time and the
+ * decimated crown came out up to 22% NARROWER than the full one — the same pop
+ * as the inflation, in the other direction. Taking the most outward of each
+ * group instead fixes the width (to 3.5%) and empties the crown: a crown here
+ * is dabs on a shell, so "most outward of every group" is a shell of a shell,
+ * and the silhouette lost 18% of its filled area.
+ *
+ * So: one representative per group, the arbitrary one by default, EXCEPT that
+ * the clumps which define the crown's support in 26 sample directions take
+ * their own group's slot. That pins the envelope with about a third of the
+ * survivors and leaves the rest sampling the crown evenly, which is what fills
+ * it. Envelope and fill are two different jobs and this is the split.
  */
+const HULL_DIRS = (() => {
+  const d = [];
+  for (let x = -1; x <= 1; x++) {
+    for (let y = -1; y <= 1; y++) {
+      for (let z = -1; z <= 1; z++) {
+        if (!x && !y && !z) continue;
+        const l = Math.hypot(x, y, z);
+        d.push([x / l, y / l, z / l]);
+      }
+    }
+  }
+  return d;
+})();
+
 export function buildLeafGeometry(tree, opts = {}) {
   const keep = opts.keep ?? 1;
   const src = tree.clusters;
   const list = [];
-  for (let i = 0; i < src.length; i++) if (i % keep === 0) list.push(src[i]);
+  if (opts.hull && keep > 1) {
+    // One representative index per group of `keep`.
+    const rep = [];
+    for (let i = 0; i < src.length; i += keep) rep.push(i);
+    for (const [dx, dy, dz] of HULL_DIRS) {
+      let best = -1, bd = -1e9;
+      for (let k = 0; k < src.length; k++) {
+        const c = src[k];
+        const d = c.x * dx + c.y * dy + c.z * dz + Math.max(c.sx, c.sy);
+        if (d > bd) { bd = d; best = k; }
+      }
+      if (best >= 0) rep[(best / keep) | 0] = best;
+    }
+    for (const i of rep) list.push(src[i]);
+  } else {
+    for (let i = 0; i < src.length; i++) if (i % keep === 0) list.push(src[i]);
+  }
   const grow = Math.sqrt(keep) * (opts.sizeBoost ?? 1);
 
   const n = list.length;
+  // Per-clump growth. Uniform unless `hull` is on.
+  const gs = new Float32Array(n).fill(grow);
+  if (opts.hull && keep > 1 && grow > 1) {
+    let mx = 0, my = 0, mz = 0;
+    for (const c of src) { mx += c.x; my += c.y; mz += c.z; }
+    mx /= src.length; my /= src.length; mz /= src.length;
+    for (let i = 0; i < n; i++) {
+      const c = list[i];
+      let dx = c.x - mx, dy = c.y - my, dz = c.z - mz;
+      const len = Math.hypot(dx, dy, dz);
+      if (len < 1e-4) continue;                    // dead centre: nothing to clip
+      dx /= len; dy /= len; dz /= len;
+      const r = Math.max(c.sx, c.sy);
+      if (r < 1e-5) continue;                      // a zero-radius clump: 0/0
+      // How far the full crown reaches in this direction.
+      let support = -1e9;
+      for (const o of src) {
+        const d = (o.x - mx) * dx + (o.y - my) * dy + (o.z - mz) * dz + Math.max(o.sx, o.sy);
+        if (d > support) support = d;
+      }
+      const allowed = (support - len) / r;
+      gs[i] = Math.max(1, Math.min(grow, allowed));
+    }
+  }
+
   const pos = new Float32Array(n * 4 * 3);
   const uv = new Float32Array(n * 4 * 2);
   const corner = new Float32Array(n * 4 * 2);
@@ -245,7 +327,7 @@ export function buildLeafGeometry(tree, opts = {}) {
       corner[o * 2 + 0] = cx; corner[o * 2 + 1] = cy;
       const uq = uvq[(k + c.rot) & 3];
       uv[o * 2 + 0] = uq[0]; uv[o * 2 + 1] = uq[1];
-      size[o * 2 + 0] = c.sx * grow; size[o * 2 + 1] = c.sy * grow;
+      size[o * 2 + 0] = c.sx * gs[i]; size[o * 2 + 1] = c.sy * gs[i];
       cn[o * 3 + 0] = c.nx; cn[o * 3 + 1] = c.ny; cn[o * 3 + 2] = c.nz;
       data[o * 3 + 0] = c.ao;
       data[o * 3 + 1] = c.tone;
@@ -270,7 +352,7 @@ export function buildLeafGeometry(tree, opts = {}) {
   // by the largest clump or three will cull trees that are still on screen.
   g.computeBoundingSphere();
   let maxS = 0;
-  for (const c of list) maxS = Math.max(maxS, c.sx * grow, c.sy * grow);
+  for (let i = 0; i < n; i++) maxS = Math.max(maxS, list[i].sx * gs[i], list[i].sy * gs[i]);
   if (g.boundingSphere) g.boundingSphere.radius += maxS * 1.5;
   return g;
 }
