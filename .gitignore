@@ -9,9 +9,24 @@ dist/
 # it is regenerable with `node tools/shot.mjs`, so it stays out of history.
 shots/
 
-# review/ is deliberately TRACKED, not ignored: the archived contact sheets are
-# the visual record of the project and the art director judges rounds from them.
-# See review/INDEX.md.
+# review/ holds the archived contact sheets the art director judges rounds from.
+# The IMAGES are no longer tracked: 94 of them were 163 MB, against a 23 MB src/
+# tree, and unlike the bakes they were all live — no amount of history rewriting
+# would have recovered that, because none of it was stale. They stay on local
+# disk and are written by tools/review.mjs as before.
+#
+# The text in review/ IS still tracked, and deliberately so: review/INDEX.md is
+# the numbered written record of every round, review/anchors.json is read by
+# tools/postsweep.mjs, tod.mjs, clouddrift.mjs and cloudprobe.mjs, and
+# review/perf/*.json are measurements cited from docs/PERF_FINDINGS.md. Together
+# they are ~104 KB. Losing the images costs the pictures; losing these would
+# break the harnesses and the record of what was decided.
+#
+# Archive the images off-repo if they need to outlive this working copy.
+review/**/*.png
+review/**/*.jpg
+review/*.png
+review/*.jpg
 
 # reference-art/ is deliberately TRACKED: it is the art target every visual
 # judgement is measured against. Do not add it here, and do not delete from it.
