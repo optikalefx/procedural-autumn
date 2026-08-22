@@ -944,6 +944,47 @@ void main() {
   float bench = climb * (1.0 - smoothstep(2.4 + climbN * 1.2, 5.0 + climbN * 1.2,
                                           length(vec2(bx, bz)) / 5.2));
 
+  // ── contact ──────────────────────────────────────────────────────────────
+  //
+  // Everything above is about what the apron should *paint*. This is about
+  // where the apron mesh physically is, and it is a different defect with a
+  // different cause, so it gets its own term rather than another tweak to the
+  // gate.
+  //
+  // The apron is a decal: 5 rings x 32 segments of flat triangles, each vertex
+  // draped on the heightfield in '_buildPools'. Between vertices the mesh is
+  // planar and the rock is not, so a triangle that spans a chute wall or the
+  // rim of a basin FLOATS, and the depth test cuts it — along the straight line
+  // where the flat span crosses the rock. That cut is a dead-straight,
+  // un-antialiased silhouette with sharp corners, and no amount of noise inside
+  // the mask can soften it, because it is not the mask's edge at all: it is the
+  // mesh's. This is why the two notes above, which both correctly identified a
+  // contour and both correctly broke it with noise, did not close the defect —
+  // at 'fallbase', '--hour 18.6', the apron still drew a pointed translucent
+  // shard over the rock beside the fall and a second wedge in the lower left.
+  // 'tools/_scratch/poolprobe.mjs' settles which it is in one boot: with the
+  // fragment forced to a constant opaque colour — no gate, no churn, no noise —
+  // the magenta footprint has exactly those straight edges and exactly those
+  // corners, in exactly those places.
+  //
+  // Measured over all 28 aprons on seed 20261018 by sampling every triangle on
+  // a barycentric grid against the game's own getHeight/getWaterHeight
+  // ('tools/_scratch/poollift.mjs', on the CPU, so no fog, tone mapping or post
+  // can colour the number): lift above the drape is median 0.00 m, p90 0.15,
+  // p99 1.04, max 12.7. Only 1.1% of the apron's area floats more than a metre
+  // and 0.35% more than two. So fading the material out across that last
+  // percent costs essentially nothing anywhere the apron is in contact — which
+  // is the whole apron, everywhere it is meant to be seen — and removes the
+  // only part of the mesh that is able to draw a straight edge.
+  //
+  // Fade rather than discard, and start at 0.55 rather than 0: the terrain mesh
+  // carries up to half a metre of micro-detail on top of the field this samples,
+  // so the last half metre is noise, not float.
+  vec4 wData = wWorldData(vWPos.xz);
+  float wSurfH = (wData.g > -9000.0 && wData.g > wData.r) ? wData.g : wData.r;
+  float lift = vWPos.y - wSurfH - 0.55;
+  float contact = 1.0 - smoothstep(0.55, 2.0, lift);
+
   float R = max(vRadius, 0.5);
   // Pool space: x runs downstream, y across. The mesh is built as a disc here
   // and stretched along x on the way into the world, so everything below can be
@@ -1153,7 +1194,7 @@ void main() {
   // straight-sided edge — clearly visible on any pool seen at a grazing angle,
   // which at the foot of a chute is most of them.
   float alpha = clamp(foam * 1.45, 0.0, 1.0) * smoothstep(0.94, 0.74, rEff)
-              * smoothstep(1.0, 0.86, r);
+              * smoothstep(1.0, 0.86, r) * contact;
 
   // ── wet rock ─────────────────────────────────────────────────────────────
   //
@@ -1201,7 +1242,7 @@ void main() {
   // Darkest where it is wettest; a value, not a hue — the rock's own colour
   // has to survive, or a plunge basin reads as a hole cut in the hillside.
   vec3 wetCol = mix(uShallow, vec3(0.0), 0.72) * lit;
-  float wetA = clamp(wet, 0.0, 1.0) * 0.34 * vPower;
+  float wetA = clamp(wet, 0.0, 1.0) * 0.34 * vPower * contact;
 
   // Resolve foam-over-wet into a single premultiplied result. Doing it here
   // rather than with two meshes is what keeps this free.

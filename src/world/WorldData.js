@@ -52,17 +52,33 @@ export class WorldData {
    * cell falls under 0.9 m and writes `water[cur]` as the bottom. That walk
    * follows `flowDir`, which does not stop at the river mask, so the terminus
    * is very often a dry cell — and the sentinel is then written into the record
-   * as a height in metres. Measured on the shipped bake: **8 of 28 falls, and
-   * all four of the tallest**, including the one every canonical camera anchor
-   * is built on. Nothing downstream range-checked it:
+   * as a height in metres. Counted straight out of the shipped 1536 bake's
+   * header, which carries the waterfall records verbatim: **11 of 28 falls**.
+   *
+   * By height they are ranks 3, 5 and 6 (88.8 m, 68.3 m, 67.4 m) and eight
+   * smaller, down to 18.4 m. The **two tallest are clean** — 93.7 m and 90.4 m
+   * — and so is the 93.7 m fall at (-732, 10) that every canonical camera
+   * anchor is built on. This paragraph previously read "8 of 28 falls, and all
+   * four of the tallest, including the one every camera anchor is built on",
+   * which is the failure docs/CRITIC_PROTOCOL.md's table is about: a
+   * well-measured number attached to the wrong object. No bake on disk yields
+   * 8 of 28 — the 768 bake is 13 of 25 and the 512 bake is 5 of 19 — and the
+   * anchor fall is one of the two that never carried the sentinel at all.
+   *
+   * What is true, and is why the anchored views showed the defect anyway: fall
+   * #13, 42.1 m, plunges at (-742, 28), twenty-one metres from that anchor and
+   * squarely inside the `waterfall` and `fallbase` framings. The frames were
+   * right about the broken foot; the attribution was not.
+   *
+   * Nothing downstream range-checked it:
    *
    *   - `Waterfalls._buildPaths` clamps its last path point to `bottom[1]+0.4`,
    *     so the curtain's final vertex sat at -9998.6 m and the 1-2-1 smoothing
    *     dragged the last few rows of the sheet thousands of metres with it.
    *   - The impact burst and the mist are both spawned from that same last
-   *     point, so the biggest falls in the map had **no spray, no mist and no
-   *     churn at their feet at all** — the "bottom of the waterfall looks
-   *     horrible" defect, in one number.
+   *     point, so eleven falls — including three of the six biggest — had **no
+   *     spray, no mist and no churn at their feet at all** — the "bottom of the
+   *     waterfall looks horrible" defect, in one number.
    *   - `audio/water.js` puts each fall's emitter a third of the way up the
    *     drop, i.e. at -6714 m, so they were inaudible too.
    *
