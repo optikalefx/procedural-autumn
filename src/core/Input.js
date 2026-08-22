@@ -10,6 +10,9 @@ export class Input {
     // with. They are separate flags rather than a button mask because every
     // reader of this asks a yes/no question about one gesture.
     this.mouse = { x: 0, y: 0, dx: 0, dy: 0, down: false, mid: false, wheel: 0 };
+    // Written by ui/TouchControls.js; merged in update() exactly the way the
+    // gamepad is, so nothing downstream knows touch exists.
+    this.touch = { throttle: 0, brake: 0, steer: 0, handbrake: 0 };
     this.suppressed = false;
     this._bind();
   }
@@ -110,10 +113,11 @@ export class Input {
       this.axes.lookY += dz(gp.axes[3] ?? 0) * dt * 1.4;
     }
 
-    this.axes.throttle = throttle;
-    this.axes.brake = brake;
-    this.axes.steer = Math.max(-1, Math.min(1, steer));
-    this.axes.handbrake = handbrake;
+    const t = this.touch;
+    this.axes.throttle = Math.max(throttle, t.throttle);
+    this.axes.brake = Math.max(brake, t.brake);
+    this.axes.steer = Math.max(-1, Math.min(1, steer + t.steer));
+    this.axes.handbrake = Math.max(handbrake, t.handbrake);
 
     this.mouse.dx = 0;
     this.mouse.dy = 0;

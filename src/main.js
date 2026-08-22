@@ -25,6 +25,7 @@ import { Lighting } from './render/Lighting.js';
 import { PostFX } from './render/PostFX.js';
 import { Sky } from './sky/Sky.js';
 import { PerfOverlay } from './ui/PerfOverlay.js';
+import { TouchControls, touchCapable } from './ui/TouchControls.js';
 
 // ── world systems, in construction order ─────────────────────────────────────
 import { Clouds }      from './sky/Clouds.js';
@@ -502,6 +503,13 @@ async function boot() {
   const perfOverlay = new PerfOverlay(engine);
   engine.onLateUpdate(() => perfOverlay.update());
   window.__perfOverlay = perfOverlay;
+
+  // On-screen driving controls, only where there are thumbs to use them.
+  if (touchCapable()) {
+    const touchControls = new TouchControls(input);
+    engine.onLateUpdate(() => touchControls.update());
+    window.__touchControls = touchControls;
+  }
 
   let fpsAcc = 0, fpsN = 0;
   engine.onLateUpdate((dt) => {
