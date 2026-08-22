@@ -71,12 +71,23 @@ const CFG = {
   // around you", and it is not a fade problem — a cross-fade between two
   // different trees is a dissolve, not a LOD.
   //
-  // The cost of fixing it is draw calls, and only draw calls: 25 mid slots
-  // instead of 10, so 50 near + 50 mid + 1 far = 101 meshes at the absolute
-  // worst against the budget of 120, and typically far fewer are non-empty.
-  // No extra triangles — the same trees are spread over more prototypes — and
-  // the mid geometry of a prototype is 170-300 triangles, so the extra
-  // prototypes are ~4 kB of vertex data each.
+  // The cost of fixing it is draw calls and memory, in that order. 25 mid
+  // slots instead of 10 takes the tree meshes from 71 to 101 against the
+  // budget of 120 in the comment above — 84% of the stated headroom, and the
+  // number to watch if anyone adds a sixth species or a sixth variant.
+  // Measured over the ten canonical views it is +41 to +46 draw calls; the
+  // frame is fragment-bound (PERF_FINDINGS.md) and neither `ablate.mjs` nor an
+  // independent critic's harness could price it above their own drift.
+  //
+  // Triangles are a WASH, not a saving. The same trees are spread over more
+  // prototypes, so the count moves only because a tree's own mid geometry
+  // replaces a substitute's: 1-2 k down per view, which is view-dependent
+  // noise around zero and should not be quoted as a win.
+  //
+  // Memory is about 8 MB: 15 more mid instance slots at cap 1500 x 108 bytes
+  // is ~2.4 MB, and the impostor atlas goes from 10 tiles to 25 — 960 x 1440
+  // with its mip chain, ~5.9 MB more than the 10-tile strip. Mid geometry
+  // itself is nothing, 170-300 triangles a prototype.
 
   // 84 m, down from 96. The near LOD carries three times the leaf cards of the
   // mid one *and* it is the only foliage that casts, so every near instance is
@@ -111,9 +122,10 @@ const CFG = {
   //  · the near and mid BARK are the same skeleton at different tessellation,
   //    so drawing both during a fade z-fights along the trunk. Fading bark
   //    needs a dither, and the dithering bark program gives up early-Z for the
-  //    whole draw — measured at 38 -> 31.9 fps in the OCCLUDE note in
-  //    tree_material.js. Splitting bark and leaf onto separate instance counts
-  //    is possible but they share one instance block today.
+  //    whole draw — 51.3 fps with bark untouched against 31.9 with bark
+  //    discarding, in the table at the top of tree_material.js. Splitting bark
+  //    and leaf onto separate instance counts is possible but they share one
+  //    instance block today.
   //  · a fade parameter cannot be written at bin time, because bin time is
   //    only every 11 m: the fade would arrive in 11 m steps, which is the
   //    stutter it was meant to remove. It has to be computed per fragment from
@@ -145,8 +157,27 @@ const CFG = {
   // It is one tile per PROTOTYPE now, for the same reason the mid LOD is: with
   // two tiles a tree changed silhouette again at 255 m, because `pvar % 2`
   // chose a card baked from a different tree. The far field is still one draw
-  // call and one texture; the texture is 25 tiles wide instead of 10 (4800 x
-  // 288) and there are fifteen more one-off bakes under the loading screen.
+  // call and one texture, and there are fifteen more one-off bakes under the
+  // loading screen.
+  //
+  // The atlas is a GRID — one row per species, one column per variant, so
+  // `variants` columns and `SPECIES.length` rows, 960 x 1440 at these tile
+  // dimensions. It is not a 25-wide strip, and that is a portability fix, not
+  // a tidiness one: 25 tiles in a row is 4800 px across, three.js does not
+  // clamp render-target dimensions, and MAX_TEXTURE_SIZE 4096 is ordinary on
+  // integrated and mobile parts — the allocation fails there and the entire
+  // far field goes with it, on a class of machine nothing in this harness can
+  // boot. Both grid dimensions are inside the 2048 every WebGL2
+  // implementation must support. `_bakeImpostors` clamps against the driver's
+  // real limit as well, because a number in a config file is a promise and not
+  // a guarantee.
+  //
+  // Keying the columns off `variants` also means the grid has no waste: 25
+  // tiles in 25 slots, so the atlas holds exactly the texels the strip did.
+  // Rows cost nothing that columns did not already cost either — the mip chain
+  // blends NEIGHBOURING tiles whichever way they are packed, and at 192 x 288
+  // the horizontal neighbour is the closer of the two, so a vertical neighbour
+  // bleeds later than the packing that already shipped.
 };
 
 // Instances of the far impostor block uploaded per frame. At 120 bytes an
@@ -312,7 +343,20 @@ export class Trees extends System {
             // in and the outline cannot move outward. Measured on the matched
             // prototypes, mid-vs-near crown width was -13% to +12% before and
             // is inside 2% after.
-            leaf: buildLeafGeometry(tree, { keep: 4, sizeBoost: 0.86, hull: true }),
+            //
+            // sizeBoost 0.96, up from 0.86. That 0.86 was tuned when the ONLY
+            // brake on the decimated crown was the boost itself, so it had to
+            // trim sqrt(keep) to stop the crown inflating. `hull` is that brake
+            // now and it is a far better one, because it binds at the rim and
+            // nowhere else — which left 0.86 quietly shrinking the interior it
+            // was never meant to touch. Rendered mid-vs-near crown AREA came
+            // out at a mean of -8.6% (worst -16.2%): every mid tree in the game
+            // a little thinner and more ragged than the near tree it replaces,
+            // a static quality loss traded for boundary continuity nobody
+            // asked for. At 0.96 the interior clumps take the growth their
+            // four decimated neighbours left behind and the rim clumps do not
+            // move, because `allowed` is small exactly there.
+            leaf: buildLeafGeometry(tree, { keep: 4, sizeBoost: 0.96, hull: true }),
           },
         });
       }
@@ -466,7 +510,21 @@ export class Trees extends System {
     const TILES = N * IV;
     const W = CFG.impostorTileW, H = CFG.impostorTileH;
 
-    const rt = new THREE.WebGLRenderTarget(W * TILES, H, {
+    // Grid, not strip — see the impostor note in CFG. The driver's own limit
+    // gets the last word: this is the one place that can check it, and erring
+    // narrow only costs a row.
+    let cols = CFG.variants;                       // one row per species
+    const gl = renderer.getContext();
+    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 2048;
+    if (cols * W > maxTex) {
+      cols = Math.max(1, Math.floor(maxTex / W));
+      console.warn(`[trees] impostor atlas clamped to ${cols} columns by MAX_TEXTURE_SIZE ${maxTex}`);
+    }
+    const rows = Math.ceil(TILES / cols);
+    const AW = cols * W, AH = rows * H;
+    if (AH > maxTex) throw new Error(`[trees] impostor atlas ${AW}x${AH} exceeds MAX_TEXTURE_SIZE ${maxTex}`);
+
+    const rt = new THREE.WebGLRenderTarget(AW, AH, {
       minFilter: THREE.LinearMipmapLinearFilter,
       magFilter: THREE.LinearFilter,
       generateMipmaps: true,
@@ -521,8 +579,12 @@ export class Trees extends System {
       cam.updateProjectionMatrix();
       cam.updateMatrixWorld();
 
-      rt.viewport.set(ti * W, 0, W, H);
-      rt.scissor.set(ti * W, 0, W, H);
+      // v = 0 is the trunk base and a render target is not flipped, so row r
+      // of the grid is viewport row r counting up from the bottom — the same
+      // direction IMP_VERT reads it.
+      const tx = (ti % cols) * W, ty = ((ti / cols) | 0) * H;
+      rt.viewport.set(tx, ty, W, H);
+      rt.scissor.set(tx, ty, W, H);
       renderer.setRenderTarget(rt);
       renderer.render(bakeScene, cam);
 
@@ -531,8 +593,8 @@ export class Trees extends System {
     }
 
     rt.scissorTest = false;
-    rt.viewport.set(0, 0, W * TILES, H);
-    rt.scissor.set(0, 0, W * TILES, H);
+    rt.viewport.set(0, 0, AW, AH);
+    rt.scissor.set(0, 0, AW, AH);
     renderer.setRenderTarget(prevTarget);
     renderer.setClearColor(prevClear, prevAlpha);
 
@@ -540,7 +602,7 @@ export class Trees extends System {
     this._impostorRT = rt;
 
     this.impostorMat = createImpostorMaterial(
-      this.impostorTex, this.shared, TILES, [CFG.farDist * 0.80, CFG.farDist], W * TILES);
+      this.impostorTex, this.shared, { cols, rows }, [CFG.farDist * 0.80, CFG.farDist], AW);
     this._fogMats.push(this.impostorMat.mat);
 
     const geom = buildImpostorGeometry();

@@ -1195,7 +1195,13 @@ varying float vFade;
 #include <fog_pars_vertex>
 ${WIND}
 
-uniform float uTileCount;
+// The atlas is a GRID, not a strip: one row per species, one column per
+// variant. 25 tiles at 192 px in one row would be 4800 px wide, and 4096 is a
+// real MAX_TEXTURE_SIZE on integrated and mobile GL — the entire far field
+// would fail to allocate there, on a class of machine none of this project's
+// harnesses can boot. See the impostor note in Trees.js CFG.
+uniform float uTileCols;
+uniform float uTileRows;
 uniform float uFadeStart;
 uniform float uFadeEnd;
 
@@ -1213,7 +1219,9 @@ void main() {
              + windSway(base, aCorner.y * aCorner.y * aWind.y * 0.5, aWind.x);
 
   float tile = aImp.x;
-  vUv = vec2((tile + uv.x) / uTileCount, uv.y);
+  float col = mod(tile, uTileCols);
+  float row = floor(tile / uTileCols);
+  vUv = vec2((col + uv.x) / uTileCols, (row + uv.y) / uTileRows);
   vColA = aColA; vColB = aColB; vColC = aColC;
   vWorld = world;
   // A spherical-ish normal across the card keeps the mass turning in the light.
@@ -1292,13 +1300,18 @@ void main() {
 }
 `;
 
-export function createImpostorMaterial(atlas, shared, tileCount, fade, texels = 960) {
+/**
+ * @param grid  { cols, rows } of the impostor atlas. Tile `t` lives at column
+ *              `t % cols`, row `floor(t / cols)`.
+ */
+export function createImpostorMaterial(atlas, shared, grid, fade, texels = 960) {
   const mat = new THREE.ShaderMaterial({
     uniforms: Object.assign(fogUniforms(), stylizeUniforms(), shared, {
       uAtlas: { value: atlas },
       uAlphaTest: { value: 0.45 },
       uAtlasTexels: { value: texels },
-      uTileCount: { value: tileCount },
+      uTileCols: { value: grid.cols },
+      uTileRows: { value: grid.rows },
       uFadeStart: { value: fade[0] },
       uFadeEnd: { value: fade[1] },
     }),
