@@ -347,12 +347,30 @@ void main() {
   //
   // A flat sheet of water seen edge on has no thickness to draw, so this is
   // the honest rule rather than a patch: the river surface underneath is
-  // already drawing that water. Gated on glass, so nothing on the falling
-  // curtain — which is a volume and is bright from every angle — is touched.
+  // already drawing that water. Gated so that nothing on the falling curtain —
+  // which is a volume and is bright from every angle — is touched.
+  //
+  // ── and the gate has to key off the TONGUE, not off glass. ───────────────
+  //
+  // This was written as mix(faceOnKill, 1.0, glass), and glass is
+  // smoothstep(-0.85, 0.03, vU) — an aeration ramp that is already 0.85 by the
+  // last crest row. So the kill was 85% switched off on precisely the row that
+  // is flattest and widest, and the bar it exists to prevent was still drawn.
+  // Blind A/B against 6181c10 has it: no bar before the crest existed, a hard
+  // light-blue horizontal bar across the curtain after, at both waterfall
+  // and fallbase, sticking out past the white column on the right because
+  // the tongue is up to 1.4x the fall's own width. Isolating WaterfallSheets
+  // puts it in this mesh and no other.
+  //
+  // glass answers "has this water aerated yet", which is a ramp. The question
+  // here is "is this the flat tongue", which is not a ramp — it is true for
+  // every crest row and false the moment u goes positive, because that is how
+  // the crest is built. Two questions, two masks.
   {
     vec3 Ve = normalize(cameraPosition - vWPos);
     float faceOn = abs(dot(normalize(vNrm), Ve));
-    alpha *= mix(smoothstep(0.05, 0.55, faceOn), 1.0, glass);
+    float tongue = 1.0 - smoothstep(-0.06, 0.02, vU);
+    alpha *= mix(1.0, smoothstep(0.05, 0.55, faceOn), tongue);
   }
   // Pay back a little of the width the LOD borrowed. Not all of it: a fall on
   // a far ridge is a *bright* thread in the reference, not a grey one, so the
@@ -950,8 +968,34 @@ void main() {
   // worth seeing smears the churn into thirty-metre spokes; a pool with a
   // current through it moves one way, and saying so gets motion for free
   // without the starburst.
+  //
+  // ── ...and "only a little radial" was still a rosette generator. ─────────
+  //
+  // The coefficient was 0.26 and the term was outw * 0.26 * uTime: a UNIT
+  // VECTOR FIELD times a scalar that grows without bound. That is the same
+  // shape of bug as the one the sheet's chunk octave carried — a wall clock
+  // multiplied by a function of position — and it fails the same way.
+  //
+  // Sweep the angle at a fixed radius and the sample point walks a circle of
+  // radius 0.26*t in noise space: at five minutes that is a 78-unit circle,
+  // i.e. many noise cells per radian. Walk a radius at fixed angle and the
+  // sample point barely moves, because only the vLocal * 0.55 term depends
+  // on radius. Constant along every radius, high frequency across them, and
+  // getting finer for as long as the session lasts — that is the definition of
+  // a sunburst, and isolating this mesh (tools/falliso.mjs --view fallbase)
+  // draws one: thin spokes converging on a point at the impact, exactly the
+  // "hurricane symbol" the paragraph above believes it removed. Reducing the
+  // coefficient does not fix it; it only postpones it, because the offending
+  // quantity is 0.26*t and t is unbounded.
+  //
+  // The radial half is deleted rather than shrunk. What it was for — foam
+  // travelling outward off the boil — is already drawn, correctly, by the
+  // ring term forty lines below: a genuine travelling radial wave written as
+  // sin(radius*k - t*v), where t appears only inside a sine and so nothing
+  // grows. What is left here is a pure translation of the noise domain, which
+  // is the one form of advection that cannot generate structure of its own.
   vec2 outw = normalize(vLocal + 1e-4);
-  vec2 sp = vLocal * 0.55 - (outw * 0.26 + vec2(1.05, 0.0)) * uTime;
+  vec2 sp = vLocal * 0.55 - vec2(1.05, 0.0) * uTime;
   float n  = wFbm3(sp) * 0.5 + 0.5;
   float n2 = wFbm2(vLocal * 1.55 + vec2(uTime * 0.62, -uTime * 0.20) + 8.7) * 0.5 + 0.5;
   // One slow surge travelling out from the impact — foam is thrown outward in
