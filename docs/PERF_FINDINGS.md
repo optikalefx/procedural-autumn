@@ -1,5 +1,14 @@
 # Where the frame time goes
 
+> **ADDENDUM 2026-08-22 — read this before acting on the plan below.**
+>
+> Two of this document's numbers were re-measured with a corrected instrument
+> and did not survive, and the fix that shipped is a different shape from the
+> one recommended here. The details are at the end, in
+> "What actually shipped, and why the plan changed".
+
+
+
 Measured 2026-08-21 on an M3 Pro, at the pixel count a real display asks for.
 **No `src/` code was changed to produce these numbers** — the harness drives
 everything from the Playwright side.
@@ -444,3 +453,105 @@ the same way `tools/perf.mjs` and `tools/dprtest.mjs` already are.
   tool for that, and it is the one thing this harness cannot do. If the answer
   turns out to be "grass and ground cover shade every pixel four times", a
   depth prepass becomes interesting — and if it is closer to 1.5x, it does not.
+
+---
+
+# What actually shipped, and why the plan changed (2026-08-22)
+
+## Two numbers above did not survive re-measurement
+
+**`fx.flatShade`'s 17.75 ms was measuring the wrong thing.** It works by
+setting `scene.overrideMaterial`, and an override replaces the VERTEX shader
+too. Grass blades, ground-cover cards and the tree canopy are all built in
+their vertex shaders, so under the override they do not rasterise at all: the
+"shading cost" it reported included the whole near field simply vanishing.
+`fx.shadeOnly` (the corrected instrument — a `STYLIZE_FLATSHADE` define that
+dead-strips the lighting chain while keeping every vertex shader and every
+overlapping fragment; see Stylize.js) measures **~4.5 ms**, not 18
+(`review/perf/shadeonly-still.json`). Item 2's re-basing of every material was
+therefore capped at a fraction of what this document estimated, and
+`fx.physicalSpec` — compiling the GGX lobe out of every matte material, built
+and priced — measured **0.70 ms ± 0.75, inside its own noise**. The machinery
+is kept (`?matte=1`) but it is not the fix.
+
+**Item 3 (PCFSoft → PCF) was measured in Lighting.js and is a regression** —
+PCF with a radius loses shadow-map cache locality and cost ~55% more at the
+median. See the long note at `sun.shadow` in Lighting.js. Not done.
+
+What survives: the frame IS fragment-bound and nearly all of it scales with
+pixel count. That, not the material model, is what shipped.
+
+## The shipped shape: internal resolution + reconstruction
+
+`src/render/UpscalePass.js` + `PostFX.setInternalScale` + `Engine._adapt`:
+
+- The scene and the whole post chain render into offscreen buffers at
+  `internalScale` times the canvas; a final Catmull-Rom (9-tap) +
+  contrast-adaptive-sharpen pass reconstructs to the canvas. At scale 1 the
+  pass is off and the chain is byte-identical to before.
+- The default at boot is **effective device ratio 1.0** (scale
+  `1/pixelRatioCap`, i.e. 0.74 at the `high` cap on a 2x display; 1.0 on a 1x
+  display, where nothing changes). This is the lever this document priced at
+  **−9.6 ms** and put last; the reconstruction pass is what makes it
+  presentable. On a 2x display it is *sharper* than the old adaptive floor,
+  which handed a native-res canvas to the browser's bilinear stretch.
+- The adaptive scaler now moves `internalScale` instead of the drawing buffer,
+  so a step no longer costs a 450–2500 ms reallocation freeze — the open item
+  in docs/FREEZE_ROUND.md. Floor: effective ratio 0.85
+  (`Engine.minEffectiveInternalRatio`), reachable on 1x displays too.
+- Pin it for captures/A-Bs with `?iscale=0.74`; price it with the
+  `px.iscale*` knobs in tools/ablate.mjs.
+
+## The supporting cuts that shipped with it
+
+- **The NaN guard pass is off by default** (`PostFX.sanity`, re-enable with
+  `?sanity=1`). Its NaN source was fixed at the root in grass; the pass had
+  grown to ~1.8 ms at 3.78 MP. perf.mjs's black-frame sampler is the tripwire.
+- **Grass no longer runs a second PCF loop.** Its translucency epilogue called
+  `getShadowMask()` — nine more filtered shadow taps per fragment on the
+  highest-overdraw surface — when Stylize's light-loop patch already stashes
+  the identical value in `gSunShadow`. Same pixels, one loop fewer.
+- **POST_TIERS.high is no longer identical to ultra**: one SSAO denoise
+  iteration instead of two.
+- Grass/Water/Waterfalls pixel-size LOD math now uses the internal raster
+  height, not the drawing-buffer height.
+
+## The p95 mystery is solved, and it was the overlay
+
+The open question above — "p95 is 74 ms while p50 is 36, parked, with nothing
+moving" — was **PerfOverlay's own honest-GPU-clock burst**. Every two seconds
+it ran six readPixels-synced frames, and the first one drains the entire
+queued GPU backlog on the render thread, in a frame the player sees. Parked at
+36 ms/frame that is the ~74 ms p95; on a loaded GPU it measured **850–966 ms**,
+and it ran even with the overlay hidden and under every capture harness — so
+it has been inside every perf.mjs profile this project has ever taken.
+Diagnosed by pinning the internal scale (adaptation frozen) and watching the
+worst frames land exactly on the burst cadence
+(`review/perf/opt-drive-pinned.json` vs `opt-drive-noburst.json`: frames over
+50 ms went 179 → 4, over 100 ms went 34 → 2, same drive, same day). The burst
+is now every 10 s, only while the overlay is visible, and never under
+automation.
+
+## Where it landed
+
+Same configuration as the headline above (1920×1080 CSS at dpr 2, `high`,
+3.78 MP presented), same anchor, adaptation frozen for the parked number:
+
+| | before (2026-08-21) | after (2026-08-22) |
+|---|---|---|
+| parked | 35.8 ms / 28 fps | **13.7–14.8 ms / ~70 fps** |
+| driving p50 | 51 ms / ~20 fps | **19.3 ms / 52 fps** (contended machine, adaptation live) |
+| driving >50 ms hitches | 104–179 per 45 s | **4** |
+| black frames | 0 | 0 |
+
+The after numbers were taken while other authors' captures shared the GPU
+(baseline drift 9–28 ms across arms), so treat them as a floor on the
+improvement, not a ceiling. `px.iscale100` — switching the internal scale
+back to 1.0 — measures **+9.65 ms**, in agreement with this document's
+px.native row.
+
+Still open, in order of expected value: the terrain fragment shader
+(`draw.terrain` remains the largest scene item; 16 fetches + multi-octave
+procedural per fragment wants a distance fade), the 7–8 M peak triangles the
+tree rounds added against perf.mjs's 4.5 M budget line, and SSAO's remaining
+cost at the `high` tier.

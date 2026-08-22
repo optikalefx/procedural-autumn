@@ -125,9 +125,29 @@ export class PerfOverlay {
     this._prevProg = prog;
     this._prevRes = eng.resolutionScale;
 
-    // A six-frame synced burst every two seconds.
+    // A six-frame synced burst — every TEN seconds, only while someone can
+    // actually read the number, and never under automation.
+    //
+    // THIS BURST WAS THE ANSWER TO PERF_FINDINGS' OPEN QUESTION ("p95 is 74 ms
+    // while p50 is 36, parked, with nothing moving"). The first synced frame
+    // pays off the entire queued GPU backlog — that is by design, it is what
+    // makes the number honest — but it pays it ON the render thread, in a
+    // frame the player sees. At a healthy queue that is a ~2x frame; on a
+    // loaded GPU it measured 850-966 ms, and at the old two-second cadence it
+    // put a wall of >100 ms "freezes" into every perf.mjs run and every
+    // player session, overlay visible or not (the old code ran the burst even
+    // when hidden). Diagnosed by pinning the internal scale and watching the
+    // worst frames land exactly on the burst cadence with adaptation frozen
+    // (review/perf/opt-drive-pinned.json).
+    //
+    // Ten seconds keeps the honest end-to-end column alive for a player who
+    // has the overlay open, at a twentieth of the hitch budget. Hidden or
+    // under webdriver there is no reader, so there is no burst — and the
+    // harnesses stop measuring their own instrument.
     this._gpuAcc += dt;
-    if (this._burst === 0 && this._gpuAcc >= 2000) {
+    const capturing = !!window.__forceCamera;
+    const wantBurst = this.visible && !capturing && !navigator.webdriver;
+    if (this._burst === 0 && this._gpuAcc >= 10000 && wantBurst) {
       this._gpuAcc = 0;
       this._burst = 6;
       this._burstTimes.length = 0;
@@ -150,7 +170,6 @@ export class PerfOverlay {
     // Hide during captures, the same way the HUD does. Otherwise every review
     // sheet carries a readout in the corner of all ten tiles, which is both
     // noise and a small lie — the fps shown is the harness's, not a player's.
-    const capturing = !!window.__forceCamera;
     if (capturing !== this._wasCapturing) {
       this._wasCapturing = capturing;
       this.el.style.display = (this.visible && !capturing) ? 'block' : 'none';
@@ -193,10 +212,18 @@ export class PerfOverlay {
 
     if (this.detail >= 1) {
       const soft = eff < 0.999;
+      // Internal render scale: the scene + post chain render at this fraction
+      // of the canvas and are reconstructed by the upscale pass. This is where
+      // the adaptive scaler now buys frame time, so it must be visible for the
+      // same reason `res` always was.
+      const is = e.internalScale ?? 1;
+      const imp = mp * is * is;
       lines.push(
         `res  ${eff.toFixed(2)}x  (${(e.resolutionScale * 100).toFixed(0)}% of ${e.basePixelRatio.toFixed(2)})` +
         (soft ? '  <span style="color:#ff7a6b">BELOW NATIVE</span>' : ''),
-        `px   ${mp.toFixed(2)} MP   dpr ${window.devicePixelRatio}   ${e.quality}${e._autoDropped ? ' (auto)' : ''}`,
+        `int  ${(is * 100).toFixed(0)}%  ${imp.toFixed(2)} of ${mp.toFixed(2)} MP` +
+        (is < 0.999 ? '  <span style="opacity:.75">upscaled</span>' : ''),
+        `px   dpr ${window.devicePixelRatio}   ${e.quality}${e._autoDropped ? ' (auto)' : ''}`,
       );
     }
     // Audio state. "The sound is gone" is otherwise undiagnosable: the context

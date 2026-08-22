@@ -347,10 +347,14 @@ export class Grass extends System {
     }
 
     // World units per pixel, per metre of distance — the minimum blade width
-    // that keeps a distant meadow from crawling.
+    // that keeps a distant meadow from crawling. The scene rasterises at the
+    // INTERNAL resolution (PostFX upscales to the canvas), so the drawing
+    // buffer height is scaled by internalScale or the minimum width would be
+    // derived for pixels the raster does not have.
     renderer.getDrawingBufferSize(this._size);
     const fovRad = (camera.fov * Math.PI) / 180;
-    u.uPxWorld.value = (2 * Math.tan(fovRad * 0.5)) / Math.max(1, this._size.y);
+    const rasterH = this._size.y * (this.ctx.engine?.internalScale ?? 1);
+    u.uPxWorld.value = (2 * Math.tan(fovRad * 0.5)) / Math.max(1, rasterH);
 
     this._reassign(camera.position.x, camera.position.y, camera.position.z);
 

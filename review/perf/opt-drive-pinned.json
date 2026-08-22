@@ -1,0 +1,95 @@
+{
+ "seconds": 45,
+ "res": "1536",
+ "viewport": [
+  1600,
+  900
+ ],
+ "frames": 2296,
+ "p50": 22.8,
+ "p95": 54.1,
+ "p99": 496.2,
+ "worstMs": 966.4,
+ "worstAtS": 48.5,
+ "hitch33": 429,
+ "hitch50": 179,
+ "hitch100": 34,
+ "maxCalls": 730,
+ "maxTris": 7260555,
+ "growth": {
+  "geometries": 87,
+  "textures": 2,
+  "programs": 1
+ },
+ "worstFrames": [
+  {
+   "atS": 48.5,
+   "ms": 966.4,
+   "calls": 652,
+   "tris": 4612971
+  },
+  {
+   "atS": 46.4,
+   "ms": 938.3,
+   "calls": 653,
+   "tris": 4566793
+  },
+  {
+   "atS": 52.6,
+   "ms": 931.3,
+   "calls": 650,
+   "tris": 4584591
+  },
+  {
+   "atS": 66.6,
+   "ms": 926.1,
+   "calls": 655,
+   "tris": 4593213
+  },
+  {
+   "atS": 64.7,
+   "ms": 912.3,
+   "calls": 655,
+   "tris": 4593253
+  },
+  {
+   "atS": 68.7,
+   "ms": 904,
+   "calls": 655,
+   "tris": 4593245
+  },
+  {
+   "atS": 56.6,
+   "ms": 900.8,
+   "calls": 652,
+   "tris": 4612943
+  },
+  {
+   "atS": 62.6,
+   "ms": 880.3,
+   "calls": 652,
+   "tris": 4564465
+  },
+  {
+   "atS": 44.4,
+   "ms": 859.1,
+   "calls": 651,
+   "tris": 4586943
+  },
+  {
+   "atS": 58.6,
+   "ms": 856.3,
+   "calls": 652,
+   "tris": 4612947
+  }
+ ],
+ "blackSamples": [],
+ "errors": [],
+ "fails": [
+  "p50 22.8 ms > 16.7 (below 60 fps at the median)",
+  "p95 54.1 ms > 25",
+  "179 frames over 50 ms (budget 6)",
+  "34 frames over 100 ms — visible freezes",
+  "peak 7.26 M triangles > 4.5 M"
+ ]
+}

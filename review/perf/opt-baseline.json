@@ -1,0 +1,180 @@
+{
+ "env": {
+  "quality": "high",
+  "pixelRatio": 1.35,
+  "basePixelRatio": 1.35,
+  "buffer": [
+   2592,
+   1458
+  ],
+  "megapixels": 3.78,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 3072,
+  "preset": {
+   "shadowMapSize": 3072,
+   "cascades": 3,
+   "grassMul": 0.8,
+   "ssao": true,
+   "dof": false,
+   "volumetric": true,
+   "reflections": true,
+   "pixelRatioCap": 1.35,
+   "treeMul": 0.9
+  }
+ },
+ "viewport": [
+  1920,
+  1080
+ ],
+ "dpr": 2,
+ "rounds": 2,
+ "blockMs": 2000,
+ "modes": {
+  "still": {
+   "rows": [
+    {
+     "name": "fx.postAll",
+     "p50": 22.05,
+     "base": 27.98,
+     "save": 5.92,
+     "spread": 1.75,
+     "fps": 45.4,
+     "p95": 45.7,
+     "updMs": 1.44,
+     "lateMs": 8.35,
+     "submitMs": 13.38,
+     "calls": 413,
+     "tris": 3970572
+    },
+    {
+     "name": "fx.ssao",
+     "p50": 24.75,
+     "base": 23.55,
+     "save": -1.2,
+     "spread": 12.2,
+     "fps": 40.4,
+     "p95": 43.65,
+     "updMs": 1.57,
+     "lateMs": 11.49,
+     "submitMs": 13.48,
+     "calls": 416,
+     "tris": 4298122
+    },
+    {
+     "name": "fx.sanityPass",
+     "p50": 17.8,
+     "base": 19.6,
+     "save": 1.8,
+     "spread": 1.2,
+     "fps": 56.2,
+     "p95": 53.6,
+     "updMs": 0.99,
+     "lateMs": 15.41,
+     "submitMs": 14.63,
+     "calls": 456,
+     "tris": 4820672
+    },
+    {
+     "name": "fx.shadows",
+     "p50": 3.95,
+     "base": 12.85,
+     "save": 8.9,
+     "spread": 14,
+     "fps": 253.2,
+     "p95": 52.75,
+     "updMs": 1.07,
+     "lateMs": 16.75,
+     "submitMs": 12.94,
+     "calls": 314,
+     "tris": 3688679
+    },
+    {
+     "name": "px.native",
+     "p50": 17.8,
+     "base": 11.15,
+     "save": -6.65,
+     "spread": 5.5,
+     "fps": 56.2,
+     "p95": 27.35,
+     "updMs": 1.59,
+     "lateMs": 7.6,
+     "submitMs": 10.27,
+     "calls": 409,
+     "tris": 3616164
+    },
+    {
+     "name": "px.half",
+     "p50": 11.65,
+     "base": 20,
+     "save": 8.35,
+     "spread": 11.1,
+     "fps": 85.8,
+     "p95": 24.4,
+     "updMs": 1.28,
+     "lateMs": 2.99,
+     "submitMs": 8.03,
+     "calls": 358,
+     "tris": 3083188
+    },
+    {
+     "name": "fx.shadeOnly",
+     "p50": 21.4,
+     "base": 23.3,
+     "save": 1.9,
+     "spread": 1.4,
+     "fps": 46.7,
+     "p95": 39.3,
+     "updMs": 1.32,
+     "lateMs": 8.73,
+     "submitMs": 12.65,
+     "calls": 348,
+     "tris": 3175244
+    },
+    {
+     "name": "draw.terrain",
+     "p50": 15.15,
+     "base": 18.73,
+     "save": 3.57,
+     "spread": 3.95,
+     "fps": 66,
+     "p95": 29.45,
+     "updMs": 1.14,
+     "lateMs": 4.79,
+     "submitMs": 9.78,
+     "calls": 279,
+     "tris": 3441701
+    },
+    {
+     "name": "FLOOR (all off)",
+     "p50": 5.95,
+     "base": 18.85,
+     "save": 12.9,
+     "spread": 2.7,
+     "fps": 168.1,
+     "p95": 10.85,
+     "updMs": 0.7,
+     "lateMs": 1.13,
+     "submitMs": 4.18,
+     "calls": 138,
+     "tris": 2539119
+    }
+   ],
+   "drift": {
+    "n": 20,
+    "min": 5.5,
+    "max": 33.8,
+    "median": 22.8,
+    "first": 29.6,
+    "last": 20.3
+   },
+   "settled": {
+    "frames": 278,
+    "triangles": 5743598,
+    "calls": 601,
+    "converged": true
+   }
+  }
+ }
+}

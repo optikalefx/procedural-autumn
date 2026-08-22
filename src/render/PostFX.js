@@ -12,6 +12,7 @@ import { N8AOPostPass } from 'n8ao';
 import { QUALITY_PRESETS } from '../world/WorldConfig.js';
 import { SKY_STATE } from './Lighting.js';
 import { HEARTH } from './Hearth.js';
+import { createUpscalePass } from './UpscalePass.js';
 
 // ── Custom grade: aerial perspective, warm/cool split-tone, film curve ───────
 const GRADE_FRAG = /* glsl */`
@@ -1151,7 +1152,13 @@ void main() {
 // removes work; it never trades sharpness for it.
 const POST_TIERS = {
   ultra:  { aoSamples: 16, denoiseSamples: 8, denoiseIterations: 2, bloomMip: 12 },
-  high:   { aoSamples: 16, denoiseSamples: 8, denoiseIterations: 2, bloomMip: 12 },
+  // One denoise iteration, not two. `ultra` and `high` used to be identical
+  // rows — docs/PERF_FINDINGS.md flags it — and the AO the denoiser cleans is
+  // a 1.1 m contact cue at half res, where the second poisson iteration is
+  // plausibly as expensive as the AO pass itself. With the internal-resolution
+  // path the AO buffer is smaller again, so the noise a single iteration
+  // leaves is below what the reconstruction filter preserves.
+  high:   { aoSamples: 16, denoiseSamples: 8, denoiseIterations: 1, bloomMip: 12 },
   medium: { aoSamples: 8,  denoiseSamples: 4, denoiseIterations: 1, bloomMip: 24 },
   low:    { aoSamples: 8,  denoiseSamples: 4, denoiseIterations: 1, bloomMip: 32 },
 };
@@ -1308,16 +1315,88 @@ export class PostFX {
       depthWrite: false,
       depthTest: false,
     }), 'inputBuffer');
+    // OFF by default, priced at 1.8 ms of a 3.78 MP frame (9% — it is a
+    // full-screen HalfFloat read-modify-write, so it grew with the pixel count
+    // like everything else). The NaN it guarded against was fixed at its
+    // source — `pow(max(vT, 0.0), ...)` in grass — and MIN_BLOOM_MIP's note
+    // records the black-frame sampler measuring zero with six mip levels after
+    // that fix. The pass is kept, disabled, because it is the diagnostic to
+    // switch back on the day a black square returns: `?sanity=1`, or
+    // `postfx.sanity.enabled = true` from the console, no rebuild needed.
+    // tools/perf.mjs counts black frames during motion on every run, so a
+    // regression here cannot land silently.
+    this.sanity.enabled =
+      new URLSearchParams(location.search).get('sanity') === '1';
     this.composer.addPass(this.sanity);
 
     // Builds the SSAO pass and the merged main pass for this tier.
     this._applyTier(this.preset, this.tier);
 
-    engine.onResize((w, h) => {
-      this.composer.setSize(w, h);
-      this.ao?.setSize(w, h);
-      this._capBloomMips();
-    });
+    // ── internal-resolution rendering ───────────────────────────────────────
+    // The whole chain above renders at `internalScale` of the presented
+    // buffer; this pass reconstructs to the canvas with Catmull-Rom + CAS.
+    // See UpscalePass.js for the argument. Added LAST so the composer marks it
+    // renderToScreen; _setUpscale keeps the flags straight when it is off.
+    this.internalScale = 1;
+    this.upscale = createUpscalePass();
+    this.composer.addPass(this.upscale);
+    this._setUpscale(false);
+
+    engine.onResize(() => this._applySizes());
+  }
+
+  /**
+   * Render the scene and the post chain at `s` times the presented resolution.
+   *
+   * The canvas never changes size here — only offscreen targets do — so this
+   * is cheap enough for the adaptive scaler to call freely. That is the fix
+   * for the 450–2500 ms drawing-buffer reallocation freezes documented in
+   * Engine._adapt; the open item in docs/FREEZE_ROUND.md asked for exactly
+   * "dynamic resolution that does not reallocate the drawing buffer".
+   *
+   * At s = 1 the upscale pass is switched off and the chain presents exactly
+   * as it always did.
+   */
+  setInternalScale(s) {
+    const next = Math.min(1, Math.max(0.4, s || 1));
+    if (Math.abs(next - this.internalScale) < 1e-3) return;
+    this.internalScale = next;
+    this._applySizes();
+  }
+
+  /** Enable or disable the present pass, keeping renderToScreen coherent. */
+  _setUpscale(on) {
+    this.upscale.enabled = on;
+    this.upscale.renderToScreen = on;
+    if (this.mainPass) this.mainPass.renderToScreen = !on;
+  }
+
+  /**
+   * Size every offscreen buffer to the internal resolution and the present
+   * pass to the canvas. Runs on window resize, on tier change and on every
+   * internal-scale change; it is the single place buffer sizes are decided.
+   *
+   * The composer's own setSize is bypassed on purpose: it sizes every pass to
+   * the drawing buffer, and the drawing buffer is exactly the one size the
+   * internal chain must not be locked to.
+   */
+  _applySizes() {
+    const r = this.engine.renderer;
+    const db = r.getDrawingBufferSize(this._dbSize ??= new THREE.Vector2());
+    const s = this.internalScale;
+    const iw = Math.max(1, Math.round(db.x * s));
+    const ih = Math.max(1, Math.round(db.y * s));
+    const c = this.composer;
+    c.inputBuffer.setSize(iw, ih);
+    c.outputBuffer.setSize(iw, ih);
+    if (c.depthRenderTarget) c.depthRenderTarget.setSize(iw, ih);
+    for (const p of c.passes) {
+      if (p === this.upscale) p.setSize(db.x, db.y);
+      else p.setSize(iw, ih);
+    }
+    this.upscale.setSourceSize(iw, ih);
+    this._setUpscale(s < 0.999);
+    this._capBloomMips();
   }
 
   /**
@@ -1350,7 +1429,12 @@ export class PostFX {
     this._minBloomMip = tier.bloomMip;
     this._setSSAO(!!preset.ssao, tier);
     this._setDOF(!!preset.dof);
-    this._capBloomMips();
+    // Adding a pass sizes it to the drawing buffer (the composer's default),
+    // so the internal-resolution sizing has to be reasserted afterwards. The
+    // constructor path lands here before the upscale pass exists; it calls
+    // _applySizes itself once the pass is in place.
+    if (this.upscale) this._applySizes();
+    else this._capBloomMips();
   }
 
   /** Add, retune or remove the SSAO pass. */
@@ -1467,7 +1551,11 @@ export class PostFX {
     // `depthBuffer` is an unbound sampler there, every pixel reads depth 0, and
     // the mask would sit at the near plane covering the whole frame.
     this.mainPass.needsDepthTexture = true;
-    this.composer.addPass(this.mainPass);
+    // Before the present pass, which must stay last. During construction the
+    // present pass does not exist yet and appending is correct.
+    const at = this.upscale ? this.composer.passes.indexOf(this.upscale) : undefined;
+    this.composer.addPass(this.mainPass, at >= 0 ? at : undefined);
+    if (this.upscale) this._applySizes();
   }
 
   /**

@@ -319,6 +319,30 @@ async function boot() {
 
   engine.setRenderCallback((dt) => postfx.render(dt));
 
+  // ── internal render scale ───────────────────────────────────────────────
+  // The scene and post chain render at this fraction of the canvas and are
+  // reconstructed by PostFX's Catmull-Rom + CAS present pass (UpscalePass.js).
+  // The default puts the INTERNAL cost at one device pixel per CSS pixel —
+  // the old adaptive floor, measured at −9.6 ms on a Retina `high` frame —
+  // while PRESENTING at the tier's full pixelRatioCap, which through this
+  // filter is sharper than what the old floor showed (that path handed a
+  // native-res canvas to the browser's bilinear stretch). On a 1x display the
+  // default is 1.0 and nothing changes.
+  //
+  // `?iscale=` pins it for A/Bs and captures; the adaptive scaler in Engine
+  // moves it between the sharpness floor and 1.0 in play.
+  engine.onInternalScale = (s) => postfx.setInternalScale(s);
+  const iscale = parseFloat(params.get('iscale'));
+  if (Number.isFinite(iscale)) {
+    // Pinned for a capture or an A/B: bypass the sharpness floor and freeze
+    // the scaler, so the frame measured is the frame asked for.
+    engine.adaptive = false;
+    engine.internalScale = iscale;
+    postfx.setInternalScale(iscale);
+  } else {
+    engine.setInternalScale(Math.min(1, 1 / engine.basePixelRatio));
+  }
+
   engine.onUpdate((dt, t) => {
     const rig = ctx.systems.cameraRig;
     const rigActive = rig?.enabled && rig.active;

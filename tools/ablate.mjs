@@ -521,6 +521,24 @@ await page.evaluate(() => {
     on()  { e.resolutionScale = this._was ?? 1; e._applyResolution(); },
   };
 
+  // Internal render scale (the upscale path in PostFX). Unlike px.*, these do
+  // not touch the drawing buffer — they resize the composer's offscreen
+  // targets, which is exactly what ships. The boot default at dpr 2 is
+  // 1/pixelRatioCap (effective device ratio 1.0), so `px.iscale100` prices
+  // what going BACK to full-cap internal rendering costs, and the smaller ones
+  // price the adaptive scaler's lower rungs.
+  const iscaleKnob = (name, s) => {
+    K[name] = {
+      group: 'px',
+      off() { this._was = e.internalScale; e.internalScale = s; postfx.setInternalScale(s); },
+      on()  { const w = this._was ?? 1; e.internalScale = w; postfx.setInternalScale(w); },
+    };
+  };
+  iscaleKnob('px.iscale100', 1.0);
+  iscaleKnob('px.iscale85', 0.85);
+  iscaleKnob('px.iscale74', 0.74);
+  iscaleKnob('px.iscale63', 0.63);
+
   // ── the measurement itself ────────────────────────────────────────────────
   const rec = { on: false, t: [], calls: [], tris: [], upd: [], late: [], sub: [] };
   let last = performance.now();
@@ -761,14 +779,17 @@ const mean = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 async function sweep(arms, label) {
   const acc = new Map(arms.map((a) => [a.name, []]));
   const baselines = [];
+  const baseStats = [];
   for (let r = 0; r < ROUNDS; r++) {
     let prevBase = await measure([]);
     baselines.push(prevBase.p50);
+    baseStats.push(prevBase);
     for (let i = 0; i < arms.length; i++) {
       const a = arms[i];
       const s = await measure(a.off);
       const nextBase = await measure([]);
       baselines.push(nextBase.p50);
+      baseStats.push(nextBase);
       const localBase = (prevBase.p50 + nextBase.p50) / 2;
       acc.get(a.name).push({ ...s, base: localBase, save: localBase - s.p50 });
       prevBase = nextBase;
@@ -797,7 +818,16 @@ async function sweep(arms, label) {
   }
   const drift = { n: baselines.length, min: +Math.min(...baselines).toFixed(2), max: +Math.max(...baselines).toFixed(2),
                   median: +median(baselines).toFixed(2), first: +baselines[0].toFixed(2), last: +baselines[baselines.length - 1].toFixed(2) };
-  return { out, drift };
+  // The CPU split of the BASELINE blocks. This used to be read off one of the
+  // ablation arms (the SSAO arm, of all things) and printed as though it were
+  // the scene's — an arm with a system switched off does not have the scene's
+  // update cost, and nothing in the output said so.
+  const baseSplit = {
+    updMs: +median(baseStats.map((x) => x.updMs)).toFixed(2),
+    lateMs: +median(baseStats.map((x) => x.lateMs)).toFixed(2),
+    submitMs: +median(baseStats.map((x) => x.submitMs)).toFixed(2),
+  };
+  return { out, drift, baseSplit };
 }
 
 const report = { env, viewport: [W, H], dpr: DPR, rounds: ROUNDS, blockMs: BLOCK_MS, modes: {} };
@@ -876,17 +906,16 @@ for (const mode of MODES) {
     arms = [...LOO.filter((a) => a.name !== 'baseline'), { name: 'FLOOR (all off)', off: FLOOR }];
   }
 
-  const { out: rows, drift } = await sweep(arms, mode);
-  report.modes[mode] = { rows, drift, settled };
+  const { out: rows, drift, baseSplit } = await sweep(arms, mode);
+  report.modes[mode] = { rows, drift, baseSplit, settled };
 
   const b = drift.median;
   console.log(`\n  baseline   ${b.toFixed(2)} ms  =  ${(1000 / b).toFixed(1)} fps` +
               `   (median of ${drift.n} interleaved baseline blocks)`);
   console.log(`  drift      baselines ranged ${drift.min}–${drift.max} ms over the run ` +
               `(first ${drift.first}, last ${drift.last}) — each arm is scored against its own two neighbours`);
-  const bs = rows.find((r) => r.name === 'fx.ssao') ?? rows[0];
-  console.log(`  cpu split  update ${bs.updMs.toFixed(2)} ms   late ${bs.lateMs.toFixed(2)} ms   ` +
-              `render-submit ${bs.submitMs.toFixed(2)} ms  (blocking here means GPU-bound)`);
+  console.log(`  cpu split  update ${baseSplit.updMs.toFixed(2)} ms   late ${baseSplit.lateMs.toFixed(2)} ms   ` +
+              `render-submit ${baseSplit.submitMs.toFixed(2)} ms  (baseline blocks; blocking in submit means GPU-bound)`);
 
   if (LADDER) {
     console.log('\n  cumulative add-back (each row adds one system to the row above):');

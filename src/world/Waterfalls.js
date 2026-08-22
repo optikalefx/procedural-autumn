@@ -2165,7 +2165,10 @@ export class Waterfalls extends System {
     // Water's, recomputed each frame because fov and buffer size both move.
     const cam = this.ctx.camera, rend = this.ctx.renderer;
     if (cam && rend) {
-      const h = rend.getDrawingBufferSize(this._tmpSize ??= new THREE.Vector2()).y;
+      // Scaled by internalScale: the scene rasterises at PostFX's internal
+      // resolution, not the drawing buffer's (see UpscalePass.js).
+      const h = rend.getDrawingBufferSize(this._tmpSize ??= new THREE.Vector2()).y
+                * (this.ctx.engine?.internalScale ?? 1);
       if (h > 0) u.uPixelScale.value = 2 * Math.tan(cam.fov * Math.PI / 360) / h;
     }
 

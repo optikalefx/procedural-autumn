@@ -1,0 +1,110 @@
+{
+ "env": {
+  "quality": "high",
+  "pixelRatio": 1.35,
+  "basePixelRatio": 1.35,
+  "buffer": [
+   2592,
+   1458
+  ],
+  "megapixels": 3.78,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 3072,
+  "preset": {
+   "shadowMapSize": 3072,
+   "cascades": 3,
+   "grassMul": 0.8,
+   "ssao": true,
+   "dof": false,
+   "volumetric": true,
+   "reflections": true,
+   "pixelRatioCap": 1.35,
+   "treeMul": 0.9
+  }
+ },
+ "viewport": [
+  1920,
+  1080
+ ],
+ "dpr": 2,
+ "rounds": 3,
+ "blockMs": 2000,
+ "modes": {
+  "still": {
+   "rows": [
+    {
+     "name": "px.iscale100",
+     "p50": 28,
+     "base": 18.9,
+     "save": -6.8,
+     "spread": 21.7,
+     "fps": 35.7,
+     "p95": 67.5,
+     "updMs": 1.43,
+     "lateMs": 13.24,
+     "submitMs": 14.85,
+     "calls": 468,
+     "tris": 3254461
+    },
+    {
+     "name": "px.iscale63",
+     "p50": 15.3,
+     "base": 18.9,
+     "save": 3.6,
+     "spread": 3.75,
+     "fps": 65.4,
+     "p95": 32.3,
+     "updMs": 1.2,
+     "lateMs": 4.71,
+     "submitMs": 10.38,
+     "calls": 368,
+     "tris": 3126186
+    },
+    {
+     "name": "fx.postAll",
+     "p50": 21.7,
+     "base": 19.55,
+     "save": -2.15,
+     "spread": 10.3,
+     "fps": 46.1,
+     "p95": 46.6,
+     "updMs": 1.32,
+     "lateMs": 10.45,
+     "submitMs": 12.01,
+     "calls": 282,
+     "tris": 2935238
+    },
+    {
+     "name": "FLOOR (all off)",
+     "p50": 13.7,
+     "base": 18.7,
+     "save": 1.7,
+     "spread": 17.2,
+     "fps": 73,
+     "p95": 43.7,
+     "updMs": 0.94,
+     "lateMs": 8.49,
+     "submitMs": 9.71,
+     "calls": 182,
+     "tris": 2918100
+    }
+   ],
+   "drift": {
+    "n": 15,
+    "min": 15,
+    "max": 27.7,
+    "median": 19,
+    "first": 23.6,
+    "last": 15
+   },
+   "settled": {
+    "frames": 400,
+    "triangles": 6029025,
+    "calls": 613,
+    "converged": false
+   }
+  }
+ }
+}

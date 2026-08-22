@@ -25,6 +25,27 @@ export class Engine {
     this.basePixelRatio = Math.min(window.devicePixelRatio, this.preset.pixelRatioCap);
     this.resolutionScale = 1;
     this.targetFrameMs = 1000 / 60;
+    // ── internal render scale ──────────────────────────────────────────────
+    // The scene and post chain render at `internalScale` times the canvas and
+    // are reconstructed to it by PostFX's upscale pass (Catmull-Rom + CAS —
+    // see UpscalePass.js). The canvas itself stays at basePixelRatio, so
+    // changing this never reallocates the drawing buffer: no 450–2500 ms
+    // freeze, unlike the resolutionScale ladder below, which is retained only
+    // as a manual/diagnostic lever.
+    //
+    // The floor is expressed in device pixels per CSS pixel, like
+    // minEffectivePixelRatio, but it sits BELOW native — 0.78 rather than 1.0
+    // — because the argument for the 1.0 floor ("below native reads as a
+    // blurry game") was an argument about the browser's bilinear canvas
+    // stretch, and the reconstruction pass is what replaced it. A still A/B
+    // of the drive view at 0.63 scale through Catmull-Rom + CAS is nearly
+    // indistinguishable from native at reading distance
+    // (review/perf/upscale-*.json and the shots beside them), so 0.78 as a
+    // strain-only floor is conservative — and a strained machine holding
+    // frame rate at 0.78 looks far better than one dropping to 45 fps at 1.0.
+    this.internalScale = 1;
+    this.minEffectiveInternalRatio = 0.78;
+    this.onInternalScale = null;
     // Never render below one device pixel per CSS pixel. A scale that takes the
     // effective ratio under 1.0 is drawing fewer pixels than the display has and
     // upscaling them, which reads as a blurry game rather than a fast one — the
@@ -196,6 +217,15 @@ export class Engine {
     const floor = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
     this.resolutionScale = opts.keepResolution ? Math.max(floor, Math.min(1, heldScale)) : 1;
     this.renderer.setPixelRatio(this.basePixelRatio * this.resolutionScale);
+    // The internal-scale floor moves with basePixelRatio, so re-clamp; the
+    // held scale itself is kept — a tier change never resets it (see the
+    // note on keepResolution above for why resetting was four freezes).
+    const iFloor = this._internalFloor();
+    const iNext = Math.max(iFloor, Math.min(1, this.internalScale));
+    if (Math.abs(iNext - this.internalScale) >= 1e-3) {
+      this.internalScale = iNext;
+      this.onInternalScale?.(iNext);
+    }
     this._onResize();
     for (const fn of this._qualityCbs) {
       try { fn(preset, name); } catch (e) { console.error('[engine] onQuality handler threw', e); }
@@ -208,24 +238,41 @@ export class Engine {
 
   setRenderCallback(fn) { this._render = fn; }
 
+  /** The lowest internal scale the sharpness floor permits on this display. */
+  _internalFloor() {
+    return Math.min(1, this.minEffectiveInternalRatio / this.basePixelRatio);
+  }
+
   /**
-   * Scale the render resolution to hold `targetFrameMs`.
+   * Set the internal render scale. Clamped to [floor, 1]; PostFX resizes its
+   * offscreen targets in response. Cheap — the drawing buffer never moves.
+   */
+  setInternalScale(s) {
+    const next = Math.max(this._internalFloor(), Math.min(1, s || 1));
+    if (Math.abs(next - this.internalScale) < 1e-3) return;
+    this.internalScale = next;
+    this.onInternalScale?.(next);
+  }
+
+  /**
+   * Scale the INTERNAL render resolution to hold `targetFrameMs`.
    *
    * Judged on the 80th percentile of a rolling window rather than the mean, so
    * one streaming hitch does not drop the whole frame's resolution — and with a
    * wide dead band plus asymmetric rates (drop fast, recover slowly) so it
    * cannot oscillate visibly while driving.
+   *
+   * This used to move `resolutionScale`, which resizes the drawing buffer at a
+   * measured 450–2500 ms per step — the scaler was itself the player's p95.
+   * It now moves `internalScale`, which only resizes offscreen targets (see
+   * PostFX.setInternalScale), so the cooldown is short and a step is invisible.
+   * `resolutionScale` remains as a manual/diagnostic lever and is no longer
+   * touched by the automatic path.
    */
   _adapt(now) {
     if (!this.adaptive) return;
-    // Changing resolution reallocates the drawing buffer, and that measures at
-    // 450-2500 ms depending on buffer size — it is not a cost that can be
-    // amortised, so the only lever is to do it rarely. This scaler was itself
-    // the player's p95 of 232 ms. Hence: a long cooldown, a long warm-up so it
-    // never fires while the scene is still streaming in, and quantised steps so
-    // it settles instead of creeping.
-    if (this._frameTimes.length < 90) return;
-    if (now - this._lastAdapt < 6000) return;
+    if (this._frameTimes.length < 60) return;
+    if (now - this._lastAdapt < 2000) return;
     if (now - this._bootAt < 8000) { this._frameTimes.length = 0; return; }
 
     const sorted = [...this._frameTimes].sort((a, b) => a - b);
@@ -234,76 +281,48 @@ export class Engine {
     this._lastAdapt = now;
 
     const target = this.targetFrameMs;
-    // A short ladder rather than a continuous ratio: each rung costs a buffer
-    // reallocation, so there is no value in fine gradations.
-    const floorScale = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
-    const rungs = [...new Set([1, 0.85, 0.72, floorScale])].filter((r) => r >= floorScale - 1e-6)
+    const floorScale = this._internalFloor();
+    // Quantised rungs still, not a continuous ratio — not for reallocation
+    // cost any more, but so the scale SETTLES instead of creeping and the CAS
+    // sharpen sees a stable source. Finer than the old ladder because a step
+    // is now free.
+    const rungs = [...new Set([1, 0.92, 0.85, 0.78, 0.72, 0.67, floorScale])]
+      .filter((r) => r >= floorScale - 1e-6)
       .sort((a, b) => b - a);
-    let i = rungs.findIndex((r) => Math.abs(r - this.resolutionScale) < 0.02);
+    let i = rungs.findIndex((r) => Math.abs(r - this.internalScale) < 0.02);
     if (i < 0) i = 0;
 
-    let next = this.resolutionScale;
-    if (p80 > target * 1.30 && i < rungs.length - 1) {
-      // Go straight to the rung the measurement implies, rather than one rung
-      // per 6 s window. Frame time is roughly proportional to pixel count and
-      // pixel count to scale squared, so the scale that would land on budget is
-      // `scale * sqrt(target / p80)`. Aim AT budget, not above it: aiming 15%
-      // high left the ladder one rung short and it paid a second reallocation
-      // 6 s later to finish the job (measured: 1 -> 0.72 at 575 ms, then
-      // 0.72 -> 0.667 at 566 ms, for a destination the first window implied).
-      // Undershooting costs a whole extra freeze; overshooting costs some
-      // sharpness that the slow recovery path can win back for free.
-      //
-      // This matters because each rung costs a buffer reallocation of 450-2500
-      // ms — a freeze the player sees. Walking 1 -> 0.85 -> 0.72 -> 0.667 costs
-      // three of them; measured at dpr 2 that was 1018 + 1128 + 970 ms spread
-      // over 12 s, for a destination the first window already implied.
-      const want = this.resolutionScale * Math.sqrt(target / p80);
+    let next = this.internalScale;
+    if (p80 > target * 1.15 && i < rungs.length - 1) {
+      // Go straight to the rung the measurement implies. Frame time is roughly
+      // proportional to pixel count and pixel count to scale squared, so the
+      // scale that lands on budget is `scale * sqrt(target / p80)`.
+      const want = this.internalScale * Math.sqrt(target / p80);
       let j = i + 1;
       while (j + 1 < rungs.length && rungs[j] > want) j++;
       next = rungs[j];
     } else if (p80 < target * 0.70 && i > 0) next = rungs[i - 1];
     next = Math.max(floorScale, Math.min(1, next));
-    const moving = Math.abs(next - this.resolutionScale) >= 0.005;
+    const moving = Math.abs(next - this.internalScale) >= 0.005;
 
     // Resolution has nothing left to give: the ladder is on its last rung and
-    // is not moving this window. This test has to run BEFORE the early return,
-    // and it used to run after — which made the tier lever unreachable on EVERY
-    // display, not just some. On a 1x display `floorScale` is 1, so `rungs`
-    // collapses to `[1]`, neither ladder branch can pass its index guard, and
-    // the old `else return` left through the door ahead of the strain test; on
-    // a 2x display the ladder walks 1 -> 0.85 -> 0.72 -> 0.667 and then takes
-    // that same door out for good. Measured by driving a real instance at
-    // 250 ms/frame for ~49 s of simulated clock: quality held `ultra` at both
-    // DPRs, and at 1x `_strainSince` was never even set — neither lever
-    // existed. The fix is here and not in `rungs`, because making `rungs`
-    // meaningful at 1x means rendering below native, and that is the one thing
-    // `minEffectivePixelRatio` exists to forbid (see its comment: below native
-    // the honest move is to drop effects, not sharpness). At 1x the tier is
-    // correctly the FIRST lever, not the last.
+    // is not moving this window. This test runs BEFORE the early return — it
+    // used to run after, which made the tier lever unreachable on every
+    // display (the history is in git if the mechanism is ever revisited).
+    //
+    // The internal-scale floor (minEffectiveInternalRatio 0.85) is below 1 on
+    // every display now, so the ladder always has rungs and the strain test is
+    // reachable at 1x as well as 2x.
     //
     // `moving` also excludes the window that ARRIVES at the floor: that step
     // has not been given a frame to pay for itself yet, so strain starts
     // counting from the window after it.
-    // The TIER lever is opt-in, and that is a deliberate ship decision rather
-    // than timidity.
     //
-    // Before the ordering fix above, `_stepQualityDown` was unreachable on
-    // every display — so no build that has ever shipped from this project has
-    // stepped a tier automatically. Making it reachable is a real fix for a
-    // real latent bug (a machine that cannot hold frame rate never steps down),
-    // but it also introduces the one freeze class that `main` cannot produce:
-    // `setQuality` rebuilds materials and re-runs the post chain's tier setup,
-    // and on this scene a relink is measured in seconds, not milliseconds.
-    //
-    // The resolution ladder above is now strictly BETTER than main's — it takes
-    // the staircase in one move instead of one rung per 6 s window, and it no
-    // longer resets to full on a tier change — so leaving the tier lever off
-    // means this branch can only ever freeze less than main, never more. Turn
-    // it on with `engine.autoTier = true` once a tier change is cheap enough to
-    // be invisible; the honest prerequisite is dynamic resolution that does not
-    // reallocate the drawing buffer, which is the open item in
-    // docs/FREEZE_ROUND.md.
+    // The TIER lever stays opt-in: `setQuality` rebuilds materials and the
+    // post chain, and on this scene a relink is measured in seconds. The old
+    // prerequisite for turning it on — dynamic resolution that does not
+    // reallocate the drawing buffer (docs/FREEZE_ROUND.md) — is now met by the
+    // internal-scale path, but the relink cost stands.
     const pinned = !moving && next <= floorScale + 1e-4;
     if (this.autoTier && pinned && p80 > target * this.strainRatio) {
       if (!this._strainSince) this._strainSince = now;
@@ -316,8 +335,7 @@ export class Engine {
     }
     if (!moving) return;
 
-    this.resolutionScale = next;
-    this._applyResolution();
+    this.setInternalScale(next);
   }
 
   /** Drop one quality band. Returns whether it moved. */

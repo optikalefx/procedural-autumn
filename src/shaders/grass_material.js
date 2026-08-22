@@ -468,10 +468,6 @@ export function createGrassMaterial(shared, ring) {
       .replace('#include <begin_vertex>', 'vec3 transformed = bladePos;');
 
     shader.fragmentShader = FRAG_HEAD + shader.fragmentShader
-      // getShadowMask() needs the shadow uniforms, so define it after them.
-      .replace('#include <shadowmap_pars_fragment>',
-        '#include <shadowmap_pars_fragment>\n#include <shadowmask_pars_fragment>')
-
       // The shading normal always faces the viewer (a blade is a thin sheet)
       // but is pulled most of the way to the terrain normal, so the field
       // shades as one soft surface.
@@ -520,7 +516,15 @@ export function createGrassMaterial(shared, ring) {
         {
           vec3 V = normalize( cameraPosition - vWorldPos );
           vec3 L = normalize( uSunDir );
-          float shRaw = getShadowMask();
+          // Stylize's light-loop patch stashes the sun's shadow factor in
+          // gSunShadow as it goes past, so this used to be the ONE surface
+          // paying for a second full PCF loop (getShadowMask() — nine more
+          // bilinear-filtered compares per fragment, on the highest-overdraw
+          // surface in the frame). The stash is the same intensity-scaled
+          // getShadow() product the mask function computes; with exactly one
+          // caster active at a time (the sun/moon complement in Lighting) the
+          // two are identical, so this is a pure cost removal.
+          float shRaw = gSunShadow;
           // Shadow does not extinguish scattered light; it dims it. A blade in
           // a tree's shadow at golden hour still glows, just less.
           float sh = mix( uShadowSoft, 1.0, shRaw );

@@ -1,0 +1,82 @@
+{
+ "env": {
+  "quality": "high",
+  "pixelRatio": 1.35,
+  "basePixelRatio": 1.35,
+  "buffer": [
+   2592,
+   1458
+  ],
+  "megapixels": 3.78,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 3072,
+  "preset": {
+   "shadowMapSize": 3072,
+   "cascades": 3,
+   "grassMul": 0.8,
+   "ssao": true,
+   "dof": false,
+   "volumetric": true,
+   "reflections": true,
+   "pixelRatioCap": 1.35,
+   "treeMul": 0.9
+  }
+ },
+ "viewport": [
+  1920,
+  1080
+ ],
+ "dpr": 2,
+ "rounds": 5,
+ "blockMs": 3000,
+ "modes": {
+  "still": {
+   "rows": [
+    {
+     "name": "px.iscale100",
+     "p50": 27.5,
+     "base": 14.7,
+     "save": -9.65,
+     "spread": 21.3,
+     "fps": 36.4,
+     "p95": 61.2,
+     "updMs": 1.33,
+     "lateMs": 22.52,
+     "submitMs": 15.36,
+     "calls": 368,
+     "tris": 3468047
+    },
+    {
+     "name": "FLOOR (all off)",
+     "p50": 9.6,
+     "base": 14.2,
+     "save": 4.45,
+     "spread": 22.25,
+     "fps": 104.2,
+     "p95": 30.9,
+     "updMs": 0.93,
+     "lateMs": 21.82,
+     "submitMs": 9.24,
+     "calls": 188,
+     "tris": 2731853
+    }
+   ],
+   "drift": {
+    "n": 15,
+    "min": 9.3,
+    "max": 24.3,
+    "median": 14.8,
+    "first": 24.3,
+    "last": 13.9
+   },
+   "settled": {
+    "frames": 400,
+    "triangles": 6037398,
+    "calls": 613,
+    "converged": false
+   }
+  }
+ }
+}

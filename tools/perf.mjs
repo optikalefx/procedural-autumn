@@ -120,6 +120,10 @@ page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; })
 
 const params = new URLSearchParams({ res: RES });
 if (QUALITY) params.set('quality', QUALITY);
+// Pin the internal render scale (and thereby freeze the adaptive scaler) so a
+// hitch profile can separate "the scaler stepped" from "the frame is slow".
+const ISCALE = arg('iscale', null);
+if (ISCALE) params.set('iscale', ISCALE);
 await page.goto(`${process.env.AUTUMN_URL || 'http://localhost:5178'}/?${params}`, { waitUntil: 'domcontentloaded' });
 const navAtStart = navigations;
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
