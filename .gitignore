@@ -1,5 +1,9 @@
 # ── dependencies and build output ──────────────────────────────────────────────
 node_modules/
+# ...and as a bare symlink. Agents working in a git worktree link these two in
+# rather than reinstalling, and a trailing-slash pattern does not match a
+# symlink, so both got committed once already.
+node_modules
 dist/
 .vite/
 *.tsbuildinfo
@@ -51,6 +55,7 @@ review/*.jpg
 #
 # So: 25 s of CPU once per clone, against a repository nobody could clone.
 public/bakes/
+public/bakes
 
 # ── local noise ───────────────────────────────────────────────────────────────
 .DS_Store
