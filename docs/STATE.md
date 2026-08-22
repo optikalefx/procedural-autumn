@@ -1,3 +1,78 @@
+# State — 2026-08-22, the eight-issue round
+
+Eight player-reported defects, one worktree agent each, an independent critic
+per task, and blind A/B for every visual claim. **Seven landed. Golden hour did
+not, and was reverted on its own evidence** — see the last section.
+
+## What landed
+
+| # | Defect | What it actually was |
+|---|---|---|
+| 1 | wind too loud | **Dynamic range, not level.** At its worst instant the wind bed alone was **+1.3 dB over the entire rest of the mix combined**, parked with the camper idling. Two earlier rounds cut `buses.ambience` and failed because the old share metric divided by a mix containing its own numerator. Gust-to-calm: grass 18.6 → 5.8 dB, conifer 19.9 → 3.9, hush 12.8 → 4.7. The calm floor came **up** (p5 −53.0 → −48.6) while the peak dropped 8.4 dB. |
+| 2 | free camera in photo mode | New `free` mode. Entry is bit-identical — `dPos [0,0,0]`, quaternion 9.99e-16 — measured while the chase camera was still drifting 0.0032 m/frame, so the zero is the code holding, not a still world. Middle-drag pans at one world unit per screen unit; no auto-orbit. |
+| 3 | click the fire to refocus camp | Done — and it exposed a **pre-existing bug**: `_updateFocus` early-returned when `_focusCamp` was null, so `main` had no click-to-focus path at all and "click the car to come back" failed **34 of 117** pointer positions. Now 0. Photo mode also never set `input.suppressed`; held W dragged the camper **29 m** out of frame. |
+| 4 | 05:45 washed out | **Not the light rig.** `Grass.js`/`GroundCover.js` copied `sun.color` but never read `sun.intensity`, and 65% of the translucency pigment is a hardcoded amber `uGlowCol 0xffa235` — so the meadow glowed salmon while the key measured **decisively blue** (`(0.175,0.192,0.265)` at intensity 0.234). An earlier ablation under-read it because it scaled `uSunColor`, which never reaches `uGlowCol`. Blind: **27 for / 6 against / 23 ties** over 56 judgements, all twelve pre-dawn eye-level calls and five of six night calls for the fix. Night improved too. |
+| 6 | tree pop-in | The mid LOD binned as `mid[species*5 + (pvar % 2)]` — **three trees in five got a prototype grown from a different seed** at 84 m. Boundary IoU 0.379 → 0.671, crown height Δ 14.3% → 0.3%. Costs +38 draw calls and *fewer* triangles. The 255 m mid→far boundary is still unfaded; design and corrected price (**+20.2%** of mid instances, not the +9.9% first estimated) are in the `rebuildMove` note. |
+| 7 | waterfalls | Flow was correct on load, **reversed by 45 s, frozen by 150 s**. Separately, **11 of 28 falls** had `bottom[1]` literally `-9999`, putting plunge points 10 km down and audio emitters at ≈ −6712 m — no spray, mist, churn or sound. The dusk apron wedge was **not** the `climb`/`bench` gate two notes had blamed: forcing the fragment opaque kept the straight edges, so it is the apron **mesh** floating over chute walls and being sliced by the depth test. |
+| 8 | harsh, flickering shadows | Two causes. The texel snap **was not snapping** — it rounded world X/Z with `focus.y` raw, and at a 16° sun the light's up axis is near vertical (mean fractional texel 0.203, where 0.25 is unsnapped). And the extent re-fit every frame, walking 414 → 433 m in twelve steps. Crawl under camera motion → **0.00%**, verified live by deliberately breaking `_holdExtent` and watching it climb back to 3.51%. Depth-pass wind is damped, not frozen: `sway 0.5` keeps dapple moving at under half of main's flicker. |
+
+## Golden hour (5) — attempted, measured, reverted
+
+`hemiI` runs **1.16 at h18.3 against noon's 0.90** while the key falls to 60% of
+noon. That is backwards and it is why the terminator is weaker at golden hour
+than at midday: at `meadow`-18:15, **77.9% of ground sits in cast shadow at 88%
+of the lit value**, against 14% at ratio 1.41 at noon. Three earlier rounds all
+attacked this by raising `sunI` (one went to 3.90, *above* noon) and all three
+lost their blind test; the key arrives near-white at `#d5c7bf`, 1:0.934:0.897,
+so raising it lifts and desaturates rather than warms.
+
+Cutting the fill instead (0.98/1.16/1.10 → 0.88/0.84/0.86) was the first untried
+knob. Three blind judges across two independently built sets:
+
+| judge | views | fix | baseline | tie |
+|---|---|---|---|---|
+| A | sunlow, hero | **10** | 0 | 2 |
+| B | all four | 4 | 2 | 6 |
+| C | meadow, drive, river | 0 | **7** | 11 |
+
+**The split is by framing, not by hour.** Vistas gain a terminator; eye-level
+framings lose one. Two judges who never saw each other's frames independently
+condemned `drive` at 18:15 in nearly the same words — "dimmer AND flatter, muddy
+not moody" and "dim and muddier, the ground flattening into uniform brown."
+`drive` is the view the player spends the game inside. Reverted in `43b001c`.
+
+**For the next attempt:** the fill is what holds the eye-level ground off the
+floor once the key has dropped. Do not simply take it away — put something back.
+A warmer, lower `hemiGnd` rather than less `hemiI`, or a counter-key that
+survives to the horizon. Guards were clean on all three judges, so noon and
+night are not the constraint.
+
+## Three instrument traps this round, all of which produced clean wrong numbers
+
+- **`tod.mjs` ignored `AUTUMN_URL`** while every other tool honoured it, so a
+  before/after sweep silently sent both arms to a third worktree's server. The
+  frames were real and the means agreed to four decimals, which reads exactly
+  like a change that does nothing. It nearly caused the working grass fix to be
+  discarded. Fixed in `a283cf8`.
+- **`git stash` is one stack shared across all worktrees.** Three agents had
+  live work stashed at once; a bare `git stash pop` takes the *top* entry, i.e.
+  another agent's files. Caught before damage.
+- **Vite silently auto-increments off a busy port**, serving a different
+  worktree's code to a harness that thinks it is measuring its own. Cost one
+  critic four minutes and one agent a whole arm. `--strictPort` everywhere now.
+
+Also unresolved and worth a decision: **`WorldConfig.SEED` is `20262018` while
+every bake in `public/bakes/` is `20261018`**, so a default boot misses the cache
+and bakes a world live. Every tool this round had to pin `?seed=20261018`.
+
+**No frame-time figure from this round is trustworthy.** Six agents shared one
+machine and `ablate.mjs` disqualified itself on its own assertions every time —
+baseline drift 5–35 ms, "camper has not come to rest", "still streaming". The
+structural indicators (draw calls, triangle counts, program counts) are fine and
+are quoted per task; no millisecond claim survived.
+
+---
+
 # State — 2026-08-21, the performance ablation round
 
 The performance plan in the 2026-08-19 pivot entry below listed four items.
