@@ -1,0 +1,38 @@
+{
+ "mode": "still",
+ "passes": [
+  {
+   "name": "scene (+shadow map)",
+   "n": 134,
+   "p50": 58.719,
+   "p95": 61.58
+  },
+  {
+   "name": "ssao (N8AO)",
+   "n": 134,
+   "p50": 22.997,
+   "p95": 24.267
+  },
+  {
+   "name": "nan guard",
+   "n": 134,
+   "p50": 21.504,
+   "p95": 23.384
+  },
+  {
+   "name": "merged effects (dof,bloom,veil,tone,vignette,grade,smaa)",
+   "n": 134,
+   "p50": 52.811,
+   "p95": 57.836
+  }
+ ],
+ "frame": {
+  "p50": 36.5,
+  "p95": 74.3,
+  "n": 536
+ },
+ "quality": "high",
+ "megapixels": 3.78,
+ "calls": 580,
+ "tris": 6729358
+}

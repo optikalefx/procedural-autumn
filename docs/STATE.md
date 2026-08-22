@@ -1,3 +1,77 @@
+# State — 2026-08-21, the performance ablation round
+
+The performance plan in the 2026-08-19 pivot entry below listed four items.
+Three of them shipped (adaptive resolution, the tier fallback, `dprtest.mjs`
+re-baselined at `deviceScaleFactor` 2). The fourth — "the post chain, at 56-59%
+of frame time" — was never priced, because nothing in the harness could attribute
+frame time to a system. **`tools/ablate.mjs` now can, and this round is the
+answer.** Full write-up: **[PERF_FINDINGS.md](PERF_FINDINGS.md)**.
+
+No `src/` code changed this round. It is a measurement, not a fix.
+
+## Where the frame actually goes
+
+Parked in a meadow, 1920x1080 CSS at `devicePixelRatio` 2 (3.78 MP, tier `high`),
+adaptive resolution frozen: **35.8 ms, 27.9 fps**. Driving: 10-30 fps.
+
+| | ms | share |
+|---|---|---|
+| post chain (measured on an EMPTY scene, twice) | **10.5** | 63% of the whole 16.7 ms budget for 60 fps |
+| scene fragment shading (`scene.overrideMaterial` = flat basic) | **17.8** | 50% of the frame |
+| everything else — geometry, draw calls, streaming, all JS | ~7 | |
+| **all fourteen systems' `update()` combined** | **0.75** | 2% |
+
+## The three findings that change what to work on
+
+1. **There is no CPU problem.** Every system was switched off individually —
+   grass, ground cover, wildlife, vehicle physics, camp, audio, HUD, terrain
+   LOD — and every one measured within noise of zero. Optimising JavaScript here
+   is optimising 2% of the frame.
+2. **Every material is a `MeshStandardMaterial` with `metalness: 0.0`, and
+   `Stylize` then scales direct specular by `0.14`.** The full GGX lobe, the
+   Fresnel term, the multi-scatter compensation and the IBL path are computed on
+   every fragment and then thrown away, into a response `Stylize` computes
+   separately. This is the largest recoverable item in the game.
+3. **Trees are worth negative 5.2 ms** — hiding them makes the frame *slower*,
+   because they occlude the hillside behind them. The instinct to cut geometry
+   for frame rate is wrong here in both directions.
+
+Also: **no existing quality preset reaches 60 fps.** `medium` is 38, `low` is 54
+— and `low` is already 1024 shadows, no SSAO, no DOF, 30% grass and
+`pixelRatioCap` 1.0. The escape hatch does not reach the target.
+
+## What to do next
+
+`PERF_FINDINGS.md` ends with a ranked list, each item priced and each with the
+`ablate.mjs --only` command that verifies it. In short: delete depth of field
+(3.5 ms, one line), then re-base the materials off `MeshStandardMaterial` (up to
+17.8 ms, and the only item big enough to matter), then `PCFSoft` -> `PCF`, then
+the small ones. Pixel ratio is 9.6 ms and is deliberately listed last — it
+spends the adaptive scaler's remaining margin.
+
+## Two things this round did not answer
+
+- **p95 is 74 ms while p50 is 36 ms, parked, with nothing moving.** A steady
+  36 ms frame does not explain a doubling at the 95th percentile. Separate hunt.
+- **Overdraw is unquantified.** `fx.flatShade` proves the frame is fragment-bound
+  but not how many times each pixel is shaded. Spector.js is the tool, and the
+  answer decides whether a depth prepass is interesting or pointless.
+
+## A note on measuring anything here
+
+Do not trust a frame-time comparison that was not taken with paired baselines.
+An early version of the harness interleaved arms and alternated direction, and
+reported `draw.water` — water HIDDEN, strictly less work — as 20 ms SLOWER than
+a baseline taken thirty seconds earlier. After ~90 minutes of continuous
+measurement this rig's parked baseline drifted 36 ms -> 70 ms. The method notes
+in `tools/ablate.mjs` list six other traps of the same kind, each of which
+produced a confidently wrong number before it was fixed. Also: GPU timer queries
+(`EXT_disjoint_timer_query_webgl2`, which is what `stats-gl` reads) are broken on
+this ANGLE/Metal stack and will happily report 156 ms of GPU work inside a 36 ms
+frame — see `tools/gputime.mjs`.
+
+---
+
 # State — 2026-08-21, the camp round
 
 Park, hold the brake, pick a patch of ground near the camper, and a camp
