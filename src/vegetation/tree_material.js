@@ -661,24 +661,50 @@ void main() {
 // contribution (the same frozen instant rendered twice, once with
 // shadow.intensity 0) so that leaves waving in the LIT frame cancel exactly and
 // cannot be mistaken for this. Camera and shadow focus completely static, ground
-// pixels only, share changing by more than 0.02 luma per 0.25 s, seed 20261018:
+// pixels only, share changing by more than 0.02 luma per 0.25 s, seed 20261018.
+//
+// FIVE ARMS IN ONE BOOT, only these two uniforms touched between them:
 //
 //                              chase   drive
-//   as shipped                  3.59%   5.10%
-//   depth-pass wind frozen      0.63%   0.34%
+//   sway 1.0  flutter 1.0       2.64%   3.44%    <- what main ships
+//   sway 1.0  flutter 0.0       1.96%   3.07%
+//   sway 0.75 flutter 0.0       1.63%   2.47%
+//   sway 0.5  flutter 0.0       1.27%   1.54%
+//   sway 0.0  flutter 0.0       0.65%   0.34%
 //
 // and the tool's control column — the same threshold on the SHADOW-OFF frame,
 // i.e. leaves moving in the lit image, which is wanted and must not change —
-// is 1.163% / 0.867% in both arms, to three decimals. The canopy waves exactly
-// as it did; only its shadow stopped.
+// holds at 1.220-1.226% / 0.890-0.912% across all five arms. The canopy waves
+// exactly as it did in every one of them; only its shadow slows down.
 //
-// So: 0.0 / 0.0. The flutter is pure high-frequency noise at this scale and has
-// nothing to say in a shadow; the sway is legible on screen, where the canopy
-// still waves exactly as before, and is worth less than the crawl it costs on
-// the ground. Kept as uniforms rather than deleted so the next author can put
-// either half back — and slowly-swaying tree shadows are a real thing to want —
-// without editing a shader.
-const SHADOW_WIND = { sway: 0.0, flutter: 0.0 };
+// (An earlier revision of this note quoted 3.59 -> 0.63 and 5.10 -> 0.34 for
+// the two ends. The direction was right and the chase figure close, but `drive`
+// was overstated by more than 8x: it implied wind was nearly the whole of the
+// crawl there, when it is about a quarter of it. The residual at `drive` is
+// grass and ground cover, not trees. Do not re-quote the old pair.)
+//
+// So: sway 0.5, flutter 0.0.
+//
+// Flutter is pure high-frequency noise at this scale and has nothing to say in
+// a shadow — it is 2 cm at 2.6 Hz, sub-texel everywhere, and it costs 0.7 pts
+// at chase for a motion no one can resolve. Zero, and it should stay zero.
+//
+// Sway is a different thing and freezing it was an over-correction. NEAR leaves
+// are the only leaves that cast at all (Trees.js: `leafMesh.castShadow = kind
+// === 'near'`), so a frozen sway is precisely the up-close, under-a-tree case:
+// dappled light on the ground stops moving entirely while the canopy throwing
+// it visibly waves. Moving dapple is one of the loveliest things in a cozy
+// autumn frame and it is worth some crawl.
+//
+// 0.5 rather than 0.75 or 1.0 because the cost curve above is close to linear
+// in sway — there is no sweet spot in it to find — so the value is chosen
+// against the complaint, not against a knee. At 0.5 the wind's contribution is
+// under half of what main ships on both framings, the amplitude is still ~20 cm
+// (about three texels at the 7 cm eye-level extent, so plainly legible where it
+// matters), and the map-fit crawl that dominated the report is separately at
+// 0.00% — see the snap and extent-hold notes in Lighting.js. That fix, not this
+// one, is the big win: it took `chase` from 8.10% to 0.00% on camera motion.
+const SHADOW_WIND = { sway: 0.5, flutter: 0.0 };
 
 const LEAF_DEPTH_VERT = /* glsl */`
 attribute vec2 aCorner;

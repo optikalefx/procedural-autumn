@@ -30,7 +30,28 @@ await page.waitForFunction(() => window.__ready === true, null, { timeout: 30000
 
 const out = await page.evaluate(({ steps, stepM, flaty }) => {
   const THREE = window.__THREE, L = window.__lighting, wd = window.__world;
-  window.__engine.stop();
+  const e = window.__engine;
+  e.stop();
+  // ── THE SHADOW CAMERA'S BASIS IS ONLY CORRECT AFTER A DRAW — 2026-08-22 ──
+  //
+  // three never touches `sun.shadow.camera` from Lighting.update. The camera is
+  // positioned and aimed inside WebGLShadowMap.render, via
+  // LightShadow.updateMatrices(light), which happens during a frame. This probe
+  // stops the engine and then never draws, so `cam.matrixWorld` — and therefore
+  // `right` and `up` — was the basis from whatever the last rendered frame's
+  // sun direction happened to be, not the one the row is about.
+  //
+  // It is not a small error and it scales with the step size, because the whole
+  // measurement is a per-step delta projected onto that basis: on the SNAPPED
+  // build, at 4 m a step, the stale basis reported right 0.376 / up 0.435 —
+  // i.e. worse than the 0.25 this tool calls "random", on code that is in fact
+  // snapping exactly. So draw a frame each step and read the basis after it.
+  //
+  // `_render` is the engine's own render path minus the updaters, so this
+  // redraws without letting main.js's own lighting.update(dt, cam.position)
+  // overwrite the focus we just set. Same trick as shadowcrawl.mjs's
+  // __frozenDraw.
+  const draw = () => { if (e._render) e._render(0, e.elapsed); else e.renderer.render(e.scene, e.camera); };
   L.hour = 16.7; L.cycleSpeed = 0;
   const a = window.__cameraAnchors.road();
   const yaw = a.yaw ?? 0;
@@ -47,6 +68,7 @@ const out = await page.evaluate(({ steps, stepM, flaty }) => {
     const y0 = (window.__probeY ??= wd.getHeight(a.x, a.z) + 22);
     const f = new THREE.Vector3(x, flaty ? y0 : wd.getHeight(x, z) + 22, z);
     L.update(0, f);
+    draw();                       // see the note above: the basis needs a frame
     const cam = L.sun.shadow.camera;
     cam.updateMatrixWorld(true);
     const texel = (L.shadowExtent * 2) / L.preset.shadowMapSize;
