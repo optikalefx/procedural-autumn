@@ -1347,6 +1347,34 @@ export class Waterfalls extends System {
           let dt;
           if (hor > 0.6) {
             // ── free flight ───────────────────────────────────────────────
+            //
+            // UNDISCLOSED DELTA, stated here because it rode along with the
+            // time-of-flight fix below and changes the SHAPE of every chute,
+            // not just its speed. This was `dsH / v0` — the lip's horizontal
+            // speed, held constant for the whole descent. It is now the live
+            // `vh`, which the sliding branch below accelerates.
+            //
+            // Measured on the shipped bake with tools/_scratch/chutespeed.mjs,
+            // which recovers the integrator's own horizontal speed from the
+            // stored flight times as dsH / (flight[i] - flight[i-1]) and so
+            // needs no instrumentation in this file: every one of the 28 falls
+            // has a horizontal run, and vh grows from lip to foot by a median
+            // factor of **10.9** (max 31). So the dt of a step near the foot is
+            // about eleven times smaller than it was, and the mean dt over a
+            // whole fall about 2.7 times smaller (the 74 m fall's flight goes
+            // 13.7 s -> 5.1 s, the number the note below quotes).
+            //
+            // Two consequences, both wanted, neither previously written down:
+            //
+            //   1. `yNext = y + vyT * dt` steps a shorter arc per iteration, so
+            //      a path that has already slid steeply stays pinned to the
+            //      rock instead of launching off a convex lip. A fall reads as
+            //      a cascade hugging stone rather than as a curtain that
+            //      periodically leaves it. This is a silhouette change.
+            //   2. Time of flight is the spray's loop coordinate, so spray on
+            //      chutes advects about 2.7x faster. That is the point of the
+            //      fix, but it is a visible rate change on 28 of 28 falls and
+            //      should not be discovered by a critic.
             dt = dsH / Math.max(vh, 0.4);
             const vyT = vy - G * dt;
             let yNext = y + vyT * dt;
@@ -1809,6 +1837,29 @@ export class Waterfalls extends System {
         // `plunge` framing — isolating the mesh (tools/falliso.mjs) gave a
         // frame indistinguishable from one with the burst hidden, three specks
         // in it. The plunge is judged at 40-90 m, not at two.
+        //
+        // ── and the three of them together are UNPRICED ────────────────────
+        //
+        // This uniform, the 0.48 per-sprite alpha and the 1.20 payback exponent
+        // in BURST_FRAG were each argued on its own and each is defensible on
+        // its own. Multiplied out they are not a tweak: 2.4 -> 3.4 px is ~2.0x
+        // the sprite AREA, 0.34 -> 0.48 is 1.4x the per-sprite alpha, and 1.45
+        // -> 1.20 raises alpha further at exactly the ranges the plunge is
+        // framed from. Net, the burst composites at roughly **2x** the opacity
+        // it did, over 14,504 instanced quads that are not frustum culled and
+        // reach to uCullDist 2600.
+        //
+        // Opacity IS fill cost, and this file's own header plus
+        // docs/PERF_FINDINGS.md both say this frame is fragment bound — the
+        // header's own measurement is that hiding all three particle layers is
+        // -1.6% (iqr 3.3%), i.e. the layers were nearly free at the OLD
+        // opacity, which is not evidence about them at the new one. Nobody has
+        // re-measured since. It is filed rather than fixed because the visual
+        // argument for each knob is sound and the cost may well still be noise;
+        // what is not acceptable is that it is unknown. Settle it with
+        // tools/ablate.mjs on an interleaved sceneab of the burst layer at the
+        // plunge and fallbase framings, which is the same instrument that
+        // produced the -1.6%, and put the number here.
         uMinPx:    { value: 3.4 },
       }),
       vertexShader: BURST_VERT,

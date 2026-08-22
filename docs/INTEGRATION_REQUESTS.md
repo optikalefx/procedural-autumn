@@ -6686,13 +6686,32 @@ dead-straight top edge and it extends past the white column's own silhouette,
 which is consistent with the sheet being drawn out to 1.25 half-widths at a low
 alpha that this band makes visible.
 
-The most likely mechanism, unverified: `wSteps` quantises `lanes` into three
-flat levels, and `lanesWide` — its step softness — is driven off `sheetDist`
-through `mix(0.17, 0.5, smoothstep(60.0, 200.0, sheetDist))`. Distance varies
-monotonically down a fall receding from the camera, so a quantisation boundary
-lands at a fixed height on the fall and is drawn as a horizontal edge. The
-same distance also gates `fineFade` and `hairFade`. Anyone testing this should
-freeze `lanesWide` at a constant and capture `fallbase` before and after.
+**That mechanism is now REFUTED — do not spend a round on it.** The guess was
+that `wSteps` quantises `lanes` into three flat levels and that `lanesWide`, its
+step softness, is driven off `sheetDist` through
+`mix(0.17, 0.5, smoothstep(60.0, 200.0, sheetDist))`, so a quantisation boundary
+lands at a fixed height on a receding fall and is drawn as a horizontal edge.
+The note asked for exactly one test — freeze `lanesWide` at a constant and
+capture — and `tools/_scratch/seamprobe.mjs` runs it, plus the two other
+distance-driven terms the note named, from one page load:
+
+| variant | bar |
+|---|---|
+| `all` (untouched) | present, top edge at screen y 567 on `waterfall` |
+| `lanesWideConst` (`lanesWide = 0.33`) | **unchanged**, same y, same edge |
+| `fadesConst` (`fineFade = hairFade = 1.0`) | unchanged |
+| `allDistConst` (those three **and** `lodFar = 0.0`) | unchanged |
+
+So it is not `lanesWide`, and it is not any distance-driven term in the sheet.
+Crops in `shots/r2/crops/seam-*.png`, at 4x, all at the same pixel window.
+
+What that leaves, for whoever picks it up: the bar is fixed in the FALL's own
+parameter space, not the camera's. It is drawn by `WaterfallSheets` alone, at a
+constant height on the fall across builds, with a dead-straight un-feathered top
+edge that extends past the white column into the low-alpha skirt the sheet draws
+out to 1.25 half-widths. The path texture is `LinearFilter`, so it is not a
+nearest-texel step. The next thing to isolate is therefore something keyed on
+`aU` / `aFlight` rather than on `sheetDist`.
 
 ### 3. `plunge` and `falllip` do not frame their subjects
 
