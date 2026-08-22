@@ -141,6 +141,37 @@ const CFG = {
   // traffic (see `_commitFar`), which is the periodic hitch that note exists
   // to describe. Neither is worth it against a defect now measured at a
   // fraction of what it was.
+  //
+  // ── the 255 m boundary is a different question, and it is still open ─────
+  //
+  // A critic pointed out, correctly, that neither objection above transfers to
+  // mid->far, and mid->far is now the LARGER of the two pops: excess over the
+  // parallax floor ~4.0% at 255 m against 2.4-2.9% at 84 m, and the drive
+  // ratios did not move (2.00->2.11, 2.24->2.34, 2.36->2.19). At 255 m the mid
+  // bark is one or two pixels wide and can hard-switch, so there is nothing to
+  // z-fight; the impostor material and the mid leaf material both alpha-test
+  // already, so neither has early-Z to forfeit; and IMP_VERT already computes
+  // `length(toCam)` for its own draw-distance fade, so the fade-IN is one more
+  // smoothstep multiplied into `vFade` and a matching fade-OUT on the mid leaf.
+  // The band would be extended OUTWARD from mid, not inward from near, so the
+  // expensive LOD is not touched at all.
+  //
+  // What stopped it was the price, and the price is not what it looks like.
+  // The band itself, 244-266 m, is 9.9% of the mid population — cheap. But the
+  // binning is quantised by this constant, so the bands have to overlap by
+  // `rebuildMove` on EACH side or the fade arrives in 11 m steps, which is the
+  // stutter it exists to remove. In bin space that is 233-277 m, and mid then
+  // runs to 277 instead of 255: (277^2 - 255^2) / (255^2 - 84^2) = +20.2% of
+  // mid instances, twice the figure the band alone suggests. Mid is the most
+  // numerous LOD in the game by four to one.
+  //
+  // +20% of the most numerous LOD, unpriced, is not a trade to make blind, and
+  // it could not be priced this round: `ablate.mjs` and an independent
+  // critic's own harness both disqualified themselves under machine
+  // contention (baseline drift 5.1-34.6 ms, "the camper has not come to rest",
+  // "HIT THE CAP — still streaming"). Whoever picks this up: the design above
+  // is complete, the cost is +20.2% mid instances, and the first job is a
+  // frame-time number on a quiet machine.
   rebuildMove: 11,
 
   capNear: 700,          // instance cap per species-variant
