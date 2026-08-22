@@ -331,14 +331,15 @@ export const SOUNDS = [
     bus: 'ambience',
     module: 'src/audio/ambience.js',
     blurb: 'Layer 1. A band around 820 Hz is the dry rustle; the shelf under it '
-      + 'is the body of moving air. Level is 0.235 · openness · strength · indoors.',
+      + 'is the body of moving air. Level is 0.210 · openness · strength · indoors, '
+      + 'and strength is a 4.4 dB span — this bed swells, it does not gust.',
     layers: ['grass'],
     meterLayers: ambLayer('grass'),
     frame: ambienceFrame,
     params: [
       WIND, { ...OPEN, def: 0.9 }, ALT, INDOORS,
       readout('mGrass', 'model gain', (r) => r.audio.ambience.state.grass, { src: 'ambience.js:191' }),
-      readout('mGrassF', 'grassLow cutoff', (r) => r.audio.ambience.grassLow.frequency.value, { unit: 'Hz', src: 'ambience.js:219 — 740 + breeze·540' }),
+      readout('mGrassF', 'grassLow cutoff', (r) => r.audio.ambience.grassLow.frequency.value, { unit: 'Hz', src: 'ambience.js — 760 + breeze·330' }),
       range('grassBandHz', 'grassBand centre', 200, 2200, 820, { unit: 'Hz', step: 1, src: 'ambience.js:98', apply: P('ambience.grassBand.frequency') }),
       range('grassBandQ', 'grassBand Q', 0.1, 4, 0.55, { step: 0.01, src: 'ambience.js:98', apply: P('ambience.grassBand.Q') }),
       range('grassLow2Hz', 'grassLow2 cutoff', 300, 6000, 1500, { unit: 'Hz', step: 1, src: 'ambience.js:103', apply: P('ambience.grassLow2.frequency') }),
@@ -347,10 +348,10 @@ export const SOUNDS = [
       range('grassRate', 'noise playback rate', 0.4, 1.6, 1.0, { step: 0.01, src: 'ambience.js:97', apply: (r, v) => { r.audio.ambience.grassSrc.playbackRate.value = v; } }),
     ],
     needs: [
-      'ambience.js:191 — the 0.235 grass level constant is inline in update().',
-      'ambience.js:104 — grassSwell rate 0.037 Hz / depth 0.55: swell() discards its LFO handle.',
-      'ambience.js:108 — the 0.061 Hz / 210 Hz band LFO handle is discarded.',
-      'ambience.js:185-186 — the breeze curve (0.32, 0.94, 0.26 + 0.88·b²).',
+      'ambience.js — the 0.210 grass level constant is inline in update().',
+      'ambience.js — grassSwell rate 0.037 Hz / depth 0.13: swell() discards its LFO handle.',
+      'ambience.js — the 0.061 Hz / 210 Hz band LFO handle is discarded.',
+      'ambience.js — the breeze curve (0.32, 0.94, 0.30 + 0.20·b).',
     ],
   },
   {
@@ -377,8 +378,8 @@ export const SOUNDS = [
       range('coniferRate', 'noise playback rate', 0.4, 1.6, 0.93, { step: 0.01, src: 'ambience.js:116', apply: (r, v) => { r.audio.ambience.coniferSrc.playbackRate.value = v; } }),
     ],
     needs: [
-      'ambience.js:195 — the 0.165 conifer level constant is inline in update().',
-      'ambience.js:120 — coniferSwell rate 0.029 Hz / depth 0.58.',
+      'ambience.js — the 0.148 conifer level constant is inline in update().',
+      'ambience.js — coniferSwell rate 0.029 Hz / depth 0.13.',
     ],
   },
   {
@@ -401,8 +402,8 @@ export const SOUNDS = [
       range('hushRate', 'noise playback rate', 0.3, 1.4, 0.61, { step: 0.01, src: 'ambience.js:130', apply: (r, v) => { r.audio.ambience.hushSrc.playbackRate.value = v; } }),
     ],
     needs: [
-      'ambience.js:199 — the 0.180 hush level constant and its lerp(0.55, 1.15, breeze).',
-      'ambience.js:132 — hushSwell rate 0.023 Hz / depth 0.48.',
+      'ambience.js — the 0.180 hush level constant and its lerp(0.80, 1.05, breeze).',
+      'ambience.js — hushSwell rate 0.023 Hz / depth 0.14.',
     ],
   },
   {

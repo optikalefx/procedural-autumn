@@ -170,6 +170,16 @@ export class Audio extends System {
         // reading even came back with the lit camp QUIETER than the unlit one.
         // A layer you cannot measure is a layer nobody can tune.
         camp: this.camp.bus,
+        // Same argument, one level finer, for the three wind beds. "The wind is
+        // too loud" is a complaint about ONE of the five things on the ambience
+        // bus, and the bus tap cannot tell grass from conifers from birds — a
+        // gust and a bird call both just make the number go up. These tap each
+        // wind layer's own output gain, so `tools/windtest.mjs` can report a
+        // gust-peak-to-calm-floor ratio for the layer the note is about rather
+        // than for the bed as a whole. Silent: an analyser is a passive probe.
+        windGrass: this.ambience.grassGain,
+        windConifer: this.ambience.coniferGain,
+        windHush: this.ambience.hushGain,
       };
       for (const [name, node] of Object.entries(tapPoints)) {
         const a = actx.createAnalyser();

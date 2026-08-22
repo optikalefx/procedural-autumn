@@ -94,6 +94,15 @@ export class Ambience {
     // normal (`tools/_scratch/lfoprobe.mjs`). That is why the bed ignored the
     // weather, why the conifer hiss played in open meadow, and why two rounds
     // of cutting the bus gain did not fix "the wind is too loud".
+    //
+    // Swell DEPTH, 0.55 -> 0.13. A depth of 0.55 breathes between x0.45 and
+    // x1.55, which is 10.7 dB of movement on top of whatever the weather is
+    // already doing — and multiplied by the old weather curve it gave the grass
+    // bed a measured 21.9 dB between its quietest and loudest running RMS
+    // (`node tools/windtest.mjs`, 260 s, 3.4 gust cycles). A bed that moves by
+    // 20 dB is not a bed, it is an arriving event, and the ear follows it every
+    // time. x0.87 … x1.13 is 2.3 dB: still audibly breathing at 27 s a cycle,
+    // never something you turn your head for.
     this.grassSrc = noiseSource(actx, pink);
     this.grassBand = filter(actx, 'bandpass', 820, 0.55);
     // Two poles rather than one. Harshness is spectral before it is loud, and
@@ -101,7 +110,7 @@ export class Ambience {
     // energy above 2 kHz — right in the ear's most sensitive octave.
     this.grassLow = filter(actx, 'lowpass', 1100, 0.7);
     this.grassLow2 = filter(actx, 'lowpass', 1500, 0.5);
-    this.grassSwell = swell(actx, 0.037, 0.55, 0.4);
+    this.grassSwell = swell(actx, 0.037, 0.13, 0.4);
     this.grassGain = gain(actx, 0);
     this.grassSrc.connect(this.grassBand).connect(this.grassLow).connect(this.grassLow2)
       .connect(this.grassSwell).connect(this.grassGain).connect(bus);
@@ -113,11 +122,16 @@ export class Ambience {
     // player they have driven into the trees. It is a *hiss*, so it is the
     // layer most able to fatigue — the band is narrower and capped than it
     // was, and it now genuinely plays only where there are conifers.
+    //
+    // Swell depth 0.58 -> 0.13, for the same reason as the grass bed and with
+    // the same measurement behind it: 16.3 dB p95/p5 and 21.0 dB max/min over
+    // 160 s parked in a conifer stand. A hiss that surges is the single most
+    // fatiguing thing this game can play.
     this.coniferSrc = noiseSource(actx, pink2, 0.93);
     this.coniferBand = filter(actx, 'bandpass', 1850, 0.7);
     this.coniferHi = filter(actx, 'highpass', 620, 0.5);
     this.coniferCap = filter(actx, 'lowpass', 3200, 0.6);
-    this.coniferSwell = swell(actx, 0.029, 0.58, 2.0);
+    this.coniferSwell = swell(actx, 0.029, 0.13, 2.0);
     this.coniferGain = gain(actx, 0);
     this.coniferSrc.connect(this.coniferHi).connect(this.coniferBand).connect(this.coniferCap)
       .connect(this.coniferSwell).connect(this.coniferGain).connect(bus);
@@ -126,10 +140,12 @@ export class Ambience {
     // ── layer 3: the hush at altitude ─────────────────────────────────────
     // Almost no information — a low moving air mass with the top rolled off.
     // Its job is to make high ground feel *empty*, so it comes in as the other
-    // layers are being taken away.
+    // layers are being taken away. Swell depth 0.48 -> 0.14 alongside the other
+    // two: it is the same wind, and a low mass of air that surges reads as a
+    // storm coming rather than as altitude.
     this.hushSrc = noiseSource(actx, pink, 0.61);
     this.hushLow = filter(actx, 'lowpass', 320, 0.8);
-    this.hushSwell = swell(actx, 0.023, 0.48, 1.4);
+    this.hushSwell = swell(actx, 0.023, 0.14, 1.4);
     this.hushGain = gain(actx, 0);
     this.hushSrc.connect(this.hushLow).connect(this.hushSwell).connect(this.hushGain).connect(bus);
     lfo(actx, 0.021, 110, this.hushLow.frequency, 0.7);
@@ -169,34 +185,55 @@ export class Ambience {
     const actx = this.actx;
     const wind = clamp(L.wind, 0.35, 2.2);
 
-    // How hard it is blowing, 0.16 … 1.31.
+    // How hard it is blowing, 0.30 … 0.50 — a 4.4 dB span.
     //
-    // `wind` is Weather's whole-valley gust envelope, and in practice it runs
-    // 0.35 … 1.26 — not 0 … 2. The old curve normalised it against 1.8 and
-    // then lerped 0.55 … 1.5, which compressed the entire real range of the
-    // weather into 4.4 dB. Normalised against the range the weather actually
-    // produces, and squared, the same weather now spans 18 dB.
+    // `wind` is Weather's whole-valley gust envelope
+    // (`wind.js`: `0.78 + 0.34·sin(0.083 t) + 0.14·sin(0.211 t)`, so a 75.7 s
+    // primary period), and in practice it runs 0.35 … 1.26 — not 0 … 2. The
+    // normalisation below is against the range the weather actually produces,
+    // and that part is right and stays.
     //
-    // That is deliberately *more* dynamic than before, not less. The player's
-    // note was that the quiet moments are the good ones and the loud ones are
-    // too much, which is a complaint about the floor being high rather than
-    // the peak being high — so the answer is to widen the gap, not to flatten
-    // everything toward the middle.
+    // The CURVE on top of it was `0.26 + 0.88·breeze²`, spanning 12.8 dB, and
+    // it was widened deliberately: the reasoning of the day was that the quiet
+    // moments are the good ones and the loud ones are too much, therefore
+    // widen the gap rather than flatten toward the middle. Measured, that was
+    // the wrong half of the sentence. `node tools/windtest.mjs` over 260 s —
+    // 3.4 full gust cycles, `L.wind` sweeping its whole 0.350 … 1.260 — found
+    // the grass bed's running RMS moving 17.6 dB p95/p5 and 21.9 dB max/min,
+    // peaking at -21.1 dBFS at the tap with a crest factor of 18.9 dB. Twenty
+    // decibels is the difference between a whisper and a conversation. Nothing
+    // in a cozy driving game should do that to you every seventy-five seconds.
+    //
+    // Linear in `breeze` rather than squared, and 0.30 … 0.50 rather than
+    // 0.26 … 1.14. The floor is deliberately almost exactly where it was
+    // (0.30 × 0.210 = 0.063 against the old 0.26 × 0.235 = 0.061) — the calm
+    // bed was never the complaint — and the ceiling comes down to meet it, so
+    // a gust now lands about where the old MEDIAN sat. Weather is still
+    // legible: you hear it rise and fall, in level and in brightness, over
+    // tens of seconds. It just no longer arrives.
     const breeze = clamp01((wind - 0.32) / 0.94);
-    const strength = 0.26 + 0.88 * breeze * breeze;
+    const strength = 0.30 + 0.20 * breeze;
 
     // Open ground: gold meadow and dry grass. Fades out under canopy and above
     // the treeline, both of which have their own layer.
     const openness = clamp01(L.open) * (1 - L.altitude * 0.75);
-    const grass = 0.235 * openness * strength * L.indoors;
+    // 0.235 -> 0.210 is a 1.0 dB trim, and that is all it is meant to be. The
+    // complaint is about gusts, and gusts are the `strength` curve and the
+    // swell node above; a level constant cannot tell a gust from a calm and
+    // pulling hard on it here is how you end up with no wind at all.
+    const grass = 0.210 * openness * strength * L.indoors;
     // Conifers: keyed off moisture/forest weight, which is what actually puts
     // the trees there. Lower than the grass bed because it is a hiss and sits
     // an octave higher, where the ear is roughly 1 dB *more* sensitive.
-    const conifer = 0.165 * clamp01(L.forest) * strength * L.indoors;
+    // 0.165 -> 0.148, the same 1 dB trim, so the two beds keep their balance.
+    const conifer = 0.148 * clamp01(L.forest) * strength * L.indoors;
     // Altitude hush ramps in over the last stretch below the treeline. It is
     // nearly all sub-500 Hz, where the ear gives up 9 dB, so it carries a
-    // higher number for the same loudness.
-    const hush = 0.180 * L.altitude * lerp(0.55, 1.15, breeze);
+    // higher number for the same loudness. Its own weather term was
+    // lerp(0.55, 1.15) — 6.4 dB, wider than the whole grass curve is now — and
+    // is 0.80 … 1.05, or 2.4 dB. The 0.180 constant is untouched: this layer's
+    // absolute level was never in question, only how much it moved.
+    const hush = 0.180 * L.altitude * lerp(0.80, 1.05, breeze);
 
     // Crickets: dusk and the short hour before dawn, and never on bare rock or
     // snow — they live in the grass.
@@ -213,10 +250,13 @@ export class Ambience {
     this.sm.conifer.set(conifer, actx);
     this.sm.hush.set(hush, actx);
     this.sm.cricket.set(cricket, actx);
-    // Wind gets brighter as it strengthens — a gust you can hear arrive. The
-    // ceiling came down with it: at 1200 + wind*900 this sat near 1.9 kHz, and
-    // a fifth of the bed's energy was above 2 kHz.
-    this.sm.grassF.set(740 + breeze * 540, actx);
+    // Wind gets brighter as it strengthens. The ceiling came down once already
+    // — at 1200 + wind*900 this sat near 1.9 kHz and a fifth of the bed's
+    // energy was above 2 kHz — and the SWING comes down now, 540 Hz -> 330 Hz.
+    // A lowpass opening from 740 to 1280 Hz over a pink bed is not only a
+    // timbre change, it is level: it was part of what made a gust an event
+    // rather than a swell. 760 … 1090 keeps the cue and halves what it costs.
+    this.sm.grassF.set(760 + breeze * 330, actx);
 
     this.state.grass = grass;
     this.state.conifer = conifer;
