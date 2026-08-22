@@ -48,6 +48,15 @@ export const VIEWS = {
   hero:      { anchor: 'vista',    height: 62,  dist: 150, pitch: -0.16, fov: 46, hour: 16.7 },
   // Eye-level drive shot: what the player actually stares at for hours.
   drive:     { anchor: 'road',     height: 4.2, dist: 12,  pitch: -0.10, fov: 55, hour: 16.7, standOff: 16 },
+  // The zoomed-OUT drive shot, and the framing the player's shadow complaint is
+  // about. Every other view here is eye level or a vista; none of them is the
+  // chase camera at the far end of its wheel, which is where a shadow-map defect
+  // is worst — the camera is 22 m up, so Lighting's extent ramp opens the
+  // frustum to ~410 m, a texel is 20 cm, and a tree's crown dapple lands at
+  // about that size. Posed off CameraRig's own numbers at zoom 48 of 68:
+  // restPitch(48) = 0.467 rad, boom height 48*sin = 21.6 m, ground distance
+  // 48*cos = 42.8 m, fov 50 - wide*9 = 44.5.
+  chase:     { anchor: 'road',     height: 22,  dist: 60,  pitch: -0.42, fov: 45, hour: 16.7, standOff: 43 },
   // Down in the meadow, grass in the foreground.
   meadow:    { anchor: 'meadow',   height: 1.6, dist: 6,   pitch: -0.05, fov: 58, hour: 17.2 },
   // Forest interior — canopy, trunks, dappled light.

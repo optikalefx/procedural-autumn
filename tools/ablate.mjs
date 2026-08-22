@@ -151,6 +151,9 @@ const H        = parseInt(arg('h', '1080'), 10);
 const DPR      = parseFloat(arg('dpr', '2'));
 const PORT     = arg('port', '5180');
 const RES      = arg('res', '1536');
+// public/bakes/ is keyed on seed 20261018 while WorldConfig.SEED is not, so an
+// unpinned run bakes the world from scratch — minutes, on a timing rig, per boot.
+const SEED     = arg('seed', null);
 const QUALITY  = arg('quality', null);          // null = let pickQuality decide
 const ROUNDS   = parseInt(arg('rounds', '3'), 10);
 const BLOCK_MS = parseFloat(arg('block', '2000'));
@@ -198,6 +201,7 @@ page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; })
 
 const params = new URLSearchParams({ res: RES });
 if (QUALITY) params.set('quality', QUALITY);
+if (SEED) params.set('seed', SEED);
 await page.goto(`http://127.0.0.1:${PORT}/?${params}`, { waitUntil: 'domcontentloaded' });
 const navAtStart = navigations;
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 300000, polling: 300 });

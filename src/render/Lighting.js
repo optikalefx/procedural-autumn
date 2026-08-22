@@ -879,8 +879,61 @@ export class Lighting {
     // HIGH-VALUE violet-blue mass". Also back toward the 0.52 the art-director
     // correction originally asked for, without going all the way and losing the
     // shadow shapes that draw the forms.
-    this.sun.shadow.intensity = 0.62;
-    this._setShadowExtent(220);
+    //
+    // ── 0.44, AND THE TRANSFER HAS MOVED UNDER EVERY NUMBER ABOVE ───────────
+    //
+    // The player's report is that shadows are "too harsh … very poppy … tone
+    // them a ton". The measurement agrees, and the reason none of the notes
+    // above caught it is that they are all quoting a *separation* that this
+    // chain no longer produces at the same intensity. Same instrument
+    // (tools/_scratch/sepdiag.mjs), same target, run today at 0.62:
+    //
+    //             separation      the note above records
+    //   drive        0.282        0.194 at 0.66,  0.233 at 0.78
+    //   meadow       0.250        0.152 at 0.66,  0.187 at 0.78
+    //
+    // i.e. today's 0.62 is deeper than the old 0.88 was. Something downstream —
+    // most plausibly the cool mass in Stylize ceasing to be luminance-preserving
+    // — steepened the response by about half again, and the constant was never
+    // re-derived against it. So the historical warning that "0.46 was
+    // technically present and visually absent" does NOT transfer: 0.44 today
+    // lands a *deeper* shadow than 0.66 did when that was written.
+    //
+    // Re-derived against the plate rather than against those numbers. Plate 1's
+    // cast tree shadow on gold is srgb(148,106,47), luma 0.433, against sunlit
+    // gold at 0.69-0.73 — a shaded/sunlit display-luma RATIO of 0.59-0.63.
+    // Ratio, not separation, because it is invariant to where the exposure sits.
+    // Swept in one boot, seed 20261018:
+    //
+    //   intensity   chase   drive  meadow    hero   peaks   <- shaded/unshadowed
+    //     0.62      0.526   0.541   0.593   0.753   0.720
+    //     0.52      0.562   0.561   0.628   0.797   0.767
+    //     0.44      0.609   0.591   0.676   0.829   0.782
+    //     0.36      0.647   0.644   0.712   0.860   0.822
+    //
+    // 0.44 puts `chase` and `drive` — the two framings the report is about —
+    // exactly on the plate's band, with `meadow` a little over; 0.36 is past it
+    // everywhere. The shadow is still plainly a shape: separation 0.248 / 0.253
+    // of display luma on those two, against the 0.21-0.23 this file's own target
+    // above asks for. And the shaded pixels come back WARMER than they were,
+    // srgb(151,87,50) at chroma 0.399 against 0.367 at 0.62, because a shadow
+    // with more sun left in it has more colour in it. That is the difference
+    // between shade and a hole, and nothing here removes a cast shadow, which is
+    // the failure the note above is guarding.
+    //
+    // WHAT THIS COSTS, STATED: the two vistas were never in that band and this
+    // takes them further out of it — `hero` 0.753 -> 0.829, separation 0.144 ->
+    // 0.099. That is not really a shadow-intensity quantity: at 0.62 `hero` was
+    // already 0.20 above `drive` because several hundred metres of haze has
+    // eaten the difference before the grade sees the pixel (see the sweep beside
+    // FOG_DENSITY_SCALE, which measures exactly that authority). A vista black
+    // point wants the haze or the massif term, not a darker cast shadow under
+    // the player's wheels.
+    this.sun.shadow.intensity = 0.44;
+    // 200, not 220, purely so the boot value sits on _holdExtent's ladder: the
+    // hold band is wide enough that an off-ladder start can be kept forever.
+    // It is overwritten by the first update() that gets a focus either way.
+    this._setShadowExtent(200);
     scene.add(this.sun);
     scene.add(this.sun.target);
 
@@ -927,7 +980,15 @@ export class Lighting {
     // more so, because at night there is much less ambient to fill it and the
     // reference night plates never show a true black shadow on snow. Lighter
     // than the sun's 0.62 for that reason.
-    this.moon.shadow.intensity = 0.52;
+    //
+    // 0.38, tracking the sun's 0.62 -> 0.44 at the same 0.84 ratio this note
+    // asks for. DERIVED, NOT MEASURED: the harshness sweep above was run at
+    // golden hour and nothing in this round photographed a night frame. It is
+    // moved rather than left because leaving it at 0.52 against a sun at 0.44
+    // would make the moon's shadow the DARKER of the two, which is the exact
+    // inversion of the sentence above it. If a night round disagrees, this is
+    // the number to re-derive, and `tools/_scratch/moonshadow.mjs` is the rig.
+    this.moon.shadow.intensity = 0.38;
     scene.add(this.moon);
     scene.add(this.moon.target);
 
@@ -1099,6 +1160,24 @@ export class Lighting {
   }
 
   // ── shadows ────────────────────────────────────────────────────────────────
+
+  /**
+   * Quantise a requested shadow extent onto a coarse ladder, with a hold band
+   * so that ordinary driving never moves it. See the note at the call site:
+   * a continuously re-fitted extent rescales the texel grid every frame, which
+   * defeats the snap below it and makes the whole depth map crawl.
+   *
+   * Returns the CURRENT extent unchanged unless the request has moved by more
+   * than three quarters of a rung, so the ladder cannot chatter between two
+   * neighbouring rungs on a surface that happens to sit on a boundary.
+   */
+  _holdExtent(want) {
+    const RUNG = 50;
+    if (this.shadowExtent > 0 && Math.abs(want - this.shadowExtent) < RUNG * 0.75) {
+      return this.shadowExtent;
+    }
+    return clamp(Math.round(want / RUNG) * RUNG, 150, 900);
+  }
 
   _setShadowExtent(e) {
     if (Math.abs(e - this.shadowExtent) < 0.5) return;
@@ -1429,14 +1508,82 @@ export class Lighting {
       const wd = globalThis.__world;
       const terrainY = wd?.getHeight ? wd.getHeight(focus.x, focus.z) : null;
       const above = Number.isFinite(terrainY) ? focus.y - terrainY : focus.y - 6;
-      this._setShadowExtent(clamp(150 + Math.max(above, 0) * 12.0, 150, 900));
+      // ── AND IT HAS TO HOLD STILL — 2026-08-22 ───────────────────────────
+      //
+      // The ramp above is continuous in the camera's height over the ground, so
+      // it re-fitted the frustum EVERY FRAME while driving. Probed
+      // (tools/_scratch/snapprobe.mjs) at the zoomed-out chase framing, walking
+      // a focus point 0.23 m a step — which is 14 m/s at 60 fps — over rolling
+      // ground: the extent walked 414 -> 433 m in twelve steps, about 1.7 m a
+      // frame. Every one of those changes rescales `texelWorld`, so the snap
+      // below lands on a DIFFERENT world grid each frame and the depth map
+      // slides continuously under the world. Both biases are derived from the
+      // same number and were sliding with it.
+      //
+      // So quantise it and hold it. The ladder is 50 m, and the hold band is
+      // three quarters of that, so the extent only moves when the camera's
+      // height over the ground changes by more than about 3 m — a climb out of
+      // the valley, not a bump in the road. Every canonical framing lands where
+      // it did: `hero` (62 m up) and `peaks` (120 m) at the 900 m cap, `dawn`
+      // at 750, and every eye-level frame at 150-200.
+      this._setShadowExtent(this._holdExtent(clamp(150 + Math.max(above, 0) * 12.0, 150, 900)));
 
       const texelWorld = (this.shadowExtent * 2) / this.preset.shadowMapSize;
-      const sx = Math.round(focus.x / texelWorld) * texelWorld;
-      const sz = Math.round(focus.z / texelWorld) * texelWorld;
-      // Push the target slightly down-sun so more of the frustum lands in
-      // front of the camera rather than behind it.
-      this.sun.target.position.set(sx, focus.y, sz);
+      // ── SNAPPING IN WORLD X AND Z IS NOT SNAPPING ───────────────────────
+      //
+      // This used to round focus.x and focus.z to the texel grid and pass
+      // focus.y through untouched. Neither half of that is the quantity that
+      // matters: a shadow texel is a cell of the LIGHT's own image plane, so
+      // what has to be an integer is the target's offset along the light's
+      // right and up axes, and the light's up axis at a 16-degree golden-hour
+      // sun is very nearly world vertical — i.e. almost exactly the component
+      // that was being passed through raw.
+      //
+      // Measured before the change, same probe, extent held constant so only
+      // the snap is in play, offsets in texels:
+      //
+      //                            before          after
+      //   mean |fractional texel|  right 0.011     right 0.003
+      //                            up    0.203     up    0.004
+      //
+      // 0.25 is what a completely unsnapped quantity averages, so the map was
+      // sliding along its own vertical by a random fraction of a texel every
+      // frame — which is exactly the "crawl worst when zoomed out" report, the
+      // texel being 20 cm at the chase framing and 7 cm at eye level.
+      //
+      // The shadow camera looks down `dir` with three's default up of +Y, so
+      // its basis is right = normalise(Y x dir), up = dir x right. `dir.y` is
+      // capped at 0.95 by computeSunDir, so the cross product never degenerates.
+      //
+      // What it is worth on screen, from tools/_scratch/shadowcrawl.mjs with the
+      // CLOCK frozen and only the shadow focus walking 1.5 m — so nothing in the
+      // frame moves except the shadow map's own fit, and the tool's control
+      // column reads 0.000% by construction. Ground pixels changing by more than
+      // 0.02 luma, seed 20261018:
+      //
+      //             before   after
+      //   chase      9.49%   0.00%
+      //   drive      4.38%   0.00%
+      //   hero       0.36%   0.00%
+      //
+      // Zero, not "small": with the extent held and the target on the light's own
+      // grid, a frame after the camera has moved renders the SAME depth map,
+      // shifted by whole texels. That is what a snap is supposed to buy and this
+      // code has never collected it.
+      const R = (this._snapR ??= new THREE.Vector3());
+      const U = (this._snapU ??= new THREE.Vector3());
+      R.set(0, 1, 0).cross(dir).normalize();
+      U.copy(dir).cross(R).normalize();
+      const q = (v) => Math.round(v / texelWorld) * texelWorld;
+      const a = q(focus.x * R.x + focus.y * R.y + focus.z * R.z);
+      const b = q(focus.x * U.x + focus.y * U.y + focus.z * U.z);
+      // The along-light component is deliberately NOT snapped: it slides the
+      // frustum toward and away from the sun, which cannot move a texel.
+      const c = focus.x * dir.x + focus.y * dir.y + focus.z * dir.z;
+      this.sun.target.position.set(
+        R.x * a + U.x * b + dir.x * c,
+        R.y * a + U.y * b + dir.y * c,
+        R.z * a + U.z * b + dir.z * c);
       this.sun.position.copy(this.sun.target.position)
         .addScaledVector(dir, Math.max(this.shadowExtent * 2.4, 420));
       this.sun.target.updateMatrixWorld();

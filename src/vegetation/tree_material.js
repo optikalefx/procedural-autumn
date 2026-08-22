@@ -641,11 +641,52 @@ void main() {
 }
 `;
 
+// ── THE WIND IS NOT THE SAME WIND IN THE SHADOW PASS — 2026-08-22 ───────────
+//
+// The header above says the depth materials exist so shadows are cast from the
+// wind-displaced geometry rather than from the rest pose, and for the canopy in
+// the *beauty* pass that is right. For the shadow map it is the single largest
+// source of the crawl the player reported ("constantly flickering, probably
+// because of the wind in the leaves").
+//
+// Why it is worse in the shadow map than on screen: a near crown is ~140
+// alpha-tested cards which billboard to face the LIGHT here, so the caster is a
+// dense lace of holes, and it is sampled at one shadow texel — 20 cm at the
+// zoomed-out chase framing, where Lighting opens the extent to 414 m. Flutter
+// alone moves a card by ~2 cm at 2.6 Hz and sway by up to 40 cm; both are at or
+// above the texel, so the lace re-quantises into a different pattern every
+// frame and the ground under a tree boils.
+//
+// Measured with tools/_scratch/shadowcrawl.mjs, which extracts the shadow's own
+// contribution (the same frozen instant rendered twice, once with
+// shadow.intensity 0) so that leaves waving in the LIT frame cancel exactly and
+// cannot be mistaken for this. Camera and shadow focus completely static, ground
+// pixels only, share changing by more than 0.02 luma per 0.25 s, seed 20261018:
+//
+//                              chase   drive
+//   as shipped                  3.59%   5.10%
+//   depth-pass wind frozen      0.63%   0.34%
+//
+// and the tool's control column — the same threshold on the SHADOW-OFF frame,
+// i.e. leaves moving in the lit image, which is wanted and must not change —
+// is 1.163% / 0.867% in both arms, to three decimals. The canopy waves exactly
+// as it did; only its shadow stopped.
+//
+// So: 0.0 / 0.0. The flutter is pure high-frequency noise at this scale and has
+// nothing to say in a shadow; the sway is legible on screen, where the canopy
+// still waves exactly as before, and is worth less than the crawl it costs on
+// the ground. Kept as uniforms rather than deleted so the next author can put
+// either half back — and slowly-swaying tree shadows are a real thing to want —
+// without editing a shader.
+const SHADOW_WIND = { sway: 0.0, flutter: 0.0 };
+
 const LEAF_DEPTH_VERT = /* glsl */`
 attribute vec2 aCorner;
 attribute vec2 aSize;
 attribute vec3 aData;
 attribute vec2 aWind;
+uniform float uShadowSway;
+uniform float uShadowFlutter;
 varying vec2 vUv;
 varying vec2 vHighPrecisionZW;
 #include <common>
@@ -655,7 +696,8 @@ void main() {
   vec3 worldOrigin = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
   float phase = aWind.x + fract(dot(position.xz, vec2(0.1731, 0.3719))) * 6.2831853;
   float flex = aData.z * aData.z * aWind.y;
-  vec3 disp = windSway(worldOrigin, flex, aWind.x) + leafFlutter(phase, aData.z * aWind.y);
+  vec3 disp = windSway(worldOrigin, flex, aWind.x) * uShadowSway
+            + leafFlutter(phase, aData.z * aWind.y) * uShadowFlutter;
   vec3 local = position + disp / max(scale, 1e-4);
   vec4 worldPosition = modelMatrix * instanceMatrix * vec4(local, 1.0);
   vec3 camRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
@@ -714,6 +756,10 @@ export function createLeafMaterial(atlas, shared, opts = {}) {
       uAtlas: { value: atlas },
       uAlphaTest: { value: (opts.alphaTest ?? 0.38) * 0.9 },
       uAtlasTexels: { value: opts.atlasTexels ?? 512 },
+      // Fresh objects, not references into `shared`: this is the whole point of
+      // them. See SHADOW_WIND.
+      uShadowSway: { value: SHADOW_WIND.sway },
+      uShadowFlutter: { value: SHADOW_WIND.flutter },
     }),
     vertexShader: LEAF_DEPTH_VERT,
     fragmentShader: CUTOUT_DEPTH_FRAG,
@@ -1027,13 +1073,17 @@ void main() {
 const BARK_DEPTH_VERT = /* glsl */`
 attribute vec2 aBark;
 attribute vec2 aWind;
+uniform float uShadowSway;
 varying vec2 vHighPrecisionZW;
 #include <common>
 ${WIND}
 void main() {
   float scale = length(instanceMatrix[0].xyz);
   vec3 worldOrigin = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-  vec3 disp = windSway(worldOrigin, aBark.y * aWind.y * 0.55, aWind.x);
+  // Same argument as the leaves' — see SHADOW_WIND. A trunk sways less, but a
+  // trunk shadow is a long thin bar lying across gold ground, which is the shape
+  // a shifting texel grid shows off best.
+  vec3 disp = windSway(worldOrigin, aBark.y * aWind.y * 0.55, aWind.x) * uShadowSway;
   vec4 worldPosition = modelMatrix * instanceMatrix * vec4(position + disp / max(scale, 1e-4), 1.0);
   gl_Position = projectionMatrix * viewMatrix * worldPosition;
   vHighPrecisionZW = gl_Position.zw;
@@ -1082,7 +1132,9 @@ export function createBarkMaterial(shared, opts = {}) {
     side: THREE.FrontSide,
   });
   const depth = new THREE.ShaderMaterial({
-    uniforms: Object.assign({}, shared),
+    uniforms: Object.assign({}, shared, {
+      uShadowSway: { value: SHADOW_WIND.sway },
+    }),
     vertexShader: BARK_DEPTH_VERT,
     fragmentShader: OPAQUE_DEPTH_FRAG,
     side: THREE.FrontSide,

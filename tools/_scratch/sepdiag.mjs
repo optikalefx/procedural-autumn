@@ -16,6 +16,7 @@ import { acquire } from '../_lock.mjs';
 const VIEWS = {
   hero:      { anchor: 'vista',    height: 62,  dist: 150, pitch: -0.16, fov: 46, hour: 16.7 },
   drive:     { anchor: 'road',     height: 4.2, dist: 12,  pitch: -0.10, fov: 55, hour: 16.7, standOff: 16 },
+  chase:     { anchor: 'road',     height: 22,  dist: 60,  pitch: -0.42, fov: 45, hour: 16.7, standOff: 43 },
   meadow:    { anchor: 'meadow',   height: 1.6, dist: 6,   pitch: -0.05, fov: 58, hour: 17.2 },
   forest:    { anchor: 'forest',   height: 3.0, dist: 14,  pitch: 0.02,  fov: 60, hour: 16.4 },
   river:     { anchor: 'river',    height: 6.0, dist: 30,  pitch: -0.18, fov: 54, hour: 16.9, yawOffset: 0.42, index: 3 },
@@ -34,8 +35,11 @@ await acquire('shot');
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--disable-frame-rate-limit'] });
 const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
 page.on('pageerror', (e) => console.log('PAGEERROR', String(e.message).slice(0, 300)));
-await page.routeWebSocket(/^wss?:\/\/(localhost|127\.0\.0\.1):5178\//, () => {});
-await page.goto('http://localhost:5178' + (RES ? `?res=${RES}` : ''), { waitUntil: 'domcontentloaded' });
+// --url, because a worktree runs its own dev server on its own port and this
+// tool used to be pinned to 5178.
+const URL = arg('url', process.env.AUTUMN_URL || 'http://localhost:5178');
+await page.routeWebSocket(/^wss?:\/\/(localhost|127\.0\.0\.1):\d+\/.*(token|vite)/, () => {});
+await page.goto(URL + (RES ? `?res=${RES}` : ''), { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 300000, polling: 250 });
 
 const frozen = existsSync('review/anchors.json') ? JSON.parse(readFileSync('review/anchors.json', 'utf8')) : {};
