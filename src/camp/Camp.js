@@ -472,7 +472,30 @@ export class Camp extends System {
     if (this._warm) this._finishPrewarm();
     this._pollClick(dt);
 
-    const holding = !!veh?.enabled && !!veh.brakeHold;
+    // Photo mode counts as not holding, which takes the whole placement machine
+    // out of the frame in one line.
+    //
+    // Hiding the reticle was half a fix and the wrong half. The ring is the
+    // part that READS as UI; the clearing is the part that is actually in the
+    // photograph — `setCampAim` publishes a vec4 the grass and cover shaders
+    // thin themselves against, so a 5.8 m disc of scrubbed ground cover was
+    // sliding around the meadow under the cursor while the player composed,
+    // with the ring no longer there to explain it. Measured at 11 937 of 90 000
+    // sampled pixels changing on a pointer move, against a 3 061-pixel wind
+    // baseline.
+    //
+    // And `_interact` is where a click builds. A left click in photo mode
+    // pitched a camp — `camps 0 -> 1` mid-compose — and `_pitch` hands it the
+    // focus, so leaving photo mode cut the chase camera to a camp nobody asked
+    // for, evicting the furthest one at MAX_CAMPS. `_click` reads `mouse.down`,
+    // which the input suppression deliberately does not touch, because that is
+    // the same button the free camera looks around with.
+    //
+    // Both are one question — "is the player playing, or photographing" — and
+    // the not-holding branch below already answers it correctly: state to IDLE,
+    // `clearCampAim()`, prompt cleared, no `_interact`.
+    const photographing = !!this.ctx.systems?.hud?.photo?.active;
+    const holding = !!veh?.enabled && !!veh.brakeHold && !photographing;
 
     // ── every camp advances on its own clock ────────────────────────────────
     // Raising and striking are per-camp now, not states of the player. The
