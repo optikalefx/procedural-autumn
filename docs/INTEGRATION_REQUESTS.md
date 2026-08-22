@@ -6630,15 +6630,36 @@ The plunge point of a fall is a **water surface** sample, and the water grid's
 "no water here" sentinel is `-9999`. `_waterfalls` walks downstream from the
 lip until the drop per cell falls under 0.9 m and writes `water[cur]` as the
 bottom; that walk follows `flowDir`, which does not stop at the river mask, so
-the terminus is very often a dry cell. Measured on the shipped bake (seed
-20261018): **8 of 28 falls, and all four of the tallest**, including the one
-every canonical camera anchor is now built on.
+the terminus is very often a dry cell. Counted straight out of the shipped 1536
+bake's header, which carries the waterfall records verbatim (seed 20261018):
+**11 of 28 falls**. By height they are ranks 3, 5 and 6 — 88.8 m, 68.3 m,
+67.4 m — and eight smaller, down to 18.4 m.
+
+CORRECTION, and it is the failure `docs/CRITIC_PROTOCOL.md`'s table exists to
+catch. This paragraph was filed as "8 of 28 falls, and all four of the tallest,
+including the one every canonical camera anchor is now built on". Every clause
+of that is wrong about a real measurement: it is 11, not 8; the **two tallest
+are clean** (93.7 m and 90.4 m); and the 93.7 m fall at (-732, 10) that the
+anchors are built on is one of the clean ones. No bake on disk yields 8 of 28 —
+the 768 bake is 13 of 25 and the 512 bake is 5 of 19. Re-derive it with:
+
+```
+node -e 'const b=require("fs").readFileSync("public/bakes/world-20261018-1536-8c42a243.pab");
+const h=JSON.parse(b.subarray(8,8+b.readUInt32LE(4)).toString("utf8").replace(/\0+$/,""));
+console.log(h.waterfalls.filter(w=>!(w.bottom[1]>-9000)).length + " of " + h.waterfalls.length);'
+```
+
+What is true, and is why the anchored views showed the defect anyway: fall #13,
+42.1 m, plunges at (-742, 28) — twenty-one metres from that anchor and squarely
+inside both the `waterfall` and `fallbase` framings. The frames were right about
+the broken foot; the attribution was not.
 
 Nothing downstream range-checked it. `Waterfalls._buildPaths` clamps its last
 path point to `bottom[1] + 0.4`, so the curtain's final vertex sat at -9998.6 m
 and the 1-2-1 smoothing dragged the last rows of the sheet with it; the impact
-burst and the mist are both spawned from that same last point, so the biggest
-falls in the map had no spray, no mist and no churn at their feet at all;
+burst and the mist are both spawned from that same last point, so eleven falls,
+including three of the six biggest, had no spray, no mist and no churn at their
+feet at all;
 `audio/water.js` puts each emitter a third of the way up the drop, i.e. at
 -6714 m, so they were inaudible too.
 
