@@ -193,7 +193,8 @@ export class Camp extends System {
     this._downAt = { x: 0, y: 0, t: 0 };
     this._click = false;
     this._focusCamp = null;  // which camp the camera is on, or null for the camper
-    this._hoverFire = null;  // the fire the pointer is on and could be sent to
+    this._firePick = null;   // the fire a click this frame would be sent to
+    this._hoverFire = null;  // …and whether that is worth OFFERING (see `_pickHoverFire`)
     this._ringAt = null;     // which camp the hover ring is currently shaped to
     this._cursor = '';       // last cursor we wrote to the canvas
     this._ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
@@ -501,6 +502,7 @@ export class Camp extends System {
     // know where a click is going; three separate answers to the same question
     // is how an affordance ends up highlighting one thing and clicking
     // another.
+    this._firePick = this._fireTarget(veh);
     this._hoverFire = this._pickHoverFire(veh);
 
     // ── the player ──────────────────────────────────────────────────────────
@@ -531,8 +533,15 @@ export class Camp extends System {
     // frames it ever ran on, having been present in every dusk sheet this
     // round. Borrowed from procedural-fall-73, who added the same check to
     // their own harness for the same reason.
+    // …and not in photo mode either. A capture harness hides this because
+    // eleven authors judge art through it; photo mode is the player's own
+    // capture harness and the same argument is stronger there, because the
+    // ring is world-space geometry lying on the ground and the placement
+    // affordance is not what anyone is photographing. Parked at a camp this
+    // was already covered by `_suppressAim`; parked anywhere else it was not.
     const aimVisible = this.state === STATE.AIMING && !this.scope?.active
                     && !this._suppressAim
+                    && !this.ctx.systems?.hud?.photo?.active
                     && (!window.__forceCamera || !!window.__campForceAim);
 
     // The hover highlight, and it is the SAME ring rather than a second one.
@@ -743,7 +752,7 @@ export class Camp extends System {
     // otherwise lose the build key every time a fire drifted under the middle
     // of the screen.
     const onCar = this._click && this._pointerOnCamper();
-    if (this._aim.ok && ((this._click && !onCar && !this._hoverFire) || input.justPressed('KeyE'))) {
+    if (this._aim.ok && ((this._click && !onCar && !this._firePick) || input.justPressed('KeyE'))) {
       this._pitch();
     }
   }
@@ -764,7 +773,7 @@ export class Camp extends System {
     for (const c of this.camps) {
       if (c.striking) continue;
       const d = Math.hypot(veh.position.x - c.x, veh.position.z - c.z);
-      if (d < c.radius + SITE_MAX + 4 && d < bestD) { best = c; bestD = d; }
+      if (this._atCamp(veh, c) && d < bestD) { best = c; bestD = d; }
     }
     return best;
   }
@@ -801,9 +810,20 @@ export class Camp extends System {
     return best;
   }
 
-  /** Where the pointer meets the heightfield, or null for the sky. */
-  _pointerGround() {
-    const { input, camera, world } = this.ctx;
+  /**
+   * The pointer ray, in `this._ray`.
+   *
+   * The mouse ray if the pointer is over the canvas, and the camera's own
+   * forward ray otherwise — which is what a gamepad player gets, and what the
+   * capture harness gets.
+   *
+   * Was six identical lines copied into four methods. That is fine until the
+   * day one of them needs a depth as well as a direction, which is exactly what
+   * `_fireBlocked` needed: three of the four copies would have been right and
+   * the fourth would have been the one somebody edits next year.
+   */
+  _pointerRay() {
+    const { input, camera } = this.ctx;
     const o = this._ray.o.copy(camera.position);
     const d = this._ray.d;
     if (input.mouse && Number.isFinite(input.mouse.x) && !window.__forceCamera) {
@@ -811,7 +831,13 @@ export class Camp extends System {
     } else {
       camera.getWorldDirection(d);
     }
-    return groundRay(world, o, d, 220);
+    return this._ray;
+  }
+
+  /** Where the pointer meets the heightfield, or null for the sky. */
+  _pointerGround() {
+    const { o, d } = this._pointerRay();
+    return groundRay(this.ctx.world, o, d, 220);
   }
 
   // ── where the camera looks ────────────────────────────────────────────────
@@ -848,17 +874,19 @@ export class Camp extends System {
    * currently has focus, which is the whole of the fix; everything else here
    * is about making the fire an honest target.
    *
-   * The other line that had to go was rule 3's second half, a distance test
-   * that dropped focus once the camper was more than `SITE_MAX + 8` (26 m)
-   * from the camp. Three things wrong with it. It fired INSIDE the camp's own
-   * home range — `_homeCamp` calls anything within `radius + SITE_MAX + 4`
-   * (about 28 m) "your camp", so parking on the far side of your own fire let
-   * the camera go while the game still thought you were standing in it. It
-   * made "click the fire" a lie at exactly the distance a player who had
-   * rolled a few car-lengths on would try it from. And it was doing, worse, a
-   * job `moving` already does: you cannot leave a camp behind without going
-   * faster than 1.2 m/s, and the frame you do, focus is handed back. So
-   * distance is gone and driving is the whole of rule 3.
+   * Rule 3's second half — a distance release — was deleted outright in the
+   * first pass at this and that was wrong. It was the WRONG DISTANCE, not a
+   * distance too many: `SITE_MAX + 8`, 26 m, fires two metres inside
+   * `_homeCamp`'s own 28 m, so parking on the far side of your own fire let
+   * the camera go while the game still thought you were standing in the camp.
+   * Removing it instead let focus be taken at any range at all, and the
+   * consequence is not symmetric with the click that took it: once the camera
+   * is on a camp far enough away, the CAMPER is off the screen and there is no
+   * click that gets you back. The release is `_atCamp` now — the same
+   * expression that bounds the pick and the same one `_homeCamp` uses — so a
+   * camp can only hold the camera while you are standing at it, and while you
+   * are standing at it both the fire and the camper are things you can point
+   * at.
    */
   _updateFocus(veh) {
     const rig = this.ctx.systems?.cameraRig;
@@ -875,6 +903,15 @@ export class Camp extends System {
     // `_strike` too; this is the belt to that brace, so a camera cannot be left
     // pointing at ground where a camp used to be.
     if (this._focusCamp?.striking) this._focusCamp = null;
+    // …and you have to still be at it. See the note above: this is the release
+    // that makes the click bounded in both directions rather than one.
+    if (this._focusCamp && !this._atCamp(veh, this._focusCamp)) this._focusCamp = null;
+
+    // Photo mode composes with the free camera and the pointer is how it is
+    // aimed, not how a subject is chosen. A click that silently moved
+    // `_focusCamp` here would not be visible at all while composing and would
+    // then decide where the camera cuts to on the way out.
+    if (this.ctx.systems?.hud?.photo?.active) { rig.setFocus(this._focusTarget()); return; }
 
     // Rule 2. Both are tested as spheres rather than against geometry: a 2.8 m
     // sphere is every pixel of a 4.7 m camper from any angle the player clicks
@@ -908,9 +945,12 @@ export class Camp extends System {
       // ambiguous: the nearest two fires in this world are 9.8 m apart. If the
       // player was pointing at a fire, that fire is the answer, and the coarse
       // test never gets to disagree.
-      const fire = this._fireUnderPointer();
+      const fire = this._firePick;
       if (fire) this._focusCamp = fire;
       else {
+        // How far along the ray the camper's own triangles are. Infinity when
+        // the pointer is not on it at all, which is most clicks.
+        const carHit = this._camperHit();
         const car = this._rayMiss(veh.position, 2.8);
         // Every camp competes, not just the focused one, so clicking a second
         // camp walks the camera over to it — the same affordance in both
@@ -918,7 +958,35 @@ export class Camp extends System {
         let best = null, bestMiss = car;
         for (const c of this.camps) {
           if (c.striking) continue;
-          const m = this._rayMiss(this._v.set(c.x, c.y + 0.4, c.z), c.radius * 0.9);
+          // Only a camp you are AT can take the camera, for the same reason
+          // only a camp you are at can keep it: the release above uses
+          // `_atCamp`, so without this the click sets focus and the next
+          // frame's release takes it away again — a one-frame flicker that
+          // does nothing, at 306 m, on a fire four pixels across.
+          if (!this._atCamp(veh, c)) continue;
+          const p = this._v.set(c.x, c.y + 0.4, c.z);
+          // …but a camp standing BEHIND the camper cannot take a click that
+          // landed on the camper's own geometry.
+          //
+          // This is a defect the sphere test always had and it is not small.
+          // A camp is pitched 8-18 m out and the chase camera sits behind the
+          // camper, so "the camp is directly behind the car" is not a corner
+          // case, it is the shot the game gives you when you make a camp and
+          // then look at it. Measured in that framing — parked, camp 8.5 m
+          // beyond the camper, both projecting to the same pixel, 81 pointer
+          // positions swept across the camper's body — the camp took the click
+          // at 67 of the 77 positions that were ON the camper. The player
+          // clicks the car and the camera does not come back.
+          //
+          // A 5.22 m sphere at 17 m loses to a 2.8 m sphere at 9 m on
+          // normalised miss almost everywhere, which is exactly what the
+          // "which is the click CENTRED on" rule is supposed to give you, and
+          // here it gives the wrong answer because both are centred. Depth
+          // breaks the tie, and the camper's own triangles are the one thing
+          // in this system that can measure it — `_interact` reached the same
+          // conclusion about the same object for the same reason.
+          if (carHit < p.distanceTo(this.ctx.camera.position)) continue;
+          const m = this._rayMiss(p, c.radius * 0.9);
           if (m < bestMiss) { bestMiss = m; best = c; }
         }
         if (bestMiss < Infinity) this._focusCamp = best;   // null = the camper won
@@ -926,8 +994,13 @@ export class Camp extends System {
     }
     this._justPitched = false;
 
+    rig.setFocus(this._focusTarget());
+  }
+
+  /** Where the boom should pivot: the focused camp's fire, or null for the camper. */
+  _focusTarget() {
     const f = this._focusCamp;
-    rig.setFocus(f ? this._v.set(f.x, f.y + 0.55, f.z) : null);
+    return f ? this._v.set(f.x, f.y + 0.55, f.z) : null;
   }
 
   /**
@@ -951,6 +1024,78 @@ export class Camp extends System {
   }
 
   /**
+   * The fire a click would actually be sent to — the raw pick above, with the
+   * three things that make it honest rather than merely cheap.
+   *
+   * Computed ONCE per frame in `update` and read from `_firePick`, so the
+   * cursor, the prompt, the ring, the click and the build-suppression are all
+   * answering the same question. An affordance that highlights one thing and
+   * clicks another is worse than no affordance.
+   *
+   *  1. **Range.** The camp has to be one you are AT, by the game's own
+   *     definition of that — `_atCamp`, the same expression `_homeCamp` uses.
+   *     The first version had no bound at all and would take a click at 306 m,
+   *     where the fire is four pixels across. That is not the worst of it: once
+   *     the camera is on a camp much further than this the CAMPER is off-screen
+   *     and cannot be clicked, so the player is left on the camp with only the
+   *     throttle to get back. An affordance whose reciprocal is unreachable is
+   *     a trap, which is the thing this method's own docs are built around.
+   *
+   *  2. **The camper.** If its triangles are nearer along the ray, the click
+   *     is the camper's. See `_camperHit`.
+   *
+   *  3. **The hillside.** A pure sphere test hits through anything. The march
+   *     is only run once the cheap test has already found a fire, so the common
+   *     frame pays nothing for it.
+   *
+   * Trees are NOT tested and a fire behind a trunk is still clickable. That is
+   * a known and deliberate gap: the trunk field belongs to `CameraRig`
+   * (`BoomClearance.TrunkField`), reaching into another system's private state
+   * for a cursor is not a trade worth making, and a bole is 0.7 m wide against
+   * a 1.15 m target — the fire is nearly always visible past it.
+   */
+  _fireTarget(veh) {
+    const c = this._fireUnderPointer();
+    if (!c || !veh) return null;
+    if (!this._atCamp(veh, c)) return null;
+    const fire = this._v.set(c.x, c.y + FIRE_PICK_LIFT, c.z);
+    const depth = fire.distanceTo(this.ctx.camera.position);
+    if (this._camperHit() < depth) return null;
+    if (this._fireBlocked(depth)) return null;
+    return c;
+  }
+
+  /**
+   * Is the ground in front of the fire?
+   *
+   * `groundRay` marches the heightfield, which is what the reticle uses and
+   * therefore what the player's eye has already agreed with. The margin is a
+   * little under the pick radius: a ray that reaches a fire standing on flat
+   * ground never meets that ground first — it is still above it right up to the
+   * flame — so only a genuine rise between the two trips this.
+   */
+  _fireBlocked(depth) {
+    const { o, d } = this._pointerRay();
+    const g = groundRay(this.ctx.world, o, d, Math.min(depth, 220));
+    return !!g && g.dist < depth - 1.0;
+  }
+
+  /**
+   * Is the camper standing at this camp?
+   *
+   * `radius + SITE_MAX + 4` — see `_homeCamp`, which is the same question asked
+   * about the nearest camp rather than about a given one. Hoisted so the three
+   * places that need "you are at this camp" cannot drift apart: the placement
+   * suppression, the fire pick's range, and the focus release below. The
+   * previous release used `SITE_MAX + 8`, 26 m, which fired two metres INSIDE
+   * this one — parking on the far side of your own fire let the camera go while
+   * the game still thought you were standing in the camp.
+   */
+  _atCamp(veh, c) {
+    return Math.hypot(veh.position.x - c.x, veh.position.z - c.z) < c.radius + SITE_MAX + 4;
+  }
+
+  /**
    * The fire to OFFER, which is not the same question as the one above.
    *
    * A fire the camera is already on is not an offer — the click would do
@@ -971,10 +1116,10 @@ export class Camp extends System {
   _pickHoverFire(veh) {
     if (window.__forceCamera) return null;
     if (this.ctx.systems?.hud?.photo?.active) return null;
-    if (this.scope?.active || !this.camps.length) return null;
+    if (this.scope?.active) return null;
     const moving = Math.abs(veh?.speed ?? 0) > 1.2 || (this.ctx.input.axes.throttle ?? 0) > 0.05;
     if (moving) return null;
-    const c = this._fireUnderPointer();
+    const c = this._firePick;
     return c && c !== this._focusCamp ? c : null;
   }
 
@@ -1076,29 +1221,40 @@ export class Camp extends System {
    * Cheap because of when it runs: on the frame of a click, against the
    * camper's own rig and nothing else.
    */
-  _pointerOnCamper() {
-    const veh = this.ctx.systems?.vehicle;
-    const rig = veh?.rig;
-    if (!rig) return false;
-    const { input, camera } = this.ctx;
-    const o = this._ray.o.copy(camera.position);
-    const d = this._ray.d;
-    if (input.mouse && Number.isFinite(input.mouse.x) && !window.__forceCamera) {
-      d.set(input.mouse.x, input.mouse.y, 0.5).unproject(camera).sub(o).normalize();
-    } else camera.getWorldDirection(d);
+  _pointerOnCamper() { return this._camperHit() < Infinity; }
+
+  /**
+   * How far along the pointer ray the camper's own triangles are, or Infinity.
+   *
+   * The distance, not a boolean, and that is the whole of the fix for the worst
+   * regression this feature shipped with. `_updateFocus` let a fire win a click
+   * outright, so a camper parked in front of its own fire — the ordinary case,
+   * the camper is 8-18 m from the camp and the eye is behind the camper —
+   * handed the click to the camp instead. Sixteen of forty-two pointer
+   * positions that were ON the camper's geometry were claimed by the fire
+   * behind it, and because a fire that already has focus is not offered, the
+   * player got no cursor, no prompt and no effect: they clicked the car and
+   * nothing happened. "Click the car to come back" is the affordance this whole
+   * feature is the mirror of, and it was broken by the mirror.
+   *
+   * A boolean cannot fix it, because the ray hits the camper in BOTH cases —
+   * clicking the camper in front of the fire, and clicking the fire in front of
+   * the camper (the camp is often between the eye and the car once the camera
+   * has walked over). Only the depth tells those apart.
+   */
+  _camperHit() {
+    const rig = this.ctx.systems?.vehicle?.rig;
+    if (!rig) return Infinity;
+    const { o, d } = this._pointerRay();
     const ray = (this._caster ??= new THREE.Raycaster());
     ray.set(o, d);
     ray.far = 60;
-    return ray.intersectObject(rig, true).length > 0;
+    const hits = ray.intersectObject(rig, true);
+    return hits.length ? hits[0].distance : Infinity;
   }
 
   _rayMiss(centre, r) {
-    const { input, camera } = this.ctx;
-    const o = this._ray.o.copy(camera.position);
-    const d = this._ray.d;
-    if (input.mouse && Number.isFinite(input.mouse.x) && !window.__forceCamera) {
-      d.set(input.mouse.x, input.mouse.y, 0.5).unproject(camera).sub(o).normalize();
-    } else camera.getWorldDirection(d);
+    const { o, d } = this._pointerRay();
     const ox = centre.x - o.x, oy = centre.y - o.y, oz = centre.z - o.z;
     const along = ox * d.x + oy * d.y + oz * d.z;
     if (along < 0) return Infinity;                    // behind the lens
@@ -1118,16 +1274,8 @@ export class Camp extends System {
    * path for validity and one for the reticle.
    */
   _aimAt(veh) {
-    const { input, camera, world } = this.ctx;
-    const o = this._ray.o.copy(camera.position);
-    const d = this._ray.d;
-
-    if (input.mouse && Number.isFinite(input.mouse.x) && !window.__forceCamera) {
-      d.set(input.mouse.x, input.mouse.y, 0.5).unproject(camera).sub(o).normalize();
-    } else {
-      camera.getWorldDirection(d);
-    }
-
+    const { world } = this.ctx;
+    const { o, d } = this._pointerRay();
     const hit = groundRay(world, o, d, 220);
     const vx = veh?.position.x ?? 0, vz = veh?.position.z ?? 0;
     // No hit means the player is looking at the sky. Rather than dropping the

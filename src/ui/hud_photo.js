@@ -122,6 +122,11 @@ export class PhotoMode {
     this.active = on;
     this.node.classList.toggle('pa-open', on);
     const rig = this.ctx.systems?.cameraRig;
+    // Whatever happens below, the controls come back. This runs on both exit
+    // paths — `hud.togglePhoto` and the rail's own Escape handler, which does
+    // not go through the HUD at all — and a photo mode that could be left with
+    // the throttle still suppressed would be a soft lock.
+    if (!on && this.ctx.input) this.ctx.input.suppressed = false;
 
     if (on) {
       this._saved = this._readGrade();
@@ -129,6 +134,23 @@ export class PhotoMode {
       // camera already is — the frame the player pressed F on is the frame
       // they get to compose from — and moves only when they move it.
       rig?.enterFree?.();
+      // Take the driving controls away. `Input.suppressed` exists for exactly
+      // this and says so in its own comment ("A UI layer (menus, photo mode)
+      // sets this"), and nothing had ever set it.
+      //
+      // It was invisible while photo mode was the auto-orbit, because that
+      // camera followed the camper: press W and the whole shot moved, which
+      // reads as a camera doing something rather than as a bug. The free camera
+      // does not follow anything, so the same W now drives the camper out of
+      // frame at 20 m/s while the photograph sits perfectly still — and WASD is
+      // the first thing anyone tries in a camera they have just been given.
+      //
+      // It also takes E, R and the handbrake, which is right: every one of them
+      // does something to the world the player is trying to photograph.
+      // `mouse.dx/dy/wheel` survive, because `Input.update` zeroes them at the
+      // very end of the frame either way (main.js:385, after every lateUpdate),
+      // so the free camera has already read them.
+      if (this.ctx.input) this.ctx.input.suppressed = true;
       // The world should hold still while you compose.
       if (this.ctx.lighting) this.ctx.lighting.cycleSpeed = 0;
       this.hourEl.set(this._saved.hour);

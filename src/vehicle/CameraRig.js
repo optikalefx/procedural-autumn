@@ -666,11 +666,20 @@ export class CameraRig extends System {
    * pulled in; it is only ever pushed up, and only when it would otherwise be
    * underground.
    *
-   * And the lift NEVER writes back into the pose. The pivot, yaw, pitch and
-   * distance are the player's; the floor clamp edits the derived eye on its way
-   * to the camera and nothing else. Walk the camera into a hill and out again
-   * and it comes back to the exact height it left, with no hysteresis and no
-   * accumulated creep — which a clamp that edited `freePivot` would have.
+   * The lift carries the PIVOT with it. The first version of this clamped only
+   * the derived eye and left the pose untouched, which had one lovely property
+   * — pan into a hill and back out and you return to the exact metre you left
+   * — and one disqualifying one: everything you panned while the eye was
+   * pinned went into the pivot as hidden depth, so 300 px of overshoot bought
+   * 310 px of dead travel on the way back up, and 3600 px put the pivot 71.6 m
+   * underground. A control that does nothing for the first third of the
+   * gesture is broken however clean its state is. So the frame that lifts the
+   * eye lifts the pivot with it, and the two can never disagree.
+   *
+   * What survives is the property that mattered: a gesture that never meets
+   * the floor is exactly reversible, because nothing is written on a frame
+   * with no lift. Against the floor the camera trades the buried travel for
+   * an immediate response, which is the trade every DCC tool makes.
    *
    * The clamp translates rather than rotates: the look point is carried up with
    * the eye, so being lifted slides the frame instead of tilting it.
@@ -758,7 +767,7 @@ export class CameraRig extends System {
     // there is exactly one point to test.
     this.rockBoom.attach(this.ctx.systems?.rocks).prime(eye.x, eye.z, 12);
     const floor = this._floorAt(eye.x, eye.z) + FREE_CLEARANCE;
-    if (eye.y < floor) eye.y = floor;
+    if (eye.y < floor) { this.freePivot.y += floor - eye.y; eye.y = floor; }
 
     this.camPos.copy(eye);
     this.lookAt.copy(eye).addScaledVector(dir, this.freeDist);
