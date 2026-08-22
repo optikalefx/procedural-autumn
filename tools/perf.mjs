@@ -34,6 +34,12 @@ const RES = arg('res', '1536');
 const W = parseInt(arg('w', '1600'), 10);
 const H = parseInt(arg('h', '900'), 10);
 const QUALITY = arg('quality', null);
+// The player's display, not the harness's. dprtest.mjs exists because this
+// harness and the player disagreed by 3x on frame time for exactly this reason;
+// a hitch profile taken at a quarter of the pixel count is not the one anyone
+// feels. Default stays 1 so existing budgets and baselines still mean what they
+// meant.
+const DPR = parseFloat(arg('dpr', '1'));
 
 // Budgets. A cozy driving game must hold 60 fps; a hitch you can feel is ~2
 // dropped frames, and anything over 100 ms reads as a freeze.
@@ -75,7 +81,7 @@ const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist',
          '--enable-gpu-rasterization', '--disable-frame-rate-limit'],
 });
-const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: DPR });
 
 // Neuter Vite's HMR client before any page script runs. A dozen authors edit
   // this tree concurrently, and a peer saving a file mid-run reloads the page

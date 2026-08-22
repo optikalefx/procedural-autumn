@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 
 // export const SEED = 20261018;
-export const SEED = 20261018;
+export const SEED = 20262018;
 
 // ── World extents ────────────────────────────────────────────────────────────
 export const WORLD = {
@@ -145,8 +145,8 @@ export const VEHICLE = {
 // AdaptiveResolution in Engine scales below these at runtime, so treat them as
 // a ceiling for a fast machine rather than a target.
 export const QUALITY_PRESETS = {
-  ultra:  { shadowMapSize: 4096, cascades: 4, grassMul: 1.0,  ssao: true,  dof: true,  volumetric: true,  reflections: true,  pixelRatioCap: 1.5,  treeMul: 1.0 },
-  high:   { shadowMapSize: 3072, cascades: 3, grassMul: 0.8,  ssao: true,  dof: true,  volumetric: true,  reflections: true,  pixelRatioCap: 1.35, treeMul: 0.9 },
+  ultra:  { shadowMapSize: 4096, cascades: 4, grassMul: 1.0,  ssao: true,  dof: false,  volumetric: true,  reflections: true,  pixelRatioCap: 1.5,  treeMul: 1.0 },
+  high:   { shadowMapSize: 3072, cascades: 3, grassMul: 0.8,  ssao: true,  dof: false,  volumetric: true,  reflections: true,  pixelRatioCap: 1.35, treeMul: 0.9 },
   medium: { shadowMapSize: 2048, cascades: 3, grassMul: 0.55, ssao: true,  dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.15, treeMul: 0.7 },
   low:    { shadowMapSize: 1024, cascades: 2, grassMul: 0.3,  ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.0,  treeMul: 0.5 },
 };

@@ -727,7 +727,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   // little refractor, and a full camp rolls between the two. That is also the
   // only way both plates are ever reachable in play.
   {
-    const chance = 0.20;
+    const chance = 0.40;
     if (rnd() < chance) {
       // Which telescope. Three now, and the compact camp can only have two of
       // them for the same reason it only gets one chair: a 1.5 m equatorial rig

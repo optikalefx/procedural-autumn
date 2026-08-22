@@ -334,6 +334,80 @@ await page.evaluate(() => {
     on() { scene.overrideMaterial = null; },
   };
 
+  // ── the three override materials, which together price a material change ──
+  //
+  // fx.flatShade answers "what does ALL shading cost". These two split that
+  // number the way docs/PERF_FINDINGS.md item 2 asks it to be split, on
+  // identical geometry with every custom shader in the game stripped out:
+  //
+  //   fx.overrideBasic     = fx.flatShade. No lighting at all.
+  //   fx.overrideLambert   Gouraud-era lighting: the light loop, the shadow
+  //                        plumbing, no BRDF.
+  //   fx.overrideStandard  the same scene shaded by a stock
+  //                        MeshStandardMaterial: GGX, Fresnel, the multi-
+  //                        scatter energy compensation, the IBL path.
+  //
+  // (standard - lambert) is therefore the ENTIRE cost of the physical model,
+  // measured rather than estimated, and it is the ceiling on re-basing every
+  // material on Lambert. (lambert - basic) is what lighting and shadow
+  // sampling cost at all. (baseline - standard) is everything this project
+  // wrote itself: terrain's texture fetches, grass, ground cover, rock, and
+  // the Stylize patch.
+  //
+  // CAVEAT, AND IT APPLIES TO fx.flatShade TOO: overrideMaterial replaces the
+  // VERTEX shader as well. Grass, ground cover and the tree cards build their
+  // geometry there, so under any override they do not rasterise the same
+  // pixels. Read the frames these arms write, do not just read their numbers.
+  const overrideKnob = (name, make) => {
+    K[name] = {
+      group: 'fx',
+      off() { this._m ??= make(); scene.overrideMaterial = this._m; },
+      on() { scene.overrideMaterial = null; },
+    };
+  };
+  overrideKnob('fx.overrideBasic', () => new THREE.MeshBasicMaterial({ color: 0x808080 }));
+  overrideKnob('fx.overrideLambert', () => new THREE.MeshLambertMaterial({ color: 0x808080 }));
+  overrideKnob('fx.overrideStandard',
+    () => new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.9, metalness: 0 }));
+
+  // fx.flatShade done correctly — see the STYLIZE_FLATSHADE note in
+  // src/render/Stylize.js. Compiles the shading out of every lit material and
+  // leaves the vertex shaders, so the grass, the ground cover and the canopy
+  // still rasterise every fragment they normally do. This is the real ceiling
+  // on what a material change can buy; fx.flatShade's is inflated by the near
+  // field disappearing. Recompiles, so it is in SLOW_FLIP.
+  K['fx.shadeOnly'] = {
+    group: 'fx',
+    off() { const st = window.__stylize; st.harvest(); this._n = st.setFlatShade(true); },
+    on() { if (this._n) window.__stylize.setFlatShade(false); },
+  };
+
+  // The half of fx.flatShade that can actually be shipped.
+  //
+  // fx.flatShade removes ALL shading and is therefore only a ceiling. This
+  // removes exactly one thing from it: the physical specular lobe — BRDF_GGX
+  // per light, plus the indirect multi-scatter energy compensation — on every
+  // material that is matte, metalness-0 and env-map-free, which is everything
+  // in the world except the camper. Stylize already replaces the direct
+  // lighting response wholesale, so the lobe is scaled to 14% and mixed into a
+  // band-quantised response that has no highlights in it.
+  //
+  // `off()` = the lobe is gone, so `saved` reads the same direction as every
+  // other knob here: what shipping this change would buy.
+  //
+  // It recompiles every affected program, so it is in SLOW_FLIP. `harvest()`
+  // first because materials stream in and the registry is only swept every
+  // 16 frames.
+  K['fx.physicalSpec'] = {
+    group: 'fx',
+    off() {
+      const st = window.__stylize;
+      st.harvest();
+      this._n = st.setMatteSpecular(true);
+    },
+    on() { if (this._n) window.__stylize.setMatteSpecular(false); },
+  };
+
   // The post chain minus its effects: the HDR render targets, the copies
   // between them and the NaN guard, but no AO, no bloom, no grade. Paired with
   // fx.postAll this separates "the effects are expensive" from "rendering
@@ -632,7 +706,7 @@ const sleep = (ms) => page.waitForTimeout(ms);
 // the drawing buffer, measured at 450-2500 ms in Engine.js. Measuring those
 // transitions instead of the steady state is the classic way to get an ablation
 // exactly backwards.
-const SLOW_FLIP = /^(px\.|tier\.|fx\.shadows$|fx\.bloom$|fx\.smaa$|fx\.dof$|fx\.grade$|fx\.shadowRes1k$)/;
+const SLOW_FLIP = /^(px\.|tier\.|fx\.shadows$|fx\.bloom$|fx\.smaa$|fx\.dof$|fx\.grade$|fx\.shadowRes1k$|fx\.physicalSpec$|fx\.shadeOnly$)/;
 const warmFor = (offList, prevOff) => {
   const changed = [...new Set([...offList, ...prevOff])].filter(
     (n) => offList.includes(n) !== prevOff.includes(n));

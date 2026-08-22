@@ -578,6 +578,83 @@ export function patchStylizedLighting() {
     'Stylize'
   );
 
+  // ── the physical specular lobe, for surfaces that have no use for it ─────
+  //
+  //  Everything above is the argument for this: the direct lighting response
+  //  in this game is AUTHORED, not physical. `specIrradiance` is already
+  //  saturate(rawNL) * lightColor * 0.14, and it is then handed to BRDF_GGX —
+  //  the full Trowbridge-Reitz distribution, the Smith-correlated visibility
+  //  term and a Schlick Fresnel — so that 14% of a lobe can be added to a
+  //  band-quantised, wrap-lit, floored response that deliberately does not
+  //  have highlights. On a metalness-0 surface at roughness 0.94 that lobe is
+  //  a wide, dim wash which the grade then flattens further.
+  //
+  //  docs/PERF_FINDINGS.md prices all fragment shading in the frame at 18 ms
+  //  of 28 (`fx.flatShade`), and names this as the thing to go after. So: one
+  //  define, off by default, that compiles the lobe out. It is opt-in per
+  //  MATERIAL rather than global because the camper is the one thing in the
+  //  world that is actually metal — chrome at roughness 0.14 with an env map —
+  //  and a chrome bumper with no specular is not a saving, it is a bug.
+  //
+  //  The rim survives. It is not a highlight: it is a separate, gated term
+  //  that draws the edge of a backlit silhouette, and it does not go through
+  //  GGX at all.
+  patchChunk(
+    CHUNK,
+    /reflectedLight\.directSpecular \+= rimIrradiance \+ specIrradiance \* BRDF_GGX\(([^;]*)\);/,
+    '#ifdef STYLIZE_MATTE\n\t\treflectedLight.directSpecular += rimIrradiance;\n\t#else\n\t\treflectedLight.directSpecular += rimIrradiance + specIrradiance * BRDF_GGX($1);\n\t#endif',
+    'Stylize/matte'
+  );
+
+  //  And the indirect half. `RE_IndirectSpecular_Physical` runs the multi-
+  //  scatter energy compensation on every fragment whether or not there is
+  //  anything to reflect.
+  //
+  //  NOTE THE ONE THING THIS RETURN SKIPS THAT IS NOT SPECULAR: the last line
+  //  of that function is `indirectDiffuse += diffuse * cosineWeightedIrradiance`,
+  //  which is how ENV-MAP irradiance reaches the diffuse term. Its input is
+  //  `iblIrradiance`, which is written only under `USE_ENVMAP`, so on a
+  //  material with no env map it is a literal vec3(0.0) and this skips
+  //  nothing. That is exactly why `setMatteSpecular` refuses to mark a
+  //  material that has one — the define is safe only on the set it is offered
+  //  to, and the guard lives there rather than here.
+  patchChunk(
+    CHUNK,
+    /vec3 singleScattering = vec3\( 0\.0 \);/,
+    '#ifdef STYLIZE_MATTE\n\t\treturn;\n\t#endif\n\tvec3 singleScattering = vec3( 0.0 );',
+    'Stylize/matte'
+  );
+
+  // ── an instrument, not an effect: shading off, geometry untouched ────────
+  //
+  //  `fx.flatShade` in tools/ablate.mjs is the number docs/PERF_FINDINGS.md is
+  //  built on, and it does not measure what that document says it measures.
+  //  It works by setting `scene.overrideMaterial`, and an override material
+  //  replaces the VERTEX shader as well as the fragment one. Grass blades,
+  //  ground-cover cards and the tree canopy are all built in their vertex
+  //  shaders, so under an override they do not rasterise at all: the frame it
+  //  measures is an empty hillside in fog (shots/override/basic.png). Its
+  //  18 ms is the cost of shading PLUS the cost of the entire near field, and
+  //  it is therefore not an upper bound on any shading change.
+  //
+  //  This is the same measurement done correctly. The define makes
+  //  `outgoingLight` unused, so every GLSL compiler dead-strips the whole
+  //  lighting chain behind it — the light loop, the BRDF, the shadow taps, the
+  //  Stylize response, and each material's own albedo work — while the vertex
+  //  shader, the geometry and every overlapping fragment stay exactly as they
+  //  are. `diffuseColor.a` is kept so alpha behaviour does not change with it.
+  //
+  //  It reaches materials on three's lighting path only. Trees, water and the
+  //  waterfalls are raw ShaderMaterials that never include this chunk and are
+  //  unaffected, so the number it gives is a floor on shading cost, not a
+  //  ceiling — which is the right direction for an instrument to err in.
+  patchChunk(
+    'opaque_fragment',
+    /gl_FragColor = vec4\( outgoingLight, diffuseColor\.a \);/,
+    'gl_FragColor = vec4( outgoingLight, diffuseColor.a );\n#ifdef STYLIZE_FLATSHADE\n\tgl_FragColor = vec4( 0.5, 0.5, 0.5, diffuseColor.a );\n#endif',
+    'Stylize/flatShade'
+  );
+
   // Guarded, and it declares stylizeDiffuse() as well as the uniforms. A
   // MeshStandardMaterial already receives the stylised response through the
   // patched RE_Direct_Physical, but its author may also include STYLIZE_PARS
@@ -770,12 +847,99 @@ export class Stylize {
     this.scene = scene;
     this.params = { ...DEFAULTS };
     this._materials = new Set();
+    // Whether matte materials compile without the physical specular lobe.
+    // See setMatteSpecular; `false` is three's own behaviour, unchanged.
+    this.matte = false;
+    // Instrument, never on in a shipping frame. See setFlatShade.
+    this.flatShade = false;
+  }
+
+  /**
+   * Does this material have any use for a physical specular lobe?
+   *
+   * Three conditions, and each one is a material that would be visibly wrong
+   * without it:
+   *   - metalness above zero: a metal has NO diffuse. Its entire appearance is
+   *     the specular term, so compiling it out renders it black.
+   *   - an env map: the reflection is the specular term as well, and it is the
+   *     only path `iblIrradiance` has into the frame (see the patch note).
+   *   - `userData.keepPhysicalSpecular`, for a material that is neither of
+   *     those and still wants a highlight — wet rock, glass, a lantern lens.
+   *
+   * Everything else in this world is matte, metalness-0 and env-map-free by
+   * construction: terrain at roughness 0.94, rock at 0.93, grass, ground
+   * cover, camp props, animals. That is the set the lobe is wasted on.
+   */
+  static wantsPhysicalSpecular(m) {
+    if (!m || !m.isMeshStandardMaterial) return true;
+    if (m.userData?.keepPhysicalSpecular) return true;
+    if (m.envMap) return true;
+    return (m.metalness ?? 1) > 0.001;
+  }
+
+  /**
+   * Compile the physical specular lobe out of every matte material, or put it
+   * back. Returns the number of materials whose program changed.
+   *
+   * Flipping this marks materials for recompile, which Engine.js has a scar
+   * about (five linkProgram calls, 62-702 ms). It is meant to be set once at
+   * boot — `register` below applies the current mode to each material as it
+   * arrives, so a material streamed in later is compiled correctly the FIRST
+   * time and pays nothing. The setter exists so the ablation harness can price
+   * the change against a paired baseline in one page load, which is the only
+   * way this project measures anything.
+   */
+  setMatteSpecular(on) {
+    this.matte = !!on;
+    let n = 0;
+    for (const m of this._materials) if (this._applyMatte(m)) n++;
+    return n;
+  }
+
+  /** Bring one material's define into line with `this.matte`. */
+  _applyMatte(m) {
+    if (Stylize.wantsPhysicalSpecular(m)) return false;
+    m.defines ??= {};
+    const has = m.defines.STYLIZE_MATTE !== undefined;
+    if (has === this.matte) return false;
+    if (this.matte) m.defines.STYLIZE_MATTE = '';
+    else delete m.defines.STYLIZE_MATTE;
+    m.needsUpdate = true;
+    return true;
+  }
+
+  /**
+   * Instrument. Compile the shading out of every lit material, keeping the
+   * geometry, the vertex shaders and every overlapping fragment. See the
+   * STYLIZE_FLATSHADE patch above for why this exists and what `fx.flatShade`
+   * gets wrong. Returns the number of materials whose program changed.
+   */
+  setFlatShade(on) {
+    this.flatShade = !!on;
+    let n = 0;
+    for (const m of this._materials) {
+      m.defines ??= {};
+      const has = m.defines.STYLIZE_FLATSHADE !== undefined;
+      if (has === this.flatShade) continue;
+      if (this.flatShade) m.defines.STYLIZE_FLATSHADE = '';
+      else delete m.defines.STYLIZE_FLATSHADE;
+      m.needsUpdate = true;
+      n++;
+    }
+    return n;
   }
 
   register(material) {
     if (!material || material.lights === false) return material;
     if (this._materials.has(material)) return material;
     this._materials.add(material);
+    // Before captureShader's needsUpdate, so a material that arrives while the
+    // matte mode is on pays ONE recompile rather than two. The flat-shade
+    // instrument is applied here too: harvest runs every 16 frames, and a
+    // material that streamed in mid-measurement and kept its shading would
+    // quietly understate what the instrument is there to measure.
+    this._applyMatte(material);
+    if (this.flatShade) { (material.defines ??= {}).STYLIZE_FLATSHADE = ''; }
     // Same reason as Atmosphere.register: built-in materials keep the values
     // they were compiled with unless the shader is stashed, so any runtime
     // tuning of the stylised response would reach only the custom shaders.

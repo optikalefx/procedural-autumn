@@ -1,0 +1,96 @@
+{
+ "env": {
+  "quality": "high",
+  "pixelRatio": 1.35,
+  "basePixelRatio": 1.35,
+  "buffer": [
+   2592,
+   1458
+  ],
+  "megapixels": 3.78,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 3072,
+  "preset": {
+   "shadowMapSize": 3072,
+   "cascades": 3,
+   "grassMul": 0.8,
+   "ssao": true,
+   "dof": false,
+   "volumetric": true,
+   "reflections": true,
+   "pixelRatioCap": 1.35,
+   "treeMul": 0.9
+  }
+ },
+ "viewport": [
+  1920,
+  1080
+ ],
+ "dpr": 2,
+ "rounds": 3,
+ "blockMs": 2000,
+ "modes": {
+  "still": {
+   "rows": [
+    {
+     "name": "fx.flatShade",
+     "p50": 9.9,
+     "base": 28.3,
+     "save": 18.4,
+     "spread": 0.65,
+     "fps": 101,
+     "p95": 17.8,
+     "updMs": 1.05,
+     "lateMs": 0.17,
+     "submitMs": 7.9,
+     "calls": 554,
+     "tris": 5810310
+    },
+    {
+     "name": "fx.shadeOnly",
+     "p50": 24,
+     "base": 29,
+     "save": 4.5,
+     "spread": 8.05,
+     "fps": 41.7,
+     "p95": 48.9,
+     "updMs": 0.83,
+     "lateMs": 0.1,
+     "submitMs": 22.99,
+     "calls": 557,
+     "tris": 5818498
+    },
+    {
+     "name": "FLOOR (all off)",
+     "p50": 18.7,
+     "base": 28.95,
+     "save": 10.25,
+     "spread": 7.7,
+     "fps": 53.5,
+     "p95": 36.9,
+     "updMs": 0.73,
+     "lateMs": 0.1,
+     "submitMs": 17.52,
+     "calls": 287,
+     "tris": 4444127
+    }
+   ],
+   "drift": {
+    "n": 12,
+    "min": 28.1,
+    "max": 44.2,
+    "median": 28.65,
+    "first": 28.2,
+    "last": 29.1
+   },
+   "settled": {
+    "frames": 269,
+    "triangles": 5804554,
+    "calls": 553,
+    "converged": true
+   }
+  }
+ }
+}

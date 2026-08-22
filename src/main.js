@@ -271,6 +271,16 @@ async function boot() {
   setProgress(0.96, 'Warming the shaders');
   for (let i = 0; i < 20; i++) terrain.update(cam, 30);
   atmosphere.harvest();
+  // Whether matte surfaces compile without the physical specular lobe — see
+  // Stylize.setMatteSpecular. Set BEFORE harvest, so every material is compiled
+  // the right way the FIRST time and the change costs no recompile at boot.
+  //
+  // OFF, and the reason is a measurement rather than taste: switching it on
+  // was priced at 0.70 ms +/- 0.75 of a 28.4 ms frame, i.e. inside its own
+  // noise (`node tools/ablate.mjs --only fx.physicalSpec`). It is kept and
+  // reachable as `?matte=1` because the machinery is what proved the number,
+  // and because it is the thing to re-price if the shading budget ever moves.
+  stylize.matte = new URLSearchParams(location.search).get('matte') === '1';
   stylize.harvest();
   stylize.update();
   engine.renderer.compile(engine.scene, cam);
