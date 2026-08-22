@@ -905,10 +905,13 @@ export class Lighting {
     // legible shadow shapes off tents, vehicles and ridges, and a key with no
     // shadow reads as ambient however bright it is.
     //
-    // Two maps is not two maps' worth of cost, because the two lights are
-    // never both casting: the sun's `castShadow` is gated on `sunI > 0.35`,
-    // which no night key reaches, and the moon's is gated on the sun being
-    // down. The map is half the sun's resolution anyway — a night frame has
+    // Two maps is not two maps' worth of cost, because EXACTLY ONE of the two
+    // is casting at any moment: the sun's `castShadow` is gated on
+    // `sunI > 0.35`, which no night key reaches, and the moon's is the exact
+    // complement of it. That complement is load-bearing and is not merely
+    // tidiness — see the note at the assignment. A window in which NEITHER
+    // casts changes the shadow-caster count, which is part of three's program
+    // cache key, and relinks every shader in the game. The map is half the sun's resolution anyway — a night frame has
     // nothing like the contrast to show the difference, and the extent is the
     // same, so a moon texel is 1.2 m at the vista extent and 15 cm at eye
     // level. Allocated lazily by three on first use, so a game that never runs
@@ -1305,9 +1308,35 @@ export class Lighting {
     // the light and the disc can never disagree about whether the moon is out.
     this.moon.color.copy(MOON_KEY_C);
     this.moon.intensity = MOON_INTENSITY * s.moonIntensity * this.moonScale;
-    // Never both. The sun's own gate is `sunI > 0.35`, which no night key
-    // reaches, so in practice this is "day or night", not a race.
-    this.moon.castShadow = !this.sun.castShadow && s.moonIntensity > 0.22;
+    // EXACTLY ONE of these two casts, always. Not "never both" — never
+    // NEITHER, which is the half of the invariant that was missing and which
+    // froze the game for six seconds.
+    //
+    // This used to read `!this.sun.castShadow && s.moonIntensity > 0.22`. The
+    // sun's gate is `sunI > 0.35` and the moon's was `moonIntensity > 0.22`,
+    // and at the dawn and dusk crossings there is a window where BOTH are
+    // false. In that window the scene has zero shadow-casting directional
+    // lights — and the number of shadow-casting directional lights is part of
+    // three's PROGRAM CACHE KEY. So every material in the game re-keys and
+    // relinks, in one frame, on the main thread.
+    //
+    // Measured, camera still, nothing streaming, only the hour moving:
+    //
+    //   hour 5.0   sun false moon true    programs 109 -> 109    worst frame    61 ms
+    //   hour 5.5   sun false moon FALSE   programs 109 -> 128    worst frame  6150 ms
+    //   hour 6.0   sun true  moon false   programs 128 -> 131    worst frame   170 ms
+    //
+    // 6.15 seconds of frozen main thread, of which a CPU profile put 1771 ms in
+    // getProgramInfoLog alone — a synchronous shader link. It reads as a total
+    // freeze rather than a dropped frame because that is exactly what it is.
+    // It reproduces from the sun control in the menu, because that control
+    // walks the hour straight through the dead zone.
+    //
+    // Dropping the intensity term costs one shadow-map render during twilight
+    // that was previously skipped — and skipped is the anomaly: every other
+    // hour of the day already renders exactly one. So the steady-state cost is
+    // unchanged and the cache key is now constant for the whole cycle.
+    this.moon.castShadow = !this.sun.castShadow;
     s.zenith.copy(k.zen);
     s.horizon.copy(k.hor);
     s.sunHorizon.copy(k.sunHor);

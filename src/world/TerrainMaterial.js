@@ -32,6 +32,12 @@ export function createTerrainMaterial(world, opts = {}) {
   const uniforms = {
     uDataTex:     { value: world.dataTexture },
     uAuxTex:      { value: world.auxTexture },
+    // The hydro field. See src/world/hydroField.js, and see the note at
+    // `depth` below for what it fixes here — the terrain used to derive its own
+    // waterline from a different field at a different resolution and paint a
+    // second shoreline a metre from the water's.
+    uHydroTex:    { value: world.hydroTexture },
+    uHydroTexel:  { value: world.hydroTexel },
     uWorldSize:   { value: world.worldSize },
     uDataRes:     { value: world.res },
     uTime:        { value: 0 },
@@ -183,6 +189,68 @@ export function createTerrainMaterial(world, opts = {}) {
     shader.fragmentShader = /* glsl */`
       uniform sampler2D uDataTex;
       uniform sampler2D uAuxTex;
+      uniform sampler2D uHydroTex;
+      uniform float uHydroTexel;
+
+      // ── the hydro field, reconstructed EXACTLY as water_surface.js does ────
+      //
+      // This was a plain texture2D — hardware bilinear — while the water shader
+      // reconstructs the same field with a 4-tap bicubic B-spline. Two filters
+      // on one field, and the round's whole thesis is that everything drawing
+      // an edge reads ONE field. They stopped agreeing the moment the water got
+      // its B-spline.
+      //
+      // MEASURED by a critic over the whole shipped field, signed, positive
+      // where the water is pulled inside the terrain's line:
+      //
+      //     p50 +0.092 m   p90 +0.567 m   p99 +1.816 m
+      //     34.3% of the waterline over 0.25 m apart, 14.9% over 0.5 m,
+      //     5.1% over 0.9 m — the entire width of the damp band drawn here
+      //
+      //     2 256 m of terrain-painted shoreline encircling bodies the water
+      //     shader deletes outright, and 39 546 m2 of ground painted as
+      //     submerged with no water drawn on it
+      //
+      // That is a shoreline around water that is not there, and it is visible
+      // as closed dark loops on bare cliff and as meander outlines across dry
+      // meadow. Before the B-spline landed these two agreed exactly.
+      //
+      // The 4-tap B-spline, verbatim. texture2DGradEXT with the UN-warped uv's
+      // derivatives is required, not decoration: h0 jumps 0.8 of a texel every
+      // time f wraps, so implicit mip selection would put a camera-dependent
+      // seam back on exactly the texel boundaries this is smoothing.
+      vec4 tmHydro(vec2 uv){
+        vec2 texSize = vec2(1.0 / uHydroTexel);
+        vec2 c  = uv * texSize - 0.5;
+        vec2 f  = fract(c);
+        vec2 ic = c - f;
+        vec2 f2 = f * f, f3 = f2 * f;
+        vec2 w0 = (-f3 + 3.0 * f2 - 3.0 * f + 1.0) * (1.0 / 6.0);
+        vec2 w1 = (3.0 * f3 - 6.0 * f2 + 4.0)      * (1.0 / 6.0);
+        vec2 w2 = (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0) * (1.0 / 6.0);
+        vec2 w3 = f3 * (1.0 / 6.0);
+        // BSPLINE_K must equal water_surface.js's. Two filters on one field is
+        // the defect this function exists to remove — p90 0.62 m apart, 2 256 m
+        // of shoreline drawn round water that was not there — and it would come
+        // straight back if only one of the two carried the softening knob.
+        const float BSPLINE_K = 0.5;
+        w0 = mix(vec2(0.0), w0, BSPLINE_K);
+        w1 = mix(1.0 - f,   w1, BSPLINE_K);
+        w2 = mix(f,         w2, BSPLINE_K);
+        w3 = mix(vec2(0.0), w3, BSPLINE_K);
+        vec2 g0 = w0 + w1;
+        vec2 g1 = w2 + w3;
+        vec2 h0 = (w1 / g0) - 1.0 + ic;
+        vec2 h1 = (w3 / g1) + 1.0 + ic;
+        vec2 uv0 = (h0 + 0.5) * uHydroTexel;
+        vec2 uv1 = (h1 + 0.5) * uHydroTexel;
+        vec2 dx = dFdx(uv), dy = dFdy(uv);
+        vec4 t00 = texture2DGradEXT(uHydroTex, vec2(uv0.x, uv0.y), dx, dy);
+        vec4 t10 = texture2DGradEXT(uHydroTex, vec2(uv1.x, uv0.y), dx, dy);
+        vec4 t01 = texture2DGradEXT(uHydroTex, vec2(uv0.x, uv1.y), dx, dy);
+        vec4 t11 = texture2DGradEXT(uHydroTex, vec2(uv1.x, uv1.y), dx, dy);
+        return mix(mix(t11, t01, g0.x), mix(t10, t00, g0.x), g0.y);
+      }
       uniform float uWorldSize;
       uniform float uDataRes;
       uniform float uTime;
@@ -428,8 +496,57 @@ export function createTerrainMaterial(world, opts = {}) {
         // defect made the structure harder to find.
         river *= 1.0 - smoothstep(0.85, 1.40, slope);
         float moist   = data.a;
-        float waterH  = data.g;
-        float depth   = max(0.0, waterH - vWorldPos.y);
+        // ── the waterline, from the field the WATER uses ───────────────────
+        //
+        // This used to be max(0.0, data.g - vWorldPos.y), and both halves of
+        // that were wrong in the same direction.
+        //
+        // data.g carries -9999 on dry texels. Linearly filtered between a wet
+        // texel at 12 m and a dry one at -9999, it crosses any sane threshold
+        // 1 cm past the wet texel's centre — so every shore and damp band this
+        // shader paints was cut on a BINARY mask on the 2 m lattice, with no
+        // antialiasing, eroded by one texel. A 2 m staircase.
+        //
+        // And vWorldPos.y is the terrain MESH's height, which is the baked
+        // field plus up to 0.44 m of per-vertex micro-detail (RMS 0.131 m) that
+        // the water shader knows nothing about. Measured over the texels within
+        // half a metre of the waterline: the two shorelines were p50 0.44 m
+        // apart, p90 2.16 m, p99 7.99 m — and because the micro-detail's
+        // 3.8 m and 2.0 m octaves alias differently in each terrain LOD band,
+        // the disagreement CHANGED at every LOD ring.
+        //
+        // Two visible shorelines a metre apart is most of why a bank read as a
+        // stain rather than an edge. One field, sampled the same way by both.
+        // A QUARTER of a hydro texel, not a half.
+        //
+        // The half-texel correction eleven lines up is right for uDataTex,
+        // whose sample i sits at world i*texel - half. The hydro field is
+        // stored at half that resolution by AREA-AVERAGING pairs, so its sample
+        // k is the mean of base samples 2k and 2k+1 and therefore represents
+        // (k + 0.25)*hTexel - half, not (k + 0.5)*hTexel - half. Applying the
+        // half puts the whole field a metre off in each axis.
+        //
+        // MEASURED on a synthetic half-plane whose true waterline is at
+        // x = -55.000: with uHydroTexel*0.5 the shader's zero landed at
+        // -56.000; with *0.25 it lands at -55.000 exactly. On the shipped bake
+        // that is 1 m in -x and 1 m in -z, 1.41 m diagonally, between the
+        // shoreline this shader paints and the bed and slope the same fragment
+        // reads through uvw — twice the p50 0.44 m disagreement the block above
+        // exists to remove, and in a fixed direction rather than a noisy one.
+        //
+        // Numerically this is the same quantity as 0.5 / uDataRes, which is
+        // what uvw uses; written in the hydro texel so it stays right if the
+        // storage ratio ever changes.
+        vec2 uvh = (vWorldPos.xz / uWorldSize) + 0.5 + (uHydroTexel * 0.25);
+        uvh = abs(uvh);
+        uvh = clamp(mix(uvh, 2.0 - uvh, step(1.0, uvh)), 0.0, 1.0);
+        vec4 hydro = tmHydro(uvh);
+        float depth   = max(0.0, hydro.r);
+        // Signed metres to the waterline, positive in the water. Not used by
+        // the bands below, which are depth-driven by art direction, but it is
+        // the honest quantity for anything that wants a DISTANCE — the sand
+        // ribbon in particular, which is specified in metres of ground.
+        float shoreM  = hydro.g;
 
         vec3 N = normalize(vWorldNormal);
         float camDist = length(vWorldPos - cameraPosition);
@@ -1509,16 +1626,68 @@ export function createTerrainMaterial(world, opts = {}) {
         }
 
         // ── water margins ──────────────────────────────────────────────────
+        //
+        // Everything below is gated on DISTANCE FROM THE WATERLINE, not only on
+        // the river mask, and that is a fix rather than a refinement.
+        //
+        // The river mask is the one _waterSurface splats radially around each
+        // channel station, at a radius of 1.35 x the half-width with half a
+        // metre of freeboard up the bank. It was a reasonable stand-in for
+        // "near the channel" while the waterline itself was a soft, badly
+        // placed thing. It is not one now: the water's edge is cut on the hydro
+        // field to a metre, and the splat is a disc, so the two disagree by
+        // metres and the disagreement is PAINTED — a wide dark rust band
+        // outside the water, which reads as an outline drawn round the river
+        // rather than as a bank. It is the most visible remaining defect in the
+        // plunge framing at mid distance.
+        //
+        // 0.6 m of full strength outside the line and gone by 2.8 m.
+        // docs/WATER_ART_SPEC.md 3.5 puts the plates' damp band at 0.7-1.1 m on
+        // an ordinary bank, reaching 3.1 m only on the very shallowest, so this
+        // is the spec's own range where the disc was several times it. Inside
+        // the water shoreM is positive and the gate is fully open, because the
+        // bed showing through the shallows is the whole point of the term.
+        // ── the gate needs HEIGHT as well as horizontal distance ──────────
+        //
+        // shoreM is a Euclidean distance transform in the XZ plane. It knows
+        // nothing about elevation, so a cliff face standing directly above a
+        // channel is "within 2.8 m of the waterline" while being a hundred
+        // metres above it — and the terrain duly painted riverbed and a damp
+        // margin down the rock.
+        //
+        // A critic found it as long dark 1-px contours running for hundreds of
+        // metres across a bare cliff with no water inside them, at
+        // --pos -170,235,-1105 --look -48,160,-1008. They survive
+        // --hide Water,Waterfalls, which is what proves they are this shader
+        // and not the water: it is a waterline drawn on dry rock.
+        //
+        // Two metres of freeboard, matched to the 2.8 m horizontal reach so the
+        // gate is a small cylinder round the waterline rather than an infinite
+        // vertical prism through it. The water level is hydro's own: depth is
+        // the surface minus this bed, so surface = bed + depth = the fragment's
+        // own height plus the depth field, and the fragment's height above the
+        // waterline is therefore -hydro.r wherever hydro.r is negative.
+        // The thresholds are set so ordinary banks are untouched. Inside the
+        // 18 m grading band hydroField publishes 0.60 x the signed distance
+        // where that is FURTHER from zero than the real depth, so a gentle bank
+        // 2.8 m out reads about -1.7 m whatever its actual height; only where
+        // the real bed is genuinely far above the water does the true value
+        // win and the number get large. Gating from 3 m therefore never touches
+        // a bank the damp margin belongs on, and shuts completely on a face
+        // standing 8 m clear of its own river.
+        float aboveWater = max(0.0, -hydro.r);
+        float bandGate = (1.0 - smoothstep(0.6, 2.8, -shoreM))
+                       * (1.0 - smoothstep(3.0, 8.0, aboveWater));
         float shore = smoothstep(1.6, 0.0, depth);
         vec3 riverBed = mix(uSand, uRockMid, 0.42 + fine * 0.28);
-        albedo = mix(albedo, riverBed, smoothstep(0.02, 0.26, river) * 0.85);
+        albedo = mix(albedo, riverBed, smoothstep(0.02, 0.26, river) * 0.85 * bandGate);
         // The pale bar along the waterline. Raised from 0.30, and it is a
         // composition fix as much as a material one: river measures lumaP95
         // 0.606 against a reference band whose floor is 0.60, and it is the
         // only canonical view still short of the range band. Reference plate 1
         // puts a bright pale shore ribbon the whole length of its river, which
         // is where a good part of that plate's highlight range comes from.
-        albedo = mix(albedo, uSand, shore * smoothstep(0.04, 0.22, river) * 0.46);
+        albedo = mix(albedo, uSand, shore * smoothstep(0.04, 0.22, river) * 0.46 * bandGate);
         // Damp darkening: a band of wet ground either side of the waterline,
         // plus genuinely submerged bed. Wet rock is darker and a touch cooler.
         // Restrained: at 0.55 over the whole river mask this swallowed every
@@ -1528,9 +1697,291 @@ export function createTerrainMaterial(world, opts = {}) {
         // stacked on top of a cool sky ambient, and the gorge and plunge-pool
         // views came back with a quarter of every chromatic pixel reading blue.
         // Wet rock is *darker*; the cool note is atmosphere's job, not albedo's.
-        float damp = max(smoothstep(0.50, 0.02, depth) * step(0.001, depth),
-                         smoothstep(0.34, 0.72, river) * 0.30);
+        // The SUBMERGED half only. The dry-side half of this term has moved to
+        // the block below, where it is a real band in metres rather than a
+        // third of a mix keyed on the channel splat.
+        //
+        // GATED, and the wet/dry edge antialiased. This term was the last of
+        // the four water-margin terms in this block still ungated -- riverBed
+        // and the sand ribbon above both carry bandGate, and the dry-side
+        // dampBand below carries it. Making it match its three siblings is
+        // right on its own account and it is kept for that.
+        //
+        // IT IS NOT THE FIX FOR THE GHOST LOOP, and the paragraph that used to
+        // stand here said it was. The loop -- a closed dark lasso on a bare
+        // cliff face at mouth -- is drawn by THIS term, which a critic
+        // established by direct attribution after an earlier pass had
+        // attributed it to historical terrain shading BY ELIMINATION: repaint
+        // this one term pure red through onBeforeCompile and the loop comes
+        // back red. But adding bandGate to it moved the loop's darkest line by
+        // 1.4 of the 41.3 levels it was drawn at, and the reason is written out
+        // at the gate below. Two claims of a fix on this defect now, neither of
+        // which was checked against the frame before it was written down.
+        //
+        // step() was a binary edge driving a 0.51-stop albedo multiply, with no
+        // fwidth and no smoothstep. Forced on alone it renders the far shore at
+        // mouth as salt-and-pepper stipple, and in the shipped frame it leaves
+        // thin dark hairlines across the meadow. One pixel of screen-space ramp
+        // costs nothing and is the same treatment every other edge in this file
+        // gets.
+        //
+        // ── and NEITHER of those was the loop. This is. ────────────────────
+        //
+        // The gate above bought 1.4 stops of the 41.3 the loop was drawn at,
+        // and the reason is one line of bandGate: aboveWater = max(0, -hydro.r)
+        // is identically ZERO wherever hydro.r is positive, so on ground the
+        // field calls WET the height half of bandGate is fully open and the
+        // shoreM half is fully open too. bandGate is 1 across this whole term's
+        // domain by construction. It was never going to move it.
+        //
+        // What the loop actually is, traced from screen (1046,181) at mouth
+        // back through the pose to world (1090, -644) and read off the bake:
+        // a REAL RIVER. 4-6 m wide, 1.6-3.2 m deep, flow 54-1126, descending
+        // the massif at a bed drop of 0.54 m/m at the meadow line and 1.19 m/m
+        // higher up. There is nothing wrong with the field: the bake put a
+        // mountain river there and hydroField reported it.
+        //
+        // What is wrong is that THE WATER IS NOT DRAWN ON IT and the terrain
+        // does not know. src/shaders/water_surface.js hands steep reaches to
+        // the falls system outright --
+        //     cliff = smoothstep(0.58, 1.15, (bed - bedAhead) / |aheadV|) * moving
+        //     alpha *= (1 - cliff) * (1 - smoothstep(0.34, 0.60, cliff))
+        // -- and evaluated offline on the real bake that reach reads cliff
+        // 0.90 at (1100,-640) and 1.00 at (1110,-645), against 0.00 at the lake
+        // and 0.11 where the ribbon is still drawn. The falls system does not
+        // pick it up either: MEASURED over the 5 041 px of the loop's own box,
+        // |water frame - water-hidden frame| is mean 0.1 levels with 0.1% of
+        // pixels over 8, against 95.9 and 78.8% for the same river eighty
+        // pixels lower down. Nothing draws water there at all. So the terrain
+        // was painting the two 0.8 m rims of a channel with bare rock between
+        // them, and two thin dark lines with nothing inside them is not a damp
+        // margin, it is a contour drawn on a cliff.
+        //
+        // THE FIX IS TO RESTATE THE HAND-OFF. A margin belongs to water that is
+        // there; where the surface shader has given the pixel to the falls
+        // system, this term has nothing to be the margin of. It is stated on
+        // slope -- aux.r, |grad bed| at the bake's 2 m -- and not on the
+        // downstream drop, because the flow direction is not a uniform in this
+        // material and adding one is a WorldData change. slope >= the drop
+        // along any direction, so this withdraws EARLIER than the water does,
+        // never later, and that asymmetry is the right one: a missing margin
+        // under drawn water is mild, a margin with no water is the defect.
+        //
+        // AND IT IS THE GATE ITS THREE SIBLINGS ALREADY CARRY. river is cut
+        // at 0.85-1.40 forty lines above, on the argument that a channel cannot
+        // exist on a 62 degree face, and the dry-side dampBand below repeats
+        // it. This term was the only one of the four without it. So the block
+        // now says one thing about steep ground in four places instead of three
+        // and a hole.
+        //
+        // ── the constants, and the one that was tried first and rejected ───
+        //
+        // The water's own hand-off ramps 0.58-1.15, and using THOSE numbers was
+        // the first attempt, on the reasoning that matching the water exactly
+        // must be right. It kills the loop outright and it is not shippable.
+        // MEASURED in the frame, on the water-hidden captures, as the fraction
+        // of this term's own ink that survives the gate -- the term's ink is
+        // |ungated frame - term-deleted frame| over the pixels where that
+        // exceeds 12 levels, and what survives is |term-deleted - gated| over
+        // the same set, all three captures taken in one window:
+        //
+        //   term kept        river  mouth  waterfall  hero  backwater  drive
+        //   gate 0.58-1.15    41%    92%      60%      13%     46%      48%
+        //   gate 0.85-1.40 *  94%    96%      67%      83%     67%      83%
+        //
+        // (* the shipped capture. An intermediate run read 92/93/67/83/65/78
+        // for the same constant because the sed that set them had also caught
+        // the dry-side dampBand forty lines below and moved ITS gate from
+        // 0.85-1.40 to 0.58-1.15. Both are restored; the row above is the
+        // frame that ships. A one-line search-and-replace across a file with
+        // four copies of the same constant is how a measurement ends up being
+        // of two changes.)
+        //
+        // 0.58 is 30 degrees, and a carved channel's bank IS about 30 degrees:
+        // at hero, where the water is 600-1500 m out and every visible bank
+        // is an incised one, it takes 87% of the term. That is not a gate, it
+        // is a deletion with a slope test in front of it. The map-weighted
+        // estimate that suggested 0.58 was safe said it would cost 5% of the
+        // band, and it is wrong by more than an order of magnitude for exactly
+        // the reason a screen metric usually beats a map metric here: a bank
+        // you can SEE is a bank turned towards you, and the term is strongest
+        // on the steep ones. Recorded because the estimate was clean, plausible
+        // and off by 17x.
+        //
+        // ── what 0.85-1.40 does to the loop, measured ──────────────────────
+        //
+        // On the water-hidden mouth capture, so nothing found is the water,
+        // over the loop's own box (1035-1105, 175-245) against a control box of
+        // the same rock face at the same range with no lasso on it. ink is
+        // pixels darker than both neighbours three px away by more than 0.10
+        // stops; min() of the two neighbours and not max(), or the face's own
+        // aspect flutes score as much as the defect does and the control box
+        // comes out indistinguishable from the defect box:
+        //
+        //                        loop box  (4 900 px)   control box (7 000 px)
+        //   shipped, ungated    ink 162  sum 29.92 st    ink 48  sum 6.01
+        //   ungated, same run   ink 139  sum 25.78       ink 48  sum 6.01
+        //   gate 0.85-1.40      ink  40  sum  5.75       ink 45  sum 5.78
+        //   gate 0.58-1.15      ink   1  sum  0.11       ink 43  sum 5.37
+        //   this term deleted   ink   0  sum  0.00       ink 47  sum 5.81
+        //
+        // 81% of the loop's ink and 78% of its depth, and what is left has the
+        // same sum as the control box in two thirds of the area. The worst
+        // single dip falls 0.409 -> 0.257 stops against the control's own
+        // 0.195, and at 4x magnification the lasso is not on the rock face any
+        // more -- only its last few pixels survive down at the meadow line,
+        // where the slope drops under 0.85 and the water starts being drawn
+        // again. Cost: 4-33% of a 0.51-stop multiply on the steepest third of
+        // the shore. Two ungated rows because the harness is not
+        // frame-deterministic; the second is the one the other rows were taken
+        // beside, and the spread between them, 162 vs 139, is this metric's own
+        // repeatability.
+        //
+        // NOT FIXED, and named so it is not rediscovered as a terrain defect:
+        // there is a 4-6 m river, 1.6-3.2 m deep, carrying flow 54-1126 down
+        // that massif, and NOTHING DRAWS IT. water_surface hands it to the
+        // falls system and the falls system does not have it. This gate stops
+        // the terrain outlining it; it does not put the water back.
+        float dampAA = max(fwidth(depth), 1e-4);
+        float damp = smoothstep(0.50, 0.02, depth) * smoothstep(0.0, dampAA, depth) * bandGate
+                   * (1.0 - smoothstep(0.85, 1.40, slope));
         albedo = mix(albedo, albedo * vec3(0.70, 0.66, 0.62), damp);
+
+        // ── the damp margin, on the dry side — MOVED HERE FROM THE WATER ───
+        //
+        // It used to be drawn by src/shaders/water_surface.js, which is a
+        // TRANSPARENT layer standing over dry ground, and it was pushed into
+        // that layer's alpha with 'alpha = max(alpha, wetT * 0.80)'. That one
+        // line made the damp margin the OUTER BOUNDARY OF THE WATER — so the
+        // silhouette of every body of water in the game was whatever this band
+        // happened to be doing, and this band was rationed by camera distance
+        // and by pixel footprint.
+        //
+        // MEASURED by a critic with the engine's clock frozen, so nothing in
+        // the scene animated at all: translating the camera five metres swung
+        // 6-25% of the waterline's world-space cells by more than 30% of full
+        // coverage, and a third to two thirds of those swings REVERSED. The
+        // control that proves it is not resampling is a 3.6 degree rotation,
+        // which moves the pixels exactly as the translation does and produced
+        // ~0. The water's answer to "where does the water end" was a function
+        // of where the camera stood.
+        //
+        // Two fixes short of moving it were tried in the water shader and both
+        // regressed hard; the record is at the wetT declaration there. They
+        // agree on the reason: the band's alpha and its colour cannot be
+        // separated while the band is drawn BY THE WATER over dry ground.
+        //
+        // The terrain is opaque. A margin drawn here has no silhouette to move
+        // and the whole class of defect goes away. And it is cut from the same
+        // hydro field the water reads — hydro.g, signed metres to the waterline
+        // — so the two cannot disagree about where the waterline is.
+        //
+        // ── the numbers, all of them measured ─────────────────────────────
+        //
+        // WIDTH 0.9 m. docs/WATER_ART_SPEC.md 3.1 scans P3's near bank at
+        // 150 px/m and gets 105 px of damp band, 0.7 m; 3.2's sandbar gives
+        // 1.1 m; 3.3's far bank, which is the shallowest in the plate, gives
+        // 3.1 m. 0.9 m is the middle of the ordinary-bank pair and it is what
+        // the water shader was drawing, so the relocation does not also change
+        // the width.
+        //
+        // DARKNESS 0.85 stops. This is the fix as much as the relocation is.
+        // The look critic measured our band at 0.43-0.52 stops on three
+        // framings against the plate's 0.85 — half the plate, everywhere — and
+        // this shader's own contribution, measured on the water-hidden capture
+        // with a null control fifty pixels further up the bank, was 0.20-0.34
+        // stops net. The multiplier below is on ALBEDO and the target is in the
+        // FRAME, and those are not the same number: sky ambient, aerial
+        // perspective and the tonemap all compress the ratio on the way out.
+        // Calibrated by capture rather than by arithmetic — see the constant.
+        //
+        // HUE AND CHROMA. §3.5's rule is that against BLUE water the band goes
+        // down in value and KEEPS the meadow's hue, C held at 0.19-0.27 and
+        // cool held at -0.95 to -1.40; it is against WHITE water that a margin
+        // goes pale and loses its chroma, and every framing in this map except
+        // the foot of a fall is the blue case. So the darkening is a SCALAR:
+        // scaling a linear albedo by k holds hue exactly, holds saturation
+        // exactly, and holds cool = (B-R)/Y exactly, while sRGB C falls only as
+        // k^(1/2.4). Our banks measure C 0.386-0.488, so at 0.85 stops the band
+        // lands at C 0.30-0.37 — above the plate's own 0.217 with room, which
+        // is the contract. A vec3 multiplier here would tilt the hue for
+        // nothing; the one on the submerged term above is a different job.
+        //
+        // RAGGED OUTER EDGE. Two soft parallel edges a metre apart is a stripe,
+        // not a margin — the water shader's own note says so and it is right.
+        // The reach is modulated by a 2.4 m value-noise read from WORLD XZ
+        // only, so the outer boundary is a tide mark that wanders 0.5-1.2 m out
+        // and, being a function of position alone, cannot move when the camera
+        // does. That is the whole point of this relocation and it would be
+        // silly to give it back.
+        //
+        // GATES. Horizontal distance is hydro.g. Height is hydro.r, exactly as
+        // the block above uses it: shoreM is a Euclidean distance transform in
+        // the XZ plane and knows nothing about elevation, so without the height
+        // gate a cliff standing over a channel is "within a metre of the
+        // waterline" and gets a wet fringe painted a hundred metres up a dry
+        // face. And slope, for the reason at the 'river *=' line: a 62 degree
+        // face is where a channel stops being a channel and it has no more
+        // business carrying a damp margin than it has carrying a gravel bar.
+        //
+        // The edge is antialiased with the shader's own analytic footprint and
+        // not with fwidth of an interpolated attribute — see the note at footM,
+        // which is a whole herringbone defect — and the ramp is SYMMETRIC about
+        // the reach, so the footprint changes how soft the edge is without ever
+        // moving where it sits.
+        // The multiplier that lands 0.85 stops IN THE FRAME, and it is NOT
+        // 2^-0.85 = 0.555, because this is ALBEDO and the target is a rendered
+        // pixel. The instinct is that the two differ because ambient and aerial
+        // perspective add an unscaled term and the tonemap compresses, so the
+        // albedo would have to be darkened HARDER than the target. Measured, it
+        // is the other way round and by a lot: 0.52 here — 0.943 stops of
+        // albedo — came back as p50 1.05-1.22 stops in the frame on river,
+        // mouth and plunge, with p90 at 1.31-1.60. The filmic curve's TOE
+        // EXPANDS contrast in the shadows: a decade below mid grey its slope in
+        // log-log is about 1.5, and a damp margin lives exactly there.
+        //
+        // MEASURED by capturing the same three poses twice, changing this one
+        // constant and nothing else, and taking log2(Y_off / Y_on) per pixel
+        // over pixels above Y 0.02 (below that a single 8-bit level IS a stop
+        // and the ratio measures the quantiser). A shader constant tuned by
+        // arithmetic through this curve would have come out 40% too dark.
+        //
+        // The sweep, p50 of log2(Y_off / Y_on) over the pixels the constant
+        // moves at all, on captures taken minutes apart with nothing else
+        // changed:
+        //     0.52  ->  river 1.05  mouth 1.22  plunge 0.97
+        //     0.60  ->  river 0.96  mouth 0.96  plunge 0.89
+        //     0.62  ->  river 0.90  mouth 0.90  plunge 0.83  waterfall 0.83
+        // and 0.62 is what shipped. hero reads 0.24 on the same run and that is
+        // not a miss: its water is 300 m out and more, where the aerial
+        // perspective has closed most of the contrast in the frame. A margin
+        // that fades into the bank at range is what prefiltering a 0.9 m
+        // feature means, and unlike the water shader's version of the same
+        // fade it cannot move the water's edge, because the ground it is
+        // painted on is opaque. The band's screen coverage on those five
+        // framings is 0.9-3.5%.
+        //
+        // The target quoted in the round brief is
+        // 0.85; the plate's own band is not one number — 3.1 scans it from
+        // #4c3d13 to #413814 against a meadow at Y 0.089, which is 0.83 stops
+        // at its inner edge and 1.12 at its outer, mean 0.97, and 3.2's sandbar
+        // agrees at 0.75 -> 1.11. So the band is meant to deepen outward and
+        // 0.85 is the leading edge of it, not a ceiling.
+        const float DAMP_MUL = 0.62;
+        float bankM = max(0.0, -shoreM);
+        float dampN = fbm(vWorldPos.xz * 0.42 + 5.7, 2) * 0.5 + 0.5;
+        float dampReach = 0.9 * mix(0.55, 1.35, dampN);
+        float dampW = max(0.10, footM * 0.8);
+        float dampBand = (1.0 - smoothstep(dampReach - dampW, dampReach + dampW, bankM))
+                       * (1.0 - smoothstep(3.0, 8.0, aboveWater))
+                       * (1.0 - smoothstep(0.85, 1.40, slope));
+        // Never over ground that is already under water: the submerged term
+        // above owns the wet side, and stacking the two put 1.4 stops into the
+        // first metre of every shallow.
+        // Smoothly, not with a step(): this file has a whole paragraph on
+        // what a binary mask cut on a bilinear lattice does to a shoreline.
+        dampBand *= 1.0 - smoothstep(0.0, 0.06, depth);
+        albedo *= mix(1.0, DAMP_MUL, dampBand);
 
         // ── snow: genuine high alpine only, wind-scoured off the steep faces ─
         float snowSel = smoothstep(uSnowLine, uSnowLine + 52.0,

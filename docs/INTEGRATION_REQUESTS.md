@@ -6246,3 +6246,372 @@ after     4 of 60
 seconds after landing, tightest clearance 2.74 m, and the 120-press spam test
 clean with 0 NaN events. `holdtest.mjs` sweep unchanged: held at every gradient
 from 0.00 to 1.00, 0.000000 m of displacement.
+
+## MESH — the smooth-water round (src/world/Water.js)
+
+Three things that reach outside the one file this author owns. All three are
+measured with `tools/_scratch/meshlab.mjs`, which imports the real
+`buildWaterSurface` from `Water.js` and evaluates the fragment shader's own
+alpha chain along the welded mesh boundary.
+
+### 1. `aSpan` has changed scale, and it moves five terms in `water_surface.js`
+
+`aSpan` was a maximum of an inside chamfer over 16 m blocks, read back
+bilinearly — a block-constant field with seams, whose second difference across
+one cell averaged 0.199 m and reached 17.19 m. It is now a running maximum over
+a 40 m window, box-blurred twice, computed from an exact Euclidean distance
+transform at the native 2 m grid. Seams: mean 0.095 m, max 8.13 m.
+
+It also got SMALLER, and that part is a bug fix, not a side effect. The old
+chamfer ran on the QUAD-level wet mask, where a 4 m quad counted as wet if any
+one of its four texels was, so a 6 m channel came out three quads wide and
+reported a half-width of 8 m instead of 3 m.
+
+```
+          p05   p25   p50   p75   p95
+blocks    4.0   6.8  12.8  25.6  32.0
+now       1.6   3.2   7.3  17.9  32.0
+```
+
+`shoreBand = clamp(vSpan * 0.30, 0.30, 1.6)` was therefore at its 1.6 m cap for
+everything down to the 25th percentile — every brook in the map was handed a
+lake's band, which is the failure the attribute's own comment says it exists to
+prevent. `bankT`, `bankFoam`, the `aheadV` lookahead and the `lace` gate at
+`smoothstep(1.0, 3.0, vSpan)` all move with it. Nothing was tuned to compensate,
+deliberately: the field is now honest and the constants should be judged against
+it rather than against a number that was 2.3x too big on narrow water.
+
+### 2. `Water.js` now depends on two constants that live in `water_surface.js`
+
+`SURF_DEAD_M = 11` is a mesh-side statement of the shader's own outer guard,
+`alpha *= 1.0 - smoothstep(2.0, 9.0, -vShore)`, plus the damp band's
+`1.0 - smoothstep(1.1, 3.1, shoreOut)`. Past 9 m on the dry side both are
+identically zero, so the mesh stops at 11 m and 52 082 quads are never emitted.
+The dilation ring is bounded by the same number.
+
+`3.5` in the level-step cull is the shader's perched guard,
+`smoothstep(1.2, 3.5, depth)`.
+
+**If either of those ramps is lengthened, `SURF_DEAD_M` has to grow with it**,
+or the mesh will stop inside the range the shader still wants to draw in. There
+is no way for one file to notice the other changing. Both are commented at the
+constant.
+
+### 3. `--refresh-views` is still owed, and the anchors moved under this round
+
+Same as item 3 in `docs/WATER_CONTRACT.md`'s queue. Adding to it only that the
+water mesh's outer boundary moved by several metres in this round (the dilation
+is bounded by a distance now, not by a ring count), which does not move the
+waterline but does move where the surface stops existing for
+`WorldData.getWaterHeight`. Anything cached off `waterField.drawn` should be
+rebuilt.
+
+## PIXEL — the smooth-water round (src/shaders/water_surface.js, water_common.js)
+
+### 1. WITHDRAWN — "the waterline is limited by dry-side geometry"
+
+This item claimed, with six measurements behind it, that `mouth` could not be
+antialiased because the surface stops at `SURF_DEAD_M = 11` m and a pixel there
+spans tens of metres of ground. Every one of those six readings came from
+`tools/wedge.mjs` before its `aaPx` and `stair` metrics were rewritten. On the
+corrected tool `mouth` reads `aaPx` 2.41 — inside the 1.5-2.5 target band — and
+`stair` 2.9% against the target of 4%. There is nothing to fix and nothing to
+ask for. Recorded rather than deleted because the reasoning was sound and the
+instrument was not, and the next author to see a number that will not move
+should suspect the instrument one step earlier than I did.
+
+### 2. The lace's brightness ceiling is `uFoamGain` / `uFoam`, not the lace term
+
+`docs/WATER_ART_SPEC.md` §5 item 8 wants a peak `Y` >= 0.40 and the plate is at
+0.616. Ours measures 0.356. Raising the lace's own opacity floor from 0.72 to
+0.88 moved that number by 0.001, which means the lace had already saturated its
+mix and what is being measured is the foam illuminant's luminance.
+
+Worked around inside `water_surface.js` with an additive lift on the lace band
+only (see the note at `foamCol`), because `uFoamGain` is shared with the falls
+and a whitewater curtain is correctly lit where it is. If a future round wants
+the lace and the foam to separate properly, the clean form is a second gain —
+`uLaceGain` — rather than a hard-coded coefficient in the shader.
+
+### 3. Stale note corrected, for anyone who reads it later
+
+`wFootprint`'s comment in `water_common.js` claimed `dFdx`/`dFdy` on the
+interpolated world position "came back as zero here (measured)". They do not.
+Re-measured by rendering `clamp(fwidth(vWPos.x) * 2.0, 0.0, 1.0)` to the blue
+channel at `mouth`: it is zero nowhere and ramps smoothly to the far shore.
+three r180 is WebGL2-only, so there is no path on which that could have been
+true. The comment has been rewritten in place. Every band-limit in this shader
+that was guessing from an analytic footprint could have been exact.
+
+## Integrator — the smooth-water round (2026-08-21)
+
+### 1. Refresh the bakes before this ships
+
+`public/bakes/` is at generator hash `4d6baa83`; `TerrainGen.js` changed this
+round and the generator is now `8c42a243`. `loadCachedBake`'s stale fallback
+will serve the OLD heightfield to the NEW water code — the round's terrain
+conditioning silently absent while everything downstream assumes it. Run
+`node tools/bake.mjs --force`.
+
+Nothing in this round's captures was affected: all of them report
+`__bakeCached false, __bakeStale false` and baked live at `8c42a243`, because
+the `.pab` files in this worktree do not decode and the fallback failed through.
+That is luck, not design.
+
+### 2. `review/anchors.json` — `waterfall` no longer frames a waterfall
+
+The channels moved, and vegetation follows moisture which follows
+distance-to-water, so a red maple now stands between the `waterfall` camera and
+the fall; that frame is about 70% leaves and its water mask runs 0.86-16% of
+frame between runs. A `plunge` framing was added (same anchor, 34 m up, 96 m
+out, pitch -0.20) which shows the pool, the fall and the outflow, and it is the
+one to judge. `waterfall` is still worth capturing — it is what a player
+standing there sees — but its NUMBERS are noise.
+
+This is `docs/WATER_CONTRACT.md` queue item 3 arriving again. Whoever owns the
+review archive should decide whether to re-resolve the anchors.
+
+### 3. Two signed distance fields, and no stated tolerance between them
+
+`Water.js` derives an exact Euclidean transform at 2 m from the raw bake mask
+for its `aShore` attribute; `hydroField` derives one from the *cleaned* mask and
+then blurs it by a span-rationed radius. Both are now correctly registered — a
+correctness review found a half-texel displacement in each — but they are
+deliberately different curves and nothing says how far apart they are allowed to
+be. A future round that widens the curve smoothing without widening
+`SURF_DEAD_M` will find out the hard way. Someone should measure the p99
+divergence and put a number in `docs/WATER_CONTRACT.md`.
+
+### 4. `wedge.mjs`'s `fine` target is scale-dependent
+
+`fine < 8%` is a near-field target. At valley scale most rivers are 3-6 px wide
+and the outline of a 4 px ribbon has a curvature radius of about 2 px at every
+bend, so the metric measures the width of the feature rather than a defect in
+its edge. Either scale the threshold with the local ribbon width or restrict the
+metric to contour whose two sides are more than a few pixels apart.
+
+## SPEED round 2
+
+### 1. EDGE — `wSunShadow` now takes the shadow term you are about to `min` with
+
+`src/shaders/water_surface.js:958` reads
+
+    float shadow = min(getShadowMask(), wSunShadow(P + vec3(0.0, 0.4, 0.0)));
+
+Where `getShadowMask()` has already returned ~0 the `min` is ~0 whatever the
+march says, so the twelve-step march and its twelve texture fetches are pure
+waste — and they are waste over whole shadowed regions of the frame at once,
+which is the coherent case a GPU branch is good at. `water_common.js` now has a
+two-argument form; please change that line to
+
+    float sm = getShadowMask();
+    float shadow = min(sm, wSunShadow(P + vec3(0.0, 0.4, 0.0), sm));
+
+The one-argument form still exists and still marches unconditionally, so
+nothing breaks if this is not taken. Output is identical either way: the new
+argument only short-circuits cases where the caller's own `min` already
+decided the answer.
+
+Size of the prize, measured on the water-only pass with both variants compiled
+into one page and timed interleaved: the whole march is 0.16 ms of a 3.02 ms
+bill at `mouth` (5%) and 0.02 of 0.70 at `hero`. This request recovers the part
+of that which falls in cascade shadow, so it is worth low single digits of
+percent and no more — take it because it is free, not because it is large.
+
+### 2. EDGE — `wSkyTilt(R)` is evaluated twice per fragment
+
+`water_surface.js:1243-1244` computes `wSkyTilt(R)` and then calls
+`wEnvReflect(P, R)`, which computes `wSkyTilt(R)` again as its first statement
+and throws it away on every fragment whose ray hits land. I did not restructure
+`wEnvReflect` to take the sky as an argument because that is a call-site change
+in your file, and because with line 1243 unconditional the compiler can CSE the
+two and the saving may already be zero. If you are rewriting that block anyway,
+the shape that cannot waste it is `wEnvReflect(P, R, envRaw)`, and I will add
+the overload on request. `wSky` also spends two `pow()` where `x*x` chains
+would do (`pow(cosT, 5.0)` and `pow(cosT, 160.0)` share `cosT^5`); that one is
+mine and is not worth taking on its own — about 1% — so it is recorded here
+rather than done.
+
+### 3. Nobody in particular — `uDataTex` is RGBA32F and it does not matter
+
+For the record, so the next round does not spend a day on it. The two marches
+make up to 28 filtered `uDataTex` fetches per water fragment and the texture is
+`RGBAFormat`/`FloatType` with `LinearFilter`, which looks like an obvious
+bandwidth problem. Measured three ways at `mouth` with the marches forced to
+run their full iteration count: RGBA32F 4.235 ms, the same march reading RGBA8
+instead 4.200 ms, and the same march with no fetch at all 3.830 ms. The fetches
+cost 0.41 ms; the FORMAT is 0.035 of that, 8%. A half-float or half-resolution
+bed texture buys under 1% of the water bill and costs precision in the sun
+march. Not done, and it should stay not done.
+
+### 4. Nobody asked for the hydro field at 2 m, and here is what it would cost
+
+Brief item SPEED-4 offers the hydro field at the bake's own 2 m if the
+reconstruction needs it. EDGE took the bicubic-B-spline-through-four-bilinear-
+taps route instead, which is what the brief prescribed, so no request arrived
+and nothing was changed. If a later round wants it: `WorldData` builds
+`uHydroTex` at `hydro.res` = half the bake, RGBA16F with a CPU mip chain, which
+is 4.7 MB at 768 plus a third for the chain. At 1536 that is 18.9 MB plus the
+chain — 4x the memory to halve the lattice scale, and the note at the texture's
+construction explains why half-float and half-resolution were chosen in the
+first place (the channels are differences, so half-float's step is 0.004 m in
+the eight-metre band where every shoreline decision is made). Measure the
+reconstruction against the analytic-circle fixture before paying for it; the
+filter, not the resolution, was what flattened curvature 3x.
+
+## EDGE round 2
+
+**To SPEED (`Water.js`) — two uniforms this shader no longer reads.**
+`uWetBand` and `uDampDark` were the damp margin's two dials. Per the round's
+cross-file contract the damp margin is gone from `water_surface.js` — no `wetT`,
+neither `alpha = max(alpha, wetT * 0.80)`, no damp colour mix — so both uniform
+DECLARATIONS have been removed from the fragment shader. `Water.js:279` and
+`Water.js:292` still construct them; setting a uniform a program does not
+declare is a no-op in three, so nothing breaks, but they are now dead there and
+should either be deleted or handed to `TerrainMaterial`, which is the system
+that draws the band now. Note `Water.js:82-84` justifies `SURF_ISO` partly by
+`uWetBand` ("a contour cut shallower than that ends the polygon while the band
+is still being drawn on it") — that argument no longer applies to the water
+surface and the iso may have room it did not have.
+
+**To TERRA (`TerrainMaterial.js`) — the numbers the water was drawing with,
+so the terrain's band can be the same band.** Reach `clamp(uWetBand * 0.90,
+0.30, 3.2)` = 0.90 m of ground, gated on `hydro.g` (signed metres, negative
+outside) and NOT on depth — on a 1:30 apron one metre of depth is thirty-three
+metres of shore. Colour was `mix(col, uRefGround * 0.20, smoothstep(0.0, 0.55,
+wet))` with `wet` broken by `wFbm2(p * 0.42 + 5.7)` stretched to 0.55..1.0, i.e.
+the bank's own lit gold at a fifth of its value, with a ~2.4 m noise on the
+outer edge so it is a ragged tide mark and not a second parallel line.
+`tools/waterstats.mjs` item 7 measured the water-drawn band at −0.52 to −0.62
+stops against a target of −0.8 to −1.9; the plate is at −0.85.
+
+**To SPEED — the hydro field at 2 m is NOT needed.** Round-2 item SPEED-4 asks
+whether EDGE wants it. Measured: a bicubic B-spline through four bilinear taps
+on the 4 m field reads the analytic circle fixture at p50 0.103 / max 0.172
+against the 0.5 m truth of 0.100 / 0.168. The reconstruction, not the storage,
+was the polygon. Do not spend the 4x memory.
+
+**Not fixed, named:** `tools/wedge.mjs` `fine` on the `river` framing has a
+run-to-run spread of 0.9 percentage points with the shader byte-identical
+(three captures: 9.3 / 8.8 / 9.7, and 8.5 / 9.4 / 9.1 on the other arm of an
+A/B). Its `hole%` on that framing is 7.6-9.1%. No single `river` reading below
+about 1.0 points of difference means anything.
+
+
+## Integrator — the bank is too contrasty for the damp band to sit on (water round 2)
+
+A look critic measured `mouth`'s bank-to-waterline transition at 2.43-2.50 stops
+against plate 3's 1.19 and attributed the excess to the water round's damp band.
+An attribution probe says otherwise:
+
+    damp band OFF (DAMP_MUL = 1.0)      1.72 stops
+    damp band ON  (shipped, 0.62)       2.50 stops
+    pristine baseline                   2.46 stops
+    plate 3                             1.19 stops
+
+The band contributes **0.78 stops** — matching its own independent calibration.
+**The bank's own falloff is 1.72 stops, already above the plate's entire
+transition before any water term is drawn**, and the pristine baseline had the
+same total. The round made that transition monotone rather than darker.
+
+So no water-side constant can bring this profile to the plate. It belongs to
+whoever owns ground shading and the grade. Reproduce with
+`scratchpad/dampprof.mjs` on row 650, x 190-238 of a `mouth` capture.
+
+
+## FLOW — `tools/wcrawl.mjs`'s header makes a claim about `flip` that is false
+
+The tool tells you to trust `flip` because it "counts pixels crossing 0.5
+coverage, which foam cannot do". Foam can, and this round made it visible.
+`water_surface.js` ends with
+
+    alpha = max(alpha, foam * 0.92 * shoreFade);
+
+and inside the shoreline fade `shoreFade` is under one, so a foam mark moving
+through the band really does change the pixel's composited coverage. Until this
+round the foam field barely travelled — the advection phase wrapped on a fixed
+eight metres of distance and its blend has exactly zero net travel — so the
+claim held by accident.
+
+**Attribution, on fresh `--frames 5` captures, changing one field and nothing
+else**, against three pre-change captures of a byte-identical shader that all
+read the same number (`shots/r7-crawl`, `shots/c2-crawlA`, `shots/c2-crawlB`):
+
+    hero   flip 3.3 / 3.3 / 3.3%  before
+                3.9%              with the advection phase fixed
+                3.3%              phase still fixed, foam field `fn` frozen
+           (crawl% 1.56 -> 1.08 and ratio 2.03 -> 1.40 move with it)
+    mouth  flip 1.1% -> 1.2% -> 1.2%, against the 1.5% gate
+
+So `hero`'s whole rise is one term — the foam noise — doing exactly what the
+round exists to make it do. Nothing about the waterline's *geometry* moved.
+The tool has no way to separate "the edge is unstable" from "opaque foam is
+travelling along a soft edge", and its header currently says it does.
+
+Two options, neither of them mine to make: measure `flip` on the alpha the
+shoreline ramp produces *before* the foam max(), or restate the header so a
+future author does not read a foam number as an aliasing number. The second is
+free.
+
+**Also, for whoever maintains the reference line at the foot of the output:**
+its stored baseline (`shots/w0-crawl-ref`) reads `river` 6.3 and `hero` 2.4,
+while three captures of today's pre-change tree read `river` 3.2 and `hero` 3.3.
+The printed baseline is stale in both directions. `river` in particular is not a
+stable reading at all — four captures across this round gave flip 3.2 / 4.1 /
+5.0 / 5.1 with `drift` swinging +301 / -615 / -407 px, and the tool's own header
+says a large `drift` means the other columns are a transient.
+
+## PROFILE — the unantialiased step on near-field water is inside `wEnvReflect` (water round 3)
+
+The shoreline critic's outstanding item — *"the unantialiased 0.24-stop step in
+one pixel on near-field water at `--pos -830,62,-930 --look -720,19,-816`,
+unchanged since round 1 and never addressed"* — reproduces exactly, and it is
+**not in `water_surface.js`**. It is in `wEnvReflect()` in
+`src/shaders/water_common.js`, which is not mine to edit.
+
+Reproduced, single-pixel row scan, no filter, no colour rule, row 520:
+
+    x=1354  #2465aa  Y 0.126
+    x=1355  #2868ac  Y 0.133
+    x=1356  #2b6aae  Y 0.139
+    x=1357  #3572b7  Y 0.162      <- +0.22 stops in one pixel
+    x=1358  #3672b7  Y 0.162
+
+Right-angled, 2–6 px jogs, on water that reads ±0.03 for hundreds of pixels
+either side. Four attribution probes, each turning one term off and
+re-capturing the same crop at the same pose:
+
+| probe | step |
+|---|---|
+| `shelfWide = 0.5` (the shelf quantiser's AA at maximum) | **unchanged**, 0.127 → 0.155 |
+| `mass` unquantised (`wStepsAA` removed, plain smoothstep) | **unchanged**, 0.120 → 0.147 |
+| `Nr = vec3(0,1,0)` — a perfectly flat mirror normal, no ripple, no noise, so `R` is a smooth function of position | **unchanged**, 0.131 → 0.162 |
+| `reach = 0.0` — the marched landscape reflection removed | **GONE**. Row 520 runs 0.164–0.174 across the whole span with no discontinuity anywhere. |
+
+The third probe is the decisive one: with the reflected direction made a
+perfectly smooth function of world position, the step survives. So nothing the
+surface shader *feeds* the march is discontinuous — **the discontinuity is in
+the march's own branching**, and no dial in `water_surface.js` can antialias it.
+`reach` is the only lever I have and taking it to zero is what supplies the
+frame's value masses (§2 / item 1), so it is not a trade I can make.
+
+Where to look, from reading the function: the hit branch **interpolates** the
+crossing (`f = cp/(cp-c)`, `th = mix(tp, t, f)`) and returns `wRefLand(…, th)`,
+while the near-miss branch returns `wRefLand(…, tmin)` where `tmin` is the
+**sample** at closest approach, un-interpolated. A ray that hits well inside a
+step returns a `th` up to a whole step short of `t_i`, while its neighbour that
+misses by centimetres returns `tmin = t_i`. With `dt *= 1.38` a step is tens of
+metres by sample 8, and `wRefLand`'s haze is `clamp(0.22 + t/620, …)` — so the
+two neighbours get materially different haze. That is a seam between two
+branches that the `graze` softening does not cover, because `graze` softens the
+*weight* and not the *distance*. The candidate fix is to give the graze branch
+the same interpolated `th` the hit branch uses, or to blend on `t` as well as on
+`cmin`.
+
+**Also measured and NOT the same defect:** the smaller step the same critic
+reports on `backwater` at (380–700, 560–620). Largest single-pixel jump per row
+across seven rows there is **0.005–0.007 in Y** — 2–3 eight-bit code values on
+water sitting at Y 0.023–0.034. It reads as ±0.3 stops only because the body is
+that dark; it is the encoding floor, not a shading discontinuity. `backwater`'s
+real defect is the one the look critic files as item 7 (94% of the body in one
+mass, span 0.61 st), which is F7 and not this.

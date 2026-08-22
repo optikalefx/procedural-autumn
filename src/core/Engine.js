@@ -45,8 +45,38 @@ export class Engine {
     // Never steps back up: recovering would re-enter the state that triggered
     // the step and oscillate. An explicit ?quality= is respected and never
     // overridden.
-    this.autoQuality = !new URLSearchParams(location.search).get('quality');
+    //
+    // Never fires under automation. Every capture tool in `tools/` drives a
+    // headless Chromium at deviceScaleFactor 1 on a machine shared with the
+    // other authors, so its frame times are contended rather than
+    // representative — and a tier change part way through a capture silently
+    // invalidates the plate and every number taken off it. Until the ordering
+    // bug below was fixed that immunity was an accident (at 1x the resolution
+    // ladder has no rungs, so the tier lever was unreachable for everyone,
+    // players included); now it is stated. A harness that wants to exercise the
+    // fallback sets `engine.autoQuality = true` after construction.
+    this.autoQuality = !new URLSearchParams(location.search).get('quality')
+                       && !navigator.webdriver;
     this._strainSince = 0;
+    // How far over budget counts as strain, and for how long.
+    //
+    // 1.75x of a 16.7 ms target is 29 ms, i.e. 34 fps. The measurement this
+    // feature exists for is the player's window at ultra 32 fps, so the trigger
+    // has to sit just above it — and no lower. The previous 1.35x is 22.5 ms
+    // (44 fps), which this scene reaches on a healthy machine whenever the
+    // camera is over open water; demoting there would be wrong.
+    //
+    // The hold is longer than one adapt window on purpose: with the 6 s
+    // cooldown it takes three consecutive windows to trip, so a stretch of
+    // streaming, a shader compile or one heavy vista cannot demote a machine
+    // that is otherwise making frame rate.
+    this.strainRatio = 1.75;
+    this.strainHoldMs = 10000;
+    // Off by default — see the long note at its use in `_adapt`. Every shipped
+    // build of this project has behaved as `false`, because the lever was
+    // unreachable; keeping that the default means merging this branch cannot
+    // introduce a freeze class main does not already have.
+    this.autoTier = false;
     this._bootAt = performance.now();
     this.onQualityAutoChange = null;
 
@@ -70,6 +100,35 @@ export class Engine {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.shadowMap.autoUpdate = true;
     this.renderer.info.autoReset = false;
+
+    // Shader-error checking OFF for players, ON under automation.
+    //
+    // three's `checkShaderErrors` calls `getProgramParameter(LINK_STATUS)` and
+    // `getProgramInfoLog` immediately after `linkProgram`. Both are
+    // synchronisation points: they force the driver to FINISH the link before
+    // returning, on the main thread, in the frame that triggered it. A CPU
+    // profile of a 2053 ms freeze on this scene put 1771 ms of it inside
+    // `getProgramInfoLog` alone. With the check off, the link is not awaited at
+    // the point it is issued, so the driver is free to overlap it.
+    //
+    // This is the SECOND layer. The first is not compiling programs during play
+    // at all — see the shadow-caster invariant in render/Lighting.js, which was
+    // relinking every shader in the game at each dawn and dusk. That fix took
+    // the programs compiled over a full day/night cycle from 26 to 1 and the
+    // worst frame at the crossing from 6150 ms to 57 ms. This one is what
+    // remains for the handful that still compile the first time an object is
+    // ever drawn.
+    //
+    // It stays ON under automation because tools/health.mjs depends on it: it
+    // reads every program's `diagnostics.runnable` to catch a material that
+    // silently failed to compile, and three only attaches diagnostics when the
+    // check is on. A shader that does not link renders NOTHING, silently, while
+    // lint passes — losing that alarm to save a stall the harness does not care
+    // about would be a bad trade. `?shadercheck=0` forces the player path so
+    // tools/stall.mjs can measure it.
+    const scParam = new URLSearchParams(location.search).get('shadercheck');
+    this.renderer.debug.checkShaderErrors =
+      scParam !== null ? scParam !== '0' : !!navigator.webdriver;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.25, 6000);
@@ -108,14 +167,35 @@ export class Engine {
    * Systems opt in by implementing `onQuality(preset, name)`; those that do not
    * are simply skipped, so this is safe to call before they all support it.
    */
-  setQuality(name) {
+  /**
+   * @param {string} name
+   * @param {{keepResolution?: boolean}} [opts] `keepResolution` holds the
+   *   current resolution scale across the tier change instead of resetting to
+   *   full. The automatic ladder passes it; a human picking a tier from the
+   *   menu does not, because they asked for a fresh start.
+   *
+   * Resetting the scale to 1 here is what turned one demotion into four
+   * freezes. `_stepQualityDown` only fires when resolution is PINNED AT ITS
+   * FLOOR and still over budget — that is, after the machine has already paid
+   * for and proven it needs every rung. Snapping back to full undid all of it
+   * and made the ladder walk down again, at one buffer reallocation per rung.
+   * Measured at dpr 2, ladder armed: rs 1 -> 0.85 -> 0.72 -> 0.667 costing
+   * 1018 / 1128 / 970 ms, then the tier step reset it to 1.000 (913 ms) and it
+   * walked 0.85 (1121 ms) and 0.741 (1013 ms) all over again. Six freezes near
+   * a second each inside 52 s, of which three were pure repetition.
+   */
+  setQuality(name, opts = {}) {
     const preset = QUALITY_PRESETS[name];
     if (!preset) { console.warn(`[engine] unknown quality tier: ${name}`); return false; }
+    const heldScale = this.resolutionScale;
     this.quality = name;
     this.preset = preset;
     this.basePixelRatio = Math.min(window.devicePixelRatio, preset.pixelRatioCap);
-    this.resolutionScale = 1;
-    this.renderer.setPixelRatio(this.basePixelRatio);
+    // Clamp to the NEW tier's floor: a lower tier can cap the pixel ratio
+    // differently, so the old scalar is not automatically legal here.
+    const floor = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
+    this.resolutionScale = opts.keepResolution ? Math.max(floor, Math.min(1, heldScale)) : 1;
+    this.renderer.setPixelRatio(this.basePixelRatio * this.resolutionScale);
     this._onResize();
     for (const fn of this._qualityCbs) {
       try { fn(preset, name); } catch (e) { console.error('[engine] onQuality handler threw', e); }
@@ -163,26 +243,78 @@ export class Engine {
     if (i < 0) i = 0;
 
     let next = this.resolutionScale;
-    if (p80 > target * 1.30 && i < rungs.length - 1) next = rungs[i + 1];
-    else if (p80 < target * 0.70 && i > 0) next = rungs[i - 1];
-    else return;
+    if (p80 > target * 1.30 && i < rungs.length - 1) {
+      // Go straight to the rung the measurement implies, rather than one rung
+      // per 6 s window. Frame time is roughly proportional to pixel count and
+      // pixel count to scale squared, so the scale that would land on budget is
+      // `scale * sqrt(target / p80)`. Aim AT budget, not above it: aiming 15%
+      // high left the ladder one rung short and it paid a second reallocation
+      // 6 s later to finish the job (measured: 1 -> 0.72 at 575 ms, then
+      // 0.72 -> 0.667 at 566 ms, for a destination the first window implied).
+      // Undershooting costs a whole extra freeze; overshooting costs some
+      // sharpness that the slow recovery path can win back for free.
+      //
+      // This matters because each rung costs a buffer reallocation of 450-2500
+      // ms — a freeze the player sees. Walking 1 -> 0.85 -> 0.72 -> 0.667 costs
+      // three of them; measured at dpr 2 that was 1018 + 1128 + 970 ms spread
+      // over 12 s, for a destination the first window already implied.
+      const want = this.resolutionScale * Math.sqrt(target / p80);
+      let j = i + 1;
+      while (j + 1 < rungs.length && rungs[j] > want) j++;
+      next = rungs[j];
+    } else if (p80 < target * 0.70 && i > 0) next = rungs[i - 1];
+    next = Math.max(floorScale, Math.min(1, next));
+    const moving = Math.abs(next - this.resolutionScale) >= 0.005;
 
-    const floor = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
-    next = Math.max(floor, Math.min(1, next));
-
-    // Pinned at the floor and still well over budget: resolution has nothing
-    // left to give. Hold that state for a few seconds — a hitchy stretch of
-    // streaming should not trigger a tier change — then drop a tier.
-    if (next <= floor + 1e-4 && p80 > target * 1.35) {
+    // Resolution has nothing left to give: the ladder is on its last rung and
+    // is not moving this window. This test has to run BEFORE the early return,
+    // and it used to run after — which made the tier lever unreachable on EVERY
+    // display, not just some. On a 1x display `floorScale` is 1, so `rungs`
+    // collapses to `[1]`, neither ladder branch can pass its index guard, and
+    // the old `else return` left through the door ahead of the strain test; on
+    // a 2x display the ladder walks 1 -> 0.85 -> 0.72 -> 0.667 and then takes
+    // that same door out for good. Measured by driving a real instance at
+    // 250 ms/frame for ~49 s of simulated clock: quality held `ultra` at both
+    // DPRs, and at 1x `_strainSince` was never even set — neither lever
+    // existed. The fix is here and not in `rungs`, because making `rungs`
+    // meaningful at 1x means rendering below native, and that is the one thing
+    // `minEffectivePixelRatio` exists to forbid (see its comment: below native
+    // the honest move is to drop effects, not sharpness). At 1x the tier is
+    // correctly the FIRST lever, not the last.
+    //
+    // `moving` also excludes the window that ARRIVES at the floor: that step
+    // has not been given a frame to pay for itself yet, so strain starts
+    // counting from the window after it.
+    // The TIER lever is opt-in, and that is a deliberate ship decision rather
+    // than timidity.
+    //
+    // Before the ordering fix above, `_stepQualityDown` was unreachable on
+    // every display — so no build that has ever shipped from this project has
+    // stepped a tier automatically. Making it reachable is a real fix for a
+    // real latent bug (a machine that cannot hold frame rate never steps down),
+    // but it also introduces the one freeze class that `main` cannot produce:
+    // `setQuality` rebuilds materials and re-runs the post chain's tier setup,
+    // and on this scene a relink is measured in seconds, not milliseconds.
+    //
+    // The resolution ladder above is now strictly BETTER than main's — it takes
+    // the staircase in one move instead of one rung per 6 s window, and it no
+    // longer resets to full on a tier change — so leaving the tier lever off
+    // means this branch can only ever freeze less than main, never more. Turn
+    // it on with `engine.autoTier = true` once a tier change is cheap enough to
+    // be invisible; the honest prerequisite is dynamic resolution that does not
+    // reallocate the drawing buffer, which is the open item in
+    // docs/FREEZE_ROUND.md.
+    const pinned = !moving && next <= floorScale + 1e-4;
+    if (this.autoTier && pinned && p80 > target * this.strainRatio) {
       if (!this._strainSince) this._strainSince = now;
-      else if (now - this._strainSince > 4000) {
+      else if (now - this._strainSince >= this.strainHoldMs) {
         this._strainSince = 0;
         if (this._stepQualityDown(p80)) return;
       }
     } else {
       this._strainSince = 0;
     }
-    if (Math.abs(next - this.resolutionScale) < 0.005) return;
+    if (!moving) return;
 
     this.resolutionScale = next;
     this._applyResolution();
@@ -198,7 +330,7 @@ export class Engine {
     console.warn(`[engine] ${p80.toFixed(0)} ms/frame at minimum resolution — ` +
                  `dropping quality ${this.quality} -> ${next}`);
     this._autoDropped = true;
-    this.setQuality(next);
+    this.setQuality(next, { keepResolution: true });
     this.onQualityAutoChange?.(next, p80);
     return true;
   }

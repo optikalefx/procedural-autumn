@@ -129,6 +129,120 @@ const RESCAN_DIST = 6;
 // per cascade, which is inside the noise of the numbers above.
 const LOD_DISTANCES = [180, 380, 900, 1500];
 
+// ── the waterline band is pinned to ONE LOD, and that is a correctness fix ───
+//
+// A critic measured, with the engine's clock frozen, that translating the
+// camera five metres moved the terrain under the waterline: per-cell height
+// drift p90 0.08 m at mouth/river/plunge, 0.35 m at hero and 0.47 m at drive,
+// against exactly 0.00 for a static camera. Round 1 cut the waterline from the
+// hydro texture, which is LOD-independent — so the water surface now stays
+// still while the BANK rises and falls through it as you drive.
+//
+// Measured at the cause rather than at the symptom, with the mesh's own
+// arithmetic (vertices at the chunk lattice, quads split by the same
+// alternating diagonal _indexTemplate uses), over 4000 points within 3 m of the
+// waterline, as the spread of the height the mesh would draw across the LODs
+// that could be selected there:
+//
+//     LOD 0..0      p50 0.000   p90 0.000   p99 0.000   max 0.000   (the null)
+//     LOD 0..1      p50 0.042   p90 0.158   p99 0.389   max 1.245
+//     LOD 0..2      p50 0.178   p90 0.529   p99 1.114   max 4.146
+//     LOD 0..3      p50 0.460   p90 1.301   p99 2.965   max 5.935
+//
+// A LOD-invariant RECONSTRUCTION was tried first and rejected on its own
+// numbers. Resampling the field near the water onto a fixed world-aligned
+// lattice that every LOD's vertices land on — 1.5, 3, 6, 12 and 24 all divide
+// 6, and the chunk origin -1536 + cx*96 is a multiple of 6, so they all read
+// the same corners — takes LOD 0..2 from p50 0.178 to 0.036 and p90 0.529 to
+// 0.204. It does not reach zero, because the LODs still disagree about the
+// twist term inside a cell. And it costs more than it buys: the ground itself
+// moves p50 0.164 m and p90 0.518 m, which is the same magnitude as the drift
+// being removed, and it moves away from world.getHeight — which is what the
+// collider drives on. Trading a camera-dependent error for a permanent one of
+// equal size is not a fix.
+//
+// Pinning is structural instead of statistical: inside this radius a chunk
+// carrying a waterline is built at ONE resolution whatever the camera does, so
+// the spread is the LOD 0..0 row — exactly zero, by construction, and it cannot
+// regress under a test nobody has run yet.
+//
+// LOD 0 and not a coarser pin, for two reasons. It is the resolution those
+// chunks already have for the whole near field, so nothing at all moves at the
+// range the player looks at banks from; and it is world.getHeight sampled at
+// 1.5 m against a 2 m bake, which is the one resolution that agrees with the
+// collider. Pinning at LOD 1 would have been cheaper still — it takes triangles
+// OFF the near field — but it moves every near bank by p50 0.042 / p90 0.158 m
+// and desynchronises the mesh from the vehicle's ground.
+//
+// ── the radius, and what this actually costs ────────────────────────────────
+//
+// It is the LOD-2 switch, not the view distance, and the reason is the batcher:
+// chunks at BATCH_LOD or coarser are merged into blocks, so pinning past 380 m
+// would pull every distant water chunk out of its block and spend draw calls on
+// ground where the residual step is already under a pixel.
+//
+// And this is NOT a narrowly targeted change, which is worth saying plainly
+// because the name suggests it is. MEASURED: 949 of this map's 1024 chunks —
+// 92.7% — carry a waterline within WATERLINE_PIN_REACH. Rivers thread the whole
+// valley and a chunk is 96 m across, so at chunk granularity there is nothing
+// to target. In practice this is "LOD 0 out to 380 m", and it costs what that
+// costs: at hero, 1 066 380 triangles -> 1 296 780, +21.6%, with draw calls
+// unchanged at 368. A 40 s drive A/B could not resolve a frame-time difference
+// — p50 25.0 ms pinned against 26.1 ms unpinned, with peak triangles 6.57 M
+// against 8.29 M on the same pair — because the run-to-run spread is larger
+// than the effect and Engine's newly-reachable quality step rescales the LOD
+// radii mid-run. Do not read those two numbers as this change being free; read
+// them as this harness being unable to see it.
+//
+// Setting WATERLINE_PIN_RADIUS to 0 disables the whole thing in one constant,
+// and that is the lever if the triangle budget has to be clawed back.
+//
+// WHAT IT DOES NOT FIX. Ring budget, p90 spread at the ring times the pixels a
+// metre subtends there (900 px tall, 52 degree fov):
+//     today   180 m 0.81 px   380 m 1.09 px   900 m 1.12 px   = 3.02
+//     pinned                  380 m 1.24 px   900 m 1.12 px   = 2.36
+// The near ring is gone and the 380 m ring is slightly worse because it is now
+// a 0-to-2 step rather than a 1-to-2 step. That is a 22% cut, not a cure. The
+// cure is to band-limit the field itself so that the drift per LOD step is
+// small, and that belongs in WorldData.getHeight, where the collider, the
+// scatterers and the camp props would all move with it — here it would only
+// move the mesh and desynchronise it from everything standing on it.
+//
+// VERIFIED, not assumed: _scan's selection replayed over 1681 camera positions
+// on a 5 m grid across a 200 m square at the map's densest water, 66 866
+// chunk-camera pairs, 55 distinct chunks entering the radius. Chunks that took
+// more than one LOD while inside it: 0.
+const WATERLINE_PIN_LOD = 0;
+// MEASURED DOWN from 380, on the pin's own ring budget rather than on taste.
+//
+// The author who added this reported it honestly as untargeted: 92.7% of chunks
+// carry a waterline, so at 96 m granularity a 380 m radius is in practice "LOD 0
+// out to 380 m", and it cost **+21.6% triangles at hero** — 1 066 380 to
+// 1 296 780 — while the whole scene was already at p50 24.3 ms against a 16.7 ms
+// budget. That is a bad trade on its face, and its own numbers say it is a bad
+// trade on the detail too. Spread of the height the mesh draws, times the pixels
+// a metre subtends at each ring:
+//
+//     unpinned    180 m 0.81 px   380 m 1.09 px   900 m 1.12 px   = 3.02
+//     pinned 380                  380 m 1.24 px   900 m 1.12 px   = 2.36
+//
+// Read the 380 m column. Pinning to 380 removes the near ring and makes the
+// 380 m ring WORSE, because the LOD step there becomes 0 -> 2 instead of 1 -> 2.
+// The near ring is the one worth buying and the far ring is one the pin damages.
+//
+//     pinned 200                  380 m 1.09 px   900 m 1.12 px   = 2.21
+//
+// Better on the metric AND a fraction of the cost: a 200 m disc is about a fifth
+// the area of a 380 m one. The far rings need the field itself band-limited,
+// which belongs in WorldData.getHeight where the collider, the scatterers and
+// the camp props would all move with it — filed rather than bodged here.
+const WATERLINE_PIN_RADIUS = 200;
+// Metres from the waterline a chunk must reach to count as carrying one. The
+// damp margin TerrainMaterial draws is 0.9 m and the shore terms reach 2.8 m,
+// so 12 m is comfortably past everything that is cut on the hydro field, with
+// room for the bank above it that those bands are painted on.
+const WATERLINE_PIN_REACH = 12;
+
 // Per-tier scale on the LOD switch radii.
 //
 // Engine now steps the quality tier down on its own when the resolution scaler
@@ -352,6 +466,46 @@ export class Terrain {
     geom.boundingSphere.radius *= 1.15;
   }
 
+  /**
+   * One bit per chunk: does this chunk carry a waterline, or ground close
+   * enough to one to be painted by a band cut on the hydro field?
+   *
+   * Read from the hydro field's own signed distance rather than from the river
+   * mask, for the same reason TerrainMaterial's margins are: the river mask is
+   * a disc splatted round each channel station and the waterline is not, and
+   * where the two disagree they disagree by metres. Built once, on first scan,
+   * over the whole 4 m field — 590 k texels, a few milliseconds, and it never
+   * changes because the bake does not.
+   */
+  _waterChunks() {
+    if (this._waterChunkMap) return this._waterChunkMap;
+    const N = this.chunksPerSide;
+    const map = new Uint8Array(N * N);
+    const h = this.world.hydro;
+    if (h) {
+      const HR = h.res, texel = h.texel, half = this.world.half, cs = this.chunkSize;
+      for (let j = 0; j < HR; j++) {
+        // Sample k represents (k + 0.25) texels from the corner, not (k + 0.5):
+        // the hydro field is stored at half the bake's resolution by
+        // area-averaging pairs. The same quarter-texel that TerrainMaterial and
+        // WorldData.microDetail both carry, and getting it wrong here would
+        // slide the whole map one chunk edge in each axis.
+        const wz = (j + 0.25) * texel - half;
+        const cz = Math.floor((wz + half) / cs);
+        if (cz < 0 || cz >= N) continue;
+        for (let i = 0; i < HR; i++) {
+          if (h.sdf[j * HR + i] < -WATERLINE_PIN_REACH) continue;
+          const wx = (i + 0.25) * texel - half;
+          const cx = Math.floor((wx + half) / cs);
+          if (cx < 0 || cx >= N) continue;
+          map[cz * N + cx] = 1;
+        }
+      }
+    }
+    this._waterChunkMap = map;
+    return map;
+  }
+
   /** Raw index template for one chunk grid at `res` (no vertex offset). */
   _indexTemplate(res) {
     if (this._idxCache.has(res)) return this._idxCache.get(res);
@@ -426,7 +580,11 @@ export class Terrain {
         const dx = centreX - pos.x;
         const d = Math.sqrt(dx * dx + dz * dz);
         if (d > this.viewDistance) continue;
-        const lod = this.lodForDistance(d);
+        let lod = this.lodForDistance(d);
+        // See WATERLINE_PIN_LOD. Chunks carrying a waterline are pinned so the
+        // ground under the water's edge cannot move when the camera does.
+        if (lod > WATERLINE_PIN_LOD && d < WATERLINE_PIN_RADIUS
+            && this._waterChunks()[cz * N + cx]) lod = WATERLINE_PIN_LOD;
 
         if (lod >= BATCH_LOD) {
           const tier = lod === BATCH_LOD ? 0 : 1;

@@ -49,7 +49,7 @@ const arg = (n, d = null) => { const i = argv.indexOf(`--${n}`); return i === -1
 const has = (n) => argv.includes(`--${n}`);
 
 const OUT = arg('out', 'shots/riverplan.png');
-const URL = arg('url', 'http://localhost:5178');
+const URL = arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'));
 const SIZE = parseInt(arg('size', '1400'), 10);
 // Reaches shorter than this are headwater fragments; their sinuosity is noise
 // and there are hundreds of them, so they would dominate any statistic.

@@ -182,6 +182,99 @@ export function groundRay(world, origin, dir, maxDist = 260) {
   return null;
 }
 
+// ── what counts as water for a REFUSAL, and why it is not getWaterDepth ──────
+//
+// The player, with the reticle on open grass and the river three tree-lengths
+// away: *"I was trying to camp near this river, but it says can't spawn IN
+// WATER. But i'm clearly not in water with my selection."* They were right.
+//
+// `world.getWaterDepth` is the correct answer for physics and for the camera.
+// It takes the HIGHER of two derivations of one field — the baked 2 m water
+// grid, point sampled at the NEAREST texel, and the drawn mesh's own field —
+// because for those consumers under-reporting is the only dangerous direction:
+// an animal spawned in a lake, or a chase boom with no floor under it, is worse
+// than a spurious wetting. See the long note on `getWaterHeight`.
+//
+// For a refusal it is wrong in exactly the opposite direction. A refusal is a
+// claim about the picture, so it has to be about water the player can SEE. The
+// baked grid has speckle in it — isolated single texels carrying a valid water
+// level with no river anywhere near them — and a nearest-texel sample smears
+// each one across its own 2 x 2 m cell. The mesh culls them, so nothing is
+// drawn there and nothing else in the frame says water. But this test samples
+// 33 points over an 11.6 m disc and refuses on ANY of them, so one stray texel
+// within 5.8 m of the centre refuses the camp.
+//
+// MEASURED through `bestSite` itself, over the 256 269 candidate centres lying
+// within 90 m of drawn water, scored against an exact distance transform of the
+// mesh's own `drawn` grid:
+//
+//   refused "in the water" with the water further than   worst refusal
+//   15 m away                                            (centre -> drawn water)
+//   ────────────────────────────────────────────────     ─────────────────────
+//   shipped   114                                        61.1 m at (-440, 920)
+//   this fix    0                                        11.3 m at ( 248, 1364)
+//   main        16                                       40.0 m at (-1344, -1400)
+//
+// 11.3 m is the floor of the metric, not a residue: the ring reaches 5.8 m and
+// the mesh's cells are 4 m, so a ring edge genuinely touching drawn water scores
+// up to 5.8 + 5.66 m. Total refusals move 9 705 -> 9 416 (-3.0%); everything
+// lost is past 10 m.
+//
+// The whole cause is 122 texels. Of the 527 984 texels the baked grid calls wet,
+// 122 (0.023%) have no drawn water on them at all — 21 of those against the map
+// border, the rest in pinhole clumps of two to eight. Note the `main` column:
+// this is NOT a regression from the hydro round. It is a pre-existing hole that
+// the new bake widened.
+//
+// Two things were tested and are NOT the cause, recorded so the next person
+// does not re-test them:
+//
+//   · **The micro-detail taper.** A/B in one build, monkey-patching
+//     `microDetail` back to main's un-tapered form: the tail is bit-identical —
+//     114 centres past 15 m, same worst point, same 61.1 m. It moves 23 samples
+//     in the whole valley and all 23 are within 5 m of the water. It is a real
+//     term in this predicate — it faded the ground at (-437.8, 914.6) by exactly
+//     enough to leave 0.025 m of "depth" under a 0.02 m threshold — but it is
+//     the last straw on a stray texel, not the texel.
+//   · **The hydro field.** `sdf > 0` is the single source of truth for
+//     everything that DRAWS an edge, and it is fooled by the same speckle,
+//     because it is seeded from the same cleaned mask: at (-437.8, 914.6) it
+//     reports sdf -0.63 m and wet 0.45 with the drawn river 61 m away. Swapping
+//     the predicate to it still leaves an 11-centre tail out to 58.2 m, and —
+//     being a 4 m field with a 18 m graded band — it lets 72% more centres that
+//     are standing in drawn water through as dry. It answers "where should the
+//     edge be drawn", not "what is under this square metre".
+//
+// So ask the surface that is actually drawn. `levelAt` evaluates the same
+// triangles the renderer submits, from the same numbers, so a refusal now means
+// water is on the screen. It is not merely "the grid minus the speckle": the
+// mesh dilates out to a depth of -1.4 m (SURF_ISO), so it also answers over the
+// dry apron beyond the waterline, where its level is below the ground and this
+// returns 0 — which is exactly right.
+//
+// It gives up almost nothing on the other side, which is the side that matters:
+// a camp pitched IN a river would be far worse than a spurious refusal. Audited
+// with a 73-point ring — four radii instead of three, 24 samples each instead of
+// 16 — over the ~70 800 centres each predicate accepts, the number that turn out
+// to have drawn water somewhere under them goes 208 -> 210. Those two, and the
+// 208 already there, are `scoreSite`'s 33-sample ring being coarse at a
+// scalloped bank, and that is unchanged by this and worth its own look.
+//
+// Reaching into `world._water` is a layering smell and is deliberate rather
+// than lazy: `getWaterDepth` is the only public door and it is the one that has
+// the max in it. A `getDrawnWaterDepth` on WorldData would be the better shape,
+// but WorldData is under another author's hand this round.
+function seenWaterDepth(world, x, z) {
+  const f = world._water;
+  // The soundlab rig and the bake tools stand up a world with no water mesh at
+  // all. Fall back to the public query rather than calling the valley dry.
+  if (!f || typeof f.levelAt !== 'function') return world.getWaterDepth(x, z);
+  const lv = f.levelAt(x, z);
+  if (lv === null) return 0;
+  const d = lv - world.getHeight(x, z);
+  return d > 0 ? d : 0;
+}
+
 /**
  * Is this a place a camp could be?
  *
@@ -218,7 +311,7 @@ export function scoreSite(world, x, z, opts = {}) {
       if (!Number.isFinite(h)) { out.reason = 'nowhere'; return out; }
       sxs.push(dx); szs.push(dz); hs.push(h);
       slopeSum += sl; if (sl > slopeMax) slopeMax = sl;
-      if (world.getWaterDepth(x + dx, z + dz) > 0.02) wet++;
+      if (seenWaterDepth(world, x + dx, z + dz) > 0.02) wet++;
       n++;
     }
   }

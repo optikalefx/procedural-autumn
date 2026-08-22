@@ -37,7 +37,7 @@ const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=me
 const page = await browser.newPage({ viewport: { width: 640, height: 400 }, deviceScaleFactor: 1 });
 const errs = [];
 page.on('pageerror', (e) => errs.push(String(e)));
-await page.goto(`http://localhost:5178?res=${RES}`);
+await page.goto(`${process.env.AUTUMN_URL || 'http://localhost:5178'}?res=${RES}`);
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 300 });
 
 const out = await page.evaluate(async (P) => {

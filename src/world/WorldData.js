@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { WORLD, BIOME } from './WorldConfig.js';
 import { clamp, clamp01, lerp, smoothstep, bilinear } from '../core/MathUtils.js';
 import { NoiseField } from '../core/Noise.js';
+import { buildHydroField } from './hydroField.js';
 
 export class WorldData {
   constructor(baked, seed = 20261018) {
@@ -37,6 +38,7 @@ export class WorldData {
 
     this.noise = new NoiseField(seed ^ 0xbeef);
     this._v = new THREE.Vector3();
+    this.hydro = buildHydroField(this.height, this.water, this.res, this.worldSize);
     this._buildTextures();
     this._buildRoadNetwork();
   }
@@ -46,11 +48,48 @@ export class WorldData {
     return [(x + this.half) * this.invTexel, (z + this.half) * this.invTexel];
   }
 
-  // Micro-detail added on top of the baked heightmap. Must match the shader.
+  // Micro-detail added on top of the baked heightmap.
+  //
+  // MEASURED range -0.427 .. +0.438 m, RMS 0.131 m, over octave wavelengths
+  // 18.2 / 8.3 / 4.8 / 3.8 / 2.0 m. It is the difference between the ground the
+  // player drives over and the field every shader samples, and it is applied
+  // here so the terrain mesh, the collider and the scatterers all get the same
+  // ground.
+  //
+  // ── faded out at the waterline ──────────────────────────────────────────
+  //
+  // Because at a shoreline it is not detail, it is noise on the one curve in
+  // the frame the eye reads as a hard edge. Half a metre of bump on a bank
+  // whose gradient is 1:30 moves the visible waterline fifteen metres, and the
+  // bumps are 2-8 m across — which is precisely the lobed, scalloped edge this
+  // round exists to remove, arriving from the geometry after the bake has been
+  // conditioned to remove it from the field.
+  //
+  // The taper is in metres of ground, from the hydro field's signed distance,
+  // so it is a real distance and not a depth over a gradient: nothing within
+  // 1.5 m of the waterline, full strength again by 9 m out. That band is a
+  // twentieth of a percent of the map's area and the flattening is invisible
+  // anywhere except where it is the whole point.
   microDetail(x, z) {
     const n = this.noise;
-    return n.fbm(x * 0.055, z * 0.055, 3, 2.2, 0.45, 1) * 0.42
-         + n.fbm(x * 0.21, z * 0.21, 2, 2.4, 0.4, 1) * 0.11;
+    const d = n.fbm(x * 0.055, z * 0.055, 3, 2.2, 0.45, 1) * 0.42
+            + n.fbm(x * 0.21, z * 0.21, 2, 2.4, 0.4, 1) * 0.11;
+    const h = this.hydro;
+    if (!h) return d;
+    const HR = h.res;
+    // -0.25, not -0.5. The hydro field is stored at half the bake's resolution
+    // by area-averaging pairs, so sample k represents (k + 0.25) hydro texels
+    // from the corner, not (k + 0.5). MEASURED on a synthetic half-plane whose
+    // true waterline is at x = -55.000: with -0.5 this fade's zero landed at
+    // -54.000, with -0.25 at -55.000 exactly. Two metres per axis from the
+    // shader's own registration error in the opposite direction, which is how
+    // two mild bugs become one 2.83 m one.
+    const gx = clamp((x + this.half) / h.texel - 0.25, 0, HR - 1.001);
+    const gz = clamp((z + this.half) / h.texel - 0.25, 0, HR - 1.001);
+    const sd = Math.abs(bilinear(h.sdf, HR, HR, gx, gz));
+    if (sd >= 9) return d;
+    const t = clamp01((sd - 1.5) / 7.5);
+    return d * (t * t * (3 - 2 * t));
   }
 
   /** Ground height in metres at world (x, z). */
@@ -233,6 +272,72 @@ export class WorldData {
     auxTex.wrapS = auxTex.wrapT = THREE.ClampToEdgeWrapping;
     auxTex.needsUpdate = true;
     this.auxTexture = auxTex;
+
+    // ── the hydro texture ────────────────────────────────────────────────────
+    // See src/world/hydroField.js for what each channel is and why it exists.
+    // R = depth to test against, G = signed metres to the waterline, B = wet
+    // coverage 0..1, A = how open the water is here, in metres.
+    //
+    // Half-float, at half the bake's resolution, with a mip chain built here
+    // rather than by the driver. Three reasons, all measured:
+    //
+    //   * the field is band-limited by construction — every channel is a
+    //     low-pass at 6-10 m or a distance transform — so storing it at 2 m is
+    //     storing three copies of every number. 768^2 RGBA16F is 4.7 MB against
+    //     the 37.7 MB an RGBA32F at 1536 would cost.
+    //   * the channels are DIFFERENCES, so half-float's step is 0.004 m in the
+    //     eight-metre band where every shoreline decision is made. An absolute
+    //     elevation would have stepped 0.25 m at 365 m, which is three times the
+    //     micro-detail this field exists to reconcile.
+    //   * generateMipmaps on a float texture is not portable, and without a mip
+    //     chain a 2 m field is point-sampled at every range — which is the
+    //     narrow jagged zigzag every distant river draws in the `hero` framing.
+    //     A box-filtered chain built here is portable and is the right filter
+    //     for a field whose whole job is to be smooth.
+    {
+      const HR = this.hydro.res;
+      const half = (v) => THREE.DataUtils.toHalfFloat(v);
+      const pack = (res, depth, sdf, wet, span) => {
+        const a = new Uint16Array(res * res * 4);
+        for (let i = 0; i < res * res; i++) {
+          a[i * 4] = half(depth[i]);
+          a[i * 4 + 1] = half(sdf[i]);
+          a[i * 4 + 2] = half(wet[i]);
+          a[i * 4 + 3] = half(span[i]);
+        }
+        return a;
+      };
+      const mips = [];
+      let lr = HR;
+      let cd = this.hydro.depth, cs = this.hydro.sdf, cw = this.hydro.wet, cb = this.hydro.span;
+      mips.push({ data: pack(lr, cd, cs, cw, cb), width: lr, height: lr });
+      while (lr > 4) {
+        const nr = lr >> 1;
+        const nd = new Float32Array(nr * nr), ns = new Float32Array(nr * nr);
+        const nw = new Float32Array(nr * nr), nb = new Float32Array(nr * nr);
+        for (let z = 0; z < nr; z++) {
+          for (let x = 0; x < nr; x++) {
+            const k = z * nr + x;
+            const a = (z * 2) * lr + x * 2, b = a + 1, c = a + lr, d = c + 1;
+            nd[k] = (cd[a] + cd[b] + cd[c] + cd[d]) * 0.25;
+            ns[k] = (cs[a] + cs[b] + cs[c] + cs[d]) * 0.25;
+            nw[k] = (cw[a] + cw[b] + cw[c] + cw[d]) * 0.25;
+            nb[k] = (cb[a] + cb[b] + cb[c] + cb[d]) * 0.25;
+          }
+        }
+        lr = nr; cd = nd; cs = ns; cw = nw; cb = nb;
+        mips.push({ data: pack(lr, cd, cs, cw, cb), width: lr, height: lr });
+      }
+      const hy = new THREE.DataTexture(mips[0].data, HR, HR, THREE.RGBAFormat, THREE.HalfFloatType);
+      hy.mipmaps = mips;
+      hy.generateMipmaps = false;
+      hy.minFilter = THREE.LinearMipmapLinearFilter;
+      hy.magFilter = THREE.LinearFilter;
+      hy.wrapS = hy.wrapT = THREE.ClampToEdgeWrapping;
+      hy.needsUpdate = true;
+      this.hydroTexture = hy;
+      this.hydroTexel = 1 / HR;
+    }
 
     // ── the flow field ───────────────────────────────────────────────────────
     // R,G = flow direction times coherence, encoded to 0..1; B = discharge;

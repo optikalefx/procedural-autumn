@@ -48,7 +48,7 @@ const H = parseInt(arg('h', '900'), 10);
 const RES = arg('res', '768');
 const DIR = arg('dir', 'shots/ui/hud');
 const VIEW = arg('view', 'drive');
-const URL = `${arg('url', 'http://localhost:5178')}?res=${RES}`;
+const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}`;
 
 async function main() {
   const release = await acquire('hudshot');

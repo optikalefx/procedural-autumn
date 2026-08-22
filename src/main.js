@@ -141,11 +141,44 @@ async function loadCachedBake(seed, res) {
   if (new URLSearchParams(location.search).has('nocache')) return null;
   try {
     const t0 = performance.now();
+
+    // `r.ok` is NOT an existence test, and a cache hit is not a valid bake.
+    //
+    // A dev server answers a missing path with index.html at status 200, so a
+    // bake that is not there yet returns `ok` with a body of HTML. Worse, this
+    // request used `cache: 'force-cache'`, so that HTML got stored under the
+    // bake's own URL and was then served from cache forever — including after
+    // `tools/bake.mjs` had written the real file. The symptom is a permanent
+    // "cached bake unusable, baking live: not a Procedural Autumn bake" and a
+    // 35-50 s live bake on EVERY load, on a machine that has a perfectly good
+    // bake sitting on disk. Verified by hand: the .pab over HTTP begins `PAB1`
+    // and is byte-identical to the file, while the running page was still
+    // reporting the cache unusable.
+    //
+    // So: read the first four bytes and require the format's own magic before
+    // believing any response, and on a miss retry once with `cache: 'reload'`
+    // to evict a poisoned entry rather than inheriting it for the session.
+    const MAGIC = 0x31424150; // 'PAB1', little-endian
+    const tryBake = async (u) => {
+      for (const mode of ['force-cache', 'reload']) {
+        let resp;
+        try { resp = await fetch(u, { cache: mode }); } catch { return null; }
+        if (!resp.ok) return null;
+        const buf = await resp.arrayBuffer();
+        if (buf.byteLength >= 4 && new DataView(buf).getUint32(0, true) === MAGIC) return buf;
+        // Not a bake. If that came from the cache, one reload may still find
+        // the real file; if it came from the network, the file is genuinely
+        // not there and the caller should fall back.
+        if (mode === 'reload') return null;
+      }
+      return null;
+    };
+
     let url = `${BAKE_BASE}/${bakeFilename(seed, res, GEN_HASH)}`;
     let stale = false;
-    let r = await fetch(url, { cache: 'force-cache' });
+    let buf = await tryBake(url);
 
-    if (!r.ok) {
+    if (!buf) {
       // Exact generator hash missing — most likely someone is mid-edit on
       // TerrainGen.js. Fall back to the newest bake for this (seed, res) so
       // other authors keep fast captures, but flag it loudly.
@@ -154,14 +187,13 @@ async function loadCachedBake(seed, res) {
       if (!alt) return null;
       url = `${BAKE_BASE}/bakes/${alt.file}`;
       stale = true;
-      r = await fetch(url, { cache: 'force-cache' });
-      if (!r.ok) return null;
+      buf = await tryBake(url);
+      if (!buf) return null;
       console.warn(`[world] STALE BAKE: generator is ${GEN_HASH}, using ${alt.hash}. ` +
                    `Run "node tools/bake.mjs --force" to refresh, or add ?nocache=1 to bake live.`);
     }
 
     setProgress(0.30, 'Loading the valley');
-    const buf = await r.arrayBuffer();
     const data = decodeBake(buf);
     return { data, ms: performance.now() - t0, cached: true, stale };
   } catch (e) {

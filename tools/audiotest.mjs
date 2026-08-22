@@ -34,7 +34,7 @@ const arg = (n, d = null) => {
   return v && !v.startsWith('--') ? v : true;
 };
 const RES = arg('res', '640');
-const URL = `${arg('url', 'http://localhost:5178')}?res=${RES}`;
+const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}`;
 
 const results = [];
 const check = (name, pass, detail) => {

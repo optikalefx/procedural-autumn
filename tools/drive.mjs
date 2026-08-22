@@ -32,7 +32,7 @@ const SECONDS = parseFloat(arg('seconds', '60'));
 const ONLY = arg('scenario', null);
 const HEADED = argv.includes('--headed');
 const CAMDIR = arg('shots', 'shots/vehicle/cam');
-const URL = `${arg('url', 'http://localhost:5178')}?res=${RES}`;
+const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}`;
 
 const KEYS = { throttle: 'KeyW', brake: 'KeyS', left: 'KeyA', right: 'KeyD', handbrake: 'Space' };
 

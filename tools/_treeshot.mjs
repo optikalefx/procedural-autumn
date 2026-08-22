@@ -33,7 +33,7 @@ await acquire('treeshot');
 const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: { width: +arg('w', 1280), height: +arg('h', 720) } });
 p.on('pageerror', (e) => console.log('PAGEERR', e.message.slice(0, 300)));
-await p.goto(`http://localhost:5178/?res=${arg('res', '768')}`, { waitUntil: 'domcontentloaded' });
+await p.goto(`${process.env.AUTUMN_URL || 'http://localhost:5178'}/?res=${arg('res', '768')}`, { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => window.__ready === true, null, { timeout: 180000, polling: 250 });
 
 const names = arg('views', arg('view', 'hero')).split(',');

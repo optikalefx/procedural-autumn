@@ -63,6 +63,17 @@ export const VIEWS = {
   mouth:     { anchor: 'mouth',    height: 5.0, dist: 26, pitch: -0.16, fov: 54, hour: 16.9 },
   // The tallest waterfall, framed from below.
   waterfall: { anchor: 'waterfall',height: 11,  dist: 58,  pitch: 0.08,  fov: 50, hour: 16.2, yawOffset: -0.55 },
+  // The plunge pool, from above the canopy.
+  //
+  // `waterfall` sits at 11 m and 58 m out, and after the smooth-water round
+  // moved the channels the vegetation moved with them (moisture is derived from
+  // distance-to-water), so a red maple now stands between that camera and the
+  // fall and the frame is 70% leaves. The anchor is not wrong — the fall is
+  // still there — but a framing a critic cannot judge water in is a framing
+  // that wastes a critic. Same anchor, above the canopy, looking down into the
+  // pool: this is where the round's worst defect lived and it needs a view that
+  // is not at the mercy of one tree.
+  plunge:    { anchor: 'waterfall',height: 34,  dist: 96,  pitch: -0.20, fov: 52, hour: 16.2, yawOffset: -0.55 },
   // High peaks and aerial perspective.
   peaks:     { anchor: 'peak',     height: 120, dist: 420, pitch: -0.10, fov: 42, hour: 16.0 },
   // The vehicle, three-quarter hero framing.
@@ -93,8 +104,15 @@ if (RES) params.set('res', RES);
 if (QUALITY) params.set('quality', QUALITY);
 if (SEED) params.set('seed', SEED);
 const qs = params.toString();
-const URL = arg('url', 'http://localhost:5178') + (qs ? `?${qs}` : '');
+const URL = arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178')) + (qs ? `?${qs}` : '');
 const TIMEOUT = parseInt(arg('timeout', '180000'), 10);
+// Scene groups to hide before capture, by name — Trees, Grass, GroundCover,
+// Rocks, Wildlife, Camp, Water. See the note at the call site.
+const HIDE = typeof arg('hide') === 'string' ? arg('hide').split(',').map((s) => s.trim()).filter(Boolean) : [];
+// Also write <view>-nowater.png per view. See the note at the call site.
+const WATERDIFF = has('waterdiff');
+// Extra frames of the same pose, for the crawl measurement. Needs --waterdiff.
+const FRAMES = parseInt(arg('frames', '0'), 10) || 0;
 
 async function main() {
 /**
@@ -165,9 +183,39 @@ await acquire('shot');
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__ready === true, null, { timeout: TIMEOUT, polling: 250 });
 
+  // ── pin quality and resolution for the whole run ────────────────────────
+  //
+  // Engine now steps the quality tier down on its own, and it is gated on
+  // `!navigator.webdriver` so it cannot fire under automation. `adaptive` — the
+  // RESOLUTION ladder — is not gated, and nothing here set either.
+  //
+  // At dpr 1 that was harmless by accident: the rungs collapse to [1] and
+  // nothing can move. At dpr 2 a slow capture still walks the resolution down
+  // to 0.667 mid-run, and this project does capture at dpr 2. A plate taken at
+  // two thirds resolution against a baseline taken at full is not a comparison,
+  // and nothing in the output would say so. Six separate instruments in this
+  // round produced clean, confident, wrong numbers; this is the same shape of
+  // failure one layer down, so pin it explicitly rather than relying on a
+  // collapse that only holds at one dpr.
+  await page.evaluate(() => {
+    const e = window.__engine;
+    if (!e) return;
+    e.autoQuality = false;   // no tier change
+    e.adaptive = false;      // no resolution ladder — `_adapt` returns immediately
+    e.resolutionScale = 1;
+  });
+
+  // --views a,b,c captures a named subset in ONE page load. Every invocation of
+  // this tool re-bakes the world (~25 s at full res), so capturing four
+  // framings as four processes pays that four times and, worse, serialises
+  // behind the capture lock. A subset is the common case for a system author:
+  // the water round wants river/mouth/backwater/waterfall and nothing else.
+  const viewList = arg('views', null);
   const views = has('all')
     ? Object.keys(VIEWS)
-    : [arg('view', 'hero')].filter(Boolean);
+    : (typeof viewList === 'string'
+        ? viewList.split(',').map((s) => s.trim()).filter(Boolean)
+        : [arg('view', 'hero')].filter(Boolean));
 
   const dir = arg('dir', 'shots');
   const results = [];
@@ -343,7 +391,56 @@ await acquire('shot');
       await page.waitForTimeout(1200);
     }
 
-    const out = has('all') || !arg('out')
+    // --hide Trees,Grass,GroundCover
+    //
+    // Not a cheat: a measurement of a shoreline that is 70% hidden behind
+    // birch trunks is a measurement of birch trunks. tools/wedge.mjs finds the
+    // waterline by colour, and in the `river` framing the boundary it found was
+    // mostly canopy silhouette — a hard alpha-tested edge, which it duly
+    // reported as an aliased waterline. Hiding the occluders does not move the
+    // shoreline by a millimetre; it is the only way to see the whole of it.
+    // Keep it OUT of any frame that is judged for LOOK.
+    if (HIDE.length) {
+      await page.evaluate((names) => {
+        for (const n of names) {
+          const o = window.__engine.scene.getObjectByName(n);
+          if (o) o.visible = false;
+        }
+        return window.__settle?.(30);
+      }, HIDE);
+      await page.waitForTimeout(400);
+    }
+
+    // ── --waterdiff: freeze the clock so the PAIR is exact ──────────────────
+    //
+    // The water frame and the water-hidden frame have to differ by the water
+    // and by nothing else. Captured a few hundred milliseconds apart with the
+    // engine running, they also differ by every other animated thing in the
+    // scene — and the clouds are the killer. Their drift makes the whole sky a
+    // difference, which is one enormous connected component, and on `river` it
+    // touched the water and merged with it: the largest component in the frame
+    // was 210 383 px of sky-plus-river, it touched row 0, it was correctly
+    // rejected as sky, and tools/wedge.mjs then reported 0.38% of a frame with
+    // a river across the middle of it.
+    //
+    // Hiding the clouds fixes that one confound and not the class. Stopping the
+    // engine and calling its render path directly with dt = 0 fixes the class:
+    // no updater runs, so clouds, leaves, ripples and the sun are all bit-
+    // identical between the two, and the difference IS the water.
+    if (WATERDIFF) {
+      await page.evaluate(() => {
+        const e = window.__engine;
+        e.stop();
+        window.__frozenDraw = () => {
+          if (e._render) e._render(0, e.elapsed);
+          else e.renderer.render(e.scene, e.camera);
+        };
+        window.__frozenDraw();
+      });
+      await page.waitForTimeout(120);
+    }
+
+    const out = has('all') || views.length > 1 || !arg('out')
       ? resolve(dir, `${name}.png`)
       : resolve(arg('out'));
     if (!existsSync(dirname(out))) mkdirSync(dirname(out), { recursive: true });
@@ -389,6 +486,7 @@ await acquire('shot');
                     `(${(q.deadColFrac * 100).toFixed(0)}% dead columns); re-rendering (${attempt}/4)`);
       await page.evaluate(() => {
         window.dispatchEvent(new Event('resize'));
+        if (window.__frozenDraw) { window.__frozenDraw(); return null; }
         return window.__settle?.(120);
       });
       await page.waitForTimeout(900);
@@ -398,6 +496,97 @@ await acquire('shot');
                     `cannot be mistaken for a result`);
       try { unlinkSync(out); } catch { /* nothing written */ }
       continue;
+    }
+
+    // ── --waterdiff: the water's own contribution, exactly ──────────────────
+    //
+    // tools/wedge.mjs used to find the waterline with a colour rule, and a
+    // colour rule cannot tell water from pale cool rock: on `waterfall` it
+    // found the cliff face and reported twelve percent of it as a jagged
+    // shoreline. There is no threshold that fixes that, because the two really
+    // are the same colour.
+    //
+    // So do not guess. Capture the same pose twice, once with the Water group
+    // hidden, and difference them. Every pixel the water changed IS a water
+    // pixel, weighted by exactly the alpha it was composited with — which makes
+    // the difference a true antialiased coverage field rather than a
+    // thresholded mask, and makes the extracted waterline the real one, to the
+    // sub-pixel.
+    //
+    // Time advances between the two frames, so anything else that MOVES also
+    // differs. Capture with --hide Trees,Grass,GroundCover,Weather and the only
+    // animated thing left in frame is the water itself.
+    if (WATERDIFF) {
+      const nw = out.replace(/\.png$/, '-nowater.png');
+      await page.evaluate(() => {
+        const o = window.__engine.scene.getObjectByName('Water');
+        if (o) o.visible = false;
+        window.__frozenDraw();
+      });
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: nw });
+      console.log(`shot: ${nw}`);
+      // Water back, clock back. The --frames sequence below needs time to run.
+      await page.evaluate(() => {
+        const o = window.__engine.scene.getObjectByName('Water');
+        if (o) o.visible = true;
+        window.__frozenDraw();
+        window.__frozenDraw = null;
+        window.__engine.start();
+      });
+      await page.waitForTimeout(200);
+
+      // ── --frames N: the same pose, over time, for tools/wcrawl.mjs ────────
+      //
+      // A still frame cannot tell a clean shoreline from one that is clean in
+      // that instant and crawling in the next. The waterline is decided by
+      // geometry, and the geometry does not move — the vertex swell is two
+      // centimetres and is faded to nothing at the bank — so a waterline that
+      // MOVES between two frames of a static camera is moving because
+      // something about how it is computed is unstable at the pixel, which is
+      // exactly the failure that survives a good-looking capture.
+      //
+      // EVERY frame gets its own water-hidden twin, captured at the same frozen
+      // instant. The first version captured one twin and differenced the whole
+      // sequence against it, and that is a real bias, not a nicety: frame 0 and
+      // its twin were an exact frozen pair, but t1..t5 were captured with the
+      // engine RUNNING, so anything that changed between the frozen and running
+      // states read as a coverage change over the entire body. Measured both
+      // ways on the same pose by a critic: `mouth` 0.20% with per-step pairing
+      // against 0.43% reusing one (2.1x), `river` 3.6% -> 5.9% (1.6x). The
+      // round's headline temporal number was inflated by its own harness.
+      for (let f = 1; f <= FRAMES; f++) {
+        // Let time advance with the engine running, then freeze again so the
+        // pair is exact. The advance is what the measurement is OF.
+        await page.evaluate(() => window.__engine.start());
+        await page.waitForTimeout(240);
+        await page.evaluate(() => {
+          const e = window.__engine;
+          e.stop();
+          window.__frozenDraw = () => {
+            if (e._render) e._render(0, e.elapsed);
+            else e.renderer.render(e.scene, e.camera);
+          };
+          window.__frozenDraw();
+        });
+        await page.waitForTimeout(80);
+        const fp = out.replace(/\.png$/, `-t${f}.png`);
+        await page.screenshot({ path: fp });
+        await page.evaluate(() => {
+          const o = window.__engine.scene.getObjectByName('Water');
+          if (o) o.visible = false;
+          window.__frozenDraw();
+        });
+        await page.waitForTimeout(80);
+        await page.screenshot({ path: fp.replace(/\.png$/, '-nowater.png') });
+        await page.evaluate(() => {
+          const o = window.__engine.scene.getObjectByName('Water');
+          if (o) o.visible = true;
+          window.__frozenDraw();
+        });
+        console.log(`shot: ${fp}`);
+      }
+      await page.evaluate(() => { window.__frozenDraw = null; window.__engine.start(); });
     }
 
     results.push(out);
@@ -440,13 +629,23 @@ await acquire('shot');
     }
   }
 
+  // `quality` and `resScale` are printed on EVERY run, unconditionally, because
+  // a plate captured at two thirds resolution or a tier down against a baseline
+  // taken at full is not a comparison and nothing else in the output would say
+  // so. They are pinned above; this is the proof, not the intention.
   const stats = await page.evaluate(() => ({
     fps: window.__fps ?? null,
     drawCalls: window.__engine?.renderer?.info?.render?.calls ?? null,
     triangles: window.__engine?.renderer?.info?.render?.triangles ?? null,
     textures: window.__engine?.renderer?.info?.memory?.textures ?? null,
+    quality: window.__engine?.quality ?? null,
+    resScale: window.__engine?.resolutionScale ?? null,
   }));
   console.log('stats:', JSON.stringify(stats));
+  if (stats.quality !== 'ultra' || Math.abs((stats.resScale ?? 1) - 1) > 1e-3) {
+    console.error(`[shot] !! captured at quality=${stats.quality} resScale=${stats.resScale} — ` +
+                  `NOT comparable with a baseline taken at ultra / 1.0`);
+  }
   if (errors.length) console.log('page-errors:', JSON.stringify(errors.slice(0, 8), null, 1));
 
   await browser.close();

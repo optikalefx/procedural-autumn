@@ -23,7 +23,7 @@ p.on('pageerror', e=>console.log('ERR',e.message));
     Object.assign(window.WebSocket, RealWS);
   });
 
-await p.goto('http://localhost:5178');
+await p.goto((process.env.AUTUMN_URL || 'http://localhost:5178'));
 await p.waitForFunction(()=>window.__ready===true,null,{timeout:180000,polling:300});
 console.log(await p.evaluate(process.argv[2] || "'no expr'"));
 await b.close();

@@ -57,7 +57,7 @@ const RES = arg('res', '640');
 const HOUR = arg('hour', null);
 const FOV = arg('fov', null);
 const DIR = resolve(arg('dir', `shots/sky/strip-${VIEW}`));
-const URL = `${arg('url', 'http://localhost:5178')}?res=${RES}`;
+const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}`;
 
 await acquire('skystrip');
 const browser = await chromium.launch({

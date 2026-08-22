@@ -55,7 +55,7 @@ const RES = arg('res', '640');
 const ANCHOR = arg('anchor', 'meadow');
 const OUT = resolve(arg('out', `shots/wildlife/strip-${SPECIES}-${MODE}.png`));
 
-const URL = `${arg('url', 'http://localhost:5178')}?res=${RES}`;
+const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}`;
 
 await acquire('wstrip');
 const browser = await chromium.launch({

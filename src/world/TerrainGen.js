@@ -154,6 +154,92 @@ const PUBLISH_MIN_W = 4.0;
 // and grass distribution was tuned against.
 const DAMP_MIN_DEPTH = 0.3;
 
+// ── the shore band ───────────────────────────────────────────────────────────
+// The waterline is the zero set of (smooth surface - rough bed), so a bump of
+// height e where the bed grade is g moves it e/g metres. These are the numbers
+// that make that arithmetic behave. Every one was set by sweeping it through
+// `tools/waterlab.mjs` — nine hostile terrains, the real pipeline, ~5 s a run —
+// and the measurement that chose it is on the line.
+
+// Metres from water within which the pre-carve bed is fully low-passed, and
+// where that weight reaches zero. 14 m because that is a little past the 12 m
+// Water.js may dilate its mesh (SURF_DILATE_M): ground the surface can never be
+// drawn over does not need to be touched, and ground it CAN be drawn over is
+// where a hollow becomes a detached puddle.
+const SHORE_FULL = 3.0;
+const SHORE_BAND = 14.0;
+// Two box passes at 5 m, i.e. a triangle kernel of about 4 m sigma. Measured on
+// talus at res 512, the bed residual against an 8 m box inside the band: 0.53 m
+// raw, 0.088 m after. Radius barely matters — 3, 5, 7 and 8 m all land within
+// 0.4 points of `fine` — because the carve that follows dominates what is left;
+// what matters is that the pass happens at all, which is worth 2.8 points of
+// `fine` and 12 of `speck`.
+const SHORE_BLUR_R = 5.0;
+const SHORE_BLUR_PASSES = 2;
+// Metres from water within which the hillslope rill network is tapered out.
+// RILL_MAX is RIVER_MIN by construction, so the deepest rills in the map are the
+// ones running into the smallest traced channels, and every one of them is a
+// half-metre gully a metre from water that stands 0.45 m deep. See `_carveRills`.
+const RILL_SHORE_BAND = 10.0;
+const RILL_SHORE_KEEP = 0.0;
+// Metres the surface is propagated off the wet mask for grading, and metres from
+// the waterline the grading is allowed to act. The first has to exceed the second
+// by more than GRADE_MASK_R or the clamped depth's own ramp to its floor gets
+// graded as if it were a shoreline.
+const GRADE_REACH = 24.0;
+const GRADE_BAND = 14.0;
+// Target |grad depth| across the waterline, m/m, and the most bed this may move
+// to get it. Swept together: at G 0.30 the worst-case `grad10` is 0.266 and at
+// 0.45 it is 0.309, with `bedRms` rising 0.46 -> 0.48 and `stair` 1.48 -> 1.79
+// across that range. 0.38 sits where `grad10` is comfortably past the 0.25 the
+// round asks for and nothing else has started to pay for it.
+//
+// The cap is reached at GRADE_CAP/GRADE_G = 1.8 m from the line, and that range
+// is not arbitrary: `grad10` samples the depth field a texel either side of the
+// contour, so a ramp that saturates inside 2 m is a ramp the metric — and the
+// eye in motion — never sees. Swept at G 0.30, a 0.6 m cap takes the worst-case
+// `grad10` to 0.248 and misses the 0.25 the round asks for; a 1.0 m cap costs
+// 0.05 of `bedRms` for two thousandths of `grad10`.
+const GRADE_G = 0.38;
+const GRADE_CAP = 0.7;
+// Blur radius, metres, of the depth field whose zero set the grading treats as
+// the shoreline. This is the one constant here that is genuinely delicate: it
+// decides what counts as a shoreline at all. One texel of radius is the answer —
+// 3 m and 4 m (which round to the same 2-texel kernel) cost 7 points of `fine`
+// and 140 of `speck` because the smoothed line separates from the line the water
+// grid actually draws, and the two then fight along every bank.
+const GRADE_MASK_R = 2.0;
+// Bed slope, m/m, past which the grading refuses to act, fading out over the
+// next octave. A waterfall lip has the pool above and the pool below within a
+// few texels of each other and a zero crossing on the rock between them.
+// Measured on the `step` case, `bedStep`: 2.4 m base, 2.57 m with this gate at
+// 0.45, 3.17 m without it.
+const GRADE_MAX_SLOPE = 0.45;
+// ...and metres of bed any one texel may move. The surface propagation is a
+// nearest-neighbour Voronoi field, so where two reaches at different levels meet
+// it has a seam in it metres tall, and a fill that honours the far side of that
+// seam lifts a texel by the whole step: measured, `bedStep` 9.26 m without this
+// against 2.53 m in the base. It is also the guarantee behind "the terrain
+// outside the water's influence is untouched" — no texel moves more than a metre
+// anywhere, at any distance.
+const GRADE_MOVE = 1.0;
+// Minimum water depth at a channel centreline, metres. RAISED from 0.22.
+//
+// The bed is sampled bilinearly from a 2 m raster, and 0.22 m of water in a
+// channel whose banks rise a metre in three is under a texel wide: it was only
+// ever drawn because bed noise happened to dip below it, which is another way of
+// saying the tributary spatter WAS the water. Measured at res 512 on talus, with
+// the shore band smoothed and the rills taken out from under it: at 0.22 m, 5.5%
+// of all channel stations came out with their centreline dry and the median
+// wetted width was 5.25 m; at 0.45 m, 1.6% and 7.25 m. The base — spatter and
+// all — measured 0.4% and 7.75 m. This is what keeps `area` and `chanWet` where
+// they were while everything the spatter contributed is removed.
+//
+// It is worth nothing on its own and must not be read as a fix: alone, it takes
+// `fine` from 36.7% to 39.9% and `speck` from 461 to 553 per km^2, because all
+// it does by itself is give the spatter more water to spatter with.
+const WDEP_MIN = 0.45;
+
 export class TerrainGen {
   constructor(opts = {}) {
     this.res = opts.res ?? 1536;
@@ -179,6 +265,10 @@ export class TerrainGen {
     this._flowAccumulation();  this.onProgress(0.76, 'Routing rivers');
     this._carveChannels();     this.onProgress(0.85, 'Cutting riverbeds');
     this._waterSurface();      this.onProgress(0.92, 'Pooling water');
+    // ...and again, because _waterSurface's shore grading moves the bed by up
+    // to a metre within 14 m of every waterline. See _deriveSlope: the map it
+    // publishes was stale over 18.4% of the world.
+    this._deriveSlope();
     this._flowField();         this.onProgress(0.95, 'Setting the current');
     this._climate();           this.onProgress(0.98, 'Seeding biomes');
 
@@ -1353,6 +1443,356 @@ export class TerrainGen {
     this.lakes = { cellCount: labelled, bodyCount: bodies.length, majorCount: major };
   }
 
+  /**
+   * Chamfer distance, in metres, from every cell to the nearest seeded cell.
+   *
+   * Two sweeps with (1, sqrt2) weights, which overestimates a true Euclidean
+   * distance by at most 6.6% on the diagonal — a decimetre at the ten-metre
+   * range this is used over, and every consumer of it is a smoothstep whose
+   * edges are set to the nearest metre anyway. A jump flood would cost five
+   * more passes over the grid to buy that decimetre back.
+   */
+  _chamfer(seed) {
+    const R = this.res, N = R * R, texel = this.worldSize / R;
+    const d = new Float32Array(N);
+    const BIG = 1e6;
+    for (let i = 0; i < N; i++) d[i] = seed[i] ? 0 : BIG;
+    const c2 = Math.SQRT2;
+    for (let y = 0; y < R; y++) {
+      for (let x = 0; x < R; x++) {
+        const i = y * R + x;
+        if (d[i] === 0) continue;
+        let m = d[i];
+        if (x > 0 && d[i - 1] + 1 < m) m = d[i - 1] + 1;
+        if (y > 0) {
+          if (d[i - R] + 1 < m) m = d[i - R] + 1;
+          if (x > 0 && d[i - R - 1] + c2 < m) m = d[i - R - 1] + c2;
+          if (x < R - 1 && d[i - R + 1] + c2 < m) m = d[i - R + 1] + c2;
+        }
+        d[i] = m;
+      }
+    }
+    for (let y = R - 1; y >= 0; y--) {
+      for (let x = R - 1; x >= 0; x--) {
+        const i = y * R + x;
+        let m = d[i];
+        if (x < R - 1 && d[i + 1] + 1 < m) m = d[i + 1] + 1;
+        if (y < R - 1) {
+          if (d[i + R] + 1 < m) m = d[i + R] + 1;
+          if (x < R - 1 && d[i + R + 1] + c2 < m) m = d[i + R + 1] + c2;
+          if (x > 0 && d[i + R - 1] + c2 < m) m = d[i + R - 1] + c2;
+        }
+        d[i] = m;
+      }
+    }
+    for (let i = 0; i < N; i++) d[i] *= texel;
+    return d;
+  }
+
+  /**
+   * Low-pass the ground the water is about to stand on — BEFORE the channel is
+   * cut into it.
+   *
+   * The waterline is the zero set of (smooth surface - rough bed), so a bump of
+   * height e where the bed grade is g moves it e/g metres. On this map's aprons
+   * g is about 1:30, so the 0.35-0.6 m of bed roughness `bedRms` measures in the
+   * shallow band is not a texture on the shoreline, it IS the shoreline: it is
+   * the entire scalloped, lobed, speckled edge in shots/waterlab/base/talus.png.
+   *
+   * Two things about where this sits in the pipeline, and both of them were
+   * measured the wrong way round first:
+   *
+   *   - It runs BEFORE the carve. Anything that low-passes the bed after the U
+   *     has been cut into it fills the U back in, because at 2 m texels a
+   *     tributary channel IS high-frequency content. Measured, band-limiting the
+   *     finished cut instead — two box passes over the carve depth, which is what
+   *     `_carveRills` already does to its own incision — took `chanWet` from
+   *     98.6% to 42.8% and `area` from 17.2% to 9.2% of the patch: a blurred cut
+   *     is a shallower cut, and a shallower cut holds no water. Smoothing the
+   *     ground first and then cutting into it gives a smooth bed AND smooth
+   *     banks with no such trade.
+   *   - The band is keyed off the traced centrelines and the labelled lake
+   *     bodies, not off the water grid, because the water grid does not exist
+   *     yet at this point in the bake and both of those do.
+   *
+   * The weight falls to zero at SHORE_BAND so that ground the water cannot reach
+   * is left alone. Measured end to end on the talus case at res 512 — this pass,
+   * the rill taper and `_shoreGrade` together — the RMS height change against
+   * distance from the waterline runs 0.65 m at 4 m under water, 0.41 m at 2 m
+   * out, 0.18 m at 8 m, 0.048 m at 14 m, 0.007 m at 20 m, and no texel anywhere
+   * moves by more than a centimetre past 21.8 m.
+   */
+  _shoreSmooth() {
+    const R = this.res, N = R * R, h = this.height;
+    const texel = this.worldSize / R, half = this.worldSize / 2;
+    const seed = new Uint8Array(N);
+
+    // Standing water seeds itself: the flood already labelled it.
+    if (this.lakeId) {
+      for (let i = 0; i < N; i++) {
+        const b = this.lakeId[i];
+        if (b >= 0 && this.lakeMajorFlag[b]) seed[i] = 1;
+      }
+    }
+    // Channels seed from the line the carve is about to follow, at the width the
+    // carve is about to use, so the band is centred on the finished channel and
+    // not on the D8 cells the trace started from.
+    const stamp = (wx, wz, radT) => {
+      const gx = (wx + half) / texel, gz = (wz + half) / texel;
+      const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
+      const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
+      const r2 = radT * radT;
+      for (let iy = z0; iy <= z1; iy++) {
+        const dz = iy + 0.5 - gz;
+        for (let ix = x0; ix <= x1; ix++) {
+          const dx = ix + 0.5 - gx;
+          if (dx * dx + dz * dz <= r2) seed[iy * R + ix] = 1;
+        }
+      }
+    };
+    for (const sta of this.channels) {
+      for (let k = 0; k < sta.length - 1; k++) {
+        const a = sta[k], b = sta[k + 1];
+        const seg = Math.hypot(b.x - a.x, b.z - a.z);
+        const sub = Math.max(1, Math.ceil(seg / (texel * 0.7)));
+        for (let t = 0; t < sub; t++) {
+          const u = t / sub;
+          const w = lerp(a.w, b.w, u);
+          stamp(lerp(a.x, b.x, u), lerp(a.z, b.z, u), Math.max(1.0, (w * 0.5) / texel));
+        }
+      }
+    }
+
+    const dw = this._chamfer(seed);
+    const w = new Float32Array(N);
+    for (let i = 0; i < N; i++) w[i] = 1 - smoothstep(SHORE_FULL, SHORE_BAND, dw[i]);
+
+    // Two box passes, i.e. a triangle kernel: a single box leaves its own corner
+    // frequency in the residual, and a corner in the bed is a corner in the
+    // waterline. Measured on talus at res 512, the bed's residual against an 8 m
+    // box over the shore band: 0.53 m before this line, 0.088 m after it.
+    const bs = this._boxBlur(h, SHORE_BLUR_R, SHORE_BLUR_PASSES);
+    const delta = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      if (w[i] <= 0) continue;
+      delta[i] = (bs[i] - h[i]) * w[i];
+      h[i] += delta[i];
+    }
+
+    // ── and carry the same delta into the water surface ────────────────────
+    // Every station's `surf` was derived from `filled` on the bed as it stood a
+    // moment ago. Move the bed and leave the surface where it was and the two
+    // disagree by exactly this delta — which on a low-order tributary is the
+    // whole of the water: MEASURED, smoothing without this correction left
+    // 21.6% of all channel stations with their centreline ABOVE their own water
+    // surface and took the median wetted width from 7.75 m to 4.50 m. `chanWet`
+    // read 87%. A blurred valley floor rises, and a channel that was 0.4 m deep
+    // rises out of its own water.
+    //
+    // Scaled by (1 - lake), because a station handing over to standing water is
+    // anchored to the lake's level and the lake's level is not a function of
+    // this bed.
+    const half2 = this.worldSize / 2;
+    const at = (wx, wz) => {
+      const gx = clamp((wx + half2) / texel - 0.5, 0, R - 1.001);
+      const gz = clamp((wz + half2) / texel - 0.5, 0, R - 1.001);
+      const x0 = gx | 0, z0 = gz | 0, tx = gx - x0, tz = gz - z0;
+      const a = delta[z0 * R + x0], b = delta[z0 * R + x0 + 1];
+      const c = delta[(z0 + 1) * R + x0], e = delta[(z0 + 1) * R + x0 + 1];
+      return (a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + e * tx) * tz;
+    };
+    for (const sta of this.channels) {
+      for (const p of sta) {
+        const dz = at(p.x, p.z) * (1 - p.lake);
+        p.base += dz; p.surf += dz;
+      }
+      // The two guarantees the trace established have to be re-established, in
+      // the same order and for the same reasons: water never runs uphill, and
+      // where a reach is cut below the level it drains into, that level reaches
+      // up it. A smooth delta perturbs both only slightly, but "slightly" in a
+      // water surface is a visible step.
+      for (let k = 1; k < sta.length; k++) {
+        if (sta[k].lake > 0.999) continue;
+        if (sta[k].surf > sta[k - 1].surf) sta[k].surf = sta[k - 1].surf;
+      }
+      for (let k = sta.length - 2; k >= 0; k--) {
+        if (sta[k].surf < sta[k + 1].surf) sta[k].surf = sta[k + 1].surf;
+      }
+    }
+
+    this.shoreDist = dw;
+    this.shoreW = w;
+  }
+
+  /**
+   * Give the bed a guaranteed minimum grade across the waterline.
+   *
+   * Smoothing alone is not enough and the reason is arithmetic: low-passing the
+   * bed removes the noise gradient and leaves only the landform gradient, which
+   * on a 1:30 apron is 0.033 m/m. `grad10` — the 10th percentile of |grad depth|
+   * along the contour — is what says how far the line moves for a given wobble
+   * in the surface, and at 0.033 a five-centimetre wobble is a metre and a half
+   * of crawl. Measured over the nine lab cases: the smoothing pass on its own
+   * takes `fine` from 36.7% to 32.2% and leaves `grad10` at 0.145 against a base
+   * of 0.134 — a still frame that is slightly better and a moving one that is
+   * not. This pass is what takes `grad10` to 0.304.
+   *
+   * So the bed is also pushed away from the surface in proportion to distance
+   * from the line: down inside the water, up outside it. Because the target is
+   * `S - G*phi` and `phi` is signed distance from the line, its own zero set is
+   * the line — the waterline does not move, which is why the regression guards
+   * survive it: over the nine cases `area` goes 17.16% -> 16.84% and `chanWet`
+   * 98.6% -> 98.9% with this pass and nothing else in the round switched on.
+   *
+   * One-sided, and that is the whole reason it is safe. Inside the water it may
+   * only cut, so a channel is never filled in; outside it may only fill, so a
+   * bank is never bulldozed. What it actually does on the ground is shave the
+   * humps that poke through shallow water and fill the hollows that hold
+   * detached puddles just above it — which is the same list `speck` counts.
+   */
+  _shoreGrade(water, rm) {
+    const R = this.res, N = R * R, h = this.height;
+    const texel = this.worldSize / R;
+
+    // ── extend the surface off the wet mask ────────────────────────────────
+    // The bed outside the water has to be graded against something, and the
+    // only statement of where the surface is stops at the mask edge. A bounded
+    // nearest-water propagation is the same extension Water.js's dilation ring
+    // makes, for the same reason, and to nearly the same distance (12 m there).
+    const S = new Float32Array(N);
+    const hasS = new Uint8Array(N);
+    // Rings out from the wet mask, kept because the extension has to reach
+    // FURTHER than the pass is allowed to act. The clamped depth field below
+    // ramps to its floor over the last few rings, and a ramp has a zero
+    // crossing in it: grading against that crossing puts a second, entirely
+    // fictitious shoreline in the ground at the edge of the band. Measured over
+    // the nine cases, adding this gate: `stair` 4.0% -> 1.5%, and the `step`
+    // case's worst single-texel bed jump 15.1 m -> 6.3 m.
+    const ring = new Uint8Array(N).fill(255);
+    let frontier = [];
+    for (let i = 0; i < N; i++) {
+      if (water[i] > -9000) { S[i] = water[i]; hasS[i] = 1; ring[i] = 0; frontier.push(i); }
+    }
+    if (!frontier.length) return;
+    const RINGS = Math.max(1, Math.round(GRADE_REACH / texel));
+    const ACT = Math.max(1, Math.round(GRADE_BAND / texel));
+    for (let r = 0; r < RINGS && frontier.length; r++) {
+      const next = [];
+      for (const k of frontier) {
+        const cz = (k / R) | 0, cx = k - cz * R;
+        for (let dz = -1; dz <= 1; dz++) {
+          const z = cz + dz; if (z < 0 || z >= R) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const x = cx + dx; if (x < 0 || x >= R) continue;
+            const nk = z * R + x;
+            if (hasS[nk]) continue;
+            hasS[nk] = 1; S[nk] = S[k]; ring[nk] = Math.min(254, r + 1); next.push(nk);
+          }
+        }
+      }
+      frontier = next;
+    }
+
+    // ── the line to grade against ──────────────────────────────────────────
+    // Not the raw wet mask, and not a distance transform of it either. Both of
+    // those were tried and both failed in the same place: the raw mask still
+    // carries the detached lobes and pinholes this pass exists to remove, so a
+    // distance taken from it grades a shoreline around every one of them; and a
+    // chamfer distance is an octagon on a lattice, so writing `S - G*phi` into
+    // the bed stamps that octagon into the ground — measured, `stair` went from
+    // 0.5% to 19.9% on talus, which is the metric doing exactly its job.
+    //
+    // So the distance is taken analytically off a low-passed depth field
+    // instead: near its own zero set a smooth function is |d| / |grad d| away
+    // from it, to first order, and both of those are smooth by construction, so
+    // nothing about the lattice survives into the answer. GRADE_MASK_R sets what
+    // counts as a shoreline at all — anything narrower than about two blur
+    // radii has no zero set left, and the pass fills or cuts it flat.
+    //
+    // Clamped to +/-5 m before the blur: cells with no surface would otherwise
+    // enter the average at -1e4 and eat metres of real water at the band edge.
+    const dq = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      dq[i] = hasS[i] ? clamp(S[i] - h[i], -5, 5) : -5;
+    }
+    const dsm = this._boxBlur(dq, GRADE_MASK_R, 1);
+
+    // ── which of that is actually a body of water ──────────────────────────
+    // A detached puddle has a zero set of its own, and it is a perfectly good
+    // one: |d|/|grad d| is small around it, the pass reads "shoreline", and the
+    // cut branch then DEEPENS it. That is the defect being polished rather than
+    // removed, and it is why `speck` on talus only halved on the first pass
+    // that had every other part of this working.
+    //
+    // So the wet side is gated on connectivity to something the bake actually
+    // traced: a channel mask cell, or a labelled lake. Anything wet and not
+    // reachable from one of those over wet ground is not water, it is a hollow
+    // near water, and it goes to the fill branch and is filled flat.
+    const conn = new Uint8Array(N);
+    {
+      const stack = new Int32Array(N);
+      let sp = 0;
+      for (let i = 0; i < N; i++) {
+        if (dsm[i] <= 0 || conn[i]) continue;
+        const isLake = this.lakeId && this.lakeId[i] >= 0 && this.lakeMajorFlag[this.lakeId[i]];
+        if (rm[i] > 0.02 || isLake) { conn[i] = 1; stack[sp++] = i; }
+      }
+      while (sp > 0) {
+        const k = stack[--sp];
+        const cz = (k / R) | 0, cx = k - cz * R;
+        if (cx > 0 && !conn[k - 1] && dsm[k - 1] > 0) { conn[k - 1] = 1; stack[sp++] = k - 1; }
+        if (cx < R - 1 && !conn[k + 1] && dsm[k + 1] > 0) { conn[k + 1] = 1; stack[sp++] = k + 1; }
+        if (cz > 0 && !conn[k - R] && dsm[k - R] > 0) { conn[k - R] = 1; stack[sp++] = k - R; }
+        if (cz < R - 1 && !conn[k + R] && dsm[k + R] > 0) { conn[k + R] = 1; stack[sp++] = k + R; }
+      }
+    }
+
+    // ── apply ──────────────────────────────────────────────────────────────
+    for (let z = 1; z < R - 1; z++) {
+      for (let x = 1; x < R - 1; x++) {
+        const i = z * R + x;
+        if (!hasS[i] || ring[i] > ACT) continue;
+        // Never bulldoze a face. On a waterfall lip the surface extension puts
+        // the pool above and the pool below within a few texels of each other,
+        // and the clamped depth between them crosses zero on the rock in
+        // between — which this pass would happily grade into a ramp. Measured
+        // on the `step` case: the worst single-texel bed jump inside the wet
+        // mask went 2.4 m -> 15.1 m without this line.
+        const sl = Math.hypot((h[i + 1] - h[i - 1]) / (2 * texel), (h[i + R] - h[i - R]) / (2 * texel));
+        const steep = 1 - smoothstep(GRADE_MAX_SLOPE, GRADE_MAX_SLOPE * 2, sl);
+        if (steep <= 0) continue;
+        const gx = (dsm[i + 1] - dsm[i - 1]) / (2 * texel);
+        const gz = (dsm[i + R] - dsm[i - R]) / (2 * texel);
+        const g = Math.hypot(gx, gz);
+        // Metres from the line, and the clamp is what keeps a lake interior out
+        // of this: there |grad d| is ~0 and the estimate is kilometres, which
+        // the fade below then reads as "nowhere near a shoreline".
+        const u = g > 1e-5 ? Math.min(Math.abs(dsm[i]) / g, GRADE_BAND * 4) : GRADE_BAND * 4;
+        const fade = (1 - smoothstep(GRADE_BAND * 0.6, GRADE_BAND, u)) * steep;
+        if (fade <= 0) continue;
+        // GRADE_CAP is the most earth this may move anywhere, and it is reached
+        // at GRADE_CAP/GRADE_G m from the line. That range is not arbitrary:
+        // `grad10` samples the depth field a texel either side of the contour,
+        // so a ramp that saturates inside 2 m is a ramp the metric — and the eye
+        // in motion — never sees.
+        const t = Math.min(GRADE_G * u, GRADE_CAP);
+        // One-sided, and that is the whole reason it is safe: inside the water
+        // it may only cut, outside it may only fill.
+        if (dsm[i] > 0 && conn[i]) { const tgt = S[i] - t; if (h[i] > tgt) h[i] += Math.max(-GRADE_MOVE, (tgt - h[i]) * fade); }
+        else if (rm[i] <= 0.02) {
+          // The fill is refused inside the channel mask, and that gate is not
+          // cosmetic. GRADE_MASK_R decides what counts as a shoreline, and a
+          // channel narrower than about two blur radii has no zero set left in
+          // the low-passed depth — so without this the pass reads a 5 m brook as
+          // dry ground and fills it in. MEASURED at res 512 on talus: 16.2% of
+          // all channel stations came out with their centreline above their own
+          // water surface, against 5.0% with the gate.
+          const tgt = S[i] + t; if (h[i] < tgt) h[i] += Math.min(GRADE_MOVE, (tgt - h[i]) * fade);
+        }
+      }
+    }
+  }
+
   // ── 5. Carve channels along the smoothed centrelines ───────────────────────
   /**
    * The bed is cut from the same polyline the ribbon is swept along.
@@ -1467,7 +1907,43 @@ export class TerrainGen {
 
     this._carveRills();
 
-    // Recompute slope after carving — used everywhere downstream.
+    this._deriveSlope();
+  }
+
+  /**
+   * Slope, minimum and maximum height, from the heightfield AS IT STANDS.
+   *
+   * Called twice, and that is the point. It ran once, at the end of
+   * `_carveChannels`, under the note "recompute slope after carving — used
+   * everywhere downstream" — and then `_shoreGrade` moved the bed by up to a
+   * metre within 14 m of every waterline and nothing recomputed it. That is the
+   * same argument `_waterSurface` makes for re-rasterising `riverMask` between
+   * the two grading passes, applied to a field that was not re-derived.
+   *
+   * MEASURED at res 1536, published `slope` against a slope recomputed from the
+   * returned `height`:
+   *
+   *     stale texels          434 745   (18.43% of the map)
+   *     |delta|   p50 0.0489   p90 0.166   p99 0.284   max 0.674
+   *     median published slope over those texels        0.185
+   *     texels crossing the 0.85 riverbed gate            2 270
+   *
+   * A p50 of 0.049 against a median of 0.185 is a 26% relative error, over a
+   * fifth of the world. `slope` is `aux.r`: `TerrainMaterial` gates the
+   * riverbed paint on it (`river *= 1 - smoothstep(0.85, 1.40, slope)`),
+   * `WorldData.getBiome` calls anything past 0.85 rock, `getSurfaceWeights`
+   * ramps `rockW` from 0.55, and every scatterer, the vehicle's traction and
+   * the camp siting read it. The 2 270 texels that flip across the riverbed
+   * gate are tan riverbed painted on ground the grading has since lifted out
+   * from under it — which is the stripe this round exists to remove.
+   *
+   * `minHeight`/`maxHeight` were verified unaffected by the second call; they
+   * are recomputed anyway because deriving them anywhere else would be a second
+   * place to forget.
+   */
+  _deriveSlope() {
+    const R = this.res, N = R * R, h = this.height;
+    const texel = this.worldSize / R;
     const slope = new Float32Array(N);
     let mn = Infinity, mx = -Infinity;
     for (let y = 0; y < R; y++) {
@@ -1539,6 +2015,32 @@ export class TerrainGen {
         // ridgelines and gives the shading something to catch on.
         const steepGain = 1.0 + Math.min(1.6, g) * 2.4;
         rill[i] = Math.pow(t, 1.5) * 2.6 * w * soft * steepGain;
+        // ...but not into the shore band. RILL_MAX is RIVER_MIN by
+        // construction, so the deepest rills in the map are exactly the ones
+        // running alongside and into the smallest traced channels — a gully
+        // half a metre deep, a metre from a channel whose water stands 0.22 m
+        // above its bed. Every one of them is below the water surface, so the
+        // dilation ring finds it and paints it, and the result is the dendritic
+        // spatter around every tributary head in shots/waterlab/base/talus.png:
+        // it is not noise, it is the rill network, drawn.
+        //
+        // What this is worth is NOT what it looks like it should be worth, and
+        // the honest version is the useful one. On its own it is a regression:
+        // `speck` 461 -> 621 per km^2 over the nine cases, because taking the
+        // gully out from under a reach without also grading its bank leaves the
+        // reach shallower and the spatter finer. With `_shoreGrade` in front of
+        // it the grading has already filled those hollows, so the taper's
+        // remaining job is the regression guard: turning it off takes `area`
+        // from +2.4% against the base to +13.3%, with five of the nine cases
+        // past the +15% the round allows. It buys 1 point of `fine` and costs
+        // 24 of `speck`, and it is kept for `area`.
+        //
+        // It is also what a floodplain is — the one place on a hillside that is
+        // not gullied.
+        if (this.shoreDist !== undefined) {
+          rill[i] *= RILL_SHORE_KEEP + (1 - RILL_SHORE_KEEP)
+                   * smoothstep(0, RILL_SHORE_BAND, this.shoreDist[i]);
+        }
       }
     }
 
@@ -1580,10 +2082,31 @@ export class TerrainGen {
    * line is precisely how a bare channel ends up drawn beside a river.
    */
   _waterSurface() {
+    // Rasterised TWICE, with the shore grading between the two, and it is worth
+    // saying plainly what the second one does and does not buy. It does NOT
+    // change the waterline: measured, dropping it moves `fine` by 0.25 points
+    // and `speck` by 5 per km^2 across the nine cases, because the depth field
+    // the shader tests is `water - height` and `water` is rasterised from the
+    // polylines either way. What it changes is everything that is asked ABOUT
+    // the bed: `riverMask`, which is gated per texel on `h > surf + 0.5` and
+    // decides where TerrainMaterial paints tan riverbed, and the waterfall
+    // detection, which reads bed drops. The grading moves the bed by up to a
+    // metre within 14 m of the water, so a mask painted before it is a mask
+    // painted against ground that no longer exists — riverbed albedo on a bank
+    // the grading has since lifted clear of the water, which is the tan stripe
+    // this file already has three comments about. It costs 184 ms at res 1536.
+    let { water, rm } = this._rasterWater();
+    this._shoreGrade(water, rm);
+    ({ water, rm } = this._rasterWater());
+    this.riverMask = rm;
+    this.water = water;
+    this._waterfalls(water, rm);
+  }
+
+  _rasterWater() {
     const R = this.res, N = R * R, h = this.height;
     const water = new Float32Array(N).fill(-9999);
     const rm = new Float32Array(N);
-    const waterfalls = [];
     const texel = this.worldSize / R;
     const half = this.worldSize / 2;
 
@@ -1657,13 +2180,19 @@ export class TerrainGen {
         }
       }
     }
-    this.riverMask = rm;
-
     // Enforce monotone-downhill along flow direction, so water never runs uphill.
     // Standing water is exempt: a lake is level by definition, and letting this
     // pass shave 2 mm off successive cells across one would put a gradient on
     // the one surface in the map that must not have one.
-    const idx = Array.from({ length: N }, (_, i) => i).sort((a, b) => this.filled[b] - this.filled[a]);
+    // Cached: it is a comparator sort of 2.36 M boxed indices at res 1536 and it
+    // costs 0.34 s, and `filled` has not changed since the priority flood — so
+    // paying for it twice, once per rasterisation, was 0.34 s of the bake spent
+    // computing the same permutation.
+    if (!this._fillOrder) {
+      this._fillOrder = Array.from({ length: N }, (_, i) => i)
+        .sort((a, b) => this.filled[b] - this.filled[a]);
+    }
+    const idx = this._fillOrder;
     for (const i of idx) {
       if (water[i] < -9000) continue;
       const d = this.flowDir[i];
@@ -1671,6 +2200,12 @@ export class TerrainGen {
       if (water[d] > water[i]) water[d] = water[i] - 0.002;
     }
 
+    return { water, rm };
+  }
+
+  _waterfalls(water, rm) {
+    const R = this.res, h = this.height;
+    const waterfalls = [];
     // Waterfalls: river cells with a large drop over a short run.
     for (let y = 2; y < R - 2; y++) {
       for (let x = 2; x < R - 2; x++) {
@@ -1716,7 +2251,6 @@ export class TerrainGen {
       if (kept.length >= 28) break;
     }
 
-    this.water = water;
     this.waterfalls = kept;
   }
 
@@ -2345,7 +2879,7 @@ export class TerrainGen {
         // Both have to go to nothing or the delta is a trench with a step in
         // the surface at the end of it.
         const dcarve = (0.8 + m * m * 6.0) * (1 - lk);
-        const wdep = 0.22 + m * 0.9 * (1 - lk * 0.75);
+        const wdep = WDEP_MIN + m * 0.9 * (1 - lk * 0.75);
         sta.push({
           s, x: tmpP.x, z: tmpP.z, m, lake: lk, lkM, lkO,
           dcarve, wdep,
@@ -2422,7 +2956,7 @@ export class TerrainGen {
       // ramped part, or the delta has a trench down the middle of it.
       for (const p of sta) {
         p.dcarve = (0.8 + p.m * p.m * 6.0) * (1 - p.lake);
-        p.wdep = 0.22 + p.m * 0.9 * (1 - p.lake * 0.75);
+        p.wdep = WDEP_MIN + p.m * 0.9 * (1 - p.lake * 0.75);
         p.w = (1.2 + p.m * 11) * (1 + p.lake * (MOUTH_FLARE - 1));
       }
 
@@ -2439,6 +2973,10 @@ export class TerrainGen {
     }
 
     this.channels = channels;
+    // The ground the channels are about to be cut into is smoothed HERE, before
+    // the contract is published, because the smoothing moves the bed and the
+    // water surface has to move with it. See `_shoreSmooth`.
+    this._shoreSmooth();
     // The published contract, and only the published contract: every extra
     // property here is paid for in the bake header, which is JSON and already
     // a couple of megabytes. Rounded for the same reason — 0.1 is three

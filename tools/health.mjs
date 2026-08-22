@@ -49,17 +49,58 @@ p.on('pageerror', (e) => { if (SHADER_FAIL.test(String(e.message))) shaderErrs.p
 
 let ok = false;
 try {
-  await p.goto(`http://localhost:5178/?res=${res}`, { waitUntil: 'domcontentloaded' });
+  await p.goto(`${process.env.AUTUMN_URL || 'http://localhost:5178'}/?res=${res}`, { waitUntil: 'domcontentloaded' });
   await p.waitForFunction(() => window.__ready === true, null, { timeout: 120000, polling: 300 });
   ok = true;
 } catch { /* reported below */ }
 
-const info = ok ? await p.evaluate(() => ({
-  fps: window.__fps,
-  calls: window.__engine?.renderer?.info?.render?.calls,
-  tris: window.__engine?.renderer?.info?.render?.triangles,
-  systems: Object.fromEntries(Object.entries(window.__systems ?? {}).map(([k, v]) => [k, v.enabled !== false])),
-})) : { bootError: await p.evaluate(() => window.__bootError ?? null) };
+// ── ask the RENDERER, do not scrape the log ─────────────────────────────────
+//
+// Log scraping missed a whole material. Reproduced deliberately by an author: a
+// GLSL redefinition in TerrainMaterial's fragment shader that stopped the
+// material compiling still returned "shaderFailures": 0, "errors": [] here,
+// while tools/shot.mjs caught it. TerrainMaterial is an onBeforeCompile on a
+// MeshStandardMaterial, so its program is built lazily on the first draw that
+// uses it, and whether that draw has happened by the time this reads is a race.
+//
+// three keeps the answer: with renderer.debug.checkShaderErrors on (its
+// default), a program that failed carries diagnostics with runnable === false
+// and the driver's logs attached. Asking every program directly cannot race and
+// cannot miss a material because its error text did not match a regex.
+//
+// The forced render before reading is not optional: it is what guarantees every
+// visible material has been through the compiler at least once.
+const info = ok ? await p.evaluate(() => {
+  const e = window.__engine;
+  // Reset the counters FIRST. `_loop` calls `renderer.info.reset()` before it
+  // renders; calling `_render` directly skips that, so the forced render ADDS
+  // to whatever the last real frame left behind and `calls`/`tris` come back
+  // doubled — 602/4.2M read as 1208/8.6M the first time this ran.
+  try {
+    e?.renderer?.info?.reset?.();
+    if (e?._render) e._render(0, e.elapsed); else e?.renderer?.render(e.scene, e.camera);
+  } catch { /* reported via diagnostics */ }
+  const progs = Array.from(e?.renderer?.info?.programs ?? []);
+  const broken = progs
+    .filter((pr) => pr.diagnostics && pr.diagnostics.runnable === false)
+    .map((pr) => [
+      `program: ${pr.name ?? '(unnamed)'}`,
+      pr.diagnostics.programLog,
+      pr.diagnostics.vertexShader?.log,
+      pr.diagnostics.fragmentShader?.log,
+    ].filter(Boolean).join('\n').slice(0, 900));
+  return {
+    fps: window.__fps,
+    calls: e?.renderer?.info?.render?.calls,
+    tris: e?.renderer?.info?.render?.triangles,
+    programs: progs.length,
+    brokenPrograms: broken,
+    systems: Object.fromEntries(Object.entries(window.__systems ?? {}).map(([k, v]) => [k, v.enabled !== false])),
+  };
+}) : { bootError: await p.evaluate(() => window.__bootError ?? null) };
+
+for (const b of info.brokenPrograms ?? []) shaderErrs.push(b);
+delete info.brokenPrograms;
 
 const uniqShader = [...new Set(shaderErrs)];
 console.log(JSON.stringify({

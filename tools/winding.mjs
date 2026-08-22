@@ -57,7 +57,7 @@ const page = await browser.newPage({ viewport: { width: 800, height: 450 } });
 
 page.on('pageerror', (e) => console.error('page error:', e.message));
 
-await page.goto(`http://localhost:5178/?res=${RES}`, { waitUntil: 'domcontentloaded' });
+await page.goto(`${process.env.AUTUMN_URL || 'http://localhost:5178'}/?res=${RES}`, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 300 });
 // Let streaming systems build their geometry before auditing it.
 await page.evaluate(() => window.__settle?.(120));

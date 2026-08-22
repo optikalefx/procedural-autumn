@@ -120,7 +120,7 @@ page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; })
 
 const params = new URLSearchParams({ res: RES });
 if (QUALITY) params.set('quality', QUALITY);
-await page.goto(`http://localhost:5178/?${params}`, { waitUntil: 'domcontentloaded' });
+await page.goto(`${process.env.AUTUMN_URL || 'http://localhost:5178'}/?${params}`, { waitUntil: 'domcontentloaded' });
 const navAtStart = navigations;
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
 
