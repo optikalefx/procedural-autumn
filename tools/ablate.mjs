@@ -151,8 +151,13 @@ const H        = parseInt(arg('h', '1080'), 10);
 const DPR      = parseFloat(arg('dpr', '2'));
 const PORT     = arg('port', '5180');
 const RES      = arg('res', '1536');
-// public/bakes/ is keyed on seed 20261018 while WorldConfig.SEED is not, so an
-// unpinned run bakes the world from scratch — minutes, on a timing rig, per boot.
+// No seed by default — but pass one, and pass 20261018, if you want the run to
+// start inside a minute. WorldConfig.SEED is 20262018 and every bake in
+// public/bakes/ is 20261018, so a boot with no ?seed misses the cache and
+// bakes a whole world live before the first frame is timed. A timing run that
+// spends five minutes generating terrain is not wrong, but it holds the
+// exclusive lock the whole time and every other author's capture queues behind
+// it. Same trap tools/fallflow.mjs documents at its own SEED constant.
 const SEED     = arg('seed', null);
 const QUALITY  = arg('quality', null);          // null = let pickQuality decide
 const ROUNDS   = parseInt(arg('rounds', '3'), 10);
@@ -200,6 +205,7 @@ let navigations = 0;
 page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; });
 
 const params = new URLSearchParams({ res: RES });
+if (SEED) params.set('seed', SEED);
 if (QUALITY) params.set('quality', QUALITY);
 if (SEED) params.set('seed', SEED);
 await page.goto(`http://127.0.0.1:${PORT}/?${params}`, { waitUntil: 'domcontentloaded' });

@@ -6615,3 +6615,79 @@ water sitting at Y 0.023–0.034. It reads as ±0.3 stops only because the body 
 that dark; it is the encoding floor, not a shading discontinuity. `backwater`'s
 real defect is the one the look critic files as item 7 (94% of the body in one
 mass, span 0.61 st), which is F7 and not this.
+
+---
+
+## FALLS — the waterfall round (2026-08-22)
+
+### 1. `TerrainGen._waterfalls` writes the water grid's -9999 sentinel as a height
+
+This is the request `src/world/WorldData.js::_repairWaterfalls` says it filed
+and did not. Filing it now, because the repair there is a patch on the consumer
+side and the generator should stop emitting the value.
+
+The plunge point of a fall is a **water surface** sample, and the water grid's
+"no water here" sentinel is `-9999`. `_waterfalls` walks downstream from the
+lip until the drop per cell falls under 0.9 m and writes `water[cur]` as the
+bottom; that walk follows `flowDir`, which does not stop at the river mask, so
+the terminus is very often a dry cell. Measured on the shipped bake (seed
+20261018): **8 of 28 falls, and all four of the tallest**, including the one
+every canonical camera anchor is now built on.
+
+Nothing downstream range-checked it. `Waterfalls._buildPaths` clamps its last
+path point to `bottom[1] + 0.4`, so the curtain's final vertex sat at -9998.6 m
+and the 1-2-1 smoothing dragged the last rows of the sheet with it; the impact
+burst and the mist are both spawned from that same last point, so the biggest
+falls in the map had no spray, no mist and no churn at their feet at all;
+`audio/water.js` puts each emitter a third of the way up the drop, i.e. at
+-6714 m, so they were inaudible too.
+
+`WorldData._repairWaterfalls` now clamps anything outside the map's own
+vertical range up to the water surface (or the ground) at the fall's foot. It
+lives there rather than in `TerrainGen` **deliberately**: the bake cache key is
+an FNV hash of `TerrainGen.js` alone, so fixing it at the source would
+invalidate every `.pab` on disk and leave the shipped bakes still carrying the
+sentinel. When the bakes are next regenerated, fix the generator and the repair
+becomes a no-op that is still worth keeping as an assertion.
+
+### 2. A hard light-blue horizontal bar is drawn across the falling curtain
+
+Owned by nobody in particular; `Waterfalls.js` is where it is drawn, but it is
+not obviously a falls bug and it predates this round.
+
+What is established: it is in the `WaterfallSheets` mesh and no other
+(`tools/falliso.mjs --view fallbase` — it is absent from `-none`, present in
+`-WaterfallSheets`). It is present at `6181c10`, so it is **not** the crest,
+which did not exist then; an earlier note in this file's neighbourhood blamed
+the crest and that attribution is withdrawn. It sits at a **fixed** position on
+the fall across three separate builds, so it is not an advecting lane. It has a
+dead-straight top edge and it extends past the white column's own silhouette,
+which is consistent with the sheet being drawn out to 1.25 half-widths at a low
+alpha that this band makes visible.
+
+The most likely mechanism, unverified: `wSteps` quantises `lanes` into three
+flat levels, and `lanesWide` — its step softness — is driven off `sheetDist`
+through `mix(0.17, 0.5, smoothstep(60.0, 200.0, sheetDist))`. Distance varies
+monotonically down a fall receding from the camera, so a quantisation boundary
+lands at a fixed height on the fall and is drawn as a horizontal edge. The
+same distance also gates `fineFade` and `hairFade`. Anyone testing this should
+freeze `lanesWide` at a constant and capture `fallbase` before and after.
+
+### 3. `plunge` and `falllip` do not frame their subjects
+
+Both are new this round and both are `subject: true` framings orbiting the
+`waterfall` anchor with a hand-chosen `lookY`. Captured, `plunge` puts the
+plunge basin at the very bottom edge behind the outflow, and `falllip` comes
+back roughly 70% sky with the lip a few pixels off the bottom of frame.
+
+The cause is structural rather than a bad number: `lookY` is metres above
+`getHeight(anchor.x, anchor.z)` — the ground at the FOOT — while the camera's
+own height is metres above `getHeight` at the CAMERA, and on a valley wall
+those two grounds differ by tens of metres. A subject framing that aims in
+foot-relative metres and stands in camera-relative metres cannot be tuned
+reliably; it wants an aim point taken from the fall record itself
+(`world.waterfalls[i].top` / `.bottom`), which `_pose.mjs` currently has no way
+to express.
+
+`waterfall` and `fallbase` both frame their subject correctly and are the two
+to judge on until this is fixed.
