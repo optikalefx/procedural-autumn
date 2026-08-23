@@ -32,6 +32,25 @@ Boot with `?seed=20261018` (or `--seed 20261018`): the committed bakes match
 that seed, and a mismatched seed bakes a whole world live before the first
 frame — minutes of wall clock holding the capture lock.
 
+## There is more than one car, and the page picks at random
+
+`src/vehicle/vehicle_models.js` holds the table of vehicles. **With nothing
+pinning it, a page load picks one at random** — which is what the player should
+get, and is poison for a measurement: the cars are not the same triangle count,
+so two runs of the same gate would be measuring two different vehicles.
+
+`?car=<id>` pins it (`camper`, `roamer`). **ablate, perf, shot and vshot all
+default to `--car camper`** and pass it through, so an unadorned run of any of
+them is already deterministic; pass `--car roamer` to look at the other one.
+Anything else you drive the page with — a scratch harness, a hand-rolled
+playwright script — has to pin it itself.
+
+Adding a car is one entry in `CARS` plus a model file; the header of
+`vehicle_models.js` is the whole contract, and `src/vehicle/model_kit.js` is
+the shared parts bin every model is built from. The one rule is that every car
+rolls on `CHASSIS` — the wheelbase, track and wheel radius VehiclePhysics, the
+camera boom and the suspension tune are all built around.
+
 ## The toolbox
 
 | tool | what it answers | trust level |

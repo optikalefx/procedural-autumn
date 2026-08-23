@@ -160,10 +160,14 @@ const OUT_H = parseInt(arg('h', '900'), 10);
 const RES = arg('res', null);
 const QUALITY = arg('quality', null);
 const SEED = arg('seed', null);
+// Which car is parked in the frame. Pinned by default so two captures of the
+// same view are comparable; --car roamer for the other one.
+const CAR = arg('car', 'camper');
 const params = new URLSearchParams();
 if (RES) params.set('res', RES);
 if (QUALITY) params.set('quality', QUALITY);
 if (SEED) params.set('seed', SEED);
+if (CAR) params.set('car', CAR);
 const qs = params.toString();
 const URL = arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178')) + (qs ? `?${qs}` : '');
 const TIMEOUT = parseInt(arg('timeout', '180000'), 10);

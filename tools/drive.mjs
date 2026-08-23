@@ -32,7 +32,11 @@ const SECONDS = parseFloat(arg('seconds', '60'));
 const ONLY = arg('scenario', null);
 const HEADED = argv.includes('--headed');
 const CAMDIR = arg('shots', 'shots/vehicle/cam');
-const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}`;
+// Pin the car: the page picks at random when nothing does, and a capture
+// that changed vehicle between runs would not be comparable. --car roamer
+// for the other one. See AGENTS.md.
+const CAR = arg('car', 'camper');
+const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}&car=${CAR}`;
 
 const KEYS = { throttle: 'KeyW', brake: 'KeyS', left: 'KeyA', right: 'KeyD', handbrake: 'Space' };
 

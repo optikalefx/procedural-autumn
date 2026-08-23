@@ -40,6 +40,8 @@
 import * as THREE from 'three';
 import { mulberry32 } from '../../core/MathUtils.js';
 import { SEED } from '../../world/WorldConfig.js';
+import { CARS } from '../../vehicle/vehicle_models.js';
+import { buildEnvMap } from '../../vehicle/model_kit.js';
 
 // ── the glob ─────────────────────────────────────────────────────────────────
 //
@@ -575,54 +577,66 @@ function animalEntries(mod, path) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Family adapter — the camper
+//  Family adapter — the cars
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// `buildCamper` takes a material set rather than an RNG, so the convention
+// A car builder takes a material set rather than an RNG, so the convention
 // probe would mis-call it; and it returns a bag of named parts rather than one
 // object. Both are fine reasons for an adapter and neither is a reason to
-// change the model's signature to suit a dev page.
+// change a model's signature to suit a dev page.
+//
+// The adapter walks `CARS` (src/vehicle/vehicle_models.js) rather than naming
+// the cars here, so the next one to be authored appears on this page for free
+// — the same deal the tree and rock adapters make with their species tables.
 
-let _camperMats = null;
-function camperMats(mod) {
-  if (!_camperMats) {
-    const env = BUILD_CTX.renderer ? mod.buildEnvMap(BUILD_CTX.renderer) : null;
-    _camperMats = mod.buildMaterials(env);
+const _carMats = new Map();
+function carMats(car) {
+  if (!_carMats.has(car.id)) {
+    const env = BUILD_CTX.renderer ? buildEnvMap(BUILD_CTX.renderer) : null;
+    _carMats.set(car.id, car.materials(env));
   }
-  return _camperMats;
+  return _carMats.get(car.id);
 }
 
-function camperEntries(mod, path) {
-  return [
-    {
-      id: 'vehicle:camper', label: 'Camper', sub: 'the van',
-      group: groupOf(path), family: 'Vehicle', file: path,
-      call: 'buildCamper(buildMaterials(env), seed)',
-      seeded: true,
-      async build(seed) {
-        const built = mod.buildCamper(camperMats(mod), seed & 0xffff);
-        const D = mod.DIM;
-        return {
-          root: built.root,
-          notes: [
-            `${(D.front - D.rear).toFixed(2)} m long, ${(D.halfWidth * 2).toFixed(2)} m wide (DIM)`,
-            `${(D.roof - D.floor).toFixed(2)} m sill to roof`,
-            `${mod.WINDOWS.length} side windows`,
-          ],
-        };
-      },
+function carEntries(mod, path) {
+  return mod.CARS.map((car) => ({
+    id: `vehicle:${car.id}`,
+    label: car.label,
+    sub: car.sub,
+    group: 'Vehicle', family: 'Vehicle', file: path,
+    call: `CARS['${car.id}'].build(materials, seed)  ?car=${car.id}`,
+    seeded: true,
+    async build(seed) {
+      const built = car.build(carMats(car), seed & 0xffff);
+      const D = car.dims;
+      return {
+        root: built.root,
+        notes: [
+          `${(D.front - D.rear).toFixed(2)} m long, ${(D.halfWidth * 2).toFixed(2)} m wide (DIM)`,
+          `${(D.roof - D.floor).toFixed(2)} m sill to roof`,
+          `drive it with ?car=${car.id}`,
+        ],
+      };
     },
+  }));
+}
+
+// The wheel is shared by every car, so it is listed against the parts bin it
+// lives in rather than against one model.
+function kitEntries(mod, path) {
+  const mats = () => carMats(CARS[0]);
+  return [
     {
       id: 'vehicle:wheel', label: 'Wheel', sub: 'road',
       group: groupOf(path), family: 'Vehicle', file: path,
       call: 'buildWheel(buildMaterials(env))',
-      async build() { return { root: mod.buildWheel(camperMats(mod)) }; },
+      async build() { return { root: mod.buildWheel(mats()) }; },
     },
     {
       id: 'vehicle:wheel-spare', label: 'Wheel', sub: 'spare',
       group: groupOf(path), family: 'Vehicle', file: path,
       call: 'buildWheel(buildMaterials(env), { spare: true })',
-      async build() { return { root: mod.buildWheel(camperMats(mod), { spare: true }) }; },
+      async build() { return { root: mod.buildWheel(mats(), { spare: true }) }; },
     },
   ];
 }
@@ -747,7 +761,23 @@ const ADAPTERS = [
   { path: '/src/rocks/RockForms.js', claims: ['ARCHETYPES', 'buildRockLibrary', 'archFootprints'], entries: rockEntries },
   { path: '/src/vegetation/cover_forms.js', claims: ['COVER_ARCHETYPES', 'buildCoverLibrary', 'ARCH_INDEX'], entries: coverEntries },
   { path: '/src/wildlife/animal_species.js', claims: ['SPECIES', 'buildSpecies', 'createHideMaterial', 'pickVariant'], entries: animalEntries },
-  { path: '/src/vehicle/CamperModel.js', claims: ['buildCamper', 'buildWheel', 'buildMaterials', 'buildEnvMap', 'DIM', 'WINDOWS'], entries: camperEntries },
+  {
+    path: '/src/vehicle/vehicle_models.js',
+    claims: ['CARS', 'DEFAULT_CAR', 'carById', 'pickCar'],
+    entries: carEntries,
+    // The model files themselves are assembly steps of the table above: the
+    // card you want is "Camper", not "buildCamper".
+    parts: {
+      '/src/vehicle/CamperModel.js': ['buildCamper', 'DIM', 'WINDOWS'],
+      '/src/vehicle/RoamerModel.js': ['buildRoamer', 'buildRoamerMaterials', 'DIM', 'WINDOWS'],
+    },
+  },
+  {
+    path: '/src/vehicle/model_kit.js',
+    claims: ['CHASSIS', 'C', 'Parts', 'M', 'at', 'rbox', 'tube', 'rod',
+      'archPoints', 'roundRect', 'extrudeAcross', 'buildWheel', 'buildMaterials', 'buildEnvMap'],
+    entries: kitEntries,
+  },
   { path: '/src/camp/camp_fire.js', claims: ['Firepit'], entries: fireEntries },
   { path: '/src/wildlife/birds.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
 ];
