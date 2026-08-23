@@ -522,10 +522,32 @@ function animalEntries(mod, path) {
             pos, heading: 0, speed: pose.speed * v.scale,
             graze: pose.graze, alert: pose.alert, flag: 0, look: null, lod: 0,
           };
+          // The treadmill: the belt moves, not the animal. `AnimRig` plants
+          // feet at absolute `drive.pos`-space points but solves the leg IK
+          // through `parent.matrixWorld` — so the old trick of letting `pos`
+          // run and counter-translating the holder split those two spaces
+          // apart by exactly `pos.z`, and after a few metres of walking every
+          // IK target was metres ahead of the body and the legs clamped into
+          // a horizontal reach. (The head solve round-trips through the same
+          // matrices, so it cancelled and never showed the bug.) Instead,
+          // rebase before each step: pull the accumulated advance out of
+          // `pos` AND out of the rig's world-anchored foot state, so the
+          // animal stays at the origin and the anchors slide back under it —
+          // a real conveyor belt. Stride and cadence still come from real
+          // ground speed, and stance feet still never skate on the belt.
+          const rebase = () => {
+            const dz = pos.z;
+            if (dz === 0) return;
+            pos.z = 0;
+            for (const lg of rig.legs) {
+              lg.foot.z -= dz; lg.anchor.z -= dz; lg.from.z -= dz; lg.to.z -= dz;
+            }
+          };
           // Prime a couple of cycles so the first frame shown is mid-gait
           // rather than the reset pose stepping into it.
           rig.update(0.016, drive, FLAT_WORLD);
           for (let i = 0; i < 60 && drive.speed > 0; i++) {
+            rebase();
             pos.z += drive.speed * 0.016;
             rig.update(0.016, drive, FLAT_WORLD);
           }
@@ -533,12 +555,9 @@ function animalEntries(mod, path) {
           return {
             root,
             update(dt) {
+              rebase();
               pos.z += drive.speed * dt;
               rig.update(dt, drive, FLAT_WORLD);
-              // The treadmill. `AnimRig` writes mesh.position from drive.pos,
-              // so cancelling it on the holder keeps the subject centred while
-              // the gait clock still runs off real ground speed.
-              root.position.set(-pos.x, 0, -pos.z);
             },
             dispose() { hide.dispose(); },
             notes: [
