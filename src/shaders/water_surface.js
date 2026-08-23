@@ -919,6 +919,32 @@ void main() {
   // pre-fix wedge.mjs and are retracted with everything else measured that way.
   alpha *= 1.0 - smoothstep(2.0, 9.0, -sdist);
 
+  // ── the waterfall guard: the case the two guards above cannot see ────────
+  // Both of those guards are functions of (x,z) alone — coverage and sdist
+  // know nothing about HEIGHT — so at a fall neither one fires: the plan
+  // footprint just past a lip is wet (by the pool at the bottom of the drop),
+  // HY.b reads 1, sdist reads inside, and the dilation ring carries the
+  // UPSTREAM level horizontally out over the gorge. depth = P.y - bed is then
+  // the full height of the fall, which the alpha chain reads as "very deep
+  // water": an opaque slab hanging in the gorge's airspace, its outline drawn
+  // by the depth test against the rock — the hard staircase-edged blue
+  // polygons over every fall. Attributed by hiding every Waterfalls mesh at
+  // the (-455,-505) chute: the slab, its own foam, and the sliced edge all
+  // remain. They are this surface.
+  //
+  // The discriminator is vertical, and both halves are already in registers:
+  // depth is what the drawn surface stands above the raw bed, HY.r is the
+  // depth the field says this (x,z) actually carries. On honest water they
+  // agree to the two beds' own disagreement (p90 ~2 m of height); on the
+  // perched ring the difference is metres within a step or two past the lip
+  // and the height of the fall soon after. The 3-8 m fade is an order above
+  // the former and an order below the latter, so it has no tuning band to
+  // drift in — and the first couple of metres past the lip keep partial
+  // alpha, which is water bending over an edge, with the sheet's crest
+  // tongue landing on top of it.
+  float excessY = depth - max(HY.r, 0.0);
+  alpha *= 1.0 - smoothstep(3.0, 8.0, excessY);
+
   // ── the damp margin is GONE from this shader, and that is the fix ────────
   //
   // It used to live here: 0.9 m of dark ground on the dry side, drawn by the

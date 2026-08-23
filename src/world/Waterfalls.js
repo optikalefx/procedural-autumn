@@ -1563,12 +1563,47 @@ export class Waterfalls extends System {
 
   // ── sheet ──────────────────────────────────────────────────────────────────
   _buildSheet() {
+    const world = this.ctx.world;
     const pos = [], u = [], side = [], flight = [], wid = [], disc = [], nrm = [],
           sdir = [], idx = [];
     let base = 0;
     const C = SHEET_COLS.length;
 
     for (const f of this.falls) {
+      // ── narrow the sheet where the gorge narrows ──────────────────────────
+      // The path clamp keeps the CENTRELINE off the rock; across the width the
+      // ribbon is flat, so wherever the gorge's cross-section rises through it
+      // the depth test cuts polygon-edged bites out of the sides — the dark
+      // tears across every fall seen from above. Water in a closing slot does
+      // not climb the walls, it funnels: so probe the ground along the width
+      // axis at each row and pull that side's columns in to where the wall
+      // starts. Probed against the baked heightfield like the path clamp, with
+      // the same 0.6 m of headroom for the mesh's micro-detail.
+      const lims = f.pts.map((p) => {
+        const halfW = p.w * 0.5;
+        const probe = (sgn) => {
+          for (let s = 0.25; s <= 1.25; s += 0.125) {
+            const wx = p.x + f.sideX * sgn * s * halfW;
+            const wz = p.z + f.sideZ * sgn * s * halfW;
+            if (world.getHeight(wx, wz) > p.y + 0.6) return Math.max(s - 0.125, 0.18);
+          }
+          return 1.25;
+        };
+        return [probe(-1), probe(1)];
+      });
+      // Smooth the funnel along the path — the probe is quantised at an eighth
+      // of a half-width and a per-row sawtooth in the silhouette is exactly the
+      // artifact class this file keeps having to remove. min() against the raw
+      // probe so smoothing can only ever narrow further, never push a column
+      // back into the wall it was pulled out of.
+      for (let pass = 0; pass < 2; pass++) {
+        const L = lims.map((l) => l[0]), R = lims.map((l) => l[1]);
+        for (let i = 1; i < lims.length - 1; i++) {
+          lims[i][0] = Math.min((L[i - 1] + L[i] * 2 + L[i + 1]) * 0.25, L[i]);
+          lims[i][1] = Math.min((R[i - 1] + R[i] * 2 + R[i + 1]) * 0.25, R[i]);
+        }
+      }
+
       for (let i = 0; i < f.pts.length; i++) {
         const p = f.pts[i];
         const a = f.pts[Math.max(0, i - 1)], b = f.pts[Math.min(f.pts.length - 1, i + 1)];
@@ -1615,7 +1650,12 @@ export class Waterfalls extends System {
         const stand = p.crest ? 0.06
                     : 0.06 + (standFull - 0.06) * clamp01(p.u / 0.10);
         for (let c = 0; c < C; c++) {
-          const off = SHEET_COLS[c] * p.w * 0.5;
+          // Scale each side by its own funnel limit (1.25 is the nominal outer
+          // column). The attribute keeps the NOMINAL side coordinate: the
+          // alpha feather and the silhouette noise are in side-space, so they
+          // compress with the geometry instead of leaking past it.
+          const sc = (SHEET_COLS[c] < 0 ? lims[i][0] : lims[i][1]) / 1.25;
+          const off = SHEET_COLS[c] * p.w * 0.5 * sc;
           pos.push(p.x + f.sideX * off + nx * stand,
                    p.y + ny * stand,
                    p.z + f.sideZ * off + nz * stand);
@@ -1778,8 +1818,19 @@ export class Waterfalls extends System {
       for (let i = 0; i < count; i++) {
         // Spread the launch points across the foot of the curtain, not from one
         // node: a burst radiating from a single point is a firework.
-        const across = (rng() * 2 - 1) * fl.width * 0.55;
-        const along = rng() * fl.width * 0.5;
+        //
+        // ...and as a ROUND cloud, not a box. The old uniform box read fine
+        // edge-on, but seen from above the cluster's envelope IS the spawn
+        // footprint — hundreds of billboards fused into one flat diamond with
+        // straight sides, a pasted decal in every overhead frame. A radial
+        // spawn with a power-law falloff is dense at the impact and feathered
+        // at the rim, so the envelope has no corners at any angle. Still
+        // shifted downstream, because water thrown by a plunge goes the way it
+        // was already going.
+        const bAng = rng() * Math.PI * 2;
+        const bRad = Math.pow(rng(), 0.62);
+        const across = Math.cos(bAng) * bRad * fl.width * 0.60;
+        const along = (0.5 + 0.5 * Math.sin(bAng)) * bRad * fl.width * 0.55;
         origin.push(
           b.x + fl.sideX * across + fl.dirX * along,
           b.y + 0.3 + rng() * 0.9,
@@ -1823,7 +1874,10 @@ export class Waterfalls extends System {
         // must not be readable as shapes; the *cloud* is the read. The pixel
         // floor in BURST_VERT still holds the far view on its own, so this
         // costs nothing there.
-        size.push((0.12 + rng() * 0.21) * (0.65 + fl.width * 0.07));
+        // Rim sprites shrink with the spawn radius — the cloud's read is its
+        // dense centre, and a full-size clot at the envelope's edge re-draws
+        // the hard outline the radial spawn just removed.
+        size.push((0.12 + rng() * 0.21) * (0.65 + fl.width * 0.07) * (1.0 - 0.30 * bRad));
         seed.push(rng());
       }
     }
