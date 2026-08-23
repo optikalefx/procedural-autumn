@@ -65,6 +65,11 @@ const LAUNCH_FOCUS = 2.2;
 const CAM_MOUNT_AFT = 0.38;    // fraction of hull length behind centre
 const CAM_MOUNT_UP = 1.12;     // metres above the waterline — a seated eye
 const CAM_LOOK_UP = 0.5;       // look target height over the water ahead
+// The wheel zooms about the mount: 1.0 is the seated pose above (the resting
+// middle of the range), inward leans toward the coaming, outward eases a few
+// metres off the stern without ever returning to the old drone framing.
+const CAM_ZOOM_MIN = 0.55;
+const CAM_ZOOM_MAX = 2.6;
 
 // Prewarm hold, matching Camp's pattern: enough frames for the main and
 // shadow passes to have drawn the warm props, all under the loading screen.
@@ -90,6 +95,8 @@ export class Boat extends System {
     this._camP = new THREE.Vector3();   // mounted-camera eye, damped
     this._camL = new THREE.Vector3();   // mounted-camera look target, damped
     this._camSnap = true;
+    this._camZoom = 1;                  // 1 = the seated mount; wheel moves it
+    this._camZoomT = 1;
     this._ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
     this._v = new THREE.Vector3();
     this._q = new THREE.Quaternion();
@@ -538,9 +545,19 @@ export class Boat extends System {
     const dim = b.group.userData.dim ?? this.models[b.kind].dim;
     const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
     const L = dim.length;
-    const mx = p.x - fx * L * CAM_MOUNT_AFT;
-    const mz = p.z - fz * L * CAM_MOUNT_AFT;
-    const my = p.y + CAM_MOUNT_UP;
+    // Wheel zoom, same exponential feel as the rig's. The rig is taken over
+    // while aboard, so nothing else consumes the wheel.
+    const wheel = this.ctx.input.mouse.wheel;
+    if (wheel) {
+      this._camZoomT = Math.min(CAM_ZOOM_MAX,
+        Math.max(CAM_ZOOM_MIN, this._camZoomT * Math.exp(wheel * 0.0016)));
+    }
+    const k0 = Math.min(dt, 1 / 20);
+    this._camZoom = THREE.MathUtils.damp(this._camZoom, this._camZoomT, 9, k0);
+    const zf = this._camZoom;
+    const mx = p.x - fx * L * CAM_MOUNT_AFT * zf;
+    const mz = p.z - fz * L * CAM_MOUNT_AFT * zf;
+    const my = p.y + CAM_MOUNT_UP * (0.55 + 0.45 * zf);
     const lx = p.x + fx * L * 1.7, lz = p.z + fz * L * 1.7;
     const ly = p.y + CAM_LOOK_UP;
     const k = Math.min(dt, 1 / 20);
