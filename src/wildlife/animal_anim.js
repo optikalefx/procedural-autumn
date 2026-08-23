@@ -39,9 +39,29 @@ import { clamp, clamp01, lerp, damp, wrapAngle } from '../core/MathUtils.js';
 const GAITS = {
   walk:   { off: [0.00, 0.50, 0.25, 0.75], duty: 0.64, lift: 0.055, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 1.0 },
   trot:   { off: [0.50, 0.00, 0.00, 0.50], duty: 0.52, lift: 0.095, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 1.3 },
-  gallop: { off: [0.00, 0.08, 0.42, 0.50], duty: 0.34, lift: 0.135, bobHz: 1, flight: 0.14, flightAt: 0.86, pitch: 2.0 },
-  bound:  { off: [0.00, 0.06, 0.34, 0.40], duty: 0.30, lift: 0.150, bobHz: 1, flight: 0.30, flightAt: 0.70, pitch: 2.4 },
-  hop:    { off: [0.20, 0.26, 0.00, 0.06], duty: 0.26, lift: 0.120, bobHz: 1, flight: 0.48, flightAt: 0.52, pitch: 1.6 },
+  // ── flightAt is derived, not authored ──────────────────────────────────────
+  // A leg is down while (phase + off) mod 1 < duty, so the phase at which the
+  // animal is genuinely airborne falls straight out of `off` and `duty` and is
+  // not free to choose. Work the union of the four stance windows and take the
+  // gap:
+  //
+  //   gallop  down [.60,1) + [0,.34)   airborne [0.34, 0.50)   width .16
+  //   bound   down [.60,1) + [0,.30)   airborne [0.30, 0.60)   width .30
+  //   hop     down [.74,1) + [0,.26)   airborne [0.26, 0.74)   width .48
+  //
+  // All three were originally authored as `1 - flight`, which gets the *width*
+  // right and the *placement* wrong — it parks the float at the end of the
+  // cycle instead of where it is. The cost is not cosmetic: the barrel launches
+  // while a foot is still planted, so that leg has to span the whole flight
+  // lift on top of its own stride reach, blows past what the chain can cover
+  // and locks dead straight. On the bear that read as the forelegs vanishing
+  // into the body.
+  //
+  // Placed correctly, every leg lifts off and touches down *outside* the
+  // window, so the arc starts and ends at zero and there is no step to hide.
+  gallop: { off: [0.00, 0.08, 0.42, 0.50], duty: 0.34, lift: 0.135, bobHz: 1, flight: 0.14, flightAt: 0.34, pitch: 2.0 },
+  bound:  { off: [0.00, 0.06, 0.34, 0.40], duty: 0.30, lift: 0.150, bobHz: 1, flight: 0.30, flightAt: 0.30, pitch: 2.4 },
+  hop:    { off: [0.20, 0.26, 0.00, 0.06], duty: 0.26, lift: 0.120, bobHz: 1, flight: 0.48, flightAt: 0.26, pitch: 1.6 },
 };
 
 // Which gait a species uses at which of its three speed tiers.
@@ -292,12 +312,28 @@ export class AnimRig {
     // with the body: leaving it tracking the ground while the barrel launches
     // leaves a bounding deer with its legs dangling straight down like a
     // helicopter's, which is exactly what the first motion strip showed.
-    let flight = 0;
-    if (G.flight > 0) {
+    //
+    // The apex has to come from the *airtime*, not from the foot lift. The
+    // first cut scaled it off `liftM`, which knows nothing about how long the
+    // gait is actually off the ground: a galloping bear got a 0.39-unit arc to
+    // fly and land inside a 0.14-phase window, which at that cadence is fifty
+    // milliseconds — three frames. Thirty-seven centimetres up and back down in
+    // three frames does not read as a bound, it reads as the animation
+    // snapping, and that is exactly what it was reported as.
+    //
+    // A body in the air is the one part of a gait that is not a style choice,
+    // so take it from the only equation available: for airtime t the apex is
+    // g·t²/8. Short window, low hop; a genuinely long float (a bounding deer)
+    // earns a real one. It is in world metres, so divide by scale to land in
+    // the model units the root bone and `bob` are in.
+    let flight = 0, apex = 0;
+    if (G.flight > 0 && cadence > 1e-3) {
       const u = (this.phase - G.flightAt) / G.flight;
       if (u >= 0 && u <= 1) flight = 4 * u * (1 - u);
+      const airtime = G.flight / cadence;
+      apex = (9.81 * airtime * airtime * 0.125) / S;
     }
-    const flightY = flight * liftM * 2.4 * (0.45 + 0.85 * sn);
+    const flightY = flight * apex;
     const swingLift = lift + flightY * S;
     // How far ahead of neutral the foot lands. Falls straight out of "the foot
     // is planted for `duty` of the cycle while the body travels one stride".
