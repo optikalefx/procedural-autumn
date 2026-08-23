@@ -371,6 +371,81 @@ float canopyShadow() {
 }
 `;
 
+// Headlights (and the campfire) on trees.
+//
+// Grass, terrain and ground cover are hijacked MeshStandardMaterials, so they
+// pick up every SpotLight and PointLight through three's own light loop. These
+// materials are raw ShaderMaterials whose `lights: true` was only ever spent
+// on the shadow plumbing — which is why, at night, the road in the headlight
+// beam lit up while the tree standing in the same beam stayed a silhouette.
+// The renderer already uploads the packed light arrays to these programs
+// (lightUniforms() clones UniformsLib.lights); this block finally reads them.
+//
+// The math mirrors r180's lights_pars_begin so a trunk and the gravel beside
+// it agree about the same lamp: view-space light positions, the smoothstep
+// cone, the pow-decay falloff with the quartic cutoff window, and a Lambert
+// 1/PI at the call site. The one deliberate difference is the guarded cone
+// denominator: three's raw smoothstep divides by (penumbraCos - coneCos),
+// which is zero for a penumbra-less light, and a NaN here would ride a black
+// light colour straight into the frame as NaN, not as zero.
+const LOCAL_LIGHTS = /* glsl */`
+#if NUM_SPOT_LIGHTS > 0
+struct SpotLight {
+  vec3 position; vec3 direction; vec3 color;
+  float distance; float decay; float coneCos; float penumbraCos;
+};
+uniform SpotLight spotLights[NUM_SPOT_LIGHTS];
+#endif
+#if NUM_POINT_LIGHTS > 0
+struct PointLight { vec3 position; vec3 color; float distance; float decay; };
+uniform PointLight pointLights[NUM_POINT_LIGHTS];
+#endif
+
+float punctualAtten(float dist, float cutoff, float decay) {
+  float fall = 1.0 / max(pow(dist, decay), 0.01);
+  float edge = clamp(1.0 - pow(dist / max(cutoff, 1e-3), 4.0), 0.0, 1.0);
+  return fall * edge * edge;
+}
+
+// Diffuse irradiance from every spot and point light. 'wrap' widens the lobe:
+// 0 is a hard Lambert for bark, higher lets light bleed past the terminator
+// for the canopy, whose billboard crown normals are too coarse to trust with
+// a hard cutoff (half the crown would go black inside a beam that plainly
+// covers all of it).
+vec3 localLightIrradiance(vec3 worldPos, vec3 worldN, float wrap) {
+  vec3 acc = vec3(0.0);
+#if NUM_SPOT_LIGHTS > 0 || NUM_POINT_LIGHTS > 0
+  // three packs light positions in VIEW space; move the surface there once.
+  vec3 p = (viewMatrix * vec4(worldPos, 1.0)).xyz;
+  vec3 n = normalize(mat3(viewMatrix) * worldN);
+#endif
+#if NUM_SPOT_LIGHTS > 0
+  for (int i = 0; i < NUM_SPOT_LIGHTS; i++) {
+    vec3 lv = spotLights[i].position - p;
+    float dist = length(lv);
+    vec3 L = lv / max(dist, 1e-4);
+    float cone = clamp((dot(L, spotLights[i].direction) - spotLights[i].coneCos)
+               / max(spotLights[i].penumbraCos - spotLights[i].coneCos, 1e-4), 0.0, 1.0);
+    cone *= cone * (3.0 - 2.0 * cone);
+    float ndl = clamp((dot(n, L) + wrap) / (1.0 + wrap), 0.0, 1.0);
+    acc += spotLights[i].color
+         * (cone * ndl * punctualAtten(dist, spotLights[i].distance, spotLights[i].decay));
+  }
+#endif
+#if NUM_POINT_LIGHTS > 0
+  for (int i = 0; i < NUM_POINT_LIGHTS; i++) {
+    vec3 lv = pointLights[i].position - p;
+    float dist = length(lv);
+    vec3 L = lv / max(dist, 1e-4);
+    float ndl = clamp((dot(n, L) + wrap) / (1.0 + wrap), 0.0, 1.0);
+    acc += pointLights[i].color
+         * (ndl * punctualAtten(dist, pointLights[i].distance, pointLights[i].decay));
+  }
+#endif
+  return acc;
+}
+`;
+
 // Coverage-preserving alpha cutout.
 //
 // generateMipmaps averages coverage, so a mark that is solid at 1:1 loses alpha
@@ -592,6 +667,7 @@ varying vec3 vWorld;
 #include <fog_pars_fragment>
 ${CANOPY_LIGHT}
 ${SHADOW_SAMPLE}
+${LOCAL_LIGHTS}
 ${CUTOUT}
 ${OCCLUDE_DITHER}
 
@@ -628,6 +704,10 @@ void main() {
   vec3 N = normalize(vN.xyz);
   vec3 V = normalize(vWorld - cameraPosition);
   vec3 col = canopyShade(albedo, N, V, ao, mix(1.28, 0.40, core), canopyShadow());
+  // Headlights / campfire — see LOCAL_LIGHTS. The ao gate keeps the beam on
+  // the outside of the crown: a lamp cannot reach an interior clump.
+  col += albedo * localLightIrradiance(vWorld, N, 0.55) * RECIPROCAL_PI
+       * mix(0.55, 1.0, clamp(ao, 0.0, 1.0));
 
   gl_FragColor = vec4(col, 1.0);
   // Chunk order matters: three's own materials apply fog *before* the output
@@ -883,6 +963,7 @@ varying float vOcc;        // the whole tree's fade — see BARK_VERT
 #include <shadowmap_pars_fragment>
 #include <fog_pars_fragment>
 ${SHADOW_SAMPLE}
+${LOCAL_LIGHTS}
 
 float h21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -1083,7 +1164,10 @@ void main() {
   float rim = stylizeRim(dot(N, -V), dot(-V, uSunDir))
             * (style < 0.5 ? 3.0 : 5.0) * mix(0.5, 1.0, shadow);
 
-  vec3 col = albedo * (key + hemi) + uSunColor * rim;
+  // Headlights / campfire — see LOCAL_LIGHTS. Hard Lambert: a trunk is a
+  // solid with an honest normal, so its far side stays dark inside the beam.
+  vec3 lamps = localLightIrradiance(vWorld, N, 0.0) * RECIPROCAL_PI;
+  vec3 col = albedo * (key + hemi + lamps) + uSunColor * rim;
   gl_FragColor = vec4(col, 1.0);
   // Chunk order matters: three's own materials apply fog *before* the output
   // colour-space encode, and the atmosphere's haze colour is a linear value.
