@@ -56,6 +56,11 @@ const NEAR_SHORE_SDF = -6;
 // back (only when nothing else holds focus — see lateUpdate).
 const LAUNCH_FOCUS = 2.2;
 
+// Boom length while aboard: just off the stern, so the ride reads first-person
+// -ish over the bow instead of a ghost hull watched from a chase drone. The
+// rig's ZOOM_MIN is 5.5; the wheel can still zoom out from here.
+const BOAT_CAM_ZOOM = 6.2;
+
 // Prewarm hold, matching Camp's pattern: enough frames for the main and
 // shadow passes to have drawn the warm props, all under the loading screen.
 const PREWARM_FRAMES = 8;
@@ -309,13 +314,21 @@ export class Boat extends System {
     this._pose(b, t);
     this._animatePaddle(b, dt);
 
-    // Feed the camera duck.
+    // Feed the camera duck. The pivot sits over the boat's BACK THIRD, a hair
+    // above the deck: with the close boarding zoom the camera rides just off
+    // the stern with the bow filling the lower frame — "you are in the boat",
+    // not a ghost hull observed from a chase drone (user direction,
+    // 2026-08-23).
     const p = b.phys;
     const d = this._duck;
-    d.position.set(p.x, p.y, p.z);
+    const L = (b.group.userData.dim ?? this.models[b.kind].dim).length;
+    d.forward.set(Math.sin(p.heading), 0, Math.cos(p.heading));
+    d.position.set(
+      p.x - d.forward.x * (L / 3),
+      p.y + 0.35,
+      p.z - d.forward.z * (L / 3));
     d.heading = p.heading;
     d.speed = p.speed;
-    d.forward.set(Math.sin(p.heading), 0, Math.cos(p.heading));
     d.velocity.copy(d.forward).multiplyScalar(p.speed);
     d.quaternion.copy(b.group.quaternion);
     d.phys.lateral = p.yawRate * p.speed * 2.0;   // the chase bank reads this
@@ -491,11 +504,17 @@ export class Boat extends System {
     // Matching the rig's last-seen teleportSeq means no cut: the damped chase
     // walks the camera from the camper to the boat, an operator's move.
     this._duck.teleportSeq = veh?.teleportSeq ?? 0;
-    this._duck.position.set(b.phys.x, b.phys.y, b.phys.z);
+    this._duck.position.set(b.phys.x, b.phys.y + 0.35, b.phys.z);
     this._duck.heading = b.phys.heading;
     this._duck.speed = 0;
     rig?.setFollow?.(this._duck);
     rig?.setFocus?.(null);
+    // Ride close: pull the boom in to just off the stern. The camper's wide
+    // default reads a 4.6 m hull as a toy; the wheel still zooms freely.
+    if (rig && Number.isFinite(rig.zoomTarget)) {
+      this._savedZoom = rig.zoomTarget;
+      rig.zoomTarget = BOAT_CAM_ZOOM;
+    }
     this._cue('board', { x: b.phys.x, z: b.phys.z, kind: b.kind });
     return true;
   }
@@ -507,6 +526,10 @@ export class Boat extends System {
     const rig = this.ctx.systems?.cameraRig;
     if (veh) veh.controlsHeldBy = null;
     rig?.setFollow?.(null);
+    if (rig && this._savedZoom !== undefined) {
+      rig.zoomTarget = this._savedZoom;
+      this._savedZoom = undefined;
+    }
     if (this._aboard) this._aboard.phys.speed = 0;
     this._aboard = null;
     this.active = false;

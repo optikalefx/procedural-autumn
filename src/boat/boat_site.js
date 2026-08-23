@@ -37,9 +37,6 @@ export const SPAN_PROBE = 14;
 // the river system's water, and a boat on it would need a current model this
 // feature does not have.
 export const MAX_RIVER = 0.05;
-// Water under the floating hull at the launch point. Draft is ~0.15, so 0.7 m
-// keeps the keel well clear of the bed even on the hydro field's 4 m texels.
-export const MIN_DEPTH = 0.7;
 // Where the boat is placed: just inside the water, measured along the sdf.
 export const LAUNCH_SDF = 2.5;
 // How far from the camper a launch click may land. You carry a canoe to the
@@ -146,8 +143,11 @@ export function validateLaunch(world, cx, cz, veh = null) {
   const open = world.getHydro(s.x + s.gx * SPAN_PROBE, s.z + s.gz * SPAN_PROBE);
   if (open.span < MIN_SPAN) { out.reason = 'not enough open water'; return out; }
   if (world.getRiver(s.x, s.z) > MAX_RIVER) { out.reason = 'the river is too fast'; return out; }
-  const depth = lv - world.getHeight(s.x, s.z);
-  if (depth < MIN_DEPTH) { out.reason = 'too shallow'; return out; }
+  // No depth gate. Big lakes shelve gently, so the snapped point is often the
+  // shallowest water in sight and a depth test there refused giant lakes
+  // ("too shallow" on a 40 m span — the user's screenshot). Span already
+  // rejects puddles, and the physics beaches a hull gracefully in shallows,
+  // so the honest question is only "is the body of water large enough".
 
   // The distance gate runs LAST, so "too far from the camper" always means
   // "drive closer and this works" — the honest prompt, and it makes a

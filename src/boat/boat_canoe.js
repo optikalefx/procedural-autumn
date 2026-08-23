@@ -417,18 +417,18 @@ export function buildCanoe(rnd, opts = {}) {
   seat(0.95);        // bow seat
   seat(-1.28);       // stern seat
 
-  // ── the paddle: single blade, stowed INSIDE the hull, off to port ─────────
-  // Laid across the yoke and the stern thwart roughly parallel to the port
-  // gunwale, grip toward the bow, blade flat and level with the sheer. Two
-  // poses died before this one: across the gunwales (blade clipped the hull
-  // and poked below the keel in every turntable shot), then along the
-  // CENTRELINE — which playtesting rejected because the paddle sat in the
-  // middle of the boat; it belongs to the side, keeping the interior open.
+  // ── the paddle: single blade, laid ACROSS the gunwales ────────────────────
+  // Perpendicular to the hull (user direction, 2026-08-23): shaft resting on
+  // both rails just aft of the yoke, blade flat and overhanging one side —
+  // the classic "paused paddling" pose. The blade is dead level here, which
+  // is what keeps this pose from the fate of the first across-the-gunwales
+  // attempt (a drooped blade clipped the hull and poked below the keel).
   const paddle = buildCanoePaddle(cw, stripLo ? strips : null, trimC);
-  const diag = 0.02 + paddleYaw * 0.03;               // ≈0.03 rad, near-parallel
-  const py = sheerOf(0) - 0.005 + 0.0165;             // shaft resting on the thwart tops
-  paddle.position.set(-0.29, py, 0.02 + (paddleZ - 0.5) * 0.3);
-  paddle.rotation.set(0, Math.PI * 0.5 - diag, 0);    // grip bow-ward, blade aft
+  const diag = 0.04 + paddleYaw * 0.08;               // casual skew off square
+  const pz = 0.30 + (paddleZ - 0.5) * 0.2;
+  const py = sheerOf(pz) + 0.024;                     // shaft on the rail caps
+  paddle.position.set(-0.06, py, pz);
+  paddle.rotation.set(0, diag, 0);                    // shaft across the beam
   g.add(paddle);
 
   P.flush(g);

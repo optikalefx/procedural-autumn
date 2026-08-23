@@ -289,35 +289,13 @@ export function buildKayak(rnd, opts = {}) {
   deckLine(0.42, 1.86);
   deckLine(-0.78, -1.88);
 
-  // ── the stowed-paddle line ────────────────────────────────────────────────
-  // One straight line the paddle actually lies on, computed BEFORE the bungee
-  // cross so the bungee's hump can sit over the real shaft instead of over the
-  // place a previous round guessed the shaft would be. Fore blade flat on the
-  // foredeck near the centreline (the bow narrows to a blade-width by
-  // |z|≈1.8), shaft running aft past the coaming's starboard shoulder.
-  const stow = (() => {
-    const zF = 1.92, xF = 0.065 + (paddleX - 0.13) * 0.4;   // fore blade tip
-    // The diagonal is not free: the shaft must pass tangent to the coaming's
-    // outer shoulder (x≈0.231 at ZC), or it cuts through the riser wall —
-    // which is exactly what the first repositioning shipped.
-    const diag = Math.atan2(0.231 - xF, zF - ZC);
-    const LEN = 3.04;             // tip to tip — keep in sync with buildKayakPaddle
-    const zA = zF - LEN * Math.cos(diag), xA = xF + LEN * Math.sin(diag);
-    return {
-      diag, cx: (xF + xA) / 2, cz: (zF + zA) / 2,
-      xAt: (z) => xF + (zF - z) * Math.tan(diag),
-    };
-  })();
-
-  // bungee cross on the foredeck — it is what pins the paddle
-  const humpX = stow.xAt(0.82);                          // shaft x mid-bungee
+  // bungee cross on the foredeck. The paddle no longer runs under it (it lies
+  // ACROSS the deck now — see below), so the lines lie flat on the deck.
   const bungee = (x0, z0, x1, z1) => {
     P.add(sweptArc((t) => {
       const z = lerp(z0, z1, t);
       const x = lerp(x0, x1, t);
-      // lies on the deck, humps over the paddle shaft
-      const hump = 0.034 * Math.exp(-Math.pow((x - humpX) / 0.085, 2)) * bungeeSag;
-      return new THREE.Vector3(x, deckYAt(z, x) + 0.007 + hump, z);
+      return new THREE.Vector3(x, deckYAt(z, x) + 0.007, z);
     }, 26, 0.0050, 5), 'cord', null, bungeeC);
     fitting(x0, z0); fitting(x1, z1);
   };
@@ -342,15 +320,15 @@ export function buildKayak(rnd, opts = {}) {
       at(0, keelOf(zs) - 0.020, zs, -0.18, 0, 0), mulRGB(seamC, 1.4), { facet: true });
   }
 
-  // ── the double paddle, stowed under the bungee cross ──────────────────────
-  // The shaft touches the deck (centre height = deck + shaft radius at the
-  // ridge shoulder it crosses), the tiny aft-down pitch follows the deck's
-  // fall toward the cockpit, and the blades' built-in droop (see
-  // buildKayakPaddle) lays them onto the deck curve. The old pose floated the
-  // whole thing 30 mm up with the aft blade angled into mid-air.
+  // ── the double paddle, resting ACROSS the foredeck ────────────────────────
+  // Perpendicular to the hull (user direction, 2026-08-23): shaft across the
+  // deck between the coaming front (z≈0.17) and the bungee X (z≥0.52), the
+  // way a kayaker parks the paddle to pause. The blades' built-in droop lays
+  // the tips toward the water on both sides.
   const paddle = buildKayakPaddle(cw);
-  paddle.position.set(stow.cx, deckYAt(stow.cz, stow.cx) + 0.0148, stow.cz);
-  paddle.rotation.set(-0.008, Math.PI * 0.5 - stow.diag, 0.0);
+  const pz = 0.33 + (paddleX - 0.13) * 0.6;           // keeps the rnd variance
+  paddle.position.set(0.03, deckYAt(pz, 0) + 0.0155, pz);
+  paddle.rotation.set(0, 0.05 + paddleYaw * 0.3, 0);  // shaft across the beam
   g.add(paddle);
 
   P.flush(g);
