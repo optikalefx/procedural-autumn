@@ -131,6 +131,47 @@ export function createHideMaterial(c) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/** Catmull-Rom through four scalars. */
+function crom(a, b, c, d, t) {
+  const t2 = t * t, t3 = t2 * t;
+  return 0.5 * ((2 * b) + (-a + c) * t
+    + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+}
+
+/**
+ * Resample a profile so `factor - 1` intermediate stations sit between each
+ * authored pair, positions and radii following a Catmull-Rom through the keys
+ * rather than the straight chords. The authored stations pass through
+ * unchanged — they are the art; this only rounds the path between them.
+ *
+ * Stations must be normalised first (every numeric field present on every
+ * station, `mix` present if any station carries one). Skinning fields are
+ * deliberately absent: callers resolve bones per-ring *after* resampling, so
+ * an inserted ring weights itself exactly as an authored one at its z would.
+ */
+function smoothStations(src, factor) {
+  if (factor <= 1 || src.length < 3) return src;
+  const out = [];
+  for (let i = 0; i < src.length - 1; i++) {
+    const p0 = src[Math.max(0, i - 1)], p1 = src[i];
+    const p2 = src[i + 1], p3 = src[Math.min(src.length - 1, i + 2)];
+    out.push(p1);
+    for (let s = 1; s < factor; s++) {
+      const t = s / factor;
+      const st = {};
+      for (const f in p1) {
+        if (f === 'mix') continue;
+        if (typeof p1[f] !== 'number') continue;
+        st[f] = crom(p0[f] ?? p1[f], p1[f], p2[f] ?? p1[f], p3[f] ?? p2[f] ?? p1[f], t);
+      }
+      if (p1.mix) st.mix = mixLerp(p1.mix, p2.mix ?? p1.mix, t);
+      out.push(st);
+    }
+  }
+  out.push(src[src.length - 1]);
+  return out;
+}
+
 /** Blend a barrel station between the two nearest spine bones by its z. */
 function chainWeight(skel, names, z) {
   let i = 0;
@@ -236,10 +277,14 @@ function buildAntler(B, skel, P, side, D, rnd) {
 // ── the generic quadruped ────────────────────────────────────────────────────
 
 const DETAIL = [
-  // near
-  { radialBody: 7, radialLimb: 5, antlerRadial: 5, antlerLevels: 1, antlerSegs: 5, barrelStep: 1, ears: true },
+  // near — rounded: extra radial sides, and `smooth` inserts Catmull-Rom rings
+  // between the authored stations. Still flat-shaded and faceted, just with
+  // facets small enough to read as a curve instead of as armour plate.
+  { radialBody: 14, radialLimb: 10, radialTrim: 8, antlerRadial: 6, antlerLevels: 1, antlerSegs: 7,
+    barrelStep: 1, ears: true, smooth: 3, neckRings: 14 },
   // mid — half the rings, four-sided limbs, one antler fork
-  { radialBody: 5, radialLimb: 4, antlerRadial: 3, antlerLevels: 1, antlerSegs: 3, barrelStep: 2, ears: true },
+  { radialBody: 5, radialLimb: 4, radialTrim: 4, antlerRadial: 3, antlerLevels: 1, antlerSegs: 3,
+    barrelStep: 2, ears: true, smooth: 1, neckRings: 5 },
 ];
 
 function buildQuadruped(P, detailLevel, seed) {
@@ -292,20 +337,27 @@ function buildQuadruped(P, detailLevel, seed) {
 
   // ── geometry ───────────────────────────────────────────────────────────────
   // Barrel: the single most important shape in the whole system.
-  const bar = [];
   const src = P.barrel;
+  let barProf = [];
   for (let i = 0; i < src.length; i++) {
     // Keep the first, last and any station flagged as a silhouette key when
     // thinning for the mid LOD — dropping the hump would be fatal.
     if (detailLevel > 0 && i % D.barrelStep && i !== 0 && i !== src.length - 1 && !src[i].key) continue;
     const s = src[i];
-    const w = chainWeight(S, spineNames, s.z);
-    bar.push({
-      x: 0, y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: s.k ?? 0.92,
-      bone: w.bone, bone2: w.bone2, w2: w.w2,
+    barProf.push({
+      y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: s.k ?? 0.92,
       mix: s.mix ?? MIX.coat, shade: s.shade ?? 1,
     });
   }
+  barProf = smoothStations(barProf, D.smooth);
+  const bar = barProf.map((s) => {
+    const w = chainWeight(S, spineNames, s.z);
+    return {
+      x: 0, y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: s.k,
+      bone: w.bone, bone2: w.bone2, w2: w.w2,
+      mix: s.mix, shade: s.shade,
+    };
+  });
   // `rumpTip` collapses the rear ring to a point. That is right for a bear or a
   // rabbit, whose backside really does taper away, and wrong for a deer, where
   // it hung a cone off the back of the animal.
@@ -316,18 +368,19 @@ function buildQuadruped(P, detailLevel, seed) {
   // is a second, slightly inset tube along the bottom. Cheaper and it reads as
   // a soft-edged colour break rather than a hard line.
   if (P.belly) {
-    const bl = [];
-    for (const s of P.belly) {
+    const blProf = smoothStations(
+      P.belly.map((s) => ({ y: s.y, z: s.z, rx: s.rx, ry: s.ry })), D.smooth);
+    const bl = blProf.map((s) => {
       const w = chainWeight(S, spineNames, s.z);
-      bl.push({
+      return {
         x: 0, y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: 0.75,
         // Not full pale. A belly panel at the top of the palette catches the
         // key light where the body pitches nose-down to graze and reads as a
         // lamp slung under the animal.
         bone: w.bone, bone2: w.bone2, w2: w.w2,
         mix: mixLerp(MIX.coat, MIX.pale, 0.55), shade: 0.62,
-      });
-    }
+      };
+    });
     tube(B, bl, { radial: Math.max(4, D.radialBody - 2), ao: 0.4, tipStart: true, tipEnd: true });
   }
 
@@ -362,7 +415,7 @@ function buildQuadruped(P, detailLevel, seed) {
   // final ring rides with the head and the throat cannot shear off the jaw.
   const nBone = [S.idx('chest'), ...neckIdx, S.idx('head')];
   const nk = [];
-  const NR = detailLevel > 0 ? 5 : 7;
+  const NR = D.neckRings;
   for (let i = 0; i < NR; i++) {
     const t = i / (NR - 1);
     const f = t * (nPts.length - 1);
@@ -390,9 +443,13 @@ function buildQuadruped(P, detailLevel, seed) {
   // Head + muzzle.
   const hd = S.at('head', new THREE.Vector3());
   const iHead = S.idx('head');
-  const hs = P.headProfile.map((p) => ({
-    x: 0, y: hd.y + p.dy, z: hd.z + p.dz, rx: p.rx, ry: p.ry, k: p.k ?? 0.9,
-    bone: iHead, mix: p.mix ?? MIX.coat, shade: p.shade ?? 1,
+  const hProf = smoothStations(P.headProfile.map((p) => ({
+    dy: p.dy, dz: p.dz, rx: p.rx, ry: p.ry, k: p.k ?? 0.9,
+    mix: p.mix ?? MIX.coat, shade: p.shade ?? 1,
+  })), D.smooth);
+  const hs = hProf.map((p) => ({
+    x: 0, y: hd.y + p.dy, z: hd.z + p.dz, rx: p.rx, ry: p.ry, k: p.k,
+    bone: iHead, mix: p.mix, shade: p.shade,
   }));
   tube(B, hs, { radial: D.radialBody, ao: 0.45, tipEnd: P.muzzleTip !== false });
 
@@ -420,7 +477,7 @@ function buildQuadruped(P, detailLevel, seed) {
           bone: eb, mix: t > 0.6 ? MIX.dark : mixLerp(MIX.coat, MIX.pale, 0.25), shade: 0.92,
         });
       }
-      tube(B, st, { radial: 4, ao: 0.3, tipEnd: true });
+      tube(B, st, { radial: D.radialTrim, ao: 0.3, tipEnd: true });
     }
   }
 
@@ -440,7 +497,7 @@ function buildQuadruped(P, detailLevel, seed) {
       shade: 0.9,
     });
   }
-  tube(B, tSt, { radial: 4, ao: 0.35, tipEnd: true, capStart: false });
+  tube(B, tSt, { radial: D.radialTrim, ao: 0.35, tipEnd: true, capStart: false });
 
   // Legs and antlers.
   for (const L of legDefs) buildLeg(B, L, D);
