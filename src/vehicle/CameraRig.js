@@ -224,6 +224,10 @@ export class CameraRig extends System {
     // speed, the bank, the landing shake) still comes from the camper, which
     // is correct: those describe how the shot moves, not what it is of.
     this.focus = null;               // null = the camper
+    // `follow` swaps the subject VEHICLE wholesale — heading, speed, bank and
+    // all — where `focus` only moves the point the boom looks at. The boat is
+    // the caller. See setFollow.
+    this.follow = null;
     this.subject = new THREE.Vector3();
     this._subjPrimed = false;
     this._boomFrac = 1;            // how much of the boom the world allows
@@ -269,9 +273,12 @@ export class CameraRig extends System {
   }
 
   lateUpdate(dt) {
-    const v = this.vehicle ?? this.ctx.systems.vehicle;
+    this.vehicle = this.vehicle ?? this.ctx.systems.vehicle;
+    // The subject vehicle: the camper, unless a system handed in a follow
+    // target (the boat). The follow duck-types every field read below — see
+    // setFollow for the contract.
+    const v = this.follow ?? this.vehicle;
     if (!v?.phys?.ready) return;
-    this.vehicle = v;
 
     // C cycles the driving cameras. Not while photo mode holds the rig: that
     // mode is entered and left by the UI that owns it, and cycling out of it
@@ -903,6 +910,22 @@ export class CameraRig extends System {
    * @param fn  fn(dt) called once per frame in place of the rig, or null.
    */
   takeCamera(fn) { this._takeover = fn ?? null; }
+
+  /**
+   * Follow something other than the camper wholesale — the boat.
+   *
+   * `setFocus` moves the boom's aim point and keeps the camper as the thing
+   * whose heading and speed shape the shot; this replaces the subject vehicle
+   * itself. The object duck-types the fields lateUpdate reads:
+   * `{ position: Vector3, heading, speed, velocity: Vector3, forward: Vector3,
+   *    quaternion, wheels: [], teleportSeq, phys: { ready: true, lateral,
+   *    airborne } }`. Pass null to hand the camera back to the camper.
+   *
+   * No re-prime on purpose: the damped chase walks the camera across the gap
+   * between camper and boat, the same operator's move `setFocus` gives a camp.
+   * A caller that wants a cut instead can bump its duck's `teleportSeq`.
+   */
+  setFollow(obj) { this.follow = obj ?? null; }
 
   setFocus(target) {
     if (target && this.focus && this.focus.distanceToSquared(target) < 1e-6) return;

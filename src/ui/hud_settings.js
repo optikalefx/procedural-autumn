@@ -7,6 +7,7 @@
 //  so there is exactly one set of behaviour to keep working.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
+import { CARS } from '../vehicle/vehicle_models.js';
 
 const QUALITIES = ['ultra', 'high', 'medium', 'low'];
 const CYCLES = [['Frozen', 0], ['Slow', 0.06], ['Fast', 0.35]];
@@ -35,6 +36,14 @@ export class Settings {
     this.node.appendChild(this._group('Picture', [
       this._seg('Quality', QUALITIES.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
         () => hud.quality, (v) => hud.applyQuality(v)),
+    ]));
+
+    // The car is a picture of itself as much as a setting, so it goes first —
+    // and it is the one control here that changes something the player is
+    // looking at rather than something they are looking through.
+    this.node.appendChild(this._group('Vehicle', [
+      this._seg('Drive', CARS.map((c) => [c.label, c.id]),
+        () => hud.carId(), (v) => hud.applyCar(v)),
     ]));
 
     this.node.appendChild(this._group('Valley', [

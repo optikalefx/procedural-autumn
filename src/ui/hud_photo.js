@@ -99,6 +99,9 @@ export class PhotoMode {
   // PostFX belongs to another author, so this only ever *moves* its published
   // knobs and always puts them back on exit. Nothing here is permanent.
 
+  // `setExposure` writes PostFX's *base* exposure, which its elevation ramp
+  // then multiplies every frame (`_driveTimeOfDay`). So the base is also the
+  // only thing that may be read back — see `_readGrade`.
   _setExposure(v) { this.ctx.postfx?.setExposure?.(v); }
 
   _setSaturation(v) {
@@ -109,7 +112,15 @@ export class PhotoMode {
   _readGrade() {
     const fx = this.ctx.postfx;
     return {
-      exposure: fx?.tone?.exposure ?? 1.12,
+      // The base, NOT `tone.exposure`. They are not the same number: the ramp
+      // writes `tone.exposure = base * high * low` every frame, and in daylight
+      // `high` bottoms out at 0.66. Reading the product here and handing it to
+      // `setExposure` on the way out made every visit to photo mode a real
+      // exposure cut — 0.88, then 0.58, then 0.38 — so the world got darker
+      // each time the player closed it, and the slider opened pinned to the
+      // bottom of its range because it was showing a stopped-down value against
+      // a scale authored for the base.
+      exposure: fx?.getExposure?.() ?? fx?.tone?.exposure ?? 0.88,
       saturation: fx?.grade?.uniforms?.get('uSaturation')?.value ?? 0.86,
       hour: this.ctx.lighting?.hour ?? 16.6,
       cycle: this.ctx.lighting?.cycleSpeed ?? 0,

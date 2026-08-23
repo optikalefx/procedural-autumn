@@ -120,6 +120,10 @@ page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; })
 
 const params = new URLSearchParams({ res: RES });
 if (QUALITY) params.set('quality', QUALITY);
+// Pin the car. There is more than one now and they are not the same triangle
+// count, so leaving the choice to the page's own coin flip would put a random
+// vehicle in every run of a regression gate. --car <id> to measure another.
+params.set('car', arg('car', 'camper'));
 // Pin the internal render scale (and thereby freeze the adaptive scaler) so a
 // hitch profile can separate "the scaler stepped" from "the frame is slow".
 const ISCALE = arg('iscale', null);

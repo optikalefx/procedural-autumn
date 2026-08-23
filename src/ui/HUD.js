@@ -221,6 +221,7 @@ export class HUD extends System {
   // ── actions the settings sheet and the chips call ─────────────────────────
 
   audio() { return this.ctx.systems?.audio ?? null; }
+  vehicle() { return this.ctx.systems?.vehicle ?? globalThis.__vehicle ?? null; }
   isMuted() { return this.audio()?.muted ?? false; }
   volume() { return this.audio()?.volume ?? 0.75; }
   hour() { return this.ctx.lighting?.hour ?? 16.6; }
@@ -236,6 +237,21 @@ export class HUD extends System {
     this.muteChip.classList.toggle('pa-on', on);
     this.settings?.sync();
     this.toast(on ? 'Sound off' : 'Sound on');
+  }
+
+  /** Which car is being driven, for the settings sheet's segmented control. */
+  carId() { return this.vehicle()?.car?.id ?? null; }
+
+  /**
+   * Swap cars from the settings sheet. Deliberately NOT persisted: you arrive
+   * at the trailhead in whatever you arrived in (vehicle_models.js `pickCar`),
+   * and a saved choice would quietly turn that into "whatever I picked once".
+   */
+  applyCar(id) {
+    const v = this.vehicle();
+    if (!v?.setCar) return;
+    if (v.setCar(id)) this.toast(`${v.car.label}`);
+    this.settings?.sync();
   }
 
   applyHour(h) { if (this.ctx.lighting) this.ctx.lighting.hour = h; }

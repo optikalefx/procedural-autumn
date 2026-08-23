@@ -163,6 +163,16 @@ const SURF_DEAD_M = 11;
 const SPAN_WIN_M = 40;
 const SPAN_BLUR_M = 12;
 
+// One-shot wake impulses the shader will evaluate per frame. 12 is the loop
+// bound compiled into water_surface.js — the two must agree, and the shader's
+// is the one that cannot be read at runtime, so if this changes that changes.
+const WAKE_MAX = 12;
+// Seconds an impulse of a given ring radius lives. MUST match the `life`
+// expression in water_surface.js's wImpulseWakes — the CPU uses it to recycle
+// slots and the GPU uses it to normalise the animation, and if they disagree
+// a ring either pops out mid-life or holds a dead slot.
+const wakeLife = (radius) => Math.min(4.0, Math.max(2.5, 2.3 + radius * 0.35));
+
 import { SURFACE_VERT, SURFACE_FRAG } from '../shaders/water_surface.js';
 
 export class Water extends System {
@@ -174,6 +184,13 @@ export class Water extends System {
     this.group.name = 'Water';
     this._meshes = [];
     this._materials = [];
+    // ── boat wake state (see setBoat / pushWake below) ──────────────────────
+    this._boat = null;        // {x, z, heading, speed, beam} | null
+    this._boatSpeedS = 0;     // smoothed hull speed, m/s
+    this._boatFade = 0;       // 0..1, eased with speed so a drift has no wake
+    this._boatBeam = 1.3;
+    this._wakes = [];         // ring buffer of impulses, max WAKE_MAX
+    this._elapsed = 0;
   }
 
   async init() {
@@ -315,6 +332,18 @@ export class Water extends System {
       uFoamGain:     { value: 1.55 },
       uFoamCut:      { value: 0.74 },
       uWind:         { value: new THREE.Vector2(0.62, 0.36) },
+      // ── boat wakes (setBoat / pushWake) ─────────────────────────────────
+      // All zero at rest, and the fragment shader branches on uBoatDyn.w and
+      // uWakeCount, so an empty lake renders bit-identically to a build
+      // without any of this. uBoat.zw stays a unit vector even with no boat
+      // so nothing downstream can normalize a zero.
+      uBoat:         { value: new THREE.Vector4(0, 0, 0, 1) },
+      // x: smoothed speed m/s, y: beam m, z: trail length m, w: fade 0..1
+      uBoatDyn:      { value: new THREE.Vector4(0, 0, 0, 0) },
+      // xy: centre, z: age s, w: strength. Written every frame in update().
+      uWakes:        { value: Array.from({ length: WAKE_MAX }, () => new THREE.Vector4()) },
+      uWakeR:        { value: new Float32Array(WAKE_MAX) },
+      uWakeCount:    { value: 0 },
     };
 
     this.material = new THREE.ShaderMaterial({
@@ -346,6 +375,44 @@ export class Water extends System {
     this._buildSurface();
 
     scene.add(this.group);
+
+    // ── capture-harness hook ─────────────────────────────────────────────
+    // Lets a headless probe drive a boat and paddle strokes without a Boat
+    // system in the build. Defined only — nothing here ever runs on its own.
+    if (typeof window !== 'undefined' && !window.__wakeTest) {
+      const water = this;
+      window.__wakeTest = {
+        setBoat: (s) => water.setBoat(s),
+        pushWake: (x, z, st, r) => water.pushWake(x, z, st, r),
+        // Animate a boat along a gentle S-curve from (x, z) with paddle
+        // impulses alternating sides, then release it. Returns immediately.
+        demo(opts = {}) {
+          const o = Object.assign({ x: 0, z: 0, heading: 0, speed: 3.0,
+                                    beam: 1.4, duration: 12, turn: 0.5,
+                                    paddle: true }, opts);
+          let x = o.x, z = o.z, h = o.heading;
+          let last = water._elapsed, t = 0, side = 1, nextPaddle = 0.6;
+          const step = () => {
+            const now = water._elapsed;
+            const dtl = Math.min(0.1, Math.max(0, now - last));
+            last = now; t += dtl;
+            if (t >= o.duration) { water.setBoat(null); return; }
+            h += Math.sin(t * 0.45) * o.turn * dtl;
+            x += Math.sin(h) * o.speed * dtl;
+            z += Math.cos(h) * o.speed * dtl;
+            water.setBoat({ x, z, heading: h, speed: o.speed, beam: o.beam });
+            if (o.paddle && t >= nextPaddle) {
+              nextPaddle += 0.85; side = -side;
+              water.pushWake(x - Math.sin(h) * 0.4 + Math.cos(h) * side * o.beam * 0.7,
+                             z - Math.cos(h) * 0.4 - Math.sin(h) * side * o.beam * 0.7,
+                             0.8, 2.2);
+            }
+            requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        },
+      };
+    }
   }
 
   // The geometry itself is built by buildWaterSurface below, which is a plain
@@ -380,12 +447,88 @@ export class Water extends System {
   }
 
 
+  // ── the boat wake API ──────────────────────────────────────────────────────
+  // Called by the Boat system (ctx.systems.water.setBoat(...)) every frame a
+  // boat exists. state = {x, z, heading, speed, beam} | null. Null fades the
+  // wake out through the smoothing in update() — uniforms only, no shader
+  // recompile, and at fade 0 the shader skips the whole block. A boat at
+  // speed 0 is NOT null: a moored hull keeps a faint lapping halo, and the
+  // speed-driven wake terms fade themselves out in the shader.
+  setBoat(state) {
+    this._boat = state
+      ? { x: +state.x || 0, z: +state.z || 0, heading: +state.heading || 0,
+          speed: Math.max(0, +state.speed || 0),
+          beam: Math.max(0.6, +state.beam || 1.3) }
+      : null;
+  }
+
+  // One-shot expanding ripple rings — a paddle stroke, a launch splash.
+  // strength 0..2 scales both the ring slope and the foam; radius is how far
+  // the rings run before they die, in metres.
+  pushWake(x, z, strength = 1.0, radius = 3.0) {
+    const now = this._elapsed;
+    const w = { x: +x || 0, z: +z || 0, birth: now,
+                strength: Math.min(2, Math.max(0, +strength || 0)),
+                radius: Math.min(12, Math.max(0.5, +radius || 3)) };
+    // Recycle: drop the dead first, then the oldest if the buffer is full.
+    const alive = this._wakes.filter((k) => now - k.birth < wakeLife(k.radius));
+    alive.push(w);
+    while (alive.length > WAKE_MAX) alive.shift();
+    this._wakes = alive;
+  }
+
   // ── per frame ──────────────────────────────────────────────────────────────
   update(dt, elapsed) {
     const u = this.shared;
     if (!u) return;
     const { lighting, sky } = this.ctx;
     u.uTime.value = elapsed;
+    this._elapsed = elapsed;
+
+    // ── boat wake uniforms ───────────────────────────────────────────────
+    {
+      const b = this._boat;
+      const ease = (tau) => 1 - Math.exp(-Math.max(dt || 0.016, 0) / tau);
+      const spdTarget = b ? b.speed : 0;
+      this._boatSpeedS += (spdTarget - this._boatSpeedS) * ease(0.35);
+      // The fade is PRESENCE, not speed. It used to be a speed ramp, and a
+      // moored boat therefore sat on glass — pasted onto pre-rendered water,
+      // which is the blind review's exact words. The shader now runs its tiny
+      // waterline halo whenever a boat exists at all, and every speed-driven
+      // term (arms, trail, bow) gates itself on the smoothed uBoatDyn.x
+      // inside the shader. Slower out than in, so a boat that is removed lets
+      // its wake die rather than snapping it off. With no boat the target is
+      // an exact zero, uBoatDyn.w goes to 0, and the zero-boat surface stays
+      // bit-identical to a build without the machinery.
+      const fadeTarget = b ? 1 : 0;
+      this._boatFade += (fadeTarget - this._boatFade)
+                      * ease(fadeTarget > this._boatFade ? 0.35 : 1.6);
+      if (b) {
+        u.uBoat.value.set(b.x, b.z, Math.sin(b.heading), Math.cos(b.heading));
+        this._boatBeam = b.beam;
+      }
+      // ~8 s of travel of churned trail, bounded so a sprint cannot ask the
+      // shader to shade a 200 m ribbon. Shortened from 11.5 s: the plan
+      // captures showed the last third as a dotted line of white islands, and
+      // the art direction wants the wake to DISSOLVE, not to trail ellipses.
+      const trailLen = Math.min(40, Math.max(6, this._boatSpeedS * 8.5));
+      u.uBoatDyn.value.set(this._boatSpeedS, this._boatBeam, trailLen,
+                           this._boatFade < 0.004 ? 0 : this._boatFade);
+
+      let n = 0;
+      if (this._wakes.length) {
+        for (let i = 0; i < this._wakes.length && n < WAKE_MAX; i++) {
+          const k = this._wakes[i];
+          const age = elapsed - k.birth;
+          if (age >= wakeLife(k.radius) || age < 0) continue;
+          u.uWakes.value[n].set(k.x, k.z, age, k.strength);
+          u.uWakeR.value[n] = k.radius;
+          n++;
+        }
+        if (n === 0) this._wakes.length = 0;
+      }
+      u.uWakeCount.value = n;
+    }
 
     // Angular pixel size, for the band limits. Recomputed every frame because
     // both the field of view and the drawing buffer can change under us.

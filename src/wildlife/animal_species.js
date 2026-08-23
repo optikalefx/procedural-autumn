@@ -34,6 +34,12 @@ export function createHideMaterial(c) {
     uPale: { value: new THREE.Color(c.pale) },
     uDark: { value: new THREE.Color(c.dark) },
     uHorn: { value: new THREE.Color(c.horn ?? 0x9d8a6a) },
+    // A fifth colour, for a marking that is not a region of the hide. The four
+    // above are a blend and every hide tone is somewhere inside the tetrahedron
+    // they span; the camp dog's pink nose patch is not — no mix of tan, cream,
+    // dark brown and leather is pink. Carried on its own `aSpot` weight, which
+    // is zero on every other animal in the game.
+    uSpot: { value: new THREE.Color(c.spot ?? 0xc98a86) },
     uShadeLo: { value: c.shadeLo ?? 0.68 },
     // ── the distance silhouette ─────────────────────────────────────────────
     // Measured: off-road the median closest approach a player makes to an
@@ -77,14 +83,17 @@ export function createHideMaterial(c) {
     shader.vertexShader = /* glsl */`
       attribute vec4 aMix;
       attribute float aShade;
+      attribute float aSpot;
       varying vec4 vMix;
       varying float vShade;
+      varying float vSpot;
       varying float vHideDepth;
     ` + shader.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
        vMix = aMix;
-       vShade = aShade;`
+       vShade = aShade;
+       vSpot = aSpot;`
     ).replace(
       '#include <project_vertex>',
       `#include <project_vertex>
@@ -98,6 +107,7 @@ export function createHideMaterial(c) {
       uniform vec3 uPale;
       uniform vec3 uDark;
       uniform vec3 uHorn;
+      uniform vec3 uSpot;
       uniform float uShadeLo;
       uniform float uSilNear;
       uniform float uSilFar;
@@ -105,12 +115,17 @@ export function createHideMaterial(c) {
       uniform float uSilFlat;
       varying vec4 vMix;
       varying float vShade;
+      varying float vSpot;
       varying float vHideDepth;
     ` + shader.fragmentShader.replace(
       '#include <color_fragment>',
       `#include <color_fragment>
        float hideSil = smoothstep( uSilNear, uSilFar, vHideDepth );
        vec3 hideCol = uCoat * vMix.x + uPale * vMix.y + uDark * vMix.z + uHorn * vMix.w;
+       // The marking sits on top of the blend rather than inside it, and fades
+       // out with distance along with everything else — a two-centimetre patch
+       // has no business surviving into the distance silhouette.
+       hideCol = mix( hideCol, uSpot, vSpot * ( 1.0 - hideSil ) );
        // Four regions near, one flat tone far.
        hideCol = mix( hideCol, mix( hideCol, uDark, uSilFlat ), hideSil );
        // ...and no internal shading gradient far, which is what makes a shape
@@ -440,6 +455,34 @@ function buildQuadruped(P, detailLevel, seed) {
   }
   tube(B, nk, { radial: D.radialBody, ao: 0.5, capStart: false, capEnd: false });
 
+  // A collar. Two rings straddling one neck station, grown a few percent so it
+  // stands proud of the throat, riding the same bones the neck does so it does
+  // not slide off when the head goes down to sniff. The `horn` mix channel
+  // carries it — nothing else on a dog uses that channel, so the leather is a
+  // per-variant colour for free.
+  if (P.collar) {
+    const C = P.collar;
+    const f = clamp01(C.t) * (nk.length - 1);
+    const ci = Math.min(nk.length - 2, Math.floor(f));
+    const ct = f - ci;
+    const a = nk[ci], b = nk[ci + 1];
+    const cy = lerp(a.y, b.y, ct), cz = lerp(a.z, b.z, ct);
+    const dy = b.y - a.y, dz = b.z - a.z;
+    const dl = Math.hypot(dy, dz) || 1;
+    const hw = (C.len ?? 0.03) * 0.5;
+    const g = C.grow ?? 1.10;
+    const cst = [];
+    for (const s of [-1, 1]) {
+      cst.push({
+        x: 0, y: cy + (dy / dl) * hw * s, z: cz + (dz / dl) * hw * s,
+        rx: lerp(a.rx, b.rx, ct) * g, ry: lerp(a.ry, b.ry, ct) * g, k: 0.95,
+        bone: a.bone, bone2: a.bone2, w2: a.w2,
+        mix: MIX.horn, shade: 0.86,
+      });
+    }
+    tube(B, cst, { radial: D.radialBody, ao: 0.4, capStart: false, capEnd: false });
+  }
+
   // Head + muzzle.
   const hd = S.at('head', new THREE.Vector3());
   const iHead = S.idx('head');
@@ -466,6 +509,11 @@ function buildQuadruped(P, detailLevel, seed) {
       const e = P.ear;
       const st = [];
       const n = 3;
+      // Default: pale at the base, dark rim at the tip. A species whose ear is
+      // its signature can say otherwise — the dog's are big dark-backed
+      // triangles and are most of what makes it read as that dog.
+      const eBase = e.mixBase ?? mixLerp(MIX.coat, MIX.pale, 0.25);
+      const eTip = e.mixTip ?? MIX.dark;
       for (let i = 0; i <= n; i++) {
         const t = i / n;
         st.push({
@@ -474,11 +522,75 @@ function buildQuadruped(P, detailLevel, seed) {
           z: ep.z + e.dir[2] * e.len * t,
           rx: lerp(e.w, e.w * 0.45, t) * (1 - t * t * 0.5),
           ry: lerp(e.h, e.h * 0.7, t),
-          bone: eb, mix: t > 0.6 ? MIX.dark : mixLerp(MIX.coat, MIX.pale, 0.25), shade: 0.92,
+          bone: eb,
+          mix: e.mixBase || e.mixTip ? mixLerp(eBase, eTip, t) : (t > 0.6 ? eTip : eBase),
+          shade: 0.92,
         });
       }
       tube(B, st, { radial: D.radialTrim, ao: 0.3, tipEnd: true });
     }
+  }
+
+  // ── a face ────────────────────────────────────────────────────────────────
+  //
+  // Every other animal in this game is deliberately faceless, and that is the
+  // right call for them: the median closest approach to a deer is 77 m, where
+  // an eye is a fraction of a pixel, and geometry nobody can resolve is
+  // geometry that only costs. The camp dog is the exception the rule implies —
+  // it lies three metres from the player across a fire, at the one moment the
+  // game asks them to sit still and look at something. A blank muzzle at that
+  // range reads as a mannequin.
+  //
+  // So: eyes and a nose, on any blueprint that asks for them, and none of the
+  // wild cast does.
+  if (P.eye) {
+    const E = P.eye;
+    for (const side of [-1, 1]) {
+      // A short outward-pointing loft — small, big, small — which is a ball
+      // that costs three rings. Set proud of the skull so it catches the fire.
+      const ex = side * E.at[0], ey = hd.y + E.at[1], ez = hd.z + E.at[2];
+      const st = [];
+      for (const [t, s] of [[-1, 0.34], [0, 1], [0.85, 0.42]]) {
+        st.push({
+          x: ex + side * E.r * t * 0.9, y: ey, z: ez,
+          rx: E.r * s * 0.75, ry: (E.ry ?? E.r) * s,
+          bone: iHead, mix: E.mix ?? MIX.dark, shade: E.shade ?? 0.66,
+        });
+      }
+      tube(B, st, { radial: Math.max(5, D.radialBody - 3), ao: 0.25, k: 0.9 });
+    }
+  }
+  // The nose pad. A dog's nose is a wet black bulb wider than the muzzle it
+  // sits on, not a point — `muzzleTip` collapses the profile to one and that is
+  // right for a deer's tapered nose and wrong here.
+  if (P.nose) {
+    const N = P.nose;
+    const nx = hd.z + N.at[1];
+    // An optional patch of the fifth colour on one side of the nose. `spot` is
+    // evaluated per ring vertex, so the marking is painted onto the existing
+    // tube by angle rather than being a second piece of geometry stuck on —
+    // which is what keeps a 2 cm detail from costing a draw call's worth of
+    // rings and lets it wrap the curve properly.
+    const sp = N.spot;
+    const spotFn = sp ? (a, ca) => {
+      // `ca` is cos of the ring angle, which is the +X component: negative is
+      // the dog's own left. Feathered so it reads as a patch of skin and not a
+      // decal.
+      const side = sp.side < 0 ? -ca : ca;
+      return clamp01((side - (1 - (sp.size ?? 0.34))) / (sp.feather ?? 0.22));
+    } : 0;
+    const st = [];
+    // Ring weights taper the patch along the muzzle as well as around it, so it
+    // is a spot rather than a stripe down one side.
+    for (const [dz, s, w] of [[-N.r * 0.8, 0.55, 0], [0, 1, 1], [N.r * 0.75, 0.5, 0.30]]) {
+      st.push({
+        x: 0, y: hd.y + N.at[0], z: nx + dz,
+        rx: N.r * s, ry: N.r * (N.flat ?? 0.86) * s,
+        bone: iHead, mix: MIX.dark, shade: 0.70,
+        spot: sp && w ? (a, ca, sa) => spotFn(a, ca, sa) * w : 0,
+      });
+    }
+    tube(B, st, { radial: Math.max(6, D.radialBody - 2), ao: 0.3, k: 0.85 });
   }
 
   // Tail.
@@ -678,15 +790,32 @@ const BEAR = () => ({
   ear: { at: [0.100, 0.104, -0.078], dir: [0.42, 0.86, -0.28], len: 0.108, w: 0.074, h: 0.052 },
   tail: [[0, 0.74, -0.86], [0, 0.70, -0.92]],
   tailR: [0.045, 0.018], tailFlat: 1,
+  // ── why the joints zigzag this hard ────────────────────────────────────────
+  // A bear's leg is short and its body is heavy, so the first pass authored the
+  // segments almost straight: hip to hock spanned 0.63 of a possible 0.67, and
+  // the standing bear was up on locked stilts with 6% of travel in the whole
+  // chain. The gait then asks each foot to sweep half a stride either side of
+  // neutral — 0.3 m — which needs 0.70 of reach the leg does not have, so the
+  // IK clamped for most of every cycle: both bones went dead straight, stopped
+  // moving relative to each other, and the foreleg raked back under the barrel
+  // until it was inside the body's own silhouette. That is the "front legs
+  // disappear" report, and it is a reach problem, not a rendering one.
+  //
+  // The fix is to put the bend back where a bear actually carries it: the elbow
+  // set well behind the shoulder, the stifle carried forward and the hock
+  // dropped back behind it. Same hip, same paw, same standing height — the
+  // chain is simply longer than the straight line it has to span, which is what
+  // gives the solver room to work. Standing now sits at ~82% of reach, and the
+  // extremes of a walk at ~91%, so the joints bend all cycle instead of locking.
   hind: {
     tag: 'hind', front: false, bend: 1,
-    hip: [0.205, 0.72, -0.50], knee: [0, -0.28, 0.11], hock: [0, -0.22, -0.15], foot: [0, -0.22, 0.10],
+    hip: [0.205, 0.72, -0.50], knee: [0, -0.27, 0.20], hock: [0, -0.23, -0.26], foot: [0, -0.22, 0.10],
     rTop: 0.190, rMid: 0.132, rLow: 0.096, rFoot: 0.074, flat: 0.88, k: 0.85,
     hoofH: 0.070, hoofR: 0.082, hoofLong: 1.9, hoofFwd: 0.055, sockTop: 0.30,
   },
   fore: {
     tag: 'fore', front: true, bend: -1,
-    hip: [0.225, 0.86, 0.28], knee: [0, -0.33, -0.11], hock: [0, -0.30, 0.13], foot: [0, -0.23, 0.06],
+    hip: [0.225, 0.86, 0.28], knee: [0, -0.32, -0.20], hock: [0, -0.31, 0.23], foot: [0, -0.23, 0.06],
     rTop: 0.186, rMid: 0.136, rLow: 0.102, rFoot: 0.082, flat: 0.90, k: 0.85,
     hoofH: 0.070, hoofR: 0.088, hoofLong: 1.7, hoofFwd: 0.048, sockTop: 0.30,
   },
@@ -746,6 +875,180 @@ const RABBIT = () => ({
     hoofH: 0.014, hoofR: 0.015, hoofLong: 1.8, hoofFwd: 0.012, sockTop: 0.25,
   },
 });
+
+// Dog. The camp dog, drawn from reference-art/dog: a lean medium mongrel with
+// a deep chest, a hard tuck-up behind the ribs, long clean legs, a sickle tail
+// and — the thing that actually identifies it — enormous upright triangular
+// ears with dark backs.
+//
+// It is the closest animal in the game to the camera, which changes what the
+// numbers are for. A deer is tuned for a silhouette at 77 m; this one is tuned
+// for three metres across a fire, so the muzzle, the stop, the tuck-up and the
+// collar all have to survive being looked at directly.
+const DOG = () => ({
+  key: 'dog',
+  // ── the one measurement that matters ──────────────────────────────────────
+  //
+  // Body length (point of shoulder to point of buttock) over withers height is
+  // 0.88 on the reference dog, measured off `standing.png`. The first cut of
+  // this blueprint came out at 1.08 — a fifth too long — and the effect was
+  // not "a slightly long dog", it was a deer: chest depth and ground clearance
+  // were already right, so the extra length had nowhere to go but the topline,
+  // and a long level back on tall legs is a cervid whatever the head says.
+  // Every z below is that correction; the heights are untouched.
+  pelvis: [0, 0.415, -0.165],
+  spine: [[0, 0.425, -0.052], [0, 0.428, 0.070]],
+  chest: [0, 0.432, 0.175],
+  // Carried at about 40° off horizontal, the way a standing dog holds it. Long
+  // enough that the head can reach the ground to sniff without the throat
+  // folding into the chest — the same trap the deer's neck was written around.
+  // Steep. A dog carries its head clearly ABOVE the topline, and the first cut
+  // of this rose at 40° which put the skull level with the withers — the whole
+  // animal then read as one long horizontal mass with a nose on the front,
+  // which is a weasel, not a dog. At 54° the head sits up where it belongs and
+  // the body stops looking twice as long as it is.
+  // Short. This dog's neck is a thick wedge that flows out of the shoulder over
+  // a very small distance — the second reference photo (in the creek) shows it
+  // clearly, and the previous 0.26 m span read as a lurcher's.
+  neck: [[0, 0.492, 0.218], [0, 0.560, 0.266]],
+  head: [0, 0.605, 0.298],
+  rumpTip: false,
+  barrel: [
+    // The croup falls away to the tail root rather than ending square. Without
+    // the slope the back is a plank from the shoulder to the backside.
+    { z: -0.252, y: 0.393, rx: 0.058, ry: 0.064 },
+    // The haunch. A dog's widest point behind the ribs, and what stops the
+    // back half reading as a tube.
+    { z: -0.204, y: 0.412, rx: 0.101, ry: 0.104, key: 1 },
+    // The tuck-up: waisted, and shallower than anything either side of it.
+    // This one station is most of what separates a dog from a small deer.
+    { z: -0.087, y: 0.428, rx: 0.084, ry: 0.098, key: 1 },
+    { z: 0.017, y: 0.420, rx: 0.094, ry: 0.127 },
+    // The brisket, deepest just behind the elbow and laterally compressed —
+    // a dog's chest is an oval standing on its end, not a barrel.
+    { z: 0.113, y: 0.412, rx: 0.099, ry: 0.146, key: 1 },
+    { z: 0.204, y: 0.424, rx: 0.096, ry: 0.134 },
+    { z: 0.270, y: 0.432, rx: 0.066, ry: 0.096, key: 1 },
+  ],
+  // Cream from the brisket back along the belly, which is where the reference
+  // dog's tan stops.
+  belly: [
+    { z: -0.139, y: 0.330, rx: 0.056, ry: 0.026 },
+    { z: 0.00, y: 0.312, rx: 0.066, ry: 0.030 },
+    { z: 0.139, y: 0.296, rx: 0.064, ry: 0.030 },
+  ],
+  // Thick where it leaves the chest — a dog's neck flows out of the shoulder
+  // rather than being socketed into it, and a narrow first station left a
+  // visible step at the withers.
+  neckProfile: [
+    { rx: 0.086, ry: 0.100 },
+    { rx: 0.070, ry: 0.080 },
+    { rx: 0.056, ry: 0.060 },
+    { rx: 0.047, ry: 0.049 },
+  ],
+  // The skull: a broad cranium, a real stop, and a muzzle that stays square
+  // rather than tapering to a deer's point. Bigger than the first cut all
+  // round — a dog's head is a large fraction of it, and a small one on this
+  // neck read as a whippet.
+  // DEEP, not wide. A dog's head in profile is a tall wedge — a deep skull over
+  // a deep muzzle with real jaw under it — and the first cut had the right plan
+  // view and half the height, which read as a squashed weasel. Every `ry` here
+  // is about 25% up on its `rx`; widening instead would have made it a toad.
+  headProfile: [
+    { dy: -0.006, dz: -0.056, rx: 0.048, ry: 0.061 },
+    { dy: 0.008, dz: -0.014, rx: 0.058, ry: 0.071 },
+    // The stop — a distinct narrowing where the skull gives way to the muzzle.
+    { dy: -0.010, dz: 0.030, rx: 0.040, ry: 0.055 },
+    // Blunt. A dog's muzzle is a squared-off box, and tapering it those last
+    // two centimetres is the whole difference between this and a fox.
+    { dy: -0.030, dz: 0.072, rx: 0.033, ry: 0.041, mix: mixLerp(MIX.coat, MIX.pale, 0.72) },
+    { dy: -0.042, dz: 0.106, rx: 0.029, ry: 0.033, mix: mixLerp(MIX.coat, MIX.pale, 0.80) },
+  ],
+  // The nose is its own bulb rather than the muzzle tapering to a point — see
+  // the note in buildQuadruped. Dark brown eyes set just behind the stop.
+  muzzleTip: false,
+  // Taller with the rest of the head, and carrying the pink patch on the dog's
+  // own LEFT — the fifth colour, see `uSpot`. It is a real marking on the real
+  // dog, and the one thing on this model that is a portrait rather than a breed.
+  nose: { at: [-0.048, 0.117], r: 0.021, flat: 0.95, spot: { side: -1, size: 0.34, feather: 0.22 } },
+  // Sat ON the skull, not in it. The first placement put the centre at 0.72 of
+  // the cranium's own ellipse, so the entire ball was interior and the dog had
+  // no eyes at all — the loft is only a few millimetres across and there is no
+  // margin for being approximately right.
+  eye: { at: [0.043, 0.016, 0.019], r: 0.0128, ry: 0.0106, shade: 0.58 },
+  // Big, upright, set wide and carried a little FORWARD, with dark backs.
+  // Authored base-to-tip rather than with the default pale/dark split: on this
+  // dog the whole ear is dark against a pale skull, and that contrast IS the
+  // animal. The first cut leaned them back at -0.14 z and they read as fins off
+  // the back of the neck.
+  ear: {
+    at: [0.034, 0.040, -0.008], dir: [0.28, 0.94, 0.17],
+    len: 0.126, w: 0.049, h: 0.028,
+    mixBase: mixLerp(MIX.coat, MIX.dark, 0.35), mixTip: MIX.dark,
+  },
+  collar: { t: 0.60, grow: 1.13, len: 0.030 },
+  // A sickle: thick at the root, tapering, hanging down off a sloped croup and
+  // hooking up at the tip. Long — the first cut was a 0.29 m stub that read as
+  // a docked tail, and the hook is the whole shape.
+  tail: [[0, 0.383, -0.257], [0, 0.316, -0.330], [0, 0.274, -0.404], [0, 0.290, -0.470]],
+  tailR: [0.026, 0.010], tailFlat: 1,
+  tailMix: MIX.coat, tailTipMix: mixLerp(MIX.coat, MIX.pale, 0.55),
+  // A dog's hind leg is heavily angulated — a big thigh, the stifle carried
+  // well forward and the hock well back — and that Z shape is most of what
+  // reads as "dog" from behind. `rTop` is deliberately more than twice `rMid`:
+  // the thigh is a mass, the second link is a shin.
+  // Thicker than the first cut all the way down, which had the leg radii
+  // carried over from the deer's and made a dog on knitting needles. A dog
+  // carries real muscle to the hock and a real pastern below it; the taper
+  // still runs top to bottom, it just starts and ends heavier.
+  hind: {
+    tag: 'hind', front: false, bend: 1,
+    hip: [0.062, 0.410, -0.170], knee: [0, -0.148, 0.058], hock: [0, -0.120, -0.080], foot: [0, -0.136, 0.026],
+    rTop: 0.094, rMid: 0.042, rLow: 0.027, rFoot: 0.022, flat: 0.86,
+    hoofH: 0.021, hoofR: 0.027, hoofLong: 1.8, hoofFwd: 0.016, sockTop: 0.34,
+  },
+  fore: {
+    tag: 'fore', front: true, bend: -1,
+    hip: [0.058, 0.430, 0.165], knee: [0, -0.158, -0.038], hock: [0, -0.130, 0.040], foot: [0, -0.138, 0.0],
+    rTop: 0.078, rMid: 0.040, rLow: 0.026, rFoot: 0.022, flat: 0.88,
+    hoofH: 0.021, hoofR: 0.026, hoofLong: 1.7, hoofFwd: 0.014, sockTop: 0.34,
+  },
+});
+
+// The camp dog is NOT in `SPECIES`, and that is load-bearing rather than
+// tidiness. `Wildlife` iterates `Object.keys(SPECIES)` to build prototypes, to
+// size its mesh pool and to scatter home sites across the valley — so a dog in
+// that table would be a wild animal living on the forest edge, and would also
+// read `CFG.dog` and find nothing. The dog belongs to a camp; `src/camp/
+// camp_dog.js` owns when one exists.
+export const DOG_SPECIES = {
+  key: 'dog',
+  variants: [
+    // The reference dog, and the common one.
+    { name: 'tan', scale: 1.00, weight: 0.60,
+      col: { coat: 0xa9754a, pale: 0xd7c7ae, dark: 0x2e2018, horn: 0x8a5a2e } },
+    // Two litter-mates, so a second camp is not the same dog again. Same build,
+    // different wash — a paler cream one and a darker red one.
+    { name: 'cream', scale: 0.96, weight: 0.22,
+      col: { coat: 0xbe9463, pale: 0xded2bc, dark: 0x33261b, horn: 0x7d5430 } },
+    { name: 'red', scale: 1.04, weight: 0.18,
+      col: { coat: 0x8e5730, pale: 0xc4b096, dark: 0x261a12, horn: 0x6f4526 } },
+  ],
+  blueprint: DOG,
+  // A dog at camp trots and mills; it is never fleeing anything. `run` is here
+  // because the gait ladder needs a third rung, not because it is ever used.
+  gait: {
+    walk: 0.95, trot: 2.6, run: 6.5,
+    strideBase: 0.62, strideGain: 2.4, dutyWalk: 0.62, dutyTrot: 0.50, dutyRun: 0.32,
+    bobAmp: 0.020, pitchAmp: 0.038, liftScale: 1.05,
+    grazeAng: 1.32, grazeRake: 1.40,
+  },
+};
+
+/** The camp dog's prototypes — same builder, kept out of the wild table. */
+export function buildCampDog(seed) {
+  return buildVariants(DOG_SPECIES, 'dog', seed);
+}
 
 // Antlers only exist on the stag variant, so they are grafted on rather than
 // living in the base blueprint.
@@ -814,18 +1117,40 @@ export const SPECIES = {
 
   bear: {
     key: 'bear',
+    // ── why these are so much lighter than a black bear ──────────────────────
+    // The first pass authored the near colour at the value the *distant*
+    // silhouette wants: 0x2c1d16, which is 0.024 in linear. The stylised
+    // lighting floors a shaded surface at `uStyleFloor` of the key, so the
+    // shaded flank of that hide came out at 0.003 — a hole. Every lever above
+    // it (form shading 0.68..1.0, the sun banding, the rim) is a *multiplier*,
+    // and there is nothing to multiply. So a bear four metres away was the
+    // same featureless black blob as a bear a hundred and forty metres away,
+    // and the plate's whole point — that the shape carries the animal — was
+    // being paid for twice.
+    //
+    // It only ever had to be paid once. `uSilNear/uSilFar` already collapse
+    // the four regions into `dark` and pull the whole animal down in value
+    // with distance; that is what makes the far silhouette. Freeing the near
+    // colour to be an actual hide costs the distance read nothing (at range
+    // the coat is 15% of a tone that is 85% `dark`), and it is the difference
+    // between a bear you can see the hump, the elbow and the muzzle band on
+    // and a bear-shaped hole in the meadow.
     variants: [
       { name: 'boar', scale: 1.08, weight: 0.45,
-        col: { coat: 0x2c1d16, pale: 0x6b5340, dark: 0x1a100c, horn: 0xa89a86 } },
+        col: { coat: 0x875f4a, pale: 0xc7a07d, dark: 0x3b2a20, horn: 0xa89a86 } },
       { name: 'sow', scale: 0.96, weight: 0.40,
-        col: { coat: 0x34241b, pale: 0x77604a, dark: 0x1d130e, horn: 0xa89a86 } },
+        col: { coat: 0x956a54, pale: 0xd0b190, dark: 0x422e24, horn: 0xa89a86 } },
       { name: 'cinnamon', scale: 1.00, weight: 0.15,
-        col: { coat: 0x4c2e1d, pale: 0x8a6b46, dark: 0x2a1810, horn: 0xa89a86 } },
+        col: { coat: 0xa66e47, pale: 0xdcb98a, dark: 0x573828, horn: 0xa89a86 } },
     ],
     blueprint: BEAR,
     gait: {
       walk: 1.05, trot: 2.6, run: 6.2,
-      strideBase: 1.05, strideGain: 2.3, dutyWalk: 0.68, dutyTrot: 0.56, dutyRun: 0.38,
+      // `strideBase` was the deer's 1.05 on a leg two-thirds the length, which
+      // is the other half of the reach problem above: a bear covers ground with
+      // cadence and bulk, not with a long swing. Shorter steps keep each foot
+      // inside what the chain can actually reach, and they read as a bear.
+      strideBase: 0.92, strideGain: 1.8, dutyWalk: 0.68, dutyTrot: 0.56, dutyRun: 0.38,
       bobAmp: 0.035, pitchAmp: 0.030, liftScale: 0.72,
       // A bear's nose is already low; it barely has to reach to crop.
       grazeAng: 1.30, grazeRake: 1.45,
@@ -889,7 +1214,15 @@ export const SPECIES = {
  * a near and a mid geometry sharing one skeleton description.
  */
 export function buildSpecies(key, seed) {
-  const sp = SPECIES[key];
+  return buildVariants(SPECIES[key], key, seed);
+}
+
+/**
+ * Build every variant of one species definition. Split out of `buildSpecies`
+ * so the camp dog can use it without being in the wild `SPECIES` table — see
+ * the note on DOG_SPECIES for why it must not be.
+ */
+function buildVariants(sp, key, seed) {
   const protos = [];
   for (let vi = 0; vi < sp.variants.length; vi++) {
     const v = sp.variants[vi];

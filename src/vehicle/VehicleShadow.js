@@ -56,7 +56,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp01 } from '../core/MathUtils.js';
-import { DIM } from './CamperModel.js';
+import { DIM as CAMPER_DIM } from './CamperModel.js';
 
 // Grid resolution and footprint. 15×15 is 225 height samples a frame, which is
 // under a tenth of what the tyre ribbons already cost, and it is fine enough
@@ -132,7 +132,11 @@ export class VehicleShadow {
    * @param scene  THREE.Scene
    * @param world  WorldData (for getHeight)
    */
-  constructor(scene, world) {
+  // `dims` is the DIM of whichever car is being driven (vehicle_models.js).
+  // The lobes below are sized off it, so a second car with a different body
+  // gets a patch that fits it rather than the camper's.
+  constructor(scene, world, dims = CAMPER_DIM) {
+    const DIM = dims;
     this.world = world;
     this.enabled = true;
 
@@ -160,6 +164,7 @@ export class VehicleShadow {
     g.setIndex(idx);
     this.geometry = g;
 
+    this._dims = DIM;
     this.material = new THREE.ShaderMaterial({
       uniforms: {
         // Radius and feather now reach 0.76 m around a 0.44 m tyre rather than
@@ -242,6 +247,18 @@ export class VehicleShadow {
     this.material.uniforms.uStrength.value = 0.30 + 0.70 * g;
     this.material.uniforms.uWheelLoad.value = g;
     this.mesh.visible = g > 0.02;
+  }
+
+  /**
+   * Re-size the patch for a different car. The lobes are the only thing in here
+   * that knows the body's shape, so swapping vehicles is two uniforms — no
+   * geometry is rebuilt and the grid never changes.
+   */
+  setDims(dims) {
+    if (!dims || dims === this._dims) return;
+    this._dims = dims;
+    this.material.uniforms.uWheels.value.set(dims.wheelX, dims.wheelZ, dims.wheelR * 0.78, 0.42);
+    this.material.uniforms.uBody.value.set(dims.halfWidth * 0.85, (dims.front - dims.rear) * 0.40);
   }
 
   dispose() {

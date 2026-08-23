@@ -105,7 +105,11 @@ const SEED = arg('seed', null);
 const TURNTABLE = arg('turntable', null);
 const W = parseInt(arg('w', '1600'), 10);
 const H = parseInt(arg('h', '900'), 10);
-const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}`;
+// Pin the car: the page picks at random when nothing does, and a capture
+// that changed vehicle between runs would not be comparable. --car roamer
+// for the other one. See AGENTS.md.
+const CAR = arg('car', 'camper');
+const URL = `${arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178'))}?res=${RES}&car=${CAR}`;
 
 async function main() {
   const release = await acquire('campshot');

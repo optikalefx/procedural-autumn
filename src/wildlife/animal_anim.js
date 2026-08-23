@@ -39,9 +39,41 @@ import { clamp, clamp01, lerp, damp, wrapAngle } from '../core/MathUtils.js';
 const GAITS = {
   walk:   { off: [0.00, 0.50, 0.25, 0.75], duty: 0.64, lift: 0.055, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 1.0 },
   trot:   { off: [0.50, 0.00, 0.00, 0.50], duty: 0.52, lift: 0.095, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 1.3 },
-  gallop: { off: [0.00, 0.08, 0.42, 0.50], duty: 0.34, lift: 0.135, bobHz: 1, flight: 0.14, flightAt: 0.86, pitch: 2.0 },
-  bound:  { off: [0.00, 0.06, 0.34, 0.40], duty: 0.30, lift: 0.150, bobHz: 1, flight: 0.30, flightAt: 0.70, pitch: 2.4 },
-  hop:    { off: [0.20, 0.26, 0.00, 0.06], duty: 0.26, lift: 0.120, bobHz: 1, flight: 0.48, flightAt: 0.52, pitch: 1.6 },
+  // ── flightAt is derived, not authored ──────────────────────────────────────
+  // A leg is down while (phase + off) mod 1 < duty, so the phase at which the
+  // animal is genuinely airborne falls straight out of `off` and `duty` and is
+  // not free to choose. Work the union of the four stance windows and take the
+  // gap:
+  //
+  //   gallop  down [.60,1) + [0,.34)   airborne [0.34, 0.50)   width .16
+  //   bound   down [.60,1) + [0,.30)   airborne [0.30, 0.60)   width .30
+  //   hop     down [.74,1) + [0,.26)   airborne [0.26, 0.74)   width .48
+  //
+  // All three were originally authored as `1 - flight`, which gets the *width*
+  // right and the *placement* wrong — it parks the float at the end of the
+  // cycle instead of where it is. The cost is not cosmetic: the barrel launches
+  // while a foot is still planted, so that leg has to span the whole flight
+  // lift on top of its own stride reach, blows past what the chain can cover
+  // and locks dead straight. On the bear that read as the forelegs vanishing
+  // into the body.
+  //
+  // Placed correctly, every leg lifts off and touches down *outside* the
+  // window, so the arc starts and ends at zero and there is no step to hide.
+  gallop: { off: [0.00, 0.08, 0.42, 0.50], duty: 0.34, lift: 0.135, bobHz: 1, flight: 0.14, flightAt: 0.34, pitch: 2.0 },
+  bound:  { off: [0.00, 0.06, 0.34, 0.40], duty: 0.30, lift: 0.150, bobHz: 1, flight: 0.30, flightAt: 0.30, pitch: 2.4 },
+  hop:    { off: [0.20, 0.26, 0.00, 0.06], duty: 0.26, lift: 0.120, bobHz: 1, flight: 0.48, flightAt: 0.26, pitch: 1.6 },
+  // A dog's amble. The offsets are the same lateral sequence as `walk` — left
+  // hind, left fore, right hind, right fore — but the DUTY is much higher, and
+  // that one number is the whole point of having a separate entry.
+  //
+  // At `walk`'s 0.64 each foot swings for 0.36 of the cycle while the offsets
+  // are only 0.25 apart, so two feet are off the ground together for 44% of
+  // it. That is correct for a deer and it is what a deer looks like. On a dog
+  // pottering around a fire at less than a metre a second it reads as a stagger
+  // — and at the moment the two FRONT feet overlap it reads as impossible.
+  // At 0.76 the swing is 0.24, just inside the offset, so exactly one foot is
+  // in the air at any instant and the dog puts them down one at a time.
+  dogwalk: { off: [0.00, 0.50, 0.25, 0.75], duty: 0.76, lift: 0.048, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 0.85 },
 };
 
 // Which gait a species uses at which of its three speed tiers.
@@ -49,6 +81,11 @@ const LADDER = {
   deer:   ['walk', 'trot', 'bound'],
   bear:   ['walk', 'trot', 'gallop'],
   rabbit: ['hop', 'hop', 'hop'],
+  // The camp dog had NO entry here and fell through to the deer's, which is
+  // wrong twice over: a deer's walk is too quick-footed for a dog (see
+  // `dogwalk`), and a deer's top gear is a BOUND — both hind feet together,
+  // then both fore. Dogs gallop.
+  dog:    ['dogwalk', 'trot', 'gallop'],
 };
 
 const _a = new THREE.Vector3();
@@ -180,6 +217,8 @@ export class AnimRig {
     this.bodyPitch = 0; this.bodyRoll = 0; this.bodyY = 0;
     this.lastSpeed = 0; this.surge = 0;
     this._warm = false;
+    // Was the animal standing still last frame? See the re-key in update().
+    this._wasStill = true;
   }
 
   /** Place all four feet on the ground under a standing animal. */
@@ -260,6 +299,24 @@ export class AnimRig {
     const cadence = speed > 0.04 ? speed / this.strideLen : 0;
     this.phase = (this.phase + cadence * dt) % 1;
 
+    // ── coming back from a standstill ───────────────────────────────────────
+    //
+    // Re-key every leg to its own offset the moment the animal starts moving
+    // again. The standing shuffle below moves ONE leg at a time and parks it
+    // wherever its little step ended, which is not where the gait wants it —
+    // so an animal that stops and starts often accumulates legs sharing a
+    // phase, and two legs on the same phase swing together. On the camp dog,
+    // which stops and starts every few seconds, that produced a walk with both
+    // front paws striding at once: not a gait any quadruped has.
+    //
+    // Same technique `_pickGait` uses at a gait change, and safe for the same
+    // reason: it is keyed off the running body phase, so a foot in stance
+    // stays in stance rather than being teleported into mid-swing.
+    if (cadence > 0 && this._wasStill) {
+      for (const lg of this.legs) lg.p = (this.phase + G.off[lg.key]) % 1;
+    }
+    this._wasStill = cadence === 0;
+
     const sh = Math.sin(heading), ch = Math.cos(heading);
 
     // ── the ground plane under the body ─────────────────────────────────────
@@ -292,12 +349,28 @@ export class AnimRig {
     // with the body: leaving it tracking the ground while the barrel launches
     // leaves a bounding deer with its legs dangling straight down like a
     // helicopter's, which is exactly what the first motion strip showed.
-    let flight = 0;
-    if (G.flight > 0) {
+    //
+    // The apex has to come from the *airtime*, not from the foot lift. The
+    // first cut scaled it off `liftM`, which knows nothing about how long the
+    // gait is actually off the ground: a galloping bear got a 0.39-unit arc to
+    // fly and land inside a 0.14-phase window, which at that cadence is fifty
+    // milliseconds — three frames. Thirty-seven centimetres up and back down in
+    // three frames does not read as a bound, it reads as the animation
+    // snapping, and that is exactly what it was reported as.
+    //
+    // A body in the air is the one part of a gait that is not a style choice,
+    // so take it from the only equation available: for airtime t the apex is
+    // g·t²/8. Short window, low hop; a genuinely long float (a bounding deer)
+    // earns a real one. It is in world metres, so divide by scale to land in
+    // the model units the root bone and `bob` are in.
+    let flight = 0, apex = 0;
+    if (G.flight > 0 && cadence > 1e-3) {
       const u = (this.phase - G.flightAt) / G.flight;
       if (u >= 0 && u <= 1) flight = 4 * u * (1 - u);
+      const airtime = G.flight / cadence;
+      apex = (9.81 * airtime * airtime * 0.125) / S;
     }
-    const flightY = flight * liftM * 2.4 * (0.45 + 0.85 * sn);
+    const flightY = flight * apex;
     const swingLift = lift + flightY * S;
     // How far ahead of neutral the foot lands. Falls straight out of "the foot
     // is planted for `duty` of the cycle while the body travels one stride".
@@ -317,7 +390,9 @@ export class AnimRig {
         lg.stepping = false;
       } else if (lg.stepping) {
         lg.p += dt / 0.34;
-        if (lg.p >= 1) { lg.p = 0; lg.stepping = false; }
+        // Back to this leg's OWN slot in the cycle rather than to zero, so a
+        // standing animal's weight shifts leave the gait coherent.
+        if (lg.p >= 1) { lg.p = G.off[lg.key]; lg.stepping = false; }
       }
 
       const inStance = lg.p < duty;

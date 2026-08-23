@@ -827,7 +827,18 @@ export class VehiclePhysics {
     this.nanEvents = (this.nanEvents ?? 0) + 1;
   }
 
-  teleport(x, z, heading = 0) {
+  /**
+   * Put the body somewhere else, optionally holding it `lift` metres above
+   * where it would rest.
+   *
+   * `lift` is what the settings sheet's car swap uses. Nothing simulates the
+   * drop: the wheels start outside their suspension rays, so the body is in
+   * free fall for a few frames and the springs catch it on the way down. The
+   * bounce is the real spring rate doing its job, which is why it looks like
+   * the vehicle's own suspension rather than a canned animation — a heavier
+   * car lands harder, for free.
+   */
+  teleport(x, z, heading = 0, lift = 0) {
     if (!this.ready) return;
     // A held body cannot be moved — that is the whole point of it — so the hold
     // comes off before the teleport rather than fighting it. A rescue re-arms
@@ -850,7 +861,7 @@ export class VehiclePhysics {
     // collider the camper is already inside, which is the whole reason this
     // has to happen before the body is placed rather than after.
     this.rocks?.clear();
-    const y = this._patchHeight(x, z) + RIDE_HEIGHT + 0.02;
+    const y = this._patchHeight(x, z) + RIDE_HEIGHT + 0.02 + Math.max(0, lift);
     this.body.setTranslation({ x, y, z }, true);
     this.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);

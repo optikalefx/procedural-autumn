@@ -30,6 +30,7 @@ import { WaterAudio } from './water.js';
 import { VehicleAudio } from './vehicle_audio.js';
 import { WildlifeAudio } from './wildlife_audio.js';
 import { CampAudio } from './camp_audio.js';
+import { BoatAudio } from './boat_audio.js';
 import { Music } from './music.js';
 import { Soundtrack } from './soundtrack.js';
 
@@ -146,6 +147,11 @@ export class Audio extends System {
       // rather than sitting on top of it. A fire that stays loud while the
       // wind bed is turned down is a fire in a different mix.
       this.camp = new CampAudio(actx, this.buses.ambience, this.reverb, this.ctx);
+      // The boat rides the water bus: everything it makes IS water sound, and
+      // it has to duck with the rivers and falls it sits amongst rather than
+      // on top of them. Reads ctx.systems.boat defensively — the boat system
+      // may land after this layer, and its absence is silence, not an error.
+      this.boat = new BoatAudio(actx, this.buses.water, this.reverb, this.ctx);
       this.music = new Music(actx, this.buses.music, this.reverb, this.ctx);
       // The authored bed shares the music bus, so one volume control governs
       // both and the mix meter already accounts for it.
@@ -170,6 +176,11 @@ export class Audio extends System {
         // reading even came back with the lit camp QUIETER than the unlit one.
         // A layer you cannot measure is a layer nobody can tune.
         camp: this.camp.bus,
+        // The boat shares the water BUS but gets its own TAP, for the same
+        // reason the camp does: a stroke cue read off the water bus is
+        // indistinguishable from the river it is paddled on, and a layer
+        // nobody can measure is a layer nobody can tune.
+        boat: this.boat.bus,
         // Same argument, one level finer, for the three wind beds. "The wind is
         // too loud" is a complaint about ONE of the five things on the ambience
         // bus, and the bus tap cannot tell grass from conifers from birds — a
@@ -290,6 +301,7 @@ export class Audio extends System {
     try { this.vehicle.update(dt, L); } catch (e) { this._layerFail('vehicle', e); }
     try { this.wildlife.update(dt, L); } catch (e) { this._layerFail('wildlife', e); }
     try { this.camp.update(dt, L); } catch (e) { this._layerFail('camp', e); }
+    try { this.boat.update(dt, L); } catch (e) { this._layerFail('boat', e); }
     try { this.music.update(dt, L); } catch (e) { this._layerFail('music', e); }
     // The bed ducks while a generative phrase is sounding, so the two layers
     // never occupy the same moment.

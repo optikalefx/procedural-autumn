@@ -199,6 +199,29 @@ export class WorldData {
     return bilinear(this.riverMask, this.res, this.res, gx, gz);
   }
 
+  /**
+   * Bilinear sample of the hydro field at world (x, z):
+   * `{ sdf, span, depth, wet }` — see hydroField.js for what each channel is.
+   *
+   * The -0.25 texel registration is mandatory and measured, not taste: the
+   * field is stored at HALF the bake's resolution by area-averaging pairs, so
+   * sample k represents (k + 0.25) hydro texels from the corner — see the note
+   * in `microDetail` above. Public so consumers (the boat's launch-site tests
+   * were the fourth) stop inlining their own copies of that constant.
+   */
+  getHydro(x, z, out = {}) {
+    const h = this.hydro;
+    if (!h) { out.sdf = -1e9; out.span = 0; out.depth = -1; out.wet = 0; return out; }
+    const HR = h.res;
+    const gx = clamp((x + this.half) / h.texel - 0.25, 0, HR - 1.001);
+    const gz = clamp((z + this.half) / h.texel - 0.25, 0, HR - 1.001);
+    out.sdf = bilinear(h.sdf, HR, HR, gx, gz);
+    out.span = bilinear(h.span, HR, HR, gx, gz);
+    out.depth = bilinear(h.depth, HR, HR, gx, gz);
+    out.wet = bilinear(h.wet, HR, HR, gx, gz);
+    return out;
+  }
+
   /** The drawn water surface, handed over by Water._buildSurface. */
   setWaterField(field) { this._water = field; }
 

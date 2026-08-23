@@ -207,6 +207,10 @@ page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; })
 const params = new URLSearchParams({ res: RES });
 if (SEED) params.set('seed', SEED);
 if (QUALITY) params.set('quality', QUALITY);
+// Pin the car — see the same note in perf.mjs. Paired baselines inside one
+// page load would survive a random vehicle; the ladder printed across runs
+// would not.
+params.set('car', arg('car', 'camper'));
 if (SEED) params.set('seed', SEED);
 await page.goto(`http://127.0.0.1:${PORT}/?${params}`, { waitUntil: 'domcontentloaded' });
 const navAtStart = navigations;

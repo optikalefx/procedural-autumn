@@ -13,7 +13,8 @@ import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { VEHICLE } from '../world/WorldConfig.js';
 import { clamp, clamp01, lerp, smoothstep, damp } from '../core/MathUtils.js';
-import { buildCamper, buildWheel, buildMaterials, buildEnvMap, DIM } from './CamperModel.js';
+import { buildWheel, buildEnvMap } from './model_kit.js';
+import { pickCar, carById, CARS } from './vehicle_models.js';
 import { VehiclePhysics } from './VehiclePhysics.js';
 import { ParticleField, TrackRibbons, surfaceDust, KIND } from './VehicleFX.js';
 import { VehicleShadow } from './VehicleShadow.js';
@@ -57,6 +58,18 @@ const RESCUE_TRIES = 28;        // bearings sampled on the 20 m ring
 const RESCUE_ARC = 4.5;         // m between samples along a ring
 const RESCUE_TRIES_MAX = 200;
 const RESCUE_COOLDOWN = 1.0;    // s between presses; see `rescue()`
+
+// ── swapping cars ────────────────────────────────────────────────────────────
+// How far above its resting height a newly chosen car is dropped from. High
+// enough that the suspension visibly takes the hit and rebounds — at 0.4 m the
+// springs barely moved and the swap read as a teleport — and low enough that
+// the landing cannot bottom out the travel or bounce a wheel off the ground.
+const DROP_HEIGHT = 0.95;
+
+/** Free every geometry under a model. Materials are owned by the car, not this. */
+function disposeTree(root) {
+  root?.traverse?.((o) => { if (o.isMesh) o.geometry?.dispose?.(); });
+}
 // Debug warp only: how far inside the world edge a click is allowed to land.
 // The physics patch is built *around* the arrival point, so a landing on the
 // very edge stands on a patch that is half off the map.
@@ -152,11 +165,19 @@ export class Vehicle extends System {
     this._accelSmooth = 0;
     this._lateralSmooth = 0;
     this._settle = 0;
+    this._dropping = false;    // a car swap is in the air; see `setCar`
     this._invQuat = new THREE.Quaternion();
     this._rescueCool = 0;
     this._rescueHold = false;
     this._brakeHold = false;
     this.brakeHold = false;      // what the HUD lamp reads
+    // Who owns the driving inputs. null = the camper; 'boat' while the player
+    // is paddling. While held, the pedals and steering are fed to the physics
+    // as zeros and the brake hold cannot release — the camper stays parked
+    // exactly as it was. Deliberately NOT input.suppressed (the holder needs
+    // those same axes) and NOT enabled=false (Camp's gate reads this system).
+    // The holder must clear it unconditionally on exit and in its dispose.
+    this.controlsHeldBy = null;
     this.rescues = 0;
     this.teleportSeq = 0;      // CameraRig watches this and re-primes its boom
   }
@@ -182,9 +203,15 @@ export class Vehicle extends System {
     this._home = { x: start.x, z: start.z };
 
     // ── materials + model ───────────────────────────────────────────────────
+    // Which car, and therefore which DIM everything downstream measures itself
+    // against. `?car=<id>` pins it; otherwise it is random per page load. See
+    // vehicle_models.js for the table and for how to add the next one.
+    this.car = pickCar();
+    const DIM = this.car.dims;
+    this.dims = DIM;
     this.env = buildEnvMap(renderer);
-    this.materials = buildMaterials(this.env, 0xc4551f);
-    const built = buildCamper(this.materials, 91);
+    this.materials = this.car.materials(this.env);
+    const built = this.car.build(this.materials, this.car.seed);
     this.root = built.root;
     this.antenna = built.antenna;
     this.steeringWheel = built.steeringWheel;
@@ -213,8 +240,11 @@ export class Vehicle extends System {
     for (const s of [-1, 1]) {
       const l = new THREE.SpotLight(0xfff0d2, 0, 68, 0.52, 0.55, 1.4);
       l.castShadow = false;
-      l.position.set(s * 0.60, 0.205, DIM.front - 0.02);
-      l.target.position.set(s * 0.55, -1.1, DIM.front + 20);
+      // The lamp anchor is the model's, not a constant: the Roamer's round
+      // headlights sit higher and wider than the camper's buckets, and a beam
+      // that starts inside the bodywork lights the bonnet.
+      l.position.set(s * DIM.lampX, DIM.lampY, DIM.front - 0.02);
+      l.target.position.set(s * (DIM.lampX - 0.05), -1.1, DIM.front + 20);
       this.rig.add(l);
       this.rig.add(l.target);
       this.headlights.push(l);
@@ -236,7 +266,7 @@ export class Vehicle extends System {
     // Contact occlusion. One draw call, and it is the difference between the
     // camper resting on the meadow and hovering over it — see VehicleShadow.js
     // for why this is ambient occlusion and deliberately not a cast shadow.
-    this.contactShadow = new VehicleShadow(scene, world);
+    this.contactShadow = new VehicleShadow(scene, world, DIM);
 
     this._sample = (x, z) => world.getHeight(x, z);
     this._syncTransform();
@@ -258,6 +288,8 @@ export class Vehicle extends System {
       ground: world.getHeight(this.position.x, this.position.z),
     });
     window.__vehicleTeleport = (x, z, h = 0) => this.phys.teleport(x, z, h);
+    window.__setCar = (id) => this.setCar(id);
+    window.__carId = () => this.car.id;
     window.__vehicleTune = (o) => this.phys.tune(o);
     // Test surface for tools/_scratch/rescuetest.mjs. `force` skips only the
     // cooldown, never a validity check.
@@ -267,22 +299,88 @@ export class Vehicle extends System {
     };
   }
 
+  // ── swapping cars ─────────────────────────────────────────────────────────
+  /**
+   * Change which vehicle the player is driving, live.
+   *
+   * The old model is torn down and the new one is dropped in from DROP_HEIGHT
+   * above where it would have rested, so it lands on its own suspension and
+   * bounces. Nothing about the bounce is animated: `phys.teleport` places the
+   * body high, the wheels start outside their suspension rays, and the springs
+   * catch it on the way down. See the note over `teleport`.
+   *
+   * Everything that measured itself against the old car has to be re-pointed in
+   * the same breath — the contact shadow's lobes, the headlight anchors, the
+   * exhaust tap. Those are the three places a DIM leaks out of the model, and
+   * each of them reads `this.dims` or is reset here.
+   */
+  setCar(id) {
+    const car = carById(id);
+    if (!car) {
+      console.warn(`[vehicle] no car with id "${id}" — known: ${CARS.map((c) => c.id).join(', ')}`);
+      return false;
+    }
+    if (car === this.car || !this.phys?.ready) return false;
+
+    // Old model out. Geometry is per-build and never shared, so it is ours to
+    // free; the material set is per-car and goes with it.
+    this.pivot.remove(this.root);
+    disposeTree(this.root);
+    for (const n of this.wheelNodes) { n.hub.remove(n.spin); disposeTree(n.spin); }
+    for (const m of Object.values(this.materials ?? {})) m.dispose?.();
+
+    this.car = car;
+    this.dims = car.dims;
+    this.materials = car.materials(this.env);
+    const built = car.build(this.materials, car.seed);
+    this.root = built.root;
+    this.antenna = built.antenna;
+    this.steeringWheel = built.steeringWheel;
+    this.pivot.add(this.root);
+    for (const n of this.wheelNodes) {
+      n.spin = buildWheel(this.materials);
+      n.hub.add(n.spin);
+    }
+    // The wheels were mid-rotation under the old model; the new hubs start at
+    // zero, and _syncTransform will put them back where the physics says.
+    this.contactShadow?.setDims(this.dims);
+    for (let i = 0; i < this.headlights.length; i++) {
+      const sx = i === 0 ? -1 : 1;
+      this.headlights[i].position.set(sx * this.dims.lampX, this.dims.lampY, this.dims.front - 0.02);
+      this.headlights[i].target.position.set(sx * (this.dims.lampX - 0.05), -1.1, this.dims.front + 20);
+    }
+
+    // And in it comes. Heading is kept: you are pointed where you were pointed.
+    this.phys.teleport(this.position.x, this.position.z, this.heading, DROP_HEIGHT);
+    // The settle term is a *downward* correction toward the rendered ground and
+    // it is stale the moment the body is lifted — left alone it sinks the car
+    // into the meadow for the whole fall.
+    this._settle = 0;
+    this._dropping = true;
+    this._syncTransform();
+    return true;
+  }
+
   update(dt) {
     if (!this.phys?.ready) return;
     const { ctx } = this;
     const input = ctx.input;
     const ax = input.axes;
+    // Another system (the boat) holds the controls: every axis reads as zero
+    // to the camper, and R belongs to the holder's context too. See the note
+    // on `controlsHeldBy` in the constructor.
+    const held = this.controlsHeldBy != null;
 
     // ── camera cycling / input ──────────────────────────────────────────────
-    this.throttle = ax.throttle;
-    this.steer = ax.steer;
+    this.throttle = held ? 0 : ax.throttle;
+    this.steer = held ? 0 : ax.steer;
 
     // ── rescue ──────────────────────────────────────────────────────────────
     // `justPressed` is cleared by Input every frame and zeroed entirely while a
     // menu has focus, so this cannot fire from the settings sheet or fire twice
     // from one press.
     this._rescueCool = Math.max(0, this._rescueCool - dt);
-    if (input.justPressed('KeyR')) this.rescue();
+    if (!held && input.justPressed('KeyR')) this.rescue();
     // Once per session, and only after the player has genuinely been fighting
     // it for a couple of seconds: a key you only need when stuck is no use if
     // you learn about it before you are. `_stuckFor` is the physics' own
@@ -299,22 +397,22 @@ export class Vehicle extends System {
     // frame it was released, and by the next frame the camper is over the
     // threshold. Without that ordering the two inputs deadlock and the camper
     // sits there with the throttle open.
-    const driving = ax.throttle > HOLD_PEDAL || ax.brake > HOLD_PEDAL;
+    const driving = !held && (ax.throttle > HOLD_PEDAL || ax.brake > HOLD_PEDAL);
     if (driving) this._brakeHold = false;
-    else if (ax.handbrake > 0.5 && this._holdEligible()) this._brakeHold = true;
+    else if (!held && ax.handbrake > 0.5 && this._holdEligible()) this._brakeHold = true;
 
     // A rescue leaves the park brake on. Any deliberate input releases it —
     // the player has taken over and the camper should behave normally from
     // that instant, with no "press again to release" ceremony. Steering counts
     // here, unlike the brake hold above, because a rescue was not something the
     // player chose and any sign of life should hand the camper back.
-    if (driving || Math.abs(ax.steer) > 0.05) this._rescueHold = false;
+    if (driving || (!held && Math.abs(ax.steer) > 0.05)) this._rescueHold = false;
 
     this.phys.step(dt, {
-      throttle: ax.throttle,
-      brake: ax.brake,
-      steer: ax.steer,
-      handbrake: ax.handbrake,
+      throttle: held ? 0 : ax.throttle,
+      brake: held ? 0 : ax.brake,
+      steer: held ? 0 : ax.steer,
+      handbrake: held ? 0 : ax.handbrake,
       hold: this._brakeHold,
       park: this._rescueHold,
     });
@@ -849,6 +947,28 @@ export class Vehicle extends System {
     const absSpeed = Math.abs(this.speed);
     const c = this._col;
 
+    // A car dropped in by the settings sheet lands silently otherwise, and a
+    // silent landing reads as a pop-in rather than an arrival. One puff per
+    // wheel, in whatever the ground under that wheel is made of.
+    if (this._dropping && this.wheels.some((w) => w.grounded)) {
+      this._dropping = false;
+      for (const w of this.wheels) {
+        if (!w.grounded || !Number.isFinite(w.contact.x)) continue;
+        const weights = world.getSurfaceWeights(w.contact.x, w.contact.z, this._w);
+        for (let k = 0; k < 7; k++) {
+          surfaceDust(weights, c).multiplyScalar((0.85 + Math.random() * 0.3) * 0.62);
+          const a = Math.random() * Math.PI * 2, r = 0.6 + Math.random() * 1.4;
+          P.spawn(
+            w.contact.x + (Math.random() - 0.5) * 0.4,
+            w.contact.y + 0.05 + Math.random() * 0.15,
+            w.contact.z + (Math.random() - 0.5) * 0.4,
+            Math.cos(a) * r, 0.5 + Math.random() * 0.9, Math.sin(a) * r,
+            0.8 + Math.random() * 0.8, 0.30 + Math.random() * 0.4, KIND.DUST, c,
+          );
+        }
+      }
+    }
+
     for (let i = 0; i < 4; i++) {
       const w = this.wheels[i];
       if (!w.grounded) continue;
@@ -955,7 +1075,7 @@ export class Vehicle extends System {
     this._exhaustAcc += dt * (0.9 + this.throttle * 7.5 + clamp01(this._accelSmooth * 0.3) * 6);
     while (this._exhaustAcc > 1) {
       this._exhaustAcc -= 1;
-      this._tmp.set(0.46, DIM.floor - 0.06, DIM.rear - 0.05).applyQuaternion(this.quaternion).add(this.position);
+      this._tmp.set(0.46, this.dims.floor - 0.06, this.dims.rear - 0.05).applyQuaternion(this.quaternion).add(this.position);
       c.setRGB(0.40, 0.385, 0.385);
       P.spawn(this._tmp.x, this._tmp.y, this._tmp.z,
         -this.forward.x * 1.6 + (Math.random() - 0.5) * 0.5,

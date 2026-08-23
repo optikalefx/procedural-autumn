@@ -322,6 +322,223 @@ const CAMP_CUES = [
     ['camp_props.js:188-194 — the two partials, the 3200 Hz tripod tick and the 430 Hz mount.']),
 ];
 
+// ── boat helpers ────────────────────────────────────────────────────────────
+
+/** Write a term of the boat's `tune` block — the tyre `T` pattern: these are
+ *  model numbers read by `update()`, not AudioParams, and the path a pasted
+ *  config names is the real one: `boat.tune.<key>`. */
+const B = (key) => (rig, v) => { rig.audio.boat.tune[key] = v; };
+
+const BOAT_MIX = [
+  range('boatCueGain', 'boat cue trim', 0, 8, 2.0, { step: 0.01, group: 'Mix', src: 'boat_audio.js — CUE_GAIN, one level for every boat one-shot', apply: P('boat.cueBus.gain') }),
+  range('boatWet', 'reverb send', 0, 1, 0.14, { step: 0.01, group: 'Mix', src: 'boat_audio.js — this.wet', apply: P('boat.wet.gain') }),
+  range('waterBus', 'water bus gain', 0, 2, 0.55, { step: 0.01, group: 'Mix', src: 'Audio.js:130 — the boat rides the water bus', apply: P('buses.water.gain') }),
+];
+
+const HULLS = ['canoe', 'kayak'];
+
+/**
+ * Stand a fake boat in the water, exactly the shape `BoatAudio.update` reads
+ * from `ctx.systems.boat`. `on` is gated on the rig's active-layer set, which
+ * is what Play/Stop drive — the boat layers have no trim nodes (they are
+ * gains inside the module, listed by `BoatAudio.layers()`), so presence of
+ * the boat itself is the transport.
+ */
+function fakeBoat(rig, v, on) {
+  const az = ((v.azimuth ?? 0) * Math.PI) / 180;
+  rig.ctx.systems.boat = on ? {
+    active: v.aboard !== false,
+    current: {
+      kind: v.hull ?? 'canoe', colorway: 0,
+      x: rig.L.x + Math.sin(az) * (v.distance ?? 4),
+      z: rig.L.z + Math.cos(az) * (v.distance ?? 4),
+      heading: 0, speed: v.speed ?? 0,
+    },
+  } : null;
+}
+
+const boatBedFrame = (layer, extra = null) => (rig, dt, v) => {
+  applyListener(rig, v);
+  fakeBoat(rig, v, rig.active.has(layer));
+  extra?.(rig, v);
+  rig.audio.boat.update(dt, rig.L);
+};
+const boatBedStop = (rig) => {
+  rig.ctx.systems.boat = null;
+  rig.audio.boat.update(0.016, rig.L);   // one frame, so the glide fades out
+};
+// One-shots carry their own position and hull in `opts`; no boat needs to
+// exist. The update keeps the layer's listener sample fresh for cue pan.
+const boatCueFrame = (rig, dt, v) => {
+  applyListener(rig, v);
+  fakeBoat(rig, v, false);
+  rig.audio.boat.update(dt, rig.L);
+};
+
+const boatCue = (kind, label, blurb, extraParams = [], needs = []) => ({
+  id: `boat.${kind}`,
+  group: 'Boat',
+  label,
+  kind: 'oneshot',
+  bus: 'boat',
+  module: 'src/audio/boat_audio.js',
+  blurb,
+  layers: [],
+  frame: boatCueFrame,
+  trigger: (rig, v) => {
+    const az = (v.azimuth * Math.PI) / 180;
+    rig.audio.boat.cue(kind, {
+      x: rig.L.x + Math.sin(az) * v.distance,
+      z: rig.L.z + Math.cos(az) * v.distance,
+      hull: v.hull,
+      side: v.side ?? 0,
+      strength: v.strength ?? 0.7,
+    });
+  },
+  triggerLabel: 'Trigger',
+  params: [
+    select('hull', 'Hull', HULLS, 'canoe', { src: 'boat_audio.js — HULL: kayak brighter/higher, poly knocks; canoe deeper, wood' }),
+    cond('distance', 'Distance to the boat', 0.5, 44, 8, { unit: 'm', step: 0.5, src: 'boat_audio.js — 40 m reach, 4 m near field, falloff 1.5' }),
+    cond('azimuth', 'Bearing from the listener', -180, 180, -25, { unit: '°', step: 1 }),
+    ...extraParams,
+    ...BOAT_MIX,
+  ],
+  needs,
+});
+
+const BOAT_SOUNDS = [
+  {
+    id: 'boat.glide',
+    group: 'Boat',
+    label: 'Hull glide',
+    kind: 'bed',
+    bus: 'boat',
+    module: 'src/audio/boat_audio.js',
+    blurb: 'Water on a moving hull: the water.js three-band pink voice with the '
+      + 'band centre swept by speed — a burble barely moving, a laminar "shhh" '
+      + 'with a bubbly undertone at cruise. Silent at rest (below ~0.3 m/s the '
+      + 'moored lapping takes over). The kayak sits a fifth brighter than the '
+      + 'canoe. Drag speed and the meter must rise monotonically.',
+    layers: ['boatGlide'],
+    frame: boatBedFrame('boatGlide'),
+    stop: boatBedStop,
+    params: [
+      select('hull', 'Hull', HULLS, 'canoe', { src: 'boat_audio.js — HULL.bright 1.0 / 1.22' }),
+      cond('speed', 'Boat speed', 0, 3.8, 2.6, { unit: 'm/s', step: 0.05, src: 'boat_physics.js — maxSpeed 3.2 canoe / 3.8 kayak' }),
+      cond('distance', 'Distance to the boat', 0.5, 60, 4, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      readout('mGlide', 'model glide gain', (r) => r.audio.boat.state.glide, { src: 'boat_audio.js — gate · (0.3 + 0.7·sp) · glideDrive · distance' }),
+      readout('mBody', 'body band centre', (r) => r.audio.boat.glide.body.frequency.value, { unit: 'Hz', src: 'boat_audio.js — 520 · bright · (1 + sp·0.5), ±110 Hz gurgle LFO' }),
+      readout('mAir', 'air-absorption cutoff', (r) => r.audio.boat.glide.air.frequency.value, { unit: 'Hz', src: 'boat_audio.js — 7000·e^(-d/70)' }),
+      range('glideDrive', 'glide level at full speed', 0, 0.4, 0.14, { step: 0.002, src: 'boat_audio.js — boat.tune.glideDrive', apply: B('glideDrive') }),
+      range('glideRef', 'glide reference distance', 4, 40, 14, { unit: 'm', step: 0.5, src: 'boat_audio.js — boat.tune.glideRef', apply: B('glideRef') }),
+      range('brightness', 'band-centre scale', 0.5, 2, 1.0, { step: 0.01, src: 'boat_audio.js — boat.tune.brightness', apply: B('brightness') }),
+      range('bodyQ', 'body band Q', 0.1, 3, 0.6, { step: 0.01, src: 'boat_audio.js — glide.body', apply: P('boat.glide.body.Q') }),
+      range('gBody', 'body band gain', 0, 2, 1.2, { step: 0.01, src: 'boat_audio.js — glide.gBody', apply: P('boat.glide.gBody.gain') }),
+      range('hissHz', 'top band highpass', 1000, 8000, 2400, { unit: 'Hz', step: 10, src: 'boat_audio.js — glide.hiss', apply: P('boat.glide.hiss.frequency') }),
+      ...BOAT_MIX.slice(1),      // wet + water bus; the cue trim is not in this path
+    ],
+    needs: [
+      'boat_audio.js — the speed gate smoothstep(0.12, 0.85, speed) and the /3.8 normalisation.',
+      'boat_audio.js — distance exponent 2.2 and the 7000·e^(-d/70) air model.',
+      'boat_audio.js — the gurgle LFO (0.21 Hz, ±110 Hz) and the 0.06 Hz depth-0.28 swell.',
+      'boat_audio.js — hull low/hiss band scales (HULL.lowG, HULL.hissG, hiss ∝ sp²).',
+    ],
+  },
+  {
+    id: 'boat.lapping',
+    group: 'Boat',
+    label: 'Idle lapping',
+    kind: 'bed',
+    bus: 'boat',
+    module: 'src/audio/boat_audio.js',
+    blurb: 'A moored hull: sparse soft plips on a 0.8–2.5 s clock (camp-style '
+      + 'crowding, so they never machine-gun), sometimes doubled, sometimes '
+      + 'with the hull\'s own resonance answering very quietly — wood for the '
+      + 'canoe, hollow poly for the kayak. Only below 0.3 m/s.',
+    layers: ['boatLap'],
+    frame: boatBedFrame('boatLap'),
+    stop: boatBedStop,
+    params: [
+      select('hull', 'Hull', HULLS, 'canoe', { src: 'boat_audio.js — HULL.knock 178/318 sine vs 152/264 triangle' }),
+      cond('speed', 'Boat speed (moored < 0.3)', 0, 0.3, 0, { unit: 'm/s', step: 0.01 }),
+      cond('distance', 'Distance to the boat', 0.5, 44, 3, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      readout('nLaps', 'laps sounded', (r) => r.audio.boat.state.laps, { src: 'boat_audio.js — state.laps' }),
+      range('lapRate', 'lap clock ×', 0.2, 4, 1.0, { step: 0.01, src: 'boat_audio.js — boat.tune.lapRate', apply: B('lapRate') }),
+      range('lapDrive', 'lap level ×', 0, 3, 1.0, { step: 0.01, src: 'boat_audio.js — boat.tune.lapDrive', apply: B('lapDrive') }),
+      ...BOAT_MIX,
+    ],
+    needs: [
+      'boat_audio.js — the 0.8 + rnd·1.7 s inter-lap clock and the 0.4 / 0.35 double-tap / resonance odds.',
+      'boat_audio.js — lap bands 780–1100 → 420–560 Hz at Q 1.2, peaks 0.030–0.052.',
+    ],
+  },
+  {
+    id: 'boat.drips',
+    group: 'Boat',
+    label: 'Paddle drips',
+    kind: 'bed',
+    bus: 'boat',
+    module: 'src/audio/boat_audio.js',
+    blurb: 'Tiny 2–4 kHz plips off the lifted blade for ~2.4 s after a stroke, '
+      + 'aboard only. This page holds "just stroked" true continuously so the '
+      + 'bed is auditionable; in the game it decays away after each stroke.',
+    layers: ['boatDrip'],
+    frame: boatBedFrame('boatDrip', (rig) => { rig.audio.boat._sinceStroke = 0; }),
+    stop: boatBedStop,
+    params: [
+      select('hull', 'Hull', HULLS, 'canoe'),
+      cond('distance', 'Distance to the boat', 0.5, 20, 2, { unit: 'm', step: 0.5, src: 'aboard, the camera is on the boat' }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      readout('nDrips', 'drips sounded', (r) => r.audio.boat.state.drips, { src: 'boat_audio.js — state.drips' }),
+      range('dripDrive', 'drip level ×', 0, 3, 1.0, { step: 0.01, src: 'boat_audio.js — boat.tune.dripDrive', apply: B('dripDrive') }),
+      ...BOAT_MIX,
+    ],
+    needs: [
+      'boat_audio.js — the 0.14 + rnd·0.42 s drip clock and the 2.4 s post-stroke window.',
+      'boat_audio.js — drip bands 2000–4000 Hz at Q 9, peaks 0.012–0.026 fading with the window.',
+    ],
+  },
+  boatCue('stroke', 'Paddle stroke',
+    'The hero sound, three phases of one gesture: the catch (a soft plunk '
+    + 'falling 250 → 120 Hz as the blade goes in), the drive (0.4 s of pink '
+    + 'swash sliding 680 → 330 Hz), and two or three release drips off the '
+    + 'lifted blade. Panned to its side. The canoe digs deeper and rounder; '
+    + 'the kayak is lighter and a sixth higher.',
+    [
+      cond('side', 'Stroke side (-1 left, 1 right)', -1, 1, 1, { step: 2, src: 'boat_physics.js — onStroke(side, strength)' }),
+      cond('strength', 'Stroke strength', 0, 1, 0.7, { step: 0.01 }),
+    ],
+    ['boat_audio.js — VOICES.stroke: the catch/drive/release offsets, peaks and the ±0.30 side pan.']),
+  boatCue('launch', 'Launch — hull into water',
+    'The keel dragging off the bank (brown noise under a 520 Hz lowpass, '
+    + '0.6 s), then a generous splash on the vehicle-splash recipe (pink, '
+    + '1400 → 380 Hz over half a second) with a low body of displaced water, '
+    + 'and two settle-laps as the hull stops bobbing.',
+    [],
+    ['boat_audio.js — VOICES.launch: the scrape/splash/settle offsets and peaks.']),
+  boatCue('board', 'Boarding knock',
+    'A knee and a hand on the hull: two knocks on the hull\'s own partials — '
+    + '178/318 Hz near-pure for the canoe\'s wood, 152/264 Hz odd-harmonic '
+    + 'triangle for the kayak\'s rotomoulded poly — the water answering '
+    + 'underneath, and the creak of the hull taking weight (the one band in '
+    + 'this module swept upward).',
+    [],
+    ['boat_audio.js — VOICES.board and the HULL knock table.']),
+  boatCue('beach', 'Beaching scrape',
+    'Sand and gravel under the keel: a decelerating hiss-scrape falling '
+    + '1500 → 620 Hz over half a second, three gravel ticks spacing out as '
+    + 'the hull slows, and a low grounding thump.',
+    [],
+    ['boat_audio.js — VOICES.beach: the tick spacings 0.07/0.13/0.22 s.']),
+  boatCue('bump', 'Shoreline bump',
+    'A single nudge: one hull knock on the hull\'s lowest partial and the '
+    + 'plip of the water it displaced.',
+    [],
+    ['boat_audio.js — VOICES.bump.']),
+];
+
 export const SOUNDS = [
   // ── ambience ──────────────────────────────────────────────────────────────
   {
@@ -1040,6 +1257,15 @@ export const SOUNDS = [
   // deliberate: these sit on the fire's bus, and if a cue is loud enough to
   // bury the fire it is loud enough to see it happen on one meter.
   ...CAMP_CUES,
+
+  // ── boat ──────────────────────────────────────────────────────────────────
+  //
+  // Three continuous layers and five cues, all metering on the `boat` tap.
+  // The beds stand a fake boat into `ctx.systems.boat` — the exact shape the
+  // layer reads defensively in the game — gated on the rig's active set, so
+  // Play/Stop work without trim nodes. The tune sliders write the module's
+  // real `boat.tune` block, the tyre pattern.
+  ...BOAT_SOUNDS,
 
   // ── interface ─────────────────────────────────────────────────────────────
   {
