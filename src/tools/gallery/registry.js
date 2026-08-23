@@ -577,6 +577,106 @@ function animalEntries(mod, path) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Family adapter — the camp dog
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The dog is a camp prop with a gait solver, so it belongs to neither family
+// cleanly. It gets its own adapter because the thing anyone opens it to judge
+// is not the mesh but the three REST POSES, which no other entry in the gallery
+// has: they are authored per-bone rather than solved, so the only way to know a
+// sign is wrong is to look at one.
+const DOG_POSES_UI = [
+  { key: 'stand', label: 'Stand' },
+  { key: 'walk', label: 'Meander' },
+  { key: 'curl', label: 'Curled up' },
+  { key: 'lie', label: 'Lying' },
+  { key: 'sit', label: 'Sitting' },
+];
+
+function dogEntries(mod, path) {
+  const out = [];
+  const protos = mod.dogProto();
+  protos.forEach((p, vi) => {
+    out.push({
+      id: `campdog:${vi}`,
+      label: 'Camp dog',
+      sub: p.variant.name,
+      group: groupOf(path),
+      family: 'Animals',
+      file: path,
+      call: `new CampDog(root, site, rnd, world)`,
+      poses: DOG_POSES_UI,
+      async build(_seed, opts = {}) {
+        const { instantiate } = await import('../../wildlife/animal_rig.js');
+        const { AnimRig } = await import('../../wildlife/animal_anim.js');
+        const { createHideMaterial } = await import('../../wildlife/animal_species.js');
+        const hide = createHideMaterial(p.variant.col);
+        const inst = instantiate(p, hide, 0);
+        const rig = new AnimRig(p, inst, p.scale, mod.DOG_GAIT_CFG, 'dog');
+        const root = new THREE.Group();
+        root.add(inst.mesh);
+
+        const poseKey = opts.pose ?? 'stand';
+        const rest = mod.DOG_POSES[poseKey] ?? null;
+        const walking = poseKey === 'walk';
+        const pos = new THREE.Vector3(0, 0, 0);
+        const drive = {
+          pos, heading: 0, speed: walking ? 0.78 : 0,
+          graze: 0, alert: rest ? 0.15 : 0, flag: 0, look: null, lod: 0,
+        };
+        // Same treadmill rebase the wild animals use — see `animalEntries`.
+        const rebase = () => {
+          const dz = pos.z;
+          if (dz === 0) return;
+          pos.z = 0;
+          for (const lg of rig.legs) {
+            lg.foot.z -= dz; lg.anchor.z -= dz; lg.from.z -= dz; lg.to.z -= dz;
+          }
+        };
+        const apply = () => {
+          if (!rest) return;
+          const r = rig.root;
+          r.position.y += rest.drop;
+          // Assigned, not accumulated — AnimRig rewrites y each frame but never
+          // touches z. See the note in camp_dog.js `_applyPose`.
+          r.position.z = rest.push ?? 0;
+          r.rotation.x = rest.pitch;
+          r.rotation.z = rest.roll;
+          for (const name in rest.bones) {
+            const b = inst.byName[name];
+            if (!b) continue;
+            const [rx, ry, rz] = rest.bones[name];
+            b.rotation.set(rx, ry, rz);
+          }
+          inst.mesh.updateWorldMatrix(false, true);
+        };
+        rig.update(0.016, drive, FLAT_WORLD);
+        for (let i = 0; i < 60 && walking; i++) { rebase(); pos.z += drive.speed * 0.016; rig.update(0.016, drive, FLAT_WORLD); }
+        apply();
+
+        return {
+          root,
+          update(dt) {
+            rebase();
+            pos.z += drive.speed * dt;
+            rig.update(dt, drive, FLAT_WORLD);
+            apply();
+          },
+          dispose() { hide.dispose(); },
+          notes: [
+            `${p.tris} triangles (near LOD)`,
+            `${p.height.toFixed(2)} m at the withers`,
+            rest ? `authored pose · drop ${rest.drop} m` : 'gait solver',
+            '80% chance per camp',
+          ],
+        };
+      },
+    });
+  });
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Family adapter — the cars
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -779,6 +879,7 @@ const ADAPTERS = [
     entries: kitEntries,
   },
   { path: '/src/camp/camp_fire.js', claims: ['Firepit'], entries: fireEntries },
+  { path: '/src/camp/camp_dog.js', claims: ['CampDog', 'dogProto', 'DOG_POSES'], entries: dogEntries },
   { path: '/src/wildlife/birds.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
 ];
 

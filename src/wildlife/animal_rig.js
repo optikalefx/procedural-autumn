@@ -99,17 +99,22 @@ const _p = new THREE.Vector3();
  */
 export class RigBuilder {
   constructor() {
-    this.pos = []; this.nor = []; this.mix = []; this.shade = [];
+    this.pos = []; this.nor = []; this.mix = []; this.shade = []; this.spot = [];
     this.si = []; this.sw = []; this.index = [];
   }
 
   get count() { return this.pos.length / 3; }
 
-  vert(x, y, z, nx, ny, nz, mix, shade, b0, w0 = 1, b1 = 0, w1 = 0) {
+  vert(x, y, z, nx, ny, nz, mix, shade, b0, w0 = 1, b1 = 0, w1 = 0, spot = 0) {
     this.pos.push(x, y, z);
     this.nor.push(nx, ny, nz);
     this.mix.push(mix[0], mix[1], mix[2], mix[3]);
     this.shade.push(shade);
+    // The fifth colour. See `uSpot` in createHideMaterial — this is deliberately
+    // NOT a fifth `aMix` channel: the four there are a blend that has to sum to
+    // one, and a marking that overrides the hide outright is a different thing
+    // from a region of it.
+    this.spot.push(spot);
     this.si.push(b0, b1, 0, 0);
     this.sw.push(w0, w1, 0, 0);
     return this.count - 1;
@@ -124,6 +129,7 @@ export class RigBuilder {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('aMix', new THREE.Float32BufferAttribute(this.mix, 4));
     g.setAttribute('aShade', new THREE.Float32BufferAttribute(this.shade, 1));
+    g.setAttribute('aSpot', new THREE.Float32BufferAttribute(this.spot, 1));
     g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(this.si, 4));
     g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(this.sw, 4));
     g.setIndex(this.index);
@@ -195,9 +201,13 @@ export function tube(B, stations, opts = {}) {
         .addScaledVector(U[i], sa / Math.max(st.ry, 1e-4)).normalize();
       // Bake form shading: whatever faces down sits in its own occlusion.
       const sh = shade * (1 - ao * Math.max(0, -_n.y) * 0.9 - ao * 0.25 * Math.max(0, -_n.y * 0.5));
+      // A station may carry a spot weight as a plain number, or as a function
+      // of the angle round the ring — which is how a marking lands on ONE side
+      // of a tube without needing its own geometry.
+      const sp = typeof st.spot === 'function' ? st.spot(a, ca, sa) : (st.spot ?? 0);
       ring.push(B.vert(
         st.x + _p.x, st.y + _p.y, st.z + _p.z,
-        _n.x, _n.y, _n.z, mix, sh, b0, 1 - w2, b1, w2,
+        _n.x, _n.y, _n.z, mix, sh, b0, 1 - w2, b1, w2, sp,
       ));
     }
     rings.push(ring);
@@ -220,6 +230,7 @@ export function tube(B, stations, opts = {}) {
       st.x + T[i].x * off * dir, st.y + T[i].y * off * dir, st.z + T[i].z * off * dir,
       T[i].x * dir, T[i].y * dir, T[i].z * dir, mix, shade * (tip ? 0.94 : 1),
       st.bone, 1 - (st.w2 ?? 0), st.bone2 ?? 0, st.w2 ?? 0,
+      typeof st.spot === 'function' ? 0 : (st.spot ?? 0),
     );
     for (let j = 0; j < R; j++) {
       const j2 = (j + 1) % R;

@@ -47,6 +47,7 @@ import { buildChair } from './camp_chair.js';
 import { buildCooler } from './camp_cooler.js';
 import { buildTable } from './camp_table.js';
 import { buildTelescope } from './camp_telescope.js';
+import { CampDog, warmDog, disposeDogProtos } from './camp_dog.js';
 
 const STATE = { IDLE: 'idle', AIMING: 'aiming', RAISING: 'raising', PITCHED: 'pitched', STRIKING: 'striking' };
 
@@ -112,6 +113,16 @@ const MAX_CAMPS = 4;
 // that their clearings never touch, so the ground between them stays meadow and
 // the two read as two places rather than as one sprawl.
 const CAMP_GAP = 3.0;
+
+// ── the camp dog ────────────────────────────────────────────────────────────
+//
+// The player: "When you setup camp, 80% chance you get a camp dog."
+//
+// Rolled off the SITE's rng rather than a fresh one, so whether a given patch
+// of ground comes with a dog is a property of the place. Pack up and pitch
+// again in the same spot and the same dog is there; that is the difference
+// between a companion and a slot machine.
+const DOG_CHANCE = 0.80;
 
 // ── clicking a fire ─────────────────────────────────────────────────────────
 //
@@ -297,6 +308,11 @@ export class Camp extends System {
     // it draws out of the same `campMaterials()` set, with the same
     // position/normal/uv/color attributes, as the dome above it. Adding it would
     // cost a 37 000-triangle build under the loading screen and link nothing.
+    // The dog's geometry, built here for the same reason as everything else in
+    // this list. Its MATERIAL needs no warming: `createHideMaterial` pins
+    // `customProgramCacheKey` to 'animalHide', which Wildlife's own pool has
+    // already linked at boot, so the first dog reuses that program.
+    try { warmDog(); } catch (e) { console.warn('[camp] dog prewarm failed', e); }
     const builders = [buildTent, buildChair, buildCooler, buildTable, buildWoodpile,
                         (r) => buildTelescope(r, { variant: 'reflector' })];
     try {
@@ -516,6 +532,19 @@ export class Camp extends System {
         c.raise = Math.min(1, c.raise + dt / RAISE_TIME);
         this._applyRaise(c, true);
       }
+      // The dog arrives with the FINISHED camp, not during the build: props
+      // are still popping in one per frame and a dog milling through them
+      // clips, and one that fades up alongside the tent reads as part of the
+      // furniture rather than as something that wandered over.
+      //
+      // Tested outside the `raise < 1` branch on purpose. It lived inside it
+      // first, which meant an INSTANT pitch — `pitchAt({instant:true})`, the
+      // path every capture harness and the whole debug surface uses — set
+      // `raise` to 1 without ever entering that branch, so the camp had
+      // `hasDog` true and no dog, forever. Seven of eight camps rolled a dog
+      // and none of them had one.
+      if (!c.striking && c.raise >= 1 && c.hasDog && !c.dog) this._makeDog(c);
+      if (c.dog) c.dog.update(dt, this.ctx.camera.position);
     }
     if (this.camps.length) this._publishSlots();
 
@@ -1501,6 +1530,9 @@ export class Camp extends System {
       props: [], queue: [], queueN: 0, rnd,
       raise: 0, striking: false,
       root: new THREE.Group(),
+      // Rolled here, off the site's own rng, so it is decided before anything
+      // else consumes from that stream and stays stable for the site.
+      hasDog: rnd() < DOG_CHANCE, dog: null,
     };
     camp.root.name = 'camp_props';
     this.root.add(camp.root);
@@ -1568,6 +1600,47 @@ export class Camp extends System {
     this._applyRaise(camp);
     this.ctx.systems?.hud?.toast?.('Camp made');
     return camp;
+  }
+
+  /**
+   * Give a camp its dog.
+   *
+   * The props are the dog's obstacle set, and they exist by now because the
+   * queue drains during the raise and this only runs once the raise is done.
+   * Each is its own footprint plus a little, so the dog walks round the cooler
+   * rather than through it — see `CampDog._orbitPoint`, which is a two-pass
+   * relaxation rather than a solver, because the failure it prevents is a dog
+   * clipping a chair and the cost of a real one is not worth paying for that.
+   */
+  _makeDog(camp) {
+    // ── measure the props, do not ask them ────────────────────────────────
+    //
+    // `userData.footprint` is the number `_buildNext` uses to decide how far to
+    // LIFT a prop out of the ground, and it is not a clearance radius. Measured
+    // against the real bounds: the tent declares 1.45 and is actually 3.3 m
+    // across, the telescope declares 0.29 and is actually 1.14. Trusting it
+    // let the dog walk through the side of the tent — visibly, in game, while
+    // an obstacle test that used the same wrong number reported no overlap at
+    // all. So take the bounding box of what was actually built.
+    const box = new THREE.Box3();
+    const size = new THREE.Vector3();
+    const mid = new THREE.Vector3();
+    const obstacles = camp.props.map((p) => {
+      box.setFromObject(p.obj);
+      box.getSize(size); box.getCenter(mid);
+      return {
+        x: mid.x, z: mid.z,
+        // Half the widest horizontal extent, plus half a dog.
+        r: Math.max(size.x, size.z) * 0.5 + 0.20,
+      };
+    });
+    try {
+      camp.dog = new CampDog(camp.root, camp, camp.rnd, this.ctx.world, { obstacles });
+    } catch (e) {
+      // A dog that fails to build must not take the camp with it.
+      console.warn('[camp] dog failed to build', e);
+      camp.hasDog = false;
+    }
   }
 
   /**
@@ -1817,6 +1890,11 @@ export class Camp extends System {
       this.scope.leave();
     }
 
+    // The dog goes with the camp. Its geometry is a shared prototype and is NOT
+    // disposed here — only its own material and its place in the scene graph.
+    camp.dog?.dispose();
+    camp.dog = null;
+
     for (const p of camp.props) {
       camp.root.remove(p.obj);
       p.obj.traverse((o) => { if (o.isMesh) o.geometry?.dispose?.(); });
@@ -1931,5 +2009,6 @@ export class Camp extends System {
     this.scope?.dispose();
     this.ctx.scene.remove(this.root);
     disposeCampMaterials();
+    disposeDogProtos();
   }
 }
