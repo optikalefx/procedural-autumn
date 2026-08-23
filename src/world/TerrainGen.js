@@ -238,6 +238,44 @@ const GRADE_MOVE = 1.0;
 // It is worth nothing on its own and must not be read as a fix: alone, it takes
 // `fine` from 36.7% to 39.9% and `speck` from 461 to 553 per km^2, because all
 // it does by itself is give the spatter more water to spatter with.
+
+// ── keeping a channel's bed under its own water ──────────────────────────────
+// Three numbers, all of them about the same failure: the carve reaching for a
+// bed a long way off and taking someone else's out with it. See the floor at
+// `_carveChannels`, where they are used and where the measurements are.
+
+// How much wider than its nominal width a channel's carve disc may grow to
+// hold a deep cut on a gentle bank. The term it caps is `deep`-proportional
+// and uncapped it reached a 54.5 m radius for a four metre channel on the
+// shipped bake — a crater with the next fall's lip inside it. Worth little on
+// its own (it moved nothing across the nine waterlab terrains, which have no
+// mountainside in them) and 3.5 m off the worst over-cut on the real map.
+const CARVE_RAD_CAP = 2.2;
+// Metres of bed drop per metre of ground away from a channel's centreline: the
+// bank the carve is allowed to leave, and the slope of the floor cones. 1:2,
+// which is what the disc radius formula above was already aiming for.
+const CARVE_BANK = 0.5;
+// Texels a station asserts its floor over, at minimum. Wide enough that a
+// narrow channel still has a say about a wide one cutting past it: its own
+// disc can be two texels across, and the trunk's is fifteen.
+const CARVE_GROOVE_T = 8;
+// Metres below the ground it stands on that any texel may be cut regardless of
+// the floor — the local groove, as opposed to reaching for a bed elsewhere.
+// SWEPT, because it is the whole trade this round makes. Against the base, over
+// the nine terrains, as `perch` improvement / `speck` regression:
+//
+//     no groove (floor everything)   +72% / -33%
+//     1.0 m                          +72% / -33%
+//     2.0 m                          +60% / -27%
+//     3.0 m                          +39% / -18%
+//     groove unbounded (`lowered` exempt entirely)   +20% / -8%
+//
+// The specks are detached puddles: a hollow a few metres off the line that used
+// to be cut through to the channel and now is not. 1.0 buys the whole of the
+// perch fix and the `speck` cost is flat under it, so anything smaller is free
+// and anything larger only gives the fix away.
+const CARVE_GROOVE = 1.0;
+
 const WDEP_MIN = 0.45;
 
 export class TerrainGen {
@@ -1825,6 +1863,80 @@ export class TerrainGen {
     const texel = this.worldSize / R, half = this.worldSize / 2;
     const hOrig = Float32Array.from(h);
     const bedTarget = new Float32Array(N).fill(Infinity);
+    // ── who owns each texel, and how deep that owner's bed is ──────────────
+    //
+    // MEASURED, and it is the largest remaining source of water standing above
+    // its own bed. Of the 3 080 stations on the shipped bake whose bed sits
+    // more than two metres below the bed their own surface was published
+    // against, only 27% were cut that deep by their OWN reach: the median
+    // culprit is a station five metres away belonging to a DIFFERENT channel.
+    // On a hillside a river switchbacks, and two limbs that pass within ten
+    // metres of each other in plan stand twenty metres apart in height — so
+    // the lower limb's disc, which is `deep`-proportional and reached 54.5 m
+    // of radius, simply excavates the upper limb's bed out from under it. The
+    // upper limb's water surface is then left hanging over the hole, and
+    // `_rasterWater` paints it across everything within three metres.
+    //
+    // So a texel needs a FLOOR: it may be cut to the shape of whatever passes
+    // over it, but not to any depth that passes over it.
+    //
+    // The obvious floor is the one Water.js already applies to its vertex
+    // levels — the nearest real channel wins, and nothing may cut below that
+    // channel's bed. It was tried first and it is the wrong shape: it assigns
+    // each texel to exactly one channel, so where the assignment
+    // changes between two channels twenty metres apart in height the bed has a
+    // twenty metre cliff in it, in the middle of the water. Measured on the
+    // nine waterlab terrains it took `perch` down 76% and `bedStep` — the worst
+    // single-texel bed jump inside the wet mask — from 2.3 m to 6.3 m, with
+    // `speck` up 31%. A floor has to be as smooth as the bed it floors.
+    //
+    // So the floor is a max of CONES, one per station: the bed may not be cut
+    // below `bedC - CARVE_BANK * r`, r metres from that station's centreline.
+    // At the centreline it is exactly bedC, so the channel still reaches its
+    // own bed; a limb five metres away and twenty metres lower can now pull the
+    // ground down by CARVE_BANK * 5 rather than by twenty; and a max of cones
+    // of slope CARVE_BANK is Lipschitz with that slope, so the floor itself can
+    // never put a step in anything. It is the same statement the radius formula
+    // above was making — "hold the bank near 1:2" — enforced as a constraint on
+    // the result instead of by inflating a disc until the shape happens to
+    // comply.
+    const ownBed = new Float32Array(N).fill(-Infinity);
+
+    const claim = (wx, wz, m, lk, surf, wdep, dcarve, base) => {
+      // The apex of the cone is NOT the water's own bed. A channel is cut
+      // `dcarve` — 0.8 to 6.8 m — into the ground it runs through, and where
+      // that ground is already at or below the water surface the incision is
+      // the only thing that gives the reach a trench to run in. Flooring at
+      // `bedC` alone takes that away: the bed comes out exactly `wdep`, half a
+      // metre, under the surface, and every bump erosion left in it is then an
+      // island. Measured on the nine waterlab terrains, `speck` +33% and
+      // `chanWet` down as much as 3.7 points, with the floor at bedC and
+      // nothing else changed.
+      const ci = Math.max(0, Math.min(R - 1, Math.round((wz + half) / texel - 0.5))) * R
+               + Math.max(0, Math.min(R - 1, Math.round((wx + half) / texel - 0.5)));
+      const bedC = Math.min(surf - wdep, hOrig[ci] - dcarve);
+      const deep = Math.max(0, (base ?? bedC + dcarve) - bedC);
+      const radT = Math.min((1.0 + m * 7.5) * CARVE_RAD_CAP,
+                            1.0 + m * 7.5 + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
+      // The cone has to be asserted at least as far as another channel's disc
+      // can reach in, or a brook whose own disc is two texels wide has no say
+      // about the trunk that cuts across it.
+      const radC = Math.max(radT, CARVE_GROOVE_T);
+      const gx = (wx + half) / texel, gz = (wz + half) / texel;
+      const x0 = Math.max(0, Math.floor(gx - radC)), x1 = Math.min(R - 1, Math.ceil(gx + radC));
+      const z0 = Math.max(0, Math.floor(gz - radC)), z1 = Math.min(R - 1, Math.ceil(gz + radC));
+      for (let iy = z0; iy <= z1; iy++) {
+        const dz = iy + 0.5 - gz;
+        for (let ix = x0; ix <= x1; ix++) {
+          const dx = ix + 0.5 - gx;
+          const d2 = dx * dx + dz * dz;
+          if (d2 > radC * radC) continue;
+          const ni = iy * R + ix;
+          const f = bedC - Math.sqrt(d2) * texel * CARVE_BANK;
+          if (f > ownBed[ni]) ownBed[ni] = f;
+        }
+      }
+    };
 
     const splat = (wx, wz, m, lk, surf, wdep, dcarve, base) => {
       const bedC = surf - wdep;
@@ -1854,7 +1966,8 @@ export class TerrainGen {
       // a 3 m cut into a 1.1-texel radius is 54 degrees, which is a canyon in
       // the middle of a meadow. 0.9 texels of extra radius per metre of extra
       // cut holds the bank near 1:2 however deep the channel has to go.
-      const radT = (1.0 + m * 7.5 + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
+      const radT = Math.min((1.0 + m * 7.5) * CARVE_RAD_CAP,
+                            1.0 + m * 7.5 + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
       const gx = (wx + half) / texel, gz = (wz + half) / texel;
       const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
       const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
@@ -1876,28 +1989,47 @@ export class TerrainGen {
           // where they differ, the U-profile toward bedC is the one that leaves
           // the channel able to hold its own water, and it still relaxes to the
           // untouched ground at d = 1 so no bank gets a step in it.
-          const tgt = lowered < shaped ? lowered : shaped;
+          // The floor applies to `shaped` and NOT to `lowered`, and the
+          // difference is the whole cost of it. `lowered` is a groove of at
+          // most `dcarve` cut into the ground that is there, so it follows the
+          // terrain and cannot pull a bed anywhere; it is also what joins the
+          // hollows beside a channel to the channel. `shaped` is the term that
+          // reaches for a bed somewhere else, and it is the one that needs a
+          // floor. Flooring both took `speck` up 33% on the nine waterlab
+          // terrains — small detached puddles, where a hollow a few metres off
+          // the line stopped being cut through to the channel.
+          const floor = ownBed[ni] < hOrig[ni] - CARVE_GROOVE ? ownBed[ni] : hOrig[ni] - CARVE_GROOVE;
+          let tgt = lowered < shaped ? lowered : shaped;
+          if (tgt < floor) tgt = floor;
           if (tgt < bedTarget[ni]) bedTarget[ni] = tgt;
         }
       }
     };
 
-    for (const sta of this.channels) {
-      for (let k = 0; k < sta.length - 1; k++) {
-        const a = sta[k], b = sta[k + 1];
-        // Sub-step along the segment: stations are up to 6 m apart and a disc
-        // every 6 m is a string of beads, not a channel.
-        const seg = Math.hypot(b.x - a.x, b.z - a.z);
-        const sub = Math.max(1, Math.ceil(seg / (texel * 0.7)));
-        for (let t = 0; t < sub; t++) {
-          const u = t / sub;
-          splat(lerp(a.x, b.x, u), lerp(a.z, b.z, u),
-                lerp(a.m, b.m, u), lerp(a.lake, b.lake, u),
-                lerp(a.surf, b.surf, u), lerp(a.wdep, b.wdep, u),
-                lerp(a.dcarve, b.dcarve, u), lerp(a.base, b.base, u));
+    // Twice over the same stations: the first pass decides who owns each texel,
+    // the second cuts. It cannot be one pass — a splat that arrives later may
+    // be the nearer one, and a floor that is only correct for the splats seen
+    // so far is not a floor.
+    const walk = (fn) => {
+      for (const sta of this.channels) {
+        for (let k = 0; k < sta.length - 1; k++) {
+          const a = sta[k], b = sta[k + 1];
+          // Sub-step along the segment: stations are up to 6 m apart and a disc
+          // every 6 m is a string of beads, not a channel.
+          const seg = Math.hypot(b.x - a.x, b.z - a.z);
+          const sub = Math.max(1, Math.ceil(seg / (texel * 0.7)));
+          for (let t = 0; t < sub; t++) {
+            const u = t / sub;
+            fn(lerp(a.x, b.x, u), lerp(a.z, b.z, u),
+               lerp(a.m, b.m, u), lerp(a.lake, b.lake, u),
+               lerp(a.surf, b.surf, u), lerp(a.wdep, b.wdep, u),
+               lerp(a.dcarve, b.dcarve, u), lerp(a.base, b.base, u));
+          }
         }
       }
-    }
+    };
+    walk(claim);
+    walk(splat);
 
     const carve = new Float32Array(N);
     for (let i = 0; i < N; i++) {
@@ -2704,13 +2836,45 @@ export class TerrainGen {
             // the first texel almost everywhere and the meander never grew:
             // median sinuosity moved 1.081 -> 1.089.
             const ref = pb[k] + MEANDER_FREEBOARD + (0.8 + pm[k] * pm[k] * 6.0) * 0.8;
+            // ...and the SAME BAR ON THE WAY DOWN, which is the half that was
+            // missing, and is the whole of the perched-river defect.
+            //
+            // This gate only ever asked whether the ground had risen. On a
+            // valley floor that is the complete question — the bend fills the
+            // flat and stops at the bank. On a hillside it is half of one: the
+            // uphill probe closes at the first texel, the downhill probe never
+            // closes at all, and a reach that should run down the fall line is
+            // free to be dragged up to MEANDER_AMP (5) channel widths across
+            // the slope. `pb` is then re-read where the line ended up, twenty
+            // metres downhill and tens of metres lower, and everything after it
+            // in this file believes that number.
+            //
+            // MEASURED on the shipped bake, seed 20261018 at res 1536, between
+            // stations 2 m apart: `base` steps DOWN by up to 28.65 m and up by
+            // 14.3 m, p99 3.70 m. The forward monotone clamp then latches onto
+            // the lowest of those outliers and holds the surface there for
+            // every station after it, so `deep` — how far the carve has to cut
+            // to reach the water surface — runs to 26.7 m, the carve's radius
+            // is `deep`-proportional and runs to 54.5 m, and the resulting
+            // crater leaves the published surface standing up to 19.3 m above
+            // its own bed. `_rasterWater` then paints that surface over every
+            // texel within 3 m of it: a slab of water lying on a mountainside,
+            // clean from above and plainly floating from eye level.
+            //
+            // Symmetric, because the statement is symmetric. A bank that falls
+            // away is still a bank, and a bend may not cross it: past `refLo`
+            // the ground is already below the bed this reach is about to cut,
+            // so the water would not be in a channel there, it would be
+            // spilling down a hill.
+            const refLo = pb[k] - MEANDER_FREEBOARD - (0.8 + pm[k] * pm[k] * 6.0) * 0.8;
             let room = want;
             const dir = sig >= 0 ? 1 : -1;
             for (let t = texel; t <= want; t += texel) {
               const gx = Math.round((px[k] + nx * dir * t + half) / texel);
               const gz = Math.round((pz[k] + nz * dir * t + half) / texel);
               if (gx < 0 || gz < 0 || gx >= R || gz >= R) { room = t - texel; break; }
-              if (this.height[gz * R + gx] > ref) { room = t - texel; break; }
+              const g = this.height[gz * R + gx];
+              if (g > ref || g < refLo) { room = t - texel; break; }
             }
             // Taper to nothing at both ends: the head is a confluence or a
             // spill point and the tail is a waterline, and neither may move.

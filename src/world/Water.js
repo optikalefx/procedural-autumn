@@ -134,6 +134,12 @@ const SURF_ISO = -1.4;
 // it by more than the 3.5 m at which that guard has fully closed. 246 quads
 // meet all three. None of them has a wet neighbour, and none holds water.
 const SURF_LEVEL_STEP = 8.0;
+// Metres a pure dilation-ring cell may stand above the lowest ground under it
+// before it is dropped. Two, because the ring's whole job is to give the
+// shoreline fade and the damp band ground to finish on, and both are drawn
+// within a metre of the waterline; a ring cell standing higher than a bank is
+// not carrying a fade, it is a sheet in the air. See the cull site.
+const SURF_RING_HANG = 2.0;
 // Signed shore distance is capped here, in metres. Past this the shader only
 // wants to know "open water", and a u8-sized number keeps the attribute small.
 const SHORE_CAP = 32;
@@ -1221,7 +1227,7 @@ export function buildWaterSurface(world, debug = null) {
   const vmap = new Int32Array((perChunk + 1) * (perChunk + 1));
   let quadCount = 0, tris = 0;
   const outChunks = [];
-  let cullVOk = 0, cullStep = 0, cullNp = 0, cullDead = 0;
+  let cullVOk = 0, cullStep = 0, cullNp = 0, cullDead = 0, cullHang = 0;
 
   // Corners are walked 00 -> 01 -> 11 -> 10, which is the reverse of the
   // natural order and is what the quad emission always used; keep it, or every
@@ -1303,6 +1309,49 @@ export function buildWaterSurface(world, debug = null) {
           }
           if (hi - lo > SURF_LEVEL_STEP && !hasWD[kc]
               && lo - bedLo[kc] > 3.5) { cullStep++; continue; }
+
+          // ── and the ring may not hang ────────────────────────────────────
+          //
+          // The test above catches a quad that stands ON END. This one catches
+          // the far commoner thing, which stands perfectly level and is just as
+          // wrong: a ring cell lying flat, several metres up in the air, over
+          // ground that has fallen away underneath it.
+          //
+          // The contour is cut at SURF_ISO = -1.4 m, which is a bound on how
+          // far the surface may go UNDER the ground. There has never been a
+          // bound the other way, and downhill of a channel there needs to be
+          // one, because the ring carries the water's level outward while the
+          // hill drops away from it: the depth field the contour tests grows
+          // instead of crossing the iso, so the polygon never closes and the
+          // mesh runs the full SURF_DEAD_M of ring. MEASURED on the bank of the
+          // reach at (615, -765), sampling straight down the fall line from the
+          // last baked-wet texel: the mesh carries a level of 49.9 over ground
+          // at 46.6, and four metres further down, 50.3 over 43.4 — a sheet of
+          // water geometry standing seven metres in the air.
+          //
+          // It is not a small defect and it is invisible from above, which is
+          // why it survived: in plan it is a band a few metres wide beside the
+          // river, and the alpha ramps that are supposed to withdraw it are all
+          // functions of PLAN distance. Seen along the hill it is the whole
+          // hillside — a metre of ground costs a metre of screen when you are
+          // looking down the slope, and Fresnel at that angle hands back the
+          // sky at almost full strength however low the alpha is. It is the
+          // slab of water lying on the mountainside in every eye-level frame of
+          // this map.
+          //
+          // Bounded on `hasWD`, so this only ever removes cells the bake itself
+          // does not call water: over a real body, however deep, hasWD is set
+          // and nothing here fires.
+          // On `hasW`, the cell's OWN baked water, and not on the one-cell
+          // growth `hasWD` used above. hasWD exists because the shader reads
+          // the baked grid through a linear filter and a cell one texel out
+          // still sees water in it; that is the right reach for a per-pixel
+          // guard and the wrong one here, where the question is whether the
+          // BAKE put water in this cell. It did not, and the bake already
+          // refuses to write channel water more than three metres above its own
+          // bed — so a cell it declined, standing higher than a bank above the
+          // ground, is exactly the geometry that has no business existing.
+          if (!hasW[kc] && lo - bedLo[kc] > SURF_RING_HANG) { cullHang++; continue; }
 
           // A quad whose four corners are ALL further out on the dry side
           // than the shader's outer alpha guard reaches is multiplied by
@@ -1409,7 +1458,7 @@ export function buildWaterSurface(world, debug = null) {
     // an instrument that indexed it at R either way would be reading a
     // quarter of the map at four times the scale and reporting it as a result.
     sdf, sdfAt, span, sdfRes: SR, sdfTexel: ST, sdfFromHydro: !!HY,
-    cullVOk, cullStep, cullNp, cullDead,
+    cullVOk, cullStep, cullNp, cullDead, cullHang,
   });
 
   void clamp01;

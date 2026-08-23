@@ -67,6 +67,23 @@ handover to the lake surface.
 3. **Surface height is continuous across a junction.** River surface is
    `bed + 0.22 + rm*0.9`; lake surface is `filled + 0.05`. Those two do not
    meet, and the step is visible where a channel reaches standing water.
+4. **The surface stands on its own bed.** At every station, the bed the carve
+   leaves is within a metre of `y - wdep`. This is not a shape guarantee like
+   the three above, it is a VERTICAL one, and it was added because nothing in
+   the harness could see it break: every other number this round is measured in
+   plan, on a contour or a mask, and a river that has come away from its bed is
+   a clean blue line from above and a slab of water lying on a hillside at eye
+   level. It broke by up to 19.3 m on the shipped bake — see `_carveChannels`,
+   where a neighbouring limb's disc excavated the bed out from under the water
+   it was published for. `waterlab`'s `perch` and `spill` columns are the check;
+   `tools/_scratch/carveaudit.mjs` is the same measurement on the real map.
+
+   Geometry may also rely on the corollary that Water.js now enforces from its
+   own side: a dilation-ring cell may not stand more than `SURF_RING_HANG`
+   above the ground under it. The contour is cut at `SURF_ISO = -1.4 m`, which
+   bounds how far the surface may go UNDER the ground and never bounded the
+   other way, so downhill of a channel the ring drew the water level out over
+   ground that had fallen seven metres away from it.
 
 ## How to check your work
 

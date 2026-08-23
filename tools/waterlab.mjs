@@ -66,6 +66,19 @@
  *   bedStep   worst single-texel bed jump inside the wet mask, metres.
  *   area      water area as a fraction of the patch. A regression guard: a
  *             "fix" that scores well by deleting water is caught here.
+ *   perch     metres the published water surface stands above the bed the carve
+ *             actually left AT ITS OWN CENTRELINE, p99 over stations. Every
+ *             other number in this table is measured in PLAN, on a contour or a
+ *             mask, and a river that has come away from its bed is invisible to
+ *             all of them: seen from above it is a clean blue line, seen from
+ *             eye level it is a slab of water lying on a hillside with the
+ *             ground showing under its downhill edge. The station knows what
+ *             its depth should be — `wdep`, 0.45-1.35 m — so this is simply
+ *             (surf - wdep) - bed, and anything over a metre is a channel whose
+ *             bed has been excavated out from under its own water surface.
+ *   spill     % of channel texels carrying more than a metre more water than
+ *             the nearest station's own depth. `perch` is the defect at the
+ *             centreline; this is how much ground it floods on the way out.
  *
  * A case also FAILS LOUDLY if it produced no water at all — a silent zero is
  * how a harness reports ten clean numbers about nothing.
@@ -614,7 +627,56 @@ function metrics(gen, d) {
   for (let i = 0; i < N; i++) if (wet[i]) depths.push(d[i]);
   depths.sort((a, b) => a - b);
 
+  // ── perch and spill: is the water still on its bed? ──────────────────────
+  // The stations carry both halves of the statement — `surf`, the height the
+  // rasteriser writes, and `wdep`, how deep this station's water is meant to
+  // be — so the bed the carve owes them is `surf - wdep`, and the difference
+  // against the bed that exists is the defect, in metres, with no threshold
+  // and no contour in it. `spill` then asks what that costs in plan: a texel
+  // holding a metre more water than the station nearest it is ground the
+  // channel never accounted for, and on a slope it is where the surface comes
+  // away from the hill.
+  const TX = WORLD / R, HALF = WORLD / 2;
+  const bedAtStation = (x, z) => {
+    const xi = Math.max(0, Math.min(R - 1, Math.round((x + HALF) / TX - 0.5)));
+    const zi = Math.max(0, Math.min(R - 1, Math.round((z + HALF) / TX - 0.5)));
+    return gen.height[zi * R + xi];
+  };
+  const over = [];
+  // Cheap nearest-station lookup: one bucket per 32 m, stations bucketed once.
+  const BK = 32, BG = Math.ceil(WORLD / BK);
+  const buckets = new Map();
+  for (const sta of gen.channels ?? []) {
+    for (const p of sta) {
+      over.push((p.surf - p.wdep) - bedAtStation(p.x, p.z));
+      const bx = Math.floor((p.x + HALF) / BK), bz = Math.floor((p.z + HALF) / BK);
+      const key = bz * BG + bx;
+      let arr = buckets.get(key); if (!arr) buckets.set(key, arr = []);
+      arr.push(p);
+    }
+  }
+  over.sort((a, b) => a - b);
+  let spillN = 0, spillW = 0;
+  for (let i = 0; i < N; i++) {
+    if (!wet[i] || (gen.riverMask?.[i] ?? 0) < 0.20) continue;
+    const zi = (i / R) | 0, xi = i - zi * R;
+    const x = (xi + 0.5) * TX - HALF, z = (zi + 0.5) * TX - HALF;
+    const bx = Math.floor((x + HALF) / BK), bz = Math.floor((z + HALF) / BK);
+    let bd = Infinity, bw = 0;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const arr = buckets.get((bz + dz) * BG + (bx + dx)); if (!arr) continue;
+      for (const p of arr) {
+        const dd = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
+        if (dd < bd) { bd = dd; bw = p.wdep; }
+      }
+    }
+    if (!isFinite(bd)) continue;
+    spillN++; if (d[i] > bw + 1.0) spillW++;
+  }
+
   return {
+    perch: over.length ? +over[Math.floor(over.length * 0.99)].toFixed(2) : 0,
+    spill: spillN ? +(spillW / spillN * 100).toFixed(1) : 0,
     area: +(area * 100).toFixed(2),
     chanWet: chanN ? +(chanW / chanN * 100).toFixed(1) : 0,
     depth50: depths.length ? +depths[depths.length >> 1].toFixed(2) : 0,
@@ -623,6 +685,12 @@ function metrics(gen, d) {
     fine: totLen > 0 ? +(fineLen * TEXEL / totLen * 100).toFixed(1) : 0,
     stair: +(stair * 100).toFixed(1),
     speck: +((bodies + holes) / km2).toFixed(1),
+    // `speck`'s two halves, reported separately because they have different
+    // causes and a fix can trade one for the other: `bodies` are detached
+    // puddles, `holes` are dry islands inside water. Not in the compare table —
+    // `speck` is the number to rank on — but the first thing to look at when it
+    // moves.
+    bodies: +(bodies / km2).toFixed(1), holes: +(holes / km2).toFixed(1),
     grad10: +grad10.toFixed(4),
     bedRms: +bedRms.toFixed(3),
     bedTan: tanN ? +Math.sqrt(tanS / tanN).toFixed(3) : 0,
@@ -690,6 +758,7 @@ function render(gen, d, name, m, scale = SCALE) {
   text(img, 5, 21, `crenel ${m.crenel} fine ${m.fine}% stair ${m.stair}% speck ${m.speck}`, [235, 232, 170], 1);
   text(img, 5, 30, `grad10 ${m.grad10} bedrms ${m.bedRms} step ${m.bedStep}`, [235, 232, 170], 1);
   text(img, 5, 39, `area ${m.area}% chanwet ${m.chanWet}% d50 ${m.depth50}m`, [200, 205, 215], 1);
+  text(img, 5, 48, `perch ${m.perch}m spill ${m.spill}%`, [255, 190, 170], 1);
   return img;
 }
 
@@ -699,9 +768,9 @@ if (has('compare')) {
   const [A, B] = [argv[i + 1], argv[i + 2]];
   const load = (t) => JSON.parse(readFileSync(`shots/waterlab/${t}/metrics.json`, 'utf8'));
   const a = load(A), b = load(B);
-  const KEYS = ['crenel', 'fine', 'stair', 'speck', 'grad10', 'bedRms', 'bedTan', 'bedStep', 'area', 'chanWet', 'depth50'];
+  const KEYS = ['crenel', 'fine', 'stair', 'speck', 'grad10', 'bedRms', 'bedTan', 'bedStep', 'area', 'chanWet', 'depth50', 'perch', 'spill'];
   // Lower is better for all but grad10 and area, which want to be preserved.
-  const BETTER_LOW = new Set(['crenel', 'fine', 'stair', 'speck', 'bedRms', 'bedTan', 'bedStep']);
+  const BETTER_LOW = new Set(['crenel', 'fine', 'stair', 'speck', 'bedRms', 'bedTan', 'bedStep', 'perch', 'spill']);
   console.log(`\n${A}  ->  ${B}\n`);
   const pad = (s, n) => String(s).padStart(n);
   console.log(`${'case'.padEnd(9)}${KEYS.map((k) => pad(k, 10)).join('')}`);
@@ -754,7 +823,8 @@ for (const name of names) {
             + `stair ${String(m.stair).padStart(5)}%  speck ${String(m.speck).padStart(5)}  `
             + `grad10 ${String(m.grad10).padStart(7)}  bedRms ${String(m.bedRms).padStart(6)}  `
             + `bedTan ${String(m.bedTan).padStart(6)}  `
-            + `bedStep ${String(m.bedStep).padStart(5)}  area ${String(m.area).padStart(5)}%  `
+            + `bedStep ${String(m.bedStep).padStart(5)}  perch ${String(m.perch).padStart(5)}m  `
+            + `spill ${String(m.spill).padStart(4)}%  area ${String(m.area).padStart(5)}%  `
             + `chanWet ${String(m.chanWet).padStart(5)}%  d50 ${String(m.depth50).padStart(5)}m  ${ms}ms`);
 }
 
