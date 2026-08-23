@@ -683,6 +683,20 @@ export class Camp extends System {
       return;
     }
 
+    // ── the boat has the pointer ────────────────────────────────────────────
+    // Boat is registered BEFORE Camp (see SYSTEMS in main.js), so this claim
+    // is same-frame: it is true while the pointer is over a boat, over a valid
+    // launch aim at the water's edge, or while the player is aboard. One guard
+    // keeps a shore click from also pitching a camp, and suppresses the
+    // placement affordance the same way being parked at a camp does.
+    if (this.ctx.systems?.boat?.pointerClaim) {
+      this._suppressAim = true;
+      clearCampAim();
+      this._aim.ok = false;
+      this.prompt.set('');
+      return;
+    }
+
     // ── you are AT a camp; you are not shopping for another one ─────────────
     //
     // The player: "I know we can allow another camp without packing up, but
@@ -958,7 +972,11 @@ export class Camp extends System {
     // has neither problem: a click on the camper is centred on the camper
     // (0.1 of its radius) even while it passes through the edge of the camp's
     // sphere (0.9 of that one). It is also just what the player means.
-    if (this._click && !moving && !this._justPitched) {
+    // …and not while the boat owns the click (a boarding click, or any click
+    // made from the water — a fire picked from mid-lake would drag the boom's
+    // subject off the boat the player is sitting in).
+    if (this._click && !moving && !this._justPitched
+        && !this.ctx.systems?.boat?.pointerClaim) {
       // The fire first, and it beats everything.
       //
       // The camp spheres below are 5.2 m across and overlap the camper's, so

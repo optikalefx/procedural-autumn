@@ -157,6 +157,13 @@ export class Vehicle extends System {
     this._rescueHold = false;
     this._brakeHold = false;
     this.brakeHold = false;      // what the HUD lamp reads
+    // Who owns the driving inputs. null = the camper; 'boat' while the player
+    // is paddling. While held, the pedals and steering are fed to the physics
+    // as zeros and the brake hold cannot release — the camper stays parked
+    // exactly as it was. Deliberately NOT input.suppressed (the holder needs
+    // those same axes) and NOT enabled=false (Camp's gate reads this system).
+    // The holder must clear it unconditionally on exit and in its dispose.
+    this.controlsHeldBy = null;
     this.rescues = 0;
     this.teleportSeq = 0;      // CameraRig watches this and re-primes its boom
   }
@@ -272,17 +279,21 @@ export class Vehicle extends System {
     const { ctx } = this;
     const input = ctx.input;
     const ax = input.axes;
+    // Another system (the boat) holds the controls: every axis reads as zero
+    // to the camper, and R belongs to the holder's context too. See the note
+    // on `controlsHeldBy` in the constructor.
+    const held = this.controlsHeldBy != null;
 
     // ── camera cycling / input ──────────────────────────────────────────────
-    this.throttle = ax.throttle;
-    this.steer = ax.steer;
+    this.throttle = held ? 0 : ax.throttle;
+    this.steer = held ? 0 : ax.steer;
 
     // ── rescue ──────────────────────────────────────────────────────────────
     // `justPressed` is cleared by Input every frame and zeroed entirely while a
     // menu has focus, so this cannot fire from the settings sheet or fire twice
     // from one press.
     this._rescueCool = Math.max(0, this._rescueCool - dt);
-    if (input.justPressed('KeyR')) this.rescue();
+    if (!held && input.justPressed('KeyR')) this.rescue();
     // Once per session, and only after the player has genuinely been fighting
     // it for a couple of seconds: a key you only need when stuck is no use if
     // you learn about it before you are. `_stuckFor` is the physics' own
@@ -299,22 +310,22 @@ export class Vehicle extends System {
     // frame it was released, and by the next frame the camper is over the
     // threshold. Without that ordering the two inputs deadlock and the camper
     // sits there with the throttle open.
-    const driving = ax.throttle > HOLD_PEDAL || ax.brake > HOLD_PEDAL;
+    const driving = !held && (ax.throttle > HOLD_PEDAL || ax.brake > HOLD_PEDAL);
     if (driving) this._brakeHold = false;
-    else if (ax.handbrake > 0.5 && this._holdEligible()) this._brakeHold = true;
+    else if (!held && ax.handbrake > 0.5 && this._holdEligible()) this._brakeHold = true;
 
     // A rescue leaves the park brake on. Any deliberate input releases it —
     // the player has taken over and the camper should behave normally from
     // that instant, with no "press again to release" ceremony. Steering counts
     // here, unlike the brake hold above, because a rescue was not something the
     // player chose and any sign of life should hand the camper back.
-    if (driving || Math.abs(ax.steer) > 0.05) this._rescueHold = false;
+    if (driving || (!held && Math.abs(ax.steer) > 0.05)) this._rescueHold = false;
 
     this.phys.step(dt, {
-      throttle: ax.throttle,
-      brake: ax.brake,
-      steer: ax.steer,
-      handbrake: ax.handbrake,
+      throttle: held ? 0 : ax.throttle,
+      brake: held ? 0 : ax.brake,
+      steer: held ? 0 : ax.steer,
+      handbrake: held ? 0 : ax.handbrake,
       hold: this._brakeHold,
       park: this._rescueHold,
     });
