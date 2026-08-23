@@ -42,6 +42,18 @@ const GAITS = {
   gallop: { off: [0.00, 0.08, 0.42, 0.50], duty: 0.34, lift: 0.135, bobHz: 1, flight: 0.14, flightAt: 0.86, pitch: 2.0 },
   bound:  { off: [0.00, 0.06, 0.34, 0.40], duty: 0.30, lift: 0.150, bobHz: 1, flight: 0.30, flightAt: 0.70, pitch: 2.4 },
   hop:    { off: [0.20, 0.26, 0.00, 0.06], duty: 0.26, lift: 0.120, bobHz: 1, flight: 0.48, flightAt: 0.52, pitch: 1.6 },
+  // A dog's amble. The offsets are the same lateral sequence as `walk` — left
+  // hind, left fore, right hind, right fore — but the DUTY is much higher, and
+  // that one number is the whole point of having a separate entry.
+  //
+  // At `walk`'s 0.64 each foot swings for 0.36 of the cycle while the offsets
+  // are only 0.25 apart, so two feet are off the ground together for 44% of
+  // it. That is correct for a deer and it is what a deer looks like. On a dog
+  // pottering around a fire at less than a metre a second it reads as a stagger
+  // — and at the moment the two FRONT feet overlap it reads as impossible.
+  // At 0.76 the swing is 0.24, just inside the offset, so exactly one foot is
+  // in the air at any instant and the dog puts them down one at a time.
+  dogwalk: { off: [0.00, 0.50, 0.25, 0.75], duty: 0.76, lift: 0.048, bobHz: 2, flight: 0.00, flightAt: 1.00, pitch: 0.85 },
 };
 
 // Which gait a species uses at which of its three speed tiers.
@@ -49,6 +61,11 @@ const LADDER = {
   deer:   ['walk', 'trot', 'bound'],
   bear:   ['walk', 'trot', 'gallop'],
   rabbit: ['hop', 'hop', 'hop'],
+  // The camp dog had NO entry here and fell through to the deer's, which is
+  // wrong twice over: a deer's walk is too quick-footed for a dog (see
+  // `dogwalk`), and a deer's top gear is a BOUND — both hind feet together,
+  // then both fore. Dogs gallop.
+  dog:    ['dogwalk', 'trot', 'gallop'],
 };
 
 const _a = new THREE.Vector3();
@@ -180,6 +197,8 @@ export class AnimRig {
     this.bodyPitch = 0; this.bodyRoll = 0; this.bodyY = 0;
     this.lastSpeed = 0; this.surge = 0;
     this._warm = false;
+    // Was the animal standing still last frame? See the re-key in update().
+    this._wasStill = true;
   }
 
   /** Place all four feet on the ground under a standing animal. */
@@ -260,6 +279,24 @@ export class AnimRig {
     const cadence = speed > 0.04 ? speed / this.strideLen : 0;
     this.phase = (this.phase + cadence * dt) % 1;
 
+    // ── coming back from a standstill ───────────────────────────────────────
+    //
+    // Re-key every leg to its own offset the moment the animal starts moving
+    // again. The standing shuffle below moves ONE leg at a time and parks it
+    // wherever its little step ended, which is not where the gait wants it —
+    // so an animal that stops and starts often accumulates legs sharing a
+    // phase, and two legs on the same phase swing together. On the camp dog,
+    // which stops and starts every few seconds, that produced a walk with both
+    // front paws striding at once: not a gait any quadruped has.
+    //
+    // Same technique `_pickGait` uses at a gait change, and safe for the same
+    // reason: it is keyed off the running body phase, so a foot in stance
+    // stays in stance rather than being teleported into mid-swing.
+    if (cadence > 0 && this._wasStill) {
+      for (const lg of this.legs) lg.p = (this.phase + G.off[lg.key]) % 1;
+    }
+    this._wasStill = cadence === 0;
+
     const sh = Math.sin(heading), ch = Math.cos(heading);
 
     // ── the ground plane under the body ─────────────────────────────────────
@@ -317,7 +354,9 @@ export class AnimRig {
         lg.stepping = false;
       } else if (lg.stepping) {
         lg.p += dt / 0.34;
-        if (lg.p >= 1) { lg.p = 0; lg.stepping = false; }
+        // Back to this leg's OWN slot in the cycle rather than to zero, so a
+        // standing animal's weight shifts leave the gait coherent.
+        if (lg.p >= 1) { lg.p = G.off[lg.key]; lg.stepping = false; }
       }
 
       const inStance = lg.p < duty;
