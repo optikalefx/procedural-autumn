@@ -573,6 +573,326 @@ float wStreak(vec2 p, vec2 T, float k, float stretch, vec3 ph){
              (wFbm2(b) + wFbm2(b + s)) * 0.5, ph.z) * 0.5 + 0.5;
 }
 
+// ── boat wakes ───────────────────────────────────────────────────────────────
+// Two inputs, both written per-frame by Water.update() and both exactly zero
+// when nothing is on the water — the call sites branch on uniforms, so an
+// empty lake pays two compares and nothing else.
+//
+//   uBoat / uBoatDyn   ONE continuous attached wake: a Kelvin-style V (two
+//                      diverging arms at the classical ~19.5 degree half
+//                      angle), a bow bulge and collar of foam at the stem,
+//                      and a turbulent foam trail astern. All analytic in
+//                      boat-local coordinates; the trail is a straight ribbon
+//                      behind the current heading, which is honest for the
+//                      few seconds of it that are visible.
+//   uWakes / uWakeR    up to 12 one-shot impulses (paddle strokes, launch
+//                      splashes): an expanding band-limited ring packet plus
+//                      a foam disc that blooms and dissolves over 2.5-4 s.
+//
+// Everything that oscillates is a single analytic travelling wave (the same
+// arithmetic as wWaveGrad) and is multiplied by wRippleFade(foot, k), because
+// a wake seen from the far bank must dissolve into the pixel footprint the
+// way the chop does (see chopOn) rather than alias into a dotted moire. Foam
+// derived from a crest phase is band-limited by the same factor, and the
+// noise that breaks the trail up is faded to a flat tone as the footprint
+// grows for the same reason.
+uniform vec4  uBoat;     // xy: boat position, m. zw: unit forward direction.
+uniform vec4  uBoatDyn;  // x: speed m/s (smoothed). y: beam m. z: trail length m. w: fade 0..1.
+uniform vec4  uWakes[12];// xy: centre, m. z: age, s. w: strength 0..2.
+uniform float uWakeR[12];// ring radius per impulse, m
+uniform int   uWakeCount;
+
+const float W_KELVIN_TAN = 0.3541;   // tan(19.47 deg), the Kelvin half-angle
+
+void wBoatWake(vec2 p, float foot, float t, inout vec2 g, inout float wfoam){
+  float bf = uBoatDyn.w;
+  vec2 f = uBoat.zw;
+  vec2 rr = vec2(-f.y, f.x);
+  vec2 rel = p - uBoat.xy;
+  float s = -dot(rel, f);            // metres astern of the stem
+  float q = dot(rel, rr);            // metres abeam, + to starboard
+  float beam = max(uBoatDyn.y, 0.6);
+  float len = uBoatDyn.z;
+  // Hull half-length, estimated from the beam. The canoe is 4.6 x 0.90 and
+  // the kayak 4.2 x 0.60; both land within a decimetre of this line, and
+  // setBoat does not carry a length. uBoat.xy is the hull CENTRE (Boat.js
+  // publishes phys.x/z), so the transom sits near s = +hullHalf and the stem
+  // near s = -hullHalf — the old code's own comment believed s = 0 was the
+  // stem, which is why its "stern" churn peaked under the middle of the boat.
+  float hullHalf = 1.55 + 0.85 * beam;
+  // One rejection for the whole wake: a box around the V, the trail, the bow
+  // and the hull halo. It is what keeps the cost of a boat local to the boat.
+  // The forward bound must sit where the bow collar/halo gaussians are truly
+  // zero, not merely small: at hullHalf + 1.8 the tail was still ~5% and the
+  // box edge printed as a hard diagonal line across the foam ahead of the
+  // stem (user screenshot, kayak). 6 m puts the cut below quantisation.
+  if (s < -(hullHalf + 6.0) || s > len + 6.0 ||
+      abs(q) > s * W_KELVIN_TAN + beam * 2.5 + 4.0) return;
+
+  float spd = uBoatDyn.x;
+  // Wavelength follows hull speed the way a real wake's does — a faster boat
+  // draws a longer feather — clamped so the band-limit always has something
+  // it can hold.
+  float lam = clamp(0.7 + 0.5 * spd, 0.9, 2.8);
+  float k = 6.28318 / lam;
+  float fk = wRippleFade(foot, k);
+
+  // ── the V: two diverging arms ────────────────────────────────────────────
+  // Each arm is a straight line through the stem; dA/dB are exact signed
+  // distances to it, so the crests lie parallel to the arm and radiate slowly
+  // away from it, and the gradient is analytic — nothing here can alias.
+  // The arms live about two boat lengths and no further. The old envelope ran
+  // them out on len — up to 60 m of trail — and the plan captures drew two
+  // razor rails to the frame corner: a projector seam, not displaced water.
+  // A real feather loses its coherence within a few lengths of the transom;
+  // past that the trail's churn is the only mark left.
+  float armEnd  = hullHalf * 5.2;                // ~12 m for the canoe
+  float armFade = 1.0 - smoothstep(hullHalf * 1.6, armEnd, s);
+  float armGrow = smoothstep(0.5, 4.0, s) * armFade;
+  if (armGrow > 0.003) {
+    vec2 nA = normalize(rr + f * W_KELVIN_TAN);
+    vec2 nB = normalize(rr - f * W_KELVIN_TAN);
+    // Scallop the centreline itself, not just the amplitude on it. A
+    // world-anchored wander (features ~6 m, growing to about +-0.8 m by the
+    // arm's end) is pushed straight into the signed distances, so the crest
+    // LINES undulate and no straight edge longer than a couple of metres
+    // survives in plan view. Opposite signs, so the two arms never wobble in
+    // lockstep like a rigid stencil sliding sideways.
+    float bendM = wFbm2(p * 0.16 + 27.0) * (0.55 + 0.16 * s);
+    float dA = dot(rel, nA) + bendM;
+    float dB = dot(rel, nB) - bendM;
+    // The arm narrows AND dims as it fades — a taper, not a long ribbon that
+    // merely loses opacity while keeping its razor width.
+    float aw = beam * (0.95 + s * 0.05) * (0.55 + 0.45 * armFade);
+    float envA = exp(-dA * dA / (aw * aw)) * armGrow;
+    float envB = exp(-dB * dB / (aw * aw)) * armGrow;
+    // Featherlets. A continuous crest parallel to the arm over its whole
+    // length is a contrail, and the first plan-view capture drew exactly
+    // that: forty metres of razor-straight line. A real feather is a train
+    // of short strokes, so the crest amplitude is broken along the arm by a
+    // static world-space field (~6 m patches — the marks are left in the
+    // water and must not ride with the boat).
+    // Two octaves, so the strokes are STAGGERED — the single 0.33 field cut
+    // the same gaps into both arms at the same stations and the surviving
+    // dashes still queued up along one straight line.
+    float fe = wFbm2(p * 0.33 + 3.0) + 0.6 * wFbm2(p * 0.85 + 13.0) + 0.5;
+    // Floor dropped 0.40 -> 0.18 -> 0.12: with the slope raised to visibility
+    // a high floor kept the crest an unbroken line for the arm's whole run —
+    // the plan captures drew contrails again. Near-glass gaps are what make
+    // the strokes read as separate featherlets.
+    float feA = 0.12 + 0.88 * smoothstep(0.30, 0.78, fe);
+    // 0.085 was the same magnitude as the ambient chop it sits in, and the
+    // arms vanished at cruise in the integrated captures; the soft slope
+    // ceiling below main() keeps this from banding the Fresnel. The tail of
+    // the taper dims faster than the envelope alone, so the arm's last metres
+    // sink into the ambient chop instead of holding a faint straight ghost.
+    float slope = 0.26 * bf * smoothstep(0.3, 1.2, spd) * feA
+                * (0.40 + 0.60 * armFade);
+    float phA = abs(dA) * k - 0.55 * k * t;
+    float phB = abs(dB) * k - 0.55 * k * t;
+    if (fk > 0.003) {
+      g += nA * (sign(dA) * cos(phA) * slope * envA * fk);
+      g += nB * (sign(dB) * cos(phB) * slope * envB * fk);
+    }
+    // Foam rides the crest lines, gated by the feather field so it is a
+    // broken stitch and never a drawn line. The chase camera sits 2 m over
+    // the water, so fk dies by ~20 m astern — where the sin pattern can no
+    // longer be resolved the crest foam dissolves to a soft feather-broken
+    // mass on the arm envelope instead of dying with the ripples, which is
+    // what kept the V invisible from the gameplay camera. The far guard
+    // dissolves the mass itself before its 3-6 m feather patches are
+    // under-sampled, so nothing here can shimmer from the far bank.
+    float crest = max(sin(phA) * envA, sin(phB) * envB);
+    float envM = max(envA, envB);
+    // The fallback mass is broken ALONG the arm by the feather field before
+    // the mix, not only gated after it — a flat 0.60 * envM foreshortened at
+    // the chase camera's grazing angle into a razor one-pixel contrail
+    // running to the frame edge (seen in the first round-2 capture). Dashes,
+    // never a drawn line.
+    float crestM = mix(envM * (0.30 + 0.55 * smoothstep(0.40, 0.78, fe)),
+                       max(crest, 0.0), fk);
+    float farDis = 1.0 - smoothstep(2.5, 6.0, foot);
+    wfoam = max(wfoam, smoothstep(0.28, 0.78, crestM)
+                * smoothstep(0.35, 0.70, fe)
+                * bf * smoothstep(0.6, 1.7, spd)
+                * armFade * 0.95 * farDis);
+  }
+
+  // ── the trail: churned foam directly astern ──────────────────────────────
+  // Starts a metre under the stern so it meets the bow collar with no gap.
+  if (s > -1.0) {
+    float sc = max(s, 0.0);
+    float halfW = beam * 0.6 + sc * 0.055;
+    float lat = 1.0 - smoothstep(halfW * 0.15, halfW, abs(q));
+    if (lat > 0.003) {
+      float along = 1.0 - smoothstep(0.0, len, sc);
+      // World-anchored turbulence: the churn is left IN the water, so its
+      // texture must not ride along with the boat.
+      float n2 = wFbm2(p * 0.7 + 17.0) + wFbm2(p * 1.9 + 4.0) * 0.5;
+      float blim = smoothstep(0.7, 2.2, foot);
+      // Band-limit the breakup, not the mass — but fade the noise toward
+      // slightly UNDER its mean, so at range the ribbon thins and dims
+      // instead of solidifying into the fog bar of the round-1 captures.
+      n2 = mix(n2, -0.06, blim);
+      // The threshold sits ABOVE the field's centre value, so the noise is
+      // what decides where foam is: bright rags with dark water between them
+      // from the first metre, tightening astern to dots, then nothing. The
+      // old 0.42 floor sat below the centre, saturated trl to a smooth
+      // ribbon, and the 0.62 mass then read as translucent fog — the exact
+      // defect the round-1 gameplay captures showed.
+      // The far end rises past the field's ceiling, so the last third of the
+      // trail loses its rags entirely instead of trailing a dotted line of
+      // white islands to the horizon (the round-1 plan capture).
+      float thresh = mix(0.65, 1.06, sc / max(len, 1.0));
+      // Hard-shouldered rags near, dissolving to a soft ramp at range —
+      // the wSteps discipline, done inline.
+      float ww = mix(0.10, 0.34, blim);
+      float trl = smoothstep(thresh, thresh + ww, 0.55 + n2 * 1.1 + lat * 0.18);
+      // ...with a short, hotter wash anchored at the TRANSOM — textured all
+      // the way through, because at close range a smooth gaussian of foam is
+      // a white blob, not churned water. The old envelope peaked at s = 0,
+      // which is the hull CENTRE, and was already zero at the stern it was
+      // named for: the hottest churn hid under the boat and the visible trail
+      // began as detached rags a metre behind it — the blind review's
+      // "tissue-shapes disconnected from the boat". Anchored at the transom,
+      // with a floor under the noise, the churn now touches the waterline and
+      // tapers continuously into the rag field.
+      float scS = max(sc - hullHalf * 0.8, 0.0);
+      float stern = (1.0 - smoothstep(0.0, beam * 2.0 + 2.2, scS)) * lat
+                  * (0.42 + 0.55 * smoothstep(0.20, 0.75, 0.5 + n2));
+      float massT2 = max(trl * lat * pow(along, 1.4) * 0.95, stern);
+      wfoam = max(wfoam, massT2 * bf * smoothstep(0.35, 1.0, spd));
+    }
+  }
+
+  // ── the bow: a bulge and a collar of foam at the stem ────────────────────
+  // At the STEM — hullHalf ahead of the centre uBoat.xy actually carries —
+  // not beam*0.9, which put the collar under the middle of the foredeck.
+  float bowOn = bf * smoothstep(0.5, 1.4, spd);
+  if (bowOn > 0.003) {
+    vec2 db = p - (uBoat.xy + f * (hullHalf * 0.85));
+    float rb2 = dot(db, db);
+    float bw = beam * 0.95;
+    float e = exp(-rb2 / (bw * bw));
+    // The analytic slope of a gaussian mound — 6 cm of pile-up at the stem.
+    g += db * (e * (-2.0 * 0.06) / (bw * bw)) * bowOn;
+    float nb = clamp(wFbm2(p * 1.6 + 7.0) + 0.5, 0.0, 1.0);
+    nb = mix(nb, 0.5, smoothstep(0.7, 2.2, foot));
+    wfoam = max(wfoam, smoothstep(bw, bw * 0.25, sqrt(rb2)) * bowOn
+                * (0.40 + 0.50 * nb) * 0.85);
+  }
+
+  // ── the attached halo: a boat OWNS its waterline at every speed ──────────
+  // A soft ellipse of lapping ripple hugging the hull, present the moment a
+  // boat is. This is the fix for the "composited onto pre-rendered water"
+  // read: a moored hull breathes a ~half-metre collar of faint rings (bf is
+  // PRESENCE now, not speed — see Water.js), and the same collar strengthens
+  // with speed until it hands over to the bow ripple. Everything here is
+  // inside the rejection box above, so a lake with no boat still pays two
+  // compares and nothing else.
+  float bwL = beam * 0.78;                       // waterline half-beam
+  float ringM = (length(vec2(s / hullHalf, q / bwL)) - 1.0) * bwL;
+  if (ringM > -0.35 && ringM < 1.7) {
+    float kH = 6.28318 / 0.90;                   // 0.90 m lapping wavelets
+    float fkH = wRippleFade(foot, kH);
+    // 0.016 at idle was invisible against the ambient chop from the chase
+    // camera — the round-1 moored capture showed glass, and 0.042 still did:
+    // a 4 cm slope in a half-metre band is a few pixels of Fresnel shift at
+    // the distances a moored boat is actually looked at. 0.07 reads as a
+    // quiet breathing collar without ever competing with the driven wake.
+    float haloAmp = bf * (0.090 + 0.050 * smoothstep(0.10, 1.3, spd));
+    if (fkH > 0.003 && haloAmp > 0.0015) {
+      // Gentle breathing, phase-seeded by position so two moored hulls do
+      // not lap in unison; rings drift outward at 0.22 m/s.
+      float breathe = 0.70 + 0.30 * sin(t * 1.9 + (uBoat.x + uBoat.y) * 0.61);
+      float envH = smoothstep(-0.35, 0.0, ringM) * exp(-max(ringM, 0.0) * 1.5);
+      vec2 dirH = normalize(rr * (q / (bwL * bwL)) - f * (s / (hullHalf * hullHalf))
+                            + vec2(1e-4));
+      g += dirH * (cos(ringM * kH - t * 2.23) * haloAmp * breathe * envH * fkH);
+      // ...and a band of broken waterline lace right against the planking, so
+      // the hull visibly sits IN the water — ~30 cm sigma, not the 10 cm
+      // thread of the first attempt, which vanished into two pixels at any
+      // real viewing distance. Noise-broken, faint when moored, and killed by
+      // the same band-limit as the wavelets so the far shot never carries a
+      // bright rim.
+      // 0.30 peak sat below the white-lift's own threshold and mixed at ~14%
+      // — the round-3 moored capture STILL read as glass from four metres.
+      // 0.45 through the noise gate lands the rim's bright rags at ~0.40,
+      // clearly a lace and still well under the driven wake's churn.
+      float nH = wFbm2(p * 1.3 + 5.0) + 0.5;
+      wfoam = max(wfoam, exp(-ringM * ringM * 6.0) * bf
+                  * (0.45 + 0.20 * smoothstep(0.25, 1.2, spd))
+                  * smoothstep(0.15, 0.60, nH) * fkH);
+    }
+  }
+}
+
+void wImpulseWakes(vec2 p, float foot, inout vec2 g, inout float wfoam){
+  for (int i = 0; i < 12; i++) {
+    if (i >= uWakeCount) break;
+    vec4 W = uWakes[i];
+    float str = W.w;
+    if (str < 0.002) continue;
+    float rad = max(uWakeR[i], 0.5);
+    // Life scales with size — a paddle dimple dies in 2.5 s, a launch splash
+    // rings for 4. MUST match Water.js's _wakeLife.
+    float life = clamp(2.3 + rad * 0.35, 2.5, 4.0);
+    float u = W.z / life;
+    if (u >= 1.0) continue;
+    vec2 d = p - W.xy;
+    float r2 = dot(d, d);
+    float reach = rad + 3.0;
+    if (r2 > reach * reach) continue;
+    float r = sqrt(r2);
+    float u2 = 1.0 - (1.0 - u) * (1.0 - u);      // ease-out expansion
+    float R = mix(0.35, rad, u2);                // the ring front
+    // Wavelength floor raised: a 0.55 m capillary ripple was already dying
+    // in the band-limit at the 7-9 m the chase camera watches strokes from.
+    float lam = clamp(rad * 0.45, 0.7, 1.7);
+    float k = 6.28318 / lam;
+    float fk = wRippleFade(foot, k);
+    // A compass-perfect circle is the tell of a decal. Warp the ring front
+    // with low-frequency world noise (stronger as it grows) so every crest
+    // wobbles like water and no two rings match — the blind review read the
+    // unwarped rings as "sonar pings / archery targets".
+    float wob = wFbm2(p * 0.33 + W.xy * 0.19) * (0.35 + 0.22 * R);
+    float x = r - R + wob;
+    float pw = lam * 1.35;                       // packet width: 2-3 rings
+    float env = exp(-x * x / (pw * pw));
+    float fade = pow(1.0 - u, 1.3);
+    if (fk > 0.003) {
+      vec2 dir = d / max(r, 1e-3);
+      // 1/r-ish spreading, so the ring loses height as it grows the way a
+      // capillary ring does. Retuned against the REAL stroke inputs (str
+      // 0.4-0.9 through Boat.js's 0.85*strength): the old 0.22 was sized for
+      // the harness's str 0.8-2 and read as nothing at a gameplay paddle.
+      float slope = str * 0.38 * fade / (0.55 + r * 0.30);
+      g += dir * (cos(x * k) * slope * env * fk);
+      // a thread of foam on the crests, strongest while the ring is young —
+      // broken into arcs by world noise, so the circles sit in the same
+      // hand-broken family as the shoreline lace instead of reading as
+      // compass-drawn strokes.
+      // Floor dropped 0.45 -> 0.15 and the threshold narrowed: at launch
+      // strength the old floor kept 45% of the crest lit everywhere, which
+      // re-fused the arcs into an unbroken circle. The crest must stay
+      // ragged at EVERY strength, and it dies earlier than the swell does.
+      float arc = 0.15 + 0.85 * smoothstep(0.34, 0.66, wFbm2(p * 0.55 + W.xy * 0.07) + 0.5);
+      wfoam = max(wfoam, smoothstep(0.18, 0.75, sin(x * k)) * env * arc
+                  * fade * (1.0 - smoothstep(0.15, 0.70, u)) * min(str * 0.75, 0.85) * fk);
+    }
+    // The churned disc at the centre: blooms, then dissolves well before the
+    // rings die, so the last thing seen is water and not a fading decal.
+    // min() rather than a bare str, so a full-effort stroke saturates to the
+    // lace family's brightness instead of scaling past it.
+    float bloom = smoothstep(0.0, 0.10, u) * (1.0 - smoothstep(0.35, 0.90, u));
+    float dr = rad * (0.30 + 0.45 * u);
+    float disc = 1.0 - smoothstep(dr * 0.25, dr, r);
+    float nz = clamp(wFbm2(p * 1.2 + W.xy * 0.11) + 0.5, 0.0, 1.0);
+    nz = mix(nz, 0.5, smoothstep(0.7, 2.2, foot));
+    wfoam = max(wfoam, min(str * 1.3, 1.0) * bloom * disc * clamp(nz * 1.35, 0.0, 1.0) * 0.9);
+  }
+}
+
 void main() {
   // The surface where it really is. vWPos is the drawn geometry, which was
   // lifted clear of the terrain by vLift so the polygon never becomes the
@@ -1139,6 +1459,14 @@ void main() {
   g *= mix(gust, 1.0, coh) * (0.35 + 0.65 * exp(-dist * 0.006));
   // Cross-channel chop builds against the banks, where the flow shears.
   g += Bv * (wDrift(p, T, 0.62, ph) - 0.5) * 0.09 * smoothstep(0.35, 0.95, bankT) * coh;
+  // ── boat wake and paddle impulses ────────────────────────────────────────
+  // Gated on uniforms, so with no boat and no impulses this is two compares
+  // and the surface renders bit-identically to a build without the machinery.
+  // Added BEFORE the soft ceiling below so a hard-driven wake saturates the
+  // same way every other slope here does instead of banding the Fresnel.
+  float wakeFoam = 0.0;
+  if (uBoatDyn.w > 0.002) wBoatWake(p, foot, uTime, g, wakeFoam);
+  if (uWakeCount > 0)     wImpulseWakes(p, foot, g, wakeFoam);
   // Soft ceiling on the slope. Fresnel at a grazing angle is the steepest
   // function in this shader — a tenth of a radian of normal swings it from body
   // colour to mirror — so an unbounded gradient bands. Soft, because a hard
@@ -1461,6 +1789,13 @@ void main() {
   float cut = uFoamCut - drive * 0.34;
   float foam = smoothstep(cut, cut + 0.10, fn);
   foam *= smoothstep(0.04, 0.16, drive);
+  // Boat wake foam joins the same channel, so it takes the same illuminant
+  // (wFoamLight), the same mirror suppression and the same alpha path as
+  // every other aerated surface here. Faded out at the waterline so a wake
+  // running ashore dissolves into the shoreline lace instead of stamping a
+  // white shape over the bank.
+  wakeFoam *= smoothstep(0.15, 1.0, shoreIn);
+  foam = max(foam, wakeFoam);
 
   // ── the waterline ────────────────────────────────────────────────────────
   // The single loudest cue in the reference: even a lazy meander is drawn with
@@ -2017,6 +2352,19 @@ void main() {
   float laceLift = min(laceTop * 0.85 * (1.0 - far),
                        max(foamY * 1.14 - dot(col, LUMA_W), 0.0) / foamY);
   col += laceCol * (laceLift * laceProf);
+  // ── and BOAT foam is sunlit spray, not mist ──────────────────────────────
+  // Wake and ring foam arrive through the same mix as river foam and were
+  // reading grey: at wakeFoam 0.5 the pixel is only half-way to foamCol, and
+  // the mix saturates at foamCol's own luminance — the exact ceiling the lace
+  // measurement above documents. The lace solves it with an additive lift
+  // bounded in units of the foam illuminant; boat churn gets the same lift
+  // with a headroom bound just UNDER the lace's (1.12 vs 1.14 foamY), so the
+  // stern wash reads white in the lace's family without ever out-shining it
+  // or crossing the bloom threshold. Zero wherever wakeFoam is zero, so the
+  // river's own foam is untouched.
+  float wakeLift = min(smoothstep(0.18, 0.85, wakeFoam) * 0.50,
+                       max(foamY * 1.12 - dot(col, LUMA_W), 0.0) / foamY);
+  col += foamCol * wakeLift;
 
   // A whisper of cool in the whole surface. Water in the reference is never the
   // same hue as the cream sky it sits under, even where it reflects it.

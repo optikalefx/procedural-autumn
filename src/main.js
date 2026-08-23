@@ -38,6 +38,7 @@ import { GroundCover } from './vegetation/GroundCover.js';
 import { Grass }       from './vegetation/Grass.js';
 import { Wildlife }    from './wildlife/Wildlife.js';
 import { Vehicle }     from './vehicle/Vehicle.js';
+import { Boat }        from './boat/Boat.js';
 import { Camp }        from './camp/Camp.js';
 import { CameraRig }   from './vehicle/CameraRig.js';
 import { Audio }       from './audio/Audio.js';
@@ -54,6 +55,11 @@ const SYSTEMS = [
   ['grass',       Grass],
   ['wildlife',    Wildlife],
   ['vehicle',     Vehicle],
+  // After Vehicle (Boat reads `vehicle.brakeHold` and the camper's pose on the
+  // frame they are written) and BEFORE Camp: Camp arbitrates clicks against
+  // `boat.pointerClaim`, and registering Boat first makes that claim
+  // same-frame rather than a frame stale. See Camp._interact.
+  ['boat',        Boat],
   // After Vehicle: Camp reads `vehicle.brakeHold` and the camper's position on
   // the same frame they are written, and before CameraRig so the reticle has
   // been placed by the time the boom decides what it is looking at.
