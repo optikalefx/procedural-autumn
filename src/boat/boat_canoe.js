@@ -435,7 +435,9 @@ export function buildCanoe(rnd, opts = {}) {
   paddleS.position.set(-0.06, sheerOf(pz) + 0.024, pz);
   paddleS.rotation.set(0, diag, 0);                   // blade to starboard
   g.add(paddleS);
-  const pz2 = -0.85 - (paddleZ - 0.5) * 0.2;
+  // The pair sit almost in line — 16 cm apart, just enough that the second
+  // shaft clears the first blade's edge without ever clipping it.
+  const pz2 = pz - 0.16;
   const paddleP = buildCanoePaddle(cw, stripLo ? strips : null, trimC);
   paddleP.position.set(0.06, sheerOf(pz2) + 0.024, pz2);
   paddleP.rotation.set(0, Math.PI + diag, 0);         // blade to port
