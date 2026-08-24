@@ -56,15 +56,20 @@ export class Settings {
     this.pageSettings.appendChild(this._group('Picture', [
       this._seg('Quality', QUALITY_TIERS.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
         () => hud.quality, (v) => hud.applyQuality(v)),
-      this._toggle('Auto resolution', () => hud.autoRes(), (v) => hud.applyAutoRes(v)),
       // "Resolution", not "Render scale": the number a player wants to change
       // is the one they can see, and what they see is a soft picture. 100% is
       // one rendered pixel per device pixel — no upscaling at all. It is
       // expensive, and it is meant to be reachable anyway; the FPS readout
       // under "View" is the other half of this control.
+      //
+      // Auto sits on the track rather than in a row of its own: the two are one
+      // decision — dragging the slider pins the scale, which is to say it turns
+      // Auto off — and a stacked row spent a whole line saying so.
       this._range('Resolution', 0.5, 1, 0.05,
         () => hud.renderScale(), (v) => hud.applyRenderScale(v),
-        (v) => hud.renderScaleLabel(v)),
+        (v) => hud.renderScaleLabel(v),
+        this._tailToggle('Auto', () => hud.autoRes(), (v) => hud.applyAutoRes(v),
+          'Auto resolution')),
     ]));
 
     // The car is a picture of itself as much as a setting, so it goes first —
@@ -83,16 +88,17 @@ export class Settings {
 
     this.pageSettings.appendChild(this._group('Sound', [
       this._range('Volume', 0, 1, 0.01, () => hud.volume(), (v) => hud.applyVolume(v),
-        (v) => `${Math.round(v * 100)}%`),
-      this._toggle('Mute', () => hud.isMuted(), (v) => hud.applyMute(v)),
+        (v) => `${Math.round(v * 100)}%`,
+        this._tailToggle('Mute', () => hud.isMuted(), (v) => hud.applyMute(v))),
     ]));
 
     // "View", not "Camera": the group also carries HUD visibility, and a
     // player looking for the setting that hides the interface does not look
     // under Camera.
     this.pageSettings.appendChild(this._group('View', [
-      this._toggle('Invert look', () => hud.invertY, (v) => hud.applyInvert(v)),
-      this._toggle('Valley map', () => hud.showMap, (v) => hud.applyMap(v)),
+      this._pair(
+        this._toggle('Invert look', () => hud.invertY, (v) => hud.applyInvert(v)),
+        this._toggle('Valley map', () => hud.showMap, (v) => hud.applyMap(v))),
       this._toggle('FPS readout', () => hud.showPerf(), (v) => hud.applyPerf(v)),
       this._seg('Interface', HUD_MODES, () => hud.hudOpacity, (v) => hud.applyHudMode(v)),
     ]));
@@ -179,8 +185,20 @@ export class Settings {
     return g;
   }
 
-  /** Slider row: name, live value, then the track underneath it. */
-  _range(name, min, max, step, get, set, fmt) {
+  /** Two rows sharing one line — for switches short enough to halve. */
+  _pair(a, b) {
+    const row = el('div', 'pa-pair');
+    row.appendChild(a);
+    row.appendChild(b);
+    return row;
+  }
+
+  /**
+   * Slider row: name, live value, then the track underneath it. `tail` is an
+   * optional control that rides at the end of the track instead of costing a
+   * row of its own — the switch that belongs to this slider, not beside it.
+   */
+  _range(name, min, max, step, get, set, fmt, tail) {
     const row = el('div');
     const head = el('div', 'pa-row');
     head.appendChild(el('div', 'pa-row-name', name));
@@ -198,7 +216,14 @@ export class Settings {
       input.style.setProperty('--fill', `${((v - min) / (max - min)) * 100}%`);
     };
     input.addEventListener('input', () => { set(+input.value); paint(); });
-    row.appendChild(input);
+    if (tail) {
+      const track = el('div', 'pa-track');
+      track.appendChild(input);
+      track.appendChild(tail);
+      row.appendChild(track);
+    } else {
+      row.appendChild(input);
+    }
     row._sync = () => { input.value = get(); paint(); };
     this._syncs = this._syncs ?? [];
     this._syncs.push(row._sync);
@@ -261,21 +286,39 @@ export class Settings {
     return row;
   }
 
+  /**
+   * The same switch as _toggle, sized and labelled to sit at the end of a
+   * slider track rather than in a row of its own.
+   */
+  _tailToggle(label, get, set, aria) {
+    const wrap = el('div', 'pa-tail');
+    wrap.appendChild(el('span', 'pa-tail-name', label));
+    wrap.appendChild(this._switch(aria ?? label, get, set));
+    return wrap;
+  }
+
   _toggle(name, get, set) {
     const row = el('div', 'pa-row');
     row.appendChild(el('div', 'pa-row-name', name));
-    const t = button('pa-toggle', '', () => { set(!get()); sync(); }, name);
+    const t = this._switch(name, get, set);
+    row.appendChild(t);
+    row._sync = t._sync;
+    return row;
+  }
+
+  /** The switch itself — one implementation, wherever it is parked. */
+  _switch(aria, get, set) {
+    const t = button('pa-toggle', '', () => { set(!get()); sync(); }, aria);
     t.setAttribute('role', 'switch');
     const sync = () => {
       const on = !!get();
       t.classList.toggle('pa-on', on);
       t.setAttribute('aria-checked', String(on));
     };
-    row.appendChild(t);
-    row._sync = sync;
+    t._sync = sync;
     this._syncs = this._syncs ?? [];
     this._syncs.push(sync);
-    return row;
+    return t;
   }
 
   _collect() {

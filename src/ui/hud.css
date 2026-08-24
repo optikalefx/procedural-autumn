@@ -611,6 +611,31 @@
   background: var(--ink); box-shadow: 0 2px 8px rgba(46, 18, 28, 0.5);
 }
 
+/* A slider and the switch that belongs to it, on one line. The track takes
+   whatever is left after the switch, which is why it needs min-width: 0 — the
+   range input's own width: 100% otherwise refuses to shrink past its content
+   and pushes the switch off the panel. */
+.pa-track {
+  display: flex;
+  align-items: center;
+  gap: 0.75em;
+}
+.pa-track input[type="range"] { flex: 1; min-width: 0; }
+.pa-tail {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
+  flex: none;
+  font-size: 0.86em;          /* match .pa-row, so the switch is the same size */
+}
+.pa-tail-name { color: var(--ink-dim); letter-spacing: 0.04em; white-space: nowrap; }
+
+/* Two switches sharing a line. Halves, not content-width columns: a ragged
+   middle edge reads as two unrelated controls that happened to collide. */
+.pa-pair { display: flex; gap: 0.9em; }
+.pa-pair > * { flex: 1; min-width: 0; }
+.pa-pair .pa-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Segmented control — used for anything with three or four choices. */
 .pa-seg {
   display: flex;
@@ -652,8 +677,9 @@
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.06em;
   padding: 0.4em 0.7em;
-  border: 1px solid rgba(255, 246, 234, 0.18);
+  border: none;
   border-radius: 99px;
+  /* Fill, no outline — same as .pa-seg's track and the Controls button. */
   background: rgba(255, 246, 234, 0.08);
   color: var(--ink);
   -moz-appearance: textfield;
@@ -714,10 +740,17 @@
 .pa-toggle.pa-on::after { transform: translateY(-50%) translateX(1.2em); }
 .pa-toggle:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.7); outline-offset: 2px; }
 
+/* No rule above the footer: it landed flush on the bottom edge of the last
+   group's segmented control and read as a border drawn around those chips —
+   the one bordered thing in a sheet where nothing else is bordered. Space
+   separates the footer perfectly well on its own.
+
+   padding, not margin: `#pa-hud * { margin: 0 }` up at the top of this file is
+   an ID selector, so it beats every class-level margin in the sheet. A
+   `margin-top` here computes to 0px and the footer lands flush anyway — which
+   is how the rule ended up touching the chips in the first place. */
 .pa-foot {
-  margin-top: 1em;
-  padding-top: 0.85em;
-  border-top: 1px solid rgba(255, 246, 234, 0.1);
+  padding-top: 1.15em;
   font-size: 0.7em;
   letter-spacing: 0.08em;
   color: var(--ink-faint);
@@ -735,15 +768,19 @@
   font-size: 1.1em;          /* .pa-foot shrank us to 0.7em; land near row size */
   letter-spacing: 0.08em;
   padding: 0.5em 0.2em;
-  border: 1px solid rgba(255, 246, 234, 0.18);
+  border: none;
   border-radius: 99px;
+  /* Same fill as .pa-seg's track and the seed field — borderless everywhere. */
   background: rgba(255, 246, 234, 0.08);
   color: var(--ink-dim);
   cursor: pointer;
-  transition: color 0.2s var(--ease), border-color 0.2s var(--ease);
+  transition: color 0.2s var(--ease), background 0.2s var(--ease);
 }
-.pa-controls-open:hover, .pa-controls-open:focus-visible {
-  color: var(--ink); border-color: rgba(240, 173, 70, 0.6); outline: none;
+.pa-controls-open:hover { color: var(--ink); background: rgba(255, 246, 234, 0.14); }
+.pa-controls-open:focus-visible {
+  color: var(--ink);
+  outline: 2px solid rgba(240, 173, 70, 0.7);
+  outline-offset: 1px;
 }
 
 /* The back arrow shares .pa-close's round chrome. */
