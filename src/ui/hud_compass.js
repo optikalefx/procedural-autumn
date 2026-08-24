@@ -8,7 +8,9 @@
 //
 //  It carries no waypoints, no objectives and no distances-to-target — the game
 //  has no goals. It says "there is a waterfall that way, 700 m", which is an
-//  invitation rather than an instruction.
+//  invitation rather than an instruction. The two exceptions are the camp and
+//  the camper: those are not discoveries, they are the way back, so HUD.js
+//  pins them whenever the player is away from them.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, ICON, distanceLabel } from './hud_dom.js';
 
@@ -17,7 +19,9 @@ const CARDS = [
   [0, 'N'], [45, 'NE'], [90, 'E'], [135, 'SE'],
   [180, 'S'], [225, 'SW'], [270, 'W'], [315, 'NW'],
 ];
-const MAX_POI = 6;
+// Six nearest landmarks, plus the pins HUD.js always sends (camp, camper) and
+// any waterfall close enough to hear — see _refreshMarks for the arithmetic.
+const MAX_POI = 14;
 
 const wrap180 = (d) => ((d + 180) % 360 + 360) % 360 - 180;
 
@@ -55,7 +59,11 @@ export class Compass {
       s.appendChild(disc);
       s.appendChild(dist);
       s.style.opacity = '0';
-      this.track.appendChild(s);
+      // On the strip, NOT in the track: the track's overflow:hidden was
+      // guillotining the distance label and every second-row chip, and its
+      // edge mask erased the pinned-behind-you markers it exists to keep.
+      // Chips clamp their own x, so they never needed the clipping.
+      this.node.appendChild(s);
       this.slots.push({ node: s, disc, dist, kind: null, key: null });
     }
     this._w = 0;
@@ -97,8 +105,9 @@ export class Compass {
       const x = delta * pxPerDeg + half;
       // Landmarks behind you are not hidden, they are pinned to the edge and
       // faded: knowing the falls are somewhere behind is useful, and a marker
-      // that pops in and out at the screen edge is not.
-      const clamped = Math.max(-24, Math.min(w + 24, x));
+      // that pops in and out at the screen edge is not. Clamped fully inside
+      // the strip so the disc is never shown half-cut.
+      const clamped = Math.max(14, Math.min(w - 14, x));
       place.push({ i, m, delta, x: clamped, off: Math.abs(x - clamped), row: 0 });
     }
     // Horizontal position carries the bearing, so crowding is resolved by

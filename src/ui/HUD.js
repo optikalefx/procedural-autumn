@@ -20,7 +20,7 @@
 //     `--eval "window.__hudForce = true"` to capture it deliberately.
 // ─────────────────────────────────────────────────────────────────────────────
 import { System } from '../core/System.js';
-import { QUALITY_PRESETS } from '../world/WorldConfig.js';
+import { QUALITY_PRESETS, SEED } from '../world/WorldConfig.js';
 import './hud.css';
 import { el, button, ICON } from './hud_dom.js';
 import { Compass } from './hud_compass.js';
@@ -34,6 +34,12 @@ const STORE = 'pa.hud';
 // it is the thing worth driving to, and the thing you can already hear.
 const LANDMARKS = [['waterfall', 4], ['vista', 3], ['peak', 2], ['river', 3]];
 const FOUND_RADIUS = 75;
+// A waterfall inside this range stays on the compass even when six other
+// landmarks are nearer — it is the thing you can already hear.
+const WATERFALL_NEAR = 1000;
+// The camp and camper pins stand down when you are basically standing at them:
+// a marker for "here" swings across the whole strip with every step.
+const PIN_HIDE = 30;
 
 export class HUD extends System {
   constructor(ctx) {
@@ -161,7 +167,26 @@ export class HUD extends System {
       if (m.found) found++;
     }
     this.found = found;
-    this.marks = this._all.slice().sort((a, b) => a.dist - b.dist).slice(0, 6);
+    const sorted = this._all.slice().sort((a, b) => a.dist - b.dist);
+    const marks = sorted.slice(0, 6);
+    for (const m of sorted) {
+      if (m.kind === 'waterfall' && m.dist < WATERFALL_NEAR && !marks.includes(m)) marks.push(m);
+    }
+    // The camp and the camper are not landmarks to be found — they are the way
+    // back, so they are always on the strip while the player is away from them.
+    for (const c of this.ctx.systems?.camp?.camps ?? []) {
+      if (!c.striking) this._pin(marks, 'camp', c.x, c.z, cam);
+    }
+    const veh = this.vehicle();
+    if (veh?.position) this._pin(marks, 'car', veh.position.x, veh.position.z, cam);
+    this.marks = marks;
+  }
+
+  _pin(marks, kind, x, z, cam) {
+    const dx = x - cam.x, dz = z - cam.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < PIN_HIDE) return;
+    marks.push({ kind, x, z, dist, bearing: (Math.atan2(dx, -dz) * 180) / Math.PI, found: false });
   }
 
   // ── input ─────────────────────────────────────────────────────────────────
@@ -252,6 +277,26 @@ export class HUD extends System {
     if (!v?.setCar) return;
     if (v.setCar(id)) this.toast(`${v.car.label}`);
     this.settings?.sync();
+  }
+
+  /** The seed the running world was baked from: the URL's, else the default. */
+  seed() {
+    const v = parseInt(new URLSearchParams(location.search).get('seed') ?? '', 10);
+    return Number.isFinite(v) ? v : SEED;
+  }
+
+  /**
+   * New seed → new valley. This is a page reload, not a live change: the whole
+   * boot path (main.js) keys terrain, water and POIs off ?seed=, so rewriting
+   * the URL is the one honest way to rebuild everything consistently. Other
+   * params (res, quality overrides) ride along untouched.
+   */
+  applySeed(v) {
+    const s = Math.floor(v);
+    if (!Number.isFinite(s) || s < 0 || s === this.seed()) return;
+    const params = new URLSearchParams(location.search);
+    params.set('seed', String(s));
+    location.search = params.toString();
   }
 
   applyHour(h) { if (this.ctx.lighting) this.ctx.lighting.hour = h; }
