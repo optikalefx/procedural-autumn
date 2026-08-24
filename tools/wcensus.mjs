@@ -41,7 +41,9 @@ const out = await page.evaluate(async (P) => {
   const fr = new T.Frustum(), pm = new T.Matrix4(), sp = new T.Sphere();
 
   const samples = [];
-  const perSpecies = { deer: 0, bear: 0, rabbit: 0 };
+  // From the live pool, not a hardcoded list — the hardcoded version silently
+  // reported `null` for any species added after it was written.
+  const perSpecies = Object.fromEntries(Object.keys(wl.pool).map((k) => [k, 0]));
   let steps = 0, seen = 0, seenClose = 0, seenNoticeable = 0, birdsSeen = 0;
   // Nothing may ever stand in standing water. Measured, not assumed.
   let maxDepth = 0, wetSamples = 0, maxSlope = 0;

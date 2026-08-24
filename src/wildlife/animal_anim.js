@@ -86,6 +86,9 @@ const LADDER = {
   // `dogwalk`), and a deer's top gear is a BOUND — both hind feet together,
   // then both fore. Dogs gallop.
   dog:    ['dogwalk', 'trot', 'gallop'],
+  // A fox moves like a light dog, not like a deer: lateral walk, long trot,
+  // and a gallop at the top rather than a bound.
+  fox:    ['walk', 'trot', 'gallop'],
 };
 
 const _a = new THREE.Vector3();

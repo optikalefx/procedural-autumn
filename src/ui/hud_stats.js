@@ -34,6 +34,7 @@
 import { el, button } from './hud_dom.js';
 import { CARS } from '../vehicle/vehicle_models.js';
 import { SKY_OBJECTS } from '../game/sky_objects.js';
+import { SPECIES } from '../wildlife/animal_species.js';
 import {
   stats, fmtDuration, fmtSeconds, fmtDistance, fmtMetres, fmtSpeed, fmtCount, fmtDate,
 } from '../game/stats_store.js';
@@ -105,10 +106,16 @@ const GROUPS = [
     ['Pitched after dark', 'n count', 'camp.night'],
     ['Time at camp', 'n dur', 'camp.time'],
   ]],
+  // The mammal rows walk `SPECIES` — the same deal the vehicle rows make with
+  // CARS and the sky rows with SKY_OBJECTS. Stats.js already credits
+  // `seen.<key>` for whatever is in the wildlife pool, so a new species added
+  // to the table arrives here (and earns its row, 'row' mode below) with no
+  // edit to this file. `plural` lives on the species because that is the one
+  // word a table walk cannot derive.
   ['Wildlife', [
-    ['Deer seen', 'n count', 'seen.deer'],
-    ['Bears seen', 'n count', 'seen.bear'],
-    ['Rabbits seen', 'n count', 'seen.rabbit'],
+    ...Object.values(SPECIES).map((sp) => [`${sp.plural} seen`, 'n count', `seen.${sp.key}`]),
+    // The eagle is a bird, not a pooled mammal — it lives in the perch-and-fly
+    // system, credits its own key, and so keeps a hand-written row here.
     ['Bald eagles seen', 'n count', 'seen.baldEagle'],
     ['Bird flocks', 'n count', 'seen.flocks'],
     ['Birds startled', 'n count', 'birds.startled'],

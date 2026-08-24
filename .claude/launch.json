@@ -59,6 +59,19 @@
       "port": 5224
     },
     {
+      "name": "fox-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5233",
+        "--strictPort"
+      ],
+      "port": 5233
+    },
+    {
       "name": "logbook-dev",
       "runtimeExecutable": "npx",
       "runtimeArgs": [
