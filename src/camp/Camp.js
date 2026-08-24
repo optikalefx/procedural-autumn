@@ -85,6 +85,46 @@ const OCCUPIED = 0.78;
 // rather than refused — see `_blocked` for the measurement that forced this.
 const CENTRE_CLEAR = 2.3;
 
+// ── the tent's own ground ────────────────────────────────────────────────────
+//
+// The player, on a capture of a compact camp pitched on a hillside: "looks like
+// it's possible for grass to be inside the tent when it spawns."
+//
+// It is, and the clearing cannot be the thing that prevents it — see the long
+// note beside `uCampPads` in camp_clearing.js for the arithmetic. So the tent
+// carries a small clearing of its own, published alongside the camp's.
+//
+// PAD_CLEAR is the radius that ends up genuinely bare. 1.30 m, from the fly's
+// own reach: `tools/_scratch/tentreach.mjs` measures the built fabric — cords
+// and pegs excluded, because a guy line lying in grass is what a guy line does
+// — at 1.26 m from the tent's centre across both styles, and the layout
+// separates against a declared 1.45 that the geometry is dimensioned to stay
+// inside. 1.30 covers the fabric on every bearing with 4 cm to spare, and does
+// not spend a centimetre of the compact camp's small dirt patch on ground no
+// tent is standing on.
+//
+// PAD_FEATHER is what stops the pad reading as a disc where it pokes out past
+// the clearing on a small camp. It is much shorter than the camp's own — 1.16 m
+// on a full camp — for the same reason `CLEARING_FEATHER_K` is a fraction
+// rather than a constant: a 1.16 m feather on a 1.3 m pad is not an edge, it is
+// the whole pad.
+const PAD_CLEAR = 1.30;
+const PAD_FEATHER = 0.45;
+
+/**
+ * The clearing a laid-out camp's tent needs, or null for a camp that somehow
+ * has no tent.
+ *
+ * `radius` is the outer edge — where the meadow is back to full height — so
+ * that it means the same thing as a camp's own radius and `campPadOne` can
+ * take the pair without knowing which it was handed.
+ */
+function tentPad(items) {
+  const t = items.find((it) => it.kind === 'tent');
+  if (!t) return null;
+  return { x: t.x, z: t.z, radius: PAD_CLEAR + PAD_FEATHER, feather: PAD_FEATHER };
+}
+
 // How many camps may stand in the world at once.
 //
 // The player: "if I forget to pack up camp, I can't make a new camp elsewhere.
@@ -1510,7 +1550,13 @@ export class Camp extends System {
     if (rocks?.cells) {
       for (const c of rocks.cells.values()) {
         for (const inst of c.instances) {
-          if (inst.size < 0.30) continue;
+          // 0.15, not the 0.30 this started at. `size` is a radius, so the old
+          // threshold handed the layout every rock over 60 cm across and left
+          // it blind to everything from 30 to 60 — which is precisely the band
+          // that is invisible on open dirt and unmistakable under a tent floor.
+          // Anything smaller than 30 cm across is mostly planted in the ground
+          // and is not worth constraining a placement for.
+          if (inst.size < 0.15) continue;
           if (Math.hypot(inst.x - x, inst.z - z) > R + inst.size) continue;
           out.push({ x: inst.x, z: inst.z, r: inst.size * 0.8 });
         }
@@ -1588,11 +1634,36 @@ export class Camp extends System {
     this.root.add(camp.root);
     this.camps.push(camp);
 
+    const wind = this.ctx.systems?.weather?.windDir
+              ?? this.ctx.systems?.grass?.windDir
+              ?? new THREE.Vector2(0.86, 0.51);
+
+    // ── the layout runs FIRST, and the ground is built around its answer ────
+    //
+    // It used to be the other way round, and that ordering is what let the
+    // grass stand up inside the tent. The dirt derives its own outline by
+    // bisecting `campCoverAt`, so whatever the clearing field says is bare at
+    // build time is what the mesh covers — and at build time the field knew
+    // about the clearing only, because the tent had not been placed yet. Give
+    // the tent its pad first and the dirt follows it for free, exactly as
+    // camp_ground's decision 1 promises: one shape function, two readers.
+    //
+    // The rng ordering this inverts was deliberate, and inverting it is an
+    // improvement rather than a cost. camp_ground draws a fixed count from the
+    // shared stream precisely so that retuning its scatter would not re-roll
+    // where the tent goes; running it after the layout means it cannot, by
+    // construction, whatever it draws.
+    const items = layoutCamp(rnd, world, x, z, {
+      radius: R, small: camp.small, windDir: wind,
+      obstacles: this._obstacles(x, z),
+    });
+    camp.pad = tentPad(items);
+
     // Publish the clearing BEFORE building the dirt: the mesh reads
     // `campCoverAt` back to shape its own alpha, so the two are the same edge
     // by construction rather than by two authors agreeing on a formula.
     this._publishSlots();
-    camp.ground.build(x, z, R, rnd, camp.feather);
+    camp.ground.build(x, z, R, rnd, camp.feather, camp.pad ? [camp.pad] : []);
 
     if (typeof camp.fire?.rebuild === 'function') {
       // Optional and additive: a Firepit that can re-roll its stones for a new
@@ -1607,15 +1678,6 @@ export class Camp extends System {
       standOn(world, x, z, 0, 1, this._q);
       camp.fire.setOrientation(this._q);
     }
-
-    const wind = this.ctx.systems?.weather?.windDir
-              ?? this.ctx.systems?.grass?.windDir
-              ?? new THREE.Vector2(0.86, 0.51);
-
-    const items = layoutCamp(rnd, world, x, z, {
-      radius: R, small: camp.small, windDir: wind,
-      obstacles: this._obstacles(x, z),
-    });
 
     // ── the props are built one per frame, not all at once ──────────────────
     //
@@ -1769,10 +1831,18 @@ export class Camp extends System {
       .slice(0, CAMP_SLOTS)
       // The published radius follows the build-in, which is what makes the
       // ground sweep open ahead of the props rather than appearing under them.
-      .map(({ c }) => ({
-        x: c.x, z: c.z, feather: c.feather,
-        radius: c.radius * smoothstep(0, 0.55, c.raise),
-      }));
+      .map(({ c }) => {
+        const k = smoothstep(0, 0.55, c.raise);
+        return {
+          x: c.x, z: c.z, feather: c.feather,
+          radius: c.radius * k,
+          // The tent's pad opens on the same curve, so the ground under it
+          // sweeps clear with the rest rather than snapping bare at the end.
+          pad: c.pad
+            ? { x: c.pad.x, z: c.pad.z, radius: c.pad.radius * k, feather: c.pad.feather * k }
+            : null,
+        };
+      });
     setCampSlots(near);
   }
 
