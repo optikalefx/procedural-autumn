@@ -78,6 +78,14 @@ const SIGHT = 20;
 const FLOCK_SIGHT = 260;
 const FALL_SIGHT = 420;
 
+// An individual perched bird sits between the two rules above: you cannot get
+// 20 m from something twenty-five metres up a spruce, but a lone eagle is not
+// a flock to be credited at the horizon either. 130 m is roughly where a two-
+// metre bird stops being "a bird" and starts being "an eagle" — inside the
+// spawn ring, so driving toward a perched one, or having one cross the road
+// ahead, is what earns the line in the book.
+const TREE_BIRD_SIGHT = 130;
+
 // A flock is not an individual — there are two of them and they follow the
 // camera around the valley — so a flock sighting is re-credited only after this
 // long out of view. Long enough that one drive is one sighting.
@@ -388,6 +396,7 @@ export class Stats extends System {
     const eye = cam.position;
 
     this._wildlife(eye);
+    this._treeBirds(eye);
     this._flocks(eye, step);
     this._waterfalls(eye);
     this._landmarks();
@@ -435,6 +444,35 @@ export class Stats extends System {
           stats.add(`seen.${key}`);
           stats.add('seen.animals');
         }
+      }
+    }
+  }
+
+  /**
+   * The perch-and-fly birds (tree_birds.js) — the bald eagles, and whatever
+   * species join them. Same shape as _wildlife: one credit per streamed-in
+   * bird, reset when its slot recycles, keyed per species so the sheet can
+   * say "eagle" and not "bird". Perched or mid-flight both count; the frustum
+   * test is what says the player was actually looking.
+   */
+  _treeBirds(eye) {
+    const tb = this.ctx.systems?.wildlife?.treeBirds;
+    if (!tb?.slots) return;
+    const veh = this.ctx.systems?.vehicle;
+    const ab = this.ctx.systems?.boat?._aboard;
+    const me = ab ? { x: ab.phys.x, z: ab.phys.z } : (veh?.position ?? eye);
+    const r2 = TREE_BIRD_SIGHT * TREE_BIRD_SIGHT;
+
+    for (const slots of tb.slots) {
+      for (const b of slots) {
+        if (!b.active) { b._statSeen = false; continue; }
+        if (b._statSeen) continue;
+        const dx = b.x - me.x, dz = b.z - me.z;
+        if (dx * dx + dz * dz > r2) continue;
+        _v.set(b.x, b.y, b.z);
+        if (!_frustum.containsPoint(_v)) continue;
+        b._statSeen = true;
+        stats.add(`seen.${b.spec.key}`);
       }
     }
   }
