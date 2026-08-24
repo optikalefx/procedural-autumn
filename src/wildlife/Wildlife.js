@@ -119,7 +119,8 @@ export class Wildlife extends System {
     this.birds = new Birds(this.ctx, SEED ^ 0x51b1);
     this.birds.build();
 
-    // The perch-and-fly birds (bald eagles, for now) — see tree_birds.js.
+    // The perch-and-fly birds — eagles in the trees, herons and flamingos in
+    // the shallows. See tree_birds.js and water_birds.js.
     this.treeBirds = new TreeBirds(this.ctx, SEED ^ 0x6ea9);
     this.treeBirds.build();
 
