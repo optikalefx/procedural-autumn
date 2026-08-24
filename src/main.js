@@ -121,6 +121,86 @@ function pickQuality() {
   return tier;
 }
 
+/** 'PAB1', little-endian — the first four bytes of every valid bake. */
+const MAGIC = 0x31424150;
+
+/** Where a bake for this (seed, res) lives, on the network and in the cache. */
+const bakeUrl = (seed, res) => `/${bakeFilename(seed, res, GEN_HASH)}`;
+
+/**
+ * Persist live-baked worlds, so a seed is generated at most once per device.
+ *
+ * Only the seed the deploy baked ships as a file. Anything else — the Seed box
+ * in settings, a shared `?seed=` link — has no file to fetch, so every load
+ * paid a full worker bake: 72 s measured on production, and paid again on
+ * every reload and every return visit. A player who finds a valley they like
+ * and bookmarks it was the worst case.
+ *
+ * The key is the same URL the network path would have used, so the generator
+ * hash is already baked into it and a change to TerrainGen.js orphans these
+ * entries rather than serving a world from the previous algorithm. `pruneBakes`
+ * then collects them.
+ *
+ * Entries are gzipped: a world is 44.5 MB raw and 17.3 MB gzipped, and this is
+ * the player's disk, not ours. The whole layer is best-effort — no cache, an
+ * insecure context, a full disk and a corrupt entry all degrade to the bake
+ * that would have happened anyway.
+ */
+const BAKE_CACHE = 'pab-bakes-v1';
+const BAKE_CACHE_KEEP = 3;
+
+/** null whenever caching is unavailable, which is not an error. */
+async function openBakeCache() {
+  // `caches` needs a secure context, and the streams need a browser new enough
+  // to have them; the game's WebGL2/WASM floor is well above both, but a file://
+  // open or an http:// LAN address would land here.
+  if (typeof caches === 'undefined' || typeof CompressionStream === 'undefined') return null;
+  try { return await caches.open(BAKE_CACHE); } catch { return null; }
+}
+
+async function readBakeCache(url) {
+  const cache = await openBakeCache();
+  if (!cache) return null;
+  try {
+    const hit = await cache.match(url);
+    if (!hit?.body) return null;
+    const buf = await new Response(hit.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+    // Same standard as the network path: believe the format, not the envelope.
+    // A half-written entry from a tab closed mid-store lands here.
+    if (buf.byteLength >= 4 && new DataView(buf).getUint32(0, true) === MAGIC) return buf;
+    await cache.delete(url);
+    return null;
+  } catch { return null; }
+}
+
+async function writeBakeCache(url, buf) {
+  const cache = await openBakeCache();
+  if (!cache) return;
+  try {
+    const t0 = performance.now();
+    const gz = await new Response(new Blob([buf]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+    await cache.put(url, new Response(gz));
+    await pruneBakes(cache);
+    console.log(`[world] cached this bake (${(gz.byteLength / 1048576).toFixed(1)} MB gzipped, ` +
+                `${(performance.now() - t0).toFixed(0)} ms) — this seed will load instantly from now on`);
+  } catch (e) {
+    // QuotaExceededError is the expected one. Nothing is broken; the next load
+    // of this seed simply bakes again.
+    console.warn(`[world] could not cache this bake (${e.name}) — this seed will bake again next time`);
+  }
+}
+
+/** Drop other generator hashes outright, then trim to the newest KEEP seeds. */
+async function pruneBakes(cache) {
+  const keys = await cache.keys();          // insertion order, oldest first
+  const live = [];
+  for (const k of keys) {
+    if (k.url.includes(GEN_HASH)) live.push(k);
+    else await cache.delete(k);
+  }
+  for (const k of live.slice(0, Math.max(0, live.length - BAKE_CACHE_KEEP))) await cache.delete(k);
+}
+
 /**
  * Load a pre-baked world if one exists, otherwise bake in a worker.
  *
@@ -133,6 +213,15 @@ async function loadCachedBake(seed, res) {
   if (new URLSearchParams(location.search).has('nocache')) return null;
   try {
     const t0 = performance.now();
+
+    // A world this device has already baked, from a seed the deploy does not
+    // ship. Checked before the network because for those seeds there is no
+    // file to find — the fetch below would only rediscover that.
+    const stored = await readBakeCache(bakeUrl(seed, res));
+    if (stored) {
+      setProgress(0.30, 'Loading the valley');
+      return { data: decodeBake(stored), ms: performance.now() - t0, cached: true, fromDevice: true };
+    }
 
     // `r.ok` is NOT an existence test, and a cache hit is not a valid bake.
     //
@@ -150,7 +239,6 @@ async function loadCachedBake(seed, res) {
     // So: read the first four bytes and require the format's own magic before
     // believing any response, and on a miss retry once with `cache: 'reload'`
     // to evict a poisoned entry rather than inheriting it for the session.
-    const MAGIC = 0x31424150; // 'PAB1', little-endian
     const tryBake = async (u) => {
       for (const mode of ['force-cache', 'reload']) {
         let resp;
@@ -168,7 +256,7 @@ async function loadCachedBake(seed, res) {
 
     // Same-origin: dev serves public/bakes/ and production ships the same
     // files in dist/, baked during the deploy build. See docs/DEPLOY.md.
-    let url = `/${bakeFilename(seed, res, GEN_HASH)}`;
+    let url = bakeUrl(seed, res);
     let stale = false;
     let buf = await tryBake(url);
 
@@ -219,9 +307,19 @@ async function boot() {
   const res = parseInt(params.get('res') ?? WORLD.heightmapRes, 10);
 
   setProgress(0.02, 'Raising mountains');
-  const baked = (await loadCachedBake(seed, res)) ?? (await bakeWorld(seed, res));
-  console.log(`[world] ${baked.cached ? 'loaded cached bake' : 'baked live'} in ${baked.ms.toFixed(0)} ms (gen ${GEN_HASH})`);
+  let baked = await loadCachedBake(seed, res);
+  if (!baked) {
+    baked = await bakeWorld(seed, res);
+    // Deliberately not awaited: gzipping 44 MB must not stand between the
+    // player and the first frame of a world they have already waited a minute
+    // for. It settles during startup and is only read on a later load.
+    if (baked.encoded) writeBakeCache(bakeUrl(seed, res), baked.encoded);
+  }
+  const source = baked.fromDevice ? 'loaded bake cached on this device'
+               : baked.cached ? 'loaded cached bake' : 'baked live';
+  console.log(`[world] ${source} in ${baked.ms.toFixed(0)} ms (gen ${GEN_HASH})`);
   window.__bakeCached = !!baked.cached;
+  window.__bakeFromDevice = !!baked.fromDevice;
   window.__bakeStale = !!baked.stale;
   if (baked.stale) console.warn('[world] rendering a STALE terrain bake');
 
