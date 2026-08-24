@@ -21,6 +21,7 @@
 //  *synchronously* in the same task, before the compositor clears it.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
+import { posthog } from '../posthog.js';
 
 const RANGES = {
   hour: [0, 24, 0.05],
@@ -260,6 +261,11 @@ export class PhotoMode {
     this.hud.audio()?.cue('shutter');
     this.hud.toast('Photo saved');
     this.lastPhotoBytes = url.length;
+    posthog.capture('photo_taken', {
+      file_size_bytes: url.length,
+      grid_visible: this.grid,
+      hour_of_day: this.ctx.lighting?.hour ?? null,
+    });
     return true;
   }
 }

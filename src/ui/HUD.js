@@ -20,6 +20,7 @@
 //     `--eval "window.__hudForce = true"` to capture it deliberately.
 // ─────────────────────────────────────────────────────────────────────────────
 import { System } from '../core/System.js';
+import { posthog } from '../posthog.js';
 import { QUALITY_PRESETS, SEED } from '../world/WorldConfig.js';
 import './hud.css';
 import { el, button, ICON } from './hud_dom.js';
@@ -163,6 +164,11 @@ export class HUD extends System {
       if (m.dist < FOUND_RADIUS && !m.found) {
         m.found = true;
         this.toast(`Found a ${m.kind === 'river' ? 'river bend' : m.kind}`);
+        posthog.capture('landmark_discovered', {
+          landmark_kind: m.kind,
+          landmarks_found_total: this.found + 1,
+          landmarks_total: this.total,
+        });
       }
       if (m.found) found++;
     }
@@ -275,7 +281,10 @@ export class HUD extends System {
   applyCar(id) {
     const v = this.vehicle();
     if (!v?.setCar) return;
-    if (v.setCar(id)) this.toast(`${v.car.label}`);
+    if (v.setCar(id)) {
+      this.toast(`${v.car.label}`);
+      posthog.capture('car_changed', { car_id: id, car_label: v.car.label });
+    }
     this.settings?.sync();
   }
 
@@ -294,6 +303,7 @@ export class HUD extends System {
   applySeed(v) {
     const s = Math.floor(v);
     if (!Number.isFinite(s) || s < 0 || s === this.seed()) return;
+    posthog.capture('world_seed_changed', { new_seed: s, previous_seed: this.seed() });
     const params = new URLSearchParams(location.search);
     params.set('seed', String(s));
     location.search = params.toString();
@@ -362,6 +372,7 @@ export class HUD extends System {
       try { p?.onQuality?.(preset); } catch { /* optional hook */ }
     }
     this.toast(`${q[0].toUpperCase()}${q.slice(1)} quality`);
+    posthog.capture('quality_changed', { quality_tier: q });
     this.settings?.sync();
   }
 
@@ -380,6 +391,7 @@ export class HUD extends System {
     this.root.classList.toggle('pa-photo', on);
     this.photoChip.classList.toggle('pa-on', on);
     this._dismissHint();
+    posthog.capture('photo_mode_toggled', { active: on });
   }
 
   toast(msg) {

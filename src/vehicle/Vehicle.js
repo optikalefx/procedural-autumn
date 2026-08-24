@@ -18,6 +18,7 @@ import { pickCar, carById, CARS } from './vehicle_models.js';
 import { VehiclePhysics } from './VehiclePhysics.js';
 import { ParticleField, TrackRibbons, surfaceDust, KIND } from './VehicleFX.js';
 import { VehicleShadow } from './VehicleShadow.js';
+import { posthog } from '../posthog.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
@@ -523,6 +524,12 @@ export class Vehicle extends System {
       site.landmark ? 'Moved you back to the road'
         : moved > 60 ? `Moved you ${Math.round(moved)} m to clear ground`
           : site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
+    posthog.capture('vehicle_rescued', {
+      distance_moved_m: Math.round(moved),
+      rescue_count: this.rescues,
+      used_landmark: !!site.landmark,
+      relaxed: !!site.relaxed,
+    });
     return site;
   }
 

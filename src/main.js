@@ -6,6 +6,7 @@
 //  a fixed order. System authors never edit this file.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+import { posthog } from './posthog.js';
 
 import { Engine } from './core/Engine.js';
 import { Input } from './core/Input.js';
@@ -528,6 +529,15 @@ async function boot() {
   setProgress(1, 'Ready');
   setTimeout(() => loaderEl?.classList.add('hidden'), 400);
   window.__ready = true;
+
+  posthog.capture('session_started', {
+    quality_tier: quality,
+    seed,
+    touch_capable: touchCapable(),
+    device_memory_gb: navigator.deviceMemory ?? null,
+    hardware_concurrency: navigator.hardwareConcurrency ?? null,
+    bake_cached: !!baked.cached,
+  });
 }
 
 boot().catch((e) => {
