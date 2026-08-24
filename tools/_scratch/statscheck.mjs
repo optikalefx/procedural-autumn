@@ -83,9 +83,17 @@ const camp = await get(async () => {
   const c = window.__systems.camp;
   const v = window.__systems.vehicle;
   const frame = () => new Promise((r) => requestAnimationFrame(r));
+  // Strike between pitches, and move 40 m each time. The site scorer refuses
+  // ground that overlaps an existing camp, so pitching repeatedly on the spot
+  // simply fails after the first — a run that did that made 3 camps out of 10
+  // attempts and then reported "no telescope" as if the feature were broken.
+  // One telescope in 2.5 camps, so ten real pitches is a ~1% miss.
   let scope = null;
+  const at = v.position.clone();
   for (let i = 0; i < 10 && !scope; i++) {
-    c.pitchNear(v.position.x + i * 3, v.position.z + i * 3, {});
+    c.strike();
+    for (let f = 0; f < 6; f++) await frame();
+    c.pitchNear(at.x + i * 40, at.z + i * 40, {});
     for (let f = 0; f < 30; f++) await frame();
     scope = c.camps.flatMap((cc) => cc.props)
       .find((pp) => pp.item?.kind === 'telescope' && pp.obj?.userData?.telescope) ?? null;
