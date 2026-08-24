@@ -1646,9 +1646,15 @@ function mergeAttr(list) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  The woodpile
 //
-//  The fire's supply, stacked where somebody dropped it. Same split-log
-//  primitive as the fuel, so the two read as the same firewood — which is the
-//  whole reason it is in this file and not in one of its own.
+//  The fire's supply, stacked where somebody dropped it. Sawn whole rounds in
+//  a pyramid — not the fire's split wedges. That was tried: a stack of bent,
+//  partial-arc split pieces under random rolls read as a heap of curled
+//  shavings, because a wedge's silhouette is its roll and a course of mixed
+//  rolls has no silhouette at all. Rounds have one silhouette — a circle —
+//  from every roll, which is what makes a pile of them read as logs from any
+//  camera. The pale sawn ends carry the same SPLIT_T the fire's split faces
+//  do, so the two still read as one batch of firewood, which is why this
+//  stays in this file.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -1676,14 +1682,10 @@ function layLog(x, y, z, yaw, roll) {
 /**
  * How far a laid log reaches across and below/above its own origin, exactly.
  *
- * Nothing about a split log's silhouette can be predicted from its radius. It
- * is a wedge, and which way it was rolled decides everything: bark-down it
- * hangs a full radius below the axis, bark-up it hangs 0.06 of one — the apex —
- * and stands a radius proud instead. Seating a course on a nominal radius
- * therefore floats half of it and buries the other half, which is what left the
- * bottom course of the woodpile hovering 4 cm over its own shadow. Once the
- * stack holds quarters, halves AND whole rounds, no single nominal exists at
- * all, and measuring is the only thing that packs them.
+ * Used to seat the ground course and the stray log on the actual dirt: a
+ * round's lowest point is its jittered radius at whatever roll it landed in,
+ * not its nominal one, and a nominal seat is what once left the bottom course
+ * hovering 4 cm over its own shadow.
  *
  * Transforming the points is exact where `Box3.applyMatrix4` is not: that
  * inflates the box to the axis-aligned bound of an already axis-aligned bound,
@@ -1707,28 +1709,73 @@ function extentsXY(geos, m) {
 }
 
 /**
- * One piece of firewood: how much of a round it is, and how big that round was.
+ * One whole round of firewood: a sawn log, closed and watertight.
  *
- * A woodpile is not a box of identical billets. Somebody quartered the big
- * rounds, halved the middling ones and threw the small ones on whole, and the
- * mix is most of what makes a stack look like wood rather than like stock.
+ * Deliberately NOT `splitLog` with a wide span. A span just short of TAU is a
+ * pac-man — an open slot down the length with two split faces diving to the
+ * apex — and under a random roll a third of them turn that slot toward the
+ * camera as a black gash. The round has no slot, almost no bend and only a
+ * whisper of radius jitter, because a stacked log's job is to read as a
+ * cylinder; the character lives in the mix of radii and lengths, not in any
+ * single piece's deformity.
  *
- * The arc is the part that matters and it is the second time this file has had
- * to learn it: the fire's fuel carries a note that at 100 degrees of arc "the
- * bark side barely curves across its own width and every piece read as sawn
- * planking", and the woodpile was still on 97-155 degrees — so its pieces read
- * as shingles for exactly the same reason. Nothing here is under 155 now, and
- * a third of the stack is very nearly a closed cylinder.
+ * Y runs along the log, centred. Returns `{ bark, split }` on the same
+ * contract as `splitLog` — bark is the side, split the two pale sawn ends —
+ * so the pile tints both through the one wood material exactly as the fire's
+ * fuel does.
+ *
+ * Winding is derived, not inherited: side quads wind (A, C, B)/(A, D, C) so
+ * (p1−p0)×(p2−p0) points radially out, and the caps fan (centre, k+1, k) on
+ * top / (centre, k, k+1) on the bottom — the cross product of two radials in
+ * ascending angle points −Y, which is the top cap's INWARD direction, hence
+ * the swap on top.
  */
-function firewoodPiece(rnd) {
-  const r = rnd();
-  // A small round, thrown on whole: as tall as it is wide, and the piece that
-  // does most of the work of saying "these are logs".
-  if (r < 0.30) return { span: 5.60 + rnd() * 0.50, rad: 0.042 + rnd() * 0.012 };
-  // A halved round, the common case.
-  if (r < 0.75) return { span: 2.95 + rnd() * 0.30, rad: 0.052 + rnd() * 0.016 };
-  // A big one, off a trunk too thick to burn whole.
-  return { span: 2.60 + rnd() * 0.35, rad: 0.068 + rnd() * 0.014 };
+function roundLog(rnd, len, R) {
+  const NA = 9, NL = 3;
+  const bendX = (rnd() - 0.5) * R * 0.16, bendZ = (rnd() - 0.5) * R * 0.16;
+  const taperEnd = 0.90 + rnd() * 0.08;
+  const flat = 0.92 + rnd() * 0.08;        // slight ovality, rolled by `ph`
+  const ph = rnd() * TAU;
+  const jit = [];
+  for (let k = 0; k < NA; k++) jit.push(0.96 + rnd() * 0.06);
+
+  const P = [];         // [l][k] ring points
+  const C = [];         // [l] ring centres, for the cap fans
+  for (let l = 0; l <= NL; l++) {
+    const t = l / NL;
+    const y = -len * 0.5 + t * len;
+    const tp = lerp(1, taperEnd, t);
+    const bx = bendX * Math.sin(t * Math.PI), bz = bendZ * Math.sin(t * Math.PI);
+    const row = [];
+    for (let k = 0; k < NA; k++) {
+      const ang = ph + (k / NA) * TAU;
+      const r = R * tp * jit[k];
+      row.push(new THREE.Vector3(Math.cos(ang) * r + bx, y, Math.sin(ang) * r * flat + bz));
+    }
+    P.push(row);
+    C.push(new THREE.Vector3(bx, y, bz));
+  }
+  const barkP = [], splitP = [];
+  const tri = (arr, a, b, c) => arr.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  for (let l = 0; l < NL; l++) {
+    for (let k = 0; k < NA; k++) {
+      const k1 = (k + 1) % NA;
+      const a = P[l][k], b = P[l][k1], c = P[l + 1][k1], d = P[l + 1][k];
+      tri(barkP, a, c, b);
+      tri(barkP, a, d, c);
+    }
+  }
+  for (let k = 0; k < NA; k++) {
+    const k1 = (k + 1) % NA;
+    tri(splitP, C[NL], P[NL][k1], P[NL][k]);
+    tri(splitP, C[0], P[0][k], P[0][k1]);
+  }
+  const mk = (arr) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(arr), 3));
+    return g;
+  };
+  return { bark: mk(barkP), split: mk(splitP) };
 }
 
 export function buildWoodpile(rnd, opts = {}) {
@@ -1740,82 +1787,102 @@ export function buildWoodpile(rnd, opts = {}) {
   // accepted and ignored for the whole of the last round, which is why every
   // camp had a stack of exactly the same mass.
   const N = Math.max(4, Math.round(opts.logs ?? 14));
-  // How wide the rick is built, and the finger-gap between pieces in a course.
-  // Courses are filled to this and then started again, so how many pieces a
-  // course holds falls out of how big they happen to be — which is the only
-  // thing that works once the stack contains quarters, halves and rounds.
-  const ROW_W = 0.46;
-  const GAP = 0.004;
-  // The ends facing +Z are flush; the far ends are ragged, because the pieces
-  // are not the same length and nobody trims a woodpile.
+  // The finger-gap between neighbours in the ground course, and the flush-ish
+  // face: ends facing +Z are roughly even, the far ends ragged, because the
+  // logs are not the same length and nobody trims a woodpile.
+  const GAP = 0.006;
   const zFace = 0.17;
-  // Each course is seated on the mean top of the one below, less a couple of
-  // millimetres so it has settled into it rather than balanced on it. Mean
-  // rather than max: the tallest piece in a course should be pressed into the
-  // next, not hold it up over a gap.
-  const SETTLE = 0.003;
+  // Upper logs are pressed this far into the grooves they sit in. Resting
+  // contact is computed exactly, but the rings carry a few percent of radius
+  // jitter the contact solve cannot see; a couple of millimetres of
+  // penetration turns any worst-case sliver of daylight into "settled",
+  // where the same error as a gap reads as "levitating".
+  const SETTLE = 0.002;
 
-  // ── cut the wood, and measure every piece ────────────────────────────────
-  const pieces = [];
+  // ── saw the logs, fattest first ──────────────────────────────────────────
+  // Sorted so dealing fills the ground course with the big rounds and the top
+  // with the light ones — which is both how a person stacks wood and what
+  // keeps the pyramid from looking top-heavy.
+  const logs = [];
   for (let i = 0; i < N; i++) {
-    const { span, rad } = firewoodPiece(rnd);
-    const len = 0.34 + rnd() * 0.08;
-    const { bark, split } = splitLog(rnd, len, rad, span);
-    // A split piece settles onto a flat face with the bark up or down. A round
-    // has no flat face and no preference, so it lands however it rolled.
-    const roll = span > 4.5
-      ? rnd() * TAU
-      : (rnd() < 0.5 ? 1 : -1) * Math.PI * 0.5 + (rnd() - 0.5) * 0.45;
-    const yaw = (rnd() - 0.5) * 0.05;
-    pieces.push({ bark, split, roll, yaw, len, e: extentsXY([bark, split], layLog(0, 0, 0, yaw, roll)) });
+    const rad = 0.048 + rnd() * 0.022;
+    const len = 0.36 + rnd() * 0.10;
+    const { bark, split } = roundLog(rnd, len, rad);
+    logs.push({ bark, split, rad, len, yaw: (rnd() - 0.5) * 0.06, roll: rnd() * TAU });
   }
+  logs.sort((a, b) => b.rad - a.rad);
 
-  // ── pack them into courses ───────────────────────────────────────────────
+  // ── deal them into pyramid courses ───────────────────────────────────────
+  // A course of m sits in the m grooves of a course of m+1, so the base width
+  // is the smallest whose full pyramid holds N; the last course just comes up
+  // short instead of the top coming to a single balanced log every time.
+  let baseN = 2;
+  while (baseN * (baseN + 1) / 2 < N) baseN++;
   const courses = [];
-  let course = [], used = 0;
-  for (const p of pieces) {
-    const w = p.e.hiX - p.e.loX;
-    if (course.length && used + GAP + w > ROW_W) { courses.push(course); course = []; used = 0; }
-    used += (course.length ? GAP : 0) + w;
-    course.push(p);
+  for (let i = 0, n = baseN; i < N; n = Math.max(1, n - 1)) {
+    courses.push(logs.slice(i, i + n));
+    i += n;
   }
-  if (course.length) courses.push(course);
 
-  // ── stack them ───────────────────────────────────────────────────────────
-  let base = -0.005;                       // the ground course, a little bedded in
-  for (let row = 0; row < courses.length; row++) {
-    const c = courses[row];
-    let total = 0;
-    for (const p of c) total += p.e.hiX - p.e.loX;
-    total += GAP * (c.length - 1);
-    // Courses do not line up with each other on a real stack, and a rick whose
-    // ends are flush on both sides is a pallet.
-    let cursor = -total * 0.5 + (row % 2 ? 1 : -1) * 0.012 + (rnd() - 0.5) * 0.008;
-    let topSum = 0;
-    for (const p of c) {
-      const x = cursor - p.e.loX;          // butt this piece up against the last
-      cursor += (p.e.hiX - p.e.loX) + GAP;
-      const y = base - p.e.loY + (rnd() - 0.5) * 0.003;
-      const z = zFace - p.len * 0.5 + (rnd() - 0.5) * 0.014;
-      topSum += y + p.e.hiY;
-      const m = layLog(x, y, z, p.yaw, p.roll);
-      const dust = dusted([1, 1, 1], { top: 0.10, amount: 0.20 + wear * 0.22 });
-      const bt = 0.86 + rnd() * 0.3;
-      P.add(p.bark, 'wood', m.clone(), tintMul(dust, [BARK_T[0] * bt, BARK_T[1] * bt, BARK_T[2] * bt]));
-      P.add(p.split, 'wood', m.clone(), tintMul(dust, [SPLIT_T[0] * bt, SPLIT_T[1] * bt, SPLIT_T[2]]));
+  // ── stack them: ground course shoulder to shoulder, the rest seated by ──
+  // ── circle contact in the grooves of the course below ───────────────────
+  const emit = (l, x, y) => {
+    const z = zFace - l.len * 0.5 + (rnd() - 0.5) * 0.03;
+    const m = layLog(x, y, z, l.yaw, l.roll);
+    const dust = dusted([1, 1, 1], { top: 0.10, amount: 0.20 + wear * 0.22 });
+    const bt = 0.86 + rnd() * 0.3;
+    P.add(l.bark, 'wood', m.clone(), tintMul(dust, [BARK_T[0] * bt, BARK_T[1] * bt, BARK_T[2] * bt]));
+    P.add(l.split, 'wood', m.clone(), tintMul(dust, [SPLIT_T[0] * bt, SPLIT_T[1] * bt, SPLIT_T[2]]));
+  };
+  let below = null;                        // [{x, y, rad}] of the course under this one
+  for (const course of courses) {
+    const row = [];
+    if (!below) {
+      let total = -GAP;
+      for (const l of course) total += 2 * l.rad + GAP;
+      let x = -total * 0.5;
+      for (const l of course) {
+        x += l.rad;
+        // Seated on the measured lowest point, a little bedded into the dirt.
+        const e = extentsXY([l.bark, l.split], layLog(0, 0, 0, l.yaw, l.roll));
+        row.push({ x, y: -0.004 - e.loY, rad: l.rad });
+        x += l.rad + GAP;
+      }
+    } else {
+      // This is the physics the pile needs and all of it: a resting log
+      // touches the two logs under it, so its centre is the upper
+      // intersection of the two circles grown by its own radius. Solved,
+      // not simulated — the result is identical to where a rigid-body
+      // settle would leave it, and it cannot jitter, tunnel, or wake up.
+      const off = Math.floor((below.length - 1 - course.length) / 2);
+      course.forEach((l, j) => {
+        const a = below[off + j], b = below[off + j + 1];
+        const r1 = a.rad + l.rad - SETTLE, r2 = b.rad + l.rad - SETTLE;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.hypot(dx, dy);
+        const t = (d * d + r1 * r1 - r2 * r2) / (2 * d);
+        const h = Math.sqrt(Math.max(0, r1 * r1 - t * t));
+        row.push({
+          x: a.x + (t * dx - h * dy) / d,
+          y: a.y + (t * dy + h * dx) / d,
+          rad: l.rad,
+        });
+      });
     }
-    base = topSum / c.length - SETTLE;
+    course.forEach((l, j) => emit(l, row[j].x, row[j].y));
+    below = row;
   }
+  const halfW = baseN * 0.062;             // rough half-width of the ground course
 
   // One that has rolled off the stack — the difference between a woodpile and
   // a crate of dowels. Beside the stack and turned out of line with it, so it
   // reads as one that got away rather than as the stack itself going wrong.
   {
-    const { span, rad } = firewoodPiece(rnd);
+    const rad = 0.042 + rnd() * 0.016;
     const len = 0.34 + rnd() * 0.07;
-    const { bark, split } = splitLog(rnd, len, rad, span);
+    const { bark, split } = roundLog(rnd, len, rad);
     const side = rnd() < 0.5 ? 1 : -1;
-    const x = side * (ROW_W * 0.5 + 0.07 + rnd() * 0.05);
+    const x = side * (halfW + 0.07 + rnd() * 0.05);
     const z = 0.14 + rnd() * 0.09;
     const yaw = side * (0.90 + rnd() * 0.30), roll = rnd() * TAU;
     const { loY } = extentsXY([bark, split], layLog(x, 0, z, yaw, roll));
