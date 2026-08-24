@@ -423,18 +423,29 @@ export function buildCanoe(rnd, opts = {}) {
   // the classic "paused paddling" pose. The blade is dead level here, which
   // is what keeps this pose from the fate of the first across-the-gunwales
   // attempt (a drooped blade clipped the hull and poked below the keel).
-  const paddle = buildCanoePaddle(cw, stripLo ? strips : null, trimC);
+  // TWO paddles, one per side (user direction, 2026-08-23): the stroke
+  // animation dips only the paddle whose side is pulling, so the off-side
+  // grip never plunges into the water like a phantom blade. Blade of the
+  // first points starboard (+X); the second is yaw-mirrored so its blade
+  // hangs over port. Both rest across the rails, one ahead of the yoke and
+  // one behind, so they read as a pair and never overlap.
   const diag = 0.04 + paddleYaw * 0.08;               // casual skew off square
   const pz = 0.30 + (paddleZ - 0.5) * 0.2;
-  const py = sheerOf(pz) + 0.024;                     // shaft on the rail caps
-  paddle.position.set(-0.06, py, pz);
-  paddle.rotation.set(0, diag, 0);                    // shaft across the beam
-  g.add(paddle);
+  const paddleS = buildCanoePaddle(cw, stripLo ? strips : null, trimC);
+  paddleS.position.set(-0.06, sheerOf(pz) + 0.024, pz);
+  paddleS.rotation.set(0, diag, 0);                   // blade to starboard
+  g.add(paddleS);
+  const pz2 = -0.85 - (paddleZ - 0.5) * 0.2;
+  const paddleP = buildCanoePaddle(cw, stripLo ? strips : null, trimC);
+  paddleP.position.set(0.06, sheerOf(pz2) + 0.024, pz2);
+  paddleP.rotation.set(0, Math.PI + diag, 0);         // blade to port
+  g.add(paddleP);
 
   P.flush(g);
 
   g.userData.dim = { ...CANOE_DIM };
-  g.userData.paddle = paddle;
+  g.userData.paddle = paddleS;                        // compat: "the" paddle
+  g.userData.paddles = { starboard: paddleS, port: paddleP };
   g.userData.colorway = cw.name;
   return g;
 }

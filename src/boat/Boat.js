@@ -373,13 +373,31 @@ export class Boat extends System {
   /** Dip the stowed paddle alternately with the stroke — a small rotation on
    *  top of the model's own stowed pose, so it works for either author's rig. */
   _animatePaddle(b, dt) {
-    const paddle = b.group.userData.paddle;
-    if (!paddle) return;
-    if (!b.paddleBase) b.paddleBase = paddle.quaternion.clone();
+    const u = b.group.userData;
     const p = b.phys;
     const env = p._stroking && p._phase < 0.35 ? Math.sin((p._phase / 0.35) * Math.PI) : 0;
-    this._q2.setFromAxisAngle(this._v.set(0, 0, 1), p._side * env * 0.45);
-    paddle.quaternion.copy(b.paddleBase).multiply(this._q2);
+    if (u.paddles) {
+      // Canoe: a paddle per side. Only the stroke side's paddle dips — a
+      // local-Z roll of −angle drops the blade (local +X) for both, since the
+      // port one is yaw-mirrored. Stroke rings emit to port when _side > 0
+      // (see onStroke's left-vector), so the paddle mapping matches.
+      if (!b.paddleBase) {
+        b.paddleBase = {
+          starboard: u.paddles.starboard.quaternion.clone(),
+          port: u.paddles.port.quaternion.clone(),
+        };
+      }
+      const active = p._side > 0 ? 'port' : 'starboard';
+      for (const k of ['port', 'starboard']) {
+        this._q2.setFromAxisAngle(this._v.set(0, 0, 1), k === active ? -env * 0.5 : 0);
+        u.paddles[k].quaternion.copy(b.paddleBase[k]).multiply(this._q2);
+      }
+    } else if (u.paddle) {
+      // Kayak: one double blade, alternating tips.
+      if (!b.paddleBase) b.paddleBase = u.paddle.quaternion.clone();
+      this._q2.setFromAxisAngle(this._v.set(0, 0, 1), p._side * env * 0.45);
+      u.paddle.quaternion.copy(b.paddleBase).multiply(this._q2);
+    }
     void dt;
   }
 
