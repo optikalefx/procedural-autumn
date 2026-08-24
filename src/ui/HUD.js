@@ -20,7 +20,7 @@
 //     `--eval "window.__hudForce = true"` to capture it deliberately.
 // ─────────────────────────────────────────────────────────────────────────────
 import { System } from '../core/System.js';
-import { QUALITY_PRESETS } from '../world/WorldConfig.js';
+import { QUALITY_PRESETS, SEED } from '../world/WorldConfig.js';
 import './hud.css';
 import { el, button, ICON } from './hud_dom.js';
 import { Compass } from './hud_compass.js';
@@ -252,6 +252,26 @@ export class HUD extends System {
     if (!v?.setCar) return;
     if (v.setCar(id)) this.toast(`${v.car.label}`);
     this.settings?.sync();
+  }
+
+  /** The seed the running world was baked from: the URL's, else the default. */
+  seed() {
+    const v = parseInt(new URLSearchParams(location.search).get('seed') ?? '', 10);
+    return Number.isFinite(v) ? v : SEED;
+  }
+
+  /**
+   * New seed → new valley. This is a page reload, not a live change: the whole
+   * boot path (main.js) keys terrain, water and POIs off ?seed=, so rewriting
+   * the URL is the one honest way to rebuild everything consistently. Other
+   * params (res, quality overrides) ride along untouched.
+   */
+  applySeed(v) {
+    const s = Math.floor(v);
+    if (!Number.isFinite(s) || s < 0 || s === this.seed()) return;
+    const params = new URLSearchParams(location.search);
+    params.set('seed', String(s));
+    location.search = params.toString();
   }
 
   applyHour(h) { if (this.ctx.lighting) this.ctx.lighting.hour = h; }
