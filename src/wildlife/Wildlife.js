@@ -60,6 +60,15 @@ const CFG = {
   // rabbit's and the deer's: far enough out that it never pops in view, close
   // enough that a spawned fox is actually resolvable.
   fox:    { spawn: 140, despawn: 178, live: 4,  perKm2: 16 },
+  // Squirrels are the common small life of the timber — commoner on the map
+  // than rabbits, on a streaming band even tighter than theirs, because a
+  // 0.19 m animal past forty metres is nothing at all. The tight band is what
+  // makes the high density affordable: at any moment only the handful around
+  // the camper exist.
+  // 240 lands ~620 home sites — about 2.5× the rabbits, far and away the
+  // commonest mammal, without letting one species own most of the site table
+  // (the first cut at 420 took 1080 of 1671).
+  squirrel: { spawn: 72, despawn: 104, live: 8, perKm2: 240 },
 };
 
 // LOD. A deer is about 1.5 m tall, so at 60 m it is roughly forty pixels — the
@@ -284,6 +293,15 @@ export class Wildlife extends System {
       const scrub = (1 - smoothstep(0.46, 0.72, m)) * smoothstep(0.05, 0.22, m) * 0.6;
       return clamp01((edge + scrub) * 1.1 * flat * clump * (1 - smoothstep(170, 250, h)));
     }
+    if (key === 'squirrel') {
+      // The timber itself, plus its inner edge — the one species that lives
+      // where the trees are rather than where they stop. The moisture field is
+      // the tree field, so "wood" here is the same band the forest grows in;
+      // the edge term keeps a few on the verges the player actually drives.
+      const wood = smoothstep(0.48, 0.76, m);
+      const edge = smoothstep(0.30, 0.46, m) * (1 - smoothstep(0.64, 0.88, m)) * 0.5;
+      return clamp01((wood * 1.15 + edge) * flat * clump * (1 - smoothstep(150, 230, h)));
+    }
     // Bear: water and cover. River sites are placed separately off the actual
     // polylines; this covers the deep-wood animal.
     const cover = smoothstep(0.55, 0.80, m);
@@ -322,7 +340,13 @@ export class Wildlife extends System {
       }
     }
 
-    const cap = 1400;
+    // The cap bounds the every-0.3 s scan loop, and it has to clear the
+    // realised site count with room to spare: species are placed in key
+    // order and the river bears after all of them, so a saturated cap does
+    // not degrade evenly — it silently deletes whatever placed last. The
+    // squirrels found this at 1400: the census came back with exactly 1400
+    // sites and zero bears on the map.
+    const cap = 2400;
     const sx = new Float32Array(cap), sz = new Float32Array(cap);
     const spec = new Uint8Array(cap), scount = new Uint8Array(cap), sseed = new Uint32Array(cap);
     const lines = new Array(cap).fill(null);
@@ -420,6 +444,9 @@ export class Wildlife extends System {
     this.stats.sites = n;
     const byKey = keys.map((k, i) => `${k} ${spec.slice(0, n).reduce((a, v) => a + (v === i ? 1 : 0), 0)}`);
     console.log(`[wildlife] ${n} home sites (${byKey.join(', ')}) in ${(performance.now() - t0).toFixed(0)} ms`);
+    // Say so when the cap truncates — see its comment for why silence here
+    // once cost the valley every bear it had.
+    if (n >= cap) console.warn(`[wildlife] site cap ${cap} reached — later species were truncated`);
   }
 
   // ── streaming ──────────────────────────────────────────────────────────────
