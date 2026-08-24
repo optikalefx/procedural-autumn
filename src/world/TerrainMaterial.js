@@ -580,7 +580,7 @@ export function createTerrainMaterial(world, opts = {}) {
           // legible without charging flat meadow pixels for it.
           vec3 tpFast = tpWeights(Nfast);
           float zoneFast = macroFast;
-          float zoneTriFast = smoothstep(0.995, 0.90, tpFast.y);
+          float zoneTriFast = smoothstep(0.995, 0.90, tpFast.y) * uZoneTP;
           if (zoneTriFast > 0.002) {
             float zf = fbmTP(vWorldPos * 0.0042, 3, tpFast)
                      * 0.5 * inversesqrt(max(dot(tpFast, tpFast), 1e-4));
@@ -612,10 +612,72 @@ export function createTerrainMaterial(world, opts = {}) {
             vec2 bg = vec2(bxf - b0f, bzf - b0f) * (uBedLevels / FAST_BED_E);
             bedGradFast = vec3(bg.x, 0.0, bg.y);
             bedStepFast = plateStep(b0f * uBedLevels, 0.215);
+            // ── the anti-contour filter, ported from the near painter ────
+            // This block is a cut-down copy of the full painter's plane
+            // breaks, and until now it was cut down by one term too many: it
+            // took the staircase and it took the pitch fade, and it left the
+            // ANISOTROPY FILTER behind. The near painter's copy carries three
+            // screens of comment on why that filter is not optional; the short
+            // version is that a level set of a horizontal field is a closed
+            // curve, so near an extremum of the field it is a NEST of closed
+            // curves, and a nest seen obliquely on a dome is a fingerprint.
+            //
+            // TERRAIN_FAST is defined unconditionally, so the path missing the
+            // filter is the ONLY path that ships — which is how the fix landed
+            // in the near painter and the artefact stayed on screen. Measured
+            // on the massif right of centre in the peaks view: eight
+            // concentric rings wrapping the flank, and they leave with
+            // uBedRelief alone, so it is the normal perturbation drawing them
+            // and not the albedo.
+            //
+            // What separates a trace that reads as geology from one that reads
+            // as a contour is which way it runs relative to the slope: down the
+            // fall line it is a flute, a spur, a gully; across it it is a
+            // contour whatever drew it. The trace is perpendicular to the
+            // field's gradient, so the test is one dot product. Floored at 0.12
+            // rather than cut to zero, so the occasional cross break survives,
+            // and gated on there being a fall line at all — a plane break is a
+            // property of a FACE, and gentle ground, which has none, is exactly
+            // where the whole nest of level sets shows at once.
+            vec2 fallDF = Nfast.xz;
+            float fallLF = length(fallDF);
+            vec2 gNF = bg / max(length(bg), 1e-6);
+            float acrossF = 1.0 - abs(dot(gNF, fallDF / max(fallLF, 1e-6)));
+            float anisoF = (0.12 + 0.88 * smoothstep(0.08, 0.68, acrossF))
+                         * smoothstep(0.10, 0.34, fallLF);
+            // ── and the distance budget, at TWICE the near painter's ─────
+            // The filter above is necessary and it is not sufficient, and the
+            // capture is what said so: with the filter in and these two
+            // coefficients left at the near painter's 0.045/0.100, the nest was
+            // quieter and still a nest. The surviving arcs are the ones the
+            // filter is designed to KEEP — level sets that genuinely run down
+            // the fall line — and the eye closes them into loops anyway,
+            // because what reads as a fingerprint is the family, not any one
+            // trace. No anisotropy test can catch that; only scale can.
+            //
+            // The near painter's numbers say a plane break is off under about
+            // ten pixels of pitch and full over about twenty-two. That bound is
+            // right in kind and measured too low: the rings on the massif right
+            // of centre in the peaks view sit near 25, comfortably inside
+            // "full", and eight of them fit across the flank. Halving both
+            // coefficients moves the window to roughly 20 and 44 — a band has
+            // to be worth about twice the area before it is drawn — and the
+            // nest is gone from that face while the near cliff in hero is
+            // untouched, which is the whole point: the fade only bites where
+            // the bands were already too small to read as planes.
+            //
+            // Measured against the previous behaviour (both changes, one page
+            // load, uniform-only): peaks 7.9% of pixels past 8/255, hero 7.1%,
+            // waterfall 0.2% — the near view barely moves, which is correct.
+            //
+            // The caps stay at 3.5 and 8.0. They are absolute footprints, tied
+            // by construction to the footFast < 8.0 early-out above, and the
+            // field's pitch never gets near making them bind.
             float pitchFast = 1.0 / max(length(bg), 1e-5);
-            bedFadeFast = 1.0 - smoothstep(min(pitchFast * 0.045, 3.5),
-                                           min(pitchFast * 0.100, 8.0),
-                                           footFast);
+            bedFadeFast = (1.0 - smoothstep(min(pitchFast * 0.0225, 3.5),
+                                            min(pitchFast * 0.050, 8.0),
+                                            footFast))
+                        * anisoF;
           }
           vec3 stoneFast = mix(uRockMid, uRockLit,
                                0.30 + 0.58 * valueZones(zoneFast, 3.0));
@@ -1246,6 +1308,15 @@ export function createTerrainMaterial(world, opts = {}) {
           // analytically from distance and grazing angle, never from fwidth of
           // an interpolated attribute, which is constant across a triangle and
           // would print the mesh.
+          // NOTE, and read this before copying these two coefficients: the
+          // FAST path — which, since TERRAIN_FAST is unconditional, is the only
+          // one that ships — runs them at half these values. 22 px turned out
+          // to be too generous a lower bound for "worth reading as a plane": at
+          // that setting a nest of ~25 px bands survived the anisotropy filter
+          // above and read as a fingerprint on a distant massif. This copy is
+          // left as measured because the measurements quoted around it were
+          // taken on this path, and this path is compiled out; if it is ever
+          // switched back on, halve these too.
           float pitchM = 1.0 / max(length(gxz), 1e-5);
           fBed = (1.0 - smoothstep(min(pitchM * 0.045, BED_FAR * 0.44),
                                    min(pitchM * 0.100, BED_FAR), footM)) * aniso;
