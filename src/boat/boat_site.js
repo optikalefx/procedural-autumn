@@ -20,18 +20,59 @@
 import { clamp } from '../core/MathUtils.js';
 
 // ── launch rules ─────────────────────────────────────────────────────────────
-// `span` is the hydro field's openness in metres (a thread of river reads ~1,
-// a lake saturates at 48). 14 m of open water is a pond you can actually turn
-// a canoe around on; less is a puddle or a channel.
 //
-// MEASURED, not sampled at the beached point itself: span is the mean inside
-// distance over 12 m, so AT the waterline half its probes look at land and
-// even the big lakes read ~5.5 there (probed on seed 20261018: shoreline span
-// tops out at 5.6 across 903 launch-band points). The honest question is "is
-// there a lake in front of the bow", so span is read SPAN_PROBE metres into
-// the water along the sdf gradient — where the same probe reads 17-41 on
-// lakes and 0.3-5.6 on every river bank tested.
-export const MIN_SPAN = 14;
+// `span` is the hydro field's openness — the mean of max(sdf, 0) over a box
+// blur of radius 12 m (hydroField.js, the spanF block), so a ~25 m window.
+// It is NOT a width in metres, and the scale to set a threshold on is the one
+// hydroField states for itself: "1.0 m is a thread; 4.0 m is a body that can
+// take the full radius".
+//
+// Read SPAN_PROBE metres into the water along the sdf gradient, not at the
+// beached point — AT the waterline half the window looks at land and even big
+// lakes read ~5.5 (seed 20261018, 903 launch-band points). The honest question
+// is "is there a lake in front of the bow".
+//
+// ── MIN_SPAN WAS 14, AND 14 IS ABOVE THE PROBE'S OWN CEILING ─────────────────
+//
+// The probe point sits at LAUNCH_SDF + SPAN_PROBE = 16.5 m inside the
+// waterline, so the 25 m window straddles the shore: half of it samples water
+// shallower than the probe and some of it samples land at zero. The mean
+// therefore cannot exceed ~16 however big the lake is. 14 was a threshold set
+// at 86% of the largest value the measurement is capable of returning. (An
+// earlier note here claimed the probe "reads 17-41 on lakes". It does not and
+// it cannot; that claim is what the 14 rested on.)
+//
+// Measured on seed 20261018 — every shoreline point in the map on a 20 m grid,
+// standing water only. n = 1097; "real lake" = 40 m or more of water across in
+// front of the bow (n = 420); "puddle" = under 8 m (n = 413):
+//
+//   probe 14 m   span ceiling over the WHOLE map ......... 16.3
+//                median on a real lake .................... 12.9   <- under 14
+//
+//   threshold    real lakes accepted    puddles accepted
+//        3              91%                   31%
+//        6              83%                   12%     <- SHIPPED
+//        8              79%                    0%
+//       10              70%                    0%
+//       14              40%                    0%     <- was
+//
+// So the median real lake shoreline FAILED the gate, and a player reporting a
+// giant lake that refuses a canoe was reading it correctly.
+//
+// 6 is a DELIBERATE trade and not what the table alone would pick. 8 is the
+// strictest threshold that costs nothing on the reject side and was the first
+// choice here; 6 buys four more points of real lake and pays 12% of puddles
+// for them, so some ponds now accept a canoe that arguably should not. That is
+// the right side to err on — refusing a launch on water the player is looking
+// at reads as a bug, while accepting one on water that turns out to be small
+// reads as a short paddle, and the physics beaches a hull gracefully either
+// way (user direction, 2026-08-24).
+//
+// Do not move this without re-running tools/_scratch/launchgate.mjs. MIN_SPAN
+// and SPAN_PROBE are COUPLED through the box radius — changing the probe
+// distance moves the whole usable range of the threshold, and tuning one
+// without the other is what produced the 14.
+export const MIN_SPAN = 6;
 export const SPAN_PROBE = 14;
 // Standing water only. getRiver is the baked river mask; anything flowing is
 // the river system's water, and a boat on it would need a current model this

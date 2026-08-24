@@ -34,6 +34,8 @@ import { waterRay, sdfGrad, shoreSnap, validateLaunch, MAX_LAUNCH_DIST } from '.
 import { BoatPhysics } from './boat_physics.js';
 import { buildCanoe, CANOE_DIM } from './boat_canoe.js';
 import { buildKayak, KAYAK_DIM } from './boat_kayak.js';
+import { setBoatEnv } from './boat_materials.js';
+import { SkyProbe } from '../render/SkyProbe.js';
 
 // Top speeds, per the design: a kayak is faster and twitchier than a canoe.
 const MAX_SPEED = { canoe: 3.2, kayak: 3.8 };
@@ -88,6 +90,17 @@ const LOOK_RECENTER_DELAY = 2.0;
 // of the lake (user, 2026-08-24).
 const DRIVE_HINT_TIME = 6.0;
 
+// How long a refused launch stays on screen after the click that earned it.
+//
+// A refusal is the ANSWER TO AN ATTEMPT, not a running commentary. It used to
+// print continuously for as long as the pointer sat over an unlaunchable stretch
+// of shore, which is most of the shoreline — so simply parking near water put
+// "no boat here — not enough open water" under the crosshair and left it there,
+// reading as a fault the player is supposed to go and fix rather than as the
+// reply to a click they have not made (user, 2026-08-24). Held until `placed`,
+// then shown for a beat.
+const REFUSE_TIME = 2.4;
+
 // Prewarm hold, matching Camp's pattern: enough frames for the main and
 // shadow passes to have drawn the warm props, all under the loading screen.
 const PREWARM_FRAMES = 8;
@@ -118,6 +131,8 @@ export class Boat extends System {
     this._lookPitch = 0;
     this._lookIdle = 0;                 // seconds since the look was touched
     this._hintT = 0;                    // seconds left of the drive hint
+    this._refuse = '';                  // why the last attempted launch failed
+    this._refuseT = 0;                  // seconds left of that refusal
     this._ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
     this._v = new THREE.Vector3();
     this._q = new THREE.Quaternion();
@@ -151,6 +166,14 @@ export class Boat extends System {
       canoe: { build: buildCanoe, dim: CANOE_DIM, placeholder: false },
       kayak: { build: buildKayak, dim: KAYAK_DIM, placeholder: false },
     };
+
+    // The kit's shade fill. See setBoatEnv — before _prewarm, because envMap
+    // is part of the program cache key and the prewarm is what links these
+    // shaders under the loading screen.
+    //
+    // groundMix 0: a boat's lower hemisphere is water, so the bounce under the
+    // hull is dimmed sky rather than the warm meadow tint a prop on dirt wants.
+    this._probe = new SkyProbe(this.ctx.renderer, { groundMix: 0, onBake: setBoatEnv });
 
     this._prewarm();
 
@@ -224,6 +247,14 @@ export class Boat extends System {
   update(dt, t) {
     if (this._warm) this._finishPrewarm();
     this.click.poll(dt);
+
+    // Keep the shade fill on the same clock as the sky. Skipped entirely
+    // unless the hour has actually moved — see REBAKE_HOUR_DELTA — so a parked
+    // clock (every capture harness) costs one subtraction a frame. The probe
+    // re-points the shared materials itself, via the onBake it was built with.
+    if (this.boats.length) this._probe?.update();
+    if (this._refuseT > 0) this._refuseT -= dt;
+
     const veh = this.ctx.systems?.vehicle;
     const rig = this.ctx.systems?.cameraRig;
 
@@ -348,9 +379,13 @@ export class Boat extends System {
       }
       return true;
     }
-    // A gentle reason, not silence — the reject the spec calls out is the
-    // far side of the lake ("too far from the camper").
-    this._say(`no boat here — ${v.reason}`);
+    // Refused. Say so only if the player actually tried — see REFUSE_TIME.
+    // The claim is returned either way: this is still the shore band, and
+    // handing the pointer back to Camp here would offer to set a chair down
+    // in the lake.
+    if (placed(input)) { this._refuse = v.reason; this._refuseT = REFUSE_TIME; }
+    if (this._refuseT > 0) this._say(`no boat here — ${this._refuse}`);
+    else this._say('');
     this._cursor('');
     return true;
   }
@@ -796,6 +831,9 @@ export class Boat extends System {
     this.exit();                                    // controls + camera back, always
     for (const b of this.boats.slice()) this._remove(b);
     this.ctx.systems?.water?.setBoat?.(null);
+    setBoatEnv(null);
+    this._probe?.dispose();
+    this._probe = null;
     this.prompt?.dispose();
     this.root?.parent?.remove(this.root);
     if (window.__boat === this) delete window.__boat;
