@@ -42,12 +42,11 @@ review/*.jpg
 # These were tracked until 2026-08-21, on the reasoning that a fresh clone
 # should run without waiting for a bake. That trade stopped being worth it:
 #
-#   * Players never received these files anyway. vite.config.js deletes every
-#     .pab from dist/ at build time, because Cloudflare rejects any asset over
-#     25 MiB and the 1536 bake is 44 MB. Production serves bakes from R2 via
-#     VITE_BAKE_BASE_URL, and a client with no bake at all bakes live in a
-#     worker (src/main.js — `loadCachedBake() ?? bakeWorld()`). The tracked
-#     copies only ever saved *developers* the one-time bake.
+#   * Nothing needs git to carry them. The Vercel build regenerates them from
+#     source (`node tools/bake.mjs` in vercel.json's buildCommand) and ships
+#     them in dist/, and a client with no bake at all bakes live in a worker
+#     (src/main.js — `loadCachedBake() ?? bakeWorld()`). The tracked copies
+#     only ever saved *developers* the one-time bake.
 #   * They cost 387 MB of the 637 MB .git. Every edit to TerrainGen.js changes
 #     the generator hash and produces a whole new 44 MB incompressible blob.
 #     tools/bake.mjs prunes stale bakes from disk correctly, but git history

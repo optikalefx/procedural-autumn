@@ -19,6 +19,7 @@ import { VehiclePhysics } from './VehiclePhysics.js';
 import { ParticleField, TrackRibbons, surfaceDust, KIND } from './VehicleFX.js';
 import { VehicleShadow } from './VehicleShadow.js';
 import { touchCapable } from '../core/verbs.js';
+import { posthog } from '../posthog.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
@@ -303,6 +304,18 @@ export class Vehicle extends System {
     };
   }
 
+  /** Warm post-target variants even if the parked model begins off camera. */
+  precompileMaterials() {
+    const { renderer, camera, scene } = this.ctx;
+    // Do not compile `rig` as a child scene: it contains the two headlights,
+    // and WebGLRenderer would gather those in addition to the same lights from
+    // target `scene`, producing a four-spotlight key gameplay never uses.
+    renderer.compile(this.root, camera, scene);
+    for (const { spin } of this.wheelNodes) {
+      renderer.compile(spin, camera, scene);
+    }
+  }
+
   // ── swapping cars ─────────────────────────────────────────────────────────
   /**
    * Change which vehicle the player is driving, live.
@@ -542,6 +555,12 @@ export class Vehicle extends System {
       site.landmark ? 'Moved you back to the road'
         : moved > 60 ? `Moved you ${Math.round(moved)} m to clear ground`
           : site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
+    posthog.capture('vehicle_rescued', {
+      distance_moved_m: Math.round(moved),
+      rescue_count: this.rescues,
+      used_landmark: !!site.landmark,
+      relaxed: !!site.relaxed,
+    });
     return site;
   }
 
@@ -1010,7 +1029,7 @@ export class Vehicle extends System {
       const cx = w.contact.x, cy = w.contact.y, cz = w.contact.z;
       if (!Number.isFinite(cx)) continue;
 
-      const depth = world.getWaterDepth(cx, cz);
+      const depth = world.getWaterContactDepth?.(cx, cz) ?? world.getWaterDepth(cx, cz);
       const weights = world.getSurfaceWeights(cx, cz, this._w);
       const soft = clamp01(weights.grass * 0.7 + weights.dry * 0.8 + weights.dirt * 1.0
         + weights.sand * 1.0 + weights.snow * 0.9 - weights.rock * 0.8);

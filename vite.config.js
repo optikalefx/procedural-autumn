@@ -57,59 +57,72 @@ function glslBacktickGuard() {
 }
 
 /**
- * Keep the .pab world bakes out of dist/.
+ * Brotli-compress the .pab world bakes in dist/.
  *
- * Cloudflare Pages and Workers both reject any single static asset over
- * 25 MiB, and public/bakes/world-20261018-1536-*.pab — the default the game
- * loads, since WORLD.heightmapRes is 1536 — is 32 MB. Vite copies public/
- * into dist/ verbatim, so a plain `npm run build` walks straight into that
- * limit. The bakes are hosted on R2 instead and reached through
- * VITE_BAKE_BASE_URL (see src/main.js and docs/DEPLOY.md).
+ * The bakes are float grids and they compress 2.76x — the 1536 bake goes
+ * 44.5 MB -> 16.1 MB — which is the single largest lever on the bandwidth
+ * bill, since every first-time visitor pays the full download and an HTTP
+ * cache only ever helps the *second* visit.
  *
- * `apply: 'build'` is the inverse of the guard above: dev must keep serving
- * the bakes from public/bakes/ exactly as it does today, because every capture
- * harness in tools/ depends on that and a live bake costs ~25 s of CPU per run.
+ * The compressed bytes keep the original .pab filename, and vercel.json sets
+ * `Content-Encoding: br` on that path so the browser transparently inflates
+ * them. `loadCachedBake` therefore needs no change: `arrayBuffer()` hands it
+ * the original bytes, magic number and all.
  *
- * The deletion happens in closeBundle rather than by filtering the copy,
- * because Vite copies publicDir wholesale with no per-file hook. manifest.json
- * is deliberately left in place: it is 480 bytes, and a build with no
- * VITE_BAKE_BASE_URL set (a local `npm run preview`, say) still wants it.
+ * Build-only, and it rewrites dist/ rather than public/, because everything
+ * in tools/ reads public/bakes/*.pab straight off disk with decodeBake and
+ * would choke on a compressed file. Dev serves public/ raw and is untouched.
+ *
+ * Quality 5 is deliberate: q9 saves a further 0.2 MB for 11 s more build
+ * time per bake, and Vercel bills build minutes too.
  */
-function excludeBakesFromBuild() {
+function compressBakesForBuild() {
   let outDir = 'dist';
   return {
-    name: 'exclude-bakes-from-build',
+    name: 'compress-bakes-for-build',
     apply: 'build',
     configResolved(cfg) { outDir = cfg.build.outDir; },
     async closeBundle() {
-      const { readdir, stat, unlink } = await import('node:fs/promises');
+      const { readdir, readFile, writeFile } = await import('node:fs/promises');
       const { join, resolve } = await import('node:path');
+      const zlib = await import('node:zlib');
+      const { promisify } = await import('node:util');
+      const brotli = promisify(zlib.brotliCompress);
+
       const dir = resolve(outDir, 'bakes');
       let names;
       try { names = await readdir(dir); } catch { return; }   // nothing copied
-      let n = 0, bytes = 0;
+      let n = 0, from = 0, to = 0;
       for (const name of names) {
         if (!name.endsWith('.pab')) continue;
         const p = join(dir, name);
-        bytes += (await stat(p)).size;
-        await unlink(p);
-        n++;
+        const raw = await readFile(p);
+        const out = await brotli(raw, {
+          params: {
+            [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
+            [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length,
+          },
+        });
+        await writeFile(p, out);
+        n++; from += raw.length; to += out.length;
       }
       if (n) {
-        this.info(`excluded ${n} .pab bake(s), ${(bytes / 1048576).toFixed(1)} MB, ` +
-                  `from ${outDir}/bakes — serve them from VITE_BAKE_BASE_URL`);
+        this.info(`brotli: ${n} bake(s) ${(from / 1048576).toFixed(1)} MB -> ` +
+                  `${(to / 1048576).toFixed(1)} MB (${(from / to).toFixed(2)}x). ` +
+                  `vercel.json must serve /bakes/*.pab with Content-Encoding: br.`);
       }
     },
   };
 }
 
 /**
- * Fail the build if any single file in dist/ would be rejected by Cloudflare's
- * 25 MiB per-asset cap. This is the check that would have caught the 32 MB
- * bake before a deploy did, and it stays useful for whatever large asset shows
- * up next. Build-only, and it runs after the exclusion above.
+ * Fail the build if any single file in dist/ exceeds Vercel's 100 MB
+ * per-file deployment limit. The .pab world bakes ship in dist/ deliberately
+ * (the 1536 bake is 44 MB — see docs/DEPLOY.md), so the headroom is real but
+ * finite; this catches whatever large asset shows up next before a deploy
+ * refuses it. Build-only.
  */
-function assetSizeCap(limitBytes = 25 * 1024 * 1024) {
+function assetSizeCap(limitBytes = 100 * 1024 * 1024) {
   let outDir = 'dist';
   return {
     name: 'asset-size-cap',
@@ -136,7 +149,7 @@ function assetSizeCap(limitBytes = 25 * 1024 * 1024) {
       await walk(root);
       if (over.length) {
         this.error(
-          `${over.length} file(s) in ${outDir}/ exceed Cloudflare's 25 MiB per-asset limit ` +
+          `${over.length} file(s) in ${outDir}/ exceed Vercel's 100 MB per-file limit ` +
           `and the deploy will be rejected:\n  ${over.join('\n  ')}\n` +
           `  Host the file off the bundle (see docs/DEPLOY.md) rather than shrinking it.`
         );
@@ -146,7 +159,7 @@ function assetSizeCap(limitBytes = 25 * 1024 * 1024) {
 }
 
 export default defineConfig({
-  plugins: [glslBacktickGuard(), excludeBakesFromBuild(), assetSizeCap()],
+  plugins: [glslBacktickGuard(), compressBakesForBuild(), assetSizeCap()],
   server: { host: '127.0.0.1', port: 5178, strictPort: true },
   build: { target: 'esnext', sourcemap: true },
   worker: { format: 'es' },

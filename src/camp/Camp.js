@@ -50,6 +50,7 @@ import { buildTelescope } from './camp_telescope.js';
 import { CampDog, warmDog, disposeDogProtos } from './camp_dog.js';
 import { picked, placed, placing, pointing } from '../core/Pointer.js';
 import { pickVerb, placeVerb, actVerb, touchCapable } from '../core/verbs.js';
+import { posthog } from '../posthog.js';
 
 const STATE = { IDLE: 'idle', AIMING: 'aiming', RAISING: 'raising', PITCHED: 'pitched', STRIKING: 'striking' };
 
@@ -1648,6 +1649,12 @@ export class Camp extends System {
     this._justPitched = true;
     this._applyRaise(camp);
     this.ctx.systems?.hud?.toast?.('Camp made');
+    posthog.capture('camp_pitched', {
+      camp_radius: camp.radius,
+      camp_small: camp.small,
+      camp_has_dog: camp.hasDog,
+      camps_active: this.camps.length,
+    });
     return camp;
   }
 
@@ -1930,7 +1937,15 @@ export class Camp extends System {
    * once the raise has eased to zero.
    */
   _strike(camp, now = false) {
-    if (!now) { camp.striking = true; return; }
+    if (!now) {
+      camp.striking = true;
+      posthog.capture('camp_struck', {
+        camp_radius: camp.radius,
+        camp_small: camp.small,
+        camps_remaining: this.camps.length - 1,
+      });
+      return;
+    }
 
     // Never leave the player inside a prop that has been packed away. The
     // eyepiece view owns the camera outright, so if the geometry goes the view

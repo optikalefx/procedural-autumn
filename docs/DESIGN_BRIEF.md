@@ -489,13 +489,15 @@ node tools/dprtest.mjs --dpr 2 --w 2560 --h 1400 --seconds 26 --gate   # large w
 
 It reports the **settled** frame rate — after adaptive resolution has stabilised
 — plus the resolution actually reached, and exits non-zero outside budget:
-settled ≥ 50 fps, p95 ≤ 45 ms, effective pixel ratio ≥ 1.0.
+settled ≥ 50 fps, p95 ≤ 45 ms, effective internal pixel ratio ≥ 0.90.
 
 Three things learned the hard way here:
 
-- **Never buy frame rate with sharpness.** The first adaptive-resolution attempt
-  let the effective ratio reach 0.825 and the player's reaction was "very blurry
-  / fuzzy looking, even on ultra". Below native, drop effects instead.
+- **Treat reduced resolution as insurance, not the default look.** The first
+  bilinear adaptive-resolution attempt reached 0.825 and looked visibly fuzzy;
+  reconstruction improved the trade, but a later 0.78 floor still read as
+  potato quality in motion. The game now starts at 1.15, targets 50 fps and
+  keeps 0.90 as a strain-only floor.
 - **p95 matters more than the average.** A p95 of 232 ms against a p50 of 42 ms
   is what a player calls "it drops to 15 fps", however good the mean looks.
 - **This machine's throughput drifts 2–3× over minutes.** Multi-second A/B blocks

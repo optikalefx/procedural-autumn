@@ -148,9 +148,9 @@ export class MassifShadow {
   }
 
   /**
-   * Rebuild if the sun has moved enough to matter. `cycleSpeed` is 0 by default
-   * (WorldConfig.TOD), so in a shipped run and in every capture this fires once
-   * and never again; the rate limit is for the HUD's time-of-day scrub.
+   * Rebuild if the sun has moved enough to matter. The rate limit keeps slow
+   * sun motion and HUD time-of-day scrubbing from rebuilding this field every
+   * frame.
    */
   update(sunDir, nowMs) {
     if (!this.ready) return;

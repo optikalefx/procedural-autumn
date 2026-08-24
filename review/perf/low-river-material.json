@@ -1,0 +1,104 @@
+{
+ "env": {
+  "quality": "low",
+  "pixelRatio": 1,
+  "basePixelRatio": 1,
+  "internalScale": 1,
+  "effectivePixelRatio": 1,
+  "buffer": [
+   1170,
+   870
+  ],
+  "megapixels": 1.02,
+  "internalMegapixels": 1.02,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 1024,
+  "preset": {
+   "shadowMapSize": 1024,
+   "cascades": 2,
+   "grassMul": 0.3,
+   "ssao": false,
+   "dof": false,
+   "volumetric": false,
+   "reflections": false,
+   "pixelRatioCap": 1,
+   "treeMul": 0.5
+  }
+ },
+ "viewport": [
+  1170,
+  870
+ ],
+ "dpr": 2,
+ "rounds": 3,
+ "blockMs": 2000,
+ "modes": {
+  "motion": {
+   "rows": [
+    {
+     "name": "fx.terrainBasic",
+     "p50": 7.6,
+     "base": 11.75,
+     "save": 4.05,
+     "spread": 0.5,
+     "fps": 131.6,
+     "p95": 14.8,
+     "updMs": 1.27,
+     "lateMs": 0.04,
+     "submitMs": 5.84,
+     "calls": 515,
+     "tris": 2448420
+    },
+    {
+     "name": "fx.shadeOnly",
+     "p50": 10.5,
+     "base": 11.7,
+     "save": 1.3,
+     "spread": 0.35,
+     "fps": 95.2,
+     "p95": 20,
+     "updMs": 1.56,
+     "lateMs": 0.04,
+     "submitMs": 8.5,
+     "calls": 514,
+     "tris": 2444653
+    },
+    {
+     "name": "fx.shadows",
+     "p50": 11.3,
+     "base": 11.7,
+     "save": 0.4,
+     "spread": 0.1,
+     "fps": 88.5,
+     "p95": 21.5,
+     "updMs": 1.59,
+     "lateMs": 0.04,
+     "submitMs": 9.21,
+     "calls": 293,
+     "tris": 1665490
+    }
+   ],
+   "drift": {
+    "n": 12,
+    "min": 11.6,
+    "max": 11.9,
+    "median": 11.7,
+    "first": 11.9,
+    "last": 11.7
+   },
+   "baseSplit": {
+    "updMs": 1.7,
+    "lateMs": 0.04,
+    "submitMs": 9.7
+   },
+   "settled": {
+    "frames": 90,
+    "triangles": 2479873,
+    "calls": 524,
+    "converged": true
+   }
+  }
+ }
+}

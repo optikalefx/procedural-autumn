@@ -15,6 +15,12 @@
 //
 //  Loading is lazy and failure is silent: no soundtrack file, no problem, the
 //  game still has its generative layer and its ambience.
+//
+//  Lazy means lazy. This used to fetch from the constructor, which put 4.9 MB
+//  on the wire during the loading screen for a bed that does not enter for
+//  20-45 s and never enters at all for someone who leaves first — about a
+//  tenth of the bandwidth bill, spent on nothing. The fetch now waits until
+//  the first entry is nearly due (LOAD_LEAD below).
 // ─────────────────────────────────────────────────────────────────────────────
 import { gain } from './synth.js';
 import { clamp01 } from '../core/MathUtils.js';
@@ -27,6 +33,12 @@ const PLAY_MIN = 95;
 const PLAY_MAX = 165;
 const REST_MIN = 70;
 const REST_MAX = 130;
+
+// How long before the bed is due to enter we start fetching it. Enough for a
+// 4.9 MB download and decode on an unhurried connection; if it is not enough
+// the entry simply happens when the buffer lands, because `update` keeps the
+// clock running while the fetch is in flight.
+const LOAD_LEAD = 12.0;
 
 const FADE_IN = 6.0;
 const FADE_OUT = 7.5;
@@ -66,8 +78,19 @@ export class Soundtrack {
     this._t = 0;
     this._until = 20 + Math.random() * 25;   // do not open the game with music
     this.state = { loaded: false, playing: false, plays: 0 };
+    this._loading = false;
+  }
 
-    this._load();
+  /**
+   * Fetch and decode the bed. Safe to call repeatedly — the first call wins
+   * and the rest are no-ops. `update` calls this when the entry is nearly
+   * due; callers that need the buffer *now* (the sound lab) await it.
+   */
+  async ensureLoaded() {
+    if (this.buffer || this.failed) return;
+    if (this._loading) return this._loading;
+    this._loading = this._load();
+    return this._loading;
   }
 
   async _load() {
@@ -120,9 +143,17 @@ export class Soundtrack {
 
   /** @param musicActive whether a generative phrase is sounding right now. */
   update(dt, musicActive) {
-    if (this.failed || !this.buffer) return;
+    if (this.failed) return;
 
     this._t += dt;
+
+    // Start the download once the entry is within LOAD_LEAD. The clock keeps
+    // running either way, so a slow fetch delays the first entry rather than
+    // losing it: `_t` stays past `_until` and the branch below fires as soon
+    // as the buffer exists.
+    if (!this.buffer && this._t >= this._until - LOAD_LEAD) this.ensureLoaded();
+
+    if (!this.buffer) return;
     if (this._t >= this._until) {
       this._t = 0;
       if (this.playing) {

@@ -14,6 +14,7 @@
     "alea": "^1.0.1",
     "lil-gui": "^0.20.0",
     "n8ao": "^1.9.4",
+    "posthog-js": "^1.418.10",
     "postprocessing": "^6.37.8",
     "simplex-noise": "^4.0.3",
     "stats-gl": "^3.6.0",

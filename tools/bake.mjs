@@ -9,6 +9,7 @@
  */
 import { TerrainGen } from '../src/world/TerrainGen.js';
 import { encodeBake, bakeFilename, sourceHash } from '../src/world/bakeFormat.js';
+import { SEED as GAME_SEED, WORLD as GAME_WORLD } from '../src/world/WorldConfig.js';
 import { writeFileSync, existsSync, mkdirSync, statSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { acquire } from './_lock.mjs';
@@ -17,9 +18,12 @@ const argv = process.argv.slice(2);
 const arg = (n, d) => { const i = argv.indexOf(`--${n}`); return i === -1 ? d : argv[i + 1]; };
 const has = (n) => argv.includes(`--${n}`);
 
-const SEED = parseInt(arg('seed', '20261018'), 10);
-const ALT = parseFloat(arg('alt', '340'));
-const WORLD = parseFloat(arg('world', '3072'));
+// Defaults come from WorldConfig so the bake is always the world the game
+// actually loads. A hardcoded seed here once drifted from WorldConfig.SEED,
+// which silently bakes a world nobody plays.
+const SEED = parseInt(arg('seed', String(GAME_SEED)), 10);
+const ALT = parseFloat(arg('alt', String(GAME_WORLD.maxAltitude)));
+const WORLD = parseFloat(arg('world', String(GAME_WORLD.size)));
 const resList = arg('res') ? [parseInt(arg('res'), 10)] : [1536, 768, 512];
 
 // Cache key tracks the generator source, so editing TerrainGen.js invalidates

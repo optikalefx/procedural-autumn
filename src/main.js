@@ -6,6 +6,7 @@
 //  a fixed order. System authors never edit this file.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+import { posthog } from './posthog.js';
 
 import { Engine } from './core/Engine.js';
 import { Input } from './core/Input.js';
@@ -105,10 +106,9 @@ function pickQuality() {
            : cores >= 4 ? 'medium'
            : 'low';
 
-  // Step down for heavy pixel loads. AdaptiveResolution in Engine will not
-  // rescue this on its own: it refuses to draw below one device pixel per CSS
-  // pixel, because rendering under native reads as a blurry game rather than a
-  // fast one. Below native the honest lever is fewer effects, not less sharpness.
+  // Step down for heavy pixel loads. Adaptive resolution is an emergency
+  // margin, not a substitute for choosing an affordable effect tier: it has a
+  // firm 0.90 effective-ratio floor to keep a large display from turning soft.
   const ORDER = ['ultra', 'high', 'medium', 'low'];
   let steps = 0;
   if (megapixels > 6.0) steps = 2;
@@ -119,22 +119,6 @@ function pickQuality() {
               `${cores} cores, ${mem} GB` + (steps ? ` (stepped down ${steps} for pixel load)` : ''));
   return tier;
 }
-
-/**
- * Where the .pab bakes are served from.
- *
- * Empty by default, which yields exactly the URLs this file used before —
- * same-origin `/bakes/...` off the dev server's public/ directory. Local dev
- * and every headless tool in tools/ therefore behave identically to before.
- *
- * A deployed build sets VITE_BAKE_BASE_URL to an absolute origin (the R2
- * public bucket URL or a custom domain in front of it) because the 1536 bake
- * is 32 MB and Cloudflare Pages/Workers refuse any single asset over 25 MiB.
- * Vite inlines this at build time; see docs/DEPLOY.md. Cross-origin means the
- * bucket needs CORS — a bake that is blocked or 404s presents as a game stuck
- * on the loading screen, so the failure is logged explicitly below.
- */
-const BAKE_BASE = (import.meta.env?.VITE_BAKE_BASE_URL ?? '').replace(/\/+$/, '');
 
 /**
  * Load a pre-baked world if one exists, otherwise bake in a worker.
@@ -181,7 +165,9 @@ async function loadCachedBake(seed, res) {
       return null;
     };
 
-    let url = `${BAKE_BASE}/${bakeFilename(seed, res, GEN_HASH)}`;
+    // Same-origin: dev serves public/bakes/ and production ships the same
+    // files in dist/, baked during the deploy build. See docs/DEPLOY.md.
+    let url = `/${bakeFilename(seed, res, GEN_HASH)}`;
     let stale = false;
     let buf = await tryBake(url);
 
@@ -189,10 +175,10 @@ async function loadCachedBake(seed, res) {
       // Exact generator hash missing — most likely someone is mid-edit on
       // TerrainGen.js. Fall back to the newest bake for this (seed, res) so
       // other authors keep fast captures, but flag it loudly.
-      const man = await fetch(`${BAKE_BASE}/bakes/manifest.json`, { cache: 'no-store' }).then((x) => x.ok ? x.json() : null).catch(() => null);
+      const man = await fetch('/bakes/manifest.json', { cache: 'no-store' }).then((x) => x.ok ? x.json() : null).catch(() => null);
       const alt = man?.entries?.find((e) => e.seed === seed && e.res === res);
       if (!alt) return null;
-      url = `${BAKE_BASE}/bakes/${alt.file}`;
+      url = `/bakes/${alt.file}`;
       stale = true;
       buf = await tryBake(url);
       if (!buf) return null;
@@ -205,12 +191,6 @@ async function loadCachedBake(seed, res) {
     return { data, ms: performance.now() - t0, cached: true, stale };
   } catch (e) {
     console.warn('[world] cached bake unusable, baking live:', e.message);
-    if (BAKE_BASE) {
-      console.warn(`[world] bakes are being fetched cross-origin from ${BAKE_BASE}. ` +
-                   `A network/TypeError here is almost always missing CORS on the bucket ` +
-                   `(it needs Access-Control-Allow-Origin for this site's origin) or a ` +
-                   `missing object. See docs/DEPLOY.md.`);
-    }
     return null;
   }
 }
@@ -255,7 +235,9 @@ async function boot() {
   const atmosphere = new Atmosphere(engine.scene);
   const lighting = new Lighting(engine.scene, quality);
   const sky = new Sky(engine.scene);
-  const terrain = new Terrain(world, engine.scene);
+  const terrain = new Terrain(world, engine.scene, {
+    detailDistance: QUALITY_PRESETS[quality].terrainDetailDistance,
+  });
   const postfx = new PostFX(engine, quality);
 
   const ctx = {
@@ -322,22 +304,40 @@ async function boot() {
   stylize.matte = new URLSearchParams(location.search).get('matte') === '1';
   stylize.harvest();
   stylize.update();
+  // EffectComposer's scene target is linear while the renderer itself remains
+  // configured for an sRGB canvas. A plain renderer.compile() only warms the
+  // direct-to-canvas combination, so every material that was invisible during
+  // the one warm draw (pooled wildlife, tyre tracks, distant streamed effects)
+  // compiled the mixed linear-target/sRGB-renderer variant the first time it
+  // appeared in play. On ANGLE/Metal that was a repeatable 200–270 ms hitch.
+  // Compile the direct path as before. For the linear-target combination, ask
+  // only systems that own invisible or unattached variants to present those
+  // materials. Compiling the entire scene twice added dozens of variants and
+  // a long loading pause merely to warm surfaces the real post draw below will
+  // already touch.
   engine.renderer.compile(engine.scene, cam);
+  const previousTarget = engine.renderer.getRenderTarget();
+  const linearTarget = new THREE.WebGLRenderTarget(1, 1);
+  try {
+    engine.renderer.setRenderTarget(linearTarget);
+    for (const [, system] of built) system.precompileMaterials?.();
+  } finally {
+    engine.renderer.setRenderTarget(previousTarget);
+    linearTarget.dispose();
+  }
 
   engine.setRenderCallback((dt) => postfx.render(dt));
 
   // ── internal render scale ───────────────────────────────────────────────
   // The scene and post chain render at this fraction of the canvas and are
   // reconstructed by PostFX's Catmull-Rom + CAS present pass (UpscalePass.js).
-  // The default puts the INTERNAL cost at one device pixel per CSS pixel —
-  // the old adaptive floor, measured at −9.6 ms on a Retina `high` frame —
-  // while PRESENTING at the tier's full pixelRatioCap, which through this
-  // filter is sharper than what the old floor showed (that path handed a
-  // native-res canvas to the browser's bilinear stretch). On a 1x display the
-  // default is 1.0 and nothing changes.
+  // Start at the policy's preferred effective ratio (1.25 device pixels per
+  // CSS pixel), while PRESENTING at the tier's full pixelRatioCap. That is a
+  // visibly sharper starting point than the original 1.0 default without
+  // paying for the full 1.35–1.5 cap. On a 1x display this clamps to 1.0.
   //
   // `?iscale=` pins it for A/Bs and captures; the adaptive scaler in Engine
-  // moves it between the sharpness floor and 1.0 in play.
+  // moves it between the sharpness floor and this preferred ceiling in play.
   engine.onInternalScale = (s) => postfx.setInternalScale(s);
   const iscale = parseFloat(params.get('iscale'));
   if (Number.isFinite(iscale)) {
@@ -347,8 +347,26 @@ async function boot() {
     engine.internalScale = iscale;
     postfx.setInternalScale(iscale);
   } else {
-    engine.setInternalScale(Math.min(1, 1 / engine.basePixelRatio));
+    engine.setInternalScale(
+      Math.min(1, engine.preferredEffectiveInternalRatio / engine.basePixelRatio),
+    );
   }
+
+  // Compile and allocate the post graph behind the loading screen. A scene-only
+  // renderer.compile() does not touch EffectComposer or shadow materials; the
+  // first playable frame was therefore paying 200–320 ms program/link spikes.
+  // Systems with pooled hidden casters can expose one only for this real draw.
+  // Aim the shadow camera at the actual starting frame first, then restore every
+  // warm-only object before the engine or loading transition begins.
+  lighting.update(0, cam.position);
+  const restoreWarmFrame = built.map(([, system]) => system.beginWarmFrame?.())
+    .filter((restore) => typeof restore === 'function');
+  try {
+    postfx.render(0);
+  } finally {
+    for (let i = restoreWarmFrame.length - 1; i >= 0; i--) restoreWarmFrame[i]();
+  }
+  engine.renderer.info.reset();
 
   engine.onUpdate((dt, t) => {
     const rig = ctx.systems.cameraRig;
@@ -454,12 +472,22 @@ async function boot() {
   // What the renderer is ACTUALLY drawing. Without this a future author can
   // measure a healthy fps without noticing that adaptive resolution quietly
   // halved the pixel count to get it.
-  window.__resolution = () => ({
-    scale: +engine.resolutionScale.toFixed(3),
-    basePixelRatio: +engine.basePixelRatio.toFixed(3),
-    effective: +(engine.basePixelRatio * engine.resolutionScale).toFixed(3),
-    megapixels: +((engine.renderer.domElement.width * engine.renderer.domElement.height) / 1e6).toFixed(2),
-  });
+  window.__resolution = () => {
+    const scale = engine.resolutionScale;
+    const internalScale = engine.internalScale;
+    const presented = engine.basePixelRatio * scale;
+    const presentedMegapixels =
+      (engine.renderer.domElement.width * engine.renderer.domElement.height) / 1e6;
+    return {
+      scale: +scale.toFixed(3),
+      internalScale: +internalScale.toFixed(3),
+      basePixelRatio: +engine.basePixelRatio.toFixed(3),
+      presented: +presented.toFixed(3),
+      effective: +(presented * internalScale).toFixed(3),
+      megapixels: +(presentedMegapixels * internalScale * internalScale).toFixed(2),
+      presentedMegapixels: +presentedMegapixels.toFixed(2),
+    };
+  };
 
   window.__settle = (frames = 60) => new Promise((res) => {
     let n = 0;
@@ -528,6 +556,15 @@ async function boot() {
   setProgress(1, 'Ready');
   setTimeout(() => loaderEl?.classList.add('hidden'), 400);
   window.__ready = true;
+
+  posthog.capture('session_started', {
+    quality_tier: quality,
+    seed,
+    touch_capable: touchCapable(),
+    device_memory_gb: navigator.deviceMemory ?? null,
+    hardware_concurrency: navigator.hardwareConcurrency ?? null,
+    bake_cached: !!baked.cached,
+  });
 }
 
 boot().catch((e) => {

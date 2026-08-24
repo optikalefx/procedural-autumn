@@ -222,6 +222,9 @@ export class Rig {
     const a = this.audio;
     if (a.soundtrack && !a.soundtrack.failed) return a.soundtrack;
     const st = new Soundtrack(this.actx, a.buses.music, this.ctx);
+    // The bed no longer fetches from its constructor — it waits until the
+    // entry is nearly due, which in the lab never comes. Ask for it outright.
+    st.ensureLoaded();
     a.soundtrack = st;
     if (!this.trims.soundtrack) {
       const t = gain(this.actx, 1);

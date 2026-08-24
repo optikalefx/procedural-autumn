@@ -28,8 +28,12 @@ code. Start your own server (`npx vite --host 127.0.0.1 --port <free port>
 --strictPort`) and point every tool at it (`--port` for ablate, `AUTUMN_URL`
 for perf/shot/probe/tod). Ports 5178–5181 are typically taken.
 
-Boot with `?seed=20261018` (or `--seed 20261018`): the committed bakes match
-that seed, and a mismatched seed bakes a whole world live before the first
+Pin a seed that has a bake on disk. `node tools/bake.mjs` defaults to the
+seed the game boots (`WorldConfig.SEED`, currently 20262018), so a freshly
+baked checkout hits the cache with no `?seed` at all. The capture toolchain
+and its historical baselines pin `?seed=20261018` (`--seed 20261018`); bake
+that seed too (`node tools/bake.mjs --seed 20261018`) before running
+captures. A seed with no bake bakes a whole world live before the first
 frame — minutes of wall clock holding the capture lock.
 
 ## There is more than one car, and the page picks at random
@@ -113,7 +117,7 @@ Its header is the authoritative method description; the short version:
 
 `draw.<system>` hides geometry; `cpu.<system>` stops an update();
 `fx.<feature>` toggles a render feature; `px.<scale>` / `tier.<name>` change
-pixel count or preset. Two families deserve special care:
+pixel count or preset. Three families deserve special care:
 
 - **`fx.flatShade` is a broken instrument.** It uses `scene.overrideMaterial`,
   which replaces vertex shaders too — grass, ground cover and the tree canopy
@@ -137,10 +141,11 @@ pixel count or preset. Two families deserve special care:
 Since 2026-08-22 the scene and the entire post chain render at
 `engine.internalScale` × the canvas and are reconstructed to the canvas by a
 Catmull-Rom + contrast-adaptive-sharpen pass (`src/render/UpscalePass.js`).
-The default is one device pixel per CSS pixel of internal cost, presented at
-the tier's `pixelRatioCap`; the adaptive scaler moves the internal scale (no
-drawing-buffer reallocation, so no freeze per step; floor
-`Engine.minEffectiveInternalRatio`).
+The default is 1.15 device pixels per CSS pixel of internal cost (clamped to
+the presented ratio), and the strain-only floor is 0.90. The adaptive scaler
+aims for 50 fps and moves the internal scale without drawing-buffer
+reallocation, so there is no freeze per step. The policy lives in
+`WorldConfig.ADAPTIVE_RESOLUTION`.
 
 URL parameters every harness can use:
 

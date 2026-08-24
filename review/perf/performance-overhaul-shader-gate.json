@@ -1,0 +1,148 @@
+{
+ "seconds": 8,
+ "res": "1536",
+ "viewport": [
+  600,
+  400
+ ],
+ "frames": 863,
+ "p50": 8,
+ "p95": 17.2,
+ "p99": 21.1,
+ "worstMs": 64.6,
+ "worstAtS": 1.2,
+ "hitch33": 1,
+ "hitch50": 1,
+ "hitch100": 0,
+ "settledP50": 8,
+ "settledP95": 17.3,
+ "maxCalls": 629,
+ "maxTris": 6731265,
+ "growth": {
+  "geometries": 151,
+  "textures": 8,
+  "programs": 1
+ },
+ "addedPrograms": [
+  {
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  }
+ ],
+ "programEvents": [
+  {
+   "t": 284.6000003814697,
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }",
+   "newMaterials": []
+  }
+ ],
+ "resolution": {
+  "scale": 1,
+  "internalScale": 1,
+  "basePixelRatio": 1,
+  "presented": 1,
+  "effective": 1,
+  "megapixels": 0.24,
+  "presentedMegapixels": 0.24
+ },
+ "worstFrames": [
+  {
+   "atS": 1.2,
+   "ms": 64.6,
+   "calls": 599,
+   "tris": 6224153,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 5.3,
+   "ms": 25.3,
+   "calls": 588,
+   "tris": 5602390,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 4.4,
+   "ms": 23.3,
+   "calls": 602,
+   "tris": 6081653,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 3.6,
+   "ms": 22.6,
+   "calls": 616,
+   "tris": 6698220,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 6.4,
+   "ms": 22.3,
+   "calls": 598,
+   "tris": 6443938,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 4.1,
+   "ms": 21.5,
+   "calls": 608,
+   "tris": 5819099,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 2.6,
+   "ms": 21.4,
+   "calls": 624,
+   "tris": 6630925,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.5,
+   "ms": 21.2,
+   "calls": 607,
+   "tris": 6039894,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 6.2,
+   "ms": 21.1,
+   "calls": 598,
+   "tris": 6150966,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 5.3,
+   "ms": 20.8,
+   "calls": 589,
+   "tris": 5614714,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": []
+}

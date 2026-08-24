@@ -1,0 +1,216 @@
+{
+ "env": {
+  "quality": "low",
+  "pixelRatio": 1,
+  "basePixelRatio": 1,
+  "internalScale": 1,
+  "effectivePixelRatio": 1,
+  "buffer": [
+   1170,
+   870
+  ],
+  "megapixels": 1.02,
+  "internalMegapixels": 1.02,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 1024,
+  "preset": {
+   "shadowMapSize": 1024,
+   "cascades": 2,
+   "grassMul": 0.3,
+   "ssao": false,
+   "dof": false,
+   "volumetric": false,
+   "reflections": false,
+   "pixelRatioCap": 1,
+   "treeMul": 0.5
+  }
+ },
+ "viewport": [
+  1170,
+  870
+ ],
+ "dpr": 2,
+ "rounds": 3,
+ "blockMs": 2000,
+ "modes": {
+  "motion": {
+   "rows": [
+    {
+     "name": "draw.terrain",
+     "p50": 5,
+     "base": 11.75,
+     "save": 6.85,
+     "spread": 0.15,
+     "fps": 200,
+     "p95": 9.4,
+     "updMs": 0.91,
+     "lateMs": 0.05,
+     "submitMs": 3.59,
+     "calls": 405,
+     "tris": 2072928
+    },
+    {
+     "name": "draw.grass",
+     "p50": 11.1,
+     "base": 11.7,
+     "save": 0.6,
+     "spread": 0.25,
+     "fps": 90.1,
+     "p95": 21.8,
+     "updMs": 1.46,
+     "lateMs": 0.05,
+     "submitMs": 9.18,
+     "calls": 502,
+     "tris": 2212951
+    },
+    {
+     "name": "draw.groundCover",
+     "p50": 10.9,
+     "base": 11.75,
+     "save": 0.9,
+     "spread": 0.55,
+     "fps": 91.7,
+     "p95": 21.4,
+     "updMs": 1.43,
+     "lateMs": 0.04,
+     "submitMs": 9,
+     "calls": 469,
+     "tris": 1689641
+    },
+    {
+     "name": "draw.trees",
+     "p50": 11.3,
+     "base": 11.85,
+     "save": 0.55,
+     "spread": 0.2,
+     "fps": 88.5,
+     "p95": 21.8,
+     "updMs": 1.45,
+     "lateMs": 0.04,
+     "submitMs": 9.38,
+     "calls": 352,
+     "tris": 2016008
+    },
+    {
+     "name": "draw.water",
+     "p50": 10.8,
+     "base": 11.85,
+     "save": 1.05,
+     "spread": 0.1,
+     "fps": 92.6,
+     "p95": 22.1,
+     "updMs": 1.43,
+     "lateMs": 0.04,
+     "submitMs": 9,
+     "calls": 501,
+     "tris": 2260780
+    },
+    {
+     "name": "draw.clouds",
+     "p50": 11.5,
+     "base": 11.8,
+     "save": 0.2,
+     "spread": 0.15,
+     "fps": 87,
+     "p95": 22.9,
+     "updMs": 1.5,
+     "lateMs": 0.04,
+     "submitMs": 9.62,
+     "calls": 514,
+     "tris": 2447649
+    },
+    {
+     "name": "draw.vehicle",
+     "p50": 11.3,
+     "base": 11.8,
+     "save": 0.45,
+     "spread": 0.15,
+     "fps": 88.5,
+     "p95": 22.5,
+     "updMs": 1.19,
+     "lateMs": 0.04,
+     "submitMs": 8.7,
+     "calls": 470,
+     "tris": 2345049
+    },
+    {
+     "name": "draw.rocks",
+     "p50": 11.7,
+     "base": 11.75,
+     "save": 0.1,
+     "spread": 0.15,
+     "fps": 85.5,
+     "p95": 22.9,
+     "updMs": 1.51,
+     "lateMs": 0.05,
+     "submitMs": 9.71,
+     "calls": 463,
+     "tris": 2350522
+    },
+    {
+     "name": "draw.waterfalls",
+     "p50": 11.6,
+     "base": 11.7,
+     "save": 0.15,
+     "spread": 0.2,
+     "fps": 86.2,
+     "p95": 22.6,
+     "updMs": 1.5,
+     "lateMs": 0.05,
+     "submitMs": 9.63,
+     "calls": 509,
+     "tris": 2352515
+    },
+    {
+     "name": "draw.sky",
+     "p50": 11.7,
+     "base": 11.7,
+     "save": 0.1,
+     "spread": 1.05,
+     "fps": 85.5,
+     "p95": 23,
+     "updMs": 1.48,
+     "lateMs": 0.04,
+     "submitMs": 9.7,
+     "calls": 513,
+     "tris": 2443332
+    },
+    {
+     "name": "draw.weather",
+     "p50": 11.6,
+     "base": 11.75,
+     "save": -0.05,
+     "spread": 0.2,
+     "fps": 86.2,
+     "p95": 22.7,
+     "updMs": 1.51,
+     "lateMs": 0.05,
+     "submitMs": 9.72,
+     "calls": 513,
+     "tris": 2446222
+    }
+   ],
+   "drift": {
+    "n": 36,
+    "min": 11.5,
+    "max": 13,
+    "median": 11.8,
+    "first": 11.9,
+    "last": 12.7
+   },
+   "baseSplit": {
+    "updMs": 1.5,
+    "lateMs": 0.04,
+    "submitMs": 9.75
+   },
+   "settled": {
+    "frames": 91,
+    "triangles": 2479873,
+    "calls": 524,
+    "converged": true
+   }
+  }
+ }
+}

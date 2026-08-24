@@ -1,0 +1,169 @@
+{
+ "seconds": 8,
+ "res": "1536",
+ "viewport": [
+  600,
+  400
+ ],
+ "frames": 1068,
+ "p50": 8.1,
+ "p95": 16.9,
+ "p99": 20,
+ "worstMs": 159.2,
+ "worstAtS": 6.8,
+ "hitch33": 2,
+ "hitch50": 1,
+ "hitch100": 1,
+ "settledP50": 8.2,
+ "settledP95": 17.8,
+ "maxCalls": 629,
+ "maxTris": 6763082,
+ "growth": {
+  "geometries": 148,
+  "textures": 8,
+  "programs": 2
+ },
+ "addedPrograms": [
+  {
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "programEvents": [
+  {
+   "t": 305.2000002861023,
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }",
+   "newMaterials": []
+  },
+  {
+   "t": 6834.60000038147,
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }",
+   "newMaterials": [
+    {
+     "object": "#200",
+     "name": "(anonymous)",
+     "type": "ShaderMaterial",
+     "shader": "#define BARK_OCCLUDE\n\n#ifndef OCCLUDE_DITHER_DECLARED\n#define OCCLUDE_DITHER_DECLARED\nfloat occThreshold( vec2 p ) {\n  v"
+    }
+   ]
+  }
+ ],
+ "resolution": {
+  "scale": 1,
+  "internalScale": 1,
+  "basePixelRatio": 1,
+  "presented": 1,
+  "effective": 1,
+  "megapixels": 0.24,
+  "presentedMegapixels": 0.24
+ },
+ "worstFrames": [
+  {
+   "atS": 6.8,
+   "ms": 159.2,
+   "calls": 598,
+   "tris": 5950229,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 1.2,
+   "ms": 34.3,
+   "calls": 598,
+   "tris": 6058190,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 9.9,
+   "ms": 25.1,
+   "calls": 607,
+   "tris": 5495905,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 9.4,
+   "ms": 22.1,
+   "calls": 597,
+   "tris": 6194615,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 3.4,
+   "ms": 21.7,
+   "calls": 619,
+   "tris": 6601290,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.4,
+   "ms": 21.2,
+   "calls": 607,
+   "tris": 6537338,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.4,
+   "ms": 21.1,
+   "calls": 606,
+   "tris": 6536322,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7,
+   "ms": 20.1,
+   "calls": 603,
+   "tris": 6733837,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 2.6,
+   "ms": 20.1,
+   "calls": 621,
+   "tris": 6624001,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.5,
+   "ms": 20.1,
+   "calls": 605,
+   "tris": 6351445,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": [
+  "1 frames over 100 ms — visible freezes"
+ ]
+}
