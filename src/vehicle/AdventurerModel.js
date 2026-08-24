@@ -25,7 +25,7 @@
 //     rear down-tubes and braces, body-colour with black padding — rather than
 //     as a detail glimpsed through a window;
 //   · the interior is furnished, because it is scenery now rather than a dark
-//     void: floor, tunnel, buckets, rear bench, dash, and eight ducks, all of
+//     void: floor, tunnel, buckets, rear bench, dash, and four ducks, all of
 //     it lit by the actual sky.
 //
 //  The ducks are not a joke at the model's expense. It is a Jeep thing.
@@ -105,14 +105,20 @@ export function buildAdventurerMaterials(env) {
   // The ducks. A rubber duck is the one thing in this valley that is *shiny and
   // soft at once*, and it has to read at 60 mm across, so it gets a real
   // clearcoat rather than the standard material everything else in here uses —
-  // without the specular pop they are eight yellow pebbles on the dash.
+  // without the specular pop they are four orange pebbles on the dash.
+  //
+  // Orange, not the classic yellow: they sit on a yellow dash in front of a
+  // yellow cowl, and a yellow duck on yellow paint is a silhouette nobody can
+  // find. The beak then has to go darker than the body — orange-on-orange is
+  // the same failure one step in — so it is a burnt red rather than the amber
+  // it was when the body was yellow.
   mats.duck = new THREE.MeshPhysicalMaterial({
-    color: C(0xffd616), roughness: 0.34, metalness: 0.0,
+    color: C(0xff6a12), roughness: 0.34, metalness: 0.0,
     clearcoat: 0.85, clearcoatRoughness: 0.20,
     envMap: env, envMapIntensity: 0.55, vertexColors: true,
   });
   mats.beak = new THREE.MeshStandardMaterial({
-    color: C(0xef7d16), roughness: 0.45, metalness: 0.0,
+    color: C(0xbe3708), roughness: 0.45, metalness: 0.0,
     envMap: env, envMapIntensity: 0.4, vertexColors: true,
   });
   return mats;
@@ -157,7 +163,7 @@ function tubShape() {
 //  A rubber duck
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Eight of these live on the dash top against the windscreen. Each is six
+// Four of these live on the dash top against the windscreen. Each is six
 // primitives and they are 60 mm long, so the whole flotilla is cheaper than one
 // wheel — but they are the first thing anybody notices about this car, which is
 // the correct ratio of cost to payoff.
@@ -306,15 +312,21 @@ export function buildAdventurer(materials, seed = 12) {
   }
 
   // ── the ducks ────────────────────────────────────────────────────────────
-  // Four of them, in a row along the dash top against the glass, each turned a
-  // few degrees off its neighbour so the line reads as a collection somebody
-  // added to rather than a moulding. Seeded, so a given car always has the same
-  // four in the same places.
+  // Four of them, huddled on the passenger corner of the dash against the
+  // glass, each turned a few degrees off its neighbour so the line reads as a
+  // collection somebody added to rather than a moulding. Seeded, so a given car
+  // always has the same four in the same places.
+  //
+  // They used to be spread the full 1.36 m of the dash, evenly, one duck per
+  // quarter — which is the spacing of a moulding, not of a thing somebody put
+  // there. Bunched at one end they read as a flotilla; and they stay off the
+  // driver's half (the wheel is at x +0.40), so nothing sits in the sight line
+  // over the bonnet.
   {
     const n = 4, y = D.waist + 0.035, z = 0.945;
     for (let i = 0; i < n; i++) {
       const t = n === 1 ? 0.5 : i / (n - 1);
-      const x = -0.68 + t * 1.36;
+      const x = -0.72 + t * 0.30;
       addDuck(P, x, y - Math.abs(x) * 0.012, z - Math.abs(x) * 0.02,
         (rnd() - 0.5) * 0.9, 0.92 + rnd() * 0.22);
     }
