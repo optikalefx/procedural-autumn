@@ -525,11 +525,11 @@
   color: var(--ink);
 }
 .pa-group { margin-bottom: 1.15em; }
-/* A group label belongs to what is under it. Without this the tiny caps sat
-   right beneath the previous group's control and read as its caption. */
+/* A group label belongs to what is under it. Without the gap the tiny caps sat
+   right beneath the previous group's control and read as its caption. Space
+   does that on its own; a rule under every control ruled the whole sheet. */
 .pa-group + .pa-group {
-  padding-top: 0.95em;
-  border-top: 1px solid rgba(255, 246, 234, 0.11);
+  padding-top: 1.15em;
 }
 .pa-group:last-of-type { margin-bottom: 0.5em; }
 .pa-group > .pa-label { display: block; margin-bottom: 0.3em; }
@@ -626,6 +626,53 @@
 .pa-seg button.pa-on { background: rgba(240, 173, 70, 0.9); color: #3a1f17; font-weight: 700; }
 .pa-seg button:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.7); outline-offset: 1px; }
 
+/* Seed row: a number field and its "New map" button, side by side. */
+.pa-seed {
+  display: flex;
+  gap: 0.5em;
+  width: 100%;
+}
+.pa-seed input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.86em;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  padding: 0.4em 0.7em;
+  border: 1px solid rgba(255, 246, 234, 0.18);
+  border-radius: 99px;
+  background: rgba(255, 246, 234, 0.08);
+  color: var(--ink);
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.pa-seed input[type="number"]::-webkit-inner-spin-button,
+.pa-seed input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.pa-seed input[type="number"]:focus-visible {
+  outline: 2px solid rgba(240, 173, 70, 0.7);
+  outline-offset: 1px;
+}
+.pa-seed button {
+  font: inherit;
+  font-size: 0.76em;
+  letter-spacing: 0.08em;
+  padding: 0.4em 1em;
+  border: none;
+  border-radius: 99px;
+  background: rgba(240, 173, 70, 0.9);
+  color: #3a1f17;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.18s var(--ease);
+}
+.pa-seed button:hover { transform: scale(1.04); }
+.pa-seed button:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.7); outline-offset: 1px; }
+
 /* Toggle. */
 .pa-toggle {
   width: 2.6em;
@@ -665,6 +712,54 @@
   line-height: 1.75;
 }
 .pa-foot b { color: var(--ink-dim); font-weight: 700; }
+
+/* The sheet's two pages: settings, and the controls reference. */
+.pa-page { display: none; }
+.pa-page.pa-page-on { display: block; }
+
+.pa-controls-open {
+  width: 100%;
+  font: inherit;
+  font-size: 1.1em;          /* .pa-foot shrank us to 0.7em; land near row size */
+  letter-spacing: 0.08em;
+  padding: 0.5em 0.2em;
+  border: 1px solid rgba(255, 246, 234, 0.18);
+  border-radius: 99px;
+  background: rgba(255, 246, 234, 0.08);
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.pa-controls-open:hover, .pa-controls-open:focus-visible {
+  color: var(--ink); border-color: rgba(240, 173, 70, 0.6); outline: none;
+}
+
+/* The back arrow shares .pa-close's round chrome. */
+.pa-back { margin-right: 0.6em; }
+.pa-sheet-head .pa-back + h2 { margin-right: auto; }
+
+.pa-keys { padding-top: 0.2em; }
+.pa-key-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8em;
+  padding: 0.42em 0;
+  font-size: 0.82em;
+}
+.pa-key-row + .pa-key-row { border-top: 1px solid rgba(255, 246, 234, 0.07); }
+.pa-key {
+  flex: 0 0 3.4em;
+  text-align: center;
+  font-size: 0.85em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 0.18em 0.4em;
+  border: 1px solid rgba(255, 246, 234, 0.2);
+  border-radius: 0.45em;
+  color: var(--ink);
+  background: rgba(255, 246, 234, 0.07);
+}
+.pa-key-desc { color: var(--ink-dim); line-height: 1.5; }
 
 /* ── photo mode ──────────────────────────────────────────────────────── */
 .pa-photo-frame {

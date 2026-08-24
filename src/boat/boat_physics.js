@@ -210,6 +210,23 @@ export class BoatPhysics {
       this._pinT = 0;
       this.speed = -0.45 * back;
     }
+    // Forward escape too, but ONLY when the bow points at floatable water.
+    // Since the launch depth gate was removed, a fresh launch on a shelving
+    // beach starts beached with its bow already aimed at the lake — W must
+    // paddle it straight out (the player should never need the S-then-W
+    // dance). A bow nosed against the bank finds no depth ahead and stays
+    // put, which keeps the step-ashore flow intact.
+    if (this.beached && fwd > 0.02) {
+      const ax = this.x + Math.sin(this.heading) * 3.0;
+      const az = this.z + Math.cos(this.heading) * 3.0;
+      const lv = this._levelAt(ax, az);
+      const ahead = (lv === null ? -1e9 : lv) - this.world.getHeight(ax, az);
+      if (ahead > this.draft + BEACH_MARGIN + 0.05) {
+        this.beached = false;
+        this._pinT = 0;
+        this.speed = 0.45 * fwd;
+      }
+    }
 
     // ── attitude ───────────────────────────────────────────────────────────
     const sp = clamp01(Math.abs(this.speed) / this.maxSpeed);

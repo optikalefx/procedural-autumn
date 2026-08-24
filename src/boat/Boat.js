@@ -56,10 +56,20 @@ const NEAR_SHORE_SDF = -6;
 // back (only when nothing else holds focus — see lateUpdate).
 const LAUNCH_FOCUS = 2.2;
 
-// Boom length while aboard: just off the stern, so the ride reads first-person
-// -ish over the bow instead of a ghost hull watched from a chase drone. The
-// rig's ZOOM_MIN is 5.5; the wheel can still zoom out from here.
-const BOAT_CAM_ZOOM = 6.2;
+// The mounted camera: eye height above the waterline at the stern-third
+// mount, and how far along the hull (as a fraction of length) the mount sits
+// behind the hull centre. A short chase boom was tried first and still read
+// as "camera behind the canoe" (user, 2026-08-23) — with no paddler model the
+// honest fix is to put the eye ON the boat, riding the back third of the
+// deck and looking over the bow.
+const CAM_MOUNT_AFT = 0.38;    // fraction of hull length behind centre
+const CAM_MOUNT_UP = 1.12;     // metres above the waterline — a seated eye
+const CAM_LOOK_UP = 0.5;       // look target height over the water ahead
+// The wheel zooms about the mount: 1.0 is the seated pose above (the resting
+// middle of the range), inward leans toward the coaming, outward eases a few
+// metres off the stern without ever returning to the old drone framing.
+const CAM_ZOOM_MIN = 0.55;
+const CAM_ZOOM_MAX = 2.6;
 
 // Prewarm hold, matching Camp's pattern: enough frames for the main and
 // shadow passes to have drawn the warm props, all under the loading screen.
@@ -82,6 +92,11 @@ export class Boat extends System {
     this._focusT = 0;         // seconds left of the launch glance
     this._focusP = new THREE.Vector3();
     this._cursorNow = '';
+    this._camP = new THREE.Vector3();   // mounted-camera eye, damped
+    this._camL = new THREE.Vector3();   // mounted-camera look target, damped
+    this._camSnap = true;
+    this._camZoom = 1;                  // 1 = the seated mount; wheel moves it
+    this._camZoomT = 1;
     this._ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
     this._v = new THREE.Vector3();
     this._q = new THREE.Quaternion();
@@ -289,7 +304,13 @@ export class Boat extends System {
       const other = this._kind === 'canoe' ? 'kayak' : 'canoe';
       this._say(`<b>click</b>&nbsp; launch a ${this._kind} here&ensp;<b>K</b>&nbsp; ${other} instead`);
       this._cursor('pointer');
-      if (this.click.clicked) this.spawn(v.x, v.z, { kind: this._kind, heading: v.heading, y: v.y });
+      if (this.click.clicked) {
+        // Launch AND board in one act (user direction, 2026-08-23): you put a
+        // boat in, you're in the boat — W paddles immediately, no second
+        // click. board() cancels spawn()'s launch glance.
+        const nb = this.spawn(v.x, v.z, { kind: this._kind, heading: v.heading, y: v.y });
+        if (nb) this.board();
+      }
       return true;
     }
     // A gentle reason, not silence — the reject the spec calls out is the
@@ -340,7 +361,7 @@ export class Boat extends System {
       // Generous reach: the camper can be most of a lake away.
       if (objectHit(ray, veh?.rig, 300) < Infinity) { this.exit(); return; }
     }
-    if (p.beached && input.justPressed('KeyE')) { this.exit(); return; }
+    if (p.beached && input.justPressed('KeyE')) { this._comeAshore(b); return; }
 
     this._say(p.beached
       ? '<b>E</b>&nbsp; step ashore&ensp;<b>click camper</b>&nbsp; drive'
@@ -352,13 +373,31 @@ export class Boat extends System {
   /** Dip the stowed paddle alternately with the stroke — a small rotation on
    *  top of the model's own stowed pose, so it works for either author's rig. */
   _animatePaddle(b, dt) {
-    const paddle = b.group.userData.paddle;
-    if (!paddle) return;
-    if (!b.paddleBase) b.paddleBase = paddle.quaternion.clone();
+    const u = b.group.userData;
     const p = b.phys;
     const env = p._stroking && p._phase < 0.35 ? Math.sin((p._phase / 0.35) * Math.PI) : 0;
-    this._q2.setFromAxisAngle(this._v.set(0, 0, 1), p._side * env * 0.45);
-    paddle.quaternion.copy(b.paddleBase).multiply(this._q2);
+    if (u.paddles) {
+      // Canoe: a paddle per side. Only the stroke side's paddle dips — a
+      // local-Z roll of −angle drops the blade (local +X) for both, since the
+      // port one is yaw-mirrored. Stroke rings emit to port when _side > 0
+      // (see onStroke's left-vector), so the paddle mapping matches.
+      if (!b.paddleBase) {
+        b.paddleBase = {
+          starboard: u.paddles.starboard.quaternion.clone(),
+          port: u.paddles.port.quaternion.clone(),
+        };
+      }
+      const active = p._side > 0 ? 'port' : 'starboard';
+      for (const k of ['port', 'starboard']) {
+        this._q2.setFromAxisAngle(this._v.set(0, 0, 1), k === active ? -env * 0.5 : 0);
+        u.paddles[k].quaternion.copy(b.paddleBase[k]).multiply(this._q2);
+      }
+    } else if (u.paddle) {
+      // Kayak: one double blade, alternating tips.
+      if (!b.paddleBase) b.paddleBase = u.paddle.quaternion.clone();
+      this._q2.setFromAxisAngle(this._v.set(0, 0, 1), p._side * env * 0.45);
+      u.paddle.quaternion.copy(b.paddleBase).multiply(this._q2);
+    }
     void dt;
   }
 
@@ -503,20 +542,86 @@ export class Boat extends System {
     if (veh) veh.controlsHeldBy = 'boat';
     // Matching the rig's last-seen teleportSeq means no cut: the damped chase
     // walks the camera from the camper to the boat, an operator's move.
-    this._duck.teleportSeq = veh?.teleportSeq ?? 0;
-    this._duck.position.set(b.phys.x, b.phys.y + 0.35, b.phys.z);
-    this._duck.heading = b.phys.heading;
-    this._duck.speed = 0;
-    rig?.setFollow?.(this._duck);
     rig?.setFocus?.(null);
-    // Ride close: pull the boom in to just off the stern. The camper's wide
-    // default reads a 4.6 m hull as a toy; the wheel still zooms freely.
-    if (rig && Number.isFinite(rig.zoomTarget)) {
-      this._savedZoom = rig.zoomTarget;
-      rig.zoomTarget = BOAT_CAM_ZOOM;
-    }
+    // Mount the camera on the boat: full takeover, the same sanctioned
+    // mechanism the telescope uses (rig.takeCamera outranks everything and
+    // hands back cleanly). We do NOT raise __forceCamera — the HUD and the
+    // prompts stay up. The mount eases in from wherever the camera was.
+    this._camSnap = true;
+    rig?.takeCamera?.((dt) => this._boatCam(dt));
     this._cue('board', { x: b.phys.x, z: b.phys.z, kind: b.kind });
     return true;
+  }
+
+  /** The mounted ride camera: seated at the back third of the deck, looking
+   *  over the bow. Damped so the hull's bob reads as gentle sway, not shake. */
+  _boatCam(dt) {
+    const b = this._aboard;
+    const cam = this.ctx.camera;
+    if (!b) return;
+    const p = b.phys;
+    const dim = b.group.userData.dim ?? this.models[b.kind].dim;
+    const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
+    const L = dim.length;
+    // Wheel zoom, same exponential feel as the rig's. The rig is taken over
+    // while aboard, so nothing else consumes the wheel.
+    const wheel = this.ctx.input.mouse.wheel;
+    if (wheel) {
+      this._camZoomT = Math.min(CAM_ZOOM_MAX,
+        Math.max(CAM_ZOOM_MIN, this._camZoomT * Math.exp(wheel * 0.0016)));
+    }
+    const k0 = Math.min(dt, 1 / 20);
+    this._camZoom = THREE.MathUtils.damp(this._camZoom, this._camZoomT, 9, k0);
+    const zf = this._camZoom;
+    const mx = p.x - fx * L * CAM_MOUNT_AFT * zf;
+    const mz = p.z - fz * L * CAM_MOUNT_AFT * zf;
+    const my = p.y + CAM_MOUNT_UP * (0.55 + 0.45 * zf);
+    const lx = p.x + fx * L * 1.7, lz = p.z + fz * L * 1.7;
+    const ly = p.y + CAM_LOOK_UP;
+    const k = Math.min(dt, 1 / 20);
+    if (this._camSnap) {
+      this._camP.set(mx, my, mz);
+      this._camL.set(lx, ly, lz);
+      this._camSnap = false;
+    } else {
+      // Position tracks hard (the eye is IN the boat); the look target trails
+      // a little more so a sweep-turn reads as the bow swinging through frame.
+      const dp = THREE.MathUtils.damp;
+      this._camP.set(dp(this._camP.x, mx, 14, k), dp(this._camP.y, my, 10, k), dp(this._camP.z, mz, 14, k));
+      this._camL.set(dp(this._camL.x, lx, 7, k), dp(this._camL.y, ly, 7, k), dp(this._camL.z, lz, 7, k));
+    }
+    cam.position.copy(this._camP);
+    cam.lookAt(this._camL);
+  }
+
+  /** E on a beached bow: bring the camper around to the shore in front of the
+   *  boat, then step off (user direction, 2026-08-23). The camper lands via
+   *  Vehicle._land — the same full teleport a rescue uses (physics cut,
+   *  camera cut, park brake held until the player drives). If no dry ground
+   *  can be found off the bow, this is just exit(). */
+  _comeAshore(b) {
+    const veh = this.ctx.systems?.vehicle;
+    const world = this.ctx.world;
+    const p = b.phys;
+    const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
+    let best = null;
+    for (let d = 6; d <= 26 && !best; d += 2) {
+      const x = p.x + fx * d, z = p.z + fz * d;
+      if (!world.isInBounds(x, z)) break;
+      const h = world.getHydro(x, z, {});
+      if (h.sdf > -2.5) continue;                 // not solidly on land yet
+      if (world.getSlope(x, z) < 0.35) best = { x, z };
+    }
+    if (!best) {
+      // No gentle ground: take the first dry spot at all, or bail to a plain
+      // exit — the camper stays where it was.
+      for (let d = 6; d <= 26 && !best; d += 2) {
+        const x = p.x + fx * d, z = p.z + fz * d;
+        if (world.isInBounds(x, z) && world.getHydro(x, z, {}).sdf < -2.5) best = { x, z };
+      }
+    }
+    if (best && veh?._land) veh._land(best.x, best.z, p.heading);
+    this.exit();
   }
 
   /** Step off: moor the boat where it is, give everything back. Unconditional
@@ -526,10 +631,7 @@ export class Boat extends System {
     const rig = this.ctx.systems?.cameraRig;
     if (veh) veh.controlsHeldBy = null;
     rig?.setFollow?.(null);
-    if (rig && this._savedZoom !== undefined) {
-      rig.zoomTarget = this._savedZoom;
-      this._savedZoom = undefined;
-    }
+    rig?.takeCamera?.(null);   // the chase re-primes behind the camper: a cut
     if (this._aboard) this._aboard.phys.speed = 0;
     this._aboard = null;
     this.active = false;

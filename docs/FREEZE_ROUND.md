@@ -125,7 +125,7 @@ existence test. A dev server answers a missing path with `index.html` at status
 200, so a bake that did not exist yet returned `ok` with a body of HTML — and
 `force-cache` then stored that HTML under the bake's own URL and served it
 forever, including after `tools/bake.mjs` wrote the real file. Symptom: a
-permanent `cached bake unusable, baking live: not a Procedural Autumn bake` and
+permanent `cached bake unusable, baking live: not a Camping Season bake` and
 a **35-50 s live bake on every load**, on a machine with a perfectly good bake on
 disk. Verified by hand: the `.pab` over HTTP begins `PAB1` and is byte-identical
 to the file while the page reported the cache unusable.

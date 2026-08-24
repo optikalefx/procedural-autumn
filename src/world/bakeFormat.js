@@ -99,7 +99,7 @@ export function encodeBake(data) {
 
 export function decodeBake(buf) {
   const dv = new DataView(buf);
-  if (dv.getUint32(0, true) !== MAGIC) throw new Error('not a Procedural Autumn bake');
+  if (dv.getUint32(0, true) !== MAGIC) throw new Error('not a Camping Season bake');
   const headerLen = dv.getUint32(4, true);
   const text = new TextDecoder().decode(new Uint8Array(buf, 8, headerLen)).replace(/\0+$/, '');
   const header = JSON.parse(text);

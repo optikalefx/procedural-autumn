@@ -1,4 +1,4 @@
-# Procedural Autumn — visual progression
+# Camping Season — visual progression
 
 Each entry is a contact sheet of the ten canonical camera views at that point in
 development, newest last. Framings are pinned via `shots/_anchors.json`, so the

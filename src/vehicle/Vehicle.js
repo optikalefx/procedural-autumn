@@ -13,11 +13,12 @@ import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { VEHICLE } from '../world/WorldConfig.js';
 import { clamp, clamp01, lerp, smoothstep, damp } from '../core/MathUtils.js';
-import { buildWheel, buildEnvMap } from './model_kit.js';
+import { buildWheel, buildEnvMap, CHASSIS } from './model_kit.js';
 import { pickCar, carById, CARS } from './vehicle_models.js';
 import { VehiclePhysics } from './VehiclePhysics.js';
 import { ParticleField, TrackRibbons, surfaceDust, KIND } from './VehicleFX.js';
 import { VehicleShadow } from './VehicleShadow.js';
+import { posthog } from '../posthog.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
@@ -209,6 +210,8 @@ export class Vehicle extends System {
     this.car = pickCar();
     const DIM = this.car.dims;
     this.dims = DIM;
+    this._lift = (DIM.wheelR ?? CHASSIS.wheelR) - CHASSIS.wheelR;
+    this._poke = DIM.wheelOut ?? 0;
     this.env = buildEnvMap(renderer);
     this.materials = this.car.materials(this.env);
     const built = this.car.build(this.materials, this.car.seed);
@@ -229,7 +232,7 @@ export class Vehicle extends System {
     this.wheelNodes = [];
     for (let i = 0; i < 4; i++) {
       const hub = new THREE.Group();          // steering
-      const spin = buildWheel(this.materials);
+      const spin = buildWheel(this.materials, this.car.wheel ?? {});
       hub.add(spin);
       this.rig.add(hub);                      // NB: not under `pivot` — wheels
       this.wheelNodes.push({ hub, spin });     // must not inherit body lean
@@ -331,6 +334,8 @@ export class Vehicle extends System {
 
     this.car = car;
     this.dims = car.dims;
+    this._lift = (car.dims.wheelR ?? CHASSIS.wheelR) - CHASSIS.wheelR;
+    this._poke = car.dims.wheelOut ?? 0;
     this.materials = car.materials(this.env);
     const built = car.build(this.materials, car.seed);
     this.root = built.root;
@@ -338,7 +343,7 @@ export class Vehicle extends System {
     this.steeringWheel = built.steeringWheel;
     this.pivot.add(this.root);
     for (const n of this.wheelNodes) {
-      n.spin = buildWheel(this.materials);
+      n.spin = buildWheel(this.materials, this.car.wheel ?? {});
       n.hub.add(n.spin);
     }
     // The wheels were mid-rotation under the old model; the new hubs start at
@@ -519,6 +524,12 @@ export class Vehicle extends System {
       site.landmark ? 'Moved you back to the road'
         : moved > 60 ? `Moved you ${Math.round(moved)} m to clear ground`
           : site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
+    posthog.capture('vehicle_rescued', {
+      distance_moved_m: Math.round(moved),
+      rescue_count: this.rescues,
+      used_landmark: !!site.landmark,
+      relaxed: !!site.relaxed,
+    });
     return site;
   }
 
@@ -833,11 +844,18 @@ export class Vehicle extends System {
     this.position.set(t.x, t.y, t.z);
     this.quaternion.set(r.x, r.y, r.z, r.w);
     this._invQuat.copy(this.quaternion).invert();
-    this.rig.position.copy(this.position);
     this.rig.quaternion.copy(this.quaternion);
     this.forward.copy(this.phys._fwd);
     this.right.copy(this.phys._right);
     this.up.copy(this.phys._up);
+    // Suspension lift for a car drawn on tyres bigger than the physics radius.
+    // The rig carries the body AND the hubs, so lifting it puts the bottom of
+    // the larger tyre back exactly on the contact patch and raises the body
+    // over it — which is what a lift kit does. Along the body's up axis, not
+    // world Y, so it stays glued when the vehicle is on its side on a bank.
+    // See buildWheel's header for what this costs.
+    this.rig.position.copy(this.position);
+    if (this._lift) this.rig.position.addScaledVector(this.up, this._lift);
     this.heading = Math.atan2(this.forward.x, this.forward.z);
     this.speed = this.phys.speed;
     this.velocity.copy(this.phys.velocity);
@@ -900,6 +918,11 @@ export class Vehicle extends System {
       // settle out for the wheels and drop the body onto them instead of
       // moving the whole vehicle down.
       this._tmp.copy(w.pos).sub(this.position).applyQuaternion(this._invQuat);
+      // Visual track widening. Physics keeps VEHICLE.trackWidth; this pushes
+      // the drawn wheel outboard of its suspension ray so the tyre stands proud
+      // of the flare, which is most of what a wheel-and-tyre package looks like
+      // from outside. Nothing reads the hub node back, so it is free.
+      if (this._poke) this._tmp.x += Math.sign(this._tmp.x) * this._poke;
       n.hub.position.copy(this._tmp);
       n.hub.rotation.y = w.steer;
       // Rapier's wheel rotation grows as the wheel rolls forward, and the axle

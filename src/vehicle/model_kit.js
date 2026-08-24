@@ -202,18 +202,55 @@ export function extrudeAcross(shape, width, bevel = 0.03) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Wheel
 // ─────────────────────────────────────────────────────────────────────────────
-export function buildWheel(materials, { spare = false } = {}) {
-  const R = CHASSIS.wheelR;
-  const halfW = 0.185;
+/**
+ * One wheel, axle along X.
+ *
+ * `radius` IS A VISUAL RADIUS AND IT COSTS SOMETHING. VehiclePhysics raycasts
+ * the suspension and puts the hub exactly CHASSIS.wheelR above the contact
+ * point, so a tyre drawn larger than that would drive with its lugs buried.
+ * A car on bigger rubber therefore also declares `DIM.wheelR`, and Vehicle
+ * lifts the whole rig by the difference — body and hubs together — which puts
+ * the bottom of the bigger tyre back on the contact patch and raises the body
+ * over it by exactly the amount a real lift would. See `_syncTransform`.
+ *
+ * The consequence to know about: the visual body then sits that much above the
+ * physics chassis. Nothing simulates against the model, so the only thing this
+ * can do is let the body clear a rock its collider would have clipped, at the
+ * scale of the lift. `_groundSettle`'s clearance maths is unaffected — it
+ * measures `w.pos.y - VEHICLE.wheelRadius`, and lift cancels out of that.
+ *
+ *   `width`      half-width. A fatter carcass reads as a bigger tyre from every
+ *                angle the chase cam actually uses.
+ *   `deepTread`  metres the *carcass* is pulled in under the tread blocks. The
+ *                blocks still stand out to the crown, so this is depth of tread
+ *                rather than size of tyre — exactly what separates a mud
+ *                terrain from an all terrain of the same diameter.
+ *
+ * All of them default to the numbers the camper and the Roamer were authored
+ * against, and the profile below reproduces their original literals exactly at
+ * those defaults (0.400 = CR - 0.040, 0.428 = CR - 0.012).
+ */
+export function buildWheel(materials, {
+  spare = false, width = 0.185, deepTread = 0, band = true,
+  radius = CHASSIS.wheelR, rimKey = 'rim', spokeKey = 'trim', accentKey = null,
+} = {}) {
+  const R = radius;
+  const halfW = width;
+  // Two scale factors, and every literal below is written against them, so a
+  // bigger tyre is a bigger *wheel* rather than the same hubcap adrift in more
+  // rubber — which is exactly what the first fat-tyre pass looked like.
+  const rs = R / 0.44;                    // radial scale
+  const ws = halfW / 0.185;               // axial scale
+  const CR = R - deepTread;               // carcass crown, under the tread
   const parts = new Parts();
 
   // ── tyre carcass: revolved cross-section, axle along X ────────────────────
   const prof = [
-    [0.285, -halfW * 0.92], [0.315, -halfW], [0.352, -halfW * 1.03],
-    [0.400, -halfW * 0.96], [0.428, -halfW * 0.80], [R, -halfW * 0.55],
-    [R + 0.004, 0], [R, halfW * 0.55], [0.428, halfW * 0.80],
-    [0.400, halfW * 0.96], [0.352, halfW * 1.03], [0.315, halfW],
-    [0.285, halfW * 0.92],
+    [0.285 * rs, -halfW * 0.92], [0.315 * rs, -halfW], [0.352 * rs, -halfW * 1.03],
+    [CR - 0.040 * rs, -halfW * 0.96], [CR - 0.012 * rs, -halfW * 0.80], [CR, -halfW * 0.55],
+    [CR + 0.004 * rs, 0], [CR, halfW * 0.55], [CR - 0.012 * rs, halfW * 0.80],
+    [CR - 0.040 * rs, halfW * 0.96], [0.352 * rs, halfW * 1.03], [0.315 * rs, halfW],
+    [0.285 * rs, halfW * 0.92],
   ].map(([r, y]) => new THREE.Vector2(r, y));
   const carcass = new THREE.LatheGeometry(prof, 30);
   carcass.rotateZ(Math.PI / 2);            // Y axis -> X axis
@@ -226,55 +263,86 @@ export function buildWheel(materials, { spare = false } = {}) {
     const a = (i / N) * Math.PI * 2;
     const odd = i & 1;
     const ca = Math.cos(a), sa = Math.sin(a);
-    // centre block, canted slightly for a directional tread
-    const cr = R - 0.005;
+    // Centre block, canted slightly for a directional tread. It grows *inward*
+    // as the tread deepens so its outer face stays put at the rolling radius.
+    const cr = R - 0.005 * rs - deepTread * 0.5;
     parts.add(
-      rbox(0.15, 0.030, 0.11, 0.012),
+      rbox(0.15 * ws, 0.030 * rs + deepTread, 0.11 * rs, 0.012),
       'rubber',
       at(0, ca * cr, sa * cr, -a + Math.PI / 2, 0, odd ? 0.16 : -0.16),
       [0.94, 0.94, 0.96],
     );
     // shoulder lugs
     for (const s of [-1, 1]) {
-      const sr = R - 0.02;
+      const sr = R - 0.02 * rs - deepTread * 0.5;
       parts.add(
-        rbox(0.115, 0.036, 0.085, 0.014),
+        rbox(0.115 * ws, 0.036 * rs + deepTread, 0.085 * rs, 0.014),
         'rubber',
         at(s * (halfW * 0.72), ca * sr, sa * sr, -a + Math.PI / 2, 0, 0),
         [0.9, 0.9, 0.93],
       );
       // sidewall knob — catches rim light, sells the off-road tyre in profile
+      const kr = CR - 0.035 * rs;
       parts.add(
-        rbox(0.035, 0.030, 0.055, 0.012),
+        rbox(0.035 * ws, 0.030 * rs + deepTread * 0.5, 0.055 * rs, 0.012),
         'rubber',
-        at(s * (halfW * 1.02), ca * (R - 0.075), sa * (R - 0.075), -a + Math.PI / 2, 0, 0),
+        at(s * (halfW * 1.02), ca * kr, sa * kr, -a + Math.PI / 2, 0, 0),
         [0.86, 0.86, 0.9],
       );
     }
   }
-  // whitewall-ish raised lettering band (a thin ring, slightly lighter)
-  const band = new THREE.TorusGeometry(0.365, 0.008, 5, 40);
-  band.rotateY(Math.PI / 2);
-  parts.add(band, 'rubber', at(-halfW * 0.99, 0, 0), [1.25, 1.25, 1.3]);
+  // raised sidewall band (a thin ring, slightly lighter)
+  if (band) {
+    const ring = new THREE.TorusGeometry(0.365 * rs, 0.008 * rs, 5, 40);
+    ring.rotateY(Math.PI / 2);
+    parts.add(ring, 'rubber', at(-halfW * 0.99, 0, 0), [1.25, 1.25, 1.3]);
+  }
 
-  // ── rim: white 5-slot steel wheel ─────────────────────────────────────────
+  // ── rim: 5-slot steel wheel ───────────────────────────────────────────────
   const barrel = new THREE.LatheGeometry([
-    new THREE.Vector2(0.20, -0.16), new THREE.Vector2(0.288, -0.155),
-    new THREE.Vector2(0.295, -0.10), new THREE.Vector2(0.278, 0.02),
-    new THREE.Vector2(0.288, 0.10), new THREE.Vector2(0.295, 0.155),
-    new THREE.Vector2(0.20, 0.16),
+    new THREE.Vector2(0.20 * rs, -0.16 * ws), new THREE.Vector2(0.288 * rs, -0.155 * ws),
+    new THREE.Vector2(0.295 * rs, -0.10 * ws), new THREE.Vector2(0.278 * rs, 0.02 * ws),
+    new THREE.Vector2(0.288 * rs, 0.10 * ws), new THREE.Vector2(0.295 * rs, 0.155 * ws),
+    new THREE.Vector2(0.20 * rs, 0.16 * ws),
   ], 26);
   barrel.rotateZ(Math.PI / 2);
-  parts.add(barrel, 'rim', null, [1, 1, 1]);
+  parts.add(barrel, rimKey, null, [1, 1, 1]);
 
   // Dished face: a solid outer lip, five deep windows, a raised centre. The
   // first version used tiny holes and read as a plain white disc at any range.
-  const face = new THREE.CylinderGeometry(0.278, 0.278, 0.028, 26);
+  // Dish depth is held CONSTANT rather than proportional. A half-width
+  // fraction meant that widening the tyre also pushed the face deeper into it,
+  // and at the Adventurer's 0.5 m section the whole wheel disappeared down a
+  // hole with only the hub showing.
+  const dish = Math.min(0.089, halfW * 0.52);
+  const faceX = halfW - dish;
+  const face = new THREE.CylinderGeometry(0.278 * rs, 0.278 * rs, 0.028 * ws, 26);
   face.rotateZ(Math.PI / 2);
-  parts.add(face, 'rim', at(halfW * 0.52, 0, 0));
-  const lip = new THREE.TorusGeometry(0.272, 0.026, 8, 26);
+  parts.add(face, rimKey, at(faceX, 0, 0));
+  const lip = new THREE.TorusGeometry(0.272 * rs, 0.026 * rs, 8, 26);
   lip.rotateY(Math.PI / 2);
-  parts.add(lip, 'rim', at(halfW * 0.60, 0, 0), [1.1, 1.1, 1.1]);
+  parts.add(lip, rimKey, at(faceX + 0.015 * ws, 0, 0), [1.1, 1.1, 1.1]);
+
+  // Optional beadlock ring: the outer band in a second colour, with its bolts.
+  // Two-tone wheels are half of what makes a lifted truck look built, and the
+  // ring is the cheapest possible way to say it.
+  //
+  // ITS RADIUS IS NOT COSMETIC. Everything you can see of a wheel is seen down
+  // the hole in the tyre bead, whose radius is the carcass profile's smallest,
+  // 0.285 * rs. The first ring sat at 0.288 * rs — four millimetres outside
+  // that — and was completely hidden behind the sidewall on a car whose whole
+  // wheel design was supposed to be the yellow ring.
+  if (accentKey) {
+    const ring = new THREE.TorusGeometry(0.258 * rs, 0.022 * rs, 8, 30);
+    ring.rotateY(Math.PI / 2);
+    parts.add(ring, accentKey, at(halfW * 0.60, 0, 0), [1, 1, 1]);
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2 + 0.13;
+      parts.add(new THREE.CylinderGeometry(0.012 * rs, 0.012 * rs, 0.024 * ws, 6), 'trim',
+        at(halfW * 0.66, Math.cos(a) * 0.258 * rs, Math.sin(a) * 0.258 * rs, 0, 0, Math.PI / 2),
+        [0.5, 0.5, 0.55]);
+    }
+  }
 
   // Ventilation slots, not round holes. Five dark circles ringing a pale hub
   // read as a face at any distance — the wheels looked like skulls in profile.
@@ -286,27 +354,29 @@ export function buildWheel(materials, { spare = false } = {}) {
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2 + 0.31;
     // Long axis along Y, rotated about the axle (X) to point radially outward.
-    parts.add(rbox(0.02, 0.150, 0.058, 0.026, 1), 'trim',
-      at(halfW * 0.562, Math.cos(a) * 0.168, Math.sin(a) * 0.168, a, 0, 0), [1.3, 1.3, 1.36]);
+    parts.add(rbox(0.02 * ws, 0.150 * rs, 0.058 * rs, 0.026, 1), spokeKey,
+      at(faceX + 0.008 * ws, Math.cos(a) * 0.168 * rs, Math.sin(a) * 0.168 * rs, a, 0, 0),
+      [1.3, 1.3, 1.36]);
   }
   // hub + lug nuts
-  parts.add(new THREE.CylinderGeometry(0.085, 0.09, 0.05, 16), 'chrome',
-    at(halfW * 0.72, 0, 0, 0, 0, Math.PI / 2));
+  parts.add(new THREE.CylinderGeometry(0.085 * rs, 0.09 * rs, 0.05 * ws, 16), 'chrome',
+    at(faceX + 0.037 * ws, 0, 0, 0, 0, Math.PI / 2));
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
-    parts.add(new THREE.CylinderGeometry(0.017, 0.017, 0.03, 6), 'chrome',
-      at(halfW * 0.68, Math.cos(a) * 0.062, Math.sin(a) * 0.062, 0, 0, Math.PI / 2));
+    parts.add(new THREE.CylinderGeometry(0.017 * rs, 0.017 * rs, 0.03 * ws, 6), 'chrome',
+      at(faceX + 0.030 * ws, Math.cos(a) * 0.062 * rs, Math.sin(a) * 0.062 * rs, 0, 0, Math.PI / 2));
   }
   // brake disc peeking behind the rim
   if (!spare) {
-    parts.add(new THREE.CylinderGeometry(0.21, 0.21, 0.022, 18), 'trim',
-      at(-0.02, 0, 0, 0, 0, Math.PI / 2));
+    parts.add(new THREE.CylinderGeometry(0.21 * rs, 0.21 * rs, 0.022 * ws, 18), 'trim',
+      at(-0.02, 0, 0, 0, 0, Math.PI / 2), [0.55, 0.55, 0.6]);
   }
 
   const g = new THREE.Group();
   parts.flush(g, materials);
   return g;
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Materials
 // ─────────────────────────────────────────────────────────────────────────────

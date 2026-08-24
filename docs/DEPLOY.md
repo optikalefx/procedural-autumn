@@ -185,7 +185,7 @@ not run. Check that the Vercel project is using `vercel.json`'s `buildCommand`
 (a dashboard override wins over the file) and that `node tools/bake.mjs`
 succeeded in the build log.
 
-**`cached bake unusable, baking live: not a Procedural Autumn bake`, on a
+**`cached bake unusable, baking live: not a Camping Season bake`, on a
 machine that has a perfectly good bake on disk.**
 A poisoned HTTP cache entry. A dev server answers a missing path with
 `index.html` at status 200, so a bake requested before it existed got HTML

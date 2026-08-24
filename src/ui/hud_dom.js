@@ -34,6 +34,11 @@ export const ICON = {
   // A horizon seen from above: what a vista actually is.
   vista: S('<path d="M2 15h20M6 15a6 6 0 0 1 12 0"/><circle cx="12" cy="7" r="1.6"/>'),
   meadow: S('<path d="M4 20V9M9 20V6M14 20v-9M19 20V8"/>'),
+  // A pitched tent: the ridge and the door.
+  camp: S('<path d="M12 4.8 2.8 19h18.4z"/><path d="M12 11l-3.6 8M12 11l3.6 8"/>'),
+  // The camper, side-on: cab, box, two wheels.
+  car: S('<path d="M3.5 16.2V10a1.5 1.5 0 0 1 1.5-1.5h8.6l4.3 3.6h2.1a1.6 1.6 0 0 1 1.6 1.6v2.5h-2"/>' +
+         '<circle cx="7.4" cy="16.4" r="1.8"/><circle cx="15.6" cy="16.4" r="1.8"/><path d="M9.2 16.4h4.4"/>'),
 
   gear: S('<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M21.5 12h-2.6M5.1 12H2.5' +
           'M18.7 5.3l-1.8 1.8M7.1 16.9l-1.8 1.8M18.7 18.7l-1.8-1.8M7.1 7.1L5.3 5.3"/>'),

@@ -170,7 +170,10 @@ export class VehicleShadow {
         // Radius and feather now reach 0.76 m around a 0.44 m tyre rather than
         // 1.18 m — a halo nearly three tyre-widths across was most of what made
         // the patch read as standing water.
-        uWheels: { value: new THREE.Vector4(DIM.wheelX, DIM.wheelZ, DIM.wheelR * 0.78, 0.42) },
+        uWheels: {
+          value: new THREE.Vector4(DIM.wheelX + (DIM.wheelOut ?? 0), DIM.wheelZ,
+            DIM.wheelR * 0.78, 0.42),
+        },
         uBody: { value: new THREE.Vector2(DIM.halfWidth * 0.85, (DIM.front - DIM.rear) * 0.40) },
         uFade: { value: new THREE.Vector2(FADE_NEAR, FADE_FAR) },
         uStrength: { value: 1 },
@@ -257,7 +260,8 @@ export class VehicleShadow {
   setDims(dims) {
     if (!dims || dims === this._dims) return;
     this._dims = dims;
-    this.material.uniforms.uWheels.value.set(dims.wheelX, dims.wheelZ, dims.wheelR * 0.78, 0.42);
+    this.material.uniforms.uWheels.value.set(dims.wheelX + (dims.wheelOut ?? 0), dims.wheelZ,
+      dims.wheelR * 0.78, 0.42);
     this.material.uniforms.uBody.value.set(dims.halfWidth * 0.85, (dims.front - dims.rear) * 0.40);
   }
 
