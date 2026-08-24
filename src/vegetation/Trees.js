@@ -414,6 +414,33 @@ export class Trees extends System {
     this._fogMats = [this.leafNear.mat, this.leafMid.mat, this.bark.mat];
   }
 
+  /**
+   * Precompile the occlusion-only bark variant while the loading plate is up.
+   *
+   * This material is intentionally not attached to a mesh until a trunk lies
+   * between the camera and the vehicle. A scene traversal therefore cannot see
+   * it at boot; its first swap used to link a shader mid-drive. Temporarily put
+   * it on the exact instanced bark meshes so Three keys the real variant, then
+   * restore the shipping material before the first visible frame.
+   */
+  precompileMaterials() {
+    // barkOcc is deliberately unattached, so the scene-wide harvest above did
+    // not install Atmosphere/Stylize's onBeforeCompile patches on it. Register
+    // those first or this warm program has a different cache key and is thrown
+    // away the moment the material is first harvested during play.
+    this.ctx.atmosphere.register(this.barkOcc.mat);
+    this.ctx.stylize.register(this.barkOcc.mat);
+    const barkMeshes = this.meshes.filter((m) => m.material === this.bark.mat);
+    if (!barkMeshes.length) return;
+    for (const m of barkMeshes) m.material = this.barkOcc.mat;
+    try {
+      const { renderer, scene, camera } = this.ctx;
+      renderer.compile(this.group, camera, scene);
+    } finally {
+      for (const m of barkMeshes) m.material = this.bark.mat;
+    }
+  }
+
   // ── instanced meshes ───────────────────────────────────────────────────────
 
   /** One instance-attribute block, shared by the bark and leaf mesh of a slot. */

@@ -1241,6 +1241,7 @@ export function createBarkMaterial(shared, opts = {}) {
     fog: !bake,
     side: THREE.FrontSide,
   });
+  mat.name = occlude ? 'tree.barkOcclusion' : (bake ? 'tree.barkBake' : 'tree.bark');
   const depth = new THREE.ShaderMaterial({
     uniforms: Object.assign({}, shared, {
       uShadowSway: { value: SHADOW_WIND.sway },
@@ -1249,6 +1250,7 @@ export function createBarkMaterial(shared, opts = {}) {
     fragmentShader: OPAQUE_DEPTH_FRAG,
     side: THREE.FrontSide,
   });
+  depth.name = bake ? 'tree.barkDepthBake' : 'tree.barkDepth';
   return { mat, depth };
 }
 

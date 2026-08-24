@@ -33,9 +33,11 @@ export class Engine {
     // The scene and post chain render at `internalScale` times the canvas and
     // are reconstructed to it by PostFX's upscale pass (Catmull-Rom + CAS —
     // see UpscalePass.js). The canvas itself stays at basePixelRatio, so
-    // changing this never reallocates the drawing buffer: no 450–2500 ms
-    // freeze, unlike the resolutionScale ladder below, which is retained only
-    // as a manual/diagnostic lever.
+    // changing this never reallocates the drawing buffer. It DOES resize the
+    // composer's offscreen graph, though, and the corrected drive harness has
+    // measured that transition at roughly 300 ms on ANGLE/Metal. The scaler is
+    // therefore allowed to rescue a heavy frame and recover back to its boot
+    // target, but never to opportunistically climb above that target.
     //
     // The quality policy is expressed as effective device pixels per CSS pixel
     // rather than a raw scale, so `high` at 1.35 and `ultra` at 1.5 settle to
@@ -269,7 +271,10 @@ export class Engine {
    * This used to move `resolutionScale`, which resizes the drawing buffer at a
    * measured 450–2500 ms per step — the scaler was itself the player's p95.
    * It now moves `internalScale`, which only resizes offscreen targets (see
-   * PostFX.setInternalScale), so the cooldown is short and a step is invisible.
+   * PostFX.setInternalScale). That avoids the much larger drawing-buffer
+   * freeze, but target reallocation is still visible on ANGLE/Metal; the rung
+   * ladder below is capped at the preferred boot ratio so spare headroom does
+   * not create a series of pointless upscale freezes.
    * `resolutionScale` remains as a manual/diagnostic lever and is no longer
    * touched by the automatic path.
    */
@@ -291,12 +296,14 @@ export class Engine {
     // ultra and a 1x display instead of making the same scalar mean three
     // different image qualities.
     const presentedRatio = this.basePixelRatio * this.resolutionScale;
+    const ceilingScale = Math.min(1,
+      this.preferredEffectiveInternalRatio / presentedRatio);
     const rungs = [...new Set([
-      1,
+      ceilingScale,
       ...ADAPTIVE_RESOLUTION.effectiveRungs.map((r) => Math.min(1, r / presentedRatio)),
       floorScale,
     ])]
-      .filter((r) => r >= floorScale - 1e-6)
+      .filter((r) => r >= floorScale - 1e-6 && r <= ceilingScale + 1e-6)
       .sort((a, b) => b - a);
     let i = rungs.findIndex((r) => Math.abs(r - this.internalScale) < 0.02);
     if (i < 0) i = 0;

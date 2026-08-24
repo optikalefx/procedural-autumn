@@ -302,6 +302,18 @@ export class Vehicle extends System {
     };
   }
 
+  /** Warm post-target variants even if the parked model begins off camera. */
+  precompileMaterials() {
+    const { renderer, camera, scene } = this.ctx;
+    // Do not compile `rig` as a child scene: it contains the two headlights,
+    // and WebGLRenderer would gather those in addition to the same lights from
+    // target `scene`, producing a four-spotlight key gameplay never uses.
+    renderer.compile(this.root, camera, scene);
+    for (const { spin } of this.wheelNodes) {
+      renderer.compile(spin, camera, scene);
+    }
+  }
+
   // ── swapping cars ─────────────────────────────────────────────────────────
   /**
    * Change which vehicle the player is driving, live.

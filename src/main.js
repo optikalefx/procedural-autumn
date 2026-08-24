@@ -235,7 +235,9 @@ async function boot() {
   const atmosphere = new Atmosphere(engine.scene);
   const lighting = new Lighting(engine.scene, quality);
   const sky = new Sky(engine.scene);
-  const terrain = new Terrain(world, engine.scene);
+  const terrain = new Terrain(world, engine.scene, {
+    detailDistance: QUALITY_PRESETS[quality].terrainDetailDistance,
+  });
   const postfx = new PostFX(engine, quality);
 
   const ctx = {
@@ -302,20 +304,40 @@ async function boot() {
   stylize.matte = new URLSearchParams(location.search).get('matte') === '1';
   stylize.harvest();
   stylize.update();
+  // EffectComposer's scene target is linear while the renderer itself remains
+  // configured for an sRGB canvas. A plain renderer.compile() only warms the
+  // direct-to-canvas combination, so every material that was invisible during
+  // the one warm draw (pooled wildlife, tyre tracks, distant streamed effects)
+  // compiled the mixed linear-target/sRGB-renderer variant the first time it
+  // appeared in play. On ANGLE/Metal that was a repeatable 200–270 ms hitch.
+  // Compile the direct path as before. For the linear-target combination, ask
+  // only systems that own invisible or unattached variants to present those
+  // materials. Compiling the entire scene twice added dozens of variants and
+  // a long loading pause merely to warm surfaces the real post draw below will
+  // already touch.
   engine.renderer.compile(engine.scene, cam);
+  const previousTarget = engine.renderer.getRenderTarget();
+  const linearTarget = new THREE.WebGLRenderTarget(1, 1);
+  try {
+    engine.renderer.setRenderTarget(linearTarget);
+    for (const [, system] of built) system.precompileMaterials?.();
+  } finally {
+    engine.renderer.setRenderTarget(previousTarget);
+    linearTarget.dispose();
+  }
 
   engine.setRenderCallback((dt) => postfx.render(dt));
 
   // ── internal render scale ───────────────────────────────────────────────
   // The scene and post chain render at this fraction of the canvas and are
   // reconstructed by PostFX's Catmull-Rom + CAS present pass (UpscalePass.js).
-  // Start at the policy's preferred effective ratio (1.15 device pixels per
+  // Start at the policy's preferred effective ratio (1.25 device pixels per
   // CSS pixel), while PRESENTING at the tier's full pixelRatioCap. That is a
   // visibly sharper starting point than the original 1.0 default without
   // paying for the full 1.35–1.5 cap. On a 1x display this clamps to 1.0.
   //
   // `?iscale=` pins it for A/Bs and captures; the adaptive scaler in Engine
-  // moves it between the sharpness floor and 1.0 in play.
+  // moves it between the sharpness floor and this preferred ceiling in play.
   engine.onInternalScale = (s) => postfx.setInternalScale(s);
   const iscale = parseFloat(params.get('iscale'));
   if (Number.isFinite(iscale)) {
@@ -329,6 +351,22 @@ async function boot() {
       Math.min(1, engine.preferredEffectiveInternalRatio / engine.basePixelRatio),
     );
   }
+
+  // Compile and allocate the post graph behind the loading screen. A scene-only
+  // renderer.compile() does not touch EffectComposer or shadow materials; the
+  // first playable frame was therefore paying 200–320 ms program/link spikes.
+  // Systems with pooled hidden casters can expose one only for this real draw.
+  // Aim the shadow camera at the actual starting frame first, then restore every
+  // warm-only object before the engine or loading transition begins.
+  lighting.update(0, cam.position);
+  const restoreWarmFrame = built.map(([, system]) => system.beginWarmFrame?.())
+    .filter((restore) => typeof restore === 'function');
+  try {
+    postfx.render(0);
+  } finally {
+    for (let i = restoreWarmFrame.length - 1; i >= 0; i--) restoreWarmFrame[i]();
+  }
+  engine.renderer.info.reset();
 
   engine.onUpdate((dt, t) => {
     const rig = ctx.systems.cameraRig;

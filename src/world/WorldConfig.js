@@ -151,10 +151,19 @@ export const VEHICLE = {
 // AdaptiveResolution in Engine scales below these at runtime, so treat them as
 // a ceiling for a fast machine rather than a target.
 export const QUALITY_PRESETS = {
-  ultra:  { shadowMapSize: 4096, cascades: 4, grassMul: 1.0,  ssao: true,  dof: false,  volumetric: true,  reflections: true,  pixelRatioCap: 1.5,  treeMul: 1.0 },
-  high:   { shadowMapSize: 3072, cascades: 3, grassMul: 0.8,  ssao: true,  dof: false,  volumetric: true,  reflections: true,  pixelRatioCap: 1.35, treeMul: 0.9 },
-  medium: { shadowMapSize: 2048, cascades: 3, grassMul: 0.55, ssao: true,  dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.15, treeMul: 0.7 },
-  low:    { shadowMapSize: 1024, cascades: 2, grassMul: 0.3,  ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.0,  treeMul: 0.5 },
+  // Terrain uses the same optimized painter at every tier. A distance ring
+  // between two materially different painters was visible while driving, so
+  // quality is spent on pixels, vegetation, shadows and post effects instead.
+  // 3K at Ultra is deliberate: paired at the dense river view it recovers
+  // 1.1 ms versus 4K, while still matching High's already art-approved shadow
+  // density. SSAO is deliberately off at every tier: it cost 3.25 +/- 0.70 ms
+  // (22% of the Ultra frame) in a paired river run, yet three canonical A/B
+  // plates were visually indistinguishable. Authored lighting and contact
+  // shadows already provide the cue; spend that budget on sharp pixels.
+  ultra:  { shadowMapSize: 3072, cascades: 4, grassMul: 1.0,  ssao: false, dof: false, volumetric: true,  reflections: true,  pixelRatioCap: 1.5,  treeMul: 1.0, terrainDetailDistance: 0 },
+  high:   { shadowMapSize: 3072, cascades: 3, grassMul: 0.8,  ssao: false, dof: false, volumetric: true,  reflections: true,  pixelRatioCap: 1.35, treeMul: 0.9, terrainDetailDistance: 0 },
+  medium: { shadowMapSize: 2048, cascades: 3, grassMul: 0.55, ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.15, treeMul: 0.7, terrainDetailDistance: 0 },
+  low:    { shadowMapSize: 1024, cascades: 2, grassMul: 0.3,  ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.0,  treeMul: 0.5, terrainDetailDistance: 0 },
 };
 
 export const QUALITY_TIERS = Object.freeze(Object.keys(QUALITY_PRESETS));
@@ -171,10 +180,18 @@ export const QUALITY_TIERS = Object.freeze(Object.keys(QUALITY_PRESETS));
 // turn the whole image to mush.
 export const ADAPTIVE_RESOLUTION = Object.freeze({
   targetFps: 50,
-  preferredEffectiveRatio: 1.15,
+  // The terrain and Ultra shadow cuts bought enough real headroom for this
+  // sharper starting rung: paired Ultra motion at ~1.28x stays inside the
+  // 60 fps frame budget. Adaptation can still step through 1.15/1.05/0.98.
+  preferredEffectiveRatio: 1.25,
   minEffectiveRatio: 0.90,
   downscaleThreshold: 1.08,
-  upscaleHeadroom: 0.95,
+  // The downscale threshold already provides the hysteresis. At 0.95 a 60 Hz
+  // browser reporting the vsync floor (16.7 ms) could never prove that the
+  // 0.90 -> 0.98 rung fit inside 19 ms, so one transient downscale became
+  // permanent even with GPU headroom. A full target budget lets that first
+  // recovery step happen; the 1.08 downscale threshold prevents oscillation.
+  upscaleHeadroom: 1.0,
   maxDownRungs: 2,
   effectiveRungs: Object.freeze([1.35, 1.25, 1.15, 1.05, 0.98]),
 });

@@ -7,6 +7,46 @@
 > one recommended here. The details are at the end, in
 > "What actually shipped, and why the plan changed".
 
+> **ADDENDUM 2026-08-24 — resolution-first overhaul.**
+>
+> The current shipping path is materially different again. At the reporting
+> player's 1170×870 CSS / DPR 2 viewport, Ultra now starts and stays at **1.25
+> effective device pixels per CSS pixel** (1.59 MP internal, reconstructed to
+> the 1.5× presented buffer). A 12 s real Retina drive passed with p50 12.7 ms,
+> p95 24.0 ms, no frame over 50 ms, no late programs and no black samples. The
+> longer 45 s route held the same resolution at p50 13.5 ms with no frame over
+> 50 ms or 100 ms; its settled p95 passed at 24.2 ms while the whole-run p95 was
+> 25.6 ms, 0.6 ms over the regression harness's strict line. See
+> `review/perf/performance-overhaul-shadow-warm-gate.json` and
+> `review/perf/performance-overhaul-final-retina-drive.json`.
+>
+> The paired attribution that paid for those pixels:
+>
+> - The former full terrain painter cost **7.75 ± 0.40 ms** more than the new
+>   bounded painter in the Ultra river frame, with identical geometry and
+>   coverage (`performance-overhaul-final-ultra-river.json`). The old shader's
+>   many procedural layers and texture fetches, not terrain triangles, were the
+>   dominant scene cost.
+> - SSAO cost **3.25 ± 0.70 ms**, 22% of that Ultra frame. Matched river, drive
+>   and forest plates were visually indistinguishable, so it is now removed
+>   from every shipping tier.
+> - Ultra's 4K shadow map became 3K: **1.10 ± 0.60 ms** saved in the paired
+>   river run, without changing the already-approved High shadow density.
+> - Invisible pooled wildlife, the off-camera vehicle and an unattached trunk
+>   occlusion material were compiling linear-target shader variants during
+>   play. A real hidden skinned-shadow warm frame plus targeted material cache
+>   seeding moved that work behind the loading plate. The final drive grew by
+>   **zero programs** and had no shader freeze.
+>
+> Two instruments were corrected too. The adaptive ladder's 0.95 recovery test
+> could never climb from its 0.90 floor under a 60 Hz vsync clock; it now uses
+> the full target budget and is capped at the preferred boot ratio so it cannot
+> cause opportunistic target-reallocation freezes. `PerfOverlay`'s `readPixels`
+> burst is now labelled as a serialized fps floor and excluded from gameplay
+> p95/freeze history. The WebGL specification defines `readPixels` as blocking
+> until prior rendering completes; it is a stress bound, not an ordinary
+> delivered-frame clock: <https://registry.khronos.org/webgl/specs/latest/2.0/>.
+
 
 
 Measured 2026-08-21 on an M3 Pro, at the pixel count a real display asks for.

@@ -1,0 +1,160 @@
+{
+ "seconds": 12,
+ "res": "1536",
+ "viewport": [
+  800,
+  600
+ ],
+ "frames": 1448,
+ "p50": 8.6,
+ "p95": 18.1,
+ "p99": 20.8,
+ "worstMs": 268.7,
+ "worstAtS": 6.4,
+ "hitch33": 2,
+ "hitch50": 2,
+ "hitch100": 1,
+ "settledP50": 8.4,
+ "settledP95": 17.2,
+ "maxCalls": 626,
+ "maxTris": 6725373,
+ "growth": {
+  "geometries": 148,
+  "textures": 8,
+  "programs": 2
+ },
+ "addedPrograms": [
+  {
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "programEvents": [
+  {
+   "t": 293.40000009536743,
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "t": 6393.700000286102,
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "resolution": {
+  "scale": 1,
+  "internalScale": 1,
+  "basePixelRatio": 1,
+  "presented": 1,
+  "effective": 1,
+  "megapixels": 0.48,
+  "presentedMegapixels": 0.48
+ },
+ "worstFrames": [
+  {
+   "atS": 6.4,
+   "ms": 268.7,
+   "calls": 588,
+   "tris": 5669438,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 1.3,
+   "ms": 88.3,
+   "calls": 595,
+   "tris": 6164037,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.3,
+   "ms": 26.4,
+   "calls": 600,
+   "tris": 6209779,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 12.1,
+   "ms": 25.4,
+   "calls": 572,
+   "tris": 5818365,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 5.3,
+   "ms": 23.9,
+   "calls": 586,
+   "tris": 5576481,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 5.7,
+   "ms": 23.9,
+   "calls": 576,
+   "tris": 5953259,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 13.9,
+   "ms": 23.3,
+   "calls": 596,
+   "tris": 5811132,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.1,
+   "ms": 22.7,
+   "calls": 604,
+   "tris": 6358766,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7,
+   "ms": 22.3,
+   "calls": 603,
+   "tris": 6357614,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 6.9,
+   "ms": 22.2,
+   "calls": 602,
+   "tris": 6414984,
+   "prog": 124,
+   "iscale": 1,
+   "quality": "ultra"
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": [
+  "1 frames over 100 ms — visible freezes"
+ ]
+}
