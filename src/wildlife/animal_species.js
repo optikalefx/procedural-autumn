@@ -208,7 +208,7 @@ function buildLeg(B, L, D) {
   const { spec: sp, iU, iL, iC, hip, knee, hock, foot } = L;
   const R = D.radialLimb;
 
-  const seg = (aP, bP, bA, bB, r0, r1, mixA, mixB, shade) => {
+  const seg = (aP, bP, bA, bB, r0, r1, mixA, mixB, shade, opts) => {
     // A short overlap either side of each joint, weighted to both bones, hides
     // the seam without smooth-skinning the whole limb into rubber.
     const st = [];
@@ -223,16 +223,25 @@ function buildLeg(B, L, D) {
         bone: bA, bone2: t > 0.92 ? bB : bA, w2: t > 0.92 ? 0.5 : 0,
       });
     }
-    tube(B, st, { radial: R, ao: 0.5, k: sp.k ?? 1 });
+    tube(B, st, { radial: R, ao: 0.5, k: sp.k ?? 1, domeSteps: D.domeSteps ?? 2, ...opts });
   };
 
   const coat = MIX.coat, dark = MIX.dark;
   const sockT = sp.sockTop ?? 0.55;   // where the coat gives way to dark legs
   const midMix = mixLerp(coat, dark, sockT);
 
-  seg(hip, knee, iU, iL, sp.rTop, sp.rMid, coat, coat, 0.94);
-  seg(knee, hock, iL, iC, sp.rMid, sp.rLow, coat, midMix, 0.90);
-  seg(hock, foot, iC, iC, sp.rLow, sp.rFoot, midMix, dark, 0.86);
+  // Every segment top is domed rather than capped flat. Nothing here is a
+  // sealed cylinder in practice: the hip rides at the edge of the barrel's
+  // silhouette and clears it entirely on a raised or trailing leg, and each
+  // joint below bends far enough that the segment's own cap swings out past
+  // the one above it — a stifle at a dog's angulation is the worst of them.
+  // A flat cap in either place reads as a sawn-off tube; a hemisphere reads as
+  // the ball the joint actually is. Joint domes are shallower than the hip's
+  // so a bent knee gains a knuckle without growing a bulb.
+  const jd = sp.jointDome ?? 0.65;
+  seg(hip, knee, iU, iL, sp.rTop, sp.rMid, coat, coat, 0.94, { domeStart: sp.hipDome ?? 0.9 });
+  seg(knee, hock, iL, iC, sp.rMid, sp.rLow, coat, midMix, 0.90, { domeStart: jd });
+  seg(hock, foot, iC, iC, sp.rLow, sp.rFoot, midMix, dark, 0.86, { domeStart: jd });
 
   // Hoof / paw: a small squat block so the leg does not end in a needle.
   const hh = sp.hoofH ?? 0.07, hr = sp.hoofR ?? (sp.rFoot * 1.5);
@@ -296,10 +305,10 @@ const DETAIL = [
   // between the authored stations. Still flat-shaded and faceted, just with
   // facets small enough to read as a curve instead of as armour plate.
   { radialBody: 14, radialLimb: 10, radialTrim: 8, antlerRadial: 6, antlerLevels: 1, antlerSegs: 7,
-    barrelStep: 1, ears: true, smooth: 3, neckRings: 14 },
+    barrelStep: 1, ears: true, smooth: 3, neckRings: 14, domeSteps: 2 },
   // mid — half the rings, four-sided limbs, one antler fork
   { radialBody: 5, radialLimb: 4, radialTrim: 4, antlerRadial: 3, antlerLevels: 1, antlerSegs: 3,
-    barrelStep: 2, ears: true, smooth: 1, neckRings: 5 },
+    barrelStep: 2, ears: true, smooth: 1, neckRings: 5, domeSteps: 1 },
 ];
 
 function buildQuadruped(P, detailLevel, seed) {
