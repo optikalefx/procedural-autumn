@@ -13,13 +13,15 @@
 //  filling toward anything, and nothing anywhere on it goes down — the one
 //  exception is "closest a bear came", which is a story rather than a score.
 //
-//  Nothing here shows what has NOT happened yet. The sky catalogue listed every
-//  object with a hint about where to find it, and on a fresh logbook that was
-//  eight rows of homework sitting under a heading that said "0 of 8" — a
-//  to-do list, which is the one thing this game does not have (user,
-//  2026-08-24). An object appears the night it is found, with the description
-//  of what was actually at the eyepiece. The count keeps its "of 8", because
-//  knowing there is more out there is an invitation and not an instruction.
+//  Nothing here shows what has NOT happened yet, and that rule runs all the way
+//  up: a row appears when it has a number, a whole section appears when one of
+//  its rows does. A player who has never put a boat in the water has no "On the
+//  water" heading with seven dashes under it, and the sky catalogue does not
+//  greet a fresh logbook with eight rows of homework under a heading reading
+//  "0 of 8" (user, 2026-08-24). Both of those are to-do lists, which is the one
+//  thing this game does not have. The night an object is found it appears, by
+//  name, with the description of what was actually at the eyepiece — and how
+//  many more there are to find is not this page's business to say.
 //
 //  ── refreshing ────────────────────────────────────────────────────────────
 //
@@ -31,7 +33,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { CARS } from '../vehicle/vehicle_models.js';
-import { SKY_OBJECTS, SKY_TOTAL } from '../game/sky_objects.js';
+import { SKY_OBJECTS } from '../game/sky_objects.js';
 import {
   stats, fmtDuration, fmtSeconds, fmtDistance, fmtMetres, fmtSpeed, fmtCount, fmtDate,
 } from '../game/stats_store.js';
@@ -53,6 +55,21 @@ const REFRESH = 0.4;
 // The session column is only ever shown for `n` rows: "you drove another
 // 4 km today" is a sentence, "your top speed today was also your top speed
 // ever" is not, and a record is worth more when it is not annotated.
+//
+// A group may carry a third field saying when it is worth showing at all. A row
+// with nothing in it prints '—', and that is what both modes are counting:
+//
+//   (none)  always on the page — the valley, the driving, the camp: things
+//           anyone who got this far has done
+//   'group' the whole section stays away until ONE of its rows has a value,
+//           then arrives whole. For the places a player might never go, where
+//           the individual rows only make sense read together.
+//   'row'   each row waits for its own value, and the heading arrives with the
+//           first of them. For the two sections that are made OF discoveries —
+//           the animals and the valley's own features — where naming a thing
+//           the player has not met yet is half of telling them it is there.
+//           A waterfall should be something you came over a rise and found,
+//           not a line that was sitting in the logbook waiting for a number.
 const GROUPS = [
   ['Logbook', [
     ['Time in the valley', 'n dur', 'time.total'],
@@ -73,7 +90,7 @@ const GROUPS = [
     ['Total airtime', 'n dur', 'air.time'],
     ['Jumps', 'n count', 'air.jumps'],
     ['Longest hang', 'hi secs', 'air.long'],
-  ]],
+  ], 'group'],
   ['On the water', [
     ['Time afloat', 'n dur', 'water.time'],
     ['Distance paddled', 'n dist', 'water.dist'],
@@ -82,12 +99,10 @@ const GROUPS = [
     ['Kayaks launched', 'n count', 'boat.launch.kayak'],
     ['Time in a canoe', 'n dur', 'water.time.canoe'],
     ['Time in a kayak', 'n dur', 'water.time.kayak'],
-  ]],
+  ], 'group'],
   ['Camp', [
     ['Camps made', 'n count', 'camp.made'],
-    ['Packed up', 'n count', 'camp.struck'],
     ['Pitched after dark', 'n count', 'camp.night'],
-    ['Camps with a dog', 'n count', 'camp.dogs'],
     ['Time at camp', 'n dur', 'camp.time'],
   ]],
   ['Wildlife', [
@@ -97,14 +112,17 @@ const GROUPS = [
     ['Bird flocks', 'n count', 'seen.flocks'],
     ['Birds startled', 'n count', 'birds.startled'],
     ['Closest a bear came', 'lo metres', 'bear.near'],
-  ]],
+  ], 'row'],
+  // 'Valleys visited' is marked the moment Stats boots, so this section always
+  // has its one honest row and never disappears entirely — what it does not
+  // have, until the player earns them, is the four rows underneath.
   ['The valley', [
+    ['Valleys visited', 'set', 'seeds'],
     ['Waterfalls found', 'set', 'falls'],
     ['Landmarks found', 'set', 'poi'],
-    ['Valleys visited', 'set', 'seeds'],
     ['Photos taken', 'n count', 'photo.taken'],
     ['Time in photo mode', 'n dur', 'photo.time'],
-  ]],
+  ], 'row'],
 ];
 
 const FMT = {
@@ -199,9 +217,14 @@ export class StatsPage {
 
   refresh() {
     const out = [];
-    for (const [label, rows] of GROUPS) {
+    for (const [label, rows, mode] of GROUPS) {
+      // '—' is a row with nothing to say, and it is the same test both modes
+      // ask: one about itself, one about the section it belongs to.
+      const filled = rows.filter(([, kind, key]) => valueText(kind, key) !== '—');
+      if (mode && !filled.length) continue;
+      const shown = mode === 'row' ? filled : rows;
       out.push(`<div class="pa-group"><div class="pa-label">${label}</div>`);
-      for (const [name, kind, key] of rows) {
+      for (const [name, kind, key] of shown) {
         out.push(this._row(name, valueText(kind, key), sessionText(kind, key)));
       }
       out.push('</div>');
@@ -233,23 +256,28 @@ export class StatsPage {
   }
 
   /**
-   * The night sky: a count, then everything found so far.
+   * The night sky: the eyepiece, then everything found through it.
+   *
+   * Nothing until the telescope has actually been used — the section is hand
+   * written rather than a GROUPS entry, so it does its own version of the
+   * 'group' test above.
    *
    * `SKY_OBJECTS` order rather than discovery order, so the list does not
    * reshuffle itself between visits — a record that reorders is harder to read
-   * than one that grows.
+   * than one that grows. There is no "n of eight" over it: a total is a
+   * denominator, and a denominator turns a list of nights into a checklist.
    */
   _sky() {
     const found = stats.count('sky');
+    const uses = fmtCount(stats.get('scope.uses'));
+    const time = fmtDuration(stats.get('scope.time'));
+    if (!found && uses === '—' && time === '—') return '';
     const out = ['<div class="pa-group"><div class="pa-label">The night sky</div>'];
     // "Visits", not "nights": stepping up to the telescope twice in one
     // evening is two of these, and calling them nights would be a small lie
     // told by a logbook whose only job is to be true.
-    out.push(this._row('Visits to the eyepiece', fmtCount(stats.get('scope.uses')),
-      sessionText('n count', 'scope.uses')));
-    out.push(this._row('Time at the eyepiece', fmtDuration(stats.get('scope.time')),
-      sessionText('n dur', 'scope.time')));
-    out.push(this._row('Objects found', `${found} of ${SKY_TOTAL}`, ''));
+    out.push(this._row('Visits to the eyepiece', uses, sessionText('n count', 'scope.uses')));
+    out.push(this._row('Time at the eyepiece', time, sessionText('n dur', 'scope.time')));
     if (found) {
       out.push('<div class="pa-sky">');
       for (const o of SKY_OBJECTS) {

@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>logbook render check</title>
+<!--
+  Renders the logbook page on its own, against a fixture written straight into
+  localStorage, so the "what shows and what stays away" rules can be read at a
+  glance without driving the world for an hour first.
+
+    ?state=empty    a fresh logbook — nothing done
+    ?state=partial  a short first visit: some driving, two deer, one waterfall
+    ?state=full     some of everything, including three sky objects
+
+  Served by any vite on this checkout: /tools/_scratch/logbook_check.html.
+  It writes the real `pa.stats` key, so on a port you also play the game on,
+  clear it afterwards.
+-->
+<link rel="stylesheet" href="/src/ui/hud.css">
+<style>
+  body { background:#14100c; margin:0; padding:16px; font-family:system-ui; }
+  /* The sheet is normally an absolutely-positioned overlay that fades in; on a
+     bare harness page it just sits in the flow. */
+  #pa-hud { position: static; pointer-events: auto; }
+  .pa-sheet { position: static; transform: none; opacity: 1; visibility: visible;
+              width: 24em; background: rgba(43,28,51,0.9); border-radius: 14px; }
+  h2 { color:#f6e6d0; font:600 13px system-ui; }
+</style>
+<div id="pa-hud"><h2 id="h1"></h2><div id="a" class="pa-sheet"></div></div>
+<script type="module">
+  // Which fixture: ?state=empty (fresh logbook) or ?state=full (some of everything)
+  const q = new URLSearchParams(location.search).get('state') || 'empty';
+  const fixtures = {
+    empty: null,
+    partial: { v:1, firstPlayed:Date.now()-864e5, lastPlayed:Date.now(), sessions:3,
+      n:{ 'time.total':4200, 'drive.time':3000, 'drive.dist':8200, 'camp.made':2,
+          'seen.deer':4, 'seen.rabbit':1, 'photo.taken':3 },
+      hi:{ 'speed.top':18, 'alt.high':820, 'session.long':2400 }, lo:{}, sets:{ falls:['a'] } },
+    full: { v:1, firstPlayed:Date.now()-864e6, lastPlayed:Date.now(), sessions:12,
+      n:{ 'time.total':42000, 'drive.time':30000, 'drive.dist':48200, 'air.time':90,
+          'air.jumps':14, 'water.time':600, 'water.dist':900, 'water.strokes':240,
+          'boat.launch.canoe':2, 'water.time.canoe':600, 'camp.made':5, 'camp.night':2,
+          'camp.time':3000, 'seen.deer':9, 'seen.bear':2, 'seen.flocks':6,
+          'scope.uses':4, 'scope.time':400, 'photo.taken':22, 'photo.time':300 },
+      hi:{ 'speed.top':24, 'alt.high':1120, 'air.long':2.4, 'range.far':3400, 'session.long':5400 },
+      lo:{ 'bear.near':31 },
+      sets:{ falls:['a','b'], poi:['x'], seeds:['1','2'], sky:['saturn','moon','spiral'] } },
+  };
+  localStorage.setItem('pa.stats', fixtures[q] ? JSON.stringify(fixtures[q]) : '');
+  if (!fixtures[q]) localStorage.removeItem('pa.stats');
+  document.getElementById('h1').textContent = q;
+  // Stats.init() marks the running seed the moment the game boots, so "no
+  // valleys visited at all" is not a state a player can ever be looking at.
+  const { stats } = await import('/src/game/stats_store.js');
+  stats.mark('seeds', 20262018);
+  const { StatsPage } = await import('/src/ui/hud_stats.js');
+  new StatsPage(document.getElementById('a'), { toast(){} });
+</script>
