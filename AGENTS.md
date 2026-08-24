@@ -28,8 +28,12 @@ code. Start your own server (`npx vite --host 127.0.0.1 --port <free port>
 --strictPort`) and point every tool at it (`--port` for ablate, `AUTUMN_URL`
 for perf/shot/probe/tod). Ports 5178–5181 are typically taken.
 
-Boot with `?seed=20261018` (or `--seed 20261018`): the committed bakes match
-that seed, and a mismatched seed bakes a whole world live before the first
+Pin a seed that has a bake on disk. `node tools/bake.mjs` defaults to the
+seed the game boots (`WorldConfig.SEED`, currently 20262018), so a freshly
+baked checkout hits the cache with no `?seed` at all. The capture toolchain
+and its historical baselines pin `?seed=20261018` (`--seed 20261018`); bake
+that seed too (`node tools/bake.mjs --seed 20261018`) before running
+captures. A seed with no bake bakes a whole world live before the first
 frame — minutes of wall clock holding the capture lock.
 
 ## There is more than one car, and the page picks at random
