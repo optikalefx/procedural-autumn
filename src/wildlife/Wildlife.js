@@ -33,6 +33,7 @@ import { instantiate } from './animal_rig.js';
 import { AnimRig } from './animal_anim.js';
 import { Brain, ST, WATER_MAX } from './animal_brain.js';
 import { Birds } from './birds.js';
+import { TreeBirds } from './tree_birds.js';
 
 // Per-species streaming and population budget.
 //
@@ -103,6 +104,10 @@ export class Wildlife extends System {
 
     this.birds = new Birds(this.ctx, SEED ^ 0x51b1);
     this.birds.build();
+
+    // The perch-and-fly birds (bald eagles, for now) — see tree_birds.js.
+    this.treeBirds = new TreeBirds(this.ctx, SEED ^ 0x6ea9);
+    this.treeBirds.build();
 
     scene.add(this.group);
     this._compileWarm = true;
@@ -614,6 +619,7 @@ export class Wildlife extends System {
     }
 
     this.birds.update(dt, cam, threat);
+    this.treeBirds.update(dt, cam, threat);
   }
 
   /** One animal: brain, then LOD, then the gait solver. */
@@ -888,6 +894,7 @@ export class Wildlife extends System {
       for (const m of this.mats[key]) m.dispose();
     }
     this.birds?.dispose();
+    this.treeBirds?.dispose();
   }
 }
 
