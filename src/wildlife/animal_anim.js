@@ -89,6 +89,10 @@ const LADDER = {
   // A fox moves like a light dog, not like a deer: lateral walk, long trot,
   // and a gallop at the top rather than a bound.
   fox:    ['walk', 'trot', 'gallop'],
+  // A squirrel never walks — ground travel is a bound at every speed, like the
+  // rabbit. (Every species needs its own row: a missing key falls through to
+  // the deer's ladder, and a squirrel that trots is a rat.)
+  squirrel: ['hop', 'hop', 'hop'],
 };
 
 const _a = new THREE.Vector3();
