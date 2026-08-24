@@ -42,6 +42,7 @@ export function makeCoverUniforms() {
     // Shared by reference with camp_clearing.js; see the note there on why the
     // clearing is a shader fact rather than a re-scatter.
     uCampSites:    campSite.uCampSites,
+    uCampPads:     campSite.uCampPads,
     uCampAim:      campSite.uCampAim,
     uCampAimFloor: campSite.uCampAimFloor,
     uTime:         { value: 0 },
