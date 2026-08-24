@@ -1687,6 +1687,88 @@ export class PostFX {
     n = n < 0 ? 0 : n > 1 ? 1 : n;
     const night = n * n * (3 - 2 * n);
 
+    // ── …AND THE SECOND ONE, BECAUSE THE FIVE TERMS ABOVE IT ARE NOT ONE ────
+    //
+    // `night` above used to carry all five of the grade's night corrections,
+    // and the comment defending its late start defends exactly ONE of them:
+    // the rod response, which must not touch a sunset wedge. The lift cut, the
+    // toe cut and the tone curve's black-offset cut rest on a completely
+    // different argument — the one written out at EXPOSURE_LOW and again at
+    // the contrast pivot — that a term sized for a display-referred daylight
+    // frame becomes the majority of the signal in a frame two decades lower.
+    // That stops being an argument about rods and starts being arithmetic, and
+    // the arithmetic changes at SUNSET, not twenty-five minutes after it.
+    //
+    // What the single ramp cost, measured (tools/_scratch/fireworth.mjs, which
+    // shoots each hour twice — fire lit and fire dark — and differences them,
+    // so the number is "how much of this picture is the fire" and does not
+    // care where the camp lottery put the tent):
+    //
+    //   hour   18.4   18.9   19.0   19.4   20.0   20.6   21.0
+    //   elev  +.033   .000  -.014  -.054  -.105  -.149  -.177
+    //   mean   10.8    9.1    8.0    7.5   12.5   16.7   16.7
+    //   %>8    48.9   39.7   33.8   34.7   67.8   67.7   68.2
+    //
+    // i.e. the fire's pool covered HALF as much of the frame at 19:00 as at
+    // 21:00, and less than it did in broad daylight at 18:24 — while the fire
+    // itself was emitting MORE (light intensity 2.42 against 1.95; see the
+    // inverted ramp at LIGHT_DAY in camp_fire.js, which is deliberate and is
+    // not what was wrong). The dip is not the fire. Between 18.9 and ~19.3 the
+    // sun has stopped reaching up-facing ground and the moon key has not
+    // started — `sunGone` in Lighting.js gates on this same -0.045 — so the
+    // world is already lit like night while the grade is still corrected like
+    // day.
+    //
+    // One term at a time at h19, everything else shipping:
+    //
+    //   moved to its night value        mean   %>8
+    //   ship                            7.98   33.8
+    //   uLift 0.020 -> 0.003           12.32   54.4   <- the big one
+    //   exposure x1.166                13.56   53.4
+    //   offsetScale -> 0.15            11.87   49.7
+    //   uToe -> 0.0088                 10.27   45.9
+    //   uContrast -> 1.05               7.38   36.7   <- WORSE
+    //
+    // The lift dominates for the reason its own note gives from the other end:
+    // it is a spatially constant pedestal, and a constant has no gradient. A
+    // camp fire's contribution three to five metres out is the same order of
+    // magnitude as 0.020, so the lift does not dim the fire's pool — it fills
+    // the frame in underneath it until there is no pool left to see.
+    //
+    // uContrast is deliberately NOT on this ramp, and the table above is why:
+    // it is a multiplicative term, so it scales the fire's own delta along
+    // with everything else, and moving it early made the fire LESS visible
+    // while also being the term the sunset look is calibrated on. Splitting a
+    // ramp is cheap; re-deriving the twilight contrast against the plates is
+    // not, and nothing here needs it.
+    //
+    // ── where this ramp is anchored, and why not at the horizon ─────────────
+    //
+    // The obvious anchor is sunset — e = 0 — and it does not work. Measured:
+    // an `-e / 0.16` smoothstep leaves uLift at 0.0196 at h19, because h19 is
+    // six minutes past sunset and sits at e = -0.014, which is inside any
+    // smoothstep's flat toe. The fire's worth went 8.0 -> 9.8 and the dip was
+    // still there. A ramp anchored at the horizon cannot move fast enough to
+    // matter in the twenty-five minutes that need it.
+    //
+    // It should not be anchored there anyway. The key stops *reaching the
+    // ground* well before it geometrically sets, because N.L on flat ground is
+    // sin(elev): at e = 0.03 the meadow is already collecting three percent of
+    // the key, and the frame's radiance has fallen the two decades this whole
+    // family of corrections is sized against. So the band runs from a grazing
+    // sun to civil twilight — 0.060 down to -0.090, the elevation where
+    // EXPOSURE_LOW takes its own first real step.
+    //
+    // The shipping daylight sheet is untouched by construction: the canonical
+    // golden-hour framings sit at sin(elev) 0.12 (h7.4) to 0.34 (h17.9), and
+    // even h18.3 — the last key before sunset, and past every judged view — is
+    // at 0.045, where this reads 0.028 and uLift lands on 0.0195 against
+    // 0.0200. Below -0.16 `dark` and `night` are both 1, so the night frames
+    // are bit-identical too. Everything this can reach is inside twilight.
+    let d = (0.060 - e) / 0.150;
+    d = d < 0 ? 0 : d > 1 ? 1 : d;
+    const dark = d * d * (3 - 2 * d);
+
     // ── glare ───────────────────────────────────────────────────────────────
     const lm = this.bloom.luminanceMaterial;
     const thresh = L.threshHi + (L.threshLo - L.threshHi) * lowSun;
@@ -1760,7 +1842,10 @@ export class PostFX {
     // lift: with the pivot brought down there is much less negative excursion
     // for it to catch, and what it does catch it should catch gently or it is
     // once again the majority of a dark pixel.
-    u.get('uToe').value = 0.022 * (1 - L.nightToeCut * night);
+    // …on `dark` rather than on `night`, though. See the note beside that
+    // ramp: the pivot argument this line inherits is arithmetic about where
+    // the frame's radiance sits, and the frame's radiance falls at sunset.
+    u.get('uToe').value = 0.022 * (1 - L.nightToeCut * dark);
     // Vibrance down at twilight. It is a chroma *compressor* — it boosts by
     // (1 - sat), so it does its largest work on the least saturated pixels in
     // the frame, and at dusk those are the sky and the haze. Measured on the
@@ -1769,11 +1854,15 @@ export class PostFX {
     // dome into a strongly purple one.
     u.get('uVibrance').value = 0.90 - L.twiVibrance * lowSun;
     // …and the lift down at night, so the scene outruns it. See the scotopic
-    // block in the grade for the measurement.
-    u.get('uLift').value = 0.020 * (1 - L.nightLiftCut * night);
+    // block in the grade for the measurement, and `dark` above for why this is
+    // the one term of the five that most needed to let go at the horizon: it
+    // is the pedestal that was filling in underneath the camp fire's pool.
+    u.get('uLift').value = 0.020 * (1 - L.nightLiftCut * dark);
+    // The rod block keeps `night`, and it is the term that ramp's late start
+    // was written for.
     u.get('uRodAmount').value = L.rodAmount;
     u.get('uRodTint').value.set(L.rodTint[0], L.rodTint[1], L.rodTint[2]);
-    this.tone.offsetScale = 1 - (1 - L.nightOffset) * night;
+    this.tone.offsetScale = 1 - (1 - L.nightOffset) * dark;
   }
 
   /** Scene exposure applied immediately before the tone curve. */
