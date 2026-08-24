@@ -259,6 +259,20 @@ export class WorldData {
     return Math.max(0, w - this.getHeight(x, z));
   }
 
+  /**
+   * Depth for contact effects and vehicle physics. The drawn water mesh extends
+   * past the actual waterline so the shader can render a damp shoreline fade;
+   * that margin is visible water-adjacent geometry, but a tyre on it is still
+   * on dry ground and must not trigger splash, bow-wave audio or drag.
+   */
+  getWaterContactDepth(x, z) {
+    const h = this.getHydro(x, z, this._hydroContact ??= {});
+    if (h.sdf <= 0 || h.depth <= 0) return 0;
+    const m = this._water?.depthAt?.(x, z);
+    if (m !== null && m !== undefined) return Math.max(0, Math.min(m, h.depth));
+    return h.depth;
+  }
+
   isInBounds(x, z) {
     return x > -this.half && x < this.half && z > -this.half && z < this.half;
   }

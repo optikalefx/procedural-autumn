@@ -1,0 +1,193 @@
+{
+ "seconds": 8,
+ "res": "1536",
+ "viewport": [
+  800,
+  600
+ ],
+ "frames": 974,
+ "p50": 8.9,
+ "p95": 18.9,
+ "p99": 21,
+ "worstMs": 104.6,
+ "worstAtS": 1.3,
+ "hitch33": 1,
+ "hitch50": 1,
+ "hitch100": 1,
+ "settledP50": 9.2,
+ "settledP95": 19.4,
+ "maxCalls": 626,
+ "maxTris": 6724227,
+ "growth": {
+  "geometries": 152,
+  "textures": 8,
+  "programs": 5
+ },
+ "addedPrograms": [
+  {
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "name": "vehicle.paint",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "name": "vehicle.glass",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,1027,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "name": "hide:deer:stag",
+   "type": "MeshStandardMaterial",
+   "key": "physical,STANDARD,,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,1,132135,srgb,animalHide"
+  },
+  {
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "programEvents": [
+  {
+   "t": 281.6000003814697,
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "t": 446.1000003814697,
+   "name": "vehicle.paint",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "t": 516.1000003814697,
+   "name": "vehicle.glass",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,1027,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "t": 1323.1000003814697,
+   "name": "hide:deer:stag",
+   "type": "MeshStandardMaterial",
+   "key": "physical,STANDARD,,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,1,132135,srgb,animalHide"
+  },
+  {
+   "t": 6600.200000286102,
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "resolution": {
+  "scale": 1,
+  "internalScale": 1,
+  "basePixelRatio": 1,
+  "presented": 1,
+  "effective": 1,
+  "megapixels": 0.48,
+  "presentedMegapixels": 0.48
+ },
+ "worstFrames": [
+  {
+   "atS": 1.3,
+   "ms": 104.6,
+   "calls": 596,
+   "tris": 6189688,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 6.9,
+   "ms": 22.7,
+   "calls": 587,
+   "tris": 6387349,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 4.5,
+   "ms": 22.4,
+   "calls": 595,
+   "tris": 6060043,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 5.3,
+   "ms": 21.8,
+   "calls": 583,
+   "tris": 5731153,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 6.3,
+   "ms": 21.8,
+   "calls": 588,
+   "tris": 6103418,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 6.8,
+   "ms": 21.6,
+   "calls": 593,
+   "tris": 6433200,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.1,
+   "ms": 21.4,
+   "calls": 594,
+   "tris": 5943810,
+   "prog": 123,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 4.6,
+   "ms": 21.1,
+   "calls": 591,
+   "tris": 6044907,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 2,
+   "ms": 21,
+   "calls": 597,
+   "tris": 6103875,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 5.7,
+   "ms": 21,
+   "calls": 577,
+   "tris": 5961859,
+   "prog": 122,
+   "iscale": 1,
+   "quality": "ultra"
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": [
+  "1 frames over 100 ms — visible freezes"
+ ]
+}

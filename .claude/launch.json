@@ -4,14 +4,46 @@
     {
       "name": "autumn",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 5178
     },
     {
       "name": "autumn-sky",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--host", "127.0.0.1", "--port", "5180", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5180",
+        "--strictPort"
+      ],
       "port": 5180
+    },
+    {
+      "name": "worktree-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5223",
+        "--strictPort"
+      ],
+      "port": 5223
+    },
+    {
+      "name": "vercel-sim",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "tools/vercel-sim.mjs",
+        "dist"
+      ],
+      "port": 5224
     }
   ]
 }

@@ -18,6 +18,8 @@ import { pickCar, carById, CARS } from './vehicle_models.js';
 import { VehiclePhysics } from './VehiclePhysics.js';
 import { ParticleField, TrackRibbons, surfaceDust, KIND } from './VehicleFX.js';
 import { VehicleShadow } from './VehicleShadow.js';
+import { touchCapable } from '../core/verbs.js';
+import { posthog } from '../posthog.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
@@ -168,6 +170,7 @@ export class Vehicle extends System {
     this._dropping = false;    // a car swap is in the air; see `setCar`
     this._invQuat = new THREE.Quaternion();
     this._rescueCool = 0;
+    this._rescueOffered = false;   // touch only: is the rescue toast up? see `update`
     this._rescueHold = false;
     this._brakeHold = false;
     this.brakeHold = false;      // what the HUD lamp reads
@@ -301,6 +304,18 @@ export class Vehicle extends System {
     };
   }
 
+  /** Warm post-target variants even if the parked model begins off camera. */
+  precompileMaterials() {
+    const { renderer, camera, scene } = this.ctx;
+    // Do not compile `rig` as a child scene: it contains the two headlights,
+    // and WebGLRenderer would gather those in addition to the same lights from
+    // target `scene`, producing a four-spotlight key gameplay never uses.
+    renderer.compile(this.root, camera, scene);
+    for (const { spin } of this.wheelNodes) {
+      renderer.compile(spin, camera, scene);
+    }
+  }
+
   // ── swapping cars ─────────────────────────────────────────────────────────
   /**
    * Change which vehicle the player is driving, live.
@@ -385,11 +400,28 @@ export class Vehicle extends System {
     // from one press.
     this._rescueCool = Math.max(0, this._rescueCool - dt);
     if (!held && input.justPressed('KeyR')) this.rescue();
-    // Once per session, and only after the player has genuinely been fighting
-    // it for a couple of seconds: a key you only need when stuck is no use if
-    // you learn about it before you are. `_stuckFor` is the physics' own
-    // measure — full throttle or full brake, going nowhere, on the ground.
-    if (!this._toldAboutRescue && this.phys._stuckFor > 2.4) {
+    // Only after the player has genuinely been fighting it for a couple of
+    // seconds: an offer you only need when stuck is no use if it arrives before
+    // you are. `_stuckFor` is the physics' own measure — full throttle or full
+    // brake, going nowhere, on the ground.
+    //
+    // The two devices get genuinely different behaviour here, and it is not
+    // just wording. With a keyboard the toast TEACHES a key, so it says it once
+    // per session and goes; you know R from then on. On touch the toast IS the
+    // rescue — there is no key to learn — so it has to come back every time the
+    // camper is stuck, and it has to stay up while the offer stands instead of
+    // timing out under a player who is still rocking the throttle. Hence
+    // sticky, and hence taking it down again the moment they drive out of it
+    // under their own power.
+    const stuck = this.phys._stuckFor > 2.4;
+    if (touchCapable()) {
+      if (stuck !== this._rescueOffered) {
+        this._rescueOffered = stuck;
+        const hud = ctx.systems.hud;
+        if (stuck) hud?.toast?.('Touch to rescue', { action: () => this.rescue(), sticky: true });
+        else hud?.hideToast?.();
+      }
+    } else if (!this._toldAboutRescue && stuck) {
       this._toldAboutRescue = true;
       ctx.systems.hud?.toast?.('Stuck? Press R');
     }
@@ -523,6 +555,12 @@ export class Vehicle extends System {
       site.landmark ? 'Moved you back to the road'
         : moved > 60 ? `Moved you ${Math.round(moved)} m to clear ground`
           : site.relaxed ? 'Moved you clear' : 'Moved you to open ground');
+    posthog.capture('vehicle_rescued', {
+      distance_moved_m: Math.round(moved),
+      rescue_count: this.rescues,
+      used_landmark: !!site.landmark,
+      relaxed: !!site.relaxed,
+    });
     return site;
   }
 
@@ -991,7 +1029,7 @@ export class Vehicle extends System {
       const cx = w.contact.x, cy = w.contact.y, cz = w.contact.z;
       if (!Number.isFinite(cx)) continue;
 
-      const depth = world.getWaterDepth(cx, cz);
+      const depth = world.getWaterContactDepth?.(cx, cz) ?? world.getWaterDepth(cx, cz);
       const weights = world.getSurfaceWeights(cx, cz, this._w);
       const soft = clamp01(weights.grass * 0.7 + weights.dry * 0.8 + weights.dirt * 1.0
         + weights.sand * 1.0 + weights.snow * 0.9 - weights.rock * 0.8);

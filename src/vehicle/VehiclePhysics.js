@@ -542,7 +542,7 @@ export class VehiclePhysics {
     const absSpeed = Math.abs(this.speed);
 
     // ── water ───────────────────────────────────────────────────────────────
-    const depth = this.world.getWaterDepth(t.x, t.z);
+    const depth = this._wheelWaterDepth();
     this.waterDepth = depth;
     const wade = clamp01(depth / 1.25);
 
@@ -748,8 +748,23 @@ export class VehiclePhysics {
     if (steps === 12) this._accum = 0;
 
     this._readWheels(dt);
+    this.waterDepth = this._wheelWaterDepth();
     this._recover(dt, ctrl);
     this._guardNaN();
+  }
+
+  _waterContactDepth(x, z) {
+    return this.world.getWaterContactDepth?.(x, z) ?? this.world.getWaterDepth(x, z);
+  }
+
+  _wheelWaterDepth() {
+    let depth = 0;
+    for (let i = 0; i < 4; i++) {
+      const w = this.wheels[i];
+      if (!w?.grounded || !Number.isFinite(w.contact.x)) continue;
+      depth = Math.max(depth, this._waterContactDepth(w.contact.x, w.contact.z));
+    }
+    return depth;
   }
 
   _readWheels(dt) {

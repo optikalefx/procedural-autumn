@@ -30,10 +30,9 @@
 //  sheets stay clean.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function touchCapable() {
-  return (navigator.maxTouchPoints ?? 0) > 0
-    || window.matchMedia?.('(pointer: coarse)').matches;
-}
+import { touchCapable } from '../core/verbs.js';
+
+export { touchCapable };
 
 const BASE = [
   'position:fixed', 'z-index:9998', 'user-select:none', '-webkit-user-select:none',

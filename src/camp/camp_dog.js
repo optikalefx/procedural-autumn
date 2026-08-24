@@ -41,7 +41,7 @@
 //  system, which is the whole trick: every path it walks is *about* the fire.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { clamp, clamp01, lerp, damp, mulberry32, wrapAngle } from '../core/MathUtils.js';
+import { clamp, clamp01, lerp, damp, wrapAngle } from '../core/MathUtils.js';
 import { buildCampDog, createHideMaterial } from '../wildlife/animal_species.js';
 import { instantiate } from '../wildlife/animal_rig.js';
 import { AnimRig } from '../wildlife/animal_anim.js';
@@ -204,6 +204,7 @@ const REST_TIME = [26, 75];      // s asleep / sitting before getting up
 const WANDER_TIME = [7, 18];     // s milling about before settling again
 const SETTLE_TIME = 1.05;        // s to fold down into a pose
 const RISE_TIME = 0.85;          // s to stand back up
+const APPROACH_TIME = 16;        // s before abandoning an unreachable bed
 
 // Where it walks. The fire ring is 0.58 m of stone, so nothing here may come
 // inside about a metre and a half of the centre.
@@ -215,11 +216,15 @@ const ORBIT_MAX = 3.4;
 const REST_MIN = 1.7;            // …and where it chooses to lie down
 const REST_MAX = 2.8;
 const WALK_SPEED = 0.78;         // m/s. A dog pottering, not going anywhere.
+const DOG_CLEAR = 0.25;          // body radius used for path clearance
+const REST_CLEAR = 0.12;         // extra empty ground around a sleeping dog
+const REST_MAX_SLOPE = 0.18;     // tan(angle), about ten degrees
+const REST_MAX_RELIEF = 0.032;   // metres away from the fitted ground plane
+const BACK_SPEED = 0.27;         // a careful two- or three-step retreat
+const BACK_TIME = 1.15;          // long enough to open a useful reverse arc
 
 const ST = { WANDER: 0, APPROACH: 1, SETTLE: 2, REST: 3, RISE: 4 };
-
-const _v = new THREE.Vector3();
-const _e = new THREE.Euler();
+const ST_NAME = ['wander', 'approach', 'settle', 'rest', 'rise'];
 
 /**
  * One dog, belonging to one camp.
@@ -277,20 +282,35 @@ export class CampDog {
     this.timer = rand(rnd, WANDER_TIME);
     this.pose = null;          // the pose being blended toward, or null
     this.blend = 0;            // 0 = the gait solver's pose, 1 = fully settled
-    this.poseYaw = 0;          // heading the dog settled at, held while resting
 
     // Polar wander state — see the note at the top of the file.
     this.ang = rnd() * Math.PI * 2;
-    this.angV = (rnd() < 0.5 ? -1 : 1) * (0.16 + rnd() * 0.14);
+    this.orbitDir = rnd() < 0.5 ? -1 : 1;
+    this.angV = this.orbitDir * (0.16 + rnd() * 0.14);
     this.orbit = lerp(ORBIT_MIN, ORBIT_MAX, rnd());
     this.orbitT = 0;
+
+    // Avoidance has memory. Without it an obstacle crossing the centre line
+    // changes from "pass left" to "pass right" every other frame, which is the
+    // visible shake the old stateless push-out produced.
+    this.avoidSide = 0;
+    this.avoidTimer = 0;
+    this.blockedTime = 0;
+    this.recovering = false;
+    this.recoverTimer = 0;
+    this.recoverStartX = 0;
+    this.recoverStartZ = 0;
+    this.restPlan = null;
+    this.restGround = null;
+    this.approachFinal = false;
 
     // Start it somewhere sensible on its own orbit, standing.
     const p = this._orbitPoint(this.ang, this.orbit);
     this.pos = new THREE.Vector3(p.x, world.getHeight(p.x, p.z), p.z);
-    this.heading = this.ang + Math.PI * 0.5;
+    this.heading = this.ang + this.orbitDir * Math.PI * 0.5;
     this.speed = 0;
     this.target = new THREE.Vector3(p.x, 0, p.z);
+    this.nearestClearance = this._clearanceAt(this.pos.x, this.pos.z);
 
     this.drive = {
       pos: this.pos, heading: this.heading, speed: 0,
@@ -299,96 +319,255 @@ export class CampDog {
     this.rig.reset(this.pos, this.heading, world);
   }
 
-  /** A point on the orbit, pushed off anything solid standing there. */
-  _orbitPoint(ang, r, out = { x: 0, z: 0 }) {
-    let x = this.fire.x + Math.sin(ang) * r;
-    let z = this.fire.z + Math.cos(ang) * r;
-    // Two relaxation passes against the camp's own props. Not a solver — just
-    // enough that the dog does not walk through the cooler.
-    for (let pass = 0; pass < 2; pass++) {
-      for (const o of this.obstacles) {
-        const dx = x - o.x, dz = z - o.z;
-        const d = Math.hypot(dx, dz);
-        const need = o.r + 0.34;
-        if (d > need || d < 1e-4) continue;
-        const k = (need - d) / d;
-        x += dx * k; z += dz * k;
-      }
+  /** Human-readable state for the observation harness and diagnostics. */
+  get stateName() { return ST_NAME[this.state] ?? 'unknown'; }
+
+  /** Signed distance from the dog's body to the nearest camp obstacle. */
+  _clearanceAt(x, z, pad = DOG_CLEAR) {
+    let nearest = Infinity;
+    for (const o of this.obstacles) {
+      nearest = Math.min(nearest, Math.hypot(x - o.x, z - o.z) - o.r - pad);
     }
-    out.x = x; out.z = z;
+    return nearest;
+  }
+
+  /**
+   * Resolve a desired point onto empty ground.
+   *
+   * This is for TARGETS, never for the live dog. Moving the live position out
+   * of every overlapping circle in sequence was the old vibration bug: one
+   * prop pushed east, its neighbour pushed west, and steering supplied a third
+   * answer every frame. A target may be relaxed as much as necessary; the dog
+   * itself only moves through collision-checked steps below.
+   */
+  _resolvePoint(x0, z0, pad = DOG_CLEAR, out = { x: 0, z: 0 }) {
+    let x = x0, z = z0;
+    for (let pass = 0; pass < 10; pass++) {
+      let worst = null, worstGap = Infinity, worstD = 0;
+      for (const o of this.obstacles) {
+        const d = Math.hypot(x - o.x, z - o.z);
+        const gap = d - o.r - pad;
+        if (gap < worstGap) { worst = o; worstGap = gap; worstD = d; }
+      }
+      if (!worst || worstGap >= 0.015) { out.x = x; out.z = z; return out; }
+      let dx = x - worst.x, dz = z - worst.z;
+      if (worstD < 1e-4) {
+        const a = this.ang + pass * 2.39996;
+        dx = Math.sin(a); dz = Math.cos(a); worstD = 1;
+      }
+      const need = worst.r + pad + 0.02;
+      x = worst.x + dx / worstD * need;
+      z = worst.z + dz / worstD * need;
+    }
+
+    // Overlapping prop circles can have no common projection. Search a small
+    // deterministic rosette around the requested point and take the nearest
+    // genuinely clear sample instead of oscillating between the two circles.
+    let bestX = x, bestZ = z, bestScore = this._clearanceAt(x, z, pad) - 10;
+    for (let ring = 1; ring <= 5; ring++) {
+      const rr = ring * 0.28;
+      for (let i = 0; i < 16; i++) {
+        const a = i / 16 * Math.PI * 2;
+        const sx = x0 + Math.sin(a) * rr, sz = z0 + Math.cos(a) * rr;
+        const clear = this._clearanceAt(sx, sz, pad);
+        const score = clear >= 0.015 ? 10 - rr : clear - rr;
+        if (score > bestScore) { bestScore = score; bestX = sx; bestZ = sz; }
+      }
+      if (bestScore > 9) break;
+    }
+    out.x = bestX; out.z = bestZ;
     return out;
   }
 
-  /** Choose somewhere to lie down: near the fire, clear of the props. */
+  /** A point on the orbit, resolved away from anything solid there. */
+  _orbitPoint(ang, r, out = { x: 0, z: 0 }) {
+    return this._resolvePoint(
+      this.fire.x + Math.sin(ang) * r,
+      this.fire.z + Math.cos(ang) * r,
+      DOG_CLEAR + 0.08,
+      out,
+    );
+  }
+
+  /** Fit a stable local ground plane under a whole resting dog. */
+  _surfaceAt(x, z, yaw) {
+    const W = this.world;
+    const spanZ = Math.max(this.rig.bodyLen, 0.90) * 0.5;
+    const spanX = Math.max(this.rig.bodyW, 0.45) * 0.5;
+    const fx = Math.sin(yaw), fz = Math.cos(yaw);
+    const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+    const height = (side, fore) => W.getHeight(
+      x + rx * side + fx * fore,
+      z + rz * side + fz * fore,
+    );
+    const y = height(0, 0);
+    const hF = height(0, spanZ), hR = height(0, -spanZ);
+    const hRt = height(spanX, 0), hL = height(-spanX, 0);
+    const gradeF = (hF - hR) / (spanZ * 2);
+    const gradeR = (hRt - hL) / (spanX * 2);
+    let relief = 0;
+    for (const side of [-spanX, 0, spanX]) {
+      for (const fore of [-spanZ, 0, spanZ]) {
+        const expected = y + gradeR * side + gradeF * fore;
+        relief = Math.max(relief, Math.abs(height(side, fore) - expected));
+      }
+    }
+    return {
+      y,
+      pitch: clamp(-Math.atan(gradeF), -0.60, 0.60),
+      roll: clamp(Math.atan(gradeR), -0.45, 0.45),
+      slope: Math.hypot(gradeF, gradeR),
+      relief,
+    };
+  }
+
+  /** Choose a flat, clear bed and an approach line that arrives head-first. */
   _pickRestSpot() {
     let best = null, bestScore = -Infinity;
-    for (let i = 0; i < 10; i++) {
-      const a = this.rnd() * Math.PI * 2;
+    const here = Math.atan2(this.pos.x - this.fire.x, this.pos.z - this.fire.z);
+    for (let i = 0; i < 28; i++) {
+      // Beds are searched AHEAD on the current meander, not at an arbitrary
+      // bearing. The arbitrary draw often chose the far side of the fire, then
+      // the shortest line to it ran through the furniture and sent avoidance
+      // on a camp-wide detour. Walking another quarter-turn before settling is
+      // both easier to solve and much more like an animal choosing a nearby pad.
+      const a = here + this.orbitDir * lerp(0.38, 1.55, this.rnd());
       const r = lerp(REST_MIN, REST_MAX, this.rnd());
       const p = this._orbitPoint(a, r);
-      // Prefer flat ground — a dog does not curl up on a slope — and prefer not
-      // to walk right across the fire to get there.
-      const slope = this.world.getSlope?.(p.x, p.z) ?? 0;
-      const turn = Math.abs(wrapAngle(Math.atan2(p.x - this.pos.x, p.z - this.pos.z) - this.heading));
-      const s = -slope * 3 - turn * 0.25 + this.rnd() * 0.3;
-      if (s > bestScore) { bestScore = s; best = p; }
+      const fireD = Math.hypot(p.x - this.fire.x, p.z - this.fire.z);
+      const clear = this._clearanceAt(p.x, p.z);
+      if (clear < REST_CLEAR || fireD < REST_MIN - 0.2 || fireD > REST_MAX + 0.7) continue;
+
+      const toFire = Math.atan2(this.fire.x - p.x, this.fire.z - p.z);
+      const yaw = toFire + (this.rnd() - 0.5) * 1.05;
+      const ground = this._surfaceAt(p.x, p.z, yaw);
+      if (ground.slope > REST_MAX_SLOPE || ground.relief > REST_MAX_RELIEF) continue;
+
+      // Approach from behind the final pose. This is the animation fix as much
+      // as it is path planning: the dog walks into its bed already facing the
+      // way it will lie, rather than stopping and rotating like a turntable.
+      const entryX = p.x - Math.sin(yaw) * 0.72;
+      const entryZ = p.z - Math.cos(yaw) * 0.72;
+      if (this._clearanceAt(entryX, entryZ) < 0.03) continue;
+
+      const turn = Math.abs(wrapAngle(Math.atan2(entryX - this.pos.x, entryZ - this.pos.z) - this.heading));
+      const score = -ground.slope * 5 - ground.relief * 24 - turn * 0.16 +
+        Math.min(clear, 0.5) * 0.2 + this.rnd() * 0.05;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x: p.x, z: p.z, yaw, ground, entryX, entryZ };
+      }
     }
     return best;
   }
 
-  /**
-   * How far to bend the heading to miss the props, in radians.
-   *
-   * Only obstacles roughly AHEAD count — something beside or behind the dog is
-   * not in the way and steering around it would make the path wander for no
-   * reason. The turn is away from whichever side the obstacle sits on, scaled
-   * by how close and how central it is.
-   */
-  _dodge(want) {
-    let turn = 0;
-    const sx = Math.sin(want), sz = Math.cos(want);
-    for (const o of this.obstacles) {
-      const dx = o.x - this.pos.x, dz = o.z - this.pos.z;
-      const d = Math.hypot(dx, dz);
-      const look = o.r + 0.85;
-      if (d > look || d < 1e-4) continue;
-      // Ahead? (dot with the desired heading)
-      const ahead = (dx * sx + dz * sz) / d;
-      if (ahead < 0.15) continue;
-      // Which side, and how hard.
-      const side = (dx * sz - dz * sx) / d;      // >0 means the prop is to the left
-      const urgency = (1 - d / look) * ahead;
-      turn += (side > 0 ? -1 : 1) * urgency * 1.5;
+  /** Minimum predicted clearance on a short straight feeler. */
+  _pathClearance(heading, distance = 1.05) {
+    const sx = Math.sin(heading), sz = Math.cos(heading);
+    let clear = Infinity;
+    for (const f of [0.28, 0.55, 0.82, 1]) {
+      clear = Math.min(clear, this._clearanceAt(
+        this.pos.x + sx * distance * f,
+        this.pos.z + sz * distance * f,
+      ));
     }
-    return clamp(turn, -1.2, 1.2);
+    return clear;
   }
 
-  /** Last line of defence: never actually stand inside a prop. */
-  _clearProps() {
-    for (const o of this.obstacles) {
-      const dx = this.pos.x - o.x, dz = this.pos.z - o.z;
-      const d = Math.hypot(dx, dz);
-      const need = o.r + 0.22;
-      if (d > need) continue;
-      if (d < 1e-4) { this.pos.x += need; continue; }
-      const k = (need - d) / d;
-      this.pos.x += dx * k; this.pos.z += dz * k;
+  /**
+   * Pick a clear heading while preserving the side already chosen around a prop.
+   * Candidate headings are relative to the BODY, so even a target behind the
+   * dog becomes a broad walking arc rather than an in-place rotation.
+   */
+  _chooseHeading(want, look = 1.05) {
+    const offsets = [0, 0.28, -0.28, 0.55, -0.55, 0.84, -0.84, 1.14, -1.14];
+    let best = this.heading, bestOffset = 0, bestScore = -Infinity;
+    for (const off of offsets) {
+      const candidate = this.heading + off;
+      const clear = this._pathClearance(candidate, look);
+      let score = Math.cos(wrapAngle(want - candidate)) * 1.55 +
+        Math.min(clear, 0.65) * 1.15 - Math.abs(off) * 0.08;
+      if (clear < 0) score -= 30 + Math.abs(clear) * 20;
+      if (this.avoidTimer > 0 && this.avoidSide && Math.sign(off) === -this.avoidSide) score -= 1.8;
+      if (score > bestScore) { bestScore = score; best = candidate; bestOffset = off; }
     }
+
+    if (Math.abs(bestOffset) > 0.2 && this._pathClearance(this.heading, look) < 0.38) {
+      if (this.avoidTimer <= 0) this.avoidSide = Math.sign(bestOffset);
+      this.avoidTimer = 1.15;
+    }
+    return best;
+  }
+
+  /** Score a curved reverse path. Positive `side` turns left, negative right. */
+  _reverseClearance(side) {
+    let x = this.pos.x, z = this.pos.z, heading = this.heading;
+    let minClear = this._clearanceAt(x, z);
+    const steps = 10;
+    const stepTime = BACK_TIME / steps;
+    for (let i = 0; i < steps; i++) {
+      heading += side * 0.72 * stepTime;
+      x -= Math.sin(heading) * BACK_SPEED * stepTime;
+      z -= Math.cos(heading) * BACK_SPEED * stepTime;
+      minClear = Math.min(minClear, this._clearanceAt(x, z));
+    }
+    const endClear = this._clearanceAt(x, z);
+    return minClear * 2.5 + endClear;
+  }
+
+  _beginRecovery(sideHint = 0) {
+    if (this.recovering) return;
+    if (sideHint) {
+      this.avoidSide = sideHint;
+    } else {
+      // This is a BACKING manoeuvre, so score the path the hindquarters will
+      // actually take. Looking forward here chose the safe side for the nose
+      // and often steered the rump straight into the tent behind it.
+      const left = this._reverseClearance(1);
+      const right = this._reverseClearance(-1);
+      this.avoidSide = left >= right ? 1 : -1;
+    }
+    this.avoidTimer = 1.5;
+    this.recovering = true;
+    this.recoverTimer = BACK_TIME;
+    this.recoverStartX = this.pos.x;
+    this.recoverStartZ = this.pos.z;
+    this.blockedTime = 0;
+  }
+
+  _resumeOrbitFromHeading() {
+    const a = Math.atan2(this.pos.x - this.fire.x, this.pos.z - this.fire.z);
+    const plus = Math.abs(wrapAngle(a + Math.PI * 0.5 - this.heading));
+    const minus = Math.abs(wrapAngle(a - Math.PI * 0.5 - this.heading));
+    this.orbitDir = plus <= minus ? 1 : -1;
+    this.ang = a + this.orbitDir * 0.32;
+    this.angV = this.orbitDir * Math.max(0.16, Math.abs(this.angV));
+  }
+
+  _abandonRestSpot() {
+    this.restPlan = null;
+    this.approachFinal = false;
+    this.state = ST.WANDER;
+    this.timer = 3 + this.rnd() * 3;
+    this._resumeOrbitFromHeading();
   }
 
   update(dt, camPos) {
     const W = this.world;
     this._t += dt;
     this.timer -= dt;
+    this.avoidTimer = Math.max(0, this.avoidTimer - dt);
 
     // ── the loop ────────────────────────────────────────────────────────────
     switch (this.state) {
       case ST.WANDER: {
-        // The orbit angle advances at a rate that itself drifts, so the dog
-        // speeds up and slows down and occasionally nearly stops, rather than
-        // tracking round at a constant rate like a fairground ride.
-        this.angV += (Math.sin(this._t * 0.37) * 0.10) * dt;
-        this.angV = clamp(this.angV, -0.42, 0.42);
+        // The rate breathes, but its SIGN stays fixed for this wander. The old
+        // integrated sine crossed zero while the body's heading still pointed
+        // around the other way; the target jumped behind it and the dog had no
+        // choice but to pivot. A dog can change direction after a rest, when it
+        // has a natural chance to pick the nearer tangent.
+        const orbitRate = 0.17 + 0.12 * (0.5 + 0.5 * Math.sin(this._t * 0.37));
+        this.angV = damp(this.angV, this.orbitDir * orbitRate, 1.1, dt);
         this.ang += this.angV * dt;
         this.orbitT += dt;
         this.orbit = lerp(ORBIT_MIN, ORBIT_MAX,
@@ -397,23 +576,61 @@ export class CampDog {
         this.target.set(p.x, 0, p.z);
         if (this.timer <= 0) {
           const spot = this._pickRestSpot();
-          this.target.set(spot.x, 0, spot.z);
-          this.state = ST.APPROACH;
-          this.timer = 14;                       // give up and settle anyway
+          if (spot) {
+            this.restPlan = spot;
+            this.approachFinal = false;
+            this.target.set(spot.entryX, 0, spot.entryZ);
+            this.state = ST.APPROACH;
+            this.timer = APPROACH_TIME;
+          } else {
+            // No honest bed is better than lying on the least-bad hummock.
+            // Wander a little further and ask again from another part of camp.
+            this.timer = 2.5 + this.rnd() * 2.5;
+          }
         }
         break;
       }
       case ST.APPROACH: {
-        const d = Math.hypot(this.target.x - this.pos.x, this.target.z - this.pos.z);
-        if (d < 0.28 || this.timer <= 0) {
-          this.state = ST.SETTLE;
-          this.timer = SETTLE_TIME;
-          this.pose = POSES[pickPose(this.rnd())];
-          // Face the fire, roughly, and hold that heading through the rest.
-          // A dog lying with its back to the fire is a dog that has been placed
-          // rather than one that chose the spot.
-          const toFire = Math.atan2(this.fire.x - this.pos.x, this.fire.z - this.pos.z);
-          this.poseYaw = toFire + (this.rnd() - 0.5) * 1.5;
+        const plan = this.restPlan;
+        if (!plan || this.timer <= 0) {
+          // The old path settled when this timer expired, wherever the dog had
+          // got stuck. That is how it lay down inside props and on bad ground.
+          this._abandonRestSpot();
+          break;
+        }
+        if (!this.approachFinal) {
+          const entryD = Math.hypot(plan.entryX - this.pos.x, plan.entryZ - this.pos.z);
+          if (entryD < 0.36) {
+            this.approachFinal = true;
+            // The outer route owns most of APPROACH_TIME. Once the entry is
+            // genuinely reached, give the short walk-in its own small window
+            // rather than abandoning a valid bed one stride before it.
+            this.timer = Math.max(this.timer, 4);
+            // Aim a hand-span THROUGH the bed. Crossing the point lines the
+            // shoulders up with the rest pose; targeting the point itself makes
+            // steering undefined exactly at the instant the dog must stop.
+            this.target.set(
+              plan.x + Math.sin(plan.yaw) * 0.12,
+              0,
+              plan.z + Math.cos(plan.yaw) * 0.12,
+            );
+          }
+        } else {
+          const spotD = Math.hypot(plan.x - this.pos.x, plan.z - this.pos.z);
+          if (spotD < 0.24) {
+            const ground = this._surfaceAt(this.pos.x, this.pos.z, this.heading);
+            if (ground.slope > REST_MAX_SLOPE || ground.relief > REST_MAX_RELIEF ||
+                this._clearanceAt(this.pos.x, this.pos.z) < REST_CLEAR * 0.5) {
+              this._abandonRestSpot();
+              break;
+            }
+            this.state = ST.SETTLE;
+            this.timer = SETTLE_TIME;
+            this.pose = POSES[pickPose(this.rnd())];
+            this.restGround = ground;
+            this.speed = 0;
+            this.recovering = false;
+          }
         }
         break;
       }
@@ -434,11 +651,14 @@ export class CampDog {
         if (this.timer <= 0) {
           this.blend = 0;
           this.pose = null;
+          this.restPlan = null;
+          this.restGround = null;
           this.state = ST.WANDER;
           this.timer = rand(this.rnd, WANDER_TIME);
-          // Re-key the orbit to wherever it woke up, so it carries on from here
-          // instead of striking out across the camp for a stale angle.
-          this.ang = Math.atan2(this.pos.x - this.fire.x, this.pos.z - this.fire.z);
+          // Pick the tangent nearest the direction it is already facing, then
+          // put the new target a little way along it. Standing up is followed
+          // by a forward step, never a 180-degree turn in place.
+          this._resumeOrbitFromHeading();
         }
         break;
     }
@@ -448,36 +668,95 @@ export class CampDog {
     if (moving) {
       const dx = this.target.x - this.pos.x, dz = this.target.z - this.pos.z;
       const d = Math.hypot(dx, dz);
-      let want = Math.atan2(dx, dz);
-      // Steer AROUND the camp rather than through it. Pushing the target point
-      // off the props (`_orbitPoint`) only fixes where the dog is going, not
-      // the line it takes to get there — and the chairs and the cooler are
-      // exactly the things standing between two points on a ring drawn round
-      // the fire. This bends the desired heading away from anything close and
-      // ahead, which is enough for a dog pottering at 0.78 m/s.
-      want += this._dodge(want);
-      // Damped turn, and the dog slows into a corner rather than pivoting on
-      // the spot — the turn rate is what keeps the path smooth.
-      this.heading += clamp(wrapAngle(want - this.heading), -1.6 * dt, 1.6 * dt);
-      const align = Math.cos(wrapAngle(want - this.heading));
-      const wantSpeed = d < 0.34 ? 0 : WALK_SPEED * clamp01(align) * clamp01(d / 0.9);
-      this.speed = damp(this.speed, wantSpeed, 3.2, dt);
+      if (this.recovering) {
+        this.recoverTimer -= dt;
+        // Backing while turning opens a new forward arc. The locomotion rig is
+        // deliberately given zero gait speed below, so its existing one-foot
+        // standing shuffle supplies the little reverse steps instead of playing
+        // a forward walk backwards.
+        this.speed = damp(this.speed, -BACK_SPEED, 5, dt);
+        const backTurn = Math.min(0.72, Math.max(0, -this.speed) * 2.8);
+        this.heading += this.avoidSide * backTurn * dt;
+        if (this.recoverTimer <= 0) {
+          const moved = Math.hypot(
+            this.pos.x - this.recoverStartX,
+            this.pos.z - this.recoverStartZ,
+          );
+          this.recovering = false;
+          if (moved < 0.04) {
+            // Commit to one whole reverse arc before trying the other side.
+            // The old 0.28 s flip reversed the turn before the body had moved,
+            // producing the exact left-right wavering in the supplied video.
+            this._beginRecovery(-this.avoidSide);
+          } else {
+            // Turning the body left while reversing moves the dog to its right,
+            // and vice versa. Carry that SPATIAL side into the forward walk so
+            // the target cannot immediately pull it back through the pocket it
+            // just escaped. This turns back-up + walk-around into one manoeuvre.
+            this.avoidSide *= -1;
+            this.avoidTimer = 2.8;
+            this.blockedTime = 0;
+          }
+        }
+      } else {
+        const want = Math.atan2(dx, dz);
+        // On the last few steps, only inspect the path up to the bed. Looking
+        // a full metre THROUGH it sees the fire beyond the intended stopping
+        // point and makes avoidance turn away at the exact moment the dog is
+        // lined up to settle.
+        const look = this.approachFinal ? Math.min(0.55, d + 0.10) : 1.05;
+        const chosen = this._chooseHeading(want, look);
+        const turn = wrapAngle(chosen - this.heading);
+        // Yaw is curvature: no ground speed means no heading change. Scaling
+        // the turn limit from the speed structurally rules out a pivot after
+        // rising or when a target changes behind the dog.
+        const turnRate = Math.min(1.35, Math.max(0, this.speed) * 3.0);
+        this.heading += clamp(turn, -turnRate * dt, turnRate * dt);
+        // Keep walking through a turn. Even the tightest allowed corner keeps
+        // forty percent of walking speed, so the body's yaw describes an arc
+        // in the ground plane instead of a pivot at zero speed.
+        const turnScale = lerp(0.42, 1, clamp01(1 - Math.abs(turn) / 1.15));
+        const nearScale = clamp01(d / (this.approachFinal ? 0.45 : 0.72));
+        let wantSpeed = d < 0.12 ? 0 : WALK_SPEED * turnScale * nearScale;
+        // Keep a real creeping step under the last heading correction. The
+        // transition test above will stop it at the bed; dropping to zero here
+        // one frame earlier recreated the exact ugly pivot this path is meant
+        // to remove.
+        if (this.approachFinal && d < 0.28) wantSpeed = Math.max(wantSpeed, WALK_SPEED * 0.24);
+        this.speed = damp(this.speed, wantSpeed, 3.5, dt);
+      }
     } else {
+      this.recovering = false;
       this.speed = damp(this.speed, 0, 6, dt);
-      // Settle the heading onto the one it chose, so the fold-down and the turn
-      // finish together.
-      if (this.pose) {
-        this.heading += clamp(wrapAngle(this.poseYaw - this.heading), -2.2 * dt, 2.2 * dt);
+    }
+
+    // Collision is a rejected step, never a positional correction. That one
+    // distinction removes the fight that made the dog shake against objects.
+    if (moving && Math.abs(this.speed) > 1e-4) {
+      const nx = this.pos.x + Math.sin(this.heading) * this.speed * dt;
+      const nz = this.pos.z + Math.cos(this.heading) * this.speed * dt;
+      const clearNow = this._clearanceAt(this.pos.x, this.pos.z);
+      const clearNext = this._clearanceAt(nx, nz);
+      // A rounded prop footprint can leave the dog a few millimetres inside a
+      // neighbouring circle. Rejecting every still-negative step makes that a
+      // permanent prison. Let a backing step proceed only when it monotonically
+      // reduces the overlap; it remains collision-safe and walks out visibly
+      // instead of being projected or teleported.
+      const escapingOverlap = clearNow < 0 && clearNext > clearNow + 1e-6;
+      if (clearNext >= 0 || escapingOverlap) {
+        this.pos.x = nx; this.pos.z = nz;
+        this.blockedTime = Math.max(0, this.blockedTime - dt * 2);
+      } else {
+        this.blockedTime += dt;
+        if (!this.recovering && this.blockedTime > 0.18) this._beginRecovery();
       }
     }
-    this.pos.x += Math.sin(this.heading) * this.speed * dt;
-    this.pos.z += Math.cos(this.heading) * this.speed * dt;
-    this._clearProps();
+    this.nearestClearance = this._clearanceAt(this.pos.x, this.pos.z);
     this.pos.y = W.getHeight(this.pos.x, this.pos.z);
 
     // ── the gait solver, then the pose over the top of it ───────────────────
     this.drive.heading = this.heading;
-    this.drive.speed = this.speed;
+    this.drive.speed = Math.max(0, this.speed);
     // A settled dog still looks around. `alert` lifts the head and pricks the
     // ears, and easing a little of it in while it rests is most of what keeps a
     // curled dog from reading as a prop.
@@ -485,6 +764,12 @@ export class CampDog {
     this.drive.lod = camPos && camPos.distanceToSquared(this.pos) > 58 * 58 ? 1 : 0;
     this.rig.update(dt, this.drive, W);
 
+    // A lying dog's support plane is chosen once. Re-solving its body height
+    // from four independently shuffling gait feet every frame is correct while
+    // walking and visibly wrong after the authored legs are folded away.
+    if (this.restGround && this.blend > 0.001) {
+      this.mesh.position.y = lerp(this.mesh.position.y, this.restGround.y, this.blend);
+    }
     if (this.blend > 0.001 && this.pose) this._applyPose(this.blend);
   }
 
@@ -507,8 +792,10 @@ export class CampDog {
     // sitting dog slid quietly out of the camp and over the horizon.
     root.position.y += P.drop * w;
     root.position.z = (P.push ?? 0) * w;
-    root.rotation.x = lerp(root.rotation.x, P.pitch, w);
-    root.rotation.z = lerp(root.rotation.z, P.roll, w);
+    const groundPitch = this.restGround?.pitch ?? 0;
+    const groundRoll = this.restGround?.roll ?? 0;
+    root.rotation.x = lerp(root.rotation.x, P.pitch + groundPitch, w);
+    root.rotation.z = lerp(root.rotation.z, P.roll + groundRoll, w);
 
     for (const name in P.bones) {
       const b = this.byName[name];

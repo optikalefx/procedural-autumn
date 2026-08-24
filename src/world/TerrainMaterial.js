@@ -28,6 +28,12 @@ export function createTerrainMaterial(world, opts = {}) {
     dithering: true,
     flatShading: false,
   });
+  // Compile the legacy full painter completely out of shipping programs. It is
+  // retained below as a visual/performance reference and can be re-enabled by
+  // the ablation harness, but leaving both sides of a uniform branch in the
+  // live program made shader linking slower and gave the driver a much larger
+  // register-allocation problem than the fast path actually needs.
+  mat.defines = { ...(mat.defines ?? {}), TERRAIN_FAST: 1 };
 
   const uniforms = {
     uDataTex:     { value: world.dataTexture },
@@ -165,6 +171,16 @@ export function createTerrainMaterial(world, opts = {}) {
     // Working out which of six overlapping masks owns a grey hillside by
     // reading the code is slow and unreliable; looking at it takes one capture.
     uDebugMask:   { value: 0 },
+
+    // The full terrain painter is intentionally lavish up close, but it had
+    // grown into the largest fragment program in the frame: two height
+    // stencils, an eight-tap slope low-pass, a four-tap hydro reconstruction
+    // and many triplanar noise octaves on every visible terrain pixel. Past
+    // this camera distance the cheaper painter below keeps the baked biome,
+    // slope, river, scree and snow structure, while dropping detail whose
+    // projected size is already carried by vegetation and aerial perspective.
+    // Quality tiers move this boundary; zero means the fast painter everywhere.
+    uDetailDistance: { value: opts.detailDistance ?? 160.0 },
   };
 
   mat.userData.uniforms = uniforms;
@@ -265,6 +281,7 @@ export function createTerrainMaterial(world, opts = {}) {
       uniform float uZoneTP;
       uniform float uSnowLine;
       uniform float uDebugMask;
+      uniform float uDetailDistance;
 
       varying vec3 vWorldPos;
       varying vec3 vWorldNormal;
@@ -496,6 +513,199 @@ export function createTerrainMaterial(world, opts = {}) {
         // defect made the structure harder to find.
         river *= 1.0 - smoothstep(0.85, 1.40, slope);
         float moist   = data.a;
+        vec3 N = normalize(vWorldNormal);
+        float camDist = length(vWorldPos - cameraPosition);
+
+        // ── distance/quality-budgeted painter ─────────────────────────────
+        // This is not a flat fallback. It preserves the large structures that
+        // identify the world — baked moisture and hardness, slope-driven rock,
+        // talus, rivers, damp banks, snow and the apron — with 7 texture reads
+        // and five planar noise octaves. The full path below can exceed twenty
+        // texture reads and evaluates many triplanar octaves. At range those
+        // extra frequencies are below their own pixel budget, and on Low the
+        // vegetation is the authored near-field detail layer anyway.
+        #ifdef TERRAIN_FAST
+        {
+        #else
+        if (camDist >= uDetailDistance) {
+        #endif
+          vec2 uvhFast = (vWorldPos.xz / uWorldSize) + 0.5 + (uHydroTexel * 0.25);
+          uvhFast = abs(uvhFast);
+          uvhFast = clamp(mix(uvhFast, 2.0 - uvhFast, step(1.0, uvhFast)), 0.0, 1.0);
+          // Bilinear is sufficient once the shoreline footprint is sub-pixel;
+          // the exact four-tap reconstruction remains in the near painter.
+          vec4 hydroFast = texture2D(uHydroTex, uvhFast);
+
+          vec3 Vfast = normalize(cameraPosition - vWorldPos);
+          float grazeFast = max(abs(dot(Vfast, N)), 0.30);
+          float footFast = camDist * 0.0012 / grazeFast;
+          float stencilFast = clamp(max(camDist * 0.009, footFast * 3.0), 7.0, 30.0);
+          vec2 ef = vec2(stencilFast / uWorldSize, 0.0);
+          float fhL = texture2D(uDataTex, uvw - ef.xy).r;
+          float fhR = texture2D(uDataTex, uvw + ef.xy).r;
+          float fhD = texture2D(uDataTex, uvw - ef.yx).r;
+          float fhU = texture2D(uDataTex, uvw + ef.yx).r;
+          vec3 Nfast = normalize(vec3(fhL - fhR, stencilFast * 2.0, fhD - fhU));
+          gReliefN = Nfast;
+          gReliefW = 0.84 * smoothstep(110.0, 300.0, camDist);
+
+          float macroFast  = fbm(vWorldPos.xz * 0.0042, 3) * 0.5 + 0.5;
+          float macro2Fast = fbm(vWorldPos.xz * 0.0155 + 31.4, 2) * 0.5 + 0.5;
+          float mesoFast = 0.5;
+          float mesoFadeFast = 1.0 - smoothstep(150.0, 520.0, camDist);
+          if (mesoFadeFast > 0.004) {
+            mesoFast = mix(0.5,
+                           fbm(vWorldPos.xz * 0.062 + 7.7, 2) * 0.5 + 0.5,
+                           mesoFadeFast);
+          }
+
+          float wetFast = moist * 0.72 + macroFast * 0.28;
+          float oliveFast = softMass(wetFast + macro2Fast * 0.14, 0.83, 0.055);
+          float dryFast = softMass(macroFast * 0.56 + macro2Fast * 0.44
+                                   - moist * 0.28, 0.56, 0.050);
+          vec3 grassFast = mix(uGrassGold, uGrassOlive, oliveFast * 0.44);
+          grassFast = mix(grassFast, uGrassDry, dryFast * 0.58);
+          grassFast = mix(grassFast, uGrassDeep, (1.0 - macro2Fast) * 0.17);
+          grassFast *= 0.90 + macro2Fast * 0.10 + mesoFast * 0.12;
+
+          float hardFast = aux.g;
+          float steepFast = smoothstep(mix(0.72, 0.51,
+                                            smoothstep(120.0, 250.0, vWorldPos.y)),
+                                       1.18, slope);
+          float altFast = vWorldPos.y + (macroFast - 0.5) * 70.0
+                                      + (macro2Fast - 0.5) * 24.0;
+          // The planar macro is almost constant on a vertical massif. Spend a
+          // triplanar read only on the faces where that projection collapses;
+          // this restores the broad value zones/strata that make the peaks
+          // legible without charging flat meadow pixels for it.
+          vec3 tpFast = tpWeights(Nfast);
+          float zoneFast = macroFast;
+          float zoneTriFast = smoothstep(0.995, 0.90, tpFast.y);
+          if (zoneTriFast > 0.002) {
+            float zf = fbmTP(vWorldPos * 0.0042, 3, tpFast)
+                     * 0.5 * inversesqrt(max(dot(tpFast, tpFast), 1e-4));
+            zoneFast = mix(macroFast, clamp(0.5 + zf, 0.0, 1.0), zoneTriFast);
+          }
+          float curvFast = ((fhL + fhR + fhD + fhU) * 0.25 - data.r)
+                         / (stencilFast * 0.42);
+          curvFast = curvFast / (1.0 + abs(curvFast) * 0.62);
+          float rockField = steepFast * 1.20 - 0.18
+                          + smoothstep(232.0, 330.0, altFast) * 0.34
+                          + (hardFast - 0.5) * 0.18
+                          + (macroFast - 0.5) * 0.16;
+          float rockFeatherFast = max(fwidth(rockField) * 1.4,
+                                      mix(0.24, 0.17,
+                                          smoothstep(140.0, 520.0, camDist)));
+          float rockFast = smoothstep(0.44 - rockFeatherFast,
+                                      0.44 + rockFeatherFast, rockField);
+          vec2 bedStepFast = vec2(0.5, 0.0);
+          vec3 bedGradFast = vec3(0.0);
+          float bedFadeFast = 0.0;
+          if (rockFast > 0.02 && footFast < 8.0) {
+            const float FAST_BED_L = 160.0;
+            const float FAST_BED_E = 13.0;
+            vec2 bp = vWorldPos.xz / FAST_BED_L;
+            float bd = FAST_BED_E / FAST_BED_L;
+            float b0f = fbm(bp, 2);
+            float bxf = fbm(bp + vec2(bd, 0.0), 2);
+            float bzf = fbm(bp + vec2(0.0, bd), 2);
+            vec2 bg = vec2(bxf - b0f, bzf - b0f) * (uBedLevels / FAST_BED_E);
+            bedGradFast = vec3(bg.x, 0.0, bg.y);
+            bedStepFast = plateStep(b0f * uBedLevels, 0.215);
+            float pitchFast = 1.0 / max(length(bg), 1e-5);
+            bedFadeFast = 1.0 - smoothstep(min(pitchFast * 0.045, 3.5),
+                                           min(pitchFast * 0.100, 8.0),
+                                           footFast);
+          }
+          vec3 stoneFast = mix(uRockMid, uRockLit,
+                               0.30 + 0.58 * valueZones(zoneFast, 3.0));
+          stoneFast = mix(stoneFast, uRockWarm, 0.07);
+          stoneFast = mix(stoneFast, uRockShadow,
+                          smoothstep(0.62, 0.18, macro2Fast) * 0.18);
+          float aspectFast = atan(Nfast.z, Nfast.x);
+          float faceRawFast = 0.5 + 0.5 * sin(aspectFast * 3.0 + macroFast * 5.0);
+          stoneFast *= 0.90 + valueZones(faceRawFast, 3.0) * 0.13;
+          stoneFast *= 0.92 + macroFast * 0.10 + macro2Fast * 0.07
+                            + mesoFast * 0.06;
+          if (rockFast > 0.02) {
+            float jointFast = fbmTP(vWorldPos * 0.052 + 19.3, 2, tpFast);
+            stoneFast *= 0.94 + smoothstep(-0.025, 0.025, jointFast) * 0.11;
+          }
+          stoneFast *= 1.0 + (bedStepFast.x - 0.5)
+                              * uBedAlbedo * bedFadeFast;
+          stoneFast *= 1.0 - smoothstep(0.22, 1.05, curvFast) * 0.38;
+          stoneFast *= 1.0 + smoothstep(-0.15, -0.95, curvFast) * 0.15;
+
+          float bedWeightFast = rockFast * smoothstep(0.16, 0.58, slope)
+                               * bedFadeFast * 0.55;
+          if (bedWeightFast > 0.003) {
+            vec3 bedDeltaFast = bedGradFast * (bedStepFast.y * uBedRelief);
+            bedDeltaFast -= dot(bedDeltaFast, N) * N;
+            float bedLenFast = length(bedDeltaFast);
+            float bedExcessFast = max(bedLenFast - 0.55, 0.0);
+            gBedDelta = bedDeltaFast
+                      * ((bedLenFast - bedExcessFast
+                          + bedExcessFast / (1.0 + bedExcessFast * 1.9))
+                         / max(bedLenFast, 1e-5));
+            gBedW = bedWeightFast;
+          }
+
+          vec3 albedoFast = mix(grassFast, stoneFast, rockFast);
+          float screeFast = smoothstep(0.34, 0.72, loose)
+                          * smoothstep(0.18, 0.46, slope)
+                          * (1.0 - smoothstep(0.62, 0.95, slope));
+          albedoFast = mix(albedoFast, mix(uScree, uRockMid, 0.36), screeFast * 0.62);
+          gRockM = max(rockFast, screeFast * 0.62);
+          gRockGov = gRockM * (0.62 + 0.38 * smoothstep(0.35, 0.90, slope));
+          gNear = 1.0 - smoothstep(150.0, 520.0, camDist);
+
+          float depthFast = max(0.0, hydroFast.r);
+          float shoreFast = hydroFast.g;
+          float aboveFast = max(0.0, -hydroFast.r);
+          float bandFast = (1.0 - smoothstep(0.6, 2.8, -shoreFast))
+                         * (1.0 - smoothstep(3.0, 8.0, aboveFast));
+          vec3 riverBedFast = mix(uSand, uRockMid, 0.48 + macro2Fast * 0.18);
+          albedoFast = mix(albedoFast, riverBedFast,
+                           smoothstep(0.02, 0.26, river) * 0.82 * bandFast);
+          albedoFast = mix(albedoFast, uSand,
+                           smoothstep(1.6, 0.0, depthFast)
+                           * smoothstep(0.04, 0.22, river) * 0.42 * bandFast);
+          float bankFast = max(0.0, -shoreFast);
+          float dampWidthFast = max(0.12, footFast * 0.8);
+          float dampFast = (1.0 - smoothstep(0.72 - dampWidthFast,
+                                             1.08 + dampWidthFast, bankFast))
+                         * (1.0 - smoothstep(3.0, 8.0, aboveFast))
+                         * (1.0 - smoothstep(0.85, 1.40, slope))
+                         * (1.0 - smoothstep(0.0, 0.06, depthFast));
+          albedoFast *= mix(1.0, 0.62, dampFast);
+
+          float snowFast = smoothstep(uSnowLine, uSnowLine + 52.0,
+                                      vWorldPos.y + (macroFast - 0.5) * 42.0)
+                         * (1.0 - smoothstep(0.85, 1.30, slope))
+                         * (1.0 - uOutside);
+          albedoFast = mix(albedoFast, uSnow, snowFast);
+
+          if (uFarApron > 0.001) {
+            float slopeGeoFast = length(N.xz) / max(N.y, 1e-3);
+            float softFast = (1.0 - smoothstep(0.42, 0.96, slopeGeoFast))
+                           * (1.0 - smoothstep(190.0, 330.0, altFast));
+            vec3 apronRock = mix(uRockMid, uRockShadow, 0.38);
+            apronRock = mix(apronRock, uRockLit,
+                            valueZones(macroFast, 3.0) * 0.38);
+            vec3 apronFast = mix(apronRock,
+                                 mix(uGrassGold, uGrassDeep, 0.46),
+                                 softFast * 0.60);
+            albedoFast = mix(albedoFast, apronFast, uFarApron);
+            gRockM = mix(gRockM, 1.0 - softFast * 0.86, uFarApron);
+            gRockGov = max(gRockGov, gRockM * 0.62);
+          }
+
+          if (uDebugMask > 5.5 && uDebugMask < 6.5) gDebug = albedoFast;
+          diffuseColor.rgb *= albedoFast;
+        #ifdef TERRAIN_FAST
+        }
+        #else
+        } else {
         // ── the waterline, from the field the WATER uses ───────────────────
         //
         // This used to be max(0.0, data.g - vWorldPos.y), and both halves of
@@ -547,9 +757,6 @@ export function createTerrainMaterial(world, opts = {}) {
         // the honest quantity for anything that wants a DISTANCE — the sand
         // ribbon in particular, which is specified in metres of ground.
         float shoreM  = hydro.g;
-
-        vec3 N = normalize(vWorldNormal);
-        float camDist = length(vWorldPos - cameraPosition);
 
         // ── macro form, read from the heightfield at a screen-sized stencil ──
         // Read from the texture rather than from vWorldNormal: the mesh normal
@@ -2173,6 +2380,8 @@ export function createTerrainMaterial(world, opts = {}) {
         }
 
         diffuseColor.rgb *= albedo;
+        }
+        #endif
       }`
     ).replace(
       '#include <normal_fragment_maps>',
@@ -2310,7 +2519,7 @@ export function createTerrainMaterial(world, opts = {}) {
     );
   };
 
-  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v4';
+  mat.customProgramCacheKey = () => 'procedural-autumn-terrain-v5';
   void opts;
   return mat;
 }

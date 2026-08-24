@@ -1,0 +1,193 @@
+{
+ "seconds": 8,
+ "res": "1536",
+ "viewport": [
+  600,
+  400
+ ],
+ "frames": 843,
+ "p50": 8.1,
+ "p95": 17.3,
+ "p99": 19.9,
+ "worstMs": 166.8,
+ "worstAtS": 7.9,
+ "hitch33": 2,
+ "hitch50": 1,
+ "hitch100": 1,
+ "settledP50": 8.1,
+ "settledP95": 18.2,
+ "maxCalls": 627,
+ "maxTris": 6740433,
+ "growth": {
+  "geometries": 165,
+  "textures": 8,
+  "programs": 4
+ },
+ "addedPrograms": [
+  {
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "name": "vehicle.paint",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "name": "vehicle.glass",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,1027,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "name": "tree.barkOcclusion",
+   "type": "ShaderMaterial",
+   "key": "45,46,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "programEvents": [
+  {
+   "t": 291,
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }",
+   "newMaterials": []
+  },
+  {
+   "t": 444,
+   "name": "vehicle.paint",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }",
+   "newMaterials": []
+  },
+  {
+   "t": 478.2000002861023,
+   "name": "vehicle.glass",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,1027,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }",
+   "newMaterials": []
+  },
+  {
+   "t": 7855.599999904633,
+   "name": "tree.barkOcclusion",
+   "type": "ShaderMaterial",
+   "key": "45,46,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }",
+   "newMaterials": [
+    {
+     "object": "#212",
+     "name": "tree.barkOcclusion",
+     "type": "ShaderMaterial",
+     "shader": "#define BARK_OCCLUDE\n\n#ifndef OCCLUDE_DITHER_DECLARED\n#define OCCLUDE_DITHER_DECLARED\nfloat occThreshold( vec2 p ) {\n  v"
+    }
+   ]
+  }
+ ],
+ "resolution": {
+  "scale": 1,
+  "internalScale": 1,
+  "basePixelRatio": 1,
+  "presented": 1,
+  "effective": 1,
+  "megapixels": 0.24,
+  "presentedMegapixels": 0.24
+ },
+ "worstFrames": [
+  {
+   "atS": 7.9,
+   "ms": 166.8,
+   "calls": 603,
+   "tris": 6455956,
+   "prog": 127,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 1.2,
+   "ms": 34.3,
+   "calls": 597,
+   "tris": 6001484,
+   "prog": 126,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.2,
+   "ms": 22.5,
+   "calls": 598,
+   "tris": 6672114,
+   "prog": 126,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 2.4,
+   "ms": 22,
+   "calls": 625,
+   "tris": 6657181,
+   "prog": 126,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 9.1,
+   "ms": 21.1,
+   "calls": 605,
+   "tris": 6250479,
+   "prog": 127,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 2,
+   "ms": 20.8,
+   "calls": 611,
+   "tris": 6300895,
+   "prog": 126,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.7,
+   "ms": 20.3,
+   "calls": 601,
+   "tris": 6072939,
+   "prog": 127,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 3.7,
+   "ms": 20.2,
+   "calls": 612,
+   "tris": 5904340,
+   "prog": 126,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.4,
+   "ms": 19.9,
+   "calls": 605,
+   "tris": 6494397,
+   "prog": 126,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 3,
+   "ms": 19.7,
+   "calls": 618,
+   "tris": 6595766,
+   "prog": 126,
+   "iscale": 1,
+   "quality": "ultra"
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": [
+  "1 frames over 100 ms — visible freezes"
+ ]
+}

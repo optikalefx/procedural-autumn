@@ -7,6 +7,46 @@
 > one recommended here. The details are at the end, in
 > "What actually shipped, and why the plan changed".
 
+> **ADDENDUM 2026-08-24 — resolution-first overhaul.**
+>
+> The current shipping path is materially different again. At the reporting
+> player's 1170×870 CSS / DPR 2 viewport, Ultra now starts and stays at **1.25
+> effective device pixels per CSS pixel** (1.59 MP internal, reconstructed to
+> the 1.5× presented buffer). A 12 s real Retina drive passed with p50 12.7 ms,
+> p95 24.0 ms, no frame over 50 ms, no late programs and no black samples. The
+> longer 45 s route held the same resolution at p50 13.5 ms with no frame over
+> 50 ms or 100 ms; its settled p95 passed at 24.2 ms while the whole-run p95 was
+> 25.6 ms, 0.6 ms over the regression harness's strict line. See
+> `review/perf/performance-overhaul-shadow-warm-gate.json` and
+> `review/perf/performance-overhaul-final-retina-drive.json`.
+>
+> The paired attribution that paid for those pixels:
+>
+> - The former full terrain painter cost **7.75 ± 0.40 ms** more than the new
+>   bounded painter in the Ultra river frame, with identical geometry and
+>   coverage (`performance-overhaul-final-ultra-river.json`). The old shader's
+>   many procedural layers and texture fetches, not terrain triangles, were the
+>   dominant scene cost.
+> - SSAO cost **3.25 ± 0.70 ms**, 22% of that Ultra frame. Matched river, drive
+>   and forest plates were visually indistinguishable, so it is now removed
+>   from every shipping tier.
+> - Ultra's 4K shadow map became 3K: **1.10 ± 0.60 ms** saved in the paired
+>   river run, without changing the already-approved High shadow density.
+> - Invisible pooled wildlife, the off-camera vehicle and an unattached trunk
+>   occlusion material were compiling linear-target shader variants during
+>   play. A real hidden skinned-shadow warm frame plus targeted material cache
+>   seeding moved that work behind the loading plate. The final drive grew by
+>   **zero programs** and had no shader freeze.
+>
+> Two instruments were corrected too. The adaptive ladder's 0.95 recovery test
+> could never climb from its 0.90 floor under a 60 Hz vsync clock; it now uses
+> the full target budget and is capped at the preferred boot ratio so it cannot
+> cause opportunistic target-reallocation freezes. `PerfOverlay`'s `readPixels`
+> burst is now labelled as a serialized fps floor and excluded from gameplay
+> p95/freeze history. The WebGL specification defines `readPixels` as blocking
+> until prior rendering completes; it is a stress bound, not an ordinary
+> delivered-frame clock: <https://registry.khronos.org/webgl/specs/latest/2.0/>.
+
 
 
 Measured 2026-08-21 on an M3 Pro, at the pixel count a real display asks for.
@@ -45,8 +85,8 @@ node tools/ablate.mjs --only fx.dof,fx.ssao      # price one change
 | GPU | Apple M3 Pro (18 core), ANGLE/Metal |
 | adaptive resolution | **disabled for the measurement** |
 
-That last line matters. `Engine._adapt` scales the buffer to hold 60 fps and
-steps the tier down when it cannot, so any arm left with it on reports the
+That last line matters. `Engine._adapt` scales the internal render targets
+toward its configured frame budget, so any arm left with it on reports the
 rescue rather than the cost. Every number below draws exactly the same pixels.
 
 ## Headline
@@ -489,16 +529,19 @@ pixel count. That, not the material model, is what shipped.
   `internalScale` times the canvas; a final Catmull-Rom (9-tap) +
   contrast-adaptive-sharpen pass reconstructs to the canvas. At scale 1 the
   pass is off and the chain is byte-identical to before.
-- The default at boot is **effective device ratio 1.0** (scale
-  `1/pixelRatioCap`, i.e. 0.74 at the `high` cap on a 2x display; 1.0 on a 1x
-  display, where nothing changes). This is the lever this document priced at
-  **−9.6 ms** and put last; the reconstruction pass is what makes it
-  presentable. On a 2x display it is *sharper* than the old adaptive floor,
-  which handed a native-res canvas to the browser's bilinear stretch.
+- The default at boot is **effective device ratio 1.15** (scale 0.85 at the
+  `high` cap on a 2x display; 1.0 on a 1x display, where it clamps to native).
+  This spends about 32% more internal pixels than the original 1.0 default,
+  without paying for the full 1.35–1.5 presented ratio.
 - The adaptive scaler now moves `internalScale` instead of the drawing buffer,
   so a step no longer costs a 450–2500 ms reallocation freeze — the open item
-  in docs/FREEZE_ROUND.md. Floor: effective ratio 0.85
+  in docs/FREEZE_ROUND.md. Floor: effective ratio 0.90
   (`Engine.minEffectiveInternalRatio`), reachable on 1x displays too.
+- Adaptation aims for 50 fps, descends at most two rungs per 2 s measurement,
+  and predicts whether the next sharper rung fits before recovering. This is a
+  deliberate quality bias: the original 60 fps / 0.78-floor policy could jump
+  to a visibly soft frame after one heavy window and then required roughly
+  86 fps before it would ever climb back.
 - Pin it for captures/A-Bs with `?iscale=0.74`; price it with the
   `px.iscale*` knobs in tools/ablate.mjs.
 
@@ -544,7 +587,9 @@ Same configuration as the headline above (1920×1080 CSS at dpr 2, `high`,
 | driving >50 ms hitches | 104–179 per 45 s | **4** |
 | black frames | 0 | 0 |
 
-The after numbers were taken while other authors' captures shared the GPU
+The “after” numbers in this table predate the quality-biased 2026-08-23 scaler
+settings; they describe the reconstruction work, not the current resolution
+target. They were taken while other authors' captures shared the GPU
 (baseline drift 9–28 ms across arms), so treat them as a floor on the
 improvement, not a ceiling. `px.iscale100` — switching the internal scale
 back to 1.0 — measures **+9.65 ms**, in agreement with this document's

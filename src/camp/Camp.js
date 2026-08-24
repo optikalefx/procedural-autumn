@@ -48,6 +48,9 @@ import { buildCooler } from './camp_cooler.js';
 import { buildTable } from './camp_table.js';
 import { buildTelescope } from './camp_telescope.js';
 import { CampDog, warmDog, disposeDogProtos } from './camp_dog.js';
+import { picked, placed, placing, pointing } from '../core/Pointer.js';
+import { pickVerb, placeVerb, actVerb, touchCapable } from '../core/verbs.js';
+import { posthog } from '../posthog.js';
 
 const STATE = { IDLE: 'idle', AIMING: 'aiming', RAISING: 'raising', PITCHED: 'pitched', STRIKING: 'striking' };
 
@@ -55,13 +58,6 @@ const STATE = { IDLE: 'idle', AIMING: 'aiming', RAISING: 'raising', PITCHED: 'pi
 // enough that it never feels like waiting for a loading bar.
 const RAISE_TIME = 1.15;
 const STRIKE_TIME = 0.55;
-
-// A click is a press and release in the same place. The camera look drag uses
-// the same button, so the two have to be told apart, and the honest test is
-// "did the pointer move" rather than a timer — a slow deliberate click is still
-// a click, and a fast flick to turn the camera is not.
-const CLICK_SLOP = 6;      // px of travel that still counts as a click
-const CLICK_TIME = 0.55;   // s held that still counts as a click
 
 // How much grass survives inside the ring while the player is only aiming.
 // High enough that the meadow is obviously still there and nothing has been
@@ -143,7 +139,7 @@ const FIRE_PICK_R = 1.15;
 const FIRE_PICK_LIFT = 0.55;
 
 // The offer, when the pointer is on a fire the camera is not already on.
-const FIRE_PROMPT = '<b>click</b>&nbsp; look at the camp';
+const FIRE_PROMPT = () => `${pickVerb()}&nbsp; look at the camp`;
 
 // ── the hearth mask, published to the grade ─────────────────────────────────
 //
@@ -200,9 +196,8 @@ export class Camp extends System {
 
     this._aim = { x: 0, z: 0, y: 0, ok: false, score: 0, reason: '' };
     this._holdT = 0;
-    this._mouseDown = false;
-    this._downAt = { x: 0, y: 0, t: 0 };
-    this._click = false;
+    this._click = false;   // a PICK this frame — see `_pollClick`
+    this._place = false;   // …and a COMMIT to a spot
     this._focusCamp = null;  // which camp the camera is on, or null for the camper
     this._firePick = null;   // the fire a click this frame would be sent to
     this._hoverFire = null;  // …and whether that is worth OFFERING (see `_pickHoverFire`)
@@ -486,7 +481,7 @@ export class Camp extends System {
     const { input, camera } = this.ctx;
     const veh = this.ctx.systems?.vehicle;
     if (this._warm) this._finishPrewarm();
-    this._pollClick(dt);
+    this._pollClick();
 
     // Photo mode counts as not holding, which takes the whole placement machine
     // out of the frame in one line.
@@ -555,7 +550,10 @@ export class Camp extends System {
     // is how an affordance ends up highlighting one thing and clicking
     // another.
     this._firePick = this._fireTarget(veh);
-    this._hoverFire = this._pickHoverFire(veh);
+    // A finger that has lifted is not hovering anything. Without this the fire
+    // prompt sticks wherever the player last touched, because `mouse.x/y` keeps
+    // the last press's position — see `pointing` in core/Pointer.js.
+    this._hoverFire = pointing(input) && this._pickHoverFire(veh);
 
     // ── the player ──────────────────────────────────────────────────────────
     if (!holding) {
@@ -591,8 +589,12 @@ export class Camp extends System {
     // ring is world-space geometry lying on the ground and the placement
     // affordance is not what anyone is photographing. Parked at a camp this
     // was already covered by `_suppressAim`; parked anywhere else it was not.
+    // …and on touch, only while a hold is actually in progress. There the
+    // press IS the hover, so a ring parked under a thumb that lifted a minute
+    // ago is describing an intention nobody has.
     const aimVisible = this.state === STATE.AIMING && !this.scope?.active
                     && !this._suppressAim
+                    && placing(input)
                     && !this.ctx.systems?.hud?.photo?.active
                     && (!window.__forceCamera || !!window.__campForceAim);
 
@@ -686,7 +688,7 @@ export class Camp extends System {
     const scope = this._scopeUnderPointer();
     if (scope && veh && this._focusCamp === scope.camp &&
         Math.hypot(veh.position.x - scope.camp.x, veh.position.z - scope.camp.z) < SITE_MAX + 6) {
-      this.prompt.set('<b>click</b>&nbsp; look through the telescope');
+      this.prompt.set(`${pickVerb()}&nbsp; look through the telescope`);
       if (this._click) {
         this._click = false;      // do not also read as a click on the camp
         this.scope.enter(scope.obj);
@@ -709,6 +711,18 @@ export class Camp extends System {
     if (window.__forceCamera && !window.__campForceAim) {
       clearCampAim();
       this.prompt.set('');
+      return;
+    }
+
+    // ── a finger that has lifted is not pointing at anything ────────────────
+    // With a mouse this is never true. On touch it is true most of the time,
+    // and it is what keeps the screen quiet: press to ask what is under your
+    // thumb, hold to commit, lift and the game stops narrating.
+    if (!pointing(input)) {
+      this._packTarget = null;
+      this._aim.ok = false;
+      clearCampAim();
+      this._say('');
       return;
     }
 
@@ -750,8 +764,8 @@ export class Camp extends System {
       clearCampAim();
       this._aim.ok = false;
       if (this._packTarget) {
-        this._say('<b>E</b>&nbsp; pack up this camp');
-        if (input.justPressed('KeyE')) this._strike(this._packTarget);
+        this._say(`${actVerb()}&nbsp; pack up this camp`);
+        if (this._packPressed()) this._strike(this._packTarget);
       } else {
         // Nothing. No ring, no label, no cursor state — the absence IS the
         // answer, and a permanent "you cannot build here" caption parked over
@@ -760,7 +774,7 @@ export class Camp extends System {
         this._say('');
         // …except when they ask. Pressing the build key is the moment, and the
         // only moment, that a player wants to know why it did nothing.
-        if (input.justPressed('KeyE')) {
+        if (this._packPressed()) {
           this.ctx.systems?.hud?.toast?.('Too close to your camp — drive on to make another');
         }
       }
@@ -774,11 +788,13 @@ export class Camp extends System {
     // overlaps an existing camp, and `_blocked` hands back which one — so the
     // rule falls out of the placement test rather than needing its own.
     if (this._packTarget) {
-      this._say('<b>E</b>&nbsp; pack up this camp');
-      // E only. A CLICK on a camp means "look at that one" and is handled by
-      // `_updateFocus`; giving it a second meaning here would make packing up
-      // something you could do by accident while choosing what to look at.
-      if (input.justPressed('KeyE')) this._strike(this._packTarget);
+      this._say(`${actVerb()}&nbsp; pack up this camp`);
+      // Never a plain click. A CLICK on a camp means "look at that one" and is
+      // handled by `_updateFocus`; giving it a second meaning here would make
+      // packing up something you could do by accident while choosing what to
+      // look at. On touch that same split is a tap against a hold, which is why
+      // `_packPressed` is a hold there and E here.
+      if (this._packPressed()) this._strike(this._packTarget);
       return;
     }
 
@@ -817,10 +833,22 @@ export class Camp extends System {
     // alone here too — a gamepad player aims down the camera axis and would
     // otherwise lose the build key every time a fire drifted under the middle
     // of the screen.
-    const onCar = this._click && this._pointerOnCamper();
-    if (this._aim.ok && ((this._click && !onCar && !this._firePick) || input.justPressed('KeyE'))) {
+    const onCar = this._place && this._pointerOnCamper();
+    if (this._aim.ok && ((this._place && !onCar && !this._firePick) || input.justPressed('KeyE'))) {
       this._pitch();
     }
+  }
+
+  /**
+   * "Pack this up" — the deliberate gesture, whichever device is asking.
+   *
+   * E with a keyboard; a HOLD on touch, never a tap, for the same reason E was
+   * never a click: a tap on a camp is the player choosing what the camera looks
+   * at, and striking a camp by accident while doing that is unrecoverable.
+   */
+  _packPressed() {
+    const { input } = this.ctx;
+    return input.justPressed('KeyE') || (touchCapable() && input.press.commit);
   }
 
   /**
@@ -1209,7 +1237,7 @@ export class Camp extends System {
    * the reversible one.
    */
   _say(text) {
-    this.prompt.set(this._hoverFire ? FIRE_PROMPT : text);
+    this.prompt.set(this._hoverFire ? FIRE_PROMPT() : text);
   }
 
   /**
@@ -1386,7 +1414,7 @@ export class Camp extends System {
     // player is only pointing at because their own camp is on it.
     if (this._packTarget) return;
     this._say(s.ok
-      ? '<b>Click</b> or <b>E</b>&nbsp; make camp here'
+      ? `${placeVerb()}&nbsp; make camp here`
       : `no camp here — ${s.reason}`);
   }
 
@@ -1491,21 +1519,25 @@ export class Camp extends System {
     return out;
   }
 
-  /** Press-and-release-in-place, told apart from a camera look drag. */
-  _pollClick(dt) {
-    const m = this.ctx.input.mouse;
-    this._click = false;
-    if (m.down && !this._mouseDown) {
-      this._mouseDown = true;
-      this._downAt.x = m.x; this._downAt.y = m.y; this._downAt.t = 0;
-      this._travel = 0;
-    } else if (m.down) {
-      this._downAt.t += dt;
-      this._travel += Math.abs(m.dx) + Math.abs(m.dy);
-    } else if (this._mouseDown) {
-      this._mouseDown = false;
-      if (this._travel <= CLICK_SLOP && this._downAt.t <= CLICK_TIME) this._click = true;
-    }
+  /**
+   * Read this frame's press.
+   *
+   * This used to track the gesture itself, sampling `mouse.down` once a frame —
+   * which is why a phone could never pitch a camp: the synthetic mouse events a
+   * browser fires after a tap all land inside a single task, so no frame ever
+   * saw the button down. core/Input.js owns the press now and this reads the
+   * two halves of it that the camp cares about.
+   *
+   *   `_click`  a PICK — look at that camp, look through that telescope. Still
+   *             consumed mid-frame by the scope branch (`this._click = false`),
+   *             which is why it stays a field rather than a call.
+   *   `_place`  a COMMIT to a spot — pitch here, pack that up. On touch this is
+   *             the release of a hold and never a stray tap; with a mouse it is
+   *             the same click it always was.
+   */
+  _pollClick() {
+    this._click = picked(this.ctx.input);
+    this._place = placed(this.ctx.input);
   }
 
   // ── raising ───────────────────────────────────────────────────────────────
@@ -1617,6 +1649,12 @@ export class Camp extends System {
     this._justPitched = true;
     this._applyRaise(camp);
     this.ctx.systems?.hud?.toast?.('Camp made');
+    posthog.capture('camp_pitched', {
+      camp_radius: camp.radius,
+      camp_small: camp.small,
+      camp_has_dog: camp.hasDog,
+      camps_active: this.camps.length,
+    });
     return camp;
   }
 
@@ -1899,7 +1937,15 @@ export class Camp extends System {
    * once the raise has eased to zero.
    */
   _strike(camp, now = false) {
-    if (!now) { camp.striking = true; return; }
+    if (!now) {
+      camp.striking = true;
+      posthog.capture('camp_struck', {
+        camp_radius: camp.radius,
+        camp_small: camp.small,
+        camps_remaining: this.camps.length - 1,
+      });
+      return;
+    }
 
     // Never leave the player inside a prop that has been packed away. The
     // eyepiece view owns the camera outright, so if the geometry goes the view

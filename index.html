@@ -17,7 +17,15 @@
     -webkit-font-smoothing: antialiased;
   }
   #app { position:fixed; inset:0; }
-  canvas#gl { display:block; width:100%; height:100%; }
+  /* The world takes gestures whole. `touch-action:none` stops a steer or a
+     placement hold turning into a scroll or a double-tap zoom, and the callout
+     rule stops iOS raising its own long-press share sheet over the top of a
+     camp being pitched — see HOLD_TIME in src/core/Input.js. */
+  canvas#gl {
+    display:block; width:100%; height:100%;
+    touch-action:none; -webkit-touch-callout:none;
+    -webkit-user-select:none; user-select:none;
+  }
 
   /* ── Load screen ──────────────────────────────────────────────────────── */
   #loader {
@@ -121,6 +129,21 @@
     <div id="hint"><b>WASD</b> drive &nbsp;·&nbsp; <b>Space</b> handbrake &nbsp;·&nbsp; <b>C</b> camera &nbsp;·&nbsp; <b>F</b> photo mode</div>
   </div>
   <script>
+    // The loading hint is the one place the game gets to teach its controls
+    // before the world exists, and it was teaching a keyboard to phones. It
+    // runs here rather than in the module because the loader is on screen long
+    // before src/ parses — and it is the only place the HOLD gesture is taught
+    // at all, a long press being invisible by nature.
+    (function () {
+      if (!((navigator.maxTouchPoints || 0) > 0 || matchMedia('(pointer: coarse)').matches)) return;
+      const hint = document.getElementById('hint');
+      if (hint) {
+        hint.innerHTML = '<b>steer</b> and <b>gas</b> to drive &nbsp;·&nbsp; ' +
+                         '<b>park</b>, then <b>hold</b> the ground to make camp' +
+                         ' &nbsp;·&nbsp; <b>hold</b> the shore for a boat';
+      }
+    })();
+
     // A handful of drifting leaves so the load screen is not a dead progress bar.
     (function () {
       if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;

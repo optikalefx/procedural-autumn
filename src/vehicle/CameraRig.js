@@ -272,6 +272,22 @@ export class CameraRig extends System {
     };
   }
 
+  /**
+   * Step to the next driving camera.
+   *
+   * Extracted from `lateUpdate` so it has a caller other than the C key: on a
+   * phone there is no C, and the corner chips are where every other
+   * keyboard-only toggle already lives. Refuses while photo mode holds the rig
+   * — that mode is entered and left by the UI that owns it, and cycling out of
+   * it from underneath leaves photo mode on with a chase camera behind it.
+   */
+  cycleMode() {
+    if (this.mode === 'free') return;
+    const modes = window.__cockpitCam ? [...MODES, 'cockpit'] : MODES;
+    this.mode = modes[(modes.indexOf(this.mode) + 1) % modes.length];
+    if (this.mode === 'cockpit') this._primed = false;
+  }
+
   lateUpdate(dt) {
     this.vehicle = this.vehicle ?? this.ctx.systems.vehicle;
     // The subject vehicle: the camper, unless a system handed in a follow
@@ -283,11 +299,7 @@ export class CameraRig extends System {
     // C cycles the driving cameras. Not while photo mode holds the rig: that
     // mode is entered and left by the UI that owns it, and cycling out of it
     // from under that UI leaves photo mode on with a chase camera behind it.
-    if (this.ctx.input.justPressed('KeyC') && this.mode !== 'free') {
-      const modes = window.__cockpitCam ? [...MODES, 'cockpit'] : MODES;
-      this.mode = modes[(modes.indexOf(this.mode) + 1) % modes.length];
-      if (this.mode === 'cockpit') this._primed = false;
-    }
+    if (this.ctx.input.justPressed('KeyC')) this.cycleMode();
     this.active = true;
 
     // A system that has been handed the camera outranks EVERYTHING, including

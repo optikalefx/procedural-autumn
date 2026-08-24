@@ -22,6 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { stats } from '../game/stats_store.js';
+import { posthog } from '../posthog.js';
 
 const RANGES = {
   hour: [0, 24, 0.05],
@@ -62,7 +63,15 @@ export class PhotoMode {
     this.rail = rail;
 
     rail.addEventListener('keydown', (e) => {
-      if (e.code === 'Escape') { this.setActive(false); return; }
+      if (e.code === 'Escape' || e.code === 'KeyF') {
+        // Go through HUD so its root/chip classes stay in sync with the mode.
+        // Calling setActive directly leaves `pa-photo` stuck on the root and
+        // hides the rest of the interface after Escape closes the rail. F
+        // needs the same local path because the HUD ignores keys from controls.
+        this.hud.togglePhoto();
+        e.preventDefault();
+        return;
+      }
       e.stopPropagation();
     });
     rail.addEventListener('keyup', (e) => e.stopPropagation());
@@ -135,9 +144,9 @@ export class PhotoMode {
     this.node.classList.toggle('pa-open', on);
     const rig = this.ctx.systems?.cameraRig;
     // Whatever happens below, the controls come back. This runs on both exit
-    // paths — `hud.togglePhoto` and the rail's own Escape handler, which does
-    // not go through the HUD at all — and a photo mode that could be left with
-    // the throttle still suppressed would be a soft lock.
+    // paths — the HUD toggle and the rail's Escape handler, which delegates to
+    // that same toggle — and a photo mode that could be left with the throttle
+    // still suppressed would be a soft lock.
     if (!on && this.ctx.input) this.ctx.input.suppressed = false;
 
     if (on) {
@@ -265,6 +274,11 @@ export class PhotoMode {
     // a saved photo leaves nothing behind to watch, and nothing to hook.
     stats.add('photo.taken');
     this.lastPhotoBytes = url.length;
+    posthog.capture('photo_taken', {
+      file_size_bytes: url.length,
+      grid_visible: this.grid,
+      hour_of_day: this.ctx.lighting?.hour ?? null,
+    });
     return true;
   }
 }

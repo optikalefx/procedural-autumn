@@ -23,11 +23,12 @@
 //  as AMD's FSR1/CAS generation of upscalers, minus the patent-encumbered lobe
 //  analysis). Catmull-Rom's negative lobes keep edges from smearing the way
 //  bilinear does, and the sharpen term restores the local contrast the
-//  reconstruction loses. On this game's painterly, SMAA-antialiased output the
-//  difference from a native render at these ratios is very hard to see — and
-//  at DPR 2 it is *sharper* than what shipped before, because the old adaptive
-//  floor presented a 1.0-ratio canvas through exactly the browser bilinear this
-//  replaces.
+//  reconstruction loses. On this game's painterly, SMAA-antialiased output it
+//  makes moderate scaling much less conspicuous — and at DPR 2 it is *sharper*
+//  than the older path, because that path presented a reduced canvas through
+//  browser bilinear. It does not make extreme undersampling free; Engine's
+//  preferred ratio and floor still keep the source image from looking soft in
+//  motion.
 //
 //  The second thing it buys is freedom from the reallocation freeze. The old
 //  adaptive ladder resized the DRAWING BUFFER, measured at 450–2500 ms per

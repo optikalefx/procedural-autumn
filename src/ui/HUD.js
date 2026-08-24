@@ -20,6 +20,7 @@
 //     `--eval "window.__hudForce = true"` to capture it deliberately.
 // ─────────────────────────────────────────────────────────────────────────────
 import { System } from '../core/System.js';
+import { posthog } from '../posthog.js';
 import { QUALITY_PRESETS, SEED } from '../world/WorldConfig.js';
 import './hud.css';
 import { el, button, ICON } from './hud_dom.js';
@@ -28,6 +29,7 @@ import { Dash } from './hud_dash.js';
 import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
 import { MiniMap } from './hud_map.js';
+import { touchCapable } from '../core/verbs.js';
 
 const STORE = 'pa.hud';
 // How many of each landmark kind go on the compass. Weighted toward water:
@@ -93,17 +95,37 @@ export class HUD extends System {
     this.photoChip = button('pa-chip', ICON.camera, () => this.togglePhoto(), 'Photo mode');
     // `pa-gear` marks the one chip that survives "Interface: Off" — see hud.css.
     this.gearChip = button('pa-chip pa-gear', ICON.gear, () => this.toggleSettings(), 'Settings');
-    corner.append(this.muteChip, this.photoChip, this.gearChip);
+    // The camera cycle is C on a keyboard and nothing at all on a phone, so on
+    // touch it joins the chips — the row where every other keyboard-only toggle
+    // already ended up. Not added on desktop: the key is right there, and a
+    // fourth chip would be clutter bought with nothing.
+    if (touchCapable()) {
+      this.camChip = button('pa-chip', ICON.cycle,
+        () => this.ctx.systems?.cameraRig?.cycleMode?.(), 'Camera');
+      corner.append(this.muteChip, this.photoChip, this.camChip, this.gearChip);
+    } else {
+      corner.append(this.muteChip, this.photoChip, this.gearChip);
+    }
     root.appendChild(corner);
 
     this.toastEl = el('div', 'pa-toast pa-panel');
+    // An actionable toast fires once and takes itself down: the offer it was
+    // making has been accepted, and a rescue button that stays up after a
+    // rescue reads as one that did not work.
+    this._toastAction = null;
+    this.toastEl.addEventListener('click', () => {
+      const act = this._toastAction;
+      if (!act) return;
+      this.hideToast();
+      act();
+    });
     root.appendChild(this.toastEl);
 
     // ── first-run hint ─────────────────────────────────────────────────────
     this.hint = el('div', 'pa-hint pa-panel pa-game-only',
       '<span><kbd>WASD</kbd>drive</span><span><kbd>Drag</kbd>look</span>' +
       '<span><kbd>C</kbd>camera</span><span><kbd>R</kbd>rescue</span>' +
-      '<span><kbd>F</kbd>photo</span><span><kbd>Esc</kbd>settings</span>');
+      '<span><kbd>F</kbd>photo</span><span><kbd>~</kbd>settings</span>');
     if (this._seenHint) this.hint.classList.add('pa-gone');
     else this._hintTimer = 13;
     root.appendChild(this.hint);
@@ -163,6 +185,11 @@ export class HUD extends System {
       if (m.dist < FOUND_RADIUS && !m.found) {
         m.found = true;
         this.toast(`Found a ${m.kind === 'river' ? 'river bend' : m.kind}`);
+        posthog.capture('landmark_discovered', {
+          landmark_kind: m.kind,
+          landmarks_found_total: this.found + 1,
+          landmarks_total: this.total,
+        });
       }
       if (m.found) found++;
     }
@@ -198,9 +225,10 @@ export class HUD extends System {
       switch (e.code) {
         case 'KeyF': this.togglePhoto(); break;
         case 'Escape':
-          if (this.photo.active) this.togglePhoto();
-          else this.toggleSettings();
+          if (!this.photo.active) return;
+          this.togglePhoto();
           break;
+        case 'Backquote': this.toggleSettings(); break;
         case 'KeyM': this.applyMute(!this.isMuted()); break;
         case 'KeyG': if (this.photo.active) this.photo.toggleGrid(); break;
         case 'KeyP': if (this.photo.active) this.photo.capture(); break;
@@ -252,6 +280,14 @@ export class HUD extends System {
   hour() { return this.ctx.lighting?.hour ?? 16.6; }
   cycleSpeed() { return this.ctx.lighting?.cycleSpeed ?? 0; }
 
+  /** Take the toast down, whether it was sticky or timed. */
+  hideToast() {
+    clearTimeout(this._toastT);
+    this.toastEl.classList.remove('pa-show', 'pa-toast-action');
+    this.toastEl.style.pointerEvents = '';
+    this._toastAction = null;
+  }
+
   applyVolume(v) { this.audio()?.setVolume(v); }
 
   applyMute(m) {
@@ -275,7 +311,10 @@ export class HUD extends System {
   applyCar(id) {
     const v = this.vehicle();
     if (!v?.setCar) return;
-    if (v.setCar(id)) this.toast(`${v.car.label}`);
+    if (v.setCar(id)) {
+      this.toast(`${v.car.label}`);
+      posthog.capture('car_changed', { car_id: id, car_label: v.car.label });
+    }
     this.settings?.sync();
   }
 
@@ -294,6 +333,7 @@ export class HUD extends System {
   applySeed(v) {
     const s = Math.floor(v);
     if (!Number.isFinite(s) || s < 0 || s === this.seed()) return;
+    posthog.capture('world_seed_changed', { new_seed: s, previous_seed: this.seed() });
     const params = new URLSearchParams(location.search);
     params.set('seed', String(s));
     location.search = params.toString();
@@ -362,6 +402,7 @@ export class HUD extends System {
       try { p?.onQuality?.(preset); } catch { /* optional hook */ }
     }
     this.toast(`${q[0].toUpperCase()}${q.slice(1)} quality`);
+    posthog.capture('quality_changed', { quality_tier: q });
     this.settings?.sync();
   }
 
@@ -380,13 +421,36 @@ export class HUD extends System {
     this.root.classList.toggle('pa-photo', on);
     this.photoChip.classList.toggle('pa-on', on);
     this._dismissHint();
+    posthog.capture('photo_mode_toggled', { active: on });
   }
 
-  toast(msg) {
+  /**
+   * A line of text, briefly.
+   *
+   * Two options, both of which exist for the same reason: on a touch device the
+   * toast is sometimes the only control there is. "Stuck? Press R" is a fine
+   * thing to read on a laptop and a dead end on a phone, so the touch twin says
+   * "Touch to rescue" and IS the button — which means it has to take a tap
+   * (`action`) and it has to stay up for as long as the offer stands
+   * (`sticky`), rather than timing out after 2.2 s while the camper is still on
+   * its roof. See `Vehicle.update`.
+   *
+   * @param {string} msg
+   * @param {{action?: Function, sticky?: boolean}} [opts]
+   */
+  toast(msg, opts = {}) {
+    const { action = null, sticky = false } = opts;
     this.toastEl.textContent = msg;
     this.toastEl.classList.add('pa-show');
+    this.toastEl.classList.toggle('pa-toast-action', !!action);
+    // `#pa-hud` is pointer-events:none, so an actionable toast has to opt back
+    // in — and opt out again the moment it is an ordinary message, or an
+    // invisible pill would sit over the world eating presses.
+    this.toastEl.style.pointerEvents = action ? 'auto' : '';
+    this._toastAction = action;
     clearTimeout(this._toastT);
-    this._toastT = setTimeout(() => this.toastEl.classList.remove('pa-show'), 2200);
+    if (sticky) return;
+    this._toastT = setTimeout(() => this.hideToast(), 2200);
   }
 
   _dismissHint() {

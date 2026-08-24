@@ -18,9 +18,14 @@
 import { el, button } from './hud_dom.js';
 import { CARS } from '../vehicle/vehicle_models.js';
 import { StatsPage } from './hud_stats.js';
+import { touchCapable } from '../core/verbs.js';
+import { CYCLE_SPEEDS, QUALITY_TIERS } from '../world/WorldConfig.js';
 
-const QUALITIES = ['ultra', 'high', 'medium', 'low'];
-const CYCLES = [['Frozen', 0], ['Slow', 0.06], ['Fast', 0.35]];
+const CYCLES = [
+  ['Frozen', CYCLE_SPEEDS.frozen],
+  ['Slow', CYCLE_SPEEDS.slow],
+  ['Fast', CYCLE_SPEEDS.fast],
+];
 const HUD_MODES = [['Full', 1], ['Dim', 0.45], ['Off', 0]];
 
 const hhmm = (h) => {
@@ -63,7 +68,7 @@ export class Settings {
     this.pageSettings.appendChild(this.bodySettings);
 
     this.bodySettings.appendChild(this._group('Picture', [
-      this._seg('Quality', QUALITIES.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
+      this._seg('Quality', QUALITY_TIERS.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
         () => hud.quality, (v) => hud.applyQuality(v)),
     ]));
 
@@ -113,7 +118,24 @@ export class Settings {
     this.pageControls.appendChild(chead);
     this.pageControls.appendChild(this.bodyControls);
 
-    const KEYS = [
+    // This is the one page in the game whose entire job is to say what the
+    // controls are, so it is the last place that may get it wrong: a phone
+    // opening "Controls" and reading a list of keys it does not have is being
+    // told, in the most official voice the game has, that it is playing the
+    // wrong version. Two lists, and the touch one names gestures.
+    //
+    // The touch list is shorter because it is honest: the chips in the corner
+    // are self-evident and do not need a legend, and what genuinely needs
+    // saying is the part that is invisible — that a HOLD is a different act
+    // from a tap, and what each one is for.
+    const KEYS = touchCapable() ? [
+      ['steer', 'drag the strip — how far across is how hard you turn'],
+      ['gas / brake', 'drive; brake again from a stop to reverse'],
+      ['park', 'handbrake — under 8 km/h it holds; camp and boats need you parked'],
+      ['tap', 'look at a camp, board a boat, come back to the camper'],
+      ['hold', 'make camp here, put a boat in here, pack a camp up'],
+      ['toast', 'when you are stuck, the message that appears is the rescue'],
+    ] : [
       ['WASD', 'drive'],
       ['Space', 'handbrake — under 8 km/h it holds; stays parked until you drive off'],
       ['C', 'camera'],
@@ -123,7 +145,7 @@ export class Settings {
       ['M', 'mute'],
       ['H', 'hide interface'],
       ['F3', 'fps readout'],
-      ['Esc', 'settings / close'],
+      ['~', 'settings / close'],
     ];
     const keys = el('div', 'pa-keys');
     for (const [k, desc] of KEYS) {
@@ -149,6 +171,12 @@ export class Settings {
     // Keys typed into the sheet must not also drive the camper: Input listens
     // on window during the bubble phase, so stopping here is enough.
     this.node.addEventListener('keydown', (e) => {
+      if (e.code === 'Backquote') {
+        this.hud.toggleSettings();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (e.code === 'Escape') {
         // Esc backs out one layer at a time: controls/logbook → settings →
         // closed.

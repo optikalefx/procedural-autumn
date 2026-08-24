@@ -1,0 +1,215 @@
+{
+ "seconds": 12,
+ "res": "1536",
+ "viewport": [
+  800,
+  600
+ ],
+ "frames": 1441,
+ "p50": 8.6,
+ "p95": 18.7,
+ "p99": 22.3,
+ "worstMs": 257.8,
+ "worstAtS": 6.5,
+ "hitch33": 3,
+ "hitch50": 2,
+ "hitch100": 1,
+ "settledP50": 8.4,
+ "settledP95": 17.4,
+ "maxCalls": 625,
+ "maxTris": 6725970,
+ "growth": {
+  "geometries": 148,
+  "textures": 12,
+  "programs": 7
+ },
+ "addedPrograms": [
+  {
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "name": "vehicle.paint",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "name": "vehicle.glass",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,1027,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "name": "EffectMaterial",
+   "type": "ShaderMaterial",
+   "key": "59,60,THREE_REVISION,180,DEPTH_PACKING,3200,ENCODE_OUTPUT,1,PERSPECTIVE_CAMERA,1,e4VIGNETTE_TECHNIQUE,0,UV,vUv,FRAMEBUFFER_PRECISION_HIGH,1,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,3200,1,8192,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "name": "AutumnUpscaleMaterial",
+   "type": "ShaderMaterial",
+   "key": "63,64,FRAMEBUFFER_PRECISION_HIGH,1,highp,srgb,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,1,131072,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "name": "hide:deer:stag",
+   "type": "MeshStandardMaterial",
+   "key": "physical,STANDARD,,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,1,132135,srgb,animalHide"
+  },
+  {
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "programEvents": [
+  {
+   "t": 289,
+   "name": "(anonymous)",
+   "type": "MeshDepthMaterial",
+   "key": "depth,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,3201,1,144416,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "t": 454,
+   "name": "vehicle.paint",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "t": 512,
+   "name": "vehicle.glass",
+   "type": "MeshPhysicalMaterial",
+   "key": "physical,STANDARD,,PHYSICAL,,highp,srgb-linear,306,1024,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,2337,1027,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  },
+  {
+   "t": 1009.8000001907349,
+   "name": "EffectMaterial",
+   "type": "ShaderMaterial",
+   "key": "59,60,THREE_REVISION,180,DEPTH_PACKING,3200,ENCODE_OUTPUT,1,PERSPECTIVE_CAMERA,1,e4VIGNETTE_TECHNIQUE,0,UV,vUv,FRAMEBUFFER_PRECISION_HIGH,1,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,3200,1,8192,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "t": 1009.8000001907349,
+   "name": "AutumnUpscaleMaterial",
+   "type": "ShaderMaterial",
+   "key": "63,64,FRAMEBUFFER_PRECISION_HIGH,1,highp,srgb,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,false,false,0,,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,1,131072,srgb,onBeforeCompile() {\n  }"
+  },
+  {
+   "t": 1276.2000002861023,
+   "name": "hide:deer:stag",
+   "type": "MeshStandardMaterial",
+   "key": "physical,STANDARD,,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,1,132135,srgb,animalHide"
+  },
+  {
+   "t": 6491.200000286102,
+   "name": "(anonymous)",
+   "type": "ShaderMaterial",
+   "key": "61,62,highp,srgb-linear,false,,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,,,false,0,,3,1,2,0,1,0,1,0,0,0,0,2,0,0,0,0,3,132099,srgb,function (shader, renderer) {\n    if (prev) prev.call(this, shader, renderer);\n    this.userData.shader = shader;\n  }"
+  }
+ ],
+ "resolution": {
+  "scale": 1,
+  "internalScale": 1,
+  "basePixelRatio": 1,
+  "presented": 1,
+  "effective": 1,
+  "megapixels": 0.48,
+  "presentedMegapixels": 0.48
+ },
+ "worstFrames": [
+  {
+   "atS": 6.5,
+   "ms": 257.8,
+   "calls": 592,
+   "tris": 6389608,
+   "prog": 164,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 1,
+   "ms": 67.6,
+   "calls": 580,
+   "tris": 5392697,
+   "prog": 162,
+   "iscale": 0.9,
+   "quality": "ultra"
+  },
+  {
+   "atS": 1.3,
+   "ms": 43.2,
+   "calls": 595,
+   "tris": 5968767,
+   "prog": 163,
+   "iscale": 0.9,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.6,
+   "ms": 28.9,
+   "calls": 608,
+   "tris": 6255017,
+   "prog": 164,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 1.1,
+   "ms": 27.7,
+   "calls": 577,
+   "tris": 5413292,
+   "prog": 162,
+   "iscale": 0.9,
+   "quality": "ultra"
+  },
+  {
+   "atS": 11.9,
+   "ms": 27.3,
+   "calls": 588,
+   "tris": 5531386,
+   "prog": 164,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.2,
+   "ms": 25.6,
+   "calls": 596,
+   "tris": 5991800,
+   "prog": 164,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.4,
+   "ms": 24.5,
+   "calls": 599,
+   "tris": 6193931,
+   "prog": 164,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.9,
+   "ms": 24,
+   "calls": 604,
+   "tris": 6288993,
+   "prog": 164,
+   "iscale": 1,
+   "quality": "ultra"
+  },
+  {
+   "atS": 12.6,
+   "ms": 23.8,
+   "calls": 581,
+   "tris": 5365835,
+   "prog": 164,
+   "iscale": 1,
+   "quality": "ultra"
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": [
+  "1 frames over 100 ms — visible freezes"
+ ]
+}

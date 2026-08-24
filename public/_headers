@@ -1,0 +1,16 @@
+# Cloudflare Pages reads this from the build output root; Vite copies public/
+# into dist/ verbatim, so it lands where Pages expects it. Vercel ignores it
+# and uses vercel.json instead — the two are kept in sync deliberately so the
+# repo deploys correctly on either host.
+#
+# Content-Encoding is load-bearing: the .pab files in dist/ hold brotli bytes
+# under their original filename (see compressBakesForBuild in vite.config.js).
+# Without this header the browser hands raw brotli to decodeBake, the PAB1
+# magic check fails, and the game live-bakes instead — slow, but not broken.
+/bakes/*.pab
+  Cache-Control: public, max-age=31536000, immutable
+  Content-Encoding: br
+  Vary: Accept-Encoding
+
+/bakes/manifest.json
+  Cache-Control: no-cache
