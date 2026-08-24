@@ -609,14 +609,20 @@ export class HUD extends System {
       this.compass.update(heading, this.marks);
     }
 
-    // The map arrow follows the *camper*, not the camera: free-look swings the
-    // compass strip, but the question the map answers is which way the vehicle
-    // is pointed. `vehicle.heading` is measured from +Z; the map, like the
-    // compass, works clockwise from north, which is -Z.
+    // The map arrow follows whatever the player is *riding*, not the camera:
+    // free-look swings the compass strip, but the question the map answers is
+    // where you are and which way you are pointed. Aboard a boat that is the
+    // boat — the camper is parked on a shore that may be half a lake behind
+    // you, and an arrow stuck on it is answering a question nobody asked.
+    // Both `boat.current.heading` and `vehicle.heading` are measured from +Z;
+    // the map, like the compass, works clockwise from north, which is -Z.
     if (this.showMap) {
-      const p = veh?.position ?? ctx.camera.position;
+      const boat = ctx.systems?.boat;
+      const aboard = boat?.active ? boat.current : null;
+      const p = aboard ?? veh?.position ?? ctx.camera.position;
       let bearing;
-      if (veh) bearing = 180 - (veh.heading * 180) / Math.PI;
+      if (aboard) bearing = 180 - (aboard.heading * 180) / Math.PI;
+      else if (veh) bearing = 180 - (veh.heading * 180) / Math.PI;
       else {
         const m = ctx.camera.matrixWorld.elements;
         bearing = (Math.atan2(-m[8], m[10]) * 180) / Math.PI;
@@ -624,6 +630,7 @@ export class HUD extends System {
       this.map.update(p.x, p.z, bearing);
     }
     this.dash.update(speed, this.trip, this.found, this.total, veh?.brakeHold ?? false);
+    this.settings.tick(dt);
     this._gamepad();
   }
 

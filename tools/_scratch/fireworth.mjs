@@ -1,18 +1,28 @@
 #!/usr/bin/env node
 /**
- * What is the fire's light WORTH at each hour, and what eats it.
+ * What is a camp fire's light WORTH on screen at each hour, and what eats it.
  *
- * Layout-independent by construction: at every hour the same frame is shot
+ * Layout-independent by construction: at every hour the same instant is drawn
  * twice, once with the fire's point light on and once with it off, and the
- * answer is the difference between them. That is exactly "how much of this
- * picture is the fire", and it does not care where the camp lottery put the
- * tent.
+ * answer is the difference. That is exactly "how much of this picture is the
+ * fire", and it does not care where the camp lottery put the tent.
  *
- * Arms move ONE post term at a time to the value it would hold at full night,
- * so a change in the fire's worth can be attributed to a term rather than to
- * the hour.
+ * ── THE CLOCK IS FROZEN, AND THE FIRST VERSION OF THIS FILE WASN'T ─────────
  *
- *   node tools/_scratch/zz_fireworth.mjs --dir review/fireworth --url http://127.0.0.1:5190
+ * The first version let the engine run between the two grabs and read a
+ * noise floor as signal. How large a floor: the sibling instrument
+ * (keysplit.mjs, same construction) reported the MOON contributing 14.5 sRGB
+ * levels to a frame in which the moon's intensity was exactly zero — that is
+ * the grass, the leaf cards and the embers moving between the two shots, and
+ * it is not a constant, it ran 2.9 to 14.5 across six hours. An hour-to-hour
+ * comparison built on it is comparing wind as much as fire.
+ *
+ * So the engine is STOPPED and both frames of a pair are drawn from one
+ * pinned instant, the idiom sepdiag.mjs and shadowcrawl.mjs already use and
+ * for the same reason. Sun elevation is written directly rather than through
+ * `hour`, because Lighting.update() does not run while the engine is stopped.
+ *
+ *   node tools/_scratch/fireworth.mjs --dir review/fireworth --url http://127.0.0.1:5190
  */
 import { chromium } from 'playwright';
 import { acquire } from '../_lock.mjs';
@@ -27,58 +37,24 @@ const arg = (n, d = null) => { const i = argv.indexOf(`--${n}`); if (i === -1) r
 const DIR = arg('dir', 'review/fireworth');
 const URL = `${arg('url', 'http://127.0.0.1:5190')}/?res=768`;
 const W = 1280, H = 720;
-const HOURS = String(arg('hours', '18.4,18.9,19.0,19.4,20.0,20.6,21.0,23.0')).split(',').map(Number);
-
-// Tight on the camp: fire in the middle, chairs and tent in the ring.
+const HOURS = String(arg('hours', '17.1,18.3,18.9,19.0,19.4,20.0,20.6,21.0,23.0')).split(',').map(Number);
 const F = { az: 3.14, dist: 6.4, elev: 1.35, fov: 46, aim: 0.45 };
 
-const PATCH = `
-  const P = window.__postfx;
-  if (!P.__fw) {
-    P.__fw = 1;
-    const orig = P._driveTimeOfDay.bind(P);
-    P._driveTimeOfDay = function () {
-      orig();
-      const o = P.__ov;
-      if (!o) return;
-      const u = P.grade.uniforms;
-      if (o.contrast != null) u.get('uContrast').value = o.contrast;
-      if (o.lift != null) u.get('uLift').value = o.lift;
-      if (o.toe != null) u.get('uToe').value = o.toe;
-      if (o.offset != null) P.tone.offsetScale = o.offset;
-      if (o.expo != null) P.tone.exposure = P._baseExposure * o.expo;
-    };
-  }
-`;
-
-const HRS = [19.0, 19.4];
-const ARMS = [
-  { name: 'ship',     ov: 'null' },
-  { name: 'c105',     ov: '{ contrast: 1.05 }',                hoursOnly: HRS },
-  { name: 'c130',     ov: '{ contrast: 1.30 }',                hoursOnly: HRS },
-  { name: 'lift',     ov: '{ lift: 0.003 }',                   hoursOnly: HRS },
-  { name: 'toe',      ov: '{ toe: 0.0088 }',                   hoursOnly: HRS },
-  { name: 'offset',   ov: '{ offset: 0.15 }',                  hoursOnly: HRS },
-  { name: 'expo',     ov: '{ expo: 1.166 }',                   hoursOnly: HRS },
-  { name: 'nightall', ov: '{ contrast: 1.05, lift: 0.003, toe: 0.0088, offset: 0.15, expo: 1.166 }', hoursOnly: HRS },
-];
+// `before` puts the three split terms back on the `night` ramp, i.e. the tree
+// as it stood before the split. Computed in the page from sunElev so the two
+// arms differ in nothing else.
+const ARMS = String(arg('arms', 'after,before')).split(',');
 
 function diffStats(a, b) {
-  // Mean absolute sRGB difference over the lower 2/3 of the frame (ground and
-  // props; the sky and the massif are not what the fire lights), plus the
-  // count of pixels the fire moves by more than 8 levels — "how much of the
-  // picture can you see the fire in".
   const w = a.w, h = a.h, y0 = Math.floor(h * 0.34);
   let sum = 0, n = 0, hit = 0, peak = 0;
-  for (let y = y0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 3;
-      const d = (Math.abs(a.px[i] - b.px[i]) + Math.abs(a.px[i + 1] - b.px[i + 1])
-               + Math.abs(a.px[i + 2] - b.px[i + 2])) / 3;
-      sum += d; n++;
-      if (d > 8) hit++;
-      if (d > peak) peak = d;
-    }
+  for (let y = y0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 3;
+    const d = (Math.abs(a.px[i] - b.px[i]) + Math.abs(a.px[i + 1] - b.px[i + 1])
+             + Math.abs(a.px[i + 2] - b.px[i + 2])) / 3;
+    sum += d; n++;
+    if (d > 8) hit++;
+    if (d > peak) peak = d;
   }
   return { mean: +(sum / n).toFixed(3), pct: +(100 * hit / n).toFixed(2), peak: +peak.toFixed(0) };
 }
@@ -99,8 +75,7 @@ async function main() {
     };
     window.WebSocket.prototype = Real.prototype;
   });
-  const errors = [];
-  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('pageerror', (e) => console.log('ERR', String(e)));
 
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 300000, polling: 250 });
@@ -113,60 +88,88 @@ async function main() {
   const site = await page.evaluate(() => {
     const v = window.__systems.vehicle;
     const s = window.__camp.pitchNear(v.position.x, v.position.z, { instant: true, radius: 14 });
-    if (!s) return null;
-    return { x: s.x, y: s.y, z: s.z, radius: s.radius,
-      vehAxis: Math.atan2(v.position.x - s.x, v.position.z - s.z) };
+    return s ? { x: s.x, y: s.y, z: s.z, radius: s.radius,
+      vehAxis: Math.atan2(v.position.x - s.x, v.position.z - s.z) } : null;
   });
   if (!site) { console.error('no camp site'); await browser.close(); release(); process.exit(2); }
   mkdirSync(resolve(DIR), { recursive: true });
 
-  const pose = async ({ F, site, hour, patch, ov, fire }) => page.evaluate(async (a) => {
+  // Pose and settle while the engine still runs, then stop it for good.
+  await page.evaluate(async (a) => {
     const THREE = window.__THREE, e = window.__engine;
-    window.__lighting.hour = a.hour; window.__lighting.cycleSpeed = 0;
-    // eslint-disable-next-line no-new-func
-    new Function(a.patch)();
-    // eslint-disable-next-line no-new-func
-    window.__postfx.__ov = new Function('return ' + a.ov)();
-    window.__fireTune = { gain: 1, light: a.fire ? 1 : 0.00001, dist: 1, decay: NaN,
-      dayI: NaN, duskI: NaN, nightI: NaN, bed: 1, ember: 1, smoke: 1, knee: 1, elev: NaN };
     const ang = a.site.vehAxis + a.F.az, dist = a.F.dist * Math.max(0.62, (a.site.radius ?? 5.8) / 5.8);
     e.camera.fov = a.F.fov; e.camera.updateProjectionMatrix();
     e.camera.position.set(a.site.x + Math.sin(ang) * dist, a.site.y + a.F.elev, a.site.z + Math.cos(ang) * dist);
     e.camera.lookAt(new THREE.Vector3(a.site.x, a.site.y + a.F.aim, a.site.z));
     window.__forceCamera = true;
-    if (window.__settleStable) await window.__settleStable(600, 24);
-    return {
-      sunElev: +window.__lighting.sunDir.y.toFixed(4),
-      fireI: +window.__camp.fireLight.intensity.toFixed(3),
-      contrast: +window.__postfx.grade.uniforms.get('uContrast').value.toFixed(3),
-      lift: +window.__postfx.grade.uniforms.get('uLift').value.toFixed(4),
-      expo: +window.__postfx.tone.exposure.toFixed(4),
-      uNight: +window.__postfx.grade.uniforms.get('uNight').value.toFixed(3),
-    };
-  }, { F, site, hour, patch, ov, fire });
+    if (window.__settleStable) await window.__settleStable(1200, 40);
+  }, { site, F });
+
+  await page.evaluate(() => {
+    const e = window.__engine;
+    e.stop();
+    window.__frozenDraw = () => { if (e._render) e._render(0, e.elapsed); else e.renderer.render(e.scene, e.camera); };
+    const u = window.__systems.trees?.shared;
+    if (u) { u.uTime.value = 20; u.uWindStrength.value = 0.45; u.uWindDir.value.set(1, 0, 0); }
+    window.__frozenDraw(); window.__frozenDraw();
+  });
+
+  // One pinned instant, drawn with the fire lit and then dark. Everything the
+  // fire's own update() would animate (flicker, embers, smoke) is pinned too,
+  // because update() does not run — so the ONLY difference between the pair is
+  // the point light's intensity.
+  const pair = (hour, arm) => page.evaluate(async (a) => {
+    const L = window.__lighting, P = window.__postfx, C = window.__camp;
+    L.hour = a.hour; L.cycleSpeed = 0;
+    L.update(0, window.__engine.camera.position);   // one hand-driven lighting tick
+    const e = L.sunDir.y;
+    if (a.arm === 'before') {
+      let n = (-0.045 - e) / 0.115; n = n < 0 ? 0 : n > 1 ? 1 : n;
+      const night = n * n * (3 - 2 * n), K = P.look;
+      P.__pre = () => {
+        const u = P.grade.uniforms;
+        u.get('uToe').value = 0.022 * (1 - K.nightToeCut * night);
+        u.get('uLift').value = 0.020 * (1 - K.nightLiftCut * night);
+        P.tone.offsetScale = 1 - (1 - K.nightOffset) * night;
+      };
+    } else { P.__pre = null; }
+    if (!P.__fw) {
+      P.__fw = 1;
+      const orig = P._driveTimeOfDay.bind(P);
+      P._driveTimeOfDay = function () { orig(); if (P.__pre) P.__pre(); };
+    }
+    P._driveTimeOfDay();
+    const keep = C.fireLight.intensity;
+    window.__frozenDraw(); window.__frozenDraw();
+    const info = { sunElev: +e.toFixed(4), fireI: +keep.toFixed(3),
+      lift: +P.grade.uniforms.get('uLift').value.toFixed(4),
+      toe: +P.grade.uniforms.get('uToe').value.toFixed(4),
+      contrast: +P.grade.uniforms.get('uContrast').value.toFixed(3),
+      expo: +P.tone.exposure.toFixed(4) };
+    window.__fwRestore = () => { C.fireLight.intensity = keep; window.__frozenDraw(); };
+    window.__fwDark = () => { C.fireLight.intensity = 0; window.__frozenDraw(); window.__frozenDraw(); };
+    return info;
+  }, { hour, arm });
 
   const rows = [];
   for (const hour of HOURS) {
     for (const arm of ARMS) {
-      if (arm.hoursOnly && !arm.hoursOnly.includes(hour)) continue;
-      const tag = `h${String(hour).replace('.', 'p')}-${arm.name}`;
-      const info = await pose({ F, site, hour, patch: PATCH, ov: arm.ov, fire: true });
-      await page.waitForTimeout(350);
+      const tag = `h${String(hour).replace('.', 'p')}-${arm}`;
+      const info = await pair(hour, arm);
       const fA = resolve(DIR, `${tag}-fire.png`);
       await page.screenshot({ path: fA });
-      await pose({ F, site, hour, patch: PATCH, ov: arm.ov, fire: false });
-      await page.waitForTimeout(350);
+      await page.evaluate(() => window.__fwDark());
       const fB = resolve(DIR, `${tag}-nofire.png`);
       await page.screenshot({ path: fB });
+      await page.evaluate(() => window.__fwRestore());
       const d = diffStats(readPNG(fA), readPNG(fB));
-      rows.push({ hour, arm: arm.name, ...info, ...d });
-      console.log(`h${String(hour).padEnd(5)} ${arm.name.padEnd(9)} elev ${String(info.sunElev).padEnd(8)} ` +
-        `fireI ${String(info.fireI).padEnd(6)} con ${String(info.contrast).padEnd(6)} lift ${String(info.lift).padEnd(7)} ` +
-        `expo ${String(info.expo).padEnd(7)} | fire worth: mean ${String(d.mean).padEnd(7)} pct>8 ${String(d.pct).padEnd(6)} peak ${d.peak}`);
+      rows.push({ hour, arm, ...info, ...d });
+      console.log(`h${String(hour).padEnd(5)} ${arm.padEnd(7)} elev ${String(info.sunElev).padEnd(8)} ` +
+        `fireI ${String(info.fireI).padEnd(6)} lift ${String(info.lift).padEnd(7)} con ${String(info.contrast).padEnd(6)} ` +
+        `| fire worth: mean ${String(d.mean).padEnd(7)} pct>8 ${String(d.pct).padEnd(6)} peak ${d.peak}`);
     }
   }
   writeFileSync(resolve(DIR, 'ROWS.json'), JSON.stringify(rows, null, 1));
-  if (errors.length) console.log('page-errors:', JSON.stringify(errors.slice(0, 4), null, 1));
   await browser.close(); release();
 }
 main().catch((e) => { console.error(e); process.exit(1); });
