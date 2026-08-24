@@ -393,25 +393,33 @@ export function buildMaterials(env, opts = {}) {
   const o = typeof opts === 'number' ? { body: opts } : opts;
   const bodyColor = o.body ?? 0xc4551f;
   const creamColor = o.cream ?? 0xe6ddc9;
-  const std = (x) => new THREE.MeshStandardMaterial({ vertexColors: true, envMap: env, ...x });
+  // Names surface in renderer.info.programs, which makes a first-use shader
+  // hitch attributable to the actual vehicle surface instead of an anonymous
+  // "physical" program in the drive harness.
+  const named = (name, material) => {
+    material.name = `vehicle.${name}`;
+    return material;
+  };
+  const std = (name, x) => named(name,
+    new THREE.MeshStandardMaterial({ vertexColors: true, envMap: env, ...x }));
 
   // Stylize.js flattens *direct* specular but leaves image-based lighting
   // alone, so a hot env probe is now the loudest thing on a horizontal panel:
   // at 0.85 the bonnet reflected so much sky it went pale pink and lost the
   // body colour entirely. Keep a sheen, lose the wash — the brief wants broad
   // flat masses of saturated colour, and paint is the biggest mass we own.
-  const paint = new THREE.MeshPhysicalMaterial({
+  const paint = named('paint', new THREE.MeshPhysicalMaterial({
     color: C(bodyColor),
     roughness: 0.52, metalness: 0.06,
     clearcoat: 0.34, clearcoatRoughness: 0.34,
     envMap: env, envMapIntensity: 0.32,
     vertexColors: true,
-  });
-  const cream = new THREE.MeshPhysicalMaterial({
+  }));
+  const cream = named('cream', new THREE.MeshPhysicalMaterial({
     color: C(creamColor), roughness: 0.55, metalness: 0.06,
     clearcoat: 0.28, clearcoatRoughness: 0.36,
     envMap: env, envMapIntensity: 0.28, vertexColors: true,
-  });
+  }));
   // Glass has to carry a *reflection*, not just a tint: unlit dark glass reads
   // as a hole cut in the silhouette. But the first pass over-corrected — high
   // metalness plus a hot env probe made every pane a pale blue-grey slab
@@ -419,43 +427,43 @@ export function buildMaterials(env, opts = {}) {
   // window. Glass is now clearly darker than the body, with the reflection as
   // a sheen on top rather than the whole of it. Front-facing only: these are
   // solid slabs now, so the back faces would just double the tint.
-  const glass = new THREE.MeshPhysicalMaterial({
+  const glass = named('glass', new THREE.MeshPhysicalMaterial({
     color: C(0x33454a), roughness: 0.07, metalness: 0.12,
     transparent: true, opacity: 0.74,
     clearcoat: 1.0, clearcoatRoughness: 0.04,
     envMap: env, envMapIntensity: 1.0,
     side: THREE.FrontSide, depthWrite: false, vertexColors: true,
-  });
+  }));
 
   return {
     paint, cream, glass,
-    trim:    std({ color: C(0x3c3c44), roughness: 0.62, metalness: 0.14, envMapIntensity: 0.6 }),
-    rubber:  std({ color: C(0x33333a), roughness: 0.86, metalness: 0.04, envMapIntensity: 0.55 }),
-    flare:   std({ color: C(0x4a4a53), roughness: 0.74, metalness: 0.06, envMapIntensity: 0.5 }),
-    orange:  std({ color: C(0xd2731c), roughness: 0.62, metalness: 0.05, envMapIntensity: 0.5 }),
-    steel:   std({ color: C(0x8a8a86), roughness: 0.48, metalness: 0.50, envMapIntensity: 0.6 }),
-    rack:    std({ color: C(0x33363c), roughness: 0.48, metalness: 0.55, envMapIntensity: 0.55 }),
-    chrome:  std({ color: C(0xc9ccd2), roughness: 0.14, metalness: 1.0, envMapIntensity: 1.2 }),
-    rim:     std({ color: C(0xdedac9), roughness: 0.40, metalness: 0.45, envMapIntensity: 0.8 }),
-    rimDark: std({ color: C(0x1d1d20), roughness: 0.8, metalness: 0.1, envMapIntensity: 0.3 }),
-    interior:std({ color: C(0x1c1a20), roughness: 0.92, metalness: 0.0, envMapIntensity: 0.15 }),
-    canvas:  std({ color: C(0xbfa87e), roughness: 0.95, metalness: 0.0, envMapIntensity: 0.3 }),
-    olive:   std({ color: C(0x53603a), roughness: 0.72, metalness: 0.15, envMapIntensity: 0.4 }),
-    drum:    std({ color: C(0x3d7fae), roughness: 0.52, metalness: 0.05, envMapIntensity: 0.6 }),
-    crimson: std({ color: C(0x8e2f28), roughness: 0.7, metalness: 0.05, envMapIntensity: 0.4 }),
-    wood:    std({ color: C(0x8a6640), roughness: 0.85, metalness: 0.0, envMapIntensity: 0.3 }),
-    lensHead: new THREE.MeshStandardMaterial({
+    trim:    std('trim',     { color: C(0x3c3c44), roughness: 0.62, metalness: 0.14, envMapIntensity: 0.6 }),
+    rubber:  std('rubber',   { color: C(0x33333a), roughness: 0.86, metalness: 0.04, envMapIntensity: 0.55 }),
+    flare:   std('flare',    { color: C(0x4a4a53), roughness: 0.74, metalness: 0.06, envMapIntensity: 0.5 }),
+    orange:  std('orange',   { color: C(0xd2731c), roughness: 0.62, metalness: 0.05, envMapIntensity: 0.5 }),
+    steel:   std('steel',    { color: C(0x8a8a86), roughness: 0.48, metalness: 0.50, envMapIntensity: 0.6 }),
+    rack:    std('rack',     { color: C(0x33363c), roughness: 0.48, metalness: 0.55, envMapIntensity: 0.55 }),
+    chrome:  std('chrome',   { color: C(0xc9ccd2), roughness: 0.14, metalness: 1.0, envMapIntensity: 1.2 }),
+    rim:     std('rim',      { color: C(0xdedac9), roughness: 0.40, metalness: 0.45, envMapIntensity: 0.8 }),
+    rimDark: std('rimDark',  { color: C(0x1d1d20), roughness: 0.8, metalness: 0.1, envMapIntensity: 0.3 }),
+    interior:std('interior', { color: C(0x1c1a20), roughness: 0.92, metalness: 0.0, envMapIntensity: 0.15 }),
+    canvas:  std('canvas',   { color: C(0xbfa87e), roughness: 0.95, metalness: 0.0, envMapIntensity: 0.3 }),
+    olive:   std('olive',    { color: C(0x53603a), roughness: 0.72, metalness: 0.15, envMapIntensity: 0.4 }),
+    drum:    std('drum',     { color: C(0x3d7fae), roughness: 0.52, metalness: 0.05, envMapIntensity: 0.6 }),
+    crimson: std('crimson',  { color: C(0x8e2f28), roughness: 0.7, metalness: 0.05, envMapIntensity: 0.4 }),
+    wood:    std('wood',     { color: C(0x8a6640), roughness: 0.85, metalness: 0.0, envMapIntensity: 0.3 }),
+    lensHead: named('lensHead', new THREE.MeshStandardMaterial({
       color: C(0xfff4dd), emissive: C(0xffe6b4), emissiveIntensity: 0.35,
       roughness: 0.26, metalness: 0.0, vertexColors: true, envMap: env, envMapIntensity: 0.45,
-    }),
-    lensTail: new THREE.MeshStandardMaterial({
+    })),
+    lensTail: named('lensTail', new THREE.MeshStandardMaterial({
       color: C(0x8e1512), emissive: C(0xff2a18), emissiveIntensity: 0.55,
       roughness: 0.2, metalness: 0.0, vertexColors: true, envMap: env,
-    }),
-    lensAmber: new THREE.MeshStandardMaterial({
+    })),
+    lensAmber: named('lensAmber', new THREE.MeshStandardMaterial({
       color: C(0xc06a10), emissive: C(0xff9d20), emissiveIntensity: 0.3,
       roughness: 0.24, metalness: 0.0, vertexColors: true, envMap: env,
-    }),
+    })),
   };
 }
 /** A tiny gradient environment so chrome and glass have something to reflect. */

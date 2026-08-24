@@ -40,10 +40,13 @@ export class PerfOverlay {
     // Measured with a forced sync: CPU-side p50 25.1 ms (40 fps) against a true
     // 34.3 ms (29 fps) on the same 75 s drive.
     //
-    // A 1x1 readPixels blocks until the GPU has drained, so it turns the CPU
-    // clock into an honest end-to-end one. `gl.finish()` is a no-op under
-    // ANGLE-Metal and `clientWaitSync` deadlocks when busy-polled; readPixels is
-    // the one that works here.
+    // A 1x1 readPixels blocks until the GPU has drained. That makes it useful
+    // as a deliberately pessimistic SERIAL throughput check, but not as an
+    // ordinary delivered-frame clock: it removes CPU/GPU overlap and pays the
+    // browser-process round trip. The WebGL 2 specification explicitly calls
+    // this a blocking operation that must finish prior rendering. `gl.finish()`
+    // is a no-op under ANGLE-Metal and `clientWaitSync` deadlocks when
+    // busy-polled; readPixels is the one that works here.
     //
     // It has to be a BURST of consecutive synced frames, not one sample. A lone
     // sync waits for however deep the queue happens to be, which is the backlog
@@ -54,14 +57,18 @@ export class PerfOverlay {
     //
     // So: sync every frame for six frames, discard the first (it pays off the
     // existing backlog), and take the median interval of the rest. During the
-    // burst CPU/GPU overlap is gone, so this still reads slightly high — it is
-    // an upper bound, and it is the right one to show a player asking why the
-    // game feels slower than the headline says.
+    // burst CPU/GPU overlap is gone, so the time is an upper bound (and its
+    // reciprocal an fps floor), never a claim that the browser is only
+    // presenting that many frames.
     this._gpuMs = 0;
     this._gpuAcc = 0;
     this._gpuPx = new Uint8Array(4);
     this._burst = 0;
     this._burstTimes = [];
+    // The dt after the final burst call still contains that call's blocking
+    // time even though `_burst` has reached zero. Exclude it from the normal
+    // pacing history and freeze watchdog too.
+    this._skipTimingFrame = false;
 
     // ── freeze watchdog ─────────────────────────────────────────────────────
     //
@@ -124,14 +131,17 @@ export class PerfOverlay {
     const now = performance.now();
     const dt = now - this._last;
     this._last = now;
-    this._times.push(dt);
-    if (this._times.length > 120) this._times.shift();
+    // If the previous frame ran our forced GPU sync, this dt includes the
+    // instrument's own stall. Keep it for the serial measurement below, but
+    // never report it as gameplay p95 or as a game freeze.
+    const syncAffected = this._burst > 0 || this._skipTimingFrame;
+    this._skipTimingFrame = false;
 
     // Watchdog first, and deliberately before every early return below: a
     // freeze must be recorded whether or not the overlay is visible.
     const eng = this.engine, rr = eng.renderer;
     const prog = rr.info.programs?.length ?? 0;
-    if (dt > 1000) {
+    if (dt > 1000 && !syncAffected) {
       this._freezes.push({
         t: now, ms: dt, prog0: this._prevProg, prog1: prog,
         res0: this._prevRes, res1: eng.resolutionScale, q: eng.quality,
@@ -183,8 +193,14 @@ export class PerfOverlay {
         if (this._burst === 0 && this._burstTimes.length > 2) {
           const g = this._burstTimes.slice(1).sort((a, b) => a - b);
           this._gpuMs = g[Math.floor(g.length / 2)];
+          this._skipTimingFrame = true;
         }
       } catch { this._burst = 0; this._gpuMs = 0; }
+    }
+
+    if (!syncAffected) {
+      this._times.push(dt);
+      if (this._times.length > 120) this._times.shift();
     }
 
     // Hide during captures, the same way the HUD does. Otherwise every review
@@ -207,16 +223,18 @@ export class PerfOverlay {
     const e = this.engine;
     const r = e.renderer;
     const info = r.info.render;
-    const eff = e.basePixelRatio * e.resolutionScale;
+    const presented = e.basePixelRatio * e.resolutionScale;
+    const is = e.internalScale ?? 1;
+    const eff = presented * is;
     const mp = (r.domElement.width * r.domElement.height) / 1e6;
 
     // Colour the headline by how it actually feels to play.
     const fps = 1000 / p50;
     const tint = fps >= 55 ? '#9fe08a' : fps >= 40 ? '#ffd98a' : fps >= 25 ? '#ffab6b' : '#ff7a6b';
 
-    // The headline stays the CPU number because that is what the frame pacing
-    // feels like when the GPU is keeping up; the GPU column is what tells you it
-    // is not. When they diverge, believe the second one.
+    // The headline is delivered frame pacing. The sync column is a serialized
+    // stress floor: useful as a warning that the GPU has little spare work in
+    // hand, but intentionally pessimistic and not a replacement for the fps.
     const gpuFps = this._gpuMs > 0 ? 1000 / this._gpuMs : 0;
     const gpuTint = gpuFps >= 55 ? '#9fe08a' : gpuFps >= 40 ? '#ffd98a' : gpuFps >= 25 ? '#ffab6b' : '#ff7a6b';
     const lines = [
@@ -225,8 +243,8 @@ export class PerfOverlay {
     ];
     if (this._gpuMs > 0) {
       lines.push(
-        `gpu  <span style="color:${gpuTint};font-weight:600">${gpuFps.toFixed(0)} fps</span>` +
-        `  <span style="opacity:.75">${this._gpuMs.toFixed(1)} ms end-to-end</span>`,
+        `sync <span style="color:${gpuTint};font-weight:600">${gpuFps.toFixed(0)} fps floor</span>` +
+        `  <span style="opacity:.75">${this._gpuMs.toFixed(1)} ms serial upper bound</span>`,
       );
     }
 
@@ -236,12 +254,11 @@ export class PerfOverlay {
       // of the canvas and are reconstructed by the upscale pass. This is where
       // the adaptive scaler now buys frame time, so it must be visible for the
       // same reason `res` always was.
-      const is = e.internalScale ?? 1;
       const imp = mp * is * is;
       lines.push(
-        `res  ${eff.toFixed(2)}x  (${(e.resolutionScale * 100).toFixed(0)}% of ${e.basePixelRatio.toFixed(2)})` +
+        `res  ${eff.toFixed(2)}x  (${(is * 100).toFixed(0)}% of ${presented.toFixed(2)}x presented)` +
         (soft ? '  <span style="color:#ff7a6b">BELOW NATIVE</span>' : ''),
-        `int  ${(is * 100).toFixed(0)}%  ${imp.toFixed(2)} of ${mp.toFixed(2)} MP` +
+        `int  ${imp.toFixed(2)} of ${mp.toFixed(2)} MP` +
         (is < 0.999 ? '  <span style="opacity:.75">upscaled</span>' : ''),
         `px   dpr ${window.devicePixelRatio}   ${e.quality}${e._autoDropped ? ' (auto)' : ''}`,
       );

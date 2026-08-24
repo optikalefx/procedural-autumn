@@ -108,6 +108,50 @@ export class Wildlife extends System {
     this._compileWarm = true;
   }
 
+  /**
+   * Wildlife is pooled below the world and invisible until a habitat wakes.
+   * Compile those skinned hide variants for EffectComposer's linear scene
+   * target now; otherwise the first deer sighting also becomes a shader hitch.
+   */
+  precompileMaterials() {
+    const { renderer, camera, scene } = this.ctx;
+    renderer.compile(this.group, camera, scene);
+  }
+
+  /**
+   * Put one pooled skinned animal inside the warm frame's shadow frustum.
+   * WebGLRenderer.compile() does not visit shadow passes, so without one real
+   * caster Three links MeshDepthMaterial on the first live herd instead.
+   * Returns a restore callback for main's loading-screen warm draw.
+   */
+  beginWarmFrame() {
+    const a = this.pool?.deer?.flat()?.[0];
+    if (!a) return null;
+    const mesh = a.mesh;
+    const was = {
+      visible: mesh.visible,
+      castShadow: mesh.castShadow,
+      frustumCulled: mesh.frustumCulled,
+      position: mesh.position.clone(),
+    };
+    const { camera, world } = this.ctx;
+    const p = camera.getWorldDirection(new THREE.Vector3())
+      .multiplyScalar(18).add(camera.position);
+    p.y = world.getHeight(p.x, p.z);
+    mesh.position.copy(p);
+    mesh.visible = true;
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    mesh.updateMatrixWorld(true);
+    return () => {
+      mesh.visible = was.visible;
+      mesh.castShadow = was.castShadow;
+      mesh.frustumCulled = was.frustumCulled;
+      mesh.position.copy(was.position);
+      mesh.updateMatrixWorld(true);
+    };
+  }
+
   // ── prototypes and the mesh pool ───────────────────────────────────────────
 
   _buildProtos() {

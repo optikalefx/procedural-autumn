@@ -58,8 +58,8 @@
  *     that compares an arm against a baseline taken a minute earlier is
  *     measuring the clock. This costs twice the wall time and is not optional.
  *
- *  3. ADAPTIVE RESOLUTION AND AUTO-TIER OFF. Engine scales the drawing buffer
- *     to hold 60 fps and steps the quality tier down when it cannot. Left on, a
+ *  3. ADAPTIVE RESOLUTION AND AUTO-TIER OFF. Engine scales the internal render
+ *     targets toward its configured fps budget. Left on, a
  *     heavy arm quietly renders fewer pixels and measures FASTER than the
  *     truth. Every arm here draws exactly the same number of pixels.
  *
@@ -151,13 +151,9 @@ const H        = parseInt(arg('h', '1080'), 10);
 const DPR      = parseFloat(arg('dpr', '2'));
 const PORT     = arg('port', '5180');
 const RES      = arg('res', '1536');
-// No seed by default — but pass one, and pass 20261018, if you want the run to
-// start inside a minute. WorldConfig.SEED is 20262018 and every bake in
-// public/bakes/ is 20261018, so a boot with no ?seed misses the cache and
-// bakes a whole world live before the first frame is timed. A timing run that
-// spends five minutes generating terrain is not wrong, but it holds the
-// exclusive lock the whole time and every other author's capture queues behind
-// it. Same trap tools/fallflow.mjs documents at its own SEED constant.
+// Pin 20261018 when comparing with the historical archives; both that seed and
+// WorldConfig.SEED have bakes on disk. A seed without a bake generates the full
+// world live and holds the exclusive capture lock for minutes.
 const SEED     = arg('seed', null);
 const QUALITY  = arg('quality', null);          // null = let pickQuality decide
 const ROUNDS   = parseInt(arg('rounds', '3'), 10);
@@ -299,6 +295,42 @@ await page.evaluate(() => {
     off() { if (postfx.ao) { this._was = postfx.ao.enabled; postfx.ao.enabled = false; fixRenderToScreen(); } },
     on()  { if (postfx.ao && this._was !== undefined) { postfx.ao.enabled = this._was; fixRenderToScreen(); } },
   };
+  K['fx.ssaoLite'] = {
+    group: 'fx',
+    off() {
+      const c = postfx.ao?.configuration;
+      if (!c) return;
+      this._c = c;
+      this._was = [c.aoSamples, c.denoiseSamples, c.denoiseIterations];
+      c.aoSamples = 8;
+      c.denoiseSamples = 4;
+      c.denoiseIterations = 1;
+    },
+    on() {
+      if (!this._c || !this._was) return;
+      [this._c.aoSamples, this._c.denoiseSamples, this._c.denoiseIterations] = this._was;
+    },
+  };
+  const waterReflectKnob = (name, riverSteps, fallSteps) => {
+    K[name] = {
+      group: 'fx',
+      off() {
+        const water = window.__ctx.systems.water?.shared?.uReflectSteps;
+        const falls = window.__ctx.systems.waterfalls?.shared?.uReflectSteps;
+        this._uniforms = [water, falls].filter(Boolean);
+        this._was = this._uniforms.map((u) => u.value);
+        if (water) water.value = riverSteps;
+        if (falls) falls.value = fallSteps;
+      },
+      on() {
+        for (let i = 0; i < (this._uniforms?.length ?? 0); i++) {
+          this._uniforms[i].value = this._was[i];
+        }
+      },
+    };
+  };
+  waterReflectKnob('fx.waterReflect8', 8, 4);
+  waterReflectKnob('fx.waterReflectOff', 0, 0);
   K['fx.mainPass'] = {          // bloom + veil + tone + vignette + grade + SMAA + DOF
     group: 'fx',
     off() { if (postfx.mainPass) { this._was = postfx.mainPass.enabled; postfx.mainPass.enabled = false; fixRenderToScreen(); } },
@@ -346,6 +378,68 @@ await page.evaluate(() => {
       scene.overrideMaterial = this._m;
     },
     on() { scene.overrideMaterial = null; },
+  };
+
+  // Terrain-only material ceiling. Unlike scene.overrideMaterial this keeps
+  // every other system's real vertex and fragment shaders, and terrain itself
+  // is CPU-displaced geometry, so its coverage, occlusion and shadow-caster
+  // geometry are unchanged. The delta is therefore the cost of the terrain's
+  // procedural fragment material (including its lighting/shadow receive path),
+  // without the draw.terrain occlusion confound.
+  K['fx.terrainBasic'] = {
+    group: 'fx',
+    off() {
+      this._m ??= new THREE.MeshBasicMaterial({ color: 0x9a8150 });
+      this._saved = [];
+      for (const root of byName('Terrain', 'TerrainApron')) root.traverse((o) => {
+        if (!o.isMesh || !o.material) return;
+        this._saved.push([o, o.material]);
+        o.material = this._m;
+      });
+    },
+    on() {
+      for (const [o, m] of this._saved ?? []) o.material = m;
+      this._saved = [];
+    },
+  };
+  // Shipping baseline uses TerrainMaterial's quality/distance-budgeted fast
+  // painter. Turning it off forces the former full painter at every distance;
+  // this arm is intentionally expected to be slower (a negative "saved"
+  // value) and quantifies the optimization in the same page load.
+  K['fx.terrainFast'] = {
+    group: 'fx',
+    off() {
+      const m = window.__terrain?.material;
+      const u = m?.userData?.uniforms?.uDetailDistance;
+      this._m = m;
+      this._u = u;
+      this._was = u?.value;
+      if (u) u.value = 1e9;
+      if (m?.defines?.TERRAIN_FAST !== undefined) {
+        this._define = m.defines.TERRAIN_FAST;
+        delete m.defines.TERRAIN_FAST;
+        m.needsUpdate = true;
+      }
+    },
+    on() {
+      if (this._u && this._was !== undefined) this._u.value = this._was;
+      if (this._m && this._define !== undefined) {
+        this._m.defines.TERRAIN_FAST = this._define;
+        this._m.needsUpdate = true;
+      }
+    },
+  };
+  // Price only the expensive near-detail disc of the current tier. Turning it
+  // off keeps the optimized painter everywhere without changing coverage.
+  K['fx.terrainNearDetail'] = {
+    group: 'fx',
+    off() {
+      const u = window.__terrain?.material?.userData?.uniforms?.uDetailDistance;
+      this._u = u;
+      this._was = u?.value;
+      if (u) u.value = 0;
+    },
+    on() { if (this._u && this._was !== undefined) this._u.value = this._was; },
   };
 
   // ── the three override materials, which together price a material change ──
@@ -496,6 +590,25 @@ await page.evaluate(() => {
       }
     },
   };
+  K['fx.shadowRes3k'] = {
+    group: 'fx',
+    off() {
+      const L = window.__lighting;
+      this._saved = [];
+      for (const l of [L.sun, L.moon]) {
+        if (!l?.shadow) continue;
+        this._saved.push([l, l.shadow.mapSize.x, l.shadow.mapSize.y]);
+        l.shadow.mapSize.set(3072, 3072);
+        l.shadow.map?.dispose(); l.shadow.map = null;
+      }
+    },
+    on() {
+      for (const [l, x, y] of this._saved ?? []) {
+        l.shadow.mapSize.set(x, y);
+        l.shadow.map?.dispose(); l.shadow.map = null;
+      }
+    },
+  };
 
   // ── shipping quality tiers ────────────────────────────────────────────────
   // The four presets in WorldConfig are the escape hatch a struggling player
@@ -527,10 +640,10 @@ await page.evaluate(() => {
 
   // Internal render scale (the upscale path in PostFX). Unlike px.*, these do
   // not touch the drawing buffer — they resize the composer's offscreen
-  // targets, which is exactly what ships. The boot default at dpr 2 is
-  // 1/pixelRatioCap (effective device ratio 1.0), so `px.iscale100` prices
-  // what going BACK to full-cap internal rendering costs, and the smaller ones
-  // price the adaptive scaler's lower rungs.
+  // targets, which is exactly what ships. The quality-biased boot default is
+  // effective device ratio 1.15 (raw scale 0.85 at `high`), so
+  // `px.iscale100` prices full-cap internal rendering and the smaller ones
+  // price the adaptive scaler's lower rungs or historical settings.
   const iscaleKnob = (name, s) => {
     K[name] = {
       group: 'px',
@@ -666,13 +779,19 @@ await page.evaluate(() => {
       window.__forceCamera = true;
       if (S.cameraRig) S.cameraRig.enabled = false;
       const a = (window.__cameraAnchors[anchor] ?? window.__cameraAnchors.road)();
-      const p = this._path = { cx: a.x, cz: a.z, r: radius, v: speed, h: height, t: 0 };
+      // Start paused. The outer harness first lets streaming converge at the
+      // exact phase-zero frame, then every measurement block phase-resets and
+      // unpauses. The previous version moved during __settleStable(), so a
+      // motion run could never satisfy its own convergence requirement.
+      const p = this._path = {
+        cx: a.x, cz: a.z, r: radius, v: speed, h: height, t: 0, paused: true,
+      };
       if (!this._pathHooked) {
         this._pathHooked = true;
         e.onUpdate((dt) => {
           const q = this._path;
           if (!q) return;
-          q.t += dt;
+          if (!q.paused) q.t += dt;
           const w = q.v / q.r;                       // angular speed, rad/s
           const ang = q.t * w;
           const cam = e.camera;
@@ -690,7 +809,11 @@ await page.evaluate(() => {
       };
       tick();
     },
-    resetPhase() { if (this._path) this._path.t = 0; },
+    resetPhase() {
+      if (!this._path) return;
+      this._path.t = 0;
+      this._path.paused = false;
+    },
 
     stand() {
       window.__abDrive = false;
@@ -710,8 +833,12 @@ await page.evaluate(() => {
         quality: e.quality,
         pixelRatio: renderer.getPixelRatio(),
         basePixelRatio: e.basePixelRatio,
+        internalScale: e.internalScale,
+        effectivePixelRatio: e.basePixelRatio * e.resolutionScale * e.internalScale,
         buffer: [renderer.domElement.width, renderer.domElement.height],
         megapixels: +((renderer.domElement.width * renderer.domElement.height) / 1e6).toFixed(2),
+        internalMegapixels: +((renderer.domElement.width * renderer.domElement.height
+          * e.internalScale * e.internalScale) / 1e6).toFixed(2),
         devicePixelRatio: window.devicePixelRatio,
         gpuTimerQuery: !!ext,
         gpu: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null,
@@ -727,7 +854,8 @@ const knobs = await page.evaluate(() => ({ names: window.__ab.knobs, groups: win
 
 console.log('\n── configuration ────────────────────────────────────────────');
 console.log(`viewport   ${W}x${H} css @ dpr ${DPR}   ->  ${env.buffer[0]}x${env.buffer[1]} (${env.megapixels} MP)`);
-console.log(`quality    ${env.quality}   pixelRatio ${env.pixelRatio}   shadowMap ${env.shadowMapSize}`);
+console.log(`quality    ${env.quality}   pixelRatio ${env.pixelRatio}   internal ${env.internalScale.toFixed(3)} ` +
+            `(${env.effectivePixelRatio.toFixed(2)}x, ${env.internalMegapixels} MP)   shadowMap ${env.shadowMapSize}`);
 console.log(`gpu        ${env.gpu ?? 'unknown'}   timerQuery ${env.gpuTimerQuery}`);
 
 const sleep = (ms) => page.waitForTimeout(ms);
@@ -738,7 +866,7 @@ const sleep = (ms) => page.waitForTimeout(ms);
 // the drawing buffer, measured at 450-2500 ms in Engine.js. Measuring those
 // transitions instead of the steady state is the classic way to get an ablation
 // exactly backwards.
-const SLOW_FLIP = /^(px\.|tier\.|fx\.shadows$|fx\.bloom$|fx\.smaa$|fx\.dof$|fx\.grade$|fx\.shadowRes1k$|fx\.physicalSpec$|fx\.shadeOnly$)/;
+const SLOW_FLIP = /^(px\.|tier\.|fx\.shadows$|fx\.bloom$|fx\.smaa$|fx\.dof$|fx\.grade$|fx\.shadowRes(1k|3k)$|fx\.physicalSpec$|fx\.shadeOnly$|fx\.terrainBasic$|fx\.terrainFast$|fx\.ssaoLite$)/;
 const warmFor = (offList, prevOff) => {
   const changed = [...new Set([...offList, ...prevOff])].filter(
     (n) => offList.includes(n) !== prevOff.includes(n));
@@ -861,7 +989,7 @@ for (const mode of MODES) {
   // every arm after it is compared against a lighter world. __settleStable
   // holds until the drawn triangle and draw-call counts stop moving, which is
   // what "streaming has caught up" actually means.
-  const settled = await page.evaluate(() => window.__settleStable(400, 30));
+  const settled = await page.evaluate(() => window.__settleStable());
   await sleep(1500);
   // A frame-time number is meaningless without the frame it was measured on.
   // The first version of this had no shot, and two runs of the same command
@@ -907,7 +1035,11 @@ for (const mode of MODES) {
       arms.push({ name: `+ ${n}`, off: [...remaining] });
     }
   } else {
-    arms = [...LOO.filter((a) => a.name !== 'baseline'), { name: 'FLOOR (all off)', off: FLOOR }];
+    arms = LOO.filter((a) => a.name !== 'baseline');
+    // An explicit --only run should measure only what was requested. Appending
+    // the synthetic floor doubled short diagnostic runs and introduced large
+    // state flips between every requested arm and its paired baseline.
+    if (!ONLY) arms.push({ name: 'FLOOR (all off)', off: FLOOR });
   }
 
   const { out: rows, drift, baseSplit } = await sweep(arms, mode);

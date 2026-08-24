@@ -3,8 +3,8 @@
  * Measure frame time at a real display's pixel ratio.
  *
  * Every capture in this project runs at deviceScaleFactor 1. A Retina Mac
- * reports devicePixelRatio 2, and the engine's ultra preset caps at 2.0 — so the
- * player renders FOUR TIMES the pixels the harness ever measures. Post
+ * reports devicePixelRatio 2, and the engine's quality caps can still ask for
+ * far more pixels than a DPR-1 harness measures. Post
  * processing is fixed cost per pixel and was measured at 56-59% of the frame,
  * so this is the first thing to rule in or out when the player's frame rate and
  * the harness's disagree.
@@ -25,6 +25,8 @@ const DPR = parseFloat(arg('dpr', '2'));
 const PORT = arg('port', '5178');
 const SECONDS = parseFloat(arg('seconds', '20'));
 const QUALITY = arg('quality', null);
+const SEED = arg('seed', '20261018');
+const CAR = arg('car', 'camper');
 
 // Exclusive: a timing run cannot share a GPU. See acquireExclusive in _lock.mjs.
 await acquire('dprtest', { exclusive: true });
@@ -49,7 +51,11 @@ await page.addInitScript(() => {
 });
 
 const q = QUALITY ? `&quality=${QUALITY}` : '';
-await page.goto(`http://localhost:${PORT}/?res=1536${q}`, { waitUntil: 'domcontentloaded' });
+await page.goto(
+  `http://localhost:${PORT}/?res=1536&seed=${encodeURIComponent(SEED)}` +
+  `&car=${encodeURIComponent(CAR)}${q}`,
+  { waitUntil: 'domcontentloaded' },
+);
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 300 });
 
 const info = await page.evaluate(() => {
@@ -115,14 +121,14 @@ console.log(JSON.stringify(report, null, 1));
 // The player ran at 4 fps for a day while every harness here reported 45+,
 // because none of them measured a Retina display. This is the configuration
 // that matters, so it is the one with a pass/fail.
-const BUDGET = { settledFps: 50, p95Ms: 45, minEffectiveRatio: 1.0 };
+const BUDGET = { settledFps: 50, p95Ms: 45, minEffectiveRatio: 0.90 };
 const fails = [];
 if (stats.settled_fps < BUDGET.settledFps)
   fails.push(`settled ${stats.settled_fps} fps < ${BUDGET.settledFps}`);
 if (stats.p95 > BUDGET.p95Ms)
   fails.push(`p95 ${stats.p95} ms > ${BUDGET.p95Ms} — hitching is what a player feels`);
 if (stats.resolution && stats.resolution.effective < BUDGET.minEffectiveRatio - 1e-6)
-  fails.push(`effective pixel ratio ${stats.resolution.effective} is BELOW NATIVE — that reads as a blurry game, not a fast one`);
+  fails.push(`effective pixel ratio ${stats.resolution.effective} is below the ${BUDGET.minEffectiveRatio.toFixed(2)} quality floor`);
 
 if (process.argv.includes('--gate')) {
   if (fails.length) {

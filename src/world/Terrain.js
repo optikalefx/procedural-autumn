@@ -276,7 +276,9 @@ export class Terrain {
     // caller passes its own schedule.
     this.lodDistances = opts.lodDistances ?? LOD_DISTANCES;
 
-    this.material = createTerrainMaterial(world);
+    this.material = createTerrainMaterial(world, {
+      detailDistance: opts.detailDistance,
+    });
     this.material.side = THREE.FrontSide;
 
     this.group = new THREE.Group();
@@ -309,6 +311,10 @@ export class Terrain {
    * frames at 3 ms each and a tier change does not itself become a hitch.
    */
   onQuality(preset, name) {
+    const detail = this.material.userData.uniforms?.uDetailDistance;
+    if (detail && Number.isFinite(preset?.terrainDetailDistance)) {
+      detail.value = preset.terrainDetailDistance;
+    }
     const s = LOD_TIER_SCALE[name] ?? 1;
     if (s === this._lodScale) return;
     this._lodScale = s;

@@ -1095,9 +1095,9 @@ void main() {
 // number to plan against, because it was measured before the pixel-ratio fix
 // and before adaptive resolution. The post chain is fixed cost per pixel, so
 // when the pixel count fell the whole term fell with it. The reporting player
-// renders 1.02 MP (a ~1170x870 window at an effective ratio of 1.0, which is
-// the hard floor — anything below native reads as "blurry", so the scaler may
-// not go there).
+// rendered 1.02 MP (a ~1170x870 window at the then-current effective ratio of
+// 1.0). That is the historical measurement configuration; the current quality-
+// biased adaptive policy is defined in WorldConfig.ADAPTIVE_RESOLUTION.
 //
 // Measured at exactly that: 1.02 MP, driving, one effect removed at a time,
 // arms alternated every ~34 frames inside one page load so that this shared
@@ -1143,9 +1143,11 @@ void main() {
 // for *sampling rates*, which is what the rest of a tier drop should be. This
 // table is that vocabulary, and it lives here because these are post decisions.
 //
-// `medium` and `low` inherit `ssao: true/false` and `dof: false` from the
-// preset, so the effects they drop are dropped by the preset. What this adds is
-// that a tier they *keep* an effect at is a cheaper version of it.
+// SSAO is currently disabled in every shipping preset after a paired run found
+// it consumed 22% of the Ultra frame for no perceptible change across three
+// canonical plates. The implementation and its sampling ladder remain here as
+// an instrument: if the look changes enough to need AO later, it can be priced
+// and restored without reconstructing the pass from scratch.
 //
 // Nothing here softens the image at any tier: SMAA and the guard pass are
 // present at every tier, and no tier lowers a render resolution. A tier drop
@@ -1348,11 +1350,11 @@ export class PostFX {
   /**
    * Render the scene and the post chain at `s` times the presented resolution.
    *
-   * The canvas never changes size here — only offscreen targets do — so this
-   * is cheap enough for the adaptive scaler to call freely. That is the fix
-   * for the 450–2500 ms drawing-buffer reallocation freezes documented in
-   * Engine._adapt; the open item in docs/FREEZE_ROUND.md asked for exactly
-   * "dynamic resolution that does not reallocate the drawing buffer".
+   * The canvas never changes size here — only offscreen targets do. This is
+   * much cheaper than the former 450–2500 ms drawing-buffer reallocation, but
+   * it is not free: reallocating the whole composer graph still measured near
+   * 300 ms on ANGLE/Metal in a real drive. Engine therefore changes this only
+   * under genuine strain and caps recovery at the boot target.
    *
    * At s = 1 the upscale pass is switched off and the chain presents exactly
    * as it always did.
@@ -1408,9 +1410,9 @@ export class PostFX {
    * field were decided once, in the constructor, so the only thing a tier drop
    * actually changed here was the pixel ratio. That left a player with no
    * working escape hatch, which matters more now than any single cut — the
-   * adaptive scaler is pinned at its floor on the reporting player's machine
-   * (effective ratio 1.0, which is a hard minimum because anything below native
-   * reads as "blurry"), so the tier is the *only* lever left.
+   * adaptive scaler was pinned at its floor on the reporting player's machine,
+   * so the tier was the *only* lever left. The exact current floor belongs to
+   * WorldConfig.ADAPTIVE_RESOLUTION rather than this historical account.
    */
   onQuality(preset, name) {
     if (!preset) return;

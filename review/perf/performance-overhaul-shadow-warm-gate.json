@@ -1,0 +1,134 @@
+{
+ "seconds": 12,
+ "res": "1536",
+ "viewport": [
+  1170,
+  870
+ ],
+ "frames": 961,
+ "p50": 12.7,
+ "p95": 24,
+ "p99": 28.2,
+ "worstMs": 38.6,
+ "worstAtS": 3.8,
+ "hitch33": 1,
+ "hitch50": 0,
+ "hitch100": 0,
+ "settledP50": 12.4,
+ "settledP95": 23.5,
+ "maxCalls": 644,
+ "maxTris": 6731982,
+ "growth": {
+  "geometries": 151,
+  "textures": 9,
+  "programs": 0
+ },
+ "addedPrograms": [],
+ "programEvents": [],
+ "resolution": {
+  "scale": 1,
+  "internalScale": 0.833,
+  "basePixelRatio": 1.5,
+  "presented": 1.5,
+  "effective": 1.25,
+  "megapixels": 1.59,
+  "presentedMegapixels": 2.29
+ },
+ "worstFrames": [
+  {
+   "atS": 3.8,
+   "ms": 38.6,
+   "calls": 610,
+   "tris": 5865162,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.6,
+   "ms": 31.1,
+   "calls": 619,
+   "tris": 6280279,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 6.8,
+   "ms": 31,
+   "calls": 605,
+   "tris": 6539650,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 17.9,
+   "ms": 30.3,
+   "calls": 623,
+   "tris": 6112577,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.1,
+   "ms": 30.2,
+   "calls": 608,
+   "tris": 6358912,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.6,
+   "ms": 29.8,
+   "calls": 604,
+   "tris": 6196098,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.4,
+   "ms": 28.7,
+   "calls": 618,
+   "tris": 6233346,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 13.9,
+   "ms": 28.5,
+   "calls": 588,
+   "tris": 6172549,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 8.1,
+   "ms": 28.3,
+   "calls": 612,
+   "tris": 6018804,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  },
+  {
+   "atS": 7.3,
+   "ms": 28.2,
+   "calls": 608,
+   "tris": 6242612,
+   "prog": 123,
+   "iscale": 0.833,
+   "quality": "ultra"
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": []
+}

@@ -62,7 +62,15 @@ export class PhotoMode {
     this.rail = rail;
 
     rail.addEventListener('keydown', (e) => {
-      if (e.code === 'Escape') { this.setActive(false); return; }
+      if (e.code === 'Escape' || e.code === 'KeyF') {
+        // Go through HUD so its root/chip classes stay in sync with the mode.
+        // Calling setActive directly leaves `pa-photo` stuck on the root and
+        // hides the rest of the interface after Escape closes the rail. F
+        // needs the same local path because the HUD ignores keys from controls.
+        this.hud.togglePhoto();
+        e.preventDefault();
+        return;
+      }
       e.stopPropagation();
     });
     rail.addEventListener('keyup', (e) => e.stopPropagation());
@@ -135,9 +143,9 @@ export class PhotoMode {
     this.node.classList.toggle('pa-open', on);
     const rig = this.ctx.systems?.cameraRig;
     // Whatever happens below, the controls come back. This runs on both exit
-    // paths — `hud.togglePhoto` and the rail's own Escape handler, which does
-    // not go through the HUD at all — and a photo mode that could be left with
-    // the throttle still suppressed would be a soft lock.
+    // paths — the HUD toggle and the rail's Escape handler, which delegates to
+    // that same toggle — and a photo mode that could be left with the throttle
+    // still suppressed would be a soft lock.
     if (!on && this.ctx.input) this.ctx.input.suppressed = false;
 
     if (on) {

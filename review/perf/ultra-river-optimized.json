@@ -1,0 +1,133 @@
+{
+ "env": {
+  "quality": "ultra",
+  "pixelRatio": 1.5,
+  "basePixelRatio": 1.5,
+  "internalScale": 0.7666666666666666,
+  "effectivePixelRatio": 1.15,
+  "buffer": [
+   1755,
+   1305
+  ],
+  "megapixels": 2.29,
+  "internalMegapixels": 1.35,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 4096,
+  "preset": {
+   "shadowMapSize": 4096,
+   "cascades": 4,
+   "grassMul": 1,
+   "ssao": true,
+   "dof": false,
+   "volumetric": true,
+   "reflections": true,
+   "pixelRatioCap": 1.5,
+   "treeMul": 1,
+   "terrainDetailDistance": 0
+  }
+ },
+ "viewport": [
+  1170,
+  870
+ ],
+ "dpr": 2,
+ "rounds": 3,
+ "blockMs": 2000,
+ "modes": {
+  "motion": {
+   "rows": [
+    {
+     "name": "fx.terrainFast",
+     "p50": 21.6,
+     "base": 15.05,
+     "save": -6.7,
+     "spread": 0.65,
+     "fps": 46.3,
+     "p95": 44,
+     "updMs": 3.8,
+     "lateMs": 0.06,
+     "submitMs": 17.89,
+     "calls": 568,
+     "tris": 4598880
+    },
+    {
+     "name": "px.iscale100",
+     "p50": 19.4,
+     "base": 14.9,
+     "save": -4.5,
+     "spread": 0.3,
+     "fps": 51.5,
+     "p95": 37.2,
+     "updMs": 3.48,
+     "lateMs": 0.05,
+     "submitMs": 15.66,
+     "calls": 566,
+     "tris": 4607274
+    },
+    {
+     "name": "fx.postAll",
+     "p50": 12.4,
+     "base": 14.8,
+     "save": 2.6,
+     "spread": 0.35,
+     "fps": 80.6,
+     "p95": 23.6,
+     "updMs": 2.18,
+     "lateMs": 0.05,
+     "submitMs": 9.8,
+     "calls": 516,
+     "tris": 4371142
+    },
+    {
+     "name": "fx.postEffects",
+     "p50": 10.4,
+     "base": 14.8,
+     "save": 4.5,
+     "spread": 0.2,
+     "fps": 96.2,
+     "p95": 20.2,
+     "updMs": 1.98,
+     "lateMs": 0.06,
+     "submitMs": 8.04,
+     "calls": 517,
+     "tris": 4375947
+    },
+    {
+     "name": "fx.shadows",
+     "p50": 10.8,
+     "base": 14.95,
+     "save": 3.95,
+     "spread": 0.4,
+     "fps": 92.6,
+     "p95": 20.7,
+     "updMs": 2.26,
+     "lateMs": 0.06,
+     "submitMs": 8.54,
+     "calls": 344,
+     "tris": 3469199
+    }
+   ],
+   "drift": {
+    "n": 18,
+    "min": 14.5,
+    "max": 15.4,
+    "median": 14.9,
+    "first": 15.4,
+    "last": 14.7
+   },
+   "baseSplit": {
+    "updMs": 2.71,
+    "lateMs": 0.06,
+    "submitMs": 11.96
+   },
+   "settled": {
+    "frames": 142,
+    "triangles": 4660113,
+    "calls": 582,
+    "converged": true
+   }
+  }
+ }
+}

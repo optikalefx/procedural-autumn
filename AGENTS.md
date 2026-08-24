@@ -117,7 +117,7 @@ Its header is the authoritative method description; the short version:
 
 `draw.<system>` hides geometry; `cpu.<system>` stops an update();
 `fx.<feature>` toggles a render feature; `px.<scale>` / `tier.<name>` change
-pixel count or preset. Two families deserve special care:
+pixel count or preset. Three families deserve special care:
 
 - **`fx.flatShade` is a broken instrument.** It uses `scene.overrideMaterial`,
   which replaces vertex shaders too — grass, ground cover and the tree canopy
@@ -141,10 +141,11 @@ pixel count or preset. Two families deserve special care:
 Since 2026-08-22 the scene and the entire post chain render at
 `engine.internalScale` × the canvas and are reconstructed to the canvas by a
 Catmull-Rom + contrast-adaptive-sharpen pass (`src/render/UpscalePass.js`).
-The default is one device pixel per CSS pixel of internal cost, presented at
-the tier's `pixelRatioCap`; the adaptive scaler moves the internal scale (no
-drawing-buffer reallocation, so no freeze per step; floor
-`Engine.minEffectiveInternalRatio`).
+The default is 1.15 device pixels per CSS pixel of internal cost (clamped to
+the presented ratio), and the strain-only floor is 0.90. The adaptive scaler
+aims for 50 fps and moves the internal scale without drawing-buffer
+reallocation, so there is no freeze per step. The policy lives in
+`WorldConfig.ADAPTIVE_RESOLUTION`.
 
 URL parameters every harness can use:
 

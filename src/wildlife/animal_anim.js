@@ -177,6 +177,7 @@ export class AnimRig {
     } : null;
 
     this.root = this.bones[this.info.iRoot];
+    this.pelvis = this.bones[this.info.iPelvis];
     this.chest = this.bones[this.info.iChest];
     this.head = this.bones[this.info.iHead];
     this.spineB = this.info.spine.map((i) => this.bones[i]);
@@ -464,10 +465,22 @@ export class AnimRig {
     this.bodyPitch = damp(this.bodyPitch, pitchGround, 9, dt);
     this.bodyRoll = damp(this.bodyRoll, rollGround, 9, dt);
 
-    this.root.position.y = bob + flightY;
-    this.root.rotation.x = this.bodyPitch + this.surge + drive.graze * 0.20 +
-      Math.sin(this.phase * Math.PI * 2 - 0.55) * this.cfg.pitchAmp * (G.pitch ?? 1) * sn;
-    this.root.rotation.z = this.bodyRoll;
+    this.root.position.set(0, bob + flightY, 0);
+    this.root.rotation.set(
+      this.bodyPitch + this.surge + drive.graze * 0.20 +
+        Math.sin(this.phase * Math.PI * 2 - 0.55) * this.cfg.pitchAmp * (G.pitch ?? 1) * sn,
+      0,
+      this.bodyRoll,
+    );
+
+    // The camp dog's authored sit bends the pelvis itself. It is blended over
+    // this solver after update(), so every joint the pose can touch must start
+    // from a clean locomotion answer on the next frame. Pelvis was the sole
+    // omission: its -0.44 rad sit bend accumulated, survived the rise, and made
+    // the neck IK counter-rotate the head sharply backward on the following
+    // walk. Resetting the joint here restores the same stateless contract the
+    // spine, neck and legs already have.
+    this.pelvis.rotation.set(0, 0, 0);
 
     // Spine flex: the back gathers and extends through a bound, and breathes at
     // rest. Small numbers — a quadruped's back barely moves, and overdoing it
@@ -475,8 +488,11 @@ export class AnimRig {
     const flex = (G.flight > 0 ? Math.sin(this.phase * Math.PI * 2 - 1.2) * 0.125 * sn : 0) + breathe;
     for (let i = 0; i < this.spineB.length; i++) {
       const last = i === this.spineB.length - 1;
-      this.spineB[i].rotation.x = flex * (last ? 0.65 : 1);
-      this.spineB[i].rotation.y = G.flight > 0 ? 0 : Math.sin(this.phase * Math.PI * 2 + i) * 0.022 * sn;
+      this.spineB[i].rotation.set(
+        flex * (last ? 0.65 : 1),
+        G.flight > 0 ? 0 : Math.sin(this.phase * Math.PI * 2 + i) * 0.022 * sn,
+        0,
+      );
     }
 
     // Bones above the legs are now final, so world matrices are valid for both

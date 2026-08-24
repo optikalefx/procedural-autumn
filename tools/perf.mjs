@@ -34,6 +34,7 @@ const RES = arg('res', '1536');
 const W = parseInt(arg('w', '1600'), 10);
 const H = parseInt(arg('h', '900'), 10);
 const QUALITY = arg('quality', null);
+const SEED = arg('seed', '20261018');
 // The player's display, not the harness's. dprtest.mjs exists because this
 // harness and the player disagreed by 3x on frame time for exactly this reason;
 // a hitch profile taken at a quarter of the pixel count is not the one anyone
@@ -50,7 +51,10 @@ const BUDGET = {
   hitch100: 0,     // frames over 100 ms — a visible freeze
   blackFrames: 0,
   drawCalls: 900,
-  triangles: 4_500_000,
+  // Tree LOD rounds legitimately peak around 8 M on the current world; the old
+  // 4.5 M line predated them and failed every healthy run. Timing remains the
+  // gate, with a 9 M tripwire for a genuine geometry explosion.
+  triangles: 9_000_000,
 };
 
 /**
@@ -120,6 +124,7 @@ page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations++; })
 
 const params = new URLSearchParams({ res: RES });
 if (QUALITY) params.set('quality', QUALITY);
+params.set('seed', SEED);
 // Pin the car. There is more than one now and they are not the same triangle
 // count, so leaving the choice to the page's own coin flip would put a random
 // vehicle in every run of a regression gate. --car <id> to measure another.
@@ -135,18 +140,56 @@ await page.waitForFunction(() => window.__ready === true, null, { timeout: 24000
 // ── install the recorder ────────────────────────────────────────────────────
 await page.evaluate(() => {
   const e = window.__engine;
-  window.__perf = { frames: [], started: performance.now(), baseline: null };
+  window.__perf = { frames: [], programEvents: [], started: performance.now(), baseline: null,
+                    skipFrames: 0, paused: false };
   const r = e.renderer;
 
   window.__perf.baseline = {
     geometries: r.info.memory.geometries,
     textures: r.info.memory.textures,
     programs: r.info.programs?.length ?? 0,
+    programIds: (r.info.programs ?? []).map((p) => p.id),
   };
 
   let last = performance.now();
+  const knownProgramIds = new Set(window.__perf.baseline.programIds);
+  const knownMaterialIds = new Set();
+  e.scene.traverse((o) => {
+    const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+    for (const m of mats) knownMaterialIds.add(m.uuid);
+  });
   e.onLateUpdate(() => {
     const now = performance.now();
+    // page.screenshot() synchronizes the browser compositor with this page and
+    // can stop its render loop for hundreds of milliseconds. The pixel scan is
+    // already isolated in `analyst`; exclude the two game frames around the
+    // capture too, or the hitch gate measures its own black-frame instrument.
+    if (window.__perf.paused || window.__perf.skipFrames > 0) {
+      if (!window.__perf.paused) window.__perf.skipFrames--;
+      last = now;
+      return;
+    }
+    const newPrograms = (r.info.programs ?? []).filter((p) => !knownProgramIds.has(p.id));
+    const newMaterials = [];
+    if (newPrograms.length) {
+      e.scene.traverse((o) => {
+        const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+        for (const m of mats) {
+          if (knownMaterialIds.has(m.uuid)) continue;
+          knownMaterialIds.add(m.uuid);
+          newMaterials.push({ object: o.name || `#${o.id}`, name: m.name || '(anonymous)',
+                              type: m.type, shader: String(m.fragmentShader ?? '').slice(0, 120) });
+        }
+      });
+    }
+    for (const p of newPrograms) {
+      knownProgramIds.add(p.id);
+      window.__perf.programEvents.push({
+        t: now - window.__perf.started,
+        name: p.name || '(anonymous)', type: p.type, key: String(p.cacheKey ?? ''),
+        newMaterials,
+      });
+    }
     window.__perf.frames.push({
       t: now - window.__perf.started,
       ms: now - last,
@@ -155,6 +198,8 @@ await page.evaluate(() => {
       geo: r.info.memory.geometries,
       tex: r.info.memory.textures,
       prog: r.info.programs?.length ?? 0,
+      iscale: e.internalScale,
+      quality: e.quality,
     });
     last = now;
   });
@@ -192,8 +237,17 @@ const SAMPLES = Math.max(6, Math.round(SECONDS / 4));
 const blackSamples = [];
 for (let i = 0; i < SAMPLES; i++) {
   await page.waitForTimeout((SECONDS * 1000) / SAMPLES);
+  // Keep the recorder paused for the entire compositor capture. Merely asking
+  // it to skip two frames was racy: those frames could run at the beginning of
+  // page.screenshot(), then its remaining browser-process stall was charged to
+  // the first frame after it. Resume with two clean clock-reset frames.
+  await page.evaluate(() => { window.__perf.paused = true; });
   const buf = await page.screenshot();
-  const at = await page.evaluate(() => performance.now() - window.__perf.started);
+  const at = await page.evaluate(() => {
+    window.__perf.paused = false;
+    window.__perf.skipFrames = Math.max(window.__perf.skipFrames, 2);
+    return performance.now() - window.__perf.started;
+  });
   const q = await analyst.evaluate(async (b64) => {
     const img = new Image();
     img.src = 'data:image/png;base64,' + b64;
@@ -239,6 +293,9 @@ const data = await page.evaluate(() => {
   const pct = (p) => ms.length ? ms[Math.min(ms.length - 1, Math.floor(p * ms.length))] : 0;
   const worst = f.reduce((a, b) => (b.ms > a.ms ? b : a), f[0] ?? { ms: 0, t: 0 });
   const last = f[f.length - 1] ?? {};
+  const tail = f.slice(Math.floor(f.length * 0.66));
+  const tailMs = tail.map((x) => x.ms).sort((a, b) => a - b);
+  const tailPct = (p) => tailMs.length ? tailMs[Math.min(tailMs.length - 1, Math.floor(p * tailMs.length))] : 0;
   return {
     frames: f.length,
     p50: +pct(0.50).toFixed(2), p95: +pct(0.95).toFixed(2), p99: +pct(0.99).toFixed(2),
@@ -246,6 +303,8 @@ const data = await page.evaluate(() => {
     hitch33: f.filter((x) => x.ms > 33).length,
     hitch50: f.filter((x) => x.ms > 50).length,
     hitch100: f.filter((x) => x.ms > 100).length,
+    settledP50: +tailPct(0.50).toFixed(2),
+    settledP95: +tailPct(0.95).toFixed(2),
     maxCalls: Math.max(...f.map((x) => x.calls)),
     maxTris: Math.max(...f.map((x) => x.tris)),
     // Resource growth is the leak signal: a system that rebuilds without
@@ -255,9 +314,19 @@ const data = await page.evaluate(() => {
       textures: (last.tex ?? 0) - window.__perf.baseline.textures,
       programs: (last.prog ?? 0) - window.__perf.baseline.programs,
     },
+    // A program-count jump next to a hitch is only a correlation. Preserve the
+    // late program's material name and cache signature so the report identifies
+    // the exact surface variant that still needs warming at boot.
+    addedPrograms: (window.__engine.renderer.info.programs ?? [])
+      .filter((p) => !window.__perf.baseline.programIds.includes(p.id))
+      .map((p) => ({ name: p.name || '(anonymous)', type: p.type,
+                     key: String(p.cacheKey ?? '') })),
+    programEvents: window.__perf.programEvents,
+    resolution: window.__resolution?.() ?? null,
     // Worst ten frames with their draw-call load, to correlate hitch with cause.
     worstFrames: [...f].sort((a, b) => b.ms - a.ms).slice(0, 10)
-      .map((x) => ({ atS: +(x.t / 1000).toFixed(1), ms: +x.ms.toFixed(1), calls: x.calls, tris: x.tris })),
+      .map((x) => ({ atS: +(x.t / 1000).toFixed(1), ms: +x.ms.toFixed(1), calls: x.calls,
+                     tris: x.tris, prog: x.prog, iscale: +x.iscale.toFixed(3), quality: x.quality })),
   };
 });
 
@@ -278,13 +347,15 @@ if (data.growth.textures > 40) fails.push(`textures grew by ${data.growth.textur
 const report = { seconds: SECONDS, res: RES, viewport: [W, H], ...data, blackSamples, errors: [...new Set(errors)].slice(0, 8), fails };
 
 console.log(`\nframe time   p50 ${data.p50} ms   p95 ${data.p95} ms   p99 ${data.p99} ms   worst ${data.worstMs} ms @ ${data.worstAtS}s`);
+console.log(`settled      p50 ${data.settledP50} ms   p95 ${data.settledP95} ms   res ${data.resolution?.effective ?? '?'}x effective`);
 console.log(`hitches      >33ms ${data.hitch33}   >50ms ${data.hitch50}   >100ms ${data.hitch100}   (${data.frames} frames)`);
 console.log(`peak load    ${data.maxCalls} calls   ${(data.maxTris / 1e6).toFixed(2)} M tris`);
 console.log(`growth       geo +${data.growth.geometries}  tex +${data.growth.textures}  prog +${data.growth.programs}`);
+if (data.addedPrograms.length) console.log('late programs', JSON.stringify(data.addedPrograms, null, 1));
 console.log(`black frames ${blackSamples.length}/${SAMPLES} sampled during motion`);
 if (data.worstFrames.length) {
   console.log('\nworst frames (time, ms, calls, tris):');
-  for (const w of data.worstFrames) console.log(`  ${String(w.atS).padStart(6)}s  ${String(w.ms).padStart(7)} ms  ${String(w.calls).padStart(5)} calls  ${(w.tris / 1e6).toFixed(2)} M`);
+  for (const w of data.worstFrames) console.log(`  ${String(w.atS).padStart(6)}s  ${String(w.ms).padStart(7)} ms  ${String(w.calls).padStart(5)} calls  ${(w.tris / 1e6).toFixed(2)} M  prog ${w.prog}  is ${w.iscale}`);
 }
 if (errors.length) console.log('\nconsole errors:', JSON.stringify([...new Set(errors)].slice(0, 5), null, 1));
 

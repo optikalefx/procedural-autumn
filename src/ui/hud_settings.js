@@ -9,9 +9,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { CARS } from '../vehicle/vehicle_models.js';
+import { CYCLE_SPEEDS, QUALITY_TIERS } from '../world/WorldConfig.js';
 
-const QUALITIES = ['ultra', 'high', 'medium', 'low'];
-const CYCLES = [['Frozen', 0], ['Slow', 0.06], ['Fast', 0.35]];
+const CYCLES = [
+  ['Frozen', CYCLE_SPEEDS.frozen],
+  ['Slow', CYCLE_SPEEDS.slow],
+  ['Fast', CYCLE_SPEEDS.fast],
+];
 const HUD_MODES = [['Full', 1], ['Dim', 0.45], ['Off', 0]];
 
 const hhmm = (h) => {
@@ -45,7 +49,7 @@ export class Settings {
     this.pageSettings.appendChild(head);
 
     this.pageSettings.appendChild(this._group('Picture', [
-      this._seg('Quality', QUALITIES.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
+      this._seg('Quality', QUALITY_TIERS.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
         () => hud.quality, (v) => hud.applyQuality(v)),
     ]));
 
@@ -102,7 +106,7 @@ export class Settings {
       ['M', 'mute'],
       ['H', 'hide interface'],
       ['F3', 'fps readout'],
-      ['Esc', 'settings / close'],
+      ['~', 'settings / close'],
     ];
     const keys = el('div', 'pa-keys');
     for (const [k, desc] of KEYS) {
@@ -118,6 +122,12 @@ export class Settings {
     // Keys typed into the sheet must not also drive the camper: Input listens
     // on window during the bubble phase, so stopping here is enough.
     this.node.addEventListener('keydown', (e) => {
+      if (e.code === 'Backquote') {
+        this.hud.toggleSettings();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (e.code === 'Escape') {
         // Esc backs out one layer at a time: controls → settings → closed.
         if (this.page === 'controls') { this._showPage('settings'); e.stopPropagation(); return; }

@@ -1,0 +1,95 @@
+{
+ "seconds": 45,
+ "res": "1536",
+ "viewport": [
+  1170,
+  870
+ ],
+ "frames": 3562,
+ "p50": 16.2,
+ "p95": 32.4,
+ "p99": 38.2,
+ "worstMs": 302.4,
+ "worstAtS": 52.4,
+ "hitch33": 158,
+ "hitch50": 6,
+ "hitch100": 3,
+ "maxCalls": 697,
+ "maxTris": 7913672,
+ "growth": {
+  "geometries": 178,
+  "textures": 16,
+  "programs": 6
+ },
+ "worstFrames": [
+  {
+   "atS": 52.4,
+   "ms": 302.4,
+   "calls": 634,
+   "tris": 6513109
+  },
+  {
+   "atS": 1.5,
+   "ms": 301.5,
+   "calls": 631,
+   "tris": 6048043
+  },
+  {
+   "atS": 6.6,
+   "ms": 298.3,
+   "calls": 624,
+   "tris": 6365873
+  },
+  {
+   "atS": 41.2,
+   "ms": 61.6,
+   "calls": 646,
+   "tris": 7743925
+  },
+  {
+   "atS": 23.4,
+   "ms": 50.5,
+   "calls": 684,
+   "tris": 6630966
+  },
+  {
+   "atS": 17.6,
+   "ms": 50.2,
+   "calls": 659,
+   "tris": 6697725
+  },
+  {
+   "atS": 58.4,
+   "ms": 48.8,
+   "calls": 651,
+   "tris": 6168953
+  },
+  {
+   "atS": 24.2,
+   "ms": 48.7,
+   "calls": 684,
+   "tris": 7018500
+  },
+  {
+   "atS": 46.2,
+   "ms": 48.5,
+   "calls": 697,
+   "tris": 7219257
+  },
+  {
+   "atS": 1.1,
+   "ms": 48,
+   "calls": 621,
+   "tris": 5779320
+  }
+ ],
+ "blackSamples": [],
+ "errors": [
+  "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured."
+ ],
+ "fails": [
+  "p95 32.4 ms > 25",
+  "3 frames over 100 ms — visible freezes",
+  "peak 7.91 M triangles > 4.5 M"
+ ]
+}
