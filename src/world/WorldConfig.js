@@ -89,9 +89,15 @@ export const PALETTE = {
 };
 
 // ── Time of day presets (index by keyframe hour) ─────────────────────────────
+export const CYCLE_SPEEDS = {
+  frozen: 0.0,
+  slow: 0.06,
+  fast: 0.35,
+};
+
 export const TOD = {
   hour: 16.6,            // late-afternoon golden hour by default
-  cycleSpeed: 0.0,       // hours per second; 0 = frozen. Tunable in the HUD.
+  cycleSpeed: CYCLE_SPEEDS.slow, // hours per second. Tunable in the HUD.
   sunAzimuth: 2.32,      // radians
 };
 
@@ -150,3 +156,5 @@ export const QUALITY_PRESETS = {
   medium: { shadowMapSize: 2048, cascades: 3, grassMul: 0.55, ssao: true,  dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.15, treeMul: 0.7 },
   low:    { shadowMapSize: 1024, cascades: 2, grassMul: 0.3,  ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.0,  treeMul: 0.5 },
 };
+
+export const QUALITY_TIERS = Object.freeze(Object.keys(QUALITY_PRESETS));

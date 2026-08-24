@@ -880,8 +880,7 @@ export class Atmosphere {
     this.scene.fog.color.copy(p.nearColor);
 
     // The massif field is world-space and sun-driven only, so it rebuilds when
-    // the sun moves and not per frame. cycleSpeed is 0 by default, so in a
-    // shipped run and in every capture this is one 0.5 ms build at boot.
+    // the sun moves enough to matter rather than once per frame.
     if (!this.massif.ready) {
       if (this.massif.bind(globalThis.__world)) {
         p.massifMap = this.massif.texture;

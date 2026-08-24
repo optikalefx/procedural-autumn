@@ -1,6 +1,6 @@
 // Renderer, scene graph root, camera, resize handling and the frame loop.
 import * as THREE from 'three';
-import { QUALITY_PRESETS } from '../world/WorldConfig.js';
+import { QUALITY_PRESETS, QUALITY_TIERS } from '../world/WorldConfig.js';
 
 export class Engine {
   constructor(canvas, quality = 'ultra') {
@@ -341,10 +341,9 @@ export class Engine {
   /** Drop one quality band. Returns whether it moved. */
   _stepQualityDown(p80) {
     if (!this.autoQuality) return false;
-    const ORDER = ['ultra', 'high', 'medium', 'low'];
-    const i = ORDER.indexOf(this.quality);
-    if (i < 0 || i === ORDER.length - 1) return false;
-    const next = ORDER[i + 1];
+    const i = QUALITY_TIERS.indexOf(this.quality);
+    if (i < 0 || i === QUALITY_TIERS.length - 1) return false;
+    const next = QUALITY_TIERS[i + 1];
     console.warn(`[engine] ${p80.toFixed(0)} ms/frame at minimum resolution — ` +
                  `dropping quality ${this.quality} -> ${next}`);
     this._autoDropped = true;

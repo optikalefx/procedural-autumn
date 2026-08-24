@@ -9,9 +9,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { CARS } from '../vehicle/vehicle_models.js';
+import { CYCLE_SPEEDS, QUALITY_TIERS } from '../world/WorldConfig.js';
 
-const QUALITIES = ['ultra', 'high', 'medium', 'low'];
-const CYCLES = [['Frozen', 0], ['Slow', 0.06], ['Fast', 0.35]];
+const CYCLES = [
+  ['Frozen', CYCLE_SPEEDS.frozen],
+  ['Slow', CYCLE_SPEEDS.slow],
+  ['Fast', CYCLE_SPEEDS.fast],
+];
 const HUD_MODES = [['Full', 1], ['Dim', 0.45], ['Off', 0]];
 
 const hhmm = (h) => {
@@ -45,7 +49,7 @@ export class Settings {
     this.pageSettings.appendChild(head);
 
     this.pageSettings.appendChild(this._group('Picture', [
-      this._seg('Quality', QUALITIES.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
+      this._seg('Quality', QUALITY_TIERS.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
         () => hud.quality, (v) => hud.applyQuality(v)),
     ]));
 
