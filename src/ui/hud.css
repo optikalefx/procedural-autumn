@@ -525,11 +525,11 @@
   color: var(--ink);
 }
 .pa-group { margin-bottom: 1.15em; }
-/* A group label belongs to what is under it. Without this the tiny caps sat
-   right beneath the previous group's control and read as its caption. */
+/* A group label belongs to what is under it. Without the gap the tiny caps sat
+   right beneath the previous group's control and read as its caption. Space
+   does that on its own; a rule under every control ruled the whole sheet. */
 .pa-group + .pa-group {
-  padding-top: 0.95em;
-  border-top: 1px solid rgba(255, 246, 234, 0.11);
+  padding-top: 1.15em;
 }
 .pa-group:last-of-type { margin-bottom: 0.5em; }
 .pa-group > .pa-label { display: block; margin-bottom: 0.3em; }
