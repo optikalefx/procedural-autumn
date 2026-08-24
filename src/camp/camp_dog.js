@@ -628,14 +628,21 @@ export class CampDog {
             this.timer = SETTLE_TIME;
             this.pose = POSES[pickPose(this.rnd())];
             this.restGround = ground;
-            this.speed = 0;
+            // Speed is NOT zeroed here. Cutting it in one frame put a full
+            // -0.5 m/s step through everything the rig derives from speed —
+            // surge, bob, the neck's reach — and the head visibly snapped at
+            // the instant the dog began to fold. The not-moving branch below
+            // damps it to nothing inside a couple of strides of the settle.
             this.recovering = false;
           }
         }
         break;
       }
       case ST.SETTLE:
-        this.blend = clamp01(1 - this.timer / SETTLE_TIME);
+        // Smoothstepped, and so is the rise below: a linear ramp starts the
+        // whole-body fold at full speed in a single frame, and the head's share
+        // of that step read as a snap at every transition boundary.
+        this.blend = ease01(clamp01(1 - this.timer / SETTLE_TIME));
         if (this.timer <= 0) {
           this.blend = 1;
           this.state = ST.REST;
@@ -647,7 +654,7 @@ export class CampDog {
         if (this.timer <= 0) { this.state = ST.RISE; this.timer = RISE_TIME; }
         break;
       case ST.RISE:
-        this.blend = clamp01(this.timer / RISE_TIME);
+        this.blend = ease01(clamp01(this.timer / RISE_TIME));
         if (this.timer <= 0) {
           this.blend = 0;
           this.pose = null;
@@ -759,8 +766,11 @@ export class CampDog {
     this.drive.speed = Math.max(0, this.speed);
     // A settled dog still looks around. `alert` lifts the head and pricks the
     // ears, and easing a little of it in while it rests is most of what keeps a
-    // curled dog from reading as a prop.
-    this.drive.alert = this.blend > 0.5 ? 0.12 + 0.1 * Math.sin(this._t * 0.4) : 0;
+    // curled dog from reading as a prop. Eased for real: the old `blend > 0.5`
+    // gate switched it on in a single frame halfway through every settle and
+    // off halfway through every rise, and the ears and neck snapped with it.
+    this.drive.alert = clamp01((this.blend - 0.55) / 0.4) *
+      (0.12 + 0.1 * Math.sin(this._t * 0.4));
     this.drive.lod = camPos && camPos.distanceToSquared(this.pos) > 58 * 58 ? 1 : 0;
     this.rig.update(dt, this.drive, W);
 
@@ -858,5 +868,6 @@ function pickPose(r) {
 }
 
 const rand = (rnd, [a, b]) => a + rnd() * (b - a);
+const ease01 = (u) => u * u * (3 - 2 * u);
 
 export { POSES as DOG_POSES, ST as DOG_ST, DOG_GAIT as DOG_GAIT_CFG };
