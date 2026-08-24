@@ -998,7 +998,7 @@ export class Vehicle extends System {
       const cx = w.contact.x, cy = w.contact.y, cz = w.contact.z;
       if (!Number.isFinite(cx)) continue;
 
-      const depth = world.getWaterDepth(cx, cz);
+      const depth = world.getWaterContactDepth?.(cx, cz) ?? world.getWaterDepth(cx, cz);
       const weights = world.getSurfaceWeights(cx, cz, this._w);
       const soft = clamp01(weights.grass * 0.7 + weights.dry * 0.8 + weights.dirt * 1.0
         + weights.sand * 1.0 + weights.snow * 0.9 - weights.rock * 0.8);

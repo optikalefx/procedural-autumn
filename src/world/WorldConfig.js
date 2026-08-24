@@ -91,8 +91,8 @@ export const PALETTE = {
 // ── Time of day presets (index by keyframe hour) ─────────────────────────────
 export const CYCLE_SPEEDS = {
   frozen: 0.0,
-  slow: 0.06,
-  fast: 0.35,
+  slow: 0.02,
+  fast: 0.2,
 };
 
 export const TOD = {

@@ -1587,6 +1587,33 @@ export function buildWaterSurface(world, debug = null) {
       }
       return best;
     },
+    /**
+     * Positive depth under the actual waterline. Unlike levelAt(), this does
+     * not include the dry shoreline margin that exists only so the shader can
+     * fade wet edges out cleanly.
+     */
+    depthAt(x, z) {
+      const fx = (x - origin) / quadM, fz = (z - origin) / quadM;
+      if (!(fx >= 0 && fz >= 0 && fx <= G && fz <= G)) return null;
+      const cx0 = Math.min(G - 1, Math.floor(fx)), cz0 = Math.min(G - 1, Math.floor(fz));
+      const bx = fx - cx0 < 1e-6 ? -1 : 0, bz = fz - cz0 < 1e-6 ? -1 : 0;
+      let best = null;
+      for (let ix = bx; ix <= 0; ix++) {
+        const cx = cx0 + ix; if (cx < 0) continue;
+        for (let iz = bz; iz <= 0; iz++) {
+          const cz = cz0 + iz; if (cz < 0) continue;
+          if (!drawn[cz * G + cx]) continue;
+          const u = fx - cx, v = fz - cz;
+          const i00 = cz * VG + cx, i10 = i00 + 1;
+          const i01 = (cz + 1) * VG + cx, i11 = i01 + 1;
+          const d = (vDepth[i00] * (1 - u) + vDepth[i10] * u) * (1 - v)
+                  + (vDepth[i01] * (1 - u) + vDepth[i11] * u) * v;
+          if (d <= 0) continue;
+          if (best === null || d > best) best = d;
+        }
+      }
+      return best;
+    },
   };
   // Everything the mesh decided, for tools/_scratch/meshlab.mjs. Handed out
   // rather than recomputed, so the instrument measures this code and not a
