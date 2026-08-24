@@ -90,6 +90,40 @@ export function boatMaterials() {
   return _mats;
 }
 
+/**
+ * Hand the kit an environment probe, so the `envMapIntensity` values above
+ * mean something.
+ *
+ * They did not, until this existed. A `MeshStandardMaterial` reads
+ * `envMapIntensity` only from inside `#ifdef USE_ENVMAP`, and nothing in the
+ * game sets `scene.environment` — so the fill this file's header claims to be
+ * tuning ("a boat lives on open water under the whole sky dome, and the old
+ * values starved the shade of it") was multiplying a term that was never
+ * summed. Measured at h19.0 on seed 20261018, bow to the sunset, hull luma 32
+ * against a sky at 193; with the probe attached at the same authored
+ * intensities, 113, and the shore beside it unchanged to 1/255. Same hole the
+ * table author opened against camp_materials.js on 2026-08-20
+ * (docs/CAMP_REQUESTS.md), where it renders every camp metal flat black.
+ *
+ * Per-MATERIAL, deliberately, and not `scene.environment`: terrain, grass and
+ * ground cover are hijacked MeshStandardMaterials (TerrainMaterial.js) while
+ * the tree canopy is on raw ShaderMaterials, so a scene-wide probe relights
+ * the ground and not the canopy — measured, it takes the bank from luma 58 to
+ * 180 and pulls the frame apart. A prop kit's fill belongs to the prop kit.
+ *
+ * Call BEFORE the first boat is built: `envMap` is part of three's program
+ * cache key, so setting it after Boat._prewarm() would make the prewarm link
+ * the wrong variants and pay for the relink at the first launch instead of
+ * under the loading screen.
+ */
+export function setBoatEnv(env) {
+  const m = boatMaterials();
+  for (const k of ['varnish', 'enamel', 'royalex', 'glass']) {
+    m[k].envMap = env;
+    m[k].needsUpdate = true;
+  }
+}
+
 /** Dispose only the boat-specific materials; the camp set has its own owner. */
 export function disposeBoatMaterials() {
   if (!_mats) return;
