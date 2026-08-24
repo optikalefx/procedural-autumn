@@ -414,7 +414,25 @@ async function boot() {
   }
   engine.renderer.info.reset();
 
+  // ── world pause ───────────────────────────────────────────────────────────
+  // Photo mode freezes the world by setting `ctx.worldPaused`. Every world
+  // system still gets CALLED — streaming keeps following the camera, so trees
+  // and grass exist wherever the free camera goes — but with dt 0 and a world
+  // clock that has stopped, so nothing integrates and every shader-time
+  // animation holds its frame. `worldT` is that clock: it accumulates exactly
+  // the engine's elapsed time while running and stands still while paused, so
+  // on resume every animation continues from the pose it froze in instead of
+  // snapping to wherever the wall clock went.
+  //
+  // Four systems are exempt and run on real time: the camera rig (composing
+  // the shot is the point of the pause), audio (the music keeps playing), the
+  // HUD (it owns the controls doing the pausing) and stats (it only watches).
+  const LIVE_WHILE_PAUSED = new Set(['cameraRig', 'audio', 'hud', 'stats']);
+  let worldT = 0;
+
   engine.onUpdate((dt, t) => {
+    const wdt = ctx.worldPaused ? 0 : dt;
+    worldT += wdt;
     const rig = ctx.systems.cameraRig;
     const rigActive = rig?.enabled && rig.active;
 
@@ -436,7 +454,7 @@ async function boot() {
       cam.rotation.set(fly.pitch, fly.yaw, 0, 'YXZ');
     }
 
-    lighting.update(dt, cam.position);
+    lighting.update(wdt, cam.position);
 
     if (lighting.fogNear) {
       atmosphere.params.nearColor.copy(lighting.fogNear);
@@ -448,14 +466,14 @@ async function boot() {
     stylize.update();
     atmosphere.update(lighting.sunDir, lighting.sun.color, lighting.sunDir.y);
 
-    sky.update(dt, t, cam, lighting.sunDir);
+    sky.update(wdt, worldT, cam, lighting.sunDir);
     terrain.setSunDir(lighting.sunDir);
-    terrain.setTime(t);
+    terrain.setTime(worldT);
     terrain.update(cam, 3.0);
 
     for (const [name, s] of built) {
       if (!s.enabled) continue;
-      try { s.update(dt, t); }
+      try { s.update(LIVE_WHILE_PAUSED.has(name) ? dt : wdt, worldT); }
       catch (e) { console.error(`[system:${name}] update threw`, e); s.enabled = false; }
     }
 
@@ -472,9 +490,10 @@ async function boot() {
   });
 
   engine.onLateUpdate((dt, t) => {
+    const wdt = ctx.worldPaused ? 0 : dt;
     for (const [name, s] of built) {
       if (!s.enabled || !s.lateUpdate) continue;
-      try { s.lateUpdate(dt, t); }
+      try { s.lateUpdate(LIVE_WHILE_PAUSED.has(name) ? dt : wdt, worldT); }
       catch (e) { console.error(`[system:${name}] lateUpdate threw`, e); s.enabled = false; }
     }
     input.update(dt);

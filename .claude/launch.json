@@ -24,6 +24,19 @@
       "port": 5180
     },
     {
+      "name": "photo-pause-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5182",
+        "--strictPort"
+      ],
+      "port": 5182
+    },
+    {
       "name": "worktree-dev",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

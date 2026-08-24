@@ -153,11 +153,15 @@ export class PhotoMode {
     this.active = on;
     this.node.classList.toggle('pa-open', on);
     const rig = this.ctx.systems?.cameraRig;
-    // Whatever happens below, the controls come back. This runs on both exit
-    // paths — the HUD toggle and the rail's Escape handler, which delegates to
-    // that same toggle — and a photo mode that could be left with the throttle
-    // still suppressed would be a soft lock.
-    if (!on && this.ctx.input) this.ctx.input.suppressed = false;
+    // Whatever happens below, the controls come back and the world resumes.
+    // This runs on both exit paths — the HUD toggle and the rail's Escape
+    // handler, which delegates to that same toggle — and a photo mode that
+    // could be left with the throttle still suppressed or the world still
+    // frozen would be a soft lock.
+    if (!on) {
+      if (this.ctx.input) this.ctx.input.suppressed = false;
+      this.ctx.worldPaused = false;
+    }
 
     if (on) {
       this._saved = this._readGrade();
@@ -182,7 +186,16 @@ export class PhotoMode {
       // very end of the frame either way (main.js:385, after every lateUpdate),
       // so the free camera has already read them.
       if (this.ctx.input) this.ctx.input.suppressed = true;
-      // The world should hold still while you compose.
+      // The world holds still while you compose — all of it, not just the sun.
+      // `worldPaused` makes main.js drive every world system with dt 0 and a
+      // stopped world clock, so wildlife, water, weather, the camper and every
+      // shader-time animation freeze mid-frame while the camera rig, the
+      // music and this rail keep running on real time (see the world-pause
+      // note in main.js). The lighting line below is now redundant with the
+      // pause — a frozen clock cannot advance the hour — but it stays: it is
+      // what the exit path restores, and it keeps the sun still even if the
+      // pause ever becomes partial.
+      this.ctx.worldPaused = true;
       if (this.ctx.lighting) this.ctx.lighting.cycleSpeed = 0;
       // ── full resolution, for as long as the mode is open ──────────────────
       // In play the scene is drawn well under the display's pixel density: the
