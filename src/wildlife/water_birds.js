@@ -24,10 +24,13 @@
 //                     hang from the hip; in flight (fold 0) they trail straight
 //                     back, and the negative-side leg tucks up when standing —
 //                     the one-legged stance both these species are known for.
-//    NECK band        0.1115 + grade * 0.007, grade 0 at the neck root and 1 at
-//                     the bill tip. In flight the shader pitches the neck
-//                     forward about the root, graded, so the raised standing
-//                     neck unrolls into the extended flight neck. The flamingo
+//    NECK band        0.1115 + grade * 0.007, grade 0 at the neck root rising
+//                     to 1 where the neck meets the skull; head and bill are
+//                     rigid at a flat 1. In flight the shader pitches each
+//                     vertex forward about the root BY ITS OWN GRADE, so the
+//                     raised standing neck unrolls into the extended flight
+//                     neck — which also means any joint spanning two grades
+//                     is a joint that shears open in flight. The flamingo
 //                     uses it; the heron does NOT — a heron flies with its neck
 //                     folded, so its S-curve is authored and left alone.
 //    0.12 .. 1.0      wing spanwise fraction (flap and fold)
@@ -383,31 +386,53 @@ export function buildFlamingoGeometry() {
 
   // Neck: raised, gently S-curved, graded into the NECK band so flight
   // unrolls it forward. Root sits on the shader's shared pivot (0.045, 0.10).
+  //
+  // The last station is deliberately BURIED inside the skull (0.386, 0.120 is
+  // within 0.008 of the head's widest ring) rather than stopping where the
+  // neck stops looking like a neck. Two tube ends butted near each other do
+  // not join: authored to end at 0.368 the surfaces missed by ~0.009 and the
+  // head floated, with the open ring end reading as a hole straight down the
+  // throat. It also runs its grade to a FULL 1.0 here, matching the head and
+  // bill — the shader rotates each neck vertex by its own grade, so a joint
+  // spanning grade 0.92 to 1.0 shears itself open in the flight pose even
+  // when it looks closed standing. Head and bill are rigid at 1.0 and ride
+  // the neck tip's rotation exactly.
   loft(B, [
     [0.048, 0.108, 0.017, 0.017, 0.0],
-    [0.100, 0.134, 0.015, 0.015, 0.15],
-    [0.160, 0.156, 0.0135, 0.0135, 0.32],
-    [0.220, 0.164, 0.0125, 0.0125, 0.5],
-    [0.280, 0.156, 0.0115, 0.0115, 0.68],
-    [0.330, 0.138, 0.0105, 0.0105, 0.84],
-    [0.368, 0.122, 0.0095, 0.0095, 0.92],
-  ], 8, 2, { col: () => C_FLA_BODY, w: (g) => (g > 0.001 ? neckW(g) : 0) });
+    [0.100, 0.134, 0.015, 0.015, 0.16],
+    [0.160, 0.156, 0.0135, 0.0135, 0.36],
+    [0.220, 0.164, 0.0125, 0.0125, 0.56],
+    [0.280, 0.156, 0.0115, 0.0115, 0.76],
+    [0.330, 0.138, 0.0105, 0.0105, 0.90],
+    [0.360, 0.127, 0.0100, 0.0100, 0.97],
+    [0.386, 0.120, 0.0098, 0.0098, 1.0],
+  ], 8, 2, {
+    col: () => C_FLA_BODY,
+    w: (g) => (g > 0.001 ? neckW(g) : 0),
+    capEnd: true,
+  });
 
-  // Head: a smooth knob at the top of the neck, all at grade ~1 so it rides
-  // the neck's rotation rigidly.
+  // Head: a smooth knob the neck runs up into, rigid at grade 1 so it rides
+  // the neck's rotation as one piece. Capped at both ends — the occiput would
+  // otherwise show its open ring from behind, and the front cap is what the
+  // bill emerges through.
   loft(B, [
-    [0.386, 0.094, 0.006, 0.006, 0.96],
+    [0.386, 0.094, 0.007, 0.007, 1],
     [0.394, 0.118, 0.016, 0.015, 1],
     [0.392, 0.140, 0.013, 0.012, 1],
     [0.386, 0.155, 0.009, 0.008, 1],
-  ], 7, 2, { col: () => C_FLA_HEAD, w: (g) => neckW(g) });
+  ], 7, 2, {
+    col: () => C_FLA_HEAD, w: () => neckW(1), capStart: true, capEnd: true,
+  });
 
   // Bill: pale base dropping out of the face, then the whole thing kinked
   // steeply down into the black tip — the kink is the flamingo's entire face
   // at forty metres, so it gets a real loft rather than two quads.
   {
     const ST = [
-      [0.384, 0.156, 0.0068, 0.0075, 1, C_FLA_BILL],
+      // Starts INSIDE the skull, not flush against its front ring — a butted
+      // ring leaves its own opening facing back out of the join.
+      [0.386, 0.150, 0.0072, 0.0078, 1, C_FLA_BILL],
       [0.376, 0.172, 0.0055, 0.0062, 1, C_FLA_BILL],
       [0.362, 0.181, 0.0040, 0.0048, 1, C_FLA_TIP],
       [0.336, 0.186, 0.0016, 0.0020, 1, C_FLA_TIP],
