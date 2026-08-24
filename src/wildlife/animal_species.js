@@ -1181,6 +1181,10 @@ const STAG_ANTLER = {
 export const SPECIES = {
   deer: {
     key: 'deer',
+    // How the logbook names the species ("Deer seen"). Carried here rather
+    // than in the UI so a new species arrives in the logbook the moment it
+    // exists — the one thing a table walk cannot derive is an English plural.
+    plural: 'Deer',
     variants: [
       { name: 'doe', scale: 0.94, antler: false, weight: 0.46,
         col: { coat: 0x734e34, pale: 0xb5a184, dark: 0x3c2820, horn: 0x9c8763 } },
@@ -1227,6 +1231,7 @@ export const SPECIES = {
 
   bear: {
     key: 'bear',
+    plural: 'Bears',
     // ── why these are so much lighter than a black bear ──────────────────────
     // The first pass authored the near colour at the value the *distant*
     // silhouette wants: 0x2c1d16, which is 0.024 in linear. The stylised
@@ -1283,6 +1288,7 @@ export const SPECIES = {
 
   rabbit: {
     key: 'rabbit',
+    plural: 'Rabbits',
     variants: [
       // Hare-scaled rather than rabbit-scaled, and a good deal darker than a
       // real one: at 0.2 m in 0.6 m grass, a grass-coloured animal is invisible
@@ -1320,6 +1326,7 @@ export const SPECIES = {
 
   fox: {
     key: 'fox',
+    plural: 'Foxes',
     variants: [
       // A real red fox is nearly the same orange as the #f0ad46 meadow, which
       // is exactly the disappearing act the palette note above warns about —
