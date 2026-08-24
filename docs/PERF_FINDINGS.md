@@ -45,8 +45,8 @@ node tools/ablate.mjs --only fx.dof,fx.ssao      # price one change
 | GPU | Apple M3 Pro (18 core), ANGLE/Metal |
 | adaptive resolution | **disabled for the measurement** |
 
-That last line matters. `Engine._adapt` scales the buffer to hold 60 fps and
-steps the tier down when it cannot, so any arm left with it on reports the
+That last line matters. `Engine._adapt` scales the internal render targets
+toward its configured frame budget, so any arm left with it on reports the
 rescue rather than the cost. Every number below draws exactly the same pixels.
 
 ## Headline
@@ -489,16 +489,19 @@ pixel count. That, not the material model, is what shipped.
   `internalScale` times the canvas; a final Catmull-Rom (9-tap) +
   contrast-adaptive-sharpen pass reconstructs to the canvas. At scale 1 the
   pass is off and the chain is byte-identical to before.
-- The default at boot is **effective device ratio 1.0** (scale
-  `1/pixelRatioCap`, i.e. 0.74 at the `high` cap on a 2x display; 1.0 on a 1x
-  display, where nothing changes). This is the lever this document priced at
-  **−9.6 ms** and put last; the reconstruction pass is what makes it
-  presentable. On a 2x display it is *sharper* than the old adaptive floor,
-  which handed a native-res canvas to the browser's bilinear stretch.
+- The default at boot is **effective device ratio 1.15** (scale 0.85 at the
+  `high` cap on a 2x display; 1.0 on a 1x display, where it clamps to native).
+  This spends about 32% more internal pixels than the original 1.0 default,
+  without paying for the full 1.35–1.5 presented ratio.
 - The adaptive scaler now moves `internalScale` instead of the drawing buffer,
   so a step no longer costs a 450–2500 ms reallocation freeze — the open item
-  in docs/FREEZE_ROUND.md. Floor: effective ratio 0.85
+  in docs/FREEZE_ROUND.md. Floor: effective ratio 0.90
   (`Engine.minEffectiveInternalRatio`), reachable on 1x displays too.
+- Adaptation aims for 50 fps, descends at most two rungs per 2 s measurement,
+  and predicts whether the next sharper rung fits before recovering. This is a
+  deliberate quality bias: the original 60 fps / 0.78-floor policy could jump
+  to a visibly soft frame after one heavy window and then required roughly
+  86 fps before it would ever climb back.
 - Pin it for captures/A-Bs with `?iscale=0.74`; price it with the
   `px.iscale*` knobs in tools/ablate.mjs.
 
@@ -544,7 +547,9 @@ Same configuration as the headline above (1920×1080 CSS at dpr 2, `high`,
 | driving >50 ms hitches | 104–179 per 45 s | **4** |
 | black frames | 0 | 0 |
 
-The after numbers were taken while other authors' captures shared the GPU
+The “after” numbers in this table predate the quality-biased 2026-08-23 scaler
+settings; they describe the reconstruction work, not the current resolution
+target. They were taken while other authors' captures shared the GPU
 (baseline drift 9–28 ms across arms), so treat them as a floor on the
 improvement, not a ceiling. `px.iscale100` — switching the internal scale
 back to 1.0 — measures **+9.65 ms**, in agreement with this document's

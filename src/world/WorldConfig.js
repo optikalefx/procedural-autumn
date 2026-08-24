@@ -158,3 +158,23 @@ export const QUALITY_PRESETS = {
 };
 
 export const QUALITY_TIERS = Object.freeze(Object.keys(QUALITY_PRESETS));
+
+// Dynamic resolution is a quality fallback, not the default look. These are
+// effective device pixels per CSS pixel after internal scaling, so the policy
+// has the same visual meaning at every quality tier and display DPR.
+//
+// The first reconstruction build started at 1.0 and could fall to 0.78 while
+// chasing 60 fps. The upscaler made that better than browser bilinear, but not
+// free: in motion the bottom rungs still read as a soft, low-resolution game.
+// Prefer a sharper 50 fps frame, keep a 0.90 emergency floor, and only descend
+// through two rungs per measurement so a short heavy vista cannot immediately
+// turn the whole image to mush.
+export const ADAPTIVE_RESOLUTION = Object.freeze({
+  targetFps: 50,
+  preferredEffectiveRatio: 1.15,
+  minEffectiveRatio: 0.90,
+  downscaleThreshold: 1.08,
+  upscaleHeadroom: 0.95,
+  maxDownRungs: 2,
+  effectiveRungs: Object.freeze([1.35, 1.25, 1.15, 1.05, 0.98]),
+});

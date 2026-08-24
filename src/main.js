@@ -106,10 +106,9 @@ function pickQuality() {
            : cores >= 4 ? 'medium'
            : 'low';
 
-  // Step down for heavy pixel loads. AdaptiveResolution in Engine will not
-  // rescue this on its own: it refuses to draw below one device pixel per CSS
-  // pixel, because rendering under native reads as a blurry game rather than a
-  // fast one. Below native the honest lever is fewer effects, not less sharpness.
+  // Step down for heavy pixel loads. Adaptive resolution is an emergency
+  // margin, not a substitute for choosing an affordable effect tier: it has a
+  // firm 0.90 effective-ratio floor to keep a large display from turning soft.
   const ORDER = ['ultra', 'high', 'medium', 'low'];
   let steps = 0;
   if (megapixels > 6.0) steps = 2;
@@ -310,12 +309,10 @@ async function boot() {
   // ── internal render scale ───────────────────────────────────────────────
   // The scene and post chain render at this fraction of the canvas and are
   // reconstructed by PostFX's Catmull-Rom + CAS present pass (UpscalePass.js).
-  // The default puts the INTERNAL cost at one device pixel per CSS pixel —
-  // the old adaptive floor, measured at −9.6 ms on a Retina `high` frame —
-  // while PRESENTING at the tier's full pixelRatioCap, which through this
-  // filter is sharper than what the old floor showed (that path handed a
-  // native-res canvas to the browser's bilinear stretch). On a 1x display the
-  // default is 1.0 and nothing changes.
+  // Start at the policy's preferred effective ratio (1.15 device pixels per
+  // CSS pixel), while PRESENTING at the tier's full pixelRatioCap. That is a
+  // visibly sharper starting point than the original 1.0 default without
+  // paying for the full 1.35–1.5 cap. On a 1x display this clamps to 1.0.
   //
   // `?iscale=` pins it for A/Bs and captures; the adaptive scaler in Engine
   // moves it between the sharpness floor and 1.0 in play.
@@ -328,7 +325,9 @@ async function boot() {
     engine.internalScale = iscale;
     postfx.setInternalScale(iscale);
   } else {
-    engine.setInternalScale(Math.min(1, 1 / engine.basePixelRatio));
+    engine.setInternalScale(
+      Math.min(1, engine.preferredEffectiveInternalRatio / engine.basePixelRatio),
+    );
   }
 
   engine.onUpdate((dt, t) => {
@@ -435,12 +434,22 @@ async function boot() {
   // What the renderer is ACTUALLY drawing. Without this a future author can
   // measure a healthy fps without noticing that adaptive resolution quietly
   // halved the pixel count to get it.
-  window.__resolution = () => ({
-    scale: +engine.resolutionScale.toFixed(3),
-    basePixelRatio: +engine.basePixelRatio.toFixed(3),
-    effective: +(engine.basePixelRatio * engine.resolutionScale).toFixed(3),
-    megapixels: +((engine.renderer.domElement.width * engine.renderer.domElement.height) / 1e6).toFixed(2),
-  });
+  window.__resolution = () => {
+    const scale = engine.resolutionScale;
+    const internalScale = engine.internalScale;
+    const presented = engine.basePixelRatio * scale;
+    const presentedMegapixels =
+      (engine.renderer.domElement.width * engine.renderer.domElement.height) / 1e6;
+    return {
+      scale: +scale.toFixed(3),
+      internalScale: +internalScale.toFixed(3),
+      basePixelRatio: +engine.basePixelRatio.toFixed(3),
+      presented: +presented.toFixed(3),
+      effective: +(presented * internalScale).toFixed(3),
+      megapixels: +(presentedMegapixels * internalScale * internalScale).toFixed(2),
+      presentedMegapixels: +presentedMegapixels.toFixed(2),
+    };
+  };
 
   window.__settle = (frames = 60) => new Promise((res) => {
     let n = 0;

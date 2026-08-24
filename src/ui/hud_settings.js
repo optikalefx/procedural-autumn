@@ -106,7 +106,7 @@ export class Settings {
       ['M', 'mute'],
       ['H', 'hide interface'],
       ['F3', 'fps readout'],
-      ['Esc', 'settings / close'],
+      ['~', 'settings / close'],
     ];
     const keys = el('div', 'pa-keys');
     for (const [k, desc] of KEYS) {
@@ -122,6 +122,12 @@ export class Settings {
     // Keys typed into the sheet must not also drive the camper: Input listens
     // on window during the bubble phase, so stopping here is enough.
     this.node.addEventListener('keydown', (e) => {
+      if (e.code === 'Backquote') {
+        this.hud.toggleSettings();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (e.code === 'Escape') {
         // Esc backs out one layer at a time: controls → settings → closed.
         if (this.page === 'controls') { this._showPage('settings'); e.stopPropagation(); return; }

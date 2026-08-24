@@ -207,7 +207,9 @@ export class PerfOverlay {
     const e = this.engine;
     const r = e.renderer;
     const info = r.info.render;
-    const eff = e.basePixelRatio * e.resolutionScale;
+    const presented = e.basePixelRatio * e.resolutionScale;
+    const is = e.internalScale ?? 1;
+    const eff = presented * is;
     const mp = (r.domElement.width * r.domElement.height) / 1e6;
 
     // Colour the headline by how it actually feels to play.
@@ -236,12 +238,11 @@ export class PerfOverlay {
       // of the canvas and are reconstructed by the upscale pass. This is where
       // the adaptive scaler now buys frame time, so it must be visible for the
       // same reason `res` always was.
-      const is = e.internalScale ?? 1;
       const imp = mp * is * is;
       lines.push(
-        `res  ${eff.toFixed(2)}x  (${(e.resolutionScale * 100).toFixed(0)}% of ${e.basePixelRatio.toFixed(2)})` +
+        `res  ${eff.toFixed(2)}x  (${(is * 100).toFixed(0)}% of ${presented.toFixed(2)}x presented)` +
         (soft ? '  <span style="color:#ff7a6b">BELOW NATIVE</span>' : ''),
-        `int  ${(is * 100).toFixed(0)}%  ${imp.toFixed(2)} of ${mp.toFixed(2)} MP` +
+        `int  ${imp.toFixed(2)} of ${mp.toFixed(2)} MP` +
         (is < 0.999 ? '  <span style="opacity:.75">upscaled</span>' : ''),
         `px   dpr ${window.devicePixelRatio}   ${e.quality}${e._autoDropped ? ' (auto)' : ''}`,
       );

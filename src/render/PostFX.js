@@ -1095,9 +1095,9 @@ void main() {
 // number to plan against, because it was measured before the pixel-ratio fix
 // and before adaptive resolution. The post chain is fixed cost per pixel, so
 // when the pixel count fell the whole term fell with it. The reporting player
-// renders 1.02 MP (a ~1170x870 window at an effective ratio of 1.0, which is
-// the hard floor — anything below native reads as "blurry", so the scaler may
-// not go there).
+// rendered 1.02 MP (a ~1170x870 window at the then-current effective ratio of
+// 1.0). That is the historical measurement configuration; the current quality-
+// biased adaptive policy is defined in WorldConfig.ADAPTIVE_RESOLUTION.
 //
 // Measured at exactly that: 1.02 MP, driving, one effect removed at a time,
 // arms alternated every ~34 frames inside one page load so that this shared
@@ -1408,9 +1408,9 @@ export class PostFX {
    * field were decided once, in the constructor, so the only thing a tier drop
    * actually changed here was the pixel ratio. That left a player with no
    * working escape hatch, which matters more now than any single cut — the
-   * adaptive scaler is pinned at its floor on the reporting player's machine
-   * (effective ratio 1.0, which is a hard minimum because anything below native
-   * reads as "blurry"), so the tier is the *only* lever left.
+   * adaptive scaler was pinned at its floor on the reporting player's machine,
+   * so the tier was the *only* lever left. The exact current floor belongs to
+   * WorldConfig.ADAPTIVE_RESOLUTION rather than this historical account.
    */
   onQuality(preset, name) {
     if (!preset) return;

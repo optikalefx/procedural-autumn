@@ -104,7 +104,7 @@ export class HUD extends System {
     this.hint = el('div', 'pa-hint pa-panel pa-game-only',
       '<span><kbd>WASD</kbd>drive</span><span><kbd>Drag</kbd>look</span>' +
       '<span><kbd>C</kbd>camera</span><span><kbd>R</kbd>rescue</span>' +
-      '<span><kbd>F</kbd>photo</span><span><kbd>Esc</kbd>settings</span>');
+      '<span><kbd>F</kbd>photo</span><span><kbd>~</kbd>settings</span>');
     if (this._seenHint) this.hint.classList.add('pa-gone');
     else this._hintTimer = 13;
     root.appendChild(this.hint);
@@ -204,9 +204,10 @@ export class HUD extends System {
       switch (e.code) {
         case 'KeyF': this.togglePhoto(); break;
         case 'Escape':
-          if (this.photo.active) this.togglePhoto();
-          else this.toggleSettings();
+          if (!this.photo.active) return;
+          this.togglePhoto();
           break;
+        case 'Backquote': this.toggleSettings(); break;
         case 'KeyM': this.applyMute(!this.isMuted()); break;
         case 'KeyG': if (this.photo.active) this.photo.toggleGrid(); break;
         case 'KeyP': if (this.photo.active) this.photo.capture(); break;

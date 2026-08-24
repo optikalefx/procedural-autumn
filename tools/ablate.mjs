@@ -58,8 +58,8 @@
  *     that compares an arm against a baseline taken a minute earlier is
  *     measuring the clock. This costs twice the wall time and is not optional.
  *
- *  3. ADAPTIVE RESOLUTION AND AUTO-TIER OFF. Engine scales the drawing buffer
- *     to hold 60 fps and steps the quality tier down when it cannot. Left on, a
+ *  3. ADAPTIVE RESOLUTION AND AUTO-TIER OFF. Engine scales the internal render
+ *     targets toward its configured fps budget. Left on, a
  *     heavy arm quietly renders fewer pixels and measures FASTER than the
  *     truth. Every arm here draws exactly the same number of pixels.
  *
@@ -151,13 +151,9 @@ const H        = parseInt(arg('h', '1080'), 10);
 const DPR      = parseFloat(arg('dpr', '2'));
 const PORT     = arg('port', '5180');
 const RES      = arg('res', '1536');
-// No seed by default — but pass one, and pass 20261018, if you want the run to
-// start inside a minute. WorldConfig.SEED is 20262018 and every bake in
-// public/bakes/ is 20261018, so a boot with no ?seed misses the cache and
-// bakes a whole world live before the first frame is timed. A timing run that
-// spends five minutes generating terrain is not wrong, but it holds the
-// exclusive lock the whole time and every other author's capture queues behind
-// it. Same trap tools/fallflow.mjs documents at its own SEED constant.
+// Pin 20261018 when comparing with the historical archives; both that seed and
+// WorldConfig.SEED have bakes on disk. A seed without a bake generates the full
+// world live and holds the exclusive capture lock for minutes.
 const SEED     = arg('seed', null);
 const QUALITY  = arg('quality', null);          // null = let pickQuality decide
 const ROUNDS   = parseInt(arg('rounds', '3'), 10);
@@ -527,10 +523,10 @@ await page.evaluate(() => {
 
   // Internal render scale (the upscale path in PostFX). Unlike px.*, these do
   // not touch the drawing buffer — they resize the composer's offscreen
-  // targets, which is exactly what ships. The boot default at dpr 2 is
-  // 1/pixelRatioCap (effective device ratio 1.0), so `px.iscale100` prices
-  // what going BACK to full-cap internal rendering costs, and the smaller ones
-  // price the adaptive scaler's lower rungs.
+  // targets, which is exactly what ships. The quality-biased boot default is
+  // effective device ratio 1.15 (raw scale 0.85 at `high`), so
+  // `px.iscale100` prices full-cap internal rendering and the smaller ones
+  // price the adaptive scaler's lower rungs or historical settings.
   const iscaleKnob = (name, s) => {
     K[name] = {
       group: 'px',
@@ -861,7 +857,7 @@ for (const mode of MODES) {
   // every arm after it is compared against a lighter world. __settleStable
   // holds until the drawn triangle and draw-call counts stop moving, which is
   // what "streaming has caught up" actually means.
-  const settled = await page.evaluate(() => window.__settleStable(400, 30));
+  const settled = await page.evaluate(() => window.__settleStable());
   await sleep(1500);
   // A frame-time number is meaningless without the frame it was measured on.
   // The first version of this had no shot, and two runs of the same command

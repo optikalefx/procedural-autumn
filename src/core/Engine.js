@@ -1,6 +1,10 @@
 // Renderer, scene graph root, camera, resize handling and the frame loop.
 import * as THREE from 'three';
-import { QUALITY_PRESETS, QUALITY_TIERS } from '../world/WorldConfig.js';
+import {
+  ADAPTIVE_RESOLUTION,
+  QUALITY_PRESETS,
+  QUALITY_TIERS,
+} from '../world/WorldConfig.js';
 
 export class Engine {
   constructor(canvas, quality = 'ultra') {
@@ -24,7 +28,7 @@ export class Engine {
     // than pick one number and hope, measure and hold a target.
     this.basePixelRatio = Math.min(window.devicePixelRatio, this.preset.pixelRatioCap);
     this.resolutionScale = 1;
-    this.targetFrameMs = 1000 / 60;
+    this.targetFrameMs = 1000 / ADAPTIVE_RESOLUTION.targetFps;
     // ── internal render scale ──────────────────────────────────────────────
     // The scene and post chain render at `internalScale` times the canvas and
     // are reconstructed to it by PostFX's upscale pass (Catmull-Rom + CAS —
@@ -33,18 +37,17 @@ export class Engine {
     // freeze, unlike the resolutionScale ladder below, which is retained only
     // as a manual/diagnostic lever.
     //
-    // The floor is expressed in device pixels per CSS pixel, like
-    // minEffectivePixelRatio, but it sits BELOW native — 0.78 rather than 1.0
-    // — because the argument for the 1.0 floor ("below native reads as a
-    // blurry game") was an argument about the browser's bilinear canvas
-    // stretch, and the reconstruction pass is what replaced it. A still A/B
-    // of the drive view at 0.63 scale through Catmull-Rom + CAS is nearly
-    // indistinguishable from native at reading distance
-    // (review/perf/upscale-*.json and the shots beside them), so 0.78 as a
-    // strain-only floor is conservative — and a strained machine holding
-    // frame rate at 0.78 looks far better than one dropping to 45 fps at 1.0.
+    // The quality policy is expressed as effective device pixels per CSS pixel
+    // rather than a raw scale, so `high` at 1.35 and `ultra` at 1.5 settle to
+    // the same perceived sharpness. Start above native, and keep the emergency
+    // floor close to it: reconstruction improves a reduced frame, but player
+    // feedback is clear that the old 0.78 floor still looked like potato mode.
     this.internalScale = 1;
-    this.minEffectiveInternalRatio = 0.78;
+    this.preferredEffectiveInternalRatio = ADAPTIVE_RESOLUTION.preferredEffectiveRatio;
+    this.minEffectiveInternalRatio = ADAPTIVE_RESOLUTION.minEffectiveRatio;
+    this.adaptDownscaleThreshold = ADAPTIVE_RESOLUTION.downscaleThreshold;
+    this.adaptUpscaleHeadroom = ADAPTIVE_RESOLUTION.upscaleHeadroom;
+    this.adaptMaxDownRungs = ADAPTIVE_RESOLUTION.maxDownRungs;
     this.onInternalScale = null;
     // Never render below one device pixel per CSS pixel. A scale that takes the
     // effective ratio under 1.0 is drawing fewer pixels than the display has and
@@ -58,9 +61,9 @@ export class Engine {
     this._lastAdapt = 0;
 
     // Automatic tier fallback. Resolution scaling alone cannot save a machine
-    // that is short of frame time, because it refuses to go below native — so
-    // once it is pinned at its floor and still missing the target, the only
-    // honest lever left is fewer effects. Measured on the player's window:
+    // that is short of frame time, because the image-quality floor is finite —
+    // once it is pinned there and still missing the target, the only honest
+    // lever left is fewer effects. Measured on the player's window:
     // ultra 32 fps, medium 75. A player should not have to find that menu.
     //
     // Never steps back up: recovering would re-enter the state that triggered
@@ -81,7 +84,7 @@ export class Engine {
     this._strainSince = 0;
     // How far over budget counts as strain, and for how long.
     //
-    // 1.75x of a 16.7 ms target is 29 ms, i.e. 34 fps. The measurement this
+    // 1.45x of a 20 ms target is 29 ms, i.e. 34 fps. The measurement this
     // feature exists for is the player's window at ultra 32 fps, so the trigger
     // has to sit just above it — and no lower. The previous 1.35x is 22.5 ms
     // (44 fps), which this scene reaches on a healthy machine whenever the
@@ -91,7 +94,7 @@ export class Engine {
     // cooldown it takes three consecutive windows to trip, so a stretch of
     // streaming, a shader compile or one heavy vista cannot demote a machine
     // that is otherwise making frame rate.
-    this.strainRatio = 1.75;
+    this.strainRatio = 1.45;
     this.strainHoldMs = 10000;
     // Off by default — see the long note at its use in `_adapt`. Every shipped
     // build of this project has behaved as `false`, because the lever was
@@ -240,7 +243,8 @@ export class Engine {
 
   /** The lowest internal scale the sharpness floor permits on this display. */
   _internalFloor() {
-    return Math.min(1, this.minEffectiveInternalRatio / this.basePixelRatio);
+    const presentedRatio = this.basePixelRatio * this.resolutionScale;
+    return Math.min(1, this.minEffectiveInternalRatio / presentedRatio);
   }
 
   /**
@@ -282,26 +286,41 @@ export class Engine {
 
     const target = this.targetFrameMs;
     const floorScale = this._internalFloor();
-    // Quantised rungs still, not a continuous ratio — not for reallocation
-    // cost any more, but so the scale SETTLES instead of creeping and the CAS
-    // sharpen sees a stable source. Finer than the old ladder because a step
-    // is now free.
-    const rungs = [...new Set([1, 0.92, 0.85, 0.78, 0.72, 0.67, floorScale])]
+    // Build the ladder in EFFECTIVE pixel ratios, then translate it to this
+    // tier's raw internal scale. That keeps a rung equally sharp on high,
+    // ultra and a 1x display instead of making the same scalar mean three
+    // different image qualities.
+    const presentedRatio = this.basePixelRatio * this.resolutionScale;
+    const rungs = [...new Set([
+      1,
+      ...ADAPTIVE_RESOLUTION.effectiveRungs.map((r) => Math.min(1, r / presentedRatio)),
+      floorScale,
+    ])]
       .filter((r) => r >= floorScale - 1e-6)
       .sort((a, b) => b - a);
     let i = rungs.findIndex((r) => Math.abs(r - this.internalScale) < 0.02);
     if (i < 0) i = 0;
 
     let next = this.internalScale;
-    if (p80 > target * 1.15 && i < rungs.length - 1) {
-      // Go straight to the rung the measurement implies. Frame time is roughly
-      // proportional to pixel count and pixel count to scale squared, so the
-      // scale that lands on budget is `scale * sqrt(target / p80)`.
+    if (p80 > target * this.adaptDownscaleThreshold && i < rungs.length - 1) {
+      // Frame time is roughly proportional to pixel count and pixel count to
+      // scale squared, so solve for the rung that lands on budget. Cap each
+      // decision to a short descent: internal target resizes are cheap now, and
+      // a transient vista should have to remain heavy before it earns potato.
       const want = this.internalScale * Math.sqrt(target / p80);
       let j = i + 1;
       while (j + 1 < rungs.length && rungs[j] > want) j++;
+      j = Math.min(j, i + this.adaptMaxDownRungs);
       next = rungs[j];
-    } else if (p80 < target * 0.70 && i > 0) next = rungs[i - 1];
+    } else if (i > 0) {
+      // Try the next sharper rung whenever its worst-case pixel-squared cost
+      // still fits with a little headroom. The old fixed 0.70 threshold needed
+      // 86 fps before it would recover, so a brief drop tended to stick for the
+      // rest of the session even when a sharper rung would fit the budget.
+      const sharper = rungs[i - 1];
+      const predicted = p80 * (sharper / this.internalScale) ** 2;
+      if (predicted <= target * this.adaptUpscaleHeadroom) next = sharper;
+    }
     next = Math.max(floorScale, Math.min(1, next));
     const moving = Math.abs(next - this.internalScale) >= 0.005;
 
@@ -310,7 +329,7 @@ export class Engine {
     // used to run after, which made the tier lever unreachable on every
     // display (the history is in git if the mechanism is ever revisited).
     //
-    // The internal-scale floor (minEffectiveInternalRatio 0.85) is below 1 on
+    // The internal-scale floor (minEffectiveInternalRatio 0.90) is below 1 on
     // every display now, so the ladder always has rungs and the strain test is
     // reachable at 1x as well as 2x.
     //
