@@ -1699,35 +1699,51 @@ export class PostFX {
     // That stops being an argument about rods and starts being arithmetic, and
     // the arithmetic changes at SUNSET, not twenty-five minutes after it.
     //
-    // What the single ramp cost, measured (tools/_scratch/fireworth.mjs, which
-    // shoots each hour twice — fire lit and fire dark — and differences them,
-    // so the number is "how much of this picture is the fire" and does not
-    // care where the camp lottery put the tent):
+    // What the single ramp cost, measured with tools/_scratch/fireworth.mjs,
+    // which draws ONE frozen instant twice — fire lit and fire dark — and
+    // differences them, so the number is "how much of this picture is the
+    // fire" and does not care where the camp lottery put the tent. Mean sRGB
+    // delta over the ground, and the percentage of ground pixels the fire
+    // moves by more than eight levels. Both ramps, same instant, same pinned
+    // fire, so the two columns differ in these three uniforms and nothing else:
     //
-    //   hour   18.4   18.9   19.0   19.4   20.0   20.6   21.0
-    //   elev  +.033   .000  -.014  -.054  -.105  -.149  -.177
-    //   mean   10.8    9.1    8.0    7.5   12.5   16.7   16.7
-    //   %>8    48.9   39.7   33.8   34.7   67.8   67.7   68.2
+    //   hour    elev    uLift          mean            %>8
+    //           .       old -> new     old -> new      old -> new
+    //   17.1  +0.247   .0200  .0200    9.02   9.02    47.2  47.2   identical
+    //   18.3  +0.045   .0200  .0195   10.24  10.38    45.0  45.5
+    //   18.9   0.000   .0200  .0140    7.99   9.80    40.0  43.9
+    //   19.0  -0.014   .0200  .0117    7.95  10.71    40.1  46.6
+    //   19.4  -0.054   .0197  .0055    6.76  12.06    31.5  46.1   <- the dip
+    //   20.0  -0.105   .0110  .0030    9.26  14.80    42.6  51.8
+    //   20.6  -0.149   .0034  .0030   17.77  18.30    57.6  59.0
+    //   21.0  -0.177   .0030  .0030   18.84  18.84    58.6  58.6   identical
+    //   23.0  -0.279   .0030  .0030   20.68  20.68    60.2  60.2   identical
     //
-    // i.e. the fire's pool covered HALF as much of the frame at 19:00 as at
-    // 21:00, and less than it did in broad daylight at 18:24 — while the fire
-    // itself was emitting MORE (light intensity 2.42 against 1.95; see the
-    // inverted ramp at LIGHT_DAY in camp_fire.js, which is deliberate and is
-    // not what was wrong). The dip is not the fire. Between 18.9 and ~19.3 the
-    // sun has stopped reaching up-facing ground and the moon key has not
-    // started — `sunGone` in Lighting.js gates on this same -0.045 — so the
-    // world is already lit like night while the grade is still corrected like
-    // day.
+    // The old column is the shape the player reported: a fire worth 6.8 at
+    // 19:24 against 18.8 at 21:00, and worth LESS just after sunset than it
+    // was in broad daylight — while emitting MORE (2.42 against 1.95 in a live
+    // run; the inverted ramp at LIGHT_DAY in camp_fire.js is deliberate and is
+    // not what was wrong). Between 18.9 and ~19.3 the sun has stopped reaching
+    // up-facing ground and the moon key has not started — `sunGone` in
+    // Lighting.js gates on this same -0.045, correctly, because moonlight at
+    // civil twilight is three decades under the sky — so the world is already
+    // lit like night while the grade is still corrected like day.
     //
-    // One term at a time at h19, everything else shipping:
+    // Note what this table does NOT say: the frozen instant pins the fire's
+    // own emission at one value for every row, which is the right control for
+    // isolating the grade and is not what a player sees, since the fire also
+    // ramps 4.0 -> 2.1 across the same hours. Read the columns against each
+    // other, not down the page.
     //
-    //   moved to its night value        mean   %>8
-    //   ship                            7.98   33.8
-    //   uLift 0.020 -> 0.003           12.32   54.4   <- the big one
-    //   exposure x1.166                13.56   53.4
-    //   offsetScale -> 0.15            11.87   49.7
-    //   uToe -> 0.0088                 10.27   45.9
-    //   uContrast -> 1.05               7.38   36.7   <- WORSE
+    // Which term, at h19, one at a time (from the earlier unfrozen sweep, so
+    // these carry an animation noise floor and are ordering only — the ranking
+    // reproduced on the frozen pairs above, the magnitudes did not):
+    //
+    //   uLift 0.020 -> 0.003     <- the big one, by a distance
+    //   exposure x1.166          <- see EXPOSURE_LOW; deliberately NOT taken
+    //   offsetScale -> 0.15
+    //   uToe -> 0.0088
+    //   uContrast -> 1.05        <- WORSE than shipping
     //
     // The lift dominates for the reason its own note gives from the other end:
     // it is a spatially constant pedestal, and a constant has no gradient. A
@@ -1747,9 +1763,9 @@ export class PostFX {
     // The obvious anchor is sunset — e = 0 — and it does not work. Measured:
     // an `-e / 0.16` smoothstep leaves uLift at 0.0196 at h19, because h19 is
     // six minutes past sunset and sits at e = -0.014, which is inside any
-    // smoothstep's flat toe. The fire's worth went 8.0 -> 9.8 and the dip was
-    // still there. A ramp anchored at the horizon cannot move fast enough to
-    // matter in the twenty-five minutes that need it.
+    // smoothstep's flat toe — so the term barely moved and the dip survived.
+    // A ramp anchored at the horizon cannot move fast enough to matter in the
+    // twenty-five minutes that need it.
     //
     // It should not be anchored there anyway. The key stops *reaching the
     // ground* well before it geometrically sets, because N.L on flat ground is
