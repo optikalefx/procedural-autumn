@@ -148,8 +148,11 @@ export class RigBuilder {
  *   bone   bone index this ring binds to; bone2/w2 split the weight at a joint
  *   k      superellipse exponent, 1 = ellipse, <1 = boxier
  *
- * opts: { radial, capStart, capEnd, tipStart, tipEnd, mix, shade, ao }
+ * opts: { radial, capStart, capEnd, tipStart, tipEnd, domeStart, domeEnd,
+ *         domeSteps, mix, shade, ao }
  *   tipX collapses that end to a single point (muzzles, hooves, antler tips)
+ *   domeX rounds that end into a hemisphere instead of a flat disc; a number
+ *        scales the dome height against the cross-section, `true` means 0.9
  *   ao   how much the downward-facing side of the tube is darkened
  */
 export function tube(B, stations, opts = {}) {
@@ -180,13 +183,17 @@ export function tube(B, stations, opts = {}) {
     U.push(_n.copy(T[i]).cross(_s).normalize().clone());
   }
 
-  const rings = [];
-  for (let i = 0; i < N; i++) {
+  // One cross-section ring at station `i`. `scale` shrinks it toward the axis
+  // and `off` slides it along the tangent, which between them are all a dome
+  // cap is; `nRad`/`nAxis` tilt the normal off the cross-section plane so the
+  // dome shades as a sphere rather than as a stack of discs.
+  const makeRing = (i, scale = 1, off = 0, nRad = 1, nAxis = 0) => {
     const st = stations[i];
     const k = st.k ?? opts.k ?? 1;
     const mix = st.mix ?? defMix;
     const shade = st.shade ?? defShade;
     const b0 = st.bone, b1 = st.bone2 ?? 0, w2 = st.w2 ?? 0;
+    const cx = st.x + T[i].x * off, cy = st.y + T[i].y * off, cz = st.z + T[i].z * off;
     const ring = [];
     for (let j = 0; j < R; j++) {
       const a = (j / R) * Math.PI * 2;
@@ -195,10 +202,11 @@ export function tube(B, stations, opts = {}) {
         ca = Math.sign(ca) * Math.pow(Math.abs(ca), k);
         sa = Math.sign(sa) * Math.pow(Math.abs(sa), k);
       }
-      _p.copy(S[i]).multiplyScalar(ca * st.rx).addScaledVector(U[i], sa * st.ry);
+      _p.copy(S[i]).multiplyScalar(ca * st.rx * scale).addScaledVector(U[i], sa * st.ry * scale);
       // Ellipse normal, not the offset direction — matters where rx >> ry.
       _n.copy(S[i]).multiplyScalar(ca / Math.max(st.rx, 1e-4))
         .addScaledVector(U[i], sa / Math.max(st.ry, 1e-4)).normalize();
+      if (nAxis !== 0) _n.multiplyScalar(nRad).addScaledVector(T[i], nAxis).normalize();
       // Bake form shading: whatever faces down sits in its own occlusion.
       const sh = shade * (1 - ao * Math.max(0, -_n.y) * 0.9 - ao * 0.25 * Math.max(0, -_n.y * 0.5));
       // A station may carry a spot weight as a plain number, or as a function
@@ -206,12 +214,15 @@ export function tube(B, stations, opts = {}) {
       // of a tube without needing its own geometry.
       const sp = typeof st.spot === 'function' ? st.spot(a, ca, sa) : (st.spot ?? 0);
       ring.push(B.vert(
-        st.x + _p.x, st.y + _p.y, st.z + _p.z,
+        cx + _p.x, cy + _p.y, cz + _p.z,
         _n.x, _n.y, _n.z, mix, sh, b0, 1 - w2, b1, w2, sp,
       ));
     }
-    rings.push(ring);
-  }
+    return ring;
+  };
+
+  const rings = [];
+  for (let i = 0; i < N; i++) rings.push(makeRing(i));
 
   for (let i = 0; i < N - 1; i++) {
     const a = rings[i], b = rings[i + 1];
@@ -221,14 +232,42 @@ export function tube(B, stations, opts = {}) {
     }
   }
 
+  // Stitch two rings together with the same winding the body of the tube uses.
+  // `dir` is which end we are growing from, so the start cap runs backwards.
+  const bridge = (a, b, dir) => {
+    for (let j = 0; j < R; j++) {
+      const j2 = (j + 1) % R;
+      if (dir > 0) B.quad(a[j], a[j2], b[j2], b[j]);
+      else B.quad(b[j], b[j2], a[j2], a[j]);
+    }
+  };
+
   const cap = (i, dir) => {
-    const st = stations[i], ring = rings[i];
+    const st = stations[i];
     const mix = st.mix ?? defMix, shade = st.shade ?? defShade;
     const tip = dir > 0 ? opts.tipEnd : opts.tipStart;
-    const off = tip ? Math.max(st.rx, st.ry) * 0.85 : 0;
+    // A dome caps the tube with a hemisphere instead of a flat disc — a leg
+    // socket that reads as a ball joint where it enters the body, rather than
+    // as a sawn-off cylinder.
+    const dome = dir > 0 ? opts.domeEnd : opts.domeStart;
+    let ring = rings[i];
+    let base = 0;
+    if (dome) {
+      const h = (dome === true ? 0.9 : dome) * (st.rx + st.ry) * 0.5;
+      const steps = opts.domeSteps ?? 2;
+      for (let s = 1; s <= steps; s++) {
+        const a = (s / (steps + 1)) * Math.PI * 0.5;
+        const c = Math.cos(a), sn = Math.sin(a);
+        const next = makeRing(i, c, sn * h * dir, c, sn * dir);
+        bridge(ring, next, dir);
+        ring = next;
+      }
+      base = h * dir;
+    }
+    const off = tip ? Math.max(st.rx, st.ry) * 0.85 * dir : base;
     const c = B.vert(
-      st.x + T[i].x * off * dir, st.y + T[i].y * off * dir, st.z + T[i].z * off * dir,
-      T[i].x * dir, T[i].y * dir, T[i].z * dir, mix, shade * (tip ? 0.94 : 1),
+      st.x + T[i].x * off, st.y + T[i].y * off, st.z + T[i].z * off,
+      T[i].x * dir, T[i].y * dir, T[i].z * dir, mix, shade * (tip || dome ? 0.94 : 1),
       st.bone, 1 - (st.w2 ?? 0), st.bone2 ?? 0, st.w2 ?? 0,
       typeof st.spot === 'function' ? 0 : (st.spot ?? 0),
     );

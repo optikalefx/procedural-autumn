@@ -249,16 +249,25 @@ export class PerfOverlay {
     }
 
     if (this.detail >= 1) {
-      const soft = eff < 0.999;
       // Internal render scale: the scene + post chain render at this fraction
       // of the canvas and are reconstructed by the upscale pass. This is where
-      // the adaptive scaler now buys frame time, so it must be visible for the
-      // same reason `res` always was.
+      // the adaptive scaler buys frame time, so it must be visible for the same
+      // reason `res` always was.
+      //
+      // Judged against the DISPLAY's density, not against 1.0. The old readout
+      // called 1.25x "fine" on a panel that wants 2.0 — which is exactly the
+      // frame a player describes as looking low-resolution, so the one number
+      // that answers the question is the percentage of native.
+      const native = window.devicePixelRatio || 1;
+      const ofNative = eff / native;
+      const soft = ofNative < 0.995;
       const imp = mp * is * is;
+      const nativeMp = mp * (native / presented) ** 2;
       lines.push(
-        `res  ${eff.toFixed(2)}x  (${(is * 100).toFixed(0)}% of ${presented.toFixed(2)}x presented)` +
-        (soft ? '  <span style="color:#ff7a6b">BELOW NATIVE</span>' : ''),
-        `int  ${imp.toFixed(2)} of ${mp.toFixed(2)} MP` +
+        `res  ${eff.toFixed(2)}x  ${(ofNative * 100).toFixed(0)}% of ${native}x native` +
+        (e.resolutionPin ? '  <span style="opacity:.75">pinned</span>' : '') +
+        (soft ? `  <span style="color:${ofNative < 0.75 ? '#ff7a6b' : '#ffab6b'}">SOFT</span>` : ''),
+        `int  ${imp.toFixed(2)} MP drawn  ${mp.toFixed(2)} canvas  ${nativeMp.toFixed(2)} native` +
         (is < 0.999 ? '  <span style="opacity:.75">upscaled</span>' : ''),
         `px   dpr ${window.devicePixelRatio}   ${e.quality}${e._autoDropped ? ' (auto)' : ''}`,
       );

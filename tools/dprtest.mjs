@@ -27,6 +27,11 @@ const SECONDS = parseFloat(arg('seconds', '20'));
 const QUALITY = arg('quality', null);
 const SEED = arg('seed', '20261018');
 const CAR = arg('car', 'camper');
+// The manual resolution pin (settings > Picture > Resolution, or ?pixelratio=).
+// This is the one knob that changes the pixel count directly, so it is the one
+// worth measuring here: `--pixelratio native` is what a player asking for a
+// sharp picture actually gets charged.
+const PIXELRATIO = arg('pixelratio', null);
 
 // Exclusive: a timing run cannot share a GPU. See acquireExclusive in _lock.mjs.
 await acquire('dprtest', { exclusive: true });
@@ -53,7 +58,8 @@ await page.addInitScript(() => {
 const q = QUALITY ? `&quality=${QUALITY}` : '';
 await page.goto(
   `http://localhost:${PORT}/?res=1536&seed=${encodeURIComponent(SEED)}` +
-  `&car=${encodeURIComponent(CAR)}${q}`,
+  `&car=${encodeURIComponent(CAR)}${q}` +
+  (PIXELRATIO ? `&pixelratio=${encodeURIComponent(PIXELRATIO)}` : ''),
   { waitUntil: 'domcontentloaded' },
 );
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 300 });

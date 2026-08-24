@@ -163,11 +163,22 @@ const SEED = arg('seed', null);
 // Which car is parked in the frame. Pinned by default so two captures of the
 // same view are comparable; --car roamer for the other one.
 const CAR = arg('car', 'camper');
+// --dpr and --pixelratio are the two halves of "what does the player actually
+// see". Every other capture in this tree runs at deviceScaleFactor 1, which is
+// the right default for comparing art but cannot show a resolution question at
+// all: the thing a Retina player is looking at is a frame drawn at a fraction
+// of their display's density and reconstructed up to it. --dpr 2 gives the page
+// a Retina display to reason about; --pixelratio pins how much of it the engine
+// is allowed to use (a number, or `native`). Use them together for an A/B of
+// the resolution setting itself; leave both off for ordinary art captures.
+const DPR = parseFloat(arg('dpr', '1'));
+const PIXELRATIO = arg('pixelratio', null);
 const params = new URLSearchParams();
 if (RES) params.set('res', RES);
 if (QUALITY) params.set('quality', QUALITY);
 if (SEED) params.set('seed', SEED);
 if (CAR) params.set('car', CAR);
+if (PIXELRATIO) params.set('pixelratio', PIXELRATIO);
 const qs = params.toString();
 const URL = arg('url', (process.env.AUTUMN_URL || 'http://localhost:5178')) + (qs ? `?${qs}` : '');
 const TIMEOUT = parseInt(arg('timeout', '180000'), 10);
@@ -214,7 +225,7 @@ await acquire('shot');
   });
   const page = await browser.newPage({
     viewport: { width: OUT_W, height: OUT_H },
-    deviceScaleFactor: 1,
+    deviceScaleFactor: DPR,
   });
 
   // Neuter Vite's HMR client before any page script runs.
