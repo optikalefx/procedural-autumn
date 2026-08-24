@@ -436,6 +436,17 @@ export class Vehicle extends System {
     const driving = !held && (ax.throttle > HOLD_PEDAL || ax.brake > HOLD_PEDAL);
     if (driving) this._brakeHold = false;
     else if (!held && ax.handbrake > 0.5 && this._holdEligible()) this._brakeHold = true;
+    // On touch there is no handbrake to press: the whole screen is the stick
+    // (see ui/TouchControls.js) and letting go of it IS the park brake. So the
+    // hold arms on release rather than on a button.
+    //
+    // This is the auto-hold the camper already had, not a new behaviour —
+    // `_holdEligible` still refuses above 8.5 km/h and with wheels off the
+    // ground, so releasing at speed coasts exactly as it did and only the last
+    // walking-pace metre latches. It matters more than a convenience: camps and
+    // boats can only be started from a parked camper, so "stop and let go" is
+    // what opens the rest of the game on a phone.
+    else if (!held && touchCapable() && this._holdEligible()) this._brakeHold = true;
 
     // A rescue leaves the park brake on. Any deliberate input releases it —
     // the player has taken over and the camper should behave normally from

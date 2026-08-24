@@ -108,9 +108,8 @@ export class Settings {
     // saying is the part that is invisible — that a HOLD is a different act
     // from a tap, and what each one is for.
     const KEYS = touchCapable() ? [
-      ['steer', 'drag the strip — how far across is how hard you turn'],
-      ['gas / brake', 'drive; brake again from a stop to reverse'],
-      ['park', 'handbrake — under 8 km/h it holds; camp and boats need you parked'],
+      ['slide', 'the whole screen is the stick — push forward to drive, pull back to brake and reverse, slide sideways to steer'],
+      ['let go', 'the park brake; below walking pace the camper stays where you left it'],
       ['tap', 'look at a camp, board a boat, come back to the camper'],
       ['hold', 'make camp here, put a boat in here, pack a camp up'],
       ['toast', 'when you are stuck, the message that appears is the rescue'],

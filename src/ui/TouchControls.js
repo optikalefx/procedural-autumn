@@ -1,122 +1,95 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  On-screen driving controls for touch devices.
+//  Driving on a touch screen: the whole world is the stick.
 //
-//  The game was keyboard/gamepad only, which made it a spectator on phones.
-//  This adds the smallest control set that actually drives the camper well
-//  with two thumbs:
+//  This started as four on-screen controls — a steering strip, two pedals and a
+//  park chip — which drove the camper well enough and cost the bottom third of
+//  a phone screen to do it. The player's direction was to throw them away:
+//  "push your finger forward to go forward, and just slide it around as if the
+//  whole screen is the control stick".
 //
-//    left thumb   a steering STRIP — press anywhere on it and the horizontal
-//                 position inside the strip is the steer value, continuously.
-//                 A strip rather than left/right buttons because analog steer
-//                 is the difference between driving and bumper-car tapping,
-//                 and rather than a joystick because the camper has no use for
-//                 a vertical axis there.
-//    right thumb  two pedals, gas above brake/reverse, plus a small handbrake
-//                 chip for hills (VehiclePhysics holds the camper with it).
+//  So there is no widget any more. Put a thumb anywhere on the valley and that
+//  point becomes the stick's centre; push forward to drive, pull back to brake
+//  and then reverse, slide sideways to steer, lift to let go. Nothing is drawn
+//  until the stick is actually deflected, and then only a ring where the thumb
+//  landed and a knob where it is now — so the game is on screen instead of a
+//  control panel, which is the whole point.
 //
-//  Everything feeds `input.touch`, a contribution Input.update() merges with
-//  the keyboard and gamepad exactly the way the gamepad is merged — so all
-//  the existing readers (vehicle, camera, HUD hints) see one normalised axis
-//  set and nothing downstream knows touch exists.
+//  ── how this does not fight the rest of the game ────────────────────────────
 //
-//  Pointer events with per-pointer tracking, not touch events: one pointerId
-//  per control, so steering and pedals are naturally concurrent and a thumb
-//  sliding off a pedal releases only that pedal. `touch-action: none` on the
-//  controls stops the browser turning a steer into a scroll or a
-//  double-tap-zoom.
+//  The same finger has to be able to pitch a camp and board a canoe, and those
+//  are presses on the world too. The split is already built, in core/Input.js:
+//  a press that stays STILL is an interaction (a tap picks a thing, a hold
+//  commits to a place) and a press that SLIDES is a drag. This layer is what a
+//  drag now means. The stick's dead zone is `SLOP_TOUCH`, the very number
+//  Input uses to decide a press moved, so the two readings cannot disagree —
+//  inside it you are aiming, outside it you are driving, and there is no band
+//  where you are doing both.
 //
-//  The layer only exists on coarse-pointer devices, and hides itself during
-//  captures the same way the HUD does (`window.__forceCamera`) so review
-//  sheets stay clean.
+//  ── and the park brake ─────────────────────────────────────────────────────
+//
+//  There is no park chip either, because the stick at rest already says it:
+//  let go below walking pace and Vehicle latches the hold (see the touch branch
+//  by `_holdEligible`). That is not a workaround for a missing button, it is
+//  the auto-hold this camper already had, finally with a control that matches
+//  it. It matters more than it sounds: camps and boats can only be started from
+//  a parked camper, so on a phone "stop and let go" IS the gesture that opens
+//  the rest of the game.
+//
+//  Everything still feeds `input.touch`, which Input.update() merges exactly
+//  the way it merges the gamepad, so nothing downstream knows touch exists.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { touchCapable } from '../core/verbs.js';
+import { SLOP_TOUCH } from '../core/Input.js';
 
 export { touchCapable };
 
-const BASE = [
-  'position:fixed', 'z-index:9998', 'user-select:none', '-webkit-user-select:none',
-  'touch-action:none', '-webkit-tap-highlight-color:transparent',
-  'font:600 15px/1 ui-rounded,system-ui,sans-serif', 'color:#ffe9c8',
-  'background:rgba(24,16,22,.44)', 'border:1px solid rgba(255,214,150,.28)',
-  'backdrop-filter:blur(4px)', '-webkit-backdrop-filter:blur(4px)',
-  'display:flex', 'align-items:center', 'justify-content:center',
-].join(';');
+// Full deflection. Sized for a thumb pivoting from where it landed rather than
+// for the screen: a stick you have to cross the phone to max out is one you
+// steer with your whole arm, and one much smaller than this has no travel left
+// to be gentle with.
+const RANGE = 108;   // px from centre to full lock
+const DEAD = SLOP_TOUCH;
 
 export class TouchControls {
   constructor(input) {
     this.input = input;
     this.root = document.createElement('div');
     this.root.id = 'pa-touch';
-    // The root is a pass-through container; only the controls take pointers.
-    this.root.style.cssText = 'position:fixed;inset:0;z-index:9998;pointer-events:none';
+    // Nothing here ever takes a pointer. The stick is fed by `input.press`,
+    // which core/Input.js has already tracked for the placement gestures — so
+    // this layer reads the same press the camp and the boat read, and cannot
+    // swallow one from them.
+    this.root.style.cssText =
+      'position:fixed;inset:0;z-index:9998;pointer-events:none;' +
+      'contain:strict;overflow:hidden';
     document.body.appendChild(this.root);
-    // hud.css keys touch-device layout off this: the keyboard hint hides and
-    // the dash lifts clear of the steering strip.
+    // hud.css keys touch-device layout off this.
     document.body.classList.add('pa-touch');
 
-    // Bottom inset: clear the hint bar and the home indicator.
-    const bottom = 'calc(18px + env(safe-area-inset-bottom, 0px))';
+    const shell = 'position:absolute;left:0;top:0;border-radius:50%;' +
+      'will-change:transform;opacity:0;transition:opacity .12s ease;' +
+      'pointer-events:none';
+    // The ring is where the thumb landed; the knob is where it is now.
+    //
+    // An OUTLINE, with nothing inside it. The first version filled the ring
+    // and blurred what was behind it, and a 216 px disc of murk sitting in the
+    // middle of the valley was a worse intrusion than the four pedals it
+    // replaced — the entire argument for the stick is that you get the
+    // landscape back. What has to be legible is the pivot and the deflection,
+    // and two thin circles say both.
+    this.ring = this._el(`${shell};width:${RANGE * 2}px;height:${RANGE * 2}px;` +
+      `margin:-${RANGE}px 0 0 -${RANGE}px;` +
+      // Cream on a gold hillside is the one legibility problem this whole HUD
+      // has (see the note by `.pa-label` in hud.css): the outer dark stroke is
+      // what keeps the ring from vanishing entirely into lit grass at noon.
+      'border:1.5px solid rgba(255,232,196,.34);' +
+      'box-shadow:0 0 0 1px rgba(38,24,18,.14)');
+    this.knob = this._el(`${shell};width:54px;height:54px;margin:-27px 0 0 -27px;` +
+      'border:1.5px solid rgba(255,232,196,.55);background:rgba(255,232,196,.16);' +
+      'box-shadow:0 1px 10px rgba(0,0,0,.18)');
 
-    // ── steering strip ──────────────────────────────────────────────────────
-    this.strip = this._el(
-      `${BASE};left:calc(14px + env(safe-area-inset-left,0px));bottom:${bottom};` +
-      'width:min(42vw,300px);height:84px;border-radius:42px;pointer-events:auto');
-    this.strip.innerHTML =
-      '<span style="opacity:.6;letter-spacing:.1em">◀&nbsp;&nbsp;steer&nbsp;&nbsp;▶</span>' +
-      '<div id="pa-steer-dot" style="position:absolute;left:50%;top:50%;width:56px;height:56px;' +
-      'margin:-28px 0 0 -28px;border-radius:50%;background:rgba(255,214,150,.28);' +
-      'border:1px solid rgba(255,214,150,.4);transition:left .08s"></div>';
-    this.dot = this.strip.querySelector('#pa-steer-dot');
-
-    // A press anywhere on the strip steers; the value is the horizontal
-    // position mapped to [-1, 1] with a small dead zone at centre. The strip
-    // captures its pointer so a thumb wandering above it keeps steering.
-    this._steerId = null;
-    const steerFrom = (e) => {
-      const r = this.strip.getBoundingClientRect();
-      const t = ((e.clientX - r.left) / r.width) * 2 - 1;   // -1 left … +1 right
-      const v = Math.max(-1, Math.min(1, t / 0.9));
-      const dz = Math.abs(v) < 0.08 ? 0 : v;
-      // Keyboard convention: steer +1 is LEFT (KeyA). Screen-left must steer left.
-      this.input.touch.steer = -dz;
-      this.dot.style.left = `${(Math.max(-1, Math.min(1, t)) * 0.5 + 0.5) * 100}%`;
-    };
-    this.strip.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      this._steerId = e.pointerId;
-      this.strip.setPointerCapture(e.pointerId);
-      steerFrom(e);
-    });
-    this.strip.addEventListener('pointermove', (e) => {
-      if (e.pointerId === this._steerId) steerFrom(e);
-    });
-    const steerEnd = (e) => {
-      if (e.pointerId !== this._steerId) return;
-      this._steerId = null;
-      this.input.touch.steer = 0;
-      this.dot.style.left = '50%';
-    };
-    this.strip.addEventListener('pointerup', steerEnd);
-    this.strip.addEventListener('pointercancel', steerEnd);
-
-    // ── pedals ──────────────────────────────────────────────────────────────
-    const right = 'calc(14px + env(safe-area-inset-right,0px))';
-    this.gas = this._hold(
-      `${BASE};right:${right};bottom:calc(${bottom} + 96px);width:96px;height:88px;` +
-      'border-radius:26px;pointer-events:auto', '▲<br><span style="font-size:11px;opacity:.6">gas</span>',
-      (on) => { this.input.touch.throttle = on ? 1 : 0; });
-    this.brake = this._hold(
-      `${BASE};right:${right};bottom:${bottom};width:96px;height:88px;` +
-      'border-radius:26px;pointer-events:auto', '▼<br><span style="font-size:11px;opacity:.6">brake</span>',
-      (on) => { this.input.touch.brake = on ? 1 : 0; });
-    // Handbrake is a small chip inboard of the pedals — used rarely, so it
-    // must not sit where a gas-reaching thumb lands.
-    this.hand = this._hold(
-      `${BASE};right:calc(${right} + 108px);bottom:${bottom};width:64px;height:56px;` +
-      'border-radius:20px;font-size:11px;pointer-events:auto', 'park',
-      (on) => { this.input.touch.handbrake = on ? 1 : 0; });
-
+    this._shown = false;
     this._wasCapturing = false;
   }
 
@@ -127,33 +100,65 @@ export class TouchControls {
     return d;
   }
 
-  /** A hold-to-press control: down = on, up/cancel/capture-loss = off. */
-  _hold(css, html, set) {
-    const d = this._el(css);
-    d.innerHTML = `<span style="text-align:center">${html}</span>`;
-    const down = (e) => {
-      e.preventDefault();
-      d.setPointerCapture(e.pointerId);
-      d.style.background = 'rgba(255,214,150,.34)';
-      set(true);
-    };
-    const up = () => {
-      d.style.background = 'rgba(24,16,22,.44)';
-      set(false);
-    };
-    d.addEventListener('pointerdown', down);
-    d.addEventListener('pointerup', up);
-    d.addEventListener('pointercancel', up);
-    return d;
-  }
-
-  /** Per-frame: hide during captures/photo mode, like the HUD does. */
+  /**
+   * Read the press, drive the camper, draw the stick.
+   *
+   * Runs in `lateUpdate`, so the axes it writes are merged by the NEXT
+   * `Input.update` — one frame behind the finger. That is deliberate rather
+   * than tolerated: the alternative is a second set of pointer listeners
+   * racing Input's, and a frame is 16 ms on a control whose input is a thumb.
+   */
   update() {
     const capturing = !!window.__forceCamera || !!this.input.suppressed;
     if (capturing !== this._wasCapturing) {
       this._wasCapturing = capturing;
       this.root.style.display = capturing ? 'none' : 'block';
     }
+    const t = this.input.touch;
+    if (capturing) { t.throttle = 0; t.brake = 0; t.steer = 0; return; }
+
+    const p = this.input.press;
+    const dx = p.px - p.ox;
+    const dy = p.py - p.oy;
+    const len = p.down ? Math.hypot(dx, dy) : 0;
+
+    if (len <= DEAD) {
+      // Neutral — including the whole of a placement hold, which never leaves
+      // the dead zone by definition.
+      t.throttle = 0; t.brake = 0; t.steer = 0;
+      this._draw(false);
+      return;
+    }
+
+    // Subtract the dead zone rather than clamping through it, so the stick
+    // starts from zero at the edge of the aiming band instead of jumping to
+    // whatever fraction the band happened to be. Clamped as a VECTOR, so a
+    // diagonal cannot ask for more than full lock on both axes at once.
+    const k = Math.min(1, (len - DEAD) / (RANGE - DEAD)) / len;
+    const ux = dx * k, uy = dy * k;
+
+    // Screen-right steers right. The keyboard convention is that steer +1 is
+    // LEFT (KeyA), hence the sign — the same flip the old steering strip made.
+    t.steer = -ux;
+    // Up the screen is forward. Pulling back is the brake, and the brake is
+    // also reverse once the camper has stopped — VehiclePhysics already owns
+    // that, so back-is-reverse costs nothing here.
+    const fwd = -uy;
+    t.throttle = Math.max(0, fwd);
+    t.brake = Math.max(0, -fwd);
+
+    this._draw(true, p.ox, p.oy, p.ox + ux * RANGE, p.oy + uy * RANGE);
+  }
+
+  _draw(on, ox = 0, oy = 0, kx = 0, ky = 0) {
+    if (on) {
+      this.ring.style.transform = `translate(${ox}px,${oy}px)`;
+      this.knob.style.transform = `translate(${kx}px,${ky}px)`;
+    }
+    if (on === this._shown) return;
+    this._shown = on;
+    this.ring.style.opacity = on ? '1' : '0';
+    this.knob.style.opacity = on ? '1' : '0';
   }
 
   dispose() {

@@ -17,7 +17,11 @@
 const HOLD_TIME = 0.42;    // s pressed in place before a hold is live
 const TAP_TIME = 0.55;     // s pressed that still counts as a tap on release
 const SLOP_MOUSE = 6;      // px of travel that is still "in place"
-const SLOP_TOUCH = 14;
+// Exported because the drive stick's dead zone must BE this number: a finger
+// that has left the dead zone is a stick deflection, a finger inside it is
+// still a press that could become a tap or a hold. Two numbers here would give
+// the game a band where it is doing both or neither.
+export const SLOP_TOUCH = 14;
 
 export class Input {
   constructor(domElement = window) {
@@ -46,8 +50,13 @@ export class Input {
     // `tap` and `commit` are cleared by update() the same frame `pressed` is,
     // so a system that misses its frame misses the press — which is the same
     // contract `justPressed` has always had.
+    // `x/y` are NDC for the aim ray; `px/py` and `ox/oy` are client pixels —
+    // where the finger is and where it landed. The stick wants pixels: a
+    // deflection measured in NDC would steer harder than it accelerates purely
+    // because the screen is taller than it is wide.
     this.press = {
       down: false, x: 0, y: 0, t: 0, moved: 0,
+      px: 0, py: 0, ox: 0, oy: 0,
       holding: false, tap: false, commit: false,
     };
     this.suppressed = false;
@@ -148,6 +157,8 @@ export class Input {
       this._lastX = 0; this._lastY = 0;
       const p = this.press;
       p.down = true; p.t = 0; p.moved = 0;
+      p.ox = e.clientX; p.oy = e.clientY;
+      p.px = e.clientX; p.py = e.clientY;
       this._pressVoid = false;
       // Wall clock, not the frame's `dt`. A hold is a HUMAN act — half a second
       // is half a second whether the valley is running at 60 fps or hitching
@@ -178,6 +189,7 @@ export class Input {
       // wobbles and comes back was holding still, and a press that has already
       // left cannot come back and be a tap again — hence the max.
       this.press.moved = Math.max(this.press.moved, Math.hypot(dx, dy));
+      this.press.px = e.clientX; this.press.py = e.clientY;
       setNdc(e);
       this.press.x = this.mouse.x; this.press.y = this.mouse.y;
       // Touch has no `movementX`, so the frame delta is the difference of two
@@ -282,7 +294,13 @@ export class Input {
     const p = this.press;
     if (p.down) {
       p.t = (performance.now() - this._pressT0) / 1000;
-      if (!p.holding && p.t >= HOLD_TIME && p.moved <= this._pressSlop) p.holding = true;
+      const inPlace = p.moved <= this._pressSlop;
+      if (!p.holding && p.t >= HOLD_TIME && inPlace) p.holding = true;
+      // …and a hold that then MOVES stops being one. Without this, pressing,
+      // pausing, and driving off left the placement ring lit on the meadow for
+      // the whole drive: `commit` was already dead (the release is not in
+      // place), but the preview the hold had armed never retracted.
+      else if (p.holding && !inPlace) p.holding = false;
     }
 
     this.mouse.dx = 0;

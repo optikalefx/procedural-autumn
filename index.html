@@ -138,9 +138,10 @@
       if (!((navigator.maxTouchPoints || 0) > 0 || matchMedia('(pointer: coarse)').matches)) return;
       const hint = document.getElementById('hint');
       if (hint) {
-        hint.innerHTML = '<b>steer</b> and <b>gas</b> to drive &nbsp;·&nbsp; ' +
-                         '<b>park</b>, then <b>hold</b> the ground to make camp' +
-                         ' &nbsp;·&nbsp; <b>hold</b> the shore for a boat';
+        hint.innerHTML = '<b>slide</b> anywhere to drive &nbsp;·&nbsp; ' +
+                         '<b>let go</b> to park &nbsp;·&nbsp; ' +
+                         '<b>hold</b> the ground to make camp &nbsp;·&nbsp; ' +
+                         '<b>hold</b> the shore for a boat';
       }
     })();
 

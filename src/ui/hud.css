@@ -886,8 +886,13 @@
    desktop corner is exactly where the steering strip lives — lift it clear
    rather than shrink it. */
 /* The first-run hint is a keyboard legend and there is no keyboard; the touch
-   layer teaches itself, and index.html's loading hint carries what is left. */
+   layer teaches itself, and index.html's loading hint carries what is left.
+
+   The dash used to be lifted 118px here to clear the steering strip. There is
+   no strip any more — the whole screen is the stick — so it sits where it does
+   everywhere else, and the only touch-specific rule left is the safe-area
+   inset for the home indicator. */
 body.pa-touch .pa-hint { display: none; }
 body.pa-touch .pa-dash {
-  bottom: calc(118px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
 }
