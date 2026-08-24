@@ -71,6 +71,22 @@ const CAM_LOOK_UP = 0.5;       // look target height over the water ahead
 // metres off the stern without ever returning to the old drone framing.
 const CAM_ZOOM_MIN = 0.55;
 const CAM_ZOOM_MAX = 2.6;
+// Look around from the seat. Drag turns your head, it does not turn the boat:
+// the eye stays mounted on the deck and only the look target swings, so the
+// gunwale stays under the frame and a glance at the far shore costs nothing.
+// Same sensitivities as the chase camera (vehicle/CameraRig `_readLook`) so
+// the gesture feels identical whichever you are steering, and the same
+// courtesy: it eases back over the bow only once you are actually under way,
+// because a player drifting on a still lake is sightseeing.
+const LOOK_PITCH_MIN = -0.55;   // looking up into the trees
+const LOOK_PITCH_MAX = 0.75;    // looking down over the side at the water
+const LOOK_RECENTER_DELAY = 2.0;
+
+// How long the "drive the camper" hint sits over the bow after boarding. It is
+// a one-time reminder that the camper is still yours to click back to, not a
+// label for the boat — left up permanently it just parks a toast in the middle
+// of the lake (user, 2026-08-24).
+const DRIVE_HINT_TIME = 6.0;
 
 // Prewarm hold, matching Camp's pattern: enough frames for the main and
 // shadow passes to have drawn the warm props, all under the loading screen.
@@ -98,6 +114,10 @@ export class Boat extends System {
     this._camSnap = true;
     this._camZoom = 1;                  // 1 = the seated mount; wheel moves it
     this._camZoomT = 1;
+    this._lookYaw = 0;                  // head turn off the bow line, radians
+    this._lookPitch = 0;
+    this._lookIdle = 0;                 // seconds since the look was touched
+    this._hintT = 0;                    // seconds left of the drive hint
     this._ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
     this._v = new THREE.Vector3();
     this._q = new THREE.Quaternion();
@@ -385,8 +405,13 @@ export class Boat extends System {
       return;
     }
 
-    const drive = `${pickVerb()} camper&nbsp; drive`;
-    this._say(p.beached ? `${actVerb()}&nbsp; step ashore&ensp;${drive}` : drive);
+    // The drive hint is a greeting, not a label: it expires a few seconds after
+    // boarding. "step ashore" has a condition of its own — it only appears with
+    // the bow on a bank — so it stays.
+    this._hintT = Math.max(0, this._hintT - dt);
+    const drive = this._hintT > 0 ? `${pickVerb()} camper&nbsp; drive` : '';
+    const ashore = `${actVerb()}&nbsp; step ashore`;
+    this._say(p.beached ? (drive ? `${ashore}&ensp;${drive}` : ashore) : drive);
     this._cursor('');
     void rig;
   }
@@ -572,6 +597,10 @@ export class Boat extends System {
     // hands back cleanly). We do NOT raise __forceCamera — the HUD and the
     // prompts stay up. The mount eases in from wherever the camera was.
     this._camSnap = true;
+    this._lookYaw = 0;
+    this._lookPitch = 0;
+    this._lookIdle = 0;
+    this._hintT = DRIVE_HINT_TIME;
     rig?.takeCamera?.((dt) => this._boatCam(dt));
     this._cue('board', { x: b.phys.x, z: b.phys.z, kind: b.kind });
     return true;
@@ -589,19 +618,28 @@ export class Boat extends System {
     const L = dim.length;
     // Wheel zoom, same exponential feel as the rig's. The rig is taken over
     // while aboard, so nothing else consumes the wheel.
-    const wheel = this.ctx.input.mouse.wheel;
+    const input = this.ctx.input;
+    const wheel = input.mouse.wheel;
     if (wheel) {
       this._camZoomT = Math.min(CAM_ZOOM_MAX,
         Math.max(CAM_ZOOM_MIN, this._camZoomT * Math.exp(wheel * 0.0016)));
     }
     const k0 = Math.min(dt, 1 / 20);
+    this._readLook(k0, p);
     this._camZoom = THREE.MathUtils.damp(this._camZoom, this._camZoomT, 9, k0);
     const zf = this._camZoom;
     const mx = p.x - fx * L * CAM_MOUNT_AFT * zf;
     const mz = p.z - fz * L * CAM_MOUNT_AFT * zf;
     const my = p.y + CAM_MOUNT_UP * (0.55 + 0.45 * zf);
-    const lx = p.x + fx * L * 1.7, lz = p.z + fz * L * 1.7;
-    const ly = p.y + CAM_LOOK_UP;
+    // The look target rides a boom off the eye, swung by the head turn: yaw 0
+    // puts it over the bow (the framing above), and pitch tips it up into the
+    // trees or down at the water beside the hull.
+    const reach = L * 1.7;
+    const a = p.heading + this._lookYaw;
+    const cp = Math.cos(this._lookPitch);
+    const lx = mx + Math.sin(a) * reach * cp;
+    const lz = mz + Math.cos(a) * reach * cp;
+    const ly = my + (p.y + CAM_LOOK_UP - my) * cp - Math.sin(this._lookPitch) * reach;
     const k = Math.min(dt, 1 / 20);
     if (this._camSnap) {
       this._camP.set(mx, my, mz);
@@ -610,12 +648,58 @@ export class Boat extends System {
     } else {
       // Position tracks hard (the eye is IN the boat); the look target trails
       // a little more so a sweep-turn reads as the bow swinging through frame.
+      // Except under the player's own hand: a head turn has to feel attached to
+      // the mouse, the same bargain the chase camera strikes while dragging.
       const dp = THREE.MathUtils.damp;
+      const lk = this._lookIdle === 0 ? 22 : 7;
       this._camP.set(dp(this._camP.x, mx, 14, k), dp(this._camP.y, my, 10, k), dp(this._camP.z, mz, 14, k));
-      this._camL.set(dp(this._camL.x, lx, 7, k), dp(this._camL.y, ly, 7, k), dp(this._camL.z, lz, 7, k));
+      this._camL.set(dp(this._camL.x, lx, lk, k), dp(this._camL.y, ly, lk, k), dp(this._camL.z, lz, lk, k));
     }
     cam.position.copy(this._camP);
     cam.lookAt(this._camL);
+  }
+
+  /**
+   * Head turn while aboard: drag to look around, exactly the gesture that
+   * orbits the chase camera when you are driving. The rig is handed over while
+   * aboard (see `board`), so nothing else is reading the mouse — without this,
+   * a boat was the one place in the game where the mouse did nothing at all.
+   *
+   * A drag past the press slop is not a tap (core/Input `pressEnd`), so looking
+   * around can never be mistaken for the click that reaches back to the camper.
+   */
+  _readLook(dt, p) {
+    const input = this.ctx.input;
+    const m = input.mouse;
+    let touched = false;
+    if (m.down) {
+      touched = true;
+      if (m.dx || m.dy) {
+        this._lookYaw -= m.dx * 0.0042;
+        this._lookPitch = Math.min(LOOK_PITCH_MAX,
+          Math.max(LOOK_PITCH_MIN, this._lookPitch + m.dy * 0.0032));
+      }
+    }
+    const ax = input.axes;
+    if (ax.lookX || ax.lookY) {
+      this._lookYaw -= ax.lookX * 1.6 * dt;
+      this._lookPitch = Math.min(LOOK_PITCH_MAX,
+        Math.max(LOOK_PITCH_MIN, this._lookPitch + ax.lookY * 1.1 * dt));
+      ax.lookX = 0; ax.lookY = 0;
+      touched = true;
+    }
+    // Keep the turn in (-pi, pi] so the ease home always takes the short way.
+    this._lookYaw = Math.atan2(Math.sin(this._lookYaw), Math.cos(this._lookYaw));
+    this._lookIdle = touched ? 0 : this._lookIdle + dt;
+
+    // Ease back over the bow once you are paddling somewhere — and only then.
+    // Drifting, the player is looking at the lake on purpose.
+    const moving = Math.min(1, Math.max(0, (Math.abs(p.speed) - 0.6) / 1.8));
+    if (moving > 0.02 && this._lookIdle > LOOK_RECENTER_DELAY) {
+      const k = 1 - Math.exp(-1.5 * moving * dt);
+      this._lookYaw += (0 - this._lookYaw) * k;
+      this._lookPitch += (0 - this._lookPitch) * k;
+    }
   }
 
   /** E on a beached bow: bring the camper around to the shore in front of the
