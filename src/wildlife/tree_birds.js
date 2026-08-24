@@ -361,11 +361,12 @@ export const BALD_EAGLE_POSES = ['glide', 'perched'];
  * The pose attribute is baked per-vertex; time is frozen mid-upstroke.
  */
 export function buildBaldEagle(rnd, opts = {}) {
-  const pose = opts.pose ?? opts.colorway ?? 'glide';
+  // Spelt out against opts.pose so the gallery's option probe sees a
+  // two-value enum and deals each pose its own card (the waders' trick).
+  const perched = opts.pose === 'perched' && opts.pose !== 'glide';
   const geo = buildBaldEagleGeometry();
   const n = geo.getAttribute('position').count;
   const arr = new Float32Array(n * 4);
-  const perched = pose === 'perched';
   for (let i = 0; i < n; i++) {
     arr[i * 4] = 0.7;                       // phase → wings a touch raised
     arr[i * 4 + 1] = 0.0;                   // rate 0: frozen for the thumbnail
