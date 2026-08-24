@@ -503,9 +503,10 @@ async function boot() {
     requestAnimationFrame(tick);
   });
 
-  // Always-on perf readout (F3 toggles, Shift+F3 cycles detail). Kept out of
-  // the HUD deliberately — the HUD hides itself during captures, and this needs
-  // to be visible precisely when the player is judging how the game feels.
+  // Perf readout, off by default (F3 or the settings toggle shows it,
+  // Shift+F3 cycles detail). Kept out of the HUD deliberately — the HUD hides
+  // itself during captures, and this needs to be visible precisely when the
+  // player is judging how the game feels.
   const perfOverlay = new PerfOverlay(engine);
   engine.onLateUpdate(() => perfOverlay.update());
   window.__perfOverlay = perfOverlay;

@@ -63,6 +63,7 @@ export class Settings {
     this.node.appendChild(this._group('View', [
       this._toggle('Invert look', () => hud.invertY, (v) => hud.applyInvert(v)),
       this._toggle('Valley map', () => hud.showMap, (v) => hud.applyMap(v)),
+      this._toggle('FPS readout', () => hud.showPerf(), (v) => hud.applyPerf(v)),
       this._seg('Interface', HUD_MODES, () => hud.hudOpacity, (v) => hud.applyHudMode(v)),
     ]));
 
@@ -70,7 +71,7 @@ export class Settings {
       '<b>WASD</b> drive &nbsp;·&nbsp; <b>Space</b> handbrake &nbsp;·&nbsp; <b>C</b> camera<br>' +
       '<b>Space</b> under 8 km/h — brake hold; stays parked until you drive off<br>' +
       '<b>R</b> rescue — moves you to clear ground nearby<br>' +
-      '<b>F</b> photo mode &nbsp;·&nbsp; <b>N</b> map &nbsp;·&nbsp; <b>M</b> mute<br>' +
+      '<b>F</b> photo mode &nbsp;·&nbsp; <b>N</b> map &nbsp;·&nbsp; <b>M</b> mute &nbsp;·&nbsp; <b>F3</b> fps<br>' +
       '<b>H</b> hide interface &nbsp;·&nbsp; <b>Esc</b> close');
     this.node.appendChild(foot);
     root.appendChild(this.node);

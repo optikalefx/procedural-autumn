@@ -259,6 +259,13 @@ export class HUD extends System {
 
   applyInvert(v) { this.invertY = !!v; this._save(); }
 
+  // The perf readout lives outside the HUD (see PerfOverlay.js for why), so
+  // the settings sheet reaches it through the global main.js publishes. It
+  // persists its own visibility; nothing to save here.
+  perf() { return window.__perfOverlay ?? null; }
+  showPerf() { return this.perf()?.visible ?? false; }
+  applyPerf(v) { this.perf()?.setVisible(v); this.settings?.sync(); }
+
   applyMap(v) {
     this.showMap = !!v;
     this.map?.setVisible(this.showMap);

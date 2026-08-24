@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Always-on performance readout.
+//  Performance readout, off by default.
 //
 //  Deliberately independent of the HUD: the HUD hides itself during captures,
 //  and this must be visible exactly when the player is judging how the game
@@ -8,18 +8,21 @@
 //  healthy fps by quietly drawing fewer pixels, and you should be able to see
 //  that happening rather than only notice the picture got soft.
 //
-//  Toggle with F3. Shift+F3 cycles detail.
+//  Toggle with F3 or the "FPS readout" switch in Settings — the choice
+//  persists either way. Shift+F3 cycles detail.
 // ─────────────────────────────────────────────────────────────────────────────
-import { touchCapable } from './TouchControls.js';
+
+const STORE = 'pa.perf';
 
 export class PerfOverlay {
   constructor(engine) {
     this.engine = engine;
-    // Hidden by default on touch devices: a phone has no F3 to dismiss it,
-    // and a debug readout pinned over a phone-sized frame is not "always-on
-    // where the player judges feel", it is clutter. A touchscreen laptop
-    // still has the key, so the toggle path below is unchanged.
-    this.visible = !touchCapable();
+    // A debug readout the player did not ask for is clutter, so it starts
+    // hidden and only a persisted opt-in (F3 or the settings toggle) brings
+    // it back.
+    this.visible = false;
+    try { this.visible = localStorage.getItem(STORE) === '1'; }
+    catch { /* default stays off */ }
     this.detail = 1;
 
     this._times = [];
@@ -104,9 +107,17 @@ export class PerfOverlay {
       if (e.code !== 'F3') return;
       e.preventDefault();
       if (e.shiftKey) this.detail = (this.detail + 1) % 3;
-      else this.visible = !this.visible;
-      this.el.style.display = this.visible ? 'block' : 'none';
+      else this.setVisible(!this.visible);
     });
+  }
+
+  /** Show or hide the readout and persist the choice. F3 and the settings
+   *  sheet both come through here so there is one behaviour to keep working. */
+  setVisible(v) {
+    this.visible = !!v;
+    this.el.style.display = (this.visible && !this._wasCapturing) ? 'block' : 'none';
+    try { localStorage.setItem(STORE, this.visible ? '1' : '0'); }
+    catch { /* preference just won't stick */ }
   }
 
   update() {
