@@ -18,6 +18,7 @@ import { pickCar, carById, CARS } from './vehicle_models.js';
 import { VehiclePhysics } from './VehiclePhysics.js';
 import { ParticleField, TrackRibbons, surfaceDust, KIND } from './VehicleFX.js';
 import { VehicleShadow } from './VehicleShadow.js';
+import { touchCapable } from '../core/verbs.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
@@ -168,6 +169,7 @@ export class Vehicle extends System {
     this._dropping = false;    // a car swap is in the air; see `setCar`
     this._invQuat = new THREE.Quaternion();
     this._rescueCool = 0;
+    this._rescueOffered = false;   // touch only: is the rescue toast up? see `update`
     this._rescueHold = false;
     this._brakeHold = false;
     this.brakeHold = false;      // what the HUD lamp reads
@@ -385,11 +387,28 @@ export class Vehicle extends System {
     // from one press.
     this._rescueCool = Math.max(0, this._rescueCool - dt);
     if (!held && input.justPressed('KeyR')) this.rescue();
-    // Once per session, and only after the player has genuinely been fighting
-    // it for a couple of seconds: a key you only need when stuck is no use if
-    // you learn about it before you are. `_stuckFor` is the physics' own
-    // measure — full throttle or full brake, going nowhere, on the ground.
-    if (!this._toldAboutRescue && this.phys._stuckFor > 2.4) {
+    // Only after the player has genuinely been fighting it for a couple of
+    // seconds: an offer you only need when stuck is no use if it arrives before
+    // you are. `_stuckFor` is the physics' own measure — full throttle or full
+    // brake, going nowhere, on the ground.
+    //
+    // The two devices get genuinely different behaviour here, and it is not
+    // just wording. With a keyboard the toast TEACHES a key, so it says it once
+    // per session and goes; you know R from then on. On touch the toast IS the
+    // rescue — there is no key to learn — so it has to come back every time the
+    // camper is stuck, and it has to stay up while the offer stands instead of
+    // timing out under a player who is still rocking the throttle. Hence
+    // sticky, and hence taking it down again the moment they drive out of it
+    // under their own power.
+    const stuck = this.phys._stuckFor > 2.4;
+    if (touchCapable()) {
+      if (stuck !== this._rescueOffered) {
+        this._rescueOffered = stuck;
+        const hud = ctx.systems.hud;
+        if (stuck) hud?.toast?.('Touch to rescue', { action: () => this.rescue(), sticky: true });
+        else hud?.hideToast?.();
+      }
+    } else if (!this._toldAboutRescue && stuck) {
       this._toldAboutRescue = true;
       ctx.systems.hud?.toast?.('Stuck? Press R');
     }

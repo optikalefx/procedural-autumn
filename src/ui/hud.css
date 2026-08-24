@@ -475,6 +475,18 @@
 }
 .pa-toast.pa-show { opacity: 1; transform: translate(-50%, 0); }
 
+/* A toast that is also a button — on touch it is sometimes the only control
+   there is (see HUD.toast). Bigger tap target, and it has to read as pressable
+   rather than as another line of narration. */
+.pa-toast-action {
+  cursor: pointer;
+  padding: 0.85em 1.5em;
+  font-weight: 600;
+  border-color: var(--ink-faint);
+  -webkit-tap-highlight-color: transparent;
+}
+.pa-toast-action:active { transform: translate(-50%, 0) scale(0.96); }
+
 /* ── panels (settings / photo rail) ──────────────────────────────────── */
 .pa-sheet {
   position: absolute;
@@ -873,6 +885,8 @@
    keyboard hint is meaningless where there is no keyboard, and the dash's
    desktop corner is exactly where the steering strip lives — lift it clear
    rather than shrink it. */
+/* The first-run hint is a keyboard legend and there is no keyboard; the touch
+   layer teaches itself, and index.html's loading hint carries what is left. */
 body.pa-touch .pa-hint { display: none; }
 body.pa-touch .pa-dash {
   bottom: calc(118px + env(safe-area-inset-bottom, 0px));

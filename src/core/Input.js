@@ -1,4 +1,24 @@
 // Keyboard / gamepad / pointer input, normalised into a small action set.
+
+// ── the press gesture ────────────────────────────────────────────────────────
+// How long a press has to sit still before it becomes a HOLD, and how far a
+// finger may wander and still count as "in place".
+//
+// A touch screen has no hover, and half this game's interactions were built on
+// one: the camp ring, its green/red validity and every prompt in the game come
+// from pointing at something without committing to it. So on touch the press
+// IS the hover — hold and the preview appears under your thumb, release and it
+// happens, slide off a red spot first and it does not.
+//
+// HOLD_TIME is under the ~500 ms at which iOS fires its own long-press callout,
+// so the gesture resolves before the browser tries to take it. The slop is per
+// pointer type on purpose: a mouse that moves 7 px was aiming somewhere else, a
+// thumb that moves 7 px was holding still.
+const HOLD_TIME = 0.42;    // s pressed in place before a hold is live
+const TAP_TIME = 0.55;     // s pressed that still counts as a tap on release
+const SLOP_MOUSE = 6;      // px of travel that is still "in place"
+const SLOP_TOUCH = 14;
+
 export class Input {
   constructor(domElement = window) {
     this.dom = domElement;
@@ -13,6 +33,23 @@ export class Input {
     // Written by ui/TouchControls.js; merged in update() exactly the way the
     // gamepad is, so nothing downstream knows touch exists.
     this.touch = { throttle: 0, brake: 0, steer: 0, handbrake: 0 };
+    // The one press gesture, fed by pointer events so a mouse click and a thumb
+    // are the same thing to everything downstream. See HOLD_TIME above.
+    //
+    //   down     a pointer is down on the world (not on a control)
+    //   t        seconds it has been down
+    //   moved    px it has travelled from where it went down
+    //   holding  down, in place, past HOLD_TIME — the placement preview is live
+    //   tap      ONE frame: released in place, quickly. Picking a thing.
+    //   commit   ONE frame: released after `holding`. Committing to a place.
+    //
+    // `tap` and `commit` are cleared by update() the same frame `pressed` is,
+    // so a system that misses its frame misses the press — which is the same
+    // contract `justPressed` has always had.
+    this.press = {
+      down: false, x: 0, y: 0, t: 0, moved: 0,
+      holding: false, tap: false, commit: false,
+    };
     this.suppressed = false;
     this._bind();
   }
@@ -76,6 +113,112 @@ export class Input {
     window.addEventListener('wheel', (e) => {
       if (onWorld(e)) this.mouse.wheel += e.deltaY;
     }, { passive: true });
+
+    // ── the press gesture ───────────────────────────────────────────────────
+    // Pointer events, not mouse events, because on a touch screen there are no
+    // mouse events worth having: the browser synthesises a whole
+    // mousemove/mousedown/mouseup/click burst AFTER touchend, all inside one
+    // task, so anything that samples `mouse.down` once a frame — which is what
+    // every click in this game used to do — never sees a finger at all. That
+    // is the whole reason a phone could not pitch a camp or put a boat in the
+    // water. One pointer path, and a mouse click and a thumb become the same
+    // press.
+    //
+    // Only the FIRST pointer on the world starts a press: `_pressId` pins it,
+    // so a thumb already on the gas pedal (a different pointer, and not on the
+    // canvas anyway) cannot cancel a placement being held with the other hand.
+    this._pressId = null;
+    this._pressSlop = SLOP_MOUSE;
+    this._pressAt = { x: 0, y: 0 };
+    this._pressT0 = 0;                  // performance.now() at pointerdown — see below
+    this._pressVoid = false;            // a press a menu ate; it resolves to nothing
+    this._lastX = 0; this._lastY = 0;   // last frame's offset, for the touch look delta
+
+    const setNdc = (e) => {
+      this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    };
+
+    window.addEventListener('pointerdown', (e) => {
+      if (this._pressId !== null || !onWorld(e) || e.button > 0) return;
+      this._pressId = e.pointerId;
+      this._pressSlop = e.pointerType === 'mouse' ? SLOP_MOUSE : SLOP_TOUCH;
+      this._pressAt.x = e.clientX;
+      this._pressAt.y = e.clientY;
+      this._lastX = 0; this._lastY = 0;
+      const p = this.press;
+      p.down = true; p.t = 0; p.moved = 0;
+      this._pressVoid = false;
+      // Wall clock, not the frame's `dt`. A hold is a HUMAN act — half a second
+      // is half a second whether the valley is running at 60 fps or hitching
+      // through a bake — and simulated time is neither: it is clamped per frame
+      // and it stops when the tab does. Measured on `dt`, a hold on a phone
+      // that dropped to 15 fps would have wanted a two-second press, and the
+      // headless harness (which runs far below real time) could not perform the
+      // gesture at all.
+      this._pressT0 = performance.now();
+      p.holding = false; p.tap = false; p.commit = false;
+      // The aim ray reads `mouse.x/y` (see core/Pointer.js `pointerRay`), and a
+      // finger produces no hover to have set it — so the press position IS the
+      // aim from the instant it lands.
+      setNdc(e);
+      p.x = this.mouse.x; p.y = this.mouse.y;
+      // A finger drag has to reach the look the way a mouse drag does. Mouse
+      // pointers are left alone here: their own mousedown/mousemove handlers
+      // above already own `down` and `dx/dy`, and counting both would double
+      // every mouse look.
+      if (e.pointerType !== 'mouse') this.mouse.down = true;
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== this._pressId) return;
+      const dx = e.clientX - this._pressAt.x;
+      const dy = e.clientY - this._pressAt.y;
+      // Distance from where it went down, not distance travelled: a thumb that
+      // wobbles and comes back was holding still, and a press that has already
+      // left cannot come back and be a tap again — hence the max.
+      this.press.moved = Math.max(this.press.moved, Math.hypot(dx, dy));
+      setNdc(e);
+      this.press.x = this.mouse.x; this.press.y = this.mouse.y;
+      // Touch has no `movementX`, so the frame delta is the difference of two
+      // offsets from the press origin.
+      if (e.pointerType !== 'mouse') {
+        this.mouse.dx += dx - this._lastX;
+        this.mouse.dy += dy - this._lastY;
+      }
+      this._lastX = dx; this._lastY = dy;
+    });
+
+    const pressEnd = (e, cancelled) => {
+      if (e.pointerId !== this._pressId) return;
+      this._pressId = null;
+      const p = this.press;
+      const inPlace = p.moved <= this._pressSlop && !this._pressVoid;
+      // Resolved on release, not on a timer, so the two gestures can never both
+      // fire from one press: past HOLD_TIME it was a hold and it commits, under
+      // it, it was a tap. `TAP_TIME` is the old click contract and is only
+      // reachable when `holding` never armed (a press suppressed mid-gesture).
+      p.commit = !cancelled && inPlace && p.holding;
+      p.tap = !cancelled && inPlace && !p.holding && p.t <= TAP_TIME;
+      p.down = false;
+      p.holding = false;
+      p.t = 0;
+      this._pressVoid = false;
+      if (e.pointerType !== 'mouse') this.mouse.down = false;
+    };
+    window.addEventListener('pointerup', (e) => pressEnd(e, false));
+    window.addEventListener('pointercancel', (e) => pressEnd(e, true));
+    // A press that leaves the window never gets its pointerup.
+    window.addEventListener('blur', () => {
+      this._pressId = null;
+      this._pressVoid = false;
+      const p = this.press;
+      p.down = false; p.holding = false; p.t = 0; p.tap = false; p.commit = false;
+    });
+    // iOS raises its own long-press callout at around half a second, over the
+    // top of a placement being held. HOLD_TIME resolves first, but the callout
+    // still has to be refused or the gesture ends in a share sheet.
+    window.addEventListener('contextmenu', (e) => { if (onWorld(e)) e.preventDefault(); });
   }
 
   key(code) { return this.keys.has(code); }
@@ -91,6 +234,19 @@ export class Input {
       this.axes.steer = 0; this.axes.handbrake = 0;
       this.mouse.dx = 0; this.mouse.dy = 0; this.mouse.wheel = 0;
       this.pressed.clear();
+      // Same reason the axes are zeroed: a sheet opening over a held placement
+      // must not leave the placement armed to fire when the sheet closes.
+      //
+      // Disarming `holding` is not enough on its own. A press that outlives the
+      // sheet still has a finger on it, and when that finger finally lifts the
+      // release has to resolve to SOMETHING — with the hold disarmed it
+      // resolved to a tap, so opening the settings mid-hold and closing it
+      // again ended in a pick the player never asked for. The press is void
+      // from here until the pointer is lifted and a new one begins.
+      this.press.holding = false;
+      this.press.tap = false;
+      this.press.commit = false;
+      if (this.press.down) this._pressVoid = true;
       return;
     }
 
@@ -119,9 +275,22 @@ export class Input {
     this.axes.steer = Math.max(-1, Math.min(1, steer + t.steer));
     this.axes.handbrake = Math.max(handbrake, t.handbrake);
 
+    // A press becomes a HOLD by sitting still, which only a clock can notice.
+    // Sampled here rather than on a timer so `holding` can only ever change
+    // between frames — every reader of it asks once per frame and would
+    // otherwise see the answer change underneath it mid-update.
+    const p = this.press;
+    if (p.down) {
+      p.t = (performance.now() - this._pressT0) / 1000;
+      if (!p.holding && p.t >= HOLD_TIME && p.moved <= this._pressSlop) p.holding = true;
+    }
+
     this.mouse.dx = 0;
     this.mouse.dy = 0;
     this.mouse.wheel = 0;
     this.pressed.clear();
+    // One frame only, exactly like `pressed`.
+    p.tap = false;
+    p.commit = false;
   }
 }

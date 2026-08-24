@@ -3,50 +3,94 @@
 //  pointing", for world systems that take clicks (the boat, and eventually
 //  anything else).
 //
-//  Camp.js carries its own private copies of these (`_pollClick`,
-//  `_pointerRay`, `_rayMiss`, `_camperHit`). This module is those exact
-//  behaviours extracted, and Camp deliberately keeps its copies for now: its
-//  click state is consumed mid-frame by the scope view (`this._click = false`)
-//  and threaded through five methods, so rebasing it onto this in the same
-//  change as a new system would put two behaviour changes in one diff. The
-//  numbers below must match Camp's — if a click stops being a click at 6 px of
-//  travel in one system and not the other, the game has two ideas of clicking.
+//  Camp.js carries its own private copies of these (`_pointerRay`, `_rayMiss`,
+//  `_camperHit`). This module is those exact behaviours extracted, and Camp
+//  deliberately keeps its copies for now: its click state is consumed mid-frame
+//  by the scope view (`this._click = false`) and threaded through five methods,
+//  so rebasing it onto this in the same change as a new system would put two
+//  behaviour changes in one diff.
+//
+//  What both systems now share is the gesture itself. Press tracking used to
+//  live here AND in Camp, each sampling `input.mouse.down` once a frame — which
+//  is exactly what made the game unplayable on a phone, because the synthetic
+//  mouse events a browser fires after a tap all land inside one task and no
+//  frame ever sees the button down. core/Input.js owns the press now, and this
+//  module is the vocabulary on top of it: `pick` for a thing, `place` for a
+//  spot. See the header of core/verbs.js for why those are different gestures.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+import { touchCapable } from './verbs.js';
 
-// A click is a press and release in the same place. The camera look drag uses
-// the same button, so the honest test is "did the pointer move", not a timer —
-// a slow deliberate click is still a click, a fast flick to turn the camera is
-// not. Same numbers as Camp.js.
-const CLICK_SLOP = 6;      // px of travel that still counts as a click
-const CLICK_TIME = 0.55;   // s held that still counts as a click
-
-/** Press-and-release-in-place tracker. Call `poll(dt)` once per frame. */
+/**
+ * Press-and-release-in-place tracker.
+ *
+ * Kept as a class with a `poll(dt)` so its call sites did not have to change,
+ * but there is nothing left to track: `Input` resolves the press and this reads
+ * the answer. `clicked` is a PICK — acting on a thing the player is already
+ * pointing at — so it takes a press that ended in place however long it was
+ * held. A slow deliberate click has always counted, and on touch a hold that
+ * lands on a boat may as well board it.
+ */
 export class ClickTracker {
   constructor(input) {
     this.input = input;
     this.clicked = false;
-    this._down = false;
-    this._t = 0;
-    this._travel = 0;
   }
 
-  poll(dt) {
-    const m = this.input.mouse;
-    this.clicked = false;
-    if (m.down && !this._down) {
-      this._down = true;
-      this._t = 0;
-      this._travel = 0;
-    } else if (m.down) {
-      this._t += dt;
-      this._travel += Math.abs(m.dx) + Math.abs(m.dy);
-    } else if (this._down) {
-      this._down = false;
-      if (this._travel <= CLICK_SLOP && this._t <= CLICK_TIME) this.clicked = true;
-    }
+  poll() {
+    this.clicked = picked(this.input);
     return this.clicked;
   }
+}
+
+/** A press that resolved in place: the player picked whatever they were on. */
+export function picked(input) {
+  const p = input.press;
+  return p.tap || p.commit;
+}
+
+/**
+ * The player committed to a SPOT — pitch the camp here, put the boat in here.
+ *
+ * On touch this is the release of a hold and nothing else: a stray tap while
+ * swinging the camera must not drop a camp in the lake, and the hold is what
+ * bought the player the preview they are agreeing to. With a mouse there is a
+ * hover doing that job already, so a plain click still commits.
+ */
+export function placed(input) {
+  return touchCapable() ? input.press.commit : picked(input);
+}
+
+/**
+ * Is the placement preview live — the ring, its validity, the prompt?
+ *
+ * With a mouse, always: the pointer hovers whether or not a button is down.
+ * On touch, only while a hold is in progress, because there the press IS the
+ * hover and a permanent ring under a thumb that is not there is a lie.
+ */
+export function placing(input) {
+  return touchCapable() ? input.press.holding : true;
+}
+
+/**
+ * Is the player pointing at the world at all?
+ *
+ * A mouse is always pointing somewhere. A finger is only pointing while it is
+ * down — and `mouse.x/y` keeps the last press's position after it lifts, so
+ * without this every prompt on a phone would freeze wherever the player last
+ * touched and sit there claiming a boat is under their thumb. Systems clear
+ * their prompt and their reticle when this is false, which gives touch a quiet
+ * screen that answers when asked: press to see what is there, hold to commit.
+ */
+export function pointing(input) {
+  const p = input.press;
+  // `tap` and `commit` land on the frame AFTER the finger lifts, so `down` is
+  // already false by the time a system is told what the press decided. Without
+  // them here, every gesture on a touch screen would be cleared away one frame
+  // before the code that acts on it ever ran — which is precisely what it did:
+  // the hold showed its ring and its prompt for half a second and then pitched
+  // nothing at all.
+  return touchCapable() ? (p.down || p.tap || p.commit) : true;
 }
 
 /**

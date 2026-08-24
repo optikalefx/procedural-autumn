@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { CARS } from '../vehicle/vehicle_models.js';
+import { touchCapable } from '../core/verbs.js';
 
 const QUALITIES = ['ultra', 'high', 'medium', 'low'];
 const CYCLES = [['Frozen', 0], ['Slow', 0.06], ['Fast', 0.35]];
@@ -92,7 +93,24 @@ export class Settings {
     chead.appendChild(button('pa-close', '✕', () => hud.toggleSettings(), 'Close settings'));
     this.pageControls.appendChild(chead);
 
-    const KEYS = [
+    // This is the one page in the game whose entire job is to say what the
+    // controls are, so it is the last place that may get it wrong: a phone
+    // opening "Controls" and reading a list of keys it does not have is being
+    // told, in the most official voice the game has, that it is playing the
+    // wrong version. Two lists, and the touch one names gestures.
+    //
+    // The touch list is shorter because it is honest: the chips in the corner
+    // are self-evident and do not need a legend, and what genuinely needs
+    // saying is the part that is invisible — that a HOLD is a different act
+    // from a tap, and what each one is for.
+    const KEYS = touchCapable() ? [
+      ['steer', 'drag the strip — how far across is how hard you turn'],
+      ['gas / brake', 'drive; brake again from a stop to reverse'],
+      ['park', 'handbrake — under 8 km/h it holds; camp and boats need you parked'],
+      ['tap', 'look at a camp, board a boat, come back to the camper'],
+      ['hold', 'make camp here, put a boat in here, pack a camp up'],
+      ['toast', 'when you are stuck, the message that appears is the rescue'],
+    ] : [
       ['WASD', 'drive'],
       ['Space', 'handbrake — under 8 km/h it holds; stays parked until you drive off'],
       ['C', 'camera'],

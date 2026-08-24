@@ -26,7 +26,8 @@
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { clamp01 } from '../core/MathUtils.js';
-import { ClickTracker, pointerRay, rayMiss, objectHit } from '../core/Pointer.js';
+import { ClickTracker, pointerRay, rayMiss, objectHit, placed, pointing } from '../core/Pointer.js';
+import { pickVerb, placeVerb, actVerb, touchCapable } from '../core/verbs.js';
 import { groundRay, siteRng } from '../camp/camp_site.js';
 import { CampPrompt } from '../camp/camp_ui.js';
 import { waterRay, sdfGrad, shoreSnap, validateLaunch, MAX_LAUNCH_DIST } from './boat_site.js';
@@ -260,6 +261,12 @@ export class Boat extends System {
   /** Returns whether the boat system claims the pointer this frame. */
   _shoreside(veh) {
     const { world, camera, input } = this.ctx;
+    // A finger that has lifted is not pointing at a lake. `mouse.x/y` keeps the
+    // last press's position, so without this the shore prompt would freeze
+    // wherever the player last touched — and, worse, this method's return value
+    // is `pointerClaim`, which Camp reads to stand down. A stale claim would
+    // take the placement affordance away from the whole meadow.
+    if (!pointing(input)) { this._say(''); this._cursor(''); return false; }
     const ray = pointerRay(input, camera, this._ray);
 
     // The camper's own triangles outrank everything — a click on the camper is
@@ -278,7 +285,7 @@ export class Boat extends System {
       if (miss < bestMiss) { bestMiss = miss; over = b; }
     }
     if (over) {
-      this._say(`<b>click</b>&nbsp; board the ${over.kind}`);
+      this._say(`${pickVerb()}&nbsp; board the ${over.kind}`);
       this._cursor('pointer');
       if (this.click.clicked) this.board(this.boats.indexOf(over));
       return true;
@@ -299,12 +306,20 @@ export class Boat extends System {
     const v = validateLaunch(world, hit.x, hit.z, veh);
     // Kept for the harness: what the pointer path actually computed this frame.
     this._lastAim = { hx: hit.x, hz: hit.z, water: hit === w, ...v };
-    if (input.justPressed('KeyK')) this._kind = this._kind === 'canoe' ? 'kayak' : 'canoe';
+    if (input.justPressed('KeyK')) this._swapKind();
     if (v.ok) {
       const other = this._kind === 'canoe' ? 'kayak' : 'canoe';
-      this._say(`<b>click</b>&nbsp; launch a ${this._kind} here&ensp;<b>K</b>&nbsp; ${other} instead`);
+      // The kind swap has no key on a phone, so on touch the prompt itself is
+      // the control: it is the one thing on screen already naming the other
+      // boat, it sits where a thumb can reach it, and `CampPrompt` takes a tap
+      // handler for exactly this. With a keyboard it stays K and the prompt
+      // stays untouchable, because a mouse has better things to click.
+      this._say(
+        `${placeVerb()}&nbsp; launch a ${this._kind} here&ensp;` +
+        (touchCapable() ? `<u>${other} instead</u>` : `<b>K</b>&nbsp; ${other} instead`),
+        touchCapable() ? () => this._swapKind() : null);
       this._cursor('pointer');
-      if (this.click.clicked) {
+      if (placed(input)) {
         // Launch AND board in one act (user direction, 2026-08-23): you put a
         // boat in, you're in the boat — W paddles immediately, no second
         // click. board() cancels spawn()'s launch glance.
@@ -361,11 +376,17 @@ export class Boat extends System {
       // Generous reach: the camper can be most of a lake away.
       if (objectHit(ray, veh?.rig, 300) < Infinity) { this.exit(); return; }
     }
-    if (p.beached && input.justPressed('KeyE')) { this._comeAshore(b); return; }
+    // Stepping ashore is a commit to a place — the bank you are against — so it
+    // is a hold on touch and E with a keyboard, the same split as pitching a
+    // camp. It deliberately does not take a plain tap: a tap while aboard is
+    // how you reach the camper, and beaching happens constantly.
+    if (p.beached && (input.justPressed('KeyE') || (touchCapable() && input.press.commit))) {
+      this._comeAshore(b);
+      return;
+    }
 
-    this._say(p.beached
-      ? '<b>E</b>&nbsp; step ashore&ensp;<b>click camper</b>&nbsp; drive'
-      : '<b>click camper</b>&nbsp; drive');
+    const drive = `${pickVerb()} camper&nbsp; drive`;
+    this._say(p.beached ? `${actVerb()}&nbsp; step ashore&ensp;${drive}` : drive);
     this._cursor('');
     void rig;
   }
@@ -442,7 +463,10 @@ export class Boat extends System {
     this.ctx.systems?.audio?.boat?.cue?.(kind, data);
   }
 
-  _say(text) { this.prompt.set(text); }
+  /** Canoe ⇄ kayak. K with a keyboard, a tap on the prompt on touch. */
+  _swapKind() { this._kind = this._kind === 'canoe' ? 'kayak' : 'canoe'; }
+
+  _say(text, onTap = null) { this.prompt.set(text, onTap); }
 
   _cursor(want) {
     if (want === this._cursorNow) return;

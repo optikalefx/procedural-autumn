@@ -209,18 +209,46 @@ export class CampPrompt {
     this.el = el;
     this._text = '';
     this._forced = false;
+    // Some prompts are also controls. On a phone there is no K to swap a canoe
+    // for a kayak, and the prompt is already the one thing on screen naming the
+    // other boat — so it takes the tap itself. One listener, installed once,
+    // reading whatever handler the current prompt registered; the element is
+    // pointer-events:none whenever there is no handler, which is nearly always,
+    // so this cannot steal a press from the world by accident.
+    this._onTap = null;
+    el.addEventListener('click', (e) => {
+      if (!this._onTap) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this._onTap();
+    });
   }
 
-  set(text) {
+  /**
+   * @param {string} text  markup, or '' to hide
+   * @param {?Function} onTap  makes the prompt itself tappable — see `_onTap`
+   */
+  set(text, onTap = null) {
     // Both halves, not just the text. This used to early-out on an unchanged
     // string, so a prompt that was already showing when a capture began stayed
     // on screen through every frame of it: the harness sets `__forceCamera`
     // and the prompt never asked again. "E pack up this camp" is legible in
     // the middle of a dusk contact sheet because of it.
     const forced = !!window.__forceCamera;
-    if (text === this._text && forced === this._forced) return;
+    // `!!onTap` is part of the identity, not just the text: a prompt that keeps
+    // its wording while losing its handler would go on taking taps and doing
+    // nothing with them.
+    const tappable = !!onTap;
+    if (text === this._text && forced === this._forced && tappable === this._tappable) {
+      // Same prompt, but the handler is a fresh closure every frame. Keep the
+      // latest one so it never points at a stale receiver.
+      this._onTap = onTap;
+      return;
+    }
     this._text = text;
     this._forced = forced;
+    this._tappable = tappable;
+    this._onTap = onTap;
     // Clear the text as well as hiding the element. Leaving the old innerHTML
     // behind is invisible to a player and a trap for everything else: a test
     // reading `textContent` is told the prompt still says whatever it last
@@ -231,6 +259,9 @@ export class CampPrompt {
     const on = !!text && !forced;
     this.el.style.opacity = on ? '1' : '0';
     this.el.style.transform = `translate(-50%, ${on ? '0' : '8px'})`;
+    // A hidden prompt never takes a tap, whatever it registered.
+    this.el.style.pointerEvents = on && tappable ? 'auto' : 'none';
+    this.el.style.cursor = on && tappable ? 'pointer' : '';
   }
 
   dispose() { this.el.remove(); }

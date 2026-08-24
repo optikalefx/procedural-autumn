@@ -44,6 +44,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp, smoothstep } from '../core/MathUtils.js';
+import { touchCapable } from '../core/verbs.js';
 
 // How long the lean-in and the step-back take. Long enough to read as a move
 // and not a cut; short enough that a player who clicked by accident is not
@@ -139,8 +140,22 @@ class Eyepiece {
       'backdrop-filter:blur(7px)', '-webkit-backdrop-filter:blur(7px)',
       'border:1px solid rgba(232,236,244,.14)',
     ].join(';');
-    tip.innerHTML = 'drag to sweep the sky&nbsp; ·&nbsp; scroll to magnify' +
-                    '&nbsp; ·&nbsp; <b>Esc</b> step back';
+    // Two devices, two honest sentences. The keyboard one is unchanged. The
+    // touch one drops the scroll — there is no wheel and this view has no pinch
+    // yet, so offering magnification would be a lie — and, far more important,
+    // it makes the tip ITSELF the way out. Esc and Q are the only exits this
+    // view has ever had, which on a phone turns the telescope into a room with
+    // no door: you would enter it by tapping an eyepiece and never leave.
+    const touch = touchCapable();
+    tip.innerHTML = touch
+      ? 'drag to sweep the sky&nbsp; ·&nbsp; <b>tap here</b> to step back'
+      : 'drag to sweep the sky&nbsp; ·&nbsp; scroll to magnify' +
+        '&nbsp; ·&nbsp; <b>Esc</b> step back';
+    if (touch) {
+      tip.style.pointerEvents = 'auto';
+      tip.style.cursor = 'pointer';
+      tip.addEventListener('click', (e) => { e.stopPropagation(); this.leave(); });
+    }
     document.body.appendChild(tip);
     this.tip = tip;
 
@@ -310,6 +325,11 @@ export class ScopeView {
     const { input } = this.ctx;
 
     if (input.justPressed('Escape') || input.justPressed('KeyQ')) this.leave();
+    // The eyepiece is entered with a tap, so the first thing a touch player
+    // does inside it is tap again — which used to do nothing at all. A tap on
+    // the sky steps back out, and `t > 0.4` is the same settling guard the drag
+    // uses, so the tap that ENTERED the view cannot immediately leave it.
+    if (touchCapable() && this.t > 0.4 && input.press.tap) { this.leave(); return; }
 
     // Sensitivity scales with the field of view. At 4.5 degrees a drag that
     // felt right at 26 throws the sky past in a blink — what the hand means is
