@@ -6731,3 +6731,38 @@ to express.
 
 `waterfall` and `fallbase` both frame their subject correctly and are the two
 to judge on until this is fixed.
+
+---
+
+## Game layer / Stats
+
+**1. The sky has no catalogue, so the logbook keeps a copy.** The telescope now
+awards a discovery for centring a planet or a galaxy in the eyepiece
+(`src/game/Stats.js` → `src/game/sky_objects.js`), which means JavaScript has to
+know where those bodies are. They are `#define`s and literal arguments inside
+`PLANET_GLSL` and `GALAXY_GLSL`, reachable only by the fragment shader, so
+`sky_objects.js` mirrors the constants and says so at length in its header.
+
+Request, for whoever next opens `src/sky/`: publish the placement — an exported
+table that `plPlanets`/`gxGalaxies` are fed from, or a uniform array — so there
+is one set of numbers rather than two. Not urgent and not free: it means moving
+the placement out of GLSL for the benefit of a reader that runs eight times a
+session.
+
+*Workaround in place.* `tools/_scratch/skytargets.mjs` re-parses the constants
+out of both shader files and fails if the JS mirror has drifted, and prints each
+body's elevation against the telescope's own pitch range. Run it after touching
+either side. The failure mode if it is ever skipped is small and quiet: a
+discovery that wants the eyepiece a degree off centre. Nothing renders
+differently.
+
+**2. `WorldData` takes a seed and never stores it.** `new WorldData(baked, seed)`
+uses the seed for its noise field and drops it, so `ctx.world.seed` is
+`undefined` — and `Boat.spawn` already reads it (`this.ctx.world?.seed ?? 0`) to
+pick a boat's colourway, which therefore keys every valley's boats off 0.
+
+`Stats` needs a stable per-valley key (the same waterfall seen on two different
+days must not be counted twice), so it derives the seed the way `HUD.seed()`
+does — from `?seed=`, falling back to `SEED` — rather than trusting
+`world.seed`. One line in the `WorldData` constructor (`this.seed = seed;`)
+would let both callers stop working around it.

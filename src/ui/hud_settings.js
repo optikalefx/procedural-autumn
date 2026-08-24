@@ -1,6 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Settings — one sheet, two pages: the settings groups, and a controls
-//  reference reached by the button at the bottom (back arrow or Esc returns).
+//  Settings — one sheet, three pages: the settings groups, a controls
+//  reference, and the logbook, both reached by the buttons at the bottom (back
+//  arrow or Esc returns).
+//
+//  Each page is a head and a body, and the BODY is the scroll container — not
+//  the sheet. The sheet used to scroll as one piece, which took the title, the
+//  back arrow and the close button off the top of the screen the moment the
+//  logbook ran past a screenful: a dialog whose only way out scrolls away is a
+//  trap, and it is the same argument that keeps the gear chip lit under
+//  "Interface: Off". The head is pinned, the body moves under it.
 //
 //  Every control is a native <input>/<button>, which is what makes the panel
 //  keyboard-reachable and screen-reader-legible without a line of ARIA
@@ -9,6 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { CARS } from '../vehicle/vehicle_models.js';
+import { StatsPage } from './hud_stats.js';
 import { touchCapable } from '../core/verbs.js';
 import { CYCLE_SPEEDS, QUALITY_TIERS } from '../world/WorldConfig.js';
 
@@ -33,14 +42,22 @@ export class Settings {
     this.node.setAttribute('role', 'dialog');
     this.node.setAttribute('aria-label', 'Settings');
 
-    // Two pages in one sheet: the settings themselves, and the controls
-    // reference that used to squat in the footer. Swapping pages instead of
-    // stacking a second dialog keeps focus, Esc, and the gamepad in one place.
+    // Three pages in one sheet: the settings themselves, the controls
+    // reference that used to squat in the footer, and the logbook. Swapping
+    // pages instead of stacking a second dialog keeps focus, Esc, and the
+    // gamepad in one place.
     this.page = 'settings';
     this.pageSettings = el('div', 'pa-page pa-page-on');
     this.pageControls = el('div', 'pa-page');
+    this.pageStats = el('div', 'pa-page');
+    // Every page's scrolling half. Content goes here; only the head goes on
+    // the page itself.
+    this.bodySettings = el('div', 'pa-page-body');
+    this.bodyControls = el('div', 'pa-page-body');
+    this.bodyStats = el('div', 'pa-page-body');
     this.node.appendChild(this.pageSettings);
     this.node.appendChild(this.pageControls);
+    this.node.appendChild(this.pageStats);
 
     const head = el('div', 'pa-sheet-head');
     head.appendChild(el('h2', null, 'Settings'));
@@ -48,27 +65,41 @@ export class Settings {
     // who opened it with the mouse.
     head.appendChild(button('pa-close', '✕', () => hud.toggleSettings(), 'Close settings'));
     this.pageSettings.appendChild(head);
+    this.pageSettings.appendChild(this.bodySettings);
 
-    this.pageSettings.appendChild(this._group('Picture', [
+    // Quality is which effects run; render scale is how many pixels they run
+    // over. They are genuinely different knobs — the frame is fragment-bound,
+    // so the second one is usually the bigger lever, and it is the one a
+    // player notices as "why does that look low-resolution".
+    this.bodySettings.appendChild(this._group('Picture', [
       this._seg('Quality', QUALITY_TIERS.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
         () => hud.quality, (v) => hud.applyQuality(v)),
+      this._toggle('Auto resolution', () => hud.autoRes(), (v) => hud.applyAutoRes(v)),
+      // "Resolution", not "Render scale": the number a player wants to change
+      // is the one they can see, and what they see is a soft picture. 100% is
+      // one rendered pixel per device pixel — no upscaling at all. It is
+      // expensive, and it is meant to be reachable anyway; the FPS readout
+      // under "View" is the other half of this control.
+      this._range('Resolution', 0.5, 1, 0.05,
+        () => hud.renderScale(), (v) => hud.applyRenderScale(v),
+        (v) => hud.renderScaleLabel(v)),
     ]));
 
     // The car is a picture of itself as much as a setting, so it goes first —
     // and it is the one control here that changes something the player is
     // looking at rather than something they are looking through.
-    this.pageSettings.appendChild(this._group('Vehicle', [
+    this.bodySettings.appendChild(this._group('Vehicle', [
       this._seg('Drive', CARS.map((c) => [c.label, c.id]),
         () => hud.carId(), (v) => hud.applyCar(v)),
     ]));
 
-    this.pageSettings.appendChild(this._group('Valley', [
+    this.bodySettings.appendChild(this._group('Valley', [
       this._range('Time of day', 0, 24, 0.05, () => hud.hour(), (v) => hud.applyHour(v), hhmm),
       this._seg('Sun', CYCLES, () => hud.cycleSpeed(), (v) => hud.applyCycle(v)),
       this._seed(() => hud.seed(), (v) => hud.applySeed(v)),
     ]));
 
-    this.pageSettings.appendChild(this._group('Sound', [
+    this.bodySettings.appendChild(this._group('Sound', [
       this._range('Volume', 0, 1, 0.01, () => hud.volume(), (v) => hud.applyVolume(v),
         (v) => `${Math.round(v * 100)}%`),
       this._toggle('Mute', () => hud.isMuted(), (v) => hud.applyMute(v)),
@@ -77,17 +108,19 @@ export class Settings {
     // "View", not "Camera": the group also carries HUD visibility, and a
     // player looking for the setting that hides the interface does not look
     // under Camera.
-    this.pageSettings.appendChild(this._group('View', [
+    this.bodySettings.appendChild(this._group('View', [
       this._toggle('Invert look', () => hud.invertY, (v) => hud.applyInvert(v)),
       this._toggle('Valley map', () => hud.showMap, (v) => hud.applyMap(v)),
       this._toggle('FPS readout', () => hud.showPerf(), (v) => hud.applyPerf(v)),
       this._seg('Interface', HUD_MODES, () => hud.hudOpacity, (v) => hud.applyHudMode(v)),
     ]));
 
-    const foot = el('div', 'pa-foot');
+    const foot = el('div', 'pa-foot pa-foot-row');
     foot.appendChild(button('pa-controls-open', 'Controls', () => this._showPage('controls'),
       'Show the controls'));
-    this.pageSettings.appendChild(foot);
+    foot.appendChild(button('pa-controls-open', 'Logbook', () => this._showPage('stats'),
+      'Show what you have done'));
+    this.bodySettings.appendChild(foot);
 
     // ── controls page ─────────────────────────────────────────────────────
     const chead = el('div', 'pa-sheet-head');
@@ -96,6 +129,7 @@ export class Settings {
     chead.appendChild(el('h2', null, 'Controls'));
     chead.appendChild(button('pa-close', '✕', () => hud.toggleSettings(), 'Close settings'));
     this.pageControls.appendChild(chead);
+    this.pageControls.appendChild(this.bodyControls);
 
     // This is the one page in the game whose entire job is to say what the
     // controls are, so it is the last place that may get it wrong: a phone
@@ -132,7 +166,17 @@ export class Settings {
       kr.appendChild(el('span', 'pa-key-desc', desc));
       keys.appendChild(kr);
     }
-    this.pageControls.appendChild(keys);
+    this.bodyControls.appendChild(keys);
+
+    // ── logbook page ──────────────────────────────────────────────────────
+    const shead = el('div', 'pa-sheet-head');
+    shead.appendChild(button('pa-close pa-back', '←', () => this._showPage('settings'),
+      'Back to settings'));
+    shead.appendChild(el('h2', null, 'Logbook'));
+    shead.appendChild(button('pa-close', '✕', () => hud.toggleSettings(), 'Close settings'));
+    this.pageStats.appendChild(shead);
+    this.pageStats.appendChild(this.bodyStats);
+    this.stats = new StatsPage(this.bodyStats, hud);
 
     root.appendChild(this.node);
 
@@ -146,8 +190,9 @@ export class Settings {
         return;
       }
       if (e.code === 'Escape') {
-        // Esc backs out one layer at a time: controls → settings → closed.
-        if (this.page === 'controls') { this._showPage('settings'); e.stopPropagation(); return; }
+        // Esc backs out one layer at a time: controls/logbook → settings →
+        // closed.
+        if (this.page !== 'settings') { this._showPage('settings'); e.stopPropagation(); return; }
         this.setOpen(false); return;
       }
       e.stopPropagation();
@@ -274,12 +319,31 @@ export class Settings {
     this.page = name;
     this.pageSettings.classList.toggle('pa-page-on', name === 'settings');
     this.pageControls.classList.toggle('pa-page-on', name === 'controls');
-    this.node.setAttribute('aria-label', name === 'controls' ? 'Controls' : 'Settings');
+    this.pageStats.classList.toggle('pa-page-on', name === 'stats');
+    const TITLE = { controls: 'Controls', stats: 'Logbook' };
+    this.node.setAttribute('aria-label', TITLE[name] ?? 'Settings');
+    // The logbook is read, not driven: it must be current the instant it
+    // appears rather than at the first refresh tick a fifth of a second later.
+    if (name === 'stats') this.stats.refresh();
     this._collect();
     this.controls[0]?.focus({ preventScroll: true });
+    // A body scrolled two thirds down the settings does not open the logbook
+    // two thirds down the logbook. Each page keeps its own scroll offset, so
+    // this resets the one being shown.
+    const body = { settings: this.bodySettings, controls: this.bodyControls, stats: this.bodyStats }[name];
+    if (body) body.scrollTop = 0;
   }
 
   sync() { for (const s of this._syncs ?? []) s(); }
+
+  /**
+   * Per-frame, from HUD.update. Only the logbook wants one — everything else
+   * in this sheet is a control whose value cannot change unless the player
+   * changes it.
+   */
+  tick(dt) {
+    if (this.open && this.page === 'stats') this.stats.tick(dt);
+  }
 
   setOpen(v) {
     if (v === this.open) return;

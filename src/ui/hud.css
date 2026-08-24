@@ -505,8 +505,13 @@
      unreachable by keyboard until the animation had finished. */
   transition: opacity 0.32s var(--ease), transform 0.32s var(--ease), visibility 0s linear 0.32s;
   max-height: 92vh;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  /* The sheet does NOT scroll — its pages' bodies do. Scrolling the sheet as
+     one piece took the title, the back arrow and the close button off the top
+     of the screen on any page longer than a screenful, which on the logbook is
+     every page. A dialog whose only way out scrolls away is a trap. */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 .pa-sheet.pa-open {
   opacity: 1;
@@ -515,7 +520,14 @@
   transition: opacity 0.32s var(--ease), transform 0.32s var(--ease), visibility 0s;
 }
 
-.pa-sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.9em; }
+/* Pinned: the head is the sheet's fixed row, the body under it takes what is
+   left and scrolls inside it. `flex-shrink: 0` matters — without it a long
+   body squeezes the head until the title wraps. */
+.pa-sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 0.9em;
+  flex: 0 0 auto;
+}
 .pa-sheet-head h2 { margin: 0; }
 .pa-close {
   width: 1.8em; height: 1.8em; border-radius: 50%;
@@ -725,9 +737,34 @@
 }
 .pa-foot b { color: var(--ink-dim); font-weight: 700; }
 
-/* The sheet's two pages: settings, and the controls reference. */
+/* The sheet's three pages: settings, the controls reference, and the logbook.
+   A shown page is itself a flex column — head, then scrolling body. */
 .pa-page { display: none; }
-.pa-page.pa-page-on { display: block; }
+.pa-page.pa-page-on {
+  display: flex;
+  flex-direction: column;
+  /* Both load-bearing: `min-height: 0` lets the body actually shrink below its
+     content height (a flex item's default `min-height: auto` refuses to, and
+     the body would simply overflow the sheet without ever scrolling), and
+     `flex: 1 1 auto` gives it the room the head does not take. */
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.pa-page-body {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+  /* Clear the scrollbar, without moving the numbers.
+     The padding is the gap the right-aligned values need — flush against a
+     scrollbar they read as a column with its edge cut off. The equal negative
+     margin then widens the body back out into the sheet's own padding, so the
+     scrollbar sits near the sheet's edge and every value's right edge stays
+     exactly where it was when the sheet scrolled as one piece. */
+  padding-right: 0.7em;
+  margin-right: -0.7em;
+}
 
 .pa-controls-open {
   width: 100%;
@@ -744,6 +781,82 @@
 }
 .pa-controls-open:hover, .pa-controls-open:focus-visible {
   color: var(--ink); border-color: rgba(240, 173, 70, 0.6); outline: none;
+}
+
+/* Two buttons on the settings footer share the row rather than stacking: the
+   sheet is already tall and a second full-width pill pushed the seed field off
+   a 13-inch screen. */
+.pa-foot-row { display: flex; gap: 0.5em; }
+.pa-foot-row .pa-controls-open { flex: 1 1 0; }
+
+/* ── the logbook ──────────────────────────────────────────────────────────
+   Rows, not cards. Every figure in here is one number with one name, and the
+   only thing that has to be true of the layout is that the numbers line up in
+   a column the eye can run down — which is what tabular-nums on .pa-row-val
+   already does for the rest of the sheet. */
+.pa-stats { padding-top: 0.1em; }
+.pa-stats .pa-row { padding: 0.26em 0; }
+.pa-stats .pa-row-val { min-width: 8em; }
+/* What this visit added, in front of the lifetime figure and a step quieter.
+   In front rather than after so the lifetime numbers keep their right edge —
+   and with a real gap, because two numbers of the same shape sitting a few
+   pixels apart read as one mangled number. */
+.pa-stat-add {
+  color: var(--amber);
+  opacity: 0.62;
+  font-size: 0.86em;
+  margin-right: 1.1em;
+  letter-spacing: 0.04em;
+}
+
+/* The sky catalogue: the objects found, and what each one looked like. Nothing
+   unfound is listed — see the header of hud_stats.js. */
+.pa-sky { margin-top: 0.45em; }
+.pa-sky-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7em;
+  padding: 0.3em 0;
+  font-size: 0.8em;
+}
+.pa-sky-row + .pa-sky-row { border-top: 1px solid rgba(255, 246, 234, 0.07); }
+.pa-sky-name {
+  /* Wide enough for the longest name in the catalogue on one line — "the
+     Great Spiral" wrapped at 8.2em and a two-line row broke the rhythm of a
+     list whose whole job is to be scanned. */
+  flex: 0 0 9.8em;
+  /* Gold unconditionally: every row in this list is something the player
+     found, so there is no "not yet" state left to distinguish. */
+  color: var(--gold);
+  letter-spacing: 0.04em;
+}
+/* The note is what was at the eyepiece, so it is set as a caption rather than
+   as a value. */
+.pa-sky-note { color: var(--ink-faint); font-style: italic; }
+
+/* Reset borrows the footer pill and turns ember once it is armed — the colour
+   IS the confirmation, together with the label changing under the cursor. */
+.pa-stats-reset {
+  width: 100%;
+  font: inherit;
+  font-size: 1.1em;
+  letter-spacing: 0.08em;
+  padding: 0.5em 0.2em;
+  border: 1px solid rgba(255, 246, 234, 0.18);
+  border-radius: 99px;
+  background: rgba(255, 246, 234, 0.08);
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color 0.2s var(--ease), border-color 0.2s var(--ease),
+              background 0.2s var(--ease);
+}
+.pa-stats-reset:hover, .pa-stats-reset:focus-visible {
+  color: var(--ink-dim); border-color: rgba(240, 173, 70, 0.6); outline: none;
+}
+.pa-stats-reset.pa-warn {
+  color: var(--ink);
+  border-color: rgba(232, 98, 42, 0.75);
+  background: rgba(232, 98, 42, 0.16);
 }
 
 /* The back arrow shares .pa-close's round chrome. */

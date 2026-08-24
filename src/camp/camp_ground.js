@@ -680,7 +680,14 @@ export class CampGround {
 
   // ── build ──────────────────────────────────────────────────────────────────
 
-  build(x, z, radius, rnd = Math.random, edge = radius * 0.20) {
+  /**
+   * @param pads  the props' own clearings, in world XZ, as [{ x, z, radius }].
+   *              Litter keeps out of them: a twig under a tent floor is the
+   *              same defect as a blade of grass under it, and the clearing
+   *              field that scrubs the grass cannot scrub this because the
+   *              litter is geometry this file scatters itself.
+   */
+  build(x, z, radius, rnd = Math.random, edge = radius * 0.20, pads = []) {
     this.feather = edge;
     this.dispose();
     this._lat.clear();
@@ -711,7 +718,7 @@ export class CampGround {
     }
 
     this._buildDisc(x, z, R, feather, rng);
-    this._buildLitter(x, z, R, feather, rng);
+    this._buildLitter(x, z, R, feather, rng, pads);
     this.setReveal(this.reveal);
   }
 
@@ -840,7 +847,7 @@ export class CampGround {
   //  loose groups with bare ground between them reads as stones. Cluster seeds
   //  are placed by golden-angle so the groups themselves never collide.
 
-  _buildLitter(x, z, R, feather, rng) {
+  _buildLitter(x, z, R, feather, rng, pads = []) {
     const parts = [];   // { geo }
     const bases = [];   // Vector3 per part, for the wipe
     const us = [];
@@ -862,6 +869,13 @@ export class CampGround {
       const u = r / Ra;
       if (u > 1.06 || r < 1.25) return null;
       const lx = Math.cos(a) * r, lz = Math.sin(a) * r;
+      // Not under a prop. The pad is measured to its full-clear radius rather
+      // than its outer one — the fringe of a pad is ground beside the tent,
+      // where litter belongs, and only the part the fabric actually covers has
+      // to be empty.
+      for (const d of pads) {
+        if (Math.hypot(x + lx - d.x, z + lz - d.z) < d.radius - (d.feather ?? 0)) return null;
+      }
       const bare = 1 - campCoverAt(x + lx, z + lz);
       if (bare < 0.10) return null;
       return { lx, lz, u, bare };

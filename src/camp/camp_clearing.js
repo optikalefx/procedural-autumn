@@ -54,6 +54,38 @@ export const campSite = {
   // x, z, radius, feather — per pitched camp. radius 0 means the slot is unused.
   uCampSites: { value: Array.from({ length: CAMP_SLOTS }, EMPTY) },
 
+  // The ground a prop actually STANDS ON, one disc per camp, in the same slot
+  // order as `uCampSites`.
+  //
+  // Why this exists at all, given the clearing above already scrubs the camp:
+  // the clearing is a *composition*, and its radius was tuned as one — see the
+  // arithmetic in camp_site.js beside CAMP_RADIUS, which places the tent at
+  // 0.62 R so it stands on bare ground with only its guy lines in the fringe.
+  // That arithmetic is right about the mean and wrong about the floor, because
+  // it is done against the NOMINAL radius and the drawn boundary is wobbled:
+  // `campWobble` runs to -0.163, and a 5.8 m clearing with a 1.16 m feather
+  // therefore reaches full cover anywhere between 3.70 m and 5.69 m depending
+  // on the bearing. The tent's centre is at 3.60 m. On an unlucky bearing the
+  // meadow is still at full height under the middle of the tent — which is
+  // exactly the picture the player sent in: grass standing inside the door.
+  //
+  // The compact camp cannot be fixed by tuning at all. Its tent is held out at
+  // TENT_FIRE_CLEAR = 2.20 m by the fire, and its clearing only reaches full
+  // cover from 2.17 m; there is no radius that keeps the camp small — which is
+  // what the player asked for — and also guarantees the tent's floor.
+  //
+  // So the guarantee is made where it belongs: on the prop's own footprint,
+  // independent of how the clearing around it happened to wobble. Grass, ground
+  // cover and the dirt's litter all read it, so nothing grows or lies under the
+  // tent whatever the clearing did.
+  //
+  // One disc per camp rather than one per prop. The tent is the only prop with
+  // an inside — a chair or a cooler standing in grass is a camp, a tent with
+  // grass growing through its floor is a bug — and a per-prop array would cost
+  // the grass vertex shader another dozen iterations for props that want the
+  // grass left alone.
+  uCampPads: { value: Array.from({ length: CAMP_SLOTS }, EMPTY) },
+
   // The placement preview, which is deliberately NOT one of the slots above.
   //
   // It is not a camp, it is a proposal, and it behaves differently in the one
@@ -78,10 +110,14 @@ export const campSite = {
  */
 export function setCampSlots(list) {
   const v = campSite.uCampSites.value;
+  const p = campSite.uCampPads.value;
   for (let i = 0; i < CAMP_SLOTS; i++) {
     const c = list[i];
     if (c && c.radius > 0) v[i].set(c.x, c.z, c.radius, Math.max(0.35, c.feather));
     else v[i].set(0, 0, 0, 1);
+    const d = c?.pad;
+    if (d && d.radius > 0) p[i].set(d.x, d.z, d.radius, Math.max(0.20, d.feather));
+    else p[i].set(0, 0, 0, 1);
   }
 }
 
@@ -113,6 +149,19 @@ float campWobble( float a ) {
        + sin( a * 3.0 - 0.6 ) * 0.075
        + sin( a * 7.0 + 2.3 ) * 0.038;
 }
+// A prop's own ground. Same shape language as the clearing, with one
+// difference that is the entire point of it: the wobble may only push the
+// boundary OUT, never in. The clearing can afford an inward lobe — it is
+// scenery, and a bite out of one side of it is a better outline. A pad is a
+// GUARANTEE, and an inward lobe on a 1.6 m disc is 26 cm of meadow standing
+// back up inside the tent, which is the defect it exists to remove.
+float campPadOne( vec2 wxz, vec4 s ) {
+  vec2 d = wxz - s.xy;
+  float r = length( d );
+  if ( r > s.z * 1.25 + 1.0 ) return 1.0;
+  float R = s.z * ( 1.0 + max( 0.0, campWobble( atan( d.y, d.x ) ) ) );
+  return smoothstep( R - s.w, R, r );
+}
 float campCoverOne( vec2 wxz, vec4 s, float floorV ) {
   vec2 d = wxz - s.xy;
   float r = length( d );
@@ -132,6 +181,7 @@ float campCoverOne( vec2 wxz, vec4 s, float floorV ) {
  */
 export const CAMP_CLEARING_GLSL = /* glsl */`
 uniform vec4  uCampSites[ ${CAMP_SLOTS} ];
+uniform vec4  uCampPads[ ${CAMP_SLOTS} ];
 uniform vec4  uCampAim;
 uniform float uCampAimFloor;
 
@@ -143,6 +193,11 @@ float campCover( vec2 wxz ) {
     vec4 s = uCampSites[ i ];
     if ( s.z <= 0.0 ) continue;
     c = min( c, campCoverOne( wxz, s, 0.0 ) );
+    // The pad rides in the same slot, so it needs no loop of its own — and it
+    // carries the same cheap range test, so for the 99% of the world's grass
+    // that is nowhere near a camp it costs one length() and a compare.
+    vec4 d = uCampPads[ i ];
+    if ( d.z > 0.0 ) c = min( c, campPadOne( wxz, d ) );
   }
   if ( uCampAim.z > 0.0 && uCampAimFloor < 1.0 ) {
     c = min( c, campCoverOne( wxz, uCampAim, uCampAimFloor ) );
@@ -162,16 +217,35 @@ float campCover( vec2 wxz ) {
 export function campCoverAt(x, z) {
   let c = 1;
   const v = campSite.uCampSites.value;
+  const p = campSite.uCampPads.value;
   for (let i = 0; i < CAMP_SLOTS; i++) {
     const s = v[i];
     if (s.z <= 0) continue;
     c = Math.min(c, coverOne(x, z, s, 0));
+    const d = p[i];
+    if (d.z > 0) c = Math.min(c, padOne(x, z, d));
     if (c <= 0) return 0;
   }
   const aim = campSite.uCampAim.value;
   const floor = campSite.uCampAimFloor.value;
   if (aim.z > 0 && floor < 1) c = Math.min(c, coverOne(x, z, aim, floor));
   return c;
+}
+
+// The pad, on the CPU. Outward-only wobble — see `campPadOne` in the GLSL for
+// why that asymmetry is the whole point of a pad.
+function padOne(x, z, s) {
+  const dx = x - s.x, dz = z - s.y;
+  const r = Math.hypot(dx, dz);
+  if (r > s.z * 1.25 + 1) return 1;
+  const a = Math.atan2(dz, dx);
+  const wob = Math.sin(a * 2 + 1.7) * 0.115
+            + Math.sin(a * 3 - 0.6) * 0.075
+            + Math.sin(a * 7 + 2.3) * 0.038;
+  const R = s.z * (1 + Math.max(0, wob));
+  const t = (r - (R - s.w)) / Math.max(s.w, 1e-4);
+  const k = t < 0 ? 0 : t > 1 ? 1 : t;
+  return k * k * (3 - 2 * k);
 }
 
 function coverOne(x, z, s, floor) {

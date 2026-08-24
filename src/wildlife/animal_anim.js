@@ -187,22 +187,52 @@ export class AnimRig {
     const hb = proto.skel.bones[proto.skel.idx('head')];
     this.neckRest = new THREE.Vector3(0, hb.y, hb.z);   // mesh-local, unscaled
     this.headTarget = this.neckRest.clone();
+    // The head-carriage offsets below (nod, alert lift, nibble drift) are
+    // authored in absolute model units, sized against the deer's 0.45-unit
+    // neck. On a chain a third that long the same numbers are a third of the
+    // whole neck, and every nod threw the IK target clear through the
+    // straight-chain singularity — which is what the camp dog's head-snapping
+    // was. Everything the target moves by scales with the chain it has to move.
+    this.neckSpan = this.neck ? this.neck.l1 + this.neck.l2 : 0;
+    this.neckK = this.neck ? Math.min(1, this.neckSpan / 0.45) : 1;
 
-    // Where the poll goes when the animal crops, in the same mesh-local frame.
+    // Where the poll goes when the animal crops.
     //
-    // It is built as a point the chain can *reach*, on a fixed forward-and-down
-    // line, rather than as a point on the ground. A quadruped's neck is far too
-    // short to put the poll at grass height — a deer's muzzle sits a metre
-    // below its withers and the chain spans less than half of that — so a
-    // ground target clamps to "straight down", folds the head back under the
-    // chest, and reads as a decapitated animal. The rest of the distance comes
-    // from the crouch and the nose-down body pitch in update().
-    this.grazePoint = this.neckRest.clone();
+    // Held in POLAR form about the base of the neck — an angle below horizontal
+    // and a length — because that is what a neck is. Two things follow, and
+    // both of them were bugs:
+    //
+    //  · The base moves. Cropping pitches the whole barrel nose-down by
+    //    0.20 rad and settles it onto flexed forelegs (see update()), which
+    //    together walk the withers forward and down by more than a third of the
+    //    chain's own length. A crop point pinned in mesh space ends up BEHIND
+    //    the live base, so the chain folds back under the chest and the skull
+    //    inverts — the head reads as sawn off. _poseHead re-hangs the polar
+    //    offset off wherever the base actually is, each frame.
+    //  · The swing is an arc, not a chord. Carriage-to-crop is nearly 140° of
+    //    rotation, from up-and-forward to down-and-forward; sliding the target
+    //    along the straight line between them passes it within |l1 - l2| of the
+    //    base half way down, inside the dead zone where solve2 has to clamp.
+    //    The chain pinned folded-flat for a fifth of a second and then snapped
+    //    open. Interpolating the angle and the length separately sweeps the
+    //    poll round the outside instead, the way the animal's does.
+    //
+    // The length is a reach the chain HAS, not a point on the ground: a
+    // quadruped's neck is far too short to put the poll at grass height — a
+    // deer's muzzle sits a metre below its withers and the chain spans less
+    // than half of that. The rest of the distance comes from the crouch and the
+    // nose-down body pitch in update().
+    this.neckBase = new THREE.Vector3();
+    this.restAng = 0; this.restLen = 0;
+    this.grazeAng = 0; this.grazeLen = 0;
     if (this.neck) {
       const na = proto.skel.bones[this.info.neck[0]];
-      const ang = gaitCfg.grazeAng ?? 1.20;              // below horizontal
-      const reach = (this.neck.l1 + this.neck.l2) * 0.985;
-      this.grazePoint.set(0, na.y - reach * Math.sin(ang), na.z + reach * Math.cos(ang));
+      this.neckBase.set(0, na.y, na.z);
+      const dy = this.neckRest.y - na.y, dz = this.neckRest.z - na.z;
+      this.restAng = Math.atan2(-dy, dz);                 // below horizontal
+      this.restLen = Math.hypot(dy, dz);
+      this.grazeAng = gaitCfg.grazeAng ?? 1.20;
+      this.grazeLen = (this.neck.l1 + this.neck.l2) * 0.985;
     }
     // How far the withers drop as the forelegs flex to let the head down.
     this.crouch = this.info.legs[0].hipY * scale * 0.17;
@@ -213,6 +243,9 @@ export class AnimRig {
     this.earFlick = [0, 0];
     this.earNext = [1.3, 2.7];
     this.headYaw = 0; this.headPitch = 0; this.headRoll = 0;
+    // Last frame's unwrapped neck rotation. See the atlas counter-rotation in
+    // _poseHead — the raw value is only defined modulo a turn.
+    this.neckChain = 0;
     this.tailSway = 0; this.tailSwayV = 0; this.tailLift = 0;
     this.breath = 0;
     this.bodyPitch = 0; this.bodyRoll = 0; this.bodyY = 0;
@@ -237,6 +270,9 @@ export class AnimRig {
     }
     this.bodyY = world.getHeight(pos.x, pos.z);
     this.breath = (pos.x * 0.7 + pos.z * 1.3) % 6.283;
+    // Back to the canonical branch — a recycled rig would otherwise hand the
+    // atlas a whole turn of stale unwrap and rake the muzzle at the sky.
+    this.neckChain = 0;
     this._warm = true;
   }
 
@@ -516,16 +552,25 @@ export class AnimRig {
     // eerily locked.
     _c.copy(this.neckRest);
 
+    const nk = this.neckK;
     if (graze > 0.001) {
-      _b.copy(this.grazePoint);
+      // Swing the poll down on an arc about the neck base as it sits THIS
+      // frame — see the note in the constructor. At graze 0 this reproduces
+      // `neckRest` exactly, so there is no step where the crop starts.
+      _b.setFromMatrixPosition(this.neck.a.matrixWorld);
+      this.mesh.worldToLocal(_b);
+      _b.lerp(this.neckBase, 1 - graze);      // the base only moves as it crops
+      const ang = lerp(this.restAng, this.grazeAng, graze);
+      const len = lerp(this.restLen, this.grazeLen, graze);
+      _b.set(0, _b.y - Math.sin(ang) * len, _b.z + Math.cos(ang) * len);
       // A nibbling drift so a grazing animal is never a statue.
-      _b.z += Math.sin(this.breath * 0.55) * 0.05;
-      _b.y += Math.sin(this.breath * 1.9) * 0.022;
-      _c.lerp(_b, graze);
+      _b.z += Math.sin(this.breath * 0.55) * 0.05 * nk * graze;
+      _b.y += Math.sin(this.breath * 1.9) * 0.022 * nk * graze;
+      _c.copy(_b);
     }
     if (alert > 0.001) {
       _b.copy(this.neckRest);
-      _b.y += 0.16; _b.z -= 0.06;
+      _b.y += 0.16 * nk; _b.z -= 0.06 * nk;
       _c.lerp(_b, alert);
     }
     // At speed the neck stretches out along the body. A running quadruped
@@ -544,7 +589,7 @@ export class AnimRig {
     // read as a puppet sliding along a rail.
     if (sn > 0.001 && graze < 0.999) {
       const nod = Math.sin(this.phase * Math.PI * 2 * this.gait.bobHz - 0.9);
-      const k = (1 - graze) * Math.min(1, sn * 3.2);
+      const k = (1 - graze) * Math.min(1, sn * 3.2) * nk;
       _c.z += nod * 0.045 * k;
       _c.y -= Math.abs(nod) * 0.022 * k;
     }
@@ -563,8 +608,28 @@ export class AnimRig {
     const nb = this.neck;
     // Yaw is handled separately, so the planar solve uses the horizontal
     // distance rather than z alone or a sideways look would foreshorten it.
-    const fz = Math.hypot(_b.x, _b.z) * Math.sign(_b.z || 1);
-    solve2(nb.a.position.y, nb.a.position.z, _b.y, fz, nb.l1, nb.l2, -1, _ik);
+    let fz = Math.hypot(_b.x, _b.z) * Math.sign(_b.z || 1);
+    let ty = _b.y;
+    // ── keep the solve off the straight-chain singularity ────────────────────
+    // Every species binds its neck bones nearly colinear, so the rest target
+    // already sits at ~100% of the chain's reach — where acos in the two-link
+    // solve has infinite slope and a millimetre of target motion whips the
+    // elbow through tens of degrees. solve2's own hard clamp cannot help: it
+    // pins the pose AT the singular point. So compress the target's distance
+    // smoothly toward a 0.985 ceiling instead — the mapping's slope goes to
+    // zero exactly as the angular gain blows up, and the product stays tame.
+    // Below 90% of reach nothing changes, so a bent grazing neck is untouched.
+    {
+      let dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
+      const d = Math.hypot(dy, dz);
+      const knee = this.neckSpan * 0.90, ceil = this.neckSpan * 0.985;
+      if (d > knee) {
+        const s = (ceil - (ceil - knee) * Math.exp(-(d - knee) / (ceil - knee))) / d;
+        ty = nb.a.position.y + dy * s;
+        fz = nb.a.position.z + dz * s;
+      }
+    }
+    solve2(nb.a.position.y, nb.a.position.z, ty, fz, nb.l1, nb.l2, -1, _ik);
     const rA = nb.bindA - _ik.upper;
     nb.a.rotation.x = rA;
     nb.b.rotation.x = nb.bindB - _ik.lower - rA;
@@ -588,7 +653,16 @@ export class AnimRig {
     // counter-rotate at the atlas. `chain` is exactly how far the neck went, so
     // cancelling it and adding `grazeRake` aims the muzzle at an absolute angle
     // below horizontal, whatever the neck geometry underneath happens to be.
-    const chain = rA + nb.b.rotation.x;
+    //
+    // Both neck angles come out of atan2, so the sum is only defined modulo a
+    // turn and steps by 2π whenever the solve crosses a branch cut. The joints
+    // do not care — a whole turn on an Euler component is the same orientation
+    // — but this value is blended by `graze` and then damped, so a raw step put
+    // a fraction of a revolution into the target and whipped the skull round
+    // after it. Every deer lifting its head out of the grass crossed a cut, and
+    // one grazing downslope crossed the other. Unwrap against last frame.
+    const chain = this.neckChain + wrapAngle(rA + nb.b.rotation.x - this.neckChain);
+    this.neckChain = chain;
     const grazePitch = (this.cfg.grazeRake ?? 1.40) - chain;
     this.headPitch = damp(this.headPitch, lerp(-wantPitch, grazePitch, graze), 6, dt);
     this.head.rotation.x = this.headPitch;
