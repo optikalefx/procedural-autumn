@@ -202,7 +202,7 @@ export class Ambience {
    */
   update(dt, L) {
     const actx = this.actx;
-    const wind = clamp(L.wind, 0.35, 2.2);
+    const wind = clamp(L.wind, 0.35, 1.2);
 
     // How hard it is blowing, 0.30 … 0.50 — a 4.4 dB span.
     //
