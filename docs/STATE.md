@@ -309,7 +309,7 @@ figure that gets a working layout solver rewritten.
 
 ---
 
-# Procedural Autumn — state at the performance pivot
+# Camping Season — state at the performance pivot
 _2026-08-19, all feature work paused_
 
 ## Why we stopped

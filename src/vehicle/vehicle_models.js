@@ -24,6 +24,10 @@
 import { buildMaterials } from './model_kit.js';
 import { DIM as CAMPER_DIM, buildCamper } from './CamperModel.js';
 import { DIM as ROAMER_DIM, buildRoamer, buildRoamerMaterials } from './RoamerModel.js';
+import {
+  DIM as ADVENTURER_DIM, TYRE as ADVENTURER_TYRE,
+  buildAdventurer, buildAdventurerMaterials,
+} from './AdventurerModel.js';
 
 export const CARS = [
   {
@@ -43,6 +47,20 @@ export const CARS = [
     seed: 3,
     materials: (env) => buildRoamerMaterials(env),
     build: (materials, seed) => buildRoamer(materials, seed),
+  },
+  {
+    id: 'adventurer',
+    label: 'Adventurer',
+    sub: 'yellow two-door, doors off',
+    dims: ADVENTURER_DIM,
+    seed: 12,
+    // `wheel` is the only per-car override the shared wheel takes. It cannot
+    // change the rolling radius — see buildWheel's header — so it is width and
+    // tread depth, which is what separates a mud terrain from an all terrain at
+    // the same diameter.
+    wheel: ADVENTURER_TYRE,
+    materials: (env) => buildAdventurerMaterials(env),
+    build: (materials, seed) => buildAdventurer(materials, seed),
   },
 ];
 

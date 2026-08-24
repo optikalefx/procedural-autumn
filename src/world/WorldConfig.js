@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  PROCEDURAL AUTUMN — world constants & art direction
+//  Camping Season — world constants & art direction
 //  Every subsystem reads its numbers from here so the world stays coherent.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';

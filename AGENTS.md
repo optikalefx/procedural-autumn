@@ -1,6 +1,6 @@
-# Agent guide — Procedural Autumn
+# Agent guide — Camping Season
 
-A procedural autumn driving/camping game: three.js + Rapier, one `src/` tree,
+A Camping Season driving/camping game: three.js + Rapier, one `src/` tree,
 no build step beyond Vite. Art direction, world constants and quality tiers
 live in `src/world/WorldConfig.js`; the long-form design and findings docs are
 in `docs/` — start with `docs/PERF_FINDINGS.md` for performance and
@@ -39,17 +39,28 @@ pinning it, a page load picks one at random** — which is what the player shoul
 get, and is poison for a measurement: the cars are not the same triangle count,
 so two runs of the same gate would be measuring two different vehicles.
 
-`?car=<id>` pins it (`camper`, `roamer`). **ablate, perf, shot and vshot all
-default to `--car camper`** and pass it through, so an unadorned run of any of
-them is already deterministic; pass `--car roamer` to look at the other one.
-Anything else you drive the page with — a scratch harness, a hand-rolled
-playwright script — has to pin it itself.
+`?car=<id>` pins it (`camper`, `roamer`, `adventurer`). **ablate, perf, shot,
+vshot, hudshot, campshot and drive all default to `--car camper`** and pass it
+through, so an unadorned run of any of them is already deterministic; pass
+`--car adventurer` to look at another one. Anything else you drive the page
+with — a scratch harness, a hand-rolled playwright script — has to pin it
+itself.
 
 Adding a car is one entry in `CARS` plus a model file; the header of
 `vehicle_models.js` is the whole contract, and `src/vehicle/model_kit.js` is
 the shared parts bin every model is built from. The one rule is that every car
 rolls on `CHASSIS` — the wheelbase, track and wheel radius VehiclePhysics, the
 camera boom and the suspension tune are all built around.
+
+Bigger wheels are a *visual* override and they are wired, not free: a car may
+declare `DIM.wheelR` (drawn radius) and `DIM.wheelOut` (drawn track), and
+Vehicle lifts the whole rig by the radius difference so the tyre still lands on
+the contact patch — see `buildWheel`'s header and `_syncTransform`. Physics is
+untouched by it, which also means **driving behaviour is identical across all
+cars by construction**: mass, wheelbase, COM and engine force live in
+`VEHICLE` (WorldConfig) and no car row can reach them. If `tools/drive.mjs`
+reports different problems for different cars, that is route noise, not the
+model — run it twice before believing it.
 
 ## The toolbox
 

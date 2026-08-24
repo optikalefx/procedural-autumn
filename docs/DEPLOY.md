@@ -130,7 +130,7 @@ A `TypeError` here is a missing `Access-Control-Allow-Origin`, not a missing
 file — a genuinely absent object returns a clean 404 and falls through to a
 live bake instead of hanging.
 
-**`cached bake unusable, baking live: not a Procedural Autumn bake`, on a
+**`cached bake unusable, baking live: not a Camping Season bake`, on a
 machine that has a perfectly good bake on disk.**
 A poisoned HTTP cache entry. A dev server answers a missing path with
 `index.html` at status 200, so a bake requested before it existed got HTML

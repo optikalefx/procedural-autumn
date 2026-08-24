@@ -1,4 +1,4 @@
-# Procedural Autumn — System Author Brief
+# Camping Season — System Author Brief
 
 Read this in full before touching code. It is the contract that keeps eleven
 people's work looking like one game.

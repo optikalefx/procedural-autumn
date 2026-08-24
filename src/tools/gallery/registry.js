@@ -738,6 +738,18 @@ function kitEntries(mod, path) {
       call: 'buildWheel(buildMaterials(env), { spare: true })',
       async build() { return { root: mod.buildWheel(mats(), { spare: true }) }; },
     },
+    {
+      id: 'vehicle:wheel-mud', label: 'Wheel', sub: 'mud terrain',
+      group: groupOf(path), family: 'Vehicle', file: path,
+      call: "buildWheel(mats, { width: 0.225, deepTread: 0.055 })",
+      async build() {
+        const car = CARS.find((c) => c.wheel) ?? CARS[0];
+        return {
+          root: mod.buildWheel(carMats(car), car.wheel ?? {}),
+          notes: ['same rolling radius as the others — only the carcass moved'],
+        };
+      },
+    },
   ];
 }
 
@@ -870,6 +882,7 @@ const ADAPTERS = [
     parts: {
       '/src/vehicle/CamperModel.js': ['buildCamper', 'DIM', 'WINDOWS'],
       '/src/vehicle/RoamerModel.js': ['buildRoamer', 'buildRoamerMaterials', 'DIM', 'WINDOWS'],
+      '/src/vehicle/AdventurerModel.js': ['buildAdventurer', 'buildAdventurerMaterials', 'DIM', 'WINDOWS', 'TYRE'],
     },
   },
   {

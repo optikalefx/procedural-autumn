@@ -62,7 +62,7 @@ try { if (sheetSrc.includes('.tmp-')) execFileSync('rm', ['-f', sheetSrc]); } ca
 const INDEX = join(REVIEW, 'INDEX.md');
 if (!existsSync(INDEX)) {
   writeFileSync(INDEX,
-`# Procedural Autumn — visual progression
+`# Camping Season — visual progression
 
 Each entry is a contact sheet of the ten canonical camera views at that point in
 development, newest last. Framings are pinned via \`shots/_anchors.json\`, so the

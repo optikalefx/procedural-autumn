@@ -1,6 +1,6 @@
 // Scratch: drive the car switch from the settings sheet and film the landing.
 //
-//   node tools/_scratch/carui.mjs /tmp/carui
+//   node tools/_scratch/carui.mjs /tmp/carui [buttonIndex]
 //
 // Opens Settings the way a player does (Esc), clicks the second Vehicle button,
 // and shoots six frames across the drop plus one after it settles. Exists
@@ -33,7 +33,7 @@ await page.screenshot({ path: `${DIR}/settings.png` });
 
 const seg = page.locator('.pa-group', { hasText: 'Vehicle' }).locator('button');
 console.log('vehicle buttons:', await seg.allTextContents());
-await seg.nth(1).click();
+await seg.nth(Number(process.argv[3] ?? 1)).click();
 for (let i = 0; i < 6; i++) {
   await page.waitForTimeout(i === 0 ? 60 : 130);
   await page.screenshot({ path: `${DIR}/drop${i}.png` });

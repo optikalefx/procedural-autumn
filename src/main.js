@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  PROCEDURAL AUTUMN — entry point.
+//  Camping Season — entry point.
 //
 //  main.js owns *integration only*. Every world system lives in its own module
 //  behind the System interface (src/core/System.js) and is constructed here in
@@ -156,7 +156,7 @@ async function loadCachedBake(seed, res) {
     // request used `cache: 'force-cache'`, so that HTML got stored under the
     // bake's own URL and was then served from cache forever — including after
     // `tools/bake.mjs` had written the real file. The symptom is a permanent
-    // "cached bake unusable, baking live: not a Procedural Autumn bake" and a
+    // "cached bake unusable, baking live: not a Camping Season bake" and a
     // 35-50 s live bake on EVERY load, on a machine that has a perfectly good
     // bake sitting on disk. Verified by hand: the .pab over HTTP begins `PAB1`
     // and is byte-identical to the file, while the running page was still

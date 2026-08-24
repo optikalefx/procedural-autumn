@@ -125,7 +125,7 @@ const setup = await p.evaluate(({ hour }) => {
 
   // Every DOM node except the canvas goes. The loading screen fades to
   // opacity 0 but stays in the tree, and a screenshot composites it: the
-  // second version of this tool photographed a faint "Procedural Autumn"
+  // second version of this tool photographed a faint "Camping Season"
   // over a blue key and scored the whole frame as tree.
   for (const n of Array.from(document.body.children)) if (n.id !== 'app') n.remove();
   document.body.style.background = '#00f';
