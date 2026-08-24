@@ -43,6 +43,7 @@ import { Camp }        from './camp/Camp.js';
 import { CameraRig }   from './vehicle/CameraRig.js';
 import { Audio }       from './audio/Audio.js';
 import { HUD }         from './ui/HUD.js';
+import { Stats }       from './game/Stats.js';
 
 const SYSTEMS = [
   ['clouds',      Clouds],
@@ -67,6 +68,9 @@ const SYSTEMS = [
   ['cameraRig',   CameraRig],
   ['audio',       Audio],
   ['hud',         HUD],
+  // Last, and that IS its contract: Stats only watches, so everything it
+  // samples has already run this frame. See src/game/Stats.js.
+  ['stats',       Stats],
 ];
 
 const loaderEl = document.getElementById('loader');

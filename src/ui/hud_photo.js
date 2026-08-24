@@ -21,6 +21,7 @@
 //  *synchronously* in the same task, before the compositor clears it.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
+import { stats } from '../game/stats_store.js';
 
 const RANGES = {
   hour: [0, 24, 0.05],
@@ -259,6 +260,10 @@ export class PhotoMode {
     this.flash.classList.add('pa-fire');
     this.hud.audio()?.cue('shutter');
     this.hud.toast('Photo saved');
+    // The one line in this tree that writes to the logbook from outside
+    // src/game/Stats.js. Everything else there is derived by watching a system;
+    // a saved photo leaves nothing behind to watch, and nothing to hook.
+    stats.add('photo.taken');
     this.lastPhotoBytes = url.length;
     return true;
   }
