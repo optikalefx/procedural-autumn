@@ -109,6 +109,7 @@ const GROUPS = [
     ['Deer seen', 'n count', 'seen.deer'],
     ['Bears seen', 'n count', 'seen.bear'],
     ['Rabbits seen', 'n count', 'seen.rabbit'],
+    ['Foxes seen', 'n count', 'seen.fox'],
     ['Bird flocks', 'n count', 'seen.flocks'],
     ['Birds startled', 'n count', 'birds.startled'],
     ['Closest a bear came', 'lo metres', 'bear.near'],

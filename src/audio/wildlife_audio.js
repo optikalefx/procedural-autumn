@@ -62,7 +62,11 @@ export class WildlifeAudio {
     // what makes the alarm-free ones feel calm.
     const cands = [];
     for (const a of animals) {
-      if (a.key === 'rabbit') continue;
+      // Rabbits are silent because they are; foxes because their one real
+      // call is a scream, and a scream has no place in this valley. Falling
+      // through would give the fox the deer's bleat, which is worse than
+      // nothing.
+      if (a.key === 'rabbit' || a.key === 'fox') continue;
       if (a.state === 'flee') continue;
       const d = Math.hypot(a.x - L.x, a.z - L.z);
       if (d > 240) continue;

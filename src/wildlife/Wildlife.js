@@ -54,6 +54,11 @@ const CFG = {
   deer:   { spawn: 172, despawn: 215, live: 9,  perKm2: 88 },
   bear:   { spawn: 185, despawn: 230, live: 3,  perKm2: 0.5 },
   rabbit: { spawn: 96,  despawn: 132, live: 8,  perKm2: 330 },
+  // A fox is meant to be an uncommon treat — rarer than deer, far commoner
+  // than a bear. It is a 0.5 m animal, so the streaming band sits between the
+  // rabbit's and the deer's: far enough out that it never pops in view, close
+  // enough that a spawned fox is actually resolvable.
+  fox:    { spawn: 140, despawn: 178, live: 4,  perKm2: 16 },
 };
 
 // LOD. A deer is about 1.5 m tall, so at 60 m it is roughly forty pixels — the
@@ -263,6 +268,16 @@ export class Wildlife extends System {
       // a bolt of the feeding ground, so a little moisture is a plus.
       const scrub = (1 - smoothstep(0.44, 0.70, m)) * smoothstep(0.06, 0.26, m);
       return clamp01(scrub * 1.3 * flat * clump * (1 - smoothstep(110, 190, h)));
+    }
+    if (key === 'fox') {
+      // Where the rabbits are, plus the field edges the deer use — a fox lives
+      // on the seam between cover and open hunting ground, which conveniently
+      // is also the seam the player drives along. The two bands overlap the
+      // prey species' on purpose: a fox trotting a hedge line forty metres
+      // from a rabbit is the valley telling a true story.
+      const edge = smoothstep(0.24, 0.44, m) * (1 - smoothstep(0.60, 0.85, m));
+      const scrub = (1 - smoothstep(0.46, 0.72, m)) * smoothstep(0.05, 0.22, m) * 0.6;
+      return clamp01((edge + scrub) * 1.1 * flat * clump * (1 - smoothstep(170, 250, h)));
     }
     // Bear: water and cover. River sites are placed separately off the actual
     // polylines; this covers the deep-wood animal.
