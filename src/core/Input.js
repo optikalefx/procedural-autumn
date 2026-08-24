@@ -141,7 +141,6 @@ export class Input {
     this._pressAt = { x: 0, y: 0 };
     this._pressT0 = 0;                  // performance.now() at pointerdown — see below
     this._pressVoid = false;            // a press a menu ate; it resolves to nothing
-    this._lastX = 0; this._lastY = 0;   // last frame's offset, for the touch look delta
 
     const setNdc = (e) => {
       this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -154,7 +153,6 @@ export class Input {
       this._pressSlop = e.pointerType === 'mouse' ? SLOP_MOUSE : SLOP_TOUCH;
       this._pressAt.x = e.clientX;
       this._pressAt.y = e.clientY;
-      this._lastX = 0; this._lastY = 0;
       const p = this.press;
       p.down = true; p.t = 0; p.moved = 0;
       p.ox = e.clientX; p.oy = e.clientY;
@@ -174,11 +172,14 @@ export class Input {
       // aim from the instant it lands.
       setNdc(e);
       p.x = this.mouse.x; p.y = this.mouse.y;
-      // A finger drag has to reach the look the way a mouse drag does. Mouse
-      // pointers are left alone here: their own mousedown/mousemove handlers
-      // above already own `down` and `dx/dy`, and counting both would double
-      // every mouse look.
-      if (e.pointerType !== 'mouse') this.mouse.down = true;
+      // NOTE: `mouse.down` and `mouse.dx/dy` are deliberately NOT written for
+      // touch pointers. They are the LOOK DRAG, and CameraRig._readLook orbits
+      // the chase camera with them — so feeding a finger into them made every
+      // stick slide swing the camera as well, which put the camper off the side
+      // of the screen the first time anyone steered. On touch a one-finger
+      // slide means exactly one thing: the drive stick (ui/TouchControls.js).
+      // Anything that genuinely wants a finger drag reads `press.px/py`
+      // instead — see camp_scope_view.js.
     });
 
     window.addEventListener('pointermove', (e) => {
@@ -192,13 +193,7 @@ export class Input {
       this.press.px = e.clientX; this.press.py = e.clientY;
       setNdc(e);
       this.press.x = this.mouse.x; this.press.y = this.mouse.y;
-      // Touch has no `movementX`, so the frame delta is the difference of two
-      // offsets from the press origin.
-      if (e.pointerType !== 'mouse') {
-        this.mouse.dx += dx - this._lastX;
-        this.mouse.dy += dy - this._lastY;
-      }
-      this._lastX = dx; this._lastY = dy;
+      // Not fed into `mouse.dx/dy` — see the note in pointerdown.
     });
 
     const pressEnd = (e, cancelled) => {
@@ -216,7 +211,6 @@ export class Input {
       p.holding = false;
       p.t = 0;
       this._pressVoid = false;
-      if (e.pointerType !== 'mouse') this.mouse.down = false;
     };
     window.addEventListener('pointerup', (e) => pressEnd(e, false));
     window.addEventListener('pointercancel', (e) => pressEnd(e, true));

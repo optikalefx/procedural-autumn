@@ -339,6 +339,23 @@ export class ScopeView {
       this.yaw -= input.mouse.dx * k;
       this.pitch = clamp(this.pitch - input.mouse.dy * k, PITCH_MIN, PITCH_MAX);
     }
+    // The finger drag, read straight off the press rather than through
+    // `mouse.dx/dy`. Those are the look drag, and on touch they are deliberately
+    // left alone: CameraRig orbits the chase camera with them, so a finger in
+    // them turned every steering input into a camera swing (see the note in
+    // core/Input.js). Nothing else in the game wants a raw finger delta, so the
+    // eyepiece keeps its own — one subtraction against last frame's position.
+    const pr = input.press;
+    if (pr.down && this.t > 0.4) {
+      if (this._dragging) {
+        this.yaw -= (pr.px - this._lastPx) * k;
+        this.pitch = clamp(this.pitch - (pr.py - this._lastPy) * k, PITCH_MIN, PITCH_MAX);
+      }
+      this._dragging = true;
+      this._lastPx = pr.px; this._lastPy = pr.py;
+    } else {
+      this._dragging = false;
+    }
     const kk = dt * 0.62 * (this.fov / FOV_REST);
     if (input.key('ArrowLeft')) this.yaw += kk;
     if (input.key('ArrowRight')) this.yaw -= kk;
