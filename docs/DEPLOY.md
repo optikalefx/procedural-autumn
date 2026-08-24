@@ -138,9 +138,29 @@ The client side of this is `loadCachedBake` in `src/main.js`: it fetches with
 `cache: 'force-cache'`, validates the `PAB1` magic number, and retries once
 with `cache: 'reload'` to evict a poisoned entry.
 
-Seeds that were never baked (someone loading `?seed=123456`) fall through to a
-live worker bake on every load — only the seeds baked at build time exist as
-files.
+### Seeds the deploy never baked
+
+Only the seed in the build command ships as a file, so the Seed box in settings
+and any shared `?seed=` link have nothing to fetch and must bake in a worker —
+**72 s measured on production**, against 16 s for the same work in `node`.
+
+That bake is now kept. `main.js` stores the encoded result in the Cache API
+(`pab-bakes-v1`) under the same URL the network path would have used, so the
+generator hash is part of the key and a `TerrainGen.js` change orphans the
+entry instead of serving last week's algorithm. Measured: **9.1 s to bake,
+159 ms to reload**. The worker encodes the buffer (`worldWorker.js`) so the
+main thread never serialises 44 MB, and the store is not awaited — it settles
+during startup.
+
+Entries are gzipped (44.5 MB -> 17.3 MB at 1536) because this is the player's
+disk. `pruneBakes` deletes every entry from another generator hash, then trims
+to the newest `BAKE_CACHE_KEEP` (3) worlds.
+
+Every failure degrades to the bake that would have happened anyway: no Cache
+API, an insecure context, `QuotaExceededError`, a half-written entry. A corrupt
+entry is caught by the same `PAB1` check the network path uses and is
+overwritten by the fresh bake — verified by planting 16 bytes of garbage under
+a live key.
 
 ## Deploying a terrain change
 
