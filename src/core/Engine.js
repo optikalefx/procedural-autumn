@@ -26,7 +26,19 @@ export class Engine {
     // pixel, and the post chain is fixed cost per pixel. A display difference
     // the harness never simulated was therefore worth 3x the frame time. Rather
     // than pick one number and hope, measure and hold a target.
-    this.basePixelRatio = Math.min(window.devicePixelRatio, this.preset.pixelRatioCap);
+    // ── the manual pin ──────────────────────────────────────────────────────
+    // `resolutionPin` is a player-set number of device pixels per CSS pixel
+    // that overrides BOTH ceilings below: the tier's `pixelRatioCap` and the
+    // adaptive scaler's preferred internal rung. It exists because the two
+    // ceilings multiply, and the product is not obvious from either one — at
+    // the ultra cap of 1.5 on a dpr-2 display, with the internal scaler on its
+    // preferred 1.25 rung, the scene is drawn at 0.63 of the display's linear
+    // pixel density, i.e. 39% of its pixels. Thin high-frequency geometry (a
+    // telescope tripod, a chair frame, a radiator grille) does not survive
+    // that; soft emissive shapes like the campfire do, which is why the same
+    // frame can look both good and cheap. See `setResolutionPin`.
+    this.resolutionPin = null;
+    this.basePixelRatio = Math.min(window.devicePixelRatio, this._pixelRatioCap());
     this.resolutionScale = 1;
     this.targetFrameMs = 1000 / ADAPTIVE_RESOLUTION.targetFps;
     // ── internal render scale ──────────────────────────────────────────────
@@ -45,7 +57,10 @@ export class Engine {
     // floor close to it: reconstruction improves a reduced frame, but player
     // feedback is clear that the old 0.78 floor still looked like potato mode.
     this.internalScale = 1;
-    this.preferredEffectiveInternalRatio = ADAPTIVE_RESOLUTION.preferredEffectiveRatio;
+    // Per-tier, falling back to the global policy. Ultra overrides it to its
+    // own cap so the top tier boots at native; see QUALITY_PRESETS.
+    this.preferredEffectiveInternalRatio =
+      this.preset.preferredEffectiveRatio ?? ADAPTIVE_RESOLUTION.preferredEffectiveRatio;
     this.minEffectiveInternalRatio = ADAPTIVE_RESOLUTION.minEffectiveRatio;
     this.adaptDownscaleThreshold = ADAPTIVE_RESOLUTION.downscaleThreshold;
     this.adaptUpscaleHeadroom = ADAPTIVE_RESOLUTION.upscaleHeadroom;
@@ -216,7 +231,12 @@ export class Engine {
     const heldScale = this.resolutionScale;
     this.quality = name;
     this.preset = preset;
-    this.basePixelRatio = Math.min(window.devicePixelRatio, preset.pixelRatioCap);
+    // The preferred rung is a property of the tier now, so it moves with it.
+    // Without this, picking Ultra kept the previous tier's 1.25 ceiling and the
+    // top tier quietly refused to render at native.
+    this.preferredEffectiveInternalRatio =
+      preset.preferredEffectiveRatio ?? ADAPTIVE_RESOLUTION.preferredEffectiveRatio;
+    this.basePixelRatio = Math.min(window.devicePixelRatio, this._pixelRatioCap());
     // Clamp to the NEW tier's floor: a lower tier can cap the pixel ratio
     // differently, so the old scalar is not automatically legal here.
     const floor = Math.min(1, this.minEffectivePixelRatio / this.basePixelRatio);
@@ -226,11 +246,22 @@ export class Engine {
     // held scale itself is kept — a tier change never resets it (see the
     // note on keepResolution above for why resetting was four freezes).
     const iFloor = this._internalFloor();
-    const iNext = Math.max(iFloor, Math.min(1, this.internalScale));
+    // A tier change re-seats the starting rung, because the tier is now what
+    // decides it. Holding the old scale across a change INTO Ultra is what
+    // would make "Ultra" mean "whatever the last tier happened to settle on";
+    // the scaler is free to walk back down from here if the machine cannot
+    // hold it. A manual pin outranks all of this and is left alone.
+    const iPreferred = this.resolutionPin != null
+      ? this.internalScale
+      : Math.min(1, this.preferredEffectiveInternalRatio / this.basePixelRatio);
+    const iNext = Math.max(iFloor, Math.min(1, iPreferred));
     if (Math.abs(iNext - this.internalScale) >= 1e-3) {
       this.internalScale = iNext;
       this.onInternalScale?.(iNext);
     }
+    // The frames spanning a tier rebuild are not evidence about the new tier.
+    this._frameTimes.length = 0;
+    this._lastAdapt = performance.now();
     this._onResize();
     for (const fn of this._qualityCbs) {
       try { fn(preset, name); } catch (e) { console.error('[engine] onQuality handler threw', e); }
@@ -242,6 +273,96 @@ export class Engine {
   onQuality(fn) { this._qualityCbs.push(fn); return fn; }
 
   setRenderCallback(fn) { this._render = fn; }
+
+  /**
+   * The pixel-ratio ceiling in force: the player's manual pin if there is one,
+   * otherwise the quality tier's own cap. Every place that recomputes
+   * `basePixelRatio` goes through here, so a pin survives a resize, a tier
+   * change and the automatic tier ladder.
+   */
+  _pixelRatioCap() {
+    // A pin puts the CANVAS at the display's native density and spends the
+    // player's chosen fraction on the internal scale instead — never on a
+    // smaller canvas. See setResolutionPin for why that distinction is the
+    // whole point.
+    return this.resolutionPin != null ? this.nativePixelRatio() : this.preset.pixelRatioCap;
+  }
+
+  /** The sharpest this display can be asked for: one render pixel per device pixel. */
+  nativePixelRatio() { return window.devicePixelRatio || 1; }
+
+  /** Effective device pixels per CSS pixel actually being rendered right now. */
+  effectivePixelRatio() {
+    return this.basePixelRatio * this.resolutionScale * this.internalScale;
+  }
+
+  /**
+   * Pin the render resolution to `ratio` device pixels per CSS pixel, or pass
+   * a non-finite value to hand it back to the adaptive scaler.
+   *
+   * The pin is spent on the INTERNAL scale, not on the canvas. The canvas goes
+   * to the display's native density and stays there for the whole range of the
+   * control, and `internalScale` carries the fraction the player asked for.
+   * That ordering is the entire reason this is worth building rather than just
+   * raising `pixelRatioCap`:
+   *
+   *   · a smaller CANVAS is stretched to the display by the BROWSER, bilinear,
+   *     which is the failure UpscalePass.js was written to end — the first
+   *     version of this feature had exactly that bug, and a pin at 63% was
+   *     softer than the automatic scaler sitting at the same 63%;
+   *   · a smaller INTERNAL buffer is reconstructed by the Catmull-Rom + CAS
+   *     present pass, at the full native canvas, which is the sharpest
+   *     arrangement available for a given number of drawn pixels.
+   *
+   * At ratio === nativePixelRatio() the fraction is 1, the present pass
+   * switches off entirely, and the frame the player sees is the frame that was
+   * drawn — the sharpest the display can show.
+   *
+   * The second benefit of spending it internally: after the first commit the
+   * drawing buffer never moves again, so dragging the control costs an
+   * offscreen-target resize rather than the 450-2500 ms drawing-buffer
+   * reallocation measured on ANGLE/Metal (see `_adapt`'s notes). Callers should
+   * still debounce the first one — `HUD._commitRenderScale` does.
+   *
+   * Cost is honest and does not fall back: the frame is fragment-bound, so it
+   * tracks pixel count, and going from the automatic 1.25 effective ratio to a
+   * native 2.0 is 2.6x the pixels. A player who asked for native and got 35 fps
+   * has learned something true; a scaler that quietly undid their choice would
+   * teach them nothing. The tier ladder is the lever for frame rate, this is
+   * the lever for sharpness.
+   */
+  setResolutionPin(ratio) {
+    const native = this.nativePixelRatio();
+    // The floor matches PostFX.setInternalScale's own clamp, so the engine and
+    // the post graph can never disagree about how big the buffers are.
+    const next = Number.isFinite(ratio) && ratio > 0
+      ? Math.max(0.4 * native, Math.min(native, ratio))
+      : null;
+    if (next === this.resolutionPin) return;
+    this.resolutionPin = next;
+    // The automatic scaler and a manual pin are the same lever; only one of
+    // them may hold it, or the next adapt window walks the player's choice back
+    // down a rung at a time.
+    this.adaptive = next === null;
+    this.resolutionScale = 1;
+    this.basePixelRatio = Math.min(native, this._pixelRatioCap());
+    if (next === null) {
+      // Back to auto: return to the policy's preferred rung rather than
+      // wherever the pin happened to leave things, and give the scaler a clean
+      // window — the frames spanning a buffer reallocation are not evidence.
+      const preferred = Math.min(1, this.preferredEffectiveInternalRatio / this.basePixelRatio);
+      this.internalScale = Math.max(this._internalFloor(), preferred);
+      this._frameTimes.length = 0;
+      this._lastAdapt = performance.now();
+    } else {
+      // Deliberately NOT through setInternalScale: `minEffectiveInternalRatio`
+      // is the automatic scaler's sharpness policy, and a player dragging this
+      // control down is overriding that policy on purpose.
+      this.internalScale = Math.min(1, next / this.basePixelRatio);
+    }
+    this.onInternalScale?.(this.internalScale);
+    this._applyResolution();
+  }
 
   /** The lowest internal scale the sharpness floor permits on this display. */
   _internalFloor() {
@@ -387,7 +508,7 @@ export class Engine {
 
   _onResize() {
     const w = window.innerWidth, h = window.innerHeight;
-    this.basePixelRatio = Math.min(window.devicePixelRatio, this.preset.pixelRatioCap);
+    this.basePixelRatio = Math.min(window.devicePixelRatio, this._pixelRatioCap());
     this.renderer.setPixelRatio(this.basePixelRatio * this.resolutionScale);
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;

@@ -187,6 +187,14 @@ export class AnimRig {
     const hb = proto.skel.bones[proto.skel.idx('head')];
     this.neckRest = new THREE.Vector3(0, hb.y, hb.z);   // mesh-local, unscaled
     this.headTarget = this.neckRest.clone();
+    // The head-carriage offsets below (nod, alert lift, nibble drift) are
+    // authored in absolute model units, sized against the deer's 0.45-unit
+    // neck. On a chain a third that long the same numbers are a third of the
+    // whole neck, and every nod threw the IK target clear through the
+    // straight-chain singularity — which is what the camp dog's head-snapping
+    // was. Everything the target moves by scales with the chain it has to move.
+    this.neckSpan = this.neck ? this.neck.l1 + this.neck.l2 : 0;
+    this.neckK = this.neck ? Math.min(1, this.neckSpan / 0.45) : 1;
 
     // Where the poll goes when the animal crops, in the same mesh-local frame.
     //
@@ -516,16 +524,17 @@ export class AnimRig {
     // eerily locked.
     _c.copy(this.neckRest);
 
+    const nk = this.neckK;
     if (graze > 0.001) {
       _b.copy(this.grazePoint);
       // A nibbling drift so a grazing animal is never a statue.
-      _b.z += Math.sin(this.breath * 0.55) * 0.05;
-      _b.y += Math.sin(this.breath * 1.9) * 0.022;
+      _b.z += Math.sin(this.breath * 0.55) * 0.05 * nk;
+      _b.y += Math.sin(this.breath * 1.9) * 0.022 * nk;
       _c.lerp(_b, graze);
     }
     if (alert > 0.001) {
       _b.copy(this.neckRest);
-      _b.y += 0.16; _b.z -= 0.06;
+      _b.y += 0.16 * nk; _b.z -= 0.06 * nk;
       _c.lerp(_b, alert);
     }
     // At speed the neck stretches out along the body. A running quadruped
@@ -544,7 +553,7 @@ export class AnimRig {
     // read as a puppet sliding along a rail.
     if (sn > 0.001 && graze < 0.999) {
       const nod = Math.sin(this.phase * Math.PI * 2 * this.gait.bobHz - 0.9);
-      const k = (1 - graze) * Math.min(1, sn * 3.2);
+      const k = (1 - graze) * Math.min(1, sn * 3.2) * nk;
       _c.z += nod * 0.045 * k;
       _c.y -= Math.abs(nod) * 0.022 * k;
     }
@@ -563,8 +572,28 @@ export class AnimRig {
     const nb = this.neck;
     // Yaw is handled separately, so the planar solve uses the horizontal
     // distance rather than z alone or a sideways look would foreshorten it.
-    const fz = Math.hypot(_b.x, _b.z) * Math.sign(_b.z || 1);
-    solve2(nb.a.position.y, nb.a.position.z, _b.y, fz, nb.l1, nb.l2, -1, _ik);
+    let fz = Math.hypot(_b.x, _b.z) * Math.sign(_b.z || 1);
+    let ty = _b.y;
+    // ── keep the solve off the straight-chain singularity ────────────────────
+    // Every species binds its neck bones nearly colinear, so the rest target
+    // already sits at ~100% of the chain's reach — where acos in the two-link
+    // solve has infinite slope and a millimetre of target motion whips the
+    // elbow through tens of degrees. solve2's own hard clamp cannot help: it
+    // pins the pose AT the singular point. So compress the target's distance
+    // smoothly toward a 0.985 ceiling instead — the mapping's slope goes to
+    // zero exactly as the angular gain blows up, and the product stays tame.
+    // Below 90% of reach nothing changes, so a bent grazing neck is untouched.
+    {
+      let dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
+      const d = Math.hypot(dy, dz);
+      const knee = this.neckSpan * 0.90, ceil = this.neckSpan * 0.985;
+      if (d > knee) {
+        const s = (ceil - (ceil - knee) * Math.exp(-(d - knee) / (ceil - knee))) / d;
+        ty = nb.a.position.y + dy * s;
+        fz = nb.a.position.z + dz * s;
+      }
+    }
+    solve2(nb.a.position.y, nb.a.position.z, ty, fz, nb.l1, nb.l2, -1, _ik);
     const rA = nb.bindA - _ik.upper;
     nb.a.rotation.x = rA;
     nb.b.rotation.x = nb.bindB - _ik.lower - rA;

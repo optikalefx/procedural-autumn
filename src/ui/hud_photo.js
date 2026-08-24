@@ -13,7 +13,12 @@
 //     rule-of-thirds grid
 //   · gives three dials that matter for a photograph — the hour, the exposure,
 //     and the colour — and nothing else
-//   · writes a real PNG at the window's resolution
+//   · pins the render resolution to the display's native density for as long
+//     as the mode is open, and puts back whatever was running on the way out
+//     (see setActive) — so both the framing and the saved file are the
+//     sharpest the machine can produce
+//   · writes a real PNG at the drawing buffer's full size, which is therefore
+//     the display's native resolution rather than the reduced one play uses
 //
 //  The save path is the fiddly part. The WebGL context has no
 //  preserveDrawingBuffer, so the canvas reads back blank outside of a draw. The
@@ -135,6 +140,11 @@ export class PhotoMode {
       hour: this.ctx.lighting?.hour ?? 16.6,
       cycle: this.ctx.lighting?.cycleSpeed ?? 0,
       mode: this.ctx.systems?.cameraRig?.mode ?? 'chase',
+      // The engine's absolute pin, or null for "the adaptive scaler had it".
+      // Read from the engine rather than from HUD.renderPin on purpose: this
+      // has to restore what was actually running, and those two differ while a
+      // player is looking at an automatic frame.
+      resolutionPin: this.ctx.engine?.resolutionPin ?? null,
     };
   }
 
@@ -174,6 +184,30 @@ export class PhotoMode {
       if (this.ctx.input) this.ctx.input.suppressed = true;
       // The world should hold still while you compose.
       if (this.ctx.lighting) this.ctx.lighting.cycleSpeed = 0;
+      // ── full resolution, for as long as the mode is open ──────────────────
+      // In play the scene is drawn well under the display's pixel density: the
+      // tier's `pixelRatioCap` and the adaptive scaler's preferred rung
+      // multiply, and on a Retina panel the product is around 39% of the
+      // screen's pixels. That is a defensible trade at 60 fps and the wrong one
+      // here — this is the mode whose entire output is a still image, the
+      // sun is already stopped, and nothing in frame is moving to hide the
+      // softness. Thin high-frequency geometry (a tripod, a chair frame, a
+      // radiator grille) is exactly what undersampling destroys and exactly
+      // what a player frames a photograph on.
+      //
+      // `setResolutionPin` also switches the adaptive scaler off while it is
+      // held, so a heavy vista cannot walk the resolution back down midway
+      // through composing a shot.
+      //
+      // The saved PNG comes with it: `capture` reads the drawing buffer, which
+      // is now the display's native size.
+      //
+      // It costs a drawing-buffer reallocation on the way in and another on the
+      // way out — measured at 450-2500 ms on ANGLE/Metal. That is a real hitch
+      // and it is spent in the right place: a deliberate mode change that
+      // already cuts the camera, takes the HUD away and plays a door sound,
+      // rather than anywhere during driving.
+      this.ctx.engine?.setResolutionPin?.(this.ctx.engine.nativePixelRatio());
       this.hourEl.set(this._saved.hour);
       this.expEl.set(this._saved.exposure);
       this.colEl.set(this._saved.saturation);
@@ -189,6 +223,11 @@ export class PhotoMode {
           this.ctx.lighting.hour = s.hour;
           this.ctx.lighting.cycleSpeed = s.cycle;
         }
+        // Back to exactly what was running: a manual pin the player had set, or
+        // a non-finite value, which hands the lever back to the adaptive
+        // scaler. HUD.renderPin and its stored setting were never touched — the
+        // override lives and dies inside this mode.
+        this.ctx.engine?.setResolutionPin?.(s.resolutionPin ?? NaN);
         // Back to whatever camera was driving before — as a cut, which is what
         // `exitFree` does. `s.mode` is read rather than trusted to the rig's
         // own memory of it so a mode changed while photo mode was open (it

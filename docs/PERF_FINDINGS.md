@@ -600,3 +600,199 @@ Still open, in order of expected value: the terrain fragment shader
 procedural per fragment wants a distance fade), the 7–8 M peak triangles the
 tree rounds added against perf.mjs's 4.5 M budget line, and SSAO's remaining
 cost at the `high` tier.
+
+# The manual resolution pin (2026-08-24)
+
+Player report: the campfire looks good and the telescope, the chair and the car
+"look like such shit resolution", in the same frame. Both halves are correct,
+and the answer is the pixel count rather than any of the props.
+
+## Two ceilings multiply, and neither one is visible
+
+The scene never renders at the display's pixel density, because two independent
+caps stack:
+
+| | ultra | on a dpr-2 display |
+|---|---|---|
+| `QUALITY_PRESETS.ultra.pixelRatioCap` | 1.5 | canvas at 75% of native, 56% of its pixels |
+| `ADAPTIVE_RESOLUTION.preferredEffectiveRatio` | 1.25 | scene at 63% of native, **39% of its pixels** |
+
+`preferredEffectiveRatio` is also a *ceiling*, not a target: `_adapt` builds its
+rung ladder with `ceilingScale` at the preferred ratio, so spare GPU headroom is
+never spent on sharpness. The reporting player was at 60 fps, 16.6 ms, with the
+scene drawn at 39% of their screen's pixels and no path to more.
+
+The reported build was worse still — the pre-2026-08-23 floor let the scaler sit
+at an effective 0.78 (`int 52%`), i.e. 15% of native pixels.
+
+## Why the fire survives it and the telescope does not
+
+Nothing about the fire is cheaper. It is that undersampling is a low-pass
+filter, and the two subjects sit on opposite sides of it:
+
+- the campfire is emissive and bloomed, and **bloom is low-frequency by
+  construction** — it is built from downsampled mips, so it carries almost no
+  detail above the sample rate to lose. Reconstruction and CAS then restore its
+  local contrast exactly as intended;
+- a tripod leg, a chair tube and a radiator slat are **one-to-three-pixel
+  high-contrast features at native**. Below native they are sub-pixel, so
+  they alias, and no reconstruction filter can put back detail that was never
+  sampled. Catmull-Rom + CAS makes them *less bad*, not present.
+
+So "the fire looks good" and "the hard-surface props look low-resolution" are
+the same measurement, read at two spatial frequencies.
+
+## What shipped
+
+A manual pin — settings → Picture → **Resolution**, 50–100% of the display's
+native density, with an **Auto resolution** toggle; `?pixelratio=<n|native>`
+for captures. `Engine.setResolutionPin` overrides both ceilings at once and
+disables the adaptive scaler while held (the two are the same lever).
+
+**The pin is spent on the internal scale, never on the canvas.** The first
+implementation set a smaller *canvas*, which the browser then stretches to the
+display bilinearly — the exact failure `UpscalePass.js` exists to end, and it
+made a pin at 63% measurably softer than the automatic scaler sitting at the
+same 63%. Pinned, the canvas goes to native and stays there across the whole
+range of the control, and `internalScale` carries the fraction. Two consequences:
+below 100% the frame is reconstructed at the full native canvas rather than
+browser-stretched, and after the first commit **the drawing buffer never moves
+again**, so dragging the control costs an offscreen resize rather than the
+450–2500 ms drawing-buffer reallocation.
+
+At 100% `internalScale` is 1, the present pass switches off entirely, and the
+player sees the frame that was drawn.
+
+## The cost, measured
+
+`tools/dprtest.mjs --port <worktree> --dpr 2 --quality ultra`, 1728×1000 at
+dpr 2, ultra, seed 20261018, camper, 18 s drive each. `--dpr` and
+`--pixelratio` were added to `dprtest.mjs` and `shot.mjs` for this — every
+other capture in the tree runs at deviceScaleFactor 1, which cannot show a
+resolution question at all.
+
+| | effective ratio | drawn | settled p50 | settled fps |
+|---|---|---|---|---|
+| auto | 1.25 | 2.70 MP | 17.9 ms | 55.9 |
+| pinned native | 2.00 | 6.91 MP | 35.3 ms | 28.3 |
+
+2.56x the pixels for 1.97x the frame time — very close to linear, which is
+this document's headline finding restated: the frame is fragment-bound, so
+resolution is the biggest single lever in both directions. Different page
+loads on a shared machine, so trust the ratio and not the absolutes.
+
+The pin deliberately does **not** fall back. A player who asks for native and
+gets 30 fps has learned something true about the trade; a scaler that quietly
+undid the choice would teach them nothing. The tier ladder remains the lever
+for frame rate.
+
+## Ultra now means native (2026-08-24)
+
+"Ultra" was a naming lie: cap 1.5 x preferred rung 1.25 = 39% of a Retina
+display's pixels, chosen by a player asking for the best available picture.
+The top tier is now the tier that means *the best this display can show*.
+
+| | before | after |
+|---|---|---|
+| `ultra.pixelRatioCap` | 1.5 | **2.0** |
+| ultra's preferred rung | 1.25 (global) | **2.0** (per-tier) |
+| effective on a dpr-2 panel | 1.25 — 39% of native pixels | **2.00 — 100%** |
+| upscale/reconstruction pass | on | **off** |
+
+Three supporting changes were needed and each one was load-bearing:
+
+1. **`preferredEffectiveRatio` became a per-tier property**, falling back to
+   `ADAPTIVE_RESOLUTION.preferredEffectiveRatio`. Only Ultra sets it. It is the
+   ratio the scaler boots at *and may recover back up to* — Ultra is not pinned,
+   so a struggling machine still steps down and then climbs back to native.
+   `adaptive` stays true at Ultra; verified.
+2. **`Engine.setQuality` re-seats the rung on a tier change**, and
+   `HUD.applyQuality` now calls it instead of reimplementing it. The HUD copy
+   assigned `engine.quality`/`preset` by hand, called `setPixelRatio` itself and
+   fanned `onQuality` out a second time on top of the fan-out already registered
+   in main.js. That was survivable while every tier shared one resolution
+   preference and stopped being survivable the moment the tier decided it —
+   picking Ultra kept whatever rung the previous tier had settled on. This is
+   the request `docs/INTEGRATION_REQUESTS.md` filed; it is now met.
+3. **Two rungs were added** (`1.75`, `1.5`). Booting at a native 2.0, the next
+   rung down was 1.35 — a 46% pixel cut for a frame a few percent over budget.
+   Rungs above a tier's ceiling are filtered out in `_adapt`, so the lower tiers
+   never see them.
+
+Measured, dpr 2, 1100x640, seed 20261018:
+
+| tier | cap | effective | % of native | drawn | reconstruction |
+|---|---|---|---|---|---|
+| ultra | 2.0 | 2.00 | **100%** | 2.82 MP | off |
+| high | 1.35 | 1.25 | 63% | 1.10 MP | on |
+| medium | 1.15 | 1.15 | 57% | 0.93 MP | on |
+| low | 1.0 | 1.00 | 50% | 0.70 MP | on |
+
+### The trap this nearly walked into
+
+`pickQuality` measured pixel load against **Ultra's own cap**. Raising that cap
+to 2.0 doubled every megapixel figure it computed, which pushed a 1728x1000
+Retina window from `high` to `medium` — a silent downgrade of the DEFAULT
+experience, in the name of a tier the picker was no longer going to hand out.
+Caught before it shipped by tabulating the picker's output rather than trusting
+the change.
+
+A second, separate bug in the same fix: the Ultra-is-opt-in clamp was placed
+*before* the pixel-load step-down, so the two demotions stacked — Ultra clamped
+to High, then High stepped down to Medium, and a 1728x1000 Retina window came
+out one tier lower than it had ever been. It has to run after. Both bugs were
+caught the same way, by booting three real viewports headless and reading the
+tier back out of the engine rather than trusting the arithmetic.
+
+Fixed with `AUTOPICK_REFERENCE_RATIO = 1.5` in WorldConfig: the picker's 3.5/6.0
+MP thresholds were calibrated against 1.5 and keep that yardstick. Ultra is
+additionally opt-in on any display where it now costs more than it used to
+(`devicePixelRatio > 1`); on a 1x display `min(1, 2.0)` is 1.0, Ultra costs what
+it always did, and the picker may still choose it.
+
+Net effect on defaults — only two cases move, and both land on the same
+effective resolution they had:
+
+| window | dpr | before | after |
+|---|---|---|---|
+| 1280x800 | 2 | ultra (eff 1.25) | **high (eff 1.25)** |
+| 1440x900 | 2 | ultra (eff 1.25) | **high (eff 1.25)** |
+| 1728x1000 | 2 | high | high | (verified — this is the one the ordering bug broke) |
+| 1920x1080 | 2 | high | high |
+| 1920x1080 | 1 | ultra | ultra |
+
+Old Ultra was `min(2, 1.5) x 0.833 = 1.25`; new High is `min(2, 1.35) x 0.926 =
+1.25`. Identical sharpness — those players trade a shadow cascade and some
+vegetation density, and Ultra is one click away.
+
+## Photo mode takes the pin automatically
+
+Photo mode now pins native for as long as it is open and restores whatever was
+running on the way out — an automatic scaler, or a manual pin the player had
+set. `HUD.renderPin` and its stored setting are never touched; the override
+lives and dies inside the mode. It follows the same save/override/restore
+shape as the exposure, saturation, hour and camera-mode state that mode
+already borrows (`_readGrade` / `setActive`).
+
+It is the one mode where the trade is free in every direction: the sun is
+already stopped, nothing in frame is moving to hide softness, thin
+high-frequency geometry is exactly what a player frames a photograph on, and
+the output is a still. The saved PNG comes with it — `capture()` reads the
+drawing buffer, which is now native-sized rather than the reduced one play
+uses.
+
+The cost is a drawing-buffer reallocation on the way in and another on the way
+out (450–2500 ms on ANGLE/Metal). That is a real hitch, spent on a deliberate
+mode change that already cuts the camera, takes the HUD away and plays a door
+sound — not on anything during driving.
+
+## The overlay was calling this fine
+
+`PerfOverlay`'s `BELOW NATIVE` warning tested `eff < 1.0`, so an effective 1.25
+on a display that wants 2.0 — the frame in the report — printed no warning at
+all. It now reads as a percentage of `devicePixelRatio`:
+
+```
+res  1.25x  63% of 2x native  SOFT
+int  2.70 MP drawn  3.89 canvas  6.91 native
+```

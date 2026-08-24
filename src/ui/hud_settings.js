@@ -67,9 +67,22 @@ export class Settings {
     this.pageSettings.appendChild(head);
     this.pageSettings.appendChild(this.bodySettings);
 
+    // Quality is which effects run; render scale is how many pixels they run
+    // over. They are genuinely different knobs — the frame is fragment-bound,
+    // so the second one is usually the bigger lever, and it is the one a
+    // player notices as "why does that look low-resolution".
     this.bodySettings.appendChild(this._group('Picture', [
       this._seg('Quality', QUALITY_TIERS.map((q) => [q[0].toUpperCase() + q.slice(1), q]),
         () => hud.quality, (v) => hud.applyQuality(v)),
+      this._toggle('Auto resolution', () => hud.autoRes(), (v) => hud.applyAutoRes(v)),
+      // "Resolution", not "Render scale": the number a player wants to change
+      // is the one they can see, and what they see is a soft picture. 100% is
+      // one rendered pixel per device pixel — no upscaling at all. It is
+      // expensive, and it is meant to be reachable anyway; the FPS readout
+      // under "View" is the other half of this control.
+      this._range('Resolution', 0.5, 1, 0.05,
+        () => hud.renderScale(), (v) => hud.applyRenderScale(v),
+        (v) => hud.renderScaleLabel(v)),
     ]));
 
     // The car is a picture of itself as much as a setting, so it goes first —

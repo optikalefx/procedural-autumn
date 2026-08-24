@@ -10,7 +10,7 @@ import { posthog } from './posthog.js';
 
 import { Engine } from './core/Engine.js';
 import { Input } from './core/Input.js';
-import { WORLD, SEED, QUALITY_PRESETS } from './world/WorldConfig.js';
+import { WORLD, SEED, QUALITY_PRESETS, AUTOPICK_REFERENCE_RATIO } from './world/WorldConfig.js';
 import { WorldData } from './world/WorldData.js';
 import { PointsOfInterest } from './world/PointsOfInterest.js';
 import { decodeBake, bakeFilename, sourceHash } from './world/bakeFormat.js';
@@ -99,10 +99,19 @@ function pickQuality() {
   const mem = navigator.deviceMemory ?? 8;
   const cores = navigator.hardwareConcurrency ?? 8;
 
-  // Megapixels this display would ask for at the tier's own cap, using the
-  // window rather than the screen — a small window on a big monitor is cheap.
+  // Megapixels this display would ask for, using the window rather than the
+  // screen — a small window on a big monitor is cheap.
+  //
+  // Measured against AUTOPICK_REFERENCE_RATIO, NOT against Ultra's cap. It used
+  // to read Ultra's cap, which was fine while that cap was 1.5 and Ultra was a
+  // tier the picker could reasonably hand out. Ultra now means native (2.0), and
+  // leaving this reading it doubled every megapixel figure and silently walked
+  // the DEFAULT tier on a Retina laptop from high down to medium — a change
+  // nobody asked for, in the name of a tier the picker is no longer going to
+  // choose. The thresholds below were calibrated against 1.5; the yardstick
+  // stays 1.5.
   const cssPx = (window.innerWidth || 1280) * (window.innerHeight || 720);
-  const dpr = Math.min(window.devicePixelRatio || 1, QUALITY_PRESETS.ultra.pixelRatioCap);
+  const dpr = Math.min(window.devicePixelRatio || 1, AUTOPICK_REFERENCE_RATIO);
   const megapixels = (cssPx * dpr * dpr) / 1e6;
 
   let tier = mem >= 8 && cores >= 8 ? 'ultra'
@@ -119,8 +128,28 @@ function pickQuality() {
   else if (megapixels > 3.5) steps = 1;
   if (steps) tier = ORDER[Math.min(ORDER.length - 1, ORDER.indexOf(tier) + steps)];
 
+  // Ultra is opt-in on any display where it means something expensive.
+  //
+  // Ultra is now "one rendered pixel per device pixel", measured at roughly 2x
+  // the frame cost of the tier it replaced. Handing that to any machine that
+  // merely reports 8 cores is the exact failure `pickQuality` exists to prevent
+  // — a player ran this game at 4 fps because a Retina laptop was auto-assigned
+  // a tier tuned at deviceScaleFactor 1. A player who wants native picks it, and
+  // the Resolution slider is there for the finer grip.
+  //
+  // On a 1x display none of that applies: `min(1, 2.0)` is 1.0, so Ultra costs
+  // exactly what it always did there and the picker may still choose it.
+  //
+  // AFTER the pixel-load step-down, not before: run first, this clamps Ultra to
+  // High and then the step-down demotes that AGAIN, stacking two cuts into one.
+  // A 1728x1000 Retina window came out at `medium` where it had always been
+  // `high` — caught by tabulating the picker's real output at three viewports.
+  const clamped = tier === 'ultra' && (window.devicePixelRatio || 1) > 1;
+  if (clamped) tier = 'high';
+
   console.log(`[quality] ${tier} — ${megapixels.toFixed(2)} MP at dpr ${dpr}, ` +
-              `${cores} cores, ${mem} GB` + (steps ? ` (stepped down ${steps} for pixel load)` : ''));
+              `${cores} cores, ${mem} GB` + (steps ? ` (stepped down ${steps} for pixel load)` : '') +
+              (clamped ? ' (ultra is opt-in above dpr 1)' : ''));
   return tier;
 }
 
@@ -343,6 +372,14 @@ async function boot() {
   // `?iscale=` pins it for A/Bs and captures; the adaptive scaler in Engine
   // moves it between the sharpness floor and this preferred ceiling in play.
   engine.onInternalScale = (s) => postfx.setInternalScale(s);
+  // `?pixelratio=` is the manual pin the settings panel drives, exposed as a
+  // param so a capture or an A/B can ask for the same thing without a click.
+  // It is the effective device-pixel ratio; `native` means the display's own.
+  const prParam = params.get('pixelratio');
+  if (prParam) {
+    engine.setResolutionPin(prParam === 'native'
+      ? engine.nativePixelRatio() : parseFloat(prParam));
+  }
   const iscale = parseFloat(params.get('iscale'));
   if (Number.isFinite(iscale)) {
     // Pinned for a capture or an A/B: bypass the sharpness floor and freeze
@@ -350,6 +387,11 @@ async function boot() {
     engine.adaptive = false;
     engine.internalScale = iscale;
     postfx.setInternalScale(iscale);
+  } else if (engine.resolutionPin) {
+    // Pinned, by `?pixelratio=` above or by a setting the HUD restored during
+    // its init. The pin renders the chain at the full canvas, so there is no
+    // starting rung to choose — just make sure the post graph agrees.
+    postfx.setInternalScale(1);
   } else {
     engine.setInternalScale(
       Math.min(1, engine.preferredEffectiveInternalRatio / engine.basePixelRatio),
