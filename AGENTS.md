@@ -88,9 +88,22 @@ node tools/ablate.mjs --port 5187 --seed 20261018 --mode still --ladder
 AUTUMN_URL=http://127.0.0.1:5187 node tools/perf.mjs --seconds 45 --dpr 2
 node tools/shot.mjs --url 'http://127.0.0.1:5187/?seed=20261018&iscale=0.74' \
     --out /tmp/x.png --view drive
+# What a Retina player actually sees, and what the sharp end of it costs:
+node tools/dprtest.mjs --port 5187 --dpr 2 --pixelratio native
+node tools/shot.mjs --dpr 2 --pixelratio native --view vehicle --out /tmp/n.png
 ```
 
 Raw run archives live in `review/perf/*.json`.
+
+**Captures default to deviceScaleFactor 1, and a resolution question cannot be
+asked at 1.** A player on a Retina panel sees the scene drawn at a fraction of
+their display's density and reconstructed up to it (two caps multiply —
+`pixelRatioCap` and `ADAPTIVE_RESOLUTION.preferredEffectiveRatio`; see the
+2026-08-24 section of `docs/PERF_FINDINGS.md`). `shot.mjs` and `dprtest.mjs`
+take `--dpr` for the display and `--pixelratio <n|native>` for the manual pin
+the settings panel drives. Leave both off for ordinary art captures — changing
+them changes the pixel count, so a frame captured with them is not comparable
+to one captured without.
 
 ## How ablate.mjs works, and why every part is there
 

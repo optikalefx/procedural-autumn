@@ -150,6 +150,11 @@ export const VEHICLE = {
 //
 // AdaptiveResolution in Engine scales below these at runtime, so treat them as
 // a ceiling for a fast machine rather than a target.
+//
+// `preferredEffectiveRatio` is optional and overrides
+// ADAPTIVE_RESOLUTION.preferredEffectiveRatio for that tier — it is the
+// effective ratio the adaptive scaler BOOTS at and is allowed to recover back
+// up to. Only Ultra sets it, and Ultra sets it to its own cap. See below.
 export const QUALITY_PRESETS = {
   // Terrain uses the same optimized painter at every tier. A distance ring
   // between two materially different painters was visible while driving, so
@@ -160,13 +165,49 @@ export const QUALITY_PRESETS = {
   // (22% of the Ultra frame) in a paired river run, yet three canonical A/B
   // plates were visually indistinguishable. Authored lighting and contact
   // shadows already provide the cue; spend that budget on sharp pixels.
-  ultra:  { shadowMapSize: 3072, cascades: 4, grassMul: 1.0,  ssao: false, dof: false, volumetric: true,  reflections: true,  pixelRatioCap: 1.5,  treeMul: 1.0, terrainDetailDistance: 0 },
+  //
+  // ── Ultra means native, and nothing less ────────────────────────────────
+  // Ultra used to cap at 1.5 while the scaler preferred 1.25, so on a Retina
+  // panel the top tier drew 39% of the display's pixels and called itself
+  // Ultra. A player reported the result exactly as it reads: the bloomed,
+  // low-frequency parts of the frame (the campfire) looked right and the
+  // thin hard-surface props (a telescope tripod, a chair frame, a radiator
+  // grille) looked low-resolution — the signature of undersampling, at 60 fps
+  // with headroom to spare and no control that could spend it.
+  //
+  // Ultra is now the tier that means "the best this display can show": the cap
+  // is 2.0 and `preferredEffectiveRatio` matches it, so the scaler boots at one
+  // rendered pixel per device pixel and the reconstruction pass switches off
+  // entirely. The scaler still rescues a struggling frame — it just recovers
+  // back to native instead of to 1.25.
+  //
+  // 2.0 rather than uncapped: it is native on every Retina-class display, and
+  // it is a real ceiling for the dpr-3 panels where "native" would be 9x the
+  // pixels of a 1x display. Below native the honest lever is a lower tier.
+  //
+  // This makes Ultra roughly 2x the frame cost it was (measured: 2.56x the
+  // pixels for 1.97x the frame time), which is why `pickQuality` now rarely
+  // auto-selects it on a Retina laptop — its pixel-load step-down reads this
+  // cap. That is the intended shape: Ultra is a deliberate choice, not a
+  // default handed to any 8-core machine.
+  ultra:  { shadowMapSize: 3072, cascades: 4, grassMul: 1.0,  ssao: false, dof: false, volumetric: true,  reflections: true,  pixelRatioCap: 2.0,  preferredEffectiveRatio: 2.0, treeMul: 1.0, terrainDetailDistance: 0 },
   high:   { shadowMapSize: 3072, cascades: 3, grassMul: 0.8,  ssao: false, dof: false, volumetric: true,  reflections: true,  pixelRatioCap: 1.35, treeMul: 0.9, terrainDetailDistance: 0 },
   medium: { shadowMapSize: 2048, cascades: 3, grassMul: 0.55, ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.15, treeMul: 0.7, terrainDetailDistance: 0 },
   low:    { shadowMapSize: 1024, cascades: 2, grassMul: 0.3,  ssao: false, dof: false, volumetric: false, reflections: false, pixelRatioCap: 1.0,  treeMul: 0.5, terrainDetailDistance: 0 },
 };
 
 export const QUALITY_TIERS = Object.freeze(Object.keys(QUALITY_PRESETS));
+
+// The yardstick `pickQuality` measures a display's pixel load against.
+//
+// It is a fixed number rather than a tier's cap on purpose. Its thresholds
+// (3.5 MP / 6.0 MP) were calibrated when Ultra capped at 1.5, and they describe
+// how much a machine is being asked to draw — not what the most expensive tier
+// aspires to. Ultra's cap moved to 2.0 when Ultra came to mean native; reading
+// the cap here would have doubled every figure and demoted the DEFAULT tier on
+// every Retina display. Change this only alongside re-measuring those
+// thresholds.
+export const AUTOPICK_REFERENCE_RATIO = 1.5;
 
 // Dynamic resolution is a quality fallback, not the default look. These are
 // effective device pixels per CSS pixel after internal scaling, so the policy
@@ -193,5 +234,9 @@ export const ADAPTIVE_RESOLUTION = Object.freeze({
   // recovery step happen; the 1.08 downscale threshold prevents oscillation.
   upscaleHeadroom: 1.0,
   maxDownRungs: 2,
-  effectiveRungs: Object.freeze([1.35, 1.25, 1.15, 1.05, 0.98]),
+  // 1.75 and 1.5 exist for Ultra: booting at a native 2.0, the next rung down
+  // used to be 1.35, which is a 46% cut in pixels for a frame that may be a
+  // few percent over budget. Rungs above a tier's ceiling are filtered out in
+  // `_adapt`, so these two are invisible to High, Medium and Low.
+  effectiveRungs: Object.freeze([1.75, 1.5, 1.35, 1.25, 1.15, 1.05, 0.98]),
 });

@@ -53,6 +53,9 @@ export class HUD extends System {
     this.invertY = false;
     this.showMap = true;
     this.hudOpacity = 1;
+    // null = let the adaptive scaler decide; a number = pinned, as a fraction
+    // of this display's native pixel density. See `renderScale`.
+    this.renderPin = null;
     this.trip = 0;
     this.found = 0;
     this.marks = [];
@@ -69,6 +72,7 @@ export class HUD extends System {
         this.hudOpacity = typeof s.hudOpacity === 'number' ? s.hudOpacity : 1;
         this.showMap = s.showMap !== false;
         this._seenHint = !!s.seenHint;
+        this.renderPin = typeof s.renderPin === 'number' ? s.renderPin : null;
       }
     } catch { /* defaults are fine */ }
   }
@@ -136,6 +140,11 @@ export class HUD extends System {
     this._buildLandmarks();
     this._bindKeys();
     this.applyHudMode(this.hudOpacity);
+    // A pin restored from a previous session goes in NOW, undebounced, while
+    // the loading screen is still up — main.js checks `engine.resolutionPin`
+    // before it sets the automatic starting rung, so this wins rather than
+    // being quietly overwritten one line later.
+    if (this.renderPin) this._commitRenderScale(true);
 
     window.__hud = this;
   }
@@ -375,13 +384,94 @@ export class HUD extends System {
     this._save();
   }
 
+  // ── render resolution ─────────────────────────────────────────────────────
+  // Two ceilings decide how many pixels the scene is actually drawn with: the
+  // tier's `pixelRatioCap` (how big the canvas is) and the adaptive scaler's
+  // internal rung (what fraction of that canvas the scene renders into). They
+  // multiply, and on a Retina panel the product lands well under native — sharp
+  // enough for the soft, bloomy parts of the frame and visibly not enough for
+  // thin geometry. This is the manual override for players who would rather
+  // spend the frame time. Engine.setResolutionPin has the full argument.
+  //
+  // Stored as a FRACTION OF NATIVE rather than an absolute pixel ratio, so the
+  // setting means the same thing when the window moves between a 1x monitor and
+  // a 2x laptop panel: "as sharp as this screen goes", not "1.5, whatever that
+  // happens to be here".
+
+  /** Where the slider sits: the pin if pinned, else where the scaler has landed. */
+  renderScale() {
+    if (this.renderPin) return this.renderPin;
+    const e = this.ctx.engine;
+    const native = e?.nativePixelRatio?.() ?? (window.devicePixelRatio || 1);
+    const eff = e?.effectivePixelRatio?.() ?? native;
+    return Math.max(0.5, Math.min(1, eff / native));
+  }
+
+  /** The megapixels a given fraction of native asks for, for the slider label. */
+  renderScaleLabel(v) {
+    const native = this.ctx.engine?.nativePixelRatio?.() ?? (window.devicePixelRatio || 1);
+    const px = window.innerWidth * window.innerHeight * (native * v) ** 2;
+    return `${Math.round(v * 100)}%  ${(px / 1e6).toFixed(1)} MP`;
+  }
+
+  autoRes() { return !this.renderPin; }
+
+  applyAutoRes(v) {
+    // Turning auto OFF pins wherever the scaler currently is, so the control
+    // hands over without the picture jumping.
+    this.renderPin = v ? null : this.renderScale();
+    this._commitRenderScale();
+    this.settings?.sync();
+  }
+
+  applyRenderScale(v) {
+    this.renderPin = Math.max(0.5, Math.min(1, v));
+    this._commitRenderScale();
+    this.settings?.sync();
+  }
+
+  /**
+   * Push the pin into the engine, debounced.
+   *
+   * Committing resizes the drawing buffer, measured at 450-2500 ms on
+   * ANGLE/Metal. A slider drag fires an input event per frame, so applying
+   * every one of them would freeze the game for the length of the drag; the
+   * label under the slider updates live, the pixels follow when the hand stops.
+   */
+  _commitRenderScale(immediate = false) {
+    this._save();
+    clearTimeout(this._resTimer);
+    const apply = () => {
+      const e = this.ctx.engine;
+      if (!e?.setResolutionPin) return;
+      e.setResolutionPin(this.renderPin ? this.renderPin * e.nativePixelRatio() : NaN);
+      if (!immediate) {
+        this.toast(this.renderPin
+          ? `Resolution ${this.renderScaleLabel(this.renderPin)}`
+          : 'Resolution auto');
+        posthog.capture('render_scale_changed', {
+          render_scale: this.renderPin, quality_tier: this.quality,
+        });
+      }
+      this.settings?.sync();
+    };
+    if (immediate) apply();
+    else this._resTimer = setTimeout(apply, 260);
+  }
+
   /**
    * Live quality change.
    *
-   * `onQuality(preset)` is part of the System interface, so peers opt in by
-   * implementing it. Engine's own resize handler re-reads `engine.preset` for
-   * the pixel-ratio cap, so that has to move too — see the note filed in
-   * docs/INTEGRATION_REQUESTS.md asking for a proper `engine.setQuality()`.
+   * `Engine.setQuality` owns the whole change — pixel-ratio cap, the tier's
+   * preferred resolution rung, the resize, and the fan-out to every system that
+   * implements `onQuality` (registered in main.js). This used to be
+   * reimplemented here: it assigned `engine.quality`/`engine.preset` by hand,
+   * called `setPixelRatio` itself and then fanned out a second time. That was
+   * survivable while every tier shared one resolution preference and stopped
+   * being survivable when the tier started deciding it — picking Ultra kept
+   * whatever rung the previous tier had settled on, so the tier that is
+   * supposed to mean "native" quietly did not. docs/INTEGRATION_REQUESTS.md
+   * asked for exactly this; the request is now met.
    */
   applyQuality(q) {
     const preset = QUALITY_PRESETS[q];
@@ -390,16 +480,18 @@ export class HUD extends System {
     this.quality = q;
     ctx.quality = q;
     ctx.preset = preset;
-    if (ctx.engine) { ctx.engine.quality = q; ctx.engine.preset = preset; }
-    try {
-      ctx.renderer.setPixelRatio(Math.min(window.devicePixelRatio, preset.pixelRatioCap));
-      window.dispatchEvent(new Event('resize'));
-    } catch { /* renderer is not ours to guarantee */ }
-    for (const [name, s] of Object.entries(ctx.systems ?? {})) {
-      try { s.onQuality?.(preset); } catch (e) { console.warn(`[hud] ${name}.onQuality threw`, e); }
-    }
-    for (const p of [ctx.postfx, ctx.lighting, ctx.terrain]) {
-      try { p?.onQuality?.(preset); } catch { /* optional hook */ }
+    if (ctx.engine?.setQuality) {
+      ctx.engine.setQuality(q);
+    } else {
+      // Contexts that build a partial ctx without an Engine (the gallery, some
+      // harnesses) still get the tier change; they just have no renderer for it
+      // to resize.
+      for (const [name, s] of Object.entries(ctx.systems ?? {})) {
+        try { s.onQuality?.(preset); } catch (e) { console.warn(`[hud] ${name}.onQuality threw`, e); }
+      }
+      for (const p of [ctx.postfx, ctx.lighting, ctx.terrain]) {
+        try { p?.onQuality?.(preset); } catch { /* optional hook */ }
+      }
     }
     this.toast(`${q[0].toUpperCase()}${q.slice(1)} quality`);
     posthog.capture('quality_changed', { quality_tier: q });
@@ -464,7 +556,7 @@ export class HUD extends System {
     try {
       localStorage.setItem(STORE, JSON.stringify({
         invertY: this.invertY, hudOpacity: this.hudOpacity, showMap: this.showMap,
-        seenHint: !!this._seenHint,
+        seenHint: !!this._seenHint, renderPin: this.renderPin,
       }));
     } catch { /* nothing important lost */ }
   }
