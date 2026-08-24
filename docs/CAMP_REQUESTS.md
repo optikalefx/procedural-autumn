@@ -425,3 +425,58 @@ time-of-day invariant: measured across day and dusk, the refractor's tube goes
 129 -> 129 and the reflector's 146 -> 128, while the meadow beside them drops
 172 -> 46. At `campdusk` the telescope out-values the campfire from a hundred
 metres. Anything pale in this camp will be doing the same thing.
+
+---
+
+## Camp.js → ground: the layout now runs first, and the tent has its own pad (2026-08-24)
+
+**Author:** Camp.js · closes the ordering half of the ground's first request above.
+
+The player, on a night capture of a compact camp: *"looks like it's possible for
+grass to be inside the tent when it spawns. Is there a way to clear ground
+objects, like grass rocks etc under the tent so this never happens?"*
+
+They are right, and it was not rare. `tools/_scratch/tentgrass.mjs` samples
+`campCoverAt` over the disc the tent's fabric actually covers, across 26
+pitched camps:
+
+| camp | median share of the tent floor left in grass | worst cover within 0.7 m of the tent's centre |
+|---|---|---|
+| full (R 5.8) | 14% | 0.32 |
+| compact (R 3.4) | 27% | 0.94 |
+
+Every camp measured had standing grass somewhere under its tent. The cause is
+that the clearing's radius arithmetic — `CAMP_RADIUS`'s own note, which places
+the tent at 0.62 R so it stands on bare ground — is done against the NOMINAL
+radius, and the drawn boundary is wobbled by up to -0.163 of it. And the
+compact camp cannot be fixed by tuning at all: its tent is held out at
+`TENT_FIRE_CLEAR` = 2.20 m and its full cover starts at 2.17 m.
+
+Three changes, all of them in the direction the ground asked for:
+
+1. **The layout runs before `ground.build()`.** That is the first bullet of the
+   ground's request; the `items` array is available at the call site now, so
+   taking the rest of it — real compaction under the real tent instead of a
+   wobbled annulus at 0.34 R — is a signature change and no longer an ordering
+   problem. The rng ordering this inverts was deliberate and inverting it is
+   strictly safer: `camp_ground` can no longer re-roll the layout whatever it
+   draws.
+2. **The tent carries a clearing of its own** — `uCampPads`, one disc per camp
+   slot, published beside `uCampSites` and read by the same `campCover()`. Its
+   wobble may only push the boundary outward, because a pad is a guarantee and
+   a 26 cm inward lobe on a 1.6 m disc is grass back inside the tent. Measured
+   after: 0.000 cover over the fabric disc, on all 26 camps.
+3. **The dirt follows it for free**, exactly as camp_ground's decision 1
+   promises — it bisects `campCoverAt` for its own outline, and `campCoverAt`
+   now knows about the pad. The compact camp's disc grows a shallow lobe under
+   the tent, which is what trodden ground under a tent looks like.
+
+Litter is passed the pads explicitly (`build(..., pads)`) because it is
+geometry this file scatters rather than a field anything reads, and a twig
+under a tent floor is the same defect as a blade of grass under it.
+
+**Rocks**, the other half of what the player asked about: the layout already
+walks the tent around them, but `_obstacles` only collected instances of
+`size >= 0.30` — a radius, so it was blind to everything from 30 to 60 cm
+across, which is the band that is invisible on open dirt and unmistakable under
+a tent floor. Now 0.15. Anything smaller is mostly planted in the ground.
