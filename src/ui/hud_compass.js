@@ -139,7 +139,8 @@ export class Compass {
       // labels across a 620 px strip collide into an unreadable smear the
       // moment two of them share a bearing, and five of the six are answering
       // a question nobody asked.
-      const label = off < 2 && Math.abs(delta) < 24 ? distanceLabel(m.dist) : '';
+      // `noLabel` is the paw's (HUD.js explains why an animal gets no range).
+      const label = !m.noLabel && off < 2 && Math.abs(delta) < 24 ? distanceLabel(m.dist) : '';
       if (s._label !== label) { s._label = label; s.dist.textContent = label; }
       const near = Math.abs(delta) < 9 && off < 2;
       if (near !== s._near) { s._near = near; s.node.classList.toggle('pa-near', near); }

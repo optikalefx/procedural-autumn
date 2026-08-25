@@ -545,6 +545,68 @@ export class Wildlife extends System {
   }
 
   /**
+   * The nearest animal worth hinting at, or null — what puts the paw print on
+   * the compass strip.
+   *
+   * "Worth hinting at" is three things:
+   *
+   *  · Inside its own species' `hintDist` (animal_species.js, in the brain
+   *    block beside the other distance thresholds). One number per species
+   *    rather than one for the game, because the bands they describe are not
+   *    the same size: a deer minds you from 108 m and a bear from 66 m, so a
+   *    single radius would either hint at deer far too late or at bears far
+   *    too early. Every one of them sits inside its species' spawn ring, which
+   *    is the real ceiling — outside that there is no animal to pin.
+   *
+   *  · Not already in the logbook for this streamed-in lifetime. `_statSeen`
+   *    is Stats' flag, set when an animal comes within 20 m and into frame,
+   *    and reusing it is the point: the paw is the lead-in to that rule, so it
+   *    should go out at exactly the moment the sighting is credited. A paw
+   *    still burning over a deer the player is looking straight at is the
+   *    HUD nagging about something already found.
+   *
+   *  · Nearest first, and only one is ever returned. A herd of four deer is
+   *    one thing to go and look at, not four pins stacked on one bearing.
+   *
+   * Measured from where the player actually is rather than from the camera,
+   * for the reason `_anchor` gives in HUD.js: the chase boom sits several
+   * metres back, and the brain's own thresholds are measured from the camper
+   * too, so this keeps the paw and the animal's nerves on the same ruler.
+   *
+   * Walks the live pool, which is capped at 32 animals across all five species
+   * (the `live` column of CFG). HUD calls it from `_refreshMarks` at 4 Hz, and
+   * Stats does the same walk at 6 Hz for the logbook, so this is a rounding
+   * error on a pass the frame already pays for.
+   */
+  nearestHint(x, z) {
+    if (!this.enabled || !this.pool) return null;
+    let best = null, bestD2 = Infinity;
+    for (const key of this.keys) {
+      // SPECIES[key].brain, not the CFG table above: CFG is this file's
+      // streaming config (spawn radii, densities) and the distance thresholds
+      // all live together in the brain block, which is where this one belongs.
+      const hint = SPECIES[key].brain?.hintDist;
+      if (!hint) continue;
+      const r2 = hint * hint;
+      for (const per of this.pool[key]) {
+        for (const a of per) {
+          if (!a.active || a._statSeen) continue;
+          const p = a.brain?.pos;
+          if (!p) continue;
+          // Flat distance, matching Stats and the brain: an animal on the bank
+          // below a clifftop track is not far away in the sense the player
+          // means.
+          const dx = p.x - x, dz = p.z - z;
+          const d2 = dx * dx + dz * dz;
+          if (d2 > r2 || d2 >= bestD2) continue;
+          bestD2 = d2; best = p;
+        }
+      }
+    }
+    return best ? { x: best.x, z: best.z, dist: Math.sqrt(bestD2) } : null;
+  }
+
+  /**
    * How much distance-silhouette the hides should be running, as a scale on
    * view depth. See the SIL block in animal_species.js for why the treatment
    * is depth-denominated in the first place and why that stops being the right

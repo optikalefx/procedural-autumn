@@ -1359,6 +1359,18 @@ export const SPECIES = {
       // habitat the site was chosen for.
       standoff: 6.5,
       alertDist: 62, fleeDist: 28, calmDist: 95, noticeDist: 108,
+      // ── the paw print on the compass ────────────────────────────────────
+      // The outermost band, and the only one the player sees rather than the
+      // animal. HUD.nearestHint pins a paw on the compass strip when an animal
+      // is inside its own `hintDist`, which is set one step outside
+      // `noticeDist` so the hint always arrives while the animal is still calm
+      // and unaware — a hint that fires after the deer has already stood up is
+      // reporting a thing you can see for yourself.
+      //
+      // Inside the 172 m spawn ring by a wide margin, which it has to be:
+      // outside it there is no deer to pin. That is the real ceiling on this
+      // number for every species, and it is why the squirrel's is so short.
+      hintDist: 130,
       freezeTime: [1.0, 2.6], fleeTime: [3.5, 7.0],
       grazeTime: [6, 20], idleTime: [2.5, 7], walkTime: [4, 12],
       herd: [1, 4], herdRadius: 9, wanderRadius: 34,
@@ -1416,6 +1428,10 @@ export const SPECIES = {
       // the far bank is already the backdrop, so it needs less of a nudge.
       standoff: 4.0,
       alertDist: 24, fleeDist: 11, calmDist: 44, noticeDist: 66,
+      // A bear lets you get far closer than a deer before it minds, so its
+      // hint band is shorter in absolute metres while sitting the same one
+      // step outside `noticeDist`. See the deer's note.
+      hintDist: 79,
       freezeTime: [1.4, 3.0], fleeTime: [2.5, 5.0],
       grazeTime: [10, 26], idleTime: [3, 9], walkTime: [10, 30],
       herd: [1, 1], herdRadius: 0, wanderRadius: 60,
@@ -1454,6 +1470,10 @@ export const SPECIES = {
       // where this would matter, and cover is the whole point of a rabbit.
       standoff: 0,
       alertDist: 36, fleeDist: 26, calmDist: 45,
+      // No `noticeDist` to step outside of (see the note above it), so this is
+      // set off `alertDist` instead — far enough that the paw beats the bolt,
+      // near enough to stay inside the 96 m spawn ring.
+      hintDist: 54,
       freezeTime: [0.15, 0.65], fleeTime: [1.6, 3.4],
       grazeTime: [4, 12], idleTime: [1.5, 5], walkTime: [1.5, 5],
       herd: [1, 2], herdRadius: 4, wanderRadius: 14,
@@ -1502,6 +1522,9 @@ export const SPECIES = {
       // long watch band; the animal should be moving for most of the encounter.
       standoff: 4.5,
       alertDist: 50, fleeDist: 22, calmDist: 76, noticeDist: 86,
+      // One step outside `noticeDist`, and comfortably inside the 140 m spawn
+      // ring. See the deer's note.
+      hintDist: 103,
       freezeTime: [0.7, 1.8], fleeTime: [3.0, 6.0],
       grazeTime: [5, 14], idleTime: [2, 6], walkTime: [4, 10],
       // Solitary, almost always. A pair is a treat.
@@ -1547,6 +1570,11 @@ export const SPECIES = {
       // the whole point of it.
       standoff: 0,
       alertDist: 26, fleeDist: 18, calmDist: 34,
+      // The shortest band in the game, and it is the 72 m spawn ring that
+      // decides it rather than the squirrel's nerves: a squirrel further out
+      // than this does not exist to be hinted at. Off `alertDist`, as the
+      // rabbit's is.
+      hintDist: 39,
       freezeTime: [0.1, 0.45], fleeTime: [1.0, 2.4],
       grazeTime: [3, 9], idleTime: [1, 4], walkTime: [1, 4],
       herd: [1, 2], herdRadius: 3, wanderRadius: 10,

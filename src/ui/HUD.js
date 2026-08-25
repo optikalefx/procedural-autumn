@@ -52,6 +52,12 @@ const WATERFALL_NEAR = 1000;
 // The camp and camper pins stand down when you are basically standing at them:
 // a marker for "here" swings across the whole strip with every step.
 const PIN_HIDE = 30;
+// The paw stands down much later than the camp does. Its whole job is "there
+// is something over there", and an animal you have not been credited for at
+// fifteen metres is the case where that is most worth saying — turn around,
+// it is right behind you. Only inside this does the bearing stop meaning
+// anything, for the same reason PIN_HIDE exists at all.
+const PAW_HIDE = 8;
 
 export class HUD extends System {
   constructor(ctx) {
@@ -257,6 +263,19 @@ export class HUD extends System {
     if (veh?.position && veh.controlsHeldBy != null) {
       this._pin(marks, 'car', veh.position.x, veh.position.z, here);
     }
+    // ── the paw ─────────────────────────────────────────────────────────────
+    // One animal, the nearest that is inside its own species' hint band and
+    // not yet in the logbook. Wildlife owns both the walk and the thresholds
+    // (see `nearestHint`); all this end knows is where to point.
+    //
+    // It carries no distance label. Every other pin on this strip is a fixed
+    // landmark, and telling you a waterfall is 700 m away is the invitation
+    // the compass header describes. An animal is not a landmark: it moves, it
+    // can be spooked, and a live range readout to one would be the closest
+    // thing to a waypoint in a game that deliberately has none. Bearing is the
+    // hint; the finding is yours.
+    const paw = this.ctx.systems?.wildlife?.nearestHint?.(here.x, here.z);
+    if (paw) this._pin(marks, 'paw', paw.x, paw.z, here, PAW_HIDE, true);
     this.marks = marks;
   }
 
@@ -271,11 +290,14 @@ export class HUD extends System {
     return this.vehicle()?.position ?? cam;
   }
 
-  _pin(marks, kind, x, z, cam) {
+  _pin(marks, kind, x, z, cam, hide = PIN_HIDE, noLabel = false) {
     const dx = x - cam.x, dz = z - cam.z;
     const dist = Math.hypot(dx, dz);
-    if (dist < PIN_HIDE) return;
-    marks.push({ kind, x, z, dist, bearing: (Math.atan2(dx, -dz) * 180) / Math.PI, found: false });
+    if (dist < hide) return;
+    marks.push({
+      kind, x, z, dist, noLabel,
+      bearing: (Math.atan2(dx, -dz) * 180) / Math.PI, found: false,
+    });
   }
 
   // ── input ─────────────────────────────────────────────────────────────────

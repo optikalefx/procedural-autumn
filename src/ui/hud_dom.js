@@ -29,6 +29,21 @@ export const ICON = {
   peak: S('<path d="M2 19l7-12 5 8 3-4 5 8z"/>'),
   // A drop over a lip: the lip, the sheet, the pool.
   waterfall: S('<path d="M4 5h6M7 5v8M4 19h16M12 8c1.6 1.4 1.6 3.6 0 5"/><path d="M17 6c1.6 1.4 1.6 3.6 0 5"/>'),
+  // A pad and three toes, filled rather than stroked — the one glyph in this
+  // set that breaks the rule above it, and it has to.
+  //
+  // The disc is 1.55em and the glyph inside it 0.85em, so this draws at about
+  // fourteen pixels. A paw is a group of blobs with gaps in it, and at that
+  // size a stroked outline eats the gaps: the first cut had four stroked toes
+  // and rendered as a single white smudge with a ring under it. Filled shapes
+  // hold their edges, and three toes instead of four buys the ~2 units of
+  // clear space between them that survives being scaled to fourteen pixels.
+  paw: S('<g fill="currentColor" stroke="none">' +
+    '<ellipse cx="5.6" cy="8.0" rx="2.2" ry="2.4"/>' +
+    '<ellipse cx="12" cy="6.0" rx="2.3" ry="2.6"/>' +
+    '<ellipse cx="18.4" cy="8.0" rx="2.2" ry="2.4"/>' +
+    '<ellipse cx="12" cy="16.6" rx="5.4" ry="4.3"/>' +
+    '</g>'),
   // Two banks and the water between them.
   river: S('<path d="M3 9c3-2 5 2 8 0s5-2 8 0M3 15c3-2 5 2 8 0s5-2 8 0"/>'),
   // A horizon seen from above: what a vista actually is.
