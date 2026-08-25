@@ -1178,8 +1178,25 @@ export class Vehicle extends System {
     // Dipped, not extinguished. A camper parked at night with its lamps dead
     // reads as broken down rather than as camped, and the fire only lights the
     // few metres around itself.
+
+    // ── daylight ceiling ─────────────────────────────────────────────────
+    //
+    // `k` says the lamps are on. It does not say how much light the valley
+    // already has, and between about 17:00 and 18:30 the two disagree: the
+    // mix is most of the way up while the sun is still above the skyline and
+    // the meadow is sitting at golden-hour exposure. A spot cut for a dark
+    // valley then lands on ground already near the top of the range and clips
+    // it to white. It is the park-brake hotspot again, only with the camper
+    // moving, where the dip cannot help.
+    //
+    // So scale the beam by how much skylight is left: full 190 only once the
+    // sun is properly under the horizon, which is where that number was
+    // measured in the first place. Through the crossover the lamps read as
+    // lamps throwing a pool rather than as a floodlight bleaching the grass.
+    const beamCeil = lerp(1, 0.45, smoothstep(-0.06, 0.10, sunY));
+
     this._parkDip = damp(this._parkDip, this.brakeHold ? 1 : 0, 1.5, dt);
-    const beam = k * lerp(1, 0.06, this._parkDip);
+    const beam = k * beamCeil * lerp(1, 0.06, this._parkDip);
     for (const l of this.headlights) l.intensity = beam * 190;
     const m = this.materials;
     m.lensHead.emissiveIntensity = lerp(0.30, 2.4, k) * lerp(1, 0.42, this._parkDip);
