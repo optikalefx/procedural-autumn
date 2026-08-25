@@ -13,14 +13,17 @@
 //  attribute carries { flap phase, flap rate, flap amplitude, wing fold } and
 //  the CPU only ever writes a matrix and four floats per bird.
 //
-//  The species table is a table because the eagle is not meant to stay alone:
-//  an owl, a heron, a red-tail are each "a geometry builder plus a row of
-//  numbers" away. The behaviour (perch high → pick a tree in an area at
-//  random → fly to it → perch) is shared machinery.
+//  The species table is a table because the eagle is not meant to stay alone,
+//  and it hasn't: the heron and the flamingo (models in water_birds.js) are
+//  rows with habitat: 'water', whose "perch" is a patch of shallow water found
+//  through the world's hydro queries instead of a treetop. The behaviour
+//  (settle → pick a site in an annulus at random → fly to it → settle) is
+//  shared machinery either way.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, smoothstep, damp, dampAngle, mulberry32 } from '../core/MathUtils.js';
 import { SPECIES as TREE_SPECIES } from '../vegetation/tree_species.js';
+import { buildFlamingoGeometry, buildBlueHeronGeometry } from './water_birds.js';
 
 // ── plumage ──────────────────────────────────────────────────────────────────
 //
@@ -244,6 +247,10 @@ export function treeBirdMaterial(shared) {
     ` + shader.vertexShader.replace(
       '#include <begin_vertex>',
       /* glsl */`#include <begin_vertex>
+      // aWing bands: 0 body, <0.105 tail fan, 0.105..0.111 legs, 0.111..0.119
+      // neck, >=0.12 wing spanwise fraction. The leg and neck bands belong to
+      // the waders (water_birds.js) and pivot on shared authored points; the
+      // eagle has no vertices in either.
       if ( abs( aWing ) > 0.001 && abs( aWing ) < 0.105 ) {
         // Tail feather: aWing encodes the feather angle (x5.1). Fold swings
         // each feather toward the centreline about the tail root, closing the
@@ -255,6 +262,44 @@ export function treeBirdMaterial(shared) {
           float tx = transformed.x, tz = transformed.z + 0.14;
           transformed.x = tx * ca + tz * sa;
           transformed.z = -tx * sa + tz * ca - 0.14;
+        }
+      }
+      else if ( abs( aWing ) > 0.001 && abs( aWing ) < 0.111 ) {
+        // Leg. Standing (fold 1) it hangs from the hip; in flight it trails
+        // straight back. The negative-side leg also draws up toward the belly
+        // when standing — shortened toward the hip rather than bent, which at
+        // this fidelity reads as the tucked leg of the one-legged stance.
+        float s = aWing > 0.0 ? 1.0 : -1.0;
+        float fold = aPose.w;
+        float py = -0.015, pz = -0.030;
+        float tuck = s < 0.0 ? fold : 0.0;
+        if ( tuck > 0.001 ) {
+          float k = 1.0 - 0.72 * tuck;
+          transformed.y = py + ( transformed.y - py ) * k;
+          transformed.z = pz + ( transformed.z - pz ) * k;
+        }
+        // The tucked stub also angles back, so it reads as a folded shank
+        // against the belly rather than a shortened leg pointing at the water.
+        float ang = ( 1.0 - fold ) * 1.35 + tuck * 0.9;
+        float ca = cos( ang ), sa = sin( ang );
+        float ry = transformed.y - py, rz = transformed.z - pz;
+        transformed.y = py + ry * ca - rz * sa;
+        transformed.z = pz + ry * sa + rz * ca;
+      }
+      else if ( abs( aWing ) > 0.001 && abs( aWing ) < 0.119 ) {
+        // Neck, graded 0 at the root to 1 at the bill tip. The authored pose
+        // is the raised standing neck; in flight each vertex pitches forward
+        // about the root by its own grade, so the curve unrolls into the
+        // extended flight neck rather than hinging like a lamp arm.
+        float wn = clamp( ( abs( aWing ) - 0.1115 ) / 0.007, 0.0, 1.0 );
+        float ext = 1.0 - aPose.w;
+        if ( ext > 0.001 ) {
+          float py = 0.045, pz = 0.10;
+          float ang = ext * 1.25 * wn;
+          float ca = cos( ang ), sa = sin( ang );
+          float ry = transformed.y - py, rz = transformed.z - pz;
+          transformed.y = py + ry * ca - rz * sa;
+          transformed.z = pz + ry * sa + rz * ca;
         }
       }
       else if ( abs( aWing ) > 0.001 ) {
@@ -316,11 +361,12 @@ export const BALD_EAGLE_POSES = ['glide', 'perched'];
  * The pose attribute is baked per-vertex; time is frozen mid-upstroke.
  */
 export function buildBaldEagle(rnd, opts = {}) {
-  const pose = opts.pose ?? opts.colorway ?? 'glide';
+  // Spelt out against opts.pose so the gallery's option probe sees a
+  // two-value enum and deals each pose its own card (the waders' trick).
+  const perched = opts.pose === 'perched' && opts.pose !== 'glide';
   const geo = buildBaldEagleGeometry();
   const n = geo.getAttribute('position').count;
   const arr = new Float32Array(n * 4);
-  const perched = pose === 'perched';
   for (let i = 0; i < n; i++) {
     arr[i * 4] = 0.7;                       // phase → wings a touch raised
     arr[i * 4 + 1] = 0.0;                   // rate 0: frozen for the thumbnail
@@ -329,9 +375,13 @@ export function buildBaldEagle(rnd, opts = {}) {
   }
   geo.setAttribute('aPose', new THREE.Float32BufferAttribute(arr, 4));
   const mesh = new THREE.Mesh(geo, treeBirdMaterial({ time: { value: 0 } }));
-  mesh.scale.setScalar(2.05);
-  if (perched) { mesh.rotation.x = -0.85; mesh.position.y = 0.9; }
-  else mesh.position.y = 1.2;
+  // 4.1 m span — 2x life, matching TREE_BIRD_SPECIES. Both stand-off heights
+  // are fractions of the span rather than fixed metres, so a future scale
+  // change does not leave the bird buried in the studio floor.
+  const SPAN = 4.1;
+  mesh.scale.setScalar(SPAN);
+  if (perched) { mesh.rotation.x = -0.85; mesh.position.y = SPAN * 0.44; }
+  else mesh.position.y = SPAN * 0.59;
   const g = new THREE.Group();
   g.add(mesh);
   void rnd;
@@ -344,7 +394,17 @@ export function buildBaldEagle(rnd, opts = {}) {
 //   chance    when a bird leaves the streamed area, the odds it comes back
 //             soon rather than going dormant for minutes — the valley should
 //             sometimes simply not have an eagle in it
-//   wingspan  metres; scale IS wingspan (geometry span is 1.0)
+//   wingspan  metres; scale IS wingspan (geometry span is 1.0).
+//
+//             The two waders are deliberately drawn at 3x life: a real great
+//             blue heron is a 2 m span and 1.1 m tall, and at that size it is
+//             a grey smudge on a shadowed bank that nobody ever notices. These
+//             are landmarks, so they are sized to read as landmarks. Two other
+//             numbers move with it and are not free to leave behind — `wade`,
+//             because the depth a bird will stand in is a fraction of its leg
+//             and a 3 m bird ankle-deep in a puddle looks beached; and
+//             `flapHz`, because beat frequency falls as span grows (roughly
+//             1/sqrt) and a 6 m wing beating at a 2 m wing's rate buzzes.
 //   perchS    seconds on a perch before moving on
 //   hop       metres to the next tree, picked at random in that annulus
 //   cruise    m/s in level flight
@@ -352,20 +412,85 @@ export function buildBaldEagle(rnd, opts = {}) {
 //             most of what distinguishes it from the corvid flocks overhead
 //   minTreeH  metres; only mature trees hold a two-metre bird
 //   startle   metres; a vehicle closer than this flushes a perched bird
+//
+// Waders (habitat: 'water', models in water_birds.js) swap the tree fields
+// for water ones:
+//   wade       metres of standing-water depth a bird will stand in. The cap
+//              is what keeps the belly above the surface at full leg length.
+//   minSpan    metres of hydro `span` (how OPEN the water is) the site needs —
+//              flamingos want a lake margin, not a brook.
+//   footY      unit-space foot height (negative); -footY * scale is how far
+//              the body origin stands above the bed.
+//   perchPitch standing pitch — a wader stands level, not eagle-upright.
+//   dip        metres of takeoff drop. An eagle FALLS off its tree onto its
+//              wings; a wader starts half a metre over the water and springs.
+//   cruiseUp   metres above the higher endpoint the flight cruises.
+//   flock      spawns and lands near others of its kind when it can.
+//   colony     if set, this species lives on exactly this many islands in the
+//              whole valley and NOWHERE else — no mainland fallback. A bird
+//              you can meet anywhere is scenery; one that lives on two known
+//              islands is somewhere to go, which is the same reason a perched
+//              eagle is written up as a landmark. See _ensureIslands.
 export const TREE_BIRD_SPECIES = [
   {
     key: 'baldEagle',
     geometry: buildBaldEagleGeometry,
     live: 4,
     chance: 0.65,
-    wingspan: [1.85, 2.25],
+    // 2x life. Less than the waders' 3x on purpose: an eagle is already read
+    // against a treetop, which gives it a scale reference and a silhouette
+    // against sky that a bird standing on a flat shore never gets.
+    wingspan: [3.7, 4.5],
     perchS: [24, 75],
     hop: [55, 150],
     cruise: [11.0, 15.0],
-    flapHz: [2.2, 2.8],
+    flapHz: [1.55, 2.0],
     flapAmp: [0.72, 0.95],
     minTreeH: 11,
     startle: 26,
+  },
+  {
+    key: 'heron',
+    geometry: buildBlueHeronGeometry,
+    habitat: 'water',
+    live: 3,
+    chance: 0.6,
+    // 3x life size, on purpose — see the note over TREE_BIRD_SPECIES.
+    wingspan: [5.25, 6.0],
+    perchS: [30, 90],          // a heron is a statue with a licence to fish
+    hop: [40, 120],
+    cruise: [8.0, 11.0],
+    flapHz: [0.85, 1.1],       // slow, deep, unhurried — half the read
+    flapAmp: [0.62, 0.85],
+    startle: 30,
+    wade: [0.18, 1.14],
+    footY: -0.271,
+    perchPitch: -0.10,
+    dip: 0.3,
+    cruiseUp: [3, 7],
+  },
+  {
+    key: 'flamingo',
+    geometry: buildFlamingoGeometry,
+    habitat: 'water',
+    live: 6,
+    chance: 0.7,
+    // 3x life size, on purpose — see the note over TREE_BIRD_SPECIES.
+    wingspan: [4.05, 4.65],
+    perchS: [20, 60],
+    hop: [30, 90],
+    cruise: [9.0, 13.0],
+    flapHz: [1.8, 2.25],       // fast shallow beats, nothing like the eagle
+    flapAmp: [0.48, 0.68],
+    startle: 34,
+    wade: [0.36, 1.35],
+    minSpan: 7,
+    footY: -0.436,
+    perchPitch: -0.04,
+    dip: 0.25,
+    cruiseUp: [2.5, 6],
+    flock: true,
+    colony: 2,
   },
 ];
 
@@ -375,6 +500,14 @@ export const TREE_BIRD_SPECIES = [
 const SPAWN_R = [85, 190];
 const DESPAWN = 280;
 const VIS_OK = 150;
+
+// What counts as an island a wader would use (see _ensureIslands). The area
+// window is doing two jobs at once: below it a land component is a gravel
+// hummock with no room for a bird, and above it we have caught the mainland,
+// which in this valley is ~6.9 M m² and would hand back its whole coastline.
+const ISLAND_AREA = [400, 160000];
+const ISLAND_RING_WET = 0.6;   // fraction of a ring around it that must be water
+const ISLAND_OPEN = 6;         // metres of hydro span: a lake, not a creek bend
 
 // Behaviour states.
 const P_PERCH = 0, P_FLY = 1;
@@ -519,10 +652,40 @@ export class TreeBirds {
         // valley with no eagle in them, which is what makes the next one land.
         if (b.cool > 0) { b.cool -= 0.8; continue; }
         if (this.rnd() > 0.3) continue;               // per-scan trickle
-        for (let attempt = 0; attempt < 4; attempt++) {
-          const a = this.rnd() * Math.PI * 2;
-          const r = lerp(SPAWN_R[0], SPAWN_R[1], this.rnd());
-          const ax = cx + Math.sin(a) * r, az = cz + Math.cos(a) * r;
+        const water = S.habitat === 'water';
+        for (let attempt = 0; attempt < (water ? 6 : 4); attempt++) {
+          // Flock species arrive where their kind already is: most of the
+          // time a new flamingo joins the shallows that hold one, and the
+          // valley gets a group on one lake instead of six scattered dots.
+          let ax, az;
+          const mate = S.flock ? this._flockmate(b) : null;
+          const nearMate = !!mate && this.rnd() < 0.65;
+          if (nearMate) {
+            ax = mate.x + (this.rnd() - 0.5) * 36;
+            az = mate.z + (this.rnd() - 0.5) * 36;
+          } else {
+            const a = this.rnd() * Math.PI * 2;
+            const r = lerp(SPAWN_R[0], SPAWN_R[1], this.rnd());
+            ax = cx + Math.sin(a) * r; az = cz + Math.cos(a) * r;
+          }
+          if (water) {
+            // Island rim first, mainland waterline second — see _ensureIslands
+            // for why the mainland alone was not enough. A colony species does
+            // NOT fall through: its whole point is to be on its own islands and
+            // nowhere else, so failing to find one is the answer, not a reason
+            // to scatter it along the nearest bank.
+            let site = null;
+            if (nearMate) site = this._findWade(ax, az, S);
+            if (!site) site = this._islandSite(cx, cz, SPAWN_R[0], SPAWN_R[1], S);
+            if (!site && !S.colony) site = this._findWade(ax, az, S);
+            if (!site) continue;
+            _sphere.center.set(site.x, site.gy + 1, site.z);
+            _sphere.radius = 3;
+            const dist = Math.hypot(site.x - cx, site.z - cz);
+            if (dist < VIS_OK && _frustum.intersectsSphere(_sphere)) continue;
+            this._wadeAt(b, site, this.rnd() * Math.PI * 2);
+            break;
+          }
           const tree = this._findTree(T, ax, az, S.minTreeH, -1);
           if (tree < 0) continue;
           const py = this._perchY(T, tree);
@@ -599,17 +762,322 @@ export class TreeBirds {
     b.x = T.px[tree]; b.z = T.pz[tree];
     b.y = this._perchY(T, tree);
     b.yaw = yaw;
-    b.pitch = PERCH_PITCH;
+    b.pitch = b.spec.perchPitch ?? PERCH_PITCH;
     b.bank = 0;
     b.fold = 1; b.amp = 0;
     b.timer = lerp(b.spec.perchS[0], b.spec.perchS[1], this.rnd());
   }
 
-  /** Launch a flight from the current perch to a tree in an annulus around it. */
+  // ── island shores ─────────────────────────────────────────────────────────
+
+  /**
+   * Every shoreline point on an island in a lake, found once.
+   *
+   * This exists because the mainland waterline turned out to be a bad habitat
+   * and a worse spawn source. The depth window a wader can stand in is narrow
+   * and this terrain mostly goes from dry to over-depth inside a couple of
+   * metres, so the standable fringe is a thin broken thread — measured on the
+   * spawn lake, a 28 m square of standing water held exactly two cells a
+   * flamingo would take. Birds did spawn, just rarely and nowhere anyone
+   * drives. An island rim is the opposite: shallow the whole way round, open
+   * water on every side, and it reads from clear across the lake. Which is
+   * also simply where these birds are in life.
+   *
+   * Finding them is a flood fill on the hydro sdf, whose sign already asks the
+   * right question (>= 0 is water). Land cells group into connected
+   * components, and a component that never touches the map border is by
+   * construction ringed by water — there is no separate "is it surrounded"
+   * test to get wrong. Area and the openness of the water around it then
+   * separate a lake island from a bog hummock or a bar in a creek.
+   *
+   * One pass over a 768² field, on the first scan that finds a bake in place
+   * rather than in build(), where the hydro field may not exist yet.
+   *
+   * @returns {{list: Array, colony: Map}|null} null while the bake is missing
+   */
+  _ensureIslands() {
+    if (this._islands) return this._islands;
+    const W = this.ctx.world;
+    const h = W?.hydro;
+    if (!h?.sdf || !W.getHydro) return null;      // not baked yet — try next scan
+
+    const R = h.res, T = h.texel, half = W.half;
+    const N = R * R, sdf = h.sdf;
+    const lab = new Int32Array(N).fill(-1);
+    const stack = new Int32Array(N);
+    const kept = [];
+    let id = 0;
+
+    for (let s = 0; s < N; s++) {
+      if (sdf[s] >= 0 || lab[s] !== -1) continue;
+      let sp = 0, n = 0, border = false, sumx = 0, sumz = 0;
+      let minc = R, maxc = -1, minr = R, maxr = -1;
+      stack[sp++] = s; lab[s] = id;
+      while (sp > 0) {
+        const c = stack[--sp]; n++;
+        const cx = c % R, cz = (c / R) | 0;
+        if (cx === 0 || cz === 0 || cx === R - 1 || cz === R - 1) border = true;
+        if (cx < minc) minc = cx;
+        if (cx > maxc) maxc = cx;
+        if (cz < minr) minr = cz;
+        if (cz > maxr) maxr = cz;
+        sumx += cx; sumz += cz;
+        // Stepped one neighbour at a time with the edge guarded per side: a
+        // flat c-1 / c+1 would wrap around the row ends and weld the east
+        // shore to the west one into a single component that touches nothing.
+        if (cx > 0) { const q = c - 1; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+        if (cx < R - 1) { const q = c + 1; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+        if (cz > 0) { const q = c - R; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+        if (cz < R - 1) { const q = c + R; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+      }
+      const area = n * T * T;
+      if (!border && area >= ISLAND_AREA[0] && area <= ISLAND_AREA[1]) {
+        kept.push({
+          id,
+          x: (sumx / n + 0.25) * T - half,
+          z: (sumz / n + 0.25) * T - half,
+          rad: Math.max(maxc - minc + 1, maxr - minr + 1) * T * 0.5,
+          open: 0, sites: [],
+        });
+      }
+      id++;
+    }
+
+    // Is it in open water, and is it really an island? A component can clear
+    // the border test and still be a hummock in a bog, so sample a ring just
+    // outside it: most of that ring has to be water, and the water has to be
+    // wide enough to read as a lake.
+    const hy = {};
+    const byId = new Map();
+    for (const isl of kept) {
+      let wet = 0, tries = 0, open = 0;
+      for (let a = 0; a < 24; a++) {
+        const th = (a / 24) * Math.PI * 2;
+        const rr = isl.rad + 12;
+        const x = isl.x + Math.sin(th) * rr, z = isl.z + Math.cos(th) * rr;
+        if (!W.isInBounds(x, z)) continue;
+        tries++;
+        const q = W.getHydro(x, z, hy);
+        if (q.sdf > 0) wet++;
+        if (q.span > open) open = q.span;
+      }
+      if (!tries || wet / tries < ISLAND_RING_WET || open < ISLAND_OPEN) continue;
+      isl.open = open;
+      byId.set(isl.id, isl);
+    }
+
+    // The shoreline: every water cell touching one of these islands. Taken
+    // from the same field the components came from, so a site is on the rim
+    // by construction rather than by a second search that could disagree.
+    for (let c = 0; c < N; c++) {
+      if (sdf[c] >= 0) continue;
+      const isl = byId.get(lab[c]);
+      if (!isl) continue;
+      const cx = c % R, cz = (c / R) | 0;
+      const nb = [
+        cx > 0 ? c - 1 : -1, cx < R - 1 ? c + 1 : -1,
+        cz > 0 ? c - R : -1, cz < R - 1 ? c + R : -1,
+      ];
+      for (const q of nb) {
+        if (q < 0 || sdf[q] < 0) continue;
+        isl.sites.push({ x: ((q % R) + 0.25) * T - half, z: (((q / R) | 0) + 0.25) * T - half });
+      }
+    }
+
+    const list = [...byId.values()].filter((i) => i.sites.length >= 4);
+
+    // Colony species get a FEW islands in the whole valley, not all of them.
+    // A flamingo everywhere is scenery; a flamingo on two known islands is
+    // somewhere to go — the same reasoning that makes a perched eagle a
+    // landmark rather than a bird. Openness breaks the tie because a big
+    // bright lake is where you would actually notice them.
+    const colony = new Map();
+    for (const S of TREE_BIRD_SPECIES) {
+      if (!S.colony) continue;
+      const ranked = list
+        .map((isl, i) => ({ i, score: isl.open * (0.6 + 0.8 * this.rnd()) }))
+        .filter(({ i }) => !S.minSpan || list[i].open >= S.minSpan)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, S.colony)
+        .map(({ i }) => i);
+      colony.set(S.key, new Set(ranked));
+    }
+
+    this._islands = { list, colony };
+    return this._islands;
+  }
+
+  /**
+   * A shore site on an island whose distance from (cx, cz) lands in
+   * [rmin, rmax]. Colony species are held to their own islands; everyone else
+   * may use any of them.
+   *
+   * Depth is only capped, not floored: on a rim the difference between ankle
+   * deep and standing on wet sand is a metre of shore, and a bird at the
+   * water's edge is right either way. Flooring it here is what made the
+   * mainland so barren.
+   */
+  _islandSite(cx, cz, rmin, rmax, S) {
+    const I = this._ensureIslands();
+    if (!I) return null;
+    const allowed = I.colony.get(S.key);
+    const W = this.ctx.world;
+
+    let pick = null, seen = 0;
+    for (let k = 0; k < I.list.length; k++) {
+      if (allowed && !allowed.has(k)) continue;
+      const isl = I.list[k];
+      if (S.minSpan && isl.open < S.minSpan) continue;
+      const d = Math.hypot(isl.x - cx, isl.z - cz);
+      if (d + isl.rad < rmin || d - isl.rad > rmax) continue;
+      seen++;
+      if (this.rnd() < 1 / seen) pick = isl;      // reservoir: no bias to the first
+    }
+    if (!pick) return null;
+
+    // A flock lands together. Without this the rim is long enough that six
+    // flamingos spread themselves evenly round a 146 m island and read as six
+    // separate birds rather than a flock — the same reason _scan biases new
+    // arrivals toward a mate on the mainland.
+    let near = null;
+    if (S.flock) {
+      const mate = this._settledOn(pick, S);
+      if (mate && this.rnd() < 0.75) {
+        near = pick.sites.filter((s) => Math.hypot(s.x - mate.x, s.z - mate.z) < 34);
+        if (!near.length) near = null;
+      }
+    }
+    const pool = near ?? pick.sites;
+
+    for (let t = 0; t < 10; t++) {
+      const s = pool[(this.rnd() * pool.length) | 0];
+      // Jittered off the 4 m lattice the field is stored on, or a flock lines
+      // up on a grid like fenceposts.
+      const x = s.x + (this.rnd() - 0.5) * 3.2;
+      const z = s.z + (this.rnd() - 0.5) * 3.2;
+      if (!W.isInBounds(x, z)) continue;
+      const d = Math.hypot(x - cx, z - cz);
+      if (d < rmin || d > rmax) continue;
+      if (W.getWaterDepth(x, z) > S.wade[1]) continue;
+      return { x, z, gy: W.getHeight(x, z), wy: W.getWaterHeight(x, z), island: pick };
+    }
+    return null;
+  }
+
+  // ── wading sites (habitat: 'water') ───────────────────────────────────────
+
+  /**
+   * A wading site near (ax, az): standing water inside the species' depth
+   * window, open enough if the species cares. Sampled, not searched — water is
+   * a quarter of this map, so a handful of throws either lands in some or the
+   * neighbourhood genuinely has none and the spawn attempt should fail.
+   */
+  _findWade(ax, az, S) {
+    const W = this.ctx.world;
+    if (!W?.getWaterContactDepth) return null;
+    for (let k = 0; k < 10; k++) {
+      const x = ax + (this.rnd() - 0.5) * 36;
+      const z = az + (this.rnd() - 0.5) * 36;
+      if (!W.isInBounds(x, z)) continue;
+      // Two queries, each for what it is honest about. The hydro sdf gates
+      // OUT the phantoms — the raw grid keeps water in speck cells the drawn
+      // mesh deliberately drops, and a bird wading in one stands in dry
+      // meadow (shipped once, shots/waders/heron-wade.png). The DEPTH is
+      // getWaterDepth, which reads the drawn surface's own field: hydro depth
+      // is reconstructed as 0.60 x sdf near the waterline, and testing
+      // against that put a heron chest-deep in honest-to-goodness water.
+      const h = W.getHydro(x, z, this._hy ??= {});
+      if (h.sdf < 1.2 || h.wet < 0.5) continue;
+      const d = W.getWaterDepth(x, z);
+      if (d < S.wade[0] || d > S.wade[1]) continue;
+      if (S.minSpan && h.span < S.minSpan) continue;
+      return { x, z, gy: W.getHeight(x, z), wy: W.getWaterHeight(x, z) };
+    }
+    return null;
+  }
+
+  /**
+   * The standing height: feet on the bed, body up the leg length — but never
+   * so deep the belly ships water. The depth window should make the clamp a
+   * no-op; it exists because two derivations of "how deep is it here" have
+   * already disagreed once each.
+   */
+  _wadeY(site, S, sc) {
+    let y = site.gy - S.footY * sc;
+    if (site.wy != null) y = Math.max(y, site.wy + 0.07 * sc);
+    return y;
+  }
+
+  /** Stand a wader in the shallows: feet on the bed, body up the leg length. */
+  _wadeAt(b, site, yaw) {
+    b.active = true;
+    b.state = P_PERCH;
+    b.tree = -1;
+    b.x = site.x; b.z = site.z;
+    b.y = this._wadeY(site, b.spec, b.sc);
+    b.yaw = yaw;
+    b.pitch = b.spec.perchPitch ?? PERCH_PITCH;
+    b.bank = 0;
+    b.fold = 1; b.amp = 0;
+    b.timer = lerp(b.spec.perchS[0], b.spec.perchS[1], this.rnd());
+  }
+
+  /** A settled bird of species S standing on island `isl`, or null. */
+  _settledOn(isl, S) {
+    for (const slots of this.slots) {
+      if (slots[0]?.spec !== S) continue;
+      for (const o of slots) {
+        if (!o.active || o.state !== P_PERCH) continue;
+        if (Math.hypot(o.x - isl.x, o.z - isl.z) <= isl.rad + 20) return o;
+      }
+    }
+    return null;
+  }
+
+  /** A random other settled bird of the same species, or null. */
+  _flockmate(b) {
+    let pick = null, n = 0;
+    for (const slots of this.slots) {
+      if (slots[0]?.spec !== b.spec) continue;
+      for (const o of slots) {
+        if (o === b || !o.active || o.state !== P_PERCH) continue;
+        n++;
+        if (this.rnd() < 1 / n) pick = o;
+      }
+    }
+    return pick;
+  }
+
+  /**
+   * Set up the flight state for a hop to (tx, ty, tz). The path is a bowed
+   * line, not a bee-line: the control point swings it to one side so the bird
+   * banks through a real turn.
+   */
+  _flightTo(b, tx, ty, tz, d) {
+    const S = b.spec;
+    b.fx0 = b.x; b.fy0 = b.y; b.fz0 = b.z;
+    b.fx1 = tx; b.fy1 = ty; b.fz1 = tz;
+    const side = this.rnd() < 0.5 ? -1 : 1;
+    const nx = -(tz - b.z) / d, nz = (tx - b.x) / d;
+    b.fcx = (b.x + tx) * 0.5 + nx * side * d * (0.12 + this.rnd() * 0.16);
+    b.fcz = (b.z + tz) * 0.5 + nz * side * d * (0.12 + this.rnd() * 0.16);
+    const up = S.cruiseUp ?? [4, 11];
+    b.fcruise = Math.max(b.fy0, b.fy1) + lerp(up[0], up[1], this.rnd());
+    b.fspeed = lerp(S.cruise[0], S.cruise[1], this.rnd());
+    b.fdur = Math.max(2.5, d * 1.08 / b.fspeed);
+    b.ft = 0;
+    b.state = P_FLY;
+    b.rate = lerp(S.flapHz[0], S.flapHz[1], this.rnd());
+    b.bout = this.rnd() * 6.28;
+    this.stats.flights++;
+  }
+
+  /** Launch a flight from the current perch to a site in an annulus around it. */
   _launch(b, awayX = 0, awayZ = 0) {
+    const S = b.spec;
+    if (S.habitat === 'water') return this._launchWade(b, awayX, awayZ);
     const T = this.ctx.systems?.trees?.trees;
     if (!T) { b.timer = 8; return false; }
-    const S = b.spec;
     for (let attempt = 0; attempt < 5; attempt++) {
       let a = this.rnd() * Math.PI * 2;
       // Flushed birds leave away from the threat; wandering birds don't care.
@@ -620,23 +1088,43 @@ export class TreeBirds {
       const tx = T.px[tree], tz = T.pz[tree], ty = this._perchY(T, tree);
       const d = Math.hypot(tx - b.x, tz - b.z);
       if (d < 14) continue;                        // hopping one crown over reads as a glitch
-      b.fx0 = b.x; b.fy0 = b.y; b.fz0 = b.z;
-      b.fx1 = tx; b.fy1 = ty; b.fz1 = tz;
-      // A bowed line, not a bee-line: the control point swings the path to one
-      // side so the bird banks through a real turn.
-      const side = this.rnd() < 0.5 ? -1 : 1;
-      const nx = -(tz - b.z) / d, nz = (tx - b.x) / d;
-      b.fcx = (b.x + tx) * 0.5 + nx * side * d * (0.12 + this.rnd() * 0.16);
-      b.fcz = (b.z + tz) * 0.5 + nz * side * d * (0.12 + this.rnd() * 0.16);
-      b.fcruise = Math.max(b.fy0, b.fy1) + 4 + this.rnd() * 7;
-      b.fspeed = lerp(S.cruise[0], S.cruise[1], this.rnd());
-      b.fdur = Math.max(2.5, d * 1.08 / b.fspeed);
-      b.ft = 0;
+      this._flightTo(b, tx, ty, tz, d);
       b.tree = tree;
-      b.state = P_FLY;
-      b.rate = lerp(S.flapHz[0], S.flapHz[1], this.rnd());
-      b.bout = this.rnd() * 6.28;
-      this.stats.flights++;
+      return true;
+    }
+    b.timer = 8;
+    return false;
+  }
+
+  /** The wader version: the next stand of shallows, biased toward the flock. */
+  _launchWade(b, awayX = 0, awayZ = 0) {
+    const S = b.spec;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      let ax, az;
+      const mate = (!awayX && !awayZ && S.flock) ? this._flockmate(b) : null;
+      if (mate && this.rnd() < 0.5) {
+        ax = mate.x + (this.rnd() - 0.5) * 30;
+        az = mate.z + (this.rnd() - 0.5) * 30;
+      } else {
+        let a = this.rnd() * Math.PI * 2;
+        if (awayX || awayZ) a = Math.atan2(b.x - awayX, b.z - awayZ) + (this.rnd() - 0.5) * 1.6;
+        const r = lerp(S.hop[0], S.hop[1], this.rnd());
+        ax = b.x + Math.sin(a) * r; az = b.z + Math.cos(a) * r;
+      }
+      // Hops stay on the island rims too, so a colony bird works its way round
+      // its own island instead of leaving for a bank it can never spawn on.
+      // 14 m, not S.hop[0]: a hop between rim points is bounded by the island,
+      // and on a small one every point is inside the species' normal hop
+      // minimum — hold it to that and a colony bird can never move at all.
+      let site = (!awayX && !awayZ) || S.colony
+        ? this._islandSite(b.x, b.z, 14, S.hop[1], S) : null;
+      if (!site && !S.colony) site = this._findWade(ax, az, S);
+      if (!site) continue;
+      const ty = this._wadeY(site, S, b.sc);
+      const d = Math.hypot(site.x - b.x, site.z - b.z);
+      if (d < 12) continue;                        // shuffling one pool over reads as a glitch
+      this._flightTo(b, site.x, ty, site.z, d);
+      b.tree = -1;
       return true;
     }
     b.timer = 8;
@@ -649,7 +1137,7 @@ export class TreeBirds {
       b.timer -= dt;
       b.fold = damp(b.fold, 1, 5, dt);
       b.amp = damp(b.amp, 0, 6, dt);
-      b.pitch = damp(b.pitch, PERCH_PITCH, 4, dt);
+      b.pitch = damp(b.pitch, S.perchPitch ?? PERCH_PITCH, 4, dt);
       b.bank = damp(b.bank, 0, 4, dt);
       if (threat && Math.abs(threat.speed) > 4
         && Math.hypot(threat.x - b.x, threat.z - b.z) < S.startle) {
@@ -674,8 +1162,14 @@ export class TreeBirds {
     // onto its wings, and that drop is the most recognisable part of the move.
     let y = lerp(b.fy0, b.fcruise, smoothstep(0.04, 0.42, t));
     y = lerp(y, b.fy1, smoothstep(0.60, 0.97, t));
-    y -= 1.7 * Math.sin(clamp01(t / 0.16) * Math.PI) * clamp01(1 - t * 2);
-    if (W.isInBounds(x, z)) y = Math.max(y, W.getHeight(x, z) + 8);
+    y -= (S.dip ?? 1.7) * Math.sin(clamp01(t / 0.16) * Math.PI) * clamp01(1 - t * 2);
+    // Terrain clearance, windowed to mid-flight: at the endpoints the bird is
+    // ON its perch, and a wader's perch is half a metre over the water — the
+    // old flat +8 clamp would snatch it into the air the frame it launched.
+    if (W.isInBounds(x, z)) {
+      const mid = smoothstep(0.05, 0.30, t) * (1 - smoothstep(0.70, 0.95, t));
+      y = Math.max(y, W.getHeight(x, z) + lerp(0.35, 8, mid));
+    }
 
     // Heading from the bezier tangent; pitch from the actual climb.
     const dxdt = 2 * u * (b.fcx - b.fx0) + 2 * t * (b.fx1 - b.fcx);
@@ -755,12 +1249,26 @@ export class TreeBirds {
     return best ? { x: best.x, y: best.y, z: best.z } : null;
   }
 
-  /** Perch a bird on the best tree near (x, z) right now, view guard skipped. */
-  debugPerchNear(x, z) {
+  /**
+   * Perch a bird of `key` (default: the first species) on the best site near
+   * (x, z) right now, view guard skipped. Trees for the tree birds, shallows
+   * for the waders.
+   */
+  debugPerchNear(x, z, key) {
+    const si = key ? TREE_BIRD_SPECIES.findIndex((s) => s.key === key) : 0;
+    if (si < 0) return null;
+    const slots = this.slots[si];
+    const b = slots.find((s) => !s.active) ?? slots[0];
+    const S = b.spec;
+    if (S.habitat === 'water') {
+      const site = this._findWade(x, z, S);
+      if (!site) return null;
+      this._wadeAt(b, site, this.rnd() * Math.PI * 2);
+      return { x: b.x, y: b.y, z: b.z };
+    }
     const T = this.ctx.systems?.trees?.trees;
     if (!T) return null;
-    const b = this.slots[0].find((s) => !s.active) ?? this.slots[0][0];
-    const tree = this._findTree(T, x, z, b.spec.minTreeH, -1);
+    const tree = this._findTree(T, x, z, S.minTreeH, -1);
     if (tree < 0) return null;
     this._perchAt(b, T, tree, this.rnd() * Math.PI * 2);
     return { x: b.x, y: b.y, z: b.z };

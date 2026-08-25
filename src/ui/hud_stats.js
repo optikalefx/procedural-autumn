@@ -114,9 +114,11 @@ const GROUPS = [
   // word a table walk cannot derive.
   ['Wildlife', [
     ...Object.values(SPECIES).map((sp) => [`${sp.plural} seen`, 'n count', `seen.${sp.key}`]),
-    // The eagle is a bird, not a pooled mammal — it lives in the perch-and-fly
-    // system, credits its own key, and so keeps a hand-written row here.
+    // The perch-and-fly birds (tree_birds.js) are not pooled mammals — each
+    // credits its own key and keeps a hand-written row here.
     ['Bald eagles seen', 'n count', 'seen.baldEagle'],
+    ['Blue herons seen', 'n count', 'seen.heron'],
+    ['Flamingos seen', 'n count', 'seen.flamingo'],
     ['Bird flocks', 'n count', 'seen.flocks'],
     ['Birds startled', 'n count', 'birds.startled'],
     ['Closest a bear came', 'lo metres', 'bear.near'],

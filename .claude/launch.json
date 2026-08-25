@@ -96,6 +96,19 @@
         "--strictPort"
       ],
       "port": 5241
+    },
+    {
+      "name": "waders-worktree",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5199",
+        "--strictPort"
+      ],
+      "port": 5199
     }
   ]
 }
