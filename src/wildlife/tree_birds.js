@@ -412,6 +412,11 @@ export function buildBaldEagle(rnd, opts = {}) {
 //              wings; a wader starts half a metre over the water and springs.
 //   cruiseUp   metres above the higher endpoint the flight cruises.
 //   flock      spawns and lands near others of its kind when it can.
+//   colony     if set, this species lives on exactly this many islands in the
+//              whole valley and NOWHERE else — no mainland fallback. A bird
+//              you can meet anywhere is scenery; one that lives on two known
+//              islands is somewhere to go, which is the same reason a perched
+//              eagle is written up as a landmark. See _ensureIslands.
 export const TREE_BIRD_SPECIES = [
   {
     key: 'baldEagle',
@@ -466,6 +471,7 @@ export const TREE_BIRD_SPECIES = [
     dip: 0.25,
     cruiseUp: [2.5, 6],
     flock: true,
+    colony: 2,
   },
 ];
 
@@ -475,6 +481,14 @@ export const TREE_BIRD_SPECIES = [
 const SPAWN_R = [85, 190];
 const DESPAWN = 280;
 const VIS_OK = 150;
+
+// What counts as an island a wader would use (see _ensureIslands). The area
+// window is doing two jobs at once: below it a land component is a gravel
+// hummock with no room for a bird, and above it we have caught the mainland,
+// which in this valley is ~6.9 M m² and would hand back its whole coastline.
+const ISLAND_AREA = [400, 160000];
+const ISLAND_RING_WET = 0.6;   // fraction of a ring around it that must be water
+const ISLAND_OPEN = 6;         // metres of hydro span: a lake, not a creek bend
 
 // Behaviour states.
 const P_PERCH = 0, P_FLY = 1;
@@ -626,7 +640,8 @@ export class TreeBirds {
           // valley gets a group on one lake instead of six scattered dots.
           let ax, az;
           const mate = S.flock ? this._flockmate(b) : null;
-          if (mate && this.rnd() < 0.65) {
+          const nearMate = !!mate && this.rnd() < 0.65;
+          if (nearMate) {
             ax = mate.x + (this.rnd() - 0.5) * 36;
             az = mate.z + (this.rnd() - 0.5) * 36;
           } else {
@@ -635,7 +650,15 @@ export class TreeBirds {
             ax = cx + Math.sin(a) * r; az = cz + Math.cos(a) * r;
           }
           if (water) {
-            const site = this._findWade(ax, az, S);
+            // Island rim first, mainland waterline second — see _ensureIslands
+            // for why the mainland alone was not enough. A colony species does
+            // NOT fall through: its whole point is to be on its own islands and
+            // nowhere else, so failing to find one is the answer, not a reason
+            // to scatter it along the nearest bank.
+            let site = null;
+            if (nearMate) site = this._findWade(ax, az, S);
+            if (!site) site = this._islandSite(cx, cz, SPAWN_R[0], SPAWN_R[1], S);
+            if (!site && !S.colony) site = this._findWade(ax, az, S);
             if (!site) continue;
             _sphere.center.set(site.x, site.gy + 1, site.z);
             _sphere.radius = 3;
@@ -726,6 +749,202 @@ export class TreeBirds {
     b.timer = lerp(b.spec.perchS[0], b.spec.perchS[1], this.rnd());
   }
 
+  // ── island shores ─────────────────────────────────────────────────────────
+
+  /**
+   * Every shoreline point on an island in a lake, found once.
+   *
+   * This exists because the mainland waterline turned out to be a bad habitat
+   * and a worse spawn source. The depth window a wader can stand in is narrow
+   * and this terrain mostly goes from dry to over-depth inside a couple of
+   * metres, so the standable fringe is a thin broken thread — measured on the
+   * spawn lake, a 28 m square of standing water held exactly two cells a
+   * flamingo would take. Birds did spawn, just rarely and nowhere anyone
+   * drives. An island rim is the opposite: shallow the whole way round, open
+   * water on every side, and it reads from clear across the lake. Which is
+   * also simply where these birds are in life.
+   *
+   * Finding them is a flood fill on the hydro sdf, whose sign already asks the
+   * right question (>= 0 is water). Land cells group into connected
+   * components, and a component that never touches the map border is by
+   * construction ringed by water — there is no separate "is it surrounded"
+   * test to get wrong. Area and the openness of the water around it then
+   * separate a lake island from a bog hummock or a bar in a creek.
+   *
+   * One pass over a 768² field, on the first scan that finds a bake in place
+   * rather than in build(), where the hydro field may not exist yet.
+   *
+   * @returns {{list: Array, colony: Map}|null} null while the bake is missing
+   */
+  _ensureIslands() {
+    if (this._islands) return this._islands;
+    const W = this.ctx.world;
+    const h = W?.hydro;
+    if (!h?.sdf || !W.getHydro) return null;      // not baked yet — try next scan
+
+    const R = h.res, T = h.texel, half = W.half;
+    const N = R * R, sdf = h.sdf;
+    const lab = new Int32Array(N).fill(-1);
+    const stack = new Int32Array(N);
+    const kept = [];
+    let id = 0;
+
+    for (let s = 0; s < N; s++) {
+      if (sdf[s] >= 0 || lab[s] !== -1) continue;
+      let sp = 0, n = 0, border = false, sumx = 0, sumz = 0;
+      let minc = R, maxc = -1, minr = R, maxr = -1;
+      stack[sp++] = s; lab[s] = id;
+      while (sp > 0) {
+        const c = stack[--sp]; n++;
+        const cx = c % R, cz = (c / R) | 0;
+        if (cx === 0 || cz === 0 || cx === R - 1 || cz === R - 1) border = true;
+        if (cx < minc) minc = cx;
+        if (cx > maxc) maxc = cx;
+        if (cz < minr) minr = cz;
+        if (cz > maxr) maxr = cz;
+        sumx += cx; sumz += cz;
+        // Stepped one neighbour at a time with the edge guarded per side: a
+        // flat c-1 / c+1 would wrap around the row ends and weld the east
+        // shore to the west one into a single component that touches nothing.
+        if (cx > 0) { const q = c - 1; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+        if (cx < R - 1) { const q = c + 1; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+        if (cz > 0) { const q = c - R; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+        if (cz < R - 1) { const q = c + R; if (sdf[q] < 0 && lab[q] === -1) { lab[q] = id; stack[sp++] = q; } }
+      }
+      const area = n * T * T;
+      if (!border && area >= ISLAND_AREA[0] && area <= ISLAND_AREA[1]) {
+        kept.push({
+          id,
+          x: (sumx / n + 0.25) * T - half,
+          z: (sumz / n + 0.25) * T - half,
+          rad: Math.max(maxc - minc + 1, maxr - minr + 1) * T * 0.5,
+          open: 0, sites: [],
+        });
+      }
+      id++;
+    }
+
+    // Is it in open water, and is it really an island? A component can clear
+    // the border test and still be a hummock in a bog, so sample a ring just
+    // outside it: most of that ring has to be water, and the water has to be
+    // wide enough to read as a lake.
+    const hy = {};
+    const byId = new Map();
+    for (const isl of kept) {
+      let wet = 0, tries = 0, open = 0;
+      for (let a = 0; a < 24; a++) {
+        const th = (a / 24) * Math.PI * 2;
+        const rr = isl.rad + 12;
+        const x = isl.x + Math.sin(th) * rr, z = isl.z + Math.cos(th) * rr;
+        if (!W.isInBounds(x, z)) continue;
+        tries++;
+        const q = W.getHydro(x, z, hy);
+        if (q.sdf > 0) wet++;
+        if (q.span > open) open = q.span;
+      }
+      if (!tries || wet / tries < ISLAND_RING_WET || open < ISLAND_OPEN) continue;
+      isl.open = open;
+      byId.set(isl.id, isl);
+    }
+
+    // The shoreline: every water cell touching one of these islands. Taken
+    // from the same field the components came from, so a site is on the rim
+    // by construction rather than by a second search that could disagree.
+    for (let c = 0; c < N; c++) {
+      if (sdf[c] >= 0) continue;
+      const isl = byId.get(lab[c]);
+      if (!isl) continue;
+      const cx = c % R, cz = (c / R) | 0;
+      const nb = [
+        cx > 0 ? c - 1 : -1, cx < R - 1 ? c + 1 : -1,
+        cz > 0 ? c - R : -1, cz < R - 1 ? c + R : -1,
+      ];
+      for (const q of nb) {
+        if (q < 0 || sdf[q] < 0) continue;
+        isl.sites.push({ x: ((q % R) + 0.25) * T - half, z: (((q / R) | 0) + 0.25) * T - half });
+      }
+    }
+
+    const list = [...byId.values()].filter((i) => i.sites.length >= 4);
+
+    // Colony species get a FEW islands in the whole valley, not all of them.
+    // A flamingo everywhere is scenery; a flamingo on two known islands is
+    // somewhere to go — the same reasoning that makes a perched eagle a
+    // landmark rather than a bird. Openness breaks the tie because a big
+    // bright lake is where you would actually notice them.
+    const colony = new Map();
+    for (const S of TREE_BIRD_SPECIES) {
+      if (!S.colony) continue;
+      const ranked = list
+        .map((isl, i) => ({ i, score: isl.open * (0.6 + 0.8 * this.rnd()) }))
+        .filter(({ i }) => !S.minSpan || list[i].open >= S.minSpan)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, S.colony)
+        .map(({ i }) => i);
+      colony.set(S.key, new Set(ranked));
+    }
+
+    this._islands = { list, colony };
+    return this._islands;
+  }
+
+  /**
+   * A shore site on an island whose distance from (cx, cz) lands in
+   * [rmin, rmax]. Colony species are held to their own islands; everyone else
+   * may use any of them.
+   *
+   * Depth is only capped, not floored: on a rim the difference between ankle
+   * deep and standing on wet sand is a metre of shore, and a bird at the
+   * water's edge is right either way. Flooring it here is what made the
+   * mainland so barren.
+   */
+  _islandSite(cx, cz, rmin, rmax, S) {
+    const I = this._ensureIslands();
+    if (!I) return null;
+    const allowed = I.colony.get(S.key);
+    const W = this.ctx.world;
+
+    let pick = null, seen = 0;
+    for (let k = 0; k < I.list.length; k++) {
+      if (allowed && !allowed.has(k)) continue;
+      const isl = I.list[k];
+      if (S.minSpan && isl.open < S.minSpan) continue;
+      const d = Math.hypot(isl.x - cx, isl.z - cz);
+      if (d + isl.rad < rmin || d - isl.rad > rmax) continue;
+      seen++;
+      if (this.rnd() < 1 / seen) pick = isl;      // reservoir: no bias to the first
+    }
+    if (!pick) return null;
+
+    // A flock lands together. Without this the rim is long enough that six
+    // flamingos spread themselves evenly round a 146 m island and read as six
+    // separate birds rather than a flock — the same reason _scan biases new
+    // arrivals toward a mate on the mainland.
+    let near = null;
+    if (S.flock) {
+      const mate = this._settledOn(pick, S);
+      if (mate && this.rnd() < 0.75) {
+        near = pick.sites.filter((s) => Math.hypot(s.x - mate.x, s.z - mate.z) < 34);
+        if (!near.length) near = null;
+      }
+    }
+    const pool = near ?? pick.sites;
+
+    for (let t = 0; t < 10; t++) {
+      const s = pool[(this.rnd() * pool.length) | 0];
+      // Jittered off the 4 m lattice the field is stored on, or a flock lines
+      // up on a grid like fenceposts.
+      const x = s.x + (this.rnd() - 0.5) * 3.2;
+      const z = s.z + (this.rnd() - 0.5) * 3.2;
+      if (!W.isInBounds(x, z)) continue;
+      const d = Math.hypot(x - cx, z - cz);
+      if (d < rmin || d > rmax) continue;
+      if (W.getWaterDepth(x, z) > S.wade[1]) continue;
+      return { x, z, gy: W.getHeight(x, z), wy: W.getWaterHeight(x, z), island: pick };
+    }
+    return null;
+  }
+
   // ── wading sites (habitat: 'water') ───────────────────────────────────────
 
   /**
@@ -782,6 +1001,18 @@ export class TreeBirds {
     b.bank = 0;
     b.fold = 1; b.amp = 0;
     b.timer = lerp(b.spec.perchS[0], b.spec.perchS[1], this.rnd());
+  }
+
+  /** A settled bird of species S standing on island `isl`, or null. */
+  _settledOn(isl, S) {
+    for (const slots of this.slots) {
+      if (slots[0]?.spec !== S) continue;
+      for (const o of slots) {
+        if (!o.active || o.state !== P_PERCH) continue;
+        if (Math.hypot(o.x - isl.x, o.z - isl.z) <= isl.rad + 20) return o;
+      }
+    }
+    return null;
   }
 
   /** A random other settled bird of the same species, or null. */
@@ -861,7 +1092,14 @@ export class TreeBirds {
         const r = lerp(S.hop[0], S.hop[1], this.rnd());
         ax = b.x + Math.sin(a) * r; az = b.z + Math.cos(a) * r;
       }
-      const site = this._findWade(ax, az, S);
+      // Hops stay on the island rims too, so a colony bird works its way round
+      // its own island instead of leaving for a bank it can never spawn on.
+      // 14 m, not S.hop[0]: a hop between rim points is bounded by the island,
+      // and on a small one every point is inside the species' normal hop
+      // minimum — hold it to that and a colony bird can never move at all.
+      let site = (!awayX && !awayZ) || S.colony
+        ? this._islandSite(b.x, b.z, 14, S.hop[1], S) : null;
+      if (!site && !S.colony) site = this._findWade(ax, az, S);
       if (!site) continue;
       const ty = this._wadeY(site, S, b.sc);
       const d = Math.hypot(site.x - b.x, site.z - b.z);

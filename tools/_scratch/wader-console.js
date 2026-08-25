@@ -1,24 +1,30 @@
-// Paste into the game's devtools console. Defines __waders():
-//   __waders()        -> nearest heron + flamingo shelf to you, with bearing
-//   __waders(true)    -> same, then teleports you to the nearest one
-// Mirrors _findWade's own gates (hydro sdf >= 1.2, wet >= 0.5, the species'
-// depth window, and the flamingo's minSpan), so a hit here is a spot the
-// streamer is willing to place a bird.
-window.__waders = (go) => {
-  const ctx = window.__ctx, W = ctx.world, tb = ctx.systems.wildlife.treeBirds;
-  const species = tb.slots.map((s) => s[0].spec).filter((s) => s.habitat === 'water');
-  const c = ctx.camera.position, hy = {};
-  const out = {};
-  let nearest = null;
-  // Expanding shells, 2 m between samples in both radius and arc. The step
-  // has to be this fine: a wadeable spot is often a single 2 m speck on a
-  // narrow fringe (most of this shore drops from dry to over-depth inside a
-  // couple of metres), and both a random scatter and a 6 m shell walked
-  // straight over the known shelf 155 m south of the spawn.
+// Paste into the game's devtools console.
+//
+//   __waders()            -> table of the nearest wadeable shelf per species
+//   __waders('flamingo')  -> warp to that shelf, facing it, and settle a flock
+//   __waders('heron')     -> same for herons
+//
+// Why it does the placing rather than leaving it to the streamer: sites are
+// picked in a ring 85-190 m out and SKIPPED if they are inside 150 m and in
+// your view cone, so a shelf you have parked next to and are looking at is the
+// one place a bird will not be put. debugPerchNear ignores both rules.
+window.__waders = (species) => {
+  const ctx = window.__ctx;
+  const W = ctx.world;
+  const tb = ctx.systems.wildlife.treeBirds;
+  const veh = ctx.systems.vehicle;
+  const all = tb.slots.map((s) => s[0].spec).filter((s) => s.habitat === 'water');
+  const c = ctx.camera.position;
+  const hy = {};
+
+  // Expanding shells, 2 m between samples in both radius and arc. The step has
+  // to be this fine: a wadeable spot is often a single 2 m speck on a narrow
+  // fringe (most of this shore drops from dry to over-depth inside a couple of
+  // metres), and both a random scatter and a 6 m shell walked straight over a
+  // known shelf 155 m from the spawn.
   const STEP = 2;
-  for (const S of species) {
-    let best = null;
-    for (let r = 30; r <= 600 && !best; r += STEP) {
+  const find = (S) => {
+    for (let r = 30; r <= 600; r += STEP) {
       const N = Math.ceil((2 * Math.PI * r) / STEP);
       for (let a = 0; a < N; a++) {
         const th = (a / N) * Math.PI * 2;
@@ -29,22 +35,70 @@ window.__waders = (go) => {
         const d = W.getWaterDepth(x, z);
         if (d < S.wade[0] || d > S.wade[1]) continue;
         if (S.minSpan && h.span < S.minSpan) continue;
-        best = { x: Math.round(x), z: Math.round(z), dist: Math.round(r),
-          bearing: Math.round((th * 180 / Math.PI + 360) % 360), depth: +d.toFixed(2) };
-        break;
+        return { x: Math.round(x), z: Math.round(z), dist: Math.round(r), depth: +d.toFixed(2) };
       }
     }
-    out[S.key] = best ?? 'none within 600 m';
-    if (best && (!nearest || best.dist < nearest.dist)) nearest = best;
+    return null;
+  };
+
+  if (!species) {
+    const out = {};
+    for (const S of all) out[S.key] = find(S) ?? 'none within 600 m';
+    console.table(out);
+    console.log("call __waders('flamingo') or __waders('heron') to go and see one");
+    return out;
   }
-  console.table(out);
-  if (go && nearest) {
-    // Land 70 m short of the shelf: inside the 85-190 m spawn ring, outside
-    // the startle radius, and not so close that the view guard blocks placement.
-    const k = Math.max(0, (nearest.dist - 70) / nearest.dist);
-    window.__vehicleTeleport(c.x + (nearest.x - c.x) * k, c.z + (nearest.z - c.z) * k, 0);
-    console.log('moved to within ~70 m — turn slowly, they settle behind and beside you');
+
+  const S = all.find((s) => s.key === species);
+  if (!S) { console.warn(`no wader called "${species}" — try ${all.map((s) => s.key).join(' or ')}`); return null; }
+  const site = find(S);
+  if (!site) { console.warn(`no ${species} water within 600 m — drive somewhere else and retry`); return null; }
+
+  // Land short of the shelf, facing it. warpTo keeps the current heading, so
+  // the heading is set first; it lands you looking at the birds instead of
+  // leaving you to guess a compass bearing. 45 m clears the startle radius
+  // (30 m heron / 34 m flamingo) so parking there does not flush them.
+  const STAND = 45;
+  const th = Math.atan2(site.x - c.x, site.z - c.z);
+  veh.heading = th;
+  const landed = veh.warpTo(site.x - Math.sin(th) * STAND, site.z - Math.cos(th) * STAND);
+
+  // Settle a group. Flamingos flock, so fill every slot; a heron is solitary.
+  //
+  // Placed straight onto points this function has already validated, rather
+  // than through debugPerchNear: that jitters +/-18 m and takes ten throws, so
+  // against a 2 m speck it lands about 3% of the time and usually reports
+  // finding nothing. (It is also why the streamer takes minutes to seed one.)
+  const n = S.flock ? S.live : 1;
+  const spots = [];
+  for (let r = 0; r <= 22 && spots.length < n; r += 1.5) {
+    const N = r === 0 ? 1 : Math.ceil((2 * Math.PI * r) / 1.5);
+    for (let a = 0; a < N && spots.length < n; a++) {
+      const t2 = (a / N) * Math.PI * 2;
+      const x = site.x + (r === 0 ? 0 : Math.sin(t2) * r);
+      const z = site.z + (r === 0 ? 0 : Math.cos(t2) * r);
+      if (!W.isInBounds(x, z)) continue;
+      const h = W.getHydro(x, z, hy);
+      if (h.sdf < 1.2 || h.wet < 0.5) continue;
+      const d = W.getWaterDepth(x, z);
+      if (d < S.wade[0] || d > S.wade[1]) continue;
+      if (S.minSpan && h.span < S.minSpan) continue;
+      if (spots.some((q) => Math.hypot(q.x - x, q.z - z) < 2.5)) continue;   // no stacking
+      spots.push({ x, z, gy: W.getHeight(x, z), wy: W.getWaterHeight(x, z) });
+    }
   }
-  return out;
+  const si = tb.slots.findIndex((sl) => sl[0].spec.key === species);
+  const slots = tb.slots[si];
+  let placed = 0;
+  for (const spot of spots) {
+    const bird = slots.find((s) => !s.active) ?? slots[placed % slots.length];
+    tb._wadeAt(bird, spot, th + Math.PI + (Math.random() - 0.5) * 1.4);   // roughly facing you
+    placed++;
+  }
+
+  console.log(`${placed} ${species}${placed === 1 ? '' : 's'} at (${site.x}, ${site.z}) in ${site.depth} m of water`
+    + ` — you are ${STAND} m away at (${Math.round(landed?.x)}, ${Math.round(landed?.z)}), facing them`);
+  if (!placed) console.warn('found the water but could not settle a bird on it — try running it again');
+  return { site, landed, placed };
 };
 window.__waders();
