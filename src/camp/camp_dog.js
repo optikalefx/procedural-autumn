@@ -270,7 +270,11 @@ const WALK_SPEED = 0.78;         // m/s. A dog pottering, not going anywhere.
 const DOG_CLEAR = 0.25;          // body radius used for path clearance
 const REST_CLEAR = 0.12;         // extra empty ground around a sleeping dog
 const REST_MAX_SLOPE = 0.18;     // tan(angle), about ten degrees
-const REST_MAX_RELIEF = 0.032;   // metres away from the fitted ground plane
+// Tuned against the DRAWN camp floor (see `surfaceAt` above), which carries
+// ±2 cm of authored hummock texture the analytic field does not — the old
+// 0.032, tuned against the smooth field, rejected honest beds for the crime
+// of having the dirt's own detail under them.
+const REST_MAX_RELIEF = 0.048;   // metres away from the fitted ground plane
 const BACK_SPEED = 0.27;         // a careful two- or three-step retreat
 const BACK_TIME = 1.15;          // long enough to open a useful reverse arc
 
@@ -306,6 +310,12 @@ export class CampDog {
     // measured at 0.90 m from the fire, which is inside the stone ring. A dog
     // is the one thing in this camp that must never be walked into the fire.
     this.obstacles = [{ x: site.x, z: site.z, r: FIRE_CLEAR }, ...(opts.obstacles ?? [])];
+    // The surface to REST on. Walking rides the analytic heightfield like
+    // every other animal — a paw sunk a centimetre into the dirt skin is
+    // invisible — but a lying body is measured against the camp floor as
+    // drawn (CampGround.surfaceAt), which sits centimetres proud of the
+    // field on uneven sites.
+    this.surfaceAt = opts.surfaceAt ?? ((x, z) => world.getHeight(x, z));
 
     // One material per dog. Three dogs in three camps is three materials and
     // one program — `createHideMaterial` pins the cache key, same as the wild
@@ -491,12 +501,13 @@ export class CampDog {
 
   /** Fit a stable local ground plane under a whole resting dog. */
   _surfaceAt(x, z, yaw) {
-    const W = this.world;
     const spanZ = Math.max(this.rig.bodyLen, 0.90) * 0.5;
     const spanX = Math.max(this.rig.bodyW, 0.45) * 0.5;
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
-    const height = (side, fore) => W.getHeight(
+    // Sampled from the camp floor as drawn, not the analytic field — beds are
+    // chosen on, and the body laid onto, the surface the player can see.
+    const height = (side, fore) => this.surfaceAt(
       x + rx * side + fx * fore,
       z + rz * side + fz * fore,
     );

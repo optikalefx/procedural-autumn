@@ -98,6 +98,19 @@
       "port": 5241
     },
     {
+      "name": "dog-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5299",
+        "--strictPort"
+      ],
+      "port": 5299
+    },
+    {
       "name": "waders-worktree",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

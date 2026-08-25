@@ -691,6 +691,11 @@ export class CampGround {
     this.feather = edge;
     this.dispose();
     this._lat.clear();
+    // Kept for `surfaceAt` — anything that wants to REST on this dirt (the
+    // camp dog) needs the height of the skin actually drawn, not the analytic
+    // field it was lofted from.
+    this._cx = x;
+    this._cz = z;
 
     // The feather comes from the caller now, not from a global. There can be
     // several camps in the world at once (see camp_clearing.js) and reading
@@ -716,10 +721,44 @@ export class CampGround {
     for (let j = 0; j < SECTORS; j++) {
       R[j] = this._boundary(x, z, (j / SECTORS) * TAU, radius, feather);
     }
+    this._R = R;
 
     this._buildDisc(x, z, R, feather, rng);
     this._buildLitter(x, z, R, feather, rng, pads);
     this.setReveal(this.reveal);
+  }
+
+  /**
+   * The height of the CAMP FLOOR at (x, z) — the surface something lying on
+   * this dirt should actually rest on.
+   *
+   * `world.getHeight` is the wrong number for that twice over: the drawn
+   * terrain is the LOD-0 lattice, which departs from the analytic field by
+   * centimetres wherever the ground is curved, and the dirt skin then rides a
+   * further 1-3 cm proud of it (base lift, hummocks, berm — the same formula
+   * `_buildDisc`'s `write` uses, reproduced here term for term). A standing
+   * animal hides that inside its ankles; a dog folded onto its brisket showed
+   * every centimetre and read as buried. Falls back to the analytic field
+   * before the first build, or outside the disc, where the mesh has feathered
+   * back onto the terrain anyway.
+   */
+  surfaceAt(x, z) {
+    if (!this._R) return this.world.getHeight(x, z);
+    const lx = x - this._cx, lz = z - this._cz;
+    const r = Math.hypot(lx, lz);
+    const fa = (((Math.atan2(lz, lx) / TAU) % 1) + 1) % 1 * SECTORS;
+    const j0 = Math.floor(fa) % SECTORS;
+    const t = fa - Math.floor(fa);
+    const Ra = this._R[j0] * (1 - t) + this._R[(j0 + 1) % SECTORS] * t;
+    const u = r / Math.max(0.25, Ra);
+    if (u > 1 + SKIRT / Ra) return this.world.getHeight(x, z);
+    const skirt = 1 - smoothstep(1.0, 1.0 + SKIRT / Ra, u);
+    const hx = this._cx * 0.83, hz = this._cz * 0.83;
+    const hum = (vnoise2(hx + lx * 0.72, hz + lz * 0.72) - 0.5) * 0.026
+              + (vnoise2(hx + lx * 1.9 + 31.7, hz + lz * 1.9 - 12.1) - 0.5) * 0.011;
+    const berm = Math.exp(-Math.pow((u - 0.90) / 0.10, 2));
+    const lift = LIFT * (0.35 + 0.65 * skirt) + BERM * berm * skirt + hum * skirt;
+    return this._surfaceY(x, z) + lift;
   }
 
   _buildDisc(x, z, R, feather, rng) {
