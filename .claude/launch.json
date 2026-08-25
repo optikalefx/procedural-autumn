@@ -83,6 +83,19 @@
         "--strictPort"
       ],
       "port": 5230
+    },
+    {
+      "name": "compass-pin-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5241",
+        "--strictPort"
+      ],
+      "port": 5241
     }
   ]
 }
