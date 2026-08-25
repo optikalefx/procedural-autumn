@@ -270,6 +270,20 @@ function chainWeight(skel, names, z) {
  * a hoof or paw block. Joints arrive already resolved to absolute model space
  * and already mirrored, so nothing here has to think about sides.
  */
+// Ring fractions along one limb segment. Packed toward the ends, where the
+// joint seam and the dome cap live. `legRings` subdivides each gap evenly.
+const LEG_T_BASE = [0.02, 0.22, 0.55, 0.86, 0.98];
+function LEG_T(D) {
+  const f = D.legRings ?? 1;
+  if (f <= 1) return LEG_T_BASE;
+  const out = [];
+  for (let i = 0; i < LEG_T_BASE.length - 1; i++) {
+    for (let s = 0; s < f; s++) out.push(lerp(LEG_T_BASE[i], LEG_T_BASE[i + 1], s / f));
+  }
+  out.push(LEG_T_BASE[LEG_T_BASE.length - 1]);
+  return out;
+}
+
 function buildLeg(B, L, D) {
   const { spec: sp, iU, iL, iC, hip, knee, hock, foot } = L;
   const R = D.radialLimb;
@@ -278,7 +292,7 @@ function buildLeg(B, L, D) {
     // A short overlap either side of each joint, weighted to both bones, hides
     // the seam without smooth-skinning the whole limb into rubber.
     const st = [];
-    for (const t of [0.02, 0.22, 0.55, 0.86, 0.98]) {
+    for (const t of LEG_T(D)) {
       const r = lerp(r0, r1, t);
       st.push({
         x: lerp(aP[0], bP[0], t), y: lerp(aP[1], bP[1], t), z: lerp(aP[2], bP[2], t),
@@ -366,12 +380,32 @@ function buildAntler(B, skel, P, side, D, rnd) {
 
 // ── the generic quadruped ────────────────────────────────────────────────────
 
+// The near LOD's radial counts were set by measuring facet width in both
+// directions on every mammal and bringing them into line. `smooth: 3` already
+// puts barrel rings 17–75 mm apart along the spine, but at `radialBody: 14` the
+// facets AROUND the same barrel were 22–123 mm — 1.3–1.6× coarser across the
+// whole cast (and 4.3× on the raccoon, whose barrel is authored at 40 rings).
+// More authored stations therefore bought nothing but long thin quads; the
+// binding direction was circumferential, and these are the numbers that move it.
+//
+//   part          lever         facet ratio (radial ÷ axial), median of the cast
+//   barrel/neck   radialBody    1.45  →  14 × 1.45 ≈ 20
+//   head          radialBody    1.22  →  (same lever; 20 overshoots slightly)
+//   limbs         radialLimb    limb facets ran 1.0–1.3× the barrel's; 14 puts
+//                               them at ≈0.7× — legs are bare tapered cones in
+//                               silhouette, so they show polygons first
+//   tail/ears     radialTrim    fox brush 28.7 mm, raccoon ringed tail 35.5 mm
+//                               at 8 sides → 12 brings both under 24 mm
+//
+// `domeSteps` is the leg ball joints (hip, stifle, hock) and nothing else — the
+// one lever that adds actual roundness to a limb rather than more rings along a
+// straight cone. See buildLeg for why ring count there is deliberately fixed.
 const DETAIL = [
   // near — rounded: extra radial sides, and `smooth` inserts Catmull-Rom rings
   // between the authored stations. Still flat-shaded and faceted, just with
   // facets small enough to read as a curve instead of as armour plate.
-  { radialBody: 14, radialLimb: 10, radialTrim: 8, antlerRadial: 6, antlerLevels: 1, antlerSegs: 7,
-    barrelStep: 1, ears: true, smooth: 3, neckRings: 14, domeSteps: 2 },
+  { radialBody: 20, radialLimb: 14, radialTrim: 12, antlerRadial: 8, antlerLevels: 1, antlerSegs: 7,
+    barrelStep: 1, ears: true, smooth: 3, neckRings: 14, domeSteps: 3 },
   // mid — half the rings, four-sided limbs, one antler fork
   { radialBody: 5, radialLimb: 4, radialTrim: 4, antlerRadial: 3, antlerLevels: 1, antlerSegs: 3,
     barrelStep: 2, ears: true, smooth: 1, neckRings: 5, domeSteps: 1 },
