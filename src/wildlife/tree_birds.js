@@ -19,11 +19,18 @@
 //  through the world's hydro queries instead of a treetop. The behaviour
 //  (settle → pick a site in an annulus at random → fly to it → settle) is
 //  shared machinery either way.
+//
+//  The great horned owl (model in owl.js) is the third kind of row: a tree
+//  bird like the eagle in every respect except that it carries
+//  `nocturnal: true`, and the streamer will not hand it a tree unless
+//  SKY_STATE.nightFactor says the valley is actually dark. See NIGHT_SPAWN.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, smoothstep, damp, dampAngle, mulberry32 } from '../core/MathUtils.js';
 import { SPECIES as TREE_SPECIES } from '../vegetation/tree_species.js';
 import { buildFlamingoGeometry, buildBlueHeronGeometry } from './water_birds.js';
+import { buildGreatHornedOwlGeometry } from './owl.js';
+import { SKY_STATE } from '../render/Lighting.js';
 
 // ── plumage ──────────────────────────────────────────────────────────────────
 //
@@ -244,6 +251,11 @@ export function treeBirdMaterial(shared) {
       attribute float aWing;
       attribute vec4 aPose;
       uniform float uTreeBirdTime;
+      // The wing-fold turn, normalised. See the fold block below for why this
+      // particular axis: a 120 degree turn about it is the one rotation that
+      // sends span to back, chord to up and thickness to across, which is what
+      // a closed wing is.
+      const vec3 TB_FOLD_AXIS = vec3( -0.5773503, 0.5773503, 0.5773503 );
     ` + shader.vertexShader.replace(
       '#include <begin_vertex>',
       /* glsl */`#include <begin_vertex>
@@ -321,28 +333,65 @@ export function treeBirdMaterial(shared) {
         float rx = transformed.x - px, ry = transformed.y - py;
         transformed.x = px + rx * ca - ry * sa * s;
         transformed.y = py + rx * sa * s + ry * ca;
-        // Fold: sweep the wing back around the shoulder and shorten it, more
-        // at the tip than the root, so it wraps along the body rather than
-        // sticking out sideways like a scarecrow.
+        // Fold — ONE turn, not two.
+        //
+        // Work in the mirrored frame ( X outboard on either wing, Y up, Z
+        // forward ). A closed wing is a single rigid picture: the span lies
+        // back along the flank, the chord stands on edge with the leading
+        // edge uppermost, and the sheet that was flat over the back is now
+        // thin across the body. That is
+        //     X -> -Z      Z -> +Y      Y -> -X
+        // and that map is exactly a 120 degree turn about TB_FOLD_AXIS. Doing
+        // it as one rotation is the whole fix. The previous version rolled
+        // about Z and THEN swept about Y, and rolling first drags the span
+        // itself downward: on the owl the wing tip left the shoulder at
+        // y +0.05 and arrived at y -0.26, three times the body's own depth
+        // below the feet. Every bird here was wearing a floor-length cape;
+        // the eagle, with the longest span, wore the worst one.
+        //
+        // Before the turn the panel closes on itself the way a real wing
+        // does: the hand shuts back over the forearm and the feathers stack,
+        // so BOTH the span and the chord shrink toward the tip. Chord as well
+        // as span is the part the old code missed — a chord carried through
+        // at full width and then stood on edge is taller than the bird.
         float fold = aPose.w;
         if ( fold > 0.001 ) {
-          // First roll the sheet vertical — a folded wing is held flat
-          // AGAINST the body side, not flat over the back; without this the
-          // swept wing reads as a horizontal slab sticking off the bird.
-          float rb = fold * ( 0.30 + 0.55 * w );
-          float crb = cos( rb ), srb = sin( rb );
-          float ax = transformed.x - px, ay = transformed.y - py;
-          transformed.x = px + ax * crb + s * ay * srb;
-          transformed.y = py - s * ax * srb + ay * crb;
-          // Then sweep it back around the shoulder and shorten it. The
-          // shortening is horizontal only — scaling y as well was tried and
-          // crumples the rolled sheet into the body.
-          float th = fold * ( 0.75 + 1.00 * w ) * s;
-          float ct = cos( th ), st = sin( th );
-          float fx = transformed.x - px, fz = transformed.z - pz;
-          float k = 1.0 - 0.52 * fold * w;
-          transformed.x = px + ( fx * ct + fz * st ) * k;
-          transformed.z = pz + ( fz * ct - fx * st ) * k;
+          vec3 v = vec3( s * transformed.x - 0.048, transformed.y - py,
+                         transformed.z - pz );
+          v.x *= 1.0 - 0.58 * fold * w;
+          // The chord closes hard at the ROOT too, not only at the tip: the
+          // root chord is the widest part of the wing and it sits well forward
+          // of the shoulder, so a root carried through at full chord swings
+          // its leading edge up over the bird's own back as a strap.
+          v.z *= 1.0 - 0.66 * fold * ( 0.55 + 0.45 * w );
+          // Graded on the spanwise fraction so the shoulder end blends into
+          // the flank instead of hinging - but graded to SATURATE early, and
+          // that matters more than it looks. Halfway round this turn the span
+          // is pointing up and outward, so a wing graded smoothly from root to
+          // tip parks its own middle out to the side like a flipper. Reaching
+          // the full turn by about half the span keeps the outer wing, which
+          // is all of the visible one, in the folded picture; only the short
+          // inner run interpolates, and it is buried in the flank anyway.
+          float fa = fold * min( 1.0, 0.02 + 1.85 * w ) * 2.0943951;
+          float cf = cos( fa ), sf = sin( fa );
+          v = v * cf + cross( TB_FOLD_AXIS, v ) * sf
+            + TB_FOLD_AXIS * dot( TB_FOLD_AXIS, v ) * ( 1.0 - cf );
+          // Lay the closed panel ON the flank rather than through it. The turn
+          // alone lands it inboard of the shoulder by the wing's own camber,
+          // because thickness maps to -X; this puts it back outside. Squared
+          // in the span fraction so the root, which has not turned, does not
+          // get pushed off the shoulder.
+          v.x += 0.030 * fold * w * w;
+          // ...and settle it. The shoulder the turn happens about is the joint,
+          // which sits above the plane the wing sheet is authored in, so the
+          // stood-up chord lands with its leading edge riding a millimetre or
+          // two proud of the bird's own back — from behind that shows as a
+          // strap slung across the spine. Dropping the closed panel by this
+          // much tucks the leading edge under the back line and lets the
+          // trailing edge hang just below the belly, which is where folded
+          // primaries actually sit.
+          v.y -= 0.018 * fold * w;
+          transformed = vec3( s * ( 0.048 + v.x ), py + v.y, pz + v.z );
         }
       }`
     );
@@ -418,6 +467,10 @@ export function buildBaldEagle(rnd, opts = {}) {
 //              those birds do. A flamingo colony is the payoff at the end
 //              of a boat trip, and a payoff that leaves on the frame you
 //              arrive is not one, so it holds for five seconds first.
+//   nocturnal  this bird only exists at night. It is never handed a perch
+//              while SKY_STATE.nightFactor is under NIGHT_SPAWN, and one that
+//              is still out when the sky comes up leaves under its own power
+//              rather than blinking off — see the nocturnal block in _scan.
 //
 // Waders (habitat: 'water', models in water_birds.js) swap the tree fields
 // for water ones:
@@ -502,6 +555,40 @@ export const TREE_BIRD_SPECIES = [
     flock: true,
     colony: 2,
   },
+  {
+    key: 'owl',
+    geometry: buildGreatHornedOwlGeometry,
+    nocturnal: true,
+    // Two. An owl is an event and it is one the player can only have for a
+    // few hours of the cycle, so the valley holds at most a pair — six of them
+    // would turn the one bird you are meant to stop the car for into a zoo.
+    live: 2,
+    chance: 0.5,
+    // 2x life, like the eagle and for the same reason (both are read against a
+    // treetop), but visibly the smaller bird: a real great horned owl is 1.4 m
+    // to a bald eagle's 2.05, and the gap between 2.8 and 4.1 in the world is
+    // what says "not an eagle" before the ear tufts are resolvable.
+    wingspan: [2.6, 3.0],
+    // A statue, more so than the heron: this bird's whole trick is that it is
+    // already there, and has been for a while, when the headlights find it.
+    perchS: [45, 120],
+    hop: [45, 120],
+    cruise: [7.5, 10.5],       // unhurried; nothing an owl does is fast
+    flapHz: [1.1, 1.45],       // slower than the eagle …
+    flapAmp: [0.80, 1.00],     // … and deeper. Big soft wings, few beats.
+    // Owls use smaller trees than eagles — a hunting perch wants a view of the
+    // ground, not the highest spire in the valley.
+    minTreeH: 8,
+    // Three seconds of being crowded before it goes, for the flamingo's
+    // reason: an owl found at night is a payoff, and a payoff that leaves on
+    // the frame the headlights reach it is not one.
+    startle: 20,
+    startleDelay: 3,
+    // Less vertical than the eagle's -0.85. The head is rigid with the body
+    // and this one is mostly head: at the eagle's pitch the owl sits on its
+    // branch looking at the sky, and the face is the entire animal.
+    perchPitch: -0.70,
+  },
 ];
 
 // Streaming ring. Spawn perched birds far enough out that materialising is
@@ -510,6 +597,22 @@ export const TREE_BIRD_SPECIES = [
 const SPAWN_R = [85, 190];
 const DESPAWN = 280;
 const VIS_OK = 150;
+
+// ── the nocturnal gate ───────────────────────────────────────────────────────
+//
+// `SKY_STATE.nightFactor` is Lighting's own night ramp, and its shape is the
+// reason these are the numbers: it is 0.00 at 19:00, 0.29 at 19:48, 0.83 at
+// 20:24 and 1.00 from 21:00 through 04:36 (the table over its definition).
+//
+// So NIGHT_SPAWN 0.55 means an owl may first arrive around 20:05 — full dusk,
+// headlights already on, the sky still blue enough that the bird is not a
+// black cut-out. NIGHT_STAY is deliberately much lower than the spawn gate,
+// and not for hysteresis alone: a bird that appeared at dusk should be allowed
+// to sit through the whole night and out the other side, and 0.30 puts its
+// last legal minute at about 05:05, which is dawn twilight rather than
+// daylight. Between the two the population only shrinks.
+const NIGHT_SPAWN = 0.55;
+const NIGHT_STAY = 0.30;
 
 // What counts as an island a wader would use (see _ensureIslands). The area
 // window is doing two jobs at once: below it a land component is a gravel
@@ -654,9 +757,16 @@ export class TreeBirds {
         const S = b.spec;
         if (b.active) {
           const d = Math.hypot(b.x - cx, b.z - cz);
-          if (d > DESPAWN && b.state === P_PERCH) this._park(b);
+          if (d > DESPAWN && b.state === P_PERCH) { this._park(b); continue; }
+          // Dawn on a night bird: it goes home, it does not evaporate.
+          if (S.nocturnal && SKY_STATE.nightFactor < NIGHT_STAY) this._dayOut(b, d, cx, cz);
           continue;
         }
+        // …and the same gate on the way in. Placed ahead of the cooldown so
+        // the cooldown only burns at night: otherwise both owls would spend
+        // the afternoon draining theirs and then materialise together the
+        // moment it got dark.
+        if (S.nocturnal && SKY_STATE.nightFactor < NIGHT_SPAWN) continue;
         // The cooldown is what keeps the population breathing. A freed slot
         // that refills within seconds means exactly `live` eagles forever; a
         // slot that sometimes goes dormant for minutes means stretches of
@@ -709,6 +819,27 @@ export class TreeBirds {
         }
       }
     }
+  }
+
+  /**
+   * A nocturnal bird caught out by the sunrise.
+   *
+   * The cheap thing to do would be to call _park and be done, and for a bird
+   * three hundred metres away that is exactly right. Up close it is the one
+   * failure this whole system exists to avoid: an owl the player has driven
+   * out to look at, deleted between two frames while they watch. So near the
+   * camera it leaves the way it arrived — a launch away from the player, which
+   * is the same move a startled bird makes, and _scan pushes it off again each
+   * time it lands until it is far enough out that nobody can see it go. A
+   * hop is 45–120 m, so that is one or two flights, not a hunt for the horizon.
+   *
+   * Mid-flight birds are left alone until they land, the same rule the
+   * distance despawn follows.
+   */
+  _dayOut(b, d, cx, cz) {
+    if (d > VIS_OK) { this._park(b); return; }
+    if (b.state !== P_PERCH) return;
+    this._launch(b, cx, cz);
   }
 
   _park(b) {
@@ -1043,6 +1174,29 @@ export class TreeBirds {
       }
     }
     return null;
+  }
+
+  /**
+   * The nearest SETTLED bird of `key` within `maxD` of (x, z), or null.
+   *
+   * This exists for wildlife_audio.js. That file finds its mammals by walking
+   * Wildlife.debugState(), which knows nothing about the birds in here, and a
+   * hoot has to come from an owl that is actually sitting in a tree nearby —
+   * a call with no bird under it is the cuckoo clock its header forbids. This
+   * is the cheapest honest answer to that question, and the audio side asks it
+   * on a minute-plus cooldown, never per frame.
+   */
+  nearestPerched(key, x, z, maxD) {
+    let best = null, bd = maxD;
+    for (const slots of this.slots) {
+      if (slots[0]?.spec?.key !== key) continue;
+      for (const b of slots) {
+        if (!b.active || b.state !== P_PERCH) continue;
+        const d = Math.hypot(b.x - x, b.z - z);
+        if (d < bd) { bd = d; best = b; }
+      }
+    }
+    return best ? { x: best.x, y: best.y, z: best.z, dist: bd } : null;
   }
 
   /** A random other settled bird of the same species, or null. */
