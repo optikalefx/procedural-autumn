@@ -275,6 +275,15 @@ const ORBIT_MIN = 1.9;
 const ORBIT_MAX = 3.4;
 const REST_MIN = 1.7;            // …and where it chooses to lie down
 const REST_MAX = 2.8;
+// A camp on a hillside must still get a resting dog. The slope and relief
+// gates below are PREFERENCES, enforced strictly while flat ground exists and
+// relaxed step by step when repeated searches find none — the same courtesy
+// every other camp object gets from standOn. At full relaxation the limits
+// are wherever the rest poses' own ground-fitting clamps live (pitch 0.60,
+// roll 0.45): the dog beds across the slope and the pose tilts with it.
+const REST_RELAX_SLOPE = 0.52;   // fully relaxed slope gate
+const REST_RELAX_RELIEF = 0.10;  // fully relaxed relief gate
+const REST_CROSS_SLOPE = 0.15;   // above this, beds prefer the contour line
 const WALK_SPEED = 0.78;         // m/s. A dog pottering, not going anywhere.
 const DOG_CLEAR = 0.25;          // body radius used for path clearance
 const REST_CLEAR = 0.12;         // extra empty ground around a sleeping dog
@@ -374,6 +383,7 @@ export class CampDog {
     this.restPlan = null;
     this.restGround = null;
     this.approachFinal = false;
+    this.restRelax = 0;        // 0..1, eases the bed gates on slope-bound camps
 
     // The stuck watchdog: an anchor position, and how long the dog has failed
     // to get a body length away from it while supposedly going somewhere.
@@ -545,6 +555,8 @@ export class CampDog {
   _pickRestSpot() {
     let best = null, bestScore = -Infinity;
     const here = Math.atan2(this.pos.x - this.fire.x, this.pos.z - this.fire.z);
+    const slopeMax = lerp(REST_MAX_SLOPE, REST_RELAX_SLOPE, this.restRelax);
+    const reliefMax = lerp(REST_MAX_RELIEF, REST_RELAX_RELIEF, this.restRelax);
     for (let i = 0; i < 28; i++) {
       // Beds are searched AHEAD on the current meander, not at an arbitrary
       // bearing. The arbitrary draw often chose the far side of the fire, then
@@ -559,9 +571,26 @@ export class CampDog {
       if (clear < REST_CLEAR || fireD < REST_MIN - 0.2 || fireD > REST_MAX + 0.7) continue;
 
       const toFire = Math.atan2(this.fire.x - p.x, this.fire.z - p.z);
-      const yaw = toFire + (this.rnd() - 0.5) * 1.05;
+      let yaw = toFire + (this.rnd() - 0.5) * 1.05;
+      // On real slope, bed along the CONTOUR — the way a dog actually lies on
+      // a hillside — so the pose carries the ground as roll (which its clamp
+      // absorbs gracefully) rather than as head-down-the-hill pitch. Of the
+      // two contour directions, keep the one nearer facing the fire.
+      {
+        const e = 0.35;
+        const gx = (this.surfaceAt(p.x + e, p.z) - this.surfaceAt(p.x - e, p.z)) / (2 * e);
+        const gz = (this.surfaceAt(p.x, p.z + e) - this.surfaceAt(p.x, p.z - e)) / (2 * e);
+        const slope0 = Math.hypot(gx, gz);
+        if (slope0 > REST_CROSS_SLOPE) {
+          const cA = Math.atan2(gz, -gx);
+          const cB = Math.atan2(-gz, gx);
+          const contour = Math.abs(wrapAngle(cA - toFire)) <= Math.abs(wrapAngle(cB - toFire)) ? cA : cB;
+          const s = clamp01((slope0 - REST_CROSS_SLOPE) / 0.12);
+          yaw = yaw + wrapAngle(contour + (this.rnd() - 0.5) * 0.5 - yaw) * s;
+        }
+      }
       const ground = this._surfaceAt(p.x, p.z, yaw);
-      if (ground.slope > REST_MAX_SLOPE || ground.relief > REST_MAX_RELIEF) continue;
+      if (ground.slope > slopeMax || ground.relief > reliefMax) continue;
 
       // Approach from behind the final pose. This is the animation fix as much
       // as it is path planning: the dog walks into its bed already facing the
@@ -571,11 +600,14 @@ export class CampDog {
       if (this._clearanceAt(entryX, entryZ) < WALK_CLEAR + 0.02) continue;
 
       const turn = Math.abs(wrapAngle(Math.atan2(entryX - this.pos.x, entryZ - this.pos.z) - this.heading));
-      const score = -ground.slope * 5 - ground.relief * 24 - turn * 0.16 +
+      // |pitch| gets its own penalty on top of slope: lying nose-down the
+      // hill is the reading that looks wrong, roll along it reads fine.
+      const score = -ground.slope * 5 - Math.abs(ground.pitch) * 2.2 -
+        ground.relief * 24 - turn * 0.16 +
         Math.min(clear, 0.5) * 0.2 + this.rnd() * 0.05;
       if (score > bestScore) {
         bestScore = score;
-        best = { x: p.x, z: p.z, yaw, ground, entryX, entryZ };
+        best = { x: p.x, z: p.z, yaw, ground, entryX, entryZ, slopeMax, reliefMax };
       }
     }
     return best;
@@ -1081,8 +1113,12 @@ export class CampDog {
             this.state = ST.APPROACH;
             this.timer = APPROACH_TIME;
           } else {
-            // No honest bed is better than lying on the least-bad hummock.
-            // Wander a little further and ask again from another part of camp.
+            // No honest bed at the current standards: wander a little further
+            // and ask again from another part of camp — with the standards
+            // eased a step. On a hillside camp nothing ever passes the strict
+            // gates, and a dog that can never lie down is worse than one bedded
+            // across the slope; three failed searches reach full relaxation.
+            this.restRelax = Math.min(1, this.restRelax + 0.34);
             this.timer = 2.5 + this.rnd() * 2.5;
           }
         }
@@ -1117,11 +1153,13 @@ export class CampDog {
           const spotD = Math.hypot(plan.x - this.pos.x, plan.z - this.pos.z);
           if (spotD < 0.24) {
             const ground = this._surfaceAt(this.pos.x, this.pos.z, this.heading);
-            if (ground.slope > REST_MAX_SLOPE || ground.relief > REST_MAX_RELIEF ||
+            if (ground.slope > (plan.slopeMax ?? REST_MAX_SLOPE) ||
+                ground.relief > (plan.reliefMax ?? REST_MAX_RELIEF) ||
                 this._clearanceAt(this.pos.x, this.pos.z) < REST_CLEAR * 0.5) {
               this._abandonRestSpot();
               break;
             }
+            this.restRelax = 0;
             this.state = ST.SETTLE;
             this.timer = SETTLE_TIME;
             this.pose = POSES[pickPose(this.rnd())];
@@ -1431,6 +1469,10 @@ const DOG_GAIT = {
   strideBase: 0.62, strideGain: 2.4, dutyWalk: 0.62, dutyTrot: 0.50, dutyRun: 0.32,
   bobAmp: 0.020, pitchAmp: 0.038, liftScale: 1.05,
   grazeAng: 1.32, grazeRake: 1.40,
+  // Camps pitch on slopes; the head carriage must pitch with the body there
+  // or a dog walking downhill points its muzzle at the sky. See the
+  // carriageFollow block in animal_anim._poseHead.
+  carriageFollow: true,
 };
 
 function pickDogVariant(r) {

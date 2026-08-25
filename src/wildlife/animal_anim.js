@@ -250,6 +250,7 @@ export class AnimRig {
     this.earFlick = [0, 0];
     this.earNext = [1.3, 2.7];
     this.headYaw = 0; this.headPitch = 0; this.headRoll = 0;
+    this.carriageDelta = 0;
     // Last frame's unwrapped neck rotation. See the atlas counter-rotation in
     // _poseHead — the raw value is only defined modulo a turn.
     this.neckChain = 0;
@@ -280,6 +281,7 @@ export class AnimRig {
     // Back to the canonical branch — a recycled rig would otherwise hand the
     // atlas a whole turn of stale unwrap and rake the muzzle at the sky.
     this.neckChain = 0;
+    this.carriageDelta = 0;
     this._warm = true;
   }
 
@@ -601,6 +603,7 @@ export class AnimRig {
       _c.y -= Math.abs(nod) * 0.022 * k;
     }
 
+
     const lam = 7 + 11 * alert;
     this.headTarget.x = damp(this.headTarget.x, _c.x, lam, dt);
     this.headTarget.y = damp(this.headTarget.y, _c.y, lam, dt);
@@ -617,6 +620,46 @@ export class AnimRig {
     // distance rather than z alone or a sideways look would foreshorten it.
     let fz = Math.hypot(_b.x, _b.z) * Math.sign(_b.z || 1);
     let ty = _b.y;
+    // ── the carriage pitches WITH the body ───────────────────────────────────
+    // The target above is authored in the upright mesh frame — deliberate,
+    // that is the bob stabilisation — but on sloped ground the chest pitches
+    // AND swings on the root's pitch arc underneath it, and a target that
+    // stays level makes the neck crane: walking downhill the muzzle ended up
+    // sixty degrees above the horizon, pointed at the sky
+    // (tools/_scratch/dogslope.mjs). So probe where the bind carriage POINT
+    // lands in the live chest frame, take how far its elevation drifted from
+    // the bind elevation, and rotate the target back by that much about the
+    // neck base. The probe is a point, not a direction, because most of the
+    // drift is the chest translating, not rotating. It therefore also sees
+    // the gait bob — which must NOT be corrected, that is the stabilisation —
+    // so the delta is damped at 4/s: stride-frequency bob averages out of it,
+    // the quasi-static slope passes through. Flat ground reads zero; grazing
+    // fades it out, that path solves its own geometry.
+    // Opt-in per species (cfg.carriageFollow) rather than global, after
+    // measurement: the probe is noisy on a hopping rabbit's five-centimetre
+    // neck, and any graze at all replaces the target with the arc, whose
+    // slope behaviour is its own validated geometry — correcting across that
+    // boundary whipped the poll at every crop transition (grazeslope.mjs).
+    // The camp dog never grazes and walks gently, which is exactly the case
+    // the correction exists for. The delta decays whenever it is not applied
+    // so it always re-engages cleanly.
+    if (graze < 0.001 && this.cfg.carriageFollow) {
+      _c.copy(this.neckRest);
+      this.mesh.localToWorld(_c);
+      _c.applyMatrix4(_m);
+      const pz = Math.hypot(_c.x, _c.z) * Math.sign(_c.z || 1);
+      const probeElev = Math.atan2(_c.y - nb.a.position.y, pz - nb.a.position.z);
+      this.carriageDelta = damp(this.carriageDelta, wrapAngle(probeElev + this.restAng), 4, dt);
+      if (Math.abs(this.carriageDelta) > 1e-4) {
+        const dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
+        const d = Math.hypot(dy, dz);
+        const e = Math.atan2(dy, dz) - this.carriageDelta;
+        ty = nb.a.position.y + Math.sin(e) * d;
+        fz = nb.a.position.z + Math.cos(e) * d;
+      }
+    } else {
+      this.carriageDelta = damp(this.carriageDelta, 0, 4, dt);
+    }
     // ── keep the solve off the straight-chain singularity ────────────────────
     // Every species binds its neck bones nearly colinear, so the rest target
     // already sits at ~100% of the chain's reach — where acos in the two-link
@@ -634,6 +677,25 @@ export class AnimRig {
         const s = (ceil - (ceil - knee) * Math.exp(-(d - knee) / (ceil - knee))) / d;
         ty = nb.a.position.y + dy * s;
         fz = nb.a.position.z + dz * s;
+      }
+    }
+    // ── the anatomical stop ──────────────────────────────────────────────────
+    // Whatever upstream produced the target — a pitched body, a bad blend, a
+    // future bug — the neck must never solve for a point outside the arc a
+    // real neck covers. Measured from the chest, that is from steeply down
+    // (the graze) to a little above the bind carriage; a target past vertical
+    // toward the animal's own back is how the "head folded over the shoulders"
+    // pose happened, and clamping the ELEVATION here (radius kept) makes that
+    // pose unreachable by construction rather than merely unlikely.
+    {
+      let dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
+      const elev = Math.atan2(dy, dz);
+      const hi = -this.restAng + 0.55;      // bind carriage plus alert headroom
+      const e = clamp(elev, -1.7, hi);
+      if (e !== elev) {
+        const d = Math.hypot(dy, dz);
+        ty = nb.a.position.y + Math.sin(e) * d;
+        fz = nb.a.position.z + Math.cos(e) * d;
       }
     }
     solve2(nb.a.position.y, nb.a.position.z, ty, fz, nb.l1, nb.l2, -1, _ik);
