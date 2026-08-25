@@ -7,6 +7,8 @@
 //    animal_anim     procedural gaits driven by real ground speed
 //    animal_brain    the state machine and the steering
 //    birds           two instanced flocks and a startle burst
+//    fireflies       the night shift: one GPU-resident draw call over the
+//                    meadow and the water margins, dark before dusk
 //
 //  This file is the world layer: where animals live, when they exist, and how
 //  much of the frame they are allowed to cost.
@@ -35,6 +37,7 @@ import { AnimRig } from './animal_anim.js';
 import { Brain, ST, WATER_MAX } from './animal_brain.js';
 import { Birds } from './birds.js';
 import { TreeBirds } from './tree_birds.js';
+import { Fireflies } from './fireflies.js';
 
 // Per-species streaming and population budget.
 //
@@ -71,6 +74,20 @@ const CFG = {
   // (the first cut at 420 took 1080 of 1671).
   squirrel: { spawn: 72, despawn: 104, live: 8, perKm2: 240 },
 };
+
+// Seeded firefly population inside the 60 m wrap box, per quality tier.
+//
+// It looks enormous next to the mote counts and it is not the same kind of
+// number: a firefly is DARK about four fifths of the time, the habitat gates
+// delete most of the box on any given ground, and the clumping noise deletes
+// most of what is left. Measured at the meadow anchor at 22:00, 3000 seeded
+// lands about 28 lit insects in a 1600x900 frame; at the lake margin about 10;
+// in deep timber, zero. Sparse is the target and this is what sparse costs.
+//
+// A tier table rather than a multiplier, on Weather's pattern: these are all
+// one draw call and a few thousand vertex invocations, so the low tier is cut
+// for the fill cost of the glows and nothing else.
+const FIREFLY_N = { ultra: 3200, high: 3000, medium: 1900, low: 900 };
 
 // LOD. A deer is about 1.5 m tall, so at 60 m it is roughly forty pixels — the
 // reduced mesh is indistinguishable there and costs 40% of the triangles.
@@ -124,6 +141,12 @@ export class Wildlife extends System {
     // the shallows. See tree_birds.js and water_birds.js.
     this.treeBirds = new TreeBirds(this.ctx, SEED ^ 0x6ea9);
     this.treeBirds.build();
+
+    // The night shift. One draw call, GPU-resident, and it does not draw at all
+    // before dusk — see the header of fireflies.js.
+    this.fireflies = new Fireflies(this.ctx, SEED ^ 0x1ee5,
+                                   FIREFLY_N[this.ctx.quality] ?? FIREFLY_N.high);
+    this.fireflies.build();
 
     scene.add(this.group);
     this._compileWarm = true;
@@ -785,6 +808,7 @@ export class Wildlife extends System {
 
     this.birds.update(dt, cam, threat);
     this.treeBirds.update(dt, cam, threat);
+    this.fireflies?.update(dt, elapsed);
   }
 
   /** One animal: brain, then LOD, then the gait solver. */
@@ -1060,6 +1084,7 @@ export class Wildlife extends System {
     }
     this.birds?.dispose();
     this.treeBirds?.dispose();
+    this.fireflies?.dispose();
   }
 }
 
