@@ -95,7 +95,7 @@ export class Compass {
     }
 
     // Lay the landmarks out first, then resolve overlaps, then write the DOM.
-    // Three peaks on the same bearing used to stack into one illegible blob.
+    // Three pins on the same bearing used to stack into one illegible blob.
     const place = this._place ??= [];
     place.length = 0;
     for (let i = 0; i < this.slots.length; i++) {

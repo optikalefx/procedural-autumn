@@ -25,7 +25,10 @@ const S = (d, extra = '') =>
   `stroke-linecap="round" stroke-linejoin="round">${d}${extra}</svg>`;
 
 export const ICON = {
-  // A summit, with a shoulder behind it.
+  // A summit, with a shoulder behind it. Peaks are tracked but not pinned
+  // (see `UNPINNED` in HUD.js), so nothing draws this today — it stays because
+  // the strip falls back to `vista` for an unknown kind, and putting peaks back
+  // on the compass should not silently give them the wrong glyph.
   peak: S('<path d="M2 19l7-12 5 8 3-4 5 8z"/>'),
   // A single raindrop: falling water, whatever the shape of the rock.
   waterfall: S('<path d="M12 4c4 4.7 6 7.6 6 10.2a6 6 0 0 1-12 0C6 11.6 8 8.7 12 4z"/>'),

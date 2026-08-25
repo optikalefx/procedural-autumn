@@ -32,19 +32,26 @@ import { MiniMap } from './hud_map.js';
 import { touchCapable } from '../core/verbs.js';
 
 const STORE = 'pa.hud';
-// How many of each landmark kind go on the compass. Weighted toward water:
-// it is the thing worth driving to, and the thing you can already hear.
+// How many of each landmark kind are in the world's list of things to find.
+// Weighted toward water: it is the thing worth driving to, and the thing you
+// can already hear.
 const LANDMARKS = [['waterfall', 4], ['vista', 3], ['peak', 2], ['river', 3]];
+// Kinds that count toward "found" but never take a slot on the compass strip.
+// A crest that rises 350 m out of the valley floor announces itself from the
+// far side of the map — the player has already seen it, and a pin saying it is
+// 4 km that way is the compass repeating the windscreen. Driving up to one is
+// still worth crediting; it just does not need directions.
+const UNPINNED = new Set(['peak']);
 const FOUND_RADIUS = 75;
 // A peak is not a place you stand on — the crests here rise 350 m out of a
 // valley floor that reaches their feet, and nothing the player drives is
-// getting up one. So the pin sits on the summit (see `_landmarkSpot`) and the
+// getting up one. So the mark sits on the summit (see `_landmarkSpot`) and the
 // ring around it is the width of the mountain's foot rather than a doorstep:
 // close enough that the thing fills the windscreen, which is the moment worth
 // calling "found". At 75 m it would never fire at all.
 const FOUND_RADIUS_BY_KIND = { peak: 200 };
 // Two vantages scored for the camera can be aimed at the same massif, which
-// gives two summits a few dozen metres apart and two pins on the same rock.
+// gives two summits a few dozen metres apart and two entries on the same rock.
 const SAME_LANDMARK = 300;
 // A waterfall inside this range stays on the compass even when six other
 // landmarks are nearer — it is the thing you can already hear.
@@ -199,7 +206,7 @@ export class HUD extends System {
     for (const [kind, n] of LANDMARKS) {
       let added = 0;
       // Walk past the quota: a candidate dropped for landing on one already
-      // taken costs the kind a candidate, not a pin.
+      // taken costs the kind a candidate, not an entry.
       for (let i = 0; added < n && i < n + 12; i++) {
         const p = poi.best(kind, i);
         if (!p) break;
@@ -240,7 +247,12 @@ export class HUD extends System {
       if (m.found) found++;
     }
     this.found = found;
-    const sorted = this._all.slice().sort((a, b) => a.dist - b.dist);
+    // Every landmark is measured and credited above; only the pinnable kinds
+    // compete for the six slots. Peaks drop out here rather than at build time
+    // so they still count toward "found / total" and the logbook.
+    const sorted = this._all.slice()
+      .filter((m) => !UNPINNED.has(m.kind))
+      .sort((a, b) => a.dist - b.dist);
     const marks = sorted.slice(0, 6);
     for (const m of sorted) {
       if (m.kind === 'waterfall' && m.dist < WATERFALL_NEAR && !marks.includes(m)) marks.push(m);
