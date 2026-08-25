@@ -11,6 +11,10 @@
 //  anything about the others. It has three parts:
 //
 //    · a prevailing direction that wanders slowly (minutes, not seconds)
+//    · a squall envelope — whether it is blowing *at all* right now. Skewed
+//      low, so the valley is calm most of the time and blustery in bursts;
+//      without it the wind sits at one middling strength forever, which reads
+//      as a setting rather than as weather
 //    · gust cells that *advect* with that direction, so a gust visibly travels
 //      across the meadow rather than the whole valley pulsing in unison
 //    · a mild vertical term — thermals and lee-side lift — which is what makes
@@ -43,12 +47,15 @@ export class WindField {
     // Gust envelope, 0..~1.6. Published so other systems can drive a sway
     // amplitude off the same number the leaves are riding.
     this.gust = 1.0;
+    // Squall envelope, 0..1 — how windy this stretch of the afternoon is, on
+    // the timescale of minutes. Deliberately biased low: see `update`.
+    this.squall = 0.25;
     this.speed = this.baseSpeed;
     this.t = 0;
 
     // Phase offsets keep the sine lattices from lining up into a visible grid.
-    this._p = new Float32Array(6);
-    for (let i = 0; i < 6; i++) this._p[i] = rand() * TAU;
+    this._p = new Float32Array(8);
+    for (let i = 0; i < 8; i++) this._p[i] = rand() * TAU;
 
     this._scratch = new THREE.Vector3();
   }
@@ -64,15 +71,37 @@ export class WindField {
     this.dir.set(Math.cos(a), 0, Math.sin(a));
     this.angle = a;
 
-    // Whole-valley gust envelope — the term Trees reads as `windScale`.
-    this.gust = 0.78 + 0.34 * Math.sin(elapsed * 0.083 + this._p[2])
-                     + 0.14 * Math.sin(elapsed * 0.211 + this._p[3]);
+    // Squall envelope: whether the afternoon is *currently* blowing at all,
+    // on periods of ~4 min and ~1.7 min. Two detuned sines give a 0..1 ramp,
+    // and the exponent is the whole point — raised to 2.4 the field spends
+    // most of its time near the bottom of the range and only occasionally
+    // climbs to the top. A valley is calm most of the time and gusty in
+    // bursts; a constant mid-strength wind reads as an animation setting, not
+    // as weather, and it is what made the drift look permanently blown.
+    //
+    // The two periods are chosen for the cadence they produce, not for the
+    // numbers themselves: about sixteen blustery spells an hour, each running
+    // a little over half a minute — long enough for the drift to actually fill
+    // the air (a leaf lives ~30 s) and rare enough that the quiet between them
+    // is the normal state.
+    const raw = 0.5 + 0.5 * (0.64 * Math.sin(elapsed * 0.0262 + this._p[6])
+                           + 0.36 * Math.sin(elapsed * 0.0630 + this._p[7]));
+    this.squall = Math.pow(Math.min(Math.max(raw, 0), 1), 2.4);
+
+    // Whole-valley gust envelope — the term Trees reads as `windScale`. The
+    // fast detail (~76 s and ~30 s) rides *on* the squall rather than adding
+    // to a fixed base, so a lull is genuinely quiet and a squall still crests
+    // at the strength this used to hold all day.
+    const detail = 0.86 + 0.20 * Math.sin(elapsed * 0.083 + this._p[2])
+                        + 0.10 * Math.sin(elapsed * 0.211 + this._p[3]);
+    this.gust = (0.50 + 0.70 * this.squall) * detail;
     this.speed = this.baseSpeed * this.gust;
     void dt;
   }
 
   /**
-   * Local gust multiplier at a world point, ~0.45 … ~1.55.
+   * Local gust multiplier at a world point — roughly 0.2 … 1.5, scaled by the
+   * squall envelope, so in a lull the whole lattice sits near the bottom.
    *
    * The lattice is advected by `-dir * t` so cells sweep downwind. That is the
    * whole trick: a *stationary* gust field makes the meadow breathe in place,
