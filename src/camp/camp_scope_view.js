@@ -220,6 +220,10 @@ export class ScopeView {
     this._e = new THREE.Euler(0, 0, 0, 'YXZ');
     this._took = false;
     this._hadForce = false;
+    // The prop photo mode is standing inside, while it is standing inside it,
+    // and where the eyepiece was when it took over. See `handOff`.
+    this._handedOff = null;
+    this._eyeAt = new THREE.Vector3();
   }
 
   get active() { return !!this.prop; }
@@ -249,6 +253,9 @@ export class ScopeView {
    */
   enter(prop) {
     if (this.prop === prop) return;
+    // A telescope handed to photo mode is invisible until photo mode is done
+    // with it. Walking back up to an eyepiece is one of the ways it is done.
+    this.endHandOff();
     const cam = this.ctx.camera;
     const d = prop.userData?.telescope;
     if (!d?.eye || !d?.aim) return;
@@ -297,13 +304,82 @@ export class ScopeView {
     this.closing = true;
   }
 
-  /** Let go of the camera and the prop, immediately and without an ease. */
-  _release() {
+  /**
+   * Hand the composed frame to photo mode, where it stands.
+   *
+   * Photo mode's contract is that the frame you pressed F on is the frame you
+   * get to compose from — `CameraRig.enterFree` reads the live camera and
+   * reproduces it to the bit. Leaving the eyepiece the ordinary way breaks
+   * that, and breaks it twice over: `leave()` is an ease, the ease still owns
+   * the camera (this view holds the rig's takeover, which outranks free mode),
+   * and it finishes by cutting back to the pose the player came from. What the
+   * player saw was the eyepiece zoom out over a third of a second and then
+   * jump straight back into it — because the free camera had already been
+   * posed at the eyepiece on the way in, and picked that shot up again the
+   * moment the takeover let go.
+   *
+   * So this is the other exit: no ease, no restore, camera untouched. The rig
+   * is handed back mid-shot and free mode continues from the exact pose — same
+   * position, same bearing, same field of view. The only thing that moves is
+   * the field stop, which fades on its own 0.18 s transition and reads as the
+   * mask lifting off the shot rather than as the camera going anywhere.
+   *
+   * @returns the telescope handed over, or null if no eyepiece was open.
+   */
+  handOff() {
+    if (!this.prop) return null;
+    const cam = this.ctx.camera;
+    const rig = this.ctx.systems?.cameraRig;
+    // The rig has been returning early at its takeover for as long as this
+    // view has been open, so its own `camPos` is still the pose from before
+    // the lean-in. `enterFree` measures the free camera's arm — and with it
+    // the depth-of-field plane — against that field, so hand it the truth
+    // before it reads it.
+    rig?.camPos?.copy(cam.position);
+    this._handedOff = this.prop;
+    this._eyeAt.copy(cam.position);
+    this._release(true);
+    return this._handedOff;
+  }
+
+  /**
+   * Put the telescope back once the photographer can see it.
+   *
+   * Called every frame while photo mode holds a handed-off prop. The tube is
+   * hidden because the camera is standing in the middle of it (note 2); a free
+   * camera that has stepped away from the eyepiece is instead looking at a
+   * camp with a telescope-shaped hole in it, and that hole would be in the
+   * photograph. 1.4 m clears the length of the tube, which is the distance at
+   * which it stops being something the camera is inside of and starts being
+   * something it can see.
+   *
+   * @param camPos THREE.Vector3, the live camera position.
+   */
+  updateHandOff(camPos) {
+    if (!this._handedOff) return;
+    if (camPos.distanceToSquared(this._eyeAt) > 1.4 * 1.4) this.endHandOff();
+  }
+
+  /** The telescope comes back. Photo mode calls this on its way out. */
+  endHandOff() {
+    if (!this._handedOff) return;
+    this._handedOff.visible = true;
+    this._handedOff = null;
+  }
+
+  /**
+   * Let go of the camera and the prop, immediately and without an ease.
+   *
+   * `keepPropHidden` is the hand-off case: the camera is being left standing
+   * at the eyepiece, which is inside the tube, so putting the tube back now
+   * would fill the frame with it. `handOff` owns bringing it back.
+   */
+  _release(keepPropHidden = false) {
     const rig = this.ctx.systems?.cameraRig;
     if (this._took && rig?.takeCamera) rig.takeCamera(null);
     this._took = false;
     window.__forceCamera = this._hadForce;
-    if (this.prop) this.prop.visible = true;
+    if (this.prop && !keepPropHidden) this.prop.visible = true;
     this.prop = null;
     this.closing = false;
     this.t = 0;
@@ -410,6 +486,7 @@ export class ScopeView {
 
   dispose() {
     this._release();
+    this.endHandOff();
     this.mask.dispose();
   }
 }

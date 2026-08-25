@@ -171,6 +171,10 @@ export class PhotoMode {
     if (!on) {
       if (this.ctx.input) this.ctx.input.suppressed = false;
       this.ctx.worldPaused = false;
+      // And the telescope this shot may have been composed through comes back
+      // — it is hidden for as long as the free camera stands inside it. See
+      // `ScopeView.handOff`.
+      this.ctx.systems?.camp?.scope?.endHandOff?.();
     }
 
     if (on) {
@@ -178,6 +182,14 @@ export class PhotoMode {
       // Photo mode is CameraRig's free mode. It takes over from wherever the
       // camera already is — the frame the player pressed F on is the frame
       // they get to compose from — and moves only when they move it.
+      //
+      // Including from inside a telescope. The eyepiece holds the rig's
+      // takeover, which outranks free mode, so it has to be told to let go
+      // BEFORE `enterFree` reads the camera — and told to let go where it
+      // stands rather than through its own step-back, or the shot eases out to
+      // the pose the player came from and then cuts straight back to the
+      // eyepiece the free camera was posed at. See `ScopeView.handOff`.
+      this.ctx.systems?.camp?.scope?.handOff?.();
       rig?.enterFree?.();
       // Take the driving controls away. `Input.suppressed` exists for exactly
       // this and says so in its own comment ("A UI layer (menus, photo mode)

@@ -548,6 +548,13 @@ export class Camp extends System {
     const photographing = !!this.ctx.systems?.hud?.photo?.active;
     const holding = !!veh?.enabled && !!veh.brakeHold && !photographing;
 
+    // A photograph composed from an eyepiece leaves the free camera standing
+    // inside the telescope, which is therefore hidden. It comes back the
+    // moment the camera steps far enough away to see it — see
+    // `ScopeView.handOff`. Here because this is the only thing that still runs
+    // every frame with the world paused; photo mode itself has no update.
+    if (photographing) this.scope?.updateHandOff?.(camera.position);
+
     // ── every camp advances on its own clock ────────────────────────────────
     // Raising and striking are per-camp now, not states of the player. The
     // player is only ever doing one of two things — aiming, or not — and a camp
