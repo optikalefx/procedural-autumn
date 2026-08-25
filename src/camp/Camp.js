@@ -1760,7 +1760,14 @@ export class Camp extends System {
       };
     });
     try {
-      camp.dog = new CampDog(camp.root, camp, camp.rnd, this.ctx.world, { obstacles });
+      camp.dog = new CampDog(camp.root, camp, camp.rnd, this.ctx.world, {
+        obstacles,
+        // The dog lies down ON THE DIRT, and the dirt is not the heightfield:
+        // it is the drawn lattice plus the skin's own lift. Rest planning has
+        // to measure the surface the player can see or the dog reads as
+        // buried to the brisket — see CampGround.surfaceAt.
+        surfaceAt: (sx, sz) => camp.ground.surfaceAt(sx, sz),
+      });
     } catch (e) {
       // A dog that fails to build must not take the camp with it.
       console.warn('[camp] dog failed to build', e);

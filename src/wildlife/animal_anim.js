@@ -115,6 +115,10 @@ const _m = new THREE.Matrix4();
 
 const ease = (u) => u * u * (3 - 2 * u);
 
+// The neck chain's speed limit, radians/second summed over both neck joints.
+// See "the neck speed limit" in _poseHead.
+const NECK_MAX_RATE = 8;
+
 /**
  * Planar two-link IK in the (z, -y) plane of the parent's space.
  *
@@ -263,6 +267,9 @@ export class AnimRig {
     this.earFlick = [0, 0];
     this.earNext = [1.3, 2.7];
     this.headYaw = 0; this.headPitch = 0; this.headRoll = 0;
+    this.carriageDelta = 0;
+    this.neckPrevA = null;
+    this.neckPrevB = null;
     // Last frame's unwrapped neck rotation. See the atlas counter-rotation in
     // _poseHead — the raw value is only defined modulo a turn.
     this.neckChain = 0;
@@ -293,6 +300,9 @@ export class AnimRig {
     // Back to the canonical branch — a recycled rig would otherwise hand the
     // atlas a whole turn of stale unwrap and rake the muzzle at the sky.
     this.neckChain = 0;
+    this.carriageDelta = 0;
+    this.neckPrevA = null;
+    this.neckPrevB = null;
     this._warm = true;
   }
 
@@ -555,13 +565,13 @@ export class AnimRig {
     // the neck solve (needs the chest) and the leg IK (needs pelvis / chest).
     this.mesh.updateWorldMatrix(false, true);
 
-    this._poseHead(dt, drive, sn);
+    this._poseHead(dt, drive, sn, world);
     this._poseEars(dt, drive, sn);
     this._poseTail(dt, drive, sn);
     this._solveLegs(sh, ch);
   }
 
-  _poseHead(dt, drive, sn) {
+  _poseHead(dt, drive, sn, world) {
     if (!this.neck) return;
     const S = this.scale;
     const graze = drive.graze, alert = drive.alert;
@@ -614,6 +624,7 @@ export class AnimRig {
       _c.y -= Math.abs(nod) * 0.022 * k;
     }
 
+
     const lam = 7 + 11 * alert;
     this.headTarget.x = damp(this.headTarget.x, _c.x, lam, dt);
     this.headTarget.y = damp(this.headTarget.y, _c.y, lam, dt);
@@ -630,6 +641,69 @@ export class AnimRig {
     // distance rather than z alone or a sideways look would foreshorten it.
     let fz = Math.hypot(_b.x, _b.z) * Math.sign(_b.z || 1);
     let ty = _b.y;
+    // ── the carriage pitches WITH the body ───────────────────────────────────
+    // The target above is authored in the upright mesh frame — deliberate,
+    // that is the bob stabilisation — but on sloped ground the chest pitches
+    // AND swings on the root's pitch arc underneath it, and a target that
+    // stays level makes the neck crane: walking downhill the muzzle ended up
+    // sixty degrees above the horizon, pointed at the sky
+    // (tools/_scratch/dogslope.mjs). So probe where the bind carriage POINT
+    // lands in the live chest frame, take how far its elevation drifted from
+    // the bind elevation, and rotate the target back by that much about the
+    // neck base. The probe is a point, not a direction, because most of the
+    // drift is the chest translating, not rotating. It therefore also sees
+    // the gait bob — which must NOT be corrected, that is the stabilisation —
+    // so the delta is damped at 4/s: stride-frequency bob averages out of it,
+    // the quasi-static slope passes through. Flat ground reads zero; grazing
+    // fades it out, that path solves its own geometry.
+    // Driven by the LONG-BASELINE ground slope, nothing else. Two earlier
+    // versions of this correction are worth their tombstones: probing the
+    // carriage through the live chest matrices tracked surge and terrain
+    // ripple as faithfully as slope, and with the ~5x geometric gain the head
+    // visibly dove at every hollow the dog crossed and every hard brake
+    // (filmed — tools/_scratch/dogfilm.mjs). A head stabilises through bumps
+    // and accelerations; it only re-carries for the SUSTAINED grade under the
+    // walk. So: sample the terrain a body-length-and-a-half fore and aft,
+    // which averages the bumps out of the signal and keeps the hillside in
+    // it, scale by the calibrated gain, and damp.
+    //
+    // Opt-in per species (cfg.carriageFollow): the graze arc handles its own
+    // slope geometry and correcting across its boundary whipped the poll at
+    // every crop transition (grazeslope.mjs). The camp dog never grazes,
+    // lives wherever the camp was pitched, and is watched up close — exactly
+    // the case this exists for. The delta decays when not applied so it
+    // always re-engages cleanly.
+    if (graze < 0.001 && this.cfg.carriageFollow) {
+      const span = 1.6;
+      const px = drive.pos.x, pz2 = drive.pos.z, hd = drive.heading;
+      const hF = world.getHeight(px + Math.sin(hd) * span, pz2 + Math.cos(hd) * span);
+      const hR = world.getHeight(px - Math.sin(hd) * span, pz2 - Math.cos(hd) * span);
+      const longPitch = clamp(-Math.atan2(hF - hR, span * 2), -0.55, 0.55);
+      // The elevation shift a given body pitch produces is the bind carriage
+      // rotated about the root — evaluate that geometry directly rather than
+      // linearising it: the true response is ~5x at small angles and
+      // saturates at steep ones, and a straight gain overshot the steep ends.
+      const cth = Math.cos(longPitch), sth = Math.sin(longPitch);
+      const cy = this.neckRest.y * cth + this.neckRest.z * sth;
+      const cz = -this.neckRest.y * sth + this.neckRest.z * cth;
+      // Bounded: past this the correction is parking the target against its
+      // anatomical clamp anyway, and a target held at a clamp is a frozen,
+      // twitchy pose. Partial slope-following on extreme ground looks fine.
+      const want = clamp(
+        Math.atan2(cy - this.neckBase.y, cz - this.neckBase.z) + this.restAng,
+        -1.0, 1.0,
+      );
+      this.carriageDelta = damp(this.carriageDelta, want, 2.2, dt);
+      if (Math.abs(this.carriageDelta) > 1e-4) {
+        const dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
+        const d = Math.hypot(dy, dz);
+        const e = Math.atan2(dy, dz) - this.carriageDelta;
+        ty = nb.a.position.y + Math.sin(e) * d;
+        fz = nb.a.position.z + Math.cos(e) * d;
+      }
+    } else {
+      this.carriageDelta = damp(this.carriageDelta, 0, 2.2, dt);
+    }
     // ── keep the solve off the straight-chain singularity ────────────────────
     // Every species binds its neck bones nearly colinear, so the rest target
     // already sits at ~100% of the chain's reach — where acos in the two-link
@@ -649,10 +723,58 @@ export class AnimRig {
         fz = nb.a.position.z + dz * s;
       }
     }
+    // ── the anatomical stop ──────────────────────────────────────────────────
+    // Whatever upstream produced the target — a pitched body, a bad blend, a
+    // future bug — the neck must never solve for a point outside the arc a
+    // real neck covers. Measured from the chest, that is from steeply down
+    // (the graze) to a little above the bind carriage; a target past vertical
+    // toward the animal's own back is how the "head folded over the shoulders"
+    // pose happened, and clamping the ELEVATION here (radius kept) makes that
+    // pose unreachable by construction rather than merely unlikely.
+    // Both bounds sit WELL AWAY from vertical (±π/2), and that placement is
+    // the fix for a measured single-frame 2.3 rad mirror flip: the cap
+    // originally worked out to 1.50 — the singularity itself — so a steep
+    // slope could pin the target there, where forward-bow and backward-bow
+    // solutions meet and a millimetre of lateral wobble flips between them.
+    // A clamp must pin the pose on stable geometry, not on the knife edge.
+    {
+      let dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
+      const elev = Math.atan2(dy, dz);
+      const hi = Math.min(-this.restAng + 0.55, 1.25);
+      const e = clamp(elev, -1.45, hi);
+      if (e !== elev) {
+        const d = Math.hypot(dy, dz);
+        ty = nb.a.position.y + Math.sin(e) * d;
+        fz = nb.a.position.z + Math.cos(e) * d;
+      }
+    }
     solve2(nb.a.position.y, nb.a.position.z, ty, fz, nb.l1, nb.l2, -1, _ik);
-    const rA = nb.bindA - _ik.upper;
+    let rA = nb.bindA - _ik.upper;
+    let rB = nb.bindB - _ik.lower - rA;
+    // ── the neck speed limit ─────────────────────────────────────────────────
+    // The last line of defence, and the one that makes "the head snapped"
+    // structurally impossible rather than merely fixed-for-now: however the
+    // solve above was driven — a clamp edge, a mirror flip, a bug not yet
+    // written — the JOINTS may not move faster than a real neck. The step is
+    // wrapAngle'd, so a 2π branch re-labelling (same orientation, different
+    // number) passes through freely and only genuine motion is limited. The
+    // budget is far above everything measured in normal play (trot peaks
+    // near 3 rad/s, the graze swing near 5) and far below any snap.
+    if (this.neckPrevA !== null) {
+      const dA = wrapAngle(rA - this.neckPrevA);
+      const dB = wrapAngle(rB - this.neckPrevB);
+      const total = Math.abs(dA) + Math.abs(dB);
+      const budget = NECK_MAX_RATE * dt;
+      if (total > budget) {
+        const f = budget / total;
+        rA = this.neckPrevA + dA * f;
+        rB = this.neckPrevB + dB * f;
+      }
+    }
+    this.neckPrevA = rA;
+    this.neckPrevB = rB;
     nb.a.rotation.x = rA;
-    nb.b.rotation.x = nb.bindB - _ik.lower - rA;
+    nb.b.rotation.x = rB;
 
     // Looking at something: distributed down the neck so the animal turns to
     // look instead of the skull swivelling on a stick.
