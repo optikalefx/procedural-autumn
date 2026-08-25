@@ -206,6 +206,42 @@ const SETTLE_TIME = 1.05;        // s to fold down into a pose
 const RISE_TIME = 0.85;          // s to stand back up
 const APPROACH_TIME = 16;        // s before abandoning an unreachable bed
 
+// The head does not ride the body's settle clock. Folding the whole curl in
+// SETTLE_TIME swings the skull through its ~2.5 rad arc at 5-6 rad/s — measured
+// (tools/_scratch/dogfull.mjs), that is double the fastest thing the head ever
+// does naturally (the trot's nod peaks at 3.2), and it is exactly the "head
+// snaps backwards" every settle and rise produced. So the neck chain gets its
+// own blend, an exponential lag behind the body's: the body folds first and
+// the head follows it down over about two seconds, which is also just what a
+// dog does — the nose is the last thing tucked and the first thing raised.
+const HEAD_LAG = 2.1;            // 1/s damp rate of the head-chain blend
+const HEAD_BONES = { neck1: 1, neck2: 1, head: 1 };
+
+// The pathing above is best-effort and the props are arbitrary overlapping
+// circles; a pocket with no walkable exit can and does occur (measured: one
+// seeded camp held the dog for seventeen sim-minutes). Past this long without
+// covering a body length, stop trying to walk out and put the dog back on its
+// orbit somewhere clear — a teleport the player can very occasionally catch is
+// strictly better than a dog grinding against a cooler forever.
+const STUCK_MOVE = 0.40;         // m of net displacement that counts as progress
+const STUCK_TIME = 13;           // s without progress before respawning
+const RESPAWN_CLEAR = 0.20;      // clearance a respawn point must offer
+const NAV_CELL = 0.16;           // m; the walkable-space raster — see _buildNav
+// The one number that keeps the planner and the body honest with each other:
+// a step is only taken into space with at least this much clearance, and the
+// raster calls a cell free by the same test. Letting the body accept a hair
+// less than the raster (0 vs 0.05, as it originally did) let the dog walk
+// into slivers — the pinch between the fire ring and the tent — that no route
+// would ever pass through, and every stuck report in the sim ended there.
+const WALK_CLEAR = 0.05;
+// Routes are planned through COMFORTABLE space, a stricter set than the body
+// strictly fits in. The damped-heading steering cannot thread a corridor two
+// hand-spans wide — measured, the cooler-telescope gap (0.18 m of clearance)
+// read as a legal shortcut to the router and cost a recovery spiral every time
+// the dog was sent through it. A passage tighter than this is treated as no
+// passage at all, and the plan goes round the long way.
+const ROUTE_CLEAR = 0.14;
+
 // Where it walks. The fire ring is 0.58 m of stone, so nothing here may come
 // inside about a metre and a half of the centre.
 // The fire ring is 0.58 m of stone with a flame standing about a metre out of
@@ -282,6 +318,7 @@ export class CampDog {
     this.timer = rand(rnd, WANDER_TIME);
     this.pose = null;          // the pose being blended toward, or null
     this.blend = 0;            // 0 = the gait solver's pose, 1 = fully settled
+    this.headBlend = 0;        // the neck chain's own lagged share of `blend`
 
     // Polar wander state — see the note at the top of the file.
     this.ang = rnd() * Math.PI * 2;
@@ -303,6 +340,16 @@ export class CampDog {
     this.restPlan = null;
     this.restGround = null;
     this.approachFinal = false;
+
+    // The stuck watchdog: an anchor position, and how long the dog has failed
+    // to get a body length away from it while supposedly going somewhere.
+    this.stuckX = 0;
+    this.stuckZ = 0;
+    this.stuckT = 0;
+    this.recoverCount = 0;
+    this.respawns = 0;
+
+    this._buildNav();
 
     // Start it somewhere sensible on its own orbit, standing.
     const p = this._orbitPoint(this.ang, this.orbit);
@@ -349,13 +396,13 @@ export class CampDog {
         const gap = d - o.r - pad;
         if (gap < worstGap) { worst = o; worstGap = gap; worstD = d; }
       }
-      if (!worst || worstGap >= 0.015) { out.x = x; out.z = z; return out; }
+      if (!worst || worstGap >= WALK_CLEAR + 0.02) { out.x = x; out.z = z; return out; }
       let dx = x - worst.x, dz = z - worst.z;
       if (worstD < 1e-4) {
         const a = this.ang + pass * 2.39996;
         dx = Math.sin(a); dz = Math.cos(a); worstD = 1;
       }
-      const need = worst.r + pad + 0.02;
+      const need = worst.r + pad + WALK_CLEAR + 0.03;
       x = worst.x + dx / worstD * need;
       z = worst.z + dz / worstD * need;
     }
@@ -370,7 +417,7 @@ export class CampDog {
         const a = i / 16 * Math.PI * 2;
         const sx = x0 + Math.sin(a) * rr, sz = z0 + Math.cos(a) * rr;
         const clear = this._clearanceAt(sx, sz, pad);
-        const score = clear >= 0.015 ? 10 - rr : clear - rr;
+        const score = clear >= WALK_CLEAR + 0.02 ? 10 - rr : clear - rr;
         if (score > bestScore) { bestScore = score; bestX = sx; bestZ = sz; }
       }
       if (bestScore > 9) break;
@@ -381,12 +428,45 @@ export class CampDog {
 
   /** A point on the orbit, resolved away from anything solid there. */
   _orbitPoint(ang, r, out = { x: 0, z: 0 }) {
-    return this._resolvePoint(
+    this._resolvePoint(
       this.fire.x + Math.sin(ang) * r,
       this.fire.z + Math.cos(ang) * r,
       DOG_CLEAR + 0.08,
       out,
     );
+    // Snap into the yard — OUTWARD first. The push-out above knows circles;
+    // it does not know that the pocket it landed in is a dead-end bay. At a
+    // bearing where the orbit band is swallowed by a prop blob, the honest
+    // walkable ground is the blob's far side, so march the radial outward and
+    // take the first genuinely open cell. That turns "dive into the bay and
+    // churn" into "swing wide around the tent", which is also just what a
+    // dog rounding a camp does. Nearest-open is only the fallback.
+    if (this.navFree) {
+      const here = this._navCell(out.x, out.z);
+      if (!this.navFree[here] || this.navWall[here] > 1.3) {
+        const sx = Math.sin(ang), sz = Math.cos(ang);
+        const rMax = ORBIT_MAX + 1.8;
+        let found = false;
+        for (let rr = r; rr <= rMax; rr += NAV_CELL * 0.75) {
+          const x = this.fire.x + sx * rr, z = this.fire.z + sz * rr;
+          const c = this._navCell(x, z);
+          if (this.navFree[c] && this.navWall[c] <= 1.3) {
+            out.x = x; out.z = z;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          const c = this._navNearestFree(here, true);
+          if (c >= 0) {
+            const n = this.navN;
+            out.x = this.navMinX + ((c % n) + 0.5) * NAV_CELL;
+            out.z = this.navMinZ + (((c / n) | 0) + 0.5) * NAV_CELL;
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /** Fit a stable local ground plane under a whole resting dog. */
@@ -448,7 +528,7 @@ export class CampDog {
       // way it will lie, rather than stopping and rotating like a turntable.
       const entryX = p.x - Math.sin(yaw) * 0.72;
       const entryZ = p.z - Math.cos(yaw) * 0.72;
-      if (this._clearanceAt(entryX, entryZ) < 0.03) continue;
+      if (this._clearanceAt(entryX, entryZ) < WALK_CLEAR + 0.02) continue;
 
       const turn = Math.abs(wrapAngle(Math.atan2(entryX - this.pos.x, entryZ - this.pos.z) - this.heading));
       const score = -ground.slope * 5 - ground.relief * 24 - turn * 0.16 +
@@ -480,14 +560,24 @@ export class CampDog {
    * dog becomes a broad walking arc rather than an in-place rotation.
    */
   _chooseHeading(want, look = 1.05) {
-    const offsets = [0, 0.28, -0.28, 0.55, -0.55, 0.84, -0.84, 1.14, -1.14];
+    // The fan covers the FULL circle, not just the forward arc. The ±1.14
+    // ceiling this had was the deep-pocket bug in person: a dog wedged between
+    // the cooler and the tent could only escape on a heading ~1.5 rad off its
+    // nose, no candidate that far round existed, and so it ground at the apex
+    // until the watchdog teleported it. The wide offsets cost a little bias
+    // (|off| term) and lose the cosine race whenever anything forward is clear,
+    // so in the open they are never chosen — they exist for exactly the frame
+    // where every forward candidate is blocked and "back the way I came" is
+    // the only honest answer.
+    const offsets = [0, 0.28, -0.28, 0.55, -0.55, 0.84, -0.84, 1.14, -1.14,
+      1.5, -1.5, 1.9, -1.9, 2.4, -2.4, 3.0, -3.0];
     let best = this.heading, bestOffset = 0, bestScore = -Infinity;
     for (const off of offsets) {
       const candidate = this.heading + off;
       const clear = this._pathClearance(candidate, look);
       let score = Math.cos(wrapAngle(want - candidate)) * 1.55 +
         Math.min(clear, 0.65) * 1.15 - Math.abs(off) * 0.08;
-      if (clear < 0) score -= 30 + Math.abs(clear) * 20;
+      if (clear < WALK_CLEAR) score -= 30 + Math.abs(clear - WALK_CLEAR) * 20;
       if (this.avoidTimer > 0 && this.avoidSide && Math.sign(off) === -this.avoidSide) score -= 1.8;
       if (score > bestScore) { bestScore = score; best = candidate; bestOffset = off; }
     }
@@ -497,6 +587,274 @@ export class CampDog {
       this.avoidTimer = 1.15;
     }
     return best;
+  }
+
+  /**
+   * The navigation grid, and why the dog stopped steering by feel.
+   *
+   * Every reactive scheme this file tried — stateless push-out, scored heading
+   * fans, back-up-and-flip recovery, Bug-style wall-following — failed the
+   * same measurable way: a camp's props form concave pockets, and a steerer
+   * that re-scores against the target's pull every frame walks back into the
+   * pocket it just left. The last reactive build still teleported a dog out
+   * about once every ninety seconds on an ordinary layout.
+   *
+   * The obstacle set is at most a dozen static circles, so the honest answer
+   * is cheap: rasterise walkable space once (about four thousand cells), and
+   * A* over it whenever the target moves. The dog then chases the farthest
+   * route point it has clear line of sight to, which straightens the grid
+   * path into the same smooth arcs the old steering produced — but the route
+   * is now guaranteed to exist, and a target with NO route is known
+   * immediately and skipped instead of ground against.
+   */
+  _buildNav() {
+    const R = ORBIT_MAX + 2.0;
+    this.navMinX = this.fire.x - R;
+    this.navMinZ = this.fire.z - R;
+    this.navN = Math.ceil((R * 2) / NAV_CELL);
+    const n = this.navN;
+    this.navFree = new Uint8Array(n * n);
+    this.navWall = new Float32Array(n * n);
+    for (let iz = 0; iz < n; iz++) {
+      const z = this.navMinZ + (iz + 0.5) * NAV_CELL;
+      for (let ix = 0; ix < n; ix++) {
+        const x = this.navMinX + (ix + 0.5) * NAV_CELL;
+        const clear = this._clearanceAt(x, z);
+        this.navFree[iz * n + ix] = clear > ROUTE_CLEAR ? 1 : 0;
+        // Wall-adjacent cells are pricier, so routes run down the middle of
+        // whatever space exists. Without this A* hugs every comfort boundary
+        // — the shortest path always does — and the dog tracking it with a
+        // damped heading oscillated below the boundary into blocked steps.
+        this.navWall[iz * n + ix] = 1 + Math.max(0, 0.34 - clear) * 6;
+      }
+    }
+    // Keep only the largest connected region — "the yard". On a cramped
+    // layout the inflated prop circles merge with the fire ring into one
+    // blob, and the comfort raster fragments into a big outer region plus
+    // slivers pinched between props. A target in a sliver is reachable by
+    // nobody; culling everything but the yard here means every point the
+    // dog is ever ASKED to reach is connected to every other one, and A*
+    // succeeds by construction. (Four-connected, which is never more
+    // permissive than the A* neighbourhood below.)
+    {
+      const comp = new Int32Array(n * n).fill(-1);
+      const stack = [];
+      let bestComp = -1, bestCount = 0, id = 0;
+      for (let i = 0; i < n * n; i++) {
+        if (!this.navFree[i] || comp[i] !== -1) continue;
+        let count = 0;
+        stack.length = 0;
+        stack.push(i);
+        comp[i] = id;
+        while (stack.length) {
+          const c = stack.pop();
+          count++;
+          const cx = c % n, cz = (c / n) | 0;
+          if (cx > 0 && this.navFree[c - 1] && comp[c - 1] === -1) { comp[c - 1] = id; stack.push(c - 1); }
+          if (cx < n - 1 && this.navFree[c + 1] && comp[c + 1] === -1) { comp[c + 1] = id; stack.push(c + 1); }
+          if (cz > 0 && this.navFree[c - n] && comp[c - n] === -1) { comp[c - n] = id; stack.push(c - n); }
+          if (cz < n - 1 && this.navFree[c + n] && comp[c + n] === -1) { comp[c + n] = id; stack.push(c + n); }
+        }
+        if (count > bestCount) { bestCount = count; bestComp = id; }
+        id++;
+      }
+      for (let i = 0; i < n * n; i++) {
+        if (this.navFree[i] && comp[i] !== bestComp) this.navFree[i] = 0;
+      }
+    }
+    // Scratch buffers for A*, reused across queries.
+    this.navCost = new Float32Array(n * n);
+    this.navFrom = new Int32Array(n * n);
+    this.navOpen = [];
+    this.navPath = [];
+    this.navGoalX = 0;
+    this.navGoalZ = 0;
+    this.navTimer = 0;
+  }
+
+  _navCell(x, z) {
+    const n = this.navN;
+    const ix = clamp(Math.floor((x - this.navMinX) / NAV_CELL), 0, n - 1);
+    const iz = clamp(Math.floor((z - this.navMinZ) / NAV_CELL), 0, n - 1);
+    return iz * n + ix;
+  }
+
+  /**
+   * Nearest free cell to `c`, searched in growing rings. With `open`, prefer
+   * a cell with real elbow room — a target snapped to the first barely-free
+   * cell sits against a wall, and a dog asked to stand against a wall arrives
+   * fast, turns badly, and churns. Falls back to any free cell.
+   */
+  _navNearestFree(c, open = false) {
+    const n = this.navN;
+    if (this.navFree[c] && (!open || this.navWall[c] <= 1.3)) return c;
+    let anyFree = this.navFree[c] ? c : -1;
+    const cx = c % n, cz = (c / n) | 0;
+    for (let ring = 1; ring <= 24; ring++) {
+      for (let dz = -ring; dz <= ring; dz++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
+          const ix = cx + dx, iz = cz + dz;
+          if (ix < 0 || iz < 0 || ix >= n || iz >= n) continue;
+          const cc = iz * n + ix;
+          if (!this.navFree[cc]) continue;
+          if (!open || this.navWall[cc] <= 1.3) return cc;
+          if (anyFree < 0) anyFree = cc;
+        }
+      }
+    }
+    return anyFree;
+  }
+
+  /**
+   * A* from the dog to (tx, tz). Fills `navPath` with world-space points from
+   * the dog outward and returns true, or returns false for "no route exists".
+   */
+  _route(tx, tz) {
+    const n = this.navN;
+    const start = this._navNearestFree(this._navCell(this.pos.x, this.pos.z));
+    const goal = this._navNearestFree(this._navCell(tx, tz));
+    this.navPath.length = 0;
+    if (start < 0 || goal < 0) return false;
+    if (start === goal) return true;
+
+    const cost = this.navCost, from = this.navFrom, open = this.navOpen;
+    cost.fill(Infinity);
+    from.fill(-1);
+    open.length = 0;
+    const gx = goal % n, gz = (goal / n) | 0;
+    const h = (c) => {
+      const dx = Math.abs((c % n) - gx), dz = Math.abs(((c / n) | 0) - gz);
+      return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
+    };
+    cost[start] = 0;
+    open.push([h(start), start]);
+    let found = false;
+    while (open.length) {
+      // The open list is tiny (a few hundred entries at worst on this grid);
+      // a linear min-scan beats maintaining a heap at this size.
+      let bi = 0;
+      for (let i = 1; i < open.length; i++) if (open[i][0] < open[bi][0]) bi = i;
+      const [, c] = open[bi];
+      open[bi] = open[open.length - 1];
+      open.pop();
+      if (c === goal) { found = true; break; }
+      const cx = c % n, cz = (c / n) | 0;
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dz) continue;
+          const ix = cx + dx, iz = cz + dz;
+          if (ix < 0 || iz < 0 || ix >= n || iz >= n) continue;
+          const nc = iz * n + ix;
+          if (!this.navFree[nc]) continue;
+          // No cutting corners diagonally between two blocked cells.
+          if (dx && dz && (!this.navFree[cz * n + ix] || !this.navFree[iz * n + cx])) continue;
+          const g = cost[c] + (dx && dz ? 1.4142 : 1) * this.navWall[nc];
+          if (g < cost[nc]) {
+            cost[nc] = g;
+            from[nc] = c;
+            open.push([g + h(nc), nc]);
+          }
+        }
+      }
+    }
+    if (!found) return false;
+    for (let c = goal; c !== -1; c = from[c]) {
+      this.navPath.push(
+        this.navMinX + ((c % n) + 0.5) * NAV_CELL,
+        this.navMinZ + (((c / n) | 0) + 0.5) * NAV_CELL,
+      );
+    }
+    this.navPath.reverse();
+    // reverse() on the flat array flipped each pair too; swap them back.
+    for (let i = 0; i + 1 < this.navPath.length; i += 2) {
+      const t = this.navPath[i];
+      this.navPath[i] = this.navPath[i + 1];
+      this.navPath[i + 1] = t;
+    }
+    return true;
+  }
+
+  /**
+   * Is the straight run from the dog to (x, z) walkable?
+   *
+   * The pad is generous, but a dog already standing nearer a prop than the
+   * pad allows must not have every sight line refused on its own account —
+   * that failure mode disabled string-pulling exactly when the dog most
+   * needed a good waypoint. A segment may pass a prop as closely as the dog
+   * already is (never closer than the body's own walkable minimum), so lines
+   * that hold distance or move away always count as clear.
+   */
+  _segmentClear(x, z) {
+    const ax = this.pos.x, az = this.pos.z;
+    const dx = x - ax, dz = z - az;
+    const len2 = dx * dx + dz * dz;
+    for (const o of this.obstacles) {
+      const t = len2 > 1e-8
+        ? clamp01(((o.x - ax) * dx + (o.z - az) * dz) / len2)
+        : 0;
+      const px = ax + dx * t - o.x, pz = az + dz * t - o.z;
+      const startD = Math.hypot(ax - o.x, az - o.z);
+      // The floor is the step-check's own minimum — a line the dog cannot
+      // legally walk must never be reported as a clear sight line.
+      const limit = Math.min(
+        o.r + DOG_CLEAR + 0.08,
+        Math.max(startD - 0.005, o.r + DOG_CLEAR + WALK_CLEAR),
+      );
+      if (Math.hypot(px, pz) < limit) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The heading to walk RIGHT NOW to reach the current target: straight at it
+   * when the line is clear, else along a fresh A* route, else — no route at
+   * all — the target is skipped and the dog aims where it was already going.
+   */
+  _navHeading(dt) {
+    const tx = this.target.x, tz = this.target.z;
+    this.navTimer -= dt;
+    const moved = Math.hypot(tx - this.navGoalX, tz - this.navGoalZ);
+    if (this._segmentClear(tx, tz)) {
+      this.navPath.length = 0;
+      this.navTimer = 0;
+      this.navGoalX = tx; this.navGoalZ = tz;
+      return Math.atan2(tx - this.pos.x, tz - this.pos.z);
+    }
+    if (this.navTimer <= 0 || moved > 0.35 || !this.navPath.length) {
+      this.navGoalX = tx; this.navGoalZ = tz;
+      this.navTimer = 0.55;
+      if (!this._route(tx, tz)) {
+        // Provably unreachable. Ask for something else instead of grinding.
+        this.navPath.length = 0;
+        if (this.state === ST.APPROACH) this._abandonRestSpot();
+        else this.ang += this.orbitDir * 0.8;
+        return this.heading;
+      }
+    }
+    // Chase the farthest route point in clear line of sight — string-pulling,
+    // one segment deep. Falls back to the nearest few cells when the route
+    // hugs a wall too closely for the padded sight line.
+    const P = this.navPath;
+    let wx = tx, wz = tz, seen = false;
+    for (let i = P.length - 2; i >= 0; i -= 2) {
+      if (this._segmentClear(P[i], P[i + 1])) { wx = P[i]; wz = P[i + 1]; seen = true; break; }
+    }
+    if (!seen && P.length >= 2) {
+      // No route point passes the padded sight line — the route bends hard
+      // around something close. Chase the first point comfortably OUTSIDE the
+      // turning circle: a nearer carrot is unreachable at the minimum turn
+      // radius and the dog orbits it in place forever (measured — the little
+      // circles all over the first trajectory plot were exactly this).
+      wx = P[P.length - 2]; wz = P[P.length - 1];
+      for (let i = 0; i + 1 < P.length; i += 2) {
+        if (Math.hypot(P[i] - this.pos.x, P[i + 1] - this.pos.z) >= 0.60) {
+          wx = P[i]; wz = P[i + 1];
+          break;
+        }
+      }
+    }
+    return Math.atan2(wx - this.pos.x, wz - this.pos.z);
   }
 
   /** Score a curved reverse path. Positive `side` turns left, negative right. */
@@ -517,6 +875,29 @@ export class CampDog {
 
   _beginRecovery(sideHint = 0) {
     if (this.recovering) return;
+    // Backing up only helps if the PULL changes too. The orbit target sweeps
+    // past a big prop at a fraction of a radian per second, so for many
+    // seconds after a recovery it goes on dragging the dog into the same
+    // pocket it just backed out of — measured, that loop was a respawn every
+    // couple of minutes. So each fresh recovery skips the wander target past
+    // the blockage, and a pocket that survives repeated recoveries means this
+    // whole side of the camp is a dead end: reverse the orbit. An approach
+    // that needs rescuing twice gives its bed up rather than grinding at it.
+    if (!sideHint) {
+      this.recoverCount++;
+      if (this.state === ST.APPROACH && this.recoverCount >= 2) {
+        this._abandonRestSpot();
+      } else if (this.state === ST.WANDER) {
+        if (this.recoverCount >= 3) {
+          this.orbitDir *= -1;
+          this.angV = this.orbitDir * Math.max(0.16, Math.abs(this.angV));
+          this.ang = Math.atan2(this.pos.x - this.fire.x, this.pos.z - this.fire.z) +
+            this.orbitDir * 0.5;
+        } else {
+          this.ang += this.orbitDir * 0.55;
+        }
+      }
+    }
     if (sideHint) {
       this.avoidSide = sideHint;
     } else {
@@ -542,6 +923,67 @@ export class CampDog {
     this.orbitDir = plus <= minus ? 1 : -1;
     this.ang = a + this.orbitDir * 0.32;
     this.angV = this.orbitDir * Math.max(0.16, Math.abs(this.angV));
+  }
+
+  /**
+   * The pathing gave up: put the dog somewhere clear on its orbit and carry on.
+   *
+   * Candidates are drawn round the whole ring and scored for clearance and for
+   * distance from the camera — the pop is unavoidable, but it can at least
+   * prefer to happen behind the player's back. The rig is reset so the dog
+   * arrives standing on freshly planted feet rather than dragging four feet
+   * anchored across the camp.
+   */
+  _respawn(camPos) {
+    let bestX = 0, bestZ = 0, bestA = 0, bestScore = -Infinity;
+    for (let i = 0; i < 40; i++) {
+      const a = this.rnd() * Math.PI * 2;
+      const r = lerp(ORBIT_MIN, ORBIT_MAX, this.rnd());
+      const x = this.fire.x + Math.sin(a) * r;
+      const z = this.fire.z + Math.cos(a) * r;
+      const clear = this._clearanceAt(x, z);
+      if (clear < RESPAWN_CLEAR) continue;
+      if (!this.navFree[this._navCell(x, z)]) continue;
+      const camD = camPos ? Math.hypot(x - camPos.x, z - camPos.z) : 10;
+      const score = Math.min(clear, 0.8) + Math.min(camD, 14) * 0.15;
+      if (score > bestScore) { bestScore = score; bestX = x; bestZ = z; bestA = a; }
+    }
+    if (bestScore === -Infinity) {
+      // A camp so cluttered no ring point clears: take the least-bad answer
+      // the target resolver can produce and let the watchdog try again.
+      const p = this._orbitPoint(this.rnd() * Math.PI * 2, ORBIT_MAX);
+      bestX = p.x; bestZ = p.z;
+      bestA = Math.atan2(bestX - this.fire.x, bestZ - this.fire.z);
+    }
+
+    this.pos.set(bestX, this.world.getHeight(bestX, bestZ), bestZ);
+    this.ang = bestA;
+    this.orbitDir = this.rnd() < 0.5 ? -1 : 1;
+    this.angV = this.orbitDir * 0.16;
+    this.heading = bestA + this.orbitDir * Math.PI * 0.5;
+    this.speed = 0;
+    this.state = ST.WANDER;
+    this.timer = rand(this.rnd, WANDER_TIME);
+    this.blend = 0;
+    this.headBlend = 0;
+    this.pose = null;
+    this.restPlan = null;
+    this.restGround = null;
+    this.approachFinal = false;
+    this.recovering = false;
+    this.avoidSide = 0;
+    this.avoidTimer = 0;
+    this.blockedTime = 0;
+    this.navPath.length = 0;
+    this.navTimer = 0;
+    this.stuckX = bestX;
+    this.stuckZ = bestZ;
+    this.stuckT = 0;
+    this.recoverCount = 0;
+    const p = this._orbitPoint(this.ang + this.orbitDir * 0.3, this.orbit);
+    this.target.set(p.x, 0, p.z);
+    this.rig.reset(this.pos, this.heading, this.world);
+    this.respawns++;
   }
 
   _abandonRestSpot() {
@@ -657,9 +1099,10 @@ export class CampDog {
         this.blend = ease01(clamp01(this.timer / RISE_TIME));
         if (this.timer <= 0) {
           this.blend = 0;
-          this.pose = null;
+          // `pose` and `restGround` are NOT cleared here: the head chain is
+          // still unfolding on its own lagged blend and needs the pose to
+          // finish against. The cleanup below drops both once it has.
           this.restPlan = null;
-          this.restGround = null;
           this.state = ST.WANDER;
           this.timer = rand(this.rnd, WANDER_TIME);
           // Pick the tangent nearest the direction it is already facing, then
@@ -703,10 +1146,16 @@ export class CampDog {
             this.avoidSide *= -1;
             this.avoidTimer = 2.8;
             this.blockedTime = 0;
+            // The dog physically hit something the raster judged walkable, so
+            // its route is suspect: force a fresh one next frame.
+            this.navTimer = 0;
           }
         }
       } else {
-        const want = Math.atan2(dx, dz);
+        // Where to aim is the router's answer, not the target's bearing —
+        // straight at the target when the line is clear, along the A* route
+        // when it is not. The fan below still smooths and locally avoids.
+        const want = this._navHeading(dt);
         // On the last few steps, only inspect the path up to the bed. Looking
         // a full metre THROUGH it sees the fire beyond the intended stopping
         // point and makes avoidance turn away at the exact moment the dog is
@@ -716,15 +1165,22 @@ export class CampDog {
         const turn = wrapAngle(chosen - this.heading);
         // Yaw is curvature: no ground speed means no heading change. Scaling
         // the turn limit from the speed structurally rules out a pivot after
-        // rising or when a target changes behind the dog.
-        const turnRate = Math.min(1.35, Math.max(0, this.speed) * 3.0);
+        // rising or when a target changes behind the dog. The 4.0 sets the
+        // minimum turn radius at 20 cm — tight enough to take a waypoint at
+        // 0.6 m from any approach angle, still an arc and never a pivot.
+        const turnRate = Math.min(1.35, Math.max(0, this.speed) * 5.0);
         this.heading += clamp(turn, -turnRate * dt, turnRate * dt);
         // Keep walking through a turn. Even the tightest allowed corner keeps
         // forty percent of walking speed, so the body's yaw describes an arc
         // in the ground plane instead of a pivot at zero speed.
         const turnScale = lerp(0.42, 1, clamp01(1 - Math.abs(turn) / 1.15));
         const nearScale = clamp01(d / (this.approachFinal ? 0.45 : 0.72));
-        let wantSpeed = d < 0.12 ? 0 : WALK_SPEED * turnScale * nearScale;
+        // Tight quarters get a careful walk. At full stride against a wall,
+        // the damped heading overshoots into blocked steps and recovery; the
+        // same passage threaded at half speed just works.
+        const wallScale = lerp(0.45, 1,
+          clamp01((this.nearestClearance - WALK_CLEAR) / 0.30));
+        let wantSpeed = d < 0.12 ? 0 : WALK_SPEED * turnScale * nearScale * wallScale;
         // Keep a real creeping step under the last heading correction. The
         // transition test above will stop it at the bed; dropping to zero here
         // one frame earlier recreated the exact ugly pivot this path is meant
@@ -744,22 +1200,38 @@ export class CampDog {
       const nz = this.pos.z + Math.cos(this.heading) * this.speed * dt;
       const clearNow = this._clearanceAt(this.pos.x, this.pos.z);
       const clearNext = this._clearanceAt(nx, nz);
-      // A rounded prop footprint can leave the dog a few millimetres inside a
-      // neighbouring circle. Rejecting every still-negative step makes that a
-      // permanent prison. Let a backing step proceed only when it monotonically
-      // reduces the overlap; it remains collision-safe and walks out visibly
-      // instead of being projected or teleported.
-      const escapingOverlap = clearNow < 0 && clearNext > clearNow + 1e-6;
-      if (clearNext >= 0 || escapingOverlap) {
+      // A dog already inside the margin — a settle plan gone marginal, a prop
+      // footprint's rounding — must still be able to walk out. Any step that
+      // monotonically improves its clearance is allowed; it remains
+      // collision-safe and leaves visibly instead of being teleported.
+      const escapingOverlap = clearNow < WALK_CLEAR && clearNext > clearNow + 1e-6;
+      if (clearNext >= WALK_CLEAR - 0.002 || escapingOverlap) {
         this.pos.x = nx; this.pos.z = nz;
         this.blockedTime = Math.max(0, this.blockedTime - dt * 2);
       } else {
         this.blockedTime += dt;
-        if (!this.recovering && this.blockedTime > 0.18) this._beginRecovery();
+        if (!this.recovering && this.blockedTime > 0.34) this._beginRecovery();
       }
     }
     this.nearestClearance = this._clearanceAt(this.pos.x, this.pos.z);
     this.pos.y = W.getHeight(this.pos.x, this.pos.z);
+
+    // ── the stuck watchdog ──────────────────────────────────────────────────
+    // Recovery above handles the ordinary pocket; this is the guarantee behind
+    // it. A moving dog that has not managed a body length of net progress in
+    // STUCK_TIME — recovery attempts included — is in a pocket the steering
+    // cannot solve, and is respawned somewhere clear on its orbit.
+    if (moving) {
+      if (Math.hypot(this.pos.x - this.stuckX, this.pos.z - this.stuckZ) > STUCK_MOVE) {
+        this.stuckX = this.pos.x; this.stuckZ = this.pos.z; this.stuckT = 0;
+        this.recoverCount = 0;
+      } else {
+        this.stuckT += dt;
+        if (this.stuckT > STUCK_TIME) this._respawn(camPos);
+      }
+    } else {
+      this.stuckX = this.pos.x; this.stuckZ = this.pos.z; this.stuckT = 0;
+    }
 
     // ── the gait solver, then the pose over the top of it ───────────────────
     this.drive.heading = this.heading;
@@ -780,7 +1252,19 @@ export class CampDog {
     if (this.restGround && this.blend > 0.001) {
       this.mesh.position.y = lerp(this.mesh.position.y, this.restGround.y, this.blend);
     }
-    if (this.blend > 0.001 && this.pose) this._applyPose(this.blend);
+    // The neck chain follows the body's blend at its own damped pace — see
+    // HEAD_LAG. The pose outlives the rise for as long as the head is still
+    // finishing, then both are dropped together.
+    this.headBlend = damp(this.headBlend, this.blend, HEAD_LAG, dt);
+    if (this.pose) {
+      if (this.blend > 0.001 || this.headBlend > 0.001) {
+        this._applyPose(this.blend, this.headBlend);
+      } else if (this.state === ST.WANDER || this.state === ST.APPROACH) {
+        this.headBlend = 0;
+        this.pose = null;
+        this.restGround = null;
+      }
+    }
   }
 
   /**
@@ -792,7 +1276,7 @@ export class CampDog {
    * lets its own answer show through again, which is why standing up needs no
    * transition of its own.
    */
-  _applyPose(w) {
+  _applyPose(w, wHead = w) {
     const P = this.pose;
     const root = this.rig.root;
     // `y` is ACCUMULATED and `z` is ASSIGNED, and the asymmetry is not a slip.
@@ -804,16 +1288,17 @@ export class CampDog {
     root.position.z = (P.push ?? 0) * w;
     const groundPitch = this.restGround?.pitch ?? 0;
     const groundRoll = this.restGround?.roll ?? 0;
-    root.rotation.x = lerp(root.rotation.x, P.pitch + groundPitch, w);
-    root.rotation.z = lerp(root.rotation.z, P.roll + groundRoll, w);
+    root.rotation.x = mixAngle(root.rotation.x, P.pitch + groundPitch, w);
+    root.rotation.z = mixAngle(root.rotation.z, P.roll + groundRoll, w);
 
     for (const name in P.bones) {
       const b = this.byName[name];
       if (!b) continue;
       const [rx, ry, rz] = P.bones[name];
-      b.rotation.x = lerp(b.rotation.x, rx, w);
-      b.rotation.y = lerp(b.rotation.y, ry, w);
-      b.rotation.z = lerp(b.rotation.z, rz, w);
+      const k = HEAD_BONES[name] ? wHead : w;
+      b.rotation.x = mixAngle(b.rotation.x, rx, k);
+      b.rotation.y = mixAngle(b.rotation.y, ry, k);
+      b.rotation.z = mixAngle(b.rotation.z, rz, k);
     }
     // The solver's last act is a world-matrix update; having moved the bones
     // underneath it, we owe it another one or the skinning lags a frame.
@@ -869,5 +1354,12 @@ function pickPose(r) {
 
 const rand = (rnd, [a, b]) => a + rnd() * (b - a);
 const ease01 = (u) => u * u * (3 - 2 * u);
+// Pose blending walks the SHORTEST arc between the solver's angle and the
+// authored one. The neck IK's angles come out of atan2/acos, so when a branch
+// cut is crossed the solver's answer steps by 2π — free for the joint, since
+// it is the same orientation, but a plain lerp between the two representations
+// swings the bone through a fraction of a whole turn in one frame. Measured:
+// a 134 rad/s head flip mid-wander, from exactly this.
+const mixAngle = (from, to, k) => to + wrapAngle(from - to) * (1 - k);
 
 export { POSES as DOG_POSES, ST as DOG_ST, DOG_GAIT as DOG_GAIT_CFG };
