@@ -74,9 +74,14 @@ export class WildlifeAudio {
       // Rabbits are silent because they are; foxes because their one real
       // call is a scream, and a scream has no place in this valley; squirrels
       // because their chatter is a scold on a timer — exactly the cuckoo
-      // clock the header forbids. Falling through would give any of them the
-      // deer's bleat, which is worse than nothing.
-      if (a.key === 'rabbit' || a.key === 'fox' || a.key === 'squirrel') continue;
+      // clock the header forbids. Raccoons because their churr is a
+      // conversation rather than a call: the sound is a run of overlapping
+      // trills between animals, and the generator below makes single events,
+      // so the honest options were "build a new one" or "nothing", and the
+      // header sets the bar for the first. Falling through would give any of
+      // them the deer's bleat, which is worse than nothing.
+      if (a.key === 'rabbit' || a.key === 'fox' || a.key === 'squirrel'
+        || a.key === 'raccoon') continue;
       if (a.state === 'flee') continue;
       const d = Math.hypot(a.x - L.x, a.z - L.z);
       if (d > 240) continue;

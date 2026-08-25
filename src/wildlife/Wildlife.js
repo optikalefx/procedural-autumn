@@ -28,6 +28,7 @@
 import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { SEED } from '../world/WorldConfig.js';
+import { SKY_STATE } from '../render/Lighting.js';
 import { NoiseField } from '../core/Noise.js';
 import { clamp, clamp01, lerp, damp, smoothstep, mulberry32, hash2i } from '../core/MathUtils.js';
 import { SPECIES, buildSpecies, createHideMaterial, pickVariant,
@@ -73,6 +74,15 @@ const CFG = {
   // commonest mammal, without letting one species own most of the site table
   // (the first cut at 420 took 1080 of 1671).
   squirrel: { spawn: 72, despawn: 104, live: 8, perKm2: 240 },
+  // Raccoons exist only at night (see `_night` and the gate in `_scan`), so
+  // this row is read for perhaps a third of a day cycle — which is exactly why
+  // `perKm2` is kept low rather than raised to compensate. Home sites are
+  // placed once at init for every species whether or not it is awake, and they
+  // all come out of one capped table; a nocturnal species that paid for its
+  // downtime with density would be spending the bears' places to do it.
+  // 24 lands 54-66 sites depending on the quality tier's density
+  // multiplier — a tenth of the squirrels', a little over the foxes'.
+  raccoon: { spawn: 92, despawn: 124, live: 5, perKm2: 24 },
 };
 
 // Seeded firefly population inside the 60 m wrap box, per quality tier.
@@ -88,6 +98,15 @@ const CFG = {
 // one draw call and a few thousand vertex invocations, so the low tier is cut
 // for the fill cost of the glows and nothing else.
 const FIREFLY_N = { ultra: 3200, high: 3000, medium: 1900, low: 900 };
+
+// ── the night gate ───────────────────────────────────────────────────────────
+// How much night there has to be before a raccoon will come out, and how much
+// there has to stop being before the ones already out go home. The gap is
+// hysteresis in exactly the sense the spawn/despawn bands are: without it a
+// nightFactor sitting on the threshold at dusk would spawn and despawn the same
+// group every scan.
+const NIGHT_WAKE = 0.55;
+const NIGHT_SLEEP = 0.42;
 
 // LOD. A deer is about 1.5 m tall, so at 60 m it is roughly forty pixels — the
 // reduced mesh is indistinguishable there and costs 40% of the triangles.
@@ -121,6 +140,9 @@ export class Wildlife extends System {
     this._scanT = 0;
     this._frozen = false;
     this._time = 0;
+    // Is it night enough for the nocturnal cast? Latched with hysteresis in
+    // `_scan`; false at boot because the game starts in daylight.
+    this._night = false;
   }
 
   async init() {
@@ -322,6 +344,25 @@ export class Wildlife extends System {
       const edge = smoothstep(0.24, 0.44, m) * (1 - smoothstep(0.60, 0.85, m));
       const scrub = (1 - smoothstep(0.46, 0.72, m)) * smoothstep(0.05, 0.22, m) * 0.6;
       return clamp01((edge + scrub) * 1.1 * flat * clump * (1 - smoothstep(170, 250, h)));
+    }
+    if (key === 'raccoon') {
+      // Water margins and the forest edge, which for a raccoon are the same
+      // habitat seen from two directions: it forages along the wet edge of
+      // things and dens in the timber behind it. `river` is scored the way the
+      // bear scores it — it is the strongest single term — and the moisture
+      // edge band is the fox's seam, shifted a little wetter.
+      //
+      // "Drawn to human sites" is the third real thing about a raccoon, and the
+      // honest way to say it here is the road-verge boost that `_placeSites`
+      // already applies to every non-bear species: at this layer the road
+      // network IS where the people are (the camps sit on it), and inventing a
+      // campsite field for one species would be reaching past the world for
+      // data that does not exist yet when sites are placed.
+      const edge = smoothstep(0.30, 0.50, m) * (1 - smoothstep(0.68, 0.92, m));
+      const wood = smoothstep(0.55, 0.80, m) * 0.45;
+      // Low ground. A raccoon is a bottomland animal and has no business on the
+      // alpine benches at all, so this ceiling is harder than the fox's.
+      return clamp01((edge + wood + river * 2.2) * flat * clump * (1 - smoothstep(120, 195, h)));
     }
     if (key === 'squirrel') {
       // The timber itself, plus its inner edge — the one species that lives
@@ -688,6 +729,23 @@ export class Wildlife extends System {
    * a site inside the view cone only wakes at nearly the full spawn radius,
    * where an animal is a handful of fogged pixels. Everything closer has to
    * come in from behind or off the edge of the screen.
+   *
+   * ── the nocturnal gate ─────────────────────────────────────────────────────
+   * A raccoon only exists between about 20:00 and 05:00, and this is the layer
+   * that decides it — not `_suit`. Home sites are placed once at init, before
+   * the world has a time of day at all and for a map that has to be the same
+   * map at every hour, so a habitat term could only ever say *where* a raccoon
+   * lives and never *when*. Streaming is the part of this file that already
+   * owns when an animal exists.
+   *
+   * Coming out is a plain gate: no raccoon site wakes while `_night` is false.
+   * Going home is deliberately not the mirror of it, because the sun does not
+   * ask whether the player is looking. A group caught out by the dawn is
+   * recycled the moment it is either out of frame or well past the near half of
+   * its own despawn band, which is the same "nothing pops in view" rule the
+   * spawn side runs, played backwards. In practice they are all gone within a
+   * scan or two of the ramp: the raccoon's whole band is 124 m and the player
+   * is rarely watching more than one group.
    */
   _scan(camPos) {
     const S = this.sites;
@@ -696,6 +754,12 @@ export class Wildlife extends System {
     _pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     _frustum.setFromProjectionMatrix(_pm);
 
+    // Latched, so a nightFactor hovering on the threshold through dusk cannot
+    // spawn and despawn the same group on alternate scans. Read once here
+    // rather than per site.
+    const nf = SKY_STATE.nightFactor;
+    this._night = nf > (this._night ? NIGHT_SLEEP : NIGHT_WAKE);
+
     let groups = 0;
     for (let i = 0; i < S.n; i++) {
       const key = this.keys[S.spec[i]];
@@ -703,10 +767,29 @@ export class Wildlife extends System {
       const dx = S.x[i] - camPos.x, dz = S.z[i] - camPos.z;
       const d2 = dx * dx + dz * dz;
       const live = S.live[i];
+      // The only nocturnal species. A table lookup would be tidier and this is
+      // the 0.3 s scan over every site on the map, so it stays a compare.
+      const nightOnly = key === 'raccoon';
 
       if (live) {
         groups++;
         if (live.pinned) continue;
+        if (nightOnly && !this._night) {
+          // Dawn. Put them on their feet and walking rather than standing
+          // still waiting to be deleted — a group that vanishes mid-graze
+          // reads as a bug even when the player only catches it in the corner
+          // of the frame.
+          for (const a of live.members) {
+            if (a.brain.state === ST.GRAZE || a.brain.state === ST.IDLE) {
+              a.brain.state = ST.WANDER; a.brain.timer = 0;
+            }
+          }
+          if (!this._groupVisible(live) || d2 > (c.despawn * 0.45) ** 2) {
+            this._deactivate(i);
+            groups--;
+          }
+          continue;
+        }
         // Rabbits that have finished bolting are gone; recycle them the moment
         // they are out of sight rather than parking them in the open.
         let allDone = live.members.length > 0;
@@ -718,6 +801,7 @@ export class Wildlife extends System {
         continue;
       }
       if (d2 > c.spawn * c.spawn) continue;
+      if (nightOnly && !this._night) continue;
 
       // Inside the view cone? Then only at the far edge of the budget.
       _sphere.center.set(S.x[i], this.ctx.world.getHeight(S.x[i], S.z[i]) + 1, S.z[i]);
