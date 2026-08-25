@@ -102,6 +102,10 @@ const _m = new THREE.Matrix4();
 
 const ease = (u) => u * u * (3 - 2 * u);
 
+// The neck chain's speed limit, radians/second summed over both neck joints.
+// See "the neck speed limit" in _poseHead.
+const NECK_MAX_RATE = 8;
+
 /**
  * Planar two-link IK in the (z, -y) plane of the parent's space.
  *
@@ -251,6 +255,8 @@ export class AnimRig {
     this.earNext = [1.3, 2.7];
     this.headYaw = 0; this.headPitch = 0; this.headRoll = 0;
     this.carriageDelta = 0;
+    this.neckPrevA = null;
+    this.neckPrevB = null;
     // Last frame's unwrapped neck rotation. See the atlas counter-rotation in
     // _poseHead — the raw value is only defined modulo a turn.
     this.neckChain = 0;
@@ -282,6 +288,8 @@ export class AnimRig {
     // atlas a whole turn of stale unwrap and rake the muzzle at the sky.
     this.neckChain = 0;
     this.carriageDelta = 0;
+    this.neckPrevA = null;
+    this.neckPrevB = null;
     this._warm = true;
   }
 
@@ -665,7 +673,13 @@ export class AnimRig {
       const cth = Math.cos(longPitch), sth = Math.sin(longPitch);
       const cy = this.neckRest.y * cth + this.neckRest.z * sth;
       const cz = -this.neckRest.y * sth + this.neckRest.z * cth;
-      const want = Math.atan2(cy - this.neckBase.y, cz - this.neckBase.z) + this.restAng;
+      // Bounded: past this the correction is parking the target against its
+      // anatomical clamp anyway, and a target held at a clamp is a frozen,
+      // twitchy pose. Partial slope-following on extreme ground looks fine.
+      const want = clamp(
+        Math.atan2(cy - this.neckBase.y, cz - this.neckBase.z) + this.restAng,
+        -1.0, 1.0,
+      );
       this.carriageDelta = damp(this.carriageDelta, want, 2.2, dt);
       if (Math.abs(this.carriageDelta) > 1e-4) {
         const dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
@@ -704,11 +718,17 @@ export class AnimRig {
     // toward the animal's own back is how the "head folded over the shoulders"
     // pose happened, and clamping the ELEVATION here (radius kept) makes that
     // pose unreachable by construction rather than merely unlikely.
+    // Both bounds sit WELL AWAY from vertical (±π/2), and that placement is
+    // the fix for a measured single-frame 2.3 rad mirror flip: the cap
+    // originally worked out to 1.50 — the singularity itself — so a steep
+    // slope could pin the target there, where forward-bow and backward-bow
+    // solutions meet and a millimetre of lateral wobble flips between them.
+    // A clamp must pin the pose on stable geometry, not on the knife edge.
     {
       let dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
       const elev = Math.atan2(dy, dz);
-      const hi = -this.restAng + 0.55;      // bind carriage plus alert headroom
-      const e = clamp(elev, -1.7, hi);
+      const hi = Math.min(-this.restAng + 0.55, 1.25);
+      const e = clamp(elev, -1.45, hi);
       if (e !== elev) {
         const d = Math.hypot(dy, dz);
         ty = nb.a.position.y + Math.sin(e) * d;
@@ -716,9 +736,32 @@ export class AnimRig {
       }
     }
     solve2(nb.a.position.y, nb.a.position.z, ty, fz, nb.l1, nb.l2, -1, _ik);
-    const rA = nb.bindA - _ik.upper;
+    let rA = nb.bindA - _ik.upper;
+    let rB = nb.bindB - _ik.lower - rA;
+    // ── the neck speed limit ─────────────────────────────────────────────────
+    // The last line of defence, and the one that makes "the head snapped"
+    // structurally impossible rather than merely fixed-for-now: however the
+    // solve above was driven — a clamp edge, a mirror flip, a bug not yet
+    // written — the JOINTS may not move faster than a real neck. The step is
+    // wrapAngle'd, so a 2π branch re-labelling (same orientation, different
+    // number) passes through freely and only genuine motion is limited. The
+    // budget is far above everything measured in normal play (trot peaks
+    // near 3 rad/s, the graze swing near 5) and far below any snap.
+    if (this.neckPrevA !== null) {
+      const dA = wrapAngle(rA - this.neckPrevA);
+      const dB = wrapAngle(rB - this.neckPrevB);
+      const total = Math.abs(dA) + Math.abs(dB);
+      const budget = NECK_MAX_RATE * dt;
+      if (total > budget) {
+        const f = budget / total;
+        rA = this.neckPrevA + dA * f;
+        rB = this.neckPrevB + dB * f;
+      }
+    }
+    this.neckPrevA = rA;
+    this.neckPrevB = rB;
     nb.a.rotation.x = rA;
-    nb.b.rotation.x = nb.bindB - _ik.lower - rA;
+    nb.b.rotation.x = rB;
 
     // Looking at something: distributed down the neck so the animal turns to
     // look instead of the skull swivelling on a stick.
