@@ -27,8 +27,8 @@ const S = (d, extra = '') =>
 export const ICON = {
   // A summit, with a shoulder behind it.
   peak: S('<path d="M2 19l7-12 5 8 3-4 5 8z"/>'),
-  // A drop over a lip: the lip, the sheet, the pool.
-  waterfall: S('<path d="M4 5h6M7 5v8M4 19h16M12 8c1.6 1.4 1.6 3.6 0 5"/><path d="M17 6c1.6 1.4 1.6 3.6 0 5"/>'),
+  // A single raindrop: falling water, whatever the shape of the rock.
+  waterfall: S('<path d="M12 4c4 4.7 6 7.6 6 10.2a6 6 0 0 1-12 0C6 11.6 8 8.7 12 4z"/>'),
   // A pad and three toes, filled rather than stroked — the one glyph in this
   // set that breaks the rule above it, and it has to.
   //

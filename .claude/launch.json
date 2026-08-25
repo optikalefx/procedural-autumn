@@ -98,6 +98,19 @@
       "port": 5241
     },
     {
+      "name": "raindrop-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5190",
+        "--strictPort"
+      ],
+      "port": 5190
+    },
+    {
       "name": "waders-worktree",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

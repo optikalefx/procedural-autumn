@@ -77,6 +77,16 @@ export class PhotoMode {
         e.preventDefault();
         return;
       }
+      // P and G need the same local path, for the same reason F does: focus
+      // lands on this rail's first control the moment photo mode opens (see
+      // `.focus()` below), and every key typed there is swallowed by the
+      // `stopPropagation()` a few lines down before it can reach HUD's own
+      // `KeyP`/`KeyG` cases — which never fire because HUD._onKey already
+      // ignores keys whose target is inside its root. Without this, the
+      // shutter hint on screen ("P save") is a lie until the player clicks
+      // somewhere else first.
+      if (e.code === 'KeyP') { this.capture(); e.preventDefault(); return; }
+      if (e.code === 'KeyG') { this.toggleGrid(); e.preventDefault(); return; }
       e.stopPropagation();
     });
     rail.addEventListener('keyup', (e) => e.stopPropagation());
@@ -186,6 +196,13 @@ export class PhotoMode {
       // very end of the frame either way (main.js:385, after every lateUpdate),
       // so the free camera has already read them.
       if (this.ctx.input) this.ctx.input.suppressed = true;
+      // Snap the camp placement ring off now, before the pause below freezes
+      // every world system at dt 0. Camp.js already stops drawing it once
+      // `photo.active` is true, but that check only ever runs again once
+      // paused — by then its fade-out lerp has nothing to lerp with, so a
+      // ring still fading in when F was pressed would otherwise hang lit at
+      // whatever opacity it had that frame, in every photo taken this visit.
+      this.ctx.systems?.camp?.reticle?.hide?.();
       // The world holds still while you compose — all of it, not just the sun.
       // `worldPaused` makes main.js drive every world system with dt 0 and a
       // stopped world clock, so wildlife, water, weather, the camper and every
