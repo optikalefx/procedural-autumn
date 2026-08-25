@@ -7,13 +7,14 @@
 //  only what is different: the models, and the two aWing bands the shared
 //  vertex shader uses to repose them.
 //
-//  Fidelity: these two run ~4–5× the eagle's triangle budget. They are capped
-//  at 3 and 6 instances in a 3–5M-triangle scene, and unlike the eagle a wader
-//  is a bird the player WALKS UP TO — it stands in the shallows at eye level
-//  instead of on a spire twelve metres up. The extra triangles go where the
-//  eye goes: smooth Catmull-Rom lofts with rings oriented to the centreline
-//  (a kinked neck ring reads as a broken neck at five metres), prism legs
-//  with toes, a real tail fan on the fan band, eyes, the heron's plume.
+//  Fidelity: these two run a couple of thousand triangles each. They are
+//  capped at 3 and 6 instances in a 3–5M-triangle scene, and unlike the eagle
+//  a wader is a bird the player WALKS UP TO — it stands in the shallows at eye
+//  level instead of on a spire twelve metres up. The extra triangles go where
+//  the eye goes: smooth Catmull-Rom lofts with rings oriented to the
+//  centreline (a kinked neck ring reads as a broken neck at five metres),
+//  prism legs with toes, a real tail fan on the fan band, eyes, the heron's
+//  plume. See the "density" block below for what each part is swept at.
 //
 //  The aWing contract (see treeBirdMaterial in tree_birds.js):
 //
@@ -42,12 +43,46 @@
 import * as THREE from 'three';
 import { clamp01, lerp } from '../core/MathUtils.js';
 import { treeBirdMaterial } from './tree_birds.js';
+import { crom, smoothTuples } from './loft_smooth.js';
 
 // aWing band encodings — must agree with the ranges tested in treeBirdMaterial.
 const LEG = 0.108;
 const NECK_LO = 0.1115;
 const NECK_SPAN = 0.007;
 const neckW = (grade) => NECK_LO + clamp01(grade) * NECK_SPAN;
+
+// ── density ──────────────────────────────────────────────────────────────────
+//
+// The same recipe the great horned owl is built to (owl.js's own "density"
+// block carries the long version). These two shipped at ~860 and ~900
+// triangles — a twelve-sided body, an eight-sided neck, and a wing cut into
+// three chord panels — which was four to five times the eagle and still, next
+// to a rebuilt owl, a plated barrel wearing two blades.
+//
+// Triangle count is near-free on this GPU (AGENTS.md: the 4.5 M budget line is
+// stale and the trees peak at 7–8 M while driving), these are capped at 3 and
+// 6 live instances, and a wader is a bird the player WALKS UP TO. Smaller
+// facets are the cheapest fidelity in the file.
+//
+// Rings by part rather than one number for the whole bird: a neck and a bill
+// are a fraction of the body's radius, and giving them the body's ring count
+// spends triangles on curvature nobody can resolve. Sub is the Catmull-Rom
+// sample count per authored span — `loft` already splined its centreline, so
+// what changes here is only how finely.
+//
+// FLAT SHADING IS NOT NEGOTIABLE — treeBirdMaterial derives the normal per
+// pixel from the derivative, and that is the house style. What is bought here
+// is SMALLER facets, never smoother ones.
+const RING_BODY = 20, SUB_BODY = 4;   // was 12, 3
+const RING_NECK = 14, SUB_NECK = 3;   // was 8, 2
+const RING_HEAD = 14, SUB_HEAD = 3;   // was 7, 2
+const RING_BILL = 10, SUB_BILL = 2;   // was 6, 2
+const WING_SMOOTH = 2;                // Catmull-Rom stations per authored span
+// Chord splits, leading edge to trailing edge. Six panels instead of three,
+// and the two boundaries that carry colour are kept exactly where the old
+// three-panel array put them: 0.42 (the heron's covert-to-remige step) and
+// 0.62 (the flamingo's black rear half).
+const WING_CHORD = [0, 0.14, 0.28, 0.42, 0.62, 0.80, 1];
 
 // ── plumage ──────────────────────────────────────────────────────────────────
 //
@@ -131,11 +166,8 @@ function crSample(rows, sub) {
     const p0 = rows[Math.max(i - 1, 0)], p1 = rows[i];
     const p2 = rows[i + 1], p3 = rows[Math.min(i + 2, n - 1)];
     for (let s = 0; s < sub; s++) {
-      const t = s / sub, t2 = t * t, t3 = t2 * t;
-      const v = p1.map((_, k) =>
-        0.5 * ((2 * p1[k]) + (-p0[k] + p2[k]) * t
-          + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2
-          + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * t3));
+      const t = s / sub;
+      const v = p1.map((_, k) => crom(p0[k], p1[k], p2[k], p3[k], t));
       out.push({ v, u: (i + t) / (n - 1) });
     }
   }
@@ -321,27 +353,51 @@ function foot(B, s, at, footY, fwdLen, toeR, c, webbed) {
 // ── wings ────────────────────────────────────────────────────────────────────
 
 /**
- * One wing pair from spanwise stations [x, LEz, TEz, y]: three chord panels
- * with a cambered mid-line, colour stepped per-panel and per-station but held
- * UNIFORM inside each triangle — mixing panel colours across shared verts let
- * interpolation drown the pale covert band once already (the heron lesson,
- * kept from the first build).
+ * One wing pair from AUTHORED spanwise stations [x, LEz, TEz, y]: the stations
+ * are Catmull-Rom resampled (WING_SMOOTH) and the chord is cut into six
+ * panels with a cambered arc across it.
+ *
+ * Both halves of that earn their keep and for different reasons — the shader
+ * bends the wing by grading its rotation on the spanwise fraction, so SPAN
+ * density is what turns the beat from a hinge into a curve, while CHORD
+ * density is what stops the panel creasing into flat facets when the fold
+ * stands it on edge.
+ *
+ * `colFn(x, t)` takes the station's x and the panel's LEADING chord fraction,
+ * never an index — an index-keyed ramp moves the moment the density changes.
+ * It is held UNIFORM inside each triangle across the chord (mixing panel
+ * colours across shared verts let interpolation drown the pale covert band
+ * once already — the heron lesson, kept from the first build) and blends only
+ * along the span, exactly as before.
  */
-function wingLoft(B, SPAN, wingW, colFn, SPLITS = [0, 0.42, 0.72, 1]) {
-  const CAMB = [0, 0.009, 0.004, -0.001];
+function wingLoft(B, SPAN_KEY, wingW, colFn, SPLITS = WING_CHORD) {
+  const SPAN = smoothTuples(SPAN_KEY, WING_SMOOTH);
+  // Camber as an arc rather than the old four sampled values, which only
+  // existed because there were only four chord positions to sample at. Peaks
+  // where CAMB did: ~0.009 at 42% of chord, ~0.005 at 72%, flat at both edges.
+  const camber = (t) => 0.0095 * Math.sin(Math.PI * Math.pow(clamp01(t), 0.62));
+  // Two owned instances: both colours of a band are alive at once inside a
+  // tri() call, and a colFn that returns a scratch Color would hand it the
+  // same value twice.
+  const _c0 = new THREE.Color(), _c1 = new THREE.Color();
   for (const s of [1, -1]) {
     for (let i = 0; i < SPAN.length - 1; i++) {
       const [x0, le0, te0, y0] = SPAN[i], [x1, le1, te1, y1] = SPAN[i + 1];
       const w0 = s * wingW(x0), w1 = s * wingW(x1);
       for (let j = 0; j < SPLITS.length - 1; j++) {
-        const c0 = colFn(i, j), c1 = colFn(i + 1, j);
-        const a = [s * x0, y0 + CAMB[j], lerp(le0, te0, SPLITS[j])];
-        const b = [s * x1, y1 + CAMB[j], lerp(le1, te1, SPLITS[j])];
-        const c = [s * x1, y1 + CAMB[j + 1], lerp(le1, te1, SPLITS[j + 1])];
-        const d = [s * x0, y0 + CAMB[j + 1], lerp(le0, te0, SPLITS[j + 1])];
-        const mT = j === SPLITS.length - 2 ? 0.9 : 1;
-        B.tri(a, b, c, [w0, w1, w1], c0, c1, c1, 1, 1, mT);
-        B.tri(a, c, d, [w0, w1, w0], c0, c1, c0, 1, mT, mT);
+        const t0 = SPLITS[j], t1 = SPLITS[j + 1];
+        _c0.copy(colFn(x0, t0)); _c1.copy(colFn(x1, t0));
+        const a = [s * x0, y0 + camber(t0), lerp(le0, te0, t0)];
+        const b = [s * x1, y1 + camber(t0), lerp(le1, te1, t0)];
+        const c = [s * x1, y1 + camber(t1), lerp(le1, te1, t1)];
+        const d = [s * x0, y0 + camber(t1), lerp(le0, te0, t1)];
+        // Trailing edge a stop down, ramped over the rear of the chord rather
+        // than stepped on the last panel — six panels would have made that
+        // step a visible line.
+        const mA = lerp(1, 0.9, clamp01((t0 - 0.42) / 0.58));
+        const mT = lerp(1, 0.9, clamp01((t1 - 0.42) / 0.58));
+        B.tri(a, b, c, [w0, w1, w1], _c0, _c1, _c1, mA, mA, mT);
+        B.tri(a, c, d, [w0, w1, w0], _c0, _c1, _c0, mA, mT, mT);
       }
     }
   }
@@ -375,7 +431,7 @@ export function buildFlamingoGeometry() {
     [0.004, 0.000, 0.044, 0.048],
     [0.012, 0.070, 0.036, 0.040],
     [0.030, 0.114, 0.018, 0.022],
-  ], 12, 3, {
+  ], RING_BODY, SUB_BODY, {
     col: () => C_FLA_BODY, mul: countershade, capStart: true, capEnd: true,
   });
 
@@ -406,7 +462,7 @@ export function buildFlamingoGeometry() {
     [0.330, 0.138, 0.0105, 0.0105, 0.90],
     [0.360, 0.127, 0.0100, 0.0100, 0.97],
     [0.386, 0.120, 0.0098, 0.0098, 1.0],
-  ], 8, 2, {
+  ], RING_NECK, SUB_NECK, {
     col: () => C_FLA_BODY,
     w: (g) => (g > 0.001 ? neckW(g) : 0),
     capEnd: true,
@@ -421,7 +477,7 @@ export function buildFlamingoGeometry() {
     [0.394, 0.118, 0.016, 0.015, 1],
     [0.392, 0.140, 0.013, 0.012, 1],
     [0.386, 0.155, 0.009, 0.008, 1],
-  ], 7, 2, {
+  ], RING_HEAD, SUB_HEAD, {
     col: () => C_FLA_HEAD, w: () => neckW(1), capStart: true, capEnd: true,
   });
 
@@ -437,7 +493,7 @@ export function buildFlamingoGeometry() {
       [0.362, 0.181, 0.0040, 0.0048, 1, C_FLA_TIP],
       [0.336, 0.186, 0.0016, 0.0020, 1, C_FLA_TIP],
     ];
-    loft(B, ST.map((r) => r.slice(0, 5)), 6, 2, {
+    loft(B, ST.map((r) => r.slice(0, 5)), RING_BILL, SUB_BILL, {
       col: colBySt(ST), w: () => neckW(1), capEnd: true,
     });
   }
@@ -445,12 +501,12 @@ export function buildFlamingoGeometry() {
   // Eyes: dark beads either side of the head, riding the neck rotation.
   eyes(B, neckW(1), 0.398, 0.126, 0.0155, 0.0042, C_FLA_TIP);
 
-  // Wings: narrow chord, rose coverts over black remiges. The trailing panel
-  // is black along the whole span and the outer stations go black on every
-  // panel — the black primaries wrap the tip. Panel colours stay uniform per
-  // triangle; see wingLoft.
+  // Wings: narrow chord, rose coverts over black remiges. The rear of the
+  // chord is black along the whole span and the outer stations are black
+  // across the whole chord — the black primaries wrap the tip. Panel colours
+  // stay uniform across the chord inside a triangle; see wingLoft.
   {
-    const SPAN = [
+    const SPAN_KEY = [
       [0.040, 0.068, -0.048, 0.022],
       [0.105, 0.073, -0.055, 0.028],
       [0.170, 0.075, -0.058, 0.033],
@@ -462,12 +518,14 @@ export function buildFlamingoGeometry() {
     ];
     const wingW = (x) => 0.12 + 0.88 * clamp01((x - 0.04) / 0.42);
     // Black from 62% of chord — on a flamingo the dark rear half of the wing
-    // IS the flight read, and at a narrower band it disappeared from above.
-    wingLoft(B, SPAN, wingW, (i, j) => (i >= 6 || j === 2 ? C_FLA_REM : C_FLA_DEEP),
-      [0, 0.38, 0.62, 1]);
+    // IS the flight read, and at a narrower band it disappeared from above —
+    // and from x 0.420 outboard. Both thresholds are the authored stations
+    // and splits the old index test named, so they land exactly where they
+    // did before the span was resampled and the chord recut.
+    wingLoft(B, SPAN_KEY, wingW, (x, t) => (x >= 0.420 || t >= 0.62 ? C_FLA_REM : C_FLA_DEEP));
     // Pointed tip: close the last station to a point past it.
     for (const s of [1, -1]) {
-      const [xt, le, te, yt] = SPAN[SPAN.length - 1];
+      const [xt, le, te, yt] = SPAN_KEY[SPAN_KEY.length - 1];
       const tip = [s * 0.484, yt, lerp(le, te, 0.5)];
       B.tri([s * xt, yt, le], tip, [s * xt, yt + 0.004, lerp(le, te, 0.72)], s, C_FLA_REM);
       B.tri([s * xt, yt + 0.004, lerp(le, te, 0.72)], tip, [s * xt, yt, te], s, C_FLA_REM, C_FLA_REM, C_FLA_REM, 1, 0.9, 0.9);
@@ -506,7 +564,7 @@ export function buildBlueHeronGeometry() {
       [0.022, 0.080, 0.040, 0.046, 0, C_HER_BODY],
       [0.040, 0.128, 0.020, 0.024, 0, C_HER_NECK],
     ];
-    loft(B, ST.map((r) => r.slice(0, 5)), 12, 3, {
+    loft(B, ST.map((r) => r.slice(0, 5)), RING_BODY, SUB_BODY, {
       col: colBySt(ST), mul: countershade, capStart: true, capEnd: true,
     });
   }
@@ -526,7 +584,7 @@ export function buildBlueHeronGeometry() {
     [0.240, 0.134, 0.013, 0.013, 0],
     [0.272, 0.138, 0.012, 0.012, 0],
     [0.292, 0.150, 0.011, 0.011, 0],
-  ], 8, 2, {
+  ], RING_NECK, SUB_NECK, {
     col: () => C_HER_NECK,
     mul: (off) => 1 + 0.14 * Math.max(0, off[2]),
   });
@@ -539,7 +597,7 @@ export function buildBlueHeronGeometry() {
     [0.301, 0.150, 0.0145, 0.013, 0],
     [0.300, 0.170, 0.0125, 0.0115, 0],
     [0.296, 0.186, 0.009, 0.008, 0],
-  ], 7, 2, {
+  ], RING_HEAD, SUB_HEAD, {
     col: (u, off) => (off[1] > 0.42 ? C_HER_CROWN : C_HER_HEAD),
   });
 
@@ -561,7 +619,7 @@ export function buildBlueHeronGeometry() {
     [0.290, 0.226, 0.0050, 0.0046, 0],
     [0.286, 0.262, 0.0026, 0.0024, 0],
     [0.283, 0.286, 0.0007, 0.0007, 0],
-  ], 6, 2, { col: () => C_HER_BILL, capEnd: true });
+  ], RING_BILL, SUB_BILL, { col: () => C_HER_BILL, capEnd: true });
 
   // Eyes: on the white face, just under the crown stripe.
   eyes(B, 0, 0.302, 0.163, 0.0140, 0.0040, C_HER_CROWN);
@@ -570,7 +628,7 @@ export function buildBlueHeronGeometry() {
   // covert panel stays solid (the first build's lesson) — with four modest
   // slotted fingers at the tip.
   {
-    const SPAN = [
+    const SPAN_KEY = [
       [0.046, 0.102, -0.074, 0.028],
       [0.105, 0.108, -0.082, 0.033],
       [0.165, 0.112, -0.088, 0.038],
@@ -581,9 +639,13 @@ export function buildBlueHeronGeometry() {
       [0.452, 0.052, -0.018, 0.050],
     ];
     const wingW = (x) => 0.12 + 0.88 * clamp01((x - 0.046) / 0.40);
-    wingLoft(B, SPAN, wingW, (i, j) => (i >= 6 || j > 0 ? C_HER_REM : C_HER_COV));
+    // The pale covert panel is the leading 42% of chord inboard of x 0.400 —
+    // the same two boundaries the old index test named, restated against the
+    // station's x and the panel's chord fraction so resampling the span cannot
+    // move them.
+    wingLoft(B, SPAN_KEY, wingW, (x, t) => (x >= 0.400 || t >= 0.42 ? C_HER_REM : C_HER_COV));
     for (const s of [1, -1]) {
-      const [xt, let_, tet, yt] = SPAN[SPAN.length - 1];
+      const [xt, let_, tet, yt] = SPAN_KEY[SPAN_KEY.length - 1];
       const FING = [
         [-0.05, 0.078, 0.10],
         [0.18, 0.086, 0.38],

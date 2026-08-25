@@ -16,6 +16,7 @@
 import * as THREE from 'three';
 import { mulberry32, lerp, clamp01 } from '../core/MathUtils.js';
 import { RigBuilder, Skel, tube, makePrototype, MIX, mixLerp } from './animal_rig.js';
+import { crom } from './loft_smooth.js';
 
 // ── hide material ────────────────────────────────────────────────────────────
 
@@ -205,13 +206,6 @@ export function createHideMaterial(c) {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-/** Catmull-Rom through four scalars. */
-function crom(a, b, c, d, t) {
-  const t2 = t * t, t3 = t2 * t;
-  return 0.5 * ((2 * b) + (-a + c) * t
-    + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
-}
 
 /**
  * Resample a profile so `factor - 1` intermediate stations sit between each

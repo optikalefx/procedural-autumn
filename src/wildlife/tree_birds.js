@@ -23,6 +23,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, smoothstep, damp, dampAngle, mulberry32 } from '../core/MathUtils.js';
 import { SPECIES as TREE_SPECIES } from '../vegetation/tree_species.js';
+import { smoothTuples } from './loft_smooth.js';
 import { buildFlamingoGeometry, buildBlueHeronGeometry } from './water_birds.js';
 
 // ── plumage ──────────────────────────────────────────────────────────────────
@@ -40,6 +41,29 @@ const C_HEAD  = new THREE.Color(0xd9d2c2);   // white head
 const C_TAIL  = new THREE.Color(0xd3ccbb);   // white tail
 const C_BEAK  = new THREE.Color(0xc9942e);   // yellow beak
 const C_FOOT  = new THREE.Color(0xc9942e);   // yellow tarsi
+
+// ── density ──────────────────────────────────────────────────────────────────
+//
+// The same recipe the great horned owl is built to (owl.js's own "density"
+// block carries the long version). This model shipped at 179 triangles — an
+// eight-sided loft through six stations with nothing interpolated between
+// them — and next to a rebuilt owl on the same branch it read as exactly what
+// it was: a stack of welded cones with two flat blades bolted on.
+//
+// Triangle count is near-free on this GPU (AGENTS.md: the 4.5 M budget line is
+// stale and the trees peak at 7–8 M while driving), and an eagle is capped at
+// a handful of live instances. Smaller facets are the cheapest fidelity in the
+// file.
+//
+// FLAT SHADING IS NOT NEGOTIABLE — treeBirdMaterial derives the normal per
+// pixel from the derivative, and that is the house style. What is bought here
+// is SMALLER facets, never smoother ones.
+const RING = 20;          // body loft sides (was 8)
+const BODY_SMOOTH = 4;    // Catmull-Rom rings per authored body interval
+const WING_SMOOTH = 3;    // Catmull-Rom stations per authored wing interval
+const PRIM_SEG = 3;       // segments along each slotted primary
+// Chord splits, leading edge to trailing edge.
+const WING_CHORD = [0, 0.14, 0.28, 0.42, 0.62, 0.80, 1];
 
 /**
  * The bald eagle, nose along +Z, wingspan exactly 1.0 along ±X so the
@@ -74,30 +98,45 @@ export function buildBaldEagleGeometry() {
     tri(a, c, d, w, cab, ccd, ccd, mab, mcd, mcd);
   };
 
-  // ── body: a loft through six stations, tail root to forehead ──────────────
-  // Stations: z, half-width, half-depth, centre height, colour. The neck-up
-  // stations are white — the head/neck boundary is the one line that says
-  // "bald eagle" at forty metres, so it lives in the geometry, not a texture.
-  const ST = [
-    [-0.150, 0.017, 0.019, 0.034, C_BODY],
-    [-0.062, 0.041, 0.047, 0.024, C_BODY],
-    [ 0.028, 0.047, 0.053, 0.030, C_BODY],
-    [ 0.092, 0.033, 0.037, 0.050, C_HEAD],
-    [ 0.148, 0.027, 0.029, 0.060, C_HEAD],
-    [ 0.184, 0.015, 0.016, 0.054, C_HEAD],
+  // ── body: a loft through six AUTHORED stations, tail root to forehead ─────
+  // Stations: z, half-width, half-depth, centre height. smoothTuples rounds
+  // the path between them (BODY_SMOOTH), and the ring is swept at RING sides
+  // rather than the eight this model shipped with. The old eight-sided,
+  // six-station barrel was the armour plate the owl rebuild names: an eagle
+  // is a bird the game asks the player to STOP for, and a stack of welded
+  // cones does not survive being looked at.
+  //
+  // Colour is a FUNCTION OF Z, not of station index. The white head is the
+  // one line that says "bald eagle" at forty metres, so it lives in the
+  // geometry — and keyed on z it lands in exactly the same place whatever
+  // BODY_SMOOTH is set to. The ramp reproduces the old station colours
+  // exactly: brown at and below z = 0.028, white at and above z = 0.092.
+  const ST_KEY = [
+    [-0.150, 0.017, 0.019, 0.034],
+    [-0.062, 0.041, 0.047, 0.024],
+    [ 0.028, 0.047, 0.053, 0.030],
+    [ 0.092, 0.033, 0.037, 0.050],
+    [ 0.148, 0.027, 0.029, 0.060],
+    [ 0.184, 0.015, 0.016, 0.054],
   ];
-  const RING = 8;
-  const ring = (s) => {
+  const ST = smoothTuples(ST_KEY, BODY_SMOOTH);
+  const ring = (st) => {
     const pts = [];
     for (let k = 0; k < RING; k++) {
       const a = (k / RING) * Math.PI * 2;
-      pts.push([Math.cos(a) * s[1], s[3] + Math.sin(a) * s[2], s[0]]);
+      pts.push([Math.cos(a) * st[1], st[3] + Math.sin(a) * st[2], st[0]]);
     }
     return pts;
   };
   const rings = ST.map(ring);
+  // Two instances, not one scratch: both colours of a band are alive at the
+  // same time inside a tri() call, and one shared Color would hand it the
+  // same value twice.
+  const _c0 = new THREE.Color(), _c1 = new THREE.Color();
+  const bodyCol = (into, z) => into.copy(C_BODY).lerp(C_HEAD, clamp01((z - 0.028) / 0.064));
   for (let i = 0; i < ST.length - 1; i++) {
     const r0 = rings[i], r1 = rings[i + 1];
+    bodyCol(_c0, ST[i][0]); bodyCol(_c1, ST[i + 1][0]);
     for (let k = 0; k < RING; k++) {
       const k2 = (k + 1) % RING;
       // Countershade: the belly a stop lighter than the back, so the bird has
@@ -106,8 +145,8 @@ export function buildBaldEagleGeometry() {
       const sB = Math.sin((k2 / RING) * Math.PI * 2);
       const mA = 1 - sA * 0.10 + clamp01(-sA) * 0.14;
       const mB = 1 - sB * 0.10 + clamp01(-sB) * 0.14;
-      tri(r0[k], r0[k2], r1[k2], 0, ST[i][4], ST[i][4], ST[i + 1][4], mA, mB, mB);
-      tri(r0[k], r1[k2], r1[k], 0, ST[i][4], ST[i + 1][4], ST[i + 1][4], mA, mB, mA);
+      tri(r0[k], r0[k2], r1[k2], 0, _c0, _c0, _c1, mA, mB, mB);
+      tri(r0[k], r1[k2], r1[k], 0, _c0, _c1, _c1, mA, mB, mA);
     }
   }
   // Tail-root cap.
@@ -147,9 +186,16 @@ export function buildBaldEagleGeometry() {
   // ── wings ─────────────────────────────────────────────────────────────────
   // Planform from spanwise stations: broad secondaries, a rounded tip carrying
   // five slotted primaries — the slots are most of what says "eagle, not
-  // gull" in silhouette. Chord is split leading/mid/trailing so the colour can
-  // step covert → wing → secondary across it.
-  const SPAN = [
+  // gull" in silhouette.
+  //
+  // Five AUTHORED stations, smoothTuples'd to thirteen, and the chord cut into
+  // six panels instead of two. Both halves earn their keep and for different
+  // reasons: the shader bends the wing by grading its rotation on the spanwise
+  // fraction, so SPAN density is what turns the beat from a hinge into a
+  // curve, while CHORD density is what stops the panel creasing into two flat
+  // facets when the fold stands it on edge. At two chord panels it was,
+  // unmistakably, a blade.
+  const SPAN_KEY = [
     // x,     LE z,   TE z,    y
     [0.046, 0.112, -0.068, 0.030],
     [0.150, 0.118, -0.082, 0.040],
@@ -157,21 +203,37 @@ export function buildBaldEagleGeometry() {
     [0.370, 0.088, -0.048, 0.050],
     [0.446, 0.062, -0.018, 0.052],
   ];
+  const SPAN = smoothTuples(SPAN_KEY, WING_SMOOTH);
   const wingW = (x) => 0.12 + 0.88 * clamp01((x - 0.046) / 0.40);
+  // Camber as an arc peaking a third of the way back, rather than the single
+  // lifted mid-chord point that made a tent out of it. Peak matches the old
+  // 0.008 lift at the old 0.42 mid-line.
+  const camber = (t) => 0.0083 * Math.sin(Math.PI * Math.pow(clamp01(t), 0.72));
+  // Colour by chord fraction, not by panel index — covert along the leading
+  // edge stepping into the flight feathers by 42% of chord, which is where
+  // the old two-panel split put the boundary, and the trailing edge a stop
+  // down. Keyed on t it stays put however finely the chord is cut.
+  const _wc = new THREE.Color();
+  const wingCol = (t) => _wc.copy(C_COVERT).lerp(C_WING, clamp01(t / 0.42));
+  const wingMul = (t) => lerp(1, 0.9, clamp01((t - 0.42) / 0.58));
   for (const s of [1, -1]) {
+    const pt = (st, t) => [s * st[0], st[3] + camber(t), lerp(st[1], st[2], t)];
     for (let i = 0; i < SPAN.length - 1; i++) {
-      const [x0, le0, te0, y0] = SPAN[i];
-      const [x1, le1, te1, y1] = SPAN[i + 1];
-      const m0 = lerp(le0, te0, 0.42), m1 = lerp(le1, te1, 0.42);
-      const w0 = s * wingW(x0), w1 = s * wingW(x1);
-      const camber = 0.008;
-      tri([s * x0, y0, le0], [s * x1, y1, le1], [s * x1, y1 + camber, m1], [w0, w1, w1], C_COVERT, C_COVERT, C_WING);
-      tri([s * x0, y0, le0], [s * x1, y1 + camber, m1], [s * x0, y0 + camber, m0], [w0, w1, w0], C_COVERT, C_WING, C_WING);
-      tri([s * x0, y0 + camber, m0], [s * x1, y1 + camber, m1], [s * x1, y1, te1], [w0, w1, w1], C_WING, C_WING, C_WING, 1, 1, 0.9);
-      tri([s * x0, y0 + camber, m0], [s * x1, y1, te1], [s * x0, y0, te0], [w0, w1, w0], C_WING, C_WING, C_WING, 1, 0.9, 0.9);
+      const A = SPAN[i], D = SPAN[i + 1];
+      const wA = s * wingW(A[0]), wD = s * wingW(D[0]);
+      for (let j = 0; j < WING_CHORD.length - 1; j++) {
+        const t0 = WING_CHORD[j], t1 = WING_CHORD[j + 1];
+        // Six vert() calls rather than two tri() calls: every corner wants its
+        // own colour and weight, and tri()'s three-colour form cannot express
+        // a bilinear patch. Winding matches the old two-panel loft.
+        const put = (st, w, t) => vert(pt(st, t), w, wingCol(t), wingMul(t));
+        put(A, wA, t0); put(D, wD, t0); put(D, wD, t1);
+        put(A, wA, t0); put(D, wD, t1); put(A, wA, t1);
+      }
     }
     // Slotted primaries: five fingers off the tip station, progressively swept
-    // back, tips curling up the way a soaring eagle's do.
+    // back, tips curling up the way a soaring eagle's do. Split along their
+    // length so the curl reads as a curve rather than a kink at the root.
     const [xt, let_, tet, yt] = SPAN[SPAN.length - 1];
     const FING = [
       // sweep (rad back from +x), length, chord position 0..1 LE→TE
@@ -184,15 +246,16 @@ export function buildBaldEagleGeometry() {
     for (const [sw, len, cp] of FING) {
       const bz = lerp(let_, tet, cp);
       const dx = Math.cos(sw), dz = -Math.sin(sw);
-      const tipX = xt + dx * len, tipZ = bz + dz * len;
       const hw = 0.013;
-      quad(
-        [s * xt, yt, bz + hw],
-        [s * xt, yt, bz - hw],
-        [s * tipX, yt + 0.022, tipZ - hw * 0.5],
-        [s * tipX, yt + 0.022, tipZ + hw * 0.5],
-        s * 1.0, C_PRIM, C_PRIM, 1, 0.88,
-      );
+      const fp = (u, side) => {
+        const h = hw * lerp(1, 0.5, u);
+        return [s * (xt + dx * len * u), yt + 0.022 * u * u, bz + dz * len * u + h * side];
+      };
+      for (let g = 0; g < PRIM_SEG; g++) {
+        const u0 = g / PRIM_SEG, u1 = (g + 1) / PRIM_SEG;
+        quad(fp(u0, 1), fp(u0, -1), fp(u1, -1), fp(u1, 1),
+          s * 1.0, C_PRIM, C_PRIM, lerp(1, 0.88, u0), lerp(1, 0.88, u1));
+      }
     }
   }
 
