@@ -77,6 +77,16 @@ export class PhotoMode {
         e.preventDefault();
         return;
       }
+      // P and G need the same local path, for the same reason F does: focus
+      // lands on this rail's first control the moment photo mode opens (see
+      // `.focus()` below), and every key typed there is swallowed by the
+      // `stopPropagation()` a few lines down before it can reach HUD's own
+      // `KeyP`/`KeyG` cases — which never fire because HUD._onKey already
+      // ignores keys whose target is inside its root. Without this, the
+      // shutter hint on screen ("P save") is a lie until the player clicks
+      // somewhere else first.
+      if (e.code === 'KeyP') { this.capture(); e.preventDefault(); return; }
+      if (e.code === 'KeyG') { this.toggleGrid(); e.preventDefault(); return; }
       e.stopPropagation();
     });
     rail.addEventListener('keyup', (e) => e.stopPropagation());
