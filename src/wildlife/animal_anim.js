@@ -544,13 +544,13 @@ export class AnimRig {
     // the neck solve (needs the chest) and the leg IK (needs pelvis / chest).
     this.mesh.updateWorldMatrix(false, true);
 
-    this._poseHead(dt, drive, sn);
+    this._poseHead(dt, drive, sn, world);
     this._poseEars(dt, drive, sn);
     this._poseTail(dt, drive, sn);
     this._solveLegs(sh, ch);
   }
 
-  _poseHead(dt, drive, sn) {
+  _poseHead(dt, drive, sn, world) {
     if (!this.neck) return;
     const S = this.scale;
     const graze = drive.graze, alert = drive.alert;
@@ -635,21 +635,38 @@ export class AnimRig {
     // so the delta is damped at 4/s: stride-frequency bob averages out of it,
     // the quasi-static slope passes through. Flat ground reads zero; grazing
     // fades it out, that path solves its own geometry.
-    // Opt-in per species (cfg.carriageFollow) rather than global, after
-    // measurement: the probe is noisy on a hopping rabbit's five-centimetre
-    // neck, and any graze at all replaces the target with the arc, whose
-    // slope behaviour is its own validated geometry — correcting across that
-    // boundary whipped the poll at every crop transition (grazeslope.mjs).
-    // The camp dog never grazes and walks gently, which is exactly the case
-    // the correction exists for. The delta decays whenever it is not applied
-    // so it always re-engages cleanly.
+    // Driven by the LONG-BASELINE ground slope, nothing else. Two earlier
+    // versions of this correction are worth their tombstones: probing the
+    // carriage through the live chest matrices tracked surge and terrain
+    // ripple as faithfully as slope, and with the ~5x geometric gain the head
+    // visibly dove at every hollow the dog crossed and every hard brake
+    // (filmed — tools/_scratch/dogfilm.mjs). A head stabilises through bumps
+    // and accelerations; it only re-carries for the SUSTAINED grade under the
+    // walk. So: sample the terrain a body-length-and-a-half fore and aft,
+    // which averages the bumps out of the signal and keeps the hillside in
+    // it, scale by the calibrated gain, and damp.
+    //
+    // Opt-in per species (cfg.carriageFollow): the graze arc handles its own
+    // slope geometry and correcting across its boundary whipped the poll at
+    // every crop transition (grazeslope.mjs). The camp dog never grazes,
+    // lives wherever the camp was pitched, and is watched up close — exactly
+    // the case this exists for. The delta decays when not applied so it
+    // always re-engages cleanly.
     if (graze < 0.001 && this.cfg.carriageFollow) {
-      _c.copy(this.neckRest);
-      this.mesh.localToWorld(_c);
-      _c.applyMatrix4(_m);
-      const pz = Math.hypot(_c.x, _c.z) * Math.sign(_c.z || 1);
-      const probeElev = Math.atan2(_c.y - nb.a.position.y, pz - nb.a.position.z);
-      this.carriageDelta = damp(this.carriageDelta, wrapAngle(probeElev + this.restAng), 4, dt);
+      const span = 1.6;
+      const px = drive.pos.x, pz2 = drive.pos.z, hd = drive.heading;
+      const hF = world.getHeight(px + Math.sin(hd) * span, pz2 + Math.cos(hd) * span);
+      const hR = world.getHeight(px - Math.sin(hd) * span, pz2 - Math.cos(hd) * span);
+      const longPitch = clamp(-Math.atan2(hF - hR, span * 2), -0.55, 0.55);
+      // The elevation shift a given body pitch produces is the bind carriage
+      // rotated about the root — evaluate that geometry directly rather than
+      // linearising it: the true response is ~5x at small angles and
+      // saturates at steep ones, and a straight gain overshot the steep ends.
+      const cth = Math.cos(longPitch), sth = Math.sin(longPitch);
+      const cy = this.neckRest.y * cth + this.neckRest.z * sth;
+      const cz = -this.neckRest.y * sth + this.neckRest.z * cth;
+      const want = Math.atan2(cy - this.neckBase.y, cz - this.neckBase.z) + this.restAng;
+      this.carriageDelta = damp(this.carriageDelta, want, 2.2, dt);
       if (Math.abs(this.carriageDelta) > 1e-4) {
         const dy = ty - nb.a.position.y, dz = fz - nb.a.position.z;
         const d = Math.hypot(dy, dz);
@@ -658,7 +675,7 @@ export class AnimRig {
         fz = nb.a.position.z + Math.cos(e) * d;
       }
     } else {
-      this.carriageDelta = damp(this.carriageDelta, 0, 4, dt);
+      this.carriageDelta = damp(this.carriageDelta, 0, 2.2, dt);
     }
     // ── keep the solve off the straight-chain singularity ────────────────────
     // Every species binds its neck bones nearly colinear, so the rest target
