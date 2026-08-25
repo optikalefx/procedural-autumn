@@ -375,9 +375,13 @@ export function buildBaldEagle(rnd, opts = {}) {
   }
   geo.setAttribute('aPose', new THREE.Float32BufferAttribute(arr, 4));
   const mesh = new THREE.Mesh(geo, treeBirdMaterial({ time: { value: 0 } }));
-  mesh.scale.setScalar(2.05);
-  if (perched) { mesh.rotation.x = -0.85; mesh.position.y = 0.9; }
-  else mesh.position.y = 1.2;
+  // 4.1 m span — 2x life, matching TREE_BIRD_SPECIES. Both stand-off heights
+  // are fractions of the span rather than fixed metres, so a future scale
+  // change does not leave the bird buried in the studio floor.
+  const SPAN = 4.1;
+  mesh.scale.setScalar(SPAN);
+  if (perched) { mesh.rotation.x = -0.85; mesh.position.y = SPAN * 0.44; }
+  else mesh.position.y = SPAN * 0.59;
   const g = new THREE.Group();
   g.add(mesh);
   void rnd;
@@ -433,11 +437,14 @@ export const TREE_BIRD_SPECIES = [
     geometry: buildBaldEagleGeometry,
     live: 4,
     chance: 0.65,
-    wingspan: [1.85, 2.25],
+    // 2x life. Less than the waders' 3x on purpose: an eagle is already read
+    // against a treetop, which gives it a scale reference and a silhouette
+    // against sky that a bird standing on a flat shore never gets.
+    wingspan: [3.7, 4.5],
     perchS: [24, 75],
     hop: [55, 150],
     cruise: [11.0, 15.0],
-    flapHz: [2.2, 2.8],
+    flapHz: [1.55, 2.0],
     flapAmp: [0.72, 0.95],
     minTreeH: 11,
     startle: 26,
