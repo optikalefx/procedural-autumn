@@ -217,14 +217,29 @@ const APPROACH_TIME = 16;        // s before abandoning an unreachable bed
 const HEAD_LAG = 2.1;            // 1/s damp rate of the head-chain blend
 const HEAD_BONES = { neck1: 1, neck2: 1, head: 1 };
 
-// The pathing above is best-effort and the props are arbitrary overlapping
-// circles; a pocket with no walkable exit can and does occur (measured: one
-// seeded camp held the dog for seventeen sim-minutes). Past this long without
-// covering a body length, stop trying to walk out and put the dog back on its
-// orbit somewhere clear — a teleport the player can very occasionally catch is
-// strictly better than a dog grinding against a cooler forever.
-const STUCK_MOVE = 0.40;         // m of net displacement that counts as progress
-const STUCK_TIME = 13;           // s without progress before respawning
+// A dog in a moving state is CONSTANTLY covering ground — walking is 0.78 m/s
+// and even the slow cases (backing out of a corner at 0.27, creeping the last
+// step to a bed at 0.19, walking a tight arc at forty percent speed) all put
+// a few tenths of a metre behind them every couple of seconds. So stuck is
+// not a diagnosis that needs patience: fail to get one step-length away from
+// where you were two seconds ago and no walking gait is in progress — only
+// oscillation against something solid. Detect it at that timescale and put
+// the dog back on its orbit somewhere clear, rather than letting the player
+// watch it grind while a longer fuse burns down. (An earlier 13 s fuse
+// existed to let slow escape arcs finish; the honest reading is that a
+// manoeuvre slow enough to look stuck for two seconds is better cut short
+// too — the respawn prefers a spot away from the camera either way.)
+const STUCK_MOVE = 0.12;         // m of net displacement that counts as progress
+const STUCK_TIME = 2;            // s without progress before respawning
+// The anchor test above has a blind spot: a dog PACING inside a pocket moves
+// more than STUCK_MOVE on every crossing and resets its anchor forever while
+// going nowhere (found by walling a test dog into a 0.4 m pen — it paced for
+// twenty seconds without ever reading as stuck). So a second, slower test
+// watches the bounding box of everywhere the dog has recently been: a walking
+// dog's six-second box spans metres, a penned or churning one's spans half a
+// metre. Either test firing respawns the dog.
+const PEN_TIME = 6;              // s of history the box covers
+const PEN_SPAN = 0.55;           // m; a box no bigger than this is a cage
 const RESPAWN_CLEAR = 0.20;      // clearance a respawn point must offer
 const NAV_CELL = 0.16;           // m; the walkable-space raster — see _buildNav
 // The one number that keeps the planner and the body honest with each other:
@@ -348,6 +363,11 @@ export class CampDog {
     this.stuckT = 0;
     this.recoverCount = 0;
     this.respawns = 0;
+    // The pen detector's position history: [t, x, z, t, x, z, ...] — and the
+    // times of recent wall-contact recoveries, its second requirement.
+    this.penTrail = [];
+    this.penT = 0;
+    this.recentRecover = [];
 
     this._buildNav();
 
@@ -885,6 +905,19 @@ export class CampDog {
     // that needs rescuing twice gives its bed up rather than grinding at it.
     if (!sideHint) {
       this.recoverCount++;
+      this.recentRecover.push(this._t);
+      // The first recovery since real progress is ordinary behaviour — a dog
+      // that touched a prop, braking and backing up — and its opening second
+      // covers almost no ground on purpose. Restart the stuck clock for it so
+      // the two-second fuse judges the RESULT of the back-up, not the back-up
+      // itself. Only the first: a wedged dog fails this recovery inside 1.2 s
+      // and every retry after that burns the fuse, so a dog that truly cannot
+      // move is still gone in about three seconds.
+      if (this.recoverCount === 1) {
+        this.stuckX = this.pos.x;
+        this.stuckZ = this.pos.z;
+        this.stuckT = 0;
+      }
       if (this.state === ST.APPROACH && this.recoverCount >= 2) {
         this._abandonRestSpot();
       } else if (this.state === ST.WANDER) {
@@ -980,6 +1013,9 @@ export class CampDog {
     this.stuckZ = bestZ;
     this.stuckT = 0;
     this.recoverCount = 0;
+    this.penTrail.length = 0;
+    this.penT = 0;
+    this.recentRecover.length = 0;
     const p = this._orbitPoint(this.ang + this.orbitDir * 0.3, this.orbit);
     this.target.set(p.x, 0, p.z);
     this.rig.reset(this.pos, this.heading, this.world);
@@ -1229,8 +1265,42 @@ export class CampDog {
         this.stuckT += dt;
         if (this.stuckT > STUCK_TIME) this._respawn(camPos);
       }
+      // The pen detector — see PEN_TIME. Sampled a few times a second; fires
+      // when a full window of history fits inside a box no dog could walk in
+      // AND the window saw repeated wall contact. Both halves matter: the box
+      // alone also matches legitimate slow phases (the spawn ramp-up, a short
+      // walk to a bed picked close by), but those never touch anything — a
+      // caged dog bumps constantly. The final creep into a bed is deliberate,
+      // slow and already bounded by its own timer, so it clears the history
+      // rather than being judged by it.
+      if (this.approachFinal) {
+        this.penTrail.length = 0;
+        this.penT = 0;
+      }
+      this.penT += dt;
+      while (this.recentRecover.length && this.recentRecover[0] < this._t - PEN_TIME - 0.25) {
+        this.recentRecover.shift();
+      }
+      if (!this.approachFinal && this.penT >= 0.25) {
+        this.penT = 0;
+        const T = this.penTrail;
+        T.push(this._t, this.pos.x, this.pos.z);
+        while (T.length && T[0] < this._t - PEN_TIME - 0.25) T.splice(0, 3);
+        if (T.length >= 3 && this._t - T[0] > PEN_TIME && this.recentRecover.length >= 2) {
+          let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+          for (let i = 0; i < T.length; i += 3) {
+            if (T[i + 1] < minX) minX = T[i + 1];
+            if (T[i + 1] > maxX) maxX = T[i + 1];
+            if (T[i + 2] < minZ) minZ = T[i + 2];
+            if (T[i + 2] > maxZ) maxZ = T[i + 2];
+          }
+          if (Math.max(maxX - minX, maxZ - minZ) < PEN_SPAN) this._respawn(camPos);
+        }
+      }
     } else {
       this.stuckX = this.pos.x; this.stuckZ = this.pos.z; this.stuckT = 0;
+      this.penTrail.length = 0;
+      this.penT = 0;
     }
 
     // ── the gait solver, then the pose over the top of it ───────────────────
