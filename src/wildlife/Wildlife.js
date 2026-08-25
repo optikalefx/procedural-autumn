@@ -27,8 +27,9 @@ import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { SEED } from '../world/WorldConfig.js';
 import { NoiseField } from '../core/Noise.js';
-import { clamp, clamp01, lerp, smoothstep, mulberry32, hash2i } from '../core/MathUtils.js';
-import { SPECIES, buildSpecies, createHideMaterial, pickVariant } from './animal_species.js';
+import { clamp, clamp01, lerp, damp, smoothstep, mulberry32, hash2i } from '../core/MathUtils.js';
+import { SPECIES, buildSpecies, createHideMaterial, pickVariant,
+         setHideSilScale, SIL_FOV_REF } from './animal_species.js';
 import { instantiate } from './animal_rig.js';
 import { AnimRig } from './animal_anim.js';
 import { Brain, ST, WATER_MAX } from './animal_brain.js';
@@ -126,6 +127,11 @@ export class Wildlife extends System {
 
     scene.add(this.group);
     this._compileWarm = true;
+
+    // Damped so raising the telescope does not pop the value of every distant
+    // animal on one frame; photo mode cuts instead. See _silScale.
+    this._sil = 1;
+    this._silPhoto = false;
   }
 
   /**
@@ -539,6 +545,58 @@ export class Wildlife extends System {
   }
 
   /**
+   * How much distance-silhouette the hides should be running, as a scale on
+   * view depth. See the SIL block in animal_species.js for why the treatment
+   * is depth-denominated in the first place and why that stops being the right
+   * denominator the moment something changes the field of view.
+   *
+   * Two cases turn it down:
+   *
+   *  · Magnification. The camp telescope drives this same camera down to a 6
+   *    degree field of view (camp_scope_view.js), which is eight times life
+   *    size: a deer at 145 m fills the frame like one at 18 m, and flattening
+   *    it to a dark shape throws away the detail the player picked up the
+   *    telescope to look at. Dividing depth by the magnification against
+   *    SIL_FOV_REF makes the ramp apparent-size denominated, which is what it
+   *    always meant. It also picks up the chase camera's own fov breathing
+   *    (50 at rest, 62 flat out, less 9 zoomed wide) for free, in the correct
+   *    direction — a wider lens really does make the animal smaller.
+   *
+   *  · Photo mode, where it goes off entirely. That mode renders at full
+   *    resolution and its whole output is a still that gets looked at large and
+   *    shared, so the sixteen-pixel argument the treatment rests on is simply
+   *    not true there. Its zoom is a dolly on freeDist about the pivot rather
+   *    than a lens, so magnification alone would never catch it: the player
+   *    composing a shot of a deer eighty metres off-axis can dolly all day and
+   *    the deer stays eighty metres away.
+   *
+   * Reads the camera one frame late — CameraRig writes fov in lateUpdate — on a
+   * value that is damped anyway. The damp is for the telescope, whose fov is
+   * itself damped and which leaves the world running.
+   *
+   * Photo mode has to be a cut, and not as a style choice: it sets
+   * `ctx.worldPaused`, which makes main.js drive every world system with dt 0,
+   * so a damp here would never advance a single step and the mode would sit at
+   * whatever scale it was entered with. Cutting on the transition is also what
+   * matches the rest of that mode, which cuts the camera, the HUD and the
+   * render resolution on the same frame.
+   */
+  _silScale(dt, cam) {
+    const photo = this.ctx.systems?.cameraRig?.mode === 'free';
+    let want = 0;
+    if (!photo) {
+      const t = Math.tan(THREE.MathUtils.degToRad(cam.fov) * 0.5);
+      const tRef = Math.tan(THREE.MathUtils.degToRad(SIL_FOV_REF) * 0.5);
+      // Capped above 1: a very wide lens should not invent extra silhouette
+      // beyond what the ramp was tuned to give.
+      want = clamp(t / tRef, 0, 1.15);
+    }
+    if (photo !== this._silPhoto) { this._silPhoto = photo; this._sil = want; }
+    else if (dt > 0) this._sil = damp(this._sil, want, 6, dt);
+    setHideSilScale(this._sil);
+  }
+
+  /**
    * Wake and sleep home sites around the camera.
    *
    * The frustum guard is the rule that "nothing pops into existence in view":
@@ -627,6 +685,8 @@ export class Wildlife extends System {
 
     this._scanT -= dt;
     if (this._scanT <= 0) { this._scanT = 0.30; this._scan(camPos); }
+
+    this._silScale(dt, cam);
 
     // Frustum for the animation LOD. Recomputed here because the camera has
     // moved since the scan.

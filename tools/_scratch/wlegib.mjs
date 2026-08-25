@@ -46,6 +46,20 @@ const TAG = arg('tag', 'x');
 const VIEWS = String(arg('views', 'meadow:0,meadow:1,road:0,road:2,forest:0,river:1'))
   .split(',').map((v) => { const [k, i] = v.split(':'); return { k, i: parseInt(i || '0', 10) }; });
 const DIR = resolve(arg('dir', `shots/wl/${TAG}`));
+// --sil near,far,dark,flat overrides the distance-silhouette uniforms on every
+// hide just before the shot, so the same page load and the same build can be
+// asked "what does this animal look like under settings X". Two runs differing
+// only in --sil are the A/B the treatment never actually got: `punch` below is
+// the metric it is supposed to move.  --sil off disables it outright.
+const SIL = arg('sil', null);
+// --fov pins the camera's field of view, which is how the camp telescope
+// magnifies (camp_scope_view.js drives this same camera to 6-34 degrees). The
+// hide's distance-silhouette is scaled by magnification, so this is the only
+// way to see what the treatment does through the scope.
+const FOV = arg('fov', null);
+// --pinsil freezes the scale lever at a value instead of letting Wildlife drive
+// it, so a run can reproduce the pre-magnification-correction behaviour.
+const PINSIL = arg('pinsil', null);
 
 await acquire('wlegib');
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal'] });
@@ -64,7 +78,12 @@ await page.addInitScript(() => {
   };
   window.WebSocket.prototype = Real.prototype;
 });
-await page.goto(`http://localhost:5178?res=${RES}`);
+// AUTUMN_URL, not a hardcoded 5178: that port serves the MAIN checkout, so a
+// worktree running this unmodified measures main's code and reports that its
+// change did nothing (AGENTS.md, "Dev servers and worktrees"). ?car pins the
+// vehicle, which the page otherwise picks at random per load.
+const URL_BASE = process.env.AUTUMN_URL || 'http://localhost:5178';
+await page.goto(`${URL_BASE}?res=${RES}&car=${arg('car', 'camper')}`);
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 300 });
 
 const SETUP = async (P) => {
@@ -179,6 +198,66 @@ const SETUP = async (P) => {
  * occluded, how big it really is on screen, and how much it contrasts with the
  * thing it is standing in front of. Everything else is a proxy.
  */
+/** Force the four distance-silhouette uniforms on every hide material. */
+const SETSIL = async (spec) => {
+  const nums = spec === 'off' ? [1e9, 2e9, 1, 0] : spec.split(',').map(Number);
+  const [near, far, dark, flat] = nums;
+  let n = 0;
+  window.__ctx.scene.traverse((o) => {
+    const u = o.material?.userData?.uniforms;
+    if (!u?.uSilNear) return;
+    u.uSilNear.value = near; u.uSilFar.value = far;
+    u.uSilDark.value = dark; u.uSilFlat.value = flat;
+    n++;
+  });
+  // The scale lever is Wildlife's, and it rewrites it every frame — pin it so
+  // an override is not quietly undone by whatever the camera is doing.
+  const wl = window.__systems.wildlife;
+  if (wl) wl._silScale = () => {};
+  return n;
+};
+
+/**
+ * Stop the world BEFORE the first screenshot, not just before the second.
+ *
+ * Without this the two frames differ by one step of everything that moves —
+ * grass sway, water, the animals' own animation — and the difference image is
+ * the whole meadow rather than the animal. Measured: a 20 px deer scored
+ * `pixels` 87976, which is most of the frame. Every punch number this harness
+ * produced before this line was mixed with that, so old readings are not
+ * comparable with new ones.
+ */
+const FREEZE = async () => {
+  const e = window.__engine;
+  e.clock.getDelta = () => 0;
+  e._loop();
+  return true;
+};
+
+const SETFOV = async ({ fov, pin }) => {
+  const ctx = window.__ctx, wl = window.__systems.wildlife;
+  ctx.systems.cameraRig.takeCamera(() => {
+    ctx.camera.fov = fov; ctx.camera.updateProjectionMatrix();
+  });
+  ctx.camera.fov = fov; ctx.camera.updateProjectionMatrix();
+  const write = (v) => ctx.scene.traverse((o) => {
+    const u = o.material?.userData?.uniforms;
+    if (u?.uSilScale) u.uSilScale.value = v;
+  });
+  if (pin !== null) {
+    // Reproduce the behaviour before the magnification correction: the scale
+    // lever held at a constant, whatever the lens is doing.
+    wl._silScale = () => {}; wl._sil = pin; write(pin);
+  } else {
+    // Settle the real damp with a synthetic dt. Stepping the engine instead
+    // would not work: clock.getDelta between two synchronous _loop calls is
+    // essentially zero, so the damp would never advance.
+    for (let i = 0; i < 60; i++) wl._silScale(0.05, ctx.camera);
+  }
+  window.__engine._loop();
+  return { fov: ctx.camera.fov, sil: +wl._sil.toFixed(4) };
+};
+
 const HIDE = async () => {
   const e = window.__engine, wl = window.__systems.wildlife;
   e.clock.getDelta = () => 0;
@@ -196,7 +275,11 @@ for (const v of VIEWS) {
   const info = await page.evaluate(SETUP, {
     DIST, STATE, HOUR, SPECIES, COUNT, SPEED, FRAMES, W, H, ANCHOR: v.k, INDEX: v.i,
   });
+  if (SIL) info.silApplied = await page.evaluate(SETSIL, String(SIL));
+  if (FOV) info.fovApplied = await page.evaluate(SETFOV,
+    { fov: parseFloat(FOV), pin: PINSIL === null ? null : parseFloat(PINSIL) });
   const stem = `${DIR}/${v.k}${v.i}-${SPECIES}-${DIST}m`;
+  await page.evaluate(FREEZE);
   writeFileSync(`${stem}.png`, await page.screenshot({ type: 'png' }));
   await page.evaluate(HIDE);
   writeFileSync(`${stem}.empty.png`, await page.screenshot({ type: 'png' }));
