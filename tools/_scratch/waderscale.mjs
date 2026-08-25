@@ -18,9 +18,9 @@ await page.evaluate(() => {
 });
 
 for (const [id, name, dist] of [
-  ['prop:water_birds.js:buildBlueHeron:wading', 'scale-heron', 13],
-  ['prop:water_birds.js:buildFlamingo:wading', 'scale-flamingo', 13],
-  ['prop:tree_birds.js:buildBaldEagle:perched', 'scale-eagle', 15],
+  ['prop:blue_heron.js:buildBlueHeron:wading', 'scale-heron', 13],
+  ['prop:flamingo.js:buildFlamingo:wading', 'scale-flamingo', 13],
+  ['prop:bald_eagle.js:buildBaldEagle:perched', 'scale-eagle', 15],
 ]) {
   await page.evaluate((i) => window.__gallery.select(i), id);
   await page.waitForTimeout(700);

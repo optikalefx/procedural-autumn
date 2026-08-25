@@ -449,7 +449,7 @@ export class Stats extends System {
   }
 
   /**
-   * The perch-and-fly birds (tree_birds.js) — the bald eagles, and whatever
+   * The perch-and-fly birds (birds/tree_birds.js) — the bald eagles, and whatever
    * species join them. Same shape as _wildlife: one credit per streamed-in
    * bird, reset when its slot recycles, keyed per species so the sheet can
    * say "eagle" and not "bird". Perched or mid-flight both count; the frustum

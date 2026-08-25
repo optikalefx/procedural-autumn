@@ -1,13 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  owl — the great horned owl: geometry for the valley's night bird.
+//  great horned owl — the valley's night bird.
 //
 //  Behaviour lives in tree_birds.js — an owl is the same perch-and-fly animal
 //  as the bald eagle, one more TREE_BIRD_SPECIES row, except that its row
 //  carries `nocturnal: true` and the streamer will only hand it a tree while
 //  SKY_STATE.nightFactor is up. This file owns only what is different: the
-//  model. It lives here rather than in tree_birds.js for the same reason
-//  water_birds.js exists — the behaviour file is the contract, and three
-//  models in it would bury it.
+//  model. That is the rule for every file in this folder — the behaviour file
+//  is the contract, and four models in it would bury it.
 //
 //  THE SILHOUETTE IS THE WHOLE JOB. An eagle is read by a tapered white head
 //  and slotted primaries; an owl is read by four things and nothing else:
@@ -31,14 +30,14 @@
 //  create-animal palette note), and a hole is what a night bird is one bad
 //  decision away from being anyway.
 //
-//  Conventions, all inherited from tree_birds.js / birds.js:
+//  Conventions, all inherited from tree_birds.js / flocks.js:
 //    · nose along +Z, wingspan exactly 1.0 along ±X, so the instance scale IS
 //      the wingspan in metres.
 //    · flat normals — the material derives the real one per pixel.
-//    · aWing bands (the contract is documented in treeBirdMaterial):
+//    · aWing bands (the contract is documented in bird_material.js):
 //        0                body — never reposed
 //        0.001 .. 0.105   tail-fan feather angle (× 5.1 in the shader)
-//        0.105 .. 0.119   legs / neck — the waders' bands. NOT USED HERE:
+//        0.105 .. 0.119   legs / neck — wader_kit.js's bands. NOT USED HERE:
 //                         an owl has no visible neck by construction, and its
 //                         legs are feathered stubs that never move.
 //        0.12 .. 1.0      wing spanwise fraction (flap and fold)
@@ -46,13 +45,13 @@
 //      the tail-fan pivot is z = -0.14. Both are authored to below.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { clamp01, lerp } from '../core/MathUtils.js';
-import { treeBirdMaterial } from './tree_birds.js';
-import { smoothTuples } from './loft_smooth.js';
+import { clamp01, lerp } from '../../core/MathUtils.js';
+import { smoothTuples } from '../loft_smooth.js';
+import { treeBirdMaterial } from './bird_material.js';
 
 // ── density ──────────────────────────────────────────────────────────────────
 //
-// The mammals' near LOD (DETAIL[0], animal_species.js) runs a 14-sided barrel
+// The mammals' near LOD (DETAIL[0], mammals/quadruped.js) runs a 14-sided barrel
 // and inserts three Catmull-Rom rings between every authored station, with the
 // note that the point is facets "small enough to read as a curve instead of as
 // armour plate". This bird inherited the eagle's 8-to-10-sided loft with no
@@ -222,7 +221,7 @@ export function buildGreatHornedOwlGeometry() {
   // Colour of a body vertex. Two gradients and a mottle:
   //   · countershading — the belly runs to the pale chest, hard, so the bird
   //     has real internal value range before any light touches it (the
-  //     birds.js trick, pushed further because this one is lit by a headlight
+  //     flocks.js trick, pushed further because this one is lit by a headlight
   //     or by nothing).
   //   · the throat — under the face, the palest thing on the animal.
   //   · a deterministic mottle so the back is not one flat field of brown.

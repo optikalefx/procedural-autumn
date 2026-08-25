@@ -17,7 +17,7 @@
 //  pixels of shadow and doubles the draw call cost of the whole flock.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { clamp, clamp01, lerp, mulberry32 } from '../core/MathUtils.js';
+import { clamp, clamp01, lerp, mulberry32 } from '../../core/MathUtils.js';
 
 // ── how many birds, how big, how high ────────────────────────────────────────
 //

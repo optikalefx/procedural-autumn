@@ -872,7 +872,14 @@ const ADAPTERS = [
   },
   { path: '/src/rocks/RockForms.js', claims: ['ARCHETYPES', 'buildRockLibrary', 'archFootprints'], entries: rockEntries },
   { path: '/src/vegetation/cover_forms.js', claims: ['COVER_ARCHETYPES', 'buildCoverLibrary', 'ARCH_INDEX'], entries: coverEntries },
-  { path: '/src/wildlife/animal_species.js', claims: ['SPECIES', 'buildSpecies', 'createHideMaterial', 'pickVariant'], entries: animalEntries },
+  {
+    path: '/src/wildlife/animal_species.js',
+    claims: ['SPECIES', 'buildSpecies', 'createHideMaterial', 'pickVariant'],
+    entries: animalEntries,
+    // The cast is one file per animal under mammals/; the shared builder they
+    // are all fed to is an assembly step, not a prop.
+    parts: { '/src/wildlife/mammals/quadruped.js': ['buildVariants'] },
+  },
   {
     path: '/src/vehicle/vehicle_models.js',
     claims: ['CARS', 'DEFAULT_CAR', 'carById', 'pickCar'],
@@ -892,8 +899,18 @@ const ADAPTERS = [
     entries: kitEntries,
   },
   { path: '/src/camp/camp_fire.js', claims: ['Firepit'], entries: fireEntries },
-  { path: '/src/camp/camp_dog.js', claims: ['CampDog', 'dogProto', 'DOG_POSES'], entries: dogEntries },
-  { path: '/src/wildlife/birds.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
+  {
+    path: '/src/camp/camp_dog.js',
+    claims: ['CampDog', 'dogProto', 'DOG_POSES'],
+    entries: dogEntries,
+    // The dog's prototypes are built one folder over and re-exported through
+    // the wildlife front door; both are steps toward the cards above.
+    parts: {
+      '/src/wildlife/mammals/dog.js': ['buildCampDog'],
+      '/src/wildlife/animal_species.js': ['buildCampDog'],
+    },
+  },
+  { path: '/src/wildlife/birds/flocks.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

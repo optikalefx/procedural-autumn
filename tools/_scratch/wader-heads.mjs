@@ -6,19 +6,19 @@ const URL = 'http://127.0.0.1:5199/gallery.html';
 
 const SHOTS = [
   {
-    id: 'prop:water_birds.js:buildFlamingo:wading', name: 'flamingo-head-wading',
+    id: 'prop:flamingo.js:buildFlamingo:wading', name: 'flamingo-head-wading',
     target: [0, 0.436 * 1.45 + 0.39 * 1.45, 0.13 * 1.45], yaw: 1.55, pitch: 0.05, dist: 0.34,
   },
   {
-    id: 'prop:water_birds.js:buildFlamingo:wading', name: 'flamingo-head-rear',
+    id: 'prop:flamingo.js:buildFlamingo:wading', name: 'flamingo-head-rear',
     target: [0, 0.436 * 1.45 + 0.39 * 1.45, 0.13 * 1.45], yaw: 4.9, pitch: 0.30, dist: 0.34,
   },
   {
-    id: 'prop:water_birds.js:buildFlamingo:flight', name: 'flamingo-head-flight',
+    id: 'prop:flamingo.js:buildFlamingo:flight', name: 'flamingo-head-flight',
     target: [0, 1.3 + 0.16 * 1.45, 0.40 * 1.45], yaw: 1.55, pitch: 0.05, dist: 0.40,
   },
   {
-    id: 'prop:water_birds.js:buildBlueHeron:wading', name: 'heron-head-wading',
+    id: 'prop:blue_heron.js:buildBlueHeron:wading', name: 'heron-head-wading',
     target: [0, 0.271 * 1.9 + 0.30 * 1.9, 0.16 * 1.9], yaw: 1.55, pitch: 0.05, dist: 0.42,
   },
 ];

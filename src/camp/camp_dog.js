@@ -10,7 +10,7 @@
 //  ── what this file owns, and what it borrows ────────────────────────────────
 //
 //  The dog's BODY is not here. It is the same lofted quadruped every mammal in
-//  the game is built from (`animal_species`/`animal_rig`), and it walks on the
+//  the game is built from (`mammals/dog.js`/`animal_rig`), and it walks on the
 //  same procedural gait solver they do (`animal_anim`) — which is what makes it
 //  worth having at all: a dog that mills around a fire gets world-anchored feet
 //  and a real four-beat walk for free, and cannot skate.

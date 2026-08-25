@@ -6,8 +6,8 @@
 //  makes a loft read as a stack of welded plates, and no amount of extra
 //  radial sides fixes a profile that is piecewise linear along its own LENGTH.
 //  So each of them rounds the path between the keys first — the mammals
-//  (animal_species.js, `smoothStations`, station objects), the owl and the
-//  eagle (numeric tuples), the waders (water_birds.js's `crSample`, which
+//  (mammals/quadruped.js, `smoothStations`, station objects), the owl and the
+//  eagle (numeric tuples), the waders (birds/wader_kit.js's `crSample`, which
 //  keeps a 0..1 parameter alongside each row).
 //
 //  Three shapes of the same spline, so the polynomial lives here once and the

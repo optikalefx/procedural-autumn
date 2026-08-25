@@ -27,7 +27,7 @@ const out = await p.evaluate(async (STEP) => {
   const ctx = window.__ctx;
   const W = ctx.world;
   const tb = ctx.systems.wildlife.treeBirds;
-  const SPECIES = (await import('/src/wildlife/tree_birds.js')).TREE_BIRD_SPECIES
+  const SPECIES = (await import('/src/wildlife/birds/tree_birds.js')).TREE_BIRD_SPECIES
     .filter((s) => s.habitat === 'water');
 
   // Map extent

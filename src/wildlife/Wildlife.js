@@ -3,10 +3,12 @@
 //
 //  The layers below this one do the hard parts:
 //    animal_rig      geometry + skeleton, one draw call per animal
-//    animal_species  the blueprints and the palette
+//    animal_species  the cast, one file per mammal under mammals/
 //    animal_anim     procedural gaits driven by real ground speed
 //    animal_brain    the state machine and the steering
-//    birds           two instanced flocks and a startle burst
+//    birds/          one file per bird, plus the two systems they belong to:
+//                    flocks.js (instanced flocks and a startle burst) and
+//                    tree_birds.js (the perch-and-fly birds you stop for)
 //    fireflies       the night shift: one GPU-resident draw call over the
 //                    meadow and the water margins, dark before dusk
 //
@@ -36,8 +38,8 @@ import { SPECIES, buildSpecies, createHideMaterial, pickVariant,
 import { instantiate } from './animal_rig.js';
 import { AnimRig } from './animal_anim.js';
 import { Brain, ST, WATER_MAX } from './animal_brain.js';
-import { Birds } from './birds.js';
-import { TreeBirds } from './tree_birds.js';
+import { Birds } from './birds/flocks.js';
+import { TreeBirds } from './birds/tree_birds.js';
 import { Fireflies } from './fireflies.js';
 
 // Per-species streaming and population budget.
@@ -160,7 +162,7 @@ export class Wildlife extends System {
     this.birds.build();
 
     // The perch-and-fly birds — eagles in the trees, herons and flamingos in
-    // the shallows. See tree_birds.js and water_birds.js.
+    // the shallows. See birds/tree_birds.js and the wader models beside it.
     this.treeBirds = new TreeBirds(this.ctx, SEED ^ 0x6ea9);
     this.treeBirds.build();
 
@@ -614,8 +616,8 @@ export class Wildlife extends System {
    *
    * "Worth hinting at" is three things:
    *
-   *  · Inside its own species' `hintDist` (animal_species.js, in the brain
-   *    block beside the other distance thresholds). One number per species
+   *  · Inside its own species' `hintDist` (that species' file under mammals/,
+   *    in the brain block beside the other distance thresholds). One per species
    *    rather than one for the game, because the bands they describe are not
    *    the same size: a deer minds you from 108 m and a bear from 66 m, so a
    *    single radius would either hint at deer far too late or at bears far
@@ -672,7 +674,7 @@ export class Wildlife extends System {
 
   /**
    * How much distance-silhouette the hides should be running, as a scale on
-   * view depth. See the SIL block in animal_species.js for why the treatment
+   * view depth. See the SIL block in mammals/hide.js for why the treatment
    * is depth-denominated in the first place and why that stops being the right
    * denominator the moment something changes the field of view.
    *

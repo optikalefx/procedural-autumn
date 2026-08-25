@@ -1,22 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  water_birds — the waders: geometry for birds that stand IN the water.
+//  wader_kit — what the flamingo and the heron are both built out of.
 //
-//  Behaviour lives in tree_birds.js — a wader is the same perch-and-fly animal
-//  as the bald eagle, except its "perch" is a patch of shallow water instead of
-//  a treetop (TREE_BIRD_SPECIES rows with habitat: 'water'). This file owns
-//  only what is different: the models, and the two aWing bands the shared
-//  vertex shader uses to repose them.
+//  Two birds that stand IN the water: the same prism legs with toes, the same
+//  smooth Catmull-Rom lofts with rings oriented to the centreline (a kinked
+//  neck ring reads as a broken neck at five metres), the same tail fan, the
+//  same eyes. Only the numbers and the plumage differ, and those live one file
+//  over in `flamingo.js` and `blue_heron.js`.
 //
-//  Fidelity: these two run a couple of thousand triangles each. They are
-//  capped at 3 and 6 instances in a 3–5M-triangle scene, and unlike the eagle
-//  a wader is a bird the player WALKS UP TO — it stands in the shallows at eye
-//  level instead of on a spire twelve metres up. The extra triangles go where
-//  the eye goes: smooth Catmull-Rom lofts with rings oriented to the
-//  centreline (a kinked neck ring reads as a broken neck at five metres),
-//  prism legs with toes, a real tail fan on the fan band, eyes, the heron's
-//  plume. See the "density" block below for what each part is swept at.
+//  The eagle and the owl do NOT use this: each is a single model with its own
+//  builder, and neither has a leg worth sharing.
 //
-//  The aWing contract (see treeBirdMaterial in tree_birds.js):
+//  The aWing contract (see treeBirdMaterial in `bird_material.js`):
 //
 //    0                body — never reposed
 //    0.001 .. 0.105   tail-fan feather angle (spread in flight, folded shut
@@ -38,24 +32,24 @@
 //
 //  Both models author to the shader's shared pivots: hip at (y -0.015,
 //  z -0.030), neck root at (y 0.045, z 0.10) — unit space, wingspan 1.0,
-//  nose along +Z, the birds.js convention (instance scale IS the wingspan).
+//  nose along +Z, the flocks.js convention (instance scale IS the wingspan).
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { clamp01, lerp } from '../core/MathUtils.js';
-import { treeBirdMaterial } from './tree_birds.js';
-import { crom, smoothTuples } from './loft_smooth.js';
+import { clamp01, lerp } from '../../core/MathUtils.js';
+import { crom, smoothTuples } from '../loft_smooth.js';
+import { treeBirdMaterial } from './bird_material.js';
 
 // aWing band encodings — must agree with the ranges tested in treeBirdMaterial.
 const LEG = 0.108;
 const NECK_LO = 0.1115;
 const NECK_SPAN = 0.007;
-const neckW = (grade) => NECK_LO + clamp01(grade) * NECK_SPAN;
+export const neckW = (grade) => NECK_LO + clamp01(grade) * NECK_SPAN;
 
 // ── density ──────────────────────────────────────────────────────────────────
 //
-// The same recipe the great horned owl is built to (owl.js's own "density"
-// block carries the long version). These two shipped at ~860 and ~900
-// triangles — a twelve-sided body, an eight-sided neck, and a wing cut into
+// The same recipe the great horned owl is built to (great_horned_owl.js's
+// own "density" block carries the long version). These two shipped at ~860 and
+// ~900 triangles — a twelve-sided body, an eight-sided neck, and a wing cut into
 // three chord panels — which was four to five times the eagle and still, next
 // to a rebuilt owl, a plated barrel wearing two blades.
 //
@@ -73,10 +67,10 @@ const neckW = (grade) => NECK_LO + clamp01(grade) * NECK_SPAN;
 // FLAT SHADING IS NOT NEGOTIABLE — treeBirdMaterial derives the normal per
 // pixel from the derivative, and that is the house style. What is bought here
 // is SMALLER facets, never smoother ones.
-const RING_BODY = 20, SUB_BODY = 4;   // was 12, 3
-const RING_NECK = 14, SUB_NECK = 3;   // was 8, 2
-const RING_HEAD = 14, SUB_HEAD = 3;   // was 7, 2
-const RING_BILL = 10, SUB_BILL = 2;   // was 6, 2
+export const RING_BODY = 20, SUB_BODY = 4;   // was 12, 3
+export const RING_NECK = 14, SUB_NECK = 3;   // was 8, 2
+export const RING_HEAD = 14, SUB_HEAD = 3;   // was 7, 2
+export const RING_BILL = 10, SUB_BILL = 2;   // was 6, 2
 const WING_SMOOTH = 2;                // Catmull-Rom stations per authored span
 // Chord splits, leading edge to trailing edge. Six panels instead of three,
 // and the two boundaries that carry colour are kept exactly where the old
@@ -84,41 +78,10 @@ const WING_SMOOTH = 2;                // Catmull-Rom stations per authored span
 // 0.62 (the flamingo's black rear half).
 const WING_CHORD = [0, 0.14, 0.28, 0.42, 0.62, 0.80, 1];
 
-// ── plumage ──────────────────────────────────────────────────────────────────
-//
-// Flamingo: rose pink with deeper coverts and BLACK flight feathers — the
-// black is what says flamingo in flight, and at rest a thin dark seam along
-// the folded wing keeps the bird from reading as a lawn ornament. All the
-// pinks sit short of saturation so the tonemapper has room (the birds.js
-// lesson, again).
-const C_FLA_BODY  = new THREE.Color(0xe89aa4);
-const C_FLA_DEEP  = new THREE.Color(0xd06e82);   // wing coverts, deep rose
-const C_FLA_REM   = new THREE.Color(0x241d1c);   // flight feathers, warm black
-const C_FLA_HEAD  = new THREE.Color(0xeeb0b8);
-const C_FLA_LEG   = new THREE.Color(0xd8808f);
-const C_FLA_BILL  = new THREE.Color(0xe6c3c3);   // pale base
-const C_FLA_TIP   = new THREE.Color(0x1f1a19);   // the black kinked tip
-//
-// Great blue heron: slate blue-grey, paler neck, white head with a dark crown
-// stripe, dusky-yellow dagger bill. The greys are lifted a stop over life —
-// a true heron grey against dusk water disappears, and a bird nobody can see
-// is not worth its draw call.
-const C_HER_BODY  = new THREE.Color(0x717d89);
-const C_HER_COV   = new THREE.Color(0x828e9a);   // wing coverts — a stop over
-// the body, because the covert-to-remige step is the whole top-side read of a
-// heron wing and at 0x67737f it vanished into the dark trailing half.
-const C_HER_REM   = new THREE.Color(0x3b4550);   // flight feathers, dark slate
-const C_HER_NECK  = new THREE.Color(0x939aa2);
-const C_HER_HEAD  = new THREE.Color(0xd9d6cd);   // white face
-const C_HER_CROWN = new THREE.Color(0x252a32);   // black crown stripe
-const C_HER_BILL  = new THREE.Color(0xc7a044);
-const C_HER_LEG   = new THREE.Color(0x4c4639);
-const C_HER_THIGH = new THREE.Color(0x83583c);   // the rusty thigh patch
-
 // ── the shared mesh bag ──────────────────────────────────────────────────────
 // The same vert/tri/quad idiom the eagle is built from, boxed so two builders
 // can share it without sharing arrays.
-function bag() {
+export function bag() {
   const pos = [], nor = [], wing = [], col = [];
   const _c = new THREE.Color();
   const vert = (p, w, c, mul = 1) => {
@@ -159,7 +122,7 @@ function bag() {
  * loft authored as five stations comes out as a smooth dozen instead of a
  * chain of cylinders. Returns [{ v: row, u: 0..1 }].
  */
-function crSample(rows, sub) {
+export function crSample(rows, sub) {
   const n = rows.length;
   const out = [];
   for (let i = 0; i < n - 1; i++) {
@@ -190,7 +153,7 @@ function crSample(rows, sub) {
  *   w(grade)     aWing from the splined grade column, default 0.
  *   capStart / capEnd   close the tube with a fan.
  */
-function loft(B, rows, RING, sub, opts) {
+export function loft(B, rows, RING, sub, opts) {
   const S = crSample(rows, sub);
   const rings = S.map((r, i) => {
     const [y, z, hw, hd] = r.v;
@@ -236,16 +199,16 @@ function loft(B, rows, RING, sub, opts) {
 
 // Countershade for the body lofts: belly a stop lighter than the back, so the
 // bird has internal value range before light touches it (the eagle's trick).
-const countershade = (off) => 1 - off[1] * 0.10 + clamp01(-off[1]) * 0.14;
+export const countershade = (off) => 1 - off[1] * 0.10 + clamp01(-off[1]) * 0.14;
 
 /** Colour-by-nearest-authored-station, for lofts whose rows carry colours. */
-const colBySt = (ST) => (u) => ST[Math.round(u * (ST.length - 1))][5];
+export const colBySt = (ST) => (u) => ST[Math.round(u * (ST.length - 1))][5];
 
 // ── the tail fan ─────────────────────────────────────────────────────────────
 // The eagle's fan, parameterised: staggered feather quads whose aWing encodes
 // the feather angle on the fan band (< 0.105), so the shared shader spreads
 // the fan in flight and folds it to a wedge on the stand.
-function tailFan(B, TB, NF, spread, len0, taper, hw, color, mul = 1) {
+export function tailFan(B, TB, NF, spread, len0, taper, hw, color, mul = 1) {
   for (let i = 0; i < NF; i++) {
     const a = lerp(-spread, spread, NF === 1 ? 0.5 : i / (NF - 1));
     const wTail = (a / spread) * 0.09;
@@ -283,7 +246,7 @@ function frameOf(t) {
  * side in its sign; the whole chain rides the hip pivot rigidly in the shader.
  * Returns the joint frames so the foot can build off the last one.
  */
-function leg(B, s, pts, rad, colors) {
+export function leg(B, s, pts, rad, colors) {
   const w = s * LEG;
   const SIDES = 3;
   const rings = pts.map((p, i) => {
@@ -309,7 +272,7 @@ function leg(B, s, pts, rad, colors) {
 }
 
 /** A toe (or the bill of a very unlucky fish): tapered 3-prism to a point. */
-function spike(B, w, base, tip, r, c, mul = 1) {
+export function spike(B, w, base, tip, r, c, mul = 1) {
   const t = _norm([tip[0] - base[0], tip[1] - base[1], tip[2] - base[2]]);
   const [U, V] = frameOf(t);
   const ring = [];
@@ -329,7 +292,7 @@ function spike(B, w, base, tip, r, c, mul = 1) {
  * toe, all landing exactly on `footY` — the species table stands the bird on
  * its toes' own lowest vertex, so the toe tips ARE the contact patch.
  */
-function foot(B, s, at, footY, fwdLen, toeR, c, webbed) {
+export function foot(B, s, at, footY, fwdLen, toeR, c, webbed) {
   const w = s * LEG;
   const tips = [];
   for (const a of [-0.55, 0, 0.55]) {
@@ -370,7 +333,7 @@ function foot(B, s, at, footY, fwdLen, toeR, c, webbed) {
  * once already — the heron lesson, kept from the first build) and blends only
  * along the span, exactly as before.
  */
-function wingLoft(B, SPAN_KEY, wingW, colFn, SPLITS = WING_CHORD) {
+export function wingLoft(B, SPAN_KEY, wingW, colFn, SPLITS = WING_CHORD) {
   const SPAN = smoothTuples(SPAN_KEY, WING_SMOOTH);
   // Camber as an arc rather than the old four sampled values, which only
   // existed because there were only four chord positions to sample at. Peaks
@@ -404,7 +367,7 @@ function wingLoft(B, SPAN_KEY, wingW, colFn, SPLITS = WING_CHORD) {
 }
 
 /** A small dark eye on each side of the head — 4 tris of glint each. */
-function eyes(B, w, y, z, x, r, c) {
+export function eyes(B, w, y, z, x, r, c) {
   for (const s of [1, -1]) {
     const apex = [s * (x + r * 0.9), y, z];
     const ring = [
@@ -414,283 +377,12 @@ function eyes(B, w, y, z, x, r, c) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Flamingo — wingspan 1.0, so at the game's 1.35–1.55 m span the legs are a
-//  believable 0.6 m. The silhouette carries three statements: the impossible
-//  legs, the raised question-mark neck with the down-kinked bill, and (in
-//  flight) black flight feathers on a pink bird.
-// ─────────────────────────────────────────────────────────────────────────────
-export function buildFlamingoGeometry() {
-  const B = bag();
-
-  // Body: small, egg-round, riding high on the legs. [y, z, hw, hd] stations,
-  // splined; the countershade does the pre-lighting.
-  loft(B, [
-    [0.022, -0.172, 0.010, 0.012],
-    [0.006, -0.090, 0.036, 0.042],
-    [0.004, 0.000, 0.044, 0.048],
-    [0.012, 0.070, 0.036, 0.040],
-    [0.030, 0.114, 0.018, 0.022],
-  ], RING_BODY, SUB_BODY, {
-    col: () => C_FLA_BODY, mul: countershade, capStart: true, capEnd: true,
-  });
-
-  // Tail: a small pink fan on the fan band — folded to a wedge on the stand,
-  // spread when the shader opens it in flight. A flamingo's tail is a rumour,
-  // so it stays short.
-  tailFan(B, [0, 0.030, -0.162], 6, 0.38, 0.072, 0.020, 0.008, C_FLA_BODY, 0.96);
-
-  // Neck: raised, gently S-curved, graded into the NECK band so flight
-  // unrolls it forward. Root sits on the shader's shared pivot (0.045, 0.10).
-  //
-  // The last station is deliberately BURIED inside the skull (0.386, 0.120 is
-  // within 0.008 of the head's widest ring) rather than stopping where the
-  // neck stops looking like a neck. Two tube ends butted near each other do
-  // not join: authored to end at 0.368 the surfaces missed by ~0.009 and the
-  // head floated, with the open ring end reading as a hole straight down the
-  // throat. It also runs its grade to a FULL 1.0 here, matching the head and
-  // bill — the shader rotates each neck vertex by its own grade, so a joint
-  // spanning grade 0.92 to 1.0 shears itself open in the flight pose even
-  // when it looks closed standing. Head and bill are rigid at 1.0 and ride
-  // the neck tip's rotation exactly.
-  loft(B, [
-    [0.048, 0.108, 0.017, 0.017, 0.0],
-    [0.100, 0.134, 0.015, 0.015, 0.16],
-    [0.160, 0.156, 0.0135, 0.0135, 0.36],
-    [0.220, 0.164, 0.0125, 0.0125, 0.56],
-    [0.280, 0.156, 0.0115, 0.0115, 0.76],
-    [0.330, 0.138, 0.0105, 0.0105, 0.90],
-    [0.360, 0.127, 0.0100, 0.0100, 0.97],
-    [0.386, 0.120, 0.0098, 0.0098, 1.0],
-  ], RING_NECK, SUB_NECK, {
-    col: () => C_FLA_BODY,
-    w: (g) => (g > 0.001 ? neckW(g) : 0),
-    capEnd: true,
-  });
-
-  // Head: a smooth knob the neck runs up into, rigid at grade 1 so it rides
-  // the neck's rotation as one piece. Capped at both ends — the occiput would
-  // otherwise show its open ring from behind, and the front cap is what the
-  // bill emerges through.
-  loft(B, [
-    [0.386, 0.094, 0.007, 0.007, 1],
-    [0.394, 0.118, 0.016, 0.015, 1],
-    [0.392, 0.140, 0.013, 0.012, 1],
-    [0.386, 0.155, 0.009, 0.008, 1],
-  ], RING_HEAD, SUB_HEAD, {
-    col: () => C_FLA_HEAD, w: () => neckW(1), capStart: true, capEnd: true,
-  });
-
-  // Bill: pale base dropping out of the face, then the whole thing kinked
-  // steeply down into the black tip — the kink is the flamingo's entire face
-  // at forty metres, so it gets a real loft rather than two quads.
-  {
-    const ST = [
-      // Starts INSIDE the skull, not flush against its front ring — a butted
-      // ring leaves its own opening facing back out of the join.
-      [0.386, 0.150, 0.0072, 0.0078, 1, C_FLA_BILL],
-      [0.376, 0.172, 0.0055, 0.0062, 1, C_FLA_BILL],
-      [0.362, 0.181, 0.0040, 0.0048, 1, C_FLA_TIP],
-      [0.336, 0.186, 0.0016, 0.0020, 1, C_FLA_TIP],
-    ];
-    loft(B, ST.map((r) => r.slice(0, 5)), RING_BILL, SUB_BILL, {
-      col: colBySt(ST), w: () => neckW(1), capEnd: true,
-    });
-  }
-
-  // Eyes: dark beads either side of the head, riding the neck rotation.
-  eyes(B, neckW(1), 0.398, 0.126, 0.0155, 0.0042, C_FLA_TIP);
-
-  // Wings: narrow chord, rose coverts over black remiges. The rear of the
-  // chord is black along the whole span and the outer stations are black
-  // across the whole chord — the black primaries wrap the tip. Panel colours
-  // stay uniform across the chord inside a triangle; see wingLoft.
-  {
-    const SPAN_KEY = [
-      [0.040, 0.068, -0.048, 0.022],
-      [0.105, 0.073, -0.055, 0.028],
-      [0.170, 0.075, -0.058, 0.033],
-      [0.235, 0.072, -0.053, 0.037],
-      [0.300, 0.064, -0.044, 0.040],
-      [0.360, 0.053, -0.032, 0.042],
-      [0.420, 0.038, -0.016, 0.044],
-      [0.462, 0.020, -0.002, 0.044],
-    ];
-    const wingW = (x) => 0.12 + 0.88 * clamp01((x - 0.04) / 0.42);
-    // Black from 62% of chord — on a flamingo the dark rear half of the wing
-    // IS the flight read, and at a narrower band it disappeared from above —
-    // and from x 0.420 outboard. Both thresholds are the authored stations
-    // and splits the old index test named, so they land exactly where they
-    // did before the span was resampled and the chord recut.
-    wingLoft(B, SPAN_KEY, wingW, (x, t) => (x >= 0.420 || t >= 0.62 ? C_FLA_REM : C_FLA_DEEP));
-    // Pointed tip: close the last station to a point past it.
-    for (const s of [1, -1]) {
-      const [xt, le, te, yt] = SPAN_KEY[SPAN_KEY.length - 1];
-      const tip = [s * 0.484, yt, lerp(le, te, 0.5)];
-      B.tri([s * xt, yt, le], tip, [s * xt, yt + 0.004, lerp(le, te, 0.72)], s, C_FLA_REM);
-      B.tri([s * xt, yt + 0.004, lerp(le, te, 0.72)], tip, [s * xt, yt, te], s, C_FLA_REM, C_FLA_REM, C_FLA_REM, 1, 0.9, 0.9);
-    }
-  }
-
-  // Legs: the point of the whole bird. Hips on the shared pivot; the ankle
-  // kinks backward (a bird's visible "knee" bends the wrong way) and the toes
-  // reach forward off a webbed foot whose tips land exactly on footY (-0.436).
-  for (const s of [1, -1]) {
-    leg(B, s, [
-      [s * 0.030, -0.015, -0.030],
-      [s * 0.030, -0.190, -0.048],
-      [s * 0.030, -0.418, -0.020],
-      [s * 0.030, -0.430, -0.002],
-    ], [0.0080, 0.0056, 0.0044, 0.0040], [C_FLA_LEG, C_FLA_LEG, C_FLA_LEG]);
-    foot(B, s, [s * 0.030, -0.430, -0.002], -0.436, 0.032, 0.0026, C_FLA_LEG, true);
-  }
-
-  return B.build();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Blue heron — bigger span, broad rounded wings, and the S-neck it keeps in
-//  BOTH states (a heron folds its neck to fly, which is why its stations carry
-//  grade 0 and the shader never touches them).
-// ─────────────────────────────────────────────────────────────────────────────
-export function buildBlueHeronGeometry() {
-  const B = bag();
-
-  {
-    const ST = [
-      [0.030, -0.192, 0.012, 0.014, 0, C_HER_BODY],
-      [0.012, -0.100, 0.042, 0.050, 0, C_HER_BODY],
-      [0.010, 0.000, 0.050, 0.056, 0, C_HER_BODY],
-      [0.022, 0.080, 0.040, 0.046, 0, C_HER_BODY],
-      [0.040, 0.128, 0.020, 0.024, 0, C_HER_NECK],
-    ];
-    loft(B, ST.map((r) => r.slice(0, 5)), RING_BODY, SUB_BODY, {
-      col: colBySt(ST), mul: countershade, capStart: true, capEnd: true,
-    });
-  }
-
-  // Tail: short, square-ish and dark — a real fan on the fan band, spread a
-  // hand's width in flight, shut to a wedge on the stand.
-  tailFan(B, [0, 0.036, -0.184], 7, 0.42, 0.088, 0.022, 0.010, C_HER_REM);
-
-  // Neck: the S, authored and pinned (grade 0 throughout — the whole point of
-  // a heron). Pale grey, the front face a touch lighter: the white throat
-  // streak, done in value against the ring's actual forward direction.
-  loft(B, [
-    [0.050, 0.126, 0.020, 0.020, 0],
-    [0.100, 0.164, 0.017, 0.017, 0],
-    [0.150, 0.172, 0.015, 0.015, 0],
-    [0.200, 0.152, 0.014, 0.014, 0],
-    [0.240, 0.134, 0.013, 0.013, 0],
-    [0.272, 0.138, 0.012, 0.012, 0],
-    [0.292, 0.150, 0.011, 0.011, 0],
-  ], RING_NECK, SUB_NECK, {
-    col: () => C_HER_NECK,
-    mul: (off) => 1 + 0.14 * Math.max(0, off[2]),
-  });
-
-  // Head: white face under a black crown stripe — the stripe is the line that
-  // says heron, so like the eagle's white head it lives in the geometry: the
-  // up-facing vertices of every ring take the crown colour.
-  loft(B, [
-    [0.294, 0.132, 0.006, 0.006, 0],
-    [0.301, 0.150, 0.0145, 0.013, 0],
-    [0.300, 0.170, 0.0125, 0.0115, 0],
-    [0.296, 0.186, 0.009, 0.008, 0],
-  ], RING_HEAD, SUB_HEAD, {
-    col: (u, off) => (off[1] > 0.42 ? C_HER_CROWN : C_HER_HEAD),
-  });
-
-  // Occipital plume: the two black feathers trailing off the back of the
-  // crown. Two staggered slivers — at this scale they are a silhouette
-  // accent, and the silhouette is where a heron does its acting.
-  for (const s of [1, -1]) {
-    B.quad(
-      [s * 0.004, 0.310, 0.146], [s * 0.009, 0.306, 0.142],
-      [s * 0.013, 0.286, 0.090], [s * 0.006, 0.290, 0.092],
-      0, C_HER_CROWN, C_HER_CROWN, 1, 0.9,
-    );
-  }
-
-  // Bill: the dagger, lofted to a fine point with a hint of down-curve on the
-  // culmen so it reads as a blade rather than a cone.
-  loft(B, [
-    [0.294, 0.188, 0.0075, 0.0068, 0],
-    [0.290, 0.226, 0.0050, 0.0046, 0],
-    [0.286, 0.262, 0.0026, 0.0024, 0],
-    [0.283, 0.286, 0.0007, 0.0007, 0],
-  ], RING_BILL, SUB_BILL, { col: () => C_HER_BILL, capEnd: true });
-
-  // Eyes: on the white face, just under the crown stripe.
-  eyes(B, 0, 0.302, 0.163, 0.0140, 0.0040, C_HER_CROWN);
-
-  // Wings: broad and rounded, pale coverts over dark slate remiges — the
-  // covert panel stays solid (the first build's lesson) — with four modest
-  // slotted fingers at the tip.
-  {
-    const SPAN_KEY = [
-      [0.046, 0.102, -0.074, 0.028],
-      [0.105, 0.108, -0.082, 0.033],
-      [0.165, 0.112, -0.088, 0.038],
-      [0.230, 0.108, -0.082, 0.041],
-      [0.290, 0.101, -0.073, 0.044],
-      [0.345, 0.091, -0.061, 0.046],
-      [0.400, 0.077, -0.044, 0.048],
-      [0.452, 0.052, -0.018, 0.050],
-    ];
-    const wingW = (x) => 0.12 + 0.88 * clamp01((x - 0.046) / 0.40);
-    // The pale covert panel is the leading 42% of chord inboard of x 0.400 —
-    // the same two boundaries the old index test named, restated against the
-    // station's x and the panel's chord fraction so resampling the span cannot
-    // move them.
-    wingLoft(B, SPAN_KEY, wingW, (x, t) => (x >= 0.400 || t >= 0.42 ? C_HER_REM : C_HER_COV));
-    for (const s of [1, -1]) {
-      const [xt, let_, tet, yt] = SPAN_KEY[SPAN_KEY.length - 1];
-      const FING = [
-        [-0.05, 0.078, 0.10],
-        [0.18, 0.086, 0.38],
-        [0.44, 0.080, 0.66],
-        [0.72, 0.064, 0.90],
-      ];
-      for (const [sw, len, cp] of FING) {
-        const bz = lerp(let_, tet, cp);
-        const dx = Math.cos(sw), dz = -Math.sin(sw);
-        const hw = 0.012;
-        B.quad(
-          [s * xt, yt, bz + hw],
-          [s * xt, yt, bz - hw],
-          [s * (xt + dx * len), yt + 0.018, bz + dz * len - hw * 0.5],
-          [s * (xt + dx * len), yt + 0.018, bz + dz * len + hw * 0.5],
-          s * 1.0, C_HER_REM, C_HER_REM, 1, 0.88,
-        );
-      }
-    }
-  }
-
-  // Legs: shorter than the flamingo's, dark olive, the rusty thigh patch
-  // where leg meets body, long unwebbed toes on footY (-0.271).
-  for (const s of [1, -1]) {
-    leg(B, s, [
-      [s * 0.032, -0.015, -0.030],
-      [s * 0.032, -0.130, -0.050],
-      [s * 0.032, -0.256, -0.028],
-      [s * 0.032, -0.265, -0.008],
-    ], [0.0090, 0.0060, 0.0050, 0.0046], [C_HER_THIGH, C_HER_LEG, C_HER_LEG]);
-    foot(B, s, [s * 0.032, -0.265, -0.008], -0.271, 0.036, 0.0028, C_HER_LEG, false);
-  }
-
-  return B.build();
-}
-
 // ── gallery builders ─────────────────────────────────────────────────────────
 //
 // Same deal as buildBaldEagle: one bird at real scale, pose baked per-vertex,
 // time frozen. Standing puts the feet exactly on the studio floor.
 
-export const FLAMINGO_POSES = ['wading', 'flight'];
-export const BLUE_HERON_POSES = ['wading', 'flight'];
-
-function galleryBird(geoFn, span, footY, flight) {
+export function galleryBird(geoFn, span, footY, flight) {
   const geo = geoFn();
   const n = geo.getAttribute('position').count;
   const arr = new Float32Array(n * 4);
@@ -709,21 +401,4 @@ function galleryBird(geoFn, span, footY, flight) {
   const g = new THREE.Group();
   g.add(mesh);
   return g;
-}
-
-// The pose reads are spelt out against opts.pose so the gallery's option
-// probe sees a two-value enum and deals each pose its own card.
-
-/** One flamingo (4.35 m span — 3x life, see TREE_BIRD_SPECIES) for the gallery. */
-export function buildFlamingo(rnd, opts = {}) {
-  const flight = opts.pose === 'flight' && opts.pose !== 'wading';
-  void rnd;
-  return galleryBird(buildFlamingoGeometry, 4.35, -0.436, flight);
-}
-
-/** One blue heron (5.7 m span — 3x life, see TREE_BIRD_SPECIES) for the gallery. */
-export function buildBlueHeron(rnd, opts = {}) {
-  const flight = opts.pose === 'flight' && opts.pose !== 'wading';
-  void rnd;
-  return galleryBird(buildBlueHeronGeometry, 5.7, -0.271, flight);
 }
