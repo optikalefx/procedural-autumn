@@ -175,6 +175,24 @@ export class CampReticle {
     this.behind.visible = this.mesh.visible;
   }
 
+  /**
+   * Snap the ring off with no fade.
+   *
+   * `update`'s fade is a lerp driven by `dt`, and photo mode freezes every
+   * world system at `dt` 0 the instant it opens (see the world-pause note in
+   * main.js) — so a ring still mid-fade the frame F is pressed would hang at
+   * that opacity for as long as the mode stayed open, glowing in every photo
+   * taken. Photo mode calls this before it pauses the world, so there is
+   * nothing left to freeze.
+   */
+  hide() {
+    this._fade = 0;
+    this.mat.uniforms.uFade.value = 0;
+    this.matBehind.uniforms.uFade.value = 0;
+    this.mesh.visible = false;
+    this.behind.visible = false;
+  }
+
   dispose() {
     this.scene.remove(this.mesh);
     this.scene.remove(this.behind);
