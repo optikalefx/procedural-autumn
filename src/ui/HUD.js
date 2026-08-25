@@ -210,12 +210,34 @@ export class HUD extends System {
     }
     // The camp and the camper are not landmarks to be found — they are the way
     // back, so they are always on the strip while the player is away from them.
+    // Away from, and so measured from where the player actually *is*, not from
+    // the camera: a wide boom or a swung free-look puts the eye forty metres
+    // off the thing you are riding, and a pin for "here" is noise.
+    const here = this._anchor(cam);
     for (const c of this.ctx.systems?.camp?.camps ?? []) {
-      if (!c.striking) this._pin(marks, 'camp', c.x, c.z, cam);
+      if (!c.striking) this._pin(marks, 'camp', c.x, c.z, here);
     }
     const veh = this.vehicle();
-    if (veh?.position) this._pin(marks, 'car', veh.position.x, veh.position.z, cam);
+    // The camper earns a pin only when the player is out of it. Aboard, it is
+    // underneath you: the pin sits dead ahead and swings the width of the strip
+    // with every turn of the wheel. `controlsHeldBy` is the system of record
+    // for who has the pedals — null is the camper, 'boat' is the player off
+    // paddling with the camper parked on some shore behind them.
+    if (veh?.position && veh.controlsHeldBy != null) {
+      this._pin(marks, 'car', veh.position.x, veh.position.z, here);
+    }
     this.marks = marks;
+  }
+
+  /**
+   * Where the player is, as opposed to where the camera is. Aboard a boat that
+   * is the boat; otherwise it is the camper, which the player is always in.
+   * Same question the map arrow asks — see `update`.
+   */
+  _anchor(cam) {
+    const boat = this.ctx.systems?.boat;
+    if (boat?.active && boat.current) return boat.current;
+    return this.vehicle()?.position ?? cam;
   }
 
   _pin(marks, kind, x, z, cam) {
