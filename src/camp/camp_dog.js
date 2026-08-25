@@ -203,18 +203,27 @@ const POSE_PICK = [
 const REST_TIME = [26, 75];      // s asleep / sitting before getting up
 const WANDER_TIME = [7, 18];     // s milling about before settling again
 const SETTLE_TIME = 1.05;        // s to fold down into a pose
-const RISE_TIME = 0.85;          // s to stand back up
+// Longer than the settle, not shorter: the head UNWINDS with the body on the
+// way up (see the HEAD_LAG note), so the rise owns the whole neck arc and at
+// 0.85 s it swung the skull faster than anything a dog does on purpose.
+const RISE_TIME = 1.25;          // s to stand back up
 const APPROACH_TIME = 16;        // s before abandoning an unreachable bed
 
-// The head does not ride the body's settle clock. Folding the whole curl in
-// SETTLE_TIME swings the skull through its ~2.5 rad arc at 5-6 rad/s — measured
-// (tools/_scratch/dogfull.mjs), that is double the fastest thing the head ever
-// does naturally (the trot's nod peaks at 3.2), and it is exactly the "head
-// snaps backwards" every settle and rise produced. So the neck chain gets its
-// own blend, an exponential lag behind the body's: the body folds first and
-// the head follows it down over about two seconds, which is also just what a
-// dog does — the nose is the last thing tucked and the first thing raised.
-const HEAD_LAG = 2.1;            // 1/s damp rate of the head-chain blend
+// The head does not ride the body's settle clock DOWN. Folding the whole curl
+// in SETTLE_TIME swings the skull through its ~2.5 rad arc at 5-6 rad/s —
+// measured (tools/_scratch/dogfull.mjs), double the fastest thing the head
+// ever does naturally (the trot's nod peaks at 3.2), and exactly the "head
+// snaps backwards" every settle produced. So on the way INTO a pose the neck
+// chain lags the body's blend exponentially: the body folds first and the
+// nose is the last thing tucked.
+//
+// The way OUT is not the mirror image, and the first cut wrongly made it one:
+// lagging the head on the rise left the dog standing on straight legs with
+// its neck still two-thirds wrapped in the curl — a head twisted back over
+// its shoulder, which read as exactly the snap this constant exists to kill.
+// Rising, the head tracks the body directly and the extra time lives in
+// RISE_TIME instead.
+const HEAD_LAG = 2.1;            // 1/s damp rate of the head-chain blend, settling
 const HEAD_BONES = { neck1: 1, neck2: 1, head: 1 };
 
 // A dog in a moving state is CONSTANTLY covering ground — walking is 0.78 m/s
@@ -1333,10 +1342,14 @@ export class CampDog {
     if (this.restGround && this.blend > 0.001) {
       this.mesh.position.y = lerp(this.mesh.position.y, this.restGround.y, this.blend);
     }
-    // The neck chain follows the body's blend at its own damped pace — see
-    // HEAD_LAG. The pose outlives the rise for as long as the head is still
-    // finishing, then both are dropped together.
-    this.headBlend = damp(this.headBlend, this.blend, HEAD_LAG, dt);
+    // The neck chain trails the body going DOWN and never on the way up —
+    // see the HEAD_LAG note. `min` is the whole asymmetry: while the body
+    // folds (blend above headBlend) the head lags behind it; the moment the
+    // body starts back up, the head is carried with it exactly.
+    this.headBlend = Math.min(
+      this.blend,
+      damp(this.headBlend, this.blend, HEAD_LAG, dt),
+    );
     if (this.pose) {
       if (this.blend > 0.001 || this.headBlend > 0.001) {
         this._applyPose(this.blend, this.headBlend);
