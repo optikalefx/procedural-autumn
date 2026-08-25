@@ -48,6 +48,7 @@
 import * as THREE from 'three';
 import { clamp01, lerp } from '../core/MathUtils.js';
 import { treeBirdMaterial } from './tree_birds.js';
+import { smoothTuples } from './loft_smooth.js';
 
 // ── density ──────────────────────────────────────────────────────────────────
 //
@@ -79,37 +80,6 @@ const WING_SMOOTH = 3;        // Catmull-Rom stations per authored wing interval
 // shader's graded flap read as a bend; chord density is what stops the panel
 // creasing into two flat facets when the fold stands it on edge.
 const WING_CHORD = [0, 0.13, 0.28, 0.44, 0.62, 0.81, 1];
-
-/** Catmull-Rom through four scalars — animal_species.js's, kept identical. */
-function crom(a, b, c, d, t) {
-  const t2 = t * t, t3 = t2 * t;
-  return 0.5 * ((2 * b) + (-a + c) * t
-    + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
-}
-
-/**
- * smoothStations (animal_species.js) for plain numeric tuples: `factor - 1`
- * interpolated stations between each authored pair, every column following a
- * Catmull-Rom through the keys rather than the straight chord. The authored
- * stations pass through untouched — they are the art; this only rounds the
- * path between them, which is the entire difference between a loft that reads
- * as a curve and one that reads as a stack of plates.
- */
-function smoothTuples(src, factor) {
-  if (factor <= 1 || src.length < 2) return src;
-  const out = [];
-  for (let i = 0; i < src.length - 1; i++) {
-    const p0 = src[Math.max(0, i - 1)], p1 = src[i];
-    const p2 = src[i + 1], p3 = src[Math.min(src.length - 1, i + 2)];
-    out.push(p1);
-    for (let k = 1; k < factor; k++) {
-      const t = k / factor;
-      out.push(p1.map((_, f) => crom(p0[f], p1[f], p2[f], p3[f], t)));
-    }
-  }
-  out.push(src[src.length - 1]);
-  return out;
-}
 
 // ── plumage ──────────────────────────────────────────────────────────────────
 //
