@@ -43,6 +43,14 @@ export class PointsOfInterest {
         // pitch fills the frame with sky, which is what the "peaks" capture
         // used to be. What reads as mountains is a shoulder a few hundred
         // metres out and well below the crest, aimed back at the massif.
+        //
+        // Which is right for a camera and wrong for anything that treats the
+        // entry as *the place*: the stand-off sits 620-950 m away on the valley
+        // floor, 300 m below the crest. The HUD pinned its "peak" landmark
+        // there and announced "Found a peak" to a player standing on flat
+        // ground with the mountain still most of a kilometre off. So every
+        // entry carries `summit` — the crest it is aimed at — and consumers
+        // that mean the mountain read that instead of the camera position.
         if (h > 175) {
           let isPeak = true;
           for (let a = 0; a < 6 && isPeak; a++) {
@@ -77,7 +85,11 @@ export class PointsOfInterest {
                 const score = (h - vh) * 1.0 - blocked * 4.0 - W.getSlope(vx, vz) * 60;
                 if (score > bestScore) {
                   bestScore = score;
-                  best = { x: vx, z: vz, y: vh, yaw: Math.atan2(x - vx, z - vz), score: h + bestScore * 0.2 };
+                  best = {
+                    x: vx, z: vz, y: vh, yaw: Math.atan2(x - vx, z - vz),
+                    summit: { x, z, y: h },
+                    score: h + bestScore * 0.2,
+                  };
                 }
               }
             }

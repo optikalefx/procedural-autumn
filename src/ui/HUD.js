@@ -36,6 +36,16 @@ const STORE = 'pa.hud';
 // it is the thing worth driving to, and the thing you can already hear.
 const LANDMARKS = [['waterfall', 4], ['vista', 3], ['peak', 2], ['river', 3]];
 const FOUND_RADIUS = 75;
+// A peak is not a place you stand on — the crests here rise 350 m out of a
+// valley floor that reaches their feet, and nothing the player drives is
+// getting up one. So the pin sits on the summit (see `_landmarkSpot`) and the
+// ring around it is the width of the mountain's foot rather than a doorstep:
+// close enough that the thing fills the windscreen, which is the moment worth
+// calling "found". At 75 m it would never fire at all.
+const FOUND_RADIUS_BY_KIND = { peak: 200 };
+// Two vantages scored for the camera can be aimed at the same massif, which
+// gives two summits a few dozen metres apart and two pins on the same rock.
+const SAME_LANDMARK = 300;
 // A waterfall inside this range stays on the compass even when six other
 // landmarks are nearer — it is the thing you can already hear.
 const WATERFALL_NEAR = 1000;
@@ -167,16 +177,37 @@ export class HUD extends System {
 
   // ── landmarks ─────────────────────────────────────────────────────────────
 
+  /**
+   * Where the landmark *is*, which is not always where `poi` put its entry.
+   * A peak entry is a camera stand-off aimed at the crest from most of a
+   * kilometre away; the landmark the player is looking for is the crest.
+   */
+  _landmarkSpot(kind, p) {
+    if (kind === 'peak' && p.summit) return p.summit;
+    return p;
+  }
+
   _buildLandmarks() {
     const poi = this.ctx.poi;
     if (!poi) return;
     for (const [kind, n] of LANDMARKS) {
-      for (let i = 0; i < n; i++) {
+      let added = 0;
+      // Walk past the quota: a candidate dropped for landing on one already
+      // taken costs the kind a candidate, not a pin.
+      for (let i = 0; added < n && i < n + 12; i++) {
         const p = poi.best(kind, i);
+        if (!p) break;
+        const spot = this._landmarkSpot(kind, p);
         // `best` clamps to the last entry, so a short list would otherwise
-        // return the same place several times.
-        if (!p || this._all.some((m) => m.x === p.x && m.z === p.z)) continue;
-        this._all.push({ kind, x: p.x, z: p.z, dist: Infinity, bearing: 0, found: false });
+        // return the same place several times — and two peak vantages can
+        // resolve to *near* the same summit even when the entries differ, so
+        // peaks need a radius where the rest only need identity. Same kind
+        // only: a river bend 200 m from a waterfall is still its own place.
+        const sep = kind === 'peak' ? SAME_LANDMARK : 1;
+        if (this._all.some((m) => m.kind === kind &&
+            Math.hypot(m.x - spot.x, m.z - spot.z) < sep)) continue;
+        this._all.push({ kind, x: spot.x, z: spot.z, dist: Infinity, bearing: 0, found: false });
+        added++;
       }
     }
     this.total = this._all.length;
@@ -191,7 +222,7 @@ export class HUD extends System {
       // Bearing clockwise from north, matching the compass strip. North is -Z,
       // which is the direction three.js's default camera looks.
       m.bearing = (Math.atan2(dx, -dz) * 180) / Math.PI;
-      if (m.dist < FOUND_RADIUS && !m.found) {
+      if (m.dist < (FOUND_RADIUS_BY_KIND[m.kind] ?? FOUND_RADIUS) && !m.found) {
         m.found = true;
         this.toast(`Found a ${m.kind === 'river' ? 'river bend' : m.kind}`);
         posthog.capture('landmark_discovered', {
