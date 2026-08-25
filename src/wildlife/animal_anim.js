@@ -119,6 +119,18 @@ const ease = (u) => u * u * (3 - 2 * u);
 // See "the neck speed limit" in _poseHead.
 const NECK_MAX_RATE = 8;
 
+// How far an alert animal raises its carriage, as an ANGLE about the base of
+// the neck. See "the alert lift is an angle, not an offset" in _poseHead.
+const ALERT_LIFT = 0.26;
+// And how much it extends as it does — an animal craning to look at you
+// straightens its neck. Beyond the chain's reach the distance knee compresses
+// it back, which is what the up-necked species were already doing.
+const ALERT_REACH = 1.10;
+
+// The skull's own pitch stop, measured in the chest's frame as the neck chain
+// plus the atlas: down is positive. See "the skull stop" in _poseHead.
+const SKULL_UP = -0.70, SKULL_DOWN = 1.55;
+
 /**
  * Planar two-link IK in the (z, -y) plane of the parent's space.
  *
@@ -264,6 +276,24 @@ export class AnimRig {
     this.bodyLen = Math.abs(this.info.legs[0].restZ - this.info.legs[2].restZ) * scale;
     this.bodyW = Math.abs(this.info.legs[0].restX) * 2 * scale;
 
+    // ── how far off the ground this animal can get ──────────────────────────
+    //
+    // A body is launched by its legs extending against the ground, so the arc
+    // is bounded by the leg: nothing out here pushes its belly higher than the
+    // hip it pushes from. That single number is said three ways, because the
+    // suspension code in `update` needs all three: the apex, the airtime that
+    // reaches it, and the take-off speed that goes with it. They are the same
+    // ballistic arc — g·t²/8 with the airtime below is exactly `apexMax`, and
+    // sqrt(2·g·apexMax) is exactly the speed it leaves the ground at.
+    //
+    // `apexMax` is in model units (the root bone lives inside the scaled mesh,
+    // as `bob` does); the other two convert through `scale` to get there.
+    this.apexMax = this.info.legs[0].hipY;
+    this.airMax = 2 * Math.sqrt(2 * this.apexMax * scale / 9.81);   // seconds
+    this.riseMax = Math.sqrt(2 * 9.81 * this.apexMax / scale);      // units/s
+    // Last frame's suspension height, so the rise can be rate-limited.
+    this.flightY = 0;
+
     this.earFlick = [0, 0];
     this.earNext = [1.3, 2.7];
     this.headYaw = 0; this.headPitch = 0; this.headRoll = 0;
@@ -296,6 +326,7 @@ export class AnimRig {
       lg.wasStance = lg.p < this.gait.duty;
     }
     this.bodyY = world.getHeight(pos.x, pos.z);
+    this.flightY = 0;
     this.breath = (pos.x * 0.7 + pos.z * 1.3) % 6.283;
     // Back to the canonical branch — a recycled rig would otherwise hand the
     // atlas a whole turn of stale unwrap and rake the muzzle at the sky.
@@ -430,14 +461,46 @@ export class AnimRig {
     // g·t²/8. Short window, low hop; a genuinely long float (a bounding deer)
     // earns a real one. It is in world metres, so divide by scale to land in
     // the model units the root bone and `bob` are in.
+    //
+    // The airtime the window asks for is `flight / cadence`, and THAT is the
+    // half of it that has to be bounded, because cadence is derived from speed
+    // and goes to nothing at a creep. A rabbit hops at every speed it has (see
+    // LADDER), so at 0.04 m/s — the cadence floor, which every stop and start
+    // sweeps through in a frame or two — the gait table claims 0.48 of a cycle
+    // in the air and the cycle is nine seconds long. Four and a half seconds
+    // of float is a 27 m apex, and the rabbit was reported doing exactly that
+    // for a single frame every time it shuffled between crops.
+    //
+    // The animal is of course not airborne at a creep; the flight WINDOW is
+    // the fiction, not the equation. So cap the airtime at what the legs can
+    // launch and narrow the window to match, which leaves a real parabola of
+    // the right duration sitting inside a wider swing phase, rather than a
+    // slow float stretched across the whole of it. The cap only bites below
+    // 0.59 m/s on the rabbit and 0.47 on the squirrel — under their own walks,
+    // so the hop at any speed you actually watch one at is untouched (8 cm at
+    // a walk, 1 cm at a bolt, the same as before). Nothing else can reach it
+    // at all: every other species has suspension only in its top gear, and
+    // does not shift into it until five metres a second.
     let flight = 0, apex = 0;
     if (G.flight > 0 && cadence > 1e-3) {
-      const u = (this.phase - G.flightAt) / G.flight;
+      const airtime = Math.min(G.flight / cadence, this.airMax);
+      const u = (this.phase - G.flightAt) / (airtime * cadence);
       if (u >= 0 && u <= 1) flight = 4 * u * (1 - u);
-      const airtime = G.flight / cadence;
       apex = (9.81 * airtime * airtime * 0.125) / S;
     }
-    const flightY = flight * apex;
+    // ...and the body cannot get there faster than it left the ground. This
+    // costs a legitimate arc nothing — a parabola of apex h rises at exactly
+    // sqrt(2·g·h) at take-off, so anything at or under the cap is already
+    // inside this limit — and it is what makes a one-frame pop structurally
+    // impossible however the gait is edited later. The discontinuities are
+    // real: `phase` freezes wherever it stopped when the animal stands still,
+    // and the first moving frame can land mid-window with the arc's slowest
+    // cadence and highest apex, which is a hip height of altitude between two
+    // frames. Rate-limited it becomes a hop, and a stop mid-float becomes a
+    // fall instead of a teleport to the ground.
+    const rise = this.riseMax * dt;
+    this.flightY = clamp(flight * apex, this.flightY - rise, this.flightY + rise);
+    const flightY = this.flightY;
     const swingLift = lift + flightY * S;
     // How far ahead of neutral the foot lands. Falls straight out of "the foot
     // is planted for `duty` of the cycle while the body travels one stride".
@@ -598,9 +661,36 @@ export class AnimRig {
       _b.y += Math.sin(this.breath * 1.9) * 0.022 * nk * graze;
       _c.copy(_b);
     }
+    // ── the alert lift is an angle, not an offset ────────────────────────────
+    // This used to raise the carriage by a fixed 0.16 up and 0.06 back, sized
+    // against the deer and scaled by `nk`. A translation is the wrong thing to
+    // author, for the same reason the crop is held in polar form: what the
+    // chain has to DO with it depends entirely on which way the neck already
+    // points.
+    //
+    // Measured, the split is exact and it is not about size. A deer, fox,
+    // rabbit and squirrel carry the neck ABOVE horizontal, so lifting the
+    // target moves it further out along the neck's own line — 124-128% of the
+    // chain's reach, which the distance knee clips back to a straight neck
+    // pointing a little higher. The skull barely turns. A bear and a raccoon
+    // carry it BELOW horizontal, and there the same offset swings the target
+    // up and *inward*: 79% and 87% of reach. The chain has to fold up hard to
+    // meet it, and since nothing outside the graze path counter-rotates at the
+    // atlas, the skull rode a 1.1 rad chain swing round with it — throat bared,
+    // muzzle 50 degrees above the horizon, ears swung under the jaw. Filmed
+    // side-on at 3.4 m the bear reads as having its head on upside down, which
+    // is exactly what it was reported as.
+    //
+    // So: rotate the rest carriage up about the base of the neck and extend
+    // it, which is what an animal craning to look at you actually does. Every
+    // species then gets the same lift in the only units that mean the same
+    // thing on all of them — degrees of neck — and the up-necked ones land
+    // where they already were, because the knee was clipping their reach
+    // anyway.
     if (alert > 0.001) {
-      _b.copy(this.neckRest);
-      _b.y += 0.16 * nk; _b.z -= 0.06 * nk;
+      const ang = this.restAng - ALERT_LIFT;
+      const len = this.restLen * ALERT_REACH;
+      _b.set(0, this.neckBase.y - Math.sin(ang) * len, this.neckBase.z + Math.cos(ang) * len);
       _c.lerp(_b, alert);
     }
     // At speed the neck stretches out along the body. A running quadruped
@@ -807,6 +897,19 @@ export class AnimRig {
     this.neckChain = chain;
     const grazePitch = (this.cfg.grazeRake ?? 1.40) - chain;
     this.headPitch = damp(this.headPitch, lerp(-wantPitch, grazePitch, graze), 6, dt);
+    // ── the skull stop ───────────────────────────────────────────────────────
+    // The neck has an anatomical stop; the atlas needs one too, and for the
+    // same reason. `chain` is where the neck put the skull and `headPitch` is
+    // what the atlas does about it, so their sum is the skull's own pitch in
+    // the chest's frame — the number a viewer actually reads. Only the graze
+    // path authors it; every other path lets the skull ride whatever the chain
+    // did, which is how a short down-carried neck could crank the muzzle at
+    // the sky. Measured across the cast the honest band is -0.54 (a fox with
+    // its head up) to 1.43 (a bear with its nose in the grass), so these
+    // bounds sit outside everything that reads correctly and make "the head is
+    // on backwards" unreachable rather than merely unlikely — including for
+    // species not written yet.
+    this.headPitch = clamp(this.headPitch, SKULL_UP - chain, SKULL_DOWN - chain);
     this.head.rotation.x = this.headPitch;
     this.headRoll = damp(this.headRoll, -this.headYaw * 0.13, 5, dt);
     this.head.rotation.z = this.headRoll;

@@ -97,6 +97,11 @@ export class Brain {
     this._watchMove = 0;       // seconds left of the current wary drift
     this._watchSide = 1;       // which way it is drifting across your line
     this._avoid = 0;
+    // Seconds spent wanting to move and going nowhere, and the countdown that
+    // says the way out is closed. See the blocked-step guard in _steer.
+    this._pinned = 0;
+    this._cornered = 0;
+    this._fleeX = 0; this._fleeZ = 0;   // where this flight started from
     this._scale = 1;
   }
 
@@ -113,6 +118,8 @@ export class Brain {
     this._patrolDir = this.rnd() < 0.5 ? -1 : 1;
     this._stuck = 0;
     this._avoid = 0;
+    this._pinned = 0;
+    this._cornered = 0;
     this._watchMove = 0;
   }
 
@@ -131,6 +138,7 @@ export class Brain {
     this.timer = 1 + this.rnd() * 4;
     this.graze = this.state === ST.GRAZE ? 1 : 0;
     this.alert = 0; this.flag = 0; this.spent = 0; this.done = false;
+    this._pinned = 0; this._cornered = 0;
     this._scale = scale;
   }
 
@@ -181,7 +189,14 @@ export class Brain {
     // where it is actually readable, and the band outside it — from
     // `alertDist` out to `noticeDist` — is WATCH: heads up, broadside, moving.
     const notice = c.noticeDist ?? c.alertDist;
-    if (this.state !== ST.FLEE) {
+    // An animal that tried to leave and found it could not has already made
+    // its decision, and WATCH is that decision: head up, broadside, drifting,
+    // eyes on you. Re-freezing it into ALERT because the threat is close would
+    // undo it one frame later and every frame after, and it would spend the
+    // whole encounter as a statue — which is the failure WATCH exists to
+    // prevent. It holds until the corner times out and it tries again.
+    const holding = this._cornered > 0 && this.state === ST.WATCH;
+    if (this.state !== ST.FLEE && !holding) {
       if (dEff < c.fleeDist || (herdAlarm > 0.5 && this.state !== ST.ALERT && dEff < c.alertDist)) {
         // Deer and rabbits freeze first — that beat of stillness before the
         // bolt is the whole reason a deer sighting feels like a sighting.
@@ -349,10 +364,11 @@ export class Brain {
       this.wantHeading = want + (this.slot & 1 ? 1.2 : -1.2);
     }
     if (this.timer < 0) {
-      if (d < this.cfg.fleeDist * 1.25) {
+      if (d < this.cfg.fleeDist * 1.25 && this._cornered <= 0) {
         this.state = ST.FLEE;
         this.timer = this._span(this.cfg.fleeTime);
         this.spent = 0;
+        this._fleeX = this.pos.x; this._fleeZ = this.pos.z;
         // Prey do not ramp up from a standstill; the first bound is already
         // most of the speed. Without this kick the freeze-to-flight transition
         // reads as a car pulling away rather than an animal launching.
@@ -407,6 +423,31 @@ export class Brain {
     }
     // A long run curves. A perfectly straight sprint reads as a bug.
     this.wantHeading += Math.sin(this.spent * 0.9 + this.slot) * dt * 0.5;
+
+    // ── a flight that gains no ground is not a flight ───────────────────────
+    // The blocked-step guard in `_steer` catches an animal held against the
+    // waterline; this catches the other shape of the same trap, where nothing
+    // is ever *blocked* but there is nowhere to go — a river spit, an inside
+    // bend, an island. There the animal sprints two seconds, runs out of land,
+    // curves back past the threat and ends the flight no further away than it
+    // started, whereupon ALERT re-arms FLEE and it does it again for as long
+    // as the player stays parked. Traced with a kayak held three metres off a
+    // bear (tools/_scratch/bearstuck.mjs): five of forty bank sites did this.
+    //
+    // Measured on the animal's OWN displacement, not on the range to the
+    // threat: a deer being run down by a camper at 13 m/s is sprinting flat
+    // out and closing anyway, and scoring that as a failed escape would stop
+    // it dead in front of the car. Ground covered cannot be argued with.
+    // Two seconds is long enough to tell a real escape from a lap of a pocket
+    // of land — an unobstructed sprint clears twice this — and if it bought
+    // nothing, stop running: stand, face it, watch.
+    const gained = Math.hypot(this.pos.x - this._fleeX, this.pos.z - this._fleeZ);
+    if (threat && this.spent > 2 && gained < this.gait.run * this._scale * 0.9) {
+      this._cornered = 6;
+      this._enterWatch();
+      if (this.group) { this.group.alarm = 0.35; this.group.fleeH = null; }
+      return;
+    }
 
     if (this.timer < 0 || (d > this.cfg.calmDist && this.spent > 1.2)) {
       this.state = ST.ALERT;
@@ -523,6 +564,9 @@ export class Brain {
 
   get _bias() { return ((this.slot * 2654435761) % 97) / 97; }
 
+  /** Can an animal stand here? The one definition of that, used everywhere. */
+  _dry(W, x, z) { return W.isInBounds(x, z) && W.getWaterDepth(x, z) <= WATER_MAX; }
+
   _span(r) { return lerp(r[0], r[1], this.rnd()); }
 
   _lookSomewhere() {
@@ -620,13 +664,56 @@ export class Brain {
       // Final guard. The probe fan should already have prevented this, but the
       // rule is that nothing stands in standing water, so it is enforced at the
       // point of motion rather than trusted to the layer above.
-      if (W.isInBounds(nx, nz) && W.getWaterDepth(nx, nz) <= WATER_MAX) {
+      if (this._dry(W, nx, nz)) {
         this.pos.x = nx; this.pos.z = nz;
+        this._pinned = 0;
       } else {
-        this.wantHeading = this.heading + 1.9;
-        this.speed *= 0.35;
+        // ── blocked, and the fan did not see it coming ────────────────────
+        // This guard used to be a per-frame reflex: `wantHeading = heading +
+        // 1.9` and `speed *= 0.35`. Both are wrong at 60 Hz, and together they
+        // are the "stuck in one spot, sort of vibrating" report.
+        //
+        // The speed cut compounds — 0.35 sixty times a second against an accel
+        // that keeps rebuilding it — so the animal settles at a few
+        // centimetres per second: never moving, never *stopped* either, legs
+        // cycling on the spot. And re-aiming 1.9 rad off the CURRENT heading
+        // every frame sets a target that runs away from the heading as fast as
+        // the heading chases it, so the animal pivots forever and never adopts
+        // a direction. Traced on a river spit (tools/_scratch/bearpin.mjs) a
+        // bear spent fifteen seconds inside a four-metre box doing exactly
+        // that while a kayak sat offshore.
+        //
+        // So: stop — properly, this frame — and turn along the edge instead of
+        // away from it. The smallest turn with dry ground behind it is the
+        // shoreline tangent, which is the direction the animal wanted anyway;
+        // an animal that meets water walks the bank, it does not bounce off it
+        // at a fixed angle. One decision, then the ordinary turn-and-go.
+        this.speed = 0;
+        this._pinned += dt;
+        const look = 1.2 * S;
+        let best = null;
+        for (let i = 1; i <= 4 && best === null; i++) {
+          for (const s of (this.slot & 1 ? [1, -1] : [-1, 1])) {
+            const h = this.heading + s * i * 0.45;
+            if (this._dry(W, this.pos.x + Math.sin(h) * look, this.pos.z + Math.cos(h) * look)) {
+              best = h; break;
+            }
+          }
+        }
+        this.wantHeading = best ?? (this.heading + Math.PI);
+        this._avoid = 0;
+        // ── cornered ──────────────────────────────────────────────────────
+        // Two seconds of that means the way out is not merely awkward, it is
+        // closed: a spit, an inside bend, an animal between the water and the
+        // thing it is running from. Sprinting into the bank for another five
+        // seconds is not a flight, and FLEE would re-arm out of ALERT forever
+        // while the threat stayed parked. A cornered animal stands and faces
+        // instead — which is the *more* legible pose anyway, and for a bear it
+        // is also the honest one.
+        if (this._pinned > 2) this._cornered = 6;
       }
     }
+    if (this._cornered > 0) this._cornered -= dt;
     this.pos.y = W.getHeight(this.pos.x, this.pos.z);
   }
 
