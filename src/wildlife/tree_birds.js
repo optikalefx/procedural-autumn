@@ -390,7 +390,17 @@ export function buildBaldEagle(rnd, opts = {}) {
 //   chance    when a bird leaves the streamed area, the odds it comes back
 //             soon rather than going dormant for minutes — the valley should
 //             sometimes simply not have an eagle in it
-//   wingspan  metres; scale IS wingspan (geometry span is 1.0)
+//   wingspan  metres; scale IS wingspan (geometry span is 1.0).
+//
+//             The two waders are deliberately drawn at 3x life: a real great
+//             blue heron is a 2 m span and 1.1 m tall, and at that size it is
+//             a grey smudge on a shadowed bank that nobody ever notices. These
+//             are landmarks, so they are sized to read as landmarks. Two other
+//             numbers move with it and are not free to leave behind — `wade`,
+//             because the depth a bird will stand in is a fraction of its leg
+//             and a 3 m bird ankle-deep in a puddle looks beached; and
+//             `flapHz`, because beat frequency falls as span grows (roughly
+//             1/sqrt) and a 6 m wing beating at a 2 m wing's rate buzzes.
 //   perchS    seconds on a perch before moving on
 //   hop       metres to the next tree, picked at random in that annulus
 //   cruise    m/s in level flight
@@ -438,14 +448,15 @@ export const TREE_BIRD_SPECIES = [
     habitat: 'water',
     live: 3,
     chance: 0.6,
-    wingspan: [1.75, 2.0],
+    // 3x life size, on purpose — see the note over TREE_BIRD_SPECIES.
+    wingspan: [5.25, 6.0],
     perchS: [30, 90],          // a heron is a statue with a licence to fish
     hop: [40, 120],
     cruise: [8.0, 11.0],
-    flapHz: [1.5, 1.9],        // slow, deep, unhurried — half the read
+    flapHz: [0.85, 1.1],       // slow, deep, unhurried — half the read
     flapAmp: [0.62, 0.85],
     startle: 30,
-    wade: [0.06, 0.38],
+    wade: [0.18, 1.14],
     footY: -0.271,
     perchPitch: -0.10,
     dip: 0.3,
@@ -457,14 +468,15 @@ export const TREE_BIRD_SPECIES = [
     habitat: 'water',
     live: 6,
     chance: 0.7,
-    wingspan: [1.35, 1.55],
+    // 3x life size, on purpose — see the note over TREE_BIRD_SPECIES.
+    wingspan: [4.05, 4.65],
     perchS: [20, 60],
     hop: [30, 90],
     cruise: [9.0, 13.0],
-    flapHz: [3.1, 3.9],        // fast shallow beats, nothing like the eagle
+    flapHz: [1.8, 2.25],       // fast shallow beats, nothing like the eagle
     flapAmp: [0.48, 0.68],
     startle: 34,
-    wade: [0.12, 0.45],
+    wade: [0.36, 1.35],
     minSpan: 7,
     footY: -0.436,
     perchPitch: -0.04,

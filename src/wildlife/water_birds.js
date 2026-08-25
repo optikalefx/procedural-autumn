@@ -641,7 +641,9 @@ function galleryBird(geoFn, span, footY, flight) {
   geo.setAttribute('aPose', new THREE.Float32BufferAttribute(arr, 4));
   const mesh = new THREE.Mesh(geo, treeBirdMaterial({ time: { value: 0 } }));
   mesh.scale.setScalar(span);
-  mesh.position.y = flight ? 1.3 : -footY * span;
+  // Hover proportional to span, not a fixed 1.3 m — at 3x scale a fixed lift
+  // buries the flight pose's trailing legs in the studio floor.
+  mesh.position.y = flight ? span * 0.9 : -footY * span;
   const g = new THREE.Group();
   g.add(mesh);
   return g;
@@ -650,16 +652,16 @@ function galleryBird(geoFn, span, footY, flight) {
 // The pose reads are spelt out against opts.pose so the gallery's option
 // probe sees a two-value enum and deals each pose its own card.
 
-/** One flamingo (1.45 m span) for the object gallery. */
+/** One flamingo (4.35 m span — 3x life, see TREE_BIRD_SPECIES) for the gallery. */
 export function buildFlamingo(rnd, opts = {}) {
   const flight = opts.pose === 'flight' && opts.pose !== 'wading';
   void rnd;
-  return galleryBird(buildFlamingoGeometry, 1.45, -0.436, flight);
+  return galleryBird(buildFlamingoGeometry, 4.35, -0.436, flight);
 }
 
-/** One blue heron (1.9 m span) for the object gallery. */
+/** One blue heron (5.7 m span — 3x life, see TREE_BIRD_SPECIES) for the gallery. */
 export function buildBlueHeron(rnd, opts = {}) {
   const flight = opts.pose === 'flight' && opts.pose !== 'wading';
   void rnd;
-  return galleryBird(buildBlueHeronGeometry, 1.9, -0.271, flight);
+  return galleryBird(buildBlueHeronGeometry, 5.7, -0.271, flight);
 }
