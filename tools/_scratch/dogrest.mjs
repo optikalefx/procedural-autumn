@@ -5,9 +5,9 @@ const browser = await chromium.launch({ headless: true, args: ['--use-gl=angle',
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errs = [];
 page.on('pageerror', (e) => errs.push(String(e)));
-await page.goto('http://127.0.0.1:5299/?res=768&seed=20261018', { waitUntil: 'domcontentloaded' });
+await page.goto('http://127.0.0.1:5299/?res=768&seed=20261018' + (process.argv[2] === '--steep' ? '#steep' : ''), { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
-await page.evaluate(() => { window.__forceCamera = true; });
+await page.evaluate(() => { window.__forceCamera = true; window.__STEEP = location.hash === '#steep'; });
 
 const out = await page.evaluate(async () => {
   const C = window.__camp, V = window.__vehicle, W = window.__world;
@@ -19,7 +19,7 @@ const out = await page.evaluate(async () => {
     if (!W.isInBounds(x, z) || W.getWaterDepth(x, z) > 0.1) continue;
     spots.push({ x, z, s: W.getSlope(x, z) });
   }
-  spots.sort((p, q) => p.s - q.s);
+  spots.sort((p, q) => (window.__STEEP ? q.s - p.s : p.s - q.s));
   let camp = null;
   for (let attempt = 0; attempt < 8 && !camp?.dog; attempt++) {
     const c = C.pitchAt(spots[attempt].x, spots[attempt].z, { instant: true });
@@ -60,6 +60,11 @@ const out = await page.evaluate(async () => {
     dirtY: +camp.ground.surfaceAt(dog.pos.x, dog.pos.z).toFixed(3),
     fieldY: +W.getHeight(dog.pos.x, dog.pos.z).toFixed(3),
     restY: +dog.restGround.y.toFixed(3),
+    restPitch: +dog.restGround.pitch.toFixed(2),
+    restRoll: +dog.restGround.roll.toFixed(2),
+    restSlope: +dog.restGround.slope.toFixed(2),
+    relax: +dog.restRelax.toFixed(2),
+    siteSlope: +W.getSlope(dog.pos.x, dog.pos.z).toFixed(2),
     dogPos: { x: +dog.pos.x.toFixed(1), z: +dog.pos.z.toFixed(1) },
   };
 });
