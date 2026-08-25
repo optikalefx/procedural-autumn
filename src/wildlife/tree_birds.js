@@ -412,6 +412,12 @@ export function buildBaldEagle(rnd, opts = {}) {
 //             most of what distinguishes it from the corvid flocks overhead
 //   minTreeH  metres; only mature trees hold a two-metre bird
 //   startle   metres; a vehicle closer than this flushes a perched bird
+//   startleDelay  seconds that vehicle has to STAY inside `startle`
+//              before the bird actually goes. Default 0 — the eagle and
+//              the heron leave the moment you crowd them, which is what
+//              those birds do. A flamingo colony is the payoff at the end
+//              of a boat trip, and a payoff that leaves on the frame you
+//              arrive is not one, so it holds for five seconds first.
 //
 // Waders (habitat: 'water', models in water_birds.js) swap the tree fields
 // for water ones:
@@ -482,7 +488,11 @@ export const TREE_BIRD_SPECIES = [
     cruise: [9.0, 13.0],
     flapHz: [1.8, 2.25],       // fast shallow beats, nothing like the eagle
     flapAmp: [0.48, 0.68],
-    startle: 34,
+    // Not a shy bird. 34 m made it the twitchiest of the three — it left
+    // before you were close enough to see it was pink — so it now lets you
+    // inside 14 m AND then holds that for five seconds before going.
+    startle: 14,
+    startleDelay: 5,
     wade: [0.36, 1.35],
     minSpan: 7,
     footY: -0.436,
@@ -579,6 +589,7 @@ export class TreeBirds {
           tree: -1,
           // pose smoothing
           amp: 0, fold: 1, rate: 2.4, phase: this.rnd() * 6.28,
+          spooked: 0,                // seconds a threat has been in startle range
           // flight path
           fx0: 0, fy0: 0, fz0: 0, fcx: 0, fcz: 0, fx1: 0, fy1: 0, fz1: 0,
           ft: 0, fdur: 1, fcruise: 0, fspeed: 12, bout: this.rnd() * 6.28,
@@ -764,7 +775,7 @@ export class TreeBirds {
     b.yaw = yaw;
     b.pitch = b.spec.perchPitch ?? PERCH_PITCH;
     b.bank = 0;
-    b.fold = 1; b.amp = 0;
+    b.fold = 1; b.amp = 0; b.spooked = 0;
     b.timer = lerp(b.spec.perchS[0], b.spec.perchS[1], this.rnd());
   }
 
@@ -1018,7 +1029,7 @@ export class TreeBirds {
     b.yaw = yaw;
     b.pitch = b.spec.perchPitch ?? PERCH_PITCH;
     b.bank = 0;
-    b.fold = 1; b.amp = 0;
+    b.fold = 1; b.amp = 0; b.spooked = 0;
     b.timer = lerp(b.spec.perchS[0], b.spec.perchS[1], this.rnd());
   }
 
@@ -1139,8 +1150,17 @@ export class TreeBirds {
       b.amp = damp(b.amp, 0, 6, dt);
       b.pitch = damp(b.pitch, S.perchPitch ?? PERCH_PITCH, 4, dt);
       b.bank = damp(b.bank, 0, 4, dt);
-      if (threat && Math.abs(threat.speed) > 4
-        && Math.hypot(threat.x - b.x, threat.z - b.z) < S.startle) {
+      // Holding its nerve. `startleDelay` is how long a threat has to stay
+      // inside `startle` before the bird gives up on it — without it a bird
+      // flushes on the frame you arrive, which means the only flamingo anyone
+      // ever sees is one already leaving. The count decays at twice the rate
+      // it builds, so driving past does not bank credit toward a later flush,
+      // but a bird you have already crowded stays jumpy for a moment.
+      const pressed = threat && Math.abs(threat.speed) > 4
+        && Math.hypot(threat.x - b.x, threat.z - b.z) < S.startle;
+      if (pressed) b.spooked += dt;
+      else b.spooked = Math.max(0, b.spooked - dt * 2);
+      if (pressed && b.spooked >= (S.startleDelay ?? 0)) {
         this._launch(b, threat.x, threat.z);
       } else if (b.timer <= 0) {
         this._launch(b);
