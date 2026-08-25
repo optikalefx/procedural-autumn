@@ -24,6 +24,9 @@ export class WildlifeAudio {
 
     this.noise = noiseBuffer(actx, 2, 'pink', 0x1c9f);
     this._callCool = 20 + this.rnd() * 40;
+    // The owl runs its own clock, an order of magnitude slower than the
+    // mammals' — see _owl.
+    this._hootCool = 50 + this.rnd() * 70;
     this._burstLife = [];
     this._tick = 0;
     this.state = { calls: 0, wingbeats: 0 };
@@ -50,6 +53,12 @@ export class WildlifeAudio {
       }
     }
 
+    // ── the owl ─────────────────────────────────────────────────────────────
+    // Ahead of the mammal cooldown's early return, because the two are
+    // unrelated clocks and a deer that has just bleated must not be able to
+    // silence the night for the next minute.
+    this._owl(dt, L);
+
     // ── occasional calls ────────────────────────────────────────────────────
     this._callCool -= dt;
     if (this._callCool > 0) return;
@@ -65,9 +74,14 @@ export class WildlifeAudio {
       // Rabbits are silent because they are; foxes because their one real
       // call is a scream, and a scream has no place in this valley; squirrels
       // because their chatter is a scold on a timer — exactly the cuckoo
-      // clock the header forbids. Falling through would give any of them the
-      // deer's bleat, which is worse than nothing.
-      if (a.key === 'rabbit' || a.key === 'fox' || a.key === 'squirrel') continue;
+      // clock the header forbids. Raccoons because their churr is a
+      // conversation rather than a call: the sound is a run of overlapping
+      // trills between animals, and the generator below makes single events,
+      // so the honest options were "build a new one" or "nothing", and the
+      // header sets the bar for the first. Falling through would give any of
+      // them the deer's bleat, which is worse than nothing.
+      if (a.key === 'rabbit' || a.key === 'fox' || a.key === 'squirrel'
+        || a.key === 'raccoon') continue;
       if (a.state === 'flee') continue;
       const d = Math.hypot(a.x - L.x, a.z - L.z);
       if (d > 240) continue;
@@ -77,6 +91,107 @@ export class WildlifeAudio {
     const pick = cands[(this.rnd() * cands.length) | 0];
     this._call(pick.a, pick.d, L);
     this._callCool = 26 + this.rnd() * 55;
+  }
+
+  /**
+   * The great horned owl.
+   *
+   * The hook is the one the flock takeoff above uses in spirit: instead of a
+   * timer that fires into an empty valley, ask the system that owns the bird
+   * whether there IS one — TreeBirds.nearestPerched('owl', …) answers only
+   * while an owl is actually settled in a tree within earshot, which by
+   * construction only happens at night (the `nocturnal` row in
+   * TREE_BIRD_SPECIES). So there is no clock here that needs to know the hour,
+   * and there is never a hoot with no bird under it.
+   *
+   * Rate: a minute and a half to three minutes between calls, and only when
+   * one is near. This is the rarest sound in the file on purpose. An owl you
+   * hear twice in a night is a night with an owl in it; one you hear every
+   * thirty seconds is a sound effect.
+   */
+  _owl(dt, L) {
+    this._hootCool -= dt;
+    if (this._hootCool > 0) return;
+    const tb = this.ctx.systems?.wildlife?.treeBirds;
+    if (!tb?.nearestPerched) { this._hootCool = 30; return; }
+    const owl = tb.nearestPerched('owl', L.x, L.z, 260);
+    // No owl out there: check again shortly, but don't bank credit — the next
+    // one to arrive should not be greeted by an instant hoot.
+    if (!owl) { this._hootCool = 18 + this.rnd() * 14; return; }
+    this._hoot(owl, L);
+    this._hootCool = 95 + this.rnd() * 85;
+  }
+
+  /**
+   * hoo — hoo-hoo — hoo — hoo.
+   *
+   * Five notes on one soft sine, around 200–290 Hz, with the second and third
+   * run together: that stuttered pair in the middle is the whole signature,
+   * and a metronomic five would read as a foghorn. Everything else here is
+   * about keeping it *breathy and far*: a slow attack (an owl has no consonant
+   * at the front of the note), a band of pink noise under the tone for the
+   * throat, and a lowpass that closes with distance so the far ones are all
+   * body and no edge.
+   *
+   * One oscillator, one gain, one noise chain — the envelope is scheduled by
+   * hand across the whole series rather than through ping(), which cancels the
+   * node's schedule on every call and would leave only the last note.
+   */
+  _hoot(owl, L) {
+    const actx = this.actx;
+    const t0 = actx.currentTime + 0.02;
+    const f0 = 200 + this.rnd() * 90;
+    const far = clamp01(owl.dist / 260);
+    // Softer than any mammal in this file, and it falls away faster.
+    const level = lerp(0.070, 0.011, far * far);
+
+    // start, length, pitch ratio. The pair at 0.85/1.16 is the stutter.
+    const NOTES = [
+      [0.00, 0.42, 1.00],
+      [0.85, 0.26, 1.06],
+      [1.16, 0.24, 1.02],
+      [1.80, 0.36, 0.98],
+      [2.45, 0.40, 0.94],
+    ];
+
+    const o = actx.createOscillator();
+    o.type = 'sine';
+    const g = gain(actx, 0.0001);
+    const n = noiseSource(actx, this.noise);
+    const nb = filter(actx, 'bandpass', lerp(620, 380, far), 1.4);
+    const ng = gain(actx, 0.0001);
+    const body = filter(actx, 'lowpass', lerp(1300, 430, far), 1.0);
+    const p = panner(actx, clamp(Math.sin(Math.atan2(owl.x - L.x, owl.z - L.z) - L.yaw), -0.9, 0.9));
+    o.connect(g);
+    n.connect(nb).connect(ng);
+    ng.connect(g);
+    g.connect(body).connect(p).connect(this.bus);
+
+    const gp = g.gain, np = ng.gain, fp = o.frequency;
+    gp.setValueAtTime(0.0001, t0);
+    np.setValueAtTime(0.0001, t0);
+    fp.setValueAtTime(f0, t0);
+    let end = t0;
+    for (const [at, dur, ratio] of NOTES) {
+      const t = t0 + at;
+      const f = f0 * ratio * (0.99 + this.rnd() * 0.02);
+      // Each note sags a little across its length; a flat one sounds sampled.
+      fp.setValueAtTime(f * 1.012, t);
+      fp.linearRampToValueAtTime(f, t + dur * 0.30);
+      fp.linearRampToValueAtTime(f * 0.975, t + dur);
+      // Slow in, slow out — no click at either end, which is most of "soft".
+      gp.setValueAtTime(0.0001, t);
+      gp.linearRampToValueAtTime(level, t + Math.min(0.09, dur * 0.35));
+      gp.setValueAtTime(level, t + dur * 0.72);
+      gp.exponentialRampToValueAtTime(0.0001, t + dur);
+      np.setValueAtTime(0.0001, t);
+      np.linearRampToValueAtTime(0.42, t + 0.05);
+      np.exponentialRampToValueAtTime(0.0002, t + dur * 0.85);
+      end = t + dur;
+    }
+    o.start(t0); o.stop(end + 0.2);
+    stopLater([o, n, nb, ng, body, g, p], actx, end + 0.6);
+    this.state.calls++;
   }
 
   /** A deer bleat or a bear huff — same generator, very different numbers. */

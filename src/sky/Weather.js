@@ -56,6 +56,8 @@ export class Weather extends System {
     // Trees already reads this defensively as a sway multiplier; publishing it
     // is what puts the canopy and the leaves leaving it on the same gust.
     this.windScale = 1;
+    // 0..1, minutes-long: how blustery it is right now. Leaf shedding rides it.
+    this.squall = 0.25;
 
     this._scratch = new THREE.Vector3();
   }
@@ -97,7 +99,7 @@ export class Weather extends System {
     return this.wind.windAt(pos, t, out);
   }
 
-  /** Scalar gust envelope at a point, ~0.45 … ~1.55. */
+  /** Scalar gust envelope at a point, ~0.2 … ~1.5 — rides `squall`. */
   gustAt(x, z) { return this.wind.gustAt(x, z); }
 
   /** Unit horizontal wind direction (do not mutate). */
@@ -109,6 +111,7 @@ export class Weather extends System {
 
     this.wind.update(dt, elapsed);
     this.windScale = this.wind.gust;
+    this.squall = this.wind.squall;
     this.ground.update(cam.x, cam.z);
     this.near.update(dt, cam);
 
@@ -117,7 +120,13 @@ export class Weather extends System {
     // of the best frames this game has) but thin out overnight, where they
     // would only ever read as noise.
     const day = s.dayFactor;
-    const leafAmt = 0.22 + 0.78 * day;
+    // ...and the air only fills up when it is actually blowing. Shedding is
+    // driven by the same squall envelope the trees sway on, so a thick drift
+    // arrives *with* a gust instead of running flat all afternoon. The peak is
+    // the old constant value: this thins the quiet stretches, it does not cap
+    // the busy ones.
+    const blow = 0.32 + 0.68 * this.wind.squall;
+    const leafAmt = (0.22 + 0.78 * day) * blow;
 
     // Motes need a low, direct sun to be lit at all — at noon the air just
     // looks clean. Peak at first light and at golden hour.

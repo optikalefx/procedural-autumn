@@ -20,6 +20,10 @@ const STEP = parseFloat(arg('step', '25'));
 const RES = arg('res', '768');
 const SEED = arg('seed', null);
 const SPEED = parseFloat(arg('speed', '13'));
+// Time of day. Left alone by default — the drive is scored in daylight, which
+// is what it has always meant. Nocturnal species (the raccoon) do not exist at
+// all at the default hour, so scoring them needs `--hour 23`.
+const HOUR = arg('hour', null);
 
 await acquire('wcensus');
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal'] });
@@ -34,6 +38,7 @@ const out = await page.evaluate(async (P) => {
   const wl = window.__systems.wildlife;
   window.__forceCamera = true;
   e.stop(); e.clock.getDelta = () => 1 / 30;
+  if (P.HOUR !== null) { window.__lighting.hour = +P.HOUR; window.__lighting.cycleSpeed = 0; }
 
   const roads = W.roads ?? [];
   const cam = e.camera;
@@ -159,7 +164,13 @@ const out = await page.evaluate(async (P) => {
     meanLive: +meanLive.toFixed(2), liveMax, inViewMax,
     perSpeciesSightings: perSpecies,
     birdFlockInViewPct: +(100 * birdsSeen / Math.max(1, steps)).toFixed(1),
+    hour: window.__lighting.hour,
     sites: wl.stats.sites,
+    // Per-species home sites. The cap in `_placeSites` truncates in key order
+    // and the river bears place last, so "how many sites" is not the question
+    // that catches a saturated table — "did the bears survive it" is.
+    sitesBySpecies: Object.fromEntries(wl.keys.map((k, i) => [
+      k, wl.sites.spec.reduce((n, v) => n + (v === i ? 1 : 0), 0)])),
     maxWaterDepthUnderAnimal: +maxDepth.toFixed(3),
     animalsInWaterSamples: wetSamples,
     maxSlopeUnderAnimal: +maxSlope.toFixed(2),
@@ -170,7 +181,7 @@ const out = await page.evaluate(async (P) => {
       totalCalls: withW.calls, totalTris: withW.tris,
     },
   };
-}, { STEP, SPEED });
+}, { STEP, SPEED, HOUR });
 
 console.log(JSON.stringify(out, null, 1));
 if (errs.length) console.log('errors', errs.slice(0, 5));

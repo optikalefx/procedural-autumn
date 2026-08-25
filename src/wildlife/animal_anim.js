@@ -93,6 +93,19 @@ const LADDER = {
   // rabbit. (Every species needs its own row: a missing key falls through to
   // the deer's ladder, and a squirrel that trots is a rat.)
   squirrel: ['hop', 'hop', 'hop'],
+  // A raccoon ambles and bounds, and does neither of the two things the rest of
+  // the cast does in the middle gear. It does not trot like a fox — a trot is
+  // diagonal pairs on a level back, and this animal's back is not level and its
+  // legs are not the same length front to back. And it does not gallop like a
+  // dog at the top; a frightened raccoon lollops, hind pair over fore pair, and
+  // that is `bound`.
+  //
+  // So both lower rungs are lateral-sequence walks and only the DUTY changes
+  // between them: `dogwalk` at 0.76 puts exactly one foot in the air at a time,
+  // which is the rolling plantigrade amble, and `walk` at 0.64 is the same
+  // sequence hurried up. The entry is named for the dog because that is who
+  // needed it first; the gait is not a dog's, it is a slow heavy quadruped's.
+  raccoon: ['dogwalk', 'walk', 'bound'],
 };
 
 const _a = new THREE.Vector3();

@@ -119,6 +119,8 @@ const GROUPS = [
     ['Bald eagles seen', 'n count', 'seen.baldEagle'],
     ['Blue herons seen', 'n count', 'seen.heron'],
     ['Flamingos seen', 'n count', 'seen.flamingo'],
+    // Only ever creditable after dark — see `nocturnal` in TREE_BIRD_SPECIES.
+    ['Great horned owls seen', 'n count', 'seen.owl'],
     ['Bird flocks', 'n count', 'seen.flocks'],
     ['Birds startled', 'n count', 'birds.startled'],
     ['Closest a bear came', 'lo metres', 'bear.near'],
