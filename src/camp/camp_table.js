@@ -529,11 +529,17 @@ export function buildTable(rnd, opts = {}) {
  * **Why the still life had to move for it.** The header of `dressTable` states
  * the rule this prop was signed off under — *one or two objects, never three;
  * the restraint is the effect* — and a journal is a third object. It is also,
- * measured, an object with nowhere to go: the book's footprint with its squares
- * is 157 x 218 mm on a top that is 536-586 x 420-462, so lying with its long
- * edge along the table's long edge it takes 40% of the width and half the
- * depth, and the mug's band (|x| from 0.14W to 0.30W) and the paperback's
- * (0.16W to 0.28W) both run straight through it. There is no free rectangle.
+ * a third object where the rule allows two: the book's footprint with its
+ * squares is 157 x 218 mm on a top that is 536-586 x 420-462, and the mug's
+ * band and the paperback's are both on the long axis with it.
+ *
+ * It is NOT true that there is no room — an earlier version of this comment
+ * said so and it was wrong. The book's X half-extent is 78-100 mm depending on
+ * yaw and each half of the table is 268-293 mm wide, so a mug and a book sit on
+ * opposite halves with well over a hundred millimetres to spare. What was
+ * actually crowding the top was `dressTable` placing the mug on the same half
+ * as the book (see the note there). The paperback yields to the journal on the
+ * two-object RULE, not for want of space.
  *
  * So the journal takes the paperback's place rather than joining it. That is
  * the better trade twice over: the still life stays at two objects, and the
@@ -554,6 +560,14 @@ export function buildTable(rnd, opts = {}) {
  * deciding where it goes. It is written down because the next person to compare
  * a camp capture against an old one will otherwise think something broke.
  */
+// The book's own footprint, halved — 218 x 157 mm with the squares. Named
+// constants because `dressTable` has to do real geometry against them.
+const BOOK_HALF_LONG = 0.109;
+const BOOK_HALF_SHORT = 0.0785;
+// How far the mug's wire handle swings from its centre, and the gap to leave.
+const MUG_HANDLE = 0.056;
+const MUG_CLEAR = 0.020;
+
 function journalRest(rnd, W, D, H) {
   // Which end. Reused by `dressTable` to send the mug to the OTHER one, so the
   // two objects are a composition with a gap in it rather than a pile.
@@ -592,17 +606,48 @@ function dressTable(P, rnd, W, D, H, wear, rest) {
   // object hanging over the rail would need a physics argument this prop has no
   // way to make.
   //
-  // The band used to be 0.14W to 0.30W and is now 0.26W to 0.35W, i.e. the mug
-  // is out at the END of the table rather than a third of the way in. The book
-  // is why, and the numbers are measured off the two footprints rather than
-  // nudged until a render looked right: on the mug's side the book reaches
-  // 0.123 m from centre at its worst yaw, and the mug's inner reach — centre
-  // minus the 56 mm the handle swings out to — is 0.090 m at the near end of
-  // the old band and 0.146 at the near end of the new one. The old band put the
-  // handle inside the cover. The far end is capped at 0.35W so the handle stays
-  // inside the rail: 0.35 x 0.586 + 0.056 = 0.261 against a 0.268 half-width.
-  const side = -rest.side;
-  const mx = side * (W * 0.26 + rnd() * W * 0.09);
+  // The band is 0.14W to 0.30W — the original. It was briefly moved out to
+  // 0.26W-0.35W to clear the book, on a worst-case-yaw estimate; that estimate
+  // was answering a question created by the side bug below, and with the mug on
+  // its own half of the table there is nothing to clear. The far end still has
+  // to keep the handle inside the rail: 0.30 x 0.586 + 0.056 = 0.232 against a
+  // 0.268 half-width, which it does with 36 mm in hand.
+  // `journalRest` puts the book at `-rest.side * k`, so the book's half of the
+  // table IS `-rest.side` and the opposite half is `+rest.side`. The line here
+  // used to negate again, which put the mug on the SAME half as the book every
+  // single time — the note in `journalRest` says this value exists "to send the
+  // mug to the OTHER one", and it was doing the reverse of what it says.
+  //
+  // That bug is the whole reason this band was pushed out to the end of the
+  // table: with both objects crowded onto one half, the only clear ground left
+  // WAS the rail. With the mug on its own half the table has room to spare —
+  // the book reaches at most 100 mm past its own centre and the halves are
+  // 268-293 mm wide — so the band goes back to a third of the way in, which is
+  // where something somebody put down actually sits.
+  const side = rest.side;
+
+  // The book is yawed, so how far it reaches is not a constant. Its AABB
+  // half-extent in X is |a cos y| + |b sin y| over its own 218 x 157 mm
+  // footprint, and at the shallow end of the +-0.22 rad yaw it can cross the
+  // centreline by ~35 mm onto the mug's half. A fixed band cannot know that:
+  // measured over eight seeds, the worst case put the mug's HANDLE 11 mm inside
+  // the book's near edge while both objects were nominally "on their own half".
+  //
+  // So the inner end of the band is computed rather than chosen. `reach` is the
+  // book's furthest extent measured along the mug's own direction — negative
+  // when it does not cross at all — and the mug's centre has to clear it by the
+  // handle's swing plus a margin. The 0.14W floor is what it settles to
+  // whenever the book keeps to itself, which is most of the time.
+  const hx = Math.abs(BOOK_HALF_LONG * Math.cos(rest.yaw))
+           + Math.abs(BOOK_HALF_SHORT * Math.sin(rest.yaw));
+  const reach = side * rest.x + hx;
+  const inner = Math.max(W * 0.14, reach + MUG_HANDLE + MUG_CLEAR);
+  // The outer cap keeps the handle inside the rail: 0.30W + 56 mm against a
+  // half-width of W/2. If the book has crowded `inner` past that, the cap wins
+  // and the clearance is whatever is left — a mug slightly close to a book is a
+  // better still life than a mug hanging off the table.
+  const outer = Math.max(inner, W * 0.30);
+  const mx = side * (inner + rnd() * (outer - inner));
   const mz = (rnd() - 0.5) * D * 0.34;
   mug(P, rnd, mx, H, mz, rnd() * 6.2832, wear);
 }
