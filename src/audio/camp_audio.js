@@ -44,6 +44,37 @@ import { CampProps } from './camp_props.js';
 const REACH = 26;
 const NEAR = 3.0;      // inside this, the fire is at full level
 
+// ── the sizzle ───────────────────────────────────────────────────────────────
+//
+// The one new sound the roasting feature adds, and the argument for it being
+// the only one is the same argument this file's header makes about the bed: a
+// marshmallow over a fire is mostly the fire, and everything else the mechanic
+// needs — the fwoomp when one catches, the crackle when one is eaten — is a
+// voice this camp already has (see `roastEvent`).
+//
+// What it is: sugar boiling out of a skin, which is a fine, dense, HIGH hiss.
+// The band matters more than the level. The fire's own bed sweeps 430-780 Hz,
+// so anything in that region is simply more fire; two and a half octaves above
+// it there is nothing else in the camp at all, and the ear reads a narrow high
+// hiss over a broad low roar as a second thing happening rather than as the
+// first thing getting louder. It also brightens as it goes — a marshmallow that
+// is properly going is hissing higher, not just harder.
+//
+// Level. 0.026 against the bed's 0.055, and narrow against the bed's broad, so
+// it sits perceptibly under a fire the player is sitting 1.55 m from. That is
+// the whole intent: the standing note on this game's ambience is "very loud.
+// Not calming at all", and this is a sound the player holds a marshmallow in
+// front of for a minute at a time.
+//
+// It is deliberately NOT scaled by the fire's distance level. The roast view
+// puts the camera at a fixed 1.55 m from the flames for as long as it is open
+// and nowhere else, so distance is a constant while this can be heard at all;
+// riding `_level` would only expose the fact that that field tracks the NEWEST
+// camp rather than the one being sat at.
+const SIZZLE_PEAK = 0.026;
+const SIZZLE_F0 = 2300;   // barely warm
+const SIZZLE_F1 = 4300;   // properly going
+
 export class CampAudio {
   constructor(actx, bus, reverb, ctx) {
     this.actx = actx;
@@ -80,6 +111,18 @@ export class CampAudio {
     // audio graph: no wind, no water, no engine, no music, and the only
     // symptom was a console line reading "[audio] unavailable".
 
+    // ── the sizzle ────────────────────────────────────────────────────────
+    // Its own source off the same pink buffer, at a playback rate that has no
+    // simple ratio to the bed's, so the two are decorrelated and the sizzle
+    // does not phase against the roar it sits on top of. Started by
+    // `noiseSource` exactly like the bed — see the note above about calling
+    // start() twice.
+    this.sizSrc = noiseSource(actx, this.noise, 1.37);
+    this.sizBp = filter(actx, 'bandpass', SIZZLE_F0, 0.75);
+    this.sizGain = gain(actx, 0);
+    this.sizSrc.connect(this.sizBp).connect(this.sizGain).connect(this.bus);
+    this._sizzle = 0;         // 0..1, written by Camp each frame
+
     this._level = 0;          // smoothed distance gain
     this._breath = 0;         // slow swell, so the bed is never a constant
     this._cluster = 0;        // crackles left in the current burst
@@ -102,6 +145,36 @@ export class CampAudio {
    * the graph exists.
    */
   cue(kind, opts) { this.props.cue(kind, opts); }
+
+  /**
+   * How hard the marshmallow is sizzling, 0..1.
+   *
+   * Written every frame by `Camp._roastAudio`, which polls the roast view — the
+   * view itself never touches audio. Zero whenever nobody is holding one over
+   * the fire, which is nearly always, and the layer costs one `setTargetAtTime`
+   * a frame to be silent.
+   */
+  setSizzle(k) { this._sizzle = clamp01(k); }
+
+  /**
+   * The three one-shots the roasting mechanic needs, all three of them played
+   * on voices this camp already had.
+   *
+   * `ignite` and `drop` are the prop layer's `fire` voice — "the fire catching",
+   * a 175 -> 540 Hz sweep with a 140 ms attack, which is a gentle fwoomp and was
+   * written to be one. `drop` takes the same voice through the `out` shape,
+   * which is shorter, lower and softer-attacked: the difference between a patch
+   * of sugar catching and a whole marshmallow going into the coals.
+   *
+   * `eat` is the fire's own crackle, at a fixed level rather than at whatever
+   * the distance gain happens to be — the player is at the fire, and this is the
+   * one crackle in the layer that is a response to something they did.
+   */
+  roastEvent(kind, { x = 0, z = 0 } = {}) {
+    if (kind === 'ignite') this.props.cue('fire', { x, z });
+    else if (kind === 'drop') this.props.cue('fire', { x, z, out: true });
+    else if (kind === 'eat') this._crackle(0.34);
+  }
 
   update(dt, L) {
     const camp = this.ctx.systems?.camp;
@@ -150,13 +223,24 @@ export class CampAudio {
     // proximity than the level does.
     this.bedBp.frequency.setTargetAtTime(lerp(430, 780, this._level), actx.currentTime, 0.2);
 
+    // The sizzle. Written before the level gate below, not after: a marshmallow
+    // is held over a fire the player is sitting at, so the gate would never
+    // stop it — but a sizzle whose gain is only ever written on frames where
+    // some OTHER condition holds is a layer that gets stuck on the day that
+    // condition changes. Its own smoothing is short (60 ms) because the heat at
+    // the marshmallow really does move that fast when it is turned.
+    this.sizGain.gain.setTargetAtTime(
+      this._sizzle * SIZZLE_PEAK * clamp01(L.indoors ?? 1), actx.currentTime, 0.06);
+    this.sizBp.frequency.setTargetAtTime(
+      lerp(SIZZLE_F0, SIZZLE_F1, this._sizzle), actx.currentTime, 0.12);
+
     if (this._level < 0.015) return;
 
     // ── crackles ──────────────────────────────────────────────────────────
     this._next -= dt;
     if (this._next > 0) return;
 
-    this._crackle(L);
+    this._crackle();
     if (this._cluster > 0) {
       // Inside a burst: 40–150 ms apart.
       this._cluster--;
@@ -178,8 +262,17 @@ export class CampAudio {
    * Three sizes, drawn with very different weights. `size` picks the envelope
    * and the filter together, because a big crackle is not just a loud small
    * one — it is lower, longer, and has a short woody ring on the end of it.
+   *
+   * `level` defaults to the fire's own distance gain, which is what every
+   * crackle the fire makes on its own should use. `roastEvent` passes a fixed
+   * one instead: the player is at the fire and that crackle is an answer to
+   * something they just did, so it must not be quiet because some other camp
+   * happens to be the one this layer is tracking.
+   *
+   * It used to take the listener, and never read it. Removed rather than left,
+   * because an unused parameter is a promise the next reader has to disprove.
    */
-  _crackle(L) {
+  _crackle(level = this._level) {
     const actx = this.actx;
     const t = actx.currentTime + 0.005;
     const r = this.rnd();
@@ -194,7 +287,7 @@ export class CampAudio {
                : 300 + this.rnd() * 420;
     const q = size === 0 ? 1.6 : size === 1 ? 3.2 : 5.5;
     const peak = (size === 0 ? 0.055 : size === 1 ? 0.13 : 0.26)
-               * (0.6 + this.rnd() * 0.7) * this._level;
+               * (0.6 + this.rnd() * 0.7) * level;
 
     const src = noiseSource(actx, this.noise, 0.8 + this.rnd() * 0.5);
     const bp = filter(actx, 'bandpass', freq, q);
@@ -218,8 +311,10 @@ export class CampAudio {
   dispose() {
     this.props.dispose();
     try { this.bedSrc.stop(); } catch { /* already stopped */ }
+    try { this.sizSrc.stop(); } catch { /* already stopped */ }
     for (const n of [this.bedSrc, this.bedBp, this.bedLow, this.bedGain,
-                     this.bedLowGain, this.pan, this.bus, this.wet]) {
+                     this.bedLowGain, this.sizSrc, this.sizBp, this.sizGain,
+                     this.pan, this.bus, this.wet]) {
       try { n.disconnect(); } catch { /* already gone */ }
     }
   }

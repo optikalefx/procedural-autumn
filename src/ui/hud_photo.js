@@ -11,6 +11,13 @@
 //     reuses `_floorAt`, so there is no second, worse camera here either.
 //   · takes the HUD away, leaving four corner brackets and an optional
 //     rule-of-thirds grid
+//   · works from inside the camp's two modal views. Both hold CameraRig's
+//     takeover, which outranks free mode, so both are told to let go where they
+//     stand before `enterFree` reads the camera. The telescope hides its tube
+//     (the camera is inside it); the fireside stands its stick in the world and
+//     pauses the cook, so the marshmallow the player pressed F on is still over
+//     the fire to be photographed. See `ScopeView.handOff` and
+//     `RoastView.handOff`, and the two calls in `setActive`.
 //   · gives three dials that matter for a photograph — the hour, the exposure,
 //     and the colour — and nothing else
 //   · pins the render resolution to the display's native density for as long
@@ -175,6 +182,15 @@ export class PhotoMode {
       // — it is hidden for as long as the free camera stands inside it. See
       // `ScopeView.handOff`.
       this.ctx.systems?.camp?.scope?.endHandOff?.();
+      // …and the fireside goes back to roasting: the stick returns to the hand,
+      // the camera cuts back to the seat, and the marshmallow is at exactly the
+      // doneness it was when F was pressed. Here rather than in the `else`
+      // below, and BEFORE `exitFree` runs there, because the roast view retakes
+      // the rig — `CameraRig.lateUpdate` checks its takeover first, so whatever
+      // mode `exitFree` selects is moot while the fire has the camera, and
+      // doing it the other way round would show one frame of chase camera in
+      // the middle of a cut. See `RoastView.endHandOff`.
+      this.ctx.systems?.camp?.roast?.endHandOff?.();
     }
 
     if (on) {
@@ -190,6 +206,19 @@ export class PhotoMode {
       // the pose the player came from and then cuts straight back to the
       // eyepiece the free camera was posed at. See `ScopeView.handOff`.
       this.ctx.systems?.camp?.scope?.handOff?.();
+      // …and from the fire, which is the one the player asked for: "is there
+      // any way to use photo mode and be able to capture a photo while you're
+      // roasting?" The roast view holds the rig's takeover and raises
+      // `__forceCamera`, both of which `CameraRig.lateUpdate` returns at before
+      // it ever reaches free mode, so it has to let go BEFORE `enterFree` reads
+      // the camera — same ordering as the eyepiece above, same reason.
+      //
+      // What it does NOT do is put its stick away. It unparents the stick into
+      // the world at the pose the hand had it, so the free camera flies and the
+      // marshmallow stays over the fire where it can be photographed, and it
+      // pauses the cook for as long as the shutter is open. See
+      // `RoastView.handOff`.
+      this.ctx.systems?.camp?.roast?.handOff?.();
       rig?.enterFree?.();
       // Take the driving controls away. `Input.suppressed` exists for exactly
       // this and says so in its own comment ("A UI layer (menus, photo mode)

@@ -40,7 +40,9 @@ import {
 import { CampGround } from './camp_ground.js';
 import { CampReticle, CampPrompt } from './camp_ui.js';
 import { ScopeView } from './camp_scope_view.js';
+import { RoastView } from './camp_roast_view.js';
 import { Firepit, buildWoodpile } from './camp_fire.js';
+import { buildRoastStick } from './camp_marshmallow.js';
 import { buildTent } from './camp_tent.js';
 import { buildRidgeTent } from './camp_tent_ridge.js';
 import { buildChair } from './camp_chair.js';
@@ -181,6 +183,38 @@ const FIRE_PICK_LIFT = 0.55;
 // The offer, when the pointer is on a fire the camera is not already on.
 const FIRE_PROMPT = () => `${pickVerb()}&nbsp; look at the camp`;
 
+// ── clicking the roasting stick ─────────────────────────────────────────────
+//
+// The same sphere-on-a-published-point test the telescope's eyepiece gets, at
+// the marshmallow rather than at the middle of the prop. 0.34 m is about eight
+// times the marshmallow itself, which sounds enormous and is the right size for
+// the same reason `_scopeUnderPointer`'s is: the alternative is an affordance
+// that can be defeated by aiming at the gap beside a 21 mm object, and a target
+// that small is one most players would never find at all. It is still far
+// inside the table it leans on, so it cannot contest anything else in the camp.
+const STICK_PICK_R = 0.34;
+
+// The height of the flame's hottest point above the fire's own centre, handed
+// to the roast view (and through it to the toast map) by `fireState`.
+//
+// The datum the marshmallow's height is measured from, and the point the toast
+// map treats as the source of the heat.
+//
+// It was 0.45 here — the centre of the flame mesh's bounding sphere, i.e. the
+// middle of the VISIBLE column — while `camp_roast_view.js` used 0.26 for the
+// same quantity, and the view is the only consumer. Two numbers for one datum
+// is how a mechanic ends up tuned against a heat source nobody can point at, so
+// they now agree, and they agree on the view's number rather than on this one:
+// the hottest air in a fire sits just above the fuel, not halfway up the light
+// it throws, and every cooking rate in `marshmallow_toast.js` was measured
+// against 0.26. Moving it moves every marshmallow 19 cm and re-tunes the curve.
+//
+// Kept as a constant in each file rather than shared through an import, because
+// `Camp.js` already imports the view and the reverse import would close a
+// cycle. If a third consumer appears, hoist it into `camp_fire.js` beside
+// `FIRE_RING`, which exists for exactly this reason.
+const FLAME_TOP = 0.26;
+
 // ── the hearth mask, published to the grade ─────────────────────────────────
 //
 // The mask's radius is READ OFF THE LIGHT rather than authored here, and that
@@ -216,6 +250,10 @@ const PREWARM_FRAMES = 8;
 // see them.
 const PREWARM_SCALE = 0.025;
 
+// Straight down, for `_surfaceOn`. Module-level because a Raycaster's direction
+// must be a unit vector and there is exactly one of these in the whole file.
+const _DOWN = new THREE.Vector3(0, -1, 0);
+
 export class Camp extends System {
   constructor(ctx) {
     super(ctx);
@@ -233,6 +271,13 @@ export class Camp extends System {
     this.reticle = null;
     this.prompt = null;
     this.scope = null;       // the telescope eyepiece view, when one is open
+    this.roast = null;       // the fireside marshmallow view, when one is open
+    // The last roast counters this system sounded, so the sizzle layer can be
+    // driven by watching the view rather than by the view reaching into audio.
+    // Same philosophy as Stats.js: watch, do not ask.
+    this._roastHeard = { roasted: 0, dropped: 0, burning: false };
+    this._roastCamp = null;   // whose fire the open roast view is sitting at
+    this._warnedSizzle = false;
 
     this._aim = { x: 0, z: 0, y: 0, ok: false, score: 0, reason: '' };
     this._holdT = 0;
@@ -264,6 +309,10 @@ export class Camp extends System {
     this.reticle = new CampReticle(scene, world, CAMP_RADIUS);
     this.prompt = new CampPrompt();
     this.scope = new ScopeView(this.ctx);
+    // Beside the scope, and mutually exclusive with it — see `_interact`. Both
+    // take the camera outright, so two open at once is two systems writing the
+    // camera in `lateUpdate` and one of them silently losing.
+    this.roast = new RoastView(this.ctx);
 
     // ── the fire's light, created once and never removed ──────────────────
     //
@@ -349,7 +398,15 @@ export class Camp extends System {
     // already linked at boot, so the first dog reuses that program.
     try { warmDog(); } catch (e) { console.warn('[camp] dog prewarm failed', e); }
     const builders = [buildTent, buildChair, buildCooler, buildTable, buildWoodpile,
-                        (r) => buildTelescope(r, { variant: 'reflector' })];
+                        (r) => buildTelescope(r, { variant: 'reflector' }),
+                        // The roasting stick is NOT in every camp — a camp
+                        // with neither a table nor a woodpile has nowhere to
+                        // lean one and gets none (see camp_site.js). It is
+                        // pre-warmed anyway: the point of this list is to link
+                        // the programs at boot so no camp pays a compile hitch
+                        // when it DOES place one, and a builder that runs once
+                        // into a discarded object costs nothing.
+                        (r) => buildRoastStick(r, {})];
     try {
       // Every colourway, because a colourway is a vertex-colour change and not
       // a material change — one of each builder is enough for the programs.
@@ -612,6 +669,10 @@ export class Camp extends System {
         clearCampAim();
       }
       if (this.scope?.active) this.scope.leave();
+      // …and the fireside, for the same reason: the brake is what says the
+      // player is stopped, and a marshmallow held over a fire by somebody who
+      // has released the handbrake is a view nobody asked to still be in.
+      if (this.roast?.active) this.roast.leave();
       // The brake is not latched, so `_interact` is not running and nothing
       // else is speaking. The fire is still clickable — `_updateFocus` runs
       // every frame — so it still has to say so.
@@ -622,6 +683,7 @@ export class Camp extends System {
     }
 
     this._updateFocus(veh);
+    this._roastAudio();
     this._paintCursor();
     // The reticle's visibility is driven from HERE, not from `_interact`, so
     // suppressing the aim in `_interact` was not enough on its own: the ring
@@ -640,6 +702,7 @@ export class Camp extends System {
     // press IS the hover, so a ring parked under a thumb that lifted a minute
     // ago is describing an intention nobody has.
     const aimVisible = this.state === STATE.AIMING && !this.scope?.active
+                    && !this.roast?.active
                     && !this._suppressAim
                     && placing(input)
                     && !this.ctx.systems?.hud?.photo?.active
@@ -707,6 +770,39 @@ export class Camp extends System {
       return;
     }
 
+    // …and the same, at the fire.
+    //
+    // A separate branch rather than one `scope || roast` test, because the two
+    // views are the same shape and not the same object: they hold the camera in
+    // different ways, they leave for different reasons, and folding them
+    // together would make the next view added to this camp a three-way
+    // condition nobody can read. What they DO share is the rule — inside one of
+    // them, nothing else in the camp is listening, and E in particular must not
+    // reach the pack-up branch and strike the camp out from under the player.
+    if (this.roast?.active) {
+      // Speed only — NOT the throttle axis, which the eyepiece's copy of this
+      // test does read and which is wrong here.
+      //
+      // `core/Input.js` maps W and ArrowUp to `throttle = 1`, and W/S is this
+      // view's height control (contract section 3). So the axis test threw the
+      // player out of the fire on the first frame they raised the marshmallow —
+      // the one input the mechanic is built on was also the quit button.
+      //
+      // Nothing is lost by dropping it. The view claims
+      // `Vehicle.controlsHeldBy = 'roast'` on entry (the mechanism Boat.js uses
+      // for the same problem), so the pedals are zeroed at the physics and the
+      // park brake is pinned while it is open: the camper CANNOT be moving
+      // because of an input read in here. The measured-speed test is what is
+      // left, and it is the honest one — it catches a camper that is rolling
+      // for any reason at all, which is the case the rule was written for.
+      if (Math.abs(veh?.speed ?? 0) > 0.6) this.roast.leave();
+      this.roast.update(dt);
+      // The view draws its own tip, for the same reason the eyepiece does: it
+      // raises `window.__forceCamera`, and `CampPrompt` hides under that.
+      this.prompt.set('');
+      return;
+    }
+
     // The telescope, if the player is pointing at one.
     //
     // Three conditions, and the third is the one that makes it feel deliberate.
@@ -738,7 +834,32 @@ export class Camp extends System {
       this.prompt.set(`${pickVerb()}&nbsp; look through the telescope`);
       if (this._click) {
         this._click = false;      // do not also read as a click on the camp
+        this.roast?.leave();      // one view at a time; see `init`
         this.scope.enter(scope.obj);
+      }
+      return;
+    }
+
+    // The roasting stick, on exactly the same three conditions.
+    //
+    // Tested AFTER the telescope and not before, and that ordering is the only
+    // thing keeping the two apart: they are both small spheres in the same
+    // camp, and a telescope standing between the lens and a table could
+    // otherwise have its click taken by a marshmallow behind it. The scope's
+    // sphere is 0.50-0.70 m against this one's 0.34, so on a genuine overlap
+    // the bigger, further, more deliberate object should win — and a player
+    // pointing at a telescope means the telescope.
+    const stick = this._stickUnderPointer();
+    if (stick && veh && this._focusCamp === stick.camp &&
+        Math.hypot(veh.position.x - stick.camp.x, veh.position.z - stick.camp.z) < SITE_MAX + 6) {
+      this.prompt.set(`${pickVerb()}&nbsp; roast a marshmallow`);
+      if (this._click) {
+        this._click = false;      // do not also read as a click on the camp
+        this.scope?.leave();      // one view at a time; see `init`
+        // Remembered for `_roastAudio`, which has to know where in the world
+        // to put a sizzle whose own view has taken the camera off the camp.
+        this._roastCamp = stick.camp;
+        this.roast.enter(stick.obj, stick.camp);
       }
       return;
     }
@@ -1035,7 +1156,7 @@ export class Camp extends System {
     // The eyepiece view owns the camera outright while it is open; moving the
     // boom's subject under it would have the rig cut to a different shot on the
     // frame the player steps back out.
-    if (this.scope?.active) return;
+    if (this.scope?.active || this.roast?.active) return;
 
     // Rule 3, first so nothing below can override it.
     const moving = Math.abs(veh.speed) > 1.2 || (this.ctx.input.axes.throttle ?? 0) > 0.05;
@@ -1261,7 +1382,7 @@ export class Camp extends System {
   _pickHoverFire(veh) {
     if (window.__forceCamera) return null;
     if (this.ctx.systems?.hud?.photo?.active) return null;
-    if (this.scope?.active) return null;
+    if (this.scope?.active || this.roast?.active) return null;
     const moving = Math.abs(veh?.speed ?? 0) > 1.2 || (this.ctx.input.axes.throttle ?? 0) > 0.05;
     if (moving) return null;
     const c = this._firePick;
@@ -1347,6 +1468,141 @@ export class Camp extends System {
     }
     }
     return best;
+  }
+
+  /**
+   * The roasting stick the player is pointing at, if any.
+   *
+   * `_scopeUnderPointer`'s twin, and deliberately built the same way rather
+   * than sharing a generic helper with it: the two differ in the one place that
+   * matters — WHERE on the prop the sphere is centred — and a shared helper
+   * would have to be handed that as a callback, which is more machinery than
+   * two eight-line methods.
+   *
+   * The sphere is on the MARSHMALLOW, not on the stick. `userData.roast.mallow`
+   * is published in the prop's own space, so only the prop's world matrix can
+   * carry it out — and `updateMatrixWorld` first, because a stick built this
+   * frame has not been through a render and its world matrix is still identity,
+   * which would put the target at the world origin.
+   *
+   * Returns the prop AND its camp: which camp a stick belongs to is not
+   * something the player expresses by clicking it, and whether they are parked
+   * at that camp is the caller's question.
+   */
+  _stickUnderPointer() {
+    let best = null, bestMiss = 1;
+    for (const camp of this.camps) {
+      if (camp.striking) continue;
+      for (const p of camp.props) {
+        if (p.item.kind !== 'roaststick') continue;
+        const m = p.obj?.userData?.roast?.mallow;
+        if (!m) continue;
+        p.obj.updateMatrixWorld(true);
+        const miss = this._rayMiss(this._v.copy(m).applyMatrix4(p.obj.matrixWorld),
+                                   STICK_PICK_R);
+        if (miss < bestMiss) { bestMiss = miss; best = { obj: p.obj, camp }; }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Everything the roast view has to know about the fire it is held over.
+   *
+   * Published from HERE rather than read off `camp.fire` by the view, because
+   * two of the three numbers are not on the Firepit at all: its world position
+   * is the CAMP's, and its strength is the camp's build-in. A view that dug
+   * them out for itself would be a second place that has to be corrected the
+   * next time either moves.
+   *
+   * `power` is the fire's own strength and deliberately does NOT carry the
+   * flicker, even though `fireLight.intensity` does. A marshmallow's toast is
+   * an integral over seconds and the flicker is ±13% at 0.3-5 Hz, so feeding it
+   * in would add nothing to the picture and would put noise into the numbers
+   * the mini-game grades on. What it does carry is the build-in and the fade —
+   * a fire that is being lit, or has just been packed away, is weaker, and the
+   * marshmallow should know.
+   *
+   * @param camp a camp record (`camps[i]`), or null for the newest.
+   */
+  fireState(camp = this.site, out = {}) {
+    const c = camp ?? this.site;
+    out.pos = (out.pos ?? new THREE.Vector3()).set(c?.x ?? 0, (c?.y ?? 0) + 0.02, c?.z ?? 0);
+    out.top = FLAME_TOP;
+    out.power = c ? clamp01(c.raise) * clamp01(c.fire?.reveal ?? 1) : 0;
+    return out;
+  }
+
+  /**
+   * The fireside sizzle, driven by WATCHING the roast view.
+   *
+   * The same philosophy Stats.js is built on and for the same reason: a
+   * `audio.camp.setSizzle()` inside `camp_roast_view.js` would make that file a
+   * place the audio layer can be silently broken by an author who is thinking
+   * about marshmallows. Everything here is read from the view's own state, once
+   * a frame, from the system that already owns the view.
+   *
+   * The three one-shots REUSE existing voices rather than adding new ones,
+   * which is the honest answer for all three:
+   *
+   *  · ignition — `CampProps`' `fire` voice, the 175 -> 540 Hz sweep with a
+   *    140 ms attack. It was written as "the fire catching" and a marshmallow
+   *    catching is the same event at a smaller size; there is no gentler fwoomp
+   *    to be had by writing a second one.
+   *  · a marshmallow going in the fire — the same voice again, shorter and
+   *    lower through the `out` shape, which is what a small flare is.
+   *  · eating one — the fire's own crackle, which is already a soft crackle
+   *    drawn at three sizes. A fourth size for this would be a new sound where
+   *    the right one already exists.
+   *
+   * Only the sizzle bed itself is new. See `camp_audio.js`.
+   */
+  _roastAudio() {
+    const audio = this.ctx.systems?.audio?.camp;
+    if (!audio?.setSizzle) return;
+    const r = this.roast;
+    const h = this._roastHeard;
+
+    if (!r?.active) {
+      audio.setSizzle(0);
+      // Reset the watched counters on the way out, not on the way in: a view
+      // that is rebuilt, or one whose counters are per-marshmallow rather than
+      // cumulative, must not fire three years of backlog on the frame it opens.
+      h.roasted = 0; h.dropped = 0; h.burning = false;
+      return;
+    }
+
+    // Live heat at the marshmallow. `heat` is the natural name if the view ever
+    // grows one; until then `uGlow` is the same quantity already damped for the
+    // shader ("how lit-from-inside it is — live heat while it is over the
+    // flame"), which is exactly what a sizzle should ride. `ToastMap.peak` is
+    // the last resort and is a worse signal — it is accumulated toast, so it
+    // would keep hissing after the marshmallow was lifted away.
+    const heat = r.heat ?? r.uniforms?.uGlow?.value ?? r.toast?.peak ?? null;
+    if (heat === null && !this._warnedSizzle) {
+      this._warnedSizzle = true;
+      console.warn('[camp] RoastView publishes no live heat (`heat`, `uniforms.uGlow` ' +
+                   'or `toast.peak`); the fireside sizzle has nothing to ride on');
+    }
+    audio.setSizzle(clamp01(heat ?? 0));
+
+    const c = this._roastCamp ?? this.site;
+    if (!c) return;
+    const at = { x: c.x, z: c.z };
+    // Counters, by delta, floored at zero and reset when one goes backwards —
+    // the same shape `Stats._drive` reads `veh.rescues` with, and the reason is
+    // the same: what carries across is the change, not the value.
+    const roasted = r.roasted ?? 0, dropped = r.dropped ?? 0;
+    if (roasted > h.roasted) audio.roastEvent('eat', at);
+    if (dropped > h.dropped) audio.roastEvent('drop', at);
+    h.roasted = roasted; h.dropped = dropped;
+
+    // `alight` is the view's own flag and outranks the map's `burning`: the map
+    // says a texel passed ignition, the view says the marshmallow is on fire and
+    // has not been blown out yet, and the fwoomp belongs to the second one.
+    const burning = !!(r.alight ?? r.burning ?? r.toast?.burning);
+    if (burning && !h.burning) audio.roastEvent('ignite', at);
+    h.burning = burning;
   }
 
   /**
@@ -1706,7 +1962,21 @@ export class Camp extends System {
       // to that braces: a second tent in a camp this size is the difference
       // between "somebody is staying here" and "this is a campground".
       .filter((it) => !(it.kind === 'tent' && tents++ > 0))
-      .sort((p, q) => Math.hypot(p.x - x, p.z - z) - Math.hypot(q.x - x, q.z - z));
+      // …with one exception, and it is the only prop that has one: the roasting
+      // stick is built LAST, whatever its distance. It is the only thing in the
+      // camp that leans on another prop, and `_seatStick` measures that prop's
+      // real edge with a raycast — which answers nothing at all if the thing it
+      // is measuring has not been built yet. Measured over 36 camps with the
+      // plain distance sort: four of fifteen woodpile sticks were seated
+      // against the nominal height because the pile came after them in the
+      // queue, and one of those ended up 160 mm above the logs.
+      //
+      // It costs nothing else. The delay a prop appears at is computed from its
+      // place in this queue, so the stick is now the last thing to arrive — the
+      // smallest object in the camp, arriving with the outer ring, which is if
+      // anything the better order.
+      .sort((p, q) => (p.kind === 'roaststick') - (q.kind === 'roaststick')
+                   || Math.hypot(p.x - x, p.z - z) - Math.hypot(q.x - x, q.z - z));
     camp.queueN = camp.queue.length;
 
     // The payoff shot. Set before the raise so the camera is already drifting
@@ -1776,6 +2046,195 @@ export class Camp extends System {
   }
 
   /**
+   * Slide a built roasting stick along its own lean until it is actually
+   * TOUCHING the thing it is leaning on.
+   *
+   * This exists because the roast contract is under-specified in one place and
+   * it is the place that decides whether the feature reads at all. It gives the
+   * geometry `restH` (how high the edge is) and `leanYaw` (which way the stick
+   * leans), and it does not give either side the RUN — the horizontal distance
+   * from the butt to the point where the shaft crosses that height. The layout
+   * has to stand the butt somewhere, so it assumes a run (`LEAN_RUN_K` in
+   * camp_site.js); the geometry has to author an angle, and nothing makes the
+   * two agree. Disagree one way and the stick floats beside the table with a
+   * visible gap; disagree the other and it grows through the top. Both were
+   * called out as the single most visible way this feature can ship broken, and
+   * neither is something the layout can check, because at layout time the stick
+   * does not exist yet.
+   *
+   * By the time this runs the stick exists, so the question can be ANSWERED
+   * rather than agreed on in advance: the shaft is the world line from
+   * `userData.roast.butt` to `.mallow` (both named in the contract), the edge is
+   * a world point measured off the prop it leans on, and this moves the butt
+   * until the one passes through the other. Neither side's number has to be
+   * right — only this file's arithmetic does.
+   *
+   * `it.seat` records how it went: `measured` (the edge was raycast), `nominal`
+   * (the ray was rejected or missed, so the layout's height stands), `unbuilt`
+   * (the prop it leans on had not been built yet — see the queue sort in
+   * `_pitch`, which is what stops that happening), `stones` (it leans on the
+   * fire ring, which is not a prop), `nodata` (the geometry published nothing
+   * usable), and a `/unreachable` or `/clamped` suffix for the two ways the
+   * solve declines to move it.
+   */
+  _seatStick(camp, it, obj) {
+    const { world } = this.ctx;
+    const d = obj.userData?.roast;
+    // `it.seat` is why this ended where it did, kept on the item so a harness
+    // or a scratch sweep can tell a stick that was seated on a measured edge
+    // from one that gave up — the difference is invisible in a screenshot of a
+    // camp that happens to look fine.
+    it.seat = 'nodata';
+    if (!d?.mallow || !d?.butt || !(it.restH > 0) || !it.rest) return;
+    // A shaft that does not rise cannot cross anything.
+    if (!(d.mallow.y - d.butt.y > 1e-3)) return;
+    it.seat = 'nominal';
+
+    // ── 1. where the edge actually is, in the world ───────────────────────
+    //
+    // Every rest height in camp_site.js is a middle-of-the-range guess, because
+    // every one of them is rolled inside the prop's own builder from a stream
+    // the layout cannot see: the table's top is `0.425 + rnd() * 0.045`, and
+    // the woodpile's ridge measured 0.350 to 0.464 over 26 camps against a
+    // nominal 0.40. Trusting the guess left the shaft floating a median 37 mm
+    // and up to 72 mm above the logs.
+    //
+    // So drop a ray on the thing. One raycast, against one prop, on the frame
+    // the stick is built. Same argument `_makeDog` makes about
+    // `userData.footprint` — measure the props, do not ask them — and it needs
+    // no per-kind table: whatever is topmost at the target's own XZ IS the
+    // edge, whether that is a table's rail, a woodpile's ridge or a chair's
+    // back.
+    //
+    // The ray goes at `it.rest`, the point the shaft is MEANT to touch, and not
+    // at wherever the uncorrected shaft currently crosses. That distinction is
+    // not cosmetic and it cost a measurement: on a woodpile the uncorrected
+    // crossing lands ~0.18 m short of the ridge, out on the flank, where the
+    // pile stands at 0.62 of its ridge height — which the sanity band below
+    // then reads as a ray that answered the wrong question and throws away.
+    //
+    // The 0.60-1.30 band is the whole of the per-kind knowledge this avoids
+    // having. Inside it are the cases the measurement is FOR — the table's ±5%,
+    // the woodpile's ±15%, and a chair back whose profile is right where the
+    // layout says it is. Outside it are the ways a down-ray answers the wrong
+    // question, and a chair is where they live: its back is a steeply sloped
+    // panel, so a couple of centimetres of tilt on a hillside moves the ray from
+    // the panel (0.48 m) to its top edge (0.83 m, ×1.7). Rejected, the layout's
+    // own number stands — and on a chair the layout's number is the good one:
+    // profiled across ten built chairs, the surface at the target XZ is 0.476
+    // against a nominal 0.48.
+    const on = it.on && camp.props.find((q) => q.item.x === it.on.x && q.item.z === it.on.z);
+    if (!on) it.seat = it.on ? 'unbuilt' : 'stones';
+    const Q = this._vq ??= new THREE.Vector3();
+    if (on) {
+      // The target in the leaned-on prop's OWN space, carried out by its real
+      // world matrix — so it follows that prop through the tilt `standOn` gave
+      // it, which the layout's yaw-only world XZ in `it.rest` cannot. At full
+      // scale, because `_applyRaise` has the prop part-grown while the queue is
+      // still draining and at a four-hundredth of size under `pitchAt(instant)`.
+      const k = on.obj.scale.x;
+      on.obj.scale.setScalar(1);
+      on.obj.updateMatrixWorld(true);
+      Q.fromArray(it.on.l).applyMatrix4(on.obj.matrixWorld);
+      on.obj.scale.setScalar(k);
+      on.obj.updateMatrixWorld(true);
+      const hit = this._surfaceOn(on.obj, Q.x, Q.z);
+      const m = hit === null ? null : hit - on.obj.position.y;
+      if (m !== null && m > it.restH * 0.60 && m < it.restH * 1.30) {
+        Q.y = hit;
+        it.seat = 'measured';
+      }
+    } else {
+      // The fire's stones: not a prop, so there is nothing to transform or to
+      // measure. The layout's own target stands.
+      Q.set(it.rest.x, camp.y + it.restH, it.rest.z);
+    }
+
+    // ── 2. put the shaft through it ───────────────────────────────────────
+    //
+    // Solved in WORLD space and iterated, rather than the one-line horizontal
+    // subtraction this started as. Two things make the cheap version wrong, and
+    // both of them are worst on exactly the camps that most need this — the
+    // compact hillside pitches, which are the ones with no table:
+    //
+    //  · `standOn` tilts a prop into the full terrain normal, so on a 0.4 grade
+    //    a 1.25 m stick pointing downhill lies 20 degrees flatter than it was
+    //    authored and its marshmallow is 40 cm lower. The crossing moves with
+    //    it. Measured across the tilt, the raw displacement is 3-11 cm.
+    //  · the two props stand on ground of different heights and take different
+    //    `groundLift`s, so "0.48 m above the chair's origin" and "0.48 m above
+    //    the stick's origin" are not the same altitude.
+    //
+    // Both vanish if the target is a world POINT and the shaft is a world LINE.
+    // Three passes because moving the butt moves the ground under it, which
+    // moves the whole line; it converges in two.
+    const q = this._q2 ??= new THREE.Quaternion();
+    const bw = this._vb ??= new THREE.Vector3();
+    const mw = this._vm ??= new THREE.Vector3();
+    const x0 = it.x, z0 = it.z;
+    for (let pass = 0; pass < 3; pass++) {
+      standOn(world, it.x, it.z, it.yaw, it.tilt ?? 1, q);
+      // The same lift `_buildNext` is about to apply, computed the same way —
+      // if this used a different number the shaft would be seated against an
+      // altitude the prop never ends up at.
+      const foot = obj.userData?.footprint ?? 0.28;
+      const oy = it.y + Math.min(groundLift(world, it.x, it.z, q, foot), 0.08);
+      bw.copy(d.butt).applyQuaternion(q);
+      mw.copy(d.mallow).applyQuaternion(q);
+      const rise = mw.y - bw.y;
+      if (rise < 1e-3) return;
+      const t = (Q.y - (oy + bw.y)) / rise;
+      // A stick whose marshmallow never gets as high as the edge it is supposed
+      // to lean on is not a stick this can rescue; nor is one whose contact
+      // would be past its own tip.
+      if (!(t > 0) || t > 1.1) { it.seat += '/unreachable'; return; }
+      const dx = Q.x - (it.x + bw.x + (mw.x - bw.x) * t);
+      const dz = Q.z - (it.z + bw.z + (mw.z - bw.z) * t);
+      // Clamped against the ORIGINAL position, because an unbounded correction
+      // driven by another author's `userData` could otherwise walk the stick
+      // out of the camp, and the separation test it passed was run where the
+      // layout put it. 0.45 m is more than the whole plausible spread of lean
+      // angles on a 1.25 m stick; beyond that, leaving the prop standing on
+      // good ground leaning on nothing is the better failure.
+      if (Math.hypot(it.x + dx - x0, it.z + dz - z0) > 0.45) { it.seat += '/clamped'; return; }
+      it.x += dx; it.z += dz;
+      it.y = world.getHeight(it.x, it.z);
+      if (Math.hypot(dx, dz) < 0.002) break;
+    }
+  }
+
+  /**
+   * The world height of the topmost geometry of `obj` at a given world XZ, or
+   * null if the ray misses it. Used only by `_seatStick`.
+   *
+   * Dropped from four metres up rather than from the sky: the props are all
+   * under 1.5 m and a short ray is a shorter BVH walk. `firstHitOnly` is not
+   * set — a prop's own merged meshes are few, and the topmost hit is the first
+   * one a downward ray reports anyway.
+   *
+   * **The prop is measured at full size, whatever size it is currently drawn
+   * at.** `_applyRaise` scales every prop up from 0.001 over the build-in and
+   * `_buildNext` runs during it, so the neighbour this is measuring is normally
+   * part-grown when the ray is cast — and under `pitchAt({instant})`, which is
+   * how every capture tool and the whole debug surface builds a camp, the whole
+   * queue is drained at raise 0 and every prop is at a four-hundredth of its
+   * size. Measuring that would put the table's top three millimetres off the
+   * ground. The scale is put straight back, so nothing downstream can tell.
+   */
+  _surfaceOn(obj, x, z) {
+    const ray = (this._caster ??= new THREE.Raycaster());
+    const k = obj.scale.x;
+    obj.scale.setScalar(1);
+    obj.updateMatrixWorld(true);
+    ray.set(this._v.set(x, obj.position.y + 4, z), _DOWN);
+    ray.far = 8;
+    const hits = ray.intersectObject(obj, true);
+    obj.scale.setScalar(k);
+    obj.updateMatrixWorld(true);
+    return hits.length ? hits[0].point.y : null;
+  }
+
+  /**
    * Build the next queued prop. One per frame; see the note in `_pitch`.
    */
   _buildNext(camp) {
@@ -1790,6 +2249,7 @@ export class Camp extends System {
       tent: (r, o) => (o.style === 'ridge' ? buildRidgeTent(r, o) : buildTent(r, o)),
       chair: buildChair, cooler: buildCooler,
       table: buildTable, woodpile: buildWoodpile, telescope: buildTelescope,
+      roaststick: buildRoastStick,
     };
     const build = BUILD[it.kind];
     if (!build) { console.warn('[camp] no builder for', it.kind); return; }
@@ -1797,6 +2257,7 @@ export class Camp extends System {
     try { obj = build(camp.rnd, it.opts ?? {}); }
     catch (e) { console.error(`[camp] ${it.kind} builder threw`, e); return; }
     if (!obj) return;
+    if (it.kind === 'roaststick') this._seatStick(camp, it, obj);
     obj.position.set(it.x, it.y, it.z);
     standOn(this.ctx.world, it.x, it.z, it.yaw, it.tilt ?? 1, this._q);
     obj.quaternion.copy(this._q);
@@ -2037,6 +2498,24 @@ export class Camp extends System {
     if (this.scope?.active && camp.props.some((p) => p.obj === this.scope.subject)) {
       this.scope.leave();
     }
+    // The same for the fireside, and it is not the same test: the roast view is
+    // standing at the FIRE holding a stick that came out of this camp, so both
+    // halves of it go when the camp does. `subject` is the stick prop, exactly
+    // as `ScopeView.subject` is the telescope, so the ownership question is
+    // asked the same way — and asked at all, so striking camp B never throws a
+    // player out of the marshmallow they are toasting at camp A.
+    // `leave(true)`, forced, and the flag is not decoration. While photo mode
+    // holds the composed fireside frame the view refuses an ordinary `leave()`
+    // — that refusal is what stops Camp's own `holding` gate standing the
+    // player up the instant they press F. This call is the one that must get
+    // through anyway: the next lines dispose the geometry the view is holding,
+    // and a view left pointing at a freed prop is worse than an interrupted
+    // photograph. Not reachable by a player (packing up runs through
+    // `_interact`, which does not run while photographing), but `pitchNear` at
+    // the camp cap and every harness reach it.
+    if (this.roast?.active && camp.props.some((p) => p.obj === this.roast.subject)) {
+      this.roast.leave(true);
+    }
 
     // The dog goes with the camp. Its geometry is a shared prototype and is NOT
     // disposed here — only its own material and its place in the scene graph.
@@ -2063,6 +2542,7 @@ export class Camp extends System {
     if (i >= 0) this.camps.splice(i, 1);
     if (this._focusCamp === camp) this._focusCamp = null;
     if (this._packTarget === camp) this._packTarget = null;
+    if (this._roastCamp === camp) this._roastCamp = null;
     this._publishSlots();
   }
 
@@ -2155,6 +2635,7 @@ export class Camp extends System {
     this.reticle?.dispose();
     this.prompt?.dispose();
     this.scope?.dispose();
+    this.roast?.dispose();
     this.ctx.scene.remove(this.root);
     disposeCampMaterials();
     disposeDogProtos();
