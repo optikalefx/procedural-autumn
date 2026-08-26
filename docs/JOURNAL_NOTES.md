@@ -1066,7 +1066,14 @@ click.
 
 ---
 
-## 15. Round 6 — the print that was not there, and replacing one
+## 15. Round 6 — a bug, a choice, and the player's own hands
+
+Four things, in the order they were done, because each one leans on the one
+before: §15.1 fixes a print that was not on screen at all (nothing else in this
+round is worth looking at until it is), §15.2 adds the leaf that asks which of
+two prints to keep, §15.3 takes the middle rung out of the zoom ladder, and
+§15.4 hands the camera to the player — which is what makes §15.3 a removal
+rather than a loss.
 
 ### 15.1 The close look was bare paper on half the sheet
 
