@@ -434,7 +434,11 @@
 //
 //  **Calibrated against frames, not against feel.** 34 random night poses, each
 //  screenshotted twice and the flashes in the picture counted by a blob pass
-//  over the greenish-yellow core colour (`shots2/ffcal/`, `dots.mjs`). At
+//  over the greenish-yellow core colour. **The frames and the counting script
+//  lived in a scratch directory that is not in this checkout**, so — by the
+//  same standard this file applies to the road-level waterfall figure a few
+//  hundred lines down — the numbers below are reported, not reproducible from
+//  here. Re-shoot before leaning on them. At
 //  FF_MIN = 110: ten poses credited, nine of the ten had five or more
 //  countable flashes and the ten averaged 12.8; the best frame in the whole set
 //  — a wooded meadow with 25 flashes in it — is credited, and the rejects top
@@ -786,8 +790,17 @@ function frameOf(ctx) {
  * `radius` is a HALF-HEIGHT for everything that answers to `MIN_SHARE`: half a
  * mammal's bounding-box height, half a perched bird's modelled height, half a
  * waterfall's drop. `2 * atan(radius / dist)` is then the angle the subject's
- * height subtends and `s` is that over the frame's own vertical angle, so a
- * share of 0.15 means "this thing is 15% of the picture tall". The one caller
+ * height subtends and `s` is that over the frame's own vertical angle.
+ *
+ * That is an ANGULAR share, and a screen is planar — so it is not quite "15% of
+ * the picture tall". A pinhole puts the subject at `h / (2·d·tan(vfov/2))` of
+ * the frame, and the angular form runs about **7% high** at the mammal cut: the
+ * deer at 14 m measures 0.140 of the frame while the gate reads 0.149. The gate
+ * is not wrong — every threshold in this file was derived from frames THROUGH
+ * this formula, so the number and the measure agree — but a table of
+ * silhouette-over-height ratios computed the planar way will not reproduce from
+ * it, and one published at 0.81-0.88 is 0.75-0.83 recomputed this way. Do not
+ * mix the two. The one caller
  * that hands it something else is `highCamp`, whose subject is a clearing
  * rather than a standing object — see the note on `CAMP_SHARE`.
  *
