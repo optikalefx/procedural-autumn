@@ -499,23 +499,25 @@ const CROWD_MAX = 3;
 // `public/audio/journal.mp3`, whole, at one gain. No window, no shelf, no pitch
 // jitter, no pan.
 //
-// It got all four, and the user's verdict on the result was that it was not the
-// sound they loaded. They were right, and it is worth writing down what
-// "levelling a recording into the ladder" had quietly turned into:
+// It got all four, and the user's verdict was that it was not the sound they
+// loaded. They were right. What "levelling a recording into the ladder" had
+// quietly turned into:
 //
 //   · **half the file was never played.** A take detector with a 2% floor found
-//     one burst from 0.02 to 0.52 s and treated the rest of the second as room
-//     tone. Whatever decay the recording had was cut off at 0.52 s.
+//     one burst from 0.02 to 0.52 s in a one-second recording and treated the
+//     rest as room tone, so whatever decay it had was cut off at 0.52.
 //   · **the pitch moved every firing.** `c.pitch` is 0.95-1.05 and it is right
 //     for a synthesised voice, where it stops a repeat sounding like a repeat.
-//     Applied to a recording of a real object it just detunes it.
+//     On a recording of a real object it is just detuning it.
 //   · a high shelf, and a pan, both arguing with the room already in the file.
 //
-// Every one of those was defensible on its own and the stack of them was not a
-// recording any more. The ladder still matters — `slap > cover > page > cross`
-// through a 200 Hz high-pass is a rule this file holds — so there is a gain,
-// and that is all there is. If the balance is wrong the fix is this one number
-// or a different take, and either way what plays is what was recorded.
+// Each was defensible alone; the stack of them was not a recording any more.
+//
+// The gain stays, because `slap > cover > page > cross` through a 200 Hz
+// high-pass is a rule this file holds and the raw file peaks at 0.039. If the
+// balance is wrong the fix is this one number or a different take; either way
+// what plays is what was recorded. Verified by correlating the rendered cue
+// against the raw mp3 — 0.9994 over the full second.
 const COVER_SAMPLE_URL = '/audio/journal.mp3';
 const COVER_SAMPLE_GAIN = 4.3;
 
@@ -907,30 +909,64 @@ export class JournalAudio {
    *    key down is the case that ducking exists for and a buffer source is no
    *    less capable of stacking into a roar than a noise burst is.
    */
+  _sampledPage(c) {
+    const actx = this.actx;
+    const [t0, t1] = PAGE_TAKES[this.rnd() < 0.5 ? 0 : 1];
+    const rate = c.pitch * c.rate;
+    const d = (t1 - t0) / rate;
+    const t = c.t;
+
+    const src = actx.createBufferSource();
+    src.buffer = this._page;
+    src.playbackRate.value = rate;
+    const g = gain(actx, 0);
+    const p = panner(actx, -0.26);
+    p.pan.setValueAtTime(-0.26, t);
+    p.pan.linearRampToValueAtTime(0.04, t + d);
+    src.connect(g).connect(p).connect(this.bus);
+
+    // A trapezoid, not `_env`: `_env`'s shape (attack, plateau, exponential
+    // release) is a synthesis envelope and the recording brings its own. All
+    // this has to do is not click at the two cuts — see the two-takes block.
+    const a = Math.max(PAGE_SAMPLE_GAIN * c.level, 0.0004);
+    const fin = Math.min(TAKE_FADE_IN, d * 0.2);
+    const fout = Math.min(TAKE_FADE_OUT, d * 0.3);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(a, t + fin);
+    g.gain.setValueAtTime(a, t + d - fout);
+    g.gain.linearRampToValueAtTime(0.0001, t + d);
+
+    // `start(when, offset, duration)` — the take, and only the take. The
+    // duration is in BUFFER seconds, so it is `t1 - t0` and not `d`; passing
+    // the rate-scaled figure plays a different amount of tape at every jitter.
+    src.start(t, t0, t1 - t0);
+    src.stop(t + d + 0.02);
+    this._own(c, [src, g, p], t + d);
+  }
+
   /**
-   * The recorded cover, opening.
+   * The recorded cover, opening: the buffer, whole, at one gain.
    *
-   * Simpler than `_sampledPage`: one take, so no draw, and almost no pan. A
-   * page sweeps across in front of you and earns its -0.26 -> +0.04 travel; a
-   * front board hinges away from you on the spot, and panning it would put the
-   * book somewhere the book is not.
-   *
-   * The trapezoid is the same idea and for the same reason — the recording
-   * brings its own envelope and all this has to do is not click at the cuts.
+   * Deliberately the plainest voice in this file — see the note by
+   * COVER_SAMPLE_GAIN for what this used to do to the recording and why none of
+   * it survived. `_sampledPage` above still windows and pans and detunes, and
+   * should: that file is two takes and needs choosing between them, and a page
+   * turn genuinely sweeps across the frame. This is a board hinging away from
+   * you on the spot.
    */
   _sampledCover(c) {
     const actx = this.actx;
     const t = c.t;
     const src = actx.createBufferSource();
     src.buffer = this._cover;
-    // No `playbackRate`: see the note by COVER_SAMPLE_GAIN. The jitter every
-    // other voice gets is right for a synthesised one and detunes a recording.
+    // No `playbackRate`. The jitter every other voice gets is right for a
+    // synthesised one and detunes a recording.
     const g = gain(actx, 0);
     src.connect(g).connect(this.bus);
 
-    // A gain, and `c.level` so `_crowd()` can still duck a cue fired on top of
-    // itself. `setValueAtTime` rather than a ramp — the recording has its own
-    // attack and 4 ms of fade-in on top of it is 4 ms of somebody else's idea.
+    // `c.level` so `_crowd()` can still duck a cue fired on top of itself.
+    // `setValueAtTime` rather than a ramp: the recording has its own attack and
+    // 4 ms of fade-in on top of it is 4 ms of somebody else's idea.
     g.gain.setValueAtTime(Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004), t);
 
     // The whole buffer. No offset, no duration.
@@ -938,6 +974,8 @@ export class JournalAudio {
     src.stop(t + this._cover.duration + 0.05);
     c.nodes.push(src, g);
   }
+
+  // ── helpers ────────────────────────────────────────────────────────────────
 
   /**
    * Noise through a band that goes one way and then the other, under an
