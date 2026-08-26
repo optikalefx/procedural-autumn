@@ -167,7 +167,12 @@ export function focalForCameraFov(vFovDeg, aspect = 16 / 9) {
  * does stop down to 32 — it is the aperture you would use on a ridgeline — so
  * the ladder was the thing that was short.
  */
-export const APERTURE_STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32];
+// Must MATCH `STOPS` in photo_focus.js — that file owns the ring and this one
+// only says which rungs a given barrel reaches. They disagreed once already
+// (32 here against a ring that stopped at 22) and the symptom was a stop the
+// table offered and nothing could set. 28 is the last rung and it is the
+// pinhole; see `PostFX.setPinhole`.
+export const APERTURE_STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 28];
 
 /** The stops a given lens can actually be set to. */
 export function stopsFor(lens) {
@@ -198,7 +203,7 @@ export const LENSES = [
     mmDefault: 35,
     // Constant f/2.8 across the range, like the lens it is modelled on.
     fStop: 2.8,
-    fStopMin: 22,
+    fStopMin: 28,
     minFocus: 0.38,        // metres — it will focus on a marshmallow
     filter: 82,            // mm, printed on the barrel
     build: buildWideZoomLens,
@@ -218,7 +223,7 @@ export const LENSES = [
     // A real 200-400 does stop to f/32; this game's does not, and a table that
     // says otherwise is the kind of quiet lie the rest of this file exists to
     // avoid. Raise it if the ring's range ever grows.
-    fStopMin: 22,
+    fStopMin: 28,
     minFocus: 2.0,
     filter: 52,            // drop-in rear filter, as on the real thing
     build: buildTeleZoomLens,

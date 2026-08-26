@@ -191,7 +191,14 @@ const NOTCH = 40;
 // The stops, as a photographer would say them. Whole stops from f/1.4 (the
 // widest lens anyone would call fast) to f/22 (past which a real lens is
 // diffraction-limited and this model would keep pretending otherwise).
-const STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22];
+// The ring. f/28 is the last rung and it is not an ordinary stop: see
+// `PostFX.setPinhole` — the lens equation never reaches zero blur, so the far
+// end of the ring is made to mean "everything sharp" rather than "a bit less
+// blurred than f/22", which is what a player turning the dial all the way is
+// asking for.
+const STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 28];
+/** The rung that means no depth of field at all. */
+const PINHOLE_F = 28;
 
 // How many frames the opening measurement may keep asking for. It used to be a
 // bare `_pendingAF = 2` — wait two frames, read once, believe whatever comes
@@ -368,7 +375,7 @@ export class PhotoFocus {
     // player sees the number they were promised. Opening stopped down is also
     // simply what a photographer does when they have not chosen a subject yet.
     this._stop = STOPS.indexOf(22);
-    fx.setAperture(this.fStop);
+    this._applyStop();
     // The lens is now the player's; CameraRig may keep writing its own idea of
     // the focus from the free camera's pivot and will be ignored (see
     // `PostFX.holdFocus`).
@@ -583,6 +590,20 @@ export class PhotoFocus {
   }
 
   /** Set the aperture to the nearest whole stop to `f`, measured in stops. */
+  /**
+   * Push the current stop at PostFX, and switch the pinhole on at the far end.
+   *
+   * Every route that changes the aperture comes through here — the dial, the
+   * wheel, the lens clamp and `enable()` — so the pinhole cannot be left on by
+   * a path that forgot about it.
+   */
+  _applyStop() {
+    const fx = this.ctx.postfx;
+    if (!fx) return;
+    fx.setAperture(this.fStop);
+    fx.setPinhole?.(this.fStop >= PINHOLE_F - 1e-6);
+  }
+
   setAperture(f) {
     this._note = null;
     this._warn = null;
@@ -591,7 +612,7 @@ export class PhotoFocus {
       if (Math.abs(Math.log(STOPS[i] / f)) < Math.abs(Math.log(STOPS[best] / f))) best = i;
     }
     this._stop = best;
-    this.ctx.postfx?.setAperture?.(this.fStop);
+    this._applyStop();
     this._touch();
   }
 
@@ -603,7 +624,7 @@ export class PhotoFocus {
     this._note = null;
     this._warn = null;
     this._stop = next;
-    this.ctx.postfx?.setAperture?.(this.fStop);
+    this._applyStop();
     this._touch();
   }
 
@@ -628,7 +649,7 @@ export class PhotoFocus {
     const fov = this.ctx.camera?.fov ?? 0;
     if (Math.abs(fov - (this._fov ?? 0)) > 0.01) {
       this._fov = fov;
-      this.ctx.postfx?.setAperture?.(this.fStop);
+      this._applyStop();
       this._paint();
     }
     // The deferred opening measurement — see `enable`. Retried rather than

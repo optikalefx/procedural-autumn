@@ -2435,6 +2435,41 @@ export class PostFX {
     this._applyAperture();
   }
 
+  /**
+   * The far end of the ring means NO depth of field, not a little of it.
+   *
+   * The lens equation does not have an off switch — stopping down shrinks the
+   * circle of confusion asymptotically and never to nothing, and measured on a
+   * real frame with the plane at 12 m the old last stop, f/22, still left the
+   * picture at **72.9% of the acutance it has with the effect switched off**.
+   * That is a visibly soft frame at the setting a player reaches for when they
+   * want everything sharp, and adding another stop or two only walks it to
+   * about 85%.
+   *
+   * So the last stop is a pinhole by fiat: `uCocGain` goes to zero, every
+   * pixel's circle is zero, the composite alpha `min(coc * scale, 1)` is zero,
+   * and the sharp source passes through untouched — bit-identical to the effect
+   * being off, with no pass rebuild and therefore no shader recompile hitch.
+   *
+   * It is a lie about optics told deliberately and in one place. A real f/28 is
+   * not a pinhole; a dial whose far end does not mean "sharp" is worse.
+   */
+  setPinhole(on) {
+    const u = this._dofEffect?.cocMaterial.uniforms;
+    if (!u?.uCocGain) return;
+    if (on) {
+      this._cocGainHeld ??= u.uCocGain.value;
+      u.uCocGain.value = 0;
+    } else if (this._cocGainHeld !== undefined) {
+      // `_applyAperture` recomputes it from the live aperture, so the held
+      // value is only a fallback for a caller that turns this off without
+      // touching the ring.
+      u.uCocGain.value = this._cocGainHeld;
+      this._cocGainHeld = undefined;
+      this._applyAperture();
+    }
+  }
+
   get fStop() { return this._fStop; }
 
   /**
