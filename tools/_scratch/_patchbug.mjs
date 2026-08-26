@@ -1,5 +1,19 @@
 // A print taken this session vanishes at the close zoom; an older one does not.
 // The only difference between them is that the new one is stored at 1024.
+//
+// ⚠ THIS HARNESS DOES NOT MEASURE THAT, AND ITS FIRST LINE OF OUTPUT IS AN
+// ARTIFACT OF ITSELF. `store.hunt.award(...)` below reaches the store through a
+// dynamic `import()` from inside an evaluate — the exact trap JOURNAL_NOTES 13.4
+// documents — so on a tree Vite has hot-reloaded it awards into a SECOND
+// instance of the singleton. The journal, reading the first, sees nothing done
+// and reports `[]`; the reload then finds the row because the second instance
+// did write `pa.hunt` to disk. So "the row is empty until a reload" is this
+// file, not the product: driven through the real shutter the row comes back
+// `{done, hasPhoto, photoW: 1024, patchW: 1825}` with no reload at all.
+//
+// The real bug was the detail patch's ORIENTATION on a left-hand leaf — see
+// JOURNAL_NOTES 15.1 and `_jsweep.mjs`, which drives awards through
+// `hud.openJournal` so the store is never touched from an evaluate.
 import { chromium } from 'playwright';
 const URL = process.env.AUTUMN_URL ?? 'http://127.0.0.1:5199';
 const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal'] });

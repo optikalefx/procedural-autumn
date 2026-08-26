@@ -1024,3 +1024,84 @@ click.
   today (`hud_photo`) which is flagged as unusual where it happens.
 * At dpr 2 the print is a 1.72x upscale. The fix is a bigger stored photo and
   the number is in §14.3; nothing in `src/journal/` has to change for it.
+
+---
+
+## 15. Round 6 — the print that was not there, and replacing one
+
+### 15.1 The close look was bare paper on half the sheet
+
+*"I took a new photo, but when I zoom further its not there. The old photo is
+though. Just not this new one."*
+
+**It was never about new against old, and it was never about the store.** It was
+about WHICH PAGE the print is on. Pages 1 and 3 are versos — the left-hand leaf
+of a spread — and every print on one of them was bare paper at the close look.
+That is eight of the fifteen lines: deer, rabbit, squirrel, raccoon, owl, heron,
+flamingo, fireflies. The other seven (pages 2 and 4) were always fine, which is
+why a player whose older print happened to be a waterfall and whose new one
+happened to be a deer reads it as "the new one is broken".
+
+**The mechanism.** `samplePage` hands back the LEAF's own basis. `poseJournal`
+bends the left-hand leaf with `p = 1`, so `deformPage` writes it a normal of
+(0, 0, -1) and a tangent that runs the other way — it is a sheet that has been
+turned over, which is also why `journal_model` draws it `pageMat(BackSide)` and
+why `journal_page._toUV` flips u on a verso. `_detailShow` copied that basis
+onto the patch quad unchanged, so on a verso the quad was:
+
+* **front-face culled** — its own +Z pointed away from the reader, and
+* **0.9 mm UNDER the paper**, because the hold-off is applied along that same
+  +Z and the leaf's opaque depth write then covered it.
+
+And `hidePrint` had already taken the baked print out of the page texture (§14.4
+— it is hidden rather than covered because the patch is translucent in three
+places). Hidden print, invisible replacement: bare paper.
+
+Measured through the real game with `tools/_scratch/_jsweep.mjs`, as the quad's
+own +Z against the direction the camera is looking — negative is facing the
+reader:
+
+| | before | after |
+|---|---|---|
+| recto — fox (page 2), highCamp (page 4) | −0.985 | −0.985 |
+| verso — deer (page 1), owl (page 3) | **+0.985** | **−0.985** |
+
+The fix is a half-turn about the page's own vertical before the hold-off is
+applied. It is one rotation rather than a sign on the lift because the basis
+differs from a recto's by exactly that half-turn: X and Z reverse and Y does
+not, so undoing it fixes the facing, the hold-off's direction and the print's
+handedness in one move.
+
+**Turning the material `DoubleSide` also makes the print reappear, and it is the
+wrong fix.** Tried first, captured, and thrown away: seeing the back of a quad
+reverses it, so the photograph came back MIRRORED — the plate is
+`shots/journal/round6/` against `v1_verso_fixed.png`, same frame, same seat, the
+treeline swapped from left to right. An absent print is a bug somebody reports
+in a day; a flipped one is a bug nobody ever notices. The quad stays front-sided
+on purpose, so a future disagreement between it and the paper is loud.
+
+Plates: `shots/journal/round6/v0_verso_before.png` (bare paper, deer),
+`v1_verso_fixed.png` (the same seat, same run of the same harness),
+`v2_recto_unchanged.png` (fox, to show nothing moved on the side that worked).
+`v0` is captured by `BROKEN=1`, which seeds `_flipY` with an identity quaternion
+from the page rather than editing the fix out — the before and the after are the
+same binary.
+
+**What it was NOT, since two rounds of diagnosis went there first.** The row
+state after an in-session award is correct: driven through the real shutter,
+`{done: true, hasPhoto: true, photoW: 1024, patchW: 1825}` with no reload.
+`printPatch` returns its 1825 px canvas on a verso exactly as on a recto. The
+`THUMB_MAX` 512 → 1024 change is unrelated and touching it would have changed
+nothing. The committed reproduction `tools/_scratch/_patchbug.mjs` reported an
+empty row because it awards through a dynamic `import()` inside an evaluate and
+therefore into a second instance of the singleton — §13.4's first trap, again.
+Its header now says so.
+
+**Adjacent, checked, not touched.** The flying print in the ceremony rides the
+same basis and carries the same unsigned hold-off, so on a verso award it is
+also a hair under the paper as it lands and is showing its back face for the
+flight. It survives because it is `DoubleSide` and because `_bakePhoto` swaps it
+for the baked copy within 60 ms of touchdown. Filmed at 90 ms per frame
+(`FILM=1 FILM_T0=1700 FILM_DT=90`), the card is on screen mid-flight over the
+deer row and lands correctly. The ceremony is signed off and the artifact is one
+tumbling card ~50 px across; it is written down rather than fixed.

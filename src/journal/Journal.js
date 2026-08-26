@@ -1636,11 +1636,40 @@ export class Journal {
     m.position.copy(this._tmpP);
     m.quaternion.copy(this._tmpQ);
     m.scale.set(w, h, 1);
-    // Held a hair off the paper, the same 0.9 mm the landing print uses. The
-    // page is 10 degrees off face-on here, so what that costs sideways is
-    // 0.9 mm x sin(10) against a print 220 mm wide on screen — 0.07%.
+    // ── A VERSO IS A SHEET THAT HAS BEEN TURNED OVER ─────────────────────────
+    // `samplePage` hands back the LEAF's own basis, and the left-hand leaf is
+    // bent with p = 1 (`poseJournal`), so `deformPage` writes it a normal of
+    // (0, 0, -1) and its tangent runs the other way too — which is why
+    // `journal_model` draws that leaf `pageMat(BackSide)` and why
+    // `journal_page._toUV` flips u on a verso. Relative to a recto the basis is
+    // the same one turned a half-turn about the page's own vertical, which is
+    // what this undoes: the quad is a fresh plane with its art the right way
+    // round, so it wants the RECTO orientation wherever it lands.
+    //
+    // Shipped without it, the quad on a verso was back-to-front — front-face
+    // culled, and lifted 0.9 mm UNDER the paper by the hold-off below, where
+    // the leaf's own depth write covered it. The baked print had already been
+    // taken out of the page texture by `hidePrint`, so the symptom was not a
+    // misplaced photograph but BARE PAPER at the close look, on pages 1 and 3 —
+    // eight of the fifteen lines. It reads as a photo that failed to load,
+    // which is why it was first chased in the store and in `_armAward`; neither
+    // has anything to do with it. The row is fully populated and `printPatch`
+    // hands back its 1825 px canvas on a verso exactly as on a recto.
+    //
+    // Measured through the real game with `tools/_scratch/_jsweep.mjs`, as the
+    // quad's own +Z against the direction the camera is looking:
+    //   recto (fox, page 2 · highCamp, page 4)   -0.985 before, -0.985 after
+    //   verso (deer, page 1 · owl,      page 3)  +0.985 before, -0.985 after
+    //
+    // Turning the material double-sided instead would have put the print back
+    // on screen MIRRORED — captured, at `shots/journal/round6/`. See
+    // `_detailMesh` for why it is still front-sided.
+    if (S.verso) m.quaternion.multiply(this._flipY ??= new THREE.Quaternion()
+      .setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
     const n = this._dn ??= new THREE.Vector3();
-    n.set(0, 0, 1).applyQuaternion(this._tmpQ);
+    n.set(0, 0, 1).applyQuaternion(m.quaternion);
+    // The page is 10 degrees off face-on here, so what 0.9 mm costs sideways is
+    // 0.9 mm x sin(10) against a print 220 mm wide on screen — 0.07%.
     m.position.addScaledVector(n, 0.0009);
 
     if (!this._detailHidden) {
@@ -1693,6 +1722,17 @@ export class Journal {
       // all have to blend into the page; `depthWrite: false` because a
       // transparent surface a millimetre above the paper has no business
       // occluding anything.
+      //
+      // It stays FRONT-SIDED, and that is a decision rather than a default.
+      // `DoubleSide` would also have made the verso bug below go away — the
+      // quad would have been visible from behind — and it would have shipped a
+      // MIRRORED photograph, because seeing the back of a quad reverses it.
+      // A print that is absent is a bug somebody reports in a day; a print that
+      // is flipped left-for-right is one nobody ever notices. Front-sided, the
+      // quad is culled the moment its orientation disagrees with the paper's,
+      // which is the same discipline `journal_model` applies to the leaves
+      // themselves (`pageA` FrontSide, `pageB` BackSide) and is what made this
+      // bug loud enough to find.
       new THREE.MeshStandardMaterial({
         color: new THREE.Color().setScalar(PAPER_GAIN),
         roughness: 0.88, metalness: 0,
