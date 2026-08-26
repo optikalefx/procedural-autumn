@@ -141,6 +141,10 @@ export class Stats extends System {
     this._boatPos = null;
     this._rescues = 0;
     this._scoped = false;
+    // The roast view's own counters, as last seen. Plain numbers rather than a
+    // WeakSet because what is being watched here is a tally, not a set of
+    // objects — see `_roasting`.
+    this._roasted = { made: 0, dropped: 0, burnt: 0 };
     this._skyId = null;
     this._skyHeld = 0;
     this._bursts = null;
@@ -175,6 +179,7 @@ export class Stats extends System {
     this._water(dt);
     this._campsite(dt);
     this._telescope(dt);
+    this._roasting(dt);
     this._photo(dt);
 
     this._slow -= dt;
@@ -381,6 +386,56 @@ export class Stats extends System {
     this._skyHeld = -1e9;                       // credited; do not fire again
     stats.mark('sky', id);
     void hit;
+  }
+
+  // ── marshmallows ───────────────────────────────────────────────────────────
+
+  /**
+   * The roasting stick, watched rather than asked.
+   *
+   * `Camp.roast` is the view; it keeps a running tally of what has happened to
+   * the marshmallows that have been on it (`roasted`, `dropped`, `burnt`) and
+   * the grade of the last one (`result`). None of those is an event and none of
+   * them is a set of objects, so neither of this file's two existing tricks is
+   * the right one — this is the third shape it already has, and `Stats._drive`
+   * spells it out for `veh.rescues`: **what carries across is the delta, not
+   * the value.** A view that is rebuilt starts its tally again, so a counter
+   * that has gone backwards resets the watermark rather than crediting a
+   * negative or, worse, waiting until the tally climbs back past it and then
+   * crediting the same marshmallows twice.
+   *
+   * `result` is the one thing here that is a property of a single marshmallow
+   * rather than of the session, so it is read ONLY on the frame its counter
+   * moves. Reading it every frame and watching for changes would credit a
+   * second 'perfect' the moment a player made two perfect ones in a row — the
+   * value would not change, so the change test would never fire — and would
+   * credit nothing at all on the second of two identical grades. Gating on the
+   * counter has neither failure, and needs no identity trick to get there.
+   */
+  _roasting(dt) {
+    const roast = this.ctx.systems?.camp?.roast;
+    if (!roast) return;
+
+    // Time with a marshmallow actually in hand. The view is the whole of the
+    // mechanic — there is nothing to roast outside it — so its own `active` is
+    // the honest bound, exactly as `scope.active` is for the eyepiece.
+    if (roast.active) stats.add('roast.time', dt);
+
+    const seen = this._roasted;
+    const made = roast.roasted ?? 0;
+    const dropped = roast.dropped ?? 0;
+    const burnt = roast.burnt ?? 0;
+
+    if (made > seen.made) {
+      stats.add('roast.made', made - seen.made);
+      // `RESULTS[0].key`. A string or the graded object; both are read, because
+      // the contract names the field and not its shape.
+      if ((roast.result?.key ?? roast.result) === 'perfect') stats.add('roast.perfect');
+    }
+    if (dropped > seen.dropped) stats.add('roast.dropped', dropped - seen.dropped);
+    if (burnt > seen.burnt) stats.add('roast.burnt', burnt - seen.burnt);
+
+    seen.made = made; seen.dropped = dropped; seen.burnt = burnt;
   }
 
   _photo(dt) {

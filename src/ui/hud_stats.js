@@ -105,6 +105,12 @@ const GROUPS = [
     ['Camps made', 'n count', 'camp.made'],
     ['Pitched after dark', 'n count', 'camp.night'],
     ['Time at camp', 'n dur', 'camp.time'],
+    ['Marshmallows roasted', 'n count', 'roast.made'],
+    // The result's own words, from `RESULTS` in marshmallow_toast.js. It is a
+    // count of a thing that happened, phrased the way the player was told it
+    // happened — the same rule the sky rows follow, where the line reads back
+    // the description that was at the eyepiece.
+    ['Golden all over', 'n count', 'roast.perfect'],
   ]],
   // The mammal rows walk `SPECIES` — the same deal the vehicle rows make with
   // CARS and the sky rows with SKY_OBJECTS. Stats.js already credits
