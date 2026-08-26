@@ -1442,8 +1442,13 @@ leaves `leaf` where it was.
 **Getting back is one action.** Escape (and J, Enter, and both page keys) squares
 the book *before* it does anything else, and only when there is something to
 undo — `panned` is false below `PAN_SQUARE`, so a book nobody has driven closes
-on the first Escape exactly as it always did. A click squares it too, for the
-same reason: the click meant to undo a tumble must not turn a page. Verified:
+on the first Escape exactly as it always did. A click does the same, with one
+exception in the order that matters: a click on a PRINT goes in on it even from
+a tumbled book, because a player who has tilted the book and then aimed at a
+print has said what they want and it is not "put that back" — and going in
+squares it on the way. On the compare leaf a click off the prints squares up
+too, which is what gives a player who zoomed in to compare them a way back to
+the whole page that is not Escape (Escape there decides). Verified:
 `home -> panned false, open true; again -> open false`. Changing zoom level
 squares it as well, which is why the two never happen in one keystroke — and it
 has to, because the fit is solved through the camera and a player-driven camera

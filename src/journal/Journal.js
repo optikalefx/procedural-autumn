@@ -1816,6 +1816,10 @@ export class Journal {
         T.x = e.clientX; T.y = e.clientY;
         T.moved += Math.abs(dx) + Math.abs(dy);
         if (!T.drag && T.moved < DRAG_SLOP) return;
+        // Left and middle only, the two buttons photo mode uses. A right drag
+        // is left alone because `preventDefault` on `pointerdown` does not stop
+        // `contextmenu`, so it would tilt the book and then put a menu over it.
+        if (T.btn !== 0 && T.btn !== 1) return;
         T.drag = true;
         this._cursorTo(T.btn === 1 ? 'grabbing' : 'move');
         if (T.btn === 1) {
@@ -1851,7 +1855,14 @@ export class Journal {
         if (e.type === 'pointermove') { this._cmpHover(this._cmpAt(e.clientX, e.clientY)); return; }
         if (e.type !== 'pointerup') return;
         const k = this._cmpAt(e.clientX, e.clientY);
-        if (k >= 0) this._cmpChoose(k);
+        // On a print: keep it. Anywhere else: square the book up if it has been
+        // driven, and otherwise nothing at all. That "nothing" is the one
+        // deliberately inert click in this file — falling through to "turn the
+        // page" or "back out" would answer an unanswered question with the
+        // answer the player did not give — but squaring up is not answering it,
+        // and without it a player who has zoomed in to compare the two prints
+        // has no way back to the whole page except Escape, which decides.
+        if (k >= 0) this._cmpChoose(k); else this.panHome();
         return;
       }
       if (e.type === 'pointermove') {
@@ -1869,18 +1880,25 @@ export class Journal {
         return;
       }
       if (e.type !== 'pointerup') return;
-      // A click squares the book up first, exactly as Escape does — otherwise
-      // the click that was meant to undo a tumble turns a page instead.
-      if (this.panHome()) return;
-      // At the close look there is nowhere further in, so anywhere is "back".
-      // A click on a DIFFERENT print does the same rather than hopping sideways
+      // At the close look there is nowhere further in, so anywhere is "back" —
+      // but a book the player has DRIVEN squares up first, exactly as Escape
+      // does, so the click meant to undo a tumble does not also change level.
+      // A click on a DIFFERENT print backs out too rather than hopping sideways
       // to it: at this framing the other print is a sliver at the edge of the
       // frame, and a sliver that teleports the book is a way to lose your place,
       // not a shortcut.
-      if (this._studyTo > 0) { this.zoomOut(); this._cursorTo('zoom-out'); return; }
-      // A print. Go to it — the whole way, in one move.
+      if (this._studyTo > 0) {
+        if (!this.panHome()) this.zoomOut();
+        this._cursorTo('zoom-out');
+        return;
+      }
+      // A print. Go to it — the whole way, in one move. This is checked BEFORE
+      // the square-up, because a player who has tilted the book and then aimed
+      // at a print has said what they want and it is not "put that back";
+      // `study` squares it on the way in anyway.
       const seat = this._rowAt(e.clientX, e.clientY);
       if (seat) { this.study(seat.page, seat.row); this._cursorTo('zoom-out'); return; }
+      if (this.panHome()) return;
       // Click the half of the frame you want to go to. The book fills the
       // middle, so this is "click the page you can see", which needs no label.
       this.leaf(e.clientX > window.innerWidth * 0.5 ? +1 : -1);
