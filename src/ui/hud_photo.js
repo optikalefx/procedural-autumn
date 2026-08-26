@@ -140,9 +140,9 @@ export class PhotoMode {
     // same technique `Stats._water` uses on `Boat.onStroke`, and for the same
     // reason — one file breaks if the other changes shape, and it is this one.
     const rawNudge = this.focus.nudgeAperture.bind(this.focus);
-    this.focus.nudgeAperture = (steps) => { rawNudge(steps); this._fitAperture(); };
+    this.focus.nudgeAperture = (steps) => { rawNudge(steps); this._fitAperture(); this._paintLens(); };
     const rawSet = this.focus.setAperture.bind(this.focus);
-    this.focus.setAperture = (f) => rawSet(this._lensStop(f));
+    this.focus.setAperture = (f) => { rawSet(this._lensStop(f)); this._paintLens(); };
 
     this.shutterBtn = button('pa-shutter', '', () => this.capture(), 'Take photo');
     rail.appendChild(this.shutterBtn);
@@ -499,8 +499,21 @@ export class PhotoMode {
     if (Math.abs(capped - now) > 1e-6) this.focus.setAperture(capped);
   }
 
+  /**
+   * The plate under the lens.
+   *
+   * NOT `LensKit.label()`, which prints the barrel's *maximum* aperture — that
+   * is what is engraved on a real lens, and it is the wrong number here because
+   * the focus readout two hundred pixels above it prints the aperture actually
+   * set. The two disagreed on screen: the panel said f/8 while the plate said
+   * f/2.8. Contradicting yourself in two places at once is the exact thing the
+   * `_lensStop` wrapper exists to stop, so the plate reads the live stop.
+   */
   _paintLens() {
-    if (this.lensLabel) this.lensLabel.firstChild.textContent = this.lens.label();
+    if (!this.lensLabel) return;
+    const f = this.focus?.fStop ?? this.lens.lens.fStop;
+    this.lensLabel.firstChild.textContent =
+      `${this.lens.lens.name} · ${Math.round(this.lens.focal)}mm · f/${f}`;
   }
 
   /** Real seconds, from HUD.update — the rail runs while the world is frozen. */
