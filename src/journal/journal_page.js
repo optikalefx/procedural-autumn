@@ -391,7 +391,29 @@ export class JournalPage {
    * A verso's texture is sampled u-flipped, so its geometry u is 1 - canvas u.
    */
   slotUV(i) {
-    const r = this.slotRect(i);
+    return this._toUV(this.slotRect(i));
+  }
+
+  /**
+   * Row `i`'s WHOLE band — label, hint, checkbox and photo slot — in page UV.
+   *
+   * `slotUV` is where a print lands; this is what a reader is actually looking
+   * at when they lean in on one. A photograph is landscape and sits beside its
+   * line rather than above it, so framing the print alone puts the entry it
+   * belongs to off the side of the screen — the interesting rectangle is the
+   * row. Same convention as `slotUV`, including the verso u-flip.
+   */
+  rowUV(i) {
+    return this._toUV({
+      x: this._x0,
+      y: this._rowTop(i),
+      w: this._x1 - this._x0,
+      h: ROW_H,
+    });
+  }
+
+  /** A canvas-pixel rect as a page-UV centre and size. See `slotUV`. */
+  _toUV(r) {
     const cu = (r.x + r.w / 2) / PAGE_W;
     const cv = (r.y + r.h / 2) / PAGE_H;
     return {

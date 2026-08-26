@@ -172,20 +172,94 @@ export const PAPER_GAIN = 0.70;
 
 const _mats = new Map();
 
-export function journalMaterials(colorway = 0) {
-  const key = colorway | 0;
+/**
+ * `HIDE_LIFT` — the world's copy of the leather, and why it is not the same
+ * leather.
+ *
+ * The book was authored for the journal overlay: four lights, an environment
+ * map, a key at 1.95, and the object filling half the frame. It is now also a
+ * PROP, lying shut on the camp table, and that scene has none of those things
+ * — `src/render/SkyProbe.js`'s header states the problem for the whole game
+ * ("nothing sets `scene.environment` and no prop material carries an `envMap`,
+ * so every `envMapIntensity` multiplies a term that is never summed") and
+ * `camp_table.js` documents the same failure on the table the book sits on.
+ *
+ * **What was wrong with it, and how that was pinned down** — in the real game,
+ * camp pitched on the meadow POI, `tools/_scratch/_jlum.mjs`:
+ *
+ *  · the shadows were suspected first and are innocent. Mean luma over the
+ *    book, hour 13: **41.9** with cast and receive on, **41.9** with both off.
+ *    Identical, so the shadow trim in `Camp._seatJournal` is a draw-call
+ *    saving and nothing else.
+ *  · the ALBEDO MAP is the whole of it. Removing it from the leather materials
+ *    takes the same crop from **42 to 216**. The cover map averages
+ *    **sRGB (60, 26, 9)** — a linear albedo of 0.045 / 0.009 / 0.003. That is
+ *    not a bug: the map bakes the height field's own shading into the albedo,
+ *    which is most of what makes the grain read at overlay framing. It is
+ *    simply a very dark surface, and the overlay's four lights and probe are
+ *    what carried it.
+ *
+ * **What the lift buys, and it is not brightness.** Swept at runtime over the
+ * cover's own crop (the corners projected through the live camera and inset —
+ * a hand-typed crop measured the black table at every value and produced five
+ * identical rows, which is what a crop that misses looks like). Hour 13:
+ *
+ *      lift   cover mean          luma    grain sd
+ *      1.0    rgb(56, 40, 30)     42.8      1.48
+ *      1.6    rgb(61, 39, 29)     42.9      1.56
+ *      2.0    rgb(66, 38, 29)     43.4      2.03
+ *      2.6    rgb(73, 38, 28)     44.9      3.79     <- HIDE_LIFT
+ *      3.2    rgb(81, 39, 29)     47.3      6.05
+ *
+ * The mean barely moves — the atmosphere lays a pedestal over the prop that no
+ * albedo gain touches, which is why the green and blue channels sit still while
+ * red climbs. What moves is the **spread**: at 1.0 the cover is a flat dark
+ * rectangle, and by 2.6 the pebble grain, the blind-tooled fillet and the
+ * stamped emblem are back. 3.2 goes on climbing and starts reading as orange
+ * rather than as saddle brown against a yellow meadow, so 2.6 is the last value
+ * that is still leather.
+ *
+ * **Honest limit:** the same sweep at hours 18.6 and 20.4 moves nothing at all
+ * (luma 36.6 and 14.6 at every lift). No claim is made about those hours —
+ * the crop could not be confirmed to be on the cover with the sun that low, and
+ * a number whose provenance is unclear is worse than none. After sundown the
+ * whole camp is firelit and this book is as dark as the table it lies on.
+ *
+ * The precedent for the fix is the prop it lies on. `camp_table.js` hit exactly
+ * this, logged the request for an environment in `docs/CAMP_REQUESTS.md`, and
+ * in the meantime **authored its materials brighter and wrote down why**. So: a
+ * second cached material set, sharing every texture, with the leather and the
+ * board multiplied up. Nothing the overlay draws is touched — at `lift = 1`
+ * `LIFT` is white and `C(board).multiply(LIFT)` is the board, so
+ * `journalMaterials(0)` is arithmetically what it always was and the lift lives
+ * behind a separate cache key.
+ */
+export const HIDE_LIFT = 2.6;
+
+export function journalMaterials(colorway = 0, lift = 1) {
+  // The lift is part of the identity. Two sets, sharing every texture — the
+  // leather maps cost ~35 ms each and are generated inside `leatherMaps`'s own
+  // cache, so a second material set is a second set of uniforms and not a
+  // second set of bitmaps.
+  const key = `${colorway | 0}:${lift}`;
   const hit = _mats.get(key);
   if (hit) return hit;
-  const cw = JOURNAL_COLORWAYS[key] ?? JOURNAL_COLORWAYS[0];
+  const cw = JOURNAL_COLORWAYS[(colorway | 0) % JOURNAL_COLORWAYS.length] ?? JOURNAL_COLORWAYS[0];
+  // Linear, not an sRGB hex: this is a gain on an albedo, not a tint. The map
+  // keeps every bit of its colour and its grain; all that moves is the level.
+  const LIFT = new THREE.Color().setScalar(lift);
 
-  const cover = leatherMaps(C(cw.hide), { size: 512, border: true, seed: 3 + key });
+  // The maps are keyed on the COLOURWAY alone, not on the cache key: two
+  // material sets that differ only in level share their bitmaps.
+  const seed = colorway | 0;
+  const cover = leatherMaps(C(cw.hide), { size: 512, border: true, seed: 3 + seed });
   // The spine's own map. Its UV is one unit across a 25 mm arc and one unit up
   // a 218 mm height, so a repeat of 1 stretches the grain 9:1 along the spine
   // and it comes out looking POLISHED next to the cover — which is the single
   // most obvious "these are two different objects" tell the closed book had.
   // The repeat pair below puts the same ~2.6 mm cell on both.
   const plain = leatherMaps(C(cw.hide), {
-    size: 256, border: false, repeat: [0.17, 1.45], seed: 11 + key,
+    size: 256, border: false, repeat: [0.17, 1.45], seed: 11 + seed,
   });
 
   // A printed leaf. `emissive` carrying the same map is what keeps the page
@@ -209,17 +283,20 @@ export function journalMaterials(colorway = 0) {
     // Cover faces. envMapIntensity is low: the leather is matte enough that a
     // strong environment turns the grain into glitter.
     coverOut: new THREE.MeshStandardMaterial({
-      color: 0xffffff, ...cover, roughness: 1, metalness: 0.0, envMapIntensity: 0.42,
+      color: LIFT, ...cover, roughness: 1, metalness: 0.0, envMapIntensity: 0.42,
       normalScale: new THREE.Vector2(0.85, 0.85),
     }),
     // Spine, and anywhere else leather wraps without a tooled border on it.
     hide: new THREE.MeshStandardMaterial({
-      color: 0xffffff, ...plain, roughness: 1, metalness: 0.0, envMapIntensity: 0.38,
+      color: LIFT, ...plain, roughness: 1, metalness: 0.0, envMapIntensity: 0.38,
       normalScale: new THREE.Vector2(0.5, 0.5), side: THREE.DoubleSide,
     }),
     // The board seen at the cover's cut edge: greyboard, not leather.
+    // The board seen at the cover's cut edge. It takes the lift too — it is
+    // the same object's edge, and a lifted cover over an un-lifted board reads
+    // as a bright sticker on a dark box.
     board: new THREE.MeshStandardMaterial({
-      color: C(cw.board), roughness: 0.92, metalness: 0.0, envMapIntensity: 0.15,
+      color: C(cw.board).multiply(LIFT), roughness: 0.92, metalness: 0.0, envMapIntensity: 0.15,
     }),
     endpaper: new THREE.MeshStandardMaterial({
       color: 0xffffff, map: endpaperTexture(512, 11 + key), roughness: 0.88, metalness: 0.0,
@@ -710,17 +787,29 @@ export function samplePage(mesh, u, v, outPos, outQuat) {
 
 /**
  * @param rnd   mulberry32-style () => 0..1
- * @param opts  { colorway = 0, open = 0, pages = null }
+ * @param opts  { colorway = 0, open = 0, pages = null, shadow = true }
  *              `open` 0..1 poses the book from shut to lying open at the first
  *              spread — a plain number, so the gallery's option reader gives it
  *              a slider. `pages` is an array of THREE.Texture in reading order;
  *              without it the leaves are blank stock, which is what the gallery
  *              sees.
+ *
+ *              `lift` multiplies the leather's and the board's albedo — see
+ *              `HIDE_LIFT`. 1 is the overlay's book and the gallery's; the camp
+ *              prop passes `HIDE_LIFT` because the world has no environment to
+ *              fill a matte dark hide with.
+ *
+ *              `shadow` is the painted contact shadow under the book, and it
+ *              exists because the overlay scene's four lights do not CAST. On
+ *              the camp table the world's own shadow map does, so the painted
+ *              one would be a second, differently-shaped shadow lying across
+ *              the slats — three cover-widths of it, wider than the table is
+ *              deep. `Camp._seatJournal` passes false; nothing else does.
  */
 export function buildJournal(rnd = Math.random, opts = {}) {
   const colorway = Math.round(opts.colorway ?? 0) % JOURNAL_COLORWAYS.length;
   const open = clamp01(opts.open ?? 0);
-  const M = journalMaterials(colorway);
+  const M = journalMaterials(colorway, opts.lift ?? 1);
   const { W, H, T, COV, SQ, LEAVES, CLEAR } = BOOK;
 
   const group = new THREE.Group();
@@ -920,7 +1009,11 @@ export function buildJournal(rnd = Math.random, opts = {}) {
   root.add(ribbon, ribbonShade, band);
 
   // ── contact shadow ────────────────────────────────────────────────────────
+  // Built even when it is not wanted, and then hidden: `userData.journal.shadow`
+  // is read by `poseJournal` and by `dispose`, and a null there would be a
+  // second shape for every one of those to know about.
   const shadow = new THREE.Mesh(new THREE.PlaneGeometry(coverW * 3.1, coverH * 1.75), M.shadow);
+  shadow.userData.painted = opts.shadow !== false;
   shadow.position.set(coverW * 0.5, 0, zBot - COV - 0.0014);
   shadow.renderOrder = -1;
   // The shadow plane is three times the width of the book, and gallery.html
@@ -1194,6 +1287,9 @@ export function poseJournal(group, state) {
 
   // ── contact shadow ────────────────────────────────────────────────────────
   // Widens and slides as the book opens: the footprint really does double.
+  // Off entirely for a book that stands in a scene whose lights CAST — see
+  // `buildJournal`'s `shadow` option.
+  J.shadow.visible = J.shadow.userData.painted !== false;
   const sp = smoothstep(0, 1, clamp01(S.cover));
   J.shadow.scale.set(0.42 + 0.58 * sp, 1, 1);
   J.shadow.position.x = (W + SQ) * (0.5 - 0.5 * sp);

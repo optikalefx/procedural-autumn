@@ -120,6 +120,54 @@ const deg = (r) => (r * 180) / Math.PI;
 const POSE_HELD = { pos: [0.012, 0.004, 0.055], rot: [-0.30, 0.44, -0.055], scale: 1.02 };
 const POSE_LAID = { pos: [0, 0.008, 0.0], rot: [-1.005, 0.0, 0.0], scale: 1.10 };
 
+// ── leaning in on one entry ──────────────────────────────────────────────────
+//
+// Click a print and the book comes up toward you, centred on that row, so the
+// photograph and the line it belongs to are big enough to read. Click again,
+// or press Escape, and it goes back to the spread.
+//
+// **It is the ROW that is framed, not the print.** A photograph in this book is
+// landscape and sits beside its line, not over it, so framing the print alone
+// puts the entry it belongs to off the side of the screen — which is the half
+// of the pair somebody leaning in is actually trying to read. The print is the
+// TARGET (it is the visible affordance, and a small one is easier to aim at
+// than a whole band is to leaf past); the row is the FRAME.
+//
+// Three numbers, and each is a decision:
+//
+//  · `STUDY_TILT` is added to the laid pose's `rotation.x`. The spread lies at
+//    -1.005 rad, and the camera looks down at it from 23.5 degrees, which
+//    leaves the page 34 degrees off face-on; -0.41 rad would be dead face-on.
+//    0.42 takes about seventy per cent of that. Going the whole way was tried
+//    and it is worse: a page exactly perpendicular to the lens has no
+//    perspective in it at all and the book stops being an object in a room —
+//    it becomes a texture, which is precisely the "reads as a UI panel" failure
+//    the whole model is built to avoid.
+//  · `STUDY_ZOOM` scales the BOOK rather than dollying the camera, because
+//    `_fitCamera` owns the camera's position and a second author of it is a
+//    fight (and because the composition note above still holds: the book
+//    moves, the camera does not). 2.55 takes the row from ~26% of the frame's
+//    width to ~66%.
+//  · `STUDY_IN`/`STUDY_OUT`. It has to be a move and not a cut, and it has to
+//    stay READABLE while it moves — so easeInOut over four tenths of a second,
+//    with no spin and no arc. The book leans; it does not swing.
+//
+// `STUDY_LOOK` is where the row's centre is put, and the offset that puts it
+// there is recomputed from the LIVE posed page every frame rather than baked at
+// the click. That is what makes the blend work at all: at k = 0.5 the book is
+// half-tilted and half-scaled, and the offset that centres the row is not half
+// the offset that centres it at k = 1.
+const STUDY_IN = 0.42;
+const STUDY_OUT = 0.34;
+const STUDY_TILT = 0.42;
+const STUDY_ZOOM = 2.55;
+const STUDY_LOOK = new THREE.Vector3(0, 0.004, 0.02);
+// The print's own rect, grown a little, as the click target. 1.18 is about
+// 10 mm of page all round at book scale — enough that a thumb on a phone does
+// not have to be accurate to the millimetre, and small enough that the two
+// prints on a page are still nowhere near each other.
+const SLOT_PICK = 1.18;
+
 const easeOut = (t) => 1 - (1 - t) ** 3;
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 /** Overshoot-and-settle. The book arrives with a little weight. */
@@ -147,6 +195,17 @@ export class Journal {
     this._leafFrom = 0;
     this._leafTo = 0;
     this._leafT = 1;
+
+    // Leaning in on one entry. `_study` is the seat being read (null when the
+    // whole spread is in frame), `_studyTo` is 0 or 1 and `_studyK` is the
+    // eased blend between the two poses. `_study` is kept while `_studyK` runs
+    // back down to zero — the pose needs the row it is coming away FROM.
+    this._study = null;
+    this._studyTo = 0;
+    this._studyK = 0;
+    this._studyT = 1;
+    this._studyFrom = 0;
+    this._cursor = null;
 
     this._buildScene();
     this._bindInput();
@@ -454,6 +513,11 @@ export class Journal {
     this._leafFrom = this._leafTo = 0;
     this._leafT = 1;
     this._leafDur = SCRIPT.seekLeaf;
+    // A book opened from shut is a book at the spread. Snapped rather than
+    // eased: there is nothing on screen yet to ease from.
+    this._study = null;
+    this._studyTo = this._studyK = 0;
+    this._studyT = 1;
     // Every latch the ceremony sets, reset in one place. Forgetting one of
     // these is how the second open of a session skips a beat.
     this._seatOf = null;
@@ -560,6 +624,12 @@ export class Journal {
     this._active = false;
     this._closing = true;
     this._t = 0;
+    // The put-down animation is 0.46 s of a book dropping away, and it drops
+    // away from the SPREAD. Eased out over the close rather than snapped, so a
+    // player who shuts the book while leaning in sees it go back and go down as
+    // one movement instead of jumping a hand's width first.
+    this.unstudy();
+    this._cursorTo('');
     this.onClose?.();
   }
 
@@ -590,7 +660,7 @@ export class Journal {
       this._pose.scrim = 1 - k;
       this._card.visible = false;
       if (k >= 1) { this._visible = false; this._closing = false; }
-      this._apply();
+      this._apply(d);
       return;
     }
 
@@ -650,7 +720,7 @@ export class Journal {
     // it is landing on: `samplePage` reads a world matrix, and a matrix that is
     // one frame stale puts the photo a visible millimetre off the paper on the
     // exact frame it touches down.
-    this._apply();
+    this._apply(d);
 
     // ── the pencil, the tick, the photograph, the tape ──────────────────────
     if (this._script?.hasAward && this._seatOf) {
@@ -787,8 +857,16 @@ export class Journal {
     try { this.ctx.systems?.audio?.cue?.(name); } catch { /* audio is never fatal */ }
   }
 
-  /** Push the pose onto the model and the scene. */
-  _apply() {
+  /**
+   * Push the pose onto the model and the scene.
+   *
+   * @param dt real seconds since the last call. Only the lean uses it — every
+   *   other value here is written by the script and simply read. It defaults to
+   *   0 so a harness that poses the book by hand (`_jcritic --mode model`
+   *   replaces `update` with a bare `_apply()`) gets a still and not a frozen
+   *   animation halfway through one.
+   */
+  _apply(dt = 0) {
     const P = this._pose;
     poseJournal(this.book, {
       cover: P.cover, leaf: P.leaf, sheets: this._sheets, band: P.band,
@@ -825,6 +903,11 @@ export class Journal {
 
     const s = lerp(A.scale, B.scale, k) * lerp(0.9, 1, clamp01(P.lift));
     r.scale.setScalar(s);
+
+    // The lean, on top of the laid pose and nothing else — it adds to what is
+    // already on the root rather than replacing it, so the rise, the dip and
+    // the recentre above all keep working underneath it.
+    this._applyStudy(r, dt);
 
     this._scrim.material.opacity = 0.78 * clamp01(P.scrim);
     // Everything downstream of this frame — the photograph finding the page it
@@ -1062,16 +1145,28 @@ export class Journal {
    */
   _bindInput() {
     const stop = (e) => { e.stopPropagation(); };
+    // Leaning in adds a level, and every way out of it backs out ONE level.
+    // Escape from a leaned-in entry returns to the spread and a second Escape
+    // shuts the book; a page key does not teleport back to the spread and turn
+    // a page in the same keystroke. The alternative — dead keys while leaning —
+    // was tried on paper and rejected: a key that does nothing is how a player
+    // decides a mode is stuck.
     this._onKey = (e) => {
       if (!this._active) return;
       stop(e);
       switch (e.code) {
         case 'Escape': case 'KeyJ': case 'Enter':
-          e.preventDefault(); this.close(); break;
+          e.preventDefault();
+          if (this._studyTo > 0) this.unstudy(); else this.close();
+          break;
         case 'ArrowRight': case 'KeyD': case 'PageDown': case 'Space':
-          e.preventDefault(); this.leaf(+1); break;
+          e.preventDefault();
+          if (this._studyTo > 0) this.unstudy(); else this.leaf(+1);
+          break;
         case 'ArrowLeft': case 'KeyA': case 'PageUp':
-          e.preventDefault(); this.leaf(-1); break;
+          e.preventDefault();
+          if (this._studyTo > 0) this.unstudy(); else this.leaf(-1);
+          break;
         default: break;
       }
     };
@@ -1085,13 +1180,28 @@ export class Journal {
       if (now - (this._wheelAt ?? 0) < 260) return;
       if (Math.abs(e.deltaY) < 4) return;
       this._wheelAt = now;
-      this.leaf(e.deltaY > 0 ? +1 : -1);
+      if (this._studyTo > 0) this.unstudy(); else this.leaf(e.deltaY > 0 ? +1 : -1);
     };
     this._onPointer = (e) => {
       if (!this._active) return;
       stop(e);
+      if (e.type === 'pointermove') {
+        // Hover only; the pick is cheap (four `samplePage` lookups per
+        // photographed row, of which a spread holds at most eight) and it is
+        // the only thing telling the player a print is worth clicking.
+        this._cursorTo(this._studyTo > 0 ? 'zoom-out'
+          : (this._rowAt(e.clientX, e.clientY) ? 'zoom-in' : ''));
+        return;
+      }
       if (e.type !== 'pointerdown') return;
       e.preventDefault();
+      // Already leaning in: anywhere is "put it back". Nothing inside a
+      // leaned-in entry is clickable, so a hit test here would only be a way to
+      // get the gesture wrong.
+      if (this._studyTo > 0) { this.unstudy(); this._cursorTo(''); return; }
+      // A print. Lean in and read that entry.
+      const seat = this._rowAt(e.clientX, e.clientY);
+      if (seat) { this.study(seat.page, seat.row); this._cursorTo('zoom-out'); return; }
       // Click the half of the frame you want to go to. The book fills the
       // middle, so this is "click the page you can see", which needs no label.
       this.leaf(e.clientX > window.innerWidth * 0.5 ? +1 : -1);
@@ -1103,9 +1213,183 @@ export class Journal {
       window.addEventListener(t, this._onPointer, { capture: true });
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  //  Leaning in on one entry
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** True while the book is leaning in on a single row (or on its way there). */
+  get studying() { return this._studyTo > 0; }
+
+  /**
+   * Lean in on one row of the spread that is currently open.
+   *
+   * @param page  index into `_pages`
+   * @param row   index into that page's `spec.rows`
+   */
+  study(page, row) {
+    const p = this._pages[page];
+    if (!p?.spec?.rows?.[row]) return;
+    // Nothing to lean in on mid-turn: `samplePage` reads the leaf that is at
+    // rest, and there isn't one while a page is in flight.
+    if (this._leafT < 1 || this._seekQueue > 0) return;
+    // The ceremony has right of way, on the same test `leaf()` uses. The
+    // photograph flies to a page it locates with `samplePage` every frame, and
+    // leaning the book in underneath it would move the target it is aiming at.
+    if (this._script?.hasAward && !this._taped &&
+        this._t < (this._script.end + (this._seekPad ?? 0))) return;
+    this._study = { page, row, verso: p.spec.verso, ...p.rowUV(row) };
+    this._studyOff?.set(0, 0, 0);
+    this._studyFrom = this._studyK;
+    this._studyTo = 1;
+    this._studyT = 0;
+    this._studyDur = STUDY_IN * (1 - this._studyFrom);
+  }
+
+  /** Back out to the spread. Keeps `_study` until the move has finished. */
+  unstudy() {
+    if (this._studyTo === 0) return;
+    this._studyFrom = this._studyK;
+    this._studyTo = 0;
+    this._studyT = 0;
+    this._studyDur = STUDY_OUT * this._studyFrom;
+  }
+
+  /**
+   * Advance the lean, and hold the row's centre on `STUDY_LOOK`.
+   *
+   * Called from `_apply`, AFTER the base pose is on the root and before the
+   * final `updateMatrixWorld` — because it needs the world position of a point
+   * on a page that has just been re-posed, which means a matrix walk in the
+   * middle. That is the one extra tree update this feature costs, and only
+   * while it is running: at rest `_studyK` is 0 and this returns immediately.
+   */
+  _applyStudy(root, dt) {
+    if (this._studyT < 1) {
+      this._studyT = this._studyDur > 0
+        ? clamp01(this._studyT + dt / this._studyDur) : 1;
+      this._studyK = lerp(this._studyFrom, this._studyTo, easeInOut(this._studyT));
+      if (this._studyT >= 1) {
+        this._studyK = this._studyTo;
+        if (this._studyTo === 0) this._study = null;
+      }
+    }
+    const k = this._studyK;
+    if (k <= 0.0002 || !this._study) return;
+
+    const S = this._study;
+    root.rotation.x += STUDY_TILT * k;
+    root.scale.multiplyScalar(lerp(1, STUDY_ZOOM, k));
+
+    // Where that row's centre has ended up, with the lean already on the book.
+    // The offset is then scaled by `k` so it is zero at the spread and exact at
+    // full lean — see the STUDY_* header for why it cannot be precomputed.
+    root.updateMatrixWorld(true);
+    const off = this._studyOff ??= new THREE.Vector3();
+    const mesh = S.verso ? this._J.pageLeft : this._J.pageRight;
+    // The last good offset is KEPT when the page stops being sampleable, which
+    // happens on exactly one path and it matters: `close()` eases the lean out
+    // while the cover swings shut, and the moment the cover takes the leaves
+    // back (`J.inside` goes false) they are no longer visible and there is
+    // nothing to sample. Recomputing to zero there would snap a scaled, tilted
+    // book a hand's width sideways on the first frame of the put-down.
+    if (mesh?.visible && samplePage(mesh, S.u, S.v, this._tmpP)) {
+      off.subVectors(STUDY_LOOK, this._tmpP);
+    }
+    root.position.addScaledVector(off, k);
+  }
+
+  /**
+   * The photographed row under a screen point, or null.
+   *
+   * No raycaster and no second surface: `samplePage` already answers "where in
+   * the world is this bit of page", it reads the table `deformPage` left behind
+   * rather than re-integrating the bend, and it is the same function the flying
+   * print lands with. So the four corners of the print's slot go out through it
+   * and into the camera, and the test is point-in-quad on the screen. A
+   * raycaster against the leaf geometry would be a second, differently-wrong
+   * answer to a question that already has one — and it would need the page
+   * meshes to carry a UV lookup the print does not use.
+   *
+   * Only rows that HAVE a print are offered. An empty slot is a corner mark on
+   * a page and leaning in on nothing is a worse outcome than the click falling
+   * through to a page turn, which is what it does instead.
+   */
+  _rowAt(clientX, clientY) {
+    if (!this._active || this._leafT < 1 || this._seekQueue > 0) return null;
+    const s = Math.floor(this._pose.leaf + 1e-6);
+    if (Math.abs(this._pose.leaf - s) > 1e-4) return null;
+
+    const w = window.innerWidth, h = window.innerHeight;
+    const px = (clientX / Math.max(1, w)) * 2 - 1;
+    const py = -((clientY / Math.max(1, h)) * 2 - 1);
+
+    // The two leaves facing the reader: page 2s-1 on the left, 2s on the right.
+    // Exactly the pairing `setJournalPages` binds the materials with.
+    for (const idx of [2 * s - 1, 2 * s]) {
+      const p = this._pages[idx];
+      if (!p?.spec?.rows?.length) continue;
+      const mesh = p.spec.verso ? this._J.pageLeft : this._J.pageRight;
+      if (!mesh?.visible) continue;
+      for (let r = 0; r < p.spec.rows.length; r++) {
+        if (!p.spec.rows[r].done || !p.spec.rows[r].photo) continue;
+        const slot = p.slotUV(r);
+        if (this._inSlot(mesh, slot, px, py)) return { page: idx, row: r };
+      }
+    }
+    return null;
+  }
+
+  /** Is (px, py) in NDC inside this slot's projected quad? */
+  _inSlot(mesh, slot, px, py) {
+    const hw = (slot.w * SLOT_PICK) / 2, hh = (slot.h * SLOT_PICK) / 2;
+    const q = this._quad ??= [0, 1, 2, 3].map(() => new THREE.Vector3());
+    const uv = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+    for (let i = 0; i < 4; i++) {
+      if (!samplePage(mesh, slot.u + uv[i][0], slot.v + uv[i][1], q[i])) return false;
+      q[i].project(this.camera);
+      // Behind the camera. `project` mirrors such a point through the origin,
+      // which would make a quad that is off-screen behind you test as a hit.
+      if (q[i].z > 1) return false;
+    }
+    // Two triangles rather than four half-plane tests: a page is bent, so the
+    // projected quad is not convex and a winding test on it is not reliable.
+    const tri = (a, b, c) => {
+      const d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+      if (Math.abs(d) < 1e-9) return false;
+      const l1 = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / d;
+      const l2 = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / d;
+      return l1 >= 0 && l2 >= 0 && l1 + l2 <= 1;
+    };
+    return tri(q[0], q[1], q[2]) || tri(q[0], q[2], q[3]);
+  }
+
+  /**
+   * The one affordance this feature needs, and the cheapest one available.
+   *
+   * A print you can lean in on has to say so, and the journal has no chrome to
+   * say it with — the whole feature is a book with no labels on it. `zoom-in`
+   * over a print and `zoom-out` while leaning is the browser's own vocabulary
+   * for exactly this and costs nothing.
+   *
+   * Written straight onto the canvas, the way `Camp._paintCursor` does, and
+   * only on a CHANGE — the two do not fight because each caches what it last
+   * wrote and neither writes a value it already believes is there. Cleared on
+   * close, so the driving view never inherits it.
+   */
+  _cursorTo(want) {
+    if (want === this._cursor) return;
+    this._cursor = want;
+    const el = (this.ctx.renderer ?? this.ctx.engine?.renderer)?.domElement;
+    if (el) el.style.cursor = want;
+  }
+
   /** Turn `dir` leaves, if the book has them and nothing is already moving. */
   leaf(dir) {
     if (this._leafT < 1 || this._seekQueue > 0) return;
+    // Leaning in takes the page keys too. See `_bindInput`: everything backs
+    // out one level at a time rather than teleporting to the spread and turning
+    // a page in the same keystroke.
+    if (this._studyTo > 0) return;
     // The ceremony has right of way: leafing away from the award mid-strike
     // would leave a half-drawn pencil line on a page nobody is looking at.
     if (this._script?.hasAward && !this._taped && this._t < (this._script.end + (this._seekPad ?? 0)))
@@ -1127,6 +1411,7 @@ export class Journal {
     for (const t of ['pointerdown', 'pointerup', 'pointermove'])
       window.removeEventListener(t, this._onPointer, { capture: true });
 
+    this._cursorTo('');
     this._unsub?.();
     for (const p of this._pages) p.dispose();
     this._pages = [];

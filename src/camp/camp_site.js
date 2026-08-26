@@ -180,12 +180,23 @@ export const ROAST_FOOT = 0.28;
 //   chair      y 0.000 … 0.806/0.826/0.863   x ±0.324   z -0.287…0.283
 //   fire pit   y 0.000 … 0.299 (tallest cobble), ring radius FIRE_RING
 //
-// The table's mean includes the mug and the paperback the dressed ones carry;
-// its own top is `0.425 + rnd() * 0.045` in camp_table.js, so 0.447 is the
-// middle of the surface itself and the 0.461 minimum above is the undressed
-// case agreeing with it. Half-width and half-depth are taken back off the
-// measured feet, which stand 25 mm and 22 mm proud of the top plus their own
-// mouldings — the TOP's edge is what the stick rests on, not the foot.
+// The table's mean includes what is standing on it; its own top is
+// `0.425 + rnd() * 0.045` in camp_table.js, so 0.447 is the middle of the
+// surface itself and the 0.461 minimum above is the undressed case agreeing
+// with it. Half-width and half-depth are taken back off the measured feet,
+// which stand 25 mm and 22 mm proud of the top plus their own mouldings — the
+// TOP's edge is what the stick rests on, not the foot.
+//
+// The still life changed under these numbers and they survive it. Every table
+// now carries the closed journal, and the paperback that used to be its second
+// object is gone (`camp_table.js`, `journalRest`). The book stands 31 mm proud
+// of the top against the mug's 78, so the mug still sets the measured maximum;
+// and the two SEAT TARGETS the stick uses — local (±0.174, ±0.194) — are clear
+// of it, because the book's own footprint reaches z 0.155 at its furthest and
+// -0.079 at its nearest. That matters more than it looks: `Camp._seatStick`
+// rays down onto the table with `intersectObject(obj, true)` and the book is
+// now a CHILD of that object, so a target that landed on a cover would seat the
+// stick 31 mm high on a surface that is not the table.
 const TABLE_TOP = 0.447;
 const TABLE_HALF_W = 0.281;    // the long edge runs along the table's local X
 const TABLE_HALF_D = 0.194;    // …at local ±Z, and see below for why not 0.221
@@ -1086,8 +1097,9 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
     if (table) {
       // The long edge runs along the table's local X, at local ±Z, and the
       // stick stands off one END of it — `TABLE_HALF_W * 0.62` along X, which
-      // is outboard of the mug and the book but inboard of the corner where
-      // the legs splay out.
+      // is outboard of the mug and the journal but inboard of the corner where
+      // the legs splay out. The ±Z half is what actually keeps it off the
+      // journal — see the extent note above `TABLE_TOP`.
       //
       // -Z is tried first. +Z is the edge that faces the fire, so leaning on it
       // puts the stick in the strip of ground between the table and the flames,

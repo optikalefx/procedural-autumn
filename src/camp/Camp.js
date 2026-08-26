@@ -49,6 +49,7 @@ import { buildChair } from './camp_chair.js';
 import { buildCooler } from './camp_cooler.js';
 import { buildTable } from './camp_table.js';
 import { buildTelescope } from './camp_telescope.js';
+import { buildJournal, BOOK, HIDE_LIFT } from '../journal/journal_model.js';
 import { CampDog, warmDog, disposeDogProtos } from './camp_dog.js';
 import { picked, placed, placing, pointing } from '../core/Pointer.js';
 import { pickVerb, placeVerb, actVerb, touchCapable } from '../core/verbs.js';
@@ -194,6 +195,18 @@ const FIRE_PROMPT = () => `${pickVerb()}&nbsp; look at the camp`;
 // inside the table it leans on, so it cannot contest anything else in the camp.
 const STICK_PICK_R = 0.34;
 
+// ── clicking the journal on the table ───────────────────────────────────────
+//
+// The third small sphere in this camp, and the smallest by a long way. The book
+// is 157 x 218 mm lying flat, so its own half-diagonal is 134 mm; 0.17 is that
+// plus a little, and it is deliberately NOT generous the way the marshmallow's
+// is. A book lying on a table is a big, obvious, unambiguous shape — the reason
+// the marshmallow needs eight times its own size is that it is a 21 mm ball on
+// a stick, and none of that applies here.
+//
+// It is also why this one is tested BEFORE the stick; see `_interact`.
+const BOOK_PICK_R = 0.17;
+
 // The height of the flame's hottest point above the fire's own centre, handed
 // to the roast view (and through it to the toast map) by `fireState`.
 //
@@ -282,6 +295,7 @@ export class Camp extends System {
     this._aim = { x: 0, z: 0, y: 0, ok: false, score: 0, reason: '' };
     this._holdT = 0;
     this._click = false;   // a PICK this frame — see `_pollClick`
+    this._bookInHand = false;  // the journal overlay is open — see `_interact`
     this._place = false;   // …and a COMMIT to a spot
     this._focusCamp = null;  // which camp the camera is on, or null for the camper
     this._firePick = null;   // the fire a click this frame would be sent to
@@ -749,6 +763,32 @@ export class Camp extends System {
   _interact(dt, veh) {
     const { input } = this.ctx;
 
+    // ── the book is in the player's hands ─────────────────────────────────
+    //
+    // Same rule as the two views below — while the journal is open, nothing in
+    // this camp is listening — and the same reason: E must not reach the
+    // pack-up branch. Nothing would in practice, because the journal's
+    // listeners are capture-phase and `core/Input.js` never sees the event, but
+    // the PROMPT is written from here every frame and would go on offering
+    // "open the journal" behind the scrim.
+    //
+    // The prop goes with it. A player reading the book is holding the book, and
+    // leaving a second copy of it lying on the table under a 78%-opaque scrim
+    // is the kind of detail that is invisible for a year and then impossible to
+    // unsee. `visible` is flipped on the EDGE rather than every frame, so this
+    // is one boolean compare while driving.
+    const bookOpen = !!this.ctx.systems?.hud?.journal?.visible;
+    if (bookOpen !== this._bookInHand) {
+      this._bookInHand = bookOpen;
+      for (const c of this.camps) {
+        for (const p of c.props) {
+          const h = p.obj?.userData?.journalBook;
+          if (h) h.visible = !bookOpen;
+        }
+      }
+    }
+    if (bookOpen) { this.prompt.set(''); return; }
+
     // Inside the telescope, nothing else in the camp is listening. In
     // particular E must NOT reach the pack-up branch below: a player who
     // reaches for a key to get out of a view they have just entered would
@@ -836,6 +876,50 @@ export class Camp extends System {
         this._click = false;      // do not also read as a click on the camp
         this.roast?.leave();      // one view at a time; see `init`
         this.scope.enter(scope.obj);
+      }
+      return;
+    }
+
+    // The journal on the table, on exactly the same three conditions.
+    //
+    // ── WHERE THIS GOES IN THE ORDER, AND WHY ────────────────────────────
+    //
+    // After the telescope, before the stick.
+    //
+    // After the telescope for the reason the telescope is first at all: it is
+    // the biggest, most deliberate object in the camp, a player pointing at one
+    // means it, and nothing about a book changes that. A telescope is never on
+    // a table anyway — `camp_site.js` keeps it out of the seating arc entirely
+    // — so the two spheres cannot actually meet.
+    //
+    // Before the stick, and this one is a real overlap rather than a
+    // precaution. The roasting stick leans on the table by design and its
+    // sphere is on the MARSHMALLOW, 294 mm above the top and 0.34 m across —
+    // measured off the placements, when the stick takes the same end as the
+    // book their centres are about 0.34 m apart, so the marshmallow's sphere
+    // reaches down over the book while the book's 0.17 m never reaches up to
+    // the marshmallow. That asymmetry is the whole argument: the generous
+    // sphere is the one that can steal, so it goes second.
+    //
+    // Note this is the opposite conclusion to the stick-versus-telescope rule
+    // below, which is decided the other way round. They are not the same
+    // question. There, two spheres of similar generosity sit at similar heights
+    // and the bigger, further object is the more deliberate one. Here one
+    // sphere is deliberately eight times its object and the other is barely
+    // bigger than its own — the rule that covers both is "the sphere that is
+    // padded loses to the sphere that is not", and it happens to name the
+    // telescope in one case and the book in the other.
+    const book = this._journalUnderPointer();
+    if (book && veh && this._focusCamp === book.camp &&
+        Math.hypot(veh.position.x - book.camp.x, veh.position.z - book.camp.z) < SITE_MAX + 6) {
+      this.prompt.set(`${pickVerb()}&nbsp; open the journal`);
+      if (this._click) {
+        this._click = false;      // do not also read as a click on the camp
+        // `toggleJournal` rather than `journal.open()`: the HUD has to add
+        // `pa-journal` to take the driving chrome off the screen, and that
+        // class is set there and cleared from `journal.onClose`. Going round it
+        // opens the book under the speedometer.
+        this.ctx.systems?.hud?.toggleJournal?.();
       }
       return;
     }
@@ -2077,6 +2161,122 @@ export class Camp extends System {
    * usable), and a `/unreachable` or `/clamped` suffix for the two ways the
    * solve declines to move it.
    */
+  /**
+   * Put the closed journal on a table that has just been built.
+   *
+   * **Parented to the table, not placed in the world.** Every other prop is
+   * stood on the terrain by `standOn` + `groundLift`, which is right for a
+   * thing whose feet are on the ground and wrong for a thing whose feet are on
+   * a table: the table is yawed by a jitter and tilted onto sloping ground, so
+   * a world placement would have to reproduce both and would be a second,
+   * differently-wrong copy of a transform that already exists. As a child of
+   * the table group the book is exactly on the top for free, and stays there if
+   * anything ever moves or re-seats the table.
+   *
+   * The anchor is `userData.journalRest` from `camp_table.js`, published in the
+   * TABLE's own space for the reason `camp_scope_view.js` spells out about the
+   * telescope's eyepiece: guessing a spot off a bounding box is wrong by
+   * 100 mm, and this file has no business knowing where the slats are.
+   *
+   * Two frames, one rotation each, rather than one Euler with two angles in it:
+   * `rotation.set(-PI/2, yaw, 0)` composes in three's XYZ order and yaws the
+   * book about an axis that is no longer up. The wrapper carries the yaw on the
+   * table's own +Y and the book inside it is tipped onto its back — which is
+   * also the frame `_journalUnderPointer` reads, so there is one transform and
+   * not two.
+   */
+  _seatJournal(camp, table) {
+    const rest = table.userData?.journalRest;
+    if (!rest) return;
+    let book;
+    try {
+      book = buildJournal(camp.rnd, {
+        // One hide across a session. The book is the PLAYER's — the same one
+        // the J key opens — so a camp full of a different colour every time
+        // would be three different books, and `journalMaterials` caches per
+        // colourway, so this also keeps the leather maps to one set.
+        colorway: 0,
+        // The overlay's painted contact shadow is for a scene whose lights do
+        // not cast. This one's do. See `buildJournal`.
+        shadow: false,
+        // The leather, lifted for a scene with no environment in it. The whole
+        // argument and the measurement are in `HIDE_LIFT`'s header; the short
+        // version is that this book was lit by four lights and a probe when it
+        // was authored and is lit by a sun and a hemisphere here.
+        lift: HIDE_LIFT,
+      });
+    } catch (e) { console.error('[camp] journal builder threw', e); return; }
+
+    const holder = new THREE.Group();
+    holder.name = 'camp_journal';
+    holder.position.set(rest.x, rest.y + 0.0006, rest.z);
+    holder.rotation.y = rest.yaw;
+    // Tipped onto its back cover: the model stands the book up in XY with +Z
+    // out of the front cover, so -90 degrees about X puts the cover facing the
+    // sky. Lifted by half its own thickness — boards included — so the back
+    // cover touches the slats instead of sinking to the middle of the book.
+    book.rotation.x = -Math.PI / 2;
+    book.position.y = BOOK.T / 2 + BOOK.COV;
+    const J = book.userData.journal;
+    // ── shadows: three casters, not fourteen ──────────────────────────────
+    // Every other prop takes the blanket `castShadow = true` in `_buildNext`
+    // and that is right for them. It is wasteful here, because a SHUT book is a
+    // slab: the endpapers are pasted inside the covers, the sewing thread is in
+    // the gutter, the ribbon's own contact shadow is painted on a page nobody
+    // can see, and the fore edge is 26 slabs standing inside the square. All of
+    // them are enclosed by the two boards and the spine, so their shadows are
+    // exactly the shadow those three already cast — they only cost a second
+    // pass over the same silhouette.
+    //
+    // Receiving is the same argument the other way: the only surface on a
+    // closed book that anything can cast onto is the front cover.
+    book.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+    for (const m of [J?.frontPivot, J?.backPivot, J?.spine]) {
+      m?.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    }
+    if (J?.frontPivot) J.frontPivot.traverse((o) => { if (o.isMesh) o.receiveShadow = true; });
+
+    holder.add(book);
+    // Never visible while the player already has the book open — a camp pitched
+    // with the journal on screen would otherwise come up holding a second copy
+    // of it, and `_interact` only flips this on the edge.
+    holder.visible = !this._bookInHand;
+    table.add(holder);
+    table.userData.journalBook = holder;
+  }
+
+  /**
+   * The journal the player is pointing at, if any.
+   *
+   * `_scopeUnderPointer`'s and `_stickUnderPointer`'s third sibling, built the
+   * same way and for the same stated reason — the three differ only in where
+   * the sphere is centred, and a shared helper would take that as a callback,
+   * which is more machinery than three short methods.
+   *
+   * The centre is the book's own origin carried out of the TABLE's space by the
+   * table's world matrix — `updateMatrixWorld` first, because a table built
+   * this frame has not been through a render and its matrix is still identity,
+   * which would put the target at the world origin.
+   */
+  _journalUnderPointer() {
+    let best = null, bestMiss = 1;
+    for (const camp of this.camps) {
+      if (camp.striking) continue;
+      for (const p of camp.props) {
+        const holder = p.obj?.userData?.journalBook;
+        // Both flags: `_applyRaise` hides the whole TABLE while a camp is
+        // coming up or going down, and `_interact` hides the book alone while
+        // the player is reading it. A prop you cannot see is not a target.
+        if (!holder?.visible || !p.obj.visible) continue;
+        p.obj.updateMatrixWorld(true);
+        holder.getWorldPosition(this._v);
+        const miss = this._rayMiss(this._v, BOOK_PICK_R);
+        if (miss < bestMiss) { bestMiss = miss; best = { obj: holder, camp }; }
+      }
+    }
+    return best;
+  }
+
   _seatStick(camp, it, obj) {
     const { world } = this.ctx;
     const d = obj.userData?.roast;
@@ -2271,6 +2471,9 @@ export class Camp extends System {
     const foot = obj.userData?.footprint ?? it.foot ?? 0.5;
     obj.position.y += Math.min(groundLift(this.ctx.world, it.x, it.z, this._q, foot), 0.08);
     obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    // AFTER the shadow traverse, deliberately: the book sets its own flags and
+    // that blanket `castShadow = true` would undo them. See `_seatJournal`.
+    if (it.kind === 'table') this._seatJournal(camp, obj);
     obj.userData.campItem = it;
     camp.root.add(obj);
     // The delay is computed from the prop's place in the ORIGINAL queue, not

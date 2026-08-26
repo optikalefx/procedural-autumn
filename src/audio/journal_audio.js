@@ -6,8 +6,17 @@
 //    cross  a pencil struck through a line
 //    slap   a photograph put down on the page, and taped
 //
-//  Synthesised, like everything else in this game — there are no sample assets
-//  and there will not be. `camp_props.js` is the worked example this is built
+//  Synthesised, like everything else in this game, WITH ONE EXCEPTION: the page
+//  turn is played from `public/audio/page.mp3`, a recording the user made and
+//  asked for by name. That is a real departure from the repo's rule — before it,
+//  `public/audio/` had held exactly one asset ever, the music loop — and it is
+//  handled as a departure rather than as a new normal: the synthesised page
+//  voice is still here and is still what plays if the fetch or the decode
+//  fails. The whole argument, the two takes inside the file, and the measured
+//  level are in the block above `PAGE_SAMPLE_URL`. The other three voices are
+//  synthesised and are not up for negotiation.
+//
+//  `camp_props.js` is the worked example this is built
 //  in the shape of, and its three rules apply here with one change of emphasis.
 //
 //  ── these are not camp props, and the difference is distance ────────────────
@@ -241,6 +250,11 @@
 //
 //  ── page: a sweep, not a whoosh, and definitely not a click ─────────────────
 //
+//  **This voice is now the FALLBACK** — `page.mp3` plays instead whenever the
+//  buffer is there. Everything below still holds and still ships: it is what a
+//  player hears if the asset does not arrive, and it is the row every level in
+//  this file is pegged to. Do not delete it to tidy up.
+//
 //  This is the one the user singled out, and the first version was wrong in the
 //  most ordinary way: a single band-passed noise burst with a falling filter.
 //  That is a "shh" — the same failure `camp_props.tent` documents, where one
@@ -388,6 +402,104 @@ export const JOURNAL_CUES = ['cover', 'page', 'cross', 'slap'];
 const CROWD_WINDOW = 0.30;
 const CROWD_K = 0.22;
 const CROWD_MAX = 3;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The one recording in the game, and everything it has to survive
+//
+//  The rule this file's header states — "synthesised, like everything else in
+//  this game; there are no sample assets and there will not be" — was overruled
+//  by the user for this one cue: they recorded a page turn and asked for it.
+//  `public/audio/` has held exactly one asset ever (the music loop), so this is
+//  a departure and it is handled as one:
+//
+//   · **The synthesised page voice stays.** It is not dead code and it is not
+//     kept for sentiment: it is the fallback. `page.mp3` is a network fetch and
+//     a decode, either of which can fail — an old browser with no promise-form
+//     `decodeAudioData`, a cache miss on a flaky connection, a deploy that
+//     drops the file. A missing asset must never mean a SILENT page turn, which
+//     is the failure mode a `try { play } catch {}` around a sample gives you.
+//     `VOICES.page` is what runs until the buffer arrives and forever if it
+//     never does.
+//   · **The level is measured, not eyeballed**, against the same four-column
+//     table the synthesised voices are quoted in. See the ladder block below.
+//   · Loaded ONCE, lazily, cached as an `AudioBuffer` on the instance. The
+//     fetch is kicked off from the constructor rather than from the first
+//     `cue('page')`, because `Audio` builds this class on the first journal cue
+//     of the session and that cue is `cover` — which buys the load the 0.6 s
+//     before the first page turn instead of racing it.
+//
+//  ── it is TWO takes, not one, and playing the file would play both ──────────
+//
+//  Measured off the decode in 20 ms windows (mono, `tools/_scratch/_jaudio.mjs`
+//  and its envelope pass): the 1.000 s file is a lift and a snap at
+//  **0 → 215 ms** (peak 0.1680 at 160 ms), then 380 ms of room tone at
+//  rms 0.002–0.005, then a SECOND turn at **585 → 700 ms** (peak 0.1565), then
+//  280 ms of near-silence. Fired whole it is two page turns half a second
+//  apart for one call, with a long dead tail — so the cue plays ONE take,
+//  chosen by the rng, and the second take is the variation the file's own
+//  discipline asks for ("a jitter so two of the same cue are never
+//  bit-identical") without a pitch trick. Both cuts land in the room tone
+//  50 dB down, and each take still gets a 4 ms in / 14 ms out ramp: a cut at
+//  the noise floor is not silence, and a step from it is a click.
+//
+//  ── the level ──────────────────────────────────────────────────────────────
+//
+//  Rendered through the same `OfflineAudioContext` at 48 kHz as the four
+//  synthesised voices, measured with the same definitions this file's header
+//  states (peak = max |sample| over both channels; mono = (L+R)/2; rms over the
+//  0.0015-threshold window; hp200 = mono peak through TWO cascaded Q-0.707
+//  biquads, 24 dB/oct). The harness reproduces the existing table to the last
+//  digit — cover 0.2298 / page 0.1139 / cross 0.0973 / slap 0.2689 — which is
+//  what makes the new row comparable rather than merely adjacent:
+//
+//                      peak     mono     rms     rms200   hp200    ms
+//      synth page     0.1139   0.1002   0.0212   0.0252   0.1146   372
+//      page.mp3 raw   0.1682   0.1680   0.0112   0.0169   0.1662   737
+//      cue, take 0    0.1187   0.1155   0.0110   0.0118   0.1119   232
+//      cue, take 1    0.1258   0.1151   0.0113   0.0091   0.1075   132
+//
+//  **Four columns wanted four different gains and they do not agree**, so which
+//  one is the anchor has to be argued rather than assumed:
+//
+//      match peak    0.677      match hp200   0.690
+//      match mono    0.596      match rms200  1.491
+//
+//  `hp200` decides it, because the small-speaker block above is a rule and not
+//  a preference: cover and slap on top, page under them, cross at the bottom,
+//  through a 4th-order 200 Hz high-pass. The recording is almost entirely above
+//  200 Hz — the filter costs it 0.1 dB where it costs the cover 2.3 — so a gain
+//  chosen for loudness sails straight past cover (0.1319) and slap (0.1356) on
+//  a laptop speaker and inverts the ceremony. Any gain over **0.794** does. And
+//  it agrees with the full-range peak to 0.16 dB, so the two honest anchors
+//  point at the same number. **0.68**, and the ladder holds on both readings.
+//
+//  What that costs, stated rather than buried: `rms200` — the loudest 200 ms,
+//  which is the column to compare cues of different lengths on — lands **6.6 dB
+//  under** the synthesised page on take 0 and 8.9 under on take 1. The
+//  recording's crest factor is 20 dB against the synth's 13, so at matched peak
+//  it has less body. That is what a real close-mic'd page turn is, and the
+//  alternative is a page turn that is louder than the cover on the hardware
+//  most people have.
+//
+//  Two more rows, from the same pass:
+//
+//   · **A player holding the key down.** Three turns 0.12 s apart peak at
+//     0.1279 — **+0.7 dB** over one turn, against the synthesised voice's
+//     +2.4 dB, so `_crowd`'s ducking holds and riffling gets you a book.
+//     Fired SIMULTANEOUSLY they reach 0.1422 (hp200 0.1428, which does clear
+//     the cover), and that is the same stress test the header's 0.194 row is:
+//     ducking cannot separate what is already coincident, and `Journal.leaf()`
+//     refuses a turn while one is in flight, so the journal cannot produce it.
+//   · **The asset missing.** With the fetch rejected, `cue('page')` measures
+//     0.1139 / 0.0212 / 372 ms / hp200 0.1146 — bit-identical to `synth page`,
+//     which is the whole claim: no asset, no silence, same page turn as before.
+// ─────────────────────────────────────────────────────────────────────────────
+const PAGE_SAMPLE_URL = '/audio/page.mp3';
+const PAGE_SAMPLE_GAIN = 0.68;
+/** [start, end] in seconds. See the two-takes block above. */
+const PAGE_TAKES = [[0.000, 0.235], [0.578, 0.720]];
+const TAKE_FADE_IN = 0.004;
+const TAKE_FADE_OUT = 0.014;
 
 // ── the voices ───────────────────────────────────────────────────────────────
 //
@@ -625,6 +737,45 @@ export class JournalAudio {
     this._recent = [];
     this._warned = null;
     this.state = { cues: 0, last: '' };
+
+    // The recording. Kicked off here rather than from the first `cue('page')`
+    // — `Audio` builds this class on the journal's FIRST cue of the session and
+    // that cue is `cover`, so starting the fetch now buys it the 0.6 s of
+    // ceremony before the first page turn instead of racing it. Deliberately
+    // not awaited by anything: until it lands, `cue('page')` synthesises.
+    /** @type {AudioBuffer|null} */
+    this._page = null;
+    /** Harness switch: force the synthesised voice so its row keeps meaning
+     *  what it has always meant. Nothing in the game sets it. */
+    this._noSample = false;
+    this.loadSamples();
+  }
+
+  /**
+   * Fetch and decode `page.mp3` once, and hold the buffer.
+   *
+   * Every failure path lands in the same place: `this._page` stays null and
+   * `cue('page')` keeps using `VOICES.page`. That is the whole reason the
+   * synthesised voice is still in this file — see the block above
+   * `PAGE_SAMPLE_URL`. Warns once, because a page turn that has quietly
+   * stopped being the sound the user recorded is worth one line in a console.
+   *
+   * Idempotent: the promise is cached, so a second call (the Sound Lab, a
+   * harness) joins the first rather than fetching twice.
+   */
+  loadSamples(url = PAGE_SAMPLE_URL) {
+    return (this._pageLoad ??= (async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      // `decodeAudioData` is given a fresh ArrayBuffer and detaches it; nothing
+      // else reads `bytes` afterwards, which is why this is not `.slice(0)`.
+      this._page = await this.actx.decodeAudioData(await res.arrayBuffer());
+      return this._page;
+    })().catch((e) => {
+      console.warn('[journal:audio] page.mp3 unavailable; synthesising the page turn', e);
+      this._page = null;
+      return null;
+    }));
   }
 
   /**
@@ -638,7 +789,12 @@ export class JournalAudio {
    * @param {number} [opts.rate=1]   speed. Under 1 is a slower, bigger page.
    */
   cue(name, { level = 1, rate = 1 } = {}) {
-    const voice = VOICES[name];
+    // The page turn is the one cue with a recording behind it, and the choice
+    // is made per FIRING rather than once at load: the buffer arrives partway
+    // through a session, and a cue that had already bound itself to the synth
+    // would keep synthesising for the rest of it.
+    const sampled = name === 'page' && this._page && !this._noSample;
+    const voice = sampled ? this._sampledPage : VOICES[name];
     if (!voice) {
       // The courtesy `CampProps.cue` extends to a missing prop kind: silence
       // with no explanation is how a renamed cue ships mute.
@@ -660,6 +816,11 @@ export class JournalAudio {
       // to hear as a different object, far too much to hear as a repeat.
       pitch: (0.95 + this.rnd() * 0.10),
       dur: (0.93 + this.rnd() * 0.14) / clamp(rate, 0.25, 4),
+      // The caller's speed, kept whole. Every synthesised voice reads it folded
+      // into `dur`, which is right for a graph of scheduled ramps and useless
+      // to a buffer source — that needs one `playbackRate`, and dividing it
+      // back out of `dur` would also divide out the per-cue length jitter.
+      rate: clamp(rate, 0.25, 4),
       nodes: [],
       end: 0,
     };
@@ -676,6 +837,68 @@ export class JournalAudio {
     const n = Math.min(this._recent.length, CROWD_MAX);
     this._recent.push(now);
     return 1 / (1 + CROWD_K * n);
+  }
+
+  // ── voices ─────────────────────────────────────────────────────────────────
+
+  /**
+   * The page turn, played from the recording.
+   *
+   * A method rather than an entry in `VOICES` because it needs `this._page`,
+   * and because it is the one voice whose availability is decided at runtime —
+   * `cue()` picks between this and `VOICES.page` on every firing.
+   *
+   * Three things it keeps from the synthesised voice, all of them properties
+   * that were argued for and signed off rather than incidental:
+   *
+   *  · **the per-cue jitter.** `c.pitch` (0.95–1.05) becomes `playbackRate`, so
+   *    two turns are never the same length or the same pitch. Combined with the
+   *    two takes, "the ear names the loop after four pages" needs a lot more
+   *    than four pages.
+   *  · **the pan travel.** The synthesised page runs -0.51 → +0.08 across its
+   *    first 160 ms "because the page travels across the book", and the file's
+   *    header calls that most of what makes two turns in a row feel like a book
+   *    rather than a button. The recording is effectively mono (L-R rms is 3.9%
+   *    of L), so it has no travel of its own and would lose the property
+   *    outright. Half the excursion, because a recording already carries some
+   *    room and a hard sweep on top of that reads as an effect.
+   *  · **`c.level`**, which is `_crowd()`'s ducking. A player holding the page
+   *    key down is the case that ducking exists for and a buffer source is no
+   *    less capable of stacking into a roar than a noise burst is.
+   */
+  _sampledPage(c) {
+    const actx = this.actx;
+    const [t0, t1] = PAGE_TAKES[this.rnd() < 0.5 ? 0 : 1];
+    const rate = c.pitch * c.rate;
+    const d = (t1 - t0) / rate;
+    const t = c.t;
+
+    const src = actx.createBufferSource();
+    src.buffer = this._page;
+    src.playbackRate.value = rate;
+    const g = gain(actx, 0);
+    const p = panner(actx, -0.26);
+    p.pan.setValueAtTime(-0.26, t);
+    p.pan.linearRampToValueAtTime(0.04, t + d);
+    src.connect(g).connect(p).connect(this.bus);
+
+    // A trapezoid, not `_env`: `_env`'s shape (attack, plateau, exponential
+    // release) is a synthesis envelope and the recording brings its own. All
+    // this has to do is not click at the two cuts — see the two-takes block.
+    const a = Math.max(PAGE_SAMPLE_GAIN * c.level, 0.0004);
+    const fin = Math.min(TAKE_FADE_IN, d * 0.2);
+    const fout = Math.min(TAKE_FADE_OUT, d * 0.3);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(a, t + fin);
+    g.gain.setValueAtTime(a, t + d - fout);
+    g.gain.linearRampToValueAtTime(0.0001, t + d);
+
+    // `start(when, offset, duration)` — the take, and only the take. The
+    // duration is in BUFFER seconds, so it is `t1 - t0` and not `d`; passing
+    // the rate-scaled figure plays a different amount of tape at every jitter.
+    src.start(t, t0, t1 - t0);
+    src.stop(t + d + 0.02);
+    this._own(c, [src, g, p], t + d);
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────

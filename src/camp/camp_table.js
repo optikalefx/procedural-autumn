@@ -52,7 +52,6 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 // than as an error, so it is worth the duplication being explicit.
 const HEX_HDPE = 0x8f3a3c;
 const HEX_PLASTIC = 0x2a2a2e;
-const HEX_WOOD = 0x8a6a46;
 // Mill aluminium. Not the kit's 0xb9bdc2: that is a cool grey, right for the
 // metal itself but wrong for a dielectric standing in for it, because without a
 // metal's dark diffuse the cool cast survives into the midtones and the legs
@@ -501,13 +500,75 @@ export function buildTable(rnd, opts = {}) {
       V(1, 0, 0), 0.015, 0.015, bossTint, SKY_ALU);
   }
 
-  if (opts.dressed) dressTable(P, rnd, W, D, H, wear);
+  // ── where the journal lies ────────────────────────────────────────────────
+  // Decided BEFORE the still life, because the still life has to keep out of
+  // its way — see `journalRest` and `dressTable`.
+  const rest = journalRest(rnd, W, D, H);
+  if (opts.dressed) dressTable(P, rnd, W, D, H, wear, rest);
 
   P.flush(g);
   // The corner foot lands 0.391 m from the origin on the diagonal, so 0.40 is
   // the honest clearance and it matches the radius `camp_site.js` reserves.
   g.userData.footprint = 0.40;
+  /**
+   * The named anchor. **In the table's own space**, the way
+   * `camp_telescope.js` publishes `eye`/`aim` and for the same reason
+   * `camp_scope_view.js` gives at length: a consumer that guesses a spot from a
+   * bounding box is wrong by 100 mm and 15 degrees, and this prop is placed on
+   * sloping ground with a jittered yaw, so only the group's own world matrix
+   * can carry a local point out correctly. `Camp._seatJournal` parents the book
+   * to this group and reads this; nothing else in the file knows about it.
+   */
+  g.userData.journalRest = rest;
   return g;
+}
+
+/**
+ * Where a closed A5 journal rests on this table, in the table's own space.
+ *
+ * **Why the still life had to move for it.** The header of `dressTable` states
+ * the rule this prop was signed off under — *one or two objects, never three;
+ * the restraint is the effect* — and a journal is a third object. It is also,
+ * measured, an object with nowhere to go: the book's footprint with its squares
+ * is 157 x 218 mm on a top that is 536-586 x 420-462, so lying with its long
+ * edge along the table's long edge it takes 40% of the width and half the
+ * depth, and the mug's band (|x| from 0.14W to 0.30W) and the paperback's
+ * (0.16W to 0.28W) both run straight through it. There is no free rectangle.
+ *
+ * So the journal takes the paperback's place rather than joining it. That is
+ * the better trade twice over: the still life stays at two objects, and the
+ * second object stops being a random novel and becomes the player's own book —
+ * which is exactly the "somebody stepped away for a minute" the header is
+ * after. The mug stays and moves outboard (`dressTable`).
+ *
+ * Laid with the long edge along the table's long edge, pushed toward one END
+ * and toward the FRONT: +Z is the edge that faces the fire (`camp_site.js`
+ * places the table with `atan2` toward the camp centre, and the roasting
+ * stick's placement note relies on the same convention), and a book somebody
+ * put down while sitting at the fire is on the near edge, not pushed to the
+ * back rail.
+ *
+ * **This costs four draws from the table's generator and therefore moves every
+ * camp's stream after it** — different slat counts, wear and cooler colourways
+ * for the same seed. That is unavoidable: placing a new object requires
+ * deciding where it goes. It is written down because the next person to compare
+ * a camp capture against an old one will otherwise think something broke.
+ */
+function journalRest(rnd, W, D, H) {
+  // Which end. Reused by `dressTable` to send the mug to the OTHER one, so the
+  // two objects are a composition with a gap in it rather than a pile.
+  const side = rnd() < 0.5 ? -1 : 1;
+  return {
+    side,
+    x: -side * (W * 0.10 + rnd() * W * 0.06),
+    y: H,                                   // the slat top; the book sits ON it
+    z: D * (0.05 + rnd() * 0.08),
+    // Square to the table would be a book placed by a level editor, for the
+    // same reason the mug is off-axis. +-0.22 rad, which at this footprint
+    // still leaves 23 mm between the book's corner and the mug's handle at
+    // their closest — measured off the extents, not eyeballed.
+    yaw: Math.PI / 2 + (rnd() - 0.5) * 0.44,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,24 +581,30 @@ export function buildTable(rnd, opts = {}) {
 //
 //  Both objects are placed off-centre and off-axis. A mug in the middle of a
 //  table, square to its edges, is a mug that was placed by a level editor.
+//
+//  **The second object is now the journal, and it is not built here.** See
+//  `journalRest` for why a third object was not an option and why the paperback
+//  is the one that yielded. What is left in this function is the mug, and the
+//  one thing it has to do differently: get out of the book's way.
 // ─────────────────────────────────────────────────────────────────────────────
-function dressTable(P, rnd, W, D, H, wear) {
+function dressTable(P, rnd, W, D, H, wear, rest) {
   // Push things toward one end and one edge, but never past the last slat: an
   // object hanging over the rail would need a physics argument this prop has no
   // way to make.
-  const side = rnd() < 0.5 ? -1 : 1;
-  const mx = side * (W * 0.14 + rnd() * W * 0.16);
+  //
+  // The band used to be 0.14W to 0.30W and is now 0.26W to 0.35W, i.e. the mug
+  // is out at the END of the table rather than a third of the way in. The book
+  // is why, and the numbers are measured off the two footprints rather than
+  // nudged until a render looked right: on the mug's side the book reaches
+  // 0.123 m from centre at its worst yaw, and the mug's inner reach — centre
+  // minus the 56 mm the handle swings out to — is 0.090 m at the near end of
+  // the old band and 0.146 at the near end of the new one. The old band put the
+  // handle inside the cover. The far end is capped at 0.35W so the handle stays
+  // inside the rail: 0.35 x 0.586 + 0.056 = 0.261 against a 0.268 half-width.
+  const side = -rest.side;
+  const mx = side * (W * 0.26 + rnd() * W * 0.09);
   const mz = (rnd() - 0.5) * D * 0.34;
   mug(P, rnd, mx, H, mz, rnd() * 6.2832, wear);
-
-  // Roughly half the time, one more thing, always on the far side of the table
-  // from the mug so the two read as a composition with a gap in it rather than
-  // as a cluster.
-  if (rnd() < 0.55) {
-    const bx = -side * (W * 0.16 + rnd() * W * 0.12);
-    const bz = (rnd() - 0.5) * D * 0.22;
-    paperback(P, rnd, bx, H, bz, (rnd() - 0.5) * 1.1, wear);
-  }
 }
 
 /**
@@ -589,35 +656,4 @@ function mug(P, rnd, x, y, z, yaw, wear) {
       HGT * 0.58 + Math.sin(a) * 0.030,
       0);
   }, 12, 0.0042, 5), 'hdpe', local(M()), cream);
-}
-
-/**
- * A paperback, face down and slightly askew.
- *
- * Built as cover / pages / cover / spine rather than as one coloured box,
- * because the read of a closed book is entirely in the contrast between the
- * coloured cover face and the cream page block on the other three edges. A
- * single box gets the silhouette right and looks like a brick.
- */
-function paperback(P, rnd, x, y, z, yaw, wear) {
-  const BW = 0.104, BD = 0.148, BT = 0.019;   // width, depth, thickness
-  const covers = [0xa8493a, 0x3d5b52, 0x8a6f3c, 0x39445c];
-  const cover = tintFrom(HEX_HDPE, covers[Math.floor(rnd() * covers.length) % covers.length]);
-  // Paper yellows; a well-read paperback's block is nearer bone than white, and
-  // it gets more so with wear.
-  const pages = tintFrom(HEX_WOOD, 0xd6d2c6 - Math.floor(wear * 0x0a0a06));
-
-  const base = at(x, y + BT * 0.5, z, 0, yaw, 0);
-  const local = (m) => M().multiplyMatrices(base, m);
-
-  P.add(rbox(BW - 0.004, BT - 0.006, BD - 0.004, 0.0012),
-    'wood', local(M()), pages);
-  for (const sy of [-1, 1]) {
-    P.add(rbox(BW, 0.0026, BD, 0.0009),
-      'hdpe', local(at(0, sy * (BT * 0.5 - 0.0013), 0)), cover);
-  }
-  // Spine, on the long edge. Rounded hard — a paperback spine is a fold, not a
-  // corner, and this is the one silhouette cue that says "book" from above.
-  P.add(rbox(0.0042, BT, BD, 0.0021),
-    'hdpe', local(at(-(BW * 0.5 - 0.0021), 0, 0)), cover);
 }

@@ -35,9 +35,12 @@ export class Journal {
   get active()
   get wantsInput()              // NEW — true while the journal owns input
   get sheets()                  // NEW — leaf count, for harnesses
+  get studying()                // NEW (r4) — leaning in on one entry
   onClose = null                // NEW — integrator hook, fired once by close()
   open({ award = null } = {})   // award: { id, photoDataURL } | null
   close(); toggle()
+  study(page, row); unstudy()   // NEW (r4) — see §13.1. The pointer drives
+                                //   these itself; an integrator needs neither.
   update(dt)                    // REAL seconds
   render(renderer)              // straight after postfx.render(dt)
   dispose()
@@ -583,3 +586,224 @@ contours grew a wobble. Verified: hill positions and river are unchanged.
   showing one page, which is a design change.
 - The HUD hint bar visible for ~500 ms during the ceremony cross-fade was judged
   deliberately last round and stays.
+
+---
+
+## 13. Round 4 — three things the user asked for
+
+Nothing in §§1–12 was retuned. The three items below are additive, and where one
+of them touches something that was signed off, the note says so and says why it
+is not a regression.
+
+### 13.1 Click a taped photo to lean the book in and read that entry
+
+*"you should be able to click a photo in the log book to essentially have the
+book tilt more towards the user and zoom in on the book so the photo is larger
+and easier to see that entry and photo."*
+
+`Journal.study(page, row)` / `unstudy()` / `get studying`, driven from the
+existing capture-phase pointer listener. Click a print, the book comes up
+toward you centred on that row; click again, or Escape, and it goes back.
+
+**The row is the frame, the print is the target.** A photograph in this book is
+landscape and sits *beside* its line, so framing the print alone puts the entry
+it belongs to off the side of the screen — which is the half of the pair
+somebody leaning in is trying to read. The click target is the print's own slot
+grown by `SLOT_PICK` (1.18), which is ~10 mm of page all round; the framed
+rectangle is `JournalPage.rowUV(i)`, the whole band.
+
+**The picking is `samplePage`, not a raycaster.** `samplePage` already answers
+"where in the world is this bit of page", it reads the table `deformPage` left
+behind rather than re-integrating the bend, and it is the same function the
+flying print lands with. The four corners of the slot go out through it and
+into the camera, and the test is point-in-quad on screen — two triangles, not a
+winding test, because a bent page does not project to a convex quad. A
+raycaster would have been a second, differently-wrong answer to a question that
+already has one.
+
+**The pose.** `STUDY_TILT` 0.42 rad added to the laid pose's `rotation.x`,
+`STUDY_ZOOM` 2.55 on the book (not a dolly — `_fitCamera` owns the camera, and
+the composition rule in `Journal`'s header still holds), eased in over 0.42 s
+and out over 0.34 s. The offset that centres the row is recomputed from the
+LIVE posed page every frame rather than baked at the click: at k = 0.5 the book
+is half-tilted and half-scaled and the offset that centres the row then is not
+half the offset that centres it at k = 1.
+
+Measured through the real wiring, `tools/_scratch/_jstudy.mjs`, 1600×900:
+
+| | at the spread | leaned in |
+|---|---|---|
+| the row's screen box | 0.219 × 0.094 of the frame | **0.569 × 0.298** |
+| the row's centre | wherever it was | 0.500, 0.498 |
+| the page, off face-on | 34° | **10.1°** |
+| the print's own box | 0.070 × 0.070 | — |
+
+At 700×1520 (phone portrait) the same click gives **0.839 × 0.114** and the
+leaned-in view shows ONE page filling the width — which is the fix §12.3 named
+as "the real fix is showing one page, which is a design change", arriving here
+for free on the view that needs it most.
+
+Going the whole way to face-on was rejected: a page exactly perpendicular to
+the lens has no perspective in it and the book stops being an object in a room.
+0.42 takes about seventy per cent of the 34°.
+
+Everything backs out **one level at a time** — Escape from a leaned-in entry
+returns to the spread and a second Escape shuts the book; a page key or a wheel
+detent returns to the spread rather than teleporting back and turning a page in
+one input. Dead keys while leaning were considered and rejected: a key that does
+nothing is how a player decides a mode is stuck. The ceremony keeps right of
+way on the same test `leaf()` uses — the flying print locates its page with
+`samplePage` every frame and leaning the book underneath it would move the
+target it is aiming at.
+
+The one affordance: `zoom-in` on the canvas cursor over a print, `zoom-out`
+while leaning, written the way `Camp._paintCursor` writes it and only on a
+change. The journal has no chrome to say this with and the browser already has
+the vocabulary.
+
+Plates: `s0_spread`, `s2_lean_100ms` (fully legible mid-move — it leans, it does
+not swing), `s4_leaned`, `s6_spread_again`.
+
+### 13.2 The page turn is a recording now
+
+`public/audio/page.mp3`, 25 KB, recorded by the user. **This is a departure from
+the repo rule** — every sound in this game is synthesised and `public/audio/`
+had held exactly one asset ever — so it is handled as one:
+
+* **the synthesised voice stays and is the fallback.** Measured with the fetch
+  rejected, `cue('page')` renders 0.1139 peak / 0.0212 rms / 372 ms /
+  hp200 0.1146 — bit-identical to `synth page`. No asset, no silence.
+* **it is TWO takes.** Measured in 20 ms windows: a lift and a snap at
+  0 → 215 ms (peak 0.1680), 380 ms of room tone, a second turn at 585 → 700 ms
+  (peak 0.1565), then 280 ms of near-silence. Fired whole it is two page turns
+  for one call. The cue plays one take, drawn by the rng, which also supplies
+  the "never bit-identical" the file's discipline asks for.
+* **the level is measured on the same four columns the other voices are.**
+  `tools/_scratch/_jaudio.mjs` reproduces the existing table to the last digit
+  (cover 0.2298 / page 0.1139 / cross 0.0973 / slap 0.2689), which is what makes
+  the new row comparable rather than merely adjacent.
+
+Four columns wanted four different gains — peak 0.677, hp200 0.690, mono 0.596,
+loudest-200 ms 1.491 — and `hp200` decides it, because the small-speaker order
+(§ the header's block) is a rule and not a preference. The recording is almost
+entirely above 200 Hz, so a gain chosen for loudness sails past cover (0.1319)
+and slap (0.1356) through the 4th-order filter and inverts the ceremony; any
+gain over 0.794 does. **0.68**, which agrees with the full-range peak to
+0.16 dB. What it costs, stated: the loudest 200 ms lands 6.6 dB under the
+synthesised page on take 0 and 8.9 under on take 1, because the recording's
+crest factor is 20 dB against the synth's 13.
+
+Ducking still holds: three turns 0.12 s apart peak 0.1279, **+0.7 dB** over one
+turn against the synthesised voice's +2.4 dB.
+
+### 13.3 The journal sits closed on the camp table
+
+`camp_table.js` publishes `userData.journalRest` — a point and a yaw **in the
+table's own space**, the way `camp_telescope.js` publishes `eye`/`aim` and for
+the reason `camp_scope_view.js` gives at length. `Camp._seatJournal` builds the
+closed book with `buildJournal` (reuse, not new geometry) and parents it to the
+table group, so a table yawed by a jitter and tilted onto a slope carries the
+book for free. `J` still opens it; clicking it opens it too, through
+`hud.toggleJournal()` so the `pa-journal` class still takes the driving chrome
+off the screen.
+
+**Where it goes in the pick order: after the telescope, before the stick**, and
+the argument is in `Camp._interact`. The stick's sphere is on the marshmallow,
+0.34 m across and 294 mm above the table it leans on; the book's is 0.17 m and
+lies flat on it. Measured off the placements, when the two take the same end of
+the table their centres are ~0.34 m apart — so the marshmallow's sphere reaches
+down over the book and the book's never reaches up to the marshmallow. The
+padded sphere is the one that can steal, so it goes second. That is the opposite
+conclusion to the telescope-versus-stick rule beside it and it is not the same
+question; the rule that covers both is *the padded sphere loses to the one that
+is not*.
+
+**The still life had to move.** `dressTable`'s header says one or two objects,
+never three, and the book has nowhere to go beside both: with its squares it is
+157 × 218 mm on a top that is 536–586 × 420–462, and the mug's band (0.14W to
+0.30W) and the paperback's (0.16W to 0.28W) both run through it. So the journal
+takes the paperback's place — the still life stays at two objects and the second
+one stops being a random novel and becomes the player's own book, which is
+closer to "somebody stepped away for a minute" than the paperback ever was. The
+`paperback()` builder is deleted rather than left dead. The mug moves outboard,
+0.14W–0.30W → 0.26W–0.35W, and the numbers are off the two footprints: the
+book reaches 0.123 m from centre at its worst yaw and the mug's inner reach —
+centre minus the 56 mm its handle swings — is 0.090 m at the old band's near end
+and 0.146 at the new one's. **This moves the table's rnd stream**, so camps look
+different for a given seed; unavoidable, and written down in `journalRest` so
+the next person comparing an old capture does not think something broke.
+
+**It needed different leather.** The book was authored for the overlay's four
+lights and its environment map, and the world has neither
+(`src/render/SkyProbe.js`'s header states the problem for the whole game).
+Measured in the real game with `tools/_scratch/_jlum.mjs`: the shadows are
+innocent (mean luma 41.9 with cast and receive on, 41.9 with both off) and the
+albedo map is the whole of it — removing it takes the same crop from 42 to 216,
+and the cover map averages sRGB (60, 26, 9). `HIDE_LIFT = 2.6` multiplies the
+leather's and the board's albedo in a **second cached material set that shares
+every texture**; at `lift = 1` the arithmetic is unchanged, so the overlay's
+book is what it always was (verified: `_jcritic --mode model`, `m0_closed`).
+What the lift buys is not brightness — the atmosphere lays a pedestal no albedo
+gain touches — it is the grain: over the cover's own crop at hour 13 the mean
+goes rgb(56,40,30) → rgb(73,38,28) while the spread goes **1.48 → 3.79**, which
+is the pebble, the fillet and the emblem coming back. 3.2 keeps climbing and
+starts reading as orange against a yellow meadow. The full table, and the honest
+limit at dusk where the sweep moves nothing, are in `HIDE_LIFT`'s header.
+
+**Cost**, paired inside one page load (`_jtable.mjs --mode cost`): **+17 draw
+calls and +4,440 triangles** per table. It was +20 and +5,464 before the shadow
+trim in `_seatJournal`: a shut book is a slab, so only the two boards and the
+spine cast and only the front cover receives — the endpapers are pasted inside
+the covers, the thread is in the gutter, the ribbon's painted contact shadow is
+on a page nobody can see, and the fore edge stands inside the square. The
+overlay's own painted contact shadow is off entirely for the prop
+(`buildJournal({ shadow: false })`): the overlay's lights do not cast and the
+world's do, and the painted one is three cover-widths across — wider than the
+table is deep.
+
+**The prop hides while the book is open.** A player reading it is holding it,
+and a second copy on the table under a 78% scrim is the kind of detail that is
+invisible for a year and then impossible to unsee. Flipped on the edge, so it is
+one boolean compare while driving.
+
+### 13.4 New instruments
+
+| tool | what it answers |
+|---|---|
+| `tools/_scratch/_jaudio.mjs` | the four voices and the mp3, offline, on the header's own column definitions |
+| `tools/_scratch/_jstudy.mjs` | the lean-in, through the real wiring, with real pointer events |
+| `tools/_scratch/_jtable.mjs` | the prop on the table: seat, pick, prompt, click, cost |
+| `tools/_scratch/_jlum.mjs` | why the leather went dark, and the `HIDE_LIFT` sweep |
+
+Three traps each of these had to learn the hard way and each now documents:
+
+* **the hunt sheet must be SEEDED into `localStorage` before any module runs.**
+  Reaching `hunt` with a dynamic `import()` from an evaluate hands back a second
+  instance of the singleton whenever Vite has stamped `?t=` on the module — and
+  mid-edit it always has. Every award went into that second store and the book,
+  reading the first, came up empty. Two runs.
+* **the camera cannot be pinned from the render callback.** `Camp._interact`
+  builds its pointer ray from `e.camera` during the system update, so a pose
+  written after the render is invisible to it: the pick misses inside the game
+  and hits from an `evaluate()`. The symptom is an empty prompt beside a
+  `_journalUnderPointer()` that returns true. One run.
+* **`document.querySelector('.pa-camp-prompt')` is the wrong element.** There
+  are two in a booted page and the first is not the live one. Read
+  `window.__camp.prompt.el`. (`tools/campshot.mjs`'s own UI-in-frame guard has
+  the same selector and therefore the same blind spot.) One run.
+
+### 13.5 Noted, not done
+
+* `hud.toggleJournal()` reports `source: 'key'` to posthog whichever way the
+  book was opened, so a click on the table is indistinguishable from `J` in the
+  stats. The fix is one argument in `src/ui/HUD.js`, which this round does not
+  own.
+* `Journal.dispose()` calls `disposeJournalMaterials()`, which now clears BOTH
+  cached sets — so a teardown of the HUD's journal also frees the leather the
+  camp props are drawn with. That only happens on a full teardown, at which
+  point the camps are going too, but it is a coupling that did not exist before.
+* Every camp table carries the journal. One in five full camps has no table and
+  compact camps never do, so those have no book on them; `J` is the shortcut
+  that makes that fine rather than a gap.
+* At dusk the prop is as dark as the table it lies on. That is the camp's
+  standing environment-map request (`docs/CAMP_REQUESTS.md`), not this book's.
