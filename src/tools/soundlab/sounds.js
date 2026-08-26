@@ -1342,8 +1342,10 @@ export const SOUNDS = [
     module: 'src/audio/journal_audio.js',
     blurb: 'The front board swung open: a Q 2.4 hinge creak 760 → 1450 → '
       + '980 Hz with eight stick-slip grabs across it, a low swell underneath, '
-      + 'and the board arriving on its face. Peak 0.230, 273 ms — the same '
-      + 'gesture as the page turn, an octave down and four times as resonant.',
+      + 'and the board arriving on its face. Peak 0.230, 292 ms (first firing '
+      + 'on a fresh instance; the peak is a draw spanning 0.193-0.283, and the '
+      + 'duration is measured above 0.0015) — the same gesture as the page '
+      + 'turn, an octave down and four times as resonant.',
     layers: [],
     trigger: (rig, v) => journalOf(rig).cue('cover', { level: v.level, rate: v.rate }),
     params: [
@@ -1362,7 +1364,8 @@ export const SOUNDS = [
     module: 'src/audio/journal_audio.js',
     blurb: 'One band that goes up and comes back down — 700 → 3400 → 950 Hz — '
       + 'with seven ticks of paper grain over it and a soft 200 Hz landing '
-      + 'underneath the end of it. Peak 0.114, 372 ms.',
+      + 'underneath the end of it. Peak 0.114, 372 ms — first firing on a '
+      + 'fresh instance; per-firing the peak draws 0.110-0.134.',
     layers: [],
     trigger: (rig, v) => journalOf(rig).cue('page', { level: v.level, rate: v.rate }),
     params: [
@@ -1381,7 +1384,9 @@ export const SOUNDS = [
     module: 'src/audio/journal_audio.js',
     blurb: 'A pencil struck through a line: the band rises 1150 → 2500 Hz, the '
       + 'level falls, the pan travels left to right, and four graphite catches '
-      + 'land unevenly along it. Peak 0.097, 125 ms.',
+      + 'land unevenly along it. Peak 0.097, 124 ms — first firing on a fresh '
+      + 'instance; per-firing the peak draws 0.077-0.125, the widest of the '
+      + 'four, because a four-tick table is mostly transients.',
     layers: [],
     trigger: (rig, v) => journalOf(rig).cue('cross', { level: v.level, rate: v.rate }),
     params: [
@@ -1401,7 +1406,9 @@ export const SOUNDS = [
     blurb: 'A photograph put down and taped: a 150 → 78 Hz body glide, a broad '
       + 'Q 1.1 paper burst that carries the level, and three falling tape ticks. '
       + 'Peak 0.269 — the loudest of the three, and it stays that way through a '
-      + '200 Hz high-pass, which took a rebalance.',
+      + '200 Hz high-pass, which took a rebalance. Level with the cover rather '
+      + 'than over it: across 24 draws the two have the same mean and the cover '
+      + 'is louder on 43% of firings.',
     layers: [],
     trigger: (rig, v) => journalOf(rig).cue('slap', { level: v.level, rate: v.rate }),
     params: [

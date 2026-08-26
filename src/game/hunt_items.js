@@ -96,6 +96,28 @@
 //  makes a checklist read like a field guide instead of a table. Both now carry
 //  their own common name.
 //
+//  ── and two more, when the detector stopped measuring a sphere ──────────────
+//
+//  `hunt_detect.js` round three rewrote the size gate to read the animal's
+//  height rather than its bounding sphere, and the mammal reaches roughly
+//  halved: squirrel 5.0 m → 2.7, raccoon 10.4 m → 2.9. Whatever else that did,
+//  it moved two hints out of true, and by this block's own rule that is a
+//  defect rather than a nicety.
+//
+//  **The squirrel** said "the smallest animal here", which is a fact about the
+//  squirrel and not an instruction. It sat next to the rabbit's "get close, it
+//  is small" while being the tighter of the two — 2.7 m against 4.1 — so the
+//  sheet was telling the player to close in on the easier one and saying
+//  nothing about the harder. It now says "get right up to it", which is what
+//  2.7 m means when you are holding the free camera.
+//
+//  **The raccoon** carried no distance signal at all and took the biggest cut
+//  on the sheet, a factor of 3.6. The reason is worth putting in the hint
+//  rather than in a comment, because it is a fact about the animal and not
+//  about the rule: a raccoon is 0.82 m long and 0.38 m tall, so it is a large
+//  animal that reads small, and the gate reads height. "Low to the ground, so
+//  get close" is that, in seven words.
+//
 //  ── the marshmallow, which was dormant for about an hour ───────────────────
 //
 //  `burntMallow` was written blind. When this file was drafted the roasting
@@ -137,12 +159,12 @@ export const HUNT_ITEMS = [
   {
     id: 'squirrel',
     subject: 'a grey squirrel',
-    hint: 'under the hardwoods; the smallest animal here',
+    hint: 'under the hardwoods. Get right up to it',
   },
   {
     id: 'raccoon',
     subject: 'a northern raccoon',
-    hint: 'after dark, near water',
+    hint: 'after dark, near water. Low to the ground, so get close',
   },
   {
     id: 'fox',

@@ -35,16 +35,49 @@
 //  Rendered through an OfflineAudioContext at 48 kHz and measured at the bus,
 //  which is the version of these numbers worth having:
 //
-//      cover  peak 0.230   rms 0.0372   273 ms
+//      cover  peak 0.230   rms 0.0360   292 ms
 //      page   peak 0.114   rms 0.0212   372 ms
-//      cross  peak 0.097   rms 0.0099   125 ms
-//      slap   peak 0.269   rms 0.0197   205 ms
+//      cross  peak 0.097   rms 0.0099   124 ms
+//      slap   peak 0.269   rms 0.0197   206 ms
 //
-//  The whole ceremony, cover → page → cross → slap on the journal's own
-//  spacing, peaks at 0.316. That is a DRAW rather than a constant: every cue
-//  takes ±5% of pitch and ±7% of length per firing, so the same four sounds
-//  land anywhere inside about 1.5 dB of each other run to run. Quoting the
-//  ceremony peak to three figures would be quoting a random number.
+//  **Every column of that table needs its definition, and the cover's duration
+//  is why.** The row used to read `273 ms`, and two independent re-renders got
+//  308 and 315. All three were measuring the cover; none of them was measuring
+//  the same thing. So, stated once:
+//
+//   · **peak** is max |sample| over both channels of the whole render.
+//   · **duration** is first to last sample whose mono sum clears 0.0015 — about
+//     -56 dBFS. It is a threshold, it has to be quoted, and the cover is the
+//     cue that proves it: the same render is 298 ms at 0.001, 292 at 0.0015,
+//     279 at 0.003 and 247 at 0.01. A duration with no threshold is not a
+//     measurement, and 273 was somewhere on that curve with nobody left to say
+//     where.
+//   · The 308/315 ms figures are the same cue measured from **t = 0** rather
+//     than from its onset, and the cover's onset is 17 ms in (`cue()` schedules
+//     at `currentTime + 0.006 + rnd * 0.014`). 292 + 17 = 309, which is the
+//     whole of the disagreement.
+//   · **rms** is over that same window, not over the buffer. Over the 1.5 s
+//     buffer the cover reads 0.0216 instead of 0.0360, and the difference is
+//     just how much silence you included.
+//
+//  **And every peak in that table is one draw.** They are the FIRST firing on a
+//  fresh `JournalAudio`, which is why they reproduce bit-for-bit: `this.rnd` is
+//  `mulberry32(0x7a9e13)` and a fresh instance always starts there. In play a
+//  cue is the k-th firing, the rng has moved on, and the peak is a draw.
+//  Measured over 24 draws (advancing the rng only — firing throwaway cues to
+//  advance it also fills `_recent` and lets `_crowd` duck the cue under test,
+//  which is a different measurement and gave a 5 dB "spread" the first time):
+//
+//               min      median     max      spread
+//      cover   0.1933    0.2298    0.2829    3.3 dB
+//      page    0.1095    0.1154    0.1341    1.8
+//      cross   0.0770    0.0911    0.1251    4.2
+//      slap    0.2037    0.2426    0.2736    2.6
+//      whole ceremony    0.2195 / 0.2520 / 0.2829
+//
+//  So the ceremony peaks around 0.25, not the 0.316 this header used to claim —
+//  0.316 is outside the range of 24 draws and did not survive a re-render by
+//  anybody. Quote 0.22 to 0.28 or quote nothing.
 //
 //  The first draft measured 0.056 / 0.047 / 0.094 — level with the menu click
 //  — and that was the `camp_props` mistake made a second time: a level reasoned
@@ -55,26 +88,51 @@
 //
 //  The ladder is the design, and it is read top to bottom in time: the cover
 //  opens the ceremony loud (+6.1 dB on the page), the page and the cross are
-//  the quiet middle, and the slap ends it 7.5 dB over the page, 8.8 over the
-//  cross and 1.4 over the cover. The slap being last AND loudest is the whole
-//  shape — a payoff the same size as the beat before it is not one — and the
-//  cover sitting just under it is deliberate too: the first sound should
-//  announce that something is happening without spending the ending.
+//  the quiet middle, and the slap ends it 7.5 dB over the page and 8.8 over the
+//  cross. The slap being last AND loudest is the whole shape — a payoff the
+//  same size as the beat before it is not one — and the cover sitting just
+//  under it is deliberate too: the first sound should announce that something
+//  is happening without spending the ending.
+//
+//  (Those two figures are from the stereo-peak table above. The small-speaker
+//  block below quotes ITS margins off the mono sum, where the same slap-over-
+//  page gap is 5.3 dB rather than 7.5, because summing two channels that are
+//  panned apart costs the wider cue more. Two definitions, both fine, and the
+//  file used to slide between them inside one sentence.)
+//
+//  **The top two rungs are not really two rungs.** The cover-to-slap margin was
+//  quoted here as 1.4 dB, and 1.4 dB is the gap between two particular draws —
+//  the first firing of each on a fresh instance. Over the 24 draws in the table
+//  above the two cues have means 0.2363 and 0.2403, which is **0.15 dB apart**,
+//  and their ranges overlap almost completely: pairing every cover draw against
+//  every slap draw, **the cover is the louder of the two on 43% of firings**.
+//  So the honest statement of the design is that the ceremony has three levels,
+//  not four — cover and slap together at the top, the page under them, the
+//  cross at the bottom — and which of the top two is loudest on any given
+//  opening of the book is a coin weighted slightly towards the slap. The shape
+//  survives that (the payoff is never the QUIET one, and it is always last),
+//  and it is worth knowing before somebody spends an afternoon retuning a
+//  1.4 dB gap that is not there.
 //
 //  The slap's margin used to be 4.6 dB, and it used to be a lie on anything
 //  smaller than a monitor — see the next block.
 //
-//  Three page turns fired inside one crowd window peak at 0.151, which is
-//  2.4 dB over one turn alone — the ducking in `_crowd` holds, so a player
-//  flicking through the book gets a book rather than a roar. This line used to
-//  claim 0.194; 0.194 is the SLAP's old figure, pasted into the wrong
-//  paragraph. A critic re-rendering `pagex3` measured 0.1486 and was right.
+//  Three page turns fired 0.12 s apart — a player holding the key down — peak
+//  at 0.151, which is 2.4 dB over one turn alone: the ducking in `_crowd`
+//  holds, so flicking through the book gets you a book rather than a roar. This
+//  line used to claim 0.194; 0.194 is the SLAP's old figure, pasted into the
+//  wrong paragraph. A critic re-rendering `pagex3` measured 0.1486 and was
+//  right. **The spacing is part of the number**: three fired at the SAME
+//  instant peak at 0.194, because ducking cannot separate what is already
+//  simultaneous — that is a stress test rather than a thing the journal does,
+//  and two runs of "pagex3" that disagree by 2 dB are usually this.
 //
 //  ── the small speaker, which inverted the whole ceremony ────────────────────
 //
-//  Nobody plays this on a monitor. Through a 2nd-order 200 Hz high-pass — a
-//  laptop, a phone, the speaker in a desk lamp — the first version of these
-//  three cues came out in the WRONG ORDER (mono sum, peak):
+//  Nobody plays this on a monitor. Through a **4th-order 200 Hz high-pass —
+//  two cascaded biquads, 24 dB/oct** — a laptop, a phone, the speaker in a desk
+//  lamp — the first version of these three cues came out in the WRONG ORDER
+//  (mono sum, peak):
 //
 //                    full     HP 200 Hz    change
 //      page          0.100      0.115      +1.2 dB
@@ -105,12 +163,33 @@
 //      cross         0.063      0.073      +1.2 dB
 //      slap          0.184      0.136      -2.6 dB
 //
-//  Slap over page: +7.5 dB full range, +1.5 dB through the high-pass. The
-//  margin still narrows on a small speaker — it cannot not, the body really is
-//  gone — but the payoff is a payoff on both, which is the requirement. And
-//  the ORDER of all four survives the filter, which is the property that was
-//  actually broken: cover and slap at the top, page under them, cross at the
-//  bottom, on a monitor and on a phone.
+//  Slap over page: +5.3 dB on the full-range mono sum, **+1.5 dB through the
+//  4th-order filter, +0.3 dB through a 2nd-order one**. The margin still
+//  narrows on a small speaker — it cannot not, the body really is gone — but
+//  the payoff is a payoff on both, which is the requirement. And the ORDER of
+//  all four survives the filter, which is the property that was actually
+//  broken: cover and slap at the top, page under them, cross at the bottom, on
+//  a monitor and on a phone.
+//
+//  **That +1.5 dB is filter-dependent and the header used to misname the
+//  filter.** The table above was measured through `hp(hp(x))` — two cascaded
+//  Q-0.707 biquads, 24 dB/oct — while the prose called it 2nd-order, and a
+//  critic who took the prose at its word and ran ONE biquad measured the slap
+//  at 0.1122 against the page's 0.1084: a margin of 0.30 dB, not 1.5. Both
+//  numbers are right for their own filter and the 12 dB/oct one is the harsher
+//  reading, because a gentler slope lets more of the page's low end through
+//  than it lets of the slap's. So: the order is restored under both, the
+//  rebalance is justified under both, and the margin it buys is somewhere
+//  between a third of a decibel and one and a half depending on what you think
+//  a phone speaker does. Do not quote 1.5 dB without the "24 dB/oct" next to
+//  it.
+//
+//  Every peak in these two tables is a mono sum of the first firing on a fresh
+//  instance, for the reason the level block gives: that is the reproducible
+//  draw. The per-firing spread is ~±1.3 dB on the slap and ~±1.65 on the cover,
+//  which is wider than either high-pass margin — so on any single firing the
+//  order can invert. What the rebalance fixed is the systematic 12 dB, not the
+//  draw.
 //
 //  ── cover: leather and board, and not the same book twice ───────────────────
 //

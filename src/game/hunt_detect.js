@@ -24,31 +24,47 @@
 //
 //  A photograph is not an encounter, it is a picture, and a picture is judged
 //  in the picture's own units. So the gate here is **apparent size**: the
-//  subject's bounding sphere must subtend at least `MIN_SHARE` of the frame's
-//  HEIGHT. That single rule replaces the three hand-tuned distances Stats needs
+//  subject's own HEIGHT must subtend at least `MIN_SHARE` of the frame's
+//  height. That single rule replaces the three hand-tuned distances Stats needs
 //  (20 m / 130 m / 420 m), and it lands in a different place in each direction,
 //  which is exactly what it should do:
 //
 //  Everything below was measured in the running valley at fov 50, by planting
 //  one animal, hiding the rest of its site, finding a bearing with a clear line
 //  and then binary-searching the stand-off until the detector let go. Predicted
-//  is the arithmetic; cut is what the game did.
+//  is the arithmetic; cut is what the game did, as camera-to-subject distance.
 //
-//     species     sphere r   predicted   cut     (Stats' sighting gate)
-//     bear          2.01 m     29.6 m    29.5 m    20 m — this is TIGHTER
-//     deer          1.76       25.9      25.9      20
-//     fox           0.89       13.1      13.1      20
-//     raccoon       0.71       10.4      10.4      20
-//     rabbit        0.49        7.3       7.1      20
-//     squirrel      0.36        5.3       5.0      20
-//     heron                              23.2      130 m — much tighter
-//     eagle, perched                     17.9      130
-//     flamingo                           15.5      130
-//     owl, perched                       10.4      130
+//     species        height   predicted   cut      (Stats' sighting gate)
+//     deer           1.83 m     14.0 m    14.0 m     20 m — this is TIGHTER
+//     bear           1.23        9.5       9.5       20
+//     fox            0.69        5.3       5.4       20
+//     rabbit         0.53        4.1       4.0       20
+//     raccoon        0.38        2.9       3.0       20
+//     squirrel       0.35        2.7       2.6       20
+//     camp dog       0.84        6.5       6.5       20
+//     heron          3.14       24.1      24.1      130 m — much tighter
+//     eagle, perched 2.43       18.6      18.6      130
+//     flamingo       2.10       16.2      16.2      130
+//     owl, perched   1.41       10.9      10.9      130
 //
 //  A four-pixel deer in the corner is rejected by arithmetic rather than by a
-//  distance somebody guessed. At the deer's cut the animal measures 64 x 85 px
-//  in a 1080 frame — a body, four legs, a neck and a tail.
+//  distance somebody guessed. The "height" column is the subject's own, and
+//  where it comes from per family is further down, under "the gate measured a
+//  sphere" — it is the whole of what changed in round three.
+//
+//  Two of those rows are worth reading twice. **The bear counts from closer
+//  than the deer**, which looks wrong until you notice the column it is sorted
+//  on: a black bear on all fours is 1.23 m at the shoulder and a white-tailed
+//  deer with its head up is 1.83 m. The bear is the bigger animal and the
+//  shorter one, it fills the frame sideways instead, and a rule that reads
+//  height says so. **The raccoon counts from closer than the rabbit** for the
+//  same reason and it is the least comfortable row here: a raccoon is 0.82 m
+//  long and 0.38 m tall, a rabbit 0.52 m long and 0.53 m tall with its ears up,
+//  so the low animal has to be a metre nearer for the same apparent height even
+//  though it is the larger creature. That is the price of a bearing-invariant
+//  rule, and it is paid on purpose — the alternative quantities all vary as the
+//  animal turns, and a gate that fires depending on which way a raccoon is
+//  facing is worse than one that is a metre strict on raccoons.
 //
 //  **A testing note that cost a round.** `Wildlife.debugSpawn` plants a whole
 //  SITE, not an animal: four deer, three bears, two foxes. A stand-off search
@@ -94,28 +110,91 @@
 //  clearance and nothing else), the world is frozen while you fly it, and the
 //  lens goes to 400 mm. The threshold can be whatever a photograph needs.
 //
-//  **What a photograph needs, measured by looking at one.** At 0.085 the deer's
-//  cut is 46.9 m and the animal measures 35 x 46 px in a 1920x1080 frame: a
-//  dark brown lozenge with no legs, no tail and no readable head, in a frame
-//  that also holds half a dozen brown bushes of the same size and colour. It is
-//  not a landscape with a deer in it; it is a landscape in which you cannot
-//  find the deer. This file's own header had already rejected that exact frame
-//  once, at 0.065 and 57 m, in the same words — and then set a threshold that
-//  produced it again four metres closer.
+//  ── the gate measured a sphere, and the sphere is not the animal ────────────
 //
-//  0.155 is where the same deer, at 25.9 m, is a deer: 64 x 85 px, a body with
-//  four legs under it and a head at the end of a neck. The number is not round
-//  and it is not meant to be — it is the frame share of the photograph that was
-//  judged acceptable, and it comes from that photograph and nothing else.
+//  Two thresholds were set against the deer before this one — 0.085, then
+//  0.155 — and both were argued from a photograph, honestly, and both were
+//  wrong by the same mechanism, which is worth more space than either of them.
+//
+//  **They were applied to the geometry's bounding SPHERE.** A sphere's radius
+//  is half the body diagonal, so it is set by whichever axis is longest. The
+//  deer's is 1.76 m — a "diameter" of 3.52 m — for an animal 1.83 m tall. At
+//  0.155 and 25.9 m the header claimed the deer measured "64 x 85 px". It did
+//  not. 85 px is what the geometry's box PROJECTS to; 168 px is what the sphere
+//  subtends; and the deer itself, measured by rendering the same pose twice
+//  with the mesh shown and hidden and taking the largest changed blob, is 50 x
+//  57 px. **The gate was reading a sphere three times the size of the thing
+//  inside it**, and calling the result the animal's pixel size in a comment.
+//
+//  It is not a constant error that a threshold could absorb, either. The ratio
+//  of drawn silhouette height to sphere diameter, measured on all six:
+//
+//     raccoon 0.22   bear 0.29   fox 0.34   squirrel 0.40   deer 0.42
+//     rabbit 0.48
+//
+//  A factor of 2.2 between the tightest and the loosest. One number applied to
+//  that quantity is six different promises.
+//
+//  **What tracks the animal is the bounding BOX's height.** Same measurement,
+//  same six species, silhouette height over box height:
+//
+//     bear 0.81   deer 0.81   raccoon 0.81   squirrel 0.85   fox 0.87
+//     rabbit 0.88
+//
+//  0.81 to 0.88 — a spread of 8%, against the sphere's 2.2x. The residual is
+//  pose and grass: the box is the REST pose with the head up, and the animal in
+//  the picture is grazing with its front legs in a meadow. So `meshHeight`
+//  returns half the box's Y extent and `MIN_SHARE` is a share of the frame's
+//  height taken by the subject's height. Same arithmetic, honest quantity.
+//
+//  **How "px" is measured, from here on.** Render the pose twice, with the
+//  subject's mesh visible and hidden and its shadow off in both, and take the
+//  largest connected blob of changed pixels. Nothing else counts as the
+//  animal's size, and in particular a projection of eight bounding-box corners
+//  does not — that is what produced "64 x 85". The world has to be paused
+//  (`ctx.worldPaused`) for the two frames to be comparable; without it the
+//  wind moves every blade of grass between them and the largest changed blob is
+//  the meadow. That mistake produced a "deer" 12 m wide on the first run.
+//
+//  **Where the number came from: 14 metres.** A ladder of stand-offs around one
+//  isolated deer — 11, 14, 17, 20, 24 m — four bearings each, twenty frames,
+//  opened and looked at. At 20 m and 24 m the animal is a dark mark near the
+//  treeline. At 17 m it depends on what is behind it: against pale grass it
+//  reads, against the dark treeline it is genuinely hard to find, and one of
+//  four failing is the whole test failing. At 14 m all four are photographs of
+//  a deer — body, four legs, a head with ears, a tail — with the animal 82 to
+//  99 px tall in a 1080 frame against the 166 px the box subtends. 0.149 is the
+//  frame share at that distance, and it comes from those frames and nothing
+//  else. The captures are `fix2/accept/deer_b*.png`.
 //
 //  **What it costs, per subject, is in the table above** — every cut was
 //  re-measured rather than scaled, because the birds do not scale with the
-//  mammals. Two consequences are worth stating out loud:
+//  mammals. Five consequences are worth stating out loud:
 //
-//   · The squirrel counts from 5.0 m. That is close, and it is reachable: the
-//     free camera flies, the world is stopped, and the squirrel is not going
-//     anywhere while you compose. "The smallest animal here" is the hint and
-//     five metres is what the hint means.
+//   · Reach roughly halved for the mammals: the deer 25.9 → 14.0, the bear
+//     29.5 → 9.5. Both are now well inside `Stats`' 20 m sighting gate, which
+//     is the right way round — a photograph is a stronger claim than a
+//     sighting.
+//   · The squirrel counts from 2.7 m and the raccoon from 2.9. That is very
+//     close, and it is still reachable, because the free camera flies, the
+//     world is stopped and the animal is not going anywhere while you compose.
+//     Checked in the frames: at 2.6 m the squirrel is 150 px tall with its
+//     tail up its back, which is a photograph of a squirrel by anybody's
+//     reckoning. Two hints moved with these two cuts — `hunt_items.js`, "and
+//     two more, when the detector stopped measuring a sphere" — because a
+//     sheet that does not say "get close" about the closest line on it is
+//     lying by omission. The sheet stays completable; nothing here needs a
+//     shot the camera cannot take.
+//   · The birds barely moved (0.155 → 0.149 is 4%) and did not need touching,
+//     for the reason in the note over `FOLD_R`: that branch was already
+//     measuring a height.
+//   · The camp dog moved twice — its size AND its centre, because the line
+//     that placed it read `pos.y + r * 0.45` and `r` no longer means what it
+//     meant. Re-derived and re-shot rather than reasoned about: `dog.pos.y` is
+//     the ground under the dog to the last decimal (`camp_dog.js:405`), so mid
+//     height is `pos.y + r`; the dog is 0.84 m tall against a 1.75 m sphere,
+//     the cut goes 13.4 m to 6.5, and at 5.8 m the frame is a tent, a chair, a
+//     telescope and a dog. `fix2/dog.png`.
 //   · The owl is the line that changed character — see the next block.
 //
 //  ── the owl was never about the startle radius ──────────────────────────────
@@ -135,10 +214,38 @@
 //
 //  So the owl is not photographable from a car on the wide lens, and it never
 //  was. It is photographable two ways, and both are things the game gives you:
-//  fly the free camera up to the canopy (it counts from 10.4 m at perch
-//  height), or fit the long lens. Measured at 400 mm from ground level, share
-//  0.68 at 40 m and still 0.198 at 140 m — the owl is comfortably in reach from
-//  the road, through the glass that is in the bag for exactly this.
+//  fly the free camera up to the canopy (it counts from 10.9 m at perch
+//  height), or fit the long lens.
+//
+//  **The tele reach is not one number, and the old sentence made it look like
+//  one.** "Still 0.198 at 140 m" was true and irrelevant: 0.198 is a share, it
+//  clears the threshold, and the round-two critic re-measuring the same bird
+//  found the detector let go at 129 m — fifty metres short of where the size
+//  arithmetic says. Something ahead of the size gate was binding and the header
+//  did not say which.
+//
+//  Walked out on one owl, perched 15.5 m up, at both tele stops, reporting each
+//  gate separately at each stand-off:
+//
+//     400 mm (vfov 2.9 deg)   fires to 187 m; at 200 m share is 0.140 and the
+//                             march is still clear and the bird is dead centre
+//     200 mm (vfov 5.8 deg)   fires to 91 m; at 94 m share is 0.147
+//     the march                first fails somewhere between 300 and 400 m
+//
+//  So on THIS owl the size gate binds, exactly where `0.707 / tan(0.149 *
+//  2.9deg / 2) = 187 m` says it should, and nothing else gets a word in. The
+//  critic's 129 m came from a different bird — theirs was 33.9 m up — and the
+//  binding gate there can be named by elimination rather than guessed at: a
+//  stand-off harness aims the camera AT the subject, so `_ndc` is (0, 0) and
+//  `EDGE` cannot be it. It is the terrain march. A bird thirty metres up on the
+//  far side of a rise loses its line of sight long before it loses its size,
+//  and the rest of this file exists to make exactly that not count.
+//
+//  What the sheet can promise, then, is a range and a reason: 175-200 m of
+//  reach on the 400 mm from open ground (the spread is the wingspan draw, 2.6
+//  to 3.0 m), less wherever the ground between you and the tree stands up. The
+//  owl is comfortably in reach from the road, through the glass that is in the
+//  bag for exactly this.
 //
 //  That is why the hint on the sheet now says "only after dark, and high up.
 //  Fit the long lens" instead of "only at night, and only in the headlights".
@@ -151,7 +258,12 @@
 //  and the camera was nowhere near one. Driving the camera to a river anchor
 //  first places both, and the answer is the reassuring one: a wader stands in
 //  the water, so it has no perch-height problem at all. Heron 1.6 m above the
-//  bed, counts from 23.2 m; flamingo 1.9 m, counts from 15.5 m.
+//  bed, counts from 24.1 m; flamingo 1.9 m, counts from 16.2 m.
+//
+//  The flamingo takes finding: `_findWade` wants `minSpan: 7`, so most river
+//  anchors refuse it. Walking `__anchorAt('river', i)` outward, the fifth is
+//  the first that takes one. A run that gives up after one anchor reports "the
+//  flamingo cannot be measured", which is a statement about the harness.
 //
 //  ── where the photographer is ───────────────────────────────────────────────
 //
@@ -202,6 +314,14 @@
 //  overwhelmingly the long ones. Three in 256 is a player deliberately
 //  photographing a bush, and it stays.
 //
+//  (Those rings were measured against the previous, looser threshold, and the
+//  sweep has NOT been re-run since the deer's cut halved to 14 m. It is quoted
+//  as a bound rather than as a current figure: the same rings at 8-24 m are now
+//  entirely inside the range that counts where before the far two were not, and
+//  the trend the paragraph above describes — the hole is made of long poses —
+//  runs the right way. If it is ever re-run, re-run it; do not read 3 of 256 as
+//  this build's number.)
+//
 //  Tried first and thrown away: reading the depth buffer at the subject's pixel
 //  and comparing it to the subject's distance. It is exact, it costs one
 //  `readPixels`, and it is unusable — the post chain does not keep a depth
@@ -241,15 +361,55 @@
 //  part that shows. The march now runs to the **lip** — `wf.top`, where the
 //  river goes over — with `LIP_R` of slack, because a subject is visible when
 //  any of it is and the top of a fall is the part a ridge does not eat. After:
-//  86 blocked, **5** still credited, and those five are not errors — they are
-//  poses where the lip clears the ridge and the plunge pool does not, which is
-//  a real if partial view of a real waterfall.
+//  86 blocked, **5** still credited. A 43x improvement, and it reproduces
+//  exactly — 216 poses, 86 mid-blocked, 5 credited, twice, by two people.
 //
-//  And the ordinary case did not move, which is what says the test is aimed
-//  right rather than merely strict: from 120 road-level poses looking where the
-//  road looks, 25 credited `waterfall` before the change and **25 after**. The
-//  frames it was already getting were genuine; only the mountain-road case
-//  changed.
+//  ── what those five actually are, which is not what this header said ────────
+//
+//  The sentence that used to sit here said the five "are poses where the lip
+//  clears the ridge and the plunge pool does not, which is a real if partial
+//  view of a real waterfall". That is a nice sentence and it describes none of
+//  them. Resolved — by replaying `waterfalls()`'s own loop to find WHICH fall
+//  each pose is credited by, and then measuring how much waterfall is on screen
+//  by rendering each frame twice with the `Waterfalls` group shown and hidden,
+//  world paused:
+//
+//    pose                    credited by            water on screen
+//    (141, -891) e230        fall #12, 284 m away    1384 px  (0.07% of frame)
+//    (22.8, -1031.8)         fall #12, 261 m         4356 px  (0.2%)
+//    (21, -1011)             fall #12, 279 m         3519 px  (0.2%)
+//    (-367.1, -434.9)        the ring's own, 138 m     30 px
+//    (-355.1, -452)          the ring's own, 136 m      2 px
+//    — for scale, the same ring on a clear bearing —  18 959 px  (0.9%)
+//
+//  So **three of the five were not about the ring's fall at all**: they were
+//  credited by a different, 40.7 m fall a quarter of a kilometre away, which is
+//  on screen as a pale line on grey rock in a frame otherwise filled by a pine
+//  branch or a cliff face. And the two the old sentence was actually about have
+//  **thirty pixels and two pixels** of water in them — the lip clears the ridge
+//  by the march's reckoning and does not clear it by the renderer's. "Lip
+//  visible, pool hidden" describes neither group.
+//
+//  The three long ones are fixed, by `FALL_W` (see the constant): a fall 3.4 m
+//  wide at 280 m is 14 px of width, and 14 px of width is not a photograph of
+//  anything. That takes the mountain-ring residual from 5 to **2**, and the two
+//  that remain are the two with almost no water on screen — which is the lip
+//  test's own residual, is 0.9% of a deliberately contrived population of
+//  mountain-ring poses, and stays. It is the honest cost of asking about the
+//  lip instead of the middle, and the alternative — asking about the middle —
+//  is the 86-out-of-86 failure this whole block exists to describe.
+//
+//  **The "25 of 120 road-level, before and after" figure is not checkable and
+//  should not be quoted.** It was meant to show the ordinary case did not move,
+//  which is the right thing to show; but nothing recorded which 120 poses or
+//  how they were aimed, there is no road-node debug surface to reproduce them
+//  from, and two later runs with their own aiming rules got 3 and 6. Those
+//  numbers neither confirm nor refute it. What CAN be said, because it is
+//  measured on a population anybody can rebuild, is in the false-positive block
+//  below and in `FALL_W`'s own note: over the whole valley the `waterfall` line
+//  is credited on 34 of 800 random photographs, and over the mountain rings on
+//  117 of 216, against 121 before the width floor. The ordinary case moved by
+//  3%; the contrived one lost three fifths of its residual.
 //
 //  ── the fireflies were not a find ───────────────────────────────────────────
 //
@@ -283,15 +443,41 @@
 //  lights: the estimate is a population, the flashes are what the picture
 //  shows, and the two are related by that measurement rather than by a guess.
 //
+//  **Three things about that calibration, said out loud because "ten poses
+//  credited" is doing a lot of work.**
+//
+//   · "Ten credited" counts poses whose recorded `est` cleared 110, not poses
+//     the detector answered yes to. On that run the two disagreed twice —
+//     `rows.json` has poses 15 and 19 marked `hit: true` at est 88.1 and 78.4,
+//     which is `ffCount` being asked before streaming had settled and answering
+//     for a different bit of ground than the screenshot shows. A clean re-run
+//     by a critic had zero disagreements between the two. So the ten are ten by
+//     `est`, and `est` is the thing FF_MIN is a threshold on; if the two ever
+//     disagree again the answer is a settle, not a constant.
+//   · The one credited pose out of ten with fewer than five flashes is p7 —
+//     est 163, 3.5 flashes — and it is a camera pointed into a slope. That is
+//     precisely the case the per-sample line-of-sight test below exists for,
+//     caught in the act and not fully caught: the march clears enough samples
+//     to reach 163 while the near grass eats the lights. It is disclosed rather
+//     than fixed because the fix is a per-sample occlusion test finer than a
+//     3 m terrain march, and that is a different order of cost in the shutter
+//     path.
+//   · The rate below is a draw and the number quoted was one draw of it.
+//
 //  The per-sample line-of-sight test came out of the same calibration. Without
 //  it, four of the thirty-four poses estimated between 60 and 270 insects and
 //  had not one flash anywhere in the frame — every one of them a camera pressed
 //  against a slope, crediting the meadow on the other side of the hill.
 //
 //  Where it lands: 18 of 40 (45%) of poses framed deliberately at the ground
-//  the way the old sweep framed them, against 83% before; and **42 of 200
-//  (21%) of random night photographs aimed anywhere** — which is the number
-//  that matters, because that is the accidental tick. The swarm really is a
+//  the way the old sweep framed them, against 83% before; and **a fifth to a
+//  quarter of random night photographs aimed anywhere** — 42 of 200 on one
+//  draw of 200 poses, 56 of 200 on an independent one, so 21% and 28% of the
+//  same underlying rate. Quote the range, not either end: two draws of 200
+//  from a rate near a quarter differ by that much routinely, and the earlier
+//  version of this line quoted 21% to two figures as though it were a
+//  property of the rule. It is the number that matters, because it is the
+//  accidental tick, and what it says either way is that the swarm really is a
 //  valley-floor phenomenon and an honest rule cannot make it rarer than it is;
 //  what changed is that a dark hillside, a dry ridge, an alpine shoulder or a
 //  frame of night sky no longer counts as a photograph of fireflies.
@@ -299,14 +485,28 @@
 //  ── false positives, which are the failure mode that would ruin this ────────
 //
 //  800 camera poses at random points across the whole 3072 m valley, at midday
-//  with no camps pitched, each looking in a random direction: **zero** animals,
-//  zero camps, zero fireflies. The only id that came back was `waterfall`, on
-//  44 of them (5.5%) — which is not a false positive, it is what a 320 m reach
-//  over twenty-eight waterfalls looks like when you point a camera at random.
-//  (52 before the lip test; the eight that went away were the ones behind a
-//  ridge.)
+//  with no camps pitched, each on a random bearing and a random pitch inside
+//  +-0.25 rad: **zero** animals, zero camps, zero fireflies. The only id that
+//  came back was `waterfall`, on **34** of them (4.3%) — which is not a false
+//  positive, it is what a reach of a couple of hundred metres over twenty-eight
+//  waterfalls looks like when you point a camera at random.
+//
+//  The aiming rule matters and this is the third set of numbers this paragraph
+//  has carried, so: 56 of 800 on this pose set before `FALL_W`, 34 after. An
+//  earlier run of the same sweep with the camera held level rather than pitched
+//  got 44 of 800, and a critic's 400 level poses got 19 (4.8%) — level aiming
+//  finds fewer skyline falls, which is the whole of the difference. The animal,
+//  camp and firefly counts are zero under every one of them, which is the part
+//  of this paragraph that is actually load-bearing, and the tighter `MIN_SHARE`
+//  can only push those further down.
 //
 //  ── what it costs ───────────────────────────────────────────────────────────
+//
+//  (Not re-timed in round three, and quoted as unchanged rather than as
+//  re-measured. What changed is a bounding sphere for a bounding box — the same
+//  read off the same geometry — and one `atan` plus one distance per waterfall
+//  candidate, against a `clearLine` march that is twenty array reads. If it is
+//  ever re-timed, re-time it; do not read the range below as this build's.)
 //
 //  Two to nine microseconds per call, measured over 200 calls in a booted game
 //  — 2.0 at a night pose with the firefly integral running, 9.0 at the boot
@@ -345,15 +545,21 @@ import { HUNT_IDS } from './hunt_items.js';
 // ── the framing rules ────────────────────────────────────────────────────────
 
 /**
- * How much of the frame's HEIGHT the subject's bounding sphere must subtend.
+ * How much of the frame's HEIGHT the subject's own HEIGHT must subtend.
  *
- * See the header for how this was arrived at. The short version: it is the
- * size at which a capture of a real deer in the real valley stops being a
- * brown lozenge and starts having legs, and nothing else in the game pushes
- * back on it — not the birds, not the vehicle. It was 0.085 and 0.085 was a
- * threshold defended by an argument that turned out not to be true.
+ * Not its bounding sphere. See the header's "the gate measured a sphere" for
+ * the two thresholds that came before this one and what was wrong with the
+ * quantity they were applied to. The short version: a deer's bounding sphere
+ * is 3.52 m across and the deer inside it is 1.83 m tall, and every other
+ * species has its own such ratio, spanning 0.22 to 0.48 — so a share taken on
+ * the sphere is a different promise for every animal it is applied to.
+ *
+ * 0.149 is the frame share of the photograph that was judged acceptable: the
+ * deer at 14 m, from four bearings, every one of them a picture a reader finds
+ * the deer in without being told where to look. It is not round and it is not
+ * meant to be.
  */
-const MIN_SHARE = 0.155;
+const MIN_SHARE = 0.149;
 
 // The two set-pieces are not animals and do not answer to MIN_SHARE. A
 // waterfall is enormous — the animal share would still count one at 380 m,
@@ -361,8 +567,45 @@ const MIN_SHARE = 0.155;
 // something you are standing next to. Both were set against their own subject
 // and neither moved when MIN_SHARE did, because neither was ever derived from
 // it: a rule tuned on a deer has nothing to say about an eighty-metre drop.
+//
+// FALL_SHARE reads the same way MIN_SHARE now does — the drop's HEIGHT over the
+// frame's height — because `waterfalls()` hands `share` half the drop. It was
+// already the silhouette rule; see the header.
+//
+// CAMP_SHARE is the one place in this file where the number in `share` is not a
+// half-height. A camp is a clearing: it is wide and low, `c.radius` is a
+// horizontal radius, and the thing a photograph of one has to contain is the
+// ground it occupies rather than the height of a tent. Left as it was, and
+// named here so nobody reads it as the same promise as the other two.
 const FALL_SHARE = 0.12;
 const CAMP_SHARE = 0.12;
+
+/**
+ * And the same question asked across the fall, which is the dimension that
+ * decides whether it reads as water.
+ *
+ * Every fall in this valley is a ribbon: measured over all 28, the widths run
+ * 3.3 to 8.1 m (median 4.5) against heights of 22 to 96 m — nine to one. So the
+ * height gate is satisfied by falls that are, on screen, a scratch. Measured at
+ * three of the mountain-ring poses the round-two critic photographed, a 40.7 m
+ * fall 3.4 m wide at 261-284 m clears FALL_SHARE with a height share of 0.164 to
+ * 0.178 and puts **13 to 16 pixels of width** on a 1920x1080 frame; the frames
+ * are a pine branch and a cliff face with a pale line on the rock behind them.
+ * That is the deer's brown lozenge again, in a raincoat.
+ *
+ * 0.02 of the frame height is ~22 px of width, and it is where the picture
+ * turns: at 0.0138-0.015 the three poses above hold 1384, 3519 and 4356 pixels
+ * of visible water in a 2.07 megapixel frame — 0.07% to 0.2% — while the
+ * ordinary case, the same ring at a bearing where the fall is clear, holds
+ * 18 959 (0.9%) at a width share of 0.032. An order of magnitude, and it is
+ * visible as an order of magnitude when you open the two files.
+ *
+ * What it costs, measured on the same two populations as everything else:
+ * random valley poses crediting `waterfall` go 56 of 800 to 34 of 800, and the
+ * mountain-ring sweep goes 121 of 216 to 117. The reach for a median 4.5 m fall
+ * becomes 258 m; for the widest, `FALL_MAX` still binds first.
+ */
+const FALL_W = 0.02;
 
 // A marshmallow is 21 mm across, held at arm's length, in a view that frames it
 // for you. The share rule that keeps a deer honest at 26 m has nothing useful
@@ -389,7 +632,10 @@ const EDGE = 0.84;
 // whole question. Neither ever binds for an animal.
 const FALL_MAX = 320;     // a little under Stats' 420 m sighting reach: a fall
                           // you can SEE from the far rim is not one you have
-                          // photographed
+                          // photographed. Since `FALL_W` it is no longer the
+                          // gate that usually ends the reach — a median 4.5 m
+                          // fall runs out of width at 258 m — and it still
+                          // binds for the widest, which is what it is for.
 const CAMP_MAX = 140;
 const MALLOW_MAX = 4;
 
@@ -418,6 +664,22 @@ const LIP_R = 3;
  * spread and errs generous for the squat birds and tight for the tall ones,
  * which is the right way round: the tall ones are the ones you meet at a
  * distance across water.
+ *
+ * **Read that paragraph again and notice what it is a model OF.** "0.39 of its
+ * own span TALL" — this constant was always converting a wingspan into a
+ * HEIGHT, which is exactly the quantity `MIN_SHARE` now asks for. The bird
+ * branch needed no change when the mammal branch was rewritten, because the
+ * bird branch had never been measuring a sphere: `unit * sc * FOLD_R` is half
+ * the perched bird's height and has been since it was written. Measured on the
+ * live birds, `unit` is 0.508-0.568 and `sc` is the wingspan in metres, so
+ * `2 * r` comes out at 1.42 m for an owl, 2.43 m for an eagle and 3.14 m for a
+ * heron — the perched heights of birds this game draws at 2-3x life on purpose.
+ *
+ * The sphere is the right handle HERE and the wrong one for a mammal for the
+ * same reason in both cases: it is half the body diagonal, and a spread bird's
+ * diagonal IS its span. The mammals' bounding box has a Y extent that means
+ * something; these birds' does not — the bald eagle's is 0.142 of a span,
+ * because a bird with its wings out is a flat thing.
  */
 const FOLD_R = 0.5;
 
@@ -518,8 +780,16 @@ function frameOf(ctx) {
 }
 
 /**
- * Is a sphere of `radius` at `pos` big enough, and far enough inside the frame,
- * to be the subject of this photograph?
+ * Is a subject `2 * radius` tall, centred at `pos`, big enough — and far enough
+ * inside the frame — to be the subject of this photograph?
+ *
+ * `radius` is a HALF-HEIGHT for everything that answers to `MIN_SHARE`: half a
+ * mammal's bounding-box height, half a perched bird's modelled height, half a
+ * waterfall's drop. `2 * atan(radius / dist)` is then the angle the subject's
+ * height subtends and `s` is that over the frame's own vertical angle, so a
+ * share of 0.15 means "this thing is 15% of the picture tall". The one caller
+ * that hands it something else is `highCamp`, whose subject is a clearing
+ * rather than a standing object — see the note on `CAMP_SHARE`.
  *
  * Returns the frame share when it passes and 0 when it does not, so a caller
  * that wants "the best one" can compare — nothing does yet, and the flag is
@@ -609,28 +879,36 @@ function visible(f, pos, radius, minShare = MIN_SHARE, maxDist = Infinity) {
 }
 
 /**
- * A mesh's world-space bounding sphere, as (centre in `_p`, radius returned).
+ * HALF a mesh's world-space height, as (mid-height point in `_p`, half-height
+ * returned) — the number `share` wants, for the reason in the header.
  *
- * The animals are skinned and animated in a rig, so the geometry's own sphere
- * is the REST pose — which is the right thing to use anyway: a deer mid-stride
- * and a deer standing still are the same size of deer, and a per-frame sphere
- * would make the gate flicker with the gait.
+ * The bounding BOX, not the bounding sphere. The sphere's radius is half the
+ * body diagonal, so it is set by whichever axis is longest — the deer's is set
+ * by its length and its antlers and comes out at 1.76 m for an animal 1.83 m
+ * tall, a "diameter" of 3.52 m. The box's Y extent is the animal's height and
+ * nothing else, and measured against the drawn silhouette (header table) it is
+ * the height to within 11-20%, on every one of the six.
  *
- * Only `.y` of the local centre is carried across, because these objects rotate
- * about Y and the horizontal part of the offset would need the full transform
- * for an answer that moves the centre by half a metre inside a sphere metres
- * across.
+ * The animals are skinned and animated in a rig, so the geometry's own box is
+ * the REST pose — which is the right thing to use anyway: a deer mid-stride and
+ * a deer standing still are the same size of deer, and a per-frame box would
+ * make the gate flicker with the gait. It is also why the box reads a little
+ * tall: the rest pose has the head up and a grazing deer does not.
+ *
+ * Only `.y` is carried across, because these objects rotate about Y — the
+ * horizontal part of the offset would need the full transform, and height is
+ * invariant under the one rotation they have.
  */
-function meshSphere(mesh) {
+function meshHeight(mesh) {
   const g = mesh?.geometry;
   if (!g) return 0;
-  if (!g.boundingSphere) { try { g.computeBoundingSphere(); } catch { return 0; } }
-  const bs = g.boundingSphere;
-  if (!bs || !Number.isFinite(bs.radius)) return 0;
-  const s = Math.abs(mesh.scale?.x) || 1;
+  if (!g.boundingBox) { try { g.computeBoundingBox(); } catch { return 0; } }
+  const bb = g.boundingBox;
+  if (!bb || !Number.isFinite(bb.min.y) || !Number.isFinite(bb.max.y)) return 0;
+  const s = Math.abs(mesh.scale?.y) || Math.abs(mesh.scale?.x) || 1;
   _p.copy(mesh.position);
-  _p.y += bs.center.y * s;
-  return bs.radius * s;
+  _p.y += (bb.min.y + bb.max.y) * 0.5 * s;
+  return (bb.max.y - bb.min.y) * 0.5 * s;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -656,7 +934,7 @@ function mammals(f, wl, hit) {
     for (const per of pool[key]) {
       for (const a of per) {
         if (!a.active || !a.mesh) continue;
-        const r = meshSphere(a.mesh);
+        const r = meshHeight(a.mesh);
         if (!r) continue;
         if (!visible(f, _p, r)) continue;
         hit.add(key);
@@ -673,11 +951,14 @@ function campDog(f, camp, hit) {
     const dog = c.dog;
     if (!dog?.mesh || !dog.pos) continue;
     // `dog.mesh.position` is not the animal's place — `CampDog` keeps its
-    // position in `pos` and poses the mesh through its rig — so the sphere is
-    // taken from the geometry and re-centred on `pos` by hand.
-    const r = meshSphere(dog.mesh);
+    // position in `pos` and poses the mesh through its rig — so the height is
+    // taken from the geometry and re-centred on `pos` by hand. `pos.y` is the
+    // GROUND under the dog (`camp_dog.js:405` sets it from `getHeight`), so
+    // mid-height is one half-height up: `r`, exactly, rather than the 0.45 of
+    // a sphere radius this line carried when `r` meant something else.
+    const r = meshHeight(dog.mesh);
     if (!r) continue;
-    _p.set(dog.pos.x, dog.pos.y + r * 0.45, dog.pos.z);
+    _p.set(dog.pos.x, dog.pos.y + r, dog.pos.z);
     if (!visible(f, _p, r)) continue;
     hit.add('campDog');
     return;
@@ -736,6 +1017,12 @@ function waterfalls(f, list, hit) {
            (wf.top[2] + wf.bottom[2]) * 0.5);
     const r = Math.max((wf.height ?? 0) * 0.5, (wf.width ?? 0) * 0.5, 2);
     if (!share(f, _p, r, FALL_SHARE, FALL_MAX)) continue;
+    // Wide enough to be water rather than a scratch — see `FALL_W`. Done here
+    // rather than through a second `share` call because `share` would apply
+    // `EDGE` a second time with the narrower slack, and a fall filling the left
+    // of the frame is exactly the shot that slack exists for. `_p` is still the
+    // midpoint `share` just used, so this is one subtract and an atan.
+    if ((2 * Math.atan(Math.max((wf.width ?? 0) * 0.5, 0.5) / f.eye.distanceTo(_p))) / f.vfov < FALL_W) continue;
     // The march runs to the LIP, not to the middle of the drop. See the block
     // over `LIP_R`: the midpoint is the one point of a waterfall that is
     // reliably behind something, and asking about it is what made the first
@@ -1107,6 +1394,6 @@ function warn(where, e) {
  * count" without reimplementing the arithmetic — `tools/` scripts and the
  * console are the only callers.
  */
-export const _internals = { share, clearLine, visible, frameOf, meshSphere,
-  ffCount, MIN_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, CAMP_SHARE,
+export const _internals = { share, clearLine, visible, frameOf, meshHeight,
+  ffCount, MIN_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, FALL_W, CAMP_SHARE,
   FF_MIN, LIP_R };
