@@ -2533,7 +2533,20 @@ export class PostFX {
     const { f, format, s, N, A, kInf } = this._lensGeometry();
     const c = format / P.cocDiv;                     // acceptable circle, mm
     const near = (s * A) / (A + c) / 1000;
-    const far = A > c ? (s * A) / (A - c) / 1000 : Infinity;
+    // `far = sA/(A − c)` divides by a difference that goes to ZERO at the
+    // hyperfocal, and `A > c` is a knife-edge test right where the divide
+    // blows up. That used to be an academic worry; it is not any more, because
+    // `photo_focus._openAt` now parks the opening autofocus exactly ON the
+    // hyperfocal. Measured on a cold entry at 200 mm: the panel printed
+    // "sharp 23.3 – 320072412631920576 m".
+    //
+    // The cut-off is the camera's own far plane rather than an epsilon on the
+    // comparison, because that is the honest statement: past `camera.far`
+    // nothing is drawn, `readDepthAt` returns null, and "sharp to 218 km" and
+    // "sharp to infinity" describe the same photograph. An epsilon would have
+    // had to be tuned per focal length to say anything different.
+    const raw = A > c ? (s * A) / (A - c) / 1000 : Infinity;
+    const far = raw >= (this.engine.camera?.far ?? 6000) ? Infinity : raw;
     return {
       focal: f, format, fStop: N, focus: s / 1000, near, far,
       // H = f²/(Nc) + f, in metres. Focus there and A is exactly c, which is

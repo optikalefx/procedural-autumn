@@ -26,6 +26,12 @@
 //      shift + click   pull focus onto whatever is under the cursor
 //      alt   + wheel   aperture
 //
+//  Every one of those now has a VISIBLE control beside it on the rail — a focus
+//  slider, an aperture slider, an AF button — because a chord is not a control
+//  a player can find by looking, and on a phone it is not a control at all.
+//  The chords stay for the people who learned them; they are no longer the only
+//  way in. See the rail in `hud_photo.js`.
+//
 //  The aperture ladder below runs f/1.4 to f/22, but the RING the player turns
 //  is clamped to the fitted lens by the rail (`hud_photo._lensStop`): f/2.8 to
 //  f/22 on the 24-70, f/4 to f/22 on the 200-400. The ladder keeps the faster
@@ -71,13 +77,35 @@
 //
 //  ── the readout ────────────────────────────────────────────────────────────
 //
-//  A control nobody can see is a control nobody uses, and this one has no
-//  slider of its own on the rail. So the panel appears whenever the player
-//  holds either modifier — before they have scrolled anything — lists the three
-//  gestures, and shows the live focus distance and f-stop. It fades out a
-//  second and a half after the last change so it is never in a photograph. The
-//  shutter path does not have to know about it: `PhotoMode.capture()` reads the
-//  drawing buffer, and this is DOM.
+//  It is an INSTRUMENT PANEL and it never goes away. Both halves of that
+//  sentence are corrections.
+//
+//  It used to appear only while a modifier was held or a dial was moving, and
+//  fade a second and a half after the last change — on the argument that a
+//  readout on screen is a readout in the photograph. That argument was wrong
+//  twice over. The shutter reads the drawing buffer, so no DOM has ever been in
+//  a saved photo; and the numbers a photographer wants are exactly the ones you
+//  want *while deciding*, not the ones you want for a second and a half after
+//  you have already decided. The player's words were "don't hide the info bar
+//  that says the aperture and stuff". So it is up for as long as the mode is.
+//
+//  And it reads as an instrument rather than as a sentence: four value/label
+//  cells — lens, focal length, aperture, focus distance — over one line for the
+//  band that is actually sharp. The transient lines (a click that found sky, a
+//  subject the lens cannot reach) are the only thing left that comes and goes.
+//
+//  ── where it sits, and who decides ─────────────────────────────────────────
+//
+//  Pass `opts.slot` and the panel becomes an ordinary block inside it, with no
+//  position of its own. That is not a convenience; it is the fix to a real
+//  defect. The panel used to place itself at a fixed `bottom: 92px` from this
+//  file's own injected stylesheet, and `hud.css` carried an override lifting it
+//  clear of the photo rail — two files owning one strip of screen, kept in
+//  agreement by hand, and out of agreement the moment the rail grew a lens
+//  preview. With a slot, this file owns how the readout LOOKS and the host owns
+//  where it SITS, and there is no second rule to keep in step. The fixed
+//  fallback stays for a host that gives no slot, so the class is still usable
+//  on its own.
 //
 //  It also shows the DEPTH OF FIELD, which is not decoration. Nine stops is a
 //  lot of clicks for a dial whose usable range is three or four of them, and
@@ -110,9 +138,13 @@
 //  ── wiring ─────────────────────────────────────────────────────────────────
 //
 //  Deliberately self-installing. `enable()` attaches its own listeners and
-//  builds its own DOM; `disable()` removes both. The integrator needs three
-//  lines in `hud_photo.js` and nothing else — construct it, enable/disable it
-//  alongside the mode, and call `update(dt)` while it is open.
+//  builds its own DOM; `disable()` removes both. The integrator constructs it,
+//  enables/disables it alongside the mode, and calls `update(dt)` while it is
+//  open. Four optional hooks make it a citizen of a real interface rather than
+//  a floating box: `slot` (where the panel goes — see above), `barrel` (the
+//  fitted lens, which this file models the optics of but cannot name),
+//  `onChange` (so a host with sliders can follow the wheel), and `repaint()`
+//  (so a host whose lens moved can make the panel say so).
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The near end of the dial, in metres: closer than the free camera's own ground
@@ -179,35 +211,54 @@ const AF_TRIES = 10;
 // camp table is a 5 cm decision), 1 to 100 m, none past it.
 const fmtM = (d) => (d >= 100 ? d.toFixed(0) : d >= 10 ? d.toFixed(1) : d.toFixed(2));
 
-const READOUT_HOLD = 1.5;   // s the panel stays up after the last change
-const READOUT_FADE = 0.45;  // s it takes to go
+// How long a transient line stays up. The PANEL no longer fades — see the
+// header — but "sky — nothing to focus on" is an answer to a click, and an
+// answer to a click that is still on screen a minute later has stopped being
+// an answer and started being a label.
+const NOTE_HOLD = 3.0;
 
 const CSS = `
 .pa-focus {
-  position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
-  z-index: 40; pointer-events: none; opacity: 0;
-  transition: opacity ${READOUT_FADE}s ease;
-  font: 500 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  z-index: 40; pointer-events: none;
+  font: 500 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.04em; color: #f4ece0; text-align: center;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+/* The standalone placement, for a host that hands this class no slot. Inside
+   photo mode there is a slot and none of this applies — see the header on why
+   two files owning one strip of screen was a defect and not a convenience. */
+.pa-focus.pa-focus-inline { color: inherit; }
+.pa-focus:not(.pa-focus-inline) {
+  position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
   background: rgba(18, 14, 11, 0.62);
   border: 1px solid rgba(244, 236, 224, 0.18);
   border-radius: 10px; padding: 9px 16px 8px;
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
 }
-.pa-focus.pa-on { opacity: 1; }
-.pa-focus b { font-weight: 600; font-size: 17px; letter-spacing: 0.02em; }
-.pa-focus i { font-style: normal; opacity: 0.55; }
-.pa-focus u {
-  display: block; margin-top: 5px; text-decoration: none;
-  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-  opacity: 0.5;
+/* ── the instrument row ──────────────────────────────────────────────────
+   Four value/label cells. A photographer reads a camera's top plate by
+   position, not by punctuation, so the cells are a grid with air between
+   them rather than one sentence separated by middots. \`flex-wrap\` is what
+   carries it down to a phone: the row becomes two rows of two and nothing
+   is cut off. */
+.pa-focus-row {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 2px 22px;
 }
-/* The depth of field, or what the last click found. Between the number and the
-   gestures because it is the line that changes when the aperture ring moves —
-   which is the whole answer to "is this stop doing anything". */
+.pa-focus-cell { min-width: 3.6em; }
+.pa-focus-cell b {
+  display: block; font-weight: 600; font-size: 16px; letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.pa-focus-cell i {
+  display: block; font-style: normal; font-size: 9px; opacity: 0.5;
+  letter-spacing: 0.16em; text-transform: uppercase; margin-top: 1px;
+}
+/* The depth of field, or what the last click found. Under the numbers because
+   it is the line that changes when the aperture cell does — which is the whole
+   answer to "is this stop doing anything". */
 .pa-focus em {
-  display: block; margin-top: 4px; font-style: normal;
+  display: block; margin-top: 5px; font-style: normal;
   font-size: 11px; letter-spacing: 0.05em; opacity: 0.72;
 }
 /* The one thing the dial could not do. Warm amber rather than red: nothing has
@@ -235,16 +286,29 @@ export class PhotoFocus {
    * @param {object} ctx   the app context — needs `camera`, `postfx`, and
    *                       `renderer` for the canvas the click lands on.
    * @param {object} [opts]
-   * @param {HTMLElement} [opts.root]  where the readout is appended.
+   * @param {HTMLElement} [opts.root]  where the pull-focus mark is appended.
+   *                       It is `position: fixed` over the canvas, so it wants
+   *                       the HUD root whatever the readout is doing.
+   * @param {HTMLElement} [opts.slot]  where the readout is appended. Given one,
+   *                       the panel takes no position of its own and the host's
+   *                       layout places it. See the header.
+   * @param {function} [opts.barrel]  `() => ({ name, focal })` for the lens
+   *                       actually fitted. This class models the OPTICS and has
+   *                       no idea what body is on the camera; the two cells that
+   *                       say so come from whoever owns the kit.
+   * @param {function} [opts.onChange]  fired after anything the player can see
+   *                       moves, so a host with its own sliders can resync them.
    */
   constructor(ctx, opts = {}) {
     this.ctx = ctx;
     this.root = opts.root ?? document.body;
+    this.slot = opts.slot ?? null;
+    this.barrel = opts.barrel ?? null;
+    this.onChange = opts.onChange ?? null;
     this.active = false;
     this._dist = 18;
-    this._stop = STOPS.indexOf(2.8);  // f/2.8 — `enable` re-asserts it, see there
-    this._show = 0;                 // seconds of readout left
-    this._held = false;             // a modifier is down: keep the panel up
+    this._stop = STOPS.indexOf(22);  // f/22 — `enable` re-asserts it, see there
+    this._noteHold = 0;             // seconds the transient line has left
     this._node = null;
     this._mark = null;
     this._down = null;              // {x, y} of a pointer that may become a pull
@@ -256,15 +320,15 @@ export class PhotoFocus {
     // mode that can be opened and closed a hundred times a session cannot leak
     // a listener per visit.
     this._onWheel = this._onWheel.bind(this);
-    this._onKeyDown = this._onKeyDown.bind(this);
-    this._onKeyUp = this._onKeyUp.bind(this);
     this._onPointerDown = this._onPointerDown.bind(this);
     this._onPointerUp = this._onPointerUp.bind(this);
-    this._onBlur = this._onBlur.bind(this);
   }
 
   get distance() { return this._dist; }
   get fStop() { return STOPS[this._stop]; }
+  /** The near and far ends of the dial, in metres — what a slider spans. */
+  get near() { return NEAR; }
+  get reach() { return this._reach(); }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -282,16 +346,28 @@ export class PhotoFocus {
     this.active = true;
 
     fx.setPhotoDOF(true);
-    // Photo mode opens at f/2.8, and the number is chosen from the stops that
-    // EXIST rather than from taste: the rail clamps the ring to the fitted lens
-    // (`hud_photo._lensStop`), so the ladder is f/2.8-f/22 on the 24-70 and
-    // f/4-f/22 on the 200-400. This was f/2, which is on neither lens — the
-    // rail re-clamped it to f/2.8 one frame after entry, so the constant was
-    // describing an aperture the player never saw. f/2.8 is the wide lens's own
-    // maximum aperture: it separates the subject from the valley on sight and
-    // still holds a whole vehicle, and with the tele fitted the rail takes it
-    // to f/4 without a second write.
-    this._stop = STOPS.indexOf(2.8);
+    // ── photo mode opens at f/22 ──────────────────────────────────────────
+    //
+    // The player asked for it outright ("when you first go into photo mode,
+    // the default should be F22") and the measurement agrees with them, which
+    // is worth writing down because the old default was defended at length.
+    //
+    // It was f/2.8 — the wide lens's own maximum aperture, chosen to separate
+    // a subject from the valley on sight. What that argument missed is the
+    // FORMAT this mode is running. `PostFX` holds a 440 mm lens and derives
+    // the film from the fitted angle of view (see its `_lensGeometry`), so a
+    // 24 mm-equivalent frame is a 14x17 view camera: at f/2.8 the hyperfocal
+    // is 168 m and a subject 10 m away gets a band 1.2 m deep. Measured on a
+    // cold entry with the centre of frame on a hillside 227 m out, f/2.8 held
+    // 48% of the frame inside the sharp band and every near thing in it was a
+    // smear. That is the "why is it always blurry" the player is reporting.
+    //
+    // f/22 is the far end of the ladder and both lenses reach it (`fStopMin`
+    // is 22 on the 24-70 AND on the 200-400), so unlike the f/2 this line used
+    // to hold, it survives the rail's clamp with no second write and the
+    // player sees the number they were promised. Opening stopped down is also
+    // simply what a photographer does when they have not chosen a subject yet.
+    this._stop = STOPS.indexOf(22);
     fx.setAperture(this.fStop);
     // The lens is now the player's; CameraRig may keep writing its own idea of
     // the focus from the free camera's pivot and will be ignored (see
@@ -315,19 +391,55 @@ export class PhotoFocus {
     // at all. The free camera's pivot distance IS the subject distance; there
     // was never anything for the fudge to correct.
     const rig = this.ctx.systems?.cameraRig;
-    this.setDistance(Number.isFinite(rig?.freeDist) ? rig.freeDist : 18);
+    this.setDistance(this._openAt(Number.isFinite(rig?.freeDist) ? rig.freeDist : 18));
     this._pendingAF = AF_TRIES;
 
     this._mountDom();
     window.addEventListener('wheel', this._onWheel, { capture: true, passive: false });
-    window.addEventListener('keydown', this._onKeyDown, true);
-    window.addEventListener('keyup', this._onKeyUp, true);
     window.addEventListener('pointerdown', this._onPointerDown, true);
     window.addEventListener('pointerup', this._onPointerUp, true);
-    window.addEventListener('blur', this._onBlur);
-    // Up on entry, so the control announces itself once and then gets out of
-    // the way. Nobody discovers a modifier they were never told about.
-    this._flash(2.6);
+  }
+
+  /**
+   * The opening focus, brought inside the distance that leaves the MOST of the
+   * frame sharp. Applies to the automatic focus only — never to a pull the
+   * player asked for, which is their decision and gets `_warn` instead.
+   *
+   * ── the measurement ────────────────────────────────────────────────────
+   *
+   * The autofocus below was audited and it is not broken: on a cold entry the
+   * centre-of-frame depth read came back on frame 0 with zero error, and the
+   * focus distance it set was exactly the depth of the pixel in the middle of
+   * the screen. The frame was still a smear, and the census says why:
+   *
+   *     centre of frame 227.4 m     band at f/2.8   96.6 m – infinity
+   *     frame depths    p10 9.5 m   median 27.0 m   p90 436.6 m
+   *     inside the band                             48% of the frame
+   *
+   * The centre pixel was a hillside a quarter of a kilometre away, so the
+   * whole near half of the picture — which is most of the picture — fell
+   * outside the near limit. The mirror case is just as common and just as bad:
+   * point slightly down, the centre pixel is grass at 10 m, and the valley
+   * behind it dissolves. Reading the centre and believing it is what every
+   * camera does; what every camera ALSO does is refuse to focus past the
+   * hyperfocal, because beyond it the far limit is already infinity and all
+   * the extra distance buys is throwing away near sharpness for nothing.
+   *
+   * So: `min(measured, hyperfocal)`. On the frame above that moves the plane
+   * from 227.4 m to 21.3 m and the far limit stays at infinity, which is the
+   * point — the hillside is still sharp AND so is everything from 10.7 m out.
+   * A deer at 6 m is inside the hyperfocal and is focused on exactly as
+   * before; nothing near the camera changes at all.
+   *
+   * `hyperfocal` comes from `PostFX.lensInfo()`, solved from the same c(d) the
+   * shader runs, so this cannot drift from the picture. `_reach()` uses the
+   * same number for the far end of the DIAL and deliberately scales it to the
+   * widest stop; this one must not, because here the current aperture is
+   * exactly the thing being asked about.
+   */
+  _openAt(m) {
+    const h = this.ctx.postfx?.lensInfo?.()?.hyperfocal;
+    return Number.isFinite(h) && h > NEAR ? Math.min(m, h) : m;
   }
 
   /**
@@ -344,13 +456,9 @@ export class PhotoFocus {
     if (!this.active) return;
     this.active = false;
     window.removeEventListener('wheel', this._onWheel, { capture: true });
-    window.removeEventListener('keydown', this._onKeyDown, true);
-    window.removeEventListener('keyup', this._onKeyUp, true);
     window.removeEventListener('pointerdown', this._onPointerDown, true);
     window.removeEventListener('pointerup', this._onPointerUp, true);
-    window.removeEventListener('blur', this._onBlur);
     this._down = null;
-    this._held = false;
     this._note = null;
     this._warn = null;
     this._pendingAF = 0;
@@ -404,7 +512,7 @@ export class PhotoFocus {
     this._warn = null;
     this._dist = Math.min(this._reach(), Math.max(NEAR, m));
     this.ctx.postfx?.setFocusManual?.(this._dist);
-    this._flash();
+    this._touch();
   }
 
   /**
@@ -445,17 +553,16 @@ export class PhotoFocus {
   focusAt(u, v) {
     const d = this.ctx.postfx?.readDepthAt?.(u, v);
     if (d == null || !Number.isFinite(d)) {
-      // The panel comes up either way — a control that appears to have ignored
-      // a click is worse than one that says it found nothing — but it has to
-      // SAY so. Flashing the unchanged number reads as a missed click; one
-      // word closes the loop.
+      // The panel is always up now, so it cannot answer a click by appearing.
+      // It has to SAY so instead: an unchanged number reads as a missed click,
+      // and one word closes the loop.
       this._note = 'sky — nothing to focus on';
-      this._flash();
+      this._touch();
       return null;
     }
     if (!(d > NEAR)) {
       this._note = 'too near to measure — focus unchanged';
-      this._flash();
+      this._touch();
       return null;
     }
     this._note = null;
@@ -471,7 +578,7 @@ export class PhotoFocus {
     this._warn = (L && (d > L.far || d < L.near))
       ? `subject at ${fmtM(d)} m is outside the band — the lens will not reach it`
       : null;
-    this._paint();
+    this._touch();
     return this._dist;
   }
 
@@ -485,19 +592,19 @@ export class PhotoFocus {
     }
     this._stop = best;
     this.ctx.postfx?.setAperture?.(this.fStop);
-    this._flash();
+    this._touch();
   }
 
   /** One detent on the aperture ring. Positive stops down. */
   nudgeAperture(steps) {
     if (!steps) return;
     const next = Math.min(STOPS.length - 1, Math.max(0, this._stop + Math.sign(steps)));
-    if (next === this._stop) { this._flash(); return; }
+    if (next === this._stop) { this._touch(); return; }
     this._note = null;
     this._warn = null;
     this._stop = next;
     this.ctx.postfx?.setAperture?.(this.fStop);
-    this._flash();
+    this._touch();
   }
 
   // ── frame ─────────────────────────────────────────────────────────────────
@@ -505,15 +612,16 @@ export class PhotoFocus {
   /**
    * REAL time, like everything else in photo mode — the world clock is stopped.
    *
-   * Three jobs. It fades the readout, it re-asserts the aperture when the
-   * field of view has moved, and it keeps asking for the opening measurement
-   * until the depth buffer has one to give.
+   * Three jobs. It expires the transient line, it re-asserts the aperture when
+   * the field of view has moved, and it keeps asking for the opening
+   * measurement until the depth buffer has one to give.
    *
    * The fov watch is not hypothetical any more: the blur circle is derived
    * from the focal length and the focal length from the fov, and photo mode
    * now has a lens kit with a zoom ring (`src/photo/lens_models.js`). Without
    * this, zooming would leave the aperture describing the lens that was fitted
-   * before.
+   * before. It repaints too — the sharp band moves with the focal length, and
+   * a panel that is always on screen is a panel that is always being read.
    */
   update(dt) {
     if (!this.active) return;
@@ -521,21 +629,34 @@ export class PhotoFocus {
     if (Math.abs(fov - (this._fov ?? 0)) > 0.01) {
       this._fov = fov;
       this.ctx.postfx?.setAperture?.(this.fStop);
+      this._paint();
     }
     // The deferred opening measurement — see `enable`. Retried rather than
     // counted down, and the test is on the ANSWER, not on the frame number: a
     // stale depth attachment reads 0.25 m, which is finite, plausible and
     // inside the near clamp, so `> NEAR` is what tells the two apart. No
     // reticle for this one — nothing was clicked.
+    //
+    // `_openAt` is the hyperfocal clamp, and it is on BOTH exits. The second
+    // one is the case the old code left blurry with nothing to say for itself:
+    // ten frames of centre-of-frame sky — a camera pointed at the horizon, or
+    // over a ridge — and the dial stayed on the free camera's arm length with
+    // the entire landscape outside the near limit. Focusing at the hyperfocal
+    // is the right answer to "there is no subject in the middle of the frame":
+    // it is the setting that has the most of everything sharp.
     if (this._pendingAF > 0) {
       this._pendingAF--;
       const d = this.ctx.postfx?.readDepthAt?.(0.5, 0.5);
-      if (Number.isFinite(d) && d > NEAR) { this._pendingAF = 0; this.setDistance(d); }
+      if (Number.isFinite(d) && d > NEAR) { this._pendingAF = 0; this.setDistance(this._openAt(d)); }
+      else if (this._pendingAF === 0) this.setDistance(this._openAt(this._dist));
     }
-    if (this._held) { this._show = Math.max(this._show, 0.2); return; }
-    if (this._show <= 0) return;
-    this._show -= dt;
-    if (this._show <= 0) this._node?.classList.remove('pa-on');
+    if (this._noteHold <= 0) return;
+    this._noteHold -= dt;
+    if (this._noteHold <= 0 && (this._note || this._warn)) {
+      this._note = null;
+      this._warn = null;
+      this._paint();
+    }
   }
 
   // ── input ─────────────────────────────────────────────────────────────────
@@ -574,23 +695,11 @@ export class PhotoFocus {
     // trackpad's twenty events per flick would run f/1.4 to f/22 and back before
     // the player's finger left the glass.
     this._apAccum = (this._apAccum ?? 0) + steps;
-    if (Math.abs(this._apAccum) < 1.6) { this._flash(); return; }
+    if (Math.abs(this._apAccum) < 1.6) return;
     const dir = Math.sign(this._apAccum);
     this._apAccum = 0;
     this.nudgeAperture(dir);
   }
-
-  _onKeyDown(e) {
-    if (!this.active) return;
-    if (e.key === 'Shift' || e.key === 'Alt') { this._held = true; this._flash(); }
-  }
-
-  _onKeyUp(e) {
-    if (!this.active) return;
-    if (e.key === 'Shift' || e.key === 'Alt') { this._held = false; this._flash(); }
-  }
-
-  _onBlur() { this._held = false; }
 
   /**
    * Shift + click = pull focus here.
@@ -636,12 +745,13 @@ export class PhotoFocus {
         document.head.appendChild(style);
       }
       this._node = document.createElement('div');
-      this._node.className = 'pa-focus';
+      this._node.className = this.slot ? 'pa-focus pa-focus-inline' : 'pa-focus';
       this._node.setAttribute('aria-live', 'polite');
       this._mark = document.createElement('div');
       this._mark.className = 'pa-focus-mark';
     }
-    this.root.appendChild(this._node);
+    (this.slot ?? this.root).appendChild(this._node);
+    // The mark is `position: fixed` over the canvas wherever the panel went.
     this.root.appendChild(this._mark);
     this._paint();
   }
@@ -649,36 +759,55 @@ export class PhotoFocus {
   _unmountDom() {
     this._node?.remove();
     this._mark?.remove();
-    this._show = 0;
+    this._noteHold = 0;
   }
 
-  _flash(hold = READOUT_HOLD) {
-    this._show = Math.max(this._show, hold);
+  /**
+   * Something the player can see has moved: repaint, hold any transient line
+   * up for a few seconds, and tell the host so its sliders can follow.
+   *
+   * This was `_flash(hold)`, and the name was the design: the panel appeared,
+   * stayed 1.5 s and faded. It does not fade any more (see the header), so
+   * what is left is the repaint and the note timer.
+   */
+  _touch() {
+    if (this._note || this._warn) this._noteHold = NOTE_HOLD;
     this._paint();
-    this._node?.classList.add('pa-on');
+    this.onChange?.(this);
   }
+
+  /** Repaint from outside — the fitted lens changed under us. */
+  repaint() { this._paint(); }
 
   /**
    * The panel.
    *
-   * The middle line is the depth of field, and it is there to answer a
+   * Four cells and a band. The cells are what a camera puts on its top plate,
+   * in the order a photographer names them, and they are cells rather than a
+   * sentence because a value with its own label under it can be found by
+   * position at a glance — which is the entire job of an instrument panel and
+   * is not something "10.1 m focus · f/2.8" ever did.
+   *
+   * The band under them is the depth of field, and it is there to answer a
    * question the dial could not: which stops are doing anything. The usable
    * range is genuinely narrow and it MOVES — at a 3 m focus the wide end is
    * all ceiling, at 37 m the narrow end is indistinguishable from the effect
-   * being off — so rather than grey out stops (they are a wheel, not buttons)
-   * the panel shows the band that is sharp. Turn the ring and watch
-   * "17.7 – 20.6 m" become "10.4 – 113 m": that is the control explaining
-   * itself. `PostFX.lensInfo()` solves it from the same c(d) the shader runs,
-   * so the number on screen is the number in the picture.
+   * being off — so rather than grey out stops the panel shows the band that is
+   * sharp. Turn the ring and watch "17.7 – 20.6 m" become "10.4 – 113 m": that
+   * is the control explaining itself. `PostFX.lensInfo()` solves it from the
+   * same c(d) the shader runs, so the number on screen is the number in the
+   * picture.
    *
-   * "shift+click here" used to be the third line, which parses as an
-   * instruction to click the readout. It is "a subject" now.
+   * The gesture legend that used to be the last line is gone, and not because
+   * it was wrong: every chord it listed now has a slider or a button on the
+   * rail with its own label, so the line had become a second, worse copy of
+   * the controls sitting directly underneath it.
    */
   _paint() {
     if (!this._node) return;
-    const m = fmtM(this._dist);
     const f = this.fStop < 10 ? this.fStop.toFixed(1) : String(this.fStop);
     const L = this.ctx.postfx?.lensInfo?.();
+    const b = this.barrel?.() ?? null;
     let mid = this._note ?? '';
     if (!mid && L) {
       mid = `sharp ${fmtM(L.near)} – ${Number.isFinite(L.far) ? `${fmtM(L.far)} m` : '∞'}`;
@@ -687,14 +816,18 @@ export class PhotoFocus {
       // and opening up further only widens the melt toward the camera.
       if (L.wideOpen) mid += ' &nbsp;·&nbsp; background at max blur';
     }
+    const cell = (v, k) => `<div class="pa-focus-cell"><b>${v}</b><i>${k}</i></div>`;
     this._node.innerHTML =
-      `<b>${m} m</b> <i>focus</i> &nbsp;·&nbsp; <b>f/${f}</b>` +
+      '<div class="pa-focus-row">' +
+        (b ? cell(b.name, 'lens') + cell(`${Math.round(b.focal)} mm`, 'focal') : '') +
+        cell(`f/${f}`, 'aperture') +
+        cell(`${fmtM(this._dist)} m`, 'focus') +
+      '</div>' +
       (mid ? `<em>${mid}</em>` : '') +
       // BELOW the band rather than instead of it. The band is what the player
       // is being taught to read; a warning that replaced it would take the
       // lesson away at the exact moment it is most needed.
-      (this._warn ? `<em class="pa-warn">${this._warn}</em>` : '') +
-      `<u>shift+wheel focus &nbsp; shift+click a subject &nbsp; alt+wheel aperture</u>`;
+      (this._warn ? `<em class="pa-warn">${this._warn}</em>` : '');
   }
 
   _markAt(u, v) {

@@ -183,7 +183,9 @@ export function stopsFor(lens) {
  * The ranges deliberately do not meet. 70 mm to 200 mm is a real gap in a real
  * bag and it is the most interesting fact about owning these two lenses rather
  * than one 24-400 superzoom, so the mechanic leans on it rather than papering
- * over it — see `LensKit.zoom`.
+ * over it: the ring stops at the barrel's own limits and crossing the gap is
+ * an act — `cycle()`, the `L` key, the rail's swap button. See the `LensKit`
+ * header for why the ring used to cross it by itself and no longer does.
  */
 export const LENSES = [
   {
@@ -241,16 +243,29 @@ export const lensById = (id) => LENSES.find((l) => l.id === id) ?? LENSES[0];
 //  is entirely about the pair, and a rule about the pair kept in the file that
 //  draws sliders is a rule that gets re-derived the next time the rail changes.
 //
-//  THE ONE IDEA: the zoom ring runs off the end of the lens.
+//  THE ONE IDEA: the zoom ring stops where the barrel stops.
 //
-//  A zoom control that stops dead at 70 mm and needs a separate button to reach
-//  200 mm is two controls for one intention. So `zoom()` walks a single ladder
-//  of focal lengths across BOTH lenses, and when it walks off the top of the
-//  wide it changes the lens — because that is what you would physically do, and
-//  because the discontinuity (70 -> 200, nearly a 3x cut) is the moment the
-//  swap makes itself felt. `zoom()` returns `'swap'` on that step so the caller
-//  can fire the sound and the animation, and a swap costs one extra detent of
-//  hesitation (`_gap`) so it can never happen by accident on a fast flick.
+//  This used to be the opposite idea, and the opposite idea is written up at
+//  length in `docs/LENS_NOTES.md` §2 because it was argued for and shipped:
+//  `zoom()` walked ONE log-spaced ladder across BOTH lenses and changed the
+//  body when the ring ran off the top of the wide, after a banked detent of
+//  resistance so it could not happen on a flick. It felt good to whoever knew
+//  it was there. It is gone, because the person the mode is for said plainly
+//  that it should not be there: *"the zoom ring should not change lenses
+//  automatically. It should just toast saying 'cannot zoom out further, switch
+//  lenses' same in the max direction."* That settles it, and it settles it in
+//  the direction of the less clever design — a ring that silently swaps the
+//  glass on your camera is a ring that did something you did not ask for.
+//
+//  So `zoom()` now walks ONE lens and parks at its limits, returning `'end'`
+//  at either. `setLens`/`cycle` — the `L` key and the rail's swap button — are
+//  the only way to change bodies. The gap between 70 mm and 200 mm is still
+//  real and still the most interesting fact about owning these two lenses; it
+//  is now something you cross deliberately rather than something the ring
+//  crosses for you. The caller is expected to say so out loud when `'end'`
+//  comes back (`hud_photo._ringStop` ticks and toasts); the barrel going quiet
+//  at the stop was, in the old design, the one moment of the gesture with no
+//  feedback at all.
 //
 //  Detents are LOG-SPACED, which is the only spacing that feels even: 24 -> 26
 //  is a visible change and 380 -> 400 is not, so a linear ring is dead for its
@@ -275,8 +290,6 @@ export class LensKit {
     this.lens = lensById(opts.lens ?? 'wide');
     this.focal = clamp(opts.focal ?? this.lens.mmDefault, this.lens.mmMin, this.lens.mmMax);
     this.onChange = opts.onChange ?? null;
-    // Detents of resistance banked up against the end of the barrel. See zoom().
-    this._gap = 0;
   }
 
   get index() { return LENSES.indexOf(this.lens); }
@@ -323,7 +336,6 @@ export class LensKit {
     if (next === this.lens && o.focal === undefined) return false;
     const t = o.at === 'wide' ? 0 : o.at === 'tight' ? 1 : this.t;
     this.lens = next;
-    this._gap = 0;
     this.focal = o.focal !== undefined
       ? clamp(o.focal, next.mmMin, next.mmMax)
       : next.mmMin * Math.pow(next.mmMax / next.mmMin, t);
@@ -354,30 +366,30 @@ export class LensKit {
   /**
    * Turn the zoom ring by `steps` detents. Positive is toward telephoto.
    *
-   * @returns 'zoom' | 'swap' | 'end' | null
+   * @returns 'zoom' | 'end' | null
    *
-   * `'end'` is the state that makes the swap feel physical: the ring has hit
-   * the stop and the caller should say so (a tick, a nudge on the barrel) but
-   * the LENS has not changed. One more *call* in the same direction crosses.
+   * `'end'` means the ring is against a stop and the focal did not get any
+   * further. It NEVER changes the lens — see the class header. The caller is
+   * the one that says so, because only the caller has a toast and a speaker.
    *
-   * TWO THINGS THAT WERE WRONG HERE, and they are the same mistake twice —
-   * confusing the verb this returns with the state it leaves behind.
+   * `'swap'` used to be a fourth return value here. It is gone rather than
+   * left dormant: a verb no code path can produce is a verb the next reader
+   * has to prove is dead.
    *
-   *  · THE RESISTANCE DID NOT SURVIVE A MULTI-STEP CALL. The banked detent was
-   *    spent inside the same loop that banked it, so `zoom(3)` from 65 mm
-   *    walked 65 -> 70 -> (bank) -> swap and landed on the tele at 200 in one
-   *    call. `[` and `]` are bound to `_ring(±3)`, so the key that actually
-   *    turns the ring was the one key the resistance never applied to, and the
-   *    headline claim — that a fast flick toward 70 cannot land you at 200 —
-   *    was false for the only control that could flick. A gesture that runs
-   *    into the stop now STOPS THERE, whatever else it had left to spend, and
-   *    crossing takes a separate call.
-   *  · A CLAMPED FOCAL FIRED NO EVENT. `result` was `'end'`, the emit at the
-   *    bottom only fired for `'zoom'`, and `this.focal` had still moved: 65 ->
-   *    70 with zero events. `_applyLens` is the only thing that writes
-   *    `rig.fov` and the rail label, so the camera stayed at 65 while the kit
-   *    said 70 and the label lied. The emit is now driven by whether the focal
-   *    MOVED, not by which verb came out.
+   * TWO THINGS THAT WERE WRONG HERE and are still worth keeping true.
+   *
+   *  · A GESTURE THAT RUNS INTO THE STOP STOPS THERE, whatever it had left to
+   *    spend. `zoom(3)` from 65 mm parks on 70 and discards the other two
+   *    steps; it does not keep pushing. That mattered enormously when the
+   *    third step could change the lens and it still matters now, because the
+   *    remaining steps would otherwise each report `'end'` and the caller
+   *    would toast three times for one press.
+   *  · A CLAMPED FOCAL STILL FIRES `onChange`. `result` is `'end'` on the step
+   *    that clamps and `this.focal` has still MOVED (65 -> 70). The emit is
+   *    driven by whether the focal moved, not by which verb came out —
+   *    `onChange` is the only thing that writes `rig.fov` and the rail's
+   *    label, so gating it on the verb left the camera at 65 while the kit
+   *    said 70.
    */
   zoom(steps = 1) {
     if (!steps) return null;
@@ -388,24 +400,13 @@ export class LensKit {
       const l = this.lens;
       const next = this.focal * (dir > 0 ? DETENT : 1 / DETENT);
       const past = dir > 0 ? next > l.mmMax + 1e-6 : next < l.mmMin - 1e-6;
-      if (!past) {
-        this.focal = clamp(next, l.mmMin, l.mmMax);
-        this._gap = 0;
-        result = 'zoom';
-        continue;
+      if (past) {
+        this.focal = dir > 0 ? l.mmMax : l.mmMin;
+        result = 'end';
+        break;
       }
-      this.focal = dir > 0 ? l.mmMax : l.mmMin;
-      const other = LENSES[this.index + dir];
-      // The gap is crossed only by a call that BEGINS at the stop (i === 0)
-      // with the detent of resistance already banked. Everything else parks
-      // against the stop, banks the detent, and ends the gesture.
-      if (other && i === 0 && this._gap >= 1) {
-        this.setLens(other.id, { at: dir > 0 ? 'wide' : 'tight' });
-        return 'swap';                   // a lens change ends the gesture
-      }
-      this._gap = other ? 1 : 0;
-      result = 'end';
-      break;
+      this.focal = clamp(next, l.mmMin, l.mmMax);
+      result = 'zoom';
     }
     if (this.focal !== from) this._emit('zoom');
     return result;
@@ -1985,8 +1986,20 @@ export class LensPreview {
       return;
     }
     this.canvas = this.renderer.domElement;
+    // An inline style beats any stylesheet rule, so a fixed pixel height here
+    // is a size the host cannot argue with — and the host is a flex column in
+    // an `em`-scaled panel that gets narrower with the window. Measured: the
+    // rail gave this 138 px of column and the canvas drew 188, centred, hanging
+    // 25 px off both sides of its own group, and `hud.css`'s `width: 100%` had
+    // been quietly losing to this line the whole time.
+    //
+    // So the pixel width is a DEFAULT and the other two lines are the licence
+    // to shrink: `max-width` lets a narrower box win, and `height: auto` makes
+    // the canvas keep its own aspect while it does. Standing on its own with
+    // nothing constraining it, this still draws at exactly `width x height`.
     this.canvas.style.width = `${this.width}px`;
-    this.canvas.style.height = `${this.height}px`;
+    this.canvas.style.maxWidth = '100%';
+    this.canvas.style.height = 'auto';
 
     this.scene = new THREE.Scene();
     const key = new THREE.DirectionalLight(new THREE.Color(PREVIEW_KEY), 2.5);

@@ -18,8 +18,8 @@
 //     pauses the cook, so the marshmallow the player pressed F on is still over
 //     the fire to be photographed. See `ScopeView.handOff` and
 //     `RoastView.handOff`, and the two calls in `setActive`.
-//   · gives three dials that matter for a photograph — the hour, the exposure,
-//     and the colour — and nothing else
+//   · gives the controls a camera has, grouped the way a camera groups them —
+//     see "the camera back" below
 //   · pins the render resolution to the display's native density for as long
 //     as the mode is open, and puts back whatever was running on the way out
 //     (see setActive) — so both the framing and the saved file are the
@@ -31,20 +31,91 @@
 //  preserveDrawingBuffer, so the canvas reads back blank outside of a draw. The
 //  fix is to render one extra frame through the post chain and read the buffer
 //  *synchronously* in the same task, before the compositor clears it.
+//
+//  ── the camera back ─────────────────────────────────────────────────────────
+//
+//  What this rail used to be: one horizontal row holding three sliders, a 3D
+//  lens preview, a round shutter and a TEN-LINE COLUMN OF KEYBOARD HINTS —
+//  drag look / middle-drag move / wheel zoom / shift+wheel focus / shift+click
+//  a subject / alt+wheel aperture / [ ] zoom ring / L change lens / P save /
+//  G grid / J book / F exit. The focus readout floated separately above it and
+//  auto-hid. The player's verdict, and it is the right one: *"The camera UI is
+//  not good. Too many hidden options. and the UI looks weird. Fix the layout to
+//  make more sense. And don't hide the info bar that says the aperture and
+//  stuff."*
+//
+//  Three faults, and they are separable:
+//
+//   1. THE REAL CONTROLS WERE MODIFIER CHORDS. Focus, aperture and the zoom
+//      ring existed only as gestures printed in a list. A control you can only
+//      find by reading a legend is not discoverable, and on a phone a chord is
+//      not a control at all. Every one of them now has a slider or a button.
+//      The chords still work — they are accelerators for visible controls now,
+//      which is the only honest way to have both.
+//   2. IT WAS A ROW OF UNRELATED THINGS. A slider for the time of day, a
+//      picture of a lens and a shutter button share a strip of screen and
+//      nothing else. So the rail is now three GROUPS in the order a
+//      photographer would name them, each captioned:
+//
+//        LENS   the preview, the body it shows, and the three rings that turn
+//               on it — zoom, aperture, focus (plus AF, which is what
+//               shift+click always was)
+//        LIGHT  the hour, the exposure and the colour: the things about the
+//               world and the print rather than about the camera
+//        (verbs) the shutter, and grid / book / exit under it
+//
+//      They are the same order as the readout's cells, deliberately: the panel
+//      names lens, focal, aperture, focus and the sliders underneath are zoom,
+//      aperture, focus. A number and the control that moves it are in the same
+//      column of the eye.
+//   3. THE INSTRUMENT PANEL HID. It is the top row of the rail now and it never
+//      goes away. It is also the reason the three lens sliders print no numbers
+//      of their own: every value they set is already up there, larger, with a
+//      label under it. Printing them twice is what made the old strip read as
+//      clutter. The LIGHT sliders do print theirs, because nothing else does.
+//
+//  `PhotoFocus` owns that panel's contents and this file owns where it sits —
+//  it is handed a `slot` rather than positioning itself, which is what killed
+//  the old arrangement where this file's stylesheet and `hud.css` both had an
+//  opinion about one strip of screen and drifted apart.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { stats } from '../game/stats_store.js';
 import { PhotoFocus } from '../photo/photo_focus.js';
 import { detectSubjects } from '../game/hunt_detect.js';
 import { hunt } from '../game/hunt_store.js';
-import { LensKit, LensPreview, LENSES, cameraFovForFocal, focalForCameraFov, stopsFor }
+import { LensKit, LensPreview, LENSES, lensById, cameraFovForFocal, focalForCameraFov, stopsFor }
   from '../photo/lens_models.js';
+import { touchCapable } from '../core/verbs.js';
 import { posthog } from '../posthog.js';
 
 const RANGES = {
   hour: [0, 24, 0.05],
   exposure: [0.55, 1.9, 0.01],
   colour: [0.45, 1.5, 0.01],
+};
+
+// The verb glyphs this rail needs and `hud_dom.ICON` does not carry. Same
+// construction as that set — strokes, not fills, because a filled glyph at the
+// fourteen pixels a chip draws at turns into a dot — and kept here rather than
+// pushed into the shared set because nothing outside photo mode wants a
+// contact sheet or a lens-swap arrow.
+const S = (d) =>
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" ' +
+  `stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+
+const GLYPH = {
+  // Rule of thirds: the frame, and the two cuts each way.
+  grid: S('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/>' +
+          '<path d="M9.2 4.5v15M14.8 4.5v15M3.5 9.5h17M3.5 14.5h17"/>'),
+  // The journal, seen from the spine side: a cover and the block of pages.
+  book: S('<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v14H6.5A1.5 1.5 0 0 0 5 18.5z"/>' +
+          '<path d="M5 18.5A1.5 1.5 0 0 1 6.5 17H19v4H6.5A1.5 1.5 0 0 1 5 19.5z"/>'),
+  // Out of the frame.
+  exit: S('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
+  // Two lenses trading places on the mount.
+  swap: S('<path d="M4 8.5h13M14.2 5.3l3.3 3.2-3.3 3.2"/>' +
+          '<path d="M20 15.5H7M9.8 12.3l-3.3 3.2 3.3 3.2"/>'),
 };
 
 export class PhotoMode {
@@ -65,22 +136,36 @@ export class PhotoMode {
     const rail = el('div', 'pa-rail pa-panel');
     rail.setAttribute('role', 'group');
     rail.setAttribute('aria-label', 'Photo controls');
-    this.hourEl = this._slider(rail, 'Hour', 'hour', (v) => this._fmtHour(v), (v) => this.hud.applyHour(v));
-    this.expEl = this._slider(rail, 'Light', 'exposure', (v) => v.toFixed(2), (v) => this._setExposure(v));
-    this.colEl = this._slider(rail, 'Colour', 'colour', (v) => v.toFixed(2), (v) => this._setSaturation(v));
 
-    // The lens. It binds its own capture-phase wheel/key/pointer listeners in
+    // ── row one: the instrument panel ───────────────────────────────────────
+    // Always on. `PhotoFocus` fills it; this file only says where it goes. See
+    // "the camera back" in the header, and `photo_focus.js`'s own note on why
+    // a panel that positioned itself was a defect rather than an independence.
+    this.readoutSlot = el('div', 'pa-cam-readout');
+    rail.appendChild(this.readoutSlot);
+
+    // The lens. It binds its own capture-phase wheel/pointer listeners in
     // `enable()` and removes them in `disable()`, which is also how it takes
     // shift+wheel away from the free camera's dolly without either of them
     // knowing about the other: Input's wheel listener is bubble-phase, so a
     // modified wheel is consumed before it ever gets there.
-    this.focus = new PhotoFocus(this.ctx, { root });
+    //
+    // `barrel` is how the panel can print a lens it knows nothing about;
+    // `onChange` is how a wheel gesture moves the sliders that set the same
+    // numbers, so the two controls can never disagree on screen.
+    this.focus = new PhotoFocus(this.ctx, {
+      root,
+      slot: this.readoutSlot,
+      barrel: () => ({ name: this.lens.lens.name, focal: this.lens.focal }),
+      onChange: () => this._syncLens({ readout: false }),
+    });
 
     // ── the lens ────────────────────────────────────────────────────────────
-    // Two bodies, one ring. `LensKit` walks a single log-spaced ladder from
-    // 24 mm to 400 mm and changes lens across the 70-200 gap only when the
-    // player pushes through a detent of resistance at the stop — so the gap is
-    // something you feel rather than something hidden from you.
+    // Two bodies, one ring per body. `LensKit.zoom` walks the FITTED lens and
+    // stops at its own limits; crossing the 70-200 gap is `L` or the swap
+    // button and nothing else. It used to cross the gap by itself after a
+    // banked detent of resistance — see the `LensKit` header for why that is
+    // gone and `_ring` below for what happens at the stop instead.
     //
     // The camera lever is `rig.fov`, NOT `camera.fov`: CameraRig._apply writes
     // the camera's fov from its own every frame (`_apply`, near line 887), so
@@ -90,12 +175,18 @@ export class PhotoMode {
     // conversion against the live aspect.
     this.lens = new LensKit({
       onChange: ({ reason }) => {
+        // The ring moved, so whatever the barrel was pressed up against, it is
+        // not pressed up against it now. `_ring` reads this to decide whether
+        // the toast would be news or nagging. First line in the handler: the
+        // `_fitting` guard below returns early and the fit is exactly the case
+        // that has to clear it.
+        this._atStop = 0;
         const rig = this.ctx.systems?.cameraRig;
         if (rig) rig.fov = cameraFovForFocal(this.lens.focal, this.ctx.camera.aspect);
         this.lensPreview?.setZoomT(this.lens.t);
         this.lensPreview?.setLens(this.lens.lens.id);
         this._fitAperture();
-        this._paintLens();
+        this._syncLens();
         // Changing a lens is not the same act as turning a ring, so it does not
         // get the same sound. `select` is the heavier of the two UI voices.
         // Silent while this file is fitting the lens on the way in: that is not
@@ -106,25 +197,6 @@ export class PhotoMode {
         this.hud.audio()?.cue(reason === 'swap' ? 'select' : 'tick');
       },
     });
-
-    // The row exists from the start; the RENDERER inside it does not. Two
-    // reasons, and the second one is the serious one:
-    //
-    //  · a second WebGL context is not free, and photo mode may never be opened
-    //    at all — so it is taken on the first F, not at boot;
-    //  · a second WebGL context is also refusable. `LensPreview` handles that
-    //    honestly — it returns with `ok === false` and NO `canvas` property —
-    //    and the first cut of this appended `this.lensPreview.canvas`
-    //    unguarded. On a device that refuses the context that is a TypeError
-    //    thrown inside PhotoMode's constructor, inside HUD's constructor, and
-    //    the player gets NO INTERFACE AT ALL, at boot, without ever pressing F.
-    //    This game ships touch controls; phones are exactly where a second
-    //    context gets refused. The label alone is the fallback.
-    this.lensRow = el('div', 'pa-rail-item pa-lens');
-    this.lensLabel = el('div', 'pa-label pa-lens-label', '<span></span>');
-    this.lensRow.appendChild(this.lensLabel);
-    rail.appendChild(this.lensRow);
-    this._paintLens();
 
     // ── the aperture belongs to two owners, so it is wrapped ────────────────
     //
@@ -140,22 +212,120 @@ export class PhotoMode {
     // same technique `Stats._water` uses on `Boat.onStroke`, and for the same
     // reason — one file breaks if the other changes shape, and it is this one.
     const rawNudge = this.focus.nudgeAperture.bind(this.focus);
-    this.focus.nudgeAperture = (steps) => { rawNudge(steps); this._fitAperture(); this._paintLens(); };
+    this.focus.nudgeAperture = (steps) => { rawNudge(steps); this._fitAperture(); this._syncLens(); };
     const rawSet = this.focus.setAperture.bind(this.focus);
-    this.focus.setAperture = (f) => { rawSet(this._lensStop(f)); this._paintLens(); };
+    this.focus.setAperture = (f) => { rawSet(this._lensStop(f)); this._syncLens(); };
 
+    // ── row two: the desk ───────────────────────────────────────────────────
+    const desk = el('div', 'pa-cam-desk');
+    rail.appendChild(desk);
+
+    // ── group one: the lens, and the three rings that turn on it ────────────
+    const gLens = this._group(desk, 'Lens');
+    const bay = el('div', 'pa-cam-bay');
+    gLens.appendChild(bay);
+
+    // The row exists from the start; the RENDERER inside it does not. Two
+    // reasons, and the second one is the serious one:
+    //
+    //  · a second WebGL context is not free, and photo mode may never be opened
+    //    at all — so it is taken on the first F, not at boot;
+    //  · a second WebGL context is also refusable. `LensPreview` handles that
+    //    honestly — it returns with `ok === false` and NO `canvas` property —
+    //    and the first cut of this appended `this.lensPreview.canvas`
+    //    unguarded. On a device that refuses the context that is a TypeError
+    //    thrown inside PhotoMode's constructor, inside HUD's constructor, and
+    //    the player gets NO INTERFACE AT ALL, at boot, without ever pressing F.
+    //    This game ships touch controls; phones are exactly where a second
+    //    context gets refused. The label alone is the fallback.
+    this.lensRow = el('div', 'pa-lens');
+    // The plate under the barrel names the BODY and nothing else. It used to
+    // print the live focal length and stop as well — correctly, against a
+    // `LensKit.label()` that printed the barrel's engraved maximum aperture and
+    // contradicted the readout. Both numbers are cells in the instrument panel
+    // now, so a second copy of them four centimetres lower is the clutter this
+    // redesign is about. What is left is a caption for the picture above it,
+    // and the fallback if the preview's GL context is refused.
+    const foot = el('div', 'pa-cam-foot');
+    this.lensLabel = el('div', 'pa-label pa-lens-label', '<span></span>');
+    foot.appendChild(this.lensLabel);
+    this.swapBtn = this._verb(foot, 'swap', 'Change lens', 'L',
+      () => this.lens.cycle(1), 'Swap');
+    this.lensRow.appendChild(foot);
+    bay.appendChild(this.lensRow);
+
+    // Three rings, in the order the panel above prints them — focal, aperture,
+    // focus — so the number and the control that moves it line up down the
+    // screen. None of them prints its own value: see fault 3 in the header.
+    const rings = el('div', 'pa-cam-rings');
+    bay.appendChild(rings);
+    this.zoomEl = this._dial(rings, 'Zoom', {
+      min: 0, max: 1, step: 0.002, hint: '[ ]',
+      onInput: (v) => this.lens.setT(v),
+    });
+    this.apEl = this._dial(rings, 'Aperture', {
+      min: 0, max: 8, step: 1, hint: 'alt+wheel',
+      onInput: (i) => {
+        const stops = stopsFor(this.lens.lens);
+        this.focus.setAperture(stops[Math.min(stops.length - 1, Math.max(0, Math.round(i)))]);
+      },
+    });
+    // Log-spaced, like the wheel gesture it stands in for: the dial spans NEAR
+    // to several kilometres, and a linear track would give the whole near field
+    // — every subject a person actually photographs — about one pixel.
+    this.focusEl = this._dial(rings, 'Focus', {
+      min: 0, max: 1, step: 0.001, hint: 'shift+wheel',
+      onInput: (t) => {
+        const n = this.focus.near, r = Math.max(n * 1.01, this.focus.reach);
+        this.focus.setDistance(n * Math.pow(r / n, t));
+      },
+      // Autofocus. This is shift+click without the shift and without the click
+      // landing anywhere in particular — the same `focusAt(0.5, 0.5)` the mode
+      // runs on entry — and it is the only one of these controls that a phone
+      // could not otherwise reach at all.
+      verb: ['AF', 'Focus on the centre of the frame', '', () => this.focus.focusAtCentre()],
+    });
+
+    // ── group two: the light ────────────────────────────────────────────────
+    const gLight = this._group(desk, 'Light');
+    this.hourEl = this._dial(gLight, 'Hour', {
+      ...this._range('hour'), fmt: (v) => this._fmtHour(v), onInput: (v) => this.hud.applyHour(v),
+    });
+    this.expEl = this._dial(gLight, 'Exposure', {
+      ...this._range('exposure'), fmt: (v) => v.toFixed(2), onInput: (v) => this._setExposure(v),
+    });
+    this.colEl = this._dial(gLight, 'Colour', {
+      ...this._range('colour'), fmt: (v) => v.toFixed(2), onInput: (v) => this._setSaturation(v),
+    });
+
+    // ── group three: the verbs ──────────────────────────────────────────────
+    const gVerbs = el('div', 'pa-cam-group pa-cam-verbs');
+    desk.appendChild(gVerbs);
     this.shutterBtn = button('pa-shutter', '', () => this.capture(), 'Take photo');
-    rail.appendChild(this.shutterBtn);
-    // The camera verbs come first: the two dial rows above are discoverable by
-    // looking at them, and a pan you do not know exists is a pan nobody uses.
-    rail.appendChild(el('div', 'pa-rail-hint',
-      'drag&nbsp;&nbsp;look<br>middle-drag&nbsp;&nbsp;move<br>wheel&nbsp;&nbsp;zoom<br>' +
-      'shift+wheel&nbsp;&nbsp;focus<br>shift+click&nbsp;&nbsp;a subject<br>' +
-      'alt+wheel&nbsp;&nbsp;aperture<br>' +
-      '[&nbsp;]&nbsp;&nbsp;zoom ring<br>L&nbsp;&nbsp;change lens<br>' +
-      'P&nbsp;&nbsp;save<br>G&nbsp;&nbsp;grid<br>J&nbsp;&nbsp;book<br>F&nbsp;&nbsp;exit'));
+    const shutterWrap = el('div', 'pa-cam-verb pa-cam-verb-shutter');
+    shutterWrap.appendChild(this.shutterBtn);
+    shutterWrap.appendChild(this._cap('Shoot', 'P'));
+    gVerbs.appendChild(shutterWrap);
+    const small = el('div', 'pa-cam-verb-row');
+    gVerbs.appendChild(small);
+    this.gridBtn = this._verb(small, 'grid', 'Rule-of-thirds grid', 'G', () => this.toggleGrid(), 'Grid');
+    this._verb(small, 'book', 'Open the journal', 'J', () => this.hud.toggleJournal(), 'Book');
+    this._verb(small, 'exit', 'Leave photo mode', 'F', () => this.hud.togglePhoto(), 'Exit');
+
+    // ── the only hints left ─────────────────────────────────────────────────
+    // Three pointer verbs, on one wrapping line. Everything else that used to
+    // be in the ten-line column is a labelled control a few pixels above this,
+    // and these three are here because the free camera has no slider — moving
+    // the camera is a gesture, not a dial. Gone entirely where there is no
+    // mouse to make the gesture with.
+    if (!touchCapable()) {
+      rail.appendChild(el('div', 'pa-cam-gestures',
+        '<span><b>drag</b> look</span><span><b>middle-drag</b> move</span>' +
+        '<span><b>wheel</b> dolly</span>'));
+    }
     this.node.appendChild(rail);
     this.rail = rail;
+    this._syncLens();
 
     rail.addEventListener('keydown', (e) => {
       if (e.code === 'Escape' || e.code === 'KeyF') {
@@ -177,33 +347,110 @@ export class PhotoMode {
       // somewhere else first.
       if (e.code === 'KeyP') { this.capture(); e.preventDefault(); return; }
       if (e.code === 'KeyG') { this.toggleGrid(); e.preventDefault(); return; }
+      // And J, which was never here and was advertised anyway. `HUD._onKey`
+      // ignores keys whose target is inside its root and the `stopPropagation`
+      // below eats the rest, so from the moment the rail took focus the old
+      // hint column's "J book" was simply false.
+      if (e.code === 'KeyJ') { this.hud.toggleJournal(); e.preventDefault(); return; }
       if (this.lensKey(e.code)) { e.preventDefault(); return; }
       e.stopPropagation();
     });
     rail.addEventListener('keyup', (e) => e.stopPropagation());
 
     root.appendChild(this.node);
-    this.controls = [...rail.querySelectorAll('input, button')];
   }
 
-  _slider(rail, name, key, fmt, onInput) {
-    const wrap = el('div', 'pa-rail-item');
+  // ── rail construction ──────────────────────────────────────────────────────
+
+  /** One captioned group on the desk. The caption is the whole point. */
+  _group(desk, name) {
+    const g = el('div', 'pa-cam-group');
+    g.appendChild(el('div', 'pa-cam-title', name));
+    desk.appendChild(g);
+    return g;
+  }
+
+  _range(key) {
+    const [min, max, step] = RANGES[key];
+    return { min, max, step };
+  }
+
+  /**
+   * One labelled slider.
+   *
+   * `fmt` is optional and its absence is a decision, not a shortcut: the three
+   * lens rings set numbers the instrument panel is already printing, larger,
+   * with a label under each, and printing them twice is what made the old rail
+   * read as clutter. The LIGHT dials pass one, because nothing else says what
+   * hour it is.
+   *
+   * `hint` is the chord that does the same thing for someone who knows it. It
+   * goes in the tooltip rather than on screen — a legend of chords next to the
+   * controls those chords duplicate is a second, worse copy of the interface.
+   *
+   * `verb` optionally hangs a chip off the right of the track (`[glyph, label,
+   * key, onClick]`) — AF, which is the only lens control with no continuous
+   * axis to sit on.
+   */
+  _dial(parent, name, o) {
+    const wrap = el('div', 'pa-cam-dial');
     const label = el('div', 'pa-label', `<span>${name}</span><span></span>`);
     const val = label.lastChild;
     const input = el('input');
-    const [min, max, step] = RANGES[key];
     input.type = 'range';
-    input.min = min; input.max = max; input.step = step;
+    input.min = o.min; input.max = o.max; input.step = o.step;
     input.setAttribute('aria-label', name);
+    if (o.hint && !touchCapable()) input.title = `${name} — ${o.hint}`;
     const paint = () => {
-      val.textContent = fmt(+input.value);
-      input.style.setProperty('--fill', `${((+input.value - min) / (max - min)) * 100}%`);
+      const min = +input.min, max = +input.max;
+      if (o.fmt) val.textContent = o.fmt(+input.value);
+      input.style.setProperty('--fill', `${((+input.value - min) / Math.max(1e-6, max - min)) * 100}%`);
     };
-    input.addEventListener('input', () => { onInput(+input.value); paint(); });
+    input.addEventListener('input', () => { o.onInput(+input.value); paint(); });
     wrap.appendChild(label);
-    wrap.appendChild(input);
-    rail.appendChild(wrap);
-    return { input, paint, set: (v) => { input.value = v; paint(); } };
+    const track = el('div', 'pa-cam-track');
+    track.appendChild(input);
+    if (o.verb) this._verb(track, ...o.verb);
+    wrap.appendChild(track);
+    parent.appendChild(wrap);
+    return {
+      input,
+      paint,
+      set: (v) => { input.value = v; paint(); },
+      /** The aperture ladder is a different length on each body. */
+      span: (max) => { input.max = max; paint(); },
+    };
+  }
+
+  /**
+   * A round chip with a caption under it — the word for what it does, and,
+   * where there is a keyboard, the key it answers to.
+   *
+   * The caption is what let the ten-line legend go. "GRID G" under a picture of
+   * a grid is the same information the legend carried, attached to the thing it
+   * is about instead of listed six lines away from it, and it costs one short
+   * word. On a touch device the key is simply absent: there is nothing to press
+   * and a legend that names one is a legend that lies.
+   *
+   * `glyph` is a key into `GLYPH`, or its own text for a chip that is better as
+   * two letters than as a drawing — AF being the only one, because there is no
+   * icon for "autofocus" that anybody would read as autofocus.
+   */
+  _verb(parent, glyph, label, key, onClick, caption = '') {
+    const wrap = el('div', 'pa-cam-verb');
+    const art = GLYPH[glyph];
+    const b = button(art ? 'pa-chip' : 'pa-chip pa-chip-text', art ?? glyph, onClick,
+      key ? `${label} (${key})` : label);
+    b.title = key && !touchCapable() ? `${label} (${key})` : label;
+    wrap.appendChild(b);
+    if (caption) wrap.appendChild(this._cap(caption, key));
+    parent.appendChild(wrap);
+    return b;
+  }
+
+  _cap(word, key) {
+    return el('div', 'pa-label pa-cam-verb-cap',
+      `${word}${key && !touchCapable() ? ` <b>${key}</b>` : ''}`);
   }
 
   _fmtHour(h) {
@@ -293,7 +540,14 @@ export class PhotoMode {
       // stands rather than through its own step-back, or the shot eases out to
       // the pose the player came from and then cuts straight back to the
       // eyepiece the free camera was posed at. See `ScopeView.handOff`.
-      this.ctx.systems?.camp?.scope?.handOff?.();
+      //
+      // The RETURN VALUE is the sample, and taking it here is the only place it
+      // can be taken. `handOff()` gives back the telescope it released, or null
+      // if no eyepiece was open; one line later `scope.active` is false because
+      // this call is what made it false. Anything that asks afterwards gets
+      // "no" every time. It is read at the bottom of this branch, where the
+      // lens is fitted — see there for what it does with it.
+      const fromScope = !!this.ctx.systems?.camp?.scope?.handOff?.();
       // …and from the fire, which is the one the player asked for: "is there
       // any way to use photo mode and be able to capture a photo while you're
       // roasting?" The roast view holds the rig's takeover and raises
@@ -389,8 +643,31 @@ export class PhotoMode {
       // smear — and silently threw away the ring position too. Pick the lens
       // whose barrel actually contains the frame on screen, then set the ring
       // inside it.
+      //
+      // ── except from the telescope, where the BODY is chosen for you ───────
+      //
+      // "if you're going into photo mode from the telescope you should
+      // automatically be in the telephoto lens." That is a direct conflict with
+      // the fov rule two paragraphs up, so which wins has to be written down.
+      //
+      // THE TELESCOPE WINS, and only over the body. The eyepiece rests at an
+      // 18° vertical fov, which off a 36 mm frame at 16:9 is a 64 mm lens — so
+      // the rule as written fits the 24-70 and hands the player the
+      // general-purpose zoom at the exact moment they walked to an instrument
+      // for reach. That is the complaint. The counter-argument, that the frame
+      // must not change, is weaker here than anywhere else in the mode: you
+      // were not composing through the camera at the eyepiece, you were looking
+      // down a tube, and `enterFree` still reproduces the position, the bearing
+      // and therefore the SUBJECT exactly. All that moves is the crop, and it
+      // tightens onto the thing the telescope was already pointed at.
+      //
+      // The ring is still fitted from the fov — `setLens` clamps it into the
+      // barrel, so the eyepiece's 64 mm lands on the tele's own wide end at
+      // 200 mm rather than on a default nobody chose. At the scope's tightest
+      // (6°, ~194 mm) the two rules already agreed; this only changes the half
+      // of the scope's travel where they did not.
       const mm = focalForCameraFov(this.ctx.camera.fov, this.ctx.camera.aspect);
-      const fit = LENSES.find((x) => mm <= x.mmMax) ?? LENSES[0];
+      const fit = fromScope ? lensById('tele') : (LENSES.find((x) => mm <= x.mmMax) ?? LENSES[0]);
       this._fitting = true;
       try { this.lens.setLens(fit.id, { focal: mm }); } finally { this._fitting = false; }
       const rig0 = this.ctx.systems?.cameraRig;
@@ -400,8 +677,13 @@ export class PhotoMode {
       // and survivable if the browser refuses it. See the note by `lensRow`.
       if (!this.lensPreview) {
         this.lensPreview = new LensPreview({ width: 188, height: 128, lens: this.lens.lens.id });
+        // `prepend`, not `insertBefore(canvas, this.lensLabel)`: the plate is a
+        // grandchild now (it shares a row with the swap button) and
+        // `insertBefore` against a node that is not a child of the reference
+        // parent throws a DOMException — inside the first F, which would take
+        // the whole mode with it.
         if (this.lensPreview.ok && this.lensPreview.canvas) {
-          this.lensRow.insertBefore(this.lensPreview.canvas, this.lensLabel);
+          this.lensRow.prepend(this.lensPreview.canvas);
         }
       }
       this.lensPreview?.setLens(this.lens.lens.id);
@@ -409,9 +691,17 @@ export class PhotoMode {
       this.hourEl.set(this._saved.hour);
       this.expEl.set(this._saved.exposure);
       this.colEl.set(this._saved.saturation);
+      this._syncLens();
       this.hud.audio()?.cue('door');
       void this.node.offsetWidth;      // see the note in hud_settings.setOpen
-      this.controls[0]?.focus({ preventScroll: true });
+      // The zoom ring, and it is named rather than taken from a list. Focus has
+      // to land somewhere inside the rail — that is what routes P, G, J, F and
+      // the bracket keys to the handler above, since `HUD._onKey` ignores keys
+      // aimed at its own controls — and "the first control in DOM order" is now
+      // the lens-swap button, where a stray Space would change the glass on the
+      // camera. A range input answers arrow keys and ignores Space, so the ring
+      // is both the safe landing place and a good one: the arrows zoom.
+      this.zoomEl.input.focus({ preventScroll: true });
     } else {
       // Before the grade is restored below: `disable()` puts PostFX's pass list
       // back, and doing that after the exposure/saturation writes would hand
@@ -455,17 +745,40 @@ export class PhotoMode {
    * Returns true if the key was ours.
    */
   lensKey(code) {
-    let verb = null;
-    if (code === 'BracketRight') verb = this.lens.zoom(1);
-    else if (code === 'BracketLeft') verb = this.lens.zoom(-1);
-    else if (code === 'KeyL') { this.lens.cycle(1); return true; }
-    else return false;
-    // `'end'` is the detent of resistance at a stop, and the whole design idea
-    // is that the player FEELS it. It moves nothing, so `onChange` never fires
-    // and it was the one moment in the gesture with no feedback at all — the
-    // barrel going quiet exactly where it is supposed to push back.
-    if (verb === 'end') this.hud.audio()?.cue('tick');
-    return true;
+    if (code === 'BracketRight') { this._ring(1); return true; }
+    if (code === 'BracketLeft') { this._ring(-1); return true; }
+    if (code === 'KeyL') { this.lens.cycle(1); return true; }
+    return false;
+  }
+
+  /**
+   * One detent of the zoom ring, and what happens when there is no more ring.
+   *
+   * The ring used to walk off the end of the barrel and change the lens for
+   * you, after a banked detent of resistance so it could not happen on a
+   * flick. It does not any more, and the player's own words are the whole
+   * argument: *"the zoom ring should not change lenses automatically. It should
+   * just toast saying 'cannot zoom out further, switch lenses' same in the max
+   * direction."* The mechanic is documented at length in `LensKit`'s header and
+   * in `docs/LENS_NOTES.md` §2, and both now describe why it is gone.
+   *
+   * The tick fires on every press at the stop, because that is the barrel
+   * refusing to turn and you want to feel it every time. The TOAST does not:
+   * a message that reappears on every detent of a held key is not information,
+   * it is a stack of identical cards over the photograph the player is trying
+   * to compose. `_atStop` remembers which end was already announced and
+   * `LensKit`'s `onChange` clears it the moment the ring actually moves — so
+   * arriving at the stop says so once, leaving and coming back says so again.
+   */
+  _ring(dir) {
+    if (this.lens.zoom(dir) !== 'end') return;
+    this.hud.audio()?.cue('tick');
+    if (this._atStop === dir) return;
+    this._atStop = dir;
+    const mm = Math.round(this.lens.focal);
+    this.hud.toast(dir > 0
+      ? `${mm} mm is all the reach this lens has — change lens for more`
+      : `${mm} mm is as wide as this lens goes — change lens to go wider`);
   }
 
   /**
@@ -500,20 +813,45 @@ export class PhotoMode {
   }
 
   /**
-   * The plate under the lens.
+   * Put every control that reads the lens back in agreement with it.
    *
-   * NOT `LensKit.label()`, which prints the barrel's *maximum* aperture — that
-   * is what is engraved on a real lens, and it is the wrong number here because
-   * the focus readout two hundred pixels above it prints the aperture actually
-   * set. The two disagreed on screen: the panel said f/8 while the plate said
-   * f/2.8. Contradicting yourself in two places at once is the exact thing the
-   * `_lensStop` wrapper exists to stop, so the plate reads the live stop.
+   * There are five of them and they can all be moved from somewhere else: the
+   * plate under the preview, three sliders, and the instrument panel. The
+   * aperture alone can be set by the panel's own wheel chord, by its slider, by
+   * a lens swap that clamps it, or by this file fitting a lens on entry — so a
+   * single place that re-derives everything from the model is the only shape
+   * this can take. It used to be `_paintLens`, which painted the plate and left
+   * the rest to luck, and that was survivable only because the sliders did not
+   * exist yet.
+   *
+   * The plate is NOT `LensKit.label()`, which prints the barrel's *maximum*
+   * aperture — what is engraved on a real lens, and the wrong number here
+   * because the panel above it prints the aperture actually set. The two
+   * disagreed on screen: the panel said f/8 while the plate said f/2.8.
+   *
+   * `readout: false` is for the call that comes FROM the readout: `PhotoFocus`
+   * has already painted itself before it tells us, and repainting it from
+   * inside its own notification is one wasted `innerHTML` per wheel event.
    */
-  _paintLens() {
-    if (!this.lensLabel) return;
+  _syncLens(o = {}) {
     const f = this.focus?.fStop ?? this.lens.lens.fStop;
-    this.lensLabel.firstChild.textContent =
-      `${this.lens.lens.name} · ${Math.round(this.lens.focal)}mm · f/${f}`;
+    if (this.lensLabel) this.lensLabel.firstChild.textContent = this.lens.lens.name;
+    this.zoomEl?.set(this.lens.t);
+    if (this.apEl) {
+      // The ladder is a different length on each body — seven stops on the
+      // f/2.8 wide, six on the f/4 tele — so the track is re-spanned before the
+      // thumb is placed, or a swap leaves the thumb describing an index the new
+      // lens does not have.
+      const stops = stopsFor(this.lens.lens);
+      this.apEl.span(Math.max(1, stops.length - 1));
+      const i = stops.indexOf(f);
+      this.apEl.set(i < 0 ? 0 : i);
+    }
+    if (this.focusEl && this.focus) {
+      const n = this.focus.near, r = Math.max(n * 1.01, this.focus.reach);
+      this.focusEl.set(Math.log(Math.max(n, this.focus.distance) / n) / Math.log(r / n));
+    }
+    if (o.readout !== false) this.focus?.repaint();
   }
 
   /** Real seconds, from HUD.update — the rail runs while the world is frozen. */
@@ -525,6 +863,11 @@ export class PhotoMode {
   toggleGrid() {
     this.grid = !this.grid;
     this.gridNode.classList.toggle('pa-on', this.grid);
+    // The chip lights with it. G and the button are the same verb and the
+    // button is the only one of the two that can show state, so a grid turned
+    // on from the keyboard has to light it too — which is why this lives here
+    // rather than in the click handler.
+    this.gridBtn?.classList.toggle('pa-on', this.grid);
   }
 
   /**

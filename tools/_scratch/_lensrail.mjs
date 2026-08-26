@@ -32,21 +32,28 @@ const read = () => page.evaluate(() => {
 console.log('fitted   ', JSON.stringify(await read()));
 await page.screenshot({ path: `${OUT}/01-wide.png` });
 
-// Walk the ring one detent at a time and watch the gap. The whole design
-// claim is that 70->200 costs a detent of resistance, so it has to be observed
-// press by press — 40 presses in a row simply spends the resistance and lands
-// at 400, which is correct behaviour and proves nothing.
+// Walk the ring one detent at a time. The claim USED to be that 70->200 costs a
+// detent of resistance and then swaps the body; it is the opposite now — the
+// ring parks at the fitted lens's own stop and says so, and `L` is the only way
+// across the gap (see docs/LENS_NOTES.md §2). So a LENS SWAP appearing in this
+// walk is a FAILURE, not the headline.
 let prev = null;
 for (let i = 0; i < 26; i++) {
   await page.keyboard.press(']');
   await page.waitForTimeout(120);
   const st = await read();
-  const tag = prev && st.lens !== prev.lens ? '  <-- LENS SWAP'
-            : prev && st.focal === prev.focal ? '  <-- held (detent)' : '';
+  const tag = prev && st.lens !== prev.lens ? '  <-- LENS SWAP — REGRESSION'
+            : prev && st.focal === prev.focal ? '  <-- parked at the stop' : '';
   console.log(`  ${String(i + 1).padStart(2)}  ${st.label.padEnd(26)} fov ${String(st.rigFov).padStart(6)}${tag}`);
   prev = st;
 }
 await page.screenshot({ path: `${OUT}/03-tele.png` });
+console.log(prev.lens === 'wide' ? 'PASS — 26 presses stayed on the fitted lens'
+                                 : 'FAIL — the ring changed the body by itself');
+// L is still the way across.
+await page.keyboard.press('l');
+await page.waitForTimeout(200);
+console.log('after L ', JSON.stringify(await read()));
 
 // And out: the rig's own fov has to come back, or the first driving frame is 400mm.
 await page.evaluate(() => { window.__systems.hud.togglePhoto(); });

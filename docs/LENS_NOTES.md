@@ -99,7 +99,7 @@ kit.setFocal(mm)
 kit.setT(t)                       // what a slider drives
 kit.setLens(id, { at, focal })    // at: 'wide' | 'tight' | undefined (keep ratio)
 kit.cycle(dir)                    // next lens in the bag, wrapping
-kit.zoom(steps) -> 'zoom' | 'end' | 'swap' | null
+kit.zoom(steps) -> 'zoom' | 'end' | null
 ```
 
 `onChange({ lens, focal, reason })` fires on every change; `reason` is
@@ -169,61 +169,77 @@ p.dispose()
 The user asked to "switch between the lenses in photo mode". The interesting
 design fact is that **the two ranges do not meet**: 70 mm to 200 mm is a real
 gap in a real bag, and it is the whole reason owning these two lenses is
-different from owning one 24-400 superzoom. So the mechanic leans on the gap
-rather than papering over it.
+different from owning one 24-400 superzoom.
 
-**One ladder, one control.** `zoom()` walks a single log-spaced ladder of focal
-lengths across *both* lenses. Turn the ring past 70 and the next call changes
-the lens. Counted by walking it, not by dividing logs: **49 distinct focal
-lengths from 24 to 400 in 49 calls** — 28 detents up the wide, one of
-resistance at 70, one swap, 18 detents up the tele and one clamp onto 400. The
-tele's own 200 → 400 is **19 calls and 20 distinct focal lengths**, not the 26
-an earlier draft of this file claimed. The spacing is even in *ratio*, which is
-the only spacing that feels even, because 24 → 26 is a visible change and
-380 → 400 is not, so a linear ring is dead for its whole top half.
+**The ring stops where the barrel stops.** `zoom()` walks the FITTED lens and
+parks at its own limits, returning `'end'` at either one. It never changes the
+body. `cycle()` — the `L` key and the rail's swap button — is the only way
+across the gap.
 
-(The constant is `RING_DETENTS`. It was `DETENTS_PER_STOP`, in a file that also
-models aperture stops, which read as "detents per f-stop". It is detents per
-ring.)
+### What this replaced, and why it went
 
-**The stop is felt before it is crossed, and a flick cannot spend the feeling.**
-A call that runs into the limit *parks against it*: the focal clamps, `'end'`
-comes back, and the rest of the steps are discarded. Crossing takes a **separate
-call** that begins at the stop. So `zoom(3)` from 65 mm returns `'end'` at 70,
-`zoom(-3)` from 205 returns `'end'` at 200, and `zoom(30)` from 24 returns
-`'end'` at 70 — all measured. One more call in the same direction swaps.
+This section used to describe the opposite, at length, because the opposite was
+argued for and shipped: **one ladder across both lenses**, 49 distinct focal
+lengths from 24 to 400 in 49 calls, crossing the gap on a second deliberate
+call after a banked detent of resistance so a fast flick could not do it by
+accident. It was a nice mechanic and a critic liked it.
 
-That matters because §3 binds `[` and `]` to `_ring(±3)`: the key that actually
-turns the ring is a multi-step call, and the previous version banked and spent
-the detent of resistance inside its own loop, so the one control the resistance
-existed for was the one control it never applied to.
+The person the mode is for did not: *"the zoom ring should not change lenses
+automatically. It should just toast saying 'cannot zoom out further, switch
+lenses' same in the max direction."* That settles it. A control that swaps the
+glass on your camera without being asked is doing something you did not ask for,
+however well it is signposted, and the signposting was a tick and a hint line
+in a legend nobody read.
 
-Walking the ladder one call at a time, both ways:
+The gap-crossing machinery is **removed**, not disabled — `_gap` is gone from
+`LensKit` and `'swap'` is gone from `zoom()`'s return type. A verb no path can
+produce is a verb the next reader has to prove is dead.
+
+### What the caller is expected to do about `'end'`
+
+Say so. `hud_photo._ring` ticks on every press at the stop — that is the barrel
+refusing to turn and you want to feel it each time — and TOASTS ONCE:
 
 ```
-up:    zoom:wide@25 … end:wide@70   swap:tele@200 … end:tele@400
-down:  end:tele@200  swap:wide@70   … zoom:wide@24
+70 mm is all the reach this lens has — change lens for more
+24 mm is as wide as this lens goes — change lens to go wider
 ```
+
+Once, not per detent: `_atStop` remembers which end was announced and
+`LensKit`'s `onChange` clears it the moment the focal actually moves. Measured:
+forty presses of `]` from 24 mm end on `wide@70` with **one** toast and the body
+unchanged; forty of `[` end on `wide@24` with one more.
+
+**A gesture that runs into the stop stops there**, discarding whatever steps it
+had left. That mattered when the next step could change the lens and it still
+matters: without it a multi-step call would report `'end'` once per remaining
+step and the caller would toast three times for one press.
 
 **A clamped focal still fires `onChange`.** `zoom()` emits on whether the focal
 MOVED, not on which verb it returns. `zoom(2)` from 65 mm lands on 70 and
 reports it; it used to move the focal and emit nothing, which left the camera at
 65 while `kit.focal` said 70 and the rail label said 70.
 
+Detents are LOG-SPACED, which is the only spacing that feels even: 24 -> 26 is a
+visible change and 380 -> 400 is not, so a linear ring is dead for its whole top
+half. `RING_DETENTS` is 28 over the wide's 24-70, and the same ratio per detent
+covers the tele's 200-400 in 19.
+
 **Swapping keeps your place — including on the `L` key.** `setLens` with no `at`
 preserves the ring's *ratio* position, so a deliberate swap at the tight end of
 the wide arrives at the tight end of the tele, and `cycle()` now does the same:
 wide at t 0.5 (41 mm) → `cycle(1)` → tele 283 → `cycle(1)` → wide 41. It used to
 pass `at: 'wide'`/`at: 'tight'` and ratchet the ring to an end of the range on
-every press. Crossing the gap with the ZOOM RING still uses `at: 'wide'` going up
-and `at: 'tight'` coming down, so the focal ladder stays continuous through the
-change even though the numbers jump — that rule belongs to the ladder, not to a
-deliberate swap.
+every press. `at` is still a parameter of `setLens` and nothing in the shipped
+tree passes it any more — it belonged to the ladder that used to cross the gap,
+and it is kept because a caller wanting "swap and start at the wide end" is a
+reasonable thing to want.
 
 **Wheel stays the dolly.** `CameraRig._free` owns the wheel and dollies the
-camera along the view axis, and that is hours of muscle memory. The zoom ring is
-a *different* axis and gets **Shift+wheel** plus a rail slider. Zooming and
-dollying are not the same shot and the control should not pretend they are.
+camera along the view axis, and that is hours of muscle memory. Zooming and
+dollying are not the same shot and the control should not pretend they are, so
+the ring gets `[` and `]` and a rail slider — and NOT shift+wheel, which this
+file claimed for two rounds after `PhotoFocus` had taken it for the focus pull.
 
 **And a preview, because otherwise nobody sees the lens.** Decided yes: a small
 3D panel in the rail showing the fitted lens, turning slowly, with a bayonet
@@ -262,157 +278,72 @@ stop calling `update`.
 
 ---
 
-## 3. Wiring list for the integrator
+## 3. How it is actually wired
 
-Everything below is in `src/ui/hud_photo.js` unless noted. Nothing here needs a
-change in `lens_models.js`.
+This section used to be a **proposal** — a wiring list written for whoever would
+integrate the kit, full of code the integrator was invited to paste. Every
+snippet in it has since been overtaken: it named `_applyLens`, `_ring(±3)` and a
+"Lens" slider that do not exist, it gave **shift+wheel** to the zoom ring (that
+is the FOCUS control now — see `src/photo/photo_focus.js`), and it listed a
+three-line rail hint for a hint column that has been deleted. This file has now
+been caught twice describing behaviour the code does not have, so the proposal
+is gone and what follows is the shipped wiring.
 
-**Import**
+Everything is in `src/ui/hud_photo.js`; `lens_models.js` needs no caller-side
+special cases.
 
-```js
-import { LENSES, LensKit, LensPreview, cameraFovForFocal } from '../photo/lens_models.js';
-```
+**The kit** is one `LensKit` built in `PhotoMode`'s constructor. Its `onChange`
+does five things and they are all in one place on purpose: write `rig.fov`,
+drive the preview's ring and body, re-clamp the aperture to the fitted lens,
+re-sync the rail (`_syncLens`), and play a cue. A `_fitting` flag silences the
+cue while this file is fitting a lens on the way into the mode — that is not the
+player turning anything.
 
-**State — one object, built in the constructor**
+**The camera lever is `rig.fov`, never `camera.fov`.** `CameraRig._apply` writes
+the camera's fov from its own every frame in free mode, so anything written
+straight onto the camera is gone by the next one. And it is the VERTICAL angle,
+so it goes through `cameraFovForFocal(mm, camera.aspect)`.
 
-```js
-this.lensKit = new LensKit({
-  lens: 'wide',
-  onChange: ({ lens, focal, reason }) => this._applyLens(reason),
-});
-this.lensPreview = null;          // built lazily on first setActive(true)
-```
+**On entry** the ring is fitted to the frame the player pressed F on —
+`focalForCameraFov(camera.fov, camera.aspect)`, then the lens whose barrel
+contains that focal, then `setLens(id, { focal })`. Fitting only the focal
+clamps it into whatever body happened to be on, which turned "leave at 272 mm,
+come back" into a 200 mm five-degree view of an orange smear.
 
-**Apply — the only line that touches the camera**
+**Except from the telescope**, where the BODY is chosen for you: the eyepiece
+rests at an 18° vertical fov, which is a 64 mm lens, so the fov rule fitted the
+24-70 at the exact moment the player had walked to an instrument for reach. The
+tele is fitted instead and the ring still comes from the fov, clamped into the
+barrel — 200 mm. The sample is `ScopeView.handOff()`'s RETURN VALUE, because
+that call is what makes `scope.active` false and anything asking afterwards gets
+"no" every time.
 
-```js
-_applyLens(reason) {
-  const rig = this.ctx.systems?.cameraRig;
-  const cam = this.ctx.camera;
-  if (rig && cam) rig.fov = cameraFovForFocal(this.lensKit.focal, cam.aspect);
-  this.lensPreview?.setZoomT(this.lensKit.t);
-  if (reason === 'swap') {
-    this.lensPreview?.setLens(this.lensKit.lens.id);
-    this.hud.audio()?.cue('door');        // or a new 'lens' cue if D adds one
-    this.hud.toast(this.lensKit.lens.display);
-  }
-  this.lensEl?.set(this.lensKit.t);
-  this.lensLabel.textContent = this.lensKit.label();
-}
-```
+**On exit** — nothing. `_saved` restores the camera mode and `rig.fov`, and the
+kit persists across visits so the lens you left on is the lens you come back to.
 
-`rig.fov` is the right lever and the only one: `CameraRig._apply` writes
-`cam.fov = this.fov` and calls `updateProjectionMatrix()` every frame in free
-mode, so setting the rig's `fov` is picked up on the next frame and nothing
-fights it. Do **not** write `camera.fov` directly — the rig overwrites it.
+**Controls.** `[` and `]` turn the ring one detent through `_ring`, which owns
+the tick and the toast (§2). `L` is `cycle(1)`. Both are also visible controls
+on the rail: a **Zoom** slider driving `setT`, and a **Swap** button beside the
+lens plate. The slider only ever drives the fitted lens, which is now the same
+rule the keys follow rather than a special case.
 
-**On entry (`setActive(true)`, after `rig.enterFree()`)**
+**The wheel is not a lens control.** Bare wheel is the free camera's dolly and
+has been since photo mode existed; shift+wheel is focus and alt+wheel is the
+aperture, both owned by `PhotoFocus`. A fourth wheel gesture would be a modifier
+nobody could remember.
 
-```js
-// Fit the lens the player was already looking through, so the first frame of
-// photo mode is still the frame they pressed F on.
-const mm = focalForCameraFov(this.ctx.camera.fov, this.ctx.camera.aspect);
-const l = LENSES.find((x) => mm <= x.mmMax) ?? LENSES[0];
-this.lensKit.setLens(l.id, { focal: mm });
-this._applyLens('set');
-```
+**The preview** is built on the FIRST `F`, not at boot — a second WebGL context
+is not free and photo mode may never be opened — and its absence is survivable:
+`LensPreview` returns `ok === false` with no `canvas`, and the lens plate stands
+in. `tools/_scratch/_lensguard.mjs` tests exactly that, by refusing every
+context after the first. `update(dt)` must be given REAL seconds; photo mode
+runs the world at dt 0.
 
-(`enterFree` copies the live camera fov into `rig.fov`, so this is a no-op in
-practice on the wide lens — which is the point: the wide at 24 mm *is* the play
-camera. It matters if a player exits at 400 mm and comes back.)
-
-**On exit (`setActive(false)`)** — nothing. `_saved` already restores the camera
-mode and `exitFree` re-primes the rig, which re-derives `fov` from the chase
-grade on the next frame. Do not save/restore the focal length: the lens is a
-property of photo mode, and coming back to the lens you left on is the nicer
-behaviour anyway (`this.lensKit` persists across visits for free).
-
-**Rail UI** — one slider and one label, above the shutter:
-
-```js
-this.lensEl = this._slider(rail, 'Lens', 'lens', () => '', (v) => this.lensKit.setT(v));
-// RANGES.lens = [0, 1, 0.001]
-this.lensLabel = el('div', 'pa-lens-label');   // shows kit.label()
-```
-
-The slider drives only the fitted lens (0..1 across its own range). Crossing the
-gap is a deliberate act and belongs on the key and the swap button, not on a
-drag that could cross it by accident.
-
-**Keys** — inside the rail's existing `keydown` handler, beside `KeyP`/`KeyG`
-(they need the same local path, for the reason that handler already documents):
-
-```js
-if (e.code === 'KeyL') { this.lensKit.cycle(e.shiftKey ? -1 : 1); e.preventDefault(); return; }
-if (e.code === 'BracketLeft')  { this._ring(-3); e.preventDefault(); return; }
-if (e.code === 'BracketRight') { this._ring(+3); e.preventDefault(); return; }
-```
-
-```js
-_ring(steps) {
-  const r = this.lensKit.zoom(steps);
-  if (r === 'end') this.hud.audio()?.cue('tick');    // the ring hitting its stop
-}
-```
-
-`_ring(±3)` is a multi-step call and it is safe: a gesture that reaches the end
-of the lens parks there and returns `'end'` with the remaining steps discarded,
-so `]` held down walks to 70 mm and stops. The *next* press crosses. The focal
-change that happens on the way to the stop still fires `onChange`, so
-`_applyLens` runs and the camera and the label agree with `kit.focal` — do not
-gate the apply on the returned verb.
-
-**Shift+wheel** — the zoom ring. `CameraRig._free` reads `input.mouse.wheel`
-unconditionally, so the wheel has to be intercepted before the rig sees it.
-Cleanest place is `PhotoMode`'s own listener on `this.node`, added in
-`setActive(true)` and removed in `setActive(false)`:
-
-```js
-this._onWheel = (e) => {
-  if (!e.shiftKey) return;                    // plain wheel stays the dolly
-  e.preventDefault();
-  this._ring(e.deltaY > 0 ? -1 : 1);
-  if (this.ctx.input) this.ctx.input.mouse.wheel = 0;   // don't also dolly
-};
-this.node.addEventListener('wheel', this._onWheel, { passive: false });
-```
-
-**Preview** — build lazily, drive on real time:
-
-```js
-// in setActive(true):
-if (!this.lensPreview) {
-  this.lensPreview = new LensPreview({ lens: this.lensKit.lens.id });
-  if (this.lensPreview.ok) this.lensSlot.appendChild(this.lensPreview.canvas);
-}
-// wherever the HUD gets a real-time tick while worldPaused:
-this.lensPreview?.update(dtReal);
-```
-
-`update(dt)` must be given **real** seconds. Photo mode sets `ctx.worldPaused`,
-which drives every world system at dt 0; the rail, the camera rig and the music
-already run on real time and this belongs with them.
-
-**Rail hint** — three lines to add to the existing hint block:
-
-```
-L      lens
-[  ]   zoom ring
-shift-wheel   zoom ring
-```
-
-**`hud.css`** — the preview canvas needs a slot; nothing else. Suggested:
-`.pa-lens-slot { width: 188px; height: 128px; }` and
-`.pa-lens-label { font-variant-numeric: tabular-nums; }`.
-
-### What C does NOT need from anyone
-
-No changes to `CameraRig`, `PostFX`, `main.js`, `Audio.js` or `Stats.js`. If D
-adds a `lens` and a `tick` cue to `Audio`, `_applyLens`/`_ring` should use them
-instead of `door`; until then `door` is a defensible stand-in and nothing breaks
-if the cue does not exist (`audio()?.cue` is already optional everywhere).
-
----
+**Sizing.** `LensPreview` sets its canvas's pixel width inline, plus
+`max-width: 100%` and `height: auto`. The inline width is a default; the other
+two are the licence for a narrower host box to win. Without them the canvas drew
+188 px inside a 138 px column and hung 25 px off both sides — an inline style
+beats any stylesheet, so `hud.css`'s `width: 100%` had been losing silently.
 
 ## 4. Cost
 

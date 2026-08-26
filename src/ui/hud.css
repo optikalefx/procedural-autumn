@@ -969,21 +969,126 @@
 }
 .pa-grid.pa-on { opacity: 1; }
 
+/* ── the camera back ─────────────────────────────────────────────────────────
+   One panel, three rows: the instrument readout, the desk, and — where there
+   is a mouse — a line of pointer verbs. The desk holds three captioned groups.
+   `src/ui/hud_photo.js`'s header has the design argument; this is the dress.
+
+   Everything below is sized in `em` against the root's own
+   `clamp(12px, 0.72vw + 6px, 16px)`, so the whole cluster shrinks with the
+   window before it ever has to wrap. `flex-wrap` on `.pa-cam-desk` is what carries
+   it the rest of the way down to a phone: the groups stack rather than being
+   cut off at the edge, which is what the old single row did at 390 px. */
 .pa-rail {
   position: absolute;
   left: 50%;
-  bottom: 3.2vh;
+  bottom: calc(3.2vh + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   display: flex;
-  align-items: center;
-  gap: 1.15em;
-  padding: 0.85em 1.1em;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.7em;
+  padding: 0.85em 1.15em 0.95em;
+  /* Never wider than the frame the brackets draw. 3vw either side is where
+     `.pa-bracket` sits, and a control panel that runs under the corner marks
+     reads as two interfaces fighting. */
+  max-width: min(60em, 94vw);
   pointer-events: auto;
 }
-.pa-rail-item { display: flex; flex-direction: column; gap: 0.15em; width: 7.4em; }
-.pa-rail-item .pa-label { display: flex; justify-content: space-between; gap: 0.5em; }
-.pa-rail-item .pa-label span:last-child { color: var(--ink-dim); letter-spacing: 0.08em; }
-.pa-rail input[type="range"] { width: 100%; height: 1.2em; }
+
+/* Row one. A hairline under it rather than a box around it — the readout is
+   part of the same object as the controls, not a second panel sitting on
+   top of them. */
+.pa-cam-readout {
+  padding-bottom: 0.6em;
+  border-bottom: 1px solid rgba(255, 246, 234, 0.13);
+}
+
+/* Row two.
+
+   `nowrap` and not `wrap`, and it took a measurement to get here. With `wrap`,
+   Chrome's max-content contribution for the container came back as one line's
+   worth rather than the sum, so the shrink-to-fit `.pa-rail` sized itself to
+   the READOUT's width instead — 603 px at 1280x720 — and the desk then wrapped
+   inside it, dropping the shutter onto a second row and standing the panel
+   395 px tall in a 720 px window. The three groups either fit on one line or
+   the layout changes shape at the breakpoint below; there is no useful state
+   in between. */
+.pa-cam-desk {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.9em 1.5em;
+}
+
+/* A group is a caption and its controls. The rule between groups is a
+   hairline on the left edge, not a border box: the brief's first rule is that
+   nothing is a rectangle of chrome, and a stack of bordered cards inside a
+   bordered panel is three rectangles deep. */
+.pa-cam-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  padding-left: 1.5em;
+  border-left: 1px solid rgba(255, 246, 234, 0.1);
+}
+.pa-cam-group:first-child { padding-left: 0; border-left: none; }
+.pa-cam-title {
+  font-size: 0.56em;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: rgba(240, 173, 70, 0.72);
+  text-shadow: 0 1px 5px rgba(46, 18, 28, 0.75);
+}
+
+.pa-cam-dial { display: flex; flex-direction: column; gap: 0.1em; width: 8.4em; }
+.pa-cam-dial .pa-label { display: flex; justify-content: space-between; gap: 0.5em; }
+.pa-cam-dial .pa-label span:last-child {
+  color: var(--ink-dim);
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+}
+/* The track, and anything that hangs off the end of it (AF). */
+.pa-cam-track { display: flex; align-items: center; gap: 0.45em; }
+.pa-rail input[type="range"] { width: 100%; height: 1.2em; flex: 1 1 auto; min-width: 0; }
+
+/* The lens group is a picture of the lens beside the rings that turn on it,
+   which is the one arrangement that makes the preview look like it belongs to
+   something rather than like a sticker in a row of sliders. */
+.pa-cam-bay { display: flex; align-items: center; gap: 0.9em; }
+.pa-cam-rings { display: flex; flex-direction: column; gap: 0.32em; }
+
+/* ── narrow windows ──────────────────────────────────────────────────────────
+   Below about a tablet the three groups cannot stand side by side, and
+   `flex-wrap` alone leaves a vertical hairline hanging off the left edge of a
+   row that has nothing to its left. So under the breakpoint the desk becomes a
+   COLUMN and the rule between groups turns horizontal, which is what a rule
+   between stacked things is.
+
+   820 px rather than a value derived from the content: the desk is 34-ish em
+   of controls against a root font that has already bottomed out at 12 px by
+   then, so there is nothing left to shrink and the layout has to change shape
+   instead. Landscape on a phone (844 px) deliberately stays a row — there is
+   width there and almost no height. */
+@media (max-width: 820px) {
+  /* Take the width rather than shrink to fit it. Left to size itself the panel
+     came out 200 px wide on a 390 px phone — the three sliders got about ten
+     pixels of track each, which is not a control. */
+  .pa-rail { width: min(60em, 94vw); }
+  .pa-cam-desk { flex-direction: column; align-items: stretch; gap: 0.55em; }
+  .pa-cam-group {
+    border-left: none;
+    border-top: 1px solid rgba(255, 246, 234, 0.1);
+    padding: 0.5em 0 0;
+  }
+  .pa-cam-group:first-child { border-top: none; padding-top: 0; }
+  .pa-cam-verbs { flex-direction: row; justify-content: center; gap: 1.2em; }
+  /* The dials get the width the column gives them rather than a fixed 8.4em,
+     so a 390 px screen spends its pixels on the tracks. */
+  .pa-cam-dial { width: auto; }
+}
 
 .pa-shutter {
   width: 3.1em;
@@ -1010,14 +1115,54 @@
 .pa-shutter:active::after { transform: scale(0.84); }
 .pa-shutter:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.8); outline-offset: 3px; }
 
-.pa-rail-hint {
-  font-size: 0.66em;
+/* ── the verbs ───────────────────────────────────────────────────────────────
+   A chip with the word under it, and the key it answers to after the word.
+   This is what replaced a ten-line column of keyboard hints: the same
+   information, attached to the control it is about. */
+.pa-cam-verbs { align-items: center; justify-content: center; gap: 0.55em; }
+.pa-cam-verb { display: flex; flex-direction: column; align-items: center; gap: 0.22em; }
+.pa-cam-verb-row { display: flex; gap: 0.85em; }
+.pa-cam-verb-cap {
+  font-size: 0.5em;
+  letter-spacing: 0.16em;
+  white-space: nowrap;
+  text-align: center;
+}
+/* The key, in the game's amber. Bright enough to find, dim enough that the
+   word is still the thing you read first. */
+/* `padding`, not `margin`: `#pa-hud * { margin: 0 }` at the top of this sheet
+   is (1,0,0) and beats any class selector, so a margin written down here is a
+   margin that silently does nothing. */
+.pa-cam-verb-cap b { color: rgba(240, 173, 70, 0.85); font-weight: 700; padding-left: 0.35em; }
+/* AF. Two letters where no drawing would have read as "autofocus". */
+.pa-chip.pa-chip-text {
+  font-size: 0.56em;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  /* 4.1 of its OWN em, which is 0.56 of the panel's — so it lands on the same
+     2.3em circle every other chip draws at. */
+  width: 4.1em;
+  height: 4.1em;
+}
+.pa-cam-track .pa-chip { flex: none; }
+
+/* ── the only hints left ─────────────────────────────────────────────────────
+   Three pointer verbs on one wrapping line, because the free camera is the one
+   thing here with no dial. Absent entirely on touch — see `touchCapable()` in
+   hud_photo.js. */
+.pa-cam-gestures {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.2em 1.4em;
+  font-size: 0.62em;
   letter-spacing: 0.14em;
   color: var(--ink-faint);
   text-transform: uppercase;
-  white-space: nowrap;
-  line-height: 1.8;
+  padding-top: 0.15em;
+  border-top: 1px solid rgba(255, 246, 234, 0.09);
 }
+.pa-cam-gestures b { color: var(--ink-dim); font-weight: 600; padding-right: 0.5em; }
 
 /* The shutter flash: a single cream wash, gone in 220 ms. */
 .pa-flash {
@@ -1061,27 +1206,32 @@ body.pa-touch .pa-dash {
    and scene (src/photo/lens_models.js) — a real render, not a sprite, so the
    ring turns and the barrel extends as the player walks the ring.
 
-   `flex: none` and an explicit basis, both deliberate: the rail is a ROW, and
-   `.pa-rail-item`'s 7.4em is sized for a slider. Inheriting it squeezed the
-   preview to about half its width and folded the label onto two lines, and the
-   shutter — which is `flex: none` — then sat on top of the barrel. */
+   `flex: none` is still deliberate. The bay is a ROW and the preview is the
+   only thing in the panel with a fixed aspect; letting it flex squeezed it to
+   about half its width and folded the plate under it onto two lines. */
 .pa-lens {
   flex: none;
-  width: 9.6em;
+  width: 8.6em;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 0.3em;
+  gap: 0.35em;
 }
+/* The plate and the swap button share a line. Stacked, the lens column stood
+   about 70 px taller than the three rings beside it and the panel carried that
+   much dead space along its whole width. */
+.pa-cam-foot { display: flex; align-items: center; gap: 0.6em; }
+/* The SIZE comes from `LensPreview`'s own inline style (a pixel width plus
+   `max-width: 100%`), because an inline style beats this rule and always did —
+   see the note at that assignment. What is left here is how it looks. */
 .pa-lens canvas {
   display: block;
-  width: 100%;
-  height: auto;
   border-radius: 10px;
   background: rgba(24, 16, 12, 0.34);
   box-shadow: inset 0 1px 0 rgba(255, 246, 234, 0.07);
 }
-/* Overrides `.pa-rail-item .pa-label`, which is a space-between row built for
-   a name on the left and a value on the right. This label is one string. */
-.pa-lens .pa-label {
+/* One string, centred — not the name-left/value-right row `.pa-cam-dial` uses. */
+.pa-lens .pa-lens-label {
   display: block;
   text-align: center;
   white-space: nowrap;
@@ -1090,13 +1240,28 @@ body.pa-touch .pa-dash {
   color: var(--ink-dim);
 }
 
-/* The focus readout belongs to src/photo/photo_focus.js, which places it at a
-   fixed 92 px from the bottom — clear of everything that existed when it was
-   written, and squarely on top of the photo rail now that the rail has a lens
-   preview under it. Two owners, one strip of screen; the override lives here
-   because hud.css is what knows how tall the rail is.
+/* The focus readout used to be placed here AND in
+   src/photo/photo_focus.js's own injected stylesheet — that file put it at a
+   fixed `bottom: 92px` and this one lifted it clear of the rail, because
+   hud.css was what knew how tall the rail was. Two files, one strip of screen,
+   kept in agreement by hand until the rail grew a lens preview and they
+   stopped agreeing.
 
-   Above the rail rather than beside it: the readout appears only while a dial
-   is moving, and something that comes and goes must not reflow the controls
-   the player is holding. */
-#pa-hud .pa-focus { bottom: calc(3.2vh + 12.4em); }
+   There is nothing to override now. The readout is handed a slot in the rail
+   (`.pa-cam-readout` above) and takes no position of its own, so this file places
+   it the same way it places everything else in the panel: by putting it in the
+   panel. Do not add a rule here that moves `.pa-focus`. */
+
+/* ── short windows ───────────────────────────────────────────────────────────
+   A phone held sideways is 390 px tall and the panel wants 250 of them. This
+   is the one shape where the rail has to give something up: the preview gets
+   smaller, the padding tightens, and the pointer-verb line goes — it is the
+   least load-bearing thing in the panel and the only one that is pure text. */
+@media (max-height: 480px) {
+  .pa-rail { bottom: 1.6vh; padding: 0.5em 0.9em 0.6em; gap: 0.45em; }
+  .pa-cam-readout { padding-bottom: 0.4em; }
+  .pa-lens { width: 6.2em; }
+  .pa-cam-bay { gap: 0.6em; }
+  .pa-cam-desk { gap: 0.6em 1.1em; }
+  .pa-cam-gestures { display: none; }
+}
