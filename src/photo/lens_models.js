@@ -28,9 +28,9 @@
 //  tubes of different lengths, correct to the millimetre, that a photographer
 //  would have called "pipe". What was missing, in the order the fixes mattered:
 //
-//   1. THE RINGS, AS GEOMETRY. A zoom ring is rubber with 28 axial ribs
-//      standing 1.8 mm proud. Painted on as a texture it is invisible; as
-//      geometry it throws 28 specular lines that curve with the barrel, and
+//   1. THE RINGS, AS GEOMETRY. A zoom ring is rubber with 26 to 30 axial ribs
+//      standing 2.6 mm proud. Painted on as a texture it is invisible; as
+//      geometry it throws 26 specular lines that curve with the barrel, and
 //      that curve is what says "round" and "grippable". `ribbed()` below does
 //      it by displacing the radius of a lathe, which costs a few hundred
 //      triangles rather than the 5 000 the first attempt spent scattering
@@ -1021,7 +1021,22 @@ const TELE = {
   glass: { r: 0.0452, zApex: 0.3140, sag: 0.0128 },
   hood: { r0: 0.0632, r1: 0.0700, z0: 0.3320, z1: 0.4520, wall: 0.0030,
           petals: 0, amp: 0 },
-  extendMax: 0,            // internal zoom — the barrel does not move
+  // 38 mm of extension, AND THE REAL LENS DOES NOT DO THIS. A 200-400 f/4 is
+  // an internal zoom; this was authored at 0 for that reason and the note is
+  // still true. It is overruled by where the model is actually seen.
+  //
+  // The player meets this lens in a 188 x 128 rail panel, where the whole thing
+  // is about 120 px long. Everything an internal zoom can offer — the ring
+  // turning, the printed scale travelling under the index — is sub-pixel at
+  // that size: measured, the ring alone moved 1.9% of the panel's pixels across
+  // the entire 200 -> 400 travel, which is to say the control had no visible
+  // response on the only surface that ships. Extension moves 9.4%, because it
+  // changes the SILHOUETTE, and the silhouette is all a 120 px lens has.
+  //
+  // So the trade is stated rather than hidden: 38 mm on a 345 mm barrel, about
+  // what a consumer 150-600 does, bought at the cost of a detail that is right
+  // about the reference lens and invisible to the player either way.
+  extendMax: 0.0380,
   gold: true,
   switches: { z0: 0.0075, z1: 0.0270 },
   length: 0.3450,
@@ -1254,8 +1269,9 @@ function assemble(S, rnd, opts = {}) {
     // symmetric and so is a ribbed one to within a rib period — the tele's
     // whole 200 -> 400 travel is 5.7 of its 30 rib periods, which is to say the
     // ring came back to almost exactly the same geometry it left. The dash is
-    // the one feature on the ring that has a POSITION, so it is the only thing
-    // that can be seen to turn at 188 px when the printed numbers are a blur.
+    // the one feature on the ring that has a POSITION, so it is what makes the
+    // rotation itself legible in the gallery, where the printed numbers are
+    // readable and the ring's own ribbing tells you nothing.
     Z.add(revolve([
       [z.r - 0.0004, z.z1 - 0.0060], [z.r + 0.0007, z.z1 - 0.0052],
       [z.r + 0.0007, z.z1 - 0.0016], [z.r - 0.0004, z.z1 - 0.0008],
@@ -1279,9 +1295,19 @@ function assemble(S, rnd, opts = {}) {
     // Thin. The first one was 70 milliradians of arc over the full width of
     // the band and read as a red block rather than as the hairline you line a
     // focal length up against — it was the loudest thing on the wide lens.
-    W.add(revolve([
-      [w.r + 0.0005, w.z0 + 0.0034], [w.r + 0.0005, w.z1 - 0.0034],
-    ], 4, ARC_UP - 0.017, 0.034), 'accent', null, [1, 1, 1], { crease: 0.9 });
+    //
+    // It is also SHORT, and now that the numbers travel under it that matters:
+    // it used to run the whole length of the window, which put a red bar
+    // straight through the middle of whichever focal length it was selecting.
+    // A real index sits beside the numbers, against their tick marks — the z
+    // window below is the tick band of `addWindowPrint`'s canvas, which is why
+    // it is written off the same `zc`.
+    {
+      const zc = (w.z0 + w.z1) * 0.5;
+      W.add(revolve([
+        [w.r + 0.0005, zc - 0.0071], [w.r + 0.0005, zc - 0.0026],
+      ], 4, ARC_UP - 0.017, 0.034), 'accent', null, [1, 1, 1], { crease: 0.9 });
+    }
     W.flush(body, mats);
     // The focal scale goes on the RING, not on the barrel. See addWindowPrint.
     addWindowPrint({ fixed: body, ring: zoomG }, S, owned);
@@ -1399,41 +1425,15 @@ function assemble(S, rnd, opts = {}) {
     buildHood(hoodG, S, mats);
   }
 
-  // ── stand it on the table ─────────────────────────────────────────────────
-  //
-  // The wide lies on its hood and its mount flange; the tele stands on its
-  // tripod foot, which is exactly what each does in life. A model whose lowest
-  // point is not zero either floats or sinks in the gallery, and the gallery is
-  // the loop this whole prop was built in.
-  //
-  // MEASURED, NOT PREDICTED, and that is the fix. The height used to be two
-  // hand-written guesses at where the lowest vertex would end up, and both were
-  // wrong in a way nothing but a capture could show:
-  //
-  //  · the tele's `collar.footDrop + 0.0055` floated the foot 3.9 mm off the
-  //    table, because `ExtrudeGeometry`'s bevel puts the sole 1.6 mm BELOW the
-  //    shape's own `bottom` and the guess went the other way. Lit ground under
-  //    the foot, contact shadow detached.
-  //  · the wide's `max(hood.r1, filterRing.r)` reads the hood off the SPEC, not
-  //    off whether a hood was fitted, so `{ hood: false }` floated it 5.6 mm —
-  //    the difference between the hood's radius and the filter ring's.
-  //
-  // One `Box3` over a prop that is built once costs nothing and cannot be wrong
-  // about a dimension somebody changes later. `setZoom` only ever translates in
-  // Z, so the vertical extent does not depend on where the ring is.
-  const axisY = -new THREE.Box3().setFromObject(root).min.y;
-  rig.position.y = axisY;
-
   // ── posing ────────────────────────────────────────────────────────────────
   //
   // THE RING AND THE NUMBERS ARE ONE MECHANISM, and this is where that is
   // enforced. The first version rotated the ring by an arbitrary 60 degrees
   // while the printed focal scale and the red index it is read against both sat
   // on the FIXED barrel, so nothing ever moved relative to anything: the tele,
-  // which is an internal zoom and does not extend, changed 0.09% of its pixels
-  // across its entire 200 -> 400 travel and printed an index sitting between
-  // 250 and 300 while the lens was at 200. `setZoom` on the tele was a no-op
-  // that also lied.
+  // which had no extension at all, changed 0.09% of its pixels across its
+  // entire 200 -> 400 travel and printed an index sitting between 250 and 300
+  // while the lens was at 200. `setZoom` on the tele was a no-op that lied.
   //
   // The scale now rides `zoomG` (see `addWindowPrint`) and the ring turns by
   // exactly the arc the numbers occupy, so the number under the fixed index IS
@@ -1458,6 +1458,38 @@ function assemble(S, rnd, opts = {}) {
   // two of jitter is the difference between "a model" and "an object somebody
   // put down", and it costs one RNG call.
   focusG.rotation.z = (R() - 0.5) * 0.10;
+
+  // ── stand it on the table ─────────────────────────────────────────────────
+  //
+  // The wide lies on its hood and its mount flange; the tele stands on its
+  // tripod foot, which is exactly what each does in life. A model whose lowest
+  // point is not zero either floats or sinks in the gallery, and the gallery is
+  // the loop this whole prop was built in.
+  //
+  // MEASURED, NOT PREDICTED, and that is the fix. The height used to be two
+  // hand-written guesses at where the lowest vertex would end up, and both were
+  // wrong in a way nothing but a capture could show:
+  //
+  //  · the tele's `collar.footDrop + 0.0055` floated the foot 3.9 mm off the
+  //    table, because `ExtrudeGeometry`'s bevel puts the sole 1.6 mm BELOW the
+  //    shape's own `bottom` and the guess went the other way. Lit ground under
+  //    the foot, and a contact shadow detached from the thing casting it.
+  //  · the wide's `max(hood.r1, filterRing.r)` reads the hood off the SPEC, not
+  //    off whether a hood was actually fitted, so `{ hood: false }` floated it
+  //    5.6 mm — the difference between the two radii.
+  //
+  // TWO THINGS THIS MEASUREMENT HAS TO GET RIGHT, and the first draft got both
+  // wrong, which cost a capture each:
+  //
+  //  · IT MUST RUN AFTER THE POSE. The rings are rotated a line above this.
+  //  · IT MUST BE `precise`. `Box3.expandByObject` defaults to transforming
+  //    each geometry's own AABB, which for a ring rotated 34 degrees about Z is
+  //    a box rotated 34 degrees — an AABB √2 too big at 45. The wide came back
+  //    with a lowest point at −64 mm on a hood whose radius is 51, and buried
+  //    itself 13 mm in the table. `true` walks the vertices instead: one pass
+  //    over a prop that is built once, and it cannot lie.
+  const axisY = -new THREE.Box3().setFromObject(root, true).min.y;
+  rig.position.y = axisY;
 
   root.userData.spec = S;
   root.userData.lens = lensById(S.lens);
@@ -1907,9 +1939,12 @@ function addBarrelPrint(parent, S, owned) {
 //  the half of the barrel that was deciding the colour. The gallery is not the
 //  shipping surface. This panel is, and it is judged on its own captures.
 
-const PREVIEW_KEY = 0xffd9a0;
-const PREVIEW_SKY = 0x93b4dd;
-const PREVIEW_BOUNCE = 0x6f6c68;
+const PREVIEW_KEY = 0xffeeda;
+const PREVIEW_SKY = 0x9dbce0;
+const PREVIEW_BOUNCE = 0x6e6e72;
+
+/** The turntable's fixed downward tilt. `_frame` and `update` must agree. */
+const PREVIEW_PITCH = 0.30;
 
 export class LensPreview {
   /**
@@ -1948,12 +1983,12 @@ export class LensPreview {
     this.canvas.style.height = `${this.height}px`;
 
     this.scene = new THREE.Scene();
-    const key = new THREE.DirectionalLight(new THREE.Color(PREVIEW_KEY), 2.6);
+    const key = new THREE.DirectionalLight(new THREE.Color(PREVIEW_KEY), 2.5);
     key.position.set(-0.7, 0.85, 1.0);
-    const fill = new THREE.DirectionalLight(new THREE.Color(PREVIEW_SKY), 0.85);
+    const fill = new THREE.DirectionalLight(new THREE.Color(PREVIEW_SKY), 1.05);
     fill.position.set(1.0, 0.55, -0.6);
     const bounce = new THREE.HemisphereLight(new THREE.Color(PREVIEW_SKY),
-      new THREE.Color(PREVIEW_BOUNCE), 0.42);
+      new THREE.Color(PREVIEW_BOUNCE), 0.45);
     this.scene.add(key, fill, bounce);
 
     this.camera = new THREE.PerspectiveCamera(26, this.width / this.height, 0.02, 4);
@@ -1965,7 +2000,26 @@ export class LensPreview {
     this.ok = true;
   }
 
-  /** Build (once) and show a lens. */
+  /**
+   * Build (once) and show a lens.
+   *
+   * EVERY LENS HANGS IN A HOLDER, and the holder is not ceremony. The framing
+   * offset and the swap animation both want to write a position, and when both
+   * wrote it on the same object the animation won on frame one: `setLens`
+   * recentred the model (tele z −0.2284), `update` then assigned
+   * `model.position.z` outright, and the recentre was gone by the first tick —
+   * measured `[0, −0.0853, −0.2284]` in, `[0, −0.0853, 0]` one frame later.
+   * The model was then mounted 228 mm off the pivot it turns about, so the idle
+   * turntable ORBITED it: it swung across the panel, changed size as it came
+   * and went, parked in a corner with the front element clipped off the edge,
+   * and left the bottom half of a 188 x 128 slot empty. Every one of those
+   * reads as a broken panel rather than as a lens.
+   *
+   * So the centring lives on the model and the animation lives on the holder,
+   * one transform each, and they compose instead of racing. The holder's origin
+   * IS the model's centre, which is also what makes `pivot.rotation.y` a
+   * turntable rather than an orbit.
+   */
   setLens(id, o = {}) {
     if (!this.renderer) return;
     const l = lensById(id);
@@ -1977,14 +2031,25 @@ export class LensPreview {
       // photo mode opens.
       let s = 0x9e37 + l.id.length * 977;
       const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
-      m = l.build(rnd, { hood: true, wear: 0.3 });
+      const lens = l.build(rnd, { hood: true, wear: 0.3 });
       // Frame it: recentre on its own bounding box and size the camera to it,
       // once, so both lenses fill the panel to the same degree despite one
       // being four times the length of the other.
-      const box = new THREE.Box3().setFromObject(m);
-      const c = box.getCenter(new THREE.Vector3());
-      m.position.sub(c);
-      m.userData.fitRadius = box.getSize(new THREE.Vector3()).length() * 0.5;
+      const box = new THREE.Box3().setFromObject(lens);
+      lens.position.sub(box.getCenter(new THREE.Vector3()));
+      m = new THREE.Group();
+      m.name = `preview_${l.id}`;
+      m.add(lens);
+      m.userData.lens = lens;
+      const size = box.getSize(new THREE.Vector3());
+      m.userData.fitRadius = size.length() * 0.5;
+      // What the framing below actually needs: the radius the model sweeps as
+      // the turntable yaws (invariant, because yaw is about Y), and its half
+      // height. Not the same number, and on a lens they are wildly different.
+      m.userData.fit = {
+        rXZ: Math.hypot(size.x, size.z) * 0.5,
+        halfY: size.y * 0.5,
+      };
       this._models.set(l.id, m);
     }
     for (const other of this._models.values()) this.pivot.remove(other);
@@ -1992,20 +2057,48 @@ export class LensPreview {
     this.model = m;
     this._swap = o.animate === false ? 0 : 1;
     this._frame();
-    this._dirty = true;
+    this._drawn = null;
   }
 
   setZoomT(t) {
-    this.model?.userData.setZoom?.(t);
-    this._dirty = true;
+    this.model?.userData.lens?.userData.setZoom?.(t);
+    this._drawn = null;
   }
 
-  /** Distance the camera so the whole lens fits, with a little air. */
+  /**
+   * Distance the camera so the whole lens fits, with a little air.
+   *
+   * A LENS IS NOT A SPHERE and this panel is not square, so fitting a bounding
+   * sphere into the SMALLER of the two half-angles wasted both dimensions at
+   * once: the tele's bounding sphere is dominated by its 459 mm length, that
+   * radius was fitted into the 13-degree vertical, and the result stood the
+   * lens 51% further away than it needed to be — 8.5% of the panel covered, an
+   * empty bottom half, and a 200-400 mm telephoto rendered as a smudge in a
+   * 188 px slot. The lens is the only thing in this panel; it should fill it.
+   *
+   * The two constraints are genuinely different and both are cheap to state:
+   *
+   *  · HORIZONTALLY the model sweeps a circle as the turntable yaws, of radius
+   *    `hypot(sizeX, sizeZ)/2`. Yaw is about Y, so that radius is invariant —
+   *    fit it once and no rotation can ever push the model out of frame.
+   *  · VERTICALLY the extent is the model's own height, plus whatever the fixed
+   *    downward tilt tips the LENGTH into: `sin(pitch)` of that same sweep
+   *    radius. That term is most of it on the tele and it is the one a naive
+   *    "fit the height" would miss.
+   *
+   * `sin` rather than `tan` on both, which is the bounding-sphere form and so
+   * errs 2.5% long at this fov — the margin a solid the camera can be inside
+   * the extent of needs anyway.
+   */
   _frame() {
-    const r = (this.model?.userData.fitRadius ?? 0.2) * 1.16;
+    const f = this.model?.userData.fit ?? { rXZ: 0.2, halfY: 0.1 };
     const v = (this.camera.fov / DEG) * 0.5;
     const h = Math.atan(Math.tan(v) * this.camera.aspect);
-    this.camera.position.set(0, 0, r / Math.sin(Math.min(v, h)));
+    const halfV = f.halfY * Math.cos(PREVIEW_PITCH) + f.rXZ * Math.sin(PREVIEW_PITCH);
+    // 1.10: air, and headroom for the swap animation, which brings the model
+    // 9% of its own radius toward the camera on the way in.
+    const d = Math.max(f.rXZ / Math.sin(h), halfV / Math.sin(v)) * 1.10;
+    this.camera.position.set(0, 0, d);
     this.camera.lookAt(0, 0, 0);
   }
 
@@ -2026,12 +2119,13 @@ export class LensPreview {
       // turn about the optical axis, arriving with a small overshoot — and
       // drops back into the frame from slightly forward. It is 380 ms and it is
       // the entire physical feeling of changing a lens.
-      const k = 1 - this._swap;
-      const e = 1 - Math.pow(1 - k, 3);
+      //
+      // On the HOLDER, so it composes with the model's centring rather than
+      // replacing it — see `setLens`.
+      const e = 1 - Math.pow(this._swap, 3);
       this.model.rotation.z = (1 - e) * 1.15;
       this.model.position.z = (1 - e) * 0.09 * (this.model.userData.fitRadius ?? 0.2);
       a -= (1 - e) * 0.5;
-      this._dirty = true;
     } else if (this.model) {
       this.model.rotation.z = 0;
       this.model.position.z = 0;
@@ -2039,17 +2133,27 @@ export class LensPreview {
     // Three-quarter view, from slightly above: the angle every lens has ever
     // been photographed from, because it is the one that shows the length, the
     // rings and the front element at once.
-    this.pivot.rotation.set(-0.30, a * 0.35 + 0.55, 0);
+    const yaw = a * 0.35 + 0.55;
+    if (this._drawn !== null && this._drawn === yaw + this._swap) return;
+    this._drawn = yaw + this._swap;
+    this.pivot.rotation.set(-PREVIEW_PITCH, yaw, 0);
     this.renderer.render(this.scene, this.camera);
-    this._dirty = false;
   }
 
   dispose() {
     for (const m of this._models.values()) {
-      m.userData.dispose?.();
+      m.userData.lens?.userData.dispose?.();
       m.traverse((o) => { if (o.isMesh) o.geometry?.dispose(); });
     }
     this._models.clear();
+    // `dispose()` frees three's own objects; it does NOT release the WebGL
+    // context, which the browser then holds until it garbage-collects the
+    // canvas — and the context budget is about 16. One leak does not matter;
+    // a mode that can be opened and closed all session, each time building a
+    // preview, is exactly the shape that runs the budget down. `forceContextLoss`
+    // hands it back immediately. It throws on some drivers, and a failure to
+    // tidy up must not take the caller's teardown with it.
+    try { this.renderer?.forceContextLoss?.(); } catch { /* driver said no */ }
     this.renderer?.dispose();
     this.ok = false;
   }

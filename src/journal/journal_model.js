@@ -256,7 +256,11 @@ function coverGeometry(w, h, t, r, dome) {
   shape.lineTo(-hw, -hh + r);
   shape.quadraticCurveTo(-hw, -hh, -hw + r, -hh);
 
-  const g = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, curveSegments: 6 });
+  // curveSegments 12, not 6. At 6 the cover's 6 mm corner radius is four flat
+  // chords and it staircases visibly on the closed book — which is the first
+  // frame anyone sees. The triangles came out of the spine's old uniform grid,
+  // where they were being spent on a smooth tube nobody can see the cords of.
+  const g = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, curveSegments: 12 });
   g.translate(0, 0, -t / 2);
   const pos = g.attributes.position;
   const uv = g.attributes.uv;
@@ -275,49 +279,146 @@ function coverGeometry(w, h, t, r, dome) {
 }
 
 /**
- * The spine: a half-cylinder from the front hinge round to the back hinge,
- * with raised cords across it.
+ * The spine: an arc from the front hinge round to the back hinge, with raised
+ * cords across it — and, unlike everything else that used to live here, a
+ * SURFACE THAT IS POSED. See `poseSpine`.
  *
  * The cords are a radius bump, not applied geometry. Three of them, ~1.1 mm
  * proud — enough to break the spine's silhouette when the book is seen from the
  * side, which is the only time anybody looks at a spine.
+ *
+ * ── the rows are not uniform, and that is the whole budget story ────────────
+ * This was a 26 x 44 uniform grid: 2,288 triangles, 38% of the whole model, on
+ * a smooth tube whose 0.6 mm cords are invisible at every distance the book is
+ * ever seen from — while the cover's corner radius was staircasing visibly at
+ * `curveSegments: 6`. The grid is now placed where the shape actually bends:
+ * a coarse uniform backbone, five rows across each cord, two at each turn-in.
+ * Same silhouette, a third of the triangles, and the surplus went to the
+ * corners where it shows.
+ *
+ * ── the lap, and the bright seam it kills ──────────────────────────────────
+ * The arc used to stop dead at the hinge (a = 0 and a = pi, both at x = 0),
+ * abutting the cover skin's edge in a T-junction. On a framebuffer with no
+ * MSAA that junction leaks: a one-pixel CREAM SLIT ran the full height of the
+ * closed book down the front hinge — on the first frame anybody ever sees. The
+ * arc now overruns by `SPINE_LAP` at BOTH ends and tapers as it does, so each
+ * end runs ~2.3 mm in +x and tucks UNDER the board, behind the joint. Nothing
+ * can leak through a crack that has leather behind it.
  */
 const SPINE_FLAT = 0.52;
-function spineGeometry(r, h, { segs = 26, rows = 44, cords = 3, cordH = 0.0006, flat = SPINE_FLAT } = {}) {
-  const g = new THREE.BufferGeometry();
-  const pos = [], uv = [], idx = [];
+// How far past each hinge the leather runs, in radians of the arc.
+const SPINE_LAP = 0.30;
+// How much the lap sinks as it overruns, so it passes under the board rather
+// than standing proud of it.
+const SPINE_LAP_SINK = 0.13;
+
+function spineGeometry(r, h, { segs = 16, cords = 3, cordH = 0.0006, flat = SPINE_FLAT } = {}) {
   const cordAt = [];
   for (let i = 0; i < cords; i++) cordAt.push(-h / 2 + h * (0.24 + 0.26 * i));
 
-  for (let j = 0; j <= rows; j++) {
-    const y = -h / 2 + (h * j) / rows;
+  // ── rows, placed where the profile changes ──────────────────────────────
+  const set = new Set();
+  const R0 = 9;
+  for (let j = 0; j <= R0; j++) set.add(-h / 2 + (h * j) / R0);
+  for (const cy of cordAt) for (let k = -2; k <= 2; k++) set.add(cy + k * 0.00275);
+  for (const e of [-1, 1]) for (const d of [0.0043, 0.0086]) set.add(e * (h / 2 - d));
+  const rowY = [...set]
+    .filter((y) => y >= -h / 2 - 1e-9 && y <= h / 2 + 1e-9)
+    .sort((a, b) => a - b);
+
+  // Per-row radius: the cords, and the head/tail turning in over the boards —
+  // a bound spine is not a straight extrusion, it is capped at both ends.
+  const rowR = rowY.map((y) => {
     let bump = 0;
     for (const cy of cordAt) {
       const d = Math.abs(y - cy) / 0.0055;
       if (d < 1) bump = Math.max(bump, cordH * (0.5 + 0.5 * Math.cos(d * Math.PI)));
     }
-    // The head and tail turn in over the boards — a bound spine is not a
-    // straight extrusion, it is capped at both ends.
     const endIn = smoothstep(0, 0.013, Math.min(y + h / 2, h / 2 - y));
-    const rr = (r + bump) * (0.90 + 0.10 * endIn);
-    for (let i = 0; i <= segs; i++) {
-      const a = (i / segs) * Math.PI;                 // 0 at the front hinge
-      // Elliptical, not circular: a spine as proud as it is thick is a log.
-      pos.push(-Math.sin(a) * rr * flat, y, Math.cos(a) * rr);
-      uv.push(i / segs, j / rows);
-    }
+    return (r + bump) * (0.90 + 0.10 * endIn);
+  });
+
+  // ── columns, including the lap past each hinge ──────────────────────────
+  const angle = [], sink = [];
+  const A0 = -SPINE_LAP, A1 = Math.PI + SPINE_LAP;
+  for (let i = 0; i <= segs; i++) {
+    const a = A0 + ((A1 - A0) * i) / segs;
+    angle.push(a);
+    // 1 across the visible arc, tapering down through each lap.
+    const over = Math.max(0, -a, a - Math.PI) / SPINE_LAP;
+    sink.push(1 - SPINE_LAP_SINK * clamp01(over));
   }
+
+  const g = new THREE.BufferGeometry();
+  const rows = rowY.length, cols = segs + 1;
+  const uv = [], idx = [];
   for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) uv.push(i / segs, (rowY[j] + h / 2) / h);
+  }
+  for (let j = 0; j < rows - 1; j++) {
     for (let i = 0; i < segs; i++) {
-      const a = j * (segs + 1) + i, b = a + 1, c = a + segs + 1, d = c + 1;
+      const a = j * cols + i, b = a + 1, c = a + cols, d = c + 1;
       idx.push(a, c, b, b, c, d);
     }
   }
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rows * cols * 3), 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
-  g.computeVertexNormals();
+  g.userData.spine = { rowY, rowR, angle, sink, flat, r, rows, cols };
+  poseSpine(g, 0);
   return g;
+}
+
+// Where the spine goes as the book opens.
+//
+// A book opened flat RESTS ON ITS SPINE. Shut, the leather is the rounded back
+// of the block and stands ~15 mm proud of the boards; open, it is a shallow
+// band UNDER the block, and the gutter you look into is paper and thread.
+// Leaving it posed shut — which is what happened for one whole round — put an
+// 11 mm leather ridge above the paper down the entire gutter of every spread,
+// lit on top and hide-tiled, and it read as a foreign object lying on the book.
+const SPINE_OPEN_X = 1.22;        // the arc spreads a little as it flattens
+const SPINE_OPEN_DROP = 0.0026;   // how far the flattened band hangs below the boards
+
+/**
+ * Re-lay the spine for a cover angle.
+ *
+ * The profile is always `x = -sin(a)*AX`, `z = CZ + cos(a)*AZ - sin(a)*DROP`,
+ * and opening the book only moves those four numbers: the vertical semi-axis
+ * AZ collapses to nothing, the centre CZ drops to the plane the boards lie in,
+ * and DROP takes over as the only bulge — which turns a tube standing over the
+ * block into a lens lying under it, through one continuous family of shapes.
+ *
+ * @param open 0..1, the same number the covers use
+ * @param zHinge  z of the plane the boards lie in when flat (negative)
+ */
+export function poseSpine(geo, open, zHinge = 0) {
+  const t = geo.userData.spine;
+  if (!t) return;
+  const k = clamp01(open);
+  const { rowY, rowR, angle, sink, flat, r, rows, cols } = t;
+  const pos = geo.attributes.position;
+  const arr = pos.array;
+  let n = 0;
+  for (let j = 0; j < rows; j++) {
+    const rr = rowR[j] * 1;
+    const ax = rr * flat * (1 + (SPINE_OPEN_X - 1) * k);
+    const az = rr * (1 - k);
+    const cz = zHinge * k;
+    const drop = SPINE_OPEN_DROP * k * (rr / r);
+    const y = rowY[j];
+    for (let i = 0; i < cols; i++) {
+      const a = angle[i], sk = sink[i];
+      const sn = Math.sin(a), cs = Math.cos(a);
+      arr[n] = -sn * ax * sk;
+      arr[n + 1] = y;
+      arr[n + 2] = cz + cs * az * sk - sn * drop;
+      n += 3;
+    }
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
 }
 
 /** A closed ribbon of `n` sections, 4 verts each. Positions are filled by a poser. */
@@ -594,8 +695,14 @@ export function buildJournal(rnd = Math.random, opts = {}) {
   root.add(frontPivot, backPivot);
 
   // ── spine ─────────────────────────────────────────────────────────────────
+  // The plane the boards lie in once the book is open flat. `poseSpine` needs
+  // it, and it is derived here rather than guessed there so the two can never
+  // drift: it is the OUTER face of the board, because the spine passes under
+  // the boards, not between them.
+  const zHingeFlat = -(zTop + COV);
   const spine = new THREE.Mesh(spineGeometry(spineR, coverH), M.hide);
   root.add(spine);
+  const headbands = [];
 
   // Headbands at head and tail — the little striped rolls that cap a sewn
   // spine. 3 mm of object, and the only saturated colour anywhere on the closed
@@ -623,6 +730,7 @@ export function buildJournal(rnd = Math.random, opts = {}) {
     const hb = new THREE.Mesh(g, M.headband);
     hb.position.set(0.0002, s * (H / 2 - 0.0016), 0);
     root.add(hb);
+    headbands.push(hb);
   }
 
   // ── the text block ────────────────────────────────────────────────────────
@@ -635,12 +743,42 @@ export function buildJournal(rnd = Math.random, opts = {}) {
   // of instanceMatrix — so a unit-cube slab reported the whole journal as
   // "1.00 x 1.00 x 1.00 m" and the gallery framed a 15 cm book as a metre box,
   // leaving it a speck in the middle of the stage.
-  const slab = new THREE.BoxGeometry(W, H, T / LEAVES);
-  // See the note on `paper`: instanceColor needs USE_COLOR too.
-  slab.setAttribute('color',
-    new THREE.BufferAttribute(new Float32Array(slab.attributes.position.count * 3).fill(1), 3));
+  //
+  // ── the gutter gradient, and why it is in the vertex colours ────────────
+  // Cream paper running right up to the fold is half of why the spine used to
+  // read as a foreign object lying on the book: a real gutter is the darkest
+  // thing on a spread, and the block's exposed top surface was the same value
+  // at the fold as at the fore edge. The printed leaves paint their own fold
+  // shadow (journal_page's `_gutterShade`); the STACK had none.
+  //
+  // It is three vertex columns rather than a map because a map on 26 instanced
+  // slabs is a second texture bind for a surface that is 15 mm of gradient.
+  // The middle column is pushed in to ~18 mm so the ramp is short and steep
+  // instead of running the whole width of the page — and the two stacks get
+  // MIRRORED copies, because the left stack's fold is on its other side and a
+  // shared geometry would darken its fore edge.
+  const GUT_DARK = 0.34, GUT_RAMP = 0.018;
+  const slabGeometry = (sign) => {
+    const g = new THREE.BoxGeometry(W, H, T / LEAVES, 2, 1, 1);
+    const pos = g.attributes.position;
+    const col = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      let x = pos.getX(i);
+      if (Math.abs(x) < W * 0.25) { x = sign * (-W / 2 + GUT_RAMP); pos.setX(i, x); }
+      // Distance from the fold, which is at -W/2 for the right stack and
+      // +W/2 for the left one.
+      const d = sign > 0 ? x + W / 2 : W / 2 - x;
+      const v = GUT_DARK + (1 - GUT_DARK) * smoothstep(0, GUT_RAMP, d);
+      col[i * 3] = v; col[i * 3 + 1] = v * 0.995; col[i * 3 + 2] = v * 0.985;
+    }
+    pos.needsUpdate = true;
+    // See the note on `paper`: instanceColor is only multiplied in when
+    // USE_COLOR is defined, so this attribute earns its place twice.
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  };
   const mkStack = (sign) => {
-    const im = new THREE.InstancedMesh(slab, M.paper, LEAVES);
+    const im = new THREE.InstancedMesh(slabGeometry(sign), M.paper, LEAVES);
     im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(LEAVES * 3), 3);
     const jit = [];
@@ -711,7 +849,7 @@ export function buildJournal(rnd = Math.random, opts = {}) {
 
   group.userData.journal = {
     dims: BOOK, colorway, mats: M,
-    root, frontPivot, backPivot, spine, stackR, stackL,
+    root, frontPivot, backPivot, spine, headbands, zHingeFlat, stackR, stackL,
     pageRight, pageLeft, turnFront, turnBack, ribbon, band, shadow, threads,
     frontEndpaper: frontPivot.userData.endpaper,
     backEndpaper: backPivot.userData.endpaper,
@@ -774,6 +912,27 @@ export function poseJournal(group, state) {
   const zTop = T / 2, zBot = -T / 2;
 
   J.frontPivot.rotation.y = Math.PI * clamp01(S.cover);
+
+  // ── spine ─────────────────────────────────────────────────────────────────
+  // The one part of the book that used to be posed by nothing at all. It
+  // flattens and drops with the cover; see `poseSpine`. Re-laying it costs a
+  // normal recompute over ~500 vertices, so it is gated on the cover actually
+  // having moved — during the swing that is 40-odd frames, and at rest it is
+  // free, which is the state the book spends all its time in.
+  const ck = smoothstep(0, 1, clamp01(S.cover));
+  if (J._spineK !== ck) {
+    J._spineK = ck;
+    poseSpine(J.spine.geometry, ck, J.zHingeFlat ?? 0);
+    // The headbands ride the spine. Left where they were, they end up as two
+    // striped half-tori standing 11 mm above a flat spread, which is the same
+    // bug as the ridge and twice as odd-looking because they are the only
+    // saturated colour in the frame. Open, they settle into the ends of the
+    // gutter as a small roll, which is what a real one does.
+    for (const hb of J.headbands ?? []) {
+      hb.scale.set(1 + 0.15 * ck, 1, 1 - 0.58 * ck);
+      hb.position.z = ck * ((J.zHingeFlat ?? 0) + 0.0048);
+    }
+  }
 
   // ── stacks ────────────────────────────────────────────────────────────────
   const sheets = Math.max(1, S.sheets | 0);

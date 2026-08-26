@@ -1053,3 +1053,50 @@ body.pa-touch .pa-hint { display: none; }
 body.pa-touch .pa-dash {
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
 }
+
+/* ── the fitted lens ────────────────────────────────────────────────────────
+   A number is not a lens. The rail shows the body actually on the camera,
+   because "200-400mm" means nothing to most people and a long barrel with a
+   tripod foot means it immediately. LensPreview owns its own canvas, renderer
+   and scene (src/photo/lens_models.js) — a real render, not a sprite, so the
+   ring turns and the barrel extends as the player walks the ring.
+
+   `flex: none` and an explicit basis, both deliberate: the rail is a ROW, and
+   `.pa-rail-item`'s 7.4em is sized for a slider. Inheriting it squeezed the
+   preview to about half its width and folded the label onto two lines, and the
+   shutter — which is `flex: none` — then sat on top of the barrel. */
+.pa-lens {
+  flex: none;
+  width: 9.6em;
+  align-items: center;
+  gap: 0.3em;
+}
+.pa-lens canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  background: rgba(24, 16, 12, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 246, 234, 0.07);
+}
+/* Overrides `.pa-rail-item .pa-label`, which is a space-between row built for
+   a name on the left and a value on the right. This label is one string. */
+.pa-lens .pa-label {
+  display: block;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 0.5em;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+}
+
+/* The focus readout belongs to src/photo/photo_focus.js, which places it at a
+   fixed 92 px from the bottom — clear of everything that existed when it was
+   written, and squarely on top of the photo rail now that the rail has a lens
+   preview under it. Two owners, one strip of screen; the override lives here
+   because hud.css is what knows how tall the rail is.
+
+   Above the rail rather than beside it: the readout appears only while a dial
+   is moving, and something that comes and goes must not reflow the controls
+   the player is holding. */
+#pa-hud .pa-focus { bottom: calc(3.2vh + 12.4em); }

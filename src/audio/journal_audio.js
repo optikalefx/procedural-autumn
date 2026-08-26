@@ -34,24 +34,62 @@
 //  Rendered through an OfflineAudioContext at 48 kHz and measured at the bus,
 //  which is the version of these numbers worth having:
 //
-//      page   peak 0.114   rms 0.0147   437 ms
-//      cross  peak 0.097   rms 0.0048   141 ms
-//      slap   peak 0.194   rms 0.0092   222 ms
+//      page   peak 0.114   rms 0.0212   372 ms
+//      cross  peak 0.097   rms 0.0099   125 ms
+//      slap   peak 0.269   rms 0.0197   205 ms
 //
 //  The first draft measured 0.056 / 0.047 / 0.094 — level with the menu click
 //  — and that was the `camp_props` mistake made a second time: a level reasoned
 //  against a number rather than measured against a listener. Every voice went
 //  up 6 dB, which is the step that reads as "louder" rather than as "did that
-//  change?". They are still nowhere near loud: the slap peaks 14 dB under full
-//  scale and the whole layer leaves the limiter nothing to do.
+//  change?". They are still nowhere near loud: the slap peaks 11.4 dB under
+//  full scale and the whole layer leaves the limiter nothing to do.
 //
-//  The slap is the loudest by about 4.6 dB on the page and 6 dB on the cross,
-//  on purpose: it is the moment the photograph lands, it is the end of the
+//  The slap is the loudest by 7.5 dB on the page and 8.8 dB on the cross, on
+//  purpose: it is the moment the photograph lands, it is the end of the
 //  ceremony, and a payoff the same size as the page turn before it is not one.
+//  That margin used to be 4.6 dB, and it used to be a lie on anything smaller
+//  than a monitor — see the next block.
 //
-//  Three page turns fired inside one crowd window still peak at 0.194 — the
-//  ducking in `_crowd` holds, so a player flicking through the book gets a
-//  book rather than a roar.
+//  Three page turns fired inside one crowd window peak at 0.151, which is
+//  2.4 dB over one turn alone — the ducking in `_crowd` holds, so a player
+//  flicking through the book gets a book rather than a roar. This line used to
+//  claim 0.194; 0.194 is the SLAP's old figure, pasted into the wrong
+//  paragraph. A critic re-rendering `pagex3` measured 0.1486 and was right.
+//
+//  ── the small speaker, which inverted the whole ceremony ────────────────────
+//
+//  Nobody plays this on a monitor. Through a 2nd-order 200 Hz high-pass — a
+//  laptop, a phone, the speaker in a desk lamp — the first version of these
+//  three cues came out in the WRONG ORDER (mono sum, peak):
+//
+//                    full     HP 200 Hz    change
+//      page          0.100      0.115      +1.2 dB
+//      cross         0.063      0.073      +1.2 dB
+//      slap          0.164      0.074      -6.9 dB
+//
+//  The page and the cross are band-passed noise living well above 200 Hz, so
+//  the filter costs them nothing and taking the rumble off even lifts their
+//  peak. The slap's identity was its 150 → 78 Hz body glide, and a small
+//  speaker does not have that note at all; what was left was the paper burst,
+//  which sat about 15 dB under the body throughout. So the deliberate "the
+//  slap is the payoff" became "the slap is the quietest thing in the ceremony"
+//  on the hardware almost everybody has.
+//
+//  The fix is a rebalance inside the cue, not a trim on the bus: the paper
+//  band up 9.3 dB, the body glide down 2.6 dB, about 12 dB of relative shift.
+//  That is far more than the 4–5 dB a first pass suggested, and the reason to
+//  go past it is that 4–5 dB only brings the slap level with the CROSS through
+//  the high-pass. The order is not restored until it clears the PAGE:
+//
+//                    full     HP 200 Hz    change
+//      page          0.100      0.115      +1.2 dB
+//      cross         0.063      0.073      +1.2 dB
+//      slap          0.184      0.136      -2.6 dB
+//
+//  Slap over page: +7.5 dB full range, +1.5 dB through the high-pass. The
+//  margin still narrows on a small speaker — it cannot not, the body really is
+//  gone — but the payoff is a payoff on both, which is the requirement.
 //
 //  ── page: a sweep, not a whoosh, and definitely not a click ─────────────────
 //
@@ -84,17 +122,45 @@
 //  spectral centroid and this is what "a sweep, not a whoosh" looks like as a
 //  number:
 //
-//      20 ms   2398 Hz    the sheet lifting
-//     110 ms   3558 Hz
-//     170 ms   4496 Hz    the top of the arc
-//     260 ms   3587 Hz    coming back down
-//     320 ms   2826 Hz
-//     360 ms   1607 Hz    landing — and the low band goes 0.01 -> 0.24 of the
-//     380 ms   1348 Hz    frame's energy here, which is the settle arriving
+//      20 ms   1066 Hz    the sheet lifting
+//     100 ms   2437 Hz
+//     160 ms   3508 Hz    the top of the arc
+//     220 ms   2696 Hz    coming back down
+//     280 ms   1182 Hz
+//     320 ms    353 Hz    landing — and the low band goes 0.01 -> 0.64 of the
+//     340 ms    304 Hz    frame's energy here, which is the settle arriving
 //
-//  It also PANS, -0.22 to +0.06 measured across the first 160 ms, because the
+//  The table that used to sit here read 2398 / 3558 / 4496 / 1607 Hz, and it
+//  did not survive a re-render by anybody — not by a critic and not by this
+//  file's own harness. It was taken off a draft of the voice and never
+//  refreshed. Everything above comes out of `tools`-style offline renders on
+//  the shipping one: render, then 10 ms windows, energy-weighted centroid.
+//
+//  It also PANS, -0.51 to +0.08 measured across the first 160 ms, because the
 //  page travels across the book. It is a small thing and it is most of what
 //  makes two page turns in a row feel like a book rather than like a button.
+//
+//  ── the 40 ms hole between the sweep and the landing ────────────────────────
+//
+//  Three parts are one gesture only if they overlap, and these did not. With
+//  the sweep's shoulder at 0.42 and the landing scheduled at 0.300 of the cue,
+//  the render had a FLOOR between them: rms 0.0018 at 320 ms, against a sweep
+//  that peaked at 0.0363 and a landing that reached 0.031. Twenty-five dB down
+//  for about forty milliseconds is not a quiet moment inside a gesture, it is
+//  silence — and the cue read as two events with a gap, a "shhp" and then a
+//  separate thud, which is precisely the failure the one-band-that-turns-round
+//  design was chosen to avoid. The parts were right and the JOIN was missing.
+//
+//  Both halves of the fix were needed. The shoulder went 0.42 -> 0.70, so the
+//  sweep is still sounding while it is still falling in pitch; and the landing
+//  moved 0.300 -> 0.252, so its 58 ms attack is already climbing underneath
+//  that tail. Measured through the handover, 10 ms windows:
+//
+//      260 ms  0.0264      280 ms  0.0194      300 ms  0.0192
+//      320 ms  0.0255      340 ms  0.0182
+//
+//  The minimum is now 0.0192 — 5.5 dB under the sweep's peak and 2.5 dB under
+//  the landing's, where it used to be 26 dB under both. One object moving.
 //
 //  ── cross: it has to have a direction ───────────────────────────────────────
 //
@@ -124,18 +190,23 @@
 //   · the low body is a sine gliding 150 → 78 Hz and gone in 100 ms. A glide
 //     with no resonator cannot ring, and the pitch drop is what says "a flat
 //     thing trapped some air" rather than "a drum was struck".
-//   · the paper is a 55 ms noise burst at Q 1.1 — deliberately LOW Q, so it is
-//     broad and dull. Every high-Q mid band was removed; that is the snare.
+//   · the paper is a 75 ms noise burst at Q 1.1 — deliberately LOW Q, so it is
+//     broad and dull. It is also, since the rebalance above, the LOUD half of
+//     the cue: it is the part of a slap a laptop can actually reproduce. Every
+//     high-Q mid band was removed; that is the snare, and none of the extra
+//     level went into one.
 //   · there is no tail at all. The longest thing in the cue is the 140 ms
-//     board underneath. Measured: the rms is 30 dB under its peak by 90 ms.
-//     A snare's shell is still within 12 dB of its peak at 90 ms; that gap is
-//     the whole difference, and it is the one number to re-check if anybody
-//     ever retunes this cue.
+//     board underneath. Measured: the rms is 25 dB under its peak by 80 ms and
+//     28 dB by 100 ms. A snare's shell is still within 12 dB of its peak at
+//     90 ms; that gap is the whole difference, and it is the one number to
+//     re-check if anybody ever retunes this cue.
 //
-//  The band split across the render says the same story in the right order:
-//  the low fraction climbs 0.15 → 0.36 through the first 30 ms as the trapped
-//  air arrives, the mid takes over to 0.69 by 70 ms as the paper settles, and
-//  then the tape ticks come in alone — 0.86 high at 100 ms and 0.98 at 160 ms.
+//  The band split across the render tells the same story, and it is a
+//  different set of numbers from the ones this block used to carry because the
+//  rebalance moved them: the onset is now half body and half paper (0.51 low /
+//  0.38 mid at 20 ms, where it was 0.99 low), the low fraction holds 0.55-0.60
+//  through the board's decay out to 80 ms, and then the tape ticks come in
+//  alone — 0.40 high at 100 ms and 0.98 at 160 ms.
 //
 //  Then the tape: three tiny high ticks at 85, 145 and 195 ms, 3.4 / 4.6 /
 //  2.8 kHz, each about 6 ms and each quieter than the last. Two would read as
@@ -188,7 +259,7 @@ const VOICES = {
     // the FALL, which is where a page actually makes its noise.
     this._arc(c, 0.000, {
       f0: 700, f1: 3400, f2: 950, turn: 0.32, q: 0.85,
-      peak: 0.320, attack: 0.030, hold: 0.13, dur: 0.40, shoulder: 0.42,
+      peak: 0.320, attack: 0.030, hold: 0.13, dur: 0.40, shoulder: 0.70,
       pan: -0.22, pan2: 0.20,
     });
 
@@ -218,11 +289,14 @@ const VOICES = {
     }
 
     // ── landing ───────────────────────────────────────────────────────────
-    // A 55 ms attack, which is long enough that there is no onset to point at.
-    // The page does not hit the stack, it arrives on it.
-    this._arc(c, 0.300, {
+    // A 58 ms attack, which is long enough that there is no onset to point at.
+    // The page does not hit the stack, it arrives on it. It starts at 0.252
+    // rather than 0.300 so that the attack is already underway while the sweep
+    // above is still falling — the two overlap by design now; see the header's
+    // block on the hole that opened up when they did not.
+    this._arc(c, 0.252, {
       f0: 260, f1: 200, f2: 118, turn: 0.35, q: 0.7,
-      peak: 0.125, attack: 0.055, hold: 0.03, dur: 0.17, pan: 0.16, pan2: 0.10,
+      peak: 0.140, attack: 0.058, hold: 0.03, dur: 0.17, pan: 0.16, pan2: 0.10,
     });
   },
 
@@ -264,15 +338,25 @@ const VOICES = {
   slap(c) {
     // ── the trapped air ───────────────────────────────────────────────────
     // A glide, not a note, and gone in 100 ms. See the header for why this is
-    // the line between a photograph landing and a snare drum.
-    this._tone(c, 0.000, { f0: 150, f1: 78, peak: 0.215, attack: 0.003, dur: 0.10 });
+    // the line between a photograph landing and a snare drum. It is the
+    // IDENTITY of the cue and no longer the LEVEL of it: 0.160 rather than the
+    // 0.215 it shipped at, because a body nobody's speaker can play is not
+    // allowed to be the thing that sets how loud the slap is.
+    this._tone(c, 0.000, { f0: 150, f1: 78, peak: 0.160, attack: 0.003, dur: 0.10 });
 
     // ── the paper ─────────────────────────────────────────────────────────
     // Q 1.1 is the whole point: broad and dull. Every version of this with a
     // resonant mid band sounded like a rimshot.
+    //
+    // This is the loudest voice in the cue, and that is deliberate rather than
+    // a slip of a decimal point: it is the only part of a slap that reaches a
+    // laptop speaker. It went up 9.3 dB and the body below went down 2.6 dB —
+    // the header's "small speaker" block is the measurement that bought it.
+    // Note the extra level went into WIDTH, not into Q; a louder narrow band
+    // here is the snare this cue spent three drafts avoiding.
     this._arc(c, 0.000, {
       f0: 1400, f1: 900, f2: 600, turn: 0.45, q: 1.1,
-      peak: 0.260, attack: 0.002, hold: 0.008, dur: 0.055,
+      peak: 0.760, attack: 0.002, hold: 0.012, dur: 0.075,
       pan: -0.04, pan2: 0.02, white: true,
     });
 

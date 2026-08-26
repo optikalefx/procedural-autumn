@@ -342,6 +342,11 @@ export class HUD extends System {
         case 'KeyM': this.applyMute(!this.isMuted()); break;
         case 'KeyG': if (this.photo.active) this.photo.toggleGrid(); break;
         case 'KeyP': if (this.photo.active) this.photo.capture(); break;
+        case 'KeyL': case 'BracketLeft': case 'BracketRight':
+          // The rail handles these too (it swallows keys while focused); this
+          // is the path for a player who has clicked out onto the canvas.
+          if (!this.photo.active || !this.photo.lensKey(e.code)) return;
+          break;
         case 'KeyH': this.applyHudMode(this.hudOpacity > 0 ? 0 : 1); break;
         case 'KeyN': this.applyMap(!this.showMap); break;
         default: return;
@@ -707,7 +712,7 @@ export class HUD extends System {
     // the condition the book is opened under. Driving it with world time would
     // freeze the ceremony mid-page-turn.
     this.journal.update(dt);
-    if (this.photo.active) this.photo.focus?.update(dt);
+    if (this.photo.active) this.photo.update(dt);
 
     // Invert look. CameraRig reads `mouse.dy` in lateUpdate and `axes.lookY` is
     // refilled by Input at the end of the frame, so flipping both here lands

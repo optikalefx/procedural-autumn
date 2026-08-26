@@ -107,10 +107,18 @@ function canvasTexture(size, put, { srgb = true, repeat = 1 } = {}) {
  */
 export function leatherMaps(tint, { size = 512, border = true, repeat = 1, seed = 3 } = {}) {
   const N = size, N2 = N * N;
-  const h = new Float32Array(N2);
-  // Everything pressed into the board with a hot tool: the border and the
-  // emblem both write here, and the albedo and roughness passes both read it.
+  // Three fields, composed at the end, because they have to interact:
+  //   grain   the hide's own surface
+  //   deboss  everything a hot tool pressed INTO it (border, emblem)
+  //   tooled  a 0..1 mask of where that tool went
+  // The first pass added them straight into one array, which meant the grain
+  // crossed the blind-tooled fillet unchanged — see the composition at the
+  // bottom of this function for why that one omission was the loudest tell on
+  // the whole cover.
+  const grain = new Float32Array(N2);
+  const deboss = new Float32Array(N2);
   const tooled = new Float32Array(N2);
+  const h = new Float32Array(N2);
   const f = [0, 0];
 
   // ── height ────────────────────────────────────────────────────────────────
@@ -123,21 +131,33 @@ export function leatherMaps(tint, { size = 512, border = true, repeat = 1, seed 
       // (F2-F1) is ~0 on a cell boundary and ~0.5 in a cell centre: a crease
       // network with domed cells between it, which is leather.
       //
-      // THREE octaves, not two, and the middle one is the important one. Two
-      // octaves an octave and a half apart produced a single dominant cell
-      // size, and a field of same-sized cells does not read as a hide — it
-      // reads as CRAZING, the cracked-glaze pattern on old pottery, which is
-      // exactly what the second capture of this cover looked like. A slow
-      // 40-cell octave under the grain gives the pebble a size distribution.
+      // THREE octaves, and the weights below are the second attempt. The
+      // first set had 40/104/248 cells at 0.30/0.48/0.22, which on a 148 mm
+      // board is 3.7/1.4/0.6 mm — and JUDGED AT OPENING FRAMING rather than at
+      // 4x zoom, all three of those numbers were wrong:
+      //
+      //  · the 40-cell octave entered through smoothstep(0, 0.34, F2-F1),
+      //    which SATURATES over most of a cell interior. What it contributed
+      //    was therefore a second crease network rather than the large dome
+      //    the comment claimed — i.e. it was adding the very crazing it was
+      //    put here to prevent. Widened to 0.72 it stops clipping, and it is
+      //    now the heaviest term: the pebble.
+      //  · the 1.4 mm octave carried the largest weight and is a SINGLE cell
+      //    size, so the "size distribution" was not visually present at all.
+      //    It is the crease network and nothing else now.
+      //  · the 0.6 mm octave is about two screen pixels at the framing the
+      //    book actually opens at. Below Nyquist it does not resolve as cells;
+      //    it integrates to a uniform fizz that shimmers when the book moves.
+      //    Kept at a trace so a 4x zoom is not glassy between the creases.
       worley(u, v, 40, seed * 9.1, seed * 23.7, f);
-      let e = smoothstep(0.0, 0.34, f[1] - f[0]) * 0.30;
+      let e = smoothstep(0.0, 0.72, f[1] - f[0]) * 0.44;
       worley(u, v, 104, seed * 17.3, seed * 29.1, f);
-      e += smoothstep(0.0, 0.26, f[1] - f[0]) * 0.48;
+      e += smoothstep(0.0, 0.30, f[1] - f[0]) * 0.34;
       worley(u, v, 248, seed * 51.7 + 4, seed * 13.9 + 7, f);
-      e += smoothstep(0.0, 0.40, f[1] - f[0]) * 0.22;
+      e += smoothstep(0.0, 0.40, f[1] - f[0]) * 0.08;
       // A slow undulation so the hide is not perfectly flat across the board.
       e += 0.10 * Math.sin(u * 7.1 + seed) * Math.sin(v * 5.7 - seed * 2.0);
-      h[y * N + x] = e;
+      grain[y * N + x] = e;
     }
   }
 
@@ -165,7 +185,7 @@ export function leatherMaps(tint, { size = 512, border = true, repeat = 1, seed 
       g.stroke();
     }
     const d = g.getImageData(0, 0, N, N).data;
-    for (let i = 0; i < N2; i++) h[i] -= (d[i * 4] / 255) * 0.18;
+    for (let i = 0; i < N2; i++) grain[i] -= (d[i * 4] / 255) * 0.18;
   }
 
   // ── the blind-stamped emblem ──────────────────────────────────────────────
@@ -224,7 +244,7 @@ export function leatherMaps(tint, { size = 512, border = true, repeat = 1, seed 
     const d = g.getImageData(0, 0, N, N).data;
     for (let i = 0; i < N2; i++) {
       const t = (d[i * 4] / 255) * 0.74;
-      if (t > 0) { h[i] -= t; tooled[i] = Math.max(tooled[i], t); }
+      if (t > 0) { deboss[i] = Math.max(deboss[i], t); tooled[i] = Math.max(tooled[i], t); }
     }
   }
 
@@ -245,9 +265,57 @@ export function leatherMaps(tint, { size = 512, border = true, repeat = 1, seed 
         const g2 = Math.exp(-(d2 / w2) * (d2 / w2));
         const t = Math.min(1, g1 * 0.55 + g2 * 0.30);
         tooled[y * N + x] = Math.max(tooled[y * N + x], t);
-        h[y * N + x] -= t;
+        deboss[y * N + x] = Math.max(deboss[y * N + x], t);
       }
     }
+  }
+
+  // ── the joint, and the dye ────────────────────────────────────────────────
+  //
+  // THE JOINT. `coverGeometry` writes u = x/w + 0.5, so u = 0 is the hinge end
+  // of the board — and that strip is not just leather with a fold in it, it is
+  // the strip whose extruded SIDE WALL points straight down the key light
+  // (-0.62, 0.92, 0.72). Left as ordinary burnished grain it fired back a
+  // one-pixel highlight the full height of the closed book: measured 0.50 luma
+  // against a 0.34 cover, a glowing seam on the first frame anybody sees. A
+  // real joint is the opposite — crushed, dark and matte, because it is the
+  // one part of the cover a thumb touches every time the book is opened.
+  //
+  // THE DYE. Real leather pools its dye over 15-40 mm; there was NO
+  // low-frequency albedo variation on this cover at all, only a height
+  // undulation, and one flat brown with grain over it is exactly the "printed
+  // texture" read the grain is trying to escape. On a 148 mm board 15-40 mm is
+  // 4 to 10 cycles across the map. Both of these are cover-only: the spine's
+  // map TILES, and a non-tiling term in a tiling map is a visible seam.
+  const joint = new Float32Array(N2);
+  const mottle = new Float32Array(N2);
+  if (border) {
+    for (let y = 0; y < N; y++) {
+      const v = y / N;
+      for (let x = 0; x < N; x++) {
+        const u = x / N;
+        joint[y * N + x] = 1 - smoothstep(0.004, 0.042, u);
+        const m =
+          Math.sin(u * 4.3 + seed * 1.7) * Math.sin(v * 3.7 - seed * 0.9) +
+          0.70 * Math.sin(u * 6.1 - seed * 2.3 + 1.4) * Math.sin(v * 8.9 + seed * 1.1) +
+          0.50 * Math.sin((u + v) * 9.3 + seed) * Math.sin((u - v) * 7.1 - seed * 0.4);
+        mottle[y * N + x] = m / 2.2;                 // about -1 .. 1
+      }
+    }
+  }
+
+  // ── compose the height field ──────────────────────────────────────────────
+  //
+  // A HOT BRASS WHEEL CRUSHES GRAIN FLAT. The first pass subtracted the fillet
+  // and the emblem from the height field and left the pebble running across
+  // them at full amplitude — so the tooled line looked like a dark stripe
+  // PAINTED over leather instead of a line pressed into it, and that single
+  // omission was the most obvious "this is a texture, not a hide" tell on the
+  // cover. Multiplying the grain down inside the tool's own mask costs one
+  // extra array and fixes it outright.
+  for (let i = 0; i < N2; i++) {
+    const crush = clamp01(tooled[i] + joint[i]);
+    h[i] = grain[i] * (1 - 0.80 * crush) - deboss[i] - joint[i] * 0.16;
   }
 
   // ── wear ──────────────────────────────────────────────────────────────────
@@ -280,8 +348,14 @@ export function leatherMaps(tint, { size = 512, border = true, repeat = 1, seed 
         const t = tooled[i];
         c.multiplyScalar(1 - t * 0.30);
       }
+      // Dye pooling: +-8% of value over 15-40 mm. Small enough that nobody
+      // reads it as a pattern, large enough that no two square centimetres of
+      // the board are the same colour.
+      c.multiplyScalar(1 + mottle[i] * 0.08);
       // Worn areas lose pigment toward a pale dusty tan.
       c.lerp(new THREE.Color(0xb99a78), clamp01(wear[i]) * 0.34);
+      // The joint is rubbed dark. See the note above the joint mask.
+      c.multiplyScalar(1 - joint[i] * 0.36);
       d[i * 4] = c.r * 255; d[i * 4 + 1] = c.g * 255; d[i * 4 + 2] = c.b * 255; d[i * 4 + 3] = 255;
     }
   }, { srgb: true, repeat });
@@ -297,6 +371,7 @@ export function leatherMaps(tint, { size = 512, border = true, repeat = 1, seed 
       let r = lerp(0.88, 0.40, e);
       if (border) r = lerp(r, 0.34, tooled[i] * 0.8);     // the wheel polishes it
       r = lerp(r, 0.30, clamp01(wear[i]) * 0.55);
+      r = lerp(r, 0.92, joint[i] * 0.85);                  // and the joint kills it
       const v = Math.round(clamp01(r) * 255);
       d[i * 4] = v; d[i * 4 + 1] = v; d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
     }

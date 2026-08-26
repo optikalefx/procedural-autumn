@@ -5,9 +5,11 @@ Owner C of the scavenger-hunt effort. One file, no edits anywhere else.
 Two lenses for photo mode, the optics that make swapping between them mean
 something, and a small self-contained 3D preview for the rail.
 
-Everything below is the *contract*. The reasoning, and the four separate things
-that were wrong before they were right, live in the file's own header and in the
-comment above each function — that is where to look before changing a number.
+Everything below is the *contract*. The reasoning, and the several separate
+things that were wrong before they were right, live in the file's own header and
+in the comment above each function — that is where to look before changing a
+number. Where this file used to assert something the code did not do, the claim
+has been replaced with the measurement rather than softened.
 
 ---
 
@@ -24,7 +26,7 @@ focalForFov(deg)         -> mm        // inverse
 cameraFovForFocal(mm, aspect) -> deg  // VERTICAL, i.e. what three wants
 focalForCameraFov(v, aspect)  -> mm   // inverse; round-trips exactly
 
-APERTURE_STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22]
+APERTURE_STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32]
 stopsFor(lens)           -> the subset this lens can be set to
 ```
 
@@ -65,7 +67,7 @@ LENSES = [
 
   { id: 'tele', name: '200-400mm', display: '200-400mm f/4',
     mmMin: 200, mmMax: 400, mmDefault: 200,
-    fStop: 4,   fStopMin: 32, stops: [4, 5.6, 8, 11, 16, 22],
+    fStop: 4,   fStopMin: 32, stops: [4, 5.6, 8, 11, 16, 22, 32],
     minFocus: 2.0, filter: 52,
     fovWide: 10.29, fovTight: 5.15,
     blurb: '…', build: buildTeleZoomLens },
@@ -101,7 +103,13 @@ kit.zoom(steps) -> 'zoom' | 'end' | 'swap' | null
 ```
 
 `onChange({ lens, focal, reason })` fires on every change; `reason` is
-`'zoom' | 'swap' | 'set'`.
+`'zoom' | 'swap' | 'set'`. It fires whenever the focal actually moves, including
+the move that ends against a stop.
+
+`setFocal` and `setT` reject non-finite input and return `false`. `clamp` is
+`Math.min`/`Math.max` and both propagate NaN, so `setFocal(NaN)` used to return
+`true` and hand `fov`, `cameraFov` and then `rig.fov` a NaN — a NaN projection
+matrix and a black screen, two systems away from here.
 
 ### The models
 
@@ -124,10 +132,17 @@ mount, the tele on its tripod foot. Published on the group:
 
 ```js
 userData.anchors = { axisY, length, mount, front, entry }   // Vector3s, group space
+                                  // axisY is MEASURED off the posed model, not
+                                  // predicted from the spec: both lenses rest
+                                  // with their lowest vertex at y = 0 exactly,
+                                  // hood on or off, ring at either end.
 userData.lens                     // the LENSES entry
 userData.parts = { rig, body, zoom, focus, front, hood }
-userData.setZoom(t)               // turns the zoom ring 60° and, on the wide,
-                                  // slides the front group out 22 mm
+userData.setZoom(t)               // turns the zoom ring 69° AND slides the
+                                  // front group out (wide 22 mm, tele 38 mm).
+                                  // The printed focal scale rides the ring, so
+                                  // the number under the red index at noon is
+                                  // the focal length t stands for.
 userData.setFocus(t)              // turns the focus ring
 userData.dispose()                // the print textures/materials this build owns
 ```
@@ -158,28 +173,52 @@ different from owning one 24-400 superzoom. So the mechanic leans on the gap
 rather than papering over it.
 
 **One ladder, one control.** `zoom()` walks a single log-spaced ladder of focal
-lengths across *both* lenses. Turn the ring past 70 and the next detent changes
-the lens. 39 detents cover 24 → 400, evenly in *ratio* — which is the only
-spacing that feels even, because 24 → 26 is a visible change and 380 → 400 is
-not, so a linear ring is dead for its whole top half.
+lengths across *both* lenses. Turn the ring past 70 and the next call changes
+the lens. Counted by walking it, not by dividing logs: **49 distinct focal
+lengths from 24 to 400 in 49 calls** — 28 detents up the wide, one of
+resistance at 70, one swap, 18 detents up the tele and one clamp onto 400. The
+tele's own 200 → 400 is **19 calls and 20 distinct focal lengths**, not the 26
+an earlier draft of this file claimed. The spacing is even in *ratio*, which is
+the only spacing that feels even, because 24 → 26 is a visible change and
+380 → 400 is not, so a linear ring is dead for its whole top half.
 
-**The stop is felt before it is crossed.** At either end of a lens, the first
-detent past the limit returns `'end'` and changes nothing; the second returns
-`'swap'`. That single detent of resistance is what stops a fast flick toward
-70 mm from landing the player at 200, and it is the hook for the tick-then-clunk
-that makes the change read as physical. Confirmed by walking the ladder both
-ways:
+(The constant is `RING_DETENTS`. It was `DETENTS_PER_STOP`, in a file that also
+models aperture stops, which read as "detents per f-stop". It is detents per
+ring.)
+
+**The stop is felt before it is crossed, and a flick cannot spend the feeling.**
+A call that runs into the limit *parks against it*: the focal clamps, `'end'`
+comes back, and the rest of the steps are discarded. Crossing takes a **separate
+call** that begins at the stop. So `zoom(3)` from 65 mm returns `'end'` at 70,
+`zoom(-3)` from 205 returns `'end'` at 200, and `zoom(30)` from 24 returns
+`'end'` at 70 — all measured. One more call in the same direction swaps.
+
+That matters because §3 binds `[` and `]` to `_ring(±3)`: the key that actually
+turns the ring is a multi-step call, and the previous version banked and spent
+the detent of resistance inside its own loop, so the one control the resistance
+existed for was the one control it never applied to.
+
+Walking the ladder one call at a time, both ways:
 
 ```
 up:    zoom:wide@25 … end:wide@70   swap:tele@200 … end:tele@400
 down:  end:tele@200  swap:wide@70   … zoom:wide@24
 ```
 
-**Swapping keeps your place.** `setLens` with no `at` preserves the ring's
-*ratio* position, so a deliberate swap at the tight end of the wide arrives at
-the tight end of the tele. Swapping through the gap uses `at: 'wide'` going up
+**A clamped focal still fires `onChange`.** `zoom()` emits on whether the focal
+MOVED, not on which verb it returns. `zoom(2)` from 65 mm lands on 70 and
+reports it; it used to move the focal and emit nothing, which left the camera at
+65 while `kit.focal` said 70 and the rail label said 70.
+
+**Swapping keeps your place — including on the `L` key.** `setLens` with no `at`
+preserves the ring's *ratio* position, so a deliberate swap at the tight end of
+the wide arrives at the tight end of the tele, and `cycle()` now does the same:
+wide at t 0.5 (41 mm) → `cycle(1)` → tele 283 → `cycle(1)` → wide 41. It used to
+pass `at: 'wide'`/`at: 'tight'` and ratchet the ring to an end of the range on
+every press. Crossing the gap with the ZOOM RING still uses `at: 'wide'` going up
 and `at: 'tight'` coming down, so the focal ladder stays continuous through the
-change even though the numbers jump.
+change even though the numbers jump — that rule belongs to the ladder, not to a
+deliberate swap.
 
 **Wheel stays the dolly.** `CameraRig._free` owns the wheel and dollies the
 camera along the view axis, and that is hours of muscle memory. The zoom ring is
@@ -194,7 +233,32 @@ self-contained (its own canvas, renderer, scene, lights) rather than scissored
 into the main renderer: photo mode has a scar in its own header about a mode
 restoring the wrong number on the way out, and every frame of a shared-renderer
 preview would be another chance to leave something set. It costs one extra GL
-context, created lazily on first open.
+context, created lazily on first open and handed back on `dispose()` with
+`forceContextLoss()` — `renderer.dispose()` alone frees three's objects and
+leaves the context to the garbage collector, which is fine once and not fine for
+a mode that can be opened all session.
+
+**THE PANEL IS THE SHIPPING SURFACE, NOT THE GALLERY.** Three of the nine things
+wrong with the first round were only wrong here, and all three were invisible in
+a 700 px gallery view:
+
+- The framing fitted a *bounding sphere* into the *smaller* half-angle, which on
+  a 459 mm lens in a 188 × 128 slot put it 51% too far away: 8.5% of the panel
+  covered. It now fits the yaw-invariant sweep radius horizontally and the
+  tilted height vertically — 16-29% covered across a full turn, never clipped.
+- The swap animation wrote `model.position.z` outright, over the framing offset
+  the model had been recentred with, so from frame one the lens was mounted
+  228 mm off the pivot it turns about and the idle *orbited* it. Each lens now
+  hangs in a holder: centring on the model, animation on the holder.
+- The lighting was the gallery stage's — warm key over a gold ground bounce —
+  and at 188 px that is not "a dark grey lens in warm light", it is a brown
+  lens. The ground bounce is a dim neutral here and the exposure is 1.0. The key
+  stays warm; it was the fill on the shadow side that was choosing the colour.
+
+`update(dt)` draws only when the pose has changed, so `update(0)` from a paused
+rail costs a comparison. The idle turntable never stops, so a rail that ticks
+with real time draws every frame — the way to stop paying for this panel is to
+stop calling `update`.
 
 ---
 
@@ -291,6 +355,13 @@ _ring(steps) {
 }
 ```
 
+`_ring(±3)` is a multi-step call and it is safe: a gesture that reaches the end
+of the lens parks there and returns `'end'` with the remaining steps discarded,
+so `]` held down walks to 70 mm and stops. The *next* press crosses. The focal
+change that happens on the way to the stop still fires `onChange`, so
+`_applyLens` runs and the camera and the label agree with `kit.focal` — do not
+gate the apply on the returned verb.
+
 **Shift+wheel** — the zoom ring. `CameraRig._free` reads `input.mouse.wheel`
 unconditionally, so the wheel has to be intercepted before the rig sees it.
 Cleanest place is `PhotoMode`'s own listener on `this.node`, added in
@@ -347,19 +418,24 @@ if the cue does not exist (`audio()?.cue` is already optional everywhere).
 
 Measured in the gallery, at `opts` defaults with the hood on:
 
-| | triangles | meshes | size |
+| | triangles | meshes | size (zoom 0) |
 |---|---|---|---|
-| `buildWideZoomLens` | 15,906 | 21 | 0.10 × 0.10 × 0.17 m |
-| `buildTeleZoomLens` | 19,674 | 22 | 0.14 × 0.16 × 0.46 m |
+| `buildWideZoomLens` | 16,416 | 21 | 0.10 × 0.10 × 0.17 m |
+| `buildTeleZoomLens` | 20,328 | 22 | 0.14 × 0.16 × 0.46 m |
 
-Ten materials each, seven of them the shared set. About 55% of the triangles are
-the two grip rings, which are lathes at six facets per rib — that is what buys
-ribbing you can see the light catch, and it is the one place worth spending on a
-prop this size.
+Ten materials each, seven of them the shared set. About 55% of the triangles
+are the two grip rings, which are lathes at six facets per rib — that is what
+buys ribbing you can see the light catch, and it is the one place worth spending
+on a prop this size.
+
+Both rest with their lowest vertex at **y = 0 exactly**, hood on or off, ring at
+either end. That is measured at build time (`Box3.setFromObject(root, true)`,
+after the pose, `precise` because a rotated ring's AABB is not its extent)
+rather than predicted from the spec, which is how the tele came to float 3.9 mm
+and the hoodless wide 5.6 mm.
 
 These are UI-scale props. Neither is ever in the world: the only things that
-draw them are the object gallery and `LensPreview`'s own renderer, which draws
-on demand — a still rail costs nothing.
+draw them are the object gallery and `LensPreview`'s own renderer.
 
 ## 5. Honest weaknesses
 
@@ -368,19 +444,37 @@ on demand — a still rail costs nothing.
   but an alpha-tested decal is the wrong tool if a lens ever ends up in the
   world under the upscale pass — it will crawl. If that happens, the answer is
   to bake the markings into the barrel's own material rather than to fight it.
-- **The barrel reads slightly brown** under the studio's warm key plus its gold
-  ground bounce. That is the game's light, and every prop in the camp takes the
-  same tint, so it is consistent rather than wrong — but a critic who wants a
-  neutral grey lens will see brown. The lever is `lensMaterials().barrel`, and
+- **The barrel still reads warm in the GALLERY**, under that stage's warm key
+  plus its gold ground bounce. That is the game's light and every prop in the
+  camp takes the same tint, so it is consistent rather than wrong — but a critic
+  who wants a neutral grey lens will see it. The preview panel, which is the
+  surface that ships, no longer does: it runs its own neutral ground bounce at
+  exposure 1.0 and measures a red-minus-blue of 0 to 10 across a full idle turn,
+  against 21 before. The lever for the gallery is `lensMaterials().barrel`, and
   the argument for not simply cooling it is in the comment above it.
+- **The 200-400 extends 38 mm, and the lens it is modelled on does not.** A
+  200-400 f/4 is an internal zoom. It was authored that way and it produced a
+  zoom control with no visible response at the size the player sees it: the ring
+  turning and the printed scale travelling under the index together moved 1.9%
+  of the rail panel's pixels across the whole 200 → 400 range. Extension moves
+  9.4%, because it changes the silhouette, and a silhouette is most of what a
+  120 px lens has. The trade is deliberate and it is the wrong way round for
+  anyone who knows the reference lens.
 - **The 24-70 extends monotonically toward 70 mm.** The real lens it is modelled
   on is longest at both ends of its range and shortest in the middle. Modelling
   that would need `setZoom` to be non-monotonic for no gain anybody can see in a
   188 px panel.
+- **The tripod collar sits at 15% of the tele's length**, so three quarters of
+  the lens cantilevers forward of its own support. The foot is 118 mm now
+  instead of 82, which puts more plate under it and reads better, but the collar
+  itself cannot move without re-laying the whole barrel z-ladder — the rear
+  barrel, the collar and the zoom ring are packed nose to tail between 4.5 mm
+  and 147 mm, and there is nowhere for it to go. A real 200-400 carries its
+  collar at about a third.
 - **`LensPreview` opens a second WebGL context.** One is cheap and the budget is
-  ~16, but it is a real resource and it is created on first entry to photo mode,
-  not at boot. If a future mode wants a third and a fourth, they should share
-  one offscreen renderer rather than each taking their own.
+  ~16; it is created on first entry to photo mode and released on `dispose()`.
+  If a future mode wants a third and a fourth, they should share one offscreen
+  renderer rather than each taking their own.
 - **Neither lens has been seen under `Stylize`**, because nothing renders them
   in the game scene. The materials are authored for it (dielectrics only,
   `keepPhysicalSpecular` on the glass), but that is an argument, not a

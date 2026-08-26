@@ -37,6 +37,7 @@ import { stats } from '../game/stats_store.js';
 import { PhotoFocus } from '../photo/photo_focus.js';
 import { detectSubjects } from '../game/hunt_detect.js';
 import { hunt } from '../game/hunt_store.js';
+import { LensKit, LensPreview, cameraFovForFocal, stopsFor } from '../photo/lens_models.js';
 import { posthog } from '../posthog.js';
 
 const RANGES = {
@@ -74,6 +75,38 @@ export class PhotoMode {
     // modified wheel is consumed before it ever gets there.
     this.focus = new PhotoFocus(this.ctx, { root });
 
+    // ── the lens ────────────────────────────────────────────────────────────
+    // Two bodies, one ring. `LensKit` walks a single log-spaced ladder from
+    // 24 mm to 400 mm and changes lens across the 70-200 gap only when the
+    // player pushes through a detent of resistance at the stop — so the gap is
+    // something you feel rather than something hidden from you.
+    //
+    // The camera lever is `rig.fov`, NOT `camera.fov`: CameraRig._apply writes
+    // the camera's fov from its own every frame (`_apply`, near line 887), so
+    // anything written straight onto the camera is gone by the next frame.
+    // And it is the VERTICAL angle, which is what three.js means by fov and is
+    // not what a lens is specified in — `cameraFovForFocal` does that
+    // conversion against the live aspect.
+    this.lens = new LensKit({
+      onChange: () => {
+        const rig = this.ctx.systems?.cameraRig;
+        if (rig) rig.fov = cameraFovForFocal(this.lens.focal, this.ctx.camera.aspect);
+        this.lensPreview?.setZoomT(this.lens.t);
+        this.lensPreview?.setLens(this.lens.lens.id);
+        this._fitAperture();
+        this._paintLens();
+        this.hud.audio()?.cue('tick');
+      },
+    });
+
+    const lensRow = el('div', 'pa-rail-item pa-lens');
+    this.lensPreview = new LensPreview({ width: 188, height: 128, lens: this.lens.lens.id });
+    lensRow.appendChild(this.lensPreview.canvas);
+    this.lensLabel = el('div', 'pa-label pa-lens-label', '<span></span>');
+    lensRow.appendChild(this.lensLabel);
+    rail.appendChild(lensRow);
+    this._paintLens();
+
     this.shutterBtn = button('pa-shutter', '', () => this.capture(), 'Take photo');
     rail.appendChild(this.shutterBtn);
     // The camera verbs come first: the two dial rows above are discoverable by
@@ -82,6 +115,7 @@ export class PhotoMode {
       'drag&nbsp;&nbsp;look<br>middle-drag&nbsp;&nbsp;move<br>wheel&nbsp;&nbsp;zoom<br>' +
       'shift+wheel&nbsp;&nbsp;focus<br>shift+click&nbsp;&nbsp;focus here<br>' +
       'alt+wheel&nbsp;&nbsp;aperture<br>' +
+      '[&nbsp;]&nbsp;&nbsp;zoom ring<br>L&nbsp;&nbsp;change lens<br>' +
       'P&nbsp;&nbsp;save<br>G&nbsp;&nbsp;grid<br>J&nbsp;&nbsp;book<br>F&nbsp;&nbsp;exit'));
     this.node.appendChild(rail);
     this.rail = rail;
@@ -106,6 +140,7 @@ export class PhotoMode {
       // somewhere else first.
       if (e.code === 'KeyP') { this.capture(); e.preventDefault(); return; }
       if (e.code === 'KeyG') { this.toggleGrid(); e.preventDefault(); return; }
+      if (this.lensKey(e.code)) { e.preventDefault(); return; }
       e.stopPropagation();
     });
     rail.addEventListener('keyup', (e) => e.stopPropagation());
@@ -169,6 +204,10 @@ export class PhotoMode {
       hour: this.ctx.lighting?.hour ?? 16.6,
       cycle: this.ctx.lighting?.cycleSpeed ?? 0,
       mode: this.ctx.systems?.cameraRig?.mode ?? 'chase',
+      // The rig's own field of view, which the fitted lens overwrites. Chase
+      // and orbit damp theirs back within a second, but `exitFree` cuts — so
+      // without this the first frame after leaving photo mode is 400 mm wide.
+      fov: this.ctx.systems?.cameraRig?.fov ?? 52,
       // The engine's absolute pin, or null for "the adaptive scaler had it".
       // Read from the engine rather than from HUD.renderPin on purpose: this
       // has to restore what was actually running, and those two differ while a
@@ -295,6 +334,11 @@ export class PhotoMode {
       // and after the resolution pin (so the first depth read is taken at the
       // size the mode will actually run at).
       this.focus.enable();
+      // Fit whatever lens was last on the body. Done here rather than in the
+      // constructor because the rig only owns the fov once free mode has it.
+      const rig0 = this.ctx.systems?.cameraRig;
+      if (rig0) rig0.fov = cameraFovForFocal(this.lens.focal, this.ctx.camera.aspect);
+      this._fitAperture();
       this.hourEl.set(this._saved.hour);
       this.expEl.set(this._saved.exposure);
       this.colEl.set(this._saved.saturation);
@@ -324,11 +368,62 @@ export class PhotoMode {
         // own memory of it so a mode changed while photo mode was open (it
         // cannot be today; C is locked out in free mode) still loses to what
         // the player actually had.
+        if (rig) rig.fov = s.fov;
         rig?.exitFree?.(s.mode === 'free' ? 'chase' : s.mode);
       }
       this._saved = null;
       if (this.node.contains(document.activeElement)) document.activeElement.blur();
     }
+  }
+
+  /**
+   * The lens keys, in one place so the rail and the HUD can share them.
+   *
+   * `[`/`]` walk the ring and `L` swaps the body. The wheel is deliberately NOT
+   * one of them: bare wheel is the free camera's dolly and has been since photo
+   * mode existed, shift+wheel is the focus the player was promised, and
+   * alt+wheel is the aperture. A fourth wheel gesture would be a modifier
+   * nobody could remember.
+   *
+   * Returns true if the key was ours.
+   */
+  lensKey(code) {
+    if (code === 'BracketRight') { this.lens.zoom(1); return true; }
+    if (code === 'BracketLeft') { this.lens.zoom(-1); return true; }
+    if (code === 'KeyL') { this.lens.cycle(1); return true; }
+    return false;
+  }
+
+  /**
+   * A lens cannot open wider than it opens.
+   *
+   * `PhotoFocus` owns the aperture and offers f/1.4 to f/22 because that is the
+   * range the blur maths covers. The bag disagrees: the 24-70 is an f/2.8 and
+   * the 200-400 an f/4, so leaving the two unconnected let the rail advertise
+   * f/1.4 on a lens whose front element is stopped a stop and a half down —
+   * a number no photographer would believe and, worse, one that produced a
+   * different picture from the same nominal setting on each body.
+   *
+   * Clamped rather than reset: a player who was at f/11 on the wide should
+   * still be at f/11 after fitting the tele, because that is the setting they
+   * chose. Only an impossible value moves.
+   */
+  _fitAperture() {
+    const stops = stopsFor(this.lens.lens);
+    if (!stops.length || !this.focus) return;
+    const now = this.focus.fStop;
+    const capped = Math.min(Math.max(now, stops[0]), stops[stops.length - 1]);
+    if (Math.abs(capped - now) > 1e-6) this.focus.setAperture(capped);
+  }
+
+  _paintLens() {
+    if (this.lensLabel) this.lensLabel.firstChild.textContent = this.lens.label();
+  }
+
+  /** Real seconds, from HUD.update — the rail runs while the world is frozen. */
+  update(dt) {
+    this.focus?.update(dt);
+    this.lensPreview?.update(dt);
   }
 
   toggleGrid() {

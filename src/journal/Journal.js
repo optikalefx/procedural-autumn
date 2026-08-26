@@ -80,6 +80,32 @@ const SCRIPT = {
 const CAM_POS = new THREE.Vector3(0, 0.255, 0.600);
 const CAM_LOOK = new THREE.Vector3(0, -0.004, 0.005);
 const CAM_FOV = 30;
+// ── the framing has to survive a phone ────────────────────────────────────
+// `CAM_FOV` is VERTICAL, so with only `camera.aspect` written the horizontal
+// coverage shrinks with the window while the spread stays stubbornly two pages
+// wide. Measured before this existed: 1.78 and 1.25 fine, 1.33 tight, and at
+// 0.75 the heading was cut to "p Scavenger Hunt" — on the branch whose whole
+// point is that the checklist IS the interface on a device with no keyboard.
+//
+// So the framing fits HORIZONTALLY below `DESIGN_AR` (the aspect the pose was
+// composed at) and is untouched above it. The extra coverage is bought two
+// ways, in this order:
+//   · open the lens, up to `FOV_MAX`. This is a held object and some near-field
+//     perspective is part of the read;
+//   · past that, DOLLY THE CAMERA BACK instead. A 90-degree lens 600 mm from a
+//     spread laid nearly flat turns the far page into a wedge, and a checklist
+//     you have to read is the last place to spend perspective on drama.
+// And the margin is not a constant either. At the design aspect the spread
+// fills about two thirds of the width and the third that is left is the frame
+// the book sits in; on a phone held upright the frame is nothing BUT margin,
+// so the book is allowed to grow into it — to ~88% of the width — because the
+// hint under each line has to stay readable and that is the whole feature.
+const DESIGN_AR = 1.55;
+const TIGHT_AR = 0.80;      // at and below this, the full margin is reclaimed
+const TIGHT_MAX = 1.30;
+const FOV_MAX = 54;
+const rad = (d) => (d * Math.PI) / 180;
+const deg = (r) => (r * 180) / Math.PI;
 
 // The two poses the book blends between. `held` is what you are handed; `laid`
 // is the book open on a table. See the ceremony note in the header.
@@ -236,6 +262,9 @@ export class Journal {
     this._pageTex = [];
     this._sheets = 1;
     this._size = new THREE.Vector2();
+    this._dbSize = new THREE.Vector2();
+    this._clearCol = new THREE.Color();
+    this._fitAR = -1;
     this._vp = new THREE.Vector4();
     this._sc = new THREE.Vector4();
     this._tmpP = new THREE.Vector3();
@@ -769,12 +798,107 @@ export class Journal {
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
+   * Fit the framing to the window. See DESIGN_AR / FOV_MAX above.
+   *
+   * Writes `camera.fov` AND `camera.position`, so it also refreshes the world
+   * matrix: `_flyPhoto` calls `camera.localToWorld` to find where the print
+   * comes in from, and a stale matrix launches it from the wrong place.
+   */
+  _fitCamera(aspect) {
+    if (aspect === this._fitAR) return;
+    this._fitAR = aspect;
+    const tanBase = Math.tan(rad(CAM_FOV) / 2);
+    const tight = 1 + (TIGHT_MAX - 1) *
+      clamp01((DESIGN_AR - aspect) / (DESIGN_AR - TIGHT_AR));
+    const want = (tanBase * Math.max(1, DESIGN_AR / aspect)) / tight;
+    const cap = Math.tan(rad(FOV_MAX) / 2);
+    const use = Math.min(want, cap);
+    this.camera.fov = deg(Math.atan(use)) * 2;
+    this.camera.aspect = aspect;
+    // Whatever the lens could not cover, walk backwards for. Scaling the
+    // camera's offset about the look-at point keeps the composition — the
+    // book stays where it is in frame and only gets smaller.
+    const dolly = want / use;
+    this.camera.position.copy(CAM_POS).sub(CAM_LOOK).multiplyScalar(dolly).add(CAM_LOOK);
+    this.camera.lookAt(CAM_LOOK);
+    this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld(true);
+  }
+
+  /**
+   * The multisampled target the book is drawn into.
+   *
+   * `src/core/Engine.js` builds the context with `antialias: false` because the
+   * world's AA is SMAA inside the post chain — and this overlay draws AFTER
+   * that chain, into that same raw framebuffer. So every silhouette on the
+   * hero object staircased over a perfectly smooth meadow: cover corner, page
+   * edge, fore edge as raw stairs and the ribbon as a visible zigzag, which
+   * DESIGN_BRIEF 5.1 names as a fail condition outright.
+   *
+   * Four samples into an offscreen target and one blit is the cheap fix, and
+   * it is cheap because it is one full-screen quad on a frame where the world
+   * behind it is paused. Supersampling 2x was the alternative and costs four
+   * times the fragments for a slightly worse edge.
+   *
+   * RGBA8 tagged sRGB, deliberately, not half float: it is the same encoding
+   * and the same 8 bits the canvas itself has, so the composite is identical to
+   * what was there before except for the edges — and half float would have made
+   * this 46 MB of multisampled attachment for a book.
+   */
+  _target(renderer, w, h) {
+    if (this._rtFailed) return null;
+    if (this._rt && (this._rt.width !== w || this._rt.height !== h)) {
+      this._rt.setSize(w, h);
+    }
+    if (!this._rt) {
+      try {
+        const rt = new THREE.WebGLRenderTarget(w, h, {
+          samples: 4,
+          depthBuffer: true,
+          stencilBuffer: false,
+          type: THREE.UnsignedByteType,
+          format: THREE.RGBAFormat,
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter,
+        });
+        rt.texture.generateMipmaps = false;
+        rt.texture.colorSpace = THREE.SRGBColorSpace;
+        this._rt = rt;
+        // The blit. `premultipliedAlpha` is not decoration: the book is drawn
+        // over a transparent clear with three's usual separate alpha blend, so
+        // what comes out of the target has its colour ALREADY multiplied by
+        // coverage. Composited with the ordinary source-alpha blend instead,
+        // every antialiased edge pixel is darkened twice and the book gets a
+        // grey halo — which looks like a bad matte and is arithmetic.
+        this._blitScene = new THREE.Scene();
+        this._blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        this._blitMat = new THREE.MeshBasicMaterial({
+          map: rt.texture, transparent: true, premultipliedAlpha: true,
+          depthTest: false, depthWrite: false, toneMapped: false,
+        });
+        const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._blitMat);
+        q.frustumCulled = false;
+        this._blitScene.add(q);
+      } catch (e) {
+        // A driver that will not give us a multisampled target is not a reason
+        // to lose the journal. Fall back to drawing straight to the canvas.
+        this._rtFailed = true;
+        console.warn('[journal] no MSAA target; overlay will alias', e);
+        return null;
+      }
+    }
+    return this._rt;
+  }
+
+  /**
    * Draw the overlay into the canvas that postfx has just finished with.
    *
    * Saved and restored: the render target, autoClear (and its three component
-   * flags), the viewport, the scissor rect and the scissor test. `clearDepth()`
-   * is mandatory — without it the book is compared against the WORLD's depth
-   * buffer and is buried inside whatever the camera happens to be near.
+   * flags), the viewport, the scissor rect, the scissor test and the clear
+   * colour. `clearDepth()` on the canvas is no longer needed — the book has its
+   * own depth buffer in its own target now, which is strictly better: the
+   * overlay used to clobber the WORLD's depth buffer to avoid being buried
+   * inside whatever the camera happened to be near.
    *
    * Deliberately NOT touched: `toneMapping` and `shadowMap.enabled`. Both are
    * program-affecting state on this renderer, and flipping either one mid-frame
@@ -795,12 +919,12 @@ export class Journal {
     renderer.getViewport(this._vp);
     renderer.getScissor(this._sc);
     renderer.getSize(this._size);
+    renderer.getDrawingBufferSize(this._dbSize);
+    renderer.getClearColor(this._clearCol);
+    const prevClearA = renderer.getClearAlpha();
 
-    const aspect = this._size.x / Math.max(1, this._size.y);
-    if (this.camera.aspect !== aspect) {
-      this.camera.aspect = aspect;
-      this.camera.updateProjectionMatrix();
-    }
+    this._fitCamera(this._size.x / Math.max(1, this._size.y));
+    const rt = this._target(renderer, Math.max(2, this._dbSize.x | 0), Math.max(2, this._dbSize.y | 0));
 
     try {
       renderer.setRenderTarget(null);
@@ -810,13 +934,31 @@ export class Journal {
       renderer.autoClearColor = false;
       renderer.autoClearDepth = false;
       renderer.autoClearStencil = false;
-      renderer.clearDepth();
+
+      // The scrim stays on the direct path. It is a flat full-screen quad with
+      // no silhouette, so it has nothing to antialias — and putting it in the
+      // target with the book would move the world-dimming blend from the
+      // canvas's sRGB space into the target's linear one, which is a different
+      // (and lighter) amount of dimming for no gain.
       if (this._scrim.material.opacity > 0.002) {
         renderer.render(this._scrimScene, this._scrimCam);
       }
-      renderer.render(this.scene, this.camera);
+
+      if (rt) {
+        renderer.setRenderTarget(rt);
+        renderer.setClearColor(0x000000, 0);
+        renderer.clear(true, true, false);
+        renderer.render(this.scene, this.camera);
+        renderer.setRenderTarget(null);
+        renderer.setViewport(0, 0, this._size.x, this._size.y);
+        renderer.render(this._blitScene, this._blitCam);
+      } else {
+        renderer.clearDepth();
+        renderer.render(this.scene, this.camera);
+      }
     } finally {
       renderer.setRenderTarget(prevTarget);
+      renderer.setClearColor(this._clearCol, prevClearA);
       renderer.autoClear = prevAuto;
       renderer.autoClearColor = prevAutoC;
       renderer.autoClearDepth = prevAutoD;
@@ -910,6 +1052,10 @@ export class Journal {
     for (const p of this._pages) p.dispose();
     this._pages = [];
     disposePaperCache();
+    this._rt?.dispose();
+    this._rt = null;
+    this._blitMat?.dispose();
+    this._blitScene?.children[0]?.geometry?.dispose();
     this._cardTex?.dispose();
     this._card?.geometry.dispose();
     this._card?.material.dispose();
