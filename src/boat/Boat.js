@@ -30,8 +30,9 @@ import { ClickTracker, pointerRay, rayMiss, objectHit, placed, pointing } from '
 import { pickVerb, placeVerb, actVerb, touchCapable } from '../core/verbs.js';
 import { groundRay, siteRng } from '../camp/camp_site.js';
 import { CampPrompt } from '../camp/camp_ui.js';
-import { waterRay, sdfGrad, shoreSnap, validateLaunch, MAX_LAUNCH_DIST } from './boat_site.js';
-import { BoatPhysics } from './boat_physics.js';
+import { waterRay, sdfGrad, shoreSnap, validateLaunch, MAX_LAUNCH_DIST,
+         MAX_RIVER, RIVER_KIND } from './boat_site.js';
+import { BoatPhysics, BEACH_MARGIN } from './boat_physics.js';
 import { buildCanoe, CANOE_DIM } from './boat_canoe.js';
 import { buildKayak, KAYAK_DIM } from './boat_kayak.js';
 import { setBoatEnv } from './boat_materials.js';
@@ -354,27 +355,43 @@ export class Boat extends System {
       this._say(''); this._cursor(''); return false;
     }
 
-    const v = validateLaunch(world, hit.x, hit.z, veh);
+    // Aiming a canoe at moving water offers the kayak instead of refusing it.
+    // A river takes a kayak only (boat_site RIVER_KIND), and "only a kayak can
+    // run a river" as a bare refusal makes the player go and find the K key to
+    // do the thing the game just told them to do. The prompt already names the
+    // other hull and is already the touch control for swapping, so the fix is
+    // to VALIDATE the kayak here and let the prompt lead with it.
+    let kind = this._kind;
+    let v = validateLaunch(world, hit.x, hit.z, veh, kind, this._floatDepth(kind));
+    if (!v.ok && kind !== RIVER_KIND && v.river > MAX_RIVER) {
+      const asKayak = validateLaunch(world, hit.x, hit.z, veh, RIVER_KIND,
+                                     this._floatDepth(RIVER_KIND));
+      if (asKayak.ok) { kind = RIVER_KIND; v = asKayak; }
+    }
     // Kept for the harness: what the pointer path actually computed this frame.
-    this._lastAim = { hx: hit.x, hz: hit.z, water: hit === w, ...v };
+    this._lastAim = { hx: hit.x, hz: hit.z, water: hit === w, kind, ...v };
     if (input.justPressed('KeyK')) this._swapKind();
     if (v.ok) {
-      const other = this._kind === 'canoe' ? 'kayak' : 'canoe';
+      const other = kind === 'canoe' ? 'kayak' : 'canoe';
       // The kind swap has no key on a phone, so on touch the prompt itself is
       // the control: it is the one thing on screen already naming the other
       // boat, it sits where a thumb can reach it, and `CampPrompt` takes a tap
       // handler for exactly this. With a keyboard it stays K and the prompt
       // stays untouchable, because a mouse has better things to click.
+      // On a river the other hull is not on offer, so the prompt does not
+      // pretend it is — it says why instead.
+      const swap = v.river > MAX_RIVER
+        ? '<i>rivers take a kayak</i>'
+        : (touchCapable() ? `<u>${other} instead</u>` : `<b>K</b>&nbsp; ${other} instead`);
       this._say(
-        `${placeVerb()}&nbsp; launch a ${this._kind} here&ensp;` +
-        (touchCapable() ? `<u>${other} instead</u>` : `<b>K</b>&nbsp; ${other} instead`),
-        touchCapable() ? () => this._swapKind() : null);
+        `${placeVerb()}&nbsp; launch a ${kind} here&ensp;` + swap,
+        (touchCapable() && v.river <= MAX_RIVER) ? () => this._swapKind() : null);
       this._cursor('pointer');
       if (placed(input)) {
         // Launch AND board in one act (user direction, 2026-08-23): you put a
         // boat in, you're in the boat — W paddles immediately, no second
         // click. board() cancels spawn()'s launch glance.
-        const nb = this.spawn(v.x, v.z, { kind: this._kind, heading: v.heading, y: v.y });
+        const nb = this.spawn(v.x, v.z, { kind, heading: v.heading, y: v.y });
         if (nb) this.board();
       }
       return true;
@@ -388,6 +405,15 @@ export class Boat extends System {
     else this._say('');
     this._cursor('');
     return true;
+  }
+
+  /** Water this hull needs under it to float, straight off the model's own
+   *  draft plus the physics' own BEACH_MARGIN — so the launch gate's "is the
+   *  channel wide enough" and the physics' "may the boat enter this" are asking
+   *  about the same depth, and cannot drift apart. */
+  _floatDepth(kind) {
+    const dim = this.models[kind]?.dim ?? CANOE_DIM;
+    return (dim.draft ?? 0.15) + BEACH_MARGIN;
   }
 
   // ── aboard ────────────────────────────────────────────────────────────────
@@ -786,8 +812,9 @@ export class Boat extends System {
   // ── harness API (window.__boat) ───────────────────────────────────────────
 
   /** The player-path validity test, callable from the harness. */
-  validate(x, z) {
-    return validateLaunch(this.ctx.world, x, z, this.ctx.systems?.vehicle);
+  validate(x, z, kind = this._kind) {
+    return validateLaunch(this.ctx.world, x, z, this.ctx.systems?.vehicle,
+                          kind, this._floatDepth(kind));
   }
 
   /** Spawn ignoring validity; snaps to the nearest water. */
