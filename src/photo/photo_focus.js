@@ -14,7 +14,7 @@
 //    2. a focus distance the player sets — by scrolling with a modifier held,
 //       or by clicking on the thing they want sharp,
 //    3. an aperture, because "focus" without an f-stop is one number and an
-//       f/1.4-versus-f/11 choice is what a photograph is actually made of.
+//       f/2.8-versus-f/11 choice is what a photograph is actually made of.
 //
 //  ── the wheel already did something ─────────────────────────────────────────
 //
@@ -24,7 +24,13 @@
 //
 //      shift + wheel   focus nearer / further
 //      shift + click   pull focus onto whatever is under the cursor
-//      alt   + wheel   aperture, f/1.4 … f/22
+//      alt   + wheel   aperture
+//
+//  The aperture ladder below runs f/1.4 to f/22, but the RING the player turns
+//  is clamped to the fitted lens by the rail (`hud_photo._lensStop`): f/2.8 to
+//  f/22 on the 24-70, f/4 to f/22 on the 200-400. The ladder keeps the faster
+//  stops because it is the model's range, not the barrel's — a faster lens in
+//  the bag would want them and nothing here would have to change.
 //
 //  Shift and Alt were picked by elimination, not by taste. In photo mode the
 //  keys that already mean something are F (exit), Escape (exit), P (save),
@@ -78,11 +84,28 @@
 //  which three depends on the focus distance: at 3 m the wide end is all
 //  ceiling and at 37 m the narrow end is indistinguishable from the effect
 //  being off. Rather than grey out stops on a wheel, the panel prints the band
-//  that is actually sharp — turn the ring and watch "17.7 – 20.6 m" become
-//  "10.4 – 113 m" — so the control explains itself while it is being used. The
+//  that is actually sharp — turn the ring and watch "17.2 – 21.3 m" become
+//  "10.4 – 116 m" — so the control explains itself while it is being used. The
 //  band comes from `PostFX.lensInfo()`, solved from the same circle of
 //  confusion the shader runs, so the number on screen is the number in the
 //  picture rather than a second model that will drift from the first.
+//
+//  There is a second line under it, in amber, and it exists because a readout
+//  that is confidently wrong is worse than no readout. With the 200-400 fitted,
+//  a shift+click on a ridge 2 km away used to clamp the dial to a hard-coded
+//  400 m and then print "sharp 395 – 405 m" — a sentence about a photograph
+//  nobody had taken, while the ridge measured softer than with the effect off.
+//  The dial's far end is the LENS's now (`_reach`), and on the rare click it
+//  still cannot honour, the amber line says which subject fell outside the band
+//  instead of the band quietly describing somewhere else. The test is not "did
+//  it clamp" — clamping to the hyperfocal is free, everything past it is
+//  already sharp — but "is the thing you clicked on inside the band you were
+//  just shown".
+//
+//  Neither lens in the bag can currently produce that condition, and that is
+//  the point rather than an omission: the line is the tripwire that stops a
+//  future lens, or a future cap, from quietly bringing the confident wrong
+//  sentence back.
 //
 //  ── wiring ─────────────────────────────────────────────────────────────────
 //
@@ -99,9 +122,9 @@ const NEAR = 0.6;
 // The far end used to be a constant 400 m, on the argument that past it the
 // valley reads as a backdrop rather than as a subject and the aerial
 // perspective in the grade has taken over anyway. That argument was true of the
-// only lens the mode had — a 24 mm-equivalent at its widest stop is hyperfocal
-// at ~350 m, so 400 m already meant "sharp to infinity" and the clamp could
-// never be felt.
+// only lens the mode had: at 24 mm-equivalent the hyperfocal is 168 m at f/2.8
+// and 335 m even at the ladder's f/1.4, so a 400 m dial already meant "sharp to
+// infinity" and the clamp could never be felt.
 //
 // It is flatly false of a 400 mm. Aimed at valley terrain 2097 m away with the
 // tele fitted, shift+click clamped the dial to 400 m, the panel printed a
@@ -187,6 +210,9 @@ const CSS = `
   display: block; margin-top: 4px; font-style: normal;
   font-size: 11px; letter-spacing: 0.05em; opacity: 0.72;
 }
+/* The one thing the dial could not do. Warm amber rather than red: nothing has
+   gone wrong, the lens simply does not reach. */
+.pa-focus em.pa-warn { color: #ffcf8a; opacity: 0.95; margin-top: 3px; }
 /* The pull-focus target: where the last measurement was taken. It is a
    confirmation, not a reticle — it flashes once and goes, so it cannot end up
    in a photograph. */
@@ -216,7 +242,7 @@ export class PhotoFocus {
     this.root = opts.root ?? document.body;
     this.active = false;
     this._dist = 18;
-    this._stop = STOPS.indexOf(2);  // f/2 — `enable` re-asserts it, see there
+    this._stop = STOPS.indexOf(2.8);  // f/2.8 — `enable` re-asserts it, see there
     this._show = 0;                 // seconds of readout left
     this._held = false;             // a modifier is down: keep the panel up
     this._node = null;
@@ -256,12 +282,16 @@ export class PhotoFocus {
     this.active = true;
 
     fx.setPhotoDOF(true);
-    // Photo mode opens at f/2. It is a compromise and worth naming: f/1.4 makes
-    // the most striking first frame and also makes it hard to keep anything
-    // with depth — a camper, a tent — sharp end to end, which is a bad first
-    // five seconds. f/2 separates the subject from the valley on sight and
-    // still holds a whole vehicle.
-    this._stop = STOPS.indexOf(2);
+    // Photo mode opens at f/2.8, and the number is chosen from the stops that
+    // EXIST rather than from taste: the rail clamps the ring to the fitted lens
+    // (`hud_photo._lensStop`), so the ladder is f/2.8-f/22 on the 24-70 and
+    // f/4-f/22 on the 200-400. This was f/2, which is on neither lens — the
+    // rail re-clamped it to f/2.8 one frame after entry, so the constant was
+    // describing an aperture the player never saw. f/2.8 is the wide lens's own
+    // maximum aperture: it separates the subject from the valley on sight and
+    // still holds a whole vehicle, and with the tele fitted the rail takes it
+    // to f/4 without a second write.
+    this._stop = STOPS.indexOf(2.8);
     fx.setAperture(this.fStop);
     // The lens is now the player's; CameraRig may keep writing its own idea of
     // the focus from the free camera's pivot and will be ignored (see
@@ -344,11 +374,17 @@ export class PhotoFocus {
    *
    * And it does not move with the APERTURE ring, even though the hyperfocal
    * does (H ∝ 1/N exactly). A limit that tracked the current stop would be
-   * 1954 m at f/4 on the tele and 355 m at f/22, so one click of the aperture
-   * would silently yank a 1954 m focus plane back to 355 m — a dial moving
-   * because a different dial moved. Scaling to the widest stop the ring offers
-   * gives the furthest the lens could ever need, at every stop, and is one
-   * multiply because the relation is exact.
+   * 1956 m at f/4 on the 400 mm and 356 m at f/22, so one click of the aperture
+   * would silently yank a 1956 m focus plane back to 356 m — a dial moving
+   * because a different dial moved. Scaling it to `STOPS[0]` instead — the
+   * widest stop the ladder has, which is at least as wide as any ring the rail
+   * will hand out — gives the furthest this lens could ever need at ANY stop,
+   * in one multiply, because the relation is exact. Written out, H·N/N₀ is
+   * f²/(N₀·c) plus a term of a few millimetres: the reach depends on the
+   * barrel and not on the ring, which is the property being bought.
+   *
+   * What it comes to, measured through `lensInfo`: 400 m at 24 mm (the floor
+   * still winning), 496 at 35, 985 at 70, 2801 at 200 and 5594 at 400.
    *
    * `camera.far` caps it: there is nothing to focus on past the far plane, and
    * `readDepthAt` returns null there anyway.
@@ -654,6 +690,10 @@ export class PhotoFocus {
     this._node.innerHTML =
       `<b>${m} m</b> <i>focus</i> &nbsp;·&nbsp; <b>f/${f}</b>` +
       (mid ? `<em>${mid}</em>` : '') +
+      // BELOW the band rather than instead of it. The band is what the player
+      // is being taught to read; a warning that replaced it would take the
+      // lesson away at the exact moment it is most needed.
+      (this._warn ? `<em class="pa-warn">${this._warn}</em>` : '') +
       `<u>shift+wheel focus &nbsp; shift+click a subject &nbsp; alt+wheel aperture</u>`;
   }
 

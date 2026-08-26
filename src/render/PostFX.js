@@ -1239,11 +1239,12 @@ const POST_TIERS = {
 //
 //     format = 2 · focal · tan(vfov / 2)
 //
-// Physically that is one 440 mm lens and a zoom ring that CROPS: 371 mm of film
-// at 24 mm-equivalent (14×17), 127 mm at 70 mm (4×5-ish), 22 mm at 400 mm —
-// which is a full-frame 16:9 crop, so the long end simply becomes a real
-// 400 mm f/4 and stops inventing anything. The invention is spent where the
-// invention was needed.
+// Physically that is one 440 mm lens and a zoom ring that CROPS. Measured off
+// `lensInfo().format` at 16:9: 371.3 mm at 24 mm-equivalent (14×17), 254.6 at
+// 35, 127.3 at 70 (4×5-ish), 44.6 at 200 and 22.3 at 400 — and 22.3 is within
+// 10% of the 20.25 mm a 36 mm-wide frame is tall at this aspect, which is to
+// say the long end simply becomes a real full-frame 400 mm f/4 and stops
+// inventing anything. The invention is spent where the invention was needed.
 //
 // Three things fall out of it, and all three are the point:
 //
@@ -1251,10 +1252,11 @@ const POST_TIERS = {
 //    implied at a 44° vertical fov, so `2·440·tan(22°)` is 355.5 mm against the
 //    old 356 — a 0.1% difference. Every measurement the previous round took on
 //    the `vehicle` plate (fov 44) is preserved by construction, not by luck.
-//  · **The band tracks the barrel.** At 50 m, f/4: 400 mm gives 48.8–51.3 m and
-//    f/8 gives 47.6–52.7 m — a 5 m band, which holds a whole camper. 200 mm at
-//    f/4 gives the same 5 m. The dial's detent (6%, 3.0 m at 50 m) is finally
-//    smaller than the thing it is aiming at.
+//  · **The band tracks the barrel.** Camper at 50.1 m, focus pulled onto it:
+//    400 mm at f/4 reads 48.9–51.4 m (2.55 m, against 14 cm before) and at f/8
+//    reads 47.7–52.8 m — a 5.1 m band, which holds a whole camper end to end.
+//    The dial's detent (6%, 3.01 m at 50 m) is finally smaller than the thing
+//    it is aiming at instead of 21× larger.
 //  · **The ring gets its far end back.** `wideOpen` is true at f/4 on the tele
 //    (kInf 2.2% of frame height against the 1.3% ceiling — it can still throw a
 //    background away) and FALSE from f/8 down, so stopping down means something
@@ -1419,53 +1421,63 @@ const PHOTO_DOF = {
   // Half resolution — the library's default, kept after trying and rejecting
   // full res.
   //
-  // It buys less than its name suggests, and that is worth writing down
-  // because the paragraph under it used to imply otherwise. Measured on the
-  // live effect at 1600×900: `resolution.scale` resizes the NEAR bokeh target,
-  // the intermediate target and the blurred CoC buffer (800×450 at 0.5) and
-  // nothing else — `renderTargetFar`, `renderTargetCoC` and
-  // `renderTargetMasked` stay 1600×900 at either setting, and both bokeh
-  // materials keep a full-resolution `texelSize`. So the far field, which is
-  // most of a defocused frame, is drawn at full resolution regardless, and
-  // `bokehScale` is a radius in full-resolution pixels (which is what lets
-  // `blurCap` mean "a fraction of frame height" at every resolution).
+  // WHAT THE FLAG RESIZES, read out of `node_modules/postprocessing/build/
+  // index.js` rather than inferred, because this paragraph has now been wrong
+  // twice. `DepthOfFieldEffect.setSize(width, height)` gives `renderTargetFar`,
+  // `renderTargetCoC` and `renderTargetMasked` the FULL size, gives
+  // `renderTarget` (the intermediate), `renderTargetNear` and
+  // `renderTargetCoCBlurred` the scaled one, and hands all four bokeh materials
+  // a full-resolution `texelSize`. That much the last revision got right.
   //
-  // What the setting therefore costs is the NEAR half: the near CoC buffer is
-  // Kawase-blurred before use, so a little foreground CoC bleeds into the
-  // pixels just outside a blurred silhouette, and at half res that bleed is
-  // twice as coarse and the in-focus grass in front of the boulder goes
-  // slightly mushy.
+  // The trap is that the list of full-size TARGETS is not the list of full-size
+  // WORK. `update()` runs
   //
-  // It was rejected on price, and the price quoted here used to be a number
-  // that had never been measured. The rejected line read "9.05 ms ± 1.70 at
-  // full res"; nothing had measured 0.5 against 1.0, the run behind it warned
-  // that the camper had not come to rest, and a critic re-running it got
-  // "7.65 ms ± 7.70 (within noise)". Refusing to rank a within-noise number is
-  // correct; concluding anything from it is not.
+  //     bokehFarBasePass.render(renderer, renderTargetMasked, renderTarget)
+  //     bokehFarFillPass.render(renderer, renderTarget, renderTargetFar)
   //
-  // What is measured (2026-08-26), and what the reader should hold this to:
-  // 5 paired arms, base(0.5)/arm(1.0)/base inside ONE page load, IN photo mode
-  // — the world is stopped there, so unlike ablate's `still` anchor the pose
-  // cannot fail to settle — clocked as a batch of 24 composed renders followed
-  // by gl.finish(), at 1600×900 with the effect focused at 19.1 m, f/1.4:
+  // and `renderTarget` is the HALF-RES one. So the expensive 64-tap far gather
+  // runs at half resolution and the fill pass upsamples it; `renderTargetFar`
+  // being full size says only where the result lands. The near chain is half
+  // res end to end (its fill writes `renderTargetNear`, also scaled). The two
+  // sentences this replaces — "the far field is drawn at full resolution
+  // regardless" and "what the setting costs is the NEAR half" — are both false,
+  // and they were derived from the target list instead of from `update()`.
   //
-  //     full res − half res:   +0.65 ms ± 0.07   (each arm 0.59…0.78)
-  //     the whole effect on:   +1.70 ms over no depth of field, at half res
+  // Measured rather than inferred, A/B at 0.5 against 1.0 inside one page load,
+  // world stopped, film grain pinned, the `vehicle` plate focused at 19.1 m at
+  // f/2.8: **4.38%** of pixels change, against a 0.18% repeatability control,
+  // and the acutance moves on BOTH sides of the plane of focus — a 236 m box by
+  // −3.28 and a 15 m one by +3.67. Not a near-field-only setting.
   //
-  // So the saving exists and is small: about 4.6% of the composed frame here,
-  // and roughly the same fraction on a Retina native pin, where every number
-  // scales with the pixel count. It is NOT the "a third of the frame" the old
-  // paragraph implied. Half res is kept because the thing it costs is also
-  // small and specific — a slightly softer 3 px band beside a defocused
-  // silhouette, and the critic's own A/B found the depth-discontinuity
-  // artefact identical at 1.0 — but this is now a cheap, evidenced flip for
-  // anyone who wants that band back.
+  // WHAT IT COSTS, and this is the second correction in two rounds. The line
+  // here used to read "full res − half res: +0.65 ms ± 0.07" beside "the whole
+  // effect ≈ +1.70". Re-measured by two people on the same harness, the first
+  // number is the WHOLE EFFECT and the second is unsupported by any run.
+  // Paired base/arm/base inside ONE page load, IN photo mode (the world is
+  // stopped there, so unlike ablate's `still` anchor the pose cannot fail to
+  // settle), 9 arms, 24 composed renders and a `gl.finish()` per sample, at
+  // 1600×900 focused at 19.1 m, f/2.8:
   //
-  // Two caveats, since a number without them is the bug being fixed here:
-  // this is not `ablate` (ablate has no knob for the DoF buffer's own
-  // resolution — `fx.dof` is the whole effect), and 1600×900 at dpr 1 is not
-  // what a Retina player's photo mode renders. Both arms shared everything
-  // else, which is what makes the DELTA worth quoting and the absolutes not.
+  //     whole photo DoF, on − off:   +0.68 ms ± 0.19   (9/9 arms positive)
+  //     resolution.scale 1.0 − 0.5:  +0.24 ms ± 0.09   (9/9 arms positive)
+  //     control, base − base:        +0.11 ms ± 0.17
+  //
+  // An independent run of the same script a day earlier: +0.657 ± 0.097 and
+  // +0.162 ± 0.141, control −0.081 ± 0.68. The whole effect reproduces tightly;
+  // the resolution flip is small — a third of the effect's own cost, and in the
+  // earlier run barely outside the control's spread — but it is 9/9 positive in
+  // both runs, so it is real and it is cheap.
+  //
+  // Half res is therefore kept on the evidence rather than on the old story:
+  // the flip buys about a fifth of a millisecond here and changes 4% of the
+  // pixels by an amount that does not read as sharper at a glance. Anyone who
+  // wants the finer gather back can have it for that price, on both fields.
+  //
+  // Two caveats, since a number without them is the bug being fixed here: this
+  // is not `ablate` (ablate has no knob for the DoF buffer's own resolution —
+  // `fx.dof` is the whole effect), and 1600×900 at dpr 1 is not what a Retina
+  // player's photo mode renders. Both arms shared everything else, which is
+  // what makes the DELTA worth quoting and the absolutes not.
   resolutionScale: 0.5,
   // ── the fill pass, and why it is turned OFF for a photograph ─────────────
   //
