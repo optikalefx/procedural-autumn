@@ -92,12 +92,30 @@
 //  alongside the mode, and call `update(dt)` while it is open.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The dial's limits, in metres. 0.6 m is closer than the free camera's own
-// ground clearance lets it get to anything; 400 m is past the point where the
-// valley reads as a backdrop rather than as a subject, and the aerial
-// perspective in the grade has taken over anyway.
+// The near end of the dial, in metres: closer than the free camera's own ground
+// clearance lets it get to anything.
 const NEAR = 0.6;
-const FAR = 400;
+
+// The far end used to be a constant 400 m, on the argument that past it the
+// valley reads as a backdrop rather than as a subject and the aerial
+// perspective in the grade has taken over anyway. That argument was true of the
+// only lens the mode had — a 24 mm-equivalent at its widest stop is hyperfocal
+// at ~350 m, so 400 m already meant "sharp to infinity" and the clamp could
+// never be felt.
+//
+// It is flatly false of a 400 mm. Aimed at valley terrain 2097 m away with the
+// tele fitted, shift+click clamped the dial to 400 m, the panel printed a
+// confident "sharp 395 – 405 m", and the thing that had just been clicked on
+// measured 0.50 acutance against 1.48 with the effect switched off — SOFTER
+// than no depth of field at all, while the readout said it was fine. The tele's
+// own blurb sells "ridgelines, the moon".
+//
+// So the far end is now the lens's, not a constant: `_reach()` asks PostFX for
+// the hyperfocal distance and stops there, because past the hyperfocal the far
+// limit is already infinity and no further travel buys anything. `FAR_MIN`
+// keeps the old 400 m as a floor so the wide end of the kit behaves exactly as
+// it did — every measurement the previous round took at 400 m still reaches.
+const FAR_MIN = 400;
 
 // One wheel detent, as a RATIO. Logarithmic because the dial spans nearly three
 // decades: a linear step small enough to frame a mug on a camp table (5 cm)
@@ -205,6 +223,7 @@ export class PhotoFocus {
     this._mark = null;
     this._down = null;              // {x, y} of a pointer that may become a pull
     this._note = null;              // a one-line answer that replaces the DoF band
+    this._warn = null;              // a line that appears BELOW the band, not instead
     this._pendingAF = 0;            // opening-measurement attempts left
     this._apAccum = 0;              // part-detents banked toward the next stop
     // Bound once so add/removeEventListener see the same function objects. A
@@ -303,6 +322,7 @@ export class PhotoFocus {
     this._down = null;
     this._held = false;
     this._note = null;
+    this._warn = null;
     this._pendingAF = 0;
     this._apAccum = 0;
     this._unmountDom();
@@ -312,11 +332,41 @@ export class PhotoFocus {
 
   // ── the dial ──────────────────────────────────────────────────────────────
 
+  /**
+   * The far end of the dial for the lens that is fitted, in metres.
+   *
+   * Two things it deliberately is NOT.
+   *
+   * It is not a second copy of the optics. `PostFX.lensInfo()` solves the
+   * hyperfocal from the same c(d) the shader runs — the rule this file already
+   * follows for the sharp band it prints — so there is one model and the dial
+   * cannot drift from the picture.
+   *
+   * And it does not move with the APERTURE ring, even though the hyperfocal
+   * does (H ∝ 1/N exactly). A limit that tracked the current stop would be
+   * 1954 m at f/4 on the tele and 355 m at f/22, so one click of the aperture
+   * would silently yank a 1954 m focus plane back to 355 m — a dial moving
+   * because a different dial moved. Scaling to the widest stop the ring offers
+   * gives the furthest the lens could ever need, at every stop, and is one
+   * multiply because the relation is exact.
+   *
+   * `camera.far` caps it: there is nothing to focus on past the far plane, and
+   * `readDepthAt` returns null there anyway.
+   */
+  _reach() {
+    const L = this.ctx.postfx?.lensInfo?.();
+    const cap = this.ctx.camera?.far ?? 6000;
+    if (!L || !Number.isFinite(L.hyperfocal) || !(L.fStop > 0)) return FAR_MIN;
+    const widest = L.hyperfocal * (L.fStop / STOPS[0]);
+    return Math.min(cap, Math.max(FAR_MIN, widest));
+  }
+
   /** Put the focal plane at `m` metres. */
   setDistance(m) {
     if (!Number.isFinite(m)) return;
     this._note = null;
-    this._dist = Math.min(FAR, Math.max(NEAR, m));
+    this._warn = null;
+    this._dist = Math.min(this._reach(), Math.max(NEAR, m));
     this.ctx.postfx?.setFocusManual?.(this._dist);
     this._flash();
   }
@@ -343,6 +393,18 @@ export class PhotoFocus {
    * where it is rather than to snap to a number the player did not ask for.
    * The readout still comes up, because a control that appears to have ignored
    * a click is worse than one that says it found nothing.
+   *
+   * The `> NEAR` test is the same one `update`'s deferred autofocus runs, and
+   * for the same reason: a depth attachment that has just been recreated reads
+   * a finite, plausible, wrong 0.25–0.27 m, `setDistance` clamps that to the
+   * 0.6 m floor and the whole frame melts (grass 129.2 → 1.02 acutance in the
+   * measurement that found it). No shipped path rebuilds the merged pass while
+   * photo mode is open, so this is a guard against a future `_syncDOF` and not
+   * against a live bug — but it is one line and the failure it prevents looks
+   * exactly like a broken feature. What it costs: a subject genuinely inside
+   * 0.6 m cannot be clicked. Nothing in this world is: the free camera's own
+   * clearance keeps it further away than that, which is where the floor came
+   * from in the first place.
    */
   focusAt(u, v) {
     const d = this.ctx.postfx?.readDepthAt?.(u, v);
@@ -355,15 +417,32 @@ export class PhotoFocus {
       this._flash();
       return null;
     }
+    if (!(d > NEAR)) {
+      this._note = 'too near to measure — focus unchanged';
+      this._flash();
+      return null;
+    }
     this._note = null;
     this.setDistance(d);
     this._markAt(u, v);
+    // Did the dial actually get there? `_reach()` is generous enough that the
+    // answer is normally yes even when it clamped — past the hyperfocal the far
+    // limit is infinity, so a ridge at 2 km is sharp with the plane at 1.9 km
+    // and there is nothing to apologise for. The test is therefore not "was it
+    // clamped" but "is the thing you clicked on inside the band you were just
+    // told about", which is the question a silent clamp answered wrongly.
+    const L = this.ctx.postfx?.lensInfo?.();
+    this._warn = (L && (d > L.far || d < L.near))
+      ? `subject at ${fmtM(d)} m is outside the band — the lens will not reach it`
+      : null;
+    this._paint();
     return this._dist;
   }
 
   /** Set the aperture to the nearest whole stop to `f`, measured in stops. */
   setAperture(f) {
     this._note = null;
+    this._warn = null;
     let best = 0;
     for (let i = 1; i < STOPS.length; i++) {
       if (Math.abs(Math.log(STOPS[i] / f)) < Math.abs(Math.log(STOPS[best] / f))) best = i;
@@ -379,6 +458,7 @@ export class PhotoFocus {
     const next = Math.min(STOPS.length - 1, Math.max(0, this._stop + Math.sign(steps)));
     if (next === this._stop) { this._flash(); return; }
     this._note = null;
+    this._warn = null;
     this._stop = next;
     this.ctx.postfx?.setAperture?.(this.fStop);
     this._flash();

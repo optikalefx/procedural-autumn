@@ -461,9 +461,16 @@ async function boot() {
   // object held up in front of the finished frame — grading it with the world's
   // tone curve and running it through the upscale pass would soften the one
   // surface in this game made of type, and a bloom pass over a cream page
-  // blooms the page. So it composites on top at canvas resolution, clearing
-  // only depth. It owns restoring every renderer flag it touches; see
-  // `Journal.render`.
+  // blooms the page.
+  //
+  // It draws into its OWN 4x MSAA target and blits the result over the frame.
+  // That is not a detail: the engine's context is created `antialias: false`
+  // because the world's AA is SMAA inside the post chain, so anything composited
+  // after it has no antialiasing at all — and the book was staircasing over a
+  // smooth meadow. It does not clear the canvas depth buffer either; doing that
+  // was quietly clobbering the world's. `Journal.render` owns restoring every
+  // renderer flag it touches, and falls back to the direct path if a driver
+  // refuses the target.
   engine.setRenderCallback((dt) => {
     postfx.render(dt);
     const journal = ctx.systems.hud?.journal;

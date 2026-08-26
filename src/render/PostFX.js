@@ -1181,9 +1181,9 @@ const POST_TIERS = {
 // "confetti highlights" constraint above was derived for a 60 fps drive; a
 // still photograph WANTS its out-of-focus highlights to resolve as discs.
 //
-// ── why there is a sensor size in here ──────────────────────────────────────
+// ── why there is a film size in here, and why it is not a constant ─────────
 //
-// The aperture dial is real optics, not a magic slider, so that f/1.4 and f/11
+// The aperture dial is real optics, not a magic slider, so that f/2.8 and f/11
 // differ the way a photographer expects: the wide stop melts the background and
 // leaves a plane of sharpness a few centimetres thick, the narrow one brings
 // the valley back and holds everything from the grass to the ridge.
@@ -1193,37 +1193,78 @@ const POST_TIERS = {
 //     c = f² / (N · (s − f))          f = focal length, N = f-stop,
 //                                     s = focus distance, all in mm
 //
-// and f is fixed by the field of view and the SENSOR height:
-// f = (sensor / 2) / tan(vfov / 2). The trap is that this game's camera is a
-// 44–58° vertical fov, which on a 24 mm-tall full-frame sensor is a 22–28 mm
-// wide lens — and a full-frame 24 mm at f/1.4 focused at 11 m produces a
-// background blur of about **1.7 px** at 900 lines. That is the correct answer
-// and it is not a photograph; wide lenses at ordinary distances have no bokeh,
-// which is exactly why nobody shoots portraits on them.
+// and what the shader wants is that circle as a fraction of FRAME HEIGHT,
+// c / (2·format), because `bokehScale` is a radius in buffer pixels and the
+// buffer is whatever photo mode's resolution pin made it. So two numbers decide
+// the whole picture: the focal length and the film it is covering.
+//
+// The trap is that a game camera is a wide lens. This game's driving fov is
+// 44–58° vertical, which on a 24 mm-tall full-frame sensor is a 22–28 mm lens —
+// and a full-frame 24 mm at f/1.4 focused at 11 m gives a background blur of
+// about **1.7 px** at 900 lines. That is the correct answer and it is not a
+// photograph; wide lenses at ordinary distances have no bokeh, which is exactly
+// why nobody shoots portraits on them.
 //
 // Rather than fake it with a fudge factor, photo mode shoots a bigger piece of
-// film: `format` is 356 mm, the short side of a 14×17 sheet. At the same field
-// of view that makes the lens a 440 mm — a normal-to-wide on that format — and
-// the same physics then hands back the blur large format is famous for. So the
-// drama has a cause, and every derived number below stays honest.
+// film, and the size was chosen by capture rather than by reverence for a film
+// stock: on 8×10 (203 mm) the `vehicle` plate focused at 18.8 m gave a
+// 0.6%-of-height background circle — correct, and too polite to be worth a
+// feature — while 14×17 (356 mm) landed the same frame at 1.06%, melted at a
+// glance. Those two were captured at f/1.4, a stop the lens kit has since taken
+// away; the ratio between two formats is 1.75 at every stop, but a paragraph
+// that argues a tuning at an unreachable aperture is arguing about nothing, so
+// the spread that matters is re-measured at the stops that exist. On the same
+// plate at 18.8 m the background circle is **0.53%** of frame height at f/2.8,
+// the widest the 24-70 opens, and **0.13%** at f/11. That spread between the
+// ends of the dial is the thing that was tuned.
 //
-// One consequence to know before turning `format`: it is the only number that
-// scales the whole model, and photo mode now has a lens kit with a zoom ring
-// (`src/photo/lens_models.js`), so the fov it is asked to serve is no longer
-// 44–58°. At f/4 focused at 50 m the same physics gives a 24 mm-equivalent
-// (74° across) a 0.35 px background circle and a sharp band from 20.7 m to
-// infinity, and a 400 mm-equivalent (5°) a 44 CENTIMETRE band with everything
-// else at the ceiling. Both are the correct answer for a 356 mm film height,
-// and the readout in photo_focus.js prints the band so the player is told
-// rather than surprised — but if the long end reads as unusable, the dial to
-// turn is `format`, not the ramp.
+// ── what a 16:1 zoom ring did to that ──────────────────────────────────────
 //
-// The size was chosen by capture, not by reverence for a film stock. On 8×10
-// (203 mm) the `vehicle` plate at f/1.4 focused at 18.8 m gave a 0.6%-of-height
-// circle: correct, and too polite to be worth a feature. 14×17 lands the same
-// frame at 1.06% — a background that reads as melted at a glance — while f/11
-// still comes back to 0.13%, which is sharp. That spread between the ends of
-// the dial is the thing being tuned.
+// `format` was a CONSTANT 356 mm, and that was defensible for exactly as long
+// as the camera only ever wore one lens. Photo mode now fits a 24-70 or a
+// 200-400 (`src/photo/lens_models.js`), and at a fixed angle of view depth of
+// field scales as 1/format: the film that gives a 24 mm its invented bokeh gives
+// a 400 mm a band **14.8× shallower than a real full-frame lens of the same
+// angle**. Measured, camper at 50.1 m, focus pulled onto it: a 14 cm band at
+// f/4, 76 cm stopped all the way down to f/22, `wideOpen` (background already
+// at the kernel ceiling) at every one of the nine stops, and the wheel that was
+// clicked on soft in the plate. One focus detent moved the plane 3.01 m —
+// twenty-one times the entire band. Nothing in the frame read as sharp; see
+// `out/before/f1-01-tele400-f4.png` in the round-three capture set.
+//
+// The fix is to stop holding the film and start holding the LENS. `focal` is
+// 440 mm — the lens the paragraph above always claimed to be simulating — and
+// the format is whatever that lens has to cover to give the fitted angle of
+// view:
+//
+//     format = 2 · focal · tan(vfov / 2)
+//
+// Physically that is one 440 mm lens and a zoom ring that CROPS: 371 mm of film
+// at 24 mm-equivalent (14×17), 127 mm at 70 mm (4×5-ish), 22 mm at 400 mm —
+// which is a full-frame 16:9 crop, so the long end simply becomes a real
+// 400 mm f/4 and stops inventing anything. The invention is spent where the
+// invention was needed.
+//
+// Three things fall out of it, and all three are the point:
+//
+//  · **The wide end does not move.** 440 mm is the focal the old constant
+//    implied at a 44° vertical fov, so `2·440·tan(22°)` is 355.5 mm against the
+//    old 356 — a 0.1% difference. Every measurement the previous round took on
+//    the `vehicle` plate (fov 44) is preserved by construction, not by luck.
+//  · **The band tracks the barrel.** At 50 m, f/4: 400 mm gives 48.8–51.3 m and
+//    f/8 gives 47.6–52.7 m — a 5 m band, which holds a whole camper. 200 mm at
+//    f/4 gives the same 5 m. The dial's detent (6%, 3.0 m at 50 m) is finally
+//    smaller than the thing it is aiming at.
+//  · **The ring gets its far end back.** `wideOpen` is true at f/4 on the tele
+//    (kInf 2.2% of frame height against the 1.3% ceiling — it can still throw a
+//    background away) and FALSE from f/8 down, so stopping down means something
+//    again.
+//
+// The one honest cost: because c also shrinks with the crop, the band narrows
+// as 1/focal rather than the 1/focal² a real full-frame lens would give. A real
+// 70 mm at f/2.8 focused at 50 m holds 27 m to 351 m; this one holds 45 to 56.
+// That is the large-format drama the wide end was tuned for, decaying smoothly
+// into reality as the barrel gets longer, rather than two models with a seam.
 //
 // `blurCap` exists because the model is unbounded, and because the effect's
 // kernel is not. The bokeh gather is 64 taps over a disc: at a 10 px radius the
@@ -1286,8 +1327,9 @@ const POST_TIERS = {
 // unbounded and the 64-tap kernel is not. Rather than clip at `blurCap` — a
 // hard corner in depth, and the far side of it is where every stop collapses
 // onto every other one — the top is compressed: linear to `knee`, then
-// asymptotic. It is C1 continuous at the knee, and the frame keeps a little
-// separation between f/1.4 and f/2 in places that are past the cap.
+// asymptotic. It is C1 continuous at the knee, and because the asymptote is
+// still strictly monotonic in the gain, the frame keeps a little separation
+// between two adjacent wide stops in places that are past the cap.
 //
 // What this bought, measured old-model-against-new inside one page load, same
 // pose, world paused and the animated film grain pinned (it is worth 6.9% of
@@ -1318,7 +1360,20 @@ const POST_TIERS = {
 // names as amateur: the window measured acutance 52.7 against 47.2 with the
 // effect OFF — foliage inside the blur that is SHARPER than the unblurred
 // frame is the signature of a badly-keyed matte. Under c(d) the same window
-// grades (23 m composites at 0.53, not 1) and measures 36.1.
+// measures 36.1.
+//
+// Be careful about WHY, because the obvious sentence for it is wrong and was
+// written here once: "the composite now grades". It does not, or rather it
+// grades over a window nobody can see. The blend factor is still the library's
+// `min(coc·scale, 1)` and `bokehScale` is still ~11.7 in photo mode, so the
+// composite saturates at a coc of 1/11.7 — a ONE PIXEL circle. Everything
+// larger than a pixel composites at 100% blurred, and that is correct: a
+// feature bigger than a pixel is out of focus, and asking the composite to
+// half-blend it would only re-introduce the softness the far-field experiment
+// below was rejected for. What actually changed is upstream of the blend —
+// c(d) is smooth and unbounded where the ramp was a saturating smoothstep, so
+// many more of the canopy's interleaved depths land inside that sub-pixel
+// window instead of being quantised to the two ends of it.
 //
 // It is mitigated, not solved, and the honest reason is structural: a GATHER
 // cannot do partial occlusion. The obvious cheap fix was tried and rejected on
@@ -1334,7 +1389,12 @@ const DOF_TIER = {
   physical: false,   // the tier keeps the stock smoothstep ramp, byte for byte
 };
 const PHOTO_DOF = {
-  format: 356,        // mm of simulated film height — the 14" side of 14×17
+  // mm of simulated LENS. The film is derived from it and the fitted angle of
+  // view (`_lensGeometry`) — 371 mm at 24 mm-equivalent, 22 mm at 400 — which
+  // is the whole of the fix above. 440 is the focal the old constant 356 mm
+  // format implied at a 44° vertical fov, chosen so the wide end lands where
+  // the captures that tuned it landed.
+  focal: 440,
   cocDiv: 900,        // acceptable circle of confusion = format / this
   blurCap: 0.013,     // max blur RADIUS as a fraction of frame height
   knee: 0.75,         // fraction of the cap where the compression starts
@@ -1346,7 +1406,15 @@ const PHOTO_DOF = {
   // photo_focus's own dial and closer than the free camera's clearance lets it
   // get to anything, so nothing in a real composition is nearer.
   nearRef: 0.6,
-  fStop: 2.0,         // the stop photo mode opens at
+  // The stop photo mode opens at, and it has to be a stop that EXISTS: the rail
+  // clamps the ring to the fitted lens (`hud_photo._lensStop`), so the ladder
+  // runs f/2.8–f/22 on the 24-70 and f/4–f/22 on the 200-400. This was 2.0,
+  // which neither lens can be set to — the wide lens quietly re-clamped it to
+  // f/2.8 on the frame after entry and nothing else ever read it. f/2.8 is now
+  // the wide lens's own maximum aperture: it separates the subject from the
+  // valley on sight and still holds a whole vehicle, and the tele's own clamp
+  // takes it to f/4 without a second write.
+  fStop: 2.8,
   physical: true,     // use the optics ramp above, not the stock smoothstep
   // Half resolution — the library's default, kept after trying and rejecting
   // full res.
@@ -2385,25 +2453,35 @@ export class PostFX {
   }
 
   /**
-   * The lens, as numbers: focal length, the circle a background at infinity
-   * projects, and the same circle for something at the near reference.
+   * The lens, as numbers: focal length, the film it is covering, the circle a
+   * background at infinity projects, and the same circle for something at the
+   * near reference.
    *
    * Split out of `_applyAperture` because `lensInfo()` needs the identical
    * geometry and two copies of the lens equation is one copy too many.
+   *
+   * The FILM is derived and the LENS is the constant — the inverse of what this
+   * used to do, and the whole of the B1 fix. See the header above `PHOTO_DOF`:
+   * a fixed film with a 16:1 zoom ring on the front of it makes the long end
+   * 14.8× shallower than the real lens it is drawing, which is a uniform smear
+   * and not a photograph. Here the ring crops instead, and the format falls out
+   * of the fitted angle of view.
    */
   _lensGeometry() {
     const P = PHOTO_DOF;
     const cam = this.engine.camera;
-    // Focal length that gives this field of view on the simulated film.
-    const f = (P.format * 0.5) / Math.tan((cam.fov * Math.PI / 180) * 0.5);
+    const f = P.focal;                                          // mm, fixed
+    // The film this lens has to cover to give the camera's vertical fov. The
+    // floor is paranoia about a degenerate fov, not a real case.
+    const format = Math.max(2 * f * Math.tan((cam.fov * Math.PI / 180) * 0.5), 1);
     const s = Math.max(f * 1.05, this.focusDistance * 1000);   // mm, never inside the lens
     const N = this._fStop;
     // Diameter of the blur circle for a subject at infinity, in mm of film;
     // c(d) = A·|d − s|/d for everything else.
     const A = (f * f) / (N * (s - f));
-    const kInf = 0.5 * A / P.format;                 // radius, as a frac of frame height
+    const kInf = 0.5 * A / format;                   // radius, as a frac of frame height
     const dNear = Math.min(P.nearRef * 1000, s);
-    return { f, s, N, A, kInf, kNear: kInf * (s - dNear) / dNear };
+    return { f, format, s, N, A, kInf, kNear: kInf * (s - dNear) / dNear };
   }
 
   /**
@@ -2419,16 +2497,26 @@ export class PostFX {
    * kernel's ceiling — opening up further cannot melt it any harder, which is
    * the one thing left that can make two adjacent stops look alike, and is
    * worth telling the player rather than letting them discover it.
+   *
+   * `hyperfocal` is here for the dial's own far limit rather than for the
+   * readout. It is the focus distance past which `far` is already infinite, so
+   * it is the furthest setting that buys anything — and a dial that stops short
+   * of it cannot reach the ridgeline the 200-400's blurb sells. photo_focus.js
+   * reads it instead of keeping a second copy of the model that would drift
+   * from this one; that file's `_reach` is the caller.
    */
   lensInfo() {
     if (!this._dofEffect) return null;
     const P = PHOTO_DOF;
-    const { f, s, N, A, kInf } = this._lensGeometry();
-    const c = P.format / P.cocDiv;                   // acceptable circle, mm
+    const { f, format, s, N, A, kInf } = this._lensGeometry();
+    const c = format / P.cocDiv;                     // acceptable circle, mm
     const near = (s * A) / (A + c) / 1000;
     const far = A > c ? (s * A) / (A - c) / 1000 : Infinity;
     return {
-      focal: f, fStop: N, focus: s / 1000, near, far,
+      focal: f, format, fStop: N, focus: s / 1000, near, far,
+      // H = f²/(Nc) + f, in metres. Focus there and A is exactly c, which is
+      // the `A > c` above going false: same model, one solve.
+      hyperfocal: ((f * f) / (N * c) + f) / 1000,
       bokehPx: this._dofEffect.bokehScale,
       wideOpen: kInf >= P.blurCap,
     };
