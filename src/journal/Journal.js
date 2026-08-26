@@ -1012,7 +1012,10 @@ export class Journal {
     this._cmpDrop();
     this._backTo = null;
     this._hoverAt(null);
-    this._panReset();
+    // Eased, not snapped, and for the same reason the zoom is: the book goes
+    // back and goes down as one movement. `PAN_HOME` (0.28 s) fits inside the
+    // put-down's 0.46 s with room to spare.
+    this.panHome();
     this._cursorTo('');
     this.onClose?.();
   }
@@ -1986,12 +1989,16 @@ export class Journal {
   _zoomTo(level, maxDur = Infinity) {
     const to = Math.max(0, Math.min(1, level));
     if (to === this._studyTo) return;
-    // A rung change puts the book square. The framing about to be solved is
-    // measured through the camera, so a player-driven camera underneath it
-    // would be solved AROUND rather than solved for — and a zoom that arrives
-    // somewhere other than the middle of the frame is not a fit. It is also why
-    // Escape squares first and changes rung second: the two never coincide.
-    this._panReset();
+    // A rung change puts the book square — EASED, over `PAN_HOME`, so it is a
+    // movement rather than a cut on the first frame of a move. It has to happen
+    // at all because the framing about to be solved is measured through the
+    // camera, and a player-driven camera underneath it would be solved AROUND
+    // rather than solved for; a zoom that arrives somewhere other than the
+    // middle of the frame is not a fit. `_solveCloseZoom` squares the camera
+    // for the length of its own measurement, so the two do not have to wait for
+    // each other. It is also why Escape squares first and changes rung second:
+    // the two never coincide.
+    this.panHome();
     this._studyFrom = this._studyK;
     this._studyTo = to;
     this._studyT = 0;
@@ -2147,6 +2154,19 @@ export class Journal {
     const p0 = (this._sp0 ??= new THREE.Vector3()).copy(root.position);
     const s0 = (this._ss0 ??= new THREE.Vector3()).copy(root.scale);
     const rx = root.rotation.x;
+    // The measurement projects through the camera, so it is taken through the
+    // camera the FIT owns rather than through whatever the player has done to
+    // it. Without this a click from a tumbled book solves a scale that is
+    // correct for the tumbled view and wrong for the square one it is about to
+    // ease back to — and the two are easing at once, so it would never settle.
+    const cam = this.camera;
+    const cp = (this._scp ??= new THREE.Vector3()).copy(cam.position);
+    const cq = (this._scq ??= new THREE.Quaternion()).copy(cam.quaternion);
+    if (this._camPos0) {
+      cam.position.copy(this._camPos0);
+      cam.quaternion.copy(this._camQuat0);
+      cam.updateMatrixWorld(true);
+    }
     const off = this._solveOff ??= new THREE.Vector3();
     for (let i = 0; i < 2; i++) {
       root.position.copy(p0);
@@ -2167,6 +2187,9 @@ export class Journal {
     root.scale.copy(s0);
     root.rotation.x = rx;
     root.updateMatrixWorld(true);
+    cam.position.copy(cp);
+    cam.quaternion.copy(cq);
+    cam.updateMatrixWorld(true);
   }
 
   /**

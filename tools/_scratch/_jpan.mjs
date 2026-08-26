@@ -216,11 +216,37 @@ for (let n = 0; n < 6; n++) {
     return null;
   });
   if (seat) {
-    await page.mouse.move(seat.cx, seat.cy);
+    // Go in on it from a TUMBLED book: the click must open the print (not spend
+    // itself squaring up), and the fit must still land on 80% — which it only
+    // does because `_solveCloseZoom` measures through the square camera.
+    await drag('left', 200, 140);
+    console.log('\ntumbled   :', JSON.stringify(await state()));
+    // The print has MOVED with the camera, so ask again where it is — which is
+    // itself the check that the picking follows the free camera.
+    const seat2 = await page.evaluate(() => {
+      const j = window.__systems.hud.journal;
+      for (let y = 0.05; y < 0.98; y += 0.01)
+        for (let x = 0.02; x < 0.98; x += 0.01) {
+          const cx = Math.round(x * window.innerWidth), cy = Math.round(y * window.innerHeight);
+          const s = j._rowAt(cx, cy);
+          if (s) return { cx, cy, ...s };
+        }
+      return null;
+    });
+    console.log('  print now:', JSON.stringify(seat2));
+    await page.mouse.move(seat2.cx, seat2.cy);
     await page.waitForTimeout(400);
-    await page.mouse.click(seat.cx, seat.cy);
-    await page.waitForTimeout(1400);
-    console.log('\nclose look:', JSON.stringify(await state()));
+    await page.mouse.click(seat2.cx, seat2.cy);
+    await page.waitForTimeout(1600);
+    console.log('close look:', JSON.stringify(await state()));
+    // The fit has to land on the SAME solve it does from a square book — which
+    // it only can because `_solveCloseZoom` measures through the fit's own
+    // camera rather than through the one the player has moved.
+    console.log('  fit      :', JSON.stringify(await page.evaluate(() => {
+      const j = window.__systems.hud.journal;
+      return { closeZ: +j._closeZ.toFixed(3), zoomNow: +j._zoomNow.toFixed(3),
+               panned: j.panned };
+    })));
     await page.screenshot({ path: `${OUT}/q0_close.png` });
     await drag('left', 0, 3000, 40);
     console.log('  face min :', JSON.stringify(await state()));

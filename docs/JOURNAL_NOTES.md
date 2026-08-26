@@ -1467,6 +1467,19 @@ underneath it would be solved *around* rather than solved for.
   it — the book would fight the wheel. It re-solves the moment the pose comes
   home; a window resize while panned leaves the fit stale until then.
 
+**A rung change eases the camera home rather than snapping it**, over
+`PAN_HOME` (0.28 s), so it is a movement and not a cut on the first frame of a
+0.60 s zoom — and `close()` does the same, which fits inside the put-down's
+0.46 s with room to spare. That only works because `_solveCloseZoom` squares the
+camera **for the length of its own measurement**: solving through a camera that
+is itself easing home would fit a scale correct for the tumbled view and wrong
+for the square one it is arriving at, with both easing at once and neither
+settling. Verified end to end — tumble the book to yaw −0.600 / pitch +0.448
+(page 21.9° off face-on), find the print at its NEW screen position (976, 117
+against 1056, 288 square, which is also the check that the picking follows the
+camera), click it, and the fit lands on **9.095**: the same number a square book
+solves.
+
 The ceremony keeps right of way, on the same test `leaf()` and `study()` use.
 Verified by shoving the camera while the print is still in the air:
 `PASS — the ceremony kept right of way`.
