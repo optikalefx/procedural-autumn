@@ -190,8 +190,15 @@ export function journalMaterials(colorway = 0) {
       color: C(cw.band), roughness: 0.86, metalness: 0.0, envMapIntensity: 0.14,
       side: THREE.DoubleSide,
     }),
+    // Satin, not felt. 0.72 was matte enough that the marker took no highlight
+    // at all and read as a painted stripe; a ribbon is woven silk and its whole
+    // visual signature is a soft moving band of light down its length.
+    ribbonShade: new THREE.MeshBasicMaterial({
+      color: 0x2b1d12, transparent: true, opacity: 0.42, depthWrite: false,
+      toneMapped: false, side: THREE.DoubleSide,
+    }),
     ribbon: new THREE.MeshStandardMaterial({
-      color: C(0x6a2a24), roughness: 0.72, metalness: 0.0, envMapIntensity: 0.4,
+      color: C(0x6a2a24), roughness: 0.50, metalness: 0.0, envMapIntensity: 0.62,
       side: THREE.DoubleSide,
     }),
     thread: new THREE.MeshStandardMaterial({
@@ -450,13 +457,19 @@ function ribbonGeometry(n) {
  * a band that is invisible from the front and 6 mm tall from the side.
  */
 const _rT = new THREE.Vector3(), _rN = new THREE.Vector3(), _rU = new THREE.Vector3();
-function fillRibbon(geo, pts, hw, ht, wide) {
+const _rW = new THREE.Vector3(), _rQ = new THREE.Quaternion();
+function fillRibbon(geo, pts, hw, ht, wide, { roll = 0.30, twist = 0 } = {}) {
   const pos = geo.attributes.position, nor = geo.attributes.normal;
   const n = pts.length - 1;
   const CORN = [[+1, +1], [-1, +1], [-1, -1], [+1, -1]];
   for (let i = 0; i <= n; i++) {
     _rT.subVectors(pts[Math.min(n, i + 1)], pts[Math.max(0, i - 1)]).normalize();
-    _rN.copy(wide).addScaledVector(_rT, -wide.dot(_rT));
+    // Twist rolls the WIDTH direction about the path as it runs. A ribbon that
+    // keeps one face to the camera down its whole length is the thing that
+    // reads as a strip of UI: the free end has to show its back somewhere.
+    _rW.copy(wide);
+    if (twist) _rW.applyQuaternion(_rQ.setFromAxisAngle(_rT, twist * (i / n) * (i / n)));
+    _rN.copy(_rW).addScaledVector(_rT, -_rW.dot(_rT));
     if (_rN.lengthSq() < 1e-9) _rN.set(0, 0, 1).addScaledVector(_rT, -_rT.z);
     _rN.normalize();
     _rU.crossVectors(_rN, _rT).normalize();
@@ -467,10 +480,14 @@ function fillRibbon(geo, pts, hw, ht, wide) {
       pos.array[k] = p.x + _rN.x * a * hw + _rU.x * b * ht;
       pos.array[k + 1] = p.y + _rN.y * a * hw + _rU.y * b * ht;
       pos.array[k + 2] = p.z + _rN.z * a * hw + _rU.z * b * ht;
-      // Blended corner normal: mostly the broad face, a little of the edge.
-      const nx = _rU.x * b + _rN.x * a * 0.3;
-      const ny = _rU.y * b + _rN.y * a * 0.3;
-      const nz = _rU.z * b + _rN.z * a * 0.3;
+      // Blended corner normal: mostly the broad face, some of the edge. `roll`
+      // is how much — it is the cross-section's camber, and on the marker
+      // ribbon it is most of what stops a 5 mm strip reading as a flat decal,
+      // because a rolled normal across the width gives the broad face a satin
+      // gradient instead of one uniform value.
+      const nx = _rU.x * b + _rN.x * a * roll;
+      const ny = _rU.y * b + _rN.y * a * roll;
+      const nz = _rU.z * b + _rN.z * a * roll;
       const l = Math.hypot(nx, ny, nz) || 1;
       nor.array[k] = nx / l; nor.array[k + 1] = ny / l; nor.array[k + 2] = nz / l;
     }
@@ -837,19 +854,35 @@ export function buildJournal(rnd = Math.random, opts = {}) {
   }
   root.add(threads);
 
-  const ribbon = mkLeaf(ribbonGeometry(22), M.ribbon);
+  const ribbon = mkLeaf(ribbonGeometry(26), M.ribbon);
+  // The ribbon's own contact shadow, and it is worth its 200 triangles: a
+  // strip of silk with no shadow does not lie ON the page, it hovers a
+  // millimetre above it, and that is most of what made the marker read as a
+  // drawn UI element. Only the ON-PAGE run — the hanging tail has nothing to
+  // cast onto and a shadow following it into mid-air is worse than none.
+  // Drawn transparent and depth-tested, so where the ribbon covers it the
+  // shadow is simply rejected and only the millimetre that escapes shows.
+  const ribbonShade = mkLeaf(ribbonGeometry(18), M.ribbonShade);
+  ribbonShade.renderOrder = 2;
   const band = mkLeaf(ribbonGeometry(60), M.band);
-  root.add(ribbon, band);
+  root.add(ribbon, ribbonShade, band);
 
   // ── contact shadow ────────────────────────────────────────────────────────
   const shadow = new THREE.Mesh(new THREE.PlaneGeometry(coverW * 3.1, coverH * 1.75), M.shadow);
   shadow.position.set(coverW * 0.5, 0, zBot - COV - 0.0014);
   shadow.renderOrder = -1;
+  // The shadow plane is three times the width of the book, and gallery.html
+  // frames a prop from the union of its meshes' `geometry.boundingBox` — so
+  // the journal reported itself as 0.32 x 0.38 m instead of 0.16 x 0.22 and
+  // the stage framed a 15 cm book as a stamp in the middle of an empty set.
+  // A pre-set (degenerate) bounding box is honoured by every one of those
+  // walks, and nothing else reads it: culling and picking use the SPHERE.
+  shadow.geometry.boundingBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
   root.add(shadow);
 
   group.userData.journal = {
     dims: BOOK, colorway, mats: M,
-    root, frontPivot, backPivot, spine, headbands, zHingeFlat, stackR, stackL,
+    root, frontPivot, backPivot, spine, headbands, zHingeFlat, stackR, stackL, ribbonShade,
     pageRight, pageLeft, turnFront, turnBack, ribbon, band, shadow, threads,
     frontEndpaper: frontPivot.userData.endpaper,
     backEndpaper: backPivot.userData.endpaper,
@@ -988,6 +1021,30 @@ export function poseJournal(group, state) {
   J.threads.visible = J.inside;
   J.ribbon.visible = J.inside;
 
+  // gallery.html frames a prop from the union of its meshes' geometry bounding
+  // boxes and knows nothing about `visible`. The LEFT leaf is posed flat-open
+  // at all times (`deformPage(..., 1, ...)`) and simply not drawn while the
+  // book is shut, so a closed journal reported itself 300 mm wide — twice its
+  // own width — and the stage framed it accordingly. Hidden leaves contribute
+  // nothing; visible ones go back to being measured. Written only when the
+  // state flips, so this allocates nothing per frame.
+  //
+  // The text block has the same problem one level worse: the slab geometry is
+  // at NOMINAL size and centred on the mesh origin, which is the HINGE, so its
+  // own box sits a whole page-width to the left of where any instance actually
+  // is — and `instanceMatrix` is invisible to that walk. Each stack is handed
+  // the extent it really occupies instead. The marker ribbon goes in the same
+  // list: 38 mm of it hangs below the tail edge, which is a real part of the
+  // OPEN book and nothing at all while it is shut.
+  if (J._boundsInside !== J.inside) {
+    J._boundsInside = J.inside;
+    for (const m of [J.pageLeft, J.pageRight, J.turnFront, J.turnBack, J.ribbon, J.ribbonShade]) {
+      m.geometry.boundingBox = J.inside ? null : _emptyBox;
+    }
+    J.stackR.geometry.boundingBox = J.inside ? _stackBoxR : _emptyBox;
+    J.stackL.geometry.boundingBox = J.inside ? _stackBoxL : _emptyBox;
+  }
+
   // ── ribbon marker ─────────────────────────────────────────────────────────
   // Down the right-hand leaf a little way in from the fold, and over the tail
   // edge to hang below the book. The first version ran it diagonally from the
@@ -995,26 +1052,59 @@ export function poseJournal(group, state) {
   // which, at 11 mm wide across a 148 mm page, read as a luggage strap: it cut
   // the page in half and it was the first thing the eye landed on. Narrow, and
   // parallel to the gutter, it is a detail instead of a feature.
+  //
+  // ── and it has to be CLOTH ────────────────────────────────────────────────
+  // The first version of this was geometrically correct and read as the most
+  // obviously programmer-art thing in the frame: dead straight, dead flat,
+  // one uniform value from head to tail, with a hard edge and no weight. Three
+  // things fix it, and none of them is a texture:
+  //   · it WANDERS. A slow lateral drift of about a millimetre, plus a lift
+  //     off the paper in the middle — a ribbon lying in a book is not glued
+  //     down, it touches at the ends and bows in between;
+  //   · the free end CURLS and TWISTS as it comes over the tail edge, so the
+  //     hanging tail shows its back and catches a different value;
+  //   · a cambered cross-section (`roll`), so the broad face has a satin
+  //     gradient across its width rather than one flat tone.
   {
     const pts = [];
     const xr = W * 0.030;
     const yTop = H / 2 - 0.006;
-    for (let i = 0; i <= 22; i++) {
-      const u = i / 22;
-      if (u < 0.72) {
-        const k = u / 0.72;
-        pts.push(new THREE.Vector3(xr + k * 0.010, yTop - k * (H - 0.012), zR + PAGE_LIFT + 0.0006));
-      } else {
-        // Round the tail edge and hang.
-        const k = (u - 0.72) / 0.28;
-        const a = Math.min(1, k * 2.0) * Math.PI * 0.5;
+    const N = 26;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      if (u < 0.70) {
+        const k = u / 0.70;
+        // Drift and bow. A ribbon left in a book does not run parallel to the
+        // gutter — it lies where it fell. The drift is 2.4 mm over the page,
+        // which is under half its own width, and the bow is 0.7 mm: the whole
+        // difference between "lying on the page" and "printed on the page".
+        const drift = (Math.sin(k * 4.1 + 0.4) + 0.4 * Math.sin(k * 7.7 - 1.1)) * 0.0017;
+        const bow = Math.sin(Math.PI * k) * 0.0007;
         pts.push(new THREE.Vector3(
-          xr + 0.010 + k * 0.004,
-          -H / 2 - 0.006 - k * 0.030,
-          zR + PAGE_LIFT + 0.0006 - (1 - Math.cos(a)) * 0.006));
+          xr + k * 0.010 + drift,
+          yTop - k * (H - 0.012),
+          zR + PAGE_LIFT + 0.0006 + bow));
+      } else {
+        // Over the tail edge, and hanging with a curl in it.
+        const k = (u - 0.70) / 0.30;
+        const a = Math.min(1, k * 1.9) * Math.PI * 0.5;
+        pts.push(new THREE.Vector3(
+          xr + 0.010 + Math.sin(k * 2.6) * 0.0026,
+          -H / 2 - 0.006 - k * 0.032,
+          zR + PAGE_LIFT + 0.0006 - (1 - Math.cos(a)) * 0.0075 - k * k * 0.0035));
       }
     }
-    fillRibbon(J.ribbon.geometry, pts, 0.0026, 0.00028, _xAxis);
+    fillRibbon(J.ribbon.geometry, pts, 0.0028, 0.00042, _xAxis, { roll: 0.62, twist: 0.62 });
+    // The shadow: the first 19 sections, nudged down-page and hard onto the
+    // paper, a shade wider than the ribbon so a millimetre escapes on the side
+    // the key light is not on.
+    const spts = [];
+    for (let i = 0; i <= 18; i++) {          // pts[0..18] is exactly the on-page run
+      const q = pts[i];
+      spts.push(new THREE.Vector3(q.x + 0.00085, q.y - 0.0009, zR + PAGE_LIFT + 0.00022));
+    }
+    fillRibbon(J.ribbonShade.geometry, spts, 0.0031, 0.00005, _xAxis, { roll: 0 });
+    J.ribbonShade.visible = J.inside;
   }
 
   // ── elastic band ──────────────────────────────────────────────────────────
@@ -1061,5 +1151,10 @@ const _poseM = new THREE.Matrix4();
 const _poseQ = new THREE.Quaternion();
 const _poseV = new THREE.Vector3();
 const _poseS = new THREE.Vector3();
+const _emptyBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
+const _stackBoxR = new THREE.Box3(
+  new THREE.Vector3(0, -BOOK.H / 2, -BOOK.T / 2), new THREE.Vector3(BOOK.W, BOOK.H / 2, BOOK.T / 2));
+const _stackBoxL = new THREE.Box3(
+  new THREE.Vector3(-BOOK.W, -BOOK.H / 2, -BOOK.T / 2), new THREE.Vector3(0, BOOK.H / 2, BOOK.T / 2));
 const _xAxis = new THREE.Vector3(1, 0, 0);
 const _yAxis = new THREE.Vector3(0, 1, 0);

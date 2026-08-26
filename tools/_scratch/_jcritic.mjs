@@ -135,11 +135,22 @@ if (mode === 'beats') {
     const t = await page.evaluate(() => window.__systems.hud.journal._t);
     console.log(n, 'ceremony t =', t.toFixed(2));
   }
-  // The progress line, read out of the page canvas rather than off a screenshot.
+  // B6: the progress line. `spec.progress` was ALWAYS right — the bug was that
+  // the canvas never got repainted — so the string is worthless as evidence.
+  // Leaf back to page 1 and photograph it, and read the pixels of the band the
+  // line is painted in as well.
+  await page.evaluate(() => { window.__systems.hud.journal.leaf(-1); });
+  await page.waitForTimeout(1200);
+  out.push(await shot('b8_progress'));
   const prog = await page.evaluate(() => {
     const j = window.__systems.hud.journal;
     const p = j._pages.find((x) => x.spec.progress != null);
-    return { spec: p?.spec.progress ?? null, store: localStorage.getItem('pa.hunt')?.slice(0, 120) };
+    // Straight off the page's own canvas: crop the progress band, then trim it
+    // to the ink so the string can be eyeballed as an image if need be.
+    const cv = document.createElement('canvas');
+    cv.width = 700; cv.height = 60;
+    cv.getContext('2d').drawImage(p.canvas, p._x0, 92 + 116, 700, 60, 0, 0, 700, 60);
+    return { spec: p.spec.progress, band: cv.toDataURL('image/png').length };
   });
   console.log('progress:', JSON.stringify(prog));
 } else if (mode === 'aspect') {

@@ -503,15 +503,33 @@ export function endpaperTexture(size = 512, seed = 11) {
     }
   }
   // One river, because a contour map with no water on it looks like a diagram.
-  g.strokeStyle = 'rgba(96,116,132,0.28)';
-  g.lineWidth = 2.4;
-  g.beginPath();
-  g.moveTo(-10, size * 0.30);
-  for (let i = 1; i <= 10; i++) {
-    const x = (size * 1.02 * i) / 10;
-    g.lineTo(x, size * (0.30 + 0.34 * Math.sin(i * 0.9 + 1.2) * 0.5 + i * 0.024));
+  //
+  // It was ten `lineTo` points with no smoothing, which is a LINE CHART, not
+  // water — hard-cornered, uniform weight, every vertex visible. It is also the
+  // first interior surface the cover reveals, so it gets the treatment: the
+  // corners are rounded by running quadratics THROUGH the midpoints (each raw
+  // point becomes a control point, which is the standard way to smooth a
+  // polyline without solving for anything), and the weight tapers from source
+  // to mouth the way a printed river does.
+  const river = [];
+  for (let i = 0; i <= 11; i++) {
+    const x = -size * 0.04 + (size * 1.10 * i) / 11;
+    river.push([x, size * (0.30 + 0.17 * Math.sin(i * 0.9 + 1.2) + i * 0.022)]);
   }
-  g.stroke();
+  g.strokeStyle = 'rgba(96,116,132,0.30)';
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  for (let i = 1; i < river.length - 1; i++) {
+    const [px0, py0] = river[i - 1], [px1, py1] = river[i], [px2, py2] = river[i + 1];
+    const m0 = [(px0 + px1) / 2, (py0 + py1) / 2];
+    const m1 = [(px1 + px2) / 2, (py1 + py2) / 2];
+    // A river is a thread at its head and a channel at its mouth.
+    g.lineWidth = 1.5 + 1.9 * (i / (river.length - 1));
+    g.beginPath();
+    g.moveTo(m0[0], m0[1]);
+    g.quadraticCurveTo(px1, py1, m1[0], m1[1]);
+    g.stroke();
+  }
 
   // Paper tooth over the top so the flat ochre is not flat.
   const img = g.getImageData(0, 0, size, size);

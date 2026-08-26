@@ -66,7 +66,11 @@ const SCRIPT = {
   bandGap: 0.16, band: 0.40,
   coverGap: -0.24, cover: 0.80,      // the cover starts before the rise settles
   flyleafGap: -0.18, flyleaf: 0.62,
-  seekLeaf: 0.46,                    // each extra page turn on the way to the award
+  // Each extra page turn on the way to the award. 0.46 measured a 3.92 s
+  // first-page ceremony and 5.42 s at the far end of the book, and 5.4 s is
+  // where a beat stops being a beat and starts being a wait. Somebody riffling
+  // to a page they know the number of does not turn it at reading speed.
+  seekLeaf: 0.30,
   crossGap: 0.30, cross: 0.52,
   tickGap: -0.10, tick: 0.26,
   photoGap: 0.10, photo: 0.46,
@@ -153,6 +157,19 @@ export class Journal {
 
   /** True while the journal should be taking keys, wheel and pointer. */
   get wantsInput() { return this._active; }
+
+  /**
+   * True while there is anything to DRAW — which is not the same as `active`.
+   *
+   * `close()` drops `active` on the frame the key is pressed and then runs a
+   * 0.46 s drop-and-fade, so a caller that gates `render()` on `active` alone
+   * (`src/main.js` does) never draws that animation and the book vanishes
+   * instead of being put down. Gating on `journal.active || journal.visible`
+   * is the one-word fix; the journal cannot make it itself, because `active`
+   * also means "the journal owns the keyboard" and holding that through the
+   * close would swallow the next keypress.
+   */
+  get visible() { return this._visible; }
 
   /** How many leaves the book has. Useful to the integrator for nothing; here for tests. */
   get sheets() { return this._sheets; }
@@ -574,15 +591,16 @@ export class Journal {
     this._pose.lift = easeBack(clamp01(this._at('rise')));
     this._pose.band = easeInOut(this._at('band'));
     const cv = this._at('cover');
-    // The cover coming off the text block is the first thing the player hears
-    // from the book, and it gets `journal.page` — the paper voice — because
-    // that is what `src/audio/journal_audio.js` actually ships (`JOURNAL_CUES`
-    // is exactly page/cross/slap). A dedicated leather-and-board `cover` voice
-    // would be better and this is the one line that would change; calling a
-    // name nobody has written would have left the loudest beat in the ceremony
-    // silent, which is a worse trade than a second paper rustle 0.6 s before
-    // the first page turn.
-    if (cv > 0 && !this._coverCued) { this._coverCued = true; this._cue('journal.page'); }
+    // The cover coming off the text block is the loudest thing in the ceremony
+    // and it is LEATHER AND BOARD, not paper. It used to borrow `journal.page`
+    // because that was one of the three voices `src/audio/journal_audio.js`
+    // shipped, which meant the biggest beat in the feature spoke with a paper
+    // rustle 0.6 s before the first actual page turn — two rustles where there
+    // should be a creak and then a rustle. It now asks for its own name;
+    // `Audio.cue` is a no-op on a name it does not know, so the worst case
+    // until that voice is written is silence on one beat rather than the wrong
+    // sound on the one everybody hears.
+    if (cv > 0 && !this._coverCued) { this._coverCued = true; this._cue('cover'); }
     this._pose.cover = easeInOut(cv);
     this._pose.scrim = clamp01(this._at('rise') * 1.6);
 
@@ -594,7 +612,7 @@ export class Journal {
     if (fly > 0 && fly < 1 && this._leafT >= 1 && this._pose.leaf < 1) {
       this._leafFrom = 0; this._leafTo = 1; this._leafT = 0;
       this._leafDur = SCRIPT.flyleaf;
-      this._cue('journal.page');
+      this._cue('page');
     }
     if (this._seekPad != null && !this._seekDone && fly >= 1) {
       this._seekDone = true;
@@ -606,7 +624,7 @@ export class Journal {
       this._leafTo = Math.round(this._pose.leaf) + 1;
       this._leafT = 0;
       this._leafDur = SCRIPT.seekLeaf;
-      this._cue('journal.page');
+      this._cue('page');
     }
     if (this._leafT < 1) {
       this._leafT = clamp01(this._leafT + d / Math.max(0.05, this._leafDur));
@@ -625,14 +643,23 @@ export class Journal {
       const page = this._pages[this._seatOf.page];
       const cross = this._at('cross');
       if (cross > 0 && !this._crossed) {
-        if (!this._crossStarted) { this._crossStarted = true; this._cue('journal.cross'); }
+        if (!this._crossStarted) { this._crossStarted = true; this._cue('cross'); }
         page.strikeAt(this._seatOf.row, easeOut(cross));
         if (cross >= 1) this._crossed = true;
       }
       const tk = this._at('tick');
       if (tk > 0 && !this._ticked) {
         page.tickAt(this._seatOf.row, easeOut(tk));
-        if (tk >= 1) this._ticked = true;
+        if (tk >= 1) {
+          this._ticked = true;
+          // The count moves on the beat the tick lands, which is the moment
+          // the item is "counted". Until this existed the line under the
+          // heading still read "none of fifteen found" through the entire
+          // ceremony and for as long as the book stayed open — `_armAward`
+          // updates the STRING on every page but only repaints the page the
+          // award is on, and the count lives on page 1 and nowhere else.
+          this._refreshProgress();
+        }
       }
       const tp = this._at('tape');
       this._flyPhoto(this._at('photo'), tp);
@@ -690,7 +717,24 @@ export class Journal {
     this._lift.set(0, 0, 1).applyQuaternion(this._tmpQ);
     this._card.position.addScaledVector(this._lift, lerp(0.012, 0.0009, k));
 
-    if (p >= 0.86 && !this._slapped) { this._slapped = true; this._cue('journal.slap'); }
+    if (p >= 0.86 && !this._slapped) { this._slapped = true; this._cue('slap'); }
+  }
+
+  /**
+   * Bring every page carrying the progress line up to date, cheaply.
+   *
+   * A partial blit rather than `paint()`: the page this lands on is usually
+   * NOT the spread the player is looking at, but it can be, and a full repaint
+   * mid-ceremony is the one thing `strikeAt`/`tickAt`/`tapeAt` exist to avoid.
+   */
+  _refreshProgress() {
+    const line = this._progressLine();
+    for (const p of this._pages) {
+      if (p.spec.progress == null) continue;
+      try { p.progressAt(line); } catch (e) {
+        if (!this._pageErr) { this._pageErr = true; console.error('[journal] progress repaint failed', e); }
+      }
+    }
   }
 
   /** Fold the flown photo into the page texture and retire the 3D card. */
@@ -704,6 +748,22 @@ export class Journal {
     this._card.visible = false;
   }
 
+  /**
+   * Ask the game for a one-shot.
+   *
+   * THE NAMES ARE BARE, and that is a fix rather than a style choice. Every cue
+   * in here used to be `journal.page` / `journal.cross` / `journal.slap`, and
+   * `Audio.cue` dispatches the book's voices with
+   * `JOURNAL_CUES.includes(name)` against `['page', 'cross', 'slap']` — so not
+   * one of them ever matched and the whole ceremony has been playing in
+   * silence. It fails the way audio always fails: nothing throws, nothing logs,
+   * and you only find it by reading the other end.
+   *
+   * `cover` is the exception and is deliberately not one of the three: a
+   * leather-and-board voice does not exist yet, and `Audio.cue` ignores a name
+   * it does not know, so the cover beat is silent until somebody writes it
+   * rather than speaking with the wrong sound.
+   */
   _cue(name) {
     try { this.ctx.systems?.audio?.cue?.(name); } catch { /* audio is never fatal */ }
   }
@@ -1036,7 +1096,7 @@ export class Journal {
     this._leafFrom = this._pose.leaf;
     this._leafTo = to;
     this._leafT = 0;
-    this._cue('journal.page');
+    this._cue('page');
   }
 
   // ───────────────────────────────────────────────────────────────────────────

@@ -253,10 +253,14 @@ function tapeStrip(g, cx, cy, w, h, angle, seed) {
   path.closePath();
 
   // Shadow first, offset down-right to agree with the key light in the scene.
+  // HALF what it was: masking tape is two hundredths of a millimetre thick and
+  // the old shadow (0.34 at 4 px, offset 2.5/4) plus the sheen below made each
+  // strip read as a raised beige BAR lying across the print at gameplay size.
+  // The tape itself — translucent, torn-edged, crooked — was never the problem.
   g.save();
-  g.translate(2.5, 4);
-  g.filter = 'blur(4px)';
-  g.fillStyle = 'rgba(84,62,40,0.34)';
+  g.translate(1.4, 2.2);
+  g.filter = 'blur(3px)';
+  g.fillStyle = 'rgba(84,62,40,0.17)';
   g.fill(path);
   g.restore();
 
@@ -271,7 +275,7 @@ function tapeStrip(g, cx, cy, w, h, angle, seed) {
   // tape does under a raking light and what stops it looking like paper.
   const sh = g.createLinearGradient(0, -h / 2, 0, h / 2);
   sh.addColorStop(0.26, 'rgba(255,255,255,0)');
-  sh.addColorStop(0.40, 'rgba(255,255,255,0.30)');
+  sh.addColorStop(0.40, 'rgba(255,255,255,0.15)');
   sh.addColorStop(0.52, 'rgba(255,255,255,0)');
   g.fillStyle = sh;
   g.fill(path);
@@ -466,11 +470,16 @@ export class JournalPage {
     g.fillText('Camping', cx, 372);
     g.fillText('Season', cx, 470);
 
-    inkLine(g, this._x0 + 60, 516, this._x1 - 60, 519, { seed: 4, width: 2.6, alpha: 0.5, colour: '#5c452e' });
-
+    // The subtitle belongs to the title, so the rule goes UNDER BOTH. It used
+    // to sit between them, which cut the title block in half and made
+    // "scavenger hunt" read as a separate item further down the page rather
+    // than as the second line of the same masthead. Same ink, shorter, and now
+    // it is the thing that closes the block.
     g.font = hand(58, 400);
     g.fillStyle = INK_SOFT;
-    g.fillText('scavenger hunt', cx, 588);
+    g.fillText('scavenger hunt', cx, 546);
+    inkLine(g, cx - 190, 592, cx + 190, 595,
+      { seed: 4, width: 2.6, alpha: 0.5, colour: '#5c452e' });
 
     this._vignetteDoodle(g, cx, 800, 240);
 
@@ -609,21 +618,31 @@ export class JournalPage {
     // actually mark out where something is going to be pasted. A closed dashed
     // box reads as a file-upload dropzone.
     if (!row.done || row.pending) {
+      // The corner marks were `setLineDash([10, 11])` over 30 px legs — a dash
+      // PERIOD longer than the leg it was drawn on, so each leg came out as one
+      // or two dashes, which at gameplay resolution is a 1-2 px speck. Fifteen
+      // rows of specks read as dirt on the paper rather than as "a photograph
+      // goes here", and a place for the photographs is the one thing the brief
+      // asked for by name.
+      //
+      // Solid now, longer legs, and drawn with `inkLine` rather than a canvas
+      // stroke so they are in the same hand as everything else on the page —
+      // wobbled, double-passed, overshooting the corner. Still corners rather
+      // than a closed box: a closed dashed rectangle reads as a file-upload
+      // dropzone, which was right the first time.
       g.save();
       g.translate(slot.x + slot.w / 2, slot.y + slot.h / 2);
       g.rotate(tiltA);
-      g.strokeStyle = 'rgba(96,76,54,0.52)';
-      g.lineWidth = 3.8;
-      g.setLineDash([10, 11]);
-      const hw = slot.w / 2 - 8, hh = slot.h / 2 - 6, c = 30;
-      g.beginPath();
+      const hw = slot.w / 2 - 8, hh = slot.h / 2 - 6, c = 52;
+      const ink = { width: 3.4, alpha: 0.40, wobble: 1.5, colour: '#6a533a', passes: 2 };
+      let k = 0;
       for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-        g.moveTo(sx * hw, sy * hh - sy * c);
-        g.lineTo(sx * hw, sy * hh);
-        g.lineTo(sx * hw - sx * c, sy * hh);
+        inkLine(g, sx * hw, sy * hh - sy * c, sx * hw, sy * hh + sy * 2,
+          { ...ink, seed: seed + 60 + k });
+        inkLine(g, sx * hw + sx * 2, sy * hh, sx * hw - sx * c, sy * hh,
+          { ...ink, seed: seed + 70 + k });
+        k++;
       }
-      g.stroke();
-      g.setLineDash([]);
       g.restore();
     }
 
@@ -645,16 +664,25 @@ export class JournalPage {
     const lw = g.measureText(label).width;
 
     if (row.hint) {
-      g.font = hand(33);
-      g.fillStyle = 'rgba(74,58,44,0.62)';
-      // Wrapped to the text column, two lines maximum. A hint that runs under
-      // the photo slot is the one layout bug this page can actually have.
+      // FITTED to one line before it is allowed to wrap. The wrap is still
+      // here as a backstop, but the squirrel's hint ("under the hardwoods; the
+      // smallest animal here") overflowed by a single word and left "here"
+      // hanging on its own line under the row — a widow, on the page the
+      // player reads fifteen times.
+      let hs = 33;
+      g.font = hand(hs);
+      while (g.measureText(row.hint).width > tw && hs > 25) { hs -= 1; g.font = hand(hs); }
+      // A struck-off row does not need telling where to look any more. The
+      // hint stays (leafing back should still read as a list, not as a
+      // scoreboard) but it drops back so the completed rows go quiet.
+      const spent = row.done && !row.pending;
+      g.fillStyle = spent ? 'rgba(74,58,44,0.26)' : 'rgba(74,58,44,0.62)';
       const words = row.hint.split(' ');
       let line = '', y = baseline + 46, lines = 0;
       for (const w of words) {
         const t = line ? `${line} ${w}` : w;
         if (g.measureText(t).width > tw && line) {
-          g.fillText(line, tx, y); line = w; y += 38; lines++;
+          g.fillText(line, tx, y); line = w; y += hs + 5; lines++;
           if (lines >= 1) break;
         } else line = t;
       }
@@ -752,6 +780,15 @@ export class JournalPage {
     // Tape LAST and OUTSIDE the card transform, so the two pieces are crooked
     // relative to the photo as well as to the page. Two different angles and
     // two different lengths — see the header.
+    //
+    // BOTH angles are now POSITIVE, and that is a correction rather than a
+    // taste change. A strip taped over a corner runs perpendicular to that
+    // corner's bisector; the two corners used here are opposite ends of the
+    // same diagonal, so both strips want the same sign. The second one was at
+    // `tilt - 0.70`, i.e. PARALLEL to its bisector, which sent it running out
+    // of the corner instead of across it — so it frequently landed beside the
+    // print holding nothing. They stay visibly different (0.60 against 0.86)
+    // because a person does not tape two corners at the same angle either.
     const r = rng(seed + 41);
     const hx = Math.cos(tilt) * cardW / 2, hy = Math.sin(tilt) * cardW / 2;
     const vx = -Math.sin(tilt) * cardH / 2, vy = Math.cos(tilt) * cardH / 2;
@@ -759,13 +796,13 @@ export class JournalPage {
     if (a > 0) {
       g.save(); g.globalAlpha = a;
       tapeStrip(g, cx - hx * 0.86 + vx * 0.94, cy - hy * 0.86 + vy * 0.94,
-        (104 + r() * 16) * (0.7 + 0.3 * a), 34, tilt + 0.62 + (r() - 0.5) * 0.22, seed + 5);
+        (104 + r() * 16) * (0.7 + 0.3 * a), 34, tilt + 0.60 + (r() - 0.5) * 0.20, seed + 5);
       g.restore();
     }
     if (b > 0) {
       g.save(); g.globalAlpha = b;
       tapeStrip(g, cx + hx * 0.9 - vx * 0.96, cy + hy * 0.9 - vy * 0.96,
-        (96 + r() * 20) * (0.7 + 0.3 * b), 32, tilt - 0.70 + (r() - 0.5) * 0.22, seed + 6);
+        (96 + r() * 20) * (0.7 + 0.3 * b), 32, tilt + 0.86 + (r() - 0.5) * 0.20, seed + 6);
       g.restore();
     }
   }
@@ -805,14 +842,66 @@ export class JournalPage {
     if (a > 0) {
       g.save(); g.globalAlpha = a;
       tapeStrip(g, cx - hx * 0.86 + vx * 0.94, cy - hy * 0.86 + vy * 0.94,
-        (104 + r() * 16) * (0.7 + 0.3 * a), 34, tilt + 0.62 + (r() - 0.5) * 0.22, seed + 5);
+        (104 + r() * 16) * (0.7 + 0.3 * a), 34, tilt + 0.60 + (r() - 0.5) * 0.20, seed + 5);
       g.restore();
     }
     if (bb > 0) {
       g.save(); g.globalAlpha = bb;
       tapeStrip(g, cx + hx * 0.9 - vx * 0.96, cy + hy * 0.9 - vy * 0.96,
-        (96 + r() * 20) * (0.7 + 0.3 * bb), 32, tilt - 0.70 + (r() - 0.5) * 0.22, seed + 6);
+        (96 + r() * 20) * (0.7 + 0.3 * bb), 32, tilt + 0.86 + (r() - 0.5) * 0.20, seed + 6);
       g.restore();
+    }
+    this.texture.needsUpdate = true;
+  }
+
+  /**
+   * Rewrite the progress line under the heading, in place.
+   *
+   * B6 was: `Journal._armAward` calls `hunt.award()` and updates every page's
+   * `spec.progress` string, but only repaints the page the AWARD is on. The
+   * count lives on page 1 and nowhere else, so an award anywhere else left the
+   * canvas saying what it said before — measured at t = 3.90 s, with the item
+   * struck off, ticked, photographed and taped, the line still read "none of
+   * fifteen found". A wrong number on screen at the exact beat the feature
+   * exists for.
+   *
+   * A full `paint()` would fix it and costs a repaint (~40 ms of queued 2D
+   * raster) on a page that may be mid-turn. This blits the band back out of
+   * `paperBase` instead, re-lays the fold shadow over it and writes the new
+   * text — the same partial-blit discipline as `strikeAt`/`tickAt`/`tapeAt`.
+   *
+   * Note it does NOT blit from `_clean`: the clean copy is the page as it was
+   * BEFORE the ceremony, which still has the old number in it.
+   */
+  progressAt(text) {
+    const s = this.spec;
+    if (s.progress == null || text == null) return;
+    s.progress = text;
+    const g = this.g;
+    const x0 = this._x0, x1 = this._x1;
+    const b = { x: x0 - 10, y: M_TOP + 116, w: x1 - x0 + 20, h: 64 };
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = 1;
+    g.save();
+    g.beginPath();
+    g.rect(b.x, b.y, b.w, b.h);
+    g.clip();
+    g.clearRect(b.x, b.y, b.w, b.h);
+    g.drawImage(paperBase(s.seed % 3), 0, 0);
+    this._gutterShade(g);
+    g.textAlign = 'left';
+    g.textBaseline = 'alphabetic';
+    g.font = hand(36);
+    g.fillStyle = INK_SOFT;
+    g.fillText(text, x0, M_TOP + 156);
+    g.restore();
+    // Keep the pencil animation's cache honest: `strikeAt` blits this band's
+    // neighbours back out of `_clean`, and a stale number in there would come
+    // back the next time anything near it redrew.
+    if (this._clean) {
+      const cg = this._clean.getContext('2d');
+      cg.clearRect(b.x, b.y, b.w, b.h);
+      cg.drawImage(this.canvas, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
     }
     this.texture.needsUpdate = true;
   }

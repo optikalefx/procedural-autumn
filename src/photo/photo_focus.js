@@ -73,6 +73,17 @@
 //  shutter path does not have to know about it: `PhotoMode.capture()` reads the
 //  drawing buffer, and this is DOM.
 //
+//  It also shows the DEPTH OF FIELD, which is not decoration. Nine stops is a
+//  lot of clicks for a dial whose usable range is three or four of them, and
+//  which three depends on the focus distance: at 3 m the wide end is all
+//  ceiling and at 37 m the narrow end is indistinguishable from the effect
+//  being off. Rather than grey out stops on a wheel, the panel prints the band
+//  that is actually sharp — turn the ring and watch "17.7 – 20.6 m" become
+//  "10.4 – 113 m" — so the control explains itself while it is being used. The
+//  band comes from `PostFX.lensInfo()`, solved from the same circle of
+//  confusion the shader runs, so the number on screen is the number in the
+//  picture rather than a second model that will drift from the first.
+//
 //  ── wiring ─────────────────────────────────────────────────────────────────
 //
 //  Deliberately self-installing. `enable()` attaches its own listeners and
@@ -109,6 +120,24 @@ const NOTCH = 40;
 // diffraction-limited and this model would keep pretending otherwise).
 const STOPS = [1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22];
 
+// How many frames the opening measurement may keep asking for. It used to be a
+// bare `_pendingAF = 2` — wait two frames, read once, believe whatever comes
+// back — and the failure mode of that is invisible: measured over four trials,
+// `readDepthAt` right after `setPhotoDOF(true)` returns **0.25 m** on frame 0.
+// Finite, plausible, and wrong; `focusAt`'s null guard would not have caught
+// it, and the mode would have opened at the 0.6 m clamp with the whole world
+// melted — the exact bug the deferral exists to prevent. So the read is
+// retried until it comes back finite AND outside the near clamp, which is a
+// condition a stale buffer fails and a real measurement passes. Ten frames
+// because photo mode's entry can spend 450–2500 ms reallocating the drawing
+// buffer on a Retina panel (see hud_photo.js) and nobody has measured what the
+// depth attachment does across that; ten is ~1/6 s, under the door sound.
+const AF_TRIES = 10;
+
+// Metres, at three significant-ish figures: 2 decimals inside 10 m (a mug on a
+// camp table is a 5 cm decision), 1 to 100 m, none past it.
+const fmtM = (d) => (d >= 100 ? d.toFixed(0) : d >= 10 ? d.toFixed(1) : d.toFixed(2));
+
 const READOUT_HOLD = 1.5;   // s the panel stays up after the last change
 const READOUT_FADE = 0.45;  // s it takes to go
 
@@ -132,6 +161,13 @@ const CSS = `
   display: block; margin-top: 5px; text-decoration: none;
   font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
   opacity: 0.5;
+}
+/* The depth of field, or what the last click found. Between the number and the
+   gestures because it is the line that changes when the aperture ring moves —
+   which is the whole answer to "is this stop doing anything". */
+.pa-focus em {
+  display: block; margin-top: 4px; font-style: normal;
+  font-size: 11px; letter-spacing: 0.05em; opacity: 0.72;
 }
 /* The pull-focus target: where the last measurement was taken. It is a
    confirmation, not a reticle — it flashes once and goes, so it cannot end up
@@ -168,7 +204,8 @@ export class PhotoFocus {
     this._node = null;
     this._mark = null;
     this._down = null;              // {x, y} of a pointer that may become a pull
-    this._pendingAF = 0;            // frames until the opening measurement
+    this._note = null;              // a one-line answer that replaces the DoF band
+    this._pendingAF = 0;            // opening-measurement attempts left
     this._apAccum = 0;              // part-detents banked toward the next stop
     // Bound once so add/removeEventListener see the same function objects. A
     // mode that can be opened and closed a hundred times a session cannot leak
@@ -222,9 +259,15 @@ export class PhotoFocus {
     // depth buffer exists and contains nothing. Measured against it, every
     // visit to photo mode opened focused 0.6 m in front of the lens with the
     // entire world melted — which looks exactly like a broken feature.
+    //
+    // The seed is `freeDist` and nothing else. It was `freeDist * 1.15 + 4`,
+    // which is 25.85 m against a measured 19.11 — 35% long, and long enough
+    // that a frame taken before the measurement lands has nothing sharp in it
+    // at all. The free camera's pivot distance IS the subject distance; there
+    // was never anything for the fudge to correct.
     const rig = this.ctx.systems?.cameraRig;
-    this.setDistance(Number.isFinite(rig?.freeDist) ? rig.freeDist * 1.15 + 4 : 18);
-    this._pendingAF = 2;
+    this.setDistance(Number.isFinite(rig?.freeDist) ? rig.freeDist : 18);
+    this._pendingAF = AF_TRIES;
 
     this._mountDom();
     window.addEventListener('wheel', this._onWheel, { capture: true, passive: false });
@@ -259,6 +302,7 @@ export class PhotoFocus {
     window.removeEventListener('blur', this._onBlur);
     this._down = null;
     this._held = false;
+    this._note = null;
     this._pendingAF = 0;
     this._apAccum = 0;
     this._unmountDom();
@@ -271,6 +315,7 @@ export class PhotoFocus {
   /** Put the focal plane at `m` metres. */
   setDistance(m) {
     if (!Number.isFinite(m)) return;
+    this._note = null;
     this._dist = Math.min(FAR, Math.max(NEAR, m));
     this.ctx.postfx?.setFocusManual?.(this._dist);
     this._flash();
@@ -301,7 +346,16 @@ export class PhotoFocus {
    */
   focusAt(u, v) {
     const d = this.ctx.postfx?.readDepthAt?.(u, v);
-    if (d == null || !Number.isFinite(d)) { this._flash(); return null; }
+    if (d == null || !Number.isFinite(d)) {
+      // The panel comes up either way — a control that appears to have ignored
+      // a click is worse than one that says it found nothing — but it has to
+      // SAY so. Flashing the unchanged number reads as a missed click; one
+      // word closes the loop.
+      this._note = 'sky — nothing to focus on';
+      this._flash();
+      return null;
+    }
+    this._note = null;
     this.setDistance(d);
     this._markAt(u, v);
     return this._dist;
@@ -309,6 +363,7 @@ export class PhotoFocus {
 
   /** Set the aperture to the nearest whole stop to `f`, measured in stops. */
   setAperture(f) {
+    this._note = null;
     let best = 0;
     for (let i = 1; i < STOPS.length; i++) {
       if (Math.abs(Math.log(STOPS[i] / f)) < Math.abs(Math.log(STOPS[best] / f))) best = i;
@@ -323,6 +378,7 @@ export class PhotoFocus {
     if (!steps) return;
     const next = Math.min(STOPS.length - 1, Math.max(0, this._stop + Math.sign(steps)));
     if (next === this._stop) { this._flash(); return; }
+    this._note = null;
     this._stop = next;
     this.ctx.postfx?.setAperture?.(this.fStop);
     this._flash();
@@ -333,10 +389,15 @@ export class PhotoFocus {
   /**
    * REAL time, like everything else in photo mode — the world clock is stopped.
    *
-   * Two jobs. It fades the readout, and it re-asserts the aperture when the
-   * field of view has moved, because the blur circle is derived from the focal
-   * length and the focal length is derived from the fov. Nothing in the game
-   * changes the fov while photo mode is open today; a zoom lens would.
+   * Three jobs. It fades the readout, it re-asserts the aperture when the
+   * field of view has moved, and it keeps asking for the opening measurement
+   * until the depth buffer has one to give.
+   *
+   * The fov watch is not hypothetical any more: the blur circle is derived
+   * from the focal length and the focal length from the fov, and photo mode
+   * now has a lens kit with a zoom ring (`src/photo/lens_models.js`). Without
+   * this, zooming would leave the aperture describing the lens that was fitted
+   * before.
    */
   update(dt) {
     if (!this.active) return;
@@ -345,8 +406,16 @@ export class PhotoFocus {
       this._fov = fov;
       this.ctx.postfx?.setAperture?.(this.fStop);
     }
-    // The deferred opening measurement — see `enable`.
-    if (this._pendingAF > 0 && --this._pendingAF === 0) this.focusAtCentre();
+    // The deferred opening measurement — see `enable`. Retried rather than
+    // counted down, and the test is on the ANSWER, not on the frame number: a
+    // stale depth attachment reads 0.25 m, which is finite, plausible and
+    // inside the near clamp, so `> NEAR` is what tells the two apart. No
+    // reticle for this one — nothing was clicked.
+    if (this._pendingAF > 0) {
+      this._pendingAF--;
+      const d = this.ctx.postfx?.readDepthAt?.(0.5, 0.5);
+      if (Number.isFinite(d) && d > NEAR) { this._pendingAF = 0; this.setDistance(d); }
+    }
     if (this._held) { this._show = Math.max(this._show, 0.2); return; }
     if (this._show <= 0) return;
     this._show -= dt;
@@ -473,14 +542,39 @@ export class PhotoFocus {
     this._node?.classList.add('pa-on');
   }
 
+  /**
+   * The panel.
+   *
+   * The middle line is the depth of field, and it is there to answer a
+   * question the dial could not: which stops are doing anything. The usable
+   * range is genuinely narrow and it MOVES — at a 3 m focus the wide end is
+   * all ceiling, at 37 m the narrow end is indistinguishable from the effect
+   * being off — so rather than grey out stops (they are a wheel, not buttons)
+   * the panel shows the band that is sharp. Turn the ring and watch
+   * "17.7 – 20.6 m" become "10.4 – 113 m": that is the control explaining
+   * itself. `PostFX.lensInfo()` solves it from the same c(d) the shader runs,
+   * so the number on screen is the number in the picture.
+   *
+   * "shift+click here" used to be the third line, which parses as an
+   * instruction to click the readout. It is "a subject" now.
+   */
   _paint() {
     if (!this._node) return;
-    const d = this._dist;
-    const m = d >= 100 ? d.toFixed(0) : d >= 10 ? d.toFixed(1) : d.toFixed(2);
+    const m = fmtM(this._dist);
     const f = this.fStop < 10 ? this.fStop.toFixed(1) : String(this.fStop);
+    const L = this.ctx.postfx?.lensInfo?.();
+    let mid = this._note ?? '';
+    if (!mid && L) {
+      mid = `sharp ${fmtM(L.near)} – ${Number.isFinite(L.far) ? `${fmtM(L.far)} m` : '∞'}`;
+      // The one thing that can still make two adjacent stops look alike: past
+      // this point the background is already as blurred as the kernel draws,
+      // and opening up further only widens the melt toward the camera.
+      if (L.wideOpen) mid += ' &nbsp;·&nbsp; background at max blur';
+    }
     this._node.innerHTML =
       `<b>${m} m</b> <i>focus</i> &nbsp;·&nbsp; <b>f/${f}</b>` +
-      `<u>shift+wheel focus &nbsp; shift+click here &nbsp; alt+wheel aperture</u>`;
+      (mid ? `<em>${mid}</em>` : '') +
+      `<u>shift+wheel focus &nbsp; shift+click a subject &nbsp; alt+wheel aperture</u>`;
   }
 
   _markAt(u, v) {

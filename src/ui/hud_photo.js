@@ -113,7 +113,7 @@ export class PhotoMode {
     // looking at them, and a pan you do not know exists is a pan nobody uses.
     rail.appendChild(el('div', 'pa-rail-hint',
       'drag&nbsp;&nbsp;look<br>middle-drag&nbsp;&nbsp;move<br>wheel&nbsp;&nbsp;zoom<br>' +
-      'shift+wheel&nbsp;&nbsp;focus<br>shift+click&nbsp;&nbsp;focus here<br>' +
+      'shift+wheel&nbsp;&nbsp;focus<br>shift+click&nbsp;&nbsp;a subject<br>' +
       'alt+wheel&nbsp;&nbsp;aperture<br>' +
       '[&nbsp;]&nbsp;&nbsp;zoom ring<br>L&nbsp;&nbsp;change lens<br>' +
       'P&nbsp;&nbsp;save<br>G&nbsp;&nbsp;grid<br>J&nbsp;&nbsp;book<br>F&nbsp;&nbsp;exit'));

@@ -1207,6 +1207,17 @@ const POST_TIERS = {
 // the same physics then hands back the blur large format is famous for. So the
 // drama has a cause, and every derived number below stays honest.
 //
+// One consequence to know before turning `format`: it is the only number that
+// scales the whole model, and photo mode now has a lens kit with a zoom ring
+// (`src/photo/lens_models.js`), so the fov it is asked to serve is no longer
+// 44–58°. At f/4 focused at 50 m the same physics gives a 24 mm-equivalent
+// (74° across) a 0.35 px background circle and a sharp band from 20.7 m to
+// infinity, and a 400 mm-equivalent (5°) a 44 CENTIMETRE band with everything
+// else at the ceiling. Both are the correct answer for a 356 mm film height,
+// and the readout in photo_focus.js prints the band so the player is told
+// rather than surprised — but if the long end reads as unusable, the dial to
+// turn is `format`, not the ramp.
+//
 // The size was chosen by capture, not by reverence for a film stock. On 8×10
 // (203 mm) the `vehicle` plate at f/1.4 focused at 18.8 m gave a 0.6%-of-height
 // circle: correct, and too polite to be worth a feature. 14×17 lands the same
@@ -1224,10 +1235,10 @@ const POST_TIERS = {
 // kernel stops resolving its own circle, and it is a ceiling on the RADIUS as a
 // fraction of frame height, so it means the same thing at every resolution.
 //
-// It is a ceiling on the SIZE of the biggest circle, and — since 2026-08-26 —
-// nothing else. It used to be the whole aperture model's output, and that is
-// what made three to six of the nine stops byte-identical: see the next
-// section.
+// Since 2026-08-26 it is a ceiling on the SIZE of the biggest circle and
+// nothing else. It used to be the whole aperture model's output as well, and
+// that is what made three to six of the nine stops byte-identical: see the
+// next section.
 //
 // ── the ramp: why `focusRange` is not photo mode's model any more ───────────
 //
@@ -1278,12 +1289,46 @@ const POST_TIERS = {
 // asymptotic. It is C1 continuous at the knee, and the frame keeps a little
 // separation between f/1.4 and f/2 in places that are past the cap.
 //
-// What this bought, measured (the 44×44 acutance σ-of-Laplacian the critic
-// used, same pose, same load — see the report):
-//   · 3 m grass, focus pulled to the 237 m ridge at f/1.4: 4.80 off → 4.42
-//     before (8% — inert), → 0.62 after (87% — melted).
-//   · nine stops at a 3 m focus: six produced a byte-identical frame before,
-//     nine produce distinct frames after.
+// What this bought, measured old-model-against-new inside one page load, same
+// pose, world paused and the animated film grain pinned (it is worth 6.9% of
+// the frame per frame on its own): acutance is σ of a Laplacian over a fixed
+// 44 px box, and the repeatability control was 0.137% of pixels.
+//
+//   · `vehicle` plate, shift+click the ridge at 236.6 m, f/1.4. Grass 3.17 m
+//     from the lens: 16.24 with the effect off → 14.76 old (a 9% loss: inert)
+//     → 0.75 new (95%: melted). The camper at 19.1 m, 218 m out of focus:
+//     52.23 → 48.77 old → 1.78 new.
+//   · Nine stops at a 3 m focus: f/1.4 through f/8 differed from their
+//     neighbour by 0.000–0.012% of pixels — six byte-identical stops, under
+//     the control. After: every neighbour pair differs by at least 0.94%, and
+//     all nine (bokehScale, gain) pairs are distinct. Same at 6 m (three dead
+//     before) and 10 m (two dead before).
+//   · The subject at the plane of focus is not paid for: 19.1 m at f/2 scored
+//     41.44 under the old model and 44.84 under the new one, against 52.23
+//     with the effect off. The physical ramp is the SHARPER of the two.
+//
+// ── the cut-out, and what a gather can and cannot do about it ───────────────
+//
+// A canopy holds many depths within a few pixels — a probed 48 px window in
+// `backlit` has 21 m elements interleaved with 48, 92, 100, 167 and 208 m ones
+// — and the old model quantised them into two states. `bokehScale` is also the
+// composite's blend factor (`min(coc·scale, 1)`), so at 5.86 anything more
+// than about 1.4 m off the plane composited as 100% blurred while its
+// neighbour at the plane composited as 100% sharp. That is the aliased cut-out a stranger
+// names as amateur: the window measured acutance 52.7 against 47.2 with the
+// effect OFF — foliage inside the blur that is SHARPER than the unblurred
+// frame is the signature of a badly-keyed matte. Under c(d) the same window
+// grades (23 m composites at 0.53, not 1) and measures 36.1.
+//
+// It is mitigated, not solved, and the honest reason is structural: a GATHER
+// cannot do partial occlusion. The obvious cheap fix was tried and rejected on
+// capture — compositing the far field against the BLURRED CoC buffer (which is
+// what the library already does for the near field, so the matte edge softens
+// over a few pixels). It softens the matte and everything else with it: the
+// in-focus conifer at the plane of focus fell from 60.1 to 32.4 acutance in the
+// same run, and dark halos appeared along every silhouette. A real fix is
+// scatter-as-you-gather, or weighting each tap by its own CoC and depth order,
+// and that is a new pass, not a uniform.
 const DOF_TIER = {
   focusDistance: 55, focusRange: 12, bokehScale: 0.60, resolutionScale: 0.5, fillMax: true,
   physical: false,   // the tier keeps the stock smoothstep ramp, byte for byte
@@ -1303,25 +1348,56 @@ const PHOTO_DOF = {
   nearRef: 0.6,
   fStop: 2.0,         // the stop photo mode opens at
   physical: true,     // use the optics ramp above, not the stock smoothstep
-  // Half resolution for the bokeh buffers — the library's default, kept after
-  // trying and rejecting full res.
+  // Half resolution — the library's default, kept after trying and rejecting
+  // full res.
   //
-  // Full res is visibly better in exactly one place, and it is not the blurred
-  // half of the frame: a blur resolved at half res and scaled up is the same
-  // blur, and an A/B on `--view forest` is very nearly indistinguishable there.
-  // It is the SHARP half. The near circle-of-confusion buffer is Kawase-blurred
-  // before it is used, so a little foreground CoC bleeds into the pixels just
-  // outside a blurred silhouette; at half res that bleed is twice as coarse and
-  // the in-focus grass in front of the boulder goes slightly mushy.
+  // It buys less than its name suggests, and that is worth writing down
+  // because the paragraph under it used to imply otherwise. Measured on the
+  // live effect at 1600×900: `resolution.scale` resizes the NEAR bokeh target,
+  // the intermediate target and the blurred CoC buffer (800×450 at 0.5) and
+  // nothing else — `renderTargetFar`, `renderTargetCoC` and
+  // `renderTargetMasked` stay 1600×900 at either setting, and both bokeh
+  // materials keep a full-resolution `texelSize`. So the far field, which is
+  // most of a defocused frame, is drawn at full resolution regardless, and
+  // `bokehScale` is a radius in full-resolution pixels (which is what lets
+  // `blurCap` mean "a fraction of frame height" at every resolution).
   //
-  // It was rejected on price. Priced with paired baselines inside one page load
-  // (`ablate --mode still --only fx.dof`, `?photodof=1`), the whole effect at
-  // full res is 9.05 ms ± 1.70 of a 3.24 MP frame — a third of it. Photo mode
-  // then pins the render to the display's NATIVE density, which on a Retina
-  // panel is about 2.5x those pixels again, so the same choice would have cost
-  // something like 20 ms in the mode where the player is orbiting a camera by
-  // hand. A compose mode has to stay responsive; a slightly softer 3 px band
-  // beside a defocused silhouette is not worth trading that for.
+  // What the setting therefore costs is the NEAR half: the near CoC buffer is
+  // Kawase-blurred before use, so a little foreground CoC bleeds into the
+  // pixels just outside a blurred silhouette, and at half res that bleed is
+  // twice as coarse and the in-focus grass in front of the boulder goes
+  // slightly mushy.
+  //
+  // It was rejected on price, and the price quoted here used to be a number
+  // that had never been measured. The rejected line read "9.05 ms ± 1.70 at
+  // full res"; nothing had measured 0.5 against 1.0, the run behind it warned
+  // that the camper had not come to rest, and a critic re-running it got
+  // "7.65 ms ± 7.70 (within noise)". Refusing to rank a within-noise number is
+  // correct; concluding anything from it is not.
+  //
+  // What is measured (2026-08-26), and what the reader should hold this to:
+  // 5 paired arms, base(0.5)/arm(1.0)/base inside ONE page load, IN photo mode
+  // — the world is stopped there, so unlike ablate's `still` anchor the pose
+  // cannot fail to settle — clocked as a batch of 24 composed renders followed
+  // by gl.finish(), at 1600×900 with the effect focused at 19.1 m, f/1.4:
+  //
+  //     full res − half res:   +0.65 ms ± 0.07   (each arm 0.59…0.78)
+  //     the whole effect on:   +1.70 ms over no depth of field, at half res
+  //
+  // So the saving exists and is small: about 4.6% of the composed frame here,
+  // and roughly the same fraction on a Retina native pin, where every number
+  // scales with the pixel count. It is NOT the "a third of the frame" the old
+  // paragraph implied. Half res is kept because the thing it costs is also
+  // small and specific — a slightly softer 3 px band beside a defocused
+  // silhouette, and the critic's own A/B found the depth-discontinuity
+  // artefact identical at 1.0 — but this is now a cheap, evidenced flip for
+  // anyone who wants that band back.
+  //
+  // Two caveats, since a number without them is the bug being fixed here:
+  // this is not `ablate` (ablate has no knob for the DoF buffer's own
+  // resolution — `fx.dof` is the whole effect), and 1600×900 at dpr 1 is not
+  // what a Retina player's photo mode renders. Both arms shared everything
+  // else, which is what makes the DELTA worth quoting and the absolutes not.
   resolutionScale: 0.5,
   // ── the fill pass, and why it is turned OFF for a photograph ─────────────
   //

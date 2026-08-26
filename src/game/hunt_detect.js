@@ -177,10 +177,14 @@ import { HUNT_IDS } from './hunt_items.js';
 
 /**
  * How much of the frame's HEIGHT the subject's bounding sphere must subtend.
- * See the header for how 0.065 was arrived at — it is a consequence of the
- * birds' startle radii, not a number chosen for how it looks.
+ *
+ * See the header for how this was arrived at. The short version: it is the
+ * size at which a capture of a real deer in the real valley stops being a
+ * brown lozenge and starts having legs, and nothing else in the game pushes
+ * back on it — not the birds, not the vehicle. It was 0.085 and 0.085 was a
+ * threshold defended by an argument that turned out not to be true.
  */
-const MIN_SHARE = 0.085;
+const MIN_SHARE = 0.155;
 
 // The two set-pieces are not animals and do not answer to the birds' rule.
 // A waterfall is enormous, so the animal share would count one at 700 m; a camp
@@ -218,6 +222,20 @@ const CAMP_MAX = 140;
 const MALLOW_MAX = 4;
 
 /**
+ * The radius the waterfall's line-of-sight march is drawn with — see the
+ * header's "the fall behind the ridge". It is not the size of the fall; it is
+ * `clearLine`'s handle on how much slack to leave, and `AIM` turns it into
+ * 1.8 m of aim above the lip and about 6 m of ray excluded at the far end.
+ *
+ * Both of those are the same fact: the top of a drop is where the river is
+ * still a river, so the ground for the last few metres of the ray IS the water
+ * and stands exactly level with the target. Aiming a little over it and
+ * stopping a little short of it is how you ask "can I see the lip" rather than
+ * "is the lip above its own riverbed".
+ */
+const LIP_R = 3;
+
+/**
  * Perched birds are drawn folded, and the geometry's bounding sphere is the
  * bird with its wings SPREAD (span is 1.0 in unit space and scale IS wingspan
  * — see `TREE_BIRD_SPECIES`). Halve the radius as the fold closes.
@@ -245,21 +263,42 @@ const OCC_TOL = 0.75;
 //
 // The swarm has no objects to test. It is one draw call of GPU-resident points
 // wrapped toroidally around the camera inside a 30 m box (`fireflies.js:BOX`),
-// so "is a firefly in frame" is really two questions: is the swarm drawing at
-// all, and is the photograph pointed at ground close enough to have some in it.
-//
-// The system's own `points.visible` gate is `amount > 0.004 && _hab > 0.01`,
-// which is the threshold for "technically emitting" — a handful of insects an
-// hour before you could see one in a picture. These are the thresholds for
-// "there are fireflies in this photograph".
+// and the population that actually DRAWS is decided per insect in the vertex
+// shader. So the only honest question is a count: how many insects are lit
+// inside this frame? See the header block "the fireflies were not a find".
 const FF_NIGHT = 0.35;    // uOpacity: the dusk ramp. 0.35 lands around 20:00
-const FF_HAB = 0.25;      // uDensity: damped habitat at the camera
-// Ground samples inside the wrap box, and how many must land in frame. Three
-// rather than one, so a sliver of grass in a corner of a shot of the sky is not
-// a photograph of fireflies.
-const FF_RINGS = [6, 12, 19, 27];
-const FF_BEARINGS = 8;
-const FF_HITS = 3;
+const FF_HAB = 0.12;      // uDensity: damped habitat at the camera. Both of
+                          // these are early-outs now rather than the rule —
+                          // they cost two reads and skip seventy world queries
+                          // on every daylight photograph ever taken. 0.12 is
+                          // low on purpose: it was 0.25 when it WAS the rule,
+                          // and a gate that can veto a frame the count would
+                          // have passed is a second opinion nobody asked for.
+
+// The ground grid the count is integrated over: six rings of twelve, as
+// fractions of the wrap box's half-extent, so it still fits if `BOX` changes.
+// It covers the disc inscribed in the box — 81% of its area — which makes the
+// estimate mildly conservative and is the reason the corners are not in it.
+const FF_RINGS = [0.10, 0.27, 0.43, 0.60, 0.77, 0.93];
+const FF_BEARINGS = 12;
+// Height above the surface to project a sample at. `aSeed.y` arrives
+// pre-squared (mean 0.25) into a 0.35 → 3.10 m band, so the population's mean
+// height is ~1.05 m: knee-high, which is where they are.
+const FF_H = 1.05;
+// The spatial mean of the shader's `clump` term. The clumping is world-space
+// value noise (`ffNoise`) and this file deliberately does not reproduce it —
+// porting a hash into a second language is how two systems quietly disagree —
+// so the count carries its average instead: clump = mix(0.16, 1.0, s) with s
+// averaging ~0.5 over the field gives 0.52. The cost of the simplification is
+// that standing in a dense cluster reads slightly low and standing in a gap
+// slightly high, which is a smaller error than the one it avoids.
+const FF_CLUMP = 0.52;
+/**
+ * How many insects in frame make a photograph OF fireflies. See the header for
+ * the calibration — it is a count of the population present, not of the flashes
+ * you can see, and the two are related by a measurement rather than by a guess.
+ */
+const FF_MIN = 60;
 
 // ── scratch ──────────────────────────────────────────────────────────────────
 // Module-level and reused. This runs once per shutter press, but it runs in the
@@ -270,6 +309,9 @@ const _view = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
 const _inv = new THREE.Matrix4();
 const _fwd = new THREE.Vector3();
+// A second world-space point, for the two subjects whose "is it visible" point
+// is not the same as their "how big is it" point — see `waterfalls`.
+const _aim = new THREE.Vector3();
 
 /**
  * The per-call frame: everything the gates need, resolved once.
@@ -291,7 +333,13 @@ function frameOf(ctx) {
   return {
     cam,
     eye: cam.position,
-    view: _inv.clone(),
+    // `_inv` itself, not a copy of it. It was `_inv.clone()` — one Matrix4 per
+    // call, six lines under a comment promising the GC nothing at all — and
+    // the clone bought nothing: `frameOf` runs once per `detectSubjects`, the
+    // frame it returns dies at the end of that call, and no detector writes to
+    // `view`. Anything that later wants two frames alive at once takes a copy
+    // there, where the reason is visible.
+    view: _inv,
     proj: cam.projectionMatrix,
     vfov,
     world: ctx.world ?? null,
@@ -516,13 +564,13 @@ function waterfalls(f, list, hit) {
            (wf.top[1] + wf.bottom[1]) * 0.5,
            (wf.top[2] + wf.bottom[2]) * 0.5);
     const r = Math.max((wf.height ?? 0) * 0.5, (wf.width ?? 0) * 0.5, 2);
-    // No occlusion march. The line to the middle of a drop runs down a gorge
-    // whose walls stand well above it, and `getHeight` at the fall's own
-    // footprint returns the CLIFF rather than the water — the terrain test
-    // rejects almost every genuine view of one. The thing a fall is on the far
-    // side of is a ridge, and a ridge tall enough to hide a 40 m fall also
-    // takes its own share of the frame away; the size gate is doing that work.
     if (!share(f, _p, r, FALL_SHARE, FALL_MAX)) continue;
+    // The march runs to the LIP, not to the middle of the drop. See the block
+    // over `LIP_R`: the midpoint is the one point of a waterfall that is
+    // reliably behind something, and asking about it is what made the first
+    // version of this detector skip the test altogether.
+    _aim.set(wf.top[0], wf.top[1], wf.top[2]);
+    if (!clearLine(f.world, f.eye, _aim, LIP_R)) continue;
     hit.add('waterfall');
     return;
   }
@@ -575,42 +623,119 @@ function highCamp(f, camp, hit) {
   }
 }
 
-/**
- * Fireflies. See the FF_ block above for why this is a habitat query and a
- * handful of ground samples rather than a list of objects.
- */
-function fireflies(f, ff, hit) {
-  const pts = ff?.points;
-  const u = ff?.uniforms;
-  if (!pts?.visible || !u) return;
-  if ((u.uOpacity?.value ?? 0) < FF_NIGHT) return;
-  if ((u.uDensity?.value ?? 0) < FF_HAB) return;
-  const world = f.world;
-  if (typeof world?.getHeight !== 'function') return;
+/** GLSL's smoothstep, because half of `ffCount` is a transcription of one. */
+function sstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
 
-  let hits = 0;
+/**
+ * The share of the population present at a spot whose `want` is this.
+ *
+ * The shader gives every insect a rank (`aRand.w = rand() * rand()`, skewed
+ * low on purpose so the swarm thins gracefully) and draws it when `want`
+ * clears that rank, crossfading over a 0.20 band. P(rank < t) for a product of
+ * two uniforms is t·(1 − ln t); the crossfade is taken as a 0.10 offset on
+ * `want`, which is where the middle of the band sits.
+ */
+function ffPresent(want) {
+  // Three points across the crossfade band rather than one at its middle. One
+  // point is what the first version did and it is wrong exactly where it
+  // matters: the rank distribution piles up near zero, so at a `want` of 0.05 —
+  // a thin swarm that is nonetheless a swarm — a single sample at `want - 0.1`
+  // lands below zero and reports an empty meadow, while the shader is drawing
+  // one insect in five. Measured against frames, that was the estimator's worst
+  // disagreement with the picture.
+  return (ffRank(want) + ffRank(want - 0.10) + ffRank(want - 0.20)) / 3;
+}
+const ffRank = (t) => (t > 0 ? Math.min(1, t) * (1 - Math.log(Math.min(1, t))) : 0);
+
+/**
+ * How many fireflies are inside this frame.
+ *
+ * A number, not a boolean, because the question the hint asks is a question
+ * about how MANY, and every cheaper version of this answers a different one.
+ * See the header. What it counts is the population DRAWING in frame — about a
+ * fifth of them are alight at any instant, so the flashes a person could
+ * actually point at are far fewer, and the header carries that measurement.
+ *
+ * The integral is over the ground inside the wrap box: at each sample, rebuild
+ * the vertex shader's own habitat product from the same four world queries it
+ * makes through `uDataTex`, turn it into a population fraction, and add it up
+ * where the sample lands in frame. It is the shader's arithmetic on a 72-point
+ * grid instead of on three thousand insects.
+ *
+ * Exported through `_internals` because the threshold below it is the kind of
+ * number that has to be re-derived rather than re-guessed.
+ */
+function ffCount(f, ff) {
+  const W = f.world;
+  if (typeof W?.getHeight !== 'function' || typeof W?.getMoisture !== 'function'
+      || typeof W?.getSlope !== 'function' || typeof W?.getRiver !== 'function'
+      || typeof W?.getWaterDepth !== 'function') return 0;   // no bake, no claim
+  const u = ff?.uniforms;
+  const n = ff?.n | 0;
+  const half = u?.uBox?.value?.x;
+  if (!(n > 0) || !Number.isFinite(half) || !(half > 0)) return 0;
+  const opacity = u.uOpacity?.value ?? 0;
+  const density = u.uDensity?.value ?? 0;
+  const perM2 = n / (4 * half * half);
+  const dr = half * (FF_RINGS[1] - FF_RINGS[0]);
+
+  let n_in = 0;
   for (let ring = 0; ring < FF_RINGS.length; ring++) {
-    const rad = FF_RINGS[ring];
+    const rad = FF_RINGS[ring] * half;
+    // Area this sample stands for: its annulus, split between the bearings.
+    const area = (2 * Math.PI * rad * dr) / FF_BEARINGS;
     for (let i = 0; i < FF_BEARINGS; i++) {
-      // Each ring's bearings are rotated by a quarter step from the last, so
-      // the four rings sample thirty-two distinct radial lines rather than
-      // eight. Without it a single fence post or tree trunk lined up with one
-      // bearing costs four samples instead of one.
+      // Each ring turned a quarter step off the last, so the six rings sample
+      // seventy-two distinct radial lines rather than twelve. Without it one
+      // hedge line along a bearing costs six samples instead of one.
       const a = ((i + ring * 0.25) / FF_BEARINGS) * Math.PI * 2;
       const x = f.eye.x + Math.sin(a) * rad;
       const z = f.eye.z + Math.cos(a) * rad;
-      const g = world.getHeight(x, z);
+      const g = W.getHeight(x, z);
       if (!Number.isFinite(g)) continue;
-      // Where a firefly sits: a fraction of a metre above the grass, which is
-      // what `fireflies.js` puts them at in the vertex shader.
-      _p.set(x, g + 0.45, z);
+
+      // In frame first — it rejects most of the grid on most photographs, and
+      // it is four multiplies against five world queries.
+      const wet = W.getWaterDepth(x, z) || 0;
+      _p.set(x, g + wet + FF_H, z);
       _view.copy(_p).applyMatrix4(f.view);
       if (!(-_view.z > 0.2)) continue;
       _ndc.copy(_view).applyMatrix4(f.proj);
-      if (Math.abs(_ndc.x) > 0.94 || Math.abs(_ndc.y) > 0.94) continue;
-      if (++hits >= FF_HITS) { hit.add('fireflies'); return; }
+      // The full frame, not `EDGE`: an insect at the edge of the picture is in
+      // the picture. There is no "the subject is cut in half" here, because no
+      // one firefly is the subject.
+      if (Math.abs(_ndc.x) > 1 || Math.abs(_ndc.y) > 1) continue;
+
+      // `fireflies.js` VERT, term for term. Keeping the names is the point:
+      // when somebody retunes the swarm's habitat this is greppable.
+      const moist = W.getMoisture(x, z);
+      const slope = W.getSlope(x, z);
+      const meadow = sstep(0.24, 0.46, moist) * (1 - sstep(0.70, 0.92, moist));
+      const bank = sstep(0.06, 0.40, W.getRiver(x, z));
+      const open = 1 - sstep(0.34, 0.76, slope);
+      const shallow = 1 - sstep(0.12, 0.70, wet);
+      const low = 1 - sstep(190, 300, g);
+      const local = Math.max(meadow, bank) * open * shallow * low * FF_CLUMP;
+      n_in += area * perM2 * ffPresent(density * local * opacity);
     }
   }
+  return n_in;
+}
+
+/**
+ * Fireflies — enough of them, close enough, and pointed at.
+ *
+ * The two uniform gates are early-outs and nothing more; the item is decided
+ * by `ffCount`. See the header for what the old version credited.
+ */
+function fireflies(f, ff, hit) {
+  if (!ff?.points?.visible || !ff.uniforms) return;
+  if ((ff.uniforms.uOpacity?.value ?? 0) < FF_NIGHT) return;
+  if ((ff.uniforms.uDensity?.value ?? 0) < FF_HAB) return;
+  if (ffCount(f, ff) >= FF_MIN) hit.add('fireflies');
 }
 
 /**
@@ -771,4 +896,5 @@ function warn(where, e) {
  * console are the only callers.
  */
 export const _internals = { share, clearLine, visible, frameOf, meshSphere,
-  MIN_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, CAMP_SHARE };
+  ffCount, MIN_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, CAMP_SHARE,
+  FF_MIN, LIP_R };

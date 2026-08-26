@@ -53,10 +53,34 @@ await page.evaluate(async () => {
     j.update(dt);
     j.render(window.__engine.renderer);
   });
-  // A stand-in photograph: read the real canvas, which is exactly what photo
-  // mode hands the journal.
-  window.__shot = document.querySelector('canvas#gl').toDataURL('image/jpeg', 0.8);
 });
+
+// ── the black photograph was THIS, and nothing in the product ──────────────
+// This line used to be `document.querySelector('canvas#gl').toDataURL(...)`
+// sitting at the bottom of the evaluate above — i.e. run from a task that is
+// NOT the one that drew the frame. The context has no `preserveDrawingBuffer`,
+// so by then the drawing buffer has been cleared and what comes back is a
+// 12,435-byte fully black JPEG with a mean luma of 0.0. Every capture the
+// harness produced showed a black print taped into the book, and it was read
+// as a bug in the journal for a whole round.
+//
+// `PhotoMode.capture()` never had the problem because it renders and reads in
+// the SAME task; measured against the real path, 4,246,826 bytes and a mean
+// luma of 114.6. So: hook the render callback, read inside it, put the
+// callback back. Same rule as `readPixels` — if you did not draw it in this
+// task, it is not there.
+await page.evaluate(() => new Promise((res) => {
+  const cv = document.querySelector('canvas#gl');
+  const e = window.__engine;
+  const prev = e._render ?? null;               // setRenderCallback writes `_render`
+  e.setRenderCallback((dt) => {
+    prev?.(dt);
+    window.__shot = cv.toDataURL('image/jpeg', 0.8);
+    e.setRenderCallback(prev);
+    res();
+  });
+}));
+console.log('stand-in photo bytes:', await page.evaluate(() => window.__shot.length));
 await page.waitForTimeout(500);
 await page.screenshot({ path: `${dir}/1_wired.png` });
 
