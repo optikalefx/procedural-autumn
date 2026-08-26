@@ -37,6 +37,12 @@
 //  leafs to its page, the line is struck off in pencil, the box is ticked, the
 //  photograph flies in and slaps down, and two pieces of tape go over it.
 //
+//  There is a SECOND ceremony on the same object, for the shutter's other
+//  answer: photograph something already crossed off and the book leafs to a
+//  blank leaf with that print beside the new one and asks which to keep. It
+//  shares the first half of the timeline and then diverges — see the `CMP_*`
+//  block for how the two interleave, which is "they cannot", and why.
+//
 //  Timings are in ONE table (`SCRIPT`) and every one of them is real seconds.
 //  The first version drove the whole thing off `leaf`, `cover` and a pile of
 //  ad-hoc `if (t > 1.3)` branches and it was unreadable within a day; the award
@@ -60,7 +66,7 @@ import {
   BOOK, buildJournal, poseJournal, setJournalPages, samplePage, disposeJournalMaterials,
   PAPER_GAIN,
 } from './journal_model.js';
-import { hunt } from '../game/hunt_store.js';
+import { hunt, makeThumb } from '../game/hunt_store.js';
 
 // ── the script ───────────────────────────────────────────────────────────────
 // Every duration in the ceremony, in seconds, in one place. `gap` values are
@@ -223,6 +229,56 @@ const CLOSE_OUT = 0.30;
 // what a 1024 px one asks for (1024 / 220). A 512 px store would come out at
 // 2.33 and never reach this.
 const DETAIL_PX_MAX = 4.7;
+
+// ── photographing something that is already in the book ──────────────────────
+//
+// *"If you take a photo that could go in the book, but already is, we should
+// pull up the photo in a preview frame next to the old one and ask if they want
+// it replaced."*
+//
+// The book opens on a blank leaf with the two prints taped side by side, the
+// player hovers to say which and clicks to keep it, and the one they keep slaps
+// down. `journal_page._paintCompare` owns the page; this file owns the two
+// print quads over it, the pick and the beat.
+//
+// ── how it interleaves with the award ceremony ─────────────────────────────
+// It does not, and it cannot: `hunt.award` returns true exactly once per item,
+// so a shutter press is either an award or a replace and never both for the
+// same id. Where a single frame holds two subjects — a deer at a waterfall —
+// the shutter still ticks everything it finds and the AWARD wins the book, for
+// the same reason the existing comment there gives: one ceremony per press.
+// The replace is simply what the second-best outcome does with the book instead
+// of nothing, which is what it did before.
+//
+// Inside this file the two share the timeline's first half (rise, cover,
+// flyleaf, and however many turns it takes to reach the leaf) and then diverge:
+// `_makeScript` gives a replace no cross/tick/photo/tape beats at all, because
+// nothing is being crossed off. `hasSeek` rather than `hasAward` is what holds
+// the clock while the destination leaf is worked out, since both need that and
+// only one of them is an award.
+//
+// ── the numbers ───────────────────────────────────────────────────────────
+//  · `CMP_TILT` is `STUDY_TILT`, deliberately the same lean the close look
+//    uses. This is a page being read, and a second tilt for a second kind of
+//    reading would be two answers to one question.
+//  · `CMP_LIFT` is a fraction of the PRINT'S OWN measured width rather than a
+//    distance, so the hover reads the same whatever scale the fit has put the
+//    book at — 6% of a print is about 4 mm of page at the framing this lands
+//    on, which is a print picked up off the paper rather than one floating.
+//  · `CMP_DIM` is what the print you are NOT hovering falls to. 0.55 is dark
+//    enough to be unmistakable at a glance and light enough that the player can
+//    still see the photograph they are deciding against, which is the whole
+//    point of showing them side by side.
+//  · `CMP_SLAP` is the squash on the one that is kept, and it is the ceremony's
+//    own `_flyPhoto` squash (0.075 over the tail of the move) so the two beats
+//    are the same gesture. `journal.slap` fires with it, as the request asked.
+const CMP_TILT = STUDY_TILT;
+const CMP_LIFT = 0.06;
+const CMP_GROW = 1.035;
+const CMP_DIM = 0.55;
+const CMP_HOVER = 0.11;      // seconds for the hover to ease in or out
+const CMP_SLAP = 0.30;       // the chosen print settling onto the page
+const CMP_HOLD = 0.34;       // and the beat before the book leafs back
 
 const easeOut = (t) => 1 - (1 - t) ** 3;
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
@@ -416,6 +472,15 @@ export class Journal {
     this._pages = [];
     this._pageTex = [];
     this._sheets = 1;
+    // The compare leaf (`CMP_*`): null unless the book is asking which of two
+    // prints to keep. `_backTo` is the leaf it walks home to afterwards, and is
+    // the only backward page seek in the file.
+    this._cmp = null;
+    this._cmpQuad = null;
+    this._cmpTex = null;
+    this._cmpUV = null;
+    this._cmpSquash = 0;
+    this._backTo = null;
     this._size = new THREE.Vector2();
     this._dbSize = new THREE.Vector2();
     this._clearCol = new THREE.Color();
@@ -564,11 +629,21 @@ export class Journal {
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
-   * @param award { id, photoDataURL } | null
+   * @param award { id, photoDataURL|photo, replace } | null
    *
    * With an award the full ceremony runs, including however many page turns it
    * takes to reach the item's own page. With none, the book opens to the
-   * checklist and stops.
+   * checklist and stops. With `replace: true` — the shutter's answer to "this
+   * one is already crossed off" — the book leafs to a blank leaf and asks which
+   * of the two prints to keep instead; see the `CMP_*` block.
+   *
+   * `photo` is accepted alongside `photoDataURL` and is anything `drawImage`
+   * takes. It is converted HERE, synchronously, and not one turn of the event
+   * loop later: the shutter's thumbnail canvas is a single reused scratch
+   * canvas (`hud_photo`'s `_thumbCanvas`), so the next press overwrites it, and
+   * everything below this line is a promise. That is the same class of bug as
+   * the black print in §6 of the notes — if you did not read it in this task,
+   * it is not there.
    */
   open({ award = null } = {}) {
     if (this._active && !this._closing) return;
@@ -603,6 +678,16 @@ export class Journal {
     this._taped = false;
     this._bakedPhoto = false;
     this._card.visible = false;
+    this._cmpDrop();
+    this._backTo = null;
+
+    // The shutter's scratch canvas has to become a string before the first
+    // await; see the header of this method.
+    const a = award?.id
+      ? { id: award.id, replace: !!award.replace,
+          photoDataURL: award.photoDataURL
+            ?? (award.photo ? makeThumb(award.photo) : null) }
+      : null;
 
     // The store may or may not already know about this award — photo mode is
     // free to call `hunt.award()` itself before opening the book, and the
@@ -614,8 +699,9 @@ export class Journal {
       this._storeDirty = false;
       this._prep.then(() => this._decorate()).catch(() => {});
     }
-    this._prep.then(() => this._armAward(award)).catch(() => {});
-    this._script = this._makeScript(award);
+    this._prep.then(() => (a?.replace ? this._armCompare(a) : this._armAward(a)))
+      .catch(() => {});
+    this._script = this._makeScript(a);
   }
 
   async _armAward(award) {
@@ -644,6 +730,67 @@ export class Journal {
   }
 
   /**
+   * Set up the "which of these two" leaf, and point the seek at it.
+   *
+   * Runs in place of `_armAward` when the shutter reports a subject that is
+   * already crossed off. Everything it needs is in hand by the time the cover
+   * is open: the incoming thumbnail (a string by now — see `open`), the one the
+   * store is already holding, and a blank leaf to lay them both on.
+   *
+   * **The leaf is borrowed, not built.** `spec.compare` is an overlay on the
+   * Notes leaf that `paint()` draws instead of the notes, and `_cmpRestore`
+   * takes it off again. Adding a real page for this would change `sheets`,
+   * which changes the fore edge and the stack split for every book in the game
+   * including the one on the camp table, to carry a page that exists for four
+   * seconds every few sessions.
+   *
+   * Anything missing — an id off the sheet, no incoming photo, no blank leaf —
+   * falls back to opening the book normally. `_awardLeaf` still has to be set
+   * either way: it is what releases the clock.
+   */
+  async _armCompare(a) {
+    const seat = this._seat?.get(a.id);
+    const leaf = this._pages.findIndex((p) => p.spec.kind === 'notes');
+    if (!seat || leaf < 0 || !a.photoDataURL) {
+      if (!seat) console.warn(`[journal] cannot compare "${a.id}"; not on any page`);
+      this._awardLeaf = 1;
+      return;
+    }
+    const [current, incoming] = await Promise.all([
+      loadPhoto(hunt.photoFor(a.id)), loadPhoto(a.photoDataURL),
+    ]);
+    // Nothing to compare AGAINST is not a comparison. The line was crossed off
+    // with no picture, or the store evicted it to make room (`hunt_store`'s
+    // ladder, rung 2) — in which case the honest thing is to just take the new
+    // photograph, which is what the player was trying to do.
+    if (!incoming || !current) {
+      if (incoming) {
+        hunt.setPhoto(a.id, a.photoDataURL);
+        const row = this._pages[seat.page].spec.rows[seat.row];
+        row.photo = incoming;
+        this._pages[seat.page].paint();
+      }
+      this._awardLeaf = Math.ceil(seat.page / 2);
+      return;
+    }
+    const page = this._pages[leaf];
+    this._cmp = {
+      id: a.id, url: a.photoDataURL, seat, page: leaf,
+      img: [current, incoming],
+      hover: -1, ease: [0, 0], chosen: null, t: 0, up: false,
+    };
+    page.spec.compare = {
+      subject: this._pages[seat.page].spec.rows[seat.row]?.subject ?? a.id,
+      hover: -1,
+    };
+    page.paint();
+    this._awardLeaf = Math.ceil(leaf / 2);
+  }
+
+  /** True while the book is asking which of two prints to keep. */
+  get comparing() { return !!this._cmp; }
+
+  /**
    * Build the timeline. Every beat is `{ key, t0, dur }` and `_at(key)` reads
    * one back as 0..1, so `update` has no branches in it at all.
    */
@@ -666,13 +813,20 @@ export class Journal {
     // run, so the script is built for the worst case and the turns it does not
     // need are collapsed to zero length in `_seekBeats`.
     this._seekAt = t;
-    if (award) {
+    // A REPLACE gets the seek and nothing after it. There is no line to strike,
+    // no box to tick and no photograph to fly in — the two prints are already
+    // on the leaf when the book arrives at it, and what happens next is the
+    // player's move rather than the ceremony's. `hasSeek` is what the clock
+    // waits on (both cases have to know which leaf they are going to before the
+    // turns can be counted); `hasAward` stays the name for "there are beats
+    // after the seek", which is what every other reader of it means.
+    if (award && !award.replace) {
       add('cross', S.crossGap, S.cross);
       add('tick', S.tickGap, S.tick);
       add('photo', S.photoGap, S.photo);
       add('tape', S.tapeGap, S.tape);
     }
-    return { beats, end: t, hasAward: !!award };
+    return { beats, end: t, hasAward: !!award && !award.replace, hasSeek: !!award };
   }
 
   /** Progress 0..1 through a named beat, clamped, 0 before and 1 after. */
@@ -701,6 +855,13 @@ export class Journal {
     // the ease would otherwise still be running when the book stops being
     // drawn. See `_zoomTo`.
     this._zoomTo(0, SCRIPT.close);
+    // The compare leaf is BORROWED. Shutting the book on an unanswered question
+    // keeps the print that is in the book — the same answer Escape gives, for
+    // the same reason — and the Notes leaf has to be handed back either way, or
+    // the next time anyone leafs to the end of the book they find somebody
+    // else's two photographs on it.
+    this._cmpDrop();
+    this._backTo = null;
     this._cursorTo('');
     this.onClose?.();
   }
@@ -721,7 +882,7 @@ export class Journal {
     // guessing the page or letting the beats fire against a half-built book —
     // in practice the wait is one or two frames and nobody sees a hold at the
     // top of a rise animation.
-    const gated = this._script?.hasAward && this._awardLeaf == null &&
+    const gated = this._script?.hasSeek && this._awardLeaf == null &&
                   this._t >= this._seekAt - 0.02;
     if (!gated) this._t += d;
 
@@ -782,6 +943,27 @@ export class Journal {
       this._leafDur = SCRIPT.seekLeaf;
       this._cue('page');
     }
+    // Leafing HOME from the compare leaf, one turn at a time and through the
+    // same three fields every other page turn writes. The compare lives at the
+    // back of the book (the Notes leaf) and the entry it is about is near the
+    // front, so this is the only backward seek in the file; it is a queue of
+    // one-step moves rather than a single long turn because a book turns pages,
+    // it does not scrub.
+    // …and it waits for the book to be BACK DOWN first (`_studyK` at zero).
+    // Turning a page while the reader is still zoomed onto that page moves the
+    // thing they are looking at out from under them, and `_applyStudy` is
+    // meanwhile recentring on a leaf that is in flight.
+    if (this._backTo != null && this._studyK <= 0.0002
+        && this._seekQueue === 0 && this._leafT >= 1) {
+      const at = Math.round(this._pose.leaf);
+      if (at > this._backTo) {
+        this._leafFrom = this._pose.leaf;
+        this._leafTo = at - 1;
+        this._leafT = 0;
+        this._leafDur = SCRIPT.seekLeaf;
+        this._cue('page');
+      } else this._backTo = null;
+    }
     if (this._leafT < 1) {
       this._leafT = clamp01(this._leafT + d / Math.max(0.05, this._leafDur));
       this._pose.leaf = lerp(this._leafFrom, this._leafTo, easeInOut(this._leafT));
@@ -793,6 +975,13 @@ export class Journal {
     // one frame stale puts the photo a visible millimetre off the paper on the
     // exact frame it touches down.
     this._apply(d);
+
+    // The compare leaf, after `_apply` for the same reason the award beats are:
+    // it places two quads with `samplePage` and needs the pose already on the
+    // book. It runs INSTEAD of the award beats below — never alongside them,
+    // because `hunt.award` returns true exactly once and a shutter press is one
+    // or the other for a given id.
+    if (this._cmp) this._cmpTick(d);
 
     // ── the pencil, the tick, the photograph, the tape ──────────────────────
     if (this._script?.hasAward && this._seatOf) {
@@ -1226,6 +1415,24 @@ export class Journal {
     this._onKey = (e) => {
       if (!this._active) return;
       stop(e);
+      // The compare leaf takes every key that would otherwise move the book,
+      // and gives them all one meaning: leave, keeping the print that is
+      // already in the book. It is the same rule as the ladder — one press,
+      // one level out — and it is the reading the page itself prints at its
+      // foot. Turning a page out from under an unanswered question would leave
+      // the book somewhere else with two prints still loaded.
+      if (this._cmp) {
+        switch (e.code) {
+          case 'Escape': case 'KeyJ': case 'Enter':
+          case 'ArrowRight': case 'KeyD': case 'PageDown': case 'Space':
+          case 'ArrowLeft': case 'KeyA': case 'PageUp':
+            e.preventDefault();
+            this._cmpAbandon();
+            break;
+          default: break;
+        }
+        return;
+      }
       switch (e.code) {
         case 'Escape': case 'KeyJ': case 'Enter':
           e.preventDefault();
@@ -1252,11 +1459,29 @@ export class Journal {
       if (now - (this._wheelAt ?? 0) < 260) return;
       if (Math.abs(e.deltaY) < 4) return;
       this._wheelAt = now;
-      if (this._studyTo > 0) this.zoomOut(); else this.leaf(e.deltaY > 0 ? +1 : -1);
+      if (this._cmp) this._cmpAbandon();
+      else if (this._studyTo > 0) this.zoomOut(); else this.leaf(e.deltaY > 0 ? +1 : -1);
     };
     this._onPointer = (e) => {
       if (!this._active) return;
       stop(e);
+      // ── the compare leaf owns the pointer while it is up ───────────────────
+      // Hover says which print a click will keep — in three places at once, so
+      // no one of them has to carry it: the print comes off the paper, the
+      // other one goes down to 55%, and the caption under it goes to full ink
+      // with a pencil stroke beneath. Clicking anywhere that is NOT a print
+      // does nothing at all. That is the one place in this file where a click
+      // is deliberately inert, and it is because the alternative — falling
+      // through to "turn the page" or "back out" — would answer a question the
+      // player has not answered, with the answer they did not give.
+      if (this._cmp) {
+        if (e.type === 'pointermove') { this._cmpHover(this._cmpAt(e.clientX, e.clientY)); return; }
+        if (e.type !== 'pointerdown') return;
+        e.preventDefault();
+        const k = this._cmpAt(e.clientX, e.clientY);
+        if (k >= 0) this._cmpChoose(k);
+        return;
+      }
       if (e.type === 'pointermove') {
         // Hover only; the pick is cheap (four `samplePage` lookups per
         // photographed row, of which a spread holds at most eight) and it is
@@ -1321,6 +1546,10 @@ export class Journal {
   study(page, row) {
     const p = this._pages[page];
     if (!p?.spec?.rows?.[row]) return;
+    // The compare leaf owns the book while it is up, and it is already framed
+    // at the top of the ladder. Leaning in on something else from under it
+    // would move the page the two prints are being placed on.
+    if (this._cmp) return;
     // Nothing to lean in on mid-turn: `samplePage` reads the leaf that is at
     // rest, and there isn't one while a page is in flight.
     if (this._leafT < 1 || this._seekQueue > 0) return;
@@ -1426,7 +1655,13 @@ export class Journal {
     const lean = Math.min(k, 1);
     const c = clamp01(k - 1);
     root.rotation.x += STUDY_TILT * lean;
-    this._zoomNow = lerp(1, lerp(STUDY_ZOOM, this._closeZ, c), lean);
+    // `mid` is the scale at the end of the FIRST segment. It is `STUDY_ZOOM`
+    // for a print, which is what the lean was authored at, and 1 for the
+    // compare leaf — a whole page is already most of the frame at the spread's
+    // own scale, and leaning in to 2.55x on the way to 1.19x would zoom the
+    // book in and then back out again inside one move.
+    const mid = S.mid ?? STUDY_ZOOM;
+    this._zoomNow = lerp(1, lerp(mid, this._closeZ, c), lean);
     root.scale.multiplyScalar(this._zoomNow);
 
     // What is being centred crossfades from the row to the print across the
@@ -1461,7 +1696,9 @@ export class Journal {
     // follows costs a repaint (2.4 ms) and nothing else. Leaving the lean
     // entirely throws it away again; a second close look at the same row is
     // free, which is the case a player who is comparing two entries hits.
-    if (lean >= 1) this._detailPrepare(S);
+    // `S.row == null` is the compare leaf: a framed rectangle with no print of
+    // its own to swap out. It brings its own two quads — see `_cmpPlace`.
+    if (lean >= 1 && S.row != null) this._detailPrepare(S);
     else this._detailDrop();
 
     if (c > 0 && mesh?.visible) {
@@ -1484,10 +1721,12 @@ export class Journal {
       // One walk of a 20-node tree, only while the close look is up, buys the
       // question not being askable.
       root.updateMatrixWorld(true);
-      this._trackCloseZoom(mesh, S.slot);
-      this._detailShow(S, mesh);
+      this._trackCloseZoom(mesh, S.slot, mid);
+      if (this._cmp) this._cmpPlace(mesh);
+      else this._detailShow(S, mesh);
     } else {
       this._detailHide();
+      if (this._cmpQuad) for (const m of this._cmpQuad) if (m) m.visible = false;
     }
   }
 
@@ -1512,7 +1751,7 @@ export class Journal {
    * corners are read straight off the page — see the note at the call site for
    * the bug that paid for that rule.
    */
-  _trackCloseZoom(mesh, slot) {
+  _trackCloseZoom(mesh, slot, floor = STUDY_ZOOM) {
     const q = this._cq ??= [0, 1, 2, 3].map(() => new THREE.Vector3());
     const hw = slot.w / 2, hh = slot.h / 2;
     const uv = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
@@ -1533,7 +1772,12 @@ export class Journal {
     // mid-turn, a corner behind the lens), not a rate limit — one step is meant
     // to land, and at [0.5, 4] a fresh close look converges on the first frame.
     const step = Math.max(0.5, Math.min(4, want));
-    this._closeZ = Math.max(STUDY_ZOOM,
+    // The FLOOR is the scale the move set out from, not a constant: the close
+    // look must never end up smaller than the lean it came through, and the
+    // compare leaf must be free to settle BELOW that, because a whole page at
+    // 80% of the frame is 1.19x and 2.55 would crop the question off the top of
+    // it. Written as a constant, that is exactly what it did.
+    this._closeZ = Math.max(floor,
       Math.min(CLOSE_ZOOM_MAX, this._zoomNow * step));
   }
 
@@ -1621,21 +1865,46 @@ export class Journal {
   _detailShow(S, mesh) {
     const m = this._detail;
     if (!m || !this._detailUV) return;
-    const U = this._detailUV;
+    if (!this._placeOnPage(m, mesh, this._detailUV, S.verso)) return;
+
+    if (!this._detailHidden) {
+      this._detailHidden = this._detailFor;
+      try { this._pages?.[S.page]?.hidePrint(S.row, true); } catch (e) {
+        if (!this._pageErr) { this._pageErr = true; console.error('[journal] hidePrint failed', e); }
+      }
+    }
+  }
+
+  /**
+   * Lay one quad flat on the live page over UV rect `U`, and return whether it
+   * could be done. Shared by the close look's patch and by the two prints on
+   * the compare leaf; `m.visible` is written either way.
+   *
+   * The size is MEASURED — the world distance between the rectangle's own edge
+   * midpoints — rather than derived from `BOOK.W`, so it is right at any book
+   * scale without this function having to know what that scale is. (Deriving it
+   * was the other option and it is wrong by the root scale, which is 1.10 at
+   * the spread and 9.09 at the close look.)
+   *
+   * `lift` is in metres and `grow` scales the quad about its own centre; the
+   * compare leaf's hover uses both and the close look uses neither.
+   */
+  _placeOnPage(m, mesh, U, verso, lift = 0.0009, grow = 1) {
     const a = this._da ??= new THREE.Vector3();
     const b = this._db ??= new THREE.Vector3();
-    if (!samplePage(mesh, U.u, U.v, this._tmpP, this._tmpQ)) { m.visible = false; return; }
+    if (!samplePage(mesh, U.u, U.v, this._tmpP, this._tmpQ)) { m.visible = false; return false; }
     if (!samplePage(mesh, U.u - U.w / 2, U.v, a) ||
-        !samplePage(mesh, U.u + U.w / 2, U.v, b)) { m.visible = false; return; }
+        !samplePage(mesh, U.u + U.w / 2, U.v, b)) { m.visible = false; return false; }
     const w = a.distanceTo(b);
     if (!samplePage(mesh, U.u, U.v - U.h / 2, a) ||
-        !samplePage(mesh, U.u, U.v + U.h / 2, b)) { m.visible = false; return; }
+        !samplePage(mesh, U.u, U.v + U.h / 2, b)) { m.visible = false; return false; }
     const h = a.distanceTo(b);
 
     m.visible = true;
     m.position.copy(this._tmpP);
     m.quaternion.copy(this._tmpQ);
-    m.scale.set(w, h, 1);
+    m.scale.set(w * grow, h * grow, 1);
+    m.userData.pageW = w;
     // ── A VERSO IS A SHEET THAT HAS BEEN TURNED OVER ─────────────────────────
     // `samplePage` hands back the LEAF's own basis, and the left-hand leaf is
     // bent with p = 1 (`poseJournal`), so `deformPage` writes it a normal of
@@ -1664,20 +1933,14 @@ export class Journal {
     // Turning the material double-sided instead would have put the print back
     // on screen MIRRORED — captured, at `shots/journal/round6/`. See
     // `_detailMesh` for why it is still front-sided.
-    if (S.verso) m.quaternion.multiply(this._flipY ??= new THREE.Quaternion()
+    if (verso) m.quaternion.multiply(this._flipY ??= new THREE.Quaternion()
       .setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
     const n = this._dn ??= new THREE.Vector3();
     n.set(0, 0, 1).applyQuaternion(m.quaternion);
     // The page is 10 degrees off face-on here, so what 0.9 mm costs sideways is
     // 0.9 mm x sin(10) against a print 220 mm wide on screen — 0.07%.
-    m.position.addScaledVector(n, 0.0009);
-
-    if (!this._detailHidden) {
-      this._detailHidden = this._detailFor;
-      try { this._pages?.[S.page]?.hidePrint(S.row, true); } catch (e) {
-        if (!this._pageErr) { this._pageErr = true; console.error('[journal] hidePrint failed', e); }
-      }
-    }
+    m.position.addScaledVector(n, lift);
+    return true;
   }
 
   /**
@@ -1710,8 +1973,19 @@ export class Journal {
 
   /** The quad the patch is drawn on. Built once, kept, emptied when not in use. */
   _detailMesh() {
-    if (this._detail) return this._detail;
-    const m = this._detail = new THREE.Mesh(
+    return this._detail ??= this._printQuad(4);
+  }
+
+  /**
+   * One quad for a print to be composited onto, over the paper.
+   *
+   * `order` is where it sits between the leaf and the flying card. Each quad
+   * gets its OWN material rather than sharing one, because the compare leaf
+   * dims and fades its two independently and a shared material cannot say two
+   * things at once.
+   */
+  _printQuad(order) {
+    const m = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
       // The PAGE's white point and the PAGE's surface, for the reason the
       // flying card carries them (journal_model's `PAPER_GAIN`): this quad sits
@@ -1724,9 +1998,10 @@ export class Journal {
       // occluding anything.
       //
       // It stays FRONT-SIDED, and that is a decision rather than a default.
-      // `DoubleSide` would also have made the verso bug below go away — the
-      // quad would have been visible from behind — and it would have shipped a
-      // MIRRORED photograph, because seeing the back of a quad reverses it.
+      // `DoubleSide` would also have made the verso bug in `_placeOnPage` go
+      // away — the quad would have been visible from behind — and it would have
+      // shipped a MIRRORED photograph, because seeing the back of a quad
+      // reverses it.
       // A print that is absent is a bug somebody reports in a day; a print that
       // is flipped left-for-right is one nobody ever notices. Front-sided, the
       // quad is culled the moment its orientation disagrees with the paper's,
@@ -1740,10 +2015,253 @@ export class Journal {
         transparent: true, depthWrite: false,
       }));
     m.visible = false;
-    m.renderOrder = 4;              // under the flying card, over the leaf
+    m.renderOrder = order;          // under the flying card, over the leaf
     m.frustumCulled = false;
     this.scene.add(m);
     return m;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  The compare leaf — which of these two prints do you keep
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Advance the compare. Called from `update` once the leaf exists, and it is
+   * the only thing driving this ceremony — there is no beat table for it,
+   * because after the book arrives the timing belongs to the player.
+   */
+  _cmpTick(dt) {
+    const C = this._cmp;
+    if (!C.up) {
+      // The leaf has to be at REST before the prints go on it: they are placed
+      // with `samplePage` every frame, and a leaf in flight is not a page.
+      if (this._seekQueue > 0 || this._leafT < 1 || this._at('flyleaf') < 1) return;
+      C.up = true;
+      this._cmpRaise();
+      return;
+    }
+    // The hover eases rather than snapping. A print that jumps 4 mm the instant
+    // the pointer crosses its edge reads as a glitch at the edge, and the
+    // pointer spends most of its time near one.
+    for (let k = 0; k < 2; k++) {
+      const want = C.chosen == null && C.hover === k ? 1 : 0;
+      const step = dt / CMP_HOVER;
+      C.ease[k] = want > C.ease[k]
+        ? Math.min(want, C.ease[k] + step) : Math.max(want, C.ease[k] - step);
+    }
+    if (C.chosen == null) return;
+    C.t += dt;
+    if (C.t >= CMP_SLAP + CMP_HOLD) this._cmpFinish();
+  }
+
+  /** Frame the leaf and build the two print quads. */
+  _cmpRaise() {
+    const C = this._cmp, p = this._pages[C.page];
+    // The compare reuses the close look's framing solve: `_study` with a null
+    // row means "frame this rectangle and composite nothing over a print",
+    // which is exactly what this page needs — the contain-fit, the recentring
+    // and the tilt all come for free and there is one framing solver in the
+    // file rather than two.
+    const frame = p.compareFrameUV();
+    this._study = {
+      page: C.page, row: null, verso: p.spec.verso, mid: 1, ...frame, slot: frame,
+    };
+    this._studyOff?.set(0, 0, 0);
+    this._closeZ = 1;
+    this._zoomTo(2);
+    for (let k = 0; k < 2; k++) {
+      const patch = p.comparePatch(k, C.img[k], k === 0 ? 1 : 0, DETAIL_PX_MAX);
+      if (!patch) continue;
+      const m = (this._cmpQuad ??= [])[k] ??= this._printQuad(4);
+      const tex = new THREE.CanvasTexture(patch.canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = this._maxAniso ?? 1;
+      m.material.map = tex;
+      m.material.emissiveMap = tex;
+      m.material.needsUpdate = true;
+      (this._cmpTex ??= [])[k] = tex;
+      (this._cmpUV ??= [])[k] = patch.uv;
+    }
+    this._cursorTo('');
+  }
+
+  /**
+   * Place both prints on the leaf, with the hover and the slap on top.
+   *
+   * Called from `_applyStudy` with the matrices already refreshed, for the same
+   * reason the close look's patch is placed there: `samplePage` reads world
+   * matrices and one frame of staleness is a visible millimetre off the paper.
+   */
+  _cmpPlace(mesh) {
+    const C = this._cmp;
+    if (!C.up || !this._cmpUV) return;
+    for (let k = 0; k < 2; k++) {
+      const m = this._cmpQuad?.[k], U = this._cmpUV[k];
+      if (!m || !U) continue;
+      const e = C.ease[k];
+      let lift = 0.0009, grow = lerp(1, CMP_GROW, e), dim = lerp(1, CMP_DIM, C.ease[1 - k]);
+      let fade = 1;
+      if (C.chosen != null) {
+        const t = clamp01(C.t / CMP_SLAP);
+        if (C.chosen === k) {
+          // The one that is kept goes DOWN onto the paper with the ceremony's
+          // own squash — the same 7.5% over the tail of the move that
+          // `_flyPhoto` lands the awarded print with, so the two beats are one
+          // gesture rather than two dialects.
+          const hit = clamp01((t - 0.55) / 0.45);
+          const sq = Math.sin(Math.PI * hit) * 0.075;
+          grow = lerp(CMP_GROW, 1, easeOut(t));
+          m.scale.z = 1;
+          lift = lerp(0.0009 + this._cmpLift(m), 0.0009, easeOut(t));
+          dim = 1;
+          this._cmpSquash = sq;
+        } else {
+          // And the one that is not slides off the page and goes.
+          fade = 1 - easeInOut(t);
+          dim = CMP_DIM;
+        }
+      } else {
+        lift = 0.0009 + this._cmpLift(m) * e;
+      }
+      if (!this._placeOnPage(m, mesh, U, this._study.verso, lift, grow)) continue;
+      if (C.chosen === k) {
+        const sq = this._cmpSquash ?? 0;
+        m.scale.x *= 1 + sq;
+        m.scale.y *= 1 - sq;
+      }
+      if (C.chosen != null && C.chosen !== k) {
+        // Straight down the page, not toward the camera: it is being taken off
+        // the paper, not thrown at the reader.
+        const d = this._cmpDown ??= new THREE.Vector3();
+        d.set(0, -1, 0).applyQuaternion(m.quaternion);
+        m.position.addScaledVector(d, (1 - fade) * (m.userData.pageW ?? 0) * 0.45);
+      }
+      m.material.color.setScalar(PAPER_GAIN * dim);
+      m.material.opacity = fade;
+      m.visible = m.visible && fade > 0.01;
+    }
+  }
+
+  /**
+   * How far a hovered print comes off the paper, in metres.
+   *
+   * A FRACTION of the print's own measured width rather than a distance,
+   * because the fit has put the book at whatever scale this window needs
+   * (9.09x at 1600x900, 7.93x on a phone) and a fixed 4 mm would be a different
+   * gesture on each. `pageW` is written by `_placeOnPage` on the frame before,
+   * so the first frame of a hover lifts by nothing, which nobody can see.
+   */
+  _cmpLift(m) { return (m.userData.pageW ?? 0) * CMP_LIFT; }
+
+  /** Which of the two prints is under a screen point, or -1. */
+  _cmpAt(clientX, clientY) {
+    const C = this._cmp;
+    if (!C?.up || C.chosen != null || this._studyK < 0.5) return -1;
+    const p = this._pages[C.page];
+    const mesh = p.spec.verso ? this._J.pageLeft : this._J.pageRight;
+    if (!mesh?.visible) return -1;
+    const px = (clientX / Math.max(1, window.innerWidth)) * 2 - 1;
+    const py = -((clientY / Math.max(1, window.innerHeight)) * 2 - 1);
+    for (let k = 0; k < 2; k++) {
+      if (this._inSlot(mesh, p.compareSlotUV(k), px, py)) return k;
+    }
+    return -1;
+  }
+
+  /** Hover, which repaints the leaf only when it CHANGES. */
+  _cmpHover(k) {
+    const C = this._cmp;
+    if (!C || C.chosen != null || C.hover === k) return;
+    C.hover = k;
+    const p = this._pages[C.page];
+    if (p?.spec?.compare) {
+      p.spec.compare.hover = k;
+      try { p.paint(); } catch (e) {
+        if (!this._pageErr) { this._pageErr = true; console.error('[journal] compare repaint failed', e); }
+      }
+    }
+    this._cursorTo(k >= 0 ? 'pointer' : '');
+  }
+
+  /**
+   * Keep print `k`. 0 is the one already in the book, 1 is the new one.
+   *
+   * The STORE is written here and the row's decoded image with it, rather than
+   * at the end of the beat: `hunt.setPhoto` is the housekeeping door its own
+   * header describes, it is synchronous, and a player who shuts the book
+   * mid-slap has still made their choice. Choosing the incumbent writes
+   * nothing at all — and still slaps, because the request asked for the beat on
+   * whichever one is kept and because a choice that makes no sound reads as a
+   * click that was not registered.
+   */
+  _cmpChoose(k) {
+    const C = this._cmp;
+    if (!C?.up || C.chosen != null) return;
+    C.chosen = k;
+    C.t = 0;
+    this._cursorTo('');
+    if (k === 1) {
+      hunt.setPhoto(C.id, C.url);
+      const page = this._pages[C.seat.page];
+      const row = page?.spec?.rows?.[C.seat.row];
+      if (row) {
+        row.photo = C.img[1];
+        row.tapeT = 1;
+        try { page.paint(); } catch (e) {
+          if (!this._pageErr) { this._pageErr = true; console.error('[journal] page paint failed', e); }
+        }
+      }
+    }
+    this._cue('slap');
+  }
+
+  /**
+   * Leave the compare without choosing — which KEEPS the one in the book.
+   *
+   * That is what the line at the foot of the leaf says, and it is the only
+   * reading that can be right: the player has not said the new photograph is
+   * better, and the book already holds the other one. Nothing is written.
+   */
+  _cmpAbandon() {
+    if (!this._cmp) return;
+    this._cmpFinish();
+  }
+
+  /** Put the leaf back, drop the prints, and leaf home to the entry. */
+  _cmpFinish() {
+    const C = this._cmp;
+    if (!C) return;
+    this._backTo = Math.max(0, Math.ceil(C.seat.page / 2));
+    this._cmpDrop();
+    this._zoomTo(0);
+  }
+
+  /** Take the compare off the book entirely. Safe to call at any time. */
+  _cmpDrop() {
+    const C = this._cmp;
+    this._cmp = null;
+    this._cmpSquash = 0;
+    if (C) {
+      const p = this._pages?.[C.page];
+      if (p?.spec) {
+        p.spec.compare = null;
+        try { p.paint(); } catch { /* torn down */ }
+      }
+    }
+    for (let k = 0; k < 2; k++) {
+      const m = this._cmpQuad?.[k];
+      if (m) {
+        m.visible = false;
+        m.material.map = null;
+        m.material.emissiveMap = null;
+        m.material.color.setScalar(PAPER_GAIN);
+        m.material.opacity = 1;
+        m.material.needsUpdate = true;
+      }
+      this._cmpTex?.[k]?.dispose();
+      if (this._cmpTex) this._cmpTex[k] = null;
+      if (this._cmpUV) this._cmpUV[k] = null;
+    }
   }
 
   /**
@@ -1860,6 +2378,8 @@ export class Journal {
     // would leave a half-drawn pencil line on a page nobody is looking at.
     if (this._script?.hasAward && !this._taped && this._t < (this._script.end + (this._seekPad ?? 0)))
       return;
+    // …and so does the compare leaf, and so does the walk home from it.
+    if (this._cmp || this._backTo != null) return;
     const to = Math.max(0, Math.min(this._sheets - 1, Math.round(this._pose.leaf) + dir));
     if (to === Math.round(this._pose.leaf)) return;
     this._leafFrom = this._pose.leaf;
@@ -1882,6 +2402,12 @@ export class Journal {
     this._detail?.geometry.dispose();
     this._detail?.material.dispose();
     this._detail = null;
+    this._cmpDrop();
+    for (const m of this._cmpQuad ?? []) {
+      m?.geometry.dispose();
+      m?.material.dispose();
+    }
+    this._cmpQuad = null;
     this._unsub?.();
     for (const p of this._pages) p.dispose();
     this._pages = [];

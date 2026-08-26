@@ -77,6 +77,52 @@ const ROW_H = 252;
 const SLOT_W = 252;
 const SLOT_H = 190;
 
+// ── the two slots on the compare leaf ────────────────────────────────────────
+//
+// When a subject that is already crossed off is photographed again, the book
+// opens on a blank leaf with the print that is IN the book beside the one just
+// taken, and the player keeps one of them. See `Journal._armCompare`.
+//
+// The width falls out of the page and is not a taste: the text block is
+// 1024 - 78 - 112 = 834 px across, and two prints side by side with a thumb's
+// width of paper between them is 390 + 54 + 390. The height then falls out of
+// the PRINT rather than out of the page — `_paste` takes 32 px of card and
+// border off the width and 46 off the height, so holding the emulsion at the
+// 220:126 the row slots use gives 269. Anything else and the two prints on the
+// compare leaf are a different shape from the one in the checklist, which is
+// the one thing this page must not do: the player is comparing them.
+//
+// Side by side rather than one above the other because that is what the request
+// asked for, and it is also the right answer — two landscape prints stacked put
+// 500 px of paper between the things being compared, and a decision between two
+// images is made by looking back and forth along ONE line.
+// And the BLOCK is packed short and wide, high up the leaf, which is the one
+// number here that was arrived at by measuring rather than by reasoning. The
+// framing is a contain-fit at 80% (`Journal._trackCloseZoom`), so on a 16:9
+// window a tall rectangle binds on the HEIGHT and everything in it shrinks to
+// fit — and a portrait A5 page is as tall a rectangle as this book has. Framing
+// the whole text block put each print at 200 CSS px on a 1600 px window, which
+// is smaller than the thumbnail in the checklist and useless for the one
+// judgement this page exists to support. Measured, at 1600 x 900:
+//
+//     the whole leaf, M_TOP to M_BOT (h 1276)     201 px a print
+//     heading + question + prints + captions + Esc (h 625)    449 px a print
+//     the two prints and nothing else   (h 429)   598 px a print — and no
+//                                                 question, no way out written
+//                                                 down, so: no.
+//
+// 625 is the tightest block that still carries the question and the escape
+// hatch, and it triples the thing the player came here to look at. Everything
+// below it is bare paper, which is what a leaf out of the back of a notebook
+// looks like anyway.
+const CMP_W = 390;
+const CMP_H = 269;
+const CMP_GAP = 54;
+const CMP_TOP = 288;
+const CMP_CAPS = CMP_TOP + CMP_H + 68;      // caption baseline
+const CMP_ESC = CMP_CAPS + 66;              // the way out, right under it
+const CMP_BAND = { y: 96, h: 625 };         // what the camera frames
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Paper
 // ─────────────────────────────────────────────────────────────────────────────
@@ -421,6 +467,40 @@ export class JournalPage {
     });
   }
 
+  /**
+   * Slot `k` of the compare leaf — 0 is the print in the book, 1 is the new one.
+   *
+   * Left is the incumbent and right is the challenger, in reading order, and
+   * that is deliberate: this leaf is read left to right like every other page
+   * in the book, so "what you have" comes before "what you could have". The
+   * captions say which is which in words — see `_paintCompare` — because a
+   * convention nobody was told is not an answer to "which is which".
+   */
+  compareSlot(k) {
+    return {
+      x: this._x0 + (k ? CMP_W + CMP_GAP : 0),
+      y: CMP_TOP,
+      w: CMP_W,
+      h: CMP_H,
+    };
+  }
+
+  compareSlotUV(k) { return this._toUV(this.compareSlot(k)); }
+
+  /**
+   * What the camera frames while the compare leaf is up: the whole text block.
+   *
+   * NOT the pair of prints. The heading says what has happened, the captions
+   * say which print is which and the line at the foot says what Escape does —
+   * a framing that shows only the two photographs would put every one of those
+   * off the screen, and this is the one page in the book that asks a question.
+   */
+  compareFrameUV() {
+    return this._toUV({
+      x: this._x0, y: CMP_BAND.y, w: this._x1 - this._x0, h: CMP_BAND.h,
+    });
+  }
+
   /** A canvas-pixel rect as a page-UV centre and size. See `slotUV`. */
   _toUV(r) {
     const cu = (r.x + r.w / 2) / PAGE_W;
@@ -444,7 +524,12 @@ export class JournalPage {
 
     this._gutterShade(g);
 
-    if (s.kind === 'title') this._paintTitle(g);
+    // `compare` is a transient overlay on whatever leaf is carrying it, not a
+    // fourth `kind`: the leaf goes back to being itself the moment the choice
+    // is made, so the book has no page a player can leaf to and find two
+    // photographs of somebody else's decision. See `Journal._armCompare`.
+    if (s.compare) this._paintCompare(g);
+    else if (s.kind === 'title') this._paintTitle(g);
     else if (s.kind === 'notes') this._paintNotes(g);
     else this._paintList(g);
 
@@ -901,22 +986,50 @@ export class JournalPage {
   printPatch(i, maxPx = 4.7) {
     const row = this.spec.rows?.[i];
     if (!row || !row.done || !row.photo) return null;
-    const slot = this.slotRect(i);
+    const seed = this.spec.seed * 31 + i * 7 + 1;
+    return this._patch(this.slotRect(i), row.photo,
+      (rng(seed)() - 0.5) * 0.055, seed, row.tapeT ?? 1, maxPx);
+  }
+
+  /**
+   * The same trick for one of the two prints on the compare leaf.
+   *
+   * `tapeT` is the caller's, and it carries the whole difference between the
+   * two: the print that is already in the book is TAPED DOWN and the one just
+   * taken is a loose print lying on the paper. That reads before any caption
+   * does, and it is the truth rather than a decoration — one of them is stuck
+   * in a book and the other is not yet.
+   */
+  comparePatch(k, img, tapeT, maxPx = 4.7) {
+    if (!img) return null;
+    const seed = this.spec.seed * 31 + 900 + k * 7;
+    return this._patch(this.compareSlot(k), img,
+      (rng(seed)() - 0.5) * 0.055, seed, tapeT, maxPx);
+  }
+
+  /**
+   * One print, redrawn on its own canvas at whatever resolution its source can
+   * pay for. Shared by `printPatch` and `comparePatch` — the two differ only in
+   * which rectangle they hand in.
+   */
+  _patch(slot, img, tilt, seed, tapeT, maxPx) {
     // The tape overhangs the slot, and so does the shadow. This is the same
     // bleed box `tapeAt` blits, for the same reason: it is where the ink is.
     const rect = {
       x: Math.max(0, slot.x - 70), y: Math.max(0, slot.y - 40),
       w: slot.w + 140, h: slot.h + 80,
     };
-    // The emulsion is `cardW - 20` = 220 page pixels wide. Past the point where
-    // one source pixel lands on one canvas pixel there is nothing left to
-    // recover — upsampling in a 2D canvas and upsampling on the GPU are the
-    // same bilinear filter — so the scale is the SOURCE's, capped. 4.7 is what
-    // a 1024 px photo asks for (1024 / 220), which is where the cap is set; it
-    // is a ceiling and not a target, and a 512 px store would come out at 2.33
-    // and a 1825 x 1257 canvas would be a 913 x 629 one.
+    // The emulsion is `cardW - 20` = 220 page pixels wide on a row slot. Past
+    // the point where one source pixel lands on one canvas pixel there is
+    // nothing left to recover — upsampling in a 2D canvas and upsampling on the
+    // GPU are the same bilinear filter — so the scale is the SOURCE's, capped.
+    // 4.7 is what a 1024 px photo asks for (1024 / 220), which is where the cap
+    // is set; it is a ceiling and not a target, and a 512 px store would come
+    // out at 2.33 and a 1825 x 1257 canvas would be a 913 x 629 one. A compare
+    // slot's emulsion is 358 px, so the same photo asks for 2.86 there and the
+    // cap is never the binding constraint on that leaf.
     const imgW = slot.w - 12 - 20;
-    const px = Math.max(1, Math.min(maxPx, (row.photo.width ?? imgW) / imgW));
+    const px = Math.max(1, Math.min(maxPx, (img.width ?? imgW) / imgW));
 
     const cv = document.createElement('canvas');
     cv.width = Math.round(rect.w * px);
@@ -925,16 +1038,14 @@ export class JournalPage {
     // Page coordinates in, device pixels out. Everything below is written in
     // the page's own numbers, exactly as `_paintRow` writes them.
     g.setTransform(px, 0, 0, px, -rect.x * px, -rect.y * px);
-    const seed = this.spec.seed * 31 + i * 7 + 1;
-    const tilt = (rng(seed)() - 0.5) * 0.055;
-    this._paste(g, slot, row.photo, tilt, seed, row.tapeT ?? 1, px);
+    this._paste(g, slot, img, tilt, seed, tapeT, px);
     g.setTransform(1, 0, 0, 1, 0, 0);
 
     return {
       canvas: cv,
       uv: this._toUV(rect),
       px: +px.toFixed(3),
-      src: row.photo.width ?? 0,
+      src: img.width ?? 0,
       dst: Math.round(imgW * px),
     };
   }
@@ -1056,6 +1167,104 @@ export class JournalPage {
   }
 
   // ── the notes leaf ────────────────────────────────────────────────────────
+
+  /**
+   * The leaf that asks which print to keep.
+   *
+   * `spec.compare` is `{ subject, hover }` — `hover` is 0, 1 or -1 and is the
+   * ONLY thing on this page that moves, which is what makes a repaint on a
+   * hover change affordable (~2.5 ms, and only when the pointer crosses a
+   * boundary rather than every frame it is inside one).
+   *
+   * ── what is painted here and what is not ──────────────────────────────────
+   * The two photographs are NOT. They are `comparePatch` canvases composited
+   * over this leaf as quads, the same way the close look's print is, because
+   * they are the thing the player is being asked to look at and the page
+   * texture holds 358 px of a 1024 px photo. What IS painted is everything that
+   * has to sit UNDER them: the question, the two captions, the empty slot the
+   * loose print is lying in, and the line at the foot that says what Escape
+   * does. That last one is the whole of this page's escape hatch — the journal
+   * has no chrome and this is the only screen in it that can strand a player.
+   *
+   * The hover mark is a pencil bracket UNDER the caption of the print the
+   * pointer is on, not a box around the print: a box would be a second
+   * rectangle a few pixels outside a photograph that already has a white
+   * border and a drop shadow, which reads as a rendering fault. A pencil
+   * stroke under a word reads as somebody having made up their mind.
+   */
+  _paintCompare(g) {
+    const c = this.spec.compare;
+    const x0 = this._x0, x1 = this._x1;
+    g.textAlign = 'left';
+    g.textBaseline = 'alphabetic';
+
+    g.fillStyle = INK;
+    g.font = brush(62);
+    g.fillText('Two of these', x0, M_TOP + 62);
+
+    // One line, and it names the subject rather than saying "this photo": the
+    // player pressed the shutter at something, and being told WHAT the book
+    // already has is half the answer to whether they want to swap it.
+    g.font = hand(42);
+    g.fillStyle = INK_SOFT;
+    g.fillText(`Keep the better photo of ${c.subject ?? 'it'}.`, x0, M_TOP + 140);
+
+    // The two empty slots, in the same hand as an un-photographed row: open
+    // corners rather than a closed box. Under the taped print it is invisible;
+    // under the loose one it says the print is lying somewhere, not stuck.
+    for (let k = 0; k < 2; k++) {
+      const s = this.compareSlot(k);
+      const seed = this.spec.seed * 31 + 900 + k * 7;
+      const tilt = (rng(seed)() - 0.5) * 0.055;
+      g.save();
+      g.translate(s.x + s.w / 2, s.y + s.h / 2);
+      g.rotate(tilt);
+      // Inset far enough to stay UNDER the card. `_paste` draws a card
+      // `slot.w - 12` by `slot.h - 18`, so marks at the row slot's own 8/6
+      // inset stick out past the bottom corners of a print that is covering
+      // them and read as dirt on the paper. 16/18 is inside the card on both
+      // axes with room for the print's own crookedness.
+      const hw = s.w / 2 - 16, hh = s.h / 2 - 18, leg = 62;
+      const ink = { width: 3.4, alpha: 0.34, wobble: 1.5, colour: '#6a533a', passes: 2 };
+      let n = 0;
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        inkLine(g, sx * hw, sy * hh - sy * leg, sx * hw, sy * hh + sy * 2,
+          { ...ink, seed: seed + 60 + n });
+        inkLine(g, sx * hw + sx * 2, sy * hh, sx * hw - sx * leg, sy * hh,
+          { ...ink, seed: seed + 70 + n });
+        n++;
+      }
+      g.restore();
+    }
+
+    // The captions. Centred under each slot, and the hovered one goes to full
+    // ink with a stroke under it — so the page itself answers "which one am I
+    // about to keep" without the player having to trust a 3D lift.
+    const caps = ['in the book', 'just taken'];
+    g.textAlign = 'center';
+    for (let k = 0; k < 2; k++) {
+      const s = this.compareSlot(k);
+      const cx = s.x + s.w / 2, y = CMP_CAPS;
+      const on = c.hover === k;
+      g.font = hand(on ? 46 : 42);
+      g.fillStyle = on ? INK : 'rgba(74,58,44,0.42)';
+      g.fillText(caps[k], cx, y);
+      if (on) {
+        const w = g.measureText(caps[k]).width;
+        inkLine(g, cx - w / 2 - 10, y + 18, cx + w / 2 + 10, y + 20,
+          { seed: 95 + k, width: 3.4, alpha: 0.5, wobble: 1.6, colour: GRAPHITE, passes: 2 });
+      }
+    }
+
+    // The way out, in the hand, at the foot of the page. It says what Escape
+    // KEEPS rather than that it cancels: a player who has just taken a photo
+    // they are not sure about needs to know that walking away is safe, and
+    // "cancel" does not tell them which of the two survives it.
+    g.textAlign = 'center';
+    g.font = hand(36);
+    g.fillStyle = 'rgba(74,58,44,0.40)';
+    g.fillText('Esc — keep the one in the book', (x0 + x1) / 2, CMP_ESC);
+  }
 
   _paintNotes(g) {
     const x0 = this._x0, x1 = this._x1;

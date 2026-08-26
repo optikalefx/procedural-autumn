@@ -37,13 +37,15 @@ export class Journal {
   get sheets()                  // NEW — leaf count, for harnesses
   get studying()                // NEW (r4) — leaning in on one entry
   onClose = null                // NEW — integrator hook, fired once by close()
-  open({ award = null } = {})   // award: { id, photoDataURL } | null
+  open({ award = null } = {})   // award: { id, photoDataURL | photo,
+                                //           replace? } | null    (r6)
   close(); toggle()
   study(page, row); unstudy()   // NEW (r4) — see §13.1. The pointer drives
                                 //   these itself; an integrator needs neither.
   studyClose(); zoomOut()       // NEW (r5) — the third zoom level, and the
                                 //   one-level-at-a-time way back out. §14.
   get closeUp(); get zoomLevel() // NEW (r5) — 0 spread, 1 row, 2 print
+  get comparing()               // NEW (r6) — the "which of these two" leaf
   update(dt)                    // REAL seconds
   render(renderer)              // straight after postfx.render(dt)
   dispose()
@@ -225,6 +227,16 @@ see §9.
    ```
    It is safe to call `hunt.award(id, photo)` yourself first; the journal
    re-arms the row either way so the pencil still animates.
+   **And the other half of that answer (r6):** when `hunt.award` returns FALSE
+   the subject is already crossed off, and instead of nothing happening the
+   book can offer to swap the print:
+   ```js
+   journal.open({ award: { id, photo: thumb, replace: true } });
+   ```
+   `photo` may be the shutter's own canvas — the journal re-encodes it
+   synchronously inside `open()`, before its first await, precisely because
+   that canvas is a reused scratch buffer. See §15.2 for the exact three lines
+   in `hud_photo`.
 6. **Gate the HUD** on `journal.wantsInput` if you want the driving chrome to go
    away while the book is open. Nothing breaks if you do not — the journal's
    listeners are capture-phase and already take the events — but the HUD stays
@@ -1105,3 +1117,132 @@ for the baked copy within 60 ms of touchdown. Filmed at 90 ms per frame
 (`FILM=1 FILM_T0=1700 FILM_DT=90`), the card is on screen mid-flight over the
 deer row and lands correctly. The ceremony is signed off and the artifact is one
 tumbling card ~50 px across; it is written down rather than fixed.
+
+### 15.2 Photographing something the book already has
+
+*"we also need some way to replace a photo. If you take a photo that could go in
+the book, but already is, we should pull up the photo in a preview frame next to
+the old one and ask if they want it replaced. The UI can be a blank journal page
+with both photos tape side by side. and you can hover and then click the one to
+keep. Then that one slaps."*
+
+Built as asked. `hunt.award` returning false — which is how the shutter already
+knows there is nothing to do — now opens the book on a blank leaf with the two
+prints side by side instead of doing nothing.
+
+**The leaf is borrowed, not built.** `spec.compare` is a transient overlay that
+`JournalPage.paint()` draws instead of the Notes page, and it is taken off again
+by `_cmpDrop` — on the choice, on Escape, on `close()` and on the next `open()`.
+Adding a real leaf for it would change `sheets`, and `sheets` sets the fore
+edge, the stack split and the leaf-turn arithmetic for every journal in the game
+including the one lying on the camp table — a permanent change to a signed-off
+object to carry a page that exists for four seconds every few sessions.
+
+**Which is which, three times over.** The request said hover then click, and
+that the hover has to do real work, so it does three things at once and no one
+of them is load-bearing on its own:
+
+| | in the book | just taken |
+|---|---|---|
+| always | **taped down**, two crooked strips | a loose print lying on the paper |
+| always | caption "in the book" | caption "just taken" |
+| hovered | comes 6% of its own width off the page, grows 3.5%, caption goes to full ink with a pencil stroke under it | the same |
+| not hovered | falls to 55% while the other is up | the same |
+
+The tape is the half that is true rather than decorative: one of these prints is
+stuck in a book and the other is not yet. `CMP_LIFT` is a fraction of the
+print's own measured width rather than a distance in metres, because the
+framing is solved per window and a fixed 4 mm would be a different gesture on
+each one.
+
+**Escape keeps the one in the book, and the page says so** — a pencil line at
+the foot reading `Esc — keep the one in the book`. Not "cancel": a player who
+has just taken a photograph they are unsure about needs to know which of the two
+survives walking away, and "cancel" does not tell them. Every key that would
+otherwise move the book (Escape, J, Enter, both page keys, space) and a wheel
+detent all do the same thing, and so does shutting the book. A click that is not
+on a print does **nothing at all** — the one deliberately inert click in this
+file, because the alternatives (turn the page, back out) would answer an
+unanswered question with the answer the player did not give.
+
+**The slap fires on whichever print is kept, including the incumbent.** Choosing
+the one already in the book writes nothing to the store and still plays the
+beat, because the request asked for it on the chosen print and because a choice
+that makes no sound reads as a click that did not register. The squash is the
+ceremony's own — 7.5% over the tail of the move, the number `_flyPhoto` lands
+the awarded print with — so the two are one gesture rather than two dialects.
+
+**The framing, and the number that was measured.** The compare reuses the close
+look's contain-fit by handing `_study` a rectangle with a null row. That
+immediately exposed two things:
+
+* `_trackCloseZoom` clamped its solve to a FLOOR of `STUDY_ZOOM` (2.55), which
+  is right for a print — the close look must never end up wider than the lean it
+  came through — and wrong for a page: a whole A5 leaf at 80% of a 1600 x 900
+  frame is **1.19x**, so the clamp cropped the question off the top of the leaf.
+  The floor is now the scale the move set out from, which is 2.55 for a print
+  and 1 for this leaf.
+* a portrait page on a landscape screen binds on its HEIGHT, and everything on
+  it shrinks accordingly. Measured at 1600 x 900, per print:
+
+  | framed rectangle | a print, on screen |
+  |---|---|
+  | the whole text block, `M_TOP` to `M_BOT` (h 1276) | 201 px |
+  | heading + question + prints + captions + Esc (h 625) | **449 px** |
+  | the two prints alone (h 429) | 598 px — and no question, no way out |
+
+  201 px is smaller than the thumbnail in the checklist, which is useless for
+  the one judgement the page exists for. So the block is packed short and wide
+  at the top of the leaf and the rest is bare paper, which is what a leaf out of
+  the back of a notebook looks like anyway.
+
+**Store.** `hunt.setPhoto(id, url)` and nothing else — the door its own header
+describes as "the housekeeping after the moment". **`src/game/hunt_store.js` was
+not touched.** Two cases are handled without asking: an id with no stored
+photograph at all (crossed off with no picture, or the picture evicted by the
+quota ladder) skips the question and just takes the new one, because there is
+nothing to compare against; an id that is not on the sheet falls through to a
+plain open.
+
+**What the integrator wires**, in `src/ui/hud_photo.js` — three lines, and the
+existing "everything found is ticked, only the first NEW one opens the book"
+logic is untouched:
+
+```js
+      let award = null, again = null;
+      for (const id of detectSubjects(this.ctx)) {
+        if (hunt.award(id, thumb)) { if (!award) award = { id, photoDataURL: hunt.photoFor(id) }; }
+        // Already crossed off: offer the swap instead of doing nothing.
+        else if (!again) again = { id, photo: thumb, replace: true };
+      }
+      if (award ?? again) this.hud.openJournal(award ?? again);
+```
+
+An award still wins over a replace when one frame holds both — a new deer at an
+already-photographed waterfall opens the ceremony, not the question. No new
+import: `thumb` is the canvas that line already has, and the journal re-encodes
+it. `HUD.js` needs nothing: `openJournal(award)` passes the object straight
+through and `replace` rides on it.
+
+Verified end to end with `tools/_scratch/_jreplace.mjs`, which fires the real
+shutter TWICE at two vantages of the same waterfall (with a reload between, or
+`hunt.award` swallows the second) so both prints are real photographs of the
+same subject and telling them apart is a genuine test:
+
+| | stored afterwards | leaf | Notes leaf handed back |
+|---|---|---|---|
+| keep the new one | B | walks home to 2 | yes |
+| keep the one in the book | A, unchanged | walks home to 2 | yes |
+| Escape | A, unchanged | walks home to 2 | yes |
+| `CANVAS=1` (the shutter's real call shape) | B, re-encoded | 2 | yes |
+
+Plates: `shots/journal/round6/r0_compare.png`, `r1_hover_old.png`,
+`r2_hover_new.png`, `r3_slap.png`, `r4_swapped.png` — the last one is the
+checklist page after, with the new print taped into the waterfall's row.
+
+**One thing this exposed and did not fix.** `leaf()` clamps to `sheets - 1`, so
+the Notes leaf at the back of the book cannot be reached by turning pages at
+all — the compare gets there through the ceremony's seek, which is not clamped.
+That is why a borrowed Notes leaf is safe to borrow, and it is also why nobody
+has ever seen the Notes page. It is one character to fix and it is a change to
+what the book does, so it is written down here rather than slipped in.
