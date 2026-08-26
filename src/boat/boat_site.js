@@ -113,6 +113,29 @@ export const RIVER_KIND = 'kayak';
 // "how much continuous channel actually lies downstream" and does not separate
 // them at all (p50 19.5 m on good reaches, 20.5 m on dead ends), so a stricter
 // threshold buys nothing and costs real launches.
+//
+// ── WHY 5 AND NOT THE HULL'S BEAM ────────────────────────────────────────────
+//
+// The obvious floor is "wide enough for the boat", i.e. the kayak's 0.60 m
+// beam. It is the wrong one, because BoatPhysics has no width test at all: the
+// hull is integrated as a POINT and may go anywhere with water under it, so
+// nothing here gates passage, only launching. A beam-width floor would let the
+// player put a 4.2 m boat into a channel it cannot turn around in — and since
+// the physics is a point while the MODEL is four metres of drawn hull, the
+// first sweep stroke would swing the bow visibly through the bank.
+//
+// So the floor is the hull's LENGTH plus a little, not its beam: room to turn
+// the boat around is the honest minimum for a craft you can paddle upstream.
+//
+// It costs almost nothing either way, which is the real reason not to agonise.
+// Measured on seed 20262018 (the seed the game boots), n = 1112 riverbank
+// points, share accepted by floor:
+//
+//   0.60 m (beam) 99.4%   ·   4.2 m (hull) 98.9%   ·   5 m 98.6%   ·   8 m 96.6%
+//
+// Dropping to the beam buys eight tenths of a point of riverbank. What limits
+// where a kayak can go on this map is depth and how far the reach runs, never
+// width.
 export const RIVER_MIN_WIDTH = 5;
 
 // Turbulence, 0..1 off the flow field — steep, pinched or fast water. Also a
