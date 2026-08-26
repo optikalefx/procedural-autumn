@@ -73,7 +73,9 @@ import * as THREE from 'three';
 import { clamp, clamp01, lerp, smoothstep, mulberry32 } from '../core/MathUtils.js';
 import { buildEnvMap } from '../vehicle/model_kit.js';
 import { journalFontsReady } from './journal_fonts.js';
-import { JournalPage, ROWS_PER_PAGE, loadPhoto, disposePaperCache } from './journal_page.js';
+import {
+  JournalPage, ROWS_PER_PAGE, loadPhoto, forgetPhoto, disposePaperCache,
+} from './journal_page.js';
 import {
   BOOK, buildJournal, poseJournal, setJournalPages, samplePage, disposeJournalMaterials,
   PAPER_GAIN,
@@ -794,6 +796,13 @@ export class Journal {
    */
   open({ award = null } = {}) {
     if (this._active && !this._closing) return;
+    // Which OPENING this is. `_armAward` and `_armCompare` are promises — they
+    // wait on the font load, the store and a photo decode — and a book that is
+    // shut and reopened before one of them lands would otherwise have the old
+    // session's answer written into the new one: `_awardLeaf` from an award
+    // that is over (which queues page turns to a spread nobody asked for), and
+    // `_cmp` onto a book with no comparison to make.
+    this._gen = (this._gen ?? 0) + 1;
     this._active = true;
     this._visible = true;
     this._closing = false;
@@ -848,12 +857,14 @@ export class Journal {
       this._storeDirty = false;
       this._prep.then(() => this._decorate()).catch(() => {});
     }
-    this._prep.then(() => (a?.replace ? this._armCompare(a) : this._armAward(a)))
+    const gen = this._gen;
+    this._prep.then(() => (a?.replace ? this._armCompare(a, gen) : this._armAward(a, gen)))
       .catch(() => {});
     this._script = this._makeScript(a);
   }
 
-  async _armAward(award) {
+  async _armAward(award, gen) {
+    if (gen != null && gen !== this._gen) return;
     if (!award?.id) { this._seatOf = null; return; }
     const seat = this._seat?.get(award.id);
     this._seatOf = seat ?? null;
@@ -870,12 +881,20 @@ export class Journal {
     row.done = true;
     row.pending = true;                 // painted un-struck; the script strikes it
     row.photo = await loadPhoto(award.photoDataURL ?? hunt.photoFor(award.id));
+    if (gen != null && gen !== this._gen) return;
     for (const p of this._pages) if (p.spec.progress != null) p.spec.progress = this._progressLine();
-    page.paint();
-    this._drawCard(row.photo);
-    // The spread the award lives on. Page p is on spread ceil(p/2) — see
-    // journal_page.js: page 0 is alone on the right of the first spread.
+    // The spread the award lives on, BEFORE the paint. Page p is on spread
+    // ceil(p/2) — see journal_page.js: page 0 is alone on the right of the
+    // first spread. It is assigned first because it is what un-gates the clock
+    // (see `update`), and a throw below it would otherwise hold the ceremony at
+    // the top of the rise for ever with the rejection swallowed by `open`'s
+    // `.catch`. That is the difference between a missing print and a book that
+    // never finishes opening.
     this._awardLeaf = Math.ceil(seat.page / 2);
+    try { page.paint(); } catch (e) {
+      if (!this._pageErr) { this._pageErr = true; console.error('[journal] page paint failed', e); }
+    }
+    this._drawCard(row.photo);
   }
 
   /**
@@ -897,7 +916,8 @@ export class Journal {
    * falls back to opening the book normally. `_awardLeaf` still has to be set
    * either way: it is what releases the clock.
    */
-  async _armCompare(a) {
+  async _armCompare(a, gen) {
+    if (gen != null && gen !== this._gen) return;
     const seat = this._seat?.get(a.id);
     const leaf = this._pages.findIndex((p) => p.spec.kind === 'notes');
     if (!seat || leaf < 0 || !a.photoDataURL) {
@@ -908,18 +928,23 @@ export class Journal {
     const [current, incoming] = await Promise.all([
       loadPhoto(hunt.photoFor(a.id)), loadPhoto(a.photoDataURL),
     ]);
+    // The book may have been shut and reopened while those decoded. Give the
+    // candidate's decode back before dropping it — see `_cmpDrop`.
+    if (gen != null && gen !== this._gen) { forgetPhoto(a.photoDataURL); return; }
     // Nothing to compare AGAINST is not a comparison. The line was crossed off
     // with no picture, or the store evicted it to make room (`hunt_store`'s
     // ladder, rung 2) — in which case the honest thing is to just take the new
     // photograph, which is what the player was trying to do.
     if (!incoming || !current) {
+      this._awardLeaf = Math.ceil(seat.page / 2);
       if (incoming) {
         hunt.setPhoto(a.id, a.photoDataURL);
         const row = this._pages[seat.page].spec.rows[seat.row];
         row.photo = incoming;
-        this._pages[seat.page].paint();
+        try { this._pages[seat.page].paint(); } catch (e) {
+          if (!this._pageErr) { this._pageErr = true; console.error('[journal] page paint failed', e); }
+        }
       }
-      this._awardLeaf = Math.ceil(seat.page / 2);
       return;
     }
     const page = this._pages[leaf];
@@ -932,8 +957,10 @@ export class Journal {
       subject: this._pages[seat.page].spec.rows[seat.row]?.subject ?? a.id,
       hover: -1,
     };
-    page.paint();
     this._awardLeaf = Math.ceil(leaf / 2);
+    try { page.paint(); } catch (e) {
+      if (!this._pageErr) { this._pageErr = true; console.error('[journal] compare paint failed', e); }
+    }
   }
 
   /** True while the book is asking which of two prints to keep. */
@@ -1477,6 +1504,15 @@ export class Journal {
    * this — one input, one change.
    */
   panHome() {
+    // ALREADY going home is not "still off square". The pose stays non-zero for
+    // the whole 0.28 s ease, so without this test a second press re-captured
+    // `_panFrom` from the half-eased pose, reset the clock and returned true
+    // again — and the caller, which spends a press on a true, never reached
+    // `zoomOut()` or `close()`. Held down at the OS repeat rate that is an
+    // Escape key that shrinks the pose by 0.7% a press and never shuts the
+    // book. An impatient second press now does the next thing, which is also
+    // the right reading of it.
+    if (this._panFrom) return false;
     if (!this.panned) return false;
     this._panFrom = { ...this._pan };
     this._panT = 0;
@@ -1567,6 +1603,11 @@ export class Journal {
     // panned must come home to the NEW fit, not the old one.
     (this._camPos0 ??= new THREE.Vector3()).copy(this.camera.position);
     (this._camQuat0 ??= new THREE.Quaternion()).copy(this.camera.quaternion);
+    // And put the player's own framing straight back on top. The fit runs from
+    // `render()`, which is AFTER `update()` has already applied it, so without
+    // this the one frame an aspect change lands on is drawn square and the pan
+    // reappears on the next — a visible flick on every resize.
+    this._applyPan(0);
   }
 
   /**
@@ -2751,6 +2792,13 @@ export class Journal {
     this._cmp = null;
     this._cmpSquash = 0;
     if (C) {
+      // A candidate the player did NOT keep is never written to the store, so
+      // nothing else will ever ask for it again — and `loadPhoto`'s cache is
+      // keyed by the data URL and never evicts. Left in, every re-photograph of
+      // an already-found subject would pin a full-size decode for the session.
+      // The one that was kept stays cached: it is a stored photo now, and the
+      // page it is taped into will ask for it every time it repaints.
+      if (C.chosen !== 1) forgetPhoto(C.url);
       const p = this._pages?.[C.page];
       if (p?.spec) {
         p.spec.compare = null;
@@ -2876,6 +2924,15 @@ export class Journal {
     this._leafFrom = this._pose.leaf;
     this._leafTo = to;
     this._leafT = 0;
+    // Its OWN duration. This line was missing, so a turn by hand inherited
+    // whatever the last SCRIPTED turn had left behind — `SCRIPT.flyleaf`
+    // (0.62 s) after an ordinary open, `SCRIPT.seekLeaf` (0.30 s) after an
+    // award had leafed to its page or the compare had walked home. The same
+    // gesture at two speeds depending on how the book was opened. 0.62 is the
+    // one it has after a plain open, which is the case a player browsing the
+    // book is in, so pinning it there leaves the common feel alone and takes
+    // the riffle out of the other one.
+    this._leafDur = SCRIPT.flyleaf;
     this._cue('page');
   }
 

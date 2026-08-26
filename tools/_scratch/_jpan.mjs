@@ -187,6 +187,22 @@ await drag('middle', 900, 500, 30);
 console.log('pan clamp :', JSON.stringify(await state()));
 await page.screenshot({ path: `${OUT}/p8_pan_clamp.png` });
 
+// ── two Escapes FASTER than the ease home ───────────────────────────────────
+// The pose is still non-zero for the whole 0.28 s ease, so a `panHome` that
+// tested only "is it off square" answered yes to the second press as well,
+// re-armed the ease from the half-way pose and swallowed the press. Held at the
+// OS repeat rate that is an Escape key that never shuts the book.
+await page.keyboard.press('Escape');
+await page.waitForTimeout(70);
+await page.keyboard.press('Escape');
+await page.waitForTimeout(900);
+const rapid = await page.evaluate(() => window.__systems.hud.journal.active);
+console.log(rapid ? '  FAIL — two fast Escapes did not shut the book'
+                  : '  PASS — the second Escape got through the ease');
+await page.keyboard.press('j');
+await page.waitForTimeout(2200);
+await drag('left', 200, 140);
+
 // ── one Escape home, the next does what Escape always did ───────────────────
 await page.keyboard.press('Escape');
 await page.waitForTimeout(700);

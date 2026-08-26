@@ -1,5 +1,11 @@
-// A print taken this session vanishes at the close zoom; an older one does not.
-// The only difference between them is that the new one is stored at 1024.
+// A print taken THIS SESSION at the close zoom.
+//
+// The first version of this harness awarded through `await
+// import('/src/game/hunt_store.js')` inside a page evaluate, which is the trap
+// this repo's notes warn about: Vite stamps `?t=` on hot-reloaded modules, so
+// the import hands back a SECOND instance of the singleton and the award lands
+// in a store the game is not holding. It reported the bug as unfixed after it
+// had been fixed. Award through the real shutter, like _huntflow.mjs.
 //
 // ⚠ THIS HARNESS DOES NOT MEASURE THAT, AND ITS FIRST LINE OF OUTPUT IS AN
 // ARTIFACT OF ITSELF. `store.hunt.award(...)` below reaches the store through a
@@ -33,7 +39,6 @@ await page.goto(`${URL}/?seed=20261018&car=camper`, { waitUntil: 'domcontentload
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000, polling: 250 });
 
 const probe = () => page.evaluate(async () => {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const j = window.__systems.hud.journal;
   const rows = [];
   for (let p = 0; p < j._pages.length; p++) {
@@ -42,36 +47,42 @@ const probe = () => page.evaluate(async () => {
       let patchW = null, err = null;
       try { const pt = j._pages[p].printPatch(i); patchW = pt?.canvas?.width ?? null; }
       catch (e) { err = String(e).split('\n')[0]; }
-      rows.push({ id: r.id, done: !!r.done, hasPhoto: !!r.photo,
+      rows.push({ page: p, id: r.id, hasPhoto: !!r.photo,
                   photoW: r.photo?.width ?? null, patchW, err });
     }
   }
   return rows;
 });
 
-// ── path A: award THIS session, then look ──────────────────────────────────
+// Pose at a waterfall and fire the real shutter — the same path _huntflow uses.
 await page.evaluate(async () => {
-  const store = await import('/src/game/hunt_store.js');
   localStorage.removeItem('pa.hunt');
-  const make = (w) => { const c = document.createElement('canvas');
-    c.width = w; c.height = Math.round(w * 9 / 16);
-    const g = c.getContext('2d'); g.fillStyle = '#3a6ea5';
-    g.fillRect(0, 0, c.width, c.height); return c; };
-  store.hunt.award('deer', make(1024));
-  await new Promise((r) => setTimeout(r, 400));
-  window.__systems.hud.toggleJournal();
-  await new Promise((r) => setTimeout(r, 2000));
+  const cam = window.__ctx.camera;
+  window.__forceCamera = true; window.__hudForce = true;
+  const { detectSubjects } = await import('/src/game/hunt_detect.js');
+  const falls = window.__ctx.world?.waterfalls ?? [];
+  for (let f = 0; f < Math.min(falls.length, 6); f++) {
+    const wf = falls[f];
+    const mid = [(wf.top[0] + wf.bottom[0]) / 2, (wf.top[1] + wf.bottom[1]) / 2,
+                 (wf.top[2] + wf.bottom[2]) / 2];
+    for (const r of [50, 90, 150]) {
+      for (let a = 0; a < 8; a++) {
+        const ang = (a / 8) * Math.PI * 2;
+        cam.position.set(mid[0] + Math.sin(ang) * r, mid[1] + r * 0.25, mid[2] + Math.cos(ang) * r);
+        cam.lookAt(mid[0], mid[1], mid[2]); cam.updateMatrixWorld(true);
+        if (detectSubjects(window.__ctx).includes('waterfall')) return;
+      }
+    }
+  }
 });
-console.log('awarded this session :', JSON.stringify(await probe()));
+await page.waitForTimeout(3000);
+await page.evaluate(() => { window.__systems.hud.toast = () => {}; window.__systems.hud.photo.capture(); });
+await page.waitForTimeout(4500);
+console.log('awarded this session, no reload:', JSON.stringify(await probe()));
 
-// ── path B: the same store, reloaded from disk ─────────────────────────────
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 180000, polling: 250 });
-await page.evaluate(async () => {
-  window.__systems.hud.toggleJournal();
-  await new Promise((r) => setTimeout(r, 2000));
-});
-console.log('same photo, after boot:', JSON.stringify(await probe()));
-const out = {};
-console.log(JSON.stringify(out, null, 1));
+await page.keyboard.press('j');
+await page.waitForTimeout(2500);
+console.log('the same print, after boot :', JSON.stringify(await probe()));
 await b.close();

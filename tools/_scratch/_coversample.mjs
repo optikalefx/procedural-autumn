@@ -41,11 +41,24 @@ const out = await page.evaluate(async () => {
     const last = merged[merged.length - 1];
     if (last && t[0] - last[1] < 0.06) last[1] = t[1]; else merged.push([...t]);
   }
+  // The full envelope, printed — the take detector uses a 2% floor and a floor
+  // is exactly the thing that hides a quiet tail. Look at the whole second.
+  const bars = env.map((v, i) => {
+    const db = v > 0 ? 20 * Math.log10(v / peak) : -99;
+    return { t: +(i * 0.01).toFixed(2), rms: +v.toFixed(5), dbFromPeak: +db.toFixed(1) };
+  });
+  // Noise floor: the quietest tenth of the file.
+  const sorted = [...env].sort((a, b) => a - b);
+  const floor = sorted[Math.floor(sorted.length * 0.1)];
   return {
     sampleRate: sr, channels: ch, duration: +(n / sr).toFixed(3),
     peak: +peak.toFixed(4),
+    noiseFloorRms: +floor.toFixed(6),
+    peakToFloorDb: +(20 * Math.log10(peak / Math.max(floor, 1e-9))).toFixed(1),
     takes: merged.map(([a, z]) => [+a.toFixed(3), +z.toFixed(3), `${Math.round((z - a) * 1000)}ms`]),
     envPeakAt: +(env.indexOf(Math.max(...env)) * 0.01).toFixed(2),
+    // Every 20 ms, so the shape is readable in a terminal.
+    shape: bars.filter((_, i) => i % 2 === 0).map((x) => `${x.t}:${x.dbFromPeak}`).join(' '),
   };
 });
 console.log(JSON.stringify(out, null, 1));

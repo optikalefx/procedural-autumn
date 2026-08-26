@@ -374,6 +374,25 @@ export function loadPhoto(dataURL) {
   return p;
 }
 
+/**
+ * Give a decode back.
+ *
+ * The cache is keyed by the data URL and holds the decoded `Image` for the life
+ * of the page, which is right for the STORE's photographs — there are at most
+ * fifteen and the book asks for the same ones over and over. It is wrong for a
+ * candidate the player was offered and turned down (`Journal._armCompare`):
+ * that string is never written to the store, is different every shutter press,
+ * and would pin a full-size decode for the rest of the session for every
+ * re-photograph of an already-found subject.
+ *
+ * Only ever called for a URL the caller knows is not in the store. A cached
+ * decode of a stored photo must stay: dropping it would make leafing back to a
+ * page re-decode every print on it.
+ */
+export function forgetPhoto(dataURL) {
+  if (dataURL) _imgCache.delete(dataURL);
+}
+
 /** Cover-fit `img` into a w x h box at the origin. */
 function drawCover(g, img, w, h) {
   const ar = img.width / img.height, box = w / h;
