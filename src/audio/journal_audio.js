@@ -1,6 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  JournalAudio — the three sounds the scavenger-hunt journal makes.
 //
+//    cover  the front board of the book swung open
 //    page   a page turning
 //    cross  a pencil struck through a line
 //    slap   a photograph put down on the page, and taped
@@ -34,9 +35,16 @@
 //  Rendered through an OfflineAudioContext at 48 kHz and measured at the bus,
 //  which is the version of these numbers worth having:
 //
+//      cover  peak 0.230   rms 0.0372   273 ms
 //      page   peak 0.114   rms 0.0212   372 ms
 //      cross  peak 0.097   rms 0.0099   125 ms
 //      slap   peak 0.269   rms 0.0197   205 ms
+//
+//  The whole ceremony, cover → page → cross → slap on the journal's own
+//  spacing, peaks at 0.316. That is a DRAW rather than a constant: every cue
+//  takes ±5% of pitch and ±7% of length per firing, so the same four sounds
+//  land anywhere inside about 1.5 dB of each other run to run. Quoting the
+//  ceremony peak to three figures would be quoting a random number.
 //
 //  The first draft measured 0.056 / 0.047 / 0.094 — level with the menu click
 //  — and that was the `camp_props` mistake made a second time: a level reasoned
@@ -45,11 +53,16 @@
 //  change?". They are still nowhere near loud: the slap peaks 11.4 dB under
 //  full scale and the whole layer leaves the limiter nothing to do.
 //
-//  The slap is the loudest by 7.5 dB on the page and 8.8 dB on the cross, on
-//  purpose: it is the moment the photograph lands, it is the end of the
-//  ceremony, and a payoff the same size as the page turn before it is not one.
-//  That margin used to be 4.6 dB, and it used to be a lie on anything smaller
-//  than a monitor — see the next block.
+//  The ladder is the design, and it is read top to bottom in time: the cover
+//  opens the ceremony loud (+6.1 dB on the page), the page and the cross are
+//  the quiet middle, and the slap ends it 7.5 dB over the page, 8.8 over the
+//  cross and 1.4 over the cover. The slap being last AND loudest is the whole
+//  shape — a payoff the same size as the beat before it is not one — and the
+//  cover sitting just under it is deliberate too: the first sound should
+//  announce that something is happening without spending the ending.
+//
+//  The slap's margin used to be 4.6 dB, and it used to be a lie on anything
+//  smaller than a monitor — see the next block.
 //
 //  Three page turns fired inside one crowd window peak at 0.151, which is
 //  2.4 dB over one turn alone — the ducking in `_crowd` holds, so a player
@@ -68,6 +81,10 @@
 //      cross         0.063      0.073      +1.2 dB
 //      slap          0.164      0.074      -6.9 dB
 //
+//  (`cover` did not exist yet. It was written afterwards, against this
+//  measurement, which is why its loudest single element is a 1050 Hz burst and
+//  not the low thud a cover "should" be.)
+//
 //  The page and the cross are band-passed noise living well above 200 Hz, so
 //  the filter costs them nothing and taking the rumble off even lifts their
 //  peak. The slap's identity was its 150 → 78 Hz body glide, and a small
@@ -83,13 +100,65 @@
 //  the high-pass. The order is not restored until it clears the PAGE:
 //
 //                    full     HP 200 Hz    change
+//      cover         0.172      0.132      -2.3 dB
 //      page          0.100      0.115      +1.2 dB
 //      cross         0.063      0.073      +1.2 dB
 //      slap          0.184      0.136      -2.6 dB
 //
 //  Slap over page: +7.5 dB full range, +1.5 dB through the high-pass. The
 //  margin still narrows on a small speaker — it cannot not, the body really is
-//  gone — but the payoff is a payoff on both, which is the requirement.
+//  gone — but the payoff is a payoff on both, which is the requirement. And
+//  the ORDER of all four survives the filter, which is the property that was
+//  actually broken: cover and slap at the top, page under them, cross at the
+//  bottom, on a monitor and on a phone.
+//
+//  ── cover: leather and board, and not the same book twice ───────────────────
+//
+//  This voice was missing for the whole of the first round, and missing in the
+//  worst possible way. `Journal.js` cues `'cover'` when the front board swings
+//  open — the biggest movement in the ceremony and the first thing the player
+//  hears — and there was no such voice, so the beat borrowed `page`. The
+//  journal's own critic named it exactly: "the loudest beat has a paper voice."
+//  Two rustles where there should be a creak and then a rustle.
+//
+//  (There is a second edition of that story. For most of the round `Audio.cue`
+//  was dispatching on `JOURNAL_CUES.includes(name)` while the journal asked for
+//  `journal.page` / `journal.cross` / `journal.slap`, so NOTHING in this file
+//  reached the game at all. Every number in this header was rendered offline
+//  and every one of them was correct; not one of them had ever been heard. The
+//  names now match, which is also why `cover` only has to be added to the array
+//  above to be wired.)
+//
+//  **What separates leather from paper here is Q, not level.** The page's sheet
+//  is one band at Q 0.85 — broad, airy, a rustle. The cover's hinge is the same
+//  gesture, one band that rises and comes back, at **Q 2.4 and an octave
+//  lower** (760 → 1450 → 980 Hz). A rustle is broadband; a creak is a
+//  RESONANCE, a stiff thing complaining at one pitch as it bends. Same shape,
+//  same book, different material — which is the point, because these two
+//  sounds play 0.6 s apart and a listener has to hear them as one object.
+//
+//  Over it, eight stick-slip grabs at Q 5–7.5, 16–31 ms apart and unevenly
+//  spaced. That is the part that reads as leather rather than as a filter
+//  sweep: a creak is not smooth, it is a fast sequence of grip-and-release, and
+//  a smooth version of this band is a synthesiser doing an impression.
+//
+//  Under it, a 210 → 108 Hz swell with a 45 ms attack. It is the only voice in
+//  this file whose first 50 ms are meant to be nearly inaudible — a cover has
+//  mass and does not click when you START to lift it — and the creak arrives on
+//  top of something already moving.
+//
+//  Then the board arriving on its face, at 0.21: a 132 → 64 Hz drop for the
+//  weight and, louder, a broad Q 1.3 burst at 1050 → 470 Hz for the leather
+//  slapping the table. The mid one being the loud one is the small-speaker
+//  measurement above applied at the point of writing rather than in a rescue:
+//  through a 200 Hz high-pass this cue loses 2.3 dB, against the 6.9 dB the
+//  slap lost before it was rebalanced.
+//
+//  The join between the creak and the landing was the same 40 ms hole the page
+//  had, caught by the same 10 ms windows and fixed the same way — shoulder 0.80
+//  on the creak, landing pulled back to 0.21. Measured through the handover:
+//  200 ms 0.0469, 220 ms 0.0361, 240 ms 0.0613 (the board), 260 ms 0.0192. No
+//  gap; one object moving.
 //
 //  ── page: a sweep, not a whoosh, and definitely not a click ─────────────────
 //
@@ -230,7 +299,7 @@ export const JOURNAL_GAIN = 1.0;
 /** The cue names this module answers to. Exported so `Audio.cue` can dispatch
  *  on membership rather than on three hard-coded string compares, and so the
  *  Sound Lab can list them. */
-export const JOURNAL_CUES = ['page', 'cross', 'slap'];
+export const JOURNAL_CUES = ['cover', 'page', 'cross', 'slap'];
 
 // Two of these fire inside a second during the journal's award ceremony (the
 // page turn, then the cross, then the slap). Not eight in half a second like a
@@ -252,6 +321,71 @@ const CROWD_MAX = 3;
 // cue can be sped up or slowed as a whole without editing eleven numbers.
 
 const VOICES = {
+  cover(c) {
+    // ── the board coming up ───────────────────────────────────────────────
+    // Pink, low, broad, and with a 45 ms attack, because a cover has mass and
+    // does not click when you START to lift it. This is the only voice in the
+    // file whose first 50 ms are meant to be almost inaudible: the creak
+    // arrives on top of a swell that is already moving.
+    this._arc(c, 0.000, {
+      f0: 210, f1: 150, f2: 108, turn: 0.5, q: 0.7,
+      peak: 0.150, attack: 0.045, hold: 0.10, dur: 0.28, shoulder: 0.64,
+      pan: -0.10, pan2: 0.05,
+    });
+
+    // ── the hinge ─────────────────────────────────────────────────────────
+    // Q 2.4 against the page's 0.85, and that ratio is the whole difference
+    // between leather and paper: a rustle is broadband and a creak is a
+    // RESONANCE — a stiff thing complaining at one pitch as it bends. The band
+    // rises and comes back for the same reason the page's does, one object
+    // moving through one gesture, but over half the excursion and an octave
+    // lower, so the two are unmistakably the same book and not the same
+    // material.
+    this._arc(c, 0.018, {
+      f0: 760, f1: 1450, f2: 980, turn: 0.42, q: 2.4,
+      peak: 0.480, attack: 0.018, hold: 0.11, dur: 0.29, shoulder: 0.80,
+      pan: -0.14, pan2: 0.10, white: true,
+    });
+
+    // ── stick-slip ────────────────────────────────────────────────────────
+    // Eight grabs of the hinge, 16–31 ms apart and accelerating slightly, high
+    // Q and short. A creak is not a smooth sweep — it is a fast sequence of
+    // grip-and-release, and this is the part of the cue that a listener hears
+    // as leather rather than as a synthesiser. Spacings are uneven for the
+    // same reason as everywhere else in this file: even is a machine.
+    const grip = [
+      [0.030, 1250, 5.5, 0.120],
+      [0.056, 1680, 6.5, 0.092],
+      [0.075, 980, 4.5, 0.104],
+      [0.101, 1880, 7.0, 0.080],
+      [0.122, 1420, 5.5, 0.088],
+      [0.152, 2150, 7.5, 0.062],
+      [0.170, 1150, 5.0, 0.072],
+      [0.201, 1620, 6.0, 0.048],
+    ];
+    for (const [at, f, q, peak] of grip) {
+      this._tick(c, at, {
+        f: f * (0.88 + this.rnd() * 0.24), q,
+        peak: peak * (0.72 + this.rnd() * 0.56),
+        dur: 0.006 + this.rnd() * 0.005,
+        pan: -0.10 + (this.rnd() - 0.5) * 0.4,
+      });
+    }
+
+    // ── the board arriving on its face ────────────────────────────────────
+    // Two things at once, and the mid one is the loud one on purpose — see the
+    // header's small-speaker block. The low is what a cover weighs; the mid is
+    // what anybody actually hears. Both are dry and short: this is the opening
+    // of the ceremony, not its payoff, and it must leave the `slap` somewhere
+    // to go.
+    this._tone(c, 0.214, { f0: 132, f1: 64, peak: 0.115, attack: 0.005, dur: 0.11 });
+    this._arc(c, 0.212, {
+      f0: 1050, f1: 700, f2: 470, turn: 0.42, q: 1.3,
+      peak: 0.430, attack: 0.003, hold: 0.014, dur: 0.075,
+      pan: 0.06, pan2: 0.02, white: true,
+    });
+  },
+
   page(c) {
     // ── the sheet: one band that turns round ──────────────────────────────
     // 0.36 s, rising through the first 40% and falling through the rest. The
@@ -417,7 +551,7 @@ export class JournalAudio {
   /**
    * Sound one of `JOURNAL_CUES`.
    *
-   * @param {'page'|'cross'|'slap'} name
+   * @param {'cover'|'page'|'cross'|'slap'} name
    * @param {object} [opts]
    * @param {number} [opts.level=1]  a trim for this one cue, 0..1. The journal
    *   uses it for the flick-through, where a page turn should be smaller than

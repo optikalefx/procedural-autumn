@@ -210,7 +210,13 @@ export const LENSES = [
     mmMax: 400,
     mmDefault: 200,        // entering from the gap should land on the wide end
     fStop: 4,
-    fStopMin: 32,
+    // 22, not 32, and the difference is a promise this table cannot keep:
+    // `PhotoFocus` owns the aperture ring and its ladder stops at f/22, so a
+    // 32 here is a row `stopsFor` would hand out and nothing could ever set.
+    // A real 200-400 does stop to f/32; this game's does not, and a table that
+    // says otherwise is the kind of quiet lie the rest of this file exists to
+    // avoid. Raise it if the ring's range ever grows.
+    fStopMin: 22,
     minFocus: 2.0,
     filter: 52,            // drop-in rear filter, as on the real thing
     build: buildTeleZoomLens,

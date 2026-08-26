@@ -37,7 +37,7 @@ import { stats } from '../game/stats_store.js';
 import { PhotoFocus } from '../photo/photo_focus.js';
 import { detectSubjects } from '../game/hunt_detect.js';
 import { hunt } from '../game/hunt_store.js';
-import { LensKit, LensPreview, cameraFovForFocal, focalForCameraFov, stopsFor }
+import { LensKit, LensPreview, LENSES, cameraFovForFocal, focalForCameraFov, stopsFor }
   from '../photo/lens_models.js';
 import { posthog } from '../posthog.js';
 
@@ -98,6 +98,11 @@ export class PhotoMode {
         this._paintLens();
         // Changing a lens is not the same act as turning a ring, so it does not
         // get the same sound. `select` is the heavier of the two UI voices.
+        // Silent while this file is fitting the lens on the way in: that is not
+        // the player turning anything. Without the guard, entering photo mode
+        // announced itself as a lens change ("select, door") — and re-entering
+        // after a walk to the tele announced a swap the player did not make.
+        if (this._fitting) return;
         this.hud.audio()?.cue(reason === 'swap' ? 'select' : 'tick');
       },
     });
@@ -378,7 +383,16 @@ export class PhotoMode {
       // fitted to the camera instead, and the wide end of the wide lens is the
       // closest a 24 mm barrel can get to 22 — a few degrees, against a third
       // of the frame.
-      this.lens.setFocal(focalForCameraFov(this.ctx.camera.fov, this.ctx.camera.aspect), 'set');
+      // Fit the BODY as well as the ring. Fitting only the focal clamps it into
+      // whatever lens happened to be on, so leaving photo mode at 272 mm and
+      // pressing F again opened at 200 mm — a five-degree view of an orange
+      // smear — and silently threw away the ring position too. Pick the lens
+      // whose barrel actually contains the frame on screen, then set the ring
+      // inside it.
+      const mm = focalForCameraFov(this.ctx.camera.fov, this.ctx.camera.aspect);
+      const fit = LENSES.find((x) => mm <= x.mmMax) ?? LENSES[0];
+      this._fitting = true;
+      try { this.lens.setLens(fit.id, { focal: mm }); } finally { this._fitting = false; }
       const rig0 = this.ctx.systems?.cameraRig;
       if (rig0) rig0.fov = cameraFovForFocal(this.lens.focal, this.ctx.camera.aspect);
       this._fitAperture();
