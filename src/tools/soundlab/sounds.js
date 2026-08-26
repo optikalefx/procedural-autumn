@@ -1321,8 +1321,9 @@ export const SOUNDS = [
 
   // ── the journal ───────────────────────────────────────────────────────────
   //
-  // The scavenger hunt's award ceremony, in the order it plays: the book opens
-  // with a page turn, the line is crossed off, the photograph is taped in.
+  // The scavenger hunt's award ceremony, in the order it plays: the cover
+  // swings open, a page turns, the line is crossed off, the photograph is taped
+  // in.
   // They belong beside `ui.tick` rather than under a bus, because that is
   // literally where they land — dry into the master, no world position, no
   // reverb send (`journal_audio.js`, "these are not camp props").
@@ -1332,6 +1333,26 @@ export const SOUNDS = [
   // shape argument (one gesture, not two events), and neither is audible in a
   // single press. `level` is the trim the journal itself uses for a
   // flick-through page as against the one that opens the book.
+  {
+    id: 'journal.cover',
+    group: 'Interface',
+    label: 'Journal cover',
+    kind: 'oneshot',
+    bus: 'master',
+    module: 'src/audio/journal_audio.js',
+    blurb: 'The front board swung open: a Q 2.4 hinge creak 760 → 1450 → '
+      + '980 Hz with eight stick-slip grabs across it, a low swell underneath, '
+      + 'and the board arriving on its face. Peak 0.230, 273 ms — the same '
+      + 'gesture as the page turn, an octave down and four times as resonant.',
+    layers: [],
+    trigger: (rig, v) => journalOf(rig).cue('cover', { level: v.level, rate: v.rate }),
+    params: [
+      range('level', 'Cue level', 0, 1.5, 1, { step: 0.01, src: 'JournalAudio.cue opts.level' }),
+      range('rate', 'Speed', 0.5, 2, 1, { step: 0.01, src: 'JournalAudio.cue opts.rate' }),
+      range('journalGain', 'journal bus gain', 0, 2, JOURNAL_GAIN, { step: 0.01, group: 'Mix', src: 'journal_audio.js — JOURNAL_GAIN', apply: (r, v) => { journalOf(r).bus.gain.value = v; } }),
+    ],
+    needs: ['journal_audio.js — VOICES.cover: the hinge arc (Q 2.4, shoulder 0.80), the eight-grab stick-slip table, and the landing at 0.212. Audition it back to back with journal.page — the pair is the test, not either one alone.'],
+  },
   {
     id: 'journal.page',
     group: 'Interface',
