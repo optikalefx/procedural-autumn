@@ -89,6 +89,9 @@ const RIVER_IN = 0.06, RIVER_FULL = 0.25;
 // (an inside bend, a backwater behind a bar) keeps river rules for a beat
 // instead of snapping to a 1.2 m wall for a few frames.
 const RIVER_LAG = 2.0;             // 1/s
+// Smoothing on the ground track (see `made`). 4/s settles a flickering
+// pressed/free alternation in about a quarter second.
+const MADE_LAG = 4.0;              // 1/s
 
 // Current. `flowVX/VZ` already carry coherence and `q` is discharge, so the
 // drift fades out on its own as a channel opens into a lake — no branch, and
@@ -135,6 +138,16 @@ export class BoatPhysics {
     this.pitch = 0;              // + bow up
     this.beached = false;
     this.depth = 99;
+    // ── SPEED IS NOT THE SAME QUESTION AS "IS THIS BOAT GOING ANYWHERE" ──────
+    // `speed` is what the paddle is doing to the hull; `made` is what the hull
+    // is doing to the world — the smoothed length of its actual per-step ground
+    // track. They diverge exactly where the shore rules bite: a kayak held bow-
+    // on against a riverbank was measured (seed 20261018, 1200 sim frames)
+    // frozen at one position to the tenth of a metre with `speed` still reading
+    // 0.44-1.11 m/s, because the wall projects the motion away every step while
+    // the stroke keeps refilling it. Anything that wants to ask "is the player
+    // parked against something" has to read this and not `speed`.
+    this.made = 0;               // m/s actually made good over the ground
     // River state, published for the audio/HUD layers and the harness.
     this.riverness = 0;          // 0 lake .. 1 channel
     this.current = 0;            // m/s of drift the water is adding
@@ -167,6 +180,7 @@ export class BoatPhysics {
     this.x = x; this.z = z; this.heading = heading;
     this.speed = 0; this.yawRate = 0; this.roll = 0; this.pitch = 0;
     this.beached = false;
+    this.made = 0;
     this.riverness = clamp01(smoothstep(RIVER_IN, RIVER_FULL,
                                         this.world.getRiver?.(x, z) ?? 0));
     this.current = 0;
@@ -300,7 +314,7 @@ export class BoatPhysics {
         const lv = this._levelAt(px, pz);
         return (lv === null || lv === undefined) ? -1e3 : bySdf;
       }
-      return Math.min(bySdf, this._depthAt(px, pz) - floatFloor);
+      return Math.min(bySdf, this.depthAt(px, pz) - floatFloor);
     };
 
     const g = sdfGrad(this.world, this.x, this.z);
@@ -375,6 +389,14 @@ export class BoatPhysics {
         this.speed *= Math.pow(lerp(0.4, 0.78, riv), dt);
       }
     }
+    // Ground track, measured AFTER every term that can cancel motion — the
+    // wall projection, the wedge, the current — has had its say. Smoothed
+    // because near a bank the hull alternates pressed and free frames (see the
+    // _pinT decay note below) and the raw per-step distance flickers between
+    // zero and a few centimetres; MADE_LAG settles it inside a quarter second,
+    // which is far quicker than a player can act on a prompt.
+    const madeNow = dt > 1e-4 ? Math.hypot(nx - this.x, nz - this.z) / dt : 0;
+    this.made = damp(this.made, madeNow, MADE_LAG, dt);
     this.x = nx; this.z = nz;
     // How long the hull has had nowhere legal to go. The current-drag
     // exemption below is about a boat the stream is still MOVING; a hull that
@@ -519,7 +541,7 @@ export class BoatPhysics {
   /** Water over the bed at (x, z), against the DRAWN surface. Negative where
    *  there is no water — including over the mesh's dry shoreline-fade ring,
    *  which has a level below the terrain and must not read as floatable. */
-  _depthAt(x, z) {
+  depthAt(x, z) {
     const lv = this._levelAt(x, z);
     if (lv === null || lv === undefined) return -1;
     return lv - this.world.getHeight(x, z);
@@ -548,7 +570,7 @@ export class BoatPhysics {
       x: this.x, y: this.y, z: this.z,
       heading: this.heading, speed: this.speed, yawRate: this.yawRate,
       roll: this.roll, pitch: this.pitch,
-      depth: this.depth, beached: this.beached,
+      depth: this.depth, beached: this.beached, made: this.made,
       riverness: this.riverness, current: this.current, turbulence: this.turbulence,
     };
   }

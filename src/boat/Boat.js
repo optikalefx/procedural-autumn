@@ -56,6 +56,59 @@ const SINK_TIME = 1.5;
 // it on land".
 const NEAR_SHORE_SDF = -6;
 
+// ── STEPPING ASHORE IS A GEOMETRIC QUESTION, NOT A STATE ─────────────────────
+//
+// "Can I get out here" used to be `phys.beached`, for both the prompt and the
+// key. That reads as the same question and is not: `beached` is a decision the
+// physics makes about how the hull should MOVE, and there are banks you can
+// obviously step onto that it deliberately never fires at.
+//
+// The one the player reported (2026-08-25, screenshot: kayak bow hard into a
+// grassy bank, dead stationary, no prompt) is a river. d20eed9 removed pressure
+// beaching in flowing water for a measured reason that stands — on a river 0.6 s
+// of bow contact is just the outside of a bend, which every drifting boat
+// touches, and beaching there ended runs. But the sdf wall still stops the hull
+// a few metres out in water far too deep to ground in, so nothing ever sets
+// `beached`, and E was dead with no prompt to say why. Reproduced headless on
+// seed 20261018 at (1169.7, 1031.5): 1200 sim frames of full-effort paddling
+// into the bank, position frozen to the tenth of a metre, sdf 0.08, 1.24 m of
+// water under the hull, `beached` false the whole time, prompt empty, E ignored.
+// (The dead band is narrow and unfixable by tuning: riverness there oscillates
+// 0.31-0.65 around the 0.5 gate, so `_pinT` grows at a third rate at best and
+// goes NEGATIVE above 0.5 — it can never reach its 0.6 s threshold.)
+//
+// Standing water was checked for the same hole and does not have one — worth
+// recording, because "the lake must be fixed too" was the obvious guess and it
+// is wrong. Pressure beaching is at FULL rate there (riverness 0), so all three
+// lake landings still set `beached` exactly as they did: a shelving beach
+// grounds by depth; a cliff bank in 16 m of water beaches by pressure within
+// the 0.6 s; and a hull that merely COASTS at a bank without a stroke is walked
+// back out to sdf 3.3 by SHORE_PUSH and correctly gets no prompt, because it is
+// not against anything. This change is therefore additive on a lake and reads
+// identically there — verified, not assumed.
+//
+// So ask about the world instead: is there dry ground within stepping reach off
+// the bow, and is the boat actually parked rather than passing? Both the prompt
+// and the key read that one predicate (`_atBank`), so the prompt appears exactly
+// when the action will work.
+//
+// REACH is measured from the BOW and generous on purpose — it has to clear the
+// standoff the shore wall imposes. The transect at the reported spot reads 1.2-
+// 2.7 m of drawn water for 7 m ahead of the hull before the ground comes out of
+// it, and that whole 7 m is water the hull is not allowed to enter; a reach that
+// only covered the boat's own length would refuse a bank the bow is visibly
+// touching. Land found by DRAWN water depth, never by the hydro sdf, which at
+// that spot reads "dry" 1 m ahead of a boat floating in 1.26 m of water (the
+// sdf-versus-drawn discrepancy measured at length in boat_physics).
+const ASHORE_REACH = 8;    // m ahead of the bow to look for dry ground
+// And the boat has to be parked. `made` (ground track) and not `speed`: pinned
+// against that bank the hull reported 0.44-1.11 m/s of paddle speed while going
+// nowhere at all. Sits well above the drift of a hull scrubbing along a bank in
+// a current (a 1.2 m/s reach is the top of the range this world generates) and
+// well under a boat under way — the kayak tops out at 3.8 and was making 2.4-3.6
+// on the approach.
+const ASHORE_MADE = 1.2;   // m/s of ground track above which you are passing
+
 // How long the camera glances at a fresh launch before the player gets it
 // back (only when nothing else holds focus — see lateUpdate).
 const LAUNCH_FOCUS = 2.2;
@@ -461,7 +514,12 @@ export class Boat extends System {
     // is a hold on touch and E with a keyboard, the same split as pitching a
     // camp. It deliberately does not take a plain tap: a tap while aboard is
     // how you reach the camper, and beaching happens constantly.
-    if (p.beached && (input.justPressed('KeyE') || (touchCapable() && input.press.commit))) {
+    //
+    // ONE condition, read once, for both the key and the prompt below. See
+    // _atBank: this used to be `p.beached`, and a prompt that can disagree with
+    // its own action is the whole bug it was.
+    const bank = this._atBank(b);
+    if (bank && (input.justPressed('KeyE') || (touchCapable() && input.press.commit))) {
       this._comeAshore(b);
       return;
     }
@@ -472,7 +530,7 @@ export class Boat extends System {
     this._hintT = Math.max(0, this._hintT - dt);
     const drive = this._hintT > 0 ? `${pickVerb()} camper&nbsp; drive` : '';
     const ashore = `${actVerb()}&nbsp; step ashore`;
-    this._say(p.beached ? (drive ? `${ashore}&ensp;${drive}` : ashore) : drive);
+    this._say(bank ? (drive ? `${ashore}&ensp;${drive}` : ashore) : drive);
     this._cursor('');
     void rig;
   }
@@ -763,11 +821,45 @@ export class Boat extends System {
     }
   }
 
-  /** E on a beached bow: bring the camper around to the shore in front of the
-   *  boat, then step off (user direction, 2026-08-23). The camper lands via
-   *  Vehicle._land — the same full teleport a rescue uses (physics cut,
+  /** Is there a bank off this boat's bow that the player could step onto?
+   *
+   *  The single condition behind BOTH the "step ashore" prompt and the E / hold
+   *  binding — see the ASHORE_REACH note up top for why it stopped being
+   *  `phys.beached` and what that got wrong.
+   *
+   *  Aground still counts unconditionally, so every landing that worked before
+   *  works identically: this is strictly additive, and a shelving beach so flat
+   *  that the waterline is beyond ASHORE_REACH is still offered because the hull
+   *  is sitting on it. */
+  _atBank(b) {
+    const p = b.phys;
+    if (p.beached) return true;               // sitting on the bottom is ashore
+    // Under way: you are passing this bank, not landing on it. Prompting here
+    // would flicker on every bend of a river the player is running.
+    if (p.made > ASHORE_MADE) return false;
+    const world = this.ctx.world;
+    const L = (b.group.userData.dim ?? this.models[b.kind].dim).length;
+    const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
+    const bx = p.x + fx * L * 0.5, bz = p.z + fz * L * 0.5;   // the bow
+    for (let d = 0; d <= ASHORE_REACH; d += 1) {
+      const x = bx + fx * d, z = bz + fz * d;
+      if (!world.isInBounds(x, z)) return false;
+      if (p.depthAt(x, z) <= 0) return true;   // ground out of the water
+    }
+    return false;
+  }
+
+  /** E on a bow against a bank: bring the camper around to the shore in front
+   *  of the boat, then step off (user direction, 2026-08-23). The camper lands
+   *  via Vehicle._land — the same full teleport a rescue uses (physics cut,
    *  camera cut, park brake held until the player drives). If no dry ground
-   *  can be found off the bow, this is just exit(). */
+   *  can be found off the bow, this is just exit().
+   *
+   *  This search is a DIFFERENT question from `_atBank` and stays separate:
+   *  it is "where does a camper fit", which wants a flat-enough patch 6-26 m
+   *  inland, not "is the player standing next to land". Requiring it of the
+   *  prompt would recreate the reported bug on any bank with nowhere to park —
+   *  no prompt, no way out of the boat. */
   _comeAshore(b) {
     const veh = this.ctx.systems?.vehicle;
     const world = this.ctx.world;
