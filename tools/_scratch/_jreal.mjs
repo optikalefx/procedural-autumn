@@ -112,23 +112,24 @@ for (let n = 0; n < 6; n++) {
   });
   if (seat) {
     console.log('print pickable at:', JSON.stringify(seat), 'after', n, 'turns');
+    // Rest on it first: the hover is what arms the detail patch now.
+    await page.mouse.move(seat.cx, seat.cy);
+    await page.waitForTimeout(400);
     await page.mouse.click(seat.cx, seat.cy);
-    await page.waitForTimeout(1200);
-    await page.screenshot({ path: `${OUT}/b_lean.png` });
-    console.log('lean :', JSON.stringify(await state()));
-    const pt = await page.evaluate(() => {
-      const j = window.__systems.hud.journal;
-      for (let y = 0.1; y < 0.95; y += 0.02)
-        for (let x = 0.05; x < 0.95; x += 0.02) {
-          const cx = Math.round(x * window.innerWidth), cy = Math.round(y * window.innerHeight);
-          if (j._onStudiedPrint(cx, cy)) return { cx, cy };
-        }
-      return null;
-    });
-    await page.mouse.click(pt?.cx ?? 800, pt?.cy ?? 450);
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${OUT}/c_close.png` });
     console.log('close:', JSON.stringify(await state()));
+    // The ladder, one rung at a time: Escape out of the close look leaves the
+    // book OPEN at the spread, and a second Escape shuts it. Two rungs now,
+    // where there were three.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(900);
+    const l1 = await state();
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(900);
+    const l2 = await state();
+    console.log('ladder: Escape ->', `zoom ${l1.zoom} active ${l1.active}`,
+                '| Escape ->', `active ${l2.active}`);
     break;
   }
   await page.mouse.click(Math.round(1600 * 0.8), 450);   // turn the page

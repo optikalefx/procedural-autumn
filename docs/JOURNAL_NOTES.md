@@ -35,16 +35,14 @@ export class Journal {
   get active()
   get wantsInput()              // NEW — true while the journal owns input
   get sheets()                  // NEW — leaf count, for harnesses
-  get studying()                // NEW (r4) — leaning in on one entry
+  get studying()                // NEW (r4) — in on one print
   onClose = null                // NEW — integrator hook, fired once by close()
   open({ award = null } = {})   // award: { id, photoDataURL | photo,
                                 //           replace? } | null    (r6)
   close(); toggle()
-  study(page, row); unstudy()   // NEW (r4) — see §13.1. The pointer drives
-                                //   these itself; an integrator needs neither.
-  studyClose(); zoomOut()       // NEW (r5) — the third zoom level, and the
-                                //   one-level-at-a-time way back out. §14.
-  get closeUp(); get zoomLevel() // NEW (r5) — 0 spread, 1 row, 2 print
+  study(page, row); unstudy()   // r4; goes the WHOLE way in r6 — §15.3
+  zoomOut()                     // one rung out
+  get closeUp(); get zoomLevel() // 0 spread, 1 the print   (r6: was 0/1/2)
   get comparing()               // NEW (r6) — the "which of these two" leaf
   update(dt)                    // REAL seconds
   render(renderer)              // straight after postfx.render(dt)
@@ -610,22 +608,32 @@ Nothing in §§1–12 was retuned. The three items below are additive, and where
 of them touches something that was signed off, the note says so and says why it
 is not a regression.
 
-### 13.1 Click a taped photo to lean the book in and read that entry
+### 13.1 Click a taped photo to go in on that entry
 
 *"you should be able to click a photo in the log book to essentially have the
 book tilt more towards the user and zoom in on the book so the photo is larger
 and easier to see that entry and photo."*
 
+> **Round 6 removed the LEAN.** What this section described was the first of two
+> zoom rungs: the book came up centred on the ROW, and a second click on the
+> same print came the rest of the way. There is one rung now and clicking a
+> print goes straight to the close look — see §15.3, which is where the current
+> behaviour is written down. Everything below is still true except where it is
+> marked, because the machinery it describes is what the surviving rung runs on.
+
 `Journal.study(page, row)` / `unstudy()` / `get studying`, driven from the
 existing capture-phase pointer listener. Click a print, the book comes up
-toward you centred on that row; click again, or Escape, and it goes back.
+toward you; Escape and it goes back.
 
-**The row is the frame, the print is the target.** A photograph in this book is
-landscape and sits *beside* its line, so framing the print alone puts the entry
-it belongs to off the side of the screen — which is the half of the pair
-somebody leaning in is trying to read. The click target is the print's own slot
-grown by `SLOT_PICK` (1.18), which is ~10 mm of page all round; the framed
-rectangle is `JournalPage.rowUV(i)`, the whole band.
+**~~The row is the frame, the print is the target.~~** *(r6: the print is now
+both.)* The click target is the print's own slot grown by `SLOT_PICK` (1.18),
+which is ~10 mm of page all round — that is unchanged and is why a thumb on a
+phone does not have to be accurate to the millimetre. The framed rectangle used
+to be `JournalPage.rowUV(i)`, the whole band; it is now `slotUV(i)`, the print.
+The argument for framing the row — a photograph sits *beside* its line, so the
+entry is half of what somebody leaning in wants to read — is answered by the
+free camera instead (§15.4): the line is one pan away and does not need a rung
+of a ladder authored for it.
 
 **The picking is `samplePage`, not a raycaster.** `samplePage` already answers
 "where in the world is this bit of page", it reads the table `deformPage` left
@@ -634,50 +642,53 @@ flying print lands with. The four corners of the slot go out through it and
 into the camera, and the test is point-in-quad on screen — two triangles, not a
 winding test, because a bent page does not project to a convex quad. A
 raycaster would have been a second, differently-wrong answer to a question that
-already has one.
+already has one. **Unchanged.**
 
-**The pose.** `STUDY_TILT` 0.42 rad added to the laid pose's `rotation.x`,
-`STUDY_ZOOM` 2.55 on the book (not a dolly — `_fitCamera` owns the camera, and
-the composition rule in `Journal`'s header still holds), eased in over 0.42 s
-and out over 0.34 s. The offset that centres the row is recomputed from the
+**The pose.** `STUDY_TILT` 0.42 rad added to the laid pose's `rotation.x`, and
+the book SCALES rather than the camera dollying (`_fitCamera` owns the camera,
+and the composition rule in `Journal`'s header still holds). The tilt is
+unchanged and always was the close look's tilt too — §14.5's note that the tilt
+does not move on the second rung is what makes removing the first rung leave it
+exactly where it was. The offset that centres the target is recomputed from the
 LIVE posed page every frame rather than baked at the click: at k = 0.5 the book
-is half-tilted and half-scaled and the offset that centres the row then is not
-half the offset that centres it at k = 1.
+is half-tilted and half-scaled and the offset that centres it then is not half
+the offset that centres it at k = 1. **Unchanged.** ~~`STUDY_ZOOM` 2.55, eased
+in over 0.42 s and out over 0.34 s~~ — the constant is gone and the timings are
+now `CLOSE_IN` / `CLOSE_OUT`, re-measured in §15.3.
 
-Measured through the real wiring, `tools/_scratch/_jstudy.mjs`, 1600×900:
+**Historical.** These were the lean's numbers, measured through the real wiring
+with `tools/_scratch/_jstudy.mjs` at 1600×900. They describe a view that no
+longer exists and are kept because the tilt column is still the tilt that ships:
 
-| | at the spread | leaned in |
+| | at the spread | leaned in (r4–r5 only) |
 |---|---|---|
-| the row's screen box | 0.219 × 0.094 of the frame | **0.569 × 0.298** |
+| the row's screen box | 0.219 × 0.094 of the frame | 0.569 × 0.298 |
 | the row's centre | wherever it was | 0.500, 0.498 |
-| the page, off face-on | 34° | **10.1°** |
+| the page, off face-on | 34° | **10.1°** ← still true at the close look |
 | the print's own box | 0.070 × 0.070 | — |
-
-At 700×1520 (phone portrait) the same click gives **0.839 × 0.114** and the
-leaned-in view shows ONE page filling the width — which is the fix §12.3 named
-as "the real fix is showing one page, which is a design change", arriving here
-for free on the view that needs it most.
 
 Going the whole way to face-on was rejected: a page exactly perpendicular to
 the lens has no perspective in it and the book stops being an object in a room.
-0.42 takes about seventy per cent of the 34°.
+0.42 takes about seventy per cent of the 34°. **Unchanged, and it applies with
+more force at the close look, not less.**
 
-Everything backs out **one level at a time** — Escape from a leaned-in entry
-returns to the spread and a second Escape shuts the book; a page key or a wheel
-detent returns to the spread rather than teleporting back and turning a page in
-one input. Dead keys while leaning were considered and rejected: a key that does
+Everything backs out **one level at a time** — Escape from a print returns to
+the spread and a second Escape shuts the book; a page key or a wheel detent
+returns to the spread rather than teleporting back and turning a page in one
+input. Dead keys while zoomed were considered and rejected: a key that does
 nothing is how a player decides a mode is stuck. The ceremony keeps right of
 way on the same test `leaf()` uses — the flying print locates its page with
-`samplePage` every frame and leaning the book underneath it would move the
-target it is aiming at.
+`samplePage` every frame and moving the book underneath it would move the
+target it is aiming at. **Unchanged, with one rung fewer to climb.**
 
-The one affordance: `zoom-in` on the canvas cursor over a print, `zoom-out`
-while leaning, written the way `Camp._paintCursor` writes it and only on a
-change. The journal has no chrome to say this with and the browser already has
-the vocabulary.
+The one affordance: `zoom-in` on the canvas cursor over a print, `zoom-out` once
+you are in, written the way `Camp._paintCursor` writes it and only on a change.
+The journal has no chrome to say this with and the browser already has the
+vocabulary. **Unchanged** — and in round 6 the hover does a second job as well,
+arming the detail patch (§15.3).
 
-Plates: `s0_spread`, `s2_lean_100ms` (fully legible mid-move — it leans, it does
-not swing), `s4_leaned`, `s6_spread_again`.
+Plates: `s0_spread`, `s2_lean_100ms`, `s4_leaned`, `s6_spread_again` — all four
+show the removed rung and are historical.
 
 ### 13.2 The page turn is a recording now
 
@@ -831,15 +842,20 @@ Three traps each of these had to learn the hard way and each now documents:
 *"I want another level of zoom here. if you click again on the photo it would
 fill 80% of the screen with the photo on the book."*
 
-Click a print, the book leans in on that entry (§13.1). Click the print **again**
-and the book comes the rest of the way until the photograph is 80% of the
-screen — still on the book, with the paper, the tape and the page around it in
-frame. Escape, a page key, a wheel detent or a click off the print backs out one
-level; a second backs out to the spread; a third shuts the book.
+> **Round 6 removed the rung this one was added on top of**, so "click the print
+> again" is now "click the print". The close look itself — the contain-fit, the
+> per-frame solve, `printPatch`, and every number in §14.1 and §14.3 — is
+> exactly what ships; what changed is that it is one click from the spread
+> rather than two, and §14.4's third bullet and §14.5's ladder are rewritten in
+> §15.3. Read this section for what the close look IS and §15.3 for how it is
+> reached.
 
-Nothing in §§1–13 was retuned. §13.1's lean is untouched and re-measured
-unchanged (`_jstudy.mjs`: row 0.569 x 0.298 of frame, page 10.1 degrees off
-face-on, cursor and Escape ladder as before).
+Click a print and the book comes until the photograph is 80% of the screen —
+still on the book, with the paper, the tape and the page around it in frame.
+Escape, a page key, a wheel detent or a click anywhere backs out to the spread;
+a second shuts the book.
+
+Nothing in §§1–13 was retuned *in round 5*.
 
 ### 14.1 What "80% of the screen" resolves to
 
@@ -966,14 +982,16 @@ for 4x the quota, on the deepest zoom of one feature — not worth it.
   showing through a half-transparent print for a fifth of a second, which is a
   far louder artifact than a sharpness change nobody can see at that size. Same
   argument `_bakePhoto` makes for the flying card.
-* **It is built one level early.** Drawing it is 14–28 ms of canvas raster,
+* **It is built one beat early.** Drawing it is 14–28 ms of canvas raster,
   measured with the raster forced (`_jclose` prints it; Chromium defers 2D
   raster, and docs/JOURNAL_NOTES.md 9 is the standing warning about timing it
   any other way). Spent on the click into the close look that is a stutter at
-  the start of the move, where the eye is. It is spent instead on the frame the
-  LEAN lands — a still picture over a paused world — so the second click costs a
-  page repaint (2.4–3.1 ms) and nothing else. Leaving the lean throws the canvas
-  away; a second close look at the same row is free.
+  the start of the move, where the eye is. In r5 it was spent on the frame the
+  LEAN landed instead — a still picture over a paused world. **In r6 the lean
+  does not exist, so it moved one beat the other way: it is spent on HOVER**,
+  after `HOVER_ARM` (0.12 s) of the pointer resting on a print, which is the
+  same beat one step earlier and is already the moment the cursor changes to
+  `zoom-in`. See §15.3.
 
 The canvas is **1825 x 1257, 9.2 MB**, transient, held only while the player is
 leaning in on a photographed row. `DETAIL_PX_MAX` (4.7) is the cap and it is
@@ -989,25 +1007,31 @@ else. At `px = 1` the arithmetic is unchanged and the page is what it always was
 
 ### 14.5 The ladder, and the one cap on it
 
-`_studyTo` is 0, 1 or 2 and `_studyK` is a continuous position along that
-ladder; every pose term is a piecewise function of the one scalar, and every way
-in or out moves it by exactly one level. Verified in the real game: Escape from
-the close look gives level 1, Escape again gives level 0 with the book still
-open, Escape again shuts it.
+> **r6: this is now a TWO-rung ladder** — 0 the spread, 1 the print. The
+> paragraph below described three. `_studyTo` and `_studyK` are otherwise
+> exactly what they were and `_zoomTo` still measures per level crossed, which
+> still matters because `_studyFrom` is continuous: interrupt a move halfway and
+> send it back and `dist` is 0.5. §15.3.
 
-The tilt does NOT move on the second segment. At full lean the page is already
-10 degrees off face-on, so there is nothing left to win, and `STUDY_TILT`'s
+Every pose term is a function of the one scalar `_studyK`, and every way in or
+out moves it by exactly one level. Verified in the real game (`_jreal.mjs`):
+Escape from the close look gives level 0 with the book still open, and Escape
+again shuts it.
+
+The tilt does NOT move as a separate rung — it goes on with the zoom, in one
+move. At the close look the page is 10 degrees off face-on, and `STUDY_TILT`'s
 argument against going face-on (a page perpendicular to the lens has no
 perspective in it and the book stops being an object in a room) applies with
-more force this close, not less. Level 2 is a pure move toward the print.
+more force this close, not less.
 
 **`close()` caps the ease-out at `SCRIPT.close`.** The put-down is 0.46 s and
-`_visible` goes false at the end of it; two levels at `STUDY_OUT` is 0.68 s, so
-without the cap the third zoom level would have quietly broken the close
-animation §13.1 was careful to get right — the book would vanish still
-half-zoomed instead of going back and going down as one movement. Verified:
-`close()` called from level 2 leaves `zoomLevel 0`, no patch, and **no leaf with
-its print still hidden**.
+`_visible` goes false at the end of it; `CLOSE_OUT` is 0.52 s, so without the
+cap the zoom would have quietly broken the close animation §13.1 was careful to
+get right — the book would vanish still half-zoomed instead of going back and
+going down as one movement. The cap did the same job when the ladder had three
+rungs (two levels at the old `STUDY_OUT` was 0.68 s) and it is still doing real
+work with one rung fewer. Verified: `close()` from the close look leaves
+`zoomLevel 0`, no patch, and **no leaf with its print still hidden**.
 
 ### 14.6 The download was cancelled mid-round
 
@@ -1024,13 +1048,12 @@ click.
 
 ### 14.7 Noted, not done
 
-* **The wheel backs out rather than zooming in.** One detent is one level out,
-  the same as a page key, which is consistent with §13.1 — but a wheel is the
-  one input a player might reasonably expect to work in both directions. It was
-  left alone rather than given a second meaning in this round.
-* **A click on a DIFFERENT print while leaning in backs out** instead of hopping
+* ~~**The wheel backs out rather than zooming in.**~~ Fixed in round 6: the
+  wheel is the free camera's dolly now (§15.4).
+* **A click on a DIFFERENT print while zoomed in backs out** instead of hopping
   to that entry. At this framing the other print is a sliver at the edge of the
-  frame and a sliver that teleports the book is a way to lose your place.
+  frame and a sliver that teleports the book is a way to lose your place. Still
+  true in r6.
 * **No stat and no posthog event** for reaching the close look. `src/game/` is
   not this module's to write to, and `Stats.js` has exactly one external writer
   today (`hud_photo`) which is flagged as unusual where it happens.
@@ -1246,3 +1269,106 @@ all — the compare gets there through the ceremony's seek, which is not clamped
 That is why a borrowed Notes leaf is safe to borrow, and it is also why nobody
 has ever seen the Notes page. It is one character to fix and it is a change to
 what the book does, so it is written down here rather than slipped in.
+
+### 15.3 One click to the print — the lean is gone
+
+*"Then get rid of the first zoom, clicking a photo takes you the close up only.
+Now that the user can zoom on their own."*
+
+Done. `_studyTo` is 0 or 1, `studyClose()` is deleted rather than left reachable
+by another route, and `_onStudiedPrint` — whose only job was telling a second
+click on the same print apart from a click anywhere else — went with it. What is
+kept is everything §14 measured: the contain-fit on whichever axis runs out
+first, the solve, `printPatch`, `hidePrint`, the tilt, the cursor and the
+one-rung-at-a-time way out. `STUDY_ZOOM` (2.55, the lean's own scale) is the
+only constant deleted.
+
+**The timing, which is the question this raised.** One click now covers twice
+the distance, so does the ease still read? The scale is
+`lerp(1, closeZ, easeInOut(t))` and this file's `easeInOut` is the 4t³ cubic,
+whose slope peaks at **3× its mean** at the midpoint — so a move's peak rate is
+3(end − start)/T, and the rate the eye reads is that divided by the scale it
+happens at, because a zoom is perceived multiplicatively. At 1600×900, where the
+fit solves to 9.095:
+
+| | peak d(scale)/dt | at scale | peak d(ln scale)/dt |
+|---|---|---|---|
+| the lean, 1 → 2.55 over 0.42 s | 11.1 | 1.78 | 6.2 /s |
+| the close look, 2.55 → 9.09 over 0.34 s | 57.7 | 5.82 | **9.9 /s** |
+| **one move, 1 → 9.095 over 0.60 s** | 40.5 | 5.05 | **8.0 /s** |
+
+So `CLOSE_IN` 0.60 is **19% gentler at its fastest than the move it replaces**,
+while covering the whole distance. Matching the old close look's peak exactly
+would be 0.49 s; the two old moves back to back with the stop taken out would be
+0.76. `CLOSE_OUT` 0.52 by the same table (9.3 /s against the old 11.2 /s) —
+coming back is a move to something you have already seen, and it was brisker
+than going in in the old pair too.
+
+That is arithmetic, so it is checked against the game: `_jsweep.mjs` with
+`TRACE=1` samples `_studyK`, the scale actually on the book and the fit's solve
+on rAF through the whole move. **Measured peak log rate 7.9 /s against the 8.0
+predicted.**
+
+**The fit is now solved BEFORE the move, and that was not optional.** The same
+trace is what found it. `_trackCloseZoom` is a one-division correction that is
+only exact when the framed rectangle is sitting on `STUDY_LOOK` — true at the
+END of the move and nowhere else, because the recentring offset is scaled by
+`k`. That was fine when this was the second rung and the move started from a
+book already leaning. From the spread it is not:
+
+```
+ ms      k       scale on the book   the solve
+ 14      0       1.000               8      <- the seed
+ 59      0.0003  1.002               4.01   <- a meaningless measurement, clamped
+ 240     0.2677  3.725               12.14  <- overshoot
+ 294     0.4851  6.403               11.80
+ 594     1.0000  9.110               9.11   <- correct, far too late
+```
+
+The scale never went backwards, but it covered half its distance in the first
+40% of the move instead of at the halfway point — the ease was chasing a target
+that was moving. `_solveCloseZoom` now applies the pose the move is heading for
+to the root, off-frame, measures it there, and puts the root back: two
+iterations (the first trial can be far enough out that a corner projects behind
+the lens and the measurement is refused), one extra `updateMatrixWorld` of a
+20-node tree, once per click. The same trace afterwards:
+
+```
+ ms      k       scale on the book   the solve
+ 14      0.0001  9.095               9.095  <- solved before the move starts
+ 294     0.4783  4.872               9.095
+ 588     1.0000  9.095               9.095
+```
+
+and **9.095 is the value §14.1's per-frame tracker independently measured as
+9.094**, which is the cross-check that says the up-front solve and the running
+one agree. `_trackCloseZoom` still runs, but only on frames where the move has
+landed, which is what carries a window resize. `CLOSE_ZOOM_SEED` (8) is now only
+the solver's first trial and any value converges; the compare leaf seeds its own
+1 for the reason in §15.2.
+
+**The detail patch moved from one rung early to one beat early.** §14.4 spent
+its 14–28 ms of canvas raster on the frame the lean landed, specifically so it
+would not land on the click. With the lean gone the click is the only moment
+left — and the click is the START of the move, which is exactly where §14.4
+refused to put it. So it goes the other way: `HOVER_ARM` (0.12 s) of the pointer
+resting on a print arms it, which is already the beat where the cursor becomes
+`zoom-in`. A print's pick rectangle is 112 CSS px across at the spread on
+1600×900, so a pointer would have to be travelling over 900 px/s — about three
+times a comfortable sweep — to cross one inside the dwell, which is what keeps a
+sweep across a spread of eight prints from rastering eight canvases. At most one
+9.2 MB canvas exists at a time, exactly as before.
+
+**What the pointer does now**, in full: at the spread, hover a print for
+`zoom-in` and to arm it, click it to go in, click anywhere else to turn the page
+(the half of the frame you clicked). Zoomed in, the cursor is `zoom-out` and a
+click anywhere — including on a different print — goes back to the spread.
+
+Verified in the real game with `_jsweep.mjs` (all four pages, one click each,
+`zoom 1`, patch up, print hidden, quad facing the reader on both leaves) and
+`_jreal.mjs` (`ladder: Escape -> zoom 0 active true | Escape -> active false`).
+
+**Stale instrument, flagged not fixed.** `tools/_scratch/_jclose.mjs` was
+written against the three-rung ladder and clicks twice to reach the close look;
+its second click now backs out. Its measurements in §14 were taken before this
+round and stand. `_jsweep.mjs` and `_jreal.mjs` are the harnesses to use.

@@ -126,20 +126,30 @@ const deg = (r) => (r * 180) / Math.PI;
 const POSE_HELD = { pos: [0.012, 0.004, 0.055], rot: [-0.30, 0.44, -0.055], scale: 1.02 };
 const POSE_LAID = { pos: [0, 0.008, 0.0], rot: [-1.005, 0.0, 0.0], scale: 1.10 };
 
-// ── leaning in on one entry ──────────────────────────────────────────────────
+// ── clicking a print: one move, from the spread to the print ─────────────────
 //
-// Click a print and the book comes up toward you, centred on that row, so the
-// photograph and the line it belongs to are big enough to read. Click again,
-// or press Escape, and it goes back to the spread.
+// Click a print and the book comes up toward you until the photograph is about
+// 80% of the screen. It is still ON the book — the paper, the tape and the page
+// around it stay in frame — because this is a close look at a print resting in
+// a journal and not an image viewer. Escape, a page key, a wheel detent or a
+// click anywhere goes back to the spread.
 //
-// **It is the ROW that is framed, not the print.** A photograph in this book is
-// landscape and sits beside its line, not over it, so framing the print alone
-// puts the entry it belongs to off the side of the screen — which is the half
-// of the pair somebody leaning in is actually trying to read. The print is the
-// TARGET (it is the visible affordance, and a small one is easier to aim at
-// than a whole band is to leaf past); the row is the FRAME.
+// ── this used to be two rungs, and is now one ──────────────────────────────
+// *"Then get rid of the first zoom, clicking a photo takes you the close up
+// only. Now that the user can zoom on their own."*
 //
-// Three numbers, and each is a decision:
+// The removed rung was the LEAN: the book came up centred on the row, and a
+// second click on the same print came the rest of the way. Its argument was
+// that a photograph sits beside its line rather than over it, so the entry and
+// its picture are a pair and the pair is the subject. That argument is now
+// answered by the free camera instead (`PAN_*`) — a player who wants to read
+// the line beside the print can pan and zoom to it, and does not need a rung of
+// a ladder authored for them. What is kept from the close look is everything
+// that was measured: the contain-fit, the per-frame solve and `printPatch`.
+//
+// What is left is a two-state ladder: 0 the spread, 1 the print. Every way in
+// or out still moves it by exactly one, so `_zoomTo` and `_studyK` are what
+// they were with one fewer value to take.
 //
 //  · `STUDY_TILT` is added to the laid pose's `rotation.x`. The spread lies at
 //    -1.005 rad, and the camera looks down at it from 23.5 degrees, which
@@ -148,25 +158,18 @@ const POSE_LAID = { pos: [0, 0.008, 0.0], rot: [-1.005, 0.0, 0.0], scale: 1.10 }
 //    and it is worse: a page exactly perpendicular to the lens has no
 //    perspective in it at all and the book stops being an object in a room —
 //    it becomes a texture, which is precisely the "reads as a UI panel" failure
-//    the whole model is built to avoid.
-//  · `STUDY_ZOOM` scales the BOOK rather than dollying the camera, because
-//    `_fitCamera` owns the camera's position and a second author of it is a
-//    fight (and because the composition note above still holds: the book
-//    moves, the camera does not). 2.55 takes the row from ~26% of the frame's
-//    width to ~66%.
-//  · `STUDY_IN`/`STUDY_OUT`. It has to be a move and not a cut, and it has to
-//    stay READABLE while it moves — so easeInOut over four tenths of a second,
-//    with no spin and no arc. The book leans; it does not swing.
-//
-// `STUDY_LOOK` is where the row's centre is put, and the offset that puts it
-// there is recomputed from the LIVE posed page every frame rather than baked at
-// the click. That is what makes the blend work at all: at k = 0.5 the book is
-// half-tilted and half-scaled, and the offset that centres the row is not half
-// the offset that centres it at k = 1.
-const STUDY_IN = 0.42;
-const STUDY_OUT = 0.34;
+//    the whole model is built to avoid. It is unchanged from the lean, which is
+//    where it was authored: the rung that went away was the ZOOM stop, not the
+//    angle, and the close look always inherited this exact tilt.
+//  · `STUDY_LOOK` is where the print's centre is put, and the offset that puts
+//    it there is recomputed from the LIVE posed page every frame rather than
+//    baked at the click. That is what makes the blend work at all: at k = 0.5
+//    the book is half-tilted and half-scaled, and the offset that centres the
+//    print is not half the offset that centres it at k = 1.
+//  · The BOOK scales, not the camera: `_fitCamera` owns the camera's position
+//    and a second author of it is a fight, and the composition rule in this
+//    file's header still holds — the book moves, the camera does not.
 const STUDY_TILT = 0.42;
-const STUDY_ZOOM = 2.55;
 const STUDY_LOOK = new THREE.Vector3(0, 0.004, 0.02);
 // The print's own rect, grown a little, as the click target. 1.18 is about
 // 10 mm of page all round at book scale — enough that a thumb on a phone does
@@ -212,15 +215,50 @@ const SLOT_PICK = 1.18;
 // 9.09x on 1600x900 and 7.93x on a 700x1520 phone, both a long way under it.
 const CLOSE_FILL = 0.80;
 const CLOSE_ZOOM_MAX = 40;
-// The close look frames the PRINT where the lean framed the ROW. That is not a
-// change of mind about §13.1 — it is the same rule one level on. Leaning in,
-// the photograph and the line it belongs to are a pair and the pair is the
-// subject; this close, the line is long since read and the only thing left to
-// look at is the photograph. A little quicker in and out than the lean, because
-// it is a move toward something already on the screen rather than a change of
-// subject, and per LEVEL CROSSED rather than per move — see `_zoomTo`.
-const CLOSE_IN = 0.34;
-const CLOSE_OUT = 0.30;
+// ── how long the move takes, now that it is ONE move ────────────────────────
+//
+// It used to be two: 0.42 s out to the lean and 0.34 s from there to the print,
+// with a stop between them. One click now covers the whole distance, so the
+// question is whether the old timings still read over twice as far.
+//
+// Measured rather than felt. The scale is `lerp(1, closeZ, easeInOut(t))`, and
+// this file's `easeInOut` is the 4t³ cubic whose slope peaks at **3x its mean**
+// at the midpoint — so the peak rate of a move is 3 (end - start) / T. The eye
+// reads a zoom multiplicatively, so the rate that matters is that divided by
+// the scale it happens at. At 1600 x 900, where the fit solves to 9.095:
+//
+//                          peak d(scale)/dt    at scale    peak d(ln scale)/dt
+//   the lean,  1 -> 2.55        11.1             1.78            6.2 /s
+//   the close, 2.55 -> 9.09     57.7             5.82            9.9 /s
+//   ONE move,  1 -> 9.095 @0.60 40.5             5.05            8.0 /s
+//
+// So 0.60 s is **19% gentler at its fastest than the move it replaces**, while
+// covering the whole distance; matching the old close look's peak exactly would
+// be 0.49 s. Confirmed against the real game rather than left as arithmetic —
+// `_jsweep.mjs --TRACE=1` samples `_studyK`, the scale on the book and the fit's
+// solve on rAF through the whole move, and the measured peak log rate is
+// 7.9 /s against the 8.0 predicted here.
+//
+// Out is 0.52 by the same table (9.3 /s against the old 11.2 /s): coming back
+// is a move to something you have already seen, so it is allowed to be brisker
+// than going in, and it was in the old pair too (0.30 against 0.34).
+const CLOSE_IN = 0.60;
+const CLOSE_OUT = 0.52;
+// Where the fit's solve STARTS, before it has measured anything. Not a design
+// value and not a fallback — `_trackCloseZoom` overwrites it on the first frame
+// it can measure and converges within a few — but the trajectory of the move
+// is smoother the closer this is to the answer, and it is measurably 9.09 on
+// 1600x900 and 7.93 on a 700x1520 phone. 8 is between them. The compare leaf
+// seeds its own (1), because a whole page at 80% is 1.19x and 8 would send the
+// book in and back out inside one move.
+const CLOSE_ZOOM_SEED = 8;
+// How long the pointer has to rest on a print before its detail patch is drawn.
+// See `_hoverAt`. Long enough that sweeping across a spread does not raster
+// every print on it, short enough that it is always done before the click:
+// measured at 1600x900, a print's pick rectangle is 112 px across the screen at
+// the spread, so a pointer would have to be travelling over 900 px/s to cross
+// one inside this — about three times a comfortable mouse sweep.
+const HOVER_ARM = 0.12;
 // Device pixels per page pixel in the detail patch (journal_page's
 // `printPatch`), which is what makes the close look a view of the STORED photo
 // rather than of the page texture — the argument is in `_detailPrepare` and the
@@ -323,10 +361,10 @@ export class Journal {
     this._studyFrom = 0;
     this._cursor = null;
     // The solved scale for the close look, and the scale actually on the book
-    // this frame (which `_trackCloseZoom` divides by). Seeded at the lean's own
-    // zoom so the very first frame of a close look is never wilder than the
-    // level it came from.
-    this._closeZ = STUDY_ZOOM;
+    // this frame (which `_trackCloseZoom` divides by). Seeded at
+    // `CLOSE_ZOOM_SEED` so the solve starts near its own answer rather than at
+    // the spread's scale — see there.
+    this._closeZ = CLOSE_ZOOM_SEED;
     this._zoomNow = 1;
 
     this._buildScene();
@@ -481,6 +519,11 @@ export class Journal {
     this._cmpUV = null;
     this._cmpSquash = 0;
     this._backTo = null;
+    // The print the pointer is resting on, and how long it has rested. See
+    // `_hoverAt`: this is what arms the detail patch a beat before the click.
+    this._hoverKey = null;
+    this._hoverSeat = null;
+    this._hoverT = 0;
     this._size = new THREE.Vector2();
     this._dbSize = new THREE.Vector2();
     this._clearCol = new THREE.Color();
@@ -661,7 +704,7 @@ export class Journal {
     this._study = null;
     this._studyTo = this._studyK = 0;
     this._studyT = 1;
-    this._closeZ = STUDY_ZOOM;
+    this._closeZ = CLOSE_ZOOM_SEED;
     // Every latch the ceremony sets, reset in one place. Forgetting one of
     // these is how the second open of a session skips a beat.
     this._seatOf = null;
@@ -680,6 +723,7 @@ export class Journal {
     this._card.visible = false;
     this._cmpDrop();
     this._backTo = null;
+    this._hoverAt(null);
 
     // The shutter's scratch canvas has to become a string before the first
     // await; see the header of this method.
@@ -862,6 +906,7 @@ export class Journal {
     // else's two photographs on it.
     this._cmpDrop();
     this._backTo = null;
+    this._hoverAt(null);
     this._cursorTo('');
     this.onClose?.();
   }
@@ -975,6 +1020,9 @@ export class Journal {
     // one frame stale puts the photo a visible millimetre off the paper on the
     // exact frame it touches down.
     this._apply(d);
+
+    // The pointer's dwell on a print, which is what arms its detail patch.
+    this._hoverTick(d);
 
     // The compare leaf, after `_apply` for the same reason the award beats are:
     // it places two quads with `samplePage` and needs the pose already on the
@@ -1121,7 +1169,7 @@ export class Journal {
   /**
    * Push the pose onto the model and the scene.
    *
-   * @param dt real seconds since the last call. Only the lean uses it — every
+   * @param dt real seconds since the last call. Only the zoom uses it — every
    *   other value here is written by the script and simply read. It defaults to
    *   0 so a harness that poses the book by hand (`_jcritic --mode model`
    *   replaces `update` with a bare `_apply()`) gets a still and not a frozen
@@ -1165,7 +1213,8 @@ export class Journal {
     const s = lerp(A.scale, B.scale, k) * lerp(0.9, 1, clamp01(P.lift));
     r.scale.setScalar(s);
 
-    // The lean, on top of the laid pose and nothing else — it adds to what is
+    // The close look, on top of the laid pose and nothing else — it adds to
+    // what is
     // already on the root rather than replacing it, so the rise, the dip and
     // the recentre above all keep working underneath it.
     this._applyStudy(r, dt);
@@ -1485,32 +1534,26 @@ export class Journal {
       if (e.type === 'pointermove') {
         // Hover only; the pick is cheap (four `samplePage` lookups per
         // photographed row, of which a spread holds at most eight) and it is
-        // the only thing telling the player a print is worth clicking. While
-        // leaning in it is also the only thing that says there is another level
-        // to go: `zoom-in` over the print, `zoom-out` off it.
-        this._cursorTo(this._studyTo >= 2 ? 'zoom-out'
-          : this._studyTo === 1
-            ? (this._onStudiedPrint(e.clientX, e.clientY) ? 'zoom-in' : 'zoom-out')
-            : (this._rowAt(e.clientX, e.clientY) ? 'zoom-in' : ''));
+        // the only thing telling the player a print is worth clicking.
+        //
+        // It also ARMS the detail patch — see `_hoverSeat`. That is where the
+        // ~20 ms of canvas raster went when the lean stopped existing: the lean
+        // used to be the free moment to spend it in, and a hover is the same
+        // beat one step earlier.
+        const seat = this._studyTo > 0 ? null : this._rowAt(e.clientX, e.clientY);
+        this._hoverAt(seat);
+        this._cursorTo(this._studyTo > 0 ? 'zoom-out' : (seat ? 'zoom-in' : ''));
         return;
       }
       if (e.type !== 'pointerdown') return;
       e.preventDefault();
       // At the close look there is nowhere further in, so anywhere is "back".
-      if (this._studyTo >= 2) { this.zoomOut(); this._cursorTo('zoom-out'); return; }
-      // Leaning in: the print itself goes CLOSER — the user's own gesture,
-      // "click again on the photo" — and anywhere else backs out one level.
-      // A click on a DIFFERENT print on the same spread backs out too rather
-      // than hopping sideways: at this framing the other print is a sliver at
-      // the edge of the frame, and a sliver that teleports the book is a way to
-      // lose your place, not a shortcut.
-      if (this._studyTo === 1) {
-        if (this._onStudiedPrint(e.clientX, e.clientY)) {
-          this.studyClose(); this._cursorTo('zoom-out'); return;
-        }
-        this.zoomOut(); this._cursorTo(''); return;
-      }
-      // A print. Lean in and read that entry.
+      // A click on a DIFFERENT print does the same rather than hopping sideways
+      // to it: at this framing the other print is a sliver at the edge of the
+      // frame, and a sliver that teleports the book is a way to lose your place,
+      // not a shortcut.
+      if (this._studyTo > 0) { this.zoomOut(); this._cursorTo('zoom-out'); return; }
+      // A print. Go to it — the whole way, in one move.
       const seat = this._rowAt(e.clientX, e.clientY);
       if (seat) { this.study(seat.page, seat.row); this._cursorTo('zoom-out'); return; }
       // Click the half of the frame you want to go to. The book fills the
@@ -1525,20 +1568,20 @@ export class Journal {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  //  Leaning in on one entry
+  //  Going in on one print
   // ───────────────────────────────────────────────────────────────────────────
 
-  /** True while the book is leaning in on a single row (or on its way there). */
+  /** True while the book is in on a single print (or on its way there). */
   get studying() { return this._studyTo > 0; }
 
-  /** True at (or on the way to) the close look at the print itself. */
-  get closeUp() { return this._studyTo > 1; }
+  /** Kept as the name for the same thing: the close look at the print. */
+  get closeUp() { return this._studyTo > 0; }
 
-  /** 0 the spread, 1 leaning in on a row, 2 the close look. */
+  /** 0 the spread, 1 the close look at one print. */
   get zoomLevel() { return this._studyTo; }
 
   /**
-   * Lean in on one row of the spread that is currently open.
+   * Go in on one row's print, all the way, in one move.
    *
    * @param page  index into `_pages`
    * @param row   index into that page's `spec.rows`
@@ -1547,44 +1590,31 @@ export class Journal {
     const p = this._pages[page];
     if (!p?.spec?.rows?.[row]) return;
     // The compare leaf owns the book while it is up, and it is already framed
-    // at the top of the ladder. Leaning in on something else from under it
-    // would move the page the two prints are being placed on.
+    // at the top of the ladder. Going in on something else from under it would
+    // move the page the two prints are being placed on.
     if (this._cmp) return;
-    // Nothing to lean in on mid-turn: `samplePage` reads the leaf that is at
+    // Nothing to go in on mid-turn: `samplePage` reads the leaf that is at
     // rest, and there isn't one while a page is in flight.
     if (this._leafT < 1 || this._seekQueue > 0) return;
     // The ceremony has right of way, on the same test `leaf()` uses. The
     // photograph flies to a page it locates with `samplePage` every frame, and
-    // leaning the book in underneath it would move the target it is aiming at.
+    // moving the book underneath it would move the target it is aiming at.
     if (this._script?.hasAward && !this._taped &&
         this._t < (this._script.end + (this._seekPad ?? 0))) return;
-    // The row is the frame at level 1 and the slot is the frame at level 2, so
-    // both rectangles are taken now, from the same page, once. The row's four
-    // numbers stay spread on `_study` itself rather than nested: they are what
-    // `docs/JOURNAL_NOTES.md` documents and what the harnesses read.
+    // The slot is the frame. The row's own rectangle is still taken and still
+    // spread on `_study` itself rather than nested — the free camera's pan
+    // clamp measures against it, `docs/JOURNAL_NOTES.md` documents it and the
+    // harnesses read it.
     this._study = {
       page, row, verso: p.spec.verso, ...p.rowUV(row), slot: p.slotUV(row),
     };
     this._studyOff?.set(0, 0, 0);
-    this._closeZ = STUDY_ZOOM;
+    this._closeZ = CLOSE_ZOOM_SEED;
+    this._solveCloseZoom();
     this._zoomTo(1);
   }
 
-  /**
-   * One level closer: the print itself, at `CLOSE_FILL` of the frame.
-   *
-   * Only from the lean — there is no way to get here from the spread in one
-   * move, and that is deliberate. The click that starts the lean is aimed at a
-   * print about 7% of the frame across; the same click aimed at a print that is
-   * about to become 80% of it would be an enormous jump off a small target, and
-   * the entry it belongs to would never be read at all.
-   */
-  studyClose() {
-    if (!this._study || this._studyTo < 1) return;
-    this._zoomTo(2);
-  }
-
-  /** Back out ONE level: the close look to the lean, the lean to the spread. */
+  /** Back out ONE level: the close look to the spread. */
   zoomOut() {
     if (this._studyTo <= 0) return;
     this._zoomTo(this._studyTo - 1);
@@ -1594,37 +1624,34 @@ export class Journal {
   unstudy() { this._zoomTo(0); }
 
   /**
-   * Move to a level on the zoom ladder.
+   * Move to a level on the zoom ladder — 0 the spread, 1 the print.
    *
-   * The duration is per LEVEL CROSSED, not per move, so backing out of the
-   * close look all the way to the spread takes twice as long as backing out of
-   * the lean does — which is the honest reading, because it is twice as far.
+   * There used to be three of these and the duration was per LEVEL CROSSED so
+   * that a two-level move took twice as long as a one-level one. With two rungs
+   * `dist` is always 1 and that arithmetic is a no-op, but it is left in place
+   * because it is what makes `maxDur` exact rather than approximate, and
+   * because `_studyFrom` is a CONTINUOUS position: interrupting a move halfway
+   * and sending it back gives `dist` 0.5, and half the distance should take
+   * half the time.
    *
-   * `maxDur` is the one exception and it has exactly one caller: `close()`. The
-   * put-down is 0.46 s and `_visible` goes false at the end of it, so an ease
-   * that outlasts it is not slow, it is CUT — the book would vanish still
-   * half-zoomed instead of going back and going down as one movement. Two
-   * levels at `STUDY_OUT` is 0.68 s, so without this the third zoom level would
-   * have quietly broken the close animation that §13.1 was careful to get right.
+   * `maxDur` has exactly one caller: `close()`. The put-down is 0.46 s and
+   * `_visible` goes false at the end of it, so an ease that outlasts it is not
+   * slow, it is CUT — the book would vanish still half-zoomed instead of going
+   * back and going down as one movement. `CLOSE_OUT` is 0.52 s, so this is
+   * still doing real work with one rung fewer than it was written for.
    */
   _zoomTo(level, maxDur = Infinity) {
-    const to = Math.max(0, Math.min(2, level));
+    const to = Math.max(0, Math.min(1, level));
     if (to === this._studyTo) return;
     this._studyFrom = this._studyK;
     this._studyTo = to;
     this._studyT = 0;
     const dist = Math.abs(to - this._studyFrom);
-    // Which segment's rate applies is decided by where the move is GOING: a
-    // move that ends at the close look is a dolly-in and a move that ends at
-    // the spread is a lean-out, whichever level it started from.
-    const rate = to > this._studyFrom
-      ? (to >= 2 ? CLOSE_IN : STUDY_IN)
-      : (this._studyFrom > 1 && to >= 1 ? CLOSE_OUT : STUDY_OUT);
-    this._studyDur = Math.min(maxDur, rate * dist);
+    this._studyDur = Math.min(maxDur, (to > this._studyFrom ? CLOSE_IN : CLOSE_OUT) * dist);
   }
 
   /**
-   * Advance the lean, and hold the row's centre on `STUDY_LOOK`.
+   * Advance the move, and hold the print's centre on `STUDY_LOOK`.
    *
    * Called from `_apply`, AFTER the base pose is on the root and before the
    * final `updateMatrixWorld` — because it needs the world position of a point
@@ -1643,41 +1670,38 @@ export class Journal {
       }
     }
     const k = this._studyK;
-    if (k <= 0.0002 || !this._study) { this._detailDrop(); return; }
+    if (k <= 0.0002 || !this._study) {
+      // At the spread the patch is normally thrown away — but not the one the
+      // POINTER has armed (`_hoverAt`), which is the whole point of arming it
+      // before the click. `_detailHide` puts the leaf's own print back and
+      // parks the quad; the canvas stays.
+      if (this._detailFor != null && this._detailFor === this._hoverKey) this._detailHide();
+      else this._detailDrop();
+      return;
+    }
 
     const S = this._study;
-    // The ladder, as three piecewise terms of one scalar. `lean` is the 0 -> 1
-    // segment (the tilt and the first zoom) and `c` is the 1 -> 2 segment (the
-    // dolly in). The TILT does not move on the second segment: at full lean the
-    // page is already 10 degrees off face-on, so there is nothing left to win,
-    // and the STUDY_TILT header's argument against going face-on applies with
-    // more force this close, not less. Level 2 is a pure move toward the print.
-    const lean = Math.min(k, 1);
-    const c = clamp01(k - 1);
-    root.rotation.x += STUDY_TILT * lean;
-    // `mid` is the scale at the end of the FIRST segment. It is `STUDY_ZOOM`
-    // for a print, which is what the lean was authored at, and 1 for the
-    // compare leaf — a whole page is already most of the frame at the spread's
-    // own scale, and leaning in to 2.55x on the way to 1.19x would zoom the
-    // book in and then back out again inside one move.
-    const mid = S.mid ?? STUDY_ZOOM;
-    this._zoomNow = lerp(1, lerp(mid, this._closeZ, c), lean);
+    // Every pose term is a function of the one scalar, which is now a straight
+    // 0 -> 1 rather than a two-segment piecewise: the tilt, the scale and the
+    // recentring all run once, together, over one move.
+    root.rotation.x += STUDY_TILT * k;
+    this._zoomNow = lerp(1, this._closeZ, k);
     root.scale.multiplyScalar(this._zoomNow);
 
-    // What is being centred crossfades from the row to the print across the
-    // second segment, in UV, before anything is projected — so the book makes
-    // one continuous move rather than swapping targets at a threshold.
-    const tu = lerp(S.u, S.slot.u, c), tv = lerp(S.v, S.slot.v, c);
+    // The print is what is centred. The lean centred the ROW and crossfaded to
+    // the print on its second segment; with the second segment gone there is
+    // nothing to crossfade and the target is simply the slot.
+    const tu = S.slot.u, tv = S.slot.v;
 
-    // Where that point has ended up, with the lean already on the book. The
-    // offset is scaled by `lean` so it is zero at the spread and exact from
-    // full lean onward — see the STUDY_* header for why it cannot be
+    // Where that point has ended up, with the tilt and scale already on the
+    // book. The offset is scaled by `k` so it is zero at the spread and exact
+    // at the close look — see the STUDY_* header for why it cannot be
     // precomputed.
     root.updateMatrixWorld(true);
     const off = this._studyOff ??= new THREE.Vector3();
     const mesh = S.verso ? this._J.pageLeft : this._J.pageRight;
     // The last good offset is KEPT when the page stops being sampleable, which
-    // happens on exactly one path and it matters: `close()` eases the lean out
+    // happens on exactly one path and it matters: `close()` eases the zoom out
     // while the cover swings shut, and the moment the cover takes the leaves
     // back (`J.inside` goes false) they are no longer visible and there is
     // nothing to sample. Recomputing to zero there would snap a scaled, tilted
@@ -1685,23 +1709,19 @@ export class Journal {
     if (mesh?.visible && samplePage(mesh, tu, tv, this._tmpP)) {
       off.subVectors(STUDY_LOOK, this._tmpP);
     }
-    root.position.addScaledVector(off, lean);
+    root.position.addScaledVector(off, k);
 
-    // ── the patch is BUILT one level early, on purpose ───────────────────────
-    // Drawing it is ~25 ms of canvas raster (`_jclose --dir ... ` prints the
-    // number with the raster forced), which is two dropped frames. Spent on the
-    // click into the close look it is a stutter at the start of the move —
-    // exactly where the eye is. Spent on the frame the LEAN lands, it is a
-    // still picture over a paused world and nobody sees it, and the click that
-    // follows costs a repaint (2.4 ms) and nothing else. Leaving the lean
-    // entirely throws it away again; a second close look at the same row is
-    // free, which is the case a player who is comparing two entries hits.
+    // The patch itself is built on HOVER, one beat before the click — see
+    // `_hoverAt`. All this does is keep it alive for as long as the book is on
+    // this print and throw it away when it is not; `_detailPrepare` returns
+    // immediately when it is already holding the right one.
+    //
     // `S.row == null` is the compare leaf: a framed rectangle with no print of
     // its own to swap out. It brings its own two quads — see `_cmpPlace`.
-    if (lean >= 1 && S.row != null) this._detailPrepare(S);
+    if (S.row != null) this._detailPrepare(S);
     else this._detailDrop();
 
-    if (c > 0 && mesh?.visible) {
+    if (k >= 1 && mesh?.visible) {
       // ── the recentre goes onto the MATRICES before anything reads them ────
       // Both of the calls below want world positions on the page as it now
       // stands, recentring included. The first version of this passed `off`
@@ -1721,7 +1741,19 @@ export class Journal {
       // One walk of a 20-node tree, only while the close look is up, buys the
       // question not being askable.
       root.updateMatrixWorld(true);
-      this._trackCloseZoom(mesh, S.slot, mid);
+      // Only once the move has LANDED. The fit is solved up front, in
+      // `_solveCloseZoom`, and this is what keeps it honest across a resize —
+      // running it mid-move instead means the target the ease is heading for
+      // moves while the ease is running. Measured, that is not subtle: sampled
+      // on rAF through a single move, the solve went seed 8 -> 4.0 (a
+      // meaningless measurement at k = 0.003, clamped) -> 12.2 -> back down to
+      // 9.11, and the scale covered half its log distance in the first 40% of
+      // the move instead of at the halfway point.
+      this._trackCloseZoom(mesh, S.slot);
+      if (this._cmp) this._cmpPlace(mesh);
+      else this._detailShow(S, mesh);
+    } else if (k > 0 && mesh?.visible) {
+      root.updateMatrixWorld(true);
       if (this._cmp) this._cmpPlace(mesh);
       else this._detailShow(S, mesh);
     } else {
@@ -1731,14 +1763,66 @@ export class Journal {
   }
 
   /**
-   * Solve the close look's scale so the print lands on `CLOSE_FILL` of the
-   * frame — measured, every frame, rather than authored once.
+   * Solve the fit ONCE, before the move starts, by posing the book where the
+   * move is going and measuring it there.
    *
-   * A fixed number was the first attempt and it cannot be right: the scale that
-   * fills 80% depends on the window's aspect (which moves both `_fitCamera`'s
-   * lens AND its dolly), on which page of the spread the print is on, and on
-   * where in the leaf's bend it sits. Tuned at 1600x900 it was 14% off at
-   * 1280x1024 and 34% off on a phone.
+   * `_trackCloseZoom` is a one-division correction that is only exact when the
+   * framed rectangle is actually sitting on `STUDY_LOOK` — which is true at the
+   * END of the move and nowhere else, because the recentring offset is scaled
+   * by `k`. Running it every frame of the move was right when the move was the
+   * second rung of a ladder and started from a book already leaning; with one
+   * rung it starts from the spread, where the measurement is meaningless, and
+   * the ease spends the first third of itself chasing a target that is moving.
+   *
+   * So the pose the move is HEADING for is applied to the root here, off-frame,
+   * measured, and put back. Two iterations rather than one, not because the
+   * relationship is non-linear — it is linear, and that is arranged rather than
+   * lucky (see `_trackCloseZoom`) — but because the first iteration's trial
+   * scale can be far enough out that the rectangle's corners project behind the
+   * lens and the measurement is refused. The second lands on the answer to four
+   * decimal places, which is what the tracker then confirms on arrival.
+   *
+   * Costs one extra `updateMatrixWorld` of a 20-node tree per click.
+   */
+  _solveCloseZoom() {
+    const S = this._study;
+    const root = this._bookRoot;
+    const mesh = S?.verso ? this._J.pageLeft : this._J.pageRight;
+    if (!S || !mesh?.visible) return;
+    const p0 = (this._sp0 ??= new THREE.Vector3()).copy(root.position);
+    const s0 = (this._ss0 ??= new THREE.Vector3()).copy(root.scale);
+    const rx = root.rotation.x;
+    const off = this._solveOff ??= new THREE.Vector3();
+    for (let i = 0; i < 2; i++) {
+      root.position.copy(p0);
+      root.scale.copy(s0);
+      root.rotation.x = rx + STUDY_TILT;
+      root.scale.multiplyScalar(this._closeZ);
+      root.updateMatrixWorld(true);
+      if (!samplePage(mesh, S.slot.u, S.slot.v, this._tmpP)) break;
+      off.subVectors(STUDY_LOOK, this._tmpP);
+      root.position.add(off);
+      root.updateMatrixWorld(true);
+      // The tracker divides by the scale that is on the book; here that is the
+      // trial itself.
+      this._zoomNow = this._closeZ;
+      this._trackCloseZoom(mesh, S.slot);
+    }
+    root.position.copy(p0);
+    root.scale.copy(s0);
+    root.rotation.x = rx;
+    root.updateMatrixWorld(true);
+  }
+
+  /**
+   * Correct the fit. Called on the frames the move has LANDED on, which is
+   * what carries a window resize.
+   *
+   * The scale that satisfies an 80% contain-fit depends on the window's aspect
+   * (which moves both `_fitCamera`'s lens AND its dolly), on which page of the
+   * spread the print is on, and on where in the leaf's bend it sits. A fixed
+   * number was the first attempt and it cannot be right: tuned at 1600x900 it
+   * was 14% off at 1280x1024 and 34% off on a phone.
    *
    * The solve is one division because the relationship is LINEAR and that is
    * arranged rather than lucky: the print is held at `STUDY_LOOK`, a fixed world
@@ -1751,7 +1835,7 @@ export class Journal {
    * corners are read straight off the page — see the note at the call site for
    * the bug that paid for that rule.
    */
-  _trackCloseZoom(mesh, slot, floor = STUDY_ZOOM) {
+  _trackCloseZoom(mesh, slot) {
     const q = this._cq ??= [0, 1, 2, 3].map(() => new THREE.Vector3());
     const hw = slot.w / 2, hh = slot.h / 2;
     const uv = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
@@ -1772,13 +1856,12 @@ export class Journal {
     // mid-turn, a corner behind the lens), not a rate limit — one step is meant
     // to land, and at [0.5, 4] a fresh close look converges on the first frame.
     const step = Math.max(0.5, Math.min(4, want));
-    // The FLOOR is the scale the move set out from, not a constant: the close
-    // look must never end up smaller than the lean it came through, and the
-    // compare leaf must be free to settle BELOW that, because a whole page at
-    // 80% of the frame is 1.19x and 2.55 would crop the question off the top of
-    // it. Written as a constant, that is exactly what it did.
-    this._closeZ = Math.max(floor,
-      Math.min(CLOSE_ZOOM_MAX, this._zoomNow * step));
+    // The floor is 1 — the spread's own scale — and nothing above it. It used
+    // to be `STUDY_ZOOM`, on the argument that the close look must never end up
+    // wider than the lean it came through; the lean is gone, and the constant
+    // was actively wrong for the compare leaf, where a whole page at 80% of the
+    // frame is 1.19x and 2.55 cropped the question off the top of it.
+    this._closeZ = Math.max(1, Math.min(CLOSE_ZOOM_MAX, this._zoomNow * step));
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -1827,6 +1910,50 @@ export class Journal {
    * is the same argument `_bakePhoto` makes for swapping the flying card the
    * instant it lands.
    */
+  /**
+   * The pointer is over this print (or over nothing). Arm the detail patch.
+   *
+   * ── where the raster went when the lean went ──────────────────────────────
+   * Drawing the patch is 14-28 ms of canvas work (`_jclose` prints it with the
+   * raster forced; Chromium defers 2D raster and JOURNAL_NOTES 9 is the
+   * standing warning about timing it any other way). That is two dropped
+   * frames, and it has to be spent somewhere the eye is not.
+   *
+   * It used to be spent on the frame the LEAN landed: a still picture over a
+   * paused world, one whole rung before the click that needed it. With the lean
+   * gone the click is the only remaining moment — and the click is the START of
+   * the move, which is exactly where §14.4 refused to put it.
+   *
+   * So it moves one beat EARLIER instead of one later: the pointer resting on a
+   * print already changes the cursor to `zoom-in`, and a print somebody is
+   * about to click is a print they are hovering. `HOVER_ARM` of dwell keeps a
+   * pointer sweeping across a spread of eight prints from rastering eight
+   * canvases on its way past — measured, a sweep at any speed a hand actually
+   * moves crosses a slot in well under it.
+   *
+   * The canvas is thrown away when the pointer leaves and the book is not on
+   * that print, so at most one 9.2 MB canvas exists at a time, exactly as
+   * before.
+   */
+  _hoverAt(seat) {
+    const key = seat ? `${seat.page}:${seat.row}` : null;
+    if (key === this._hoverKey) return;
+    this._hoverKey = key;
+    this._hoverT = 0;
+    this._hoverSeat = seat;
+  }
+
+  /** The dwell, ticked from `update`. */
+  _hoverTick(dt) {
+    if (!this._hoverSeat || this._studyTo > 0 || this._cmp) return;
+    if (this._detailFor === this._hoverKey) return;
+    this._hoverT += dt;
+    if (this._hoverT < HOVER_ARM) return;
+    const p = this._pages?.[this._hoverSeat.page];
+    if (!p) return;
+    this._detailPrepare({ page: this._hoverSeat.page, row: this._hoverSeat.row });
+  }
+
   _detailPrepare(S) {
     const key = `${S.page}:${S.row}`;
     if (this._detailFor === key) return;
@@ -2064,11 +2191,15 @@ export class Journal {
     // file rather than two.
     const frame = p.compareFrameUV();
     this._study = {
-      page: C.page, row: null, verso: p.spec.verso, mid: 1, ...frame, slot: frame,
+      page: C.page, row: null, verso: p.spec.verso, ...frame, slot: frame,
     };
     this._studyOff?.set(0, 0, 0);
+    // Its own seed, not `CLOSE_ZOOM_SEED`: a whole leaf at 80% of the frame is
+    // 1.19x, and starting the solve at a print's 8 would send the book in and
+    // straight back out inside one move.
     this._closeZ = 1;
-    this._zoomTo(2);
+    this._solveCloseZoom();
+    this._zoomTo(1);
     for (let k = 0; k < 2; k++) {
       const patch = p.comparePatch(k, C.img[k], k === 0 ? 1 : 0, DETAIL_PX_MAX);
       if (!patch) continue;
@@ -2305,24 +2436,6 @@ export class Journal {
     return null;
   }
 
-  /**
-   * Is this screen point on the print the book is already leaning in on?
-   *
-   * The same `_inSlot` test `_rowAt` uses, aimed at one known slot instead of
-   * searching the spread — at this framing the studied print is most of the
-   * screen and the other rows are slivers, so searching would only create ways
-   * for the click to land somewhere surprising.
-   */
-  _onStudiedPrint(clientX, clientY) {
-    const S = this._study;
-    if (!S || this._studyTo < 1 || !this._active) return false;
-    const mesh = S.verso ? this._J.pageLeft : this._J.pageRight;
-    if (!mesh?.visible) return false;
-    const w = window.innerWidth, h = window.innerHeight;
-    return this._inSlot(mesh, S.slot,
-      (clientX / Math.max(1, w)) * 2 - 1, -((clientY / Math.max(1, h)) * 2 - 1));
-  }
-
   /** Is (px, py) in NDC inside this slot's projected quad? */
   _inSlot(mesh, slot, px, py) {
     const hw = (slot.w * SLOT_PICK) / 2, hh = (slot.h * SLOT_PICK) / 2;
@@ -2350,9 +2463,9 @@ export class Journal {
   /**
    * The one affordance this feature needs, and the cheapest one available.
    *
-   * A print you can lean in on has to say so, and the journal has no chrome to
+   * A print you can go in on has to say so, and the journal has no chrome to
    * say it with — the whole feature is a book with no labels on it. `zoom-in`
-   * over a print and `zoom-out` while leaning is the browser's own vocabulary
+   * over a print and `zoom-out` once you are in is the browser's own vocabulary
    * for exactly this and costs nothing.
    *
    * Written straight onto the canvas, the way `Camp._paintCursor` does, and

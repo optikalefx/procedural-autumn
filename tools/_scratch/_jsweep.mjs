@@ -171,26 +171,36 @@ for (const id of IDS) {
   }, id);
   console.log('  seat:', JSON.stringify(seat));
   if (!seat || seat.offscreen) { await page.keyboard.press('j'); await page.waitForTimeout(1000); continue; }
-  await page.mouse.click(seat.cx, seat.cy);
-  await page.waitForTimeout(1200);
-  const pt = await page.evaluate(() => {
-    const j = window.__systems.hud.journal;
-    for (let y = 0.08; y < 0.95; y += 0.02)
-      for (let x = 0.05; x < 0.95; x += 0.02) {
-        const cx = Math.round(x * window.innerWidth), cy = Math.round(y * window.innerHeight);
-        if (j._onStudiedPrint(cx, cy)) return { cx, cy };
-      }
-    return null;
-  });
-  if (!pt) { console.log('  studied print not on screen'); }
-  else {
-    await page.mouse.click(pt.cx, pt.cy);
-    await page.waitForTimeout(1500);
-    await page.screenshot({ path: `${OUT}/${id}_close.png` });
-    console.log('  facing:', JSON.stringify(await facing()));
-    console.log('  state :', JSON.stringify(await state()));
-  }
-  for (let k = 0; k < 3; k++) { await page.keyboard.press('Escape'); await page.waitForTimeout(600); }
+  // Rest on it first: the hover is what arms the detail patch now.
+  await page.mouse.move(seat.cx, seat.cy);
+  await page.waitForTimeout(400);
+  // TRACE=1 records the move itself: the ladder position, the scale actually on
+  // the book, and the fit's solve, sampled from inside the page on rAF so the
+  // sampling is the renderer's own cadence rather than an evaluate round trip.
+  if (process.env.TRACE) {
+    await page.evaluate(() => {
+      const j = window.__systems.hud.journal;
+      window.__trace = [];
+      const t0 = performance.now();
+      const tick = () => {
+        window.__trace.push([+(performance.now() - t0).toFixed(1),
+          +j._studyK.toFixed(4), +j._zoomNow.toFixed(3), +j._closeZ.toFixed(3)]);
+        if (performance.now() - t0 < 1200) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    await page.mouse.click(seat.cx, seat.cy);
+    await page.waitForTimeout(1600);
+    const tr = await page.evaluate(() => window.__trace);
+    console.log('  ms / k / scale / solve');
+    for (const r of tr) console.log('   ', r.join('\t'));
+  // ONE click is the whole move now — the lean is gone (JOURNAL_NOTES 16.2).
+  } else await page.mouse.click(seat.cx, seat.cy);
+  await page.waitForTimeout(1400);
+  await page.screenshot({ path: `${OUT}/${id}_close.png` });
+  console.log('  facing:', JSON.stringify(await facing()));
+  console.log('  state :', JSON.stringify(await state()));
+  for (let k = 0; k < 3; k++) { await page.keyboard.press('Escape'); await page.waitForTimeout(700); }
   await page.waitForTimeout(700);
 }
 
