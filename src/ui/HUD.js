@@ -678,7 +678,23 @@ export class HUD extends System {
     }
 
     const veh = ctx.systems?.vehicle;
-    const speed = veh?.speed ?? 0;
+    // Everything below reports on whatever the player is *riding*, not on the
+    // camper and not on the camera. Aboard a boat that is the boat: the camper
+    // is parked on a shore that may be half a lake behind you, and both an
+    // arrow stuck on it and a speedo reading its zero are answering a question
+    // nobody asked. `boat.current` is published every frame by Boat._publish
+    // and carries `speed` in m/s signed along the hull and `heading` measured
+    // from +Z — the same units and conventions as Vehicle's, so both consumers
+    // can take either without converting. It is non-null for a moored boat too
+    // (the water agent wants a wake source), hence the `boat.active` gate.
+    const boat = ctx.systems?.boat;
+    const aboard = boat?.active ? boat.current : null;
+    const speed = aboard?.speed ?? veh?.speed ?? 0;
+    // A deliberate consequence: the trip meter now turns while you paddle. It
+    // is the player's journey rather than the camper's odometer — the "you
+    // have been somewhere" reading hud_dash's header describes — and freezing
+    // it for the length of a lake crossing would undercount exactly the stretch
+    // the player worked hardest for.
     this.trip += Math.abs(speed) * dt;
 
     if (this._hintTimer > 0) {
@@ -704,16 +720,11 @@ export class HUD extends System {
       this.compass.update(heading, this.marks);
     }
 
-    // The map arrow follows whatever the player is *riding*, not the camera:
-    // free-look swings the compass strip, but the question the map answers is
-    // where you are and which way you are pointed. Aboard a boat that is the
-    // boat — the camper is parked on a shore that may be half a lake behind
-    // you, and an arrow stuck on it is answering a question nobody asked.
-    // Both `boat.current.heading` and `vehicle.heading` are measured from +Z;
-    // the map, like the compass, works clockwise from north, which is -Z.
+    // Free-look swings the compass strip, but the question the map answers is
+    // where you are and which way you are *pointed*, so the arrow takes the
+    // ridden heading rather than the camera's. Headings arrive measured from
+    // +Z; the map, like the compass, works clockwise from north, which is -Z.
     if (this.showMap) {
-      const boat = ctx.systems?.boat;
-      const aboard = boat?.active ? boat.current : null;
       const p = aboard ?? veh?.position ?? ctx.camera.position;
       let bearing;
       if (aboard) bearing = 180 - (aboard.heading * 180) / Math.PI;
@@ -724,7 +735,13 @@ export class HUD extends System {
       }
       this.map.update(p.x, p.z, bearing);
     }
-    this.dash.update(speed, this.trip, this.found, this.total, veh?.brakeHold ?? false);
+    // HOLD is the camper's handbrake lamp, and boarding a boat *requires* the
+    // camper parked with the hold armed (see the `parked` gate in Boat.update),
+    // so left alone the lamp would burn for every second the player is on the
+    // water. A warning lamp that is always on is not a warning lamp, and a
+    // kayak has no brake to hold in the first place.
+    this.dash.update(speed, this.trip, this.found, this.total,
+      aboard ? false : (veh?.brakeHold ?? false), aboard ? 'boat' : 'camper');
     this.settings.tick(dt);
     this._gamepad();
   }
