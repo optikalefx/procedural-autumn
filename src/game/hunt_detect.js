@@ -29,61 +29,129 @@
 //  (20 m / 130 m / 420 m), and it lands in a different place in each direction,
 //  which is exactly what it should do:
 //
-//     deer      counts out to  ~47 m   (Stats' sighting gate: 20 m — looser)
-//     bear                     ~52 m
-//     fox                      ~23 m
-//     raccoon                  ~18 m
-//     rabbit                   ~13 m
-//     squirrel                  ~9 m
-//     perched eagle            ~33 m   (Stats' bird gate: 130 m — much tighter)
-//     eagle in flight          ~66 m
-//     perched heron            ~42 m
+//  Everything below was measured in the running valley at fov 50, by planting
+//  one animal, hiding the rest of its site, finding a bearing with a clear line
+//  and then binary-searching the stand-off until the detector let go. Predicted
+//  is the arithmetic; cut is what the game did.
+//
+//     species     sphere r   predicted   cut     (Stats' sighting gate)
+//     bear          2.01 m     29.6 m    29.5 m    20 m — this is TIGHTER
+//     deer          1.76       25.9      25.9      20
+//     fox           0.89       13.1      13.1      20
+//     raccoon       0.71       10.4      10.4      20
+//     rabbit        0.49        7.3       7.1      20
+//     squirrel      0.36        5.3       5.0      20
+//     heron                              23.2      130 m — much tighter
+//     eagle, perched                     17.9      130
+//     flamingo                           15.5      130
+//     owl, perched                       10.4      130
 //
 //  A four-pixel deer in the corner is rejected by arithmetic rather than by a
-//  distance somebody guessed, and the numbers above fall out of the geometry —
-//  they are not typed in anywhere. Three of them were then measured in the
-//  running valley by walking the camera out from a real animal until the
-//  detector let go: deer 47 m (predicted 47.1), rabbit 13 m (13.3), eagle 33 m
-//  (33.1), heron 42 m (42.8).
+//  distance somebody guessed. At the deer's cut the animal measures 64 x 85 px
+//  in a 1080 frame — a body, four legs, a neck and a tail.
+//
+//  **A testing note that cost a round.** `Wildlife.debugSpawn` plants a whole
+//  SITE, not an animal: four deer, three bears, two foxes. A stand-off search
+//  run against "the nearest active deer" measures whichever of the four happens
+//  to be closest to the camera at each step, which is a different animal at
+//  different distances and a meaningless number. Every row above was taken with
+//  the other members of the site deactivated first. The `site of N` column of
+//  the harness exists only to make that mistake loud.
 //
 //  It has a property a distance rule cannot have: **zooming in works.** Frame
-//  share is computed against the live `camera.fov`, and photo mode's wheel is a
-//  zoom. Framing a distant deer through a long lens genuinely makes it count,
-//  because it genuinely makes it a photograph of a deer. When the lens models
-//  (`src/photo/lens_models.js`) land, a 400 mm at the same spot is worth ~5x
-//  the reach of a 70 mm with no change to this file.
+//  share is computed against the live `camera.fov`, and photo mode's zoom ring
+//  is a real lens (`src/photo/lens_models.js`, which has landed). Vertical fov
+//  at 16:9: 24 mm 45.8 deg, 35 mm 32.3, 70 mm 16.5, 200 mm 5.8, 400 mm 2.9. So
+//  the long lens is worth about seventeen times the reach of a 50 deg view, and
+//  a deer that counts at 26 m on the wide counts at four hundred through the
+//  tele. That is not a loophole, it is the mechanic: framing a distant deer
+//  through a long lens genuinely makes it a photograph of a deer.
 //
-//  ── how MIN_SHARE was set: a constraint, then a photograph ─────────────────
+//  ── how MIN_SHARE was set, and the ceiling that turned out not to exist ─────
 //
-//  It is squeezed from two sides and neither side is taste.
+//  This file shipped 0.085 and defended it with an argument about birds. The
+//  argument was wrong, and it is worth writing down exactly how, because it is
+//  the most seductive kind of wrong: a table of real numbers answering a
+//  question nobody was asking.
 //
-//  **From above** by the birds. `tree_birds.js:TREE_BIRD_SPECIES[].startle` is
-//  the distance at which a perched bird flushes, and a threshold that demands
-//  you crowd a bird closer than that is a threshold no player can ever satisfy
-//  — the shutter fires at an empty branch. Checked against the SMALLEST
-//  individual of each species, which is the case that binds:
+//  **The argument that was made.** `TREE_BIRD_SPECIES[].startle` is the
+//  distance at which a perched bird flushes. A threshold demanding you crowd a
+//  bird closer than that, the reasoning went, is a threshold no player can
+//  satisfy — the shutter fires at an empty branch — so the startle radii put a
+//  ceiling over MIN_SHARE, and the owl's 20 m was the tightest.
 //
-//     species     startle   counts from      margin
-//     eagle         26 m      31 m            +5 m
-//     heron         30 m      40 m           +10 m
-//     flamingo      14 m      25 m           +11 m
-//     owl           20 m      18 m            -2 m   <- the one that does not clear
+//  **Why it is not true.** Follow the flush through the code. A perched bird
+//  leaves only for `threat && Math.abs(threat.speed) > 4`
+//  (`tree_birds.js:908`), and `threat` is the VEHICLE (`Wildlife.js:850`).
+//  Photo mode pauses the world (`main.js:543`) and hands over a free camera.
+//  A parked player with a free camera has no speed, is not the threat, and
+//  **cannot flush anything, ever.** Not one of the four numbers in that table
+//  constrains a photograph. The startle radii are a driving mechanic, and this
+//  file quoted them at a mode where the world is not moving.
 //
-//  **From below** by looking at a frame. The first version of this file shipped
-//  0.065, which is where the owl clears comfortably (20.4 m) — and then a real
-//  capture of a real deer at the range that allows, 57 m, was pulled out of the
-//  running game and looked at. It is a small dark shape standing at a treeline:
-//  identifiable as an animal, about 35 px of subject height in a 1080 frame,
-//  and not a photograph OF a deer. That frame is why the number moved.
+//  So there is no ceiling. Nothing pushes back from above: the free camera is
+//  unleashed (`CameraRig._free` — no boom, no length limit, 0.45 m of floor
+//  clearance and nothing else), the world is frozen while you fly it, and the
+//  lens goes to 400 mm. The threshold can be whatever a photograph needs.
 //
-//  0.085 is the compromise, and the cost is written above: the owl has to be
-//  photographed from about 18 m, two metres inside the radius it leaves at.
-//  That is survivable rather than lucky, because the owl is the one bird that
-//  carries `startleDelay: 3` — it holds for three seconds of being crowded
-//  before it goes, and its own table says why ("an owl found at night is a
-//  payoff, and a payoff that leaves on the frame the headlights reach it is not
-//  one"). Three seconds is a shutter press. It is still the tightest line on
-//  the sheet and the first thing to revisit if players report it.
+//  **What a photograph needs, measured by looking at one.** At 0.085 the deer's
+//  cut is 46.9 m and the animal measures 35 x 46 px in a 1920x1080 frame: a
+//  dark brown lozenge with no legs, no tail and no readable head, in a frame
+//  that also holds half a dozen brown bushes of the same size and colour. It is
+//  not a landscape with a deer in it; it is a landscape in which you cannot
+//  find the deer. This file's own header had already rejected that exact frame
+//  once, at 0.065 and 57 m, in the same words — and then set a threshold that
+//  produced it again four metres closer.
+//
+//  0.155 is where the same deer, at 25.9 m, is a deer: 64 x 85 px, a body with
+//  four legs under it and a head at the end of a neck. The number is not round
+//  and it is not meant to be — it is the frame share of the photograph that was
+//  judged acceptable, and it comes from that photograph and nothing else.
+//
+//  **What it costs, per subject, is in the table above** — every cut was
+//  re-measured rather than scaled, because the birds do not scale with the
+//  mammals. Two consequences are worth stating out loud:
+//
+//   · The squirrel counts from 5.0 m. That is close, and it is reachable: the
+//     free camera flies, the world is stopped, and the squirrel is not going
+//     anywhere while you compose. "The smallest animal here" is the hint and
+//     five metres is what the hint means.
+//   · The owl is the line that changed character — see the next block.
+//
+//  ── the owl was never about the startle radius ──────────────────────────────
+//
+//  The old header claimed the owl was the tight line, cleared by a "-2 m
+//  margin" that `startleDelay: 3` was said to buy back. Every part of that is
+//  fiction: startle cannot bind a photographer at all, and there was no margin
+//  to save.
+//
+//  What actually binds an owl is **height**. A great horned owl perches at the
+//  top of a full-grown tree — measured on three live ones, 13.5 m, 25.4 m and
+//  31.0 m up — and from the ground on the wide lens its frame share never
+//  clears **0.055 at any distance, standing directly underneath included**,
+//  because standing underneath is still thirty metres away. At 0.085 that was
+//  equally true; the old "counts from 18 m" was a number computed as if the
+//  bird were on the ground.
+//
+//  So the owl is not photographable from a car on the wide lens, and it never
+//  was. It is photographable two ways, and both are things the game gives you:
+//  fly the free camera up to the canopy (it counts from 10.4 m at perch
+//  height), or fit the long lens. Measured at 400 mm from ground level, share
+//  0.68 at 40 m and still 0.198 at 140 m — the owl is comfortably in reach from
+//  the road, through the glass that is in the bag for exactly this.
+//
+//  That is why the hint on the sheet now says "only after dark, and high up.
+//  Fit the long lens" instead of "only at night, and only in the headlights".
+//  The headlights version described a shot that cannot count.
+//
+//  ── the flamingo and the heron, which are now measured ──────────────────────
+//
+//  Both were guesses in the first version, because `debugPerchNear` refuses to
+//  place a wader unless it can find a site the species' own `_findWade` accepts
+//  and the camera was nowhere near one. Driving the camera to a river anchor
+//  first places both, and the answer is the reassuring one: a wader stands in
+//  the water, so it has no perch-height problem at all. Heron 1.6 m above the
+//  bed, counts from 23.2 m; flamingo 1.9 m, counts from 15.5 m.
 //
 //  ── where the photographer is ───────────────────────────────────────────────
 //
@@ -123,6 +191,17 @@
 //  of a deer, which the terrain case never is. Deliberate line, drawn where the
 //  error stops being funny.
 //
+//  **How big that hole is, measured rather than predicted.** 256 poses around
+//  one isolated deer — 64 bearings on rings at 8, 13, 18 and 24 m, inside the
+//  range that now counts — with a real `Raycaster` against the scene, the deer
+//  itself excluded. **3 of 256** had solid non-terrain geometry on the line,
+//  and all 3 credited `deer`. At the old threshold, over rings at 16/24/34/44 m,
+//  the same sweep found 35 — including a bush 1.4 m from the lens with the deer
+//  34 m behind it. Raising MIN_SHARE shrank this hole by a factor of twelve for
+//  free, because the poses where something gets between you and a subject are
+//  overwhelmingly the long ones. Three in 256 is a player deliberately
+//  photographing a bush, and it stays.
+//
 //  Tried first and thrown away: reading the depth buffer at the subject's pixel
 //  and comparing it to the subject's distance. It is exact, it costs one
 //  `readPixels`, and it is unusable — the post chain does not keep a depth
@@ -138,19 +217,109 @@
 //  72. That is the whole claim, and it is the reason this file is allowed to be
 //  more confident than `Stats` is.
 //
+//  ── the fall behind the ridge, which was the one subject with no test ───────
+//
+//  `waterfalls()` used to skip the march entirely, and the note where the call
+//  should have been argued that it did not need one: "a ridge tall enough to
+//  hide a 40 m fall also takes its own share of the frame away; the size gate
+//  is doing that work". That is a plausible sentence and it is false. Rings of
+//  36 poses at 120 m around each of the six tallest falls: **86 of 216 had
+//  terrain across the line by this file's own `clearLine`, and every single one
+//  of the 86 credited `waterfall`** — one of them with the fall 27.9 m below
+//  the sight line and no part of it anywhere on screen. That is the
+//  photograph-of-a-cliff failure, the one this header calls the single most
+//  embarrassing thing the feature could do, shipped in the one detector that
+//  had opted out of the test written to prevent it.
+//
+//  The reason it opted out was real, though. `getHeight` at a fall's own
+//  footprint returns the CLIFF the water is falling down, so a march to the
+//  MIDDLE of the drop is blocked from almost everywhere — including from
+//  directly in front of it. The midpoint is the one point of a waterfall that
+//  is reliably behind something.
+//
+//  The fix is the one `AIM` already makes for the convex camp: ask about the
+//  part that shows. The march now runs to the **lip** — `wf.top`, where the
+//  river goes over — with `LIP_R` of slack, because a subject is visible when
+//  any of it is and the top of a fall is the part a ridge does not eat. After:
+//  86 blocked, **5** still credited, and those five are not errors — they are
+//  poses where the lip clears the ridge and the plunge pool does not, which is
+//  a real if partial view of a real waterfall.
+//
+//  And the ordinary case did not move, which is what says the test is aimed
+//  right rather than merely strict: from 120 road-level poses looking where the
+//  road looks, 25 credited `waterfall` before the change and **25 after**. The
+//  frames it was already getting were genuine; only the mountain-road case
+//  changed.
+//
+//  ── the fireflies were not a find ───────────────────────────────────────────
+//
+//  The old rule asked two questions of the uniforms — is the dusk ramp past
+//  0.35, is the damped habitat at the camera past 0.25 — and then whether three
+//  of thirty-two ground samples landed in frame. Every one of those is true
+//  almost everywhere on the valley floor after dark, so the line ticked itself
+//  on the FIRST NIGHT PHOTOGRAPH the player took, of anything, anywhere:
+//  measured, 25 of 30 random 21:30 poses (83%). They were real fireflies, so it
+//  was not a false positive — it was worse than one. It was an item on a
+//  scavenger hunt that could not be hunted, under a hint promising a search
+//  that did not exist.
+//
+//  What makes a photograph a photograph OF fireflies is how many are in it, so
+//  that is now the question. `ffCount` integrates the vertex shader's own
+//  habitat product over a 72-point grid on the ground inside the wrap box —
+//  `meadow`, `bank`, `open`, `shallow`, `low`, term for term out of
+//  `fireflies.js` VERT — turns each sample's `want` into the share of the
+//  population present there, and adds up the ones that land in frame with a
+//  clear line to them. It is the shader's arithmetic on seventy-two points
+//  instead of three thousand insects.
+//
+//  **Calibrated against frames, not against feel.** 34 random night poses, each
+//  screenshotted twice and the flashes in the picture counted by a blob pass
+//  over the greenish-yellow core colour (`shots2/ffcal/`, `dots.mjs`). At
+//  FF_MIN = 110: ten poses credited, nine of the ten had five or more
+//  countable flashes and the ten averaged 12.8; the best frame in the whole set
+//  — a wooded meadow with 25 flashes in it — is credited, and the rejects top
+//  out at 6.5. Roughly a fifth of the swarm is alight at any instant and much
+//  of the rest is behind grass, which is why 110 insects reads as about a dozen
+//  lights: the estimate is a population, the flashes are what the picture
+//  shows, and the two are related by that measurement rather than by a guess.
+//
+//  The per-sample line-of-sight test came out of the same calibration. Without
+//  it, four of the thirty-four poses estimated between 60 and 270 insects and
+//  had not one flash anywhere in the frame — every one of them a camera pressed
+//  against a slope, crediting the meadow on the other side of the hill.
+//
+//  Where it lands: 18 of 40 (45%) of poses framed deliberately at the ground
+//  the way the old sweep framed them, against 83% before; and **42 of 200
+//  (21%) of random night photographs aimed anywhere** — which is the number
+//  that matters, because that is the accidental tick. The swarm really is a
+//  valley-floor phenomenon and an honest rule cannot make it rarer than it is;
+//  what changed is that a dark hillside, a dry ridge, an alpine shoulder or a
+//  frame of night sky no longer counts as a photograph of fireflies.
+//
 //  ── false positives, which are the failure mode that would ruin this ────────
 //
 //  800 camera poses at random points across the whole 3072 m valley, at midday
 //  with no camps pitched, each looking in a random direction: **zero** animals,
 //  zero camps, zero fireflies. The only id that came back was `waterfall`, on
-//  52 of them (6.5%) — which is not a false positive, it is what a 320 m reach
-//  over twenty waterfalls looks like when you point a camera at random.
+//  44 of them (5.5%) — which is not a false positive, it is what a 320 m reach
+//  over twenty-eight waterfalls looks like when you point a camera at random.
+//  (52 before the lip test; the eight that went away were the ones behind a
+//  ridge.)
 //
 //  ── what it costs ───────────────────────────────────────────────────────────
 //
-//  11.5 microseconds per call, measured over 200 calls in a booted game. It
-//  runs once per shutter press, in the same task as a `toDataURL` of a
-//  native-resolution frame that takes tens of milliseconds. It is free.
+//  Two to nine microseconds per call, measured over 200 calls in a booted game
+//  — 2.0 at a night pose with the firefly integral running, 9.0 at the boot
+//  pose with a streamed-in animal pool to walk. The old header said 11.5, which
+//  a critic re-measuring got 4.5-7.0 for; the range above is what it actually
+//  spans, and the honest form of this number is a range.
+//
+//  The firefly count is the expensive part and it is worth knowing why it does
+//  not matter: 72 samples of five world queries each is about four hundred
+//  array reads, and it runs only after the two uniform early-outs, which are
+//  false for every photograph taken in daylight. It runs once per shutter
+//  press, in the same task as a `toDataURL` of a native-resolution frame that
+//  takes tens of milliseconds. It is free.
 //
 //  ── the marshmallow detector was written against a branch that had not landed
 //
@@ -298,7 +467,7 @@ const FF_CLUMP = 0.52;
  * the calibration — it is a count of the population present, not of the flashes
  * you can see, and the two are related by a measurement rather than by a guess.
  */
-const FF_MIN = 60;
+const FF_MIN = 110;
 
 // ── scratch ──────────────────────────────────────────────────────────────────
 // Module-level and reused. This runs once per shutter press, but it runs in the
@@ -605,6 +774,34 @@ function waterfalls(f, list, hit) {
  * Off-road the ceiling is higher still — the same sweep over the whole map
  * found campable ground to 286 m — so a player who drives off the road to do it
  * has more than one answer available.
+ *
+ * ── the provenance of that table, marked honestly ──────────────────────────
+ *
+ * The percentile table above has NOT been independently reproduced. A critic
+ * re-running the sweep collected only n = 39 usable sites before
+ * `scoreSite` refused the rest, which is far too few to confirm or refute a
+ * 97th percentile, and the table stands unaudited rather than confirmed. The
+ * constant stays because the reasoning behind it is sound and the alternative
+ * — moving a number nobody has a better measurement for — is worse. But if it
+ * is ever re-derived, re-derive it; do not quote these rows as verified.
+ *
+ * What HAS been measured is the behaviour, and it has a sharp edge worth
+ * stating. A camp pitched at 145.9 m reads unmistakably as a high mountain
+ * campsite. Detection around it, by bearing at fixed range: 12 of 12 at 10 m,
+ * 8 of 12 at 16 m, 3 of 12 at 24 m, 1 of 12 at 50 m, none by 80 m. That is
+ * `clearLine` doing exactly what `AIM` was written for and still losing: a
+ * summit is convex, the ground bulges over every chord drawn across it, and a
+ * camera far enough back to see the DROP is a camera whose line to the tent
+ * passes through the hilltop.
+ *
+ * That is accepted rather than fixed, and the reason is that the alternative is
+ * worse in a way this file will not trade for. The wide portrait — camp on the
+ * left, the valley two hundred metres below on the right — is the photograph a
+ * player wants, and it mostly will not count. But the only way to make it count
+ * is to stop asking whether the camp is visible, and a `highCamp` that credits
+ * a tent on the far side of the summit is the cliff photograph again in a
+ * different hat. So the shot that counts is the one taken from inside the camp,
+ * and the sheet's hint says so in as many words: "Photograph it from the fire".
  */
 const HIGH_CAMP = 100;
 
@@ -708,6 +905,14 @@ function ffCount(f, ff) {
       // the picture. There is no "the subject is cut in half" here, because no
       // one firefly is the subject.
       if (Math.abs(_ndc.x) > 1 || Math.abs(_ndc.y) > 1) continue;
+      // And the same line-of-sight test everything else in this file pays for,
+      // for the same reason. Without it a camera pressed against a hillside
+      // credits the whole meadow on the other side of it: measured, four of
+      // thirty-four night poses estimated 60-270 insects in frame and had not
+      // one flash anywhere in the picture, and every one of the four was
+      // pointed into a slope. 0.4 m of radius is a firefly's own float above
+      // the grass, which is what the march should be aimed at.
+      if (!clearLine(W, f.eye, _p, 0.4)) continue;
 
       // `fireflies.js` VERT, term for term. Keeping the names is the point:
       // when somebody retunes the swarm's habitat this is greppable.

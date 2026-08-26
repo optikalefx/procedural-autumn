@@ -28,7 +28,13 @@
 //  word reads as `text-decoration: line-through` — i.e. as a web page. The
 //  animation is driven by redrawing only the row's own rectangle over a cached
 //  clean copy of the page, so the cost is a partial canvas blit rather than a
-//  full repaint (which is ~40 ms here and would stutter the ceremony).
+//  full repaint. NOTE the number that used to be here — "~40 ms" — was wrong by
+//  an order of magnitude and is corrected in docs/JOURNAL_NOTES.md 9: Chromium
+//  DEFERS 2D raster, so timing either side of a paint measures command
+//  recording, and the 40 ms was a queue draining later. Measured with the
+//  raster forced, a full repaint is ~2.5 ms. The partial blits are still the
+//  right design (a rectangle instead of 1.5 M pixels); they were not saving a
+//  dropped frame.
 //
 //  ── the tape ───────────────────────────────────────────────────────────────
 //  Two pieces, both crooked, both a DIFFERENT crookedness, with torn short
@@ -865,10 +871,12 @@ export class JournalPage {
    * fifteen found". A wrong number on screen at the exact beat the feature
    * exists for.
    *
-   * A full `paint()` would fix it and costs a repaint (~40 ms of queued 2D
-   * raster) on a page that may be mid-turn. This blits the band back out of
-   * `paperBase` instead, re-lays the fold shadow over it and writes the new
-   * text — the same partial-blit discipline as `strikeAt`/`tickAt`/`tapeAt`.
+   * A full `paint()` would also fix it, but on a page that may be mid-turn.
+   * This blits the band back out of `paperBase` instead, re-lays the fold
+   * shadow over it and writes the new text — the same partial-blit discipline
+   * as `strikeAt`/`tickAt`/`tapeAt`, and measured at 2.28 ms against 4.77 ms
+   * for the full repaint (both with the raster forced; the forcing probe is
+   * ~2.3 ms of that, so the blit is very nearly free).
    *
    * Note it does NOT blit from `_clean`: the clean copy is the page as it was
    * BEFORE the ceremony, which still has the old number in it.
@@ -928,10 +936,10 @@ export class JournalPage {
    * Draw row `i`'s pencil strike at progress `t`, cheaply.
    *
    * Only the row's own rectangle is touched: the clean page is cached once and
-   * that rectangle is blitted back before each new partial stroke. A full
-   * repaint per frame measured ~40 ms here — a third of a second of ceremony
-   * would have cost twenty dropped frames on the one animation the player is
-   * looking straight at.
+   * that rectangle is blitted back before each new partial stroke. The header's
+   * note applies: the "~40 ms per repaint" this was built against was Chromium
+   * deferring 2D raster, not the paint. Touching a rectangle rather than 1.5 M
+   * pixels is still the right thing to do sixty times a second.
    */
   strikeAt(i, t) {
     const row = this.spec.rows?.[i];

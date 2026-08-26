@@ -305,8 +305,8 @@ export class Journal {
     // The hunt can be awarded from outside the journal — the integrator may
     // call `hunt.award()` itself on the shutter, and the store evicts old
     // photos on its own when localStorage fills. Repainting six pages costs
-    // ~240 ms, so it is deferred to the next `open()` rather than done here:
-    // this fires while the player is driving.
+    // six leaves, so it is deferred to the next `open()` rather than done
+    // here: this fires while the player is driving.
     this._unsub = hunt.onChange?.(() => { this._storeDirty = true; });
   }
 
@@ -371,11 +371,13 @@ export class Journal {
    * Bring the pages back in line with the store, and repaint the ones that
    * actually moved.
    *
-   * Repainting everything is ~240 ms — six leaves at ~40 ms each — and this is
-   * called from `open()`, which is a moment the player is watching an
-   * animation. So it repaints only the leaves whose rows disagree with the
-   * store (plus the one carrying the progress line, if the count changed), and
-   * it waits a frame between leaves so two repaints never land in one.
+   * Called from `open()`, which is a moment the player is watching an
+   * animation, so it repaints only the leaves whose rows disagree with the
+   * store (plus the one carrying the progress line, if the count changed) and
+   * waits a frame between leaves so two repaints never land in one. The cost
+   * that motivated all that was measured at "~40 ms a leaf" and is really
+   * ~2.5 ms (Chromium defers 2D raster — see journal_page.js's header); the
+   * discipline is kept because it is free, not because it is load-bearing.
    */
   async _decorate({ force = false } = {}) {
     const jobs = [];
@@ -413,8 +415,8 @@ export class Journal {
       try { p.paint(); } catch (e) {
         if (!this._pageErr) { this._pageErr = true; console.error('[journal] page paint failed', e); }
       }
-      // One leaf per frame. Six 40 ms repaints in one tick is a quarter of a
-      // second of frozen game on the frame the book is rising.
+      // One leaf per frame, so six repaints never land in one tick on the
+      // frame the book is rising.
       await new Promise((r) => requestAnimationFrame(r));
     }
   }

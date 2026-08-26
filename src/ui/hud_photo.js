@@ -37,7 +37,8 @@ import { stats } from '../game/stats_store.js';
 import { PhotoFocus } from '../photo/photo_focus.js';
 import { detectSubjects } from '../game/hunt_detect.js';
 import { hunt } from '../game/hunt_store.js';
-import { LensKit, LensPreview, cameraFovForFocal, stopsFor } from '../photo/lens_models.js';
+import { LensKit, LensPreview, cameraFovForFocal, focalForCameraFov, stopsFor }
+  from '../photo/lens_models.js';
 import { posthog } from '../posthog.js';
 
 const RANGES = {
@@ -88,24 +89,55 @@ export class PhotoMode {
     // not what a lens is specified in — `cameraFovForFocal` does that
     // conversion against the live aspect.
     this.lens = new LensKit({
-      onChange: () => {
+      onChange: ({ reason }) => {
         const rig = this.ctx.systems?.cameraRig;
         if (rig) rig.fov = cameraFovForFocal(this.lens.focal, this.ctx.camera.aspect);
         this.lensPreview?.setZoomT(this.lens.t);
         this.lensPreview?.setLens(this.lens.lens.id);
         this._fitAperture();
         this._paintLens();
-        this.hud.audio()?.cue('tick');
+        // Changing a lens is not the same act as turning a ring, so it does not
+        // get the same sound. `select` is the heavier of the two UI voices.
+        this.hud.audio()?.cue(reason === 'swap' ? 'select' : 'tick');
       },
     });
 
-    const lensRow = el('div', 'pa-rail-item pa-lens');
-    this.lensPreview = new LensPreview({ width: 188, height: 128, lens: this.lens.lens.id });
-    lensRow.appendChild(this.lensPreview.canvas);
+    // The row exists from the start; the RENDERER inside it does not. Two
+    // reasons, and the second one is the serious one:
+    //
+    //  · a second WebGL context is not free, and photo mode may never be opened
+    //    at all — so it is taken on the first F, not at boot;
+    //  · a second WebGL context is also refusable. `LensPreview` handles that
+    //    honestly — it returns with `ok === false` and NO `canvas` property —
+    //    and the first cut of this appended `this.lensPreview.canvas`
+    //    unguarded. On a device that refuses the context that is a TypeError
+    //    thrown inside PhotoMode's constructor, inside HUD's constructor, and
+    //    the player gets NO INTERFACE AT ALL, at boot, without ever pressing F.
+    //    This game ships touch controls; phones are exactly where a second
+    //    context gets refused. The label alone is the fallback.
+    this.lensRow = el('div', 'pa-rail-item pa-lens');
     this.lensLabel = el('div', 'pa-label pa-lens-label', '<span></span>');
-    lensRow.appendChild(this.lensLabel);
-    rail.appendChild(lensRow);
+    this.lensRow.appendChild(this.lensLabel);
+    rail.appendChild(this.lensRow);
     this._paintLens();
+
+    // ── the aperture belongs to two owners, so it is wrapped ────────────────
+    //
+    // `PhotoFocus` owns the ring and clamps to its own ladder, f/1.4 to f/22,
+    // which is the range its blur maths covers and knows nothing about what is
+    // on the front of the camera. The bag disagrees: the 24-70 is an f/2.8 and
+    // the 200-400 an f/4. Fitting the aperture only when the LENS changed left
+    // the real control — alt+wheel — untouched, so four notches opened the
+    // 200-400 to f/1.4 while the label beside it still read f/4: two numbers on
+    // screen contradicting each other.
+    //
+    // Wrapped rather than edited, and not owned by this file either way: the
+    // same technique `Stats._water` uses on `Boat.onStroke`, and for the same
+    // reason — one file breaks if the other changes shape, and it is this one.
+    const rawNudge = this.focus.nudgeAperture.bind(this.focus);
+    this.focus.nudgeAperture = (steps) => { rawNudge(steps); this._fitAperture(); };
+    const rawSet = this.focus.setAperture.bind(this.focus);
+    this.focus.setAperture = (f) => rawSet(this._lensStop(f));
 
     this.shutterBtn = button('pa-shutter', '', () => this.capture(), 'Take photo');
     rail.appendChild(this.shutterBtn);
@@ -336,9 +368,30 @@ export class PhotoMode {
       this.focus.enable();
       // Fit whatever lens was last on the body. Done here rather than in the
       // constructor because the rig only owns the fov once free mode has it.
+      // ── the lens, fitted to the frame you pressed F on ────────────────────
+      //
+      // This file's header promises "the frame the player pressed F on is the
+      // frame they get to compose from". Fitting the kit's REMEMBERED focal
+      // broke that promise the moment lenses existed: the chase camera is a
+      // 22 mm-equivalent and the kit opens at 35, so pressing F cropped the
+      // view by a third before the player had touched anything. So the ring is
+      // fitted to the camera instead, and the wide end of the wide lens is the
+      // closest a 24 mm barrel can get to 22 — a few degrees, against a third
+      // of the frame.
+      this.lens.setFocal(focalForCameraFov(this.ctx.camera.fov, this.ctx.camera.aspect), 'set');
       const rig0 = this.ctx.systems?.cameraRig;
       if (rig0) rig0.fov = cameraFovForFocal(this.lens.focal, this.ctx.camera.aspect);
       this._fitAperture();
+      // The preview's GL context, taken on the first F rather than at boot —
+      // and survivable if the browser refuses it. See the note by `lensRow`.
+      if (!this.lensPreview) {
+        this.lensPreview = new LensPreview({ width: 188, height: 128, lens: this.lens.lens.id });
+        if (this.lensPreview.ok && this.lensPreview.canvas) {
+          this.lensRow.insertBefore(this.lensPreview.canvas, this.lensLabel);
+        }
+      }
+      this.lensPreview?.setLens(this.lens.lens.id);
+      this.lensPreview?.setZoomT(this.lens.t);
       this.hourEl.set(this._saved.hour);
       this.expEl.set(this._saved.exposure);
       this.colEl.set(this._saved.saturation);
@@ -388,10 +441,17 @@ export class PhotoMode {
    * Returns true if the key was ours.
    */
   lensKey(code) {
-    if (code === 'BracketRight') { this.lens.zoom(1); return true; }
-    if (code === 'BracketLeft') { this.lens.zoom(-1); return true; }
-    if (code === 'KeyL') { this.lens.cycle(1); return true; }
-    return false;
+    let verb = null;
+    if (code === 'BracketRight') verb = this.lens.zoom(1);
+    else if (code === 'BracketLeft') verb = this.lens.zoom(-1);
+    else if (code === 'KeyL') { this.lens.cycle(1); return true; }
+    else return false;
+    // `'end'` is the detent of resistance at a stop, and the whole design idea
+    // is that the player FEELS it. It moves nothing, so `onChange` never fires
+    // and it was the one moment in the gesture with no feedback at all — the
+    // barrel going quiet exactly where it is supposed to push back.
+    if (verb === 'end') this.hud.audio()?.cue('tick');
+    return true;
   }
 
   /**
@@ -408,11 +468,20 @@ export class PhotoMode {
    * still be at f/11 after fitting the tele, because that is the setting they
    * chose. Only an impossible value moves.
    */
-  _fitAperture() {
+  /** `f`, brought inside what the fitted lens can actually do. */
+  _lensStop(f) {
     const stops = stopsFor(this.lens.lens);
-    if (!stops.length || !this.focus) return;
+    if (!stops.length) return f;
+    return Math.min(Math.max(f, stops[0]), stops[stops.length - 1]);
+  }
+
+  _fitAperture() {
+    if (!this.focus) return;
     const now = this.focus.fStop;
-    const capped = Math.min(Math.max(now, stops[0]), stops[stops.length - 1]);
+    const capped = this._lensStop(now);
+    // Clamped, not reset: a player who chose f/11 on the wide is still at f/11
+    // after fitting the tele, because that is the setting they chose. Only an
+    // impossible value moves.
     if (Math.abs(capped - now) > 1e-6) this.focus.setAperture(capped);
   }
 

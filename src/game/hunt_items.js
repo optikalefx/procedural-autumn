@@ -58,6 +58,44 @@
 //  article on purpose ("the dog at somebody's camp"): by the time you can
 //  photograph it, it is a specific dog, standing by a specific fire.
 //
+//  ── a hint has to describe a shot that counts ───────────────────────────────
+//
+//  Four lines on this sheet were rewritten after the detector was measured,
+//  because a hint is not flavour text: it is the only instruction the player
+//  gets, and a hint that sends somebody to take a photograph the rules will
+//  refuse is worse than no hint at all. Each of the four was wrong in its own
+//  way and the ways are worth keeping apart.
+//
+//  **The owl** said "only at night, and only in the headlights". Night is
+//  right and the headlights are a lovely image and the shot does not count: a
+//  great horned owl perches THIRTY METRES up a tree (measured on three live
+//  ones: 13.5 m, 25.4 m, 31.0 m), and from the ground on the wide lens its
+//  frame share never clears 0.055 at any distance, standing directly under it
+//  included. Headlights do not reach it and neither does a 24-70. What does is
+//  the long lens, which is why the hint now says so — see `hunt_detect.js`,
+//  "the owl was never about the startle radius".
+//
+//  **The fireflies** said "a warm wet meadow, well after dusk", which promised
+//  a search that did not exist: the old detector ticked the box on the first
+//  night photograph taken anywhere, so the hint described a hunt the player had
+//  already finished by accident. The detector now counts the swarm and the hint
+//  carries the rule it enforces. "A few is not a photograph" is the whole
+//  change of that item, in six words, and it is a promise the code keeps.
+//
+//  **The high camp** said "pitch camp above 100 m" and was the only hint on the
+//  sheet quoting a constant at the player. Next to "deep forest. It will hear
+//  you first" it reads like a spec, and it was also incomplete in a way that
+//  cost people the shot: detection on a summit is tight (12 of 12 bearings at
+//  10 m, 3 of 12 at 24 m, none by 80 m), so the portrait taken from where you
+//  can see the drop is exactly the one that will not count. "Photograph it from
+//  the fire" is the missing half, and it is where you are standing anyway.
+//
+//  **The raccoon and the flamingo** were database rows — "a raccoon", "a
+//  flamingo" — sitting beside "a white-tailed deer" and "a great horned owl".
+//  Every other line on the sheet earns its modifier, and the modifier is what
+//  makes a checklist read like a field guide instead of a table. Both now carry
+//  their own common name.
+//
 //  ── the marshmallow, which was dormant for about an hour ───────────────────
 //
 //  `burntMallow` was written blind. When this file was drafted the roasting
@@ -103,7 +141,7 @@ export const HUNT_ITEMS = [
   },
   {
     id: 'raccoon',
-    subject: 'a raccoon',
+    subject: 'a northern raccoon',
     hint: 'after dark, near water',
   },
   {
@@ -131,7 +169,7 @@ export const HUNT_ITEMS = [
   {
     id: 'owl',
     subject: 'a great horned owl',
-    hint: 'only at night, and only in the headlights',
+    hint: 'only after dark, and high up. Fit the long lens',
   },
   {
     id: 'heron',
@@ -140,7 +178,7 @@ export const HUNT_ITEMS = [
   },
   {
     id: 'flamingo',
-    subject: 'a flamingo',
+    subject: 'an American flamingo',
     hint: 'they keep to two islands. Take the boat',
   },
 
@@ -148,7 +186,7 @@ export const HUNT_ITEMS = [
   {
     id: 'fireflies',
     subject: 'fireflies over the meadow',
-    hint: 'a warm wet meadow, well after dusk',
+    hint: 'a wet meadow, well after dusk. A few is not a photograph',
   },
   {
     id: 'waterfall',
@@ -158,7 +196,7 @@ export const HUNT_ITEMS = [
   {
     id: 'highCamp',
     subject: 'a high mountain campsite',
-    hint: 'pitch camp above 100 m',
+    hint: 'climb, then pitch camp. Photograph it from the fire',
   },
   {
     id: 'burntMallow',

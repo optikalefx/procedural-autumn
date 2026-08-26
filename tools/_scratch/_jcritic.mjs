@@ -153,6 +153,49 @@ if (mode === 'beats') {
     return { spec: p.spec.progress, band: cv.toDataURL('image/png').length };
   });
   console.log('progress:', JSON.stringify(prog));
+} else if (mode === 'cost') {
+  // What a page repaint actually costs on the main thread.
+  //
+  // The notes claimed "~40 ms per paint()" and built three partial-blit paths
+  // around it. That number could not be reproduced: Chromium DEFERS 2D canvas
+  // raster, so a naive `performance.now()` either side of a paint measures
+  // command recording, and any 40 ms that was ever seen was the queue draining
+  // later. `getImageData(0, 0, 1, 1)` after the paint forces the flush, which
+  // is the only way to get a figure with the raster inside it.
+  const r = await page.evaluate(() => {
+    const j = window.__systems.hud.journal;
+    const p = j._pages.find((x) => x.spec.rows?.length);
+    const run = (fn, n) => {
+      fn(); // warm
+      const t0 = performance.now();
+      for (let i = 0; i < n; i++) fn();
+      return (performance.now() - t0) / n;
+    };
+    const flush = () => p.g.getImageData(0, 0, 1, 1);
+    return {
+      paint_recorded: +run(() => p.paint(), 12).toFixed(3),
+      paint_flushed: +run(() => { p.paint(); flush(); }, 12).toFixed(3),
+      strikeAt: +run(() => { p.strikeAt(0, 0.5); flush(); }, 40).toFixed(3),
+      progressAt: +run(() => { p.progressAt('three of fifteen found'); flush(); }, 40).toFixed(3),
+    };
+  });
+  console.log('per-call main-thread ms:', JSON.stringify(r));
+} else if (mode === 'timing') {
+  // How long the ceremony actually takes, on its own clock, from `open()` to
+  // the second piece of tape going down. `_t` is REAL seconds and it is the
+  // number the beat is judged on — 3.9 s reads as a beat, 5.4 s reads as a
+  // wait, which is what shortened `SCRIPT.seekLeaf`.
+  for (const id of (arg('items', 'deer,waterfall,burntMallow')).split(',')) {
+    await openAward(id);
+    const t = await page.waitForFunction(
+      () => (window.__systems.hud.journal._taped ? window.__systems.hud.journal._t : false),
+      null, { timeout: 30_000, polling: 50 }).then((h) => h.jsonValue());
+    const seek = await page.evaluate(() => window.__systems.hud.journal._seekExtra);
+    console.log(`${id}: taped at t = ${t.toFixed(2)} s (${seek} extra page turn${seek === 1 ? '' : 's'})`);
+    out.push(await shot(`t_${id}`));
+    await page.evaluate(() => window.__systems.hud.journal.close());
+    await page.waitForTimeout(900);
+  }
 } else if (mode === 'aspect') {
   // B4: the spread must survive a narrow window. The heading is the canary —
   // "Camp Scavenger Hunt" losing its first word is the measured failure.

@@ -1,19 +1,34 @@
 <!doctype html>
-<!-- NOTE: only caveat.woff2 and caveat-brush.woff2 survive in public/fonts/.
-     The other three candidates below 404 now and fall back to a system face;
-     the specimen is kept as the record of what was compared, not as a
-     runnable page. The captured comparison is in the report.
+<!-- Type specimen for the camping journal, and READ THIS BEFORE CITING IT.
+     ────────────────────────────────────────────────────────────────────────
+     This page used to draw FOUR heading candidates (Caveat Brush, Amatic SC,
+     Special Elite, Cutive Mono) over the same Caveat body. Three of those
+     woff2 files were never kept in `public/fonts/`, and the fourth was
+     referenced at the wrong filename — so every panel it produced was drawn in
+     a SYSTEM FALLBACK and the capture in the report is evidence of nothing.
+     The old capture (shots/journal/00_font_specimen.png) shows two panels,
+     cropped, in the wrong faces, and docs/JOURNAL_NOTES.md no longer cites it.
 
-     Font specimen for the camping journal page. Throwaway: four heading faces
-     over the same Caveat body, drawn into the real page canvas at the real
-     aspect so the pick is made on the page, not on a word in isolation. -->
+     What it draws now is the honest thing and the only thing this repo can
+     still show: the SHIPPED pairing — Caveat Brush heading over Caveat body —
+     laid out on a real page at the real aspect and the real sizes, so the
+     question it answers is "does the hierarchy survive at page size", which is
+     a question a specimen can actually settle. The choice of Caveat Brush over
+     Special Elite was a judgement (a typewriter heading over a handwritten
+     list says "a printed form somebody filled in"), not a measurement, and
+     the notes now say so.
+
+     Capture:
+       node tools/_scratch/_jshot.mjs --url /tools/_scratch/_journalfont.html \
+         --out shots/journal/round2/00_type_specimen.png --w 900 --h 1320 \
+         --waitfor "window.__done === true"
+-->
 <meta charset="utf-8">
 <style>
   @font-face { font-family:'Caveat'; src:url('/fonts/caveat.woff2') format('woff2'); font-weight:400 700; font-display:block; }
-  @font-face { font-family:'CaveatBrush'; src:url('/fonts/caveatbrush.woff2') format('woff2'); font-display:block; }
-  @font-face { font-family:'AmaticSC'; src:url('/fonts/amatic700.woff2') format('woff2'); font-weight:700; font-display:block; }
-  @font-face { font-family:'SpecialElite'; src:url('/fonts/specialelite.woff2') format('woff2'); font-display:block; }
-  @font-face { font-family:'CutiveMono'; src:url('/fonts/cutivemono.woff2') format('woff2'); font-display:block; }
+  /* The real filename. It was 'caveatbrush.woff2' here, which 404s — so even
+     the face that DID ship was drawn in a fallback in the old capture. */
+  @font-face { font-family:'CaveatBrush'; src:url('/fonts/caveat-brush.woff2') format('woff2'); font-display:block; }
   body { margin:0; background:#20181a; display:flex; gap:14px; padding:14px; }
   canvas { width:760px; height:auto; box-shadow:0 10px 40px #000; }
 </style>
@@ -21,10 +36,7 @@
 <script type="module">
 const W = 1024, H = 1448;
 const HEADS = [
-  ['CaveatBrush', 'CaveatBrush', 1.00],
-  ['AmaticSC',    'AmaticSC',    1.28],
-  ['SpecialElite','SpecialElite',0.74],
-  ['CutiveMono',  'CutiveMono',  0.74],
+  ['Caveat Brush heading / Caveat body — as shipped', 'CaveatBrush', 1.00],
 ];
 const ITEMS = [
   'a white-tailed deer', 'a black bear', 'a cottontail rabbit', 'a red fox',
@@ -33,7 +45,7 @@ const ITEMS = [
 await document.fonts.ready;
 await Promise.all([
   document.fonts.load('400 80px Caveat'),
-  ...HEADS.map(([f]) => document.fonts.load(`400 80px ${f}`)),
+  ...HEADS.map(([, face]) => document.fonts.load(`400 80px ${face}`)),
 ]);
 
 for (const [label, face, scale] of HEADS) {
@@ -83,7 +95,7 @@ function draw(g, face, scale, label) {
     g.fillStyle = '#37281f';
     g.font = '52px "Caveat"';
     g.fillText('Photo of ' + ITEMS[i], M + 62, y + 74);
-    g.font = `${Math.round(26 * scale)}px "${face}"`;
+    g.font = `${Math.round(26 * scale)}px "Caveat"`;
     g.fillStyle = 'rgba(70,54,40,0.62)';
     g.fillText('meadow edges, at dawn', M + 62, y + 124);
   }
