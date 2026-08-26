@@ -1023,6 +1023,10 @@ export class Journal {
     this._active = false;
     this._closing = true;
     this._t = 0;
+    // Where the cover was when the player shut the book — the put-down eases
+    // FROM here, and it has to be captured rather than accumulated. See the
+    // decay in `update`.
+    this._closeCover = this._pose.cover;
     // The put-down animation is 0.46 s of a book dropping away, and it drops
     // away from the SPREAD. Eased out over the close rather than snapped, so a
     // player who shuts the book while leaning in sees it go back and go down as
@@ -1070,7 +1074,17 @@ export class Journal {
     if (this._closing) {
       const k = clamp01(this._t / SCRIPT.close);
       this._pose.lift = 1 - easeInOut(k);
-      this._pose.cover *= 1 - easeInOut(k) * 0.9;
+      // An assignment, like the two lines around it — NOT `*=`.
+      //
+      // It used to multiply the ACCUMULATED value by an absolute-progress
+      // factor on every frame, so the decay compounded and the cover's real
+      // curve depended on how many frames the 0.46 s took: measured, it was
+      // under 20% closed by the halfway point where the expression reads as
+      // 55%, and faster again at 120 Hz. `lift` and `scrim` on either side of
+      // it were already plain functions of `k`; this one was the odd one out
+      // and the only reason it looked right is that it was always too fast in
+      // the same direction.
+      this._pose.cover = (this._closeCover ?? this._pose.cover) * (1 - easeInOut(k) * 0.9);
       this._pose.scrim = 1 - k;
       this._card.visible = false;
       if (k >= 1) { this._visible = false; this._closing = false; }

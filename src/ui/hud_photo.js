@@ -1097,11 +1097,26 @@ export class PhotoMode {
     // press is a great deal of theatre to sit through. The second line is
     // crossed off just the same; the player finds it there next time they look.
     try {
-      let award = null;
+      let award = null, again = null;
       for (const id of detectSubjects(this.ctx)) {
-        if (hunt.award(id, thumb) && !award) award = { id, photoDataURL: hunt.photoFor(id) };
+        if (hunt.award(id, thumb)) {
+          if (!award) award = { id, photoDataURL: hunt.photoFor(id) };
+        } else if (!again) {
+          // Already crossed off. Photographing a subject the book has was doing
+          // nothing at all, which reads as the shutter having missed — so offer
+          // the swap: the book opens on the two prints side by side and the
+          // player picks which one to keep.
+          again = { id, photo: thumb, replace: true };
+        }
       }
-      if (award) this.hud.openJournal(award);
+      // An award beats a replace when one frame holds both: a line the player
+      // has never crossed off is the more interesting of the two events, and
+      // two ceremonies queued behind one shutter press is a lot of theatre.
+      //
+      // `thumb` is the scratch canvas this block already holds and it is REUSED
+      // on the next press — `Journal.open()` re-encodes it synchronously before
+      // its first `await` for exactly that reason.
+      if (award ?? again) this.hud.openJournal(award ?? again);
     } catch (e) {
       console.warn('[hunt] check failed', e);
     }

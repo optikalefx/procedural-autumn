@@ -1501,3 +1501,28 @@ Plates, all from `_jpan.mjs`: `f_p0_square`, `f_p1_yaw` (turned to the stop),
 and there is no pinch. Two-pointer gestures are a real piece of work and this
 branch's brief did not ask for them; the wheel covers a trackpad's pinch, which
 arrives as `wheel` with `ctrlKey`, at the dolly's own rate.
+
+### 15.5 The put-down's cover decay was frame-rate dependent
+
+`update()`'s closing branch read `this._pose.cover *= 1 - easeInOut(k) * 0.9` —
+a `*=` on the ACCUMULATED value with an absolute-progress factor, applied every
+frame. So the decay compounded and the real curve depended on how many frames
+the 0.46 s took: measured, under 20% closed by the halfway point where the
+expression reads as 55%, and faster again at 120 Hz. `lift` and `scrim` on
+either side of it were already plain functions of `k`; this was the odd one out,
+and the only reason it looked acceptable is that it was always wrong in the same
+direction.
+
+It is an assignment now, from the cover value captured when `close()` was
+called. Verified on a real close driven by rAF: 27 frames tracking the analytic
+curve to 0.0000, ending at 0.1001 against the 0.100 the expression promises.
+
+Two harness notes, because both produced a confident wrong answer first:
+
+- Driving `update(dt)` by hand from a page evaluate leaves the journal inactive,
+  so every sample reads `cover = 1` and a frame-rate comparison "passes" having
+  exercised nothing.
+- Fitting against wall time reads as 0.08 of drift that is not there. `_t` is
+  the journal's own clock and it is GATED — it stops while a page seek is
+  outstanding — so a curve indexed on `performance.now()` is comparing against
+  the wrong x-axis.
