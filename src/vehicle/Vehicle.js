@@ -621,15 +621,64 @@ export class Vehicle extends System {
    * the thing it exists for. The only thing enforced is the world boundary,
    * because outside it there is no terrain patch to stand on at all.
    *
-   * @returns {{x:number,z:number}|null} where it actually landed
+   * ── warping out of a boat ───────────────────────────────────────────────
+   * The warp moves the CAMPER. Aboard a boat the player is not in the camper,
+   * so without the giveback below they stayed sitting in a kayak on the far
+   * side of the map, steering it, with the camper they had just "warped"
+   * parked two kilometres away and no way back to it but paddling. Whatever
+   * the warp is for, it is not that: it exists so a click on the map puts you
+   * where you clicked, and "you" is the player, not the chassis.
+   *
+   * Why here and not in `HUD._warp`, the only player-facing caller: `warpTo`
+   * is the entry point, and it already has other callers — half a dozen
+   * scratch harnesses in `tools/_scratch/` drive it directly, and every one of
+   * them would reproduce the bug on its own. A giveback that lives in the HUD
+   * is a giveback the next caller forgets. Vehicle reaching sideways into
+   * `ctx.systems` is not new here either — `rescue()` toasts through
+   * `ctx.systems.hud` from three lines away — and this reaches for one
+   * optional-chained public method, no import, no hard dependency.
+   *
+   * Why not in `_land`, which would cover `rescue()` too: `_land` is the
+   * primitive "put the camper on this point", and `Boat._comeAshore` calls it
+   * *itself* on its way out of the water. Dismounting is policy, and policy in
+   * the primitive would mean the boat exiting from inside a call the boat made.
+   * Rescue does not need it: `update()` gates R on `!held`, so the rescue key
+   * is inert while the boat holds the controls.
+   *
+   * ── ordering: land, THEN exit; and both in the same synchronous step ─────
+   * `_land` bumps `teleportSeq`; `Boat.exit()` hands the camera back with
+   * `rig.takeCamera(null)`. In `CameraRig.lateUpdate` the takeover branch
+   * returns ABOVE the `teleportSeq` check, so while the player is aboard the
+   * rig cannot see a teleport at all — the giveback is what lets it see this
+   * one, and it then re-primes the boom behind the camper at the warp point,
+   * which is the cut we want. That is why these two calls must stay in one
+   * step with no frame between them: exit the boat a frame late (or defer the
+   * giveback) and the rig picks the camper up at its OLD position for a frame
+   * first. Land first because everything past the `phys.ready` guard is a
+   * committed warp — the boat should not be taken away by a warp that then
+   * declines — and because `Boat._comeAshore` already sequences the same two
+   * acts the same way.
+   *
+   * The boat is left moored where it was, not sunk: that is what `exit()` is
+   * for, boats persist and re-board, and `MAX_BOATS` recycles the oldest, so
+   * an abandoned hull costs the player nothing but a walk they were never
+   * going to take. The caller gets its kind back so it can say so.
+   *
+   * @returns {{x:number,z:number,leftBoat:string|null}|null} where it landed,
+   *          and which boat (if any) was moored and stepped out of on the way.
    */
   warpTo(x, z) {
     if (!this.phys?.ready) return null;
     const half = this.ctx.world.worldSize / 2 - WARP_MARGIN;
     const wx = Math.max(-half, Math.min(half, x));
     const wz = Math.max(-half, Math.min(half, z));
+    const boat = this.ctx.systems?.boat;
+    // Read the kind BEFORE the exit: `Boat.current` is republished as null the
+    // next time its update runs with nobody aboard.
+    const leftBoat = boat?.active ? (boat.current?.kind ?? 'boat') : null;
     this._land(wx, wz, this.heading);
-    return { x: wx, z: wz };
+    if (leftBoat) boat.exit();
+    return { x: wx, z: wz, leftBoat };
   }
 
   /**

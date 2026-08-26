@@ -185,7 +185,15 @@ export class HUD extends System {
     const v = this.ctx.systems?.vehicle ?? globalThis.__vehicle;
     if (!v?.warpTo) return;
     const p = v.warpTo(x, z);
-    if (p) this.toast(`Warped to ${Math.round(p.x)}, ${Math.round(p.z)}`);
+    // `warpTo` steps the player off a boat on the way (the warp moves the
+    // camper, and the player has to arrive with it) and leaves the hull moored
+    // where it was. Say so in the same toast rather than a second one: a boat
+    // silently gone from under you reads as the game having eaten it, and
+    // there is no boat marker on the map to go looking for.
+    if (p) {
+      this.toast(`Warped to ${Math.round(p.x)}, ${Math.round(p.z)}`
+        + (p.leftBoat ? ` — ${p.leftBoat} left moored` : ''));
+    }
   }
 
   // ── landmarks ─────────────────────────────────────────────────────────────
