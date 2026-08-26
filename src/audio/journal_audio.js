@@ -494,6 +494,34 @@ const CROWD_MAX = 3;
 //     0.1139 / 0.0212 / 372 ms / hp200 0.1146 — bit-identical to `synth page`,
 //     which is the whole claim: no asset, no silence, same page turn as before.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── the cover, also a recording ───────────────────────────────────────────────
+//
+// Same arrangement as the page turn below, and the same fallback: `VOICES.cover`
+// still exists and still runs whenever the fetch or the decode fails.
+//
+// One take, not two — 0.02 to 0.52 s of a 1.0 s file, the rest room tone.
+//
+// **The gain is 4.26 and it is NOT the one that matches the peak.** Four
+// columns wanted four numbers and they disagree by more than they did for the
+// page, because this recording is brighter than the voice it replaces:
+//
+//     gain 5.88  peak 0.230 (matches the synth exactly)  hp200 0.1824
+//     gain 4.26  peak 0.166                              hp200 0.1319 (matches)
+//
+// hp200 decides, for the reason the small-speaker block gives: through the
+// 4th-order 200 Hz high-pass the order cover > page and slap > cover is a RULE
+// this file holds, and peak-matching puts the cover at 0.1824 against the
+// slap's 0.1356 — i.e. it would make opening the book the loudest thing in the
+// ceremony on a laptop, ahead of the photograph landing.
+//
+// A side effect worth having: the synthesised cover measured 0.230 against the
+// slap's 0.240 and was louder on 43% of firings, which is why the ladder was
+// documented as three levels rather than four. At 0.166 the slap is
+// unambiguously the ending again.
+const COVER_SAMPLE_URL = '/audio/journal.mp3';
+const COVER_SAMPLE_GAIN = 4.26;
+const COVER_TAKE = [0.020, 0.520];
+
 const PAGE_SAMPLE_URL = '/audio/page.mp3';
 const PAGE_SAMPLE_GAIN = 0.68;
 /** [start, end] in seconds. See the two-takes block above. */
@@ -745,6 +773,7 @@ export class JournalAudio {
     // not awaited by anything: until it lands, `cue('page')` synthesises.
     /** @type {AudioBuffer|null} */
     this._page = null;
+    this._cover = null;
     /** Harness switch: force the synthesised voice so its row keeps meaning
      *  what it has always meant. Nothing in the game sets it. */
     this._noSample = false;
@@ -763,19 +792,31 @@ export class JournalAudio {
    * Idempotent: the promise is cached, so a second call (the Sound Lab, a
    * harness) joins the first rather than fetching twice.
    */
-  loadSamples(url = PAGE_SAMPLE_URL) {
-    return (this._pageLoad ??= (async () => {
+  loadSamples() {
+    return (this._sampleLoad ??= Promise.all([
+      this._loadOne(PAGE_SAMPLE_URL, 'page', 'the page turn'),
+      this._loadOne(COVER_SAMPLE_URL, 'cover', 'the cover opening'),
+    ]));
+  }
+
+  /**
+   * One sample. Independent of the others on purpose: a 404 on the cover must
+   * not cost the page its recording, so each has its own catch and its own
+   * null, and `cue()` asks per name.
+   */
+  _loadOne(url, key, what) {
+    return (async () => {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       // `decodeAudioData` is given a fresh ArrayBuffer and detaches it; nothing
       // else reads `bytes` afterwards, which is why this is not `.slice(0)`.
-      this._page = await this.actx.decodeAudioData(await res.arrayBuffer());
-      return this._page;
+      this[`_${key}`] = await this.actx.decodeAudioData(await res.arrayBuffer());
+      return this[`_${key}`];
     })().catch((e) => {
-      console.warn('[journal:audio] page.mp3 unavailable; synthesising the page turn', e);
-      this._page = null;
+      console.warn(`[journal:audio] ${url} unavailable; synthesising ${what}`, e);
+      this[`_${key}`] = null;
       return null;
-    }));
+    });
   }
 
   /**
@@ -793,8 +834,11 @@ export class JournalAudio {
     // is made per FIRING rather than once at load: the buffer arrives partway
     // through a session, and a cue that had already bound itself to the synth
     // would keep synthesising for the rest of it.
-    const sampled = name === 'page' && this._page && !this._noSample;
-    const voice = sampled ? this._sampledPage : VOICES[name];
+    const SAMPLED = { page: this._page, cover: this._cover };
+    const sampled = !this._noSample && !!SAMPLED[name];
+    const voice = sampled
+      ? (name === 'page' ? this._sampledPage : this._sampledCover)
+      : VOICES[name];
     if (!voice) {
       // The courtesy `CampProps.cue` extends to a missing prop kind: silence
       // with no explanation is how a renamed cue ships mute.
@@ -866,6 +910,45 @@ export class JournalAudio {
    *    key down is the case that ducking exists for and a buffer source is no
    *    less capable of stacking into a roar than a noise burst is.
    */
+  /**
+   * The recorded cover, opening.
+   *
+   * Simpler than `_sampledPage`: one take, so no draw, and almost no pan. A
+   * page sweeps across in front of you and earns its -0.26 -> +0.04 travel; a
+   * front board hinges away from you on the spot, and panning it would put the
+   * book somewhere the book is not.
+   *
+   * The trapezoid is the same idea and for the same reason — the recording
+   * brings its own envelope and all this has to do is not click at the cuts.
+   */
+  _sampledCover(c) {
+    const actx = this.actx;
+    const [t0, t1] = COVER_TAKE;
+    const rate = c.pitch * c.rate;
+    const d = (t1 - t0) / rate;
+    const t = c.t;
+
+    const src = actx.createBufferSource();
+    src.buffer = this._cover;
+    src.playbackRate.value = rate;
+    const g = gain(actx, 0);
+    const p = panner(actx, -0.05);
+    src.connect(g).connect(p).connect(this.bus);
+
+    const a = Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004);
+    const fin = Math.min(TAKE_FADE_IN, d * 0.2);
+    const fout = Math.min(TAKE_FADE_OUT, d * 0.3);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(a, t + fin);
+    g.gain.setValueAtTime(a, t + d - fout);
+    g.gain.linearRampToValueAtTime(0.0001, t + d);
+
+    // Buffer seconds, not rate-scaled — see the note in `_sampledPage`.
+    src.start(t, t0, t1 - t0);
+    src.stop(t + d + 0.02);
+    c.nodes.push(src, g, p);
+  }
+
   _sampledPage(c) {
     const actx = this.actx;
     const [t0, t1] = PAGE_TAKES[this.rnd() < 0.5 ? 0 : 1];
