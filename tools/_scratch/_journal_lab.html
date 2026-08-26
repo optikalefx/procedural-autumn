@@ -1,0 +1,129 @@
+<!doctype html>
+<!-- Journal lab. Boots the real Journal over a stand-in "world" (a gold/violet
+     gradient standing in for a sunlit meadow, so the scrim and the page's
+     legibility over a bright frame can be judged) and drives the ceremony from
+     a query string. Throwaway; the game does not load this. -->
+<meta charset="utf-8">
+<title>journal lab</title>
+<style>
+  html,body { margin:0; height:100%; overflow:hidden; background:#000; }
+  canvas#gl { display:block; width:100%; height:100%; }
+</style>
+<canvas id="gl"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { Journal } from '/src/journal/Journal.js';
+
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) ? parseFloat(P.get(k)) : d);
+
+const canvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, stencil: false });
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;      // same as Engine
+renderer.shadowMap.enabled = true;
+const resize = () => renderer.setSize(innerWidth, innerHeight, false);
+resize(); addEventListener('resize', resize);
+
+// A stand-in for the finished frame the journal draws on top of. Deliberately
+// bright and gold: a scrim that works over black works over nothing.
+const bg = new THREE.Scene();
+const bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+bg.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+  depthTest: false, depthWrite: false,
+  vertexShader: 'varying vec2 v; void main(){ v = uv; gl_Position = vec4(position.xy,0.,1.); }',
+  fragmentShader: `varying vec2 v;
+    void main(){
+      vec3 sky = mix(vec3(0.98,0.89,0.78), vec3(0.44,0.62,0.85), smoothstep(0.55,1.0,v.y));
+      vec3 gnd = mix(vec3(0.42,0.30,0.42), vec3(0.94,0.68,0.27), smoothstep(0.0,0.55,v.y));
+      vec3 c = v.y > 0.55 ? sky : gnd;
+      c += 0.05*sin(v.x*90.0)*sin(v.y*70.0);
+      gl_FragColor = vec4(c,1.0);
+    }`,
+})));
+
+const j = new Journal({ renderer, systems: { audio: { cue: (n) => (window.__cues ??= []).push(n) } } });
+window.__j = j;
+window.__THREE = THREE;
+
+// A stand-in photograph: a little landscape, so the print in the book has
+// something in it that reads at 40 px tall.
+function fakePhoto() {
+  const cv = document.createElement('canvas');
+  cv.width = 640; cv.height = 360;
+  const g = cv.getContext('2d');
+  const sky = g.createLinearGradient(0, 0, 0, 360);
+  sky.addColorStop(0, '#5f8fd0'); sky.addColorStop(0.55, '#f6d9a6'); sky.addColorStop(1, '#e9a054');
+  g.fillStyle = sky; g.fillRect(0, 0, 640, 360);
+  g.fillStyle = '#7a5a86';
+  g.beginPath(); g.moveTo(0, 250); g.lineTo(150, 150); g.lineTo(260, 230);
+  g.lineTo(380, 120); g.lineTo(520, 220); g.lineTo(640, 165); g.lineTo(640, 360); g.lineTo(0, 360);
+  g.closePath(); g.fill();
+  g.fillStyle = '#3f5b3a';
+  g.beginPath(); g.moveTo(0, 300); g.lineTo(200, 268); g.lineTo(430, 300); g.lineTo(640, 262);
+  g.lineTo(640, 360); g.lineTo(0, 360); g.closePath(); g.fill();
+  g.fillStyle = '#241c22';
+  for (let i = 0; i < 7; i++) {
+    const x = 40 + i * 92, h = 60 + (i % 3) * 26;
+    g.beginPath(); g.moveTo(x, 320); g.lineTo(x + 16, 320 - h); g.lineTo(x + 32, 320); g.fill();
+  }
+  return cv.toDataURL('image/jpeg', 0.8);
+}
+window.__photo = fakePhoto();
+
+// Seed some already-found items so the page shows both states side by side.
+const preload = (P.get('found') ?? 'deer,rabbit,waterfall').split(',').filter(Boolean);
+j._prep.then(async () => {
+  const { hunt } = await import('/src/game/hunt_store.js');
+  for (const id of preload) hunt.award(id, window.__photo);
+  await j._decorate({ force: true });
+  window.__ready = true;
+});
+
+const AWARD = P.get('award');
+addEventListener('keydown', (e) => {
+  if (e.code === 'KeyO') j.open({ award: AWARD ? { id: AWARD, photoDataURL: window.__photo } : null });
+});
+
+// A fixed step when `?step=` is given, so a capture lands on the same frame of
+// the ceremony every time. Real time otherwise.
+let frozen = false;
+const step = num('step', 0);
+const clock = new THREE.Clock();
+let simT = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = step > 0 ? step : clock.getDelta();
+  simT += dt;
+  if (frozen || window.__manual) j._apply(); else j.update(dt);
+  renderer.autoClear = true;
+  renderer.render(bg, bgCam);
+  j.render(renderer);
+  window.__simT = simT;
+}
+frame();
+
+// ?open=1 opens immediately; ?t= runs the ceremony forward to a fixed time.
+if (P.get('open')) {
+  const go = () => j.open({ award: AWARD ? { id: AWARD, photoDataURL: window.__photo } : null });
+  window.__ready ? go() : j._prep.then(() => setTimeout(go, 60));
+}
+window.__runTo = async (target) => {
+  window.__manual = true;
+  j.open({ award: AWARD ? { id: AWARD, photoDataURL: window.__photo } : null });
+  for (let i = 0; i < 20000 && j._t < target; i++) {
+    j.update(1 / 60);
+    await Promise.resolve();
+  }
+  window.__at = j._t;
+};
+// Force a static pose with no script running: the model iteration loop.
+window.__show = (o = {}) => {
+  frozen = true;
+  j._visible = true; j._closing = false; j._script = null;
+  Object.assign(j._pose, { lift: 1, scrim: 1 }, o);
+  j._apply();
+};
+window.__pose = window.__show;
+</script>

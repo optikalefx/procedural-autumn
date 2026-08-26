@@ -1165,6 +1165,130 @@ const POST_TIERS = {
   low:    { aoSamples: 8,  denoiseSamples: 4, denoiseIterations: 1, bloomMip: 32 },
 };
 
+// ── Depth of field: two configurations, one effect ───────────────────────────
+//
+// DOF_TIER is what a quality preset with `dof: true` would get. Nothing ships
+// with it — `QUALITY_PRESETS` has `dof: false` on all four tiers — so this row
+// is the historical gameplay tune preserved as the thing `setPhotoDOF(false)`
+// restores. bokehScale 0.60 is down from 1.6 because at that size a blown
+// highlight behind the focal plane resolved as a hard white disc several
+// percent of frame width (the waterfall view was full of them) and the whole
+// frame read as tilt-shift miniature rather than cozy.
+//
+// PHOTO_DOF is the other extreme, and it is allowed to be, because photo mode
+// is a different machine: the world is frozen, one still image is being drawn,
+// and the render resolution is pinned to the display's native density. The
+// "confetti highlights" constraint above was derived for a 60 fps drive; a
+// still photograph WANTS its out-of-focus highlights to resolve as discs.
+//
+// ── why there is a sensor size in here ──────────────────────────────────────
+//
+// The aperture dial is real optics, not a magic slider, so that f/1.4 and f/11
+// differ the way a photographer expects: the wide stop melts the background and
+// leaves a plane of sharpness a few centimetres thick, the narrow one brings
+// the valley back and holds everything from the grass to the ridge.
+//
+// The circle of confusion for a background at infinity is
+//
+//     c = f² / (N · (s − f))          f = focal length, N = f-stop,
+//                                     s = focus distance, all in mm
+//
+// and f is fixed by the field of view and the SENSOR height:
+// f = (sensor / 2) / tan(vfov / 2). The trap is that this game's camera is a
+// 44–58° vertical fov, which on a 24 mm-tall full-frame sensor is a 22–28 mm
+// wide lens — and a full-frame 24 mm at f/1.4 focused at 11 m produces a
+// background blur of about **1.7 px** at 900 lines. That is the correct answer
+// and it is not a photograph; wide lenses at ordinary distances have no bokeh,
+// which is exactly why nobody shoots portraits on them.
+//
+// Rather than fake it with a fudge factor, photo mode shoots a bigger piece of
+// film: `format` is 356 mm, the short side of a 14×17 sheet. At the same field
+// of view that makes the lens a 440 mm — a normal-to-wide on that format — and
+// the same physics then hands back the blur large format is famous for. So the
+// drama has a cause, and every derived number below stays honest.
+//
+// The size was chosen by capture, not by reverence for a film stock. On 8×10
+// (203 mm) the `vehicle` plate at f/1.4 focused at 18.8 m gave a 0.6%-of-height
+// circle: correct, and too polite to be worth a feature. 14×17 lands the same
+// frame at 1.06% — a background that reads as melted at a glance — while f/11
+// still comes back to 0.13%, which is sharp. That spread between the ends of
+// the dial is the thing being tuned.
+//
+// `blurCap` exists because the model is unbounded, and because the effect's
+// kernel is not. The bokeh gather is 64 taps over a disc: at a 10 px radius the
+// taps are ~1 px apart and the circle is solid, at 20 px they are ~2.2 px apart
+// and the frame grows visible contour rings around every blob, plus white
+// halos where a near-field edge meets the sky. Captured on `--view forest` and
+// on a 2.6 m focus pull in `meadow`, a 0.022 ceiling produced exactly that —
+// a posterised smear, not a photograph. 0.013 is under the point where the
+// kernel stops resolving its own circle, and it is a ceiling on the RADIUS as a
+// fraction of frame height, so it means the same thing at every resolution.
+//
+// It bites at close focus: at f/1.4 a subject inside about 12 m is already at
+// the ceiling, so between 12 m and the near limit the aperture dial stops
+// changing the background blur and only widens the sharp zone. That is the
+// right trade — past the ceiling the extra blur was not readable as blur.
+//
+// `rangeStretch` is the one place the model is deliberately bent. The effect's
+// circle-of-confusion ramp is a `smoothstep(0, focusRange, |Δ|)` — it SATURATES
+// at focusRange, where a real lens approaches its ceiling asymptotically. Feed
+// it the textbook depth-of-field half-width and the transition from sharp to
+// fully-melted happens over centimetres, which reads as a cut-out sticker
+// rather than a photograph. Three times that half-width is what stopped it
+// looking like a mask.
+const DOF_TIER = {
+  focusDistance: 55, focusRange: 12, bokehScale: 0.60, resolutionScale: 0.5, fillMax: true,
+};
+const PHOTO_DOF = {
+  format: 356,        // mm of simulated film height — the 14" side of 14×17
+  cocDiv: 900,        // acceptable circle of confusion = format / this
+  rangeStretch: 3.0,  // see above: the shader's ramp saturates, a lens does not
+  subjectHold: 0.22,  // floor on the sharp zone, as a fraction of subject distance
+  blurCap: 0.013,     // max blur RADIUS as a fraction of frame height
+  fStop: 2.0,         // the stop photo mode opens at
+  // Half resolution for the bokeh buffers — the library's default, kept after
+  // trying and rejecting full res.
+  //
+  // Full res is visibly better in exactly one place, and it is not the blurred
+  // half of the frame: a blur resolved at half res and scaled up is the same
+  // blur, and an A/B on `--view forest` is very nearly indistinguishable there.
+  // It is the SHARP half. The near circle-of-confusion buffer is Kawase-blurred
+  // before it is used, so a little foreground CoC bleeds into the pixels just
+  // outside a blurred silhouette; at half res that bleed is twice as coarse and
+  // the in-focus grass in front of the boulder goes slightly mushy.
+  //
+  // It was rejected on price. Priced with paired baselines inside one page load
+  // (`ablate --mode still --only fx.dof`, `?photodof=1`), the whole effect at
+  // full res is 9.05 ms ± 1.70 of a 3.24 MP frame — a third of it. Photo mode
+  // then pins the render to the display's NATIVE density, which on a Retina
+  // panel is about 2.5x those pixels again, so the same choice would have cost
+  // something like 20 ms in the mode where the player is orbiting a camera by
+  // hand. A compose mode has to stay responsive; a slightly softer 3 px band
+  // beside a defocused silhouette is not worth trading that for.
+  resolutionScale: 0.5,
+  // ── the fill pass, and why it is turned OFF for a photograph ─────────────
+  //
+  // `DepthOfFieldEffect` blurs in two steps: a 64-tap disc gather, then a
+  // 16-tap pass that takes the per-channel MAX of its neighbourhood to fill the
+  // gaps the sparse kernel leaves and to bloom highlights outward.
+  //
+  // A per-channel max is not a colour operation. Where a silhouette meets the
+  // sky — every conifer edge in this game — it takes the red from the foliage
+  // and the blue from the sky and writes both, so the whole frame grew hot
+  // orange and magenta rims. Measured on `--view vehicle` at bokehScale 6:
+  // with the max fill every tree/sky boundary, the far shoreline and the lake
+  // edge carried a saturated fringe; with the fill switched to a second 64-tap
+  // gather (`PASS 1`) the fringes vanished and the only red left in the frame
+  // was the red maples that were actually there.
+  //
+  // The cost is that two chained discs convolve toward a gaussian, so a point
+  // highlight resolves as a soft ball rather than a hard-edged disc. Bloom runs
+  // AFTER depth of field (see the pass order below), so a blown out-of-focus
+  // highlight still spreads and glows — it just does not bring a colour fringe
+  // with it.
+  fillMax: false,
+};
+
 export class PostFX {
   constructor(engine, quality = 'ultra') {
     this.engine = engine;
@@ -1251,21 +1375,16 @@ export class PostFX {
     // Scratch for the hearth transform. One vector, reused — see _driveHearth.
     this._hv = new THREE.Vector3();
 
-    // Depth of field. `focusDistance` is a fraction of camera.far, so the
-    // default has to be derived from it rather than hard-coded — 0.02 put the
-    // focal plane at a fixed ~60 m, which is wrong at every chase distance and
-    // wrong in every headless capture (CameraRig drives the focus in game, but
-    // nothing does during a capture).
-    //
-    // bokehScale is down from 1.6. At that size a blown highlight behind the
-    // focal plane resolved as a hard white disc several percent of frame width
-    // — the waterfall view was full of them — and the whole frame read as
-    // tilt-shift miniature rather than cozy, which the camera author also
-    // logged. A smaller circle of confusion still separates the camper from the
-    // valley without turning specular into confetti.
-    //
-    // Built lazily by _setDOF() so the constructor and a later tier change go
-    // through one code path. A tier that has no DOF never builds it.
+    // Depth of field. Built lazily by _syncDOF() so the constructor, a later
+    // tier change and photo mode all go through one code path; a tier that has
+    // no DOF never builds it. The parameters live in DOF_TIER / PHOTO_DOF above
+    // — see those, and `setPhotoDOF`, for what the two configurations are for.
+    this._tierDOF = false;
+    this._photoDOF = false;
+    this._dofSaved = null;
+    this._depthProbe = null;
+    this._focusHeld = false;
+    this._fStop = PHOTO_DOF.fStop;
 
     // A cozy frame wants its corners to fall away. It also buys real measured
     // contrast in the vista views, which are otherwise a single 0.60–0.70 value
@@ -1334,6 +1453,20 @@ export class PostFX {
     // Builds the SSAO pass and the merged main pass for this tier.
     this._applyTier(this.preset, this.tier);
 
+    // `?photodof=1` boots with photo mode's lens already fitted, wide open.
+    //
+    // It exists for one reason: tools/ablate.mjs has no setup hook, and the
+    // only trustworthy way to price this — paired baselines inside ONE page
+    // load, per AGENTS.md — is for the page to come up with the effect already
+    // in the merged pass so `--only fx.dof` has something to leave out. It is a
+    // test instrument exactly like `?sanity=1` above, and no player path sets
+    // it. The sizes are asserted below, after the upscale pass exists.
+    if (new URLSearchParams(location.search).get('photodof') === '1') {
+      this.setPhotoDOF(true);
+      this.holdFocus(true);
+      this.setFocusManual(24);
+    }
+
     // ── internal-resolution rendering ───────────────────────────────────────
     // The whole chain above renders at `internalScale` of the presented
     // buffer; this pass reconstructs to the canvas with Catmull-Rom + CAS.
@@ -1399,6 +1532,10 @@ export class PostFX {
     this.upscale.setSourceSize(iw, ih);
     this._setUpscale(s < 0.999);
     this._capBloomMips();
+    // bokehScale is a pixel radius, so the circle has to be re-derived from the
+    // new buffer height or the aperture would mean a different thing at every
+    // window size. Photo mode's entry resize is exactly this path.
+    this._applyAperture();
   }
 
   /**
@@ -1500,19 +1637,101 @@ export class PostFX {
     if (c.denoiseIterations !== tier.denoiseIterations) c.denoiseIterations = tier.denoiseIterations;
   }
 
-  /** Add or remove depth of field, rebuilding the merged pass around it. */
+  /**
+   * The TIER's opinion on depth of field. Photo mode has its own — see
+   * `setPhotoDOF` — and the two are OR'd together by `_syncDOF`, so a tier
+   * change while a photograph is being composed cannot pull the lens out from
+   * under the player.
+   */
   _setDOF(on) {
-    const want = on
-      ? (this._dofEffect ??= new DepthOfFieldEffect(this.engine.camera, {
-          focusDistance: 55 / this.engine.camera.far,
-          focalLength: 0.26,
-          bokehScale: 0.60,
-          height: 720,
-        }))
+    this._tierDOF = !!on;
+    if (this._dofEffect && !this._photoDOF) this._applyDOFConfig(DOF_TIER);
+    this._syncDOF();
+  }
+
+  /**
+   * Photo mode's depth of field: on, wide open, and restored exactly on exit.
+   *
+   * Turning it on rebuilds the merged EffectPass, which recompiles a shader —
+   * a real hitch, and this is the one place in the game where it is affordable.
+   * Photo mode's entry already spends 450–2500 ms reallocating the drawing
+   * buffer for native resolution (see the note in ui/hud_photo.js), it already
+   * cuts the camera, takes the HUD away and plays a door sound. Nothing here
+   * touches the driving frame: every shipping tier has `dof: false`, so the
+   * effect does not exist until photo mode asks for it and stops existing when
+   * it leaves.
+   *
+   * `off` restores the tier's configuration byte for byte, including the focus
+   * distance CameraRig had written and whether `setFocus` was being obeyed. The
+   * exposure bug this file's neighbour records — a mode that read back a value
+   * the ramp had already multiplied and handed it back as the base, so the
+   * world got darker on every visit — is the failure mode being avoided.
+   */
+  setPhotoDOF(on) {
+    const want = !!on;
+    if (want === this._photoDOF) return;
+    if (want) {
+      this._dofSaved = {
+        focusDistance: this._dofEffect?.cocMaterial.uniforms.focusDistance.value ?? DOF_TIER.focusDistance,
+        held: this._focusHeld,
+      };
+      this._photoDOF = true;
+      this._syncDOF();
+      this._applyDOFConfig(PHOTO_DOF);
+      this.setAperture(this._fStop);
+    } else {
+      this._photoDOF = false;
+      this._focusHeld = this._dofSaved?.held ?? false;
+      if (this._dofEffect) {
+        this._applyDOFConfig(DOF_TIER);
+        this._dofEffect.cocMaterial.uniforms.focusDistance.value =
+          this._dofSaved?.focusDistance ?? DOF_TIER.focusDistance;
+      }
+      this._dofSaved = null;
+      this._syncDOF();
+    }
+  }
+
+  /** Build the effect if anything wants it, drop it if nothing does. */
+  _syncDOF() {
+    const want = (this._tierDOF || this._photoDOF)
+      ? (this._dofEffect ??= this._buildDOF())
       : null;
     if (this.mainPass && want === this.dof) return;
     this.dof = want;
     this._rebuildMainPass();
+  }
+
+  _buildDOF() {
+    const dof = new DepthOfFieldEffect(this.engine.camera, {
+      // METRES. This was `55 / camera.far` — the normalised convention
+      // `postprocessing` used before 6.30 — and the installed version is 6.39,
+      // where `focusDistance` and `focusRange` are world units and the CoC
+      // shader compares them against `length(viewPosition)` directly. The old
+      // form put the focal plane 3 cm in front of the lens. Nothing caught it
+      // because no shipping tier has ever built this effect.
+      focusDistance: DOF_TIER.focusDistance,
+      focusRange: DOF_TIER.focusRange,
+      bokehScale: DOF_TIER.bokehScale,
+      resolutionScale: DOF_TIER.resolutionScale,
+    });
+    this._applyDOFConfig(DOF_TIER, dof);
+    return dof;
+  }
+
+  /** Push one of the two configurations above into the live effect. */
+  _applyDOFConfig(cfg, dof = this._dofEffect) {
+    if (!dof) return;
+    dof.cocMaterial.uniforms.focusRange.value = cfg.focusRange ?? dof.cocMaterial.uniforms.focusRange.value;
+    dof.bokehScale = cfg.bokehScale ?? dof.bokehScale;
+    if (dof.resolution.scale !== cfg.resolutionScale) dof.resolution.scale = cfg.resolutionScale;
+    // The fill pass is `PASS 2` (per-channel max) as built; `PASS 1` is a
+    // second disc gather. See PHOTO_DOF.fillMax for the measurement.
+    const pass = cfg.fillMax ? '2' : '1';
+    for (const p of [dof.bokehNearFillPass, dof.bokehFarFillPass]) {
+      const m = p.fullscreenMaterial;
+      if (m.defines.PASS !== pass) { m.defines.PASS = pass; m.needsUpdate = true; }
+    }
   }
 
   /**
@@ -1885,14 +2104,218 @@ export class PostFX {
   setExposure(v) { this._baseExposure = v; this.tone.exposure = v; }
   getExposure() { return this._baseExposure; }
 
+  /**
+   * Put the focal plane at `distance` METRES.
+   *
+   * The divide by `camera.far` that used to be here was the normalised
+   * convention `postprocessing` retired at 6.30 — see `_buildDOF`.
+   *
+   * The hold is what lets photo mode take the lens. CameraRig writes this
+   * every frame from the free camera's own pivot distance (`_free`, and
+   * `_focus` for the driving cameras), which is the right default and exactly
+   * wrong once a player is pulling focus by hand: without the hold, one wheel
+   * detent of manual focus survived until the next frame and no further. The
+   * rig is left alone — it may keep calling — and this decides who wins.
+   */
   setFocus(distance) {
+    if (!this.dof || this._focusHeld) return;
+    this.dof.cocMaterial.uniforms.focusDistance.value = distance;
+  }
+
+  /** The focal plane, in metres, whoever last set it. */
+  get focusDistance() {
+    return this.dof?.cocMaterial.uniforms.focusDistance.value ?? 0;
+  }
+
+  /** Take the focus away from CameraRig (`true`) or hand it back (`false`). */
+  holdFocus(on) {
+    this._focusHeld = !!on;
+  }
+
+  /** Set the focal plane past the hold. The manual dial's write path. */
+  setFocusManual(distance) {
     if (!this.dof) return;
-    this.dof.cocMaterial.uniforms.focusDistance.value =
-      distance / this.engine.camera.far;
+    this.dof.cocMaterial.uniforms.focusDistance.value = Math.max(0.05, distance);
+    this._applyAperture();
+  }
+
+  /**
+   * The aperture, as an f-number. Only photo mode's configuration reads it —
+   * the tier row has a fixed circle and no dial.
+   *
+   * Both derived numbers move, which is the whole point of an f-stop:
+   *  · the blur ceiling `bokehScale` falls as the lens is stopped down,
+   *  · the sharp zone `focusRange` widens, straight off the hyperfocal
+   *    distance H = f²/(N·c).
+   */
+  setAperture(fStop) {
+    this._fStop = Math.max(0.7, Math.min(45, fStop || PHOTO_DOF.fStop));
+    this._applyAperture();
+  }
+
+  get fStop() { return this._fStop; }
+
+  /**
+   * Recompute bokehScale and focusRange from the aperture, the focus distance,
+   * the camera's field of view and the buffer's pixel height.
+   *
+   * Called from `_applySizes` as well as from the dials: `bokehScale` is a
+   * radius in BUFFER PIXELS, so a fixed number would be half as wide a circle
+   * the moment photo mode pins the resolution to a Retina panel's density. It
+   * is derived from a fraction of frame height every time instead.
+   */
+  _applyAperture() {
+    if (!this._photoDOF || !this._dofEffect) return;
+    const cam = this.engine.camera;
+    const P = PHOTO_DOF;
+    // Focal length that gives this field of view on the simulated film.
+    const f = (P.format * 0.5) / Math.tan((cam.fov * Math.PI / 180) * 0.5);
+    const s = Math.max(f * 1.05, this.focusDistance * 1000);   // mm, never inside the lens
+    const N = this._fStop;
+
+    // Blur ceiling: the circle a background at infinity projects, as a radius
+    // fraction of the film height, capped so a very close subject cannot smear
+    // the whole frame.
+    const radiusFrac = Math.min(P.blurCap, 0.5 * (f * f) / (N * (s - f)) / P.format);
+    const h = this.composer?.inputBuffer?.height || this.engine.height || 900;
+    this._dofEffect.bokehScale = Math.max(0.05, radiusFrac * h);
+
+    // Sharp zone: the textbook near/far limits about the hyperfocal distance,
+    // stretched (see PHOTO_DOF.rangeStretch), with a floor proportional to the
+    // focus distance.
+    //
+    // The floor is the one honest fudge in the model and it was earned by
+    // capture. A 308 mm lens at f/1.4 focused at 4 m has a total depth of field
+    // of 19 cm — that is arithmetic, not opinion — and a pull-focus onto
+    // anything inside about 15 m therefore came back with the whole frame
+    // melted and the subject melted with it, because nothing in the picture is
+    // 19 cm deep. `--view forest` produced exactly that and it reads as a
+    // broken feature, not as a fast lens. `subjectHold` keeps a band worth
+    // ±22% of the subject distance, which is roughly "a camper, a bear or a
+    // tree trunk stays sharp end to end". It only ever bites below ~15 m; past
+    // that the optical number is already the larger of the two and wins.
+    const H = (f * f) / (N * (P.format / P.cocDiv));
+    const near = (s * H) / (H + s);
+    const far = s < H ? (s * H) / (H - s) : Infinity;
+    const half = Number.isFinite(far) ? (far - near) * 0.5 : Math.max(s - near, H);
+    this._dofEffect.cocMaterial.uniforms.focusRange.value = Math.max(
+      0.04,
+      (half / 1000) * P.rangeStretch,
+      (s / 1000) * P.subjectHold,
+    );
+  }
+
+  /**
+   * How far away, in metres, whatever is drawn at screen uv (`0,0` bottom
+   * left) is — or `null` if nothing is.
+   *
+   * This is what makes focus pullable. A blind numeric dial is miserable to
+   * use, and the two obvious ways to give the player something to aim with are
+   * both wrong here:
+   *
+   *  · `Raycaster.intersectObjects(scene, true)` walks streamed terrain LOD
+   *    tiles, half a million grass blades and the tree BVH, and the first thing
+   *    it hits is usually a grass blade a metre from the lens. camp_site.js's
+   *    `groundRay` header says the same thing about the same world.
+   *  · re-rendering the scene through `scene.overrideMaterial` into a tiny
+   *    depth target replaces the VERTEX shaders too, and grass, ground cover
+   *    and the canopy are *built* in theirs — they would be sampled where they
+   *    are not drawn. AGENTS.md logs the same trap as `fx.flatShade`.
+   *
+   * The composer already keeps a stable copy of the frame's depth (the merged
+   * pass asks for it — see `_rebuildMainPass`), so the answer is one texel of a
+   * buffer that has already been paid for. One 1×1 draw plus a 4-byte
+   * `readPixels`, and it is exact for everything the player can see: terrain,
+   * trees, the camper, a bear, the far shore.
+   *
+   * The read is synchronous and therefore a pipeline stall. That is why this is
+   * called on a click, not per frame.
+   */
+  readDepthAt(u = 0.5, v = 0.5) {
+    const depth = this.composer?.depthTexture ?? this.composer?.inputBuffer?.depthTexture;
+    if (!depth) return null;
+    const cam = this.engine.camera;
+    const probe = this._depthProbe ??= this._buildDepthProbe();
+    const uni = probe.pass.fullscreenMaterial.uniforms;
+    uni.uDepth.value = depth;
+    uni.uUv.value.set(u, v);
+    uni.uNear.value = cam.near;
+    uni.uFar.value = cam.far;
+
+    const r = this.engine.renderer;
+    const prev = r.getRenderTarget();
+    probe.pass.render(r, null, probe.target);
+    r.readRenderTargetPixels(probe.target, 0, 0, 1, 1, probe.bytes);
+    r.setRenderTarget(prev);
+
+    const [b0, b1, b2] = probe.bytes;
+    const t = (b0 + b1 / 255 + b2 / 65025) / 255;
+    // The far plane means "sky", not "a subject 3 km away".
+    if (t >= 0.999) return null;
+    const viewZ = t * cam.far;
+
+    // `viewZ` is the distance along the view AXIS; the CoC shader compares
+    // against `length(viewPosition)`, the distance along the RAY. They are the
+    // same only at the centre of the frame, and a focus pull to a corner would
+    // otherwise land short by the cosine.
+    const ty = Math.tan((cam.fov * Math.PI / 180) * 0.5);
+    const nx = (u * 2 - 1) * ty * cam.aspect;
+    const ny = (v * 2 - 1) * ty;
+    return viewZ * Math.sqrt(1 + nx * nx + ny * ny);
+  }
+
+  _buildDepthProbe() {
+    const target = new THREE.WebGLRenderTarget(1, 1, {
+      depthBuffer: false,
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+    });
+    target.texture.name = 'PostFX.DepthProbe';
+    // Hand-rolled 24-bit encode rather than three's `packDepthToRGBA`, because
+    // both ends of it live here and a byte target is the only thing
+    // `readRenderTargetPixels` is guaranteed to be able to read back. Each
+    // channel is written as an exact multiple of 1/255 so the unorm8 rounding
+    // round-trips instead of drifting a metre.
+    const pass = new ShaderPass(new THREE.ShaderMaterial({
+      name: 'DepthProbeMaterial',
+      uniforms: {
+        inputBuffer: { value: null },
+        uDepth: { value: null },
+        uUv: { value: new THREE.Vector2(0.5, 0.5) },
+        uNear: { value: 0.1 },
+        uFar: { value: 3000 },
+      },
+      vertexShader: /* glsl */`
+        void main() { gl_Position = vec4(position.xy, 1.0, 1.0); }`,
+      fragmentShader: /* glsl */`
+        uniform highp sampler2D uDepth;
+        uniform vec2 uUv;
+        uniform float uNear;
+        uniform float uFar;
+        void main() {
+          float d = texture2D(uDepth, uUv).x;
+          // Window depth to view-space Z, the perspective form. Written out
+          // rather than included so this pass carries no chunk dependency.
+          float z = (2.0 * uNear * uFar) / (uFar + uNear - (d * 2.0 - 1.0) * (uFar - uNear));
+          float t = clamp(z / uFar, 0.0, 1.0);
+          float a = floor(t * 255.0);
+          float f1 = fract(t * 255.0);
+          float b = floor(f1 * 255.0);
+          float c = floor(fract(f1 * 255.0) * 255.0);
+          gl_FragColor = vec4(a, b, c, 255.0) / 255.0;
+        }`,
+      depthWrite: false,
+      depthTest: false,
+    }));
+    return { target, pass, bytes: new Uint8Array(4) };
   }
 
   dispose() {
     this.composer.dispose();
+    this._depthProbe?.target.dispose();
+    this._depthProbe?.pass.dispose();
     // The composer disposes its passes, and an EffectPass disposes the effects
     // it holds — but a tier without depth of field keeps the effect detached,
     // so nothing would ever reach it.

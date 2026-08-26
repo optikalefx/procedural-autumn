@@ -28,6 +28,7 @@ import { Compass } from './hud_compass.js';
 import { Dash } from './hud_dash.js';
 import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
+import { Journal } from '../journal/Journal.js';
 import { MiniMap } from './hud_map.js';
 import { touchCapable } from '../core/verbs.js';
 
@@ -159,6 +160,17 @@ export class HUD extends System {
 
     this.settings = new Settings(root, this);
     this.photo = new PhotoMode(root, this);
+    // The journal is NOT a DOM widget like everything else in this file — it is
+    // a three.js object drawn over the finished frame (see the render callback
+    // in main.js). HUD owns it anyway, because HUD is what has the key, the
+    // chip and the mode arbitration, and because HUD is in main.js's
+    // LIVE_WHILE_PAUSED set: the book has to keep turning its pages while the
+    // world behind it is frozen at dt 0.
+    this.journal = new Journal(this.ctx);
+    // Closing by any route — J, Escape, Enter, all of which the journal binds
+    // itself — has to put the interface back. Without this the chrome stays
+    // hidden after the book shuts and the game looks broken.
+    this.journal.onClose = () => this.root.classList.remove('pa-journal');
 
     this._buildLandmarks();
     this._bindKeys();
@@ -320,7 +332,9 @@ export class HUD extends System {
       if (this.root.contains(e.target) && e.target !== document.body) return;
       switch (e.code) {
         case 'KeyF': this.togglePhoto(); break;
+        case 'KeyJ': this.toggleJournal(); break;
         case 'Escape':
+          if (this.journal.active) { this.toggleJournal(); break; }
           if (!this.photo.active) return;
           this.togglePhoto();
           break;
@@ -588,6 +602,7 @@ export class HUD extends System {
   toggleSettings() {
     const open = !this.settings.open;
     if (open && this.photo.active) this.togglePhoto();
+    if (open && this.journal.active) this.toggleJournal();
     this.settings.setOpen(open);
     this.gearChip.classList.toggle('pa-on', open);
     this.audio()?.cue(open ? 'select' : 'tick');
@@ -601,6 +616,39 @@ export class HUD extends System {
     this.photoChip.classList.toggle('pa-on', on);
     this._dismissHint();
     posthog.capture('photo_mode_toggled', { active: on });
+  }
+
+  /**
+   * Open or shut the logbook.
+   *
+   * The `pa-journal` class is what takes the interface away (see hud.css). It
+   * is set here rather than inside Journal because the book knows nothing about
+   * the DOM, and cleared from `journal.onClose` rather than here because the
+   * journal closes itself on three keys of its own and only one of them comes
+   * through this method.
+   */
+  toggleJournal() {
+    if (this.journal.active) { this.journal.close(); return; }
+    if (this.settings.open) this.settings.setOpen(false);
+    this.root.classList.add('pa-journal');
+    this.journal.open();
+    this._dismissHint();
+    posthog.capture('journal_opened', { source: 'key' });
+  }
+
+  /**
+   * Open the book onto a line that has just been earned.
+   *
+   * Called from `PhotoMode.capture()` and nowhere else. Photo mode stays active
+   * underneath — the player is still standing where they took the shot, and
+   * shutting the book puts them back at the viewfinder rather than back in the
+   * driving seat, which is what someone who has just found one of fifteen
+   * things wants.
+   */
+  openJournal(award) {
+    this.root.classList.add('pa-journal');
+    this.journal.open({ award });
+    posthog.capture('journal_opened', { source: 'award', item: award?.id ?? null });
   }
 
   /**
@@ -653,6 +701,13 @@ export class HUD extends System {
   update(dt) {
     const { ctx } = this;
     this._frame++;
+
+    // Real seconds, deliberately. HUD is in main.js's LIVE_WHILE_PAUSED set, so
+    // `dt` here keeps running while the world is frozen at 0 — which is exactly
+    // the condition the book is opened under. Driving it with world time would
+    // freeze the ceremony mid-page-turn.
+    this.journal.update(dt);
+    if (this.photo.active) this.photo.focus?.update(dt);
 
     // Invert look. CameraRig reads `mouse.dy` in lateUpdate and `axes.lookY` is
     // refilled by Input at the end of the frame, so flipping both here lands

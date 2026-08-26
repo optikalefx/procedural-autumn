@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- NOTE: only caveat.woff2 and caveat-brush.woff2 survive in public/fonts/.
+     The other three candidates below 404 now and fall back to a system face;
+     the specimen is kept as the record of what was compared, not as a
+     runnable page. The captured comparison is in the report.
+
+     Font specimen for the camping journal page. Throwaway: four heading faces
+     over the same Caveat body, drawn into the real page canvas at the real
+     aspect so the pick is made on the page, not on a word in isolation. -->
+<meta charset="utf-8">
+<style>
+  @font-face { font-family:'Caveat'; src:url('/fonts/caveat.woff2') format('woff2'); font-weight:400 700; font-display:block; }
+  @font-face { font-family:'CaveatBrush'; src:url('/fonts/caveatbrush.woff2') format('woff2'); font-display:block; }
+  @font-face { font-family:'AmaticSC'; src:url('/fonts/amatic700.woff2') format('woff2'); font-weight:700; font-display:block; }
+  @font-face { font-family:'SpecialElite'; src:url('/fonts/specialelite.woff2') format('woff2'); font-display:block; }
+  @font-face { font-family:'CutiveMono'; src:url('/fonts/cutivemono.woff2') format('woff2'); font-display:block; }
+  body { margin:0; background:#20181a; display:flex; gap:14px; padding:14px; }
+  canvas { width:760px; height:auto; box-shadow:0 10px 40px #000; }
+</style>
+<body></body>
+<script type="module">
+const W = 1024, H = 1448;
+const HEADS = [
+  ['CaveatBrush', 'CaveatBrush', 1.00],
+  ['AmaticSC',    'AmaticSC',    1.28],
+  ['SpecialElite','SpecialElite',0.74],
+  ['CutiveMono',  'CutiveMono',  0.74],
+];
+const ITEMS = [
+  'a white-tailed deer', 'a black bear', 'a cottontail rabbit', 'a red fox',
+];
+
+await document.fonts.ready;
+await Promise.all([
+  document.fonts.load('400 80px Caveat'),
+  ...HEADS.map(([f]) => document.fonts.load(`400 80px ${f}`)),
+]);
+
+for (const [label, face, scale] of HEADS) {
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  document.body.appendChild(cv);
+  draw(cv.getContext('2d'), face, scale, label);
+}
+
+function draw(g, face, scale, label) {
+  // paper
+  g.fillStyle = '#efe3c8'; g.fillRect(0, 0, W, H);
+  const grd = g.createLinearGradient(0, 0, W, H);
+  grd.addColorStop(0, 'rgba(120,90,50,0.06)');
+  grd.addColorStop(1, 'rgba(120,90,50,0.14)');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+
+  const M = 78;
+  g.textBaseline = 'alphabetic';
+
+  // heading
+  g.fillStyle = '#3a2c22';
+  g.font = `${Math.round(74 * scale)}px "${face}"`;
+  g.fillText('CAMP SCAVENGER HUNT', M, 150);
+  g.strokeStyle = 'rgba(70,50,34,0.5)'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(M, 178); g.lineTo(W - M, 184); g.stroke();
+
+  g.font = '34px "Caveat"';
+  g.fillStyle = 'rgba(60,44,32,0.7)';
+  g.fillText('four of fourteen found', M, 226);
+
+  // four checklist rows with a photo slot on the right
+  const rowTop = 268, rowH = 274;
+  for (let i = 0; i < 4; i++) {
+    const y = rowTop + i * rowH;
+    // photo slot
+    const sw = 296, sh = 224, sx = W - M - sw, sy = y + 6;
+    g.save();
+    g.translate(sx + sw / 2, sy + sh / 2); g.rotate((i % 2 ? -1 : 1) * 0.018);
+    g.strokeStyle = 'rgba(90,70,50,0.30)'; g.setLineDash([9, 9]); g.lineWidth = 2.5;
+    g.strokeRect(-sw / 2, -sh / 2, sw, sh); g.setLineDash([]);
+    g.restore();
+    // checkbox
+    g.strokeStyle = 'rgba(58,44,34,0.75)'; g.lineWidth = 3.5;
+    g.strokeRect(M, y + 34, 42, 42);
+    // line
+    g.fillStyle = '#37281f';
+    g.font = '52px "Caveat"';
+    g.fillText('Photo of ' + ITEMS[i], M + 62, y + 74);
+    g.font = `${Math.round(26 * scale)}px "${face}"`;
+    g.fillStyle = 'rgba(70,54,40,0.62)';
+    g.fillText('meadow edges, at dawn', M + 62, y + 124);
+  }
+
+  g.fillStyle = 'rgba(0,0,0,0.55)';
+  g.font = '30px system-ui'; g.fillText(label, M, H - 40);
+}
+window.__done = true;
+</script>

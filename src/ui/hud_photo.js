@@ -34,6 +34,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, button } from './hud_dom.js';
 import { stats } from '../game/stats_store.js';
+import { PhotoFocus } from '../photo/photo_focus.js';
+import { detectSubjects } from '../game/hunt_detect.js';
+import { hunt } from '../game/hunt_store.js';
 import { posthog } from '../posthog.js';
 
 const RANGES = {
@@ -64,13 +67,22 @@ export class PhotoMode {
     this.expEl = this._slider(rail, 'Light', 'exposure', (v) => v.toFixed(2), (v) => this._setExposure(v));
     this.colEl = this._slider(rail, 'Colour', 'colour', (v) => v.toFixed(2), (v) => this._setSaturation(v));
 
+    // The lens. It binds its own capture-phase wheel/key/pointer listeners in
+    // `enable()` and removes them in `disable()`, which is also how it takes
+    // shift+wheel away from the free camera's dolly without either of them
+    // knowing about the other: Input's wheel listener is bubble-phase, so a
+    // modified wheel is consumed before it ever gets there.
+    this.focus = new PhotoFocus(this.ctx, { root });
+
     this.shutterBtn = button('pa-shutter', '', () => this.capture(), 'Take photo');
     rail.appendChild(this.shutterBtn);
     // The camera verbs come first: the two dial rows above are discoverable by
     // looking at them, and a pan you do not know exists is a pan nobody uses.
     rail.appendChild(el('div', 'pa-rail-hint',
       'drag&nbsp;&nbsp;look<br>middle-drag&nbsp;&nbsp;move<br>wheel&nbsp;&nbsp;zoom<br>' +
-      'P&nbsp;&nbsp;save<br>G&nbsp;&nbsp;grid<br>F&nbsp;&nbsp;exit'));
+      'shift+wheel&nbsp;&nbsp;focus<br>shift+click&nbsp;&nbsp;focus here<br>' +
+      'alt+wheel&nbsp;&nbsp;aperture<br>' +
+      'P&nbsp;&nbsp;save<br>G&nbsp;&nbsp;grid<br>J&nbsp;&nbsp;book<br>F&nbsp;&nbsp;exit'));
     this.node.appendChild(rail);
     this.rail = rail;
 
@@ -279,6 +291,10 @@ export class PhotoMode {
       // already cuts the camera, takes the HUD away and plays a door sound,
       // rather than anywhere during driving.
       this.ctx.engine?.setResolutionPin?.(this.ctx.engine.nativePixelRatio());
+      // After `enterFree` (it seeds its first guess from the rig's own distance)
+      // and after the resolution pin (so the first depth read is taken at the
+      // size the mode will actually run at).
+      this.focus.enable();
       this.hourEl.set(this._saved.hour);
       this.expEl.set(this._saved.exposure);
       this.colEl.set(this._saved.saturation);
@@ -286,6 +302,10 @@ export class PhotoMode {
       void this.node.offsetWidth;      // see the note in hud_settings.setOpen
       this.controls[0]?.focus({ preventScroll: true });
     } else {
+      // Before the grade is restored below: `disable()` puts PostFX's pass list
+      // back, and doing that after the exposure/saturation writes would hand
+      // those values to a chain that is about to be rebuilt underneath them.
+      this.focus.disable();
       const s = this._saved;
       if (s) {
         this._setExposure(s.exposure);
@@ -336,6 +356,7 @@ export class PhotoMode {
     // the render, for the same reason toDataURL does — the drawing buffer is
     // gone by the next one.
     let url = null;
+    let thumb = null;
     for (let attempt = 0; attempt < 3 && !url; attempt++) {
       try {
         this.ctx.postfx?.render?.(1 / 60);
@@ -356,6 +377,20 @@ export class PhotoMode {
         // matter: a black frame fails the first, a flat wash fails the second.
         if (mean < 6 || varr < 4) continue;
         url = canvas.toDataURL('image/png');
+        // The journal's copy, taken in the SAME task as the read above and for
+        // exactly the same reason: one turn of the event loop later the drawing
+        // buffer has been presented and cleared, and the book would be handed a
+        // transparent rectangle. (That is the shape of the bug that produced the
+        // black print in the journal's own harness shots.)
+        //
+        // 512 on the long edge is hunt_store's budget, not a guess: a photo here
+        // is written at the display's native density and runs to megabytes,
+        // while localStorage holds about five in total for the whole origin.
+        thumb = this._thumbCanvas ??= document.createElement('canvas');
+        const k = 512 / Math.max(canvas.width, canvas.height, 1);
+        thumb.width = Math.max(1, Math.round(canvas.width * k));
+        thumb.height = Math.max(1, Math.round(canvas.height * k));
+        thumb.getContext('2d').drawImage(canvas, 0, 0, thumb.width, thumb.height);
       } catch (e) {
         console.warn('[hud] photo failed', e);
       }
@@ -389,6 +424,30 @@ export class PhotoMode {
       grid_visible: this.grid,
       hour_of_day: this.ctx.lighting?.hour ?? null,
     });
+
+    // ── the scavenger hunt ───────────────────────────────────────────────────
+    //
+    // Last, and wrapped, and in that order deliberately. By the time this runs
+    // the player's photograph is already written to disk; nothing the hunt does
+    // is worth losing it to. `detectSubjects` promises never to throw and
+    // `hunt.award` swallows a full localStorage — this is the belt to those
+    // braces, because a shutter that dies is the worst bug this file could have.
+    //
+    // `award` returns true only the first time an item is ticked, so it is both
+    // the write and the "is this news?" test. Everything found is ticked; only
+    // the FIRST new one opens the book. Two subjects can genuinely share a frame
+    // — a deer at a waterfall — and two ceremonies queued behind one shutter
+    // press is a great deal of theatre to sit through. The second line is
+    // crossed off just the same; the player finds it there next time they look.
+    try {
+      let award = null;
+      for (const id of detectSubjects(this.ctx)) {
+        if (hunt.award(id, thumb) && !award) award = { id, photoDataURL: hunt.photoFor(id) };
+      }
+      if (award) this.hud.openJournal(award);
+    } catch (e) {
+      console.warn('[hunt] check failed', e);
+    }
     return true;
   }
 }

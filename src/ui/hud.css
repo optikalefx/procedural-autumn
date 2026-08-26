@@ -52,7 +52,14 @@
    harness is driving, unless it was explicitly asked for. */
 #pa-hud.pa-capture-hidden,
 #pa-hud.pa-hidden { opacity: 0; pointer-events: none; }
-#pa-hud.pa-photo .pa-game-only { opacity: 0; transform: translateY(10px); pointer-events: none; }
+#pa-hud.pa-photo .pa-game-only,
+#pa-hud.pa-journal .pa-game-only { opacity: 0; transform: translateY(10px); pointer-events: none; }
+/* The journal is a physical object the player is holding up to their face, and
+   a compass strip across it reads as a sticker on a book. It outranks the photo
+   rail too: the rail is still live underneath (the ceremony fires from inside
+   `capture()`, so photo mode never closed), and a row of sliders down the side
+   of a leather cover is exactly the thing that would break the illusion. */
+#pa-hud.pa-journal .pa-photo-frame { opacity: 0; pointer-events: none; }
 
 /* "Interface: Off" hides the widgets, not the way back. The gear chip stays
    lit and clickable, because with the compass, the dash and the hint gone it is

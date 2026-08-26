@@ -1,0 +1,13 @@
+import { chromium } from 'playwright';
+import { writeFileSync } from 'node:fs';
+const idx = +(process.argv[2] ?? 1);
+const b = await chromium.launch({args:['--use-gl=angle','--enable-unsafe-swiftshader']});
+const p = await b.newPage({viewport:{width:900,height:600}});
+p.on('pageerror', e=>console.log('[pageerror]', e.message));
+p.on('console', m=>{ if(m.type()==='error'||m.type()==='warning') console.log('['+m.type()+']', m.text()); });
+await p.goto('http://127.0.0.1:5199/tools/_scratch/_journal_lab.html', {waitUntil:'load'});
+await p.waitForFunction('window.__ready', null, {timeout:60000});
+const url = await p.evaluate((i) => window.__j._pages[i].canvas.toDataURL('image/png'), idx);
+writeFileSync(process.argv[3] ?? '/tmp/page.png', Buffer.from(url.split(',')[1], 'base64'));
+console.log('wrote', process.argv[3] ?? '/tmp/page.png');
+await b.close();

@@ -33,6 +33,7 @@ import { CampAudio } from './camp_audio.js';
 import { BoatAudio } from './boat_audio.js';
 import { Music } from './music.js';
 import { Soundtrack } from './soundtrack.js';
+import { JournalAudio, JOURNAL_CUES } from './journal_audio.js';
 
 const STORE = 'pa.audio';
 
@@ -261,6 +262,16 @@ export class Audio extends System {
       if (name === 'shutter') this.vehicle.shutter();
       else if (name === 'door') this.vehicle.door();
       else if (name === 'tick' || name === 'select') this._tickCue(name === 'select');
+      // The journal's three voices — a page turning, a pencil struck through a
+      // line, a print slapped down. Built on first use because the constructor
+      // fills two 1.4 s noise buffers, and a player who never opens the book
+      // should never pay for them. Straight to `master` like `_tickCue` and
+      // unlike the camp props: these are dry interface sounds with no position
+      // in the world, and putting a reverb send on a book you are holding would
+      // place it across the clearing.
+      else if (JOURNAL_CUES.includes(name)) {
+        (this._journal ??= new JournalAudio(this.actx, this.master)).cue(name);
+      }
     } catch { /* a UI click is never worth an exception */ }
   }
 

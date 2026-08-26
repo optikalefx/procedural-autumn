@@ -457,7 +457,18 @@ async function boot() {
     linearTarget.dispose();
   }
 
-  engine.setRenderCallback((dt) => postfx.render(dt));
+  // The journal draws AFTER the post chain, not into it. It is a physical
+  // object held up in front of the finished frame — grading it with the world's
+  // tone curve and running it through the upscale pass would soften the one
+  // surface in this game made of type, and a bloom pass over a cream page
+  // blooms the page. So it composites on top at canvas resolution, clearing
+  // only depth. It owns restoring every renderer flag it touches; see
+  // `Journal.render`.
+  engine.setRenderCallback((dt) => {
+    postfx.render(dt);
+    const journal = ctx.systems.hud?.journal;
+    if (journal?.active) journal.render(engine.renderer);
+  });
 
   // ── internal render scale ───────────────────────────────────────────────
   // The scene and post chain render at this fraction of the canvas and are
