@@ -1546,6 +1546,6 @@ Now: on a print, go to it. Anywhere else, nothing. Turning a page is the swipe
 badly. The close look zooms straight out instead of squaring up first, for the
 same reason.
 
-Measured, all four gestures doing exactly one thing: swipe right on the book
-leaf 1 → 2; swipe left 2 → 1; click on the book, leaf unchanged and pose moved
-0.0000; drag outside, leaf unchanged and pose moved 0.59.
+Measured, all four gestures doing exactly one thing: swipe **left** on the book
+leaf 1 → 2; swipe **right** 2 → 1; click on the book, leaf unchanged and pose
+moved 0.0000; drag outside, leaf unchanged and pose moved 0.59.

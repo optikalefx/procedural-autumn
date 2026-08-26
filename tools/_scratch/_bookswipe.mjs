@@ -46,20 +46,20 @@ const click = async (p) => { await page.mouse.move(p.x, p.y); await page.mouse.d
   await page.mouse.up(); await page.waitForTimeout(700); };
 
 const a = await st();
-await swipe(spots.on, 240);  const afterRight = await st();
-await swipe(spots.on, -240); const afterLeft = await st();
+await swipe(spots.on, -240); const afterLeft = await st();   // drag left = forward
+await swipe(spots.on, 240);  const afterRight = await st();  // drag right = back
 const beforeClick = await st();
 await click(spots.on);       const afterClickOn = await st();
 await click(spots.off);      const afterClickOff = await st();
 await swipe(spots.off, 240); const afterDragOff = await st();
 
 console.log(`start                 leaf ${a.leaf}`);
-console.log(`swipe right on book   leaf ${afterRight.leaf}  (want ${a.leaf + 1})`);
-console.log(`swipe left  on book   leaf ${afterLeft.leaf}  (want ${a.leaf})`);
+console.log(`swipe LEFT  on book   leaf ${afterLeft.leaf}  (want ${a.leaf + 1})`);
+console.log(`swipe RIGHT on book   leaf ${afterRight.leaf}  (want ${a.leaf})`);
 console.log(`click on book         leaf ${afterClickOn.leaf}, pose moved ${(afterClickOn.pose - beforeClick.pose).toFixed(4)}`);
 console.log(`click outside         leaf ${afterClickOff.leaf}`);
 console.log(`drag outside          leaf ${afterDragOff.leaf}, pose moved ${(afterDragOff.pose - afterClickOff.pose).toFixed(4)}`);
-const ok = afterRight.leaf === a.leaf + 1 && afterLeft.leaf === a.leaf
+const ok = afterLeft.leaf === a.leaf + 1 && afterRight.leaf === a.leaf
   && afterClickOn.leaf === beforeClick.leaf && Math.abs(afterClickOn.pose - beforeClick.pose) < 1e-3
   && afterClickOff.leaf === afterClickOn.leaf
   && afterDragOff.leaf === afterClickOff.leaf && Math.abs(afterDragOff.pose - afterClickOff.pose) > 0.02;

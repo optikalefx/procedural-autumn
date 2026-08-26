@@ -1922,10 +1922,12 @@ export class Journal {
         // This is what taking the page turn off the plain click was FOR: the
         // book is a book, and a book is leafed through by pushing a page
         // across. Drag right for the next spread and left for the previous —
-        // the same direction the arrow keys use, which is the tiebreaker,
-        // because "drag right" could equally describe pushing the right-hand
-        // leaf over to go back and there is no way to be right for everybody.
-        // One `sign` here flips it if that reads wrong.
+        // Drag LEFT for the next spread and right for the previous, which is
+        // the book reading: you put a finger on the right-hand leaf and push it
+        // across to the left to go forward, exactly as you would on paper. It
+        // shipped the other way round first — matched to the arrow keys, which
+        // was the wrong thing to match, because a swipe is a hand on the page
+        // and not a key that means "next".
         //
         // Gated on being HORIZONTAL and on clearing a real distance: a drag is
         // already only reachable on the book, so the only thing left to guard
@@ -1937,7 +1939,7 @@ export class Journal {
           this._cursorTo('');
           const SWIPE_MIN = Math.max(48, (window.innerWidth || 1200) * 0.045);
           if (Math.abs(T.dx) > SWIPE_MIN && Math.abs(T.dx) > Math.abs(T.dy)) {
-            this.leaf(Math.sign(T.dx));
+            this.leaf(-Math.sign(T.dx));
           }
           return;
         }
