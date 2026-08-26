@@ -1416,6 +1416,10 @@ const PHOTO_DOF = {
   // the wide lens's own maximum aperture: it separates the subject from the
   // valley on sight and still holds a whole vehicle, and the tele's own clamp
   // takes it to f/4 without a second write.
+  // The ring's own default is f/28 (see `enable` in photo_focus.js) and the
+  // pinhole makes that no blur at all. This is only the fallback for a caller
+  // that drives PostFX without the ring — it stays a real stop so the maths
+  // below has something finite to work with.
   fStop: 2.8,
   physical: true,     // use the optics ramp above, not the stock smoothstep
   // Half resolution — the library's default, kept after trying and rejecting

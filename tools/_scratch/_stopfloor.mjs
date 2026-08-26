@@ -22,6 +22,8 @@ const out = await page.evaluate(async () => {
   const hud = window.__systems.hud, fx = window.__postfx;
   hud.togglePhoto();
   await sleep(2500);
+  // What the player sees the instant the mode opens, before touching anything.
+  const openingStop = hud.photo.focus.fStop;
   const cv = window.__ctx.renderer.domElement;
   const grab = () => {
     fx.render(1 / 60);
@@ -62,8 +64,11 @@ const out = await page.evaluate(async () => {
   fx.setPhotoDOF(false);
   await sleep(250);
   const off = +acut(grab()).toFixed(2);
-  return { rows, off, atPinhole, backWide, pinholeAgain };
+  return { rows, off, atPinhole, backWide, pinholeAgain, openingStop, openingAcut: +acut(grab()).toFixed(2) };
 });
+console.log(`opens at f/${out.openingStop}, and the opening frame measures `
+  + `${out.openingAcut} against ${out.off} with the effect off `
+  + `(${(100 * out.openingAcut / out.off).toFixed(1)}%)`);
 console.log(`effect OFF: ${out.off}`);
 for (const r of out.rows) {
   const pct = (100 * r.acutance / out.off).toFixed(1);

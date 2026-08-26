@@ -314,7 +314,7 @@ export class PhotoFocus {
     this.onChange = opts.onChange ?? null;
     this.active = false;
     this._dist = 18;
-    this._stop = STOPS.indexOf(22);  // f/22 — `enable` re-asserts it, see there
+    this._stop = STOPS.indexOf(PINHOLE_F);  // `enable` re-asserts it, see there
     this._noteHold = 0;             // seconds the transient line has left
     this._node = null;
     this._mark = null;
@@ -369,12 +369,20 @@ export class PhotoFocus {
     // 48% of the frame inside the sharp band and every near thing in it was a
     // smear. That is the "why is it always blurry" the player is reporting.
     //
-    // f/22 is the far end of the ladder and both lenses reach it (`fStopMin`
-    // is 22 on the 24-70 AND on the 200-400), so unlike the f/2 this line used
-    // to hold, it survives the rail's clamp with no second write and the
-    // player sees the number they were promised. Opening stopped down is also
-    // simply what a photographer does when they have not chosen a subject yet.
-    this._stop = STOPS.indexOf(22);
+    // f/28 — the pinhole rung, so photo mode opens with NO depth of field at
+    // all and background blur is something the player turns on.
+    //
+    // That is the right default twice over. It is what the user asked for
+    // ("using background blur is a choice"), and it is what a camera handed to
+    // someone who has not chosen a subject should do: everything sharp, decide
+    // later. f/22 — the previous default — still left the frame at 72.9% of the
+    // acutance it has with the effect off, which is a soft picture nobody
+    // opted into.
+    //
+    // Both lenses reach it (`fStopMin` is 28 on the 24-70 and the 200-400), so
+    // it survives the rail's clamp with no second write and the player sees the
+    // number they were promised.
+    this._stop = STOPS.indexOf(PINHOLE_F);
     this._applyStop();
     // The lens is now the player's; CameraRig may keep writing its own idea of
     // the focus from the free camera's pivot and will be ignored (see
