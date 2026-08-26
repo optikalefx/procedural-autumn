@@ -125,6 +125,51 @@ export const JOURNAL_COLORWAYS = [
 // doing real work, and cannot be copied from the camp kit, where Stylize is
 // flattening the specular term for them.
 
+/**
+ * The page's white point — the headroom the paper needs above it.
+ *
+ * The paper is authored `#eee1c4` in `journal_page.js` and then LIT, by a 1.95
+ * key with no tone curve behind it (Journal.js header: "there is no highlight
+ * rolloff behind it to catch the overflow"). At unity albedo it overflowed: the
+ * settled spread came out of the framebuffer with 376,366 pixels clipped in R
+ * and 260,182 clipped in R AND G — the top two thirds of both leaves. Hue
+ * survived only in blue, so the cream read as a yellow-white, and the ribbon's
+ * contact shadow landed on that as a dead-neutral (160,158,137) strip instead
+ * of a warm paper shadow. At 0.70 the page peaks at 250 with nothing clipped,
+ * and that same pixel is (145,134,117).
+ *
+ * It is applied to the albedo AND the emissive together, and the pairing is the
+ * point: `setJournalPages` hands the SAME canvas to `map` and to `emissiveMap`,
+ * so both terms are proportional to the page art. Scaling both by one factor
+ * scales every page pixel by exactly that factor in linear space — the
+ * ink-to-paper contrast RATIO is arithmetically untouched, and so is the
+ * lit-to-emissive balance that the "reads as a decal" note below is protecting.
+ * Measured, the type does not merely survive the dimming, it improves: the soft
+ * hint ink was being washed into clipped paper, and its Michelson contrast goes
+ * 0.168 → 0.194 with 17% more of its strokes surviving.
+ *
+ * Three other places the headroom could have come from, and why not:
+ *
+ *  · THE KEY LIGHT (1.95). It lights the whole book. Buying the page's headroom
+ *    there pays for it with the leather, the board and the ribbon — none of
+ *    which clip, all of which were signed off, and the cover's grain needs that
+ *    key grazing it to read as hide rather than as cork (round 2, B5).
+ *  · THE EMISSIVE ALONE (0.10). It cannot buy enough — it is the minority term
+ *    on a lit spread — and it is the one thing keeping the page readable once
+ *    the leaf has swung away from the key. Spending it fixes the flat spread by
+ *    breaking the mid-turn pose, which is the harder of the two to get right.
+ *  · A HIGHLIGHT SHOULDER ON THE OVERLAY'S BLIT. Tempting, and "not the world's
+ *    curve" is genuinely not the same as "no curve". But the blit quad
+ *    composites PREMULTIPLIED colour (see `Journal._target`), so a non-linear
+ *    curve there is applied to colour×coverage and grades every antialiased
+ *    edge pixel differently from the interior it belongs to — it would put an
+ *    artifact back onto exactly the silhouettes the MSAA target exists to fix.
+ *    It also would not run on the `_rtFailed` fallback, which draws straight to
+ *    the canvas, so the same book would be graded differently on two drivers.
+ *    And it would grade the leather, which is already right.
+ */
+export const PAPER_GAIN = 0.70;
+
 const _mats = new Map();
 
 export function journalMaterials(colorway = 0) {
@@ -148,9 +193,16 @@ export function journalMaterials(colorway = 0) {
   // interface, and an interface that goes dark at 120 degrees of cover is a bug
   // however physically correct it is. 0.22 is as far as it can go before the
   // paper stops taking the scene's shading at all and reads as a decal.
+  //
+  // `PAPER_GAIN` scales BOTH terms — see its header for why that pairing is the
+  // whole point, and why the key light was not the place to take this from.
+  // `setScalar` writes the working (linear) components directly rather than
+  // decoding an sRGB hex, because what is wanted here is a linear gain and not
+  // a tint: the cream is the map's job and stays exactly where it was authored.
   const pageMat = (side) => new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 0.95, metalness: 0.0, envMapIntensity: 0.06,
-    side, emissive: 0xfff2dc, emissiveIntensity: 0.10,
+    color: new THREE.Color().setScalar(PAPER_GAIN),
+    roughness: 0.95, metalness: 0.0, envMapIntensity: 0.06,
+    side, emissive: 0xfff2dc, emissiveIntensity: 0.10 * PAPER_GAIN,
   });
 
   const m = {

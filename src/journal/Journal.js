@@ -18,6 +18,9 @@
 //     what the player sees, in sRGB. Every value here is authored for that. Do
 //     not "fix" a dark book by raising a light past the point where the paper
 //     clips — there is no highlight rolloff behind it to catch the overflow.
+//     The paper's headroom is bought on the PAGE instead, by `PAPER_GAIN` in
+//     journal_model.js; its header records the three levers that were rejected,
+//     including why a shoulder on this overlay's own blit is not one of them.
 //   · No Stylize, no Atmosphere. Those harvest the WORLD scene; this scene is
 //     not in it. The book gets three's own PBR, which is why the leather's
 //     roughness map is doing real work here and a camp prop's is not.
@@ -55,6 +58,7 @@ import { journalFontsReady } from './journal_fonts.js';
 import { JournalPage, ROWS_PER_PAGE, loadPhoto, disposePaperCache } from './journal_page.js';
 import {
   BOOK, buildJournal, poseJournal, setJournalPages, samplePage, disposeJournalMaterials,
+  PAPER_GAIN,
 } from './journal_model.js';
 import { hunt } from '../game/hunt_store.js';
 
@@ -260,9 +264,17 @@ export class Journal {
       // the GREEN channel, so every dark pixel in the photograph became a hole
       // and the print arrived looking like a washed-out ghost of itself. The
       // card is a solid rectangle; it needs no alpha at all.
+      //
+      // It carries the PAGE's white point, scaled the same way and for the same
+      // reason (journal_model.js `PAPER_GAIN`). Not decoration: this card is
+      // swapped for the flat print baked into the page texture the instant it
+      // lands, so if the two are exposed differently the photograph visibly
+      // changes brightness at the moment of the slap — a pop on the one frame
+      // the whole award beat is built around.
       new THREE.MeshStandardMaterial({
+        color: new THREE.Color().setScalar(PAPER_GAIN),
         roughness: 0.88, metalness: 0,
-        emissive: 0xfff2dc, emissiveIntensity: 0.12, side: THREE.DoubleSide,
+        emissive: 0xfff2dc, emissiveIntensity: 0.12 * PAPER_GAIN, side: THREE.DoubleSide,
       }));
     this._card.visible = false;
     this._card.renderOrder = 5;
@@ -754,17 +766,22 @@ export class Journal {
    * Ask the game for a one-shot.
    *
    * THE NAMES ARE BARE, and that is a fix rather than a style choice. Every cue
-   * in here used to be `journal.page` / `journal.cross` / `journal.slap`, and
-   * `Audio.cue` dispatches the book's voices with
-   * `JOURNAL_CUES.includes(name)` against `['page', 'cross', 'slap']` — so not
-   * one of them ever matched and the whole ceremony has been playing in
-   * silence. It fails the way audio always fails: nothing throws, nothing logs,
-   * and you only find it by reading the other end.
+   * in here used to be `journal.page` / `journal.cross` / `journal.slap`, while
+   * `Audio.cue` dispatches the book's voices with `JOURNAL_CUES.includes(name)`
+   * — so not one of them ever matched and the whole ceremony played in silence.
+   * It fails the way audio always fails: nothing throws, nothing logs, and you
+   * only find it by reading the other end.
    *
-   * `cover` is the exception and is deliberately not one of the three: a
-   * leather-and-board voice does not exist yet, and `Audio.cue` ignores a name
-   * it does not know, so the cover beat is silent until somebody writes it
-   * rather than speaking with the wrong sound.
+   * `JOURNAL_CUES` is `['cover', 'page', 'cross', 'slap']` (`journal_audio.js`)
+   * and ALL FOUR ARE LIVE. `cover` was the odd one out for a while — there was
+   * no leather-and-board voice, and `Audio.cue` ignores a name it does not
+   * know, so the cover beat stayed silent rather than speaking with the wrong
+   * sound. It has one now: a stick-slip envelope peaking 0.230, sat
+   * deliberately 1.4 dB under the slap so the first sound of the ceremony opens
+   * it without spending its ending. See the ladder in `journal_audio.js`.
+   *
+   * Nothing on this side has to change when a voice is added or removed — the
+   * dispatch is the list over there, not a switch here.
    */
   _cue(name) {
     try { this.ctx.systems?.audio?.cue?.(name); } catch { /* audio is never fatal */ }

@@ -149,7 +149,7 @@ in the fallback face and never redraws.** Nothing paints before
 
 - `gallery.html` on 5199 lists **Journal** as its own group with three
   colourways, an `open` slider, `buildJournal(rnd, {"colorway":1})` on the info
-  panel, `5,566 triangles · 23 meshes · 15 materials`, size `0.16 × 0.22 × 0.03 m`
+  panel, `5,566 triangles · 23 meshes · 15 materials`, size `0.16 × 0.23 × 0.03 m`
   shut (it was `0.32 × 0.38` and framed as a stamp — see §9).
 - **`tools/_scratch/_jcritic.mjs` is the harness to use now.** It drives the
   REAL wiring (`window.__systems.hud.journal`) in the real game at gameplay
@@ -243,7 +243,7 @@ see §9.
   times and merely not drawn while the book is shut) and the text block's slab
   geometry (nominal size, centred on the mesh origin, which is the *hinge* — a
   whole page-width left of where any instance actually is). All three now carry
-  an explicit box; the gallery reports **0.16 × 0.22 m** shut and the true
+  an explicit box; the gallery reports **0.16 × 0.23 m** shut and the true
   spread open.
 - **A repaint is NOT ~40 ms — that figure was wrong by an order of magnitude,
   and it is corrected here rather than quietly deleted.** Chromium *defers* 2D
@@ -492,3 +492,94 @@ speed:
 | `deer` (first page) | 0 | **3.57 s** (was 3.92) |
 | `waterfall` | 1 | **3.84 s** |
 | `burntMallow` | 1 | **3.88 s** (was reported 5.42) |
+
+## 12. Round 3 — the paper's highlight headroom
+
+Two items, both named by the round-2 critic in a pass that otherwise signed the
+feature off. Nothing else was touched.
+
+### 12.1 The page had no headroom, and the ribbon's shadow paid for it
+
+The page material was `color: 0xffffff` under a 1.95 key with `NoToneMapping`
+behind it. It overflowed. Measured on the settled spread at 1600×900 through
+the real game (`__systems.hud.journal`, not the lab page):
+
+| | R clipped at 255 | R **and** G clipped | page px clipped | page max R |
+|---|---|---|---|---|
+| before | 376,366 | 260,182 | 369,665 | 255 |
+| after | **823** | **793** | **0** | **250** |
+
+The 823 that remain are not paper: they are the bottom cut edge of the leaf
+stack (rows 690–699) taking a grazing specular, and they sit at exactly 823 at
+every gain from 1.0 down to 0.55. The fallback composite — `_rtFailed`, no MSAA
+target, straight to the canvas — clipped identically before (380,667) and
+clears identically now (3,636, all of it that same fore edge).
+
+What the clipping cost, at the pixel the critic quoted. The band beside the
+ribbon at y440 went from a dead-neutral **(160,158,137)** — R−G of 2 — to
+**(145,134,117)**, R−G of 11. There were 1,034 pixels of that neutral strip;
+there are now **zero**. The paper beside it went from (255,255,225), hue
+surviving in blue only, to (231,218,193). Mean R−B over the bright paper: 32.4
+→ 42.2.
+
+**The fix is `PAPER_GAIN` in `journal_model.js` — 0.70, applied to the page's
+albedo AND its emissive together.** `setJournalPages` hands the same canvas to
+`map` and to `emissiveMap`, so both terms are proportional to the page art and
+scaling both by one factor scales every page pixel by exactly that factor in
+linear space: the ink-to-paper contrast ratio is arithmetically untouched and so
+is the lit-to-emissive balance. The flying print card in `Journal.js` carries
+the same gain, because it is swapped for the baked print the instant it lands
+and a mismatch would pop on the one frame the award beat is built around —
+measured across that swap, the print region differs by **0.24 / 255**.
+
+**The type got better, not worse**, which is the opposite of the risk. The soft
+hint ink was being washed into clipped paper. Michelson contrast, same boxes,
+before → after:
+
+| | before | after |
+|---|---|---|
+| headline | 0.596 | **0.613** |
+| row label | 0.407 | **0.427** |
+| smallest hint (left) | 0.168 | **0.194** |
+| smallest hint (right) | 0.165 | **0.193** |
+| running head | 0.098 | **0.124** |
+| turning leaf, row label | 0.304 | **0.309** |
+
+Ink-pixel counts rise with it (the hint line goes 235 → 275 surviving pixels).
+The one number that falls is the headline's WCAG ratio, 10.23:1 → 9.77:1, from
+the paper's absolute luminance dropping; AAA is 7:1.
+
+Three other places the headroom could have come from were rejected — the key
+light, the emissive alone, and a highlight shoulder on the overlay's own blit
+(which composites premultiplied colour, so a curve there grades antialiased edge
+pixels differently from their interiors and would put an artifact back on the
+silhouettes the MSAA target exists to fix, and would not run on the fallback
+path at all). The full argument is in the `PAPER_GAIN` header.
+
+### 12.2 The endpaper contours were drawn with a compass
+
+Every ring of a hill shared one wobble and one radius step, so each was an exact
+scaled copy of the one inside it: perfectly concentric, perfectly evenly spaced.
+Three small irregularities now, none of them amplitude — amplitude is what made
+the round-1 version a spirograph:
+
+- **the summit migrates**, so outer rings sit off to one side of the peak;
+- **the spacing is uneven**, a per-hill steepening trend plus a small jitter;
+- **the ring shape drifts with height**, phase and depth walking per ring.
+
+Magnitudes are bounded so rings cannot touch: tightest step ~12.6 px at
+size 512, jitter takes at most 3.6 and shape drift at most ~4.3.
+
+It draws from a **second generator**. Taking these from `rnd()` would have
+shifted every later value in the sequence and moved both the hill placement and
+the river — the river was tuned last round and should not move because the
+contours grew a wobble. Verified: hill positions and river are unchanged.
+
+### 12.3 Noted, not touched
+
+- The leaf stack's bottom cut edge clips ~800 px of grazing specular. It is a
+  cut edge, not paper, and it is not what the critic reported.
+- Phone portrait below ar ~0.55 is still a ceiling, not a break. The real fix is
+  showing one page, which is a design change.
+- The HUD hint bar visible for ~500 ms during the ceremony cross-fade was judged
+  deliberately last round and stays.

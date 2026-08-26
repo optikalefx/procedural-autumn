@@ -483,19 +483,57 @@ export function endpaperTexture(size = 512, seed = 11) {
   // the whole endpaper read as a scribble the moment the cover swung open,
   // which is the first interior surface anybody sees. Real contours are nearly
   // concentric, evenly spaced and drawn in one thin weight.
+  //
+  // "Nearly", though, was doing no work: every ring of a hill shared one wobble
+  // and one radius step, so each was an exact scaled copy of the one inside it
+  // and the set came out PERFECTLY concentric and PERFECTLY evenly spaced —
+  // which reads as a compass and a ruler, not as a survey. The irregularity
+  // added below is deliberately not amplitude (that is the spirograph again).
+  // It is the three things that separate contours drawn off ground from
+  // contours drawn off a formula, and all three are small:
+  //
+  //   · THE SUMMIT MIGRATES. A hill is not a cone; its peak leans, so the outer
+  //     rings sit off to one side of the inner ones. This is the cue that does
+  //     most of the work and it costs no line amplitude whatsoever.
+  //   · THE SPACING IS UNEVEN. Even spacing is a constant gradient. Real ground
+  //     steepens or eases with height, so the rings crowd or open out — `steep`
+  //     is that trend and the jitter is the surveyor's hand on top of it.
+  //   · THE SHAPE DRIFTS WITH HEIGHT. Rings that are exact scaled copies are
+  //     the giveaway, so the wobble's phase and depth walk a little per ring.
+  //
+  // The magnitudes are picked so rings can never touch: the tightest step the
+  // trend can produce is ~12.6 px at size 512, the jitter takes at most 3.6 of
+  // that and the per-ring shape drift at most ~4.3, leaving daylight at a line
+  // weight of 1.3.
+  //
+  // A SECOND generator feeds all of it. Drawing these from `rnd()` would shift
+  // every subsequent value in the sequence, which would move the hill placement
+  // AND the river — both tuned, both signed off, and neither of which should
+  // move because the contours grew a wobble.
+  let s2 = (seed * 2246822519 + 0x9e3779b9) & 0x7fffffff;
+  const rnd2 = () => ((s2 = (s2 * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   g.strokeStyle = 'rgba(120,84,48,0.22)';
   g.lineWidth = 1.3;
   for (let hill = 0; hill < 4; hill++) {
     const cx = size * (0.16 + rnd() * 0.68), cy = size * (0.16 + rnd() * 0.68);
     const wob = 0.07 + rnd() * 0.06, ph = rnd() * 7, sq = 0.78 + rnd() * 0.3;
     const rings = 5 + Math.floor(rnd() * 4);
+    // Per-HILL: which way its summit leans, and whether its slope opens out or
+    // closes up with height.
+    const lx = (rnd2() - 0.5) * size * 0.010, ly = (rnd2() - 0.5) * size * 0.010;
+    const steep = 0.82 + rnd2() * 0.36;
     for (let ring = 1; ring <= rings; ring++) {
-      const r = ring * size * 0.030;
+      const t = ring / rings;
+      const r = size * 0.030 * ring * (1 + (steep - 1) * t * 0.5)
+        + (rnd2() - 0.5) * size * 0.007;
+      const phk = ph + ring * 0.19;
+      const wk = wob * (0.86 + 0.28 * t);
+      const ox = cx + lx * ring, oy = cy + ly * ring;
       g.beginPath();
       for (let a = 0; a <= 72; a++) {
         const th = (a / 72) * Math.PI * 2;
-        const rr = r * (1 + wob * Math.sin(th * 2 + ph) + wob * 0.4 * Math.sin(th * 3 - ph));
-        const x = cx + Math.cos(th) * rr, y = cy + Math.sin(th) * rr * sq;
+        const rr = r * (1 + wk * Math.sin(th * 2 + phk) + wk * 0.4 * Math.sin(th * 3 - phk));
+        const x = ox + Math.cos(th) * rr, y = oy + Math.sin(th) * rr * sq;
         a ? g.lineTo(x, y) : g.moveTo(x, y);
       }
       g.closePath();
