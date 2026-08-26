@@ -1,16 +1,44 @@
 /**
  * Does the parked camper stay put while the player is off in a boat?
  *
- * Two agents independently saw the HUD speedo read 89-120 km/h for a camper
- * nobody was driving, with the player aboard a boat elsewhere. VehiclePhysics
- * streams a 176 m heightfield patch (PATCH_SIZE) and AGENTS.md says it follows
- * the CAMPER; if it in fact follows the camera, then paddling far enough away
- * takes the collider out from under the parked camper and it falls.
+ * ── ANSWERED: YES. THERE IS NO BUG HERE ─────────────────────────────────────
  *
- * Boards a boat at increasing distances from the camper and watches the
+ * Kept because getting to that answer took two false alarms, and both are the
+ * kind this harness exists to stop the next person repeating.
+ *
+ * What started it: two independent observers saw the HUD speedo read 89-120
+ * km/h for a camper nobody was driving while the player was aboard a boat.
+ * The first theory was heightfield streaming — VehiclePhysics streams a 176 m
+ * patch (PATCH_SIZE) and if it followed the CAMERA rather than the camper,
+ * paddling away would take the collider out from under the parked camper.
+ * That is wrong: the camper's height above terrain held at ~0.8 m for the
+ * whole run. It had a floor the entire time. It was rolling, not falling.
+ *
+ * The second theory was that the park brake releases while the boat holds the
+ * controls. Also wrong, and wrong because of THIS HARNESS rather than because
+ * of the game — see the note over the arming code below. `veh.brakeHold` is a
+ * read-only mirror that Vehicle reassigns from `phys.holdArmed` every frame,
+ * so arming it from a probe arms nothing. The runs that "proved" a park-brake
+ * bug were measuring an unbraked camper on a 0.408 slope, which is simply
+ * correct physics.
+ *
+ * Armed properly (`--hold`, which sets the internal `_brakeHold`), measured
+ * over 600 frames with the player 2.5 km away in a kayak:
+ *
+ *              moved      dropped    max speed
+ *   armed      0.20 m     0.34 m     0.58 m/s   <- suspension settling
+ *   unarmed  154.56 m   131.13 m    38.21 m/s   <- a camper rolling downhill
+ *
+ * The mechanism is sound by construction and worth knowing: every arm AND
+ * release branch in `Vehicle.update`'s brake-hold block is gated on `!held`,
+ * so while a boat holds the controls `_brakeHold` is frozen exactly as it was
+ * at boarding and cannot release. The player path cannot board without the
+ * camper parked, so it is armed by construction too.
+ *
+ * Boards a boat as far from the camper as the map allows and watches the
  * camper's own position, height above terrain, and speed.
  *
- *   node tools/_scratch/camperdrift.mjs [--dist 400] [--frames 600]
+ *   node tools/_scratch/camperdrift.mjs [--frames 600] [--hold]
  */
 import { chromium } from 'playwright';
 const argv = process.argv.slice(2);
