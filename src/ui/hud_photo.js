@@ -83,7 +83,7 @@ import { el, button } from './hud_dom.js';
 import { stats } from '../game/stats_store.js';
 import { PhotoFocus } from '../photo/photo_focus.js';
 import { detectSubjects } from '../game/hunt_detect.js';
-import { hunt } from '../game/hunt_store.js';
+import { hunt, THUMB_MAX } from '../game/hunt_store.js';
 import { LensKit, LensPreview, LENSES, lensById, cameraFovForFocal, focalForCameraFov, stopsFor }
   from '../photo/lens_models.js';
 import { touchCapable } from '../core/verbs.js';
@@ -116,6 +116,10 @@ const GLYPH = {
   // Two lenses trading places on the mount.
   swap: S('<path d="M4 8.5h13M14.2 5.3l3.3 3.2-3.3 3.2"/>' +
           '<path d="M20 15.5H7M9.8 12.3l-3.3 3.2 3.3 3.2"/>'),
+  // A panel against the edge with an arrow into it. Drawn pointing LEFT because
+  // that is the way it goes; the button flips it with a CSS rotation when the
+  // panel is away, so the glyph always points the direction the click moves it.
+  stow: S('<path d="M4.5 4.5v15"/><path d="M20 12H9"/><path d="M12.6 8.4 9 12l3.6 3.6"/>'),
 };
 
 export class PhotoMode {
@@ -124,6 +128,7 @@ export class PhotoMode {
     this.ctx = hud.ctx;
     this.active = false;
     this.grid = false;
+    this.stowed = false;
     this._saved = null;
 
     this.node = el('div', 'pa-photo-frame');
@@ -141,6 +146,21 @@ export class PhotoMode {
     // Always on. `PhotoFocus` fills it; this file only says where it goes. See
     // "the camera back" in the header, and `photo_focus.js`'s own note on why
     // a panel that positioned itself was a defect rather than an independence.
+    // ── get out of the way ──────────────────────────────────────────────────
+    //
+    // The panel is a camera back and a camera back is opaque, so on a wide shot
+    // it sits over the bottom third of the composition — which is exactly where
+    // a horizon or a foreground usually is. This slides it off the LEFT edge and
+    // leaves a tab.
+    //
+    // Top-right of the panel is where the button goes, and that is not a taste
+    // call: sliding left means the panel's RIGHT edge is the part still on
+    // screen, so a control in that corner is the one thing guaranteed to still
+    // be reachable when it is away. A button anywhere else would hide itself.
+    this.stowBtn = button('pa-cam-stow', GLYPH.stow, () => this.toggleStow(),
+      'Hide the controls');
+    rail.appendChild(this.stowBtn);
+
     this.readoutSlot = el('div', 'pa-cam-readout');
     rail.appendChild(this.readoutSlot);
 
@@ -321,7 +341,11 @@ export class PhotoMode {
     if (!touchCapable()) {
       rail.appendChild(el('div', 'pa-cam-gestures',
         '<span><b>drag</b> look</span><span><b>middle-drag</b> move</span>' +
-        '<span><b>wheel</b> dolly</span>'));
+        '<span><b>wheel</b> dolly</span>' +
+        // The one control with no dial of its own: AF focuses the CENTRE, and
+        // this focuses whatever you point at, which is the thing a photographer
+        // actually wants and was nowhere on screen.
+        '<span><b>shift+click</b> focus there</span>'));
     }
     this.node.appendChild(rail);
     this.rail = rail;
@@ -356,6 +380,12 @@ export class PhotoMode {
       e.stopPropagation();
     });
     rail.addEventListener('keyup', (e) => e.stopPropagation());
+
+    // The offset is measured, so it is wrong the moment the viewport changes
+    // shape. Only while the mode is open and only while stowed — `_placeStow`
+    // returns immediately otherwise.
+    this._onResize = () => { if (this.active) this._placeStow(); };
+    window.addEventListener('resize', this._onResize);
 
     root.appendChild(this.node);
   }
@@ -400,7 +430,25 @@ export class PhotoMode {
     input.type = 'range';
     input.min = o.min; input.max = o.max; input.step = o.step;
     input.setAttribute('aria-label', name);
-    if (o.hint && !touchCapable()) input.title = `${name} — ${o.hint}`;
+    // The chord, PRINTED — not just a tooltip.
+    //
+    // These three dials deliberately print no value (the instrument panel above
+    // prints all three, larger), which left the right-hand half of every one of
+    // their labels blank. The chords were going into `input.title`, i.e. a
+    // tooltip you have to know to hover for — so the redesign that removed the
+    // ten-line legend took shift+wheel and alt+wheel off the screen entirely
+    // and the mode stopped teaching its own controls. The blank half of the
+    // label is exactly the right size for them and costs no layout.
+    //
+    // A dial that DOES print a value keeps it — Hour and Exposure have no chord
+    // anyway — and a touch device gets neither, because there is no modifier
+    // key to press.
+    if (o.hint && !touchCapable() && !o.fmt) {
+      val.textContent = o.hint;
+      val.classList.add('pa-cam-chord');
+    } else if (o.hint && !touchCapable()) {
+      input.title = `${name} — ${o.hint}`;
+    }
     const paint = () => {
       const min = +input.min, max = +input.max;
       if (o.fmt) val.textContent = o.fmt(+input.value);
@@ -693,6 +741,11 @@ export class PhotoMode {
       this.colEl.set(this._saved.saturation);
       this._syncLens();
       this.hud.audio()?.cue('door');
+      // The panel may have been stowed when the player last left, and the rail
+      // is a different width now — a stale offset would park it in the wrong
+      // place. Cheap, and it is the only moment the measurement can be taken
+      // before the first frame is composed.
+      this._placeStow();
       void this.node.offsetWidth;      // see the note in hud_settings.setOpen
       // The zoom ring, and it is named rather than taken from a list. Focus has
       // to land somewhere inside the rail — that is what routes P, G, J, F and
@@ -860,6 +913,43 @@ export class PhotoMode {
     this.lensPreview?.update(dt);
   }
 
+  /**
+   * Slide the panel off to the left, or bring it back.
+   *
+   * The offset is MEASURED rather than a CSS constant, and has to be: the rail
+   * is centred (`left: 50%; translateX(-50%)`) and its width changes with the
+   * viewport, the fitted lens's name and whether the gesture line is there at
+   * all. What we want is its right edge parked `TAB` px from the left of the
+   * screen, so the shift is `TAB - (rail.right)` — computed at the moment of
+   * the click, and again on resize while it is away.
+   *
+   * Composed as a second `translateX` on top of the centring one rather than
+   * replacing it, so only the transform animates. The first version switched
+   * `left: 50%` to `left: 0` and animated both, which reads as the panel
+   * jumping to the corner and then sliding.
+   */
+  toggleStow(on = !this.stowed) {
+    this.stowed = !!on;
+    this.rail.classList.toggle('pa-cam-stowed', this.stowed);
+    this.stowBtn.setAttribute('aria-label', this.stowed ? 'Show the controls' : 'Hide the controls');
+    this.stowBtn.setAttribute('aria-expanded', String(!this.stowed));
+    this._placeStow();
+    this.hud.audio()?.cue('tick');
+  }
+
+  /** The measured offset, applied. Also the resize handler. */
+  _placeStow() {
+    if (!this.stowed) { this.rail.style.setProperty('--cam-off', '0px'); return; }
+    // Enough of the panel left on screen to be an obvious handle and to hold
+    // the button that brings it back.
+    const TAB = 34;
+    const r = this.rail.getBoundingClientRect();
+    // `r` already includes the current offset, so undo it before measuring.
+    const cur = parseFloat(this.rail.style.getPropertyValue('--cam-off')) || 0;
+    const right = r.right - cur;
+    this.rail.style.setProperty('--cam-off', `${Math.round(TAB - right)}px`);
+  }
+
   toggleGrid() {
     this.grid = !this.grid;
     this.gridNode.classList.toggle('pa-on', this.grid);
@@ -921,7 +1011,14 @@ export class PhotoMode {
         // is written at the display's native density and runs to megabytes,
         // while localStorage holds about five in total for the whole origin.
         thumb = this._thumbCanvas ??= document.createElement('canvas');
-        const k = 512 / Math.max(canvas.width, canvas.height, 1);
+        // `THUMB_MAX`, imported — NOT a 512 written out again here.
+        //
+        // This line used to carry its own copy of the number, which meant the
+        // store's constant could be raised and the shutter would go on handing
+        // it a 512 px canvas: `makeThumb` only ever scales DOWN, so the larger
+        // setting would have been silently ignored and the only symptom would
+        // have been that nothing looked any better.
+        const k = THUMB_MAX / Math.max(canvas.width, canvas.height, 1);
         thumb.width = Math.max(1, Math.round(canvas.width * k));
         thumb.height = Math.max(1, Math.round(canvas.height * k));
         thumb.getContext('2d').drawImage(canvas, 0, 0, thumb.width, thumb.height);

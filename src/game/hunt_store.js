@@ -95,8 +95,26 @@ import { HUNT_ITEMS, HUNT_BY_ID } from './hunt_items.js';
 const STORE = 'pa.hunt';
 const VERSION = 1;
 
-/** Longest edge of a stored photograph, in pixels. */
-export const THUMB_MAX = 512;
+/**
+ * Longest edge of a stored photograph, in pixels.
+ *
+ * 1024, up from 512, because the journal can now be leaned in on a single entry
+ * and the print gets most of the screen — at which point 512 is being stretched
+ * about two and a half times and it shows.
+ *
+ * The constraint on this number is localStorage, which is ~5 MB for the whole
+ * origin and shared with `pa.stats`. Measured over five real frames of this
+ * game rather than assumed, because JPEG does not scale with pixel count:
+ *
+ *     512  q0.72   26.8 KB a print   0.39 MB for a full sheet of fifteen
+ *     1024 q0.72   74.2 KB a print   1.09 MB for a full sheet
+ *
+ * So four times the pixels costs 2.8 times the bytes — this game's flat-shaded
+ * art compresses the extra detail cheaply — and a completed sheet takes about a
+ * fifth of the budget. That is affordable outright, and the eviction path below
+ * is still there for the case where it is not.
+ */
+export const THUMB_MAX = 1024;
 /** JPEG quality. Below ~0.65 the grain in the grass turns to mush. */
 export const THUMB_QUALITY = 0.72;
 

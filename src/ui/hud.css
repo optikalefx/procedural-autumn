@@ -1265,3 +1265,58 @@ body.pa-touch .pa-dash {
   .pa-cam-desk { gap: 0.6em 1.1em; }
   .pa-cam-gestures { display: none; }
 }
+
+/* ── stowing the camera back ──────────────────────────────────────────────────
+   The panel is opaque and sits over the bottom third of the composition, which
+   is where a horizon or a foreground usually is. This slides it off the left and
+   leaves a tab.
+
+   The offset is a variable rather than a constant because the rail is centred
+   and its width moves with the viewport, the fitted lens's name and whether the
+   gesture line exists — `PhotoMode._placeStow` measures it and writes it here.
+   Composed as a SECOND translate on top of the centring one so that only the
+   transform animates: the first version switched `left: 50%` to `left: 0` and
+   animated both, which read as the panel jumping to the corner and then
+   sliding. */
+.pa-rail {
+  transform: translateX(-50%) translateX(var(--cam-off, 0px));
+  transition: transform 0.42s var(--ease), opacity 0.3s var(--ease);
+}
+/* Everything except the button fades as it goes, so the tab left on screen is a
+   handle rather than a slice of unreadable dials. `visibility` on a delay for
+   the reason given by `.pa-sheet`: a control you cannot see should not be
+   tabbable either. */
+.pa-rail.pa-cam-stowed > *:not(.pa-cam-stow) {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.22s var(--ease), visibility 0s linear 0.22s;
+}
+.pa-cam-stow {
+  position: absolute;
+  top: 0.5em;
+  right: 0.5em;
+  z-index: 2;
+  width: 1.9em;
+  height: 1.9em;
+  padding: 0.34em;
+  border-radius: 50%;
+  border: 1px solid var(--edge);
+  background: rgba(43, 28, 51, 0.55);
+  color: var(--ink-dim);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 0.2s var(--ease), background 0.2s var(--ease), transform 0.42s var(--ease);
+}
+.pa-cam-stow:hover { color: var(--ink); background: rgba(43, 28, 51, 0.78); }
+.pa-cam-stow:focus-visible { outline: 2px solid rgba(240, 173, 70, 0.8); outline-offset: 2px; }
+.pa-cam-stow svg { width: 100%; height: 100%; display: block; }
+/* Away: the arrow turns round, because it now brings the panel back. */
+.pa-rail.pa-cam-stowed .pa-cam-stow { transform: rotate(180deg); color: var(--ink); }
+
+/* The chord printed in the blank half of a lens dial's label. Quieter than a
+   value — it is a reminder, not a reading. */
+.pa-cam-chord {
+  letter-spacing: 0.06em;
+  text-transform: none;
+  opacity: 0.72;
+}
