@@ -130,6 +130,22 @@ const probe = await page.evaluate(async () => {
   return { w: img.width, h: img.height, mean: +mean.toFixed(1),
            variance: +(sq / n - mean * mean).toFixed(1) };
 });
+// The chrome must actually stand down while the book is up — the round-one
+// evidence had a compass strip across the cover.
+const chrome = await page.evaluate(() => {
+  const hud = window.__systems.hud;
+  const vis = (sel) => {
+    const n = hud.root.querySelector(sel);
+    if (!n) return 'absent';
+    const cs = getComputedStyle(n);
+    return `${cs.opacity} ${cs.visibility}`;
+  };
+  return { rootClasses: hud.root.className, hint: vis('.pa-hint'),
+           compass: vis('.pa-compass'), dash: vis('.pa-dash'),
+           map: vis('.pa-map'), rail: vis('.pa-rail') };
+});
+console.log('chrome while the book is open:', JSON.stringify(chrome, null, 1));
+
 console.log('stored thumbnail:', JSON.stringify(probe));
 console.log(probe.mean > 6 && probe.variance > 4
   ? 'PASS — the stored print is a real photograph'

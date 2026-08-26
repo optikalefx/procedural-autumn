@@ -467,7 +467,12 @@ async function boot() {
   engine.setRenderCallback((dt) => {
     postfx.render(dt);
     const journal = ctx.systems.hud?.journal;
-    if (journal?.active) journal.render(engine.renderer);
+    // `active` drops on the frame `close()` is called, but the book takes
+    // another 0.46 s to be put down — gating on it alone meant the whole
+    // closing animation was computed and never drawn, so the journal vanished
+    // instead of closing. `visible` is the wider window and stays true until
+    // the last frame of the put-down.
+    if (journal?.active || journal?.visible) journal.render(engine.renderer);
   });
 
   // ── internal render scale ───────────────────────────────────────────────

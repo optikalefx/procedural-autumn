@@ -355,14 +355,17 @@ import { HUNT_IDS } from './hunt_items.js';
  */
 const MIN_SHARE = 0.155;
 
-// The two set-pieces are not animals and do not answer to the birds' rule.
-// A waterfall is enormous, so the animal share would count one at 700 m; a camp
-// is something you are standing next to.
+// The two set-pieces are not animals and do not answer to MIN_SHARE. A
+// waterfall is enormous — the animal share would still count one at 380 m,
+// which is a fall on the skyline rather than a fall you went to — and a camp is
+// something you are standing next to. Both were set against their own subject
+// and neither moved when MIN_SHARE did, because neither was ever derived from
+// it: a rule tuned on a deer has nothing to say about an eighty-metre drop.
 const FALL_SHARE = 0.12;
 const CAMP_SHARE = 0.12;
 
 // A marshmallow is 21 mm across, held at arm's length, in a view that frames it
-// for you. The share rule that keeps a deer honest at 60 m has nothing useful
+// for you. The share rule that keeps a deer honest at 26 m has nothing useful
 // to say about an object you are holding, so it gets its own floor — 3% of the
 // frame, ~35 px in a 1080 shot, which is a marshmallow-sized marshmallow.
 const MALLOW_SHARE = 0.03;
@@ -477,7 +480,6 @@ const _p = new THREE.Vector3();
 const _view = new THREE.Vector3();
 const _ndc = new THREE.Vector3();
 const _inv = new THREE.Matrix4();
-const _fwd = new THREE.Vector3();
 // A second world-space point, for the two subjects whose "is it visible" point
 // is not the same as their "how big is it" point — see `waterfalls`.
 const _aim = new THREE.Vector3();
@@ -827,25 +829,30 @@ function sstep(a, b, x) {
 }
 
 /**
- * The share of the population present at a spot whose `want` is this.
+ * P(an insect's presence rank is under `t`).
  *
- * The shader gives every insect a rank (`aRand.w = rand() * rand()`, skewed
- * low on purpose so the swarm thins gracefully) and draws it when `want`
- * clears that rank, crossfading over a 0.20 band. P(rank < t) for a product of
- * two uniforms is t·(1 − ln t); the crossfade is taken as a 0.10 offset on
- * `want`, which is where the middle of the band sits.
+ * The shader gives every insect a rank — `aRand.w = rand() * rand()`, skewed
+ * low on purpose so the swarm thins gracefully rather than in one block — and
+ * draws it when `want` clears that rank. For a product of two uniforms the
+ * distribution function is t·(1 − ln t), which is this.
+ */
+const ffRank = (t) => (t > 0 ? Math.min(1, t) * (1 - Math.log(Math.min(1, t))) : 0);
+
+/**
+ * The share of the population drawing at a spot whose `want` is this.
+ *
+ * The shader crossfades presence over a 0.20 band of rank, so this averages
+ * `ffRank` across the band rather than sampling its middle. Three points where
+ * the first version used one, and the difference is not cosmetic: the rank
+ * distribution piles up near zero, so at a `want` of 0.05 — a thin swarm that
+ * is nonetheless a swarm — the single midpoint sample lands below zero and
+ * reports an empty meadow while the shader is drawing one insect in five.
+ * Measured against frames, that was this estimator's worst disagreement with
+ * the picture.
  */
 function ffPresent(want) {
-  // Three points across the crossfade band rather than one at its middle. One
-  // point is what the first version did and it is wrong exactly where it
-  // matters: the rank distribution piles up near zero, so at a `want` of 0.05 —
-  // a thin swarm that is nonetheless a swarm — a single sample at `want - 0.1`
-  // lands below zero and reports an empty meadow, while the shader is drawing
-  // one insect in five. Measured against frames, that was the estimator's worst
-  // disagreement with the picture.
   return (ffRank(want) + ffRank(want - 0.10) + ffRank(want - 0.20)) / 3;
 }
-const ffRank = (t) => (t > 0 ? Math.min(1, t) * (1 - Math.log(Math.min(1, t))) : 0);
 
 /**
  * How many fireflies are inside this frame.
