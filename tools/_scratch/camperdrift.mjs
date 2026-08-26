@@ -61,9 +61,15 @@ const out = await p.evaluate(async (FRAMES) => {
   // `board()` called straight from a harness skips that gate, so a probe that
   // does not arm it is measuring an unbraked camper on a hillside and calling
   // the result a bug.
+  // Arm the INTERNAL flag. `veh.brakeHold` is a read-only mirror — Vehicle.js
+  // reassigns it from `this.phys.holdArmed` every single frame (line ~466) —
+  // so setting it from a harness arms nothing and is silently clobbered on the
+  // next step. The first cut of this probe did exactly that, watched the mirror
+  // read false at the end, and nearly reported a park-brake bug that was its
+  // own measurement. `_brakeHold` is what reaches `phys.step({hold})`.
   const armed = !!window.__ARM_HOLD;
-  if (armed) veh.brakeHold = true;
-  const holdAtStart = veh.brakeHold;
+  if (armed) { veh._brakeHold = true; veh._rescueHold = true; }
+  const holdAtStart = veh._brakeHold;
   window.__boat.spawnAt(best.x, best.z, { kind: 'kayak' });
   window.__boat.board();
 
@@ -75,7 +81,8 @@ const out = await p.evaluate(async (FRAMES) => {
       const gy = w.getHeight(veh.position.x, veh.position.z);
       trace.push({ n, x: +veh.position.x.toFixed(1), y: +veh.position.y.toFixed(2),
         z: +veh.position.z.toFixed(1), above: +(veh.position.y - gy).toFixed(2),
-        speed: +(veh.speed ?? 0).toFixed(2), hold: veh.brakeHold ? 1 : 0 });
+        speed: +(veh.speed ?? 0).toFixed(2),
+        hold: veh._brakeHold ? 1 : 0, armed: veh.brakeHold ? 1 : 0 });
       if (++n >= FRAMES) return resolve();
       requestAnimationFrame(tick);
     };
@@ -85,8 +92,10 @@ const out = await p.evaluate(async (FRAMES) => {
   const ab = trace.map(t => t.above);
   const last = trace[trace.length - 1];
   return {
-    holdArmedByHarness: armed, holdAtStart, holdAtEnd: veh.brakeHold,
-    holdHeldEveryFrame: trace.every(t => t.hold === 1),
+    holdArmedByHarness: armed, holdAtStart, holdAtEnd: veh._brakeHold,
+    internalHoldEveryFrame: trace.every(t => t.hold === 1),
+    physHoldArmedEveryFrame: trace.every(t => t.armed === 1),
+    controlsHeldBy: veh.controlsHeldBy,
     slopeAtCamper: +w.getSlope(start.x, start.z).toFixed(3),
     boardedAt: { x: Math.round(best.x), z: Math.round(best.z) },
     distanceFromCamper: Math.round(best.d),
