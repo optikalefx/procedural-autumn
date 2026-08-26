@@ -1866,6 +1866,11 @@ export class Journal {
         e.preventDefault();
         T.down = true; T.btn = e.button; T.drag = false; T.moved = 0;
         T.x = e.clientX; T.y = e.clientY;
+        // Decided HERE and not on the move, because the answer has to be about
+        // where the gesture STARTED. Tested once per press: a drag that begins
+        // on the book is the book's, and one that begins beside it is the
+        // camera's, whatever either passes over afterwards.
+        T.onBook = this._overBook(e.clientX, e.clientY);
         return;
       }
       if (e.type === 'pointercancel') { T.down = false; T.drag = false; return; }
@@ -1874,6 +1879,11 @@ export class Journal {
         T.x = e.clientX; T.y = e.clientY;
         T.moved += Math.abs(dx) + Math.abs(dy);
         if (!T.drag && T.moved < DRAG_SLOP) return;
+        // A drag that started on the book does not move the camera — and does
+        // not become a click on release either. Falling through to the click
+        // would turn a page every time somebody's hand slipped while pointing
+        // at one, which is worse than doing nothing.
+        if (T.onBook) { T.spent = true; return; }
         // Left and middle only, the two buttons photo mode uses. A right drag
         // is left alone because `preventDefault` on `pointerdown` does not stop
         // `contextmenu`, so it would tilt the book and then put a menu over it.
@@ -1895,9 +1905,12 @@ export class Journal {
         return;
       }
       if (e.type === 'pointerup') {
-        const wasDrag = T.drag;
-        T.down = false; T.drag = false;
+        const wasDrag = T.drag, spent = T.spent;
+        T.down = false; T.drag = false; T.spent = false;
         if (wasDrag) { this._cursorTo(''); return; }
+        // Dragged across the book: the press has been spent on nothing, which
+        // is the point. See the note by `T.onBook`.
+        if (spent) return;
         // Fall through to the click, below, with `pointerup`'s coordinates.
       }
       // ── the compare leaf owns the pointer while it is up ───────────────────
@@ -2718,6 +2731,48 @@ export class Journal {
   _cmpLift(m) { return (m.userData.pageW ?? 0) * CMP_LIFT; }
 
   /** Which of the two prints is under a screen point, or -1. */
+  /**
+   * Is the pointer on the book itself?
+   *
+   * The book's surface belongs to the book — page turns, print clicks, the
+   * compare — and the space around it belongs to the camera. Without this, a
+   * left-drag that started on a page both tilted the book and (on release,
+   * inside the slop) turned a page, which is the one thing that made driving it
+   * unusable: you cannot line up a spread with a gesture that also leafs
+   * through it.
+   *
+   * A raycast rather than a bounding box, because at a tilt the box is mostly
+   * empty air and the gap between the covers is exactly where a player aims to
+   * grab "not the book". The painted contact shadow is excluded: it is a
+   * transparent quad lying under the book, several cover-widths across, and
+   * treating it as the book would make most of the table undraggable.
+   *
+   * Bounding spheres are refreshed first. `deformPage` rewrites page positions
+   * every frame and never touches the sphere three.js culls against, so a bent
+   * leaf can be missed entirely — the hit test would then report "not the book"
+   * over the one surface that most obviously is. Once per press is free.
+   */
+  _overBook(clientX, clientY) {
+    if (!this.book || !this.camera) return false;
+    const T = this.ctx.THREE ?? globalThis.__THREE;
+    if (!T) return false;
+    const rc = this._rc ??= new T.Raycaster();
+    const nd = this._ndc ??= new T.Vector2();
+    nd.set((clientX / Math.max(1, window.innerWidth)) * 2 - 1,
+           -((clientY / Math.max(1, window.innerHeight)) * 2 - 1));
+    rc.setFromCamera(nd, this.camera);
+    this.book.traverse((o) => {
+      if (o.isMesh && o.visible && o.geometry?.attributes?.position) {
+        o.geometry.computeBoundingSphere();
+      }
+    });
+    for (const h of rc.intersectObject(this.book, true)) {
+      if (h.object === this._J?.shadow) continue;
+      return true;
+    }
+    return false;
+  }
+
   _cmpAt(clientX, clientY) {
     const C = this._cmp;
     if (!C?.up || C.chosen != null || this._studyK < 0.5) return -1;
