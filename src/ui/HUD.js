@@ -733,7 +733,7 @@ export class HUD extends System {
     // water. A warning lamp that is always on is not a warning lamp, and a
     // kayak has no brake to hold in the first place.
     this.dash.update(speed, this.trip, this.found, this.total,
-      aboard ? false : (veh?.brakeHold ?? false));
+      aboard ? false : (veh?.brakeHold ?? false), aboard ? 'boat' : 'camper');
     this.settings.tick(dt);
     this._gamepad();
   }
