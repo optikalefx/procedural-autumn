@@ -896,6 +896,31 @@ function bandMesh(name, { r, z0, z1, arc, up = ARC_UP, px = 1024 }, draw, owned)
 const INK = '#e8e4dc';
 const INK_DIM = '#9a948c';
 
+const FACE = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+
+/**
+ * Set a font at `size`, then shrink it until the string fits `maxW`.
+ *
+ * A BAND HAS TWO DIMENSIONS AND THE TYPE WAS ONLY EVER CHECKED AGAINST ONE.
+ * Every size in this file is a fraction of the canvas HEIGHT, which is derived
+ * from the band's own aspect so that glyphs come out square — correct, and
+ * completely silent about whether the string is longer than the band is wide.
+ * The tele's headline band is 1024 x 358, so `H * 0.44` is 158 px type, and
+ * "200-400mm  1:4" measures 1185 px at that size: 161 px of overflow, about 80
+ * off each end, and the lens read "00-400mm 1:" on the barrel.
+ *
+ * `measureText` is the only honest test, because the answer depends on the
+ * font stack the browser actually resolved, which is not knowable from here.
+ */
+function fitText(g, str, weight, size, maxW) {
+  g.font = `${weight} ${Math.round(size)}px ${FACE}`;
+  const w = g.measureText(str).width;
+  if (w <= maxW || w <= 0) return size;
+  const s = Math.max(8, Math.floor(size * (maxW / w)));
+  g.font = `${weight} ${s}px ${FACE}`;
+  return s;
+}
+
 function printMaterial(tex) {
   const m = new THREE.MeshStandardMaterial({
     map: tex, transparent: false, alphaTest: 0.45,
@@ -979,7 +1004,13 @@ const TELE = {
   distance: ['∞', '15', '8', '5', '3', '2'],
   mountR: 0.0295, throatR: 0.0208,
   rear: { r: 0.0425, z0: 0.0045, z1: 0.0300 },
-  collar: { r: 0.0520, z0: 0.0300, z1: 0.0760, footZ0: 0.0300, footZ1: 0.1120,
+  // The foot is an Arca plate and runs 118 mm, not 82. A short foot puts the
+  // whole support under the back fifth of a 345 mm lens, which is both wrong
+  // (every long lens carries a plate you can slide fore and aft to balance on)
+  // and reads wrong — the tele looked propped up rather than stood up. It does
+  // not move the COLLAR, which stays where the barrel's z-ladder leaves room
+  // for it; see the honest-weaknesses note.
+  collar: { r: 0.0520, z0: 0.0300, z1: 0.0760, footZ0: 0.0300, footZ1: 0.1480,
             footDrop: 0.0900, footW: 0.0322 },
   zoomRing: { r: 0.0552, z0: 0.0790, z1: 0.1470, ribs: 30, depth: 0.0030 },
   window: { r: 0.0522, z0: 0.1470, z1: 0.1760 },
@@ -1483,6 +1514,12 @@ function cap(r, zApex, sag, seg) {
 function buildCollar(P, S, tint) {
   const c = S.collar;
   const seg = S.seg;
+  // Bearing of the clamp knob, as a real angle in XY (five o'clock). The split
+  // is written off the same constant: a clamp knob that is not over the split
+  // it closes is a knob glued to a band, which is what the first version was —
+  // the split ran at six o'clock, buried inside the foot, where the only thing
+  // that could ever have seen it was the table.
+  const knobAt = -0.92;
 
   // The ring itself, with a shoulder at each end.
   P.add(revolve([
@@ -1495,14 +1532,14 @@ function buildCollar(P, S, tint) {
   // band, and a band does not rotate.
   P.add(revolve([
     [c.r - 0.0009, c.z0 + 0.0080], [c.r - 0.0009, c.z1 - 0.0080],
-  ], 6, -0.13, 0.26), 'flock', null, [1, 1, 1], { crease: 0.9 });
+  ], 6, knobAt + Math.PI / 2 - 0.13, 0.26), 'flock', null, [1, 1, 1], { crease: 0.9 });
 
   // The clamp knob, out at five o'clock so it does not fight the foot. A
   // knurled stub on a short neck, both built along Y (a cylinder's own axis)
   // and rotated out along the barrel's radius — which is a rigid transform, so
   // the creased normals survive it.
   {
-    const a = -0.92;
+    const a = knobAt;
     const zc = (c.z0 + c.z1) * 0.5;
     // A cylinder stands on +Y; rotate it to point along the +X radius, then
     // spin that radius round to the bearing we want.
@@ -1686,11 +1723,14 @@ function buildHood(parent, S, mats) {
     ], seg), 'rubber', null, [1, 1, 1], { crease: 0.55 });
   }
 
-  // Locking button on the side of the hood collar.
+  // Locking button on the side of the hood collar — three o'clock, which is
+  // where the comment always said it was. Written as a bare lathe φ of 0 it
+  // came out at six, i.e. underneath, pressed against the table the wide lens
+  // rests its hood on. See `decalBand` for the bearing this file uses.
   H.add(revolve([
     [h.r0 + 0.0004, h.z0 + 0.0055], [h.r0 + 0.0030, h.z0 + 0.0065],
     [h.r0 + 0.0030, h.z0 + 0.0125], [h.r0 + 0.0004, h.z0 + 0.0135],
-  ], 8, -0.16, 0.32), 'rubber', null, [1.5, 1.5, 1.5], { crease: 0.55 });
+  ], 8, Math.PI / 2 - 0.16, 0.32), 'rubber', null, [1.5, 1.5, 1.5], { crease: 0.55 });
 
   H.flush(parent, mats);
 }
@@ -1704,17 +1744,33 @@ function buildHood(parent, S, mats) {
  * rings.
  *
  * Two separate bands, because they are two separate things on a real lens and
- * they are read from different places: the focal scale is on the fixed barrel
- * next to the zoom ring's witness line, and the distance scale is in a recessed
- * window a third of the way round.
+ * they are read from different places: the focal scale is read against the red
+ * index at noon, and the distance scale is in a recessed window a third of the
+ * way round.
+ *
+ * THE SCALE IS PARENTED TO THE ZOOM RING and the index to the barrel, which is
+ * the arrangement on every zoom lens that has ever had numbers on it, and it is
+ * the only one where turning the ring can be WRONG — which is what makes it
+ * worth anything. Both used to be on the fixed barrel: the numbers and the mark
+ * that reads them never moved relative to each other, so the index printed
+ * whatever focal length it happened to have been authored over, forever.
+ *
+ * `SCALE_ARC` and `SCALE_INSET` are the layout, and `ZOOM_TURN` is derived from
+ * them: the ring must rotate by exactly the arc between the first number and
+ * the last, or the index drifts off the scale somewhere in the middle. Retune
+ * the layout and the rotation follows; that is the point of deriving it.
  */
-function addWindowPrint(parent, S, owned) {
+const SCALE_ARC = 1.50;                    // radians of barrel the band covers
+const SCALE_INSET = 0.10;                  // fraction of the band before "24"
+const ZOOM_TURN = SCALE_ARC * (1 - 2 * SCALE_INSET);   // 1.20 rad ≈ 69 degrees
+
+function addWindowPrint(parents, S, owned) {
   const w = S.window;
   const zc = (w.z0 + w.z1) * 0.5;
 
-  // ── focal scale, at twelve o'clock ────────────────────────────────────────
+  // ── focal scale, on the ring, read at twelve o'clock ──────────────────────
   const scale = bandMesh(`lens_${S.key}_scale`,
-    { r: w.r, z0: zc - 0.0075, z1: zc + 0.0075, arc: 1.50 },
+    { r: w.r, z0: zc - 0.0075, z1: zc + 0.0075, arc: SCALE_ARC },
     (g, W, H) => {
       g.textAlign = 'center';
       g.textBaseline = 'alphabetic';
@@ -1723,19 +1779,24 @@ function addWindowPrint(parent, S, owned) {
       const n = S.scale.length;
       for (let i = 0; i < n; i++) {
         // Spaced the way a real zoom scale is: bunched toward the long end,
-        // because the ring's rotation is roughly linear in log focal length.
+        // because the ring's rotation is linear in log focal length — and
+        // because `LensKit.t` is too, so the same t drives both.
         const t = Math.log(+S.scale[i] / +S.scale[0])
                 / Math.log(+S.scale[n - 1] / +S.scale[0]);
-        const x = lerp(W * 0.10, W * 0.90, t);
+        const x = lerp(W * SCALE_INSET, W * (1 - SCALE_INSET), t);
         g.fillText(S.scale[i], x, H * 0.60);
         g.fillRect(x - H * 0.03, H * 0.72, H * 0.06, H * 0.22);
       }
     }, owned);
-  if (scale) parent.add(scale);
+  if (scale) parents.ring.add(scale);
 
   // ── distance window, round at four o'clock ────────────────────────────────
+  // A third of a turn from noon, i.e. `ARC_UP - 2π/3`. It was written as a bare
+  // -0.95, which in the bearing this file actually uses (see `decalBand`) is
+  // about eight o'clock — low and on the far side, where nothing ever saw it.
   const dist = bandMesh(`lens_${S.key}_dist`,
-    { r: w.r, z0: zc - 0.0062, z1: zc + 0.0062, arc: 1.15, up: -0.95, px: 768 },
+    { r: w.r, z0: zc - 0.0062, z1: zc + 0.0062, arc: 1.15,
+      up: ARC_UP - TAU / 3, px: 768 },
     (g, W, H) => {
       // The window itself: a dark recess with a bright hairline top and bottom,
       // which is what a real distance window looks like from any distance at
@@ -1755,7 +1816,7 @@ function addWindowPrint(parent, S, owned) {
         g.fillText(S.distance[i], lerp(W * 0.09, W * 0.91, i / (n - 1)), H * 0.51);
       }
     }, owned);
-  if (dist) parent.add(dist);
+  if (dist) parents.fixed.add(dist);
 }
 
 /**
@@ -1767,22 +1828,34 @@ function addWindowPrint(parent, S, owned) {
  * rounds of this were illegible because the arc was too wide — 2.4 radians of
  * an 82 mm barrel curves the baseline so hard that the ends of the string point
  * at the floor. 1.7 radians, larger type, and it reads.
+ *
+ * A THIRD ROUND WAS ILLEGIBLE FOR THE OPPOSITE REASON: the type fitted the band
+ * and the STRING did not. `half` was hand-set per lens and the tele's 17 mm
+ * made a band twice as tall in proportion as the wide's, so the height-derived
+ * type came out at 158 px against a string that measures 1185 on a 1024 canvas.
+ * Both halves of that are fixed here — `half` is derived so the two bands have
+ * the same proportions and the same type size on both lenses, and `fitText`
+ * catches anything the derivation cannot know about.
  */
 function addBarrelPrint(parent, S, owned) {
   const fb = S.frontBarrel;
   const arc = 1.62;
   const zc = lerp(fb.z0, fb.z1, S.key === 'tele' ? 0.34 : 0.46);
-  const half = S.key === 'tele' ? 0.0170 : 0.0058;
+  // The band's proportions are its ARC LENGTH by its axial height. Fix the
+  // ratio and both lenses print at the same size relative to their own type,
+  // however different their barrels are: the tele's 97 mm of arc gets a 17 mm
+  // band, the wide's 67 mm gets 12.
+  const half = arc * fb.r / (2 * 5.75);
   const mesh = bandMesh(`lens_${S.key}_print`,
     { r: fb.r, z0: zc - half, z1: zc + half, arc },
     (g, W, H) => {
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       g.fillStyle = INK;
-      g.font = `700 ${Math.round(H * 0.44)}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      fitText(g, S.print, 700, H * 0.44, W * 0.86);
       g.fillText(S.print, W * 0.5, H * 0.37);
       g.fillStyle = INK_DIM;
-      g.font = `500 ${Math.round(H * 0.24)}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      fitText(g, S.printSub, 500, H * 0.24, W * 0.86);
       g.fillText(S.printSub, W * 0.5, H * 0.74);
     }, owned);
   if (mesh) parent.add(mesh);
@@ -1808,17 +1881,35 @@ function addBarrelPrint(parent, S, owned) {
 //
 //  (2), decisively. Nothing in here can touch the game's renderer, its post
 //  chain, its Atmosphere or its Stylize, and the preview keeps working if any
-//  of them changes. It renders only when something moves — a swap, a zoom, or
-//  a turntable idle — so a still rail costs nothing at all.
+//  of them changes. It draws only when the pose has actually changed, which in
+//  practice means every frame it is ticked with a real dt — the idle turntable
+//  never stops — and NOTHING when it is ticked at dt 0. Do not read that as "a
+//  still rail is free": the way a rail stops paying for this panel is by not
+//  calling `update`. The earlier version of this comment claimed the render was
+//  conditional while `update` rendered unconditionally and the `_dirty` flag it
+//  set was never read by anything.
 //
-//  The lighting is the gallery stage's, deliberately: warm key, cool sky fill,
-//  gold bounce off the ground, at roughly Lighting.js's ratios. A prop that
-//  reads in the gallery reads here, which is what makes the gallery a valid
-//  iteration loop for something the player only ever sees in this panel.
+//  ── the lighting, and why it is NOT the gallery's ───────────────────────────
+//
+//  It started as a copy of the gallery stage's: warm key, cool sky fill, gold
+//  bounce off the ground, at roughly Lighting.js's ratios, on the argument that
+//  a prop which reads in the gallery reads here. That argument is wrong in one
+//  direction. The gallery draws a lens 700 px wide against a dark violet page
+//  and the eye has the whole barrel to average; this panel draws it at 188 px
+//  against the HUD, and at that size a warm key over a gold ground bounce is
+//  not "a dark grey lens in warm light", it is a brown lens. The tele read as a
+//  brass telescope — measured at mean [35, 23, 14], a red-minus-blue of 21 on a
+//  barrel authored at 0x4d4a4e, which is neutral to within 4 counts.
+//
+//  So the ground bounce here is a dim neutral and the exposure is 1.0, while
+//  the KEY stays warm — the tint on the lit side is the game's light and it
+//  should stay; what had to go was the warm fill on the shadow side, which is
+//  the half of the barrel that was deciding the colour. The gallery is not the
+//  shipping surface. This panel is, and it is judged on its own captures.
 
 const PREVIEW_KEY = 0xffd9a0;
 const PREVIEW_SKY = 0x93b4dd;
-const PREVIEW_BOUNCE = 0xe8a24a;
+const PREVIEW_BOUNCE = 0x6f6c68;
 
 export class LensPreview {
   /**
@@ -1832,7 +1923,9 @@ export class LensPreview {
     this.ok = false;
     this._swap = 0;
     this._spin = 0;
-    this._dirty = true;
+    // The last pose actually drawn, so `update(0)` — a rail that is ticking but
+    // paused — costs a comparison instead of a draw. See the header.
+    this._drawn = null;
     this._models = new Map();
 
     try {
@@ -1842,7 +1935,10 @@ export class LensPreview {
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.15;
+      // 1.0, not 1.15. The extra sixth of a stop was bought before the bounce
+      // was neutral and it was paying for the wrong thing: it lifted the warm
+      // half of the barrel, not the dark half.
+      this.renderer.toneMappingExposure = 1.0;
     } catch (e) {
       console.warn('[lens] preview renderer unavailable', e);
       return;
@@ -1857,7 +1953,7 @@ export class LensPreview {
     const fill = new THREE.DirectionalLight(new THREE.Color(PREVIEW_SKY), 0.85);
     fill.position.set(1.0, 0.55, -0.6);
     const bounce = new THREE.HemisphereLight(new THREE.Color(PREVIEW_SKY),
-      new THREE.Color(PREVIEW_BOUNCE), 0.55);
+      new THREE.Color(PREVIEW_BOUNCE), 0.42);
     this.scene.add(key, fill, bounce);
 
     this.camera = new THREE.PerspectiveCamera(26, this.width / this.height, 0.02, 4);
