@@ -56,9 +56,21 @@
 //  own listeners — which are all on the bubble phase — never see the event.
 //  `journal.wantsInput` is exported for the integrator so the HUD can also gate
 //  itself; the capture listeners mean nothing breaks if it does not.
+//
+//  The verbs, in full:
+//    click a print      go in on it (one move — the lean was removed, §15.3)
+//    click elsewhere    turn to the page on that half of the frame
+//    left drag          tilt and turn the book
+//    middle drag        slide it
+//    wheel              zoom
+//    Escape / J / Enter square the book if it has been driven, else back out
+//                      one level, else shut it
+//    arrows / PgUp/Dn   the same, then turn a page
+//  A press that moves more than `DRAG_SLOP` is a drag and never also a click,
+//  which is why the click fires on pointerUP.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { clamp01, lerp, smoothstep, mulberry32 } from '../core/MathUtils.js';
+import { clamp, clamp01, lerp, smoothstep, mulberry32 } from '../core/MathUtils.js';
 import { buildEnvMap } from '../vehicle/model_kit.js';
 import { journalFontsReady } from './journal_fonts.js';
 import { JournalPage, ROWS_PER_PAGE, loadPhoto, disposePaperCache } from './journal_page.js';
@@ -88,9 +100,12 @@ const SCRIPT = {
   close: 0.46,
 };
 
-// Framing. The camera never moves; the BOOK moves, which is both cheaper to
-// reason about and the right way round — a camera that swoops at a stationary
-// object reads as a cutscene, and this is a thing the player picked up.
+// Framing. The camera never moves and the BOOK moves — for everything the book
+// does on its OWN account, which is both cheaper to reason about and the right
+// way round: a camera that swoops at a stationary object reads as a cutscene,
+// and this is a thing the player picked up. The one exception is the free
+// camera the player drives themselves (`PAN_*`), which moves the camera,
+// because that is what a camera the player is holding is.
 const CAM_POS = new THREE.Vector3(0, 0.255, 0.600);
 const CAM_LOOK = new THREE.Vector3(0, -0.004, 0.005);
 const CAM_FOV = 30;
@@ -259,6 +274,83 @@ const CLOSE_ZOOM_SEED = 8;
 // the spread, so a pointer would have to be travelling over 900 px/s to cross
 // one inside this — about three times a comfortable mouse sweep.
 const HOVER_ARM = 0.12;
+
+// ── the player drives the book: pan, tilt and zoom ───────────────────────────
+//
+// *"add the ability to pan, tilt and zoom on the journal."*
+//
+// **The verbs are photo mode's, exactly.** `CameraRig._free` is the camera every
+// player of this game already has in their hands, and the photo rail prints its
+// three gestures on screen: left drag orbits, middle drag translates, the wheel
+// dollies. Same three here, at the SAME sensitivities — 0.0042 rad per pixel of
+// yaw, 0.0032 of pitch, `exp(deltaY * 0.0016)` on the dolly — so the muscle
+// memory transfers rather than having to be relearned on one screen.
+//
+// **And it moves the CAMERA, not the book, which is a departure.** Everything
+// else in this file moves the book and holds the camera still, on the argument
+// in the header: a camera that swoops at a stationary object reads as a
+// cutscene. That argument is about the CEREMONY's authored framing, and it does
+// not survive contact with a free camera — the whole point of which is that it
+// is the player's. It is also the only version that works: `_applyStudy`
+// recentres the book by measuring where a point on the page has ended up and
+// pushing it back to `STUDY_LOOK`, so a free transform on the book would be
+// measured and cancelled on the very same frame. Tried first, and the book sat
+// there refusing to move.
+//
+// So the free pose orbits, dollies and slides the CAMERA about `STUDY_LOOK` —
+// the point the framing centres, which is the print at the close look and the
+// middle of the spread otherwise — and every world-space thing in this file
+// (`samplePage`, the patch placement, the picking) is untouched by it and
+// follows for free.
+//
+// ── the clamps, and what each one is protecting ────────────────────────────
+//
+//  · `PAN_FACE_MIN` / `PAN_FACE_MAX` bound the PAGE's angle off face-on rather
+//    than the camera's pitch, which is the thing that actually matters and the
+//    only form of the clamp that composes with the close look's own tilt. At
+//    the spread the page is 34 degrees off face-on (§13.1); `STUDY_TILT` takes
+//    24 of those; so the range left to the player is computed per frame rather
+//    than written down. It runs from **15 degrees PAST face-on** — far enough
+//    to see the paper's tooth catch the light from the other side, not far
+//    enough to be looking at the back of the leaf — to **65 degrees**, where
+//    the spread is a steep oblique and the far page's hint text starts running
+//    into the gutter shadow. Past either end the book stops being a book.
+//  · `PAN_YAW_MAX` 0.6 rad (34 degrees) is where the far page of a spread is
+//    foreshortened to cos 34 = 83% and its inner margin begins to disappear
+//    into the fold. It is the same failure the gutter margin exists to prevent
+//    (journal_page's header), arriving from the camera instead of the layout.
+//  · `PAN_ZOOM_MIN` / `MAX` 0.55 and 3.0 are multipliers on whatever the
+//    framing has already chosen. 0.55 at the spread puts the whole book in the
+//    middle third of the frame with the scrim around it; 3.0 at the close look
+//    is a print at 240% of the frame, which is past the point where the stored
+//    photograph has anything left to give (§14.3: the emulsion is 878 CSS px on
+//    a dpr-1 1600x900 against 1024 px of source, so 1.17x is where it becomes
+//    an upscale). The ceiling is a comfort limit, not a resolution one — the
+//    page's own ink holds up further than the photograph does.
+//  · `PAN_EDGE` 0.9 keeps the point the framing centred inside 90% of the frame
+//    from the middle. That is the clamp that stops a player panning the book
+//    off the screen entirely and then having nothing on screen to pan back.
+//
+// **Getting back to square is one action.** Escape (and J, Enter, and both page
+// keys) puts the book back before it does anything else — so the first press
+// undoes the tumbling and the second does what it always did. It is only a rung
+// when the pose is actually off square, past `PAN_SQUARE`, so a book nobody has
+// touched behaves exactly as it did. Changing zoom level squares it too, which
+// is why the two never happen in one keystroke.
+const PAN_YAW_MAX = 0.60;
+const PAN_FACE_MIN = -0.26;      // rad past face-on, toward the reader
+const PAN_FACE_MAX = 1.14;       // rad off face-on, oblique
+const PAN_SPREAD_FACE = 0.593;   // the spread's own 34 degrees, in radians
+const PAN_ZOOM_MIN = 0.55;
+const PAN_ZOOM_MAX = 3.0;
+const PAN_EDGE = 0.90;
+const PAN_HOME = 0.28;           // seconds to ease back to square
+const PAN_SQUARE = 0.004;        // below this the pose counts as square
+// How far a pointer may travel between down and up and still be a CLICK. Below
+// this a drag is a click and the book turns a page when the player meant to
+// tilt it; above it, a slow deliberate click on a print gets eaten. 4 px is the
+// same threshold a browser uses to cancel a click into a drag.
+const DRAG_SLOP = 4;
 // Device pixels per page pixel in the detail patch (journal_page's
 // `printPatch`), which is what makes the close look a view of the STORED photo
 // rather than of the page texture — the argument is in `_detailPrepare` and the
@@ -317,6 +409,8 @@ const CMP_DIM = 0.55;
 const CMP_HOVER = 0.11;      // seconds for the hover to ease in or out
 const CMP_SLAP = 0.30;       // the chosen print settling onto the page
 const CMP_HOLD = 0.34;       // and the beat before the book leafs back
+
+const _UP = new THREE.Vector3(0, 1, 0);
 
 const easeOut = (t) => 1 - (1 - t) ** 3;
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
@@ -524,6 +618,16 @@ export class Journal {
     this._hoverKey = null;
     this._hoverSeat = null;
     this._hoverT = 0;
+    // The player's own framing, on top of whatever the ladder has chosen. See
+    // the `PAN_*` block: it moves the CAMERA about `STUDY_LOOK`, so nothing
+    // that reads a world matrix has to know it exists. `home` runs it back to
+    // square, which is what Escape does first if it is not.
+    this._pan = { yaw: 0, pitch: 0, zoom: 1, x: 0, y: 0 };
+    this._panFrom = null;
+    this._panT = 1;
+    // Pointer bookkeeping: a drag has to be told from a click, or every tilt
+    // also turns a page.
+    this._ptr = { down: false, btn: 0, x: 0, y: 0, moved: 0, drag: false };
     this._size = new THREE.Vector2();
     this._dbSize = new THREE.Vector2();
     this._clearCol = new THREE.Color();
@@ -724,6 +828,7 @@ export class Journal {
     this._cmpDrop();
     this._backTo = null;
     this._hoverAt(null);
+    this._panReset();
 
     // The shutter's scratch canvas has to become a string before the first
     // await; see the header of this method.
@@ -907,6 +1012,7 @@ export class Journal {
     this._cmpDrop();
     this._backTo = null;
     this._hoverAt(null);
+    this._panReset();
     this._cursorTo('');
     this.onClose?.();
   }
@@ -1214,16 +1320,173 @@ export class Journal {
     r.scale.setScalar(s);
 
     // The close look, on top of the laid pose and nothing else — it adds to
-    // what is
-    // already on the root rather than replacing it, so the rise, the dip and
-    // the recentre above all keep working underneath it.
+    // what is already on the root rather than replacing it, so the rise, the
+    // dip and the recentre above all keep working underneath it.
     this._applyStudy(r, dt);
+
+    // And the player's own framing on top of THAT — on the camera, after the
+    // book is posed and before anything reads a world matrix. See `PAN_*`.
+    this._applyPan(dt);
 
     this._scrim.material.opacity = 0.78 * clamp01(P.scrim);
     // Everything downstream of this frame — the photograph finding the page it
     // lands on, most of all — reads world matrices, and three only refreshes
     // them inside render(). One walk of a 20-node tree is nothing.
     this._bookRoot.updateMatrixWorld(true);
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  //  The player's own framing — pan, tilt, zoom
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** True while the book is anywhere other than the framing it chose itself. */
+  get panned() {
+    const P = this._pan;
+    return Math.abs(P.yaw) > PAN_SQUARE || Math.abs(P.pitch) > PAN_SQUARE
+        || Math.abs(P.zoom - 1) > PAN_SQUARE
+        || Math.abs(P.x) > PAN_SQUARE * 0.1 || Math.abs(P.y) > PAN_SQUARE * 0.1;
+  }
+
+  /**
+   * Put the free pose on the camera. Called every frame, from `_apply`.
+   *
+   * The camera is rebuilt from the FIT's pose each time rather than integrated,
+   * so there is no drift to accumulate and a window resize re-homes it for
+   * free. Four terms, in this order and for this reason:
+   *
+   *   orbit   about `STUDY_LOOK`, yaw round world up and pitch round the
+   *           camera's own right — so pitch is always "up and over the book"
+   *           whichever way it has been turned,
+   *   dolly   toward the same point, which is what makes the zoom land on what
+   *           is in the middle of the frame rather than on the book's origin
+   *           (which at 9x is a long way off screen),
+   *   pan     a straight translation in the camera's right/up plane, which is
+   *           the DCC gesture and the one `CameraRig._free` uses,
+   *   home    an ease back to square, over `PAN_HOME`.
+   */
+  _applyPan(dt) {
+    const P = this._pan;
+    // The ease home. `_panFrom` is the pose it left, so the ease is on all five
+    // terms at once and the book comes back as one movement.
+    if (this._panT < 1 && this._panFrom) {
+      this._panT = clamp01(this._panT + dt / PAN_HOME);
+      const e = 1 - easeInOut(this._panT);
+      const F = this._panFrom;
+      P.yaw = F.yaw * e; P.pitch = F.pitch * e;
+      P.x = F.x * e; P.y = F.y * e;
+      P.zoom = 1 + (F.zoom - 1) * e;
+      if (this._panT >= 1) this._panFrom = null;
+    }
+    const cam = this.camera;
+    if (!this._camPos0) return;
+    if (!this.panned) {
+      cam.position.copy(this._camPos0);
+      cam.quaternion.copy(this._camQuat0);
+      cam.updateMatrixWorld(true);
+      return;
+    }
+
+    const q = this._panQ ??= new THREE.Quaternion();
+    const q2 = this._panQ2 ??= new THREE.Quaternion();
+    const right = this._panR ??= new THREE.Vector3();
+    const up = this._panU ??= new THREE.Vector3();
+    const pos = this._panP ??= new THREE.Vector3();
+
+    // Yaw about world up first, then pitch about the camera's right AFTER that
+    // yaw — the order that makes a tilt stay a tilt once the book has been
+    // turned. `-pitch` because the drag is read the way photo mode reads it
+    // (down raises the camera), and raising the camera is a negative rotation
+    // about a right-handed +X.
+    q.setFromAxisAngle(_UP, P.yaw);
+    right.set(1, 0, 0).applyQuaternion(this._camQuat0).applyQuaternion(q).normalize();
+    q2.setFromAxisAngle(right, -P.pitch);
+    q.premultiply(q2);
+
+    pos.copy(this._camPos0).sub(STUDY_LOOK).applyQuaternion(q);
+    // The dolly. `1 / zoom` because the book is not moving: pulling the camera
+    // in is what makes the book bigger.
+    pos.multiplyScalar(1 / P.zoom).add(STUDY_LOOK);
+    cam.quaternion.copy(this._camQuat0).premultiply(q);
+    right.set(1, 0, 0).applyQuaternion(cam.quaternion);
+    up.set(0, 1, 0).applyQuaternion(cam.quaternion);
+    // The camera slides the OPPOSITE way to the content, which is what makes
+    // the point under the cursor stay under the cursor.
+    pos.addScaledVector(right, -P.x).addScaledVector(up, -P.y);
+    cam.position.copy(pos);
+    cam.updateMatrixWorld(true);
+  }
+
+  /**
+   * The world size of half the frame at the pivot's depth — what the pan clamp
+   * and the pan's own metres-per-pixel are both measured against.
+   */
+  _panFrameHalf() {
+    // Measured from the FIT's camera, not the live one. Using the live camera
+    // makes the clamp a function of the pan it is clamping: sliding sideways
+    // moves the camera further from the pivot, which widens the frame there,
+    // which widens the clamp. Measured, that let the vertical pan creep from
+    // its 0.152 m limit out to 0.175 before it settled. The dolly is divided
+    // out instead, which is the part that SHOULD move the limit — zoomed in,
+    // the same fraction of the frame is fewer metres.
+    const p0 = this._camPos0 ?? this.camera.position;
+    const d = p0.distanceTo(STUDY_LOOK) / Math.max(0.05, this._pan.zoom);
+    const h = d * Math.tan(rad(this.camera.fov) / 2);
+    return { h, w: h * (this.camera.aspect || 1) };
+  }
+
+  /**
+   * Take a drag, a wheel or a key and move the free pose, clamped.
+   *
+   * Every clamp is applied here rather than in `_applyPan`, so the state itself
+   * can never hold a pose the book is not allowed to be in — which is what
+   * makes the ease home a straight lerp of five numbers with nothing to check.
+   */
+  _panBy({ yaw = 0, pitch = 0, zoom = 1, x = 0, y = 0 }) {
+    // The ceremony has right of way, on the same test `leaf()` and `study()`
+    // use: the flying print aims at a page it locates every frame, and moving
+    // the camera under it would move the target it is aiming at.
+    if (this._script?.hasAward && !this._taped &&
+        this._t < (this._script.end + (this._seekPad ?? 0))) return;
+    const P = this._pan;
+    this._panFrom = null;
+    this._panT = 1;
+
+    P.yaw = clamp(P.yaw + yaw, -PAN_YAW_MAX, PAN_YAW_MAX);
+    // The pitch clamp is expressed on the PAGE's angle off face-on, not on the
+    // camera, so it composes with whatever tilt the ladder has already put on
+    // the book. See the `PAN_*` block.
+    const tilt = STUDY_TILT * Math.min(this._studyK, 1);
+    const face = PAN_SPREAD_FACE - tilt;
+    P.pitch = clamp(P.pitch + pitch, face - PAN_FACE_MAX, face - PAN_FACE_MIN);
+    P.zoom = clamp(P.zoom * zoom, PAN_ZOOM_MIN, PAN_ZOOM_MAX);
+
+    const f = this._panFrameHalf();
+    P.x = clamp(P.x + x, -PAN_EDGE * f.w, PAN_EDGE * f.w);
+    P.y = clamp(P.y + y, -PAN_EDGE * f.h, PAN_EDGE * f.h);
+  }
+
+  /**
+   * Back to the framing the book chose for itself, eased.
+   *
+   * The one action that undoes any amount of tumbling, and it is bound to the
+   * key a player already presses to get out of things. Returns whether it had
+   * anything to do, which is what lets Escape spend a press on this and only
+   * this — one input, one change.
+   */
+  panHome() {
+    if (!this.panned) return false;
+    this._panFrom = { ...this._pan };
+    this._panT = 0;
+    return true;
+  }
+
+  /** Square it up with no animation. For `open`, `close` and a rung change. */
+  _panReset() {
+    const P = this._pan;
+    P.yaw = P.pitch = P.x = P.y = 0;
+    P.zoom = 1;
+    this._panFrom = null;
+    this._panT = 1;
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -1295,6 +1558,12 @@ export class Journal {
     this.camera.lookAt(CAM_LOOK);
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld(true);
+    // The pose the free camera departs from and comes home to. Taken here
+    // rather than remembered from the constructor because the fit re-poses the
+    // camera on every aspect change, and a player who resizes the window while
+    // panned must come home to the NEW fit, not the old one.
+    (this._camPos0 ??= new THREE.Vector3()).copy(this.camera.position);
+    (this._camQuat0 ??= new THREE.Quaternion()).copy(this.camera.quaternion);
   }
 
   /**
@@ -1485,14 +1754,20 @@ export class Journal {
       switch (e.code) {
         case 'Escape': case 'KeyJ': case 'Enter':
           e.preventDefault();
+          // A tumbled book comes back to square FIRST. One press, one change:
+          // it is only a rung when there is something to undo, so a book nobody
+          // has driven closes on the first Escape exactly as it always did.
+          if (this.panHome()) break;
           if (this._studyTo > 0) this.zoomOut(); else this.close();
           break;
         case 'ArrowRight': case 'KeyD': case 'PageDown': case 'Space':
           e.preventDefault();
+          if (this.panHome()) break;
           if (this._studyTo > 0) this.zoomOut(); else this.leaf(+1);
           break;
         case 'ArrowLeft': case 'KeyA': case 'PageUp':
           e.preventDefault();
+          if (this.panHome()) break;
           if (this._studyTo > 0) this.zoomOut(); else this.leaf(-1);
           break;
         default: break;
@@ -1502,18 +1777,67 @@ export class Journal {
     this._onWheel = (e) => {
       if (!this._active) return;
       e.preventDefault(); stop(e);
-      // One detent per turn, with a hold-off: a trackpad emits a burst of
-      // twenty events for one flick and the book would riffle to the end.
-      const now = performance.now();
-      if (now - (this._wheelAt ?? 0) < 260) return;
-      if (Math.abs(e.deltaY) < 4) return;
-      this._wheelAt = now;
-      if (this._cmp) this._cmpAbandon();
-      else if (this._studyTo > 0) this.zoomOut(); else this.leaf(e.deltaY > 0 ? +1 : -1);
+      // ── the wheel is the DOLLY now ────────────────────────────────────────
+      // It used to be a page turn, with a hold-off to stop a trackpad's burst
+      // of twenty events riffling the book to the end. JOURNAL_NOTES 14.7
+      // flagged that as the one input a player might reasonably expect to work
+      // in both directions; it does now, and the burst stops being a problem
+      // rather than being suppressed — a continuous zoom is exactly what twenty
+      // small multiplications add up to. Same `exp(deltaY * 0.0016)` the free
+      // camera in photo mode uses, so one flick moves the book by the same
+      // amount it moves the world there.
+      //
+      // The page keys and a click on the half of the frame you want are what
+      // turn pages now. That is a real cost of this change and it is the right
+      // trade: leafing has two other bindings and zooming had none.
+      this._panBy({ zoom: Math.exp(-e.deltaY * 0.0016) });
     };
     this._onPointer = (e) => {
       if (!this._active) return;
       stop(e);
+      // ── a drag is not a click ─────────────────────────────────────────────
+      // Everything below used to fire on `pointerdown`. It cannot any more: the
+      // same left button now tilts the book, and a tilt that also turned a page
+      // would make the book unusable. So the gesture is decided on pointerUP —
+      // a press that moved less than `DRAG_SLOP` is a click and does what it
+      // always did, and one that moved further has already been spent on the
+      // camera. The cost is that a click acts a few milliseconds later than it
+      // used to; the alternative is that half of them do two things.
+      const T = this._ptr;
+      if (e.type === 'pointerdown') {
+        e.preventDefault();
+        T.down = true; T.btn = e.button; T.drag = false; T.moved = 0;
+        T.x = e.clientX; T.y = e.clientY;
+        return;
+      }
+      if (e.type === 'pointercancel') { T.down = false; T.drag = false; return; }
+      if (e.type === 'pointermove' && T.down) {
+        const dx = e.clientX - T.x, dy = e.clientY - T.y;
+        T.x = e.clientX; T.y = e.clientY;
+        T.moved += Math.abs(dx) + Math.abs(dy);
+        if (!T.drag && T.moved < DRAG_SLOP) return;
+        T.drag = true;
+        this._cursorTo(T.btn === 1 ? 'grabbing' : 'move');
+        if (T.btn === 1) {
+          // Middle drag: translate, the DCC pan. One world unit per screen unit
+          // at the pivot's depth, so the point under the cursor stays under the
+          // cursor — the same arithmetic and the same reason as
+          // `CameraRig._free`, which spells it out at length.
+          const h = window.innerHeight || 900;
+          const mpp = 2 * this._panFrameHalf().h / h;
+          this._panBy({ x: dx * mpp, y: -dy * mpp });
+        } else {
+          // Left drag: orbit, at photo mode's own sensitivity and signs.
+          this._panBy({ yaw: -dx * 0.0042, pitch: dy * 0.0032 });
+        }
+        return;
+      }
+      if (e.type === 'pointerup') {
+        const wasDrag = T.drag;
+        T.down = false; T.drag = false;
+        if (wasDrag) { this._cursorTo(''); return; }
+        // Fall through to the click, below, with `pointerup`'s coordinates.
+      }
       // ── the compare leaf owns the pointer while it is up ───────────────────
       // Hover says which print a click will keep — in three places at once, so
       // no one of them has to carry it: the print comes off the paper, the
@@ -1525,8 +1849,7 @@ export class Journal {
       // player has not answered, with the answer they did not give.
       if (this._cmp) {
         if (e.type === 'pointermove') { this._cmpHover(this._cmpAt(e.clientX, e.clientY)); return; }
-        if (e.type !== 'pointerdown') return;
-        e.preventDefault();
+        if (e.type !== 'pointerup') return;
         const k = this._cmpAt(e.clientX, e.clientY);
         if (k >= 0) this._cmpChoose(k);
         return;
@@ -1545,8 +1868,10 @@ export class Journal {
         this._cursorTo(this._studyTo > 0 ? 'zoom-out' : (seat ? 'zoom-in' : ''));
         return;
       }
-      if (e.type !== 'pointerdown') return;
-      e.preventDefault();
+      if (e.type !== 'pointerup') return;
+      // A click squares the book up first, exactly as Escape does — otherwise
+      // the click that was meant to undo a tumble turns a page instead.
+      if (this.panHome()) return;
       // At the close look there is nowhere further in, so anywhere is "back".
       // A click on a DIFFERENT print does the same rather than hopping sideways
       // to it: at this framing the other print is a sliver at the edge of the
@@ -1563,7 +1888,7 @@ export class Journal {
     window.addEventListener('keydown', this._onKey, { capture: true });
     window.addEventListener('keyup', this._onKeyUp, { capture: true });
     window.addEventListener('wheel', this._onWheel, { capture: true, passive: false });
-    for (const t of ['pointerdown', 'pointerup', 'pointermove'])
+    for (const t of ['pointerdown', 'pointerup', 'pointermove', 'pointercancel'])
       window.addEventListener(t, this._onPointer, { capture: true });
   }
 
@@ -1643,6 +1968,12 @@ export class Journal {
   _zoomTo(level, maxDur = Infinity) {
     const to = Math.max(0, Math.min(1, level));
     if (to === this._studyTo) return;
+    // A rung change puts the book square. The framing about to be solved is
+    // measured through the camera, so a player-driven camera underneath it
+    // would be solved AROUND rather than solved for — and a zoom that arrives
+    // somewhere other than the middle of the frame is not a fit. It is also why
+    // Escape squares first and changes rung second: the two never coincide.
+    this._panReset();
     this._studyFrom = this._studyK;
     this._studyTo = to;
     this._studyT = 0;
@@ -1749,7 +2080,13 @@ export class Journal {
       // meaningless measurement at k = 0.003, clamped) -> 12.2 -> back down to
       // 9.11, and the scale covered half its log distance in the first 40% of
       // the move instead of at the halfway point.
-      this._trackCloseZoom(mesh, S.slot);
+      // …and not while the PLAYER is driving the camera. The fit measures the
+      // print's projected box, so with a free camera on top it would read the
+      // player's own zoom as an error in its own and scale the book to undo it
+      // — the book would fight the wheel. It re-solves the moment the pose
+      // comes home, and a resize while panned leaves the fit stale until then,
+      // which is the honest cost and is smaller than the alternative.
+      if (!this.panned) this._trackCloseZoom(mesh, S.slot);
       if (this._cmp) this._cmpPlace(mesh);
       else this._detailShow(S, mesh);
     } else if (k > 0 && mesh?.visible) {
@@ -2507,7 +2844,7 @@ export class Journal {
     window.removeEventListener('keydown', this._onKey, { capture: true });
     window.removeEventListener('keyup', this._onKeyUp, { capture: true });
     window.removeEventListener('wheel', this._onWheel, { capture: true });
-    for (const t of ['pointerdown', 'pointerup', 'pointermove'])
+    for (const t of ['pointerdown', 'pointerup', 'pointermove', 'pointercancel'])
       window.removeEventListener(t, this._onPointer, { capture: true });
 
     this._cursorTo('');

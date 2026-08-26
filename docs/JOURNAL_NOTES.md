@@ -44,6 +44,8 @@ export class Journal {
   zoomOut()                     // one rung out
   get closeUp(); get zoomLevel() // 0 spread, 1 the print   (r6: was 0/1/2)
   get comparing()               // NEW (r6) — the "which of these two" leaf
+  get panned()                  // NEW (r6) — the player has driven the camera
+  panHome()                     // NEW (r6) — back to square; true if it moved
   update(dt)                    // REAL seconds
   render(renderer)              // straight after postfx.render(dt)
   dispose()
@@ -235,11 +237,13 @@ see §9.
    synchronously inside `open()`, before its first await, precisely because
    that canvas is a reused scratch buffer. See §15.2 for the exact three lines
    in `hud_photo`.
-6. **Gate the HUD** on `journal.wantsInput` if you want the driving chrome to go
+6. **Nothing for the free camera.** `J` already owns the wheel and the pointer
+   while the book is open (§15.4), through the same capture-phase listeners.
+7. **Gate the HUD** on `journal.wantsInput` if you want the driving chrome to go
    away while the book is open. Nothing breaks if you do not — the journal's
    listeners are capture-phase and already take the events — but the HUD stays
    drawn over the book, which the capture in the report shows.
-7. **Nothing for type.** No stylesheet change.
+8. **Nothing for type.** No stylesheet change.
 
 ## 9. Known weak points
 
@@ -1372,3 +1376,103 @@ Verified in the real game with `_jsweep.mjs` (all four pages, one click each,
 written against the three-rung ladder and clicks twice to reach the close look;
 its second click now backs out. Its measurements in §14 were taken before this
 round and stand. `_jsweep.mjs` and `_jreal.mjs` are the harnesses to use.
+
+### 15.4 The player drives the book — pan, tilt, zoom
+
+*"add the ability to pan, tilt and zoom on the journal."*
+
+**The verbs are photo mode's, exactly.** `CameraRig._free` is the camera every
+player of this game already has in their hands, and the photo rail prints its
+three gestures on screen. Same three here at the same sensitivities — 0.0042 rad
+per pixel of yaw, 0.0032 of pitch, `exp(deltaY × 0.0016)` on the dolly — so the
+muscle memory transfers instead of having to be relearned on one screen.
+
+| | | |
+|---|---|---|
+| left drag | tilt and turn the book | orbit |
+| middle drag | slide it | the DCC pan, one world unit per screen unit at the pivot's depth |
+| wheel | zoom | `exp(deltaY × 0.0016)`, undamped |
+| Escape / J / Enter | square it, then back out one level, then shut | |
+
+**It moves the CAMERA, and that is a departure from this file's own rule.**
+Everything else in the journal moves the book and holds the camera still — a
+camera that swoops at a stationary object reads as a cutscene. That argument is
+about the *ceremony's* authored framing and it does not survive contact with a
+camera the player is holding. It is also the only version that works: tried
+first on the book, and `_applyStudy` recentres by measuring where a point on the
+page has ended up and pushing it back to `STUDY_LOOK` — so a free transform on
+the book is measured and cancelled on the same frame, and the book sits there
+refusing to move. On the camera, every world-space thing in the file
+(`samplePage`, the patch placement, the picking, the compare's hover) is
+untouched and follows for free.
+
+The camera is rebuilt from the fit's pose every frame rather than integrated, so
+there is nothing to drift and a window resize re-homes it. Four terms in order:
+orbit about `STUDY_LOOK`, dolly toward the same point (which is what makes the
+zoom land on what is in the middle of the frame rather than on the book's
+origin, which at 9× is a long way off screen), a straight translation in the
+camera's right/up plane, then the ease home.
+
+**The clamps, and what each is protecting.** Measured through the real game with
+`tools/_scratch/_jpan.mjs`, which shoves each gesture past its limit and reports
+where it stopped — and captures it, because "does it still read as a book" is
+not a number:
+
+| | limit | measured at the stop | what it protects |
+|---|---|---|---|
+| turn | ±0.60 rad | yaw −0.600, page 42.0° off face-on | the far page's inner margin disappearing into the fold — the same failure the gutter margin exists to prevent, arriving from the camera instead of the layout |
+| tilt, toward | page 15° PAST face-on | pitch +0.853, page **14.8°** | a page perpendicular to the lens has no perspective in it and the book stops being an object in a room (§13.1's argument, from the other side) |
+| tilt, away | page 65° off face-on | pitch −0.547, page **65.4°** | a steep oblique is still a book; past it you are looking under the table |
+| zoom | ×0.55 to ×3.0 | 0.550 / 3.000 | out: the whole book in the middle third of the frame. in: past ~1.17× at the close look the stored photograph is an upscale (§14.3), so the ceiling is comfort, not resolution — the page's own ink holds up further than the print does |
+| slide | 90% of the frame from centre | x 0.271, y 0.152 m | panning the book off the screen and having nothing left on screen to pan back with |
+
+**The tilt clamp is written on the PAGE's angle, not the camera's pitch**, which
+is the only form that composes with the close look's own tilt. At the spread the
+page is 34° off face-on and `STUDY_TILT` takes 24 of those, so the range left to
+the player is computed per frame. Verified: the same 14.8° upper stop is reached
+from the spread (pitch +0.853) and from the close look (pitch +0.433), which is
+exactly the 0.42 rad `STUDY_TILT` had already spent.
+
+**A drag is not a click.** The same left button now tilts the book, so every
+click moved from `pointerdown` to `pointerup` and a press that travels more than
+`DRAG_SLOP` (4 px, the threshold a browser uses) is spent on the camera and
+never also on the book. Without it a tilt turns a page. Verified: a 260 px drag
+leaves `leaf` where it was.
+
+**Getting back is one action.** Escape (and J, Enter, and both page keys) squares
+the book *before* it does anything else, and only when there is something to
+undo — `panned` is false below `PAN_SQUARE`, so a book nobody has driven closes
+on the first Escape exactly as it always did. A click squares it too, for the
+same reason: the click meant to undo a tumble must not turn a page. Verified:
+`home -> panned false, open true; again -> open false`. Changing zoom level
+squares it as well, which is why the two never happen in one keystroke — and it
+has to, because the fit is solved through the camera and a player-driven camera
+underneath it would be solved *around* rather than solved for.
+
+**Two things it costs, stated.**
+
+* **The wheel no longer turns pages.** §14.7 flagged that as the one input a
+  player might reasonably expect to work in both directions; it is the dolly
+  now. Leafing keeps two bindings (the page keys, and a click on the half of the
+  frame you want); zooming had none. The trackpad hold-off that stopped a burst
+  of twenty events riffling the book to the end is gone with it, and does not
+  need replacing — twenty small multiplications of a zoom is a zoom.
+* **`_trackCloseZoom` is skipped while the camera is off square**, or the fit
+  would read the player's zoom as an error in its own and scale the book to undo
+  it — the book would fight the wheel. It re-solves the moment the pose comes
+  home; a window resize while panned leaves the fit stale until then.
+
+The ceremony keeps right of way, on the same test `leaf()` and `study()` use.
+Verified by shoving the camera while the print is still in the air:
+`PASS — the ceremony kept right of way`.
+
+Plates, all from `_jpan.mjs`: `f_p0_square`, `f_p1_yaw` (turned to the stop),
+`f_p2_tilt_up`, `f_p4_face_min` (15° past face-on — still has perspective in it),
+`f_p5_face_max` (65°, still a book on a table), `f_p6_zoom_in`, `f_p7_zoom_out`,
+`f_p8_pan_clamp` (the book pushed to the corner and still on screen), and
+`f_q2_close_zoom` (the print at 240% of the frame, from the close look).
+
+**Noted, not done.** Touch is one finger only — a one-finger drag is the orbit,
+and there is no pinch. Two-pointer gestures are a real piece of work and this
+branch's brief did not ask for them; the wheel covers a trackpad's pinch, which
+arrives as `wheel` with `ctrlKey`, at the dolly's own rate.
