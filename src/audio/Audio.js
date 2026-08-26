@@ -262,8 +262,10 @@ export class Audio extends System {
       if (name === 'shutter') this.vehicle.shutter();
       else if (name === 'door') this.vehicle.door();
       else if (name === 'tick' || name === 'select') this._tickCue(name === 'select');
-      // The journal's three voices — a page turning, a pencil struck through a
-      // line, a print slapped down. Built on first use because the constructor
+      // The journal's four voices — a leather cover opening, a page turning, a
+      // pencil struck through a line, a print slapped down. The list is
+      // `JOURNAL_CUES` rather than a switch here on purpose: a voice added there
+      // is wired by existing. Built on first use because the constructor
       // fills two 1.4 s noise buffers, and a player who never opens the book
       // should never pay for them. Straight to `master` like `_tickCue` and
       // unlike the camp props: these are dry interface sounds with no position
