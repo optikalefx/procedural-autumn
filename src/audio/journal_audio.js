@@ -513,13 +513,28 @@ const CROWD_MAX = 3;
 //
 // Each was defensible alone; the stack of them was not a recording any more.
 //
-// The gain stays, because `slap > cover > page > cross` through a 200 Hz
-// high-pass is a rule this file holds and the raw file peaks at 0.039. If the
-// balance is wrong the fix is this one number or a different take; either way
-// what plays is what was recorded. Verified by correlating the rendered cue
-// against the raw mp3 — 0.9994 over the full second.
+// **6.2, and it deliberately breaks the ladder.** `slap > cover > page > cross`
+// through a 200 Hz high-pass was a rule this file held, and the cover is now
+// the loudest beat instead of the slap. That is a considered trade, not an
+// oversight: the user could not hear their own recording in the ceremony and
+// said so three times, and being audible beats being balanced.
+//
+// The reason it needs so much is the file itself. Measured against the page
+// recording sitting beside it in `public/audio/`:
+//
+//                 peak     body (rms per 100 ms, at its loudest)
+//   page.mp3     0.1680    0.0217
+//   journal.mp3  0.0391    0.0073
+//
+// The cover take is about 13 dB quieter in peak and 9 dB quieter in body than
+// the page take. A gain of 6.2 is what closes that, and it is amplifying the
+// recording's own noise floor along with it. A louder take would let this
+// number come down and the ladder go back.
+//
+// What plays is the file: verified by correlating the rendered cue against the
+// raw mp3, 0.9994 over the full second.
 const COVER_SAMPLE_URL = '/audio/journal.mp3';
-const COVER_SAMPLE_GAIN = 4.3;
+const COVER_SAMPLE_GAIN = 6.2;
 
 const PAGE_SAMPLE_URL = '/audio/page.mp3';
 const PAGE_SAMPLE_GAIN = 0.68;
@@ -835,6 +850,15 @@ export class JournalAudio {
     // would keep synthesising for the rest of it.
     const SAMPLED = { page: this._page, cover: this._cover };
     const sampled = !this._noSample && !!SAMPLED[name];
+    // Say which path fired, once per cue name. Three rounds of this feature
+    // were spent on "is it playing my file?" with no way to answer it from the
+    // machine that could hear it — every check I could run said yes and the
+    // person listening said no. One line in a console settles that in seconds,
+    // and it costs nothing after the first firing of each cue.
+    if (SAMPLED[name] !== undefined) {
+      (this._said ??= new Set()).has(name) || (this._said.add(name),
+        console.info(`[journal:audio] ${name}: ${sampled ? SAMPLED[name] ? 'playing the recording' : '?' : 'synthesised (no recording loaded)'}`));
+    }
     const voice = sampled
       ? (name === 'page' ? this._sampledPage : this._sampledCover)
       : VOICES[name];

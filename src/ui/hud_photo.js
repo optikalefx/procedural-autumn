@@ -206,6 +206,7 @@ export class PhotoMode {
         this.lensPreview?.setZoomT(this.lens.t);
         this.lensPreview?.setLens(this.lens.lens.id);
         this._fitAperture();
+        this._fitDolly();
         this._syncLens();
         // Changing a lens is not the same act as turning a ring, so it does not
         // get the same sound. `select` is the heavier of the two UI voices.
@@ -540,6 +541,8 @@ export class PhotoMode {
       // and orbit damp theirs back within a second, but `exitFree` cuts — so
       // without this the first frame after leaving photo mode is 400 mm wide.
       fov: this.ctx.systems?.cameraRig?.fov ?? 52,
+      // Raised by `_fitDolly` for a long lens; the chase boom wants its own.
+      freeDistMax: this.ctx.systems?.cameraRig?.freeDistMax ?? 68,
       // The engine's absolute pin, or null for "the adaptive scaler had it".
       // Read from the engine rather than from HUD.renderPin on purpose: this
       // has to restore what was actually running, and those two differ while a
@@ -721,6 +724,7 @@ export class PhotoMode {
       const rig0 = this.ctx.systems?.cameraRig;
       if (rig0) rig0.fov = cameraFovForFocal(this.lens.focal, this.ctx.camera.aspect);
       this._fitAperture();
+      this._fitDolly();
       // The preview's GL context, taken on the first F rather than at boot —
       // and survivable if the browser refuses it. See the note by `lensRow`.
       if (!this.lensPreview) {
@@ -778,7 +782,7 @@ export class PhotoMode {
         // own memory of it so a mode changed while photo mode was open (it
         // cannot be today; C is locked out in free mode) still loses to what
         // the player actually had.
-        if (rig) rig.fov = s.fov;
+        if (rig) { rig.fov = s.fov; rig.freeDistMax = s.freeDistMax; }
         rig?.exitFree?.(s.mode === 'free' ? 'chase' : s.mode);
       }
       this._saved = null;
@@ -848,6 +852,28 @@ export class PhotoMode {
    * still be at f/11 after fitting the tele, because that is the setting they
    * chose. Only an impossible value moves.
    */
+  /**
+   * How far the wheel may back the camera off, given the lens on the front.
+   *
+   * The free camera's ceiling is the chase boom's ZOOM_MAX, 68 m, which is a
+   * sane distance to stand from a camper with a wide lens on. At 400 mm the
+   * frame is 2.9 degrees across and the subject is something on the far side of
+   * the valley — a player scrolling back to find it hits that stop at once, and
+   * reports it as the wheel not going far enough. Which it is.
+   *
+   * Scaled by focal length against the wide end, because that is what the
+   * geometry says: the same subject fills the same share of the frame at a
+   * distance proportional to the focal. Capped at 420 m — past that the terrain
+   * between camera and subject is doing more to the shot than the dial is, and
+   * the free camera's own floor clearance starts fighting the hillside.
+   */
+  _fitDolly() {
+    const rig = this.ctx.systems?.cameraRig;
+    if (!rig) return;
+    const wide = LENSES[0]?.mmMin ?? 24;
+    rig.freeDistMax = Math.min(420, 68 * Math.max(1, this.lens.focal / wide));
+  }
+
   /** `f`, brought inside what the fitted lens can actually do. */
   _lensStop(f) {
     const stops = stopsFor(this.lens.lens);
