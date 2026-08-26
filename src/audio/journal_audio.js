@@ -519,8 +519,53 @@ const CROWD_MAX = 3;
 // documented as three levels rather than four. At 0.166 the slap is
 // unambiguously the ending again.
 const COVER_SAMPLE_URL = '/audio/journal.mp3';
-const COVER_SAMPLE_GAIN = 4.26;
+// 2.7, not the 4.26 the first cut used, and the reason is a lesson about which
+// statistic to level a recording by.
+//
+// 4.26 was chosen to match the synthesised cover's PEAK through the
+// small-speaker filter. This file's peak is two isolated transients — -8.1 dB
+// at 0.14 s and -9.6 dB at 0.32 s — sitting 20-30 dB above its own body. So
+// peak-matching set the two clicks to the old voice's level and left the swell
+// underneath half as loud: measured, the sampled cover came out with the same
+// peak as the synth (0.171 vs 0.172) but 5.2 dB less body and 5.2 dB more crest
+// (18.3 dB against 13.1). That difference is audible and it is what "harsh"
+// means. Levelling by peak is right for a sound with a body and wrong for one
+// that is mostly transient.
+//
+// 3.6 is a compromise and is worth naming as one. The three candidates:
+//
+//   4.26  peak 0.171, NO shelf — matches the old peak, and is the harsh one
+//   3.60  peak 0.141, with the shelf — but hp200 0.110 falls UNDER the page,
+//         which breaks the ladder: the shelf takes more out of the filtered
+//         band than it does out of the peak, so the two numbers do not move
+//         together and the gain has to be re-derived after it, not before
+//   4.10  peak 0.160, with the shelf — hp200 back between page and slap
+//   12.5  peak 0.311 — what MATCHING THE OLD BODY would actually cost
+//
+// The last line is the honest limit. This take is 500 ms of two clicks with a
+// crest factor of 18 dB; the voice it replaces was a swell with a crest of 13.
+// Giving the recording the old body means a peak two thirds again as loud as
+// the slap, which would make opening the book the loudest event in the game.
+// So the cue is levelled to sit correctly in the ladder and the body it has is
+// the body the recording has. A different take — more sustain, less click —
+// would let this number go up.
+const COVER_SAMPLE_GAIN = 4.1;
 const COVER_TAKE = [0.020, 0.520];
+// A shelf off the top, and it is measured rather than taste. Band energy as a
+// share of the whole, this file against the voice it replaces:
+//
+//                 <200   200-800   0.8-2k   2-5k   5-10k
+//   journal.mp3   28.1      15.7      0.7    1.3     2.8
+//   synth cover   14.8       9.6     20.9    3.8     0.7
+//
+// It is SCOOPED: thump and top with almost nothing in the 0.8-2 kHz band where
+// the old voice kept a fifth of its energy, and four times the old voice's
+// share in the sharp 5-10 kHz band. No fader fixes that shape — an ear hears
+// the top and the thump with no midrange to seat them in. The shelf takes the
+// edge off the part that is over-represented; it cannot put back a band the
+// recording does not contain, and it does not pretend to.
+const COVER_SHELF_HZ = 5000;
+const COVER_SHELF_DB = -6;
 
 const PAGE_SAMPLE_URL = '/audio/page.mp3';
 const PAGE_SAMPLE_GAIN = 0.68;
@@ -933,7 +978,13 @@ export class JournalAudio {
     src.playbackRate.value = rate;
     const g = gain(actx, 0);
     const p = panner(actx, -0.05);
-    src.connect(g).connect(p).connect(this.bus);
+    // See COVER_SHELF_DB: this recording carries four times the synthesised
+    // voice's share above 5 kHz and almost none of its midrange.
+    const sh = actx.createBiquadFilter();
+    sh.type = 'highshelf';
+    sh.frequency.value = COVER_SHELF_HZ;
+    sh.gain.value = COVER_SHELF_DB;
+    src.connect(sh).connect(g).connect(p).connect(this.bus);
 
     const a = Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004);
     const fin = Math.min(TAKE_FADE_IN, d * 0.2);
@@ -946,7 +997,7 @@ export class JournalAudio {
     // Buffer seconds, not rate-scaled — see the note in `_sampledPage`.
     src.start(t, t0, t1 - t0);
     src.stop(t + d + 0.02);
-    c.nodes.push(src, g, p);
+    c.nodes.push(src, sh, g, p);
   }
 
   _sampledPage(c) {
