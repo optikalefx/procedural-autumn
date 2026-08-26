@@ -1884,9 +1884,17 @@ export class PostFX {
     const want = !!on;
     if (want === this._photoDOF) return;
     if (want) {
+      const u0 = this._dofEffect?.cocMaterial.uniforms;
       this._dofSaved = {
-        focusDistance: this._dofEffect?.cocMaterial.uniforms.focusDistance.value ?? DOF_TIER.focusDistance,
+        focusDistance: u0?.focusDistance.value ?? DOF_TIER.focusDistance,
         held: this._focusHeld,
+        // `uCocGain` and `uCocKnee` are photo mode's alone — the tier's branch
+        // is `mix(smoothstep(...), physical, uCocPhysical)` with uCocPhysical 0,
+        // so a leftover value is discarded and nothing looks wrong. It is still
+        // wrong: "restores exactly" was the property this mode was reviewed on
+        // twice, and one uniform short of true is not true. Cheap to keep.
+        cocGain: u0?.uCocGain?.value ?? 1,
+        cocKnee: u0?.uCocKnee?.value ?? 1,
       };
       this._photoDOF = true;
       this._syncDOF();
@@ -1897,8 +1905,10 @@ export class PostFX {
       this._focusHeld = this._dofSaved?.held ?? false;
       if (this._dofEffect) {
         this._applyDOFConfig(DOF_TIER);
-        this._dofEffect.cocMaterial.uniforms.focusDistance.value =
-          this._dofSaved?.focusDistance ?? DOF_TIER.focusDistance;
+        const u1 = this._dofEffect.cocMaterial.uniforms;
+        u1.focusDistance.value = this._dofSaved?.focusDistance ?? DOF_TIER.focusDistance;
+        if (u1.uCocGain) u1.uCocGain.value = this._dofSaved?.cocGain ?? 1;
+        if (u1.uCocKnee) u1.uCocKnee.value = this._dofSaved?.cocKnee ?? 1;
       }
       this._dofSaved = null;
       this._syncDOF();
