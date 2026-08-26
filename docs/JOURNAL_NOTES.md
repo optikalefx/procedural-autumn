@@ -1526,3 +1526,26 @@ Two harness notes, because both produced a confident wrong answer first:
   the journal's own clock and it is GATED — it stops while a page seek is
   outstanding — so a curve indexed on `performance.now()` is comparing against
   the wrong x-axis.
+
+### 15.7 A plain click stopped moving the book
+
+Two things used to happen on a click that missed a print, and both were wrong
+once the book could be driven:
+
+- **`panHome()`** — clicking the book eased the camera back to square, so the
+  book *tilted when you clicked it*. It reads as the click having grabbed
+  something. Escape still squares up, which is the right home for it: a key
+  pressed deliberately, not a side effect of every click that misses.
+- **`leaf(clientX > width/2 ? +1 : -1)`** — "click the half of the frame you
+  want to go to". That fired on ANY click, including one out on the table where
+  the player was reaching for the camera, so the book leafed while they were
+  trying to frame it.
+
+Now: on a print, go to it. Anywhere else, nothing. Turning a page is the swipe
+(§15.6), which says which direction it means and cannot be triggered by aiming
+badly. The close look zooms straight out instead of squaring up first, for the
+same reason.
+
+Measured, all four gestures doing exactly one thing: swipe right on the book
+leaf 1 → 2; swipe left 2 → 1; click on the book, leaf unchanged and pose moved
+0.0000; drag outside, leaf unchanged and pose moved 0.59.

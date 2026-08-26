@@ -1871,6 +1871,11 @@ export class Journal {
         // on the book is the book's, and one that begins beside it is the
         // camera's, whatever either passes over afterwards.
         T.onBook = this._overBook(e.clientX, e.clientY);
+        // Signed, and kept apart from `T.moved` — that one is a path LENGTH
+        // (|dx|+|dy| summed) and is the right measure for "has this stopped
+        // being a click", but it cannot tell left from right and a there-and-
+        // back wobble accumulates in it. A swipe needs displacement.
+        T.dx = 0; T.dy = 0;
         return;
       }
       if (e.type === 'pointercancel') { T.down = false; T.drag = false; return; }
@@ -1878,12 +1883,16 @@ export class Journal {
         const dx = e.clientX - T.x, dy = e.clientY - T.y;
         T.x = e.clientX; T.y = e.clientY;
         T.moved += Math.abs(dx) + Math.abs(dy);
+        T.dx += dx; T.dy += dy;
         if (!T.drag && T.moved < DRAG_SLOP) return;
-        // A drag that started on the book does not move the camera — and does
-        // not become a click on release either. Falling through to the click
-        // would turn a page every time somebody's hand slipped while pointing
-        // at one, which is worse than doing nothing.
-        if (T.onBook) { T.spent = true; return; }
+        // A drag that started on the book does not move the camera. It is a
+        // SWIPE — see the note at `pointerup` — so the cursor says so and the
+        // direction is read on release.
+        if (T.onBook) {
+          T.spent = true;
+          this._cursorTo('ew-resize');
+          return;
+        }
         // Left and middle only, the two buttons photo mode uses. A right drag
         // is left alone because `preventDefault` on `pointerdown` does not stop
         // `contextmenu`, so it would tilt the book and then put a menu over it.
@@ -1908,9 +1917,30 @@ export class Journal {
         const wasDrag = T.drag, spent = T.spent;
         T.down = false; T.drag = false; T.spent = false;
         if (wasDrag) { this._cursorTo(''); return; }
-        // Dragged across the book: the press has been spent on nothing, which
-        // is the point. See the note by `T.onBook`.
-        if (spent) return;
+        // ── a swipe across the book turns a page ──────────────────────────
+        //
+        // This is what taking the page turn off the plain click was FOR: the
+        // book is a book, and a book is leafed through by pushing a page
+        // across. Drag right for the next spread and left for the previous —
+        // the same direction the arrow keys use, which is the tiebreaker,
+        // because "drag right" could equally describe pushing the right-hand
+        // leaf over to go back and there is no way to be right for everybody.
+        // One `sign` here flips it if that reads wrong.
+        //
+        // Gated on being HORIZONTAL and on clearing a real distance: a drag is
+        // already only reachable on the book, so the only thing left to guard
+        // against is a mostly-vertical wander being read as a page turn.
+        // `SWIPE_MIN` scales with the window because the same gesture on a
+        // phone and on a 27-inch display should ask for the same fraction of
+        // the book, not the same number of pixels.
+        if (spent) {
+          this._cursorTo('');
+          const SWIPE_MIN = Math.max(48, (window.innerWidth || 1200) * 0.045);
+          if (Math.abs(T.dx) > SWIPE_MIN && Math.abs(T.dx) > Math.abs(T.dy)) {
+            this.leaf(Math.sign(T.dx));
+          }
+          return;
+        }
         // Fall through to the click, below, with `pointerup`'s coordinates.
       }
       // ── the compare leaf owns the pointer while it is up ───────────────────
@@ -1959,7 +1989,10 @@ export class Journal {
       // frame, and a sliver that teleports the book is a way to lose your place,
       // not a shortcut.
       if (this._studyTo > 0) {
-        if (!this.panHome()) this.zoomOut();
+        // Straight out. It used to square the book up first and zoom out on a
+        // second click, which is the same "a click moved the book" the spread
+        // had — see below. Escape still squares up.
+        this.zoomOut();
         this._cursorTo('zoom-out');
         return;
       }
@@ -1969,10 +2002,28 @@ export class Journal {
       // `study` squares it on the way in anyway.
       const seat = this._rowAt(e.clientX, e.clientY);
       if (seat) { this.study(seat.page, seat.row); this._cursorTo('zoom-out'); return; }
-      if (this.panHome()) return;
-      // Click the half of the frame you want to go to. The book fills the
-      // middle, so this is "click the page you can see", which needs no label.
-      this.leaf(e.clientX > window.innerWidth * 0.5 ? +1 : -1);
+
+      // ── and nothing else. A plain click does not move the book ────────────
+      //
+      // Two things used to happen here and both were wrong once the book could
+      // be driven:
+      //
+      //  · `panHome()` — a click on the book eased the camera back to square,
+      //    which is a book that TILTS when you click it. It reads as the click
+      //    having grabbed something. Escape still squares up, and that is the
+      //    right home for it: a key you press deliberately, not a side effect
+      //    of every click that misses a print.
+      //  · `leaf(clientX > width/2 ? +1 : -1)` — "click the half of the frame
+      //    you want". That fired on ANY click, including one out on the table
+      //    where the player was reaching for the camera, so the book leafed
+      //    while they were trying to frame it. Turning a page is the SWIPE now
+      //    (see `pointerup`'s spent branch), which is a gesture that says which
+      //    direction it means and cannot be triggered by aiming badly.
+      //
+      // So: on a print, go to it. Anywhere else, nothing. The space around the
+      // book is the camera's and the book's own surface is for its prints and
+      // its pages, and neither of them is a place where a stray click should
+      // change what you are looking at.
     };
     window.addEventListener('keydown', this._onKey, { capture: true });
     window.addEventListener('keyup', this._onKeyUp, { capture: true });
