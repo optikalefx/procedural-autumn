@@ -236,8 +236,17 @@ function tick(g, x, y, s, seed, t = 1) {
  * is stuck to. The fill is warm and translucent so whatever is under it shows
  * through slightly darker — that show-through is most of why it reads as tape
  * rather than as a beige rectangle.
+ *
+ * `px` is how many DEVICE pixels one page pixel is being drawn at, and it exists
+ * for `printPatch` (which draws this same strip into a canvas 2-5x the page's
+ * own resolution). It scales the blur radius and nothing else — MEASURED, not
+ * assumed: `g.filter = 'blur(6px)'` is in device pixels and is NOT affected by
+ * the context transform, so a `scale(3)` transform makes the same call blur a
+ * third as far in page coordinates. (Probed in Chromium: a 6 px blur reaches 11
+ * page px at scale 1, 5.5 at scale 2, 3.67 at scale 3.) Every other length here
+ * IS in page coordinates and the transform handles it.
  */
-function tapeStrip(g, cx, cy, w, h, angle, seed) {
+function tapeStrip(g, cx, cy, w, h, angle, seed, px = 1) {
   const r = rng(seed);
   g.save();
   g.translate(cx, cy);
@@ -265,7 +274,7 @@ function tapeStrip(g, cx, cy, w, h, angle, seed) {
   // The tape itself — translucent, torn-edged, crooked — was never the problem.
   g.save();
   g.translate(1.4, 2.2);
-  g.filter = 'blur(3px)';
+  g.filter = `blur(${(3 * px).toFixed(2)}px)`;
   g.fillStyle = 'rgba(84,62,40,0.17)';
   g.fill(path);
   g.restore();
@@ -720,7 +729,12 @@ export class JournalPage {
     // ── done: the strike, then the print ────────────────────────────────────
     if (row.done && !row.pending) {
       this._strike(g, tx, baseline, lw, seed, 1);
-      this._paste(g, slot, row.photo, tiltA, seed, row.tapeT ?? 1);
+      // `hidePrint` leaves the strike and the tick and takes only the print,
+      // because a higher-resolution copy of it is being composited over this
+      // leaf right now — see `printPatch`. The empty-slot corner marks stay
+      // away too (they are gated on `!row.done` above), which is right: the
+      // slot is not empty, it is occupied by something drawn elsewhere.
+      if (!row.hidePrint) this._paste(g, slot, row.photo, tiltA, seed, row.tapeT ?? 1);
     }
 
     // Where the strike lives, so the animation knows what to blit back.
@@ -759,8 +773,11 @@ export class JournalPage {
    * both pieces stuck down. They are staggered, because two pieces of tape
    * appearing on the same frame is one event and the point of the beat is that
    * somebody put them on one at a time.
+   *
+   * `px` is device pixels per page pixel — 1 for the page's own canvas, 2-5 for
+   * `printPatch`. It reaches only the two blur radii; see `tapeStrip`.
    */
-  _paste(g, slot, img, tilt, seed, tapeT = 1) {
+  _paste(g, slot, img, tilt, seed, tapeT = 1, px = 1) {
     const cx = slot.x + slot.w / 2, cy = slot.y + slot.h / 2;
     const cardW = slot.w - 12, cardH = slot.h - 18;
     const imgW = cardW - 20, imgH = cardH - 20 - 26;   // caption strip at the foot
@@ -772,7 +789,7 @@ export class JournalPage {
     // Drop shadow. Offset down-right, matching the tape and the key light.
     g.save();
     g.translate(3, 6);
-    g.filter = 'blur(6px)';
+    g.filter = `blur(${(6 * px).toFixed(2)}px)`;
     g.fillStyle = 'rgba(70,50,32,0.42)';
     g.fillRect(-cardW / 2, -cardH / 2, cardW, cardH);
     g.restore();
@@ -824,15 +841,117 @@ export class JournalPage {
     if (a > 0) {
       g.save(); g.globalAlpha = a;
       tapeStrip(g, cx - hx * 0.86 + vx * 0.94, cy - hy * 0.86 + vy * 0.94,
-        (104 + r() * 16) * (0.7 + 0.3 * a), 34, tilt + 0.60 + (r() - 0.5) * 0.20, seed + 5);
+        (104 + r() * 16) * (0.7 + 0.3 * a), 34, tilt + 0.60 + (r() - 0.5) * 0.20, seed + 5, px);
       g.restore();
     }
     if (b > 0) {
       g.save(); g.globalAlpha = b;
       tapeStrip(g, cx + hx * 0.9 - vx * 0.96, cy + hy * 0.9 - vy * 0.96,
-        (96 + r() * 20) * (0.7 + 0.3 * b), 32, tilt + 0.86 + (r() - 0.5) * 0.20, seed + 6);
+        (96 + r() * 20) * (0.7 + 0.3 * b), 32, tilt + 0.86 + (r() - 0.5) * 0.20, seed + 6, px);
       g.restore();
     }
+  }
+
+  /**
+   * The same print, drawn once more at whatever resolution the SOURCE can pay
+   * for, on its own transparent canvas.
+   *
+   * ── why this exists ────────────────────────────────────────────────────────
+   * The second zoom level (`Journal.studyClose`) puts one photograph across 80%
+   * of the screen, and at that magnification the page texture is the binding
+   * constraint — not the stored JPEG, which is the thing everybody assumes.
+   * The arithmetic, measured rather than estimated, at 1600x900:
+   *
+   *   · `_paste` draws the stored photo into `imgW x imgH` = **220 x 126 page
+   *     pixels**, and that downscale happens once, at paint time, and is baked;
+   *   · the close look then blows those 220 texels up to **878 CSS px**, i.e.
+   *     **3.99x**, and 7.99x on a dpr-2 display;
+   *   · the store is keeping 1024 px of that same photograph the whole time.
+   *
+   * So raising `hunt_store.THUMB_MAX` alone buys exactly nothing while this
+   * path exists. This canvas is the bypass. It carries the print at `px` device
+   * pixels per page pixel, chosen from the decoded photo's own width, so a
+   * bigger stored photo makes the close look sharper with no edit here and no
+   * edit in `Journal`.
+   *
+   * ── what it draws, and what it deliberately does not ───────────────────────
+   * EVERYTHING the baked version draws in this rectangle: the drop shadow, the
+   * card stock, the emulsion, the hairline and both pieces of tape — and it
+   * draws them from the same seed, so it is the same crookedness, the same torn
+   * edges and the same sheen. It does NOT draw the paper, the ruled row or the
+   * struck line: those stay in the page texture, at the page's own resolution,
+   * where they belong. A patch that redrew the paper would have to match the
+   * tooth exactly or show a rectangle on the leaf.
+   *
+   * That in turn is why `spec.rows[i].hidePrint` exists. The patch composites
+   * OVER the leaf, and everything in it is translucent somewhere — the shadow,
+   * the tape, the tape's own shadow — so leaving the baked copy underneath
+   * would darken every one of those twice. The page hides the print for as long
+   * as the patch is up; `paint()` is ~2.5 ms and it happens on a click.
+   *
+   * @param i        row index
+   * @param maxPx    ceiling on device px per page px (memory, see `Journal`)
+   * @returns {{canvas, uv:{u,v,w,h}, px:number, src:number, dst:number}|null}
+   *          `uv` is the covered rectangle in page UV, same convention and same
+   *          verso flip as `slotUV`, so the caller places it exactly the way it
+   *          places a slot. `src`/`dst` are the emulsion's source width and its
+   *          width on this canvas, which is the honest measure of what was
+   *          gained and is what the harness prints.
+   */
+  printPatch(i, maxPx = 4.7) {
+    const row = this.spec.rows?.[i];
+    if (!row || !row.done || !row.photo) return null;
+    const slot = this.slotRect(i);
+    // The tape overhangs the slot, and so does the shadow. This is the same
+    // bleed box `tapeAt` blits, for the same reason: it is where the ink is.
+    const rect = {
+      x: Math.max(0, slot.x - 70), y: Math.max(0, slot.y - 40),
+      w: slot.w + 140, h: slot.h + 80,
+    };
+    // The emulsion is `cardW - 20` = 220 page pixels wide. Past the point where
+    // one source pixel lands on one canvas pixel there is nothing left to
+    // recover — upsampling in a 2D canvas and upsampling on the GPU are the
+    // same bilinear filter — so the scale is the SOURCE's, capped. 4.7 is what
+    // a 1024 px photo asks for (1024 / 220), which is where the cap is set; it
+    // is a ceiling and not a target, and a 512 px store would come out at 2.33
+    // and a 1825 x 1257 canvas would be a 913 x 629 one.
+    const imgW = slot.w - 12 - 20;
+    const px = Math.max(1, Math.min(maxPx, (row.photo.width ?? imgW) / imgW));
+
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(rect.w * px);
+    cv.height = Math.round(rect.h * px);
+    const g = cv.getContext('2d');
+    // Page coordinates in, device pixels out. Everything below is written in
+    // the page's own numbers, exactly as `_paintRow` writes them.
+    g.setTransform(px, 0, 0, px, -rect.x * px, -rect.y * px);
+    const seed = this.spec.seed * 31 + i * 7 + 1;
+    const tilt = (rng(seed)() - 0.5) * 0.055;
+    this._paste(g, slot, row.photo, tilt, seed, row.tapeT ?? 1, px);
+    g.setTransform(1, 0, 0, 1, 0, 0);
+
+    return {
+      canvas: cv,
+      uv: this._toUV(rect),
+      px: +px.toFixed(3),
+      src: row.photo.width ?? 0,
+      dst: Math.round(imgW * px),
+    };
+  }
+
+  /**
+   * Hide (or restore) one row's print, and repaint.
+   *
+   * The only caller is the close look, which replaces this print with a
+   * higher-resolution copy of it — see `printPatch`. Returns true if anything
+   * changed, so the caller can skip the repaint when it did not.
+   */
+  hidePrint(i, on) {
+    const row = this.spec.rows?.[i];
+    if (!row || !!row.hidePrint === !!on) return false;
+    row.hidePrint = !!on;
+    this.paint();
+    return true;
   }
 
   /**

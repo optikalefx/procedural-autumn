@@ -41,6 +41,9 @@ export class Journal {
   close(); toggle()
   study(page, row); unstudy()   // NEW (r4) — see §13.1. The pointer drives
                                 //   these itself; an integrator needs neither.
+  studyClose(); zoomOut()       // NEW (r5) — the third zoom level, and the
+                                //   one-level-at-a-time way back out. §14.
+  get closeUp(); get zoomLevel() // NEW (r5) — 0 spread, 1 row, 2 print
   update(dt)                    // REAL seconds
   render(renderer)              // straight after postfx.render(dt)
   dispose()
@@ -774,6 +777,7 @@ one boolean compare while driving.
 | `tools/_scratch/_jstudy.mjs` | the lean-in, through the real wiring, with real pointer events |
 | `tools/_scratch/_jtable.mjs` | the prop on the table: seat, pick, prompt, click, cost |
 | `tools/_scratch/_jlum.mjs` | why the leather went dark, and the `HIDE_LIFT` sweep |
+| `tools/_scratch/_jclose.mjs` | the third zoom level, and how many source pixels are stretched over how many screen pixels (§14) |
 
 Three traps each of these had to learn the hard way and each now documents:
 
@@ -807,3 +811,216 @@ Three traps each of these had to learn the hard way and each now documents:
   that makes that fine rather than a gap.
 * At dusk the prop is as dark as the table it lies on. That is the camp's
   standing environment-map request (`docs/CAMP_REQUESTS.md`), not this book's.
+
+---
+
+## 14. Round 5 — a second zoom level, and what it exposed
+
+*"I want another level of zoom here. if you click again on the photo it would
+fill 80% of the screen with the photo on the book."*
+
+Click a print, the book leans in on that entry (§13.1). Click the print **again**
+and the book comes the rest of the way until the photograph is 80% of the
+screen — still on the book, with the paper, the tape and the page around it in
+frame. Escape, a page key, a wheel detent or a click off the print backs out one
+level; a second backs out to the spread; a third shuts the book.
+
+Nothing in §§1–13 was retuned. §13.1's lean is untouched and re-measured
+unchanged (`_jstudy.mjs`: row 0.569 x 0.298 of frame, page 10.1 degrees off
+face-on, cursor and Escape ladder as before).
+
+### 14.1 What "80% of the screen" resolves to
+
+**80% of whichever axis runs out first.** The print is 36.4 x 27.5 mm on the page
+(a 252 x 190 px slot on a 148 x 210 mm leaf), i.e. 1.32:1 landscape, and it has
+to sit inside anything from an ultrawide to a phone held upright. All three of
+the obvious readings put it off the screen on some real display:
+
+| reading | on 16:9 | on a 700 x 1520 phone |
+|---|---|---|
+| 80% of the **width** | 0.80 x **1.07** — clipped | fine |
+| 80% of the **height** | fine | **2.30x** the width — clipped |
+| 80% of the **area** | 0.77 x **1.04** — clipped | clipped, worse |
+
+Area is the worst of the three rather than the cleverest: it is the only one
+whose answer depends on the frame's aspect and still bounds neither axis.
+
+So `CLOSE_FILL` is a contain-fit: the print's projected box, largest side
+against the matching side of the frame, at 0.80. Measured through the real game
+(`_jclose.mjs`), the print's own screen box:
+
+| | at the spread | leaning in (§13.1) | the close look |
+|---|---|---|---|
+| 1600 x 900 | 0.070 x 0.070 | 0.173 x 0.223 | **0.629 x 0.800** |
+| 700 x 1520 | — | 0.255 x 0.086 | **0.800 x 0.267** |
+
+On 16:9 it binds on the height and leaves 297 px of page either side and 100/80
+above and below; on the phone it binds on the width and leaves 70 px either
+side. Neither ever clips, and both keep at least a tenth of the frame of paper
+and tape around the print, which is the "still on the book" half of the brief.
+
+**The scale is solved, not authored.** `STUDY_ZOOM` could be a constant because
+it only had to look right; a fit cannot be, because the scale that satisfies it
+moves with the window's aspect (through `_fitCamera`'s lens *and* its dolly),
+with which page of the spread the print is on, and with where in the leaf's bend
+it sits. `_trackCloseZoom` measures the projected box every frame and divides.
+It is one division rather than a search because the relationship is linear by
+construction — the print is held at `STUDY_LOOK`, a fixed world point, so its
+distance from the camera does not change with the scale. Measured: it lands on
+**9.094** at 1600 x 900 and **7.927** at 700 x 1520, and holds those to four
+decimal places over eight consecutive frames (no oscillation), and re-solves for
+free on a resize.
+
+### 14.2 The bug this cost: which matrices is `samplePage` reading?
+
+The first version passed the recentring offset down and added it to each sample
+by hand, to save a second walk of the matrix tree. It put the print **a
+screen-width off to the left**, and the reason is worth writing down because it
+is invisible at the call site: `samplePage`'s quaternion branch ends in
+`mesh.getWorldQuaternion`, and three implements that as
+`updateWorldMatrix(true, false)` — **it silently refreshes the whole ancestor
+chain mid-frame**. So one sampler in `_applyStudy` was reading pre-recentre
+matrices and its neighbour four lines later was reading post-recentre ones, and
+both looked correct in isolation. `_trackCloseZoom` survived it only because it
+measures a SIZE, and a translation does not change one — which is why the print
+was the right size in the wrong place.
+
+The rule now is `root.updateMatrixWorld(true)` before anything reads the page,
+and no offsets by hand. One walk of a 20-node tree, only while the close look is
+up.
+
+### 14.3 The resolution finding, which is the headline
+
+**At this magnification the page texture is the binding constraint, not the
+store**, and that is the opposite of what everyone assumed — including this
+round's own brief, which asked whether 512 px was too small to save.
+
+Measured at 1600 x 900, on the emulsion (the photograph inside the print's white
+border), with a REAL photograph taken by the game and put through
+`hunt_store.makeThumb`:
+
+| | |
+|---|---|
+| the emulsion on screen | **878 CSS px** wide |
+| what the page texture holds | **220 x 126 texels** (`_paste` draws into `cardW - 20`) |
+| so, without a fix | **3.99x** magnification at dpr 1, **7.99x** at dpr 2 |
+| what the store was holding all along | 1024 px |
+
+The 1024 px the store pays quota for were being thrown away one step later, at
+paint time, when `_paste` drew them into a 220 px box. **Raising `THUMB_MAX` on
+its own would have changed nothing anybody could see.**
+
+Raising the page's own resolution was the other way to fix it and is not an
+option worth having: 2x on six leaves is 143 MB of canvas, and 2x still would
+not carry a 1024 px photo — it would hold 440 of it.
+
+So `JournalPage.printPatch(i)` draws the print **once more**, on its own
+transparent canvas, at `px` device pixels per page pixel taken from the decoded
+photo's own width, and `Journal` composites it over the leaf as a flat quad
+placed with `samplePage` — the same trick and the same placement the flying
+print already lands with. Nothing in either file names a resolution.
+
+| | dpr 1 | dpr 2 |
+|---|---|---|
+| page texture only (`_jclose --nopatch`) | 3.99x | 7.99x |
+| with the patch, store at 1024 | **0.86x** (a downscale) | **1.72x** |
+| with the patch, store at 512 | 1.72x | 3.43x |
+
+The A/B is `shots/journal/round5/z4_print_1to1.png` against
+`z5_print_1to1_nopatch.png`, same crop, same frame: the page-texture version is
+blocky to the point that the camper's roof rack is four brown smears, and the
+patched one resolves the spare wheel, the ladder and individual trees. At dpr 2
+(`z6_print_dpr2.png`) the patched version is visibly soft — bilinear, plus some
+JPEG mush in the foliage — but has no blocking and everything in it is readable.
+
+**How much source the print wants.** The emulsion's width on screen is
+**~0.98 x the frame's height** in CSS px on 16:9 and wider (0.87 x the width on
+portrait), so a 1:1 view needs `0.98 x viewport height x dpr` pixels of source:
+878 at 1600 x 900 dpr 1, 1054 at 1920 x 1080, 1405 at 2560 x 1440, and **1757 on
+any dpr-2 1600 x 900**. So **1024 is the right number**: it is native for every
+dpr-1 window up to about 1050 px tall and lands at 1.72x on a retina one, which
+is soft rather than broken. 2048 would be the only size that makes dpr 2 native,
+for 4x the quota, on the deepest zoom of one feature — not worth it.
+
+### 14.4 Three things about the patch that are not obvious
+
+* **The baked print is HIDDEN, not covered** (`JournalPage.hidePrint`).
+  Everything in the patch is translucent somewhere — the drop shadow, both
+  pieces of tape, the tape's own shadow — so the copy underneath would show
+  through every one of them and darken it twice.
+* **There is no cross-fade.** The swap happens on the first frame of the dolly,
+  when the print is still 17% of the frame, and the two images are the same
+  drawing from the same seed at two resolutions. Fading would mean bare paper
+  showing through a half-transparent print for a fifth of a second, which is a
+  far louder artifact than a sharpness change nobody can see at that size. Same
+  argument `_bakePhoto` makes for the flying card.
+* **It is built one level early.** Drawing it is 14–28 ms of canvas raster,
+  measured with the raster forced (`_jclose` prints it; Chromium defers 2D
+  raster, and docs/JOURNAL_NOTES.md 9 is the standing warning about timing it
+  any other way). Spent on the click into the close look that is a stutter at
+  the start of the move, where the eye is. It is spent instead on the frame the
+  LEAN lands — a still picture over a paused world — so the second click costs a
+  page repaint (2.4–3.1 ms) and nothing else. Leaving the lean throws the canvas
+  away; a second close look at the same row is free.
+
+The canvas is **1825 x 1257, 9.2 MB**, transient, held only while the player is
+leaning in on a photographed row. `DETAIL_PX_MAX` (4.7) is the cap and it is
+what a 1024 px photo asks for (1024 / 220); at 512 the scale comes out 2.33 and
+the canvas is 913 x 629.
+
+One thing had to change in `journal_page.js` for the patch to be the same
+drawing at a different size: **`g.filter = 'blur(6px)'` is in DEVICE pixels and
+is not affected by the context transform.** Probed in Chromium — a 6 px blur
+reaches 11 page px at scale 1, 5.5 at scale 2, 3.67 at scale 3 — so `_paste` and
+`tapeStrip` take a `px` argument that scales the two blur radii and nothing
+else. At `px = 1` the arithmetic is unchanged and the page is what it always was.
+
+### 14.5 The ladder, and the one cap on it
+
+`_studyTo` is 0, 1 or 2 and `_studyK` is a continuous position along that
+ladder; every pose term is a piecewise function of the one scalar, and every way
+in or out moves it by exactly one level. Verified in the real game: Escape from
+the close look gives level 1, Escape again gives level 0 with the book still
+open, Escape again shuts it.
+
+The tilt does NOT move on the second segment. At full lean the page is already
+10 degrees off face-on, so there is nothing left to win, and `STUDY_TILT`'s
+argument against going face-on (a page perpendicular to the lens has no
+perspective in it and the book stops being an object in a room) applies with
+more force this close, not less. Level 2 is a pure move toward the print.
+
+**`close()` caps the ease-out at `SCRIPT.close`.** The put-down is 0.46 s and
+`_visible` goes false at the end of it; two levels at `STUDY_OUT` is 0.68 s, so
+without the cap the third zoom level would have quietly broken the close
+animation §13.1 was careful to get right — the book would vanish still
+half-zoomed instead of going back and going down as one movement. Verified:
+`close()` called from level 2 leaves `zoomLevel 0`, no patch, and **no leaf with
+its print still hidden**.
+
+### 14.6 The download was cancelled mid-round
+
+The brief also asked for a "save this print" control. The user withdrew it —
+*"Yea maybe 512 is too small, forget the download then"* — while it was still at
+the design stage, so there is no half-wired control anywhere and nothing was
+removed. What the design had settled on, in case it comes back: a real
+`<a download>` element over the canvas rather than anything painted into the
+book, because a download needs a user activation on an anchor either way, and
+the honest place for a browser gesture is the browser's own vocabulary. The
+journal's capture-phase pointer handler would have to return early for events
+whose target is inside it, or `preventDefault` on `pointerdown` suppresses the
+click.
+
+### 14.7 Noted, not done
+
+* **The wheel backs out rather than zooming in.** One detent is one level out,
+  the same as a page key, which is consistent with §13.1 — but a wheel is the
+  one input a player might reasonably expect to work in both directions. It was
+  left alone rather than given a second meaning in this round.
+* **A click on a DIFFERENT print while leaning in backs out** instead of hopping
+  to that entry. At this framing the other print is a sliver at the edge of the
+  frame and a sliver that teleports the book is a way to lose your place.
+* **No stat and no posthog event** for reaching the close look. `src/game/` is
+  not this module's to write to, and `Stats.js` has exactly one external writer
+  today (`hud_photo`) which is flagged as unusual where it happens.
+* At dpr 2 the print is a 1.72x upscale. The fix is a bigger stored photo and
+  the number is in §14.3; nothing in `src/journal/` has to change for it.
