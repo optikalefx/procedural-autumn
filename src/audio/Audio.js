@@ -208,6 +208,31 @@ export class Audio extends System {
       }
 
       this.started = true;
+
+      // ── warm the journal's voices, and with them its two recordings ────────
+      //
+      // Built HERE rather than on the first `cue()`, which is what it used to
+      // do. `JournalAudio`'s constructor kicks off the fetch and decode of
+      // `page.mp3` and `journal.mp3`, and both are async — so building it on
+      // first use meant the cue that built it fired in the same tick, found no
+      // buffer, and fell back to the synthesised voice. The first cover cue of
+      // every session was therefore GUARANTEED to be the synth, which is a
+      // player opening the book for the first time and hearing the one sound
+      // that is not the recording.
+      //
+      // The laziness it replaces was worth something — two noise buffers a
+      // player who never opens the book would not pay for — but that argument
+      // was written before there were assets, and it is now buying a few
+      // kilobytes at the cost of the feature being wrong exactly once, in the
+      // most visible place.
+      try {
+        this._journal = new JournalAudio(this.actx, this.master);
+      } catch (e) {
+        // A voice that will not build must not stop the audio system starting;
+        // `cue()` still builds it on demand if this ever fails.
+        console.warn('[audio] journal voices unavailable at start', e);
+      }
+
       this._applyVolume(0.9);          // fade in, never a step
       this._resume();
       for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
