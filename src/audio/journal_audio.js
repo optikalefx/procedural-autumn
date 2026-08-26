@@ -494,78 +494,30 @@ const CROWD_MAX = 3;
 //     0.1139 / 0.0212 / 372 ms / hp200 0.1146 — bit-identical to `synth page`,
 //     which is the whole claim: no asset, no silence, same page turn as before.
 // ─────────────────────────────────────────────────────────────────────────────
-// ── the cover, also a recording ───────────────────────────────────────────────
+// ── the cover: the file, played ──────────────────────────────────────────────
 //
-// Same arrangement as the page turn below, and the same fallback: `VOICES.cover`
-// still exists and still runs whenever the fetch or the decode fails.
+// `public/audio/journal.mp3`, whole, at one gain. No window, no shelf, no pitch
+// jitter, no pan.
 //
-// One take, not two — 0.02 to 0.52 s of a 1.0 s file, the rest room tone.
+// It got all four, and the user's verdict on the result was that it was not the
+// sound they loaded. They were right, and it is worth writing down what
+// "levelling a recording into the ladder" had quietly turned into:
 //
-// **The gain is 4.26 and it is NOT the one that matches the peak.** Four
-// columns wanted four numbers and they disagree by more than they did for the
-// page, because this recording is brighter than the voice it replaces:
+//   · **half the file was never played.** A take detector with a 2% floor found
+//     one burst from 0.02 to 0.52 s and treated the rest of the second as room
+//     tone. Whatever decay the recording had was cut off at 0.52 s.
+//   · **the pitch moved every firing.** `c.pitch` is 0.95-1.05 and it is right
+//     for a synthesised voice, where it stops a repeat sounding like a repeat.
+//     Applied to a recording of a real object it just detunes it.
+//   · a high shelf, and a pan, both arguing with the room already in the file.
 //
-//     gain 5.88  peak 0.230 (matches the synth exactly)  hp200 0.1824
-//     gain 4.26  peak 0.166                              hp200 0.1319 (matches)
-//
-// hp200 decides, for the reason the small-speaker block gives: through the
-// 4th-order 200 Hz high-pass the order cover > page and slap > cover is a RULE
-// this file holds, and peak-matching puts the cover at 0.1824 against the
-// slap's 0.1356 — i.e. it would make opening the book the loudest thing in the
-// ceremony on a laptop, ahead of the photograph landing.
-//
-// A side effect worth having: the synthesised cover measured 0.230 against the
-// slap's 0.240 and was louder on 43% of firings, which is why the ladder was
-// documented as three levels rather than four. At 0.166 the slap is
-// unambiguously the ending again.
+// Every one of those was defensible on its own and the stack of them was not a
+// recording any more. The ladder still matters — `slap > cover > page > cross`
+// through a 200 Hz high-pass is a rule this file holds — so there is a gain,
+// and that is all there is. If the balance is wrong the fix is this one number
+// or a different take, and either way what plays is what was recorded.
 const COVER_SAMPLE_URL = '/audio/journal.mp3';
-// 2.7, not the 4.26 the first cut used, and the reason is a lesson about which
-// statistic to level a recording by.
-//
-// 4.26 was chosen to match the synthesised cover's PEAK through the
-// small-speaker filter. This file's peak is two isolated transients — -8.1 dB
-// at 0.14 s and -9.6 dB at 0.32 s — sitting 20-30 dB above its own body. So
-// peak-matching set the two clicks to the old voice's level and left the swell
-// underneath half as loud: measured, the sampled cover came out with the same
-// peak as the synth (0.171 vs 0.172) but 5.2 dB less body and 5.2 dB more crest
-// (18.3 dB against 13.1). That difference is audible and it is what "harsh"
-// means. Levelling by peak is right for a sound with a body and wrong for one
-// that is mostly transient.
-//
-// 3.6 is a compromise and is worth naming as one. The three candidates:
-//
-//   4.26  peak 0.171, NO shelf — matches the old peak, and is the harsh one
-//   3.60  peak 0.141, with the shelf — but hp200 0.110 falls UNDER the page,
-//         which breaks the ladder: the shelf takes more out of the filtered
-//         band than it does out of the peak, so the two numbers do not move
-//         together and the gain has to be re-derived after it, not before
-//   4.10  peak 0.160, with the shelf — hp200 back between page and slap
-//   12.5  peak 0.311 — what MATCHING THE OLD BODY would actually cost
-//
-// The last line is the honest limit. This take is 500 ms of two clicks with a
-// crest factor of 18 dB; the voice it replaces was a swell with a crest of 13.
-// Giving the recording the old body means a peak two thirds again as loud as
-// the slap, which would make opening the book the loudest event in the game.
-// So the cue is levelled to sit correctly in the ladder and the body it has is
-// the body the recording has. A different take — more sustain, less click —
-// would let this number go up.
-const COVER_SAMPLE_GAIN = 4.1;
-const COVER_TAKE = [0.020, 0.520];
-// A shelf off the top, and it is measured rather than taste. Band energy as a
-// share of the whole, this file against the voice it replaces:
-//
-//                 <200   200-800   0.8-2k   2-5k   5-10k
-//   journal.mp3   28.1      15.7      0.7    1.3     2.8
-//   synth cover   14.8       9.6     20.9    3.8     0.7
-//
-// It is SCOOPED: thump and top with almost nothing in the 0.8-2 kHz band where
-// the old voice kept a fifth of its energy, and four times the old voice's
-// share in the sharp 5-10 kHz band. No fader fixes that shape — an ear hears
-// the top and the thump with no midrange to seat them in. The shelf takes the
-// edge off the part that is over-represented; it cannot put back a band the
-// recording does not contain, and it does not pretend to.
-const COVER_SHELF_HZ = 5000;
-const COVER_SHELF_DB = -6;
+const COVER_SAMPLE_GAIN = 4.3;
 
 const PAGE_SAMPLE_URL = '/audio/page.mp3';
 const PAGE_SAMPLE_GAIN = 0.68;
@@ -968,74 +920,24 @@ export class JournalAudio {
    */
   _sampledCover(c) {
     const actx = this.actx;
-    const [t0, t1] = COVER_TAKE;
-    const rate = c.pitch * c.rate;
-    const d = (t1 - t0) / rate;
     const t = c.t;
-
     const src = actx.createBufferSource();
     src.buffer = this._cover;
-    src.playbackRate.value = rate;
+    // No `playbackRate`: see the note by COVER_SAMPLE_GAIN. The jitter every
+    // other voice gets is right for a synthesised one and detunes a recording.
     const g = gain(actx, 0);
-    const p = panner(actx, -0.05);
-    // See COVER_SHELF_DB: this recording carries four times the synthesised
-    // voice's share above 5 kHz and almost none of its midrange.
-    const sh = actx.createBiquadFilter();
-    sh.type = 'highshelf';
-    sh.frequency.value = COVER_SHELF_HZ;
-    sh.gain.value = COVER_SHELF_DB;
-    src.connect(sh).connect(g).connect(p).connect(this.bus);
+    src.connect(g).connect(this.bus);
 
-    const a = Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004);
-    const fin = Math.min(TAKE_FADE_IN, d * 0.2);
-    const fout = Math.min(TAKE_FADE_OUT, d * 0.3);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(a, t + fin);
-    g.gain.setValueAtTime(a, t + d - fout);
-    g.gain.linearRampToValueAtTime(0.0001, t + d);
+    // A gain, and `c.level` so `_crowd()` can still duck a cue fired on top of
+    // itself. `setValueAtTime` rather than a ramp — the recording has its own
+    // attack and 4 ms of fade-in on top of it is 4 ms of somebody else's idea.
+    g.gain.setValueAtTime(Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004), t);
 
-    // Buffer seconds, not rate-scaled — see the note in `_sampledPage`.
-    src.start(t, t0, t1 - t0);
-    src.stop(t + d + 0.02);
-    c.nodes.push(src, sh, g, p);
+    // The whole buffer. No offset, no duration.
+    src.start(t);
+    src.stop(t + this._cover.duration + 0.05);
+    c.nodes.push(src, g);
   }
-
-  _sampledPage(c) {
-    const actx = this.actx;
-    const [t0, t1] = PAGE_TAKES[this.rnd() < 0.5 ? 0 : 1];
-    const rate = c.pitch * c.rate;
-    const d = (t1 - t0) / rate;
-    const t = c.t;
-
-    const src = actx.createBufferSource();
-    src.buffer = this._page;
-    src.playbackRate.value = rate;
-    const g = gain(actx, 0);
-    const p = panner(actx, -0.26);
-    p.pan.setValueAtTime(-0.26, t);
-    p.pan.linearRampToValueAtTime(0.04, t + d);
-    src.connect(g).connect(p).connect(this.bus);
-
-    // A trapezoid, not `_env`: `_env`'s shape (attack, plateau, exponential
-    // release) is a synthesis envelope and the recording brings its own. All
-    // this has to do is not click at the two cuts — see the two-takes block.
-    const a = Math.max(PAGE_SAMPLE_GAIN * c.level, 0.0004);
-    const fin = Math.min(TAKE_FADE_IN, d * 0.2);
-    const fout = Math.min(TAKE_FADE_OUT, d * 0.3);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(a, t + fin);
-    g.gain.setValueAtTime(a, t + d - fout);
-    g.gain.linearRampToValueAtTime(0.0001, t + d);
-
-    // `start(when, offset, duration)` — the take, and only the take. The
-    // duration is in BUFFER seconds, so it is `t1 - t0` and not `d`; passing
-    // the rate-scaled figure plays a different amount of tape at every jitter.
-    src.start(t, t0, t1 - t0);
-    src.stop(t + d + 0.02);
-    this._own(c, [src, g, p], t + d);
-  }
-
-  // ── helpers ────────────────────────────────────────────────────────────────
 
   /**
    * Noise through a band that goes one way and then the other, under an
