@@ -141,7 +141,14 @@ const deg = (r) => (r * 180) / Math.PI;
 // The two poses the book blends between. `held` is what you are handed; `laid`
 // is the book open on a table. See the ceremony note in the header.
 const POSE_HELD = { pos: [0.012, 0.004, 0.055], rot: [-0.30, 0.44, -0.055], scale: 1.02 };
-const POSE_LAID = { pos: [0, 0.008, 0.0], rot: [-1.005, 0.0, 0.0], scale: 1.10 };
+// `rot.x` was -1.005 (57.6 degrees), which left the page 34 degrees off
+// face-on and the spread reading as a book seen across a table rather than one
+// held up to read. -0.700 brings it 17.5 degrees back toward the reader.
+// `PAN_SPREAD_FACE` below records the resulting angle and MUST move with it —
+// the pitch clamp is expressed against the page's angle, so leaving it behind
+// would let the player tilt 17 degrees past the old floor on one side and stop
+// 17 short on the other.
+const POSE_LAID = { pos: [0, 0.008, 0.0], rot: [-0.700, 0.0, 0.0], scale: 1.10 };
 
 // ── clicking a print: one move, from the spread to the print ─────────────────
 //
@@ -186,7 +193,14 @@ const POSE_LAID = { pos: [0, 0.008, 0.0], rot: [-1.005, 0.0, 0.0], scale: 1.10 }
 //  · The BOOK scales, not the camera: `_fitCamera` owns the camera's position
 //    and a second author of it is a fight, and the composition rule in this
 //    file's header still holds — the book moves, the camera does not.
-const STUDY_TILT = 0.42;
+// 0.115 rad (6.6 degrees), down from 0.42 (24). This is ADDED to the laid
+// pose's `rotation.x`, so it is not an angle in its own right — it is the
+// distance from the spread to the close look, and the spread moved. From the
+// old spread's 34 degrees off face-on, 24 landed the print at 10; from the new
+// 16.6 it would land at MINUS 7.4, i.e. tilted past face-on and leaning away
+// from the reader at the top, which is the one direction a page must never go.
+// 6.6 keeps the close look where it was, at about 10 degrees.
+const STUDY_TILT = 0.115;
 const STUDY_LOOK = new THREE.Vector3(0, 0.004, 0.02);
 // The print's own rect, grown a little, as the click target. 1.18 is about
 // 10 mm of page all round at book scale — enough that a thumb on a phone does
@@ -342,7 +356,7 @@ const HOVER_ARM = 0.12;
 const PAN_YAW_MAX = 0.60;
 const PAN_FACE_MIN = -0.26;      // rad past face-on, toward the reader
 const PAN_FACE_MAX = 1.14;       // rad off face-on, oblique
-const PAN_SPREAD_FACE = 0.593;   // the spread's own 34 degrees, in radians
+const PAN_SPREAD_FACE = 0.288;   // the spread's own 16.5 degrees, in radians
 const PAN_ZOOM_MIN = 0.55;
 const PAN_ZOOM_MAX = 3.0;
 const PAN_EDGE = 0.90;
