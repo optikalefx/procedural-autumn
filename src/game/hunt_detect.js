@@ -432,59 +432,111 @@
 //  clear line to them. It is the shader's arithmetic on seventy-two points
 //  instead of three thousand insects.
 //
-//  **Calibrated against frames, not against feel.** 34 random night poses, each
-//  screenshotted twice and the flashes in the picture counted by a blob pass
-//  over the greenish-yellow core colour. **The frames and the counting script
-//  lived in a scratch directory that is not in this checkout**, so — by the
-//  same standard this file applies to the road-level waterfall figure a few
-//  hundred lines down — the numbers below are reported, not reproducible from
-//  here. Re-shoot before leaning on them. At
-//  FF_MIN = 110: ten poses credited, nine of the ten had five or more
-//  countable flashes and the ten averaged 12.8; the best frame in the whole set
-//  — a wooded meadow with 25 flashes in it — is credited, and the rejects top
-//  out at 6.5. Roughly a fifth of the swarm is alight at any instant and much
-//  of the rest is behind grass, which is why 110 insects reads as about a dozen
-//  lights: the estimate is a population, the flashes are what the picture
-//  shows, and the two are related by that measurement rather than by a guess.
+//  ── the calibration, re-shot, and what it turned out to say ────────────────
 //
-//  **Three things about that calibration, said out loud because "ten poses
-//  credited" is doing a lot of work.**
+//  This block used to carry a calibration with a warning stapled to it: the
+//  frames and the counting script "lived in a scratch directory that is not in
+//  this checkout", so the numbers were reported rather than reproducible. They
+//  have been re-shot, in this checkout, and the label is retired.
+//  `tools/_scratch/_ffcal.mjs` is the harness and `_ffaim.mjs` is its other
+//  half; both re-run from a booted server.
 //
-//   · "Ten credited" counts poses whose recorded `est` cleared 110, not poses
-//     the detector answered yes to. On that run the two disagreed twice —
-//     `rows.json` has poses 15 and 19 marked `hit: true` at est 88.1 and 78.4,
-//     which is `ffCount` being asked before streaming had settled and answering
-//     for a different bit of ground than the screenshot shows. A clean re-run
-//     by a critic had zero disagreements between the two. So the ten are ten by
-//     `est`, and `est` is the thing FF_MIN is a threshold on; if the two ever
-//     disagree again the answer is a settle, not a constant.
-//   · The one credited pose out of ten with fewer than five flashes is p7 —
-//     est 163, 3.5 flashes — and it is a camera pointed into a slope. That is
-//     precisely the case the per-sample line-of-sight test below exists for,
-//     caught in the act and not fully caught: the march clears enough samples
-//     to reach 163 while the near grass eats the lights. It is disclosed rather
-//     than fixed because the fix is a per-sample occlusion test finer than a
-//     3 m terrain march, and that is a different order of cost in the shutter
-//     path.
-//   · The rate below is a draw and the number quoted was one draw of it.
+//  **How a flash is counted.** The same way every other size in this feature
+//  is measured, rather than by hunting a colour: render the pose twice, with
+//  `Fireflies.points` drawn and not drawn, and take the connected components of
+//  changed pixels. Two things about that are worth keeping.
 //
-//  The per-sample line-of-sight test came out of the same calibration. Without
-//  it, four of the thirty-four poses estimated between 60 and 270 insects and
-//  had not one flash anywhere in the frame — every one of them a camera pressed
-//  against a slope, crediting the meadow on the other side of the hill.
+//   · **The world being paused is not enough to hide the swarm, and that cost
+//     a run.** `Fireflies.update` re-derives `points.visible` from its two
+//     ramps every frame, and a paused world still calls every system's update
+//     with dt 0 — so the flag came straight back and the "off" frame was the
+//     "on" frame. It reads as a clean result: max channel-sum difference 32,
+//     which is the post chain's own dither, on a frame with two dozen fireflies
+//     visibly in it. The harness patches the toggle into the system's own
+//     update instead.
+//   · Against that 32-count noise floor, a firefly core is rgb(225, 252, 172)
+//     on a night ground — so a threshold of 60 separates them completely, and
+//     the count is not sensitive to where in between it sits.
 //
-//  Where it lands: 18 of 40 (45%) of poses framed deliberately at the ground
-//  the way the old sweep framed them, against 83% before; and **a fifth to a
-//  quarter of random night photographs aimed anywhere** — 42 of 200 on one
-//  draw of 200 poses, 56 of 200 on an independent one, so 21% and 28% of the
-//  same underlying rate. Quote the range, not either end: two draws of 200
-//  from a rate near a quarter differ by that much routinely, and the earlier
-//  version of this line quoted 21% to two figures as though it were a
-//  property of the rule. It is the number that matters, because it is the
-//  accidental tick, and what it says either way is that the swarm really is a
-//  valley-floor phenomenon and an honest rule cannot make it rarer than it is;
-//  what changed is that a dark hillside, a dry ridge, an alpine shoulder or a
-//  frame of night sky no longer counts as a photograph of fireflies.
+//  **58 filmed poses, and the finding is not the one I went looking for.**
+//  Estimate against flashes actually in the frame, pooled over two runs:
+//
+//     est band     n    median flashes   mean
+//     0 - 80       5          0          3.4
+//     80 - 150     7          5          5.1
+//     150 - 250    7          4          8.1
+//     250 - 375   22         11         11.9
+//     375 +       17         12         12.6
+//
+//  Pearson r over all 58 is **0.41**. The relation is real and it is loose, and
+//  above about 250 it flattens: **the estimator saturates.** So raising FF_MIN
+//  does not buy a better photograph — the median credited frame has ten to
+//  twelve flashes in it whatever the threshold is — it buys RARITY, plus a
+//  real improvement at the floor. Credited frames with fewer than five flashes
+//  in them go from 9 of 49 at FF_MIN 110 to 1 of 17 at 375. That is the honest
+//  account of what the constant does and it should not be dressed up as more.
+//
+//  The one credited frame at 375 with no flashes at all is a wall of fog with
+//  three blades of grass at the bottom of it (`/tmp/ffcal2/p12-on.png`, est
+//  429). `ffCount` has no fog model and is not getting one; it is disclosed
+//  alongside the slope case below, which is the same kind of miss.
+//
+//  The per-sample line-of-sight test came out of the earlier calibration and
+//  stays. Without it, four of thirty-four poses estimated between 60 and 270
+//  insects and had not one flash anywhere in frame — every one a camera pressed
+//  against a slope, crediting the meadow on the other side of the hill. It does
+//  not catch near grass eating the lights, because that needs an occlusion test
+//  finer than a 3 m terrain march and that is a different order of cost in the
+//  shutter path.
+//
+//  ── 110 to 375: the fireflies were still not rare ──────────────────────────
+//
+//  (User: *"yea we should dial back the fireflies, let them be more rare."*)
+//
+//  The rewrite above took the item from 83% of night photographs down to
+//  roughly a quarter, and a quarter is still not a find. The other set-pieces
+//  on this sheet are places you go — a summit camp, a marshmallow you ruined on
+//  purpose, a waterfall at 4-5% of all photographs. Fireflies belong with
+//  those, not with "took a photograph after dark".
+//
+//  The threshold is bounded from both sides and both bounds are measured.
+//
+//  **From below, it has to be rare.** Two independent draws of 400 random
+//  valley poses at 21:30, play field of view, random bearing, random pitch
+//  inside +-0.25 rad — the same pose rule the false-positive sweep uses:
+//
+//     FF_MIN      110     250     300     350     375     400     425
+//     draw A     32.8%   20.5%   16.3%   11.0%    8.8%    5.8%    2.8%
+//     draw B     32.0%   19.0%   14.3%   12.0%    9.8%    5.5%    3.0%
+//
+//  (Those 32% are the same rule the previous line reported as 21-28% on draws
+//  of 200. Bigger draws and a stated pose rule; the two are not in conflict
+//  about anything except how much of the spread was sampling.)
+//
+//  **From above, it has to still be gettable where the hint sends you.** Thirty
+//  anchor sites — six each of meadow, river, river-mouth, lake and forest —
+//  four bearings apiece, ground framed at about 8 degrees down, 21:30
+//  (`_ffaim.mjs`):
+//
+//     FF_MIN      110     250     300     350     375     400     425
+//     sites       17/30   14/30   12/30   11/30   10/30    7/30    3/30
+//     bearings    49/120  34/120  29/120  27/120  25/120  19/120   7/120
+//
+//  and the shape of that table matters more than any row of it. **425 is a
+//  cliff**: 3 sites in 30, and the good wet meadows start failing. 400 is on
+//  the edge of it — two of the six meadows sit at exactly 400. 375 leaves five
+//  of the six meadows clearing, the tightest of them at 400, which is 7% of
+//  margin on the shot the hint actually describes.
+//
+//  So **375**, which is one night photograph in about eleven by the first
+//  table and a wet meadow you walked into by the second. The lake anchors read
+//  0 at every bearing and at every threshold, which is not a defect: it is the
+//  swarm's own `shallow` term, `1 - smoothstep(0.12, 0.70, wet)`, saying that
+//  nothing lives over open water.
+//
+//  The hint moved with the constant, because by `hunt_items.js`'s own rule a
+//  hint that describes a shot the rules will refuse is worse than no hint: "a
+//  wet meadow" is no longer enough, the middle of one is.
 //
 //  ── false positives, which are the failure mode that would ruin this ────────
 //
@@ -504,6 +556,31 @@
 //  of this paragraph that is actually load-bearing, and the tighter `MIN_SHARE`
 //  can only push those further down.
 //
+//  **Re-run after the sky items landed, plus a night one.** `_skysweep.mjs`,
+//  same rule, 800 poses each:
+//
+//     midday, play fov          waterfall 42 (5.3%).  Nothing else at all.
+//     23:00, play fov           waterfall 32 (4.0%).  No sky item, because a
+//                               50 deg frame cannot pass a share gate set at a
+//                               14 deg one — which is the whole point of it.
+//     23:00, 400 mm, aimed      draw A: galaxy 2, planet 0, waterfall 5
+//     anywhere in the upper     draw B: galaxy 1, planet 2, waterfall 8
+//     hemisphere                so a sky item on 2 or 3 of 800 — 0.3%.
+//
+//  That last row is the adversarial one and it is the number to quote for these
+//  items: a long lens pointed at random at a night sky credits something about
+//  once in three hundred frames, and when it does it is because an object
+//  really did land inside `EDGE` of the middle of the picture. Predicted before
+//  it was run, from the frame's solid angle: eight objects times 10.9 square
+//  degrees of accepted frame over 20 600 square degrees of upper sky is 0.42%.
+//
+//  **The firefly count in those two night rows is not evidence and must not be
+//  quoted.** `_skysweep.mjs` pauses the world, and a paused world does not
+//  advance `Fireflies._hab`, so the swarm's uniforms are frozen at whatever the
+//  boot pose left them. The firefly rate has its own harness for exactly this
+//  reason — see "110 to 375" above, where each pose either settles or converges
+//  `_hab` through the system's own update before anything is read.
+//
 //  ── what it costs ───────────────────────────────────────────────────────────
 //
 //  (Not re-timed in round three, and quoted as unchanged rather than as
@@ -517,6 +594,25 @@
 //  pose with a streamed-in animal pool to walk. The old header said 11.5, which
 //  a critic re-measuring got 4.5-7.0 for; the range above is what it actually
 //  spans, and the honest form of this number is a range.
+//
+//  **The sky branch was timed when it landed**, 400 calls after 50 warm, in a
+//  booted game (`_skysweep.mjs`, at the bottom):
+//
+//     midday, play fov                            1.0 us
+//     night, 400 mm, aimed at empty sky           1.5 us
+//     night, 400 mm, on the moon (march runs)    20.5 us
+//
+//  The last row is the branch's worst case and it is worth reading as what it
+//  is: standing on the valley floor with the moon 37 deg up, so the ray runs
+//  786 m before it clears the terrain's ceiling and the march spends 130-odd
+//  `getHeight` calls, about 0.14 us each. It is the most expensive thing this
+//  file does per call and it is still two thousandths of the `toDataURL` it
+//  shares a task with. The other two rows are the ones that run: a daylight
+//  photograph pays one multiply for the night gate and leaves.
+//
+//  (Those three poses have the firefly integral early-outed, because the sweep
+//  pauses the world and `uDensity` is stale — see the note under the false
+//  positives. They time the sky branch, not the whole function.)
 //
 //  The firefly count is the expensive part and it is worth knowing why it does
 //  not matter: 72 samples of five world queries each is about four hundred
@@ -542,9 +638,239 @@
 //  almost every photograph anybody ever takes there is no marshmallow at all.
 //  "This build has no roasting" and "nobody is at a fire right now" are the
 //  same code path, and it is the one that runs 99% of the time.
+//
+//  ── the sky needed its own rule, because you cannot walk closer to Jupiter ──
+//
+//  Three lines were added for the night sky (`hunt_items.js`, "why it is three
+//  lines and not eight"), and `MIN_SHARE` cannot be the rule for any of them.
+//
+//  Every other gate in this file is a distance gate wearing a share's clothes:
+//  the deer counts at 14 m because at 14 m it fills 0.149 of the frame, and the
+//  quantity the player moves is the metres. A planet has ONE fixed angular
+//  size and it is 0.092 to 0.150 deg across — Jupiter through a 400 mm lens is
+//  0.052 of the frame, a third of what the deer has to be, and no amount of
+//  walking will change it. The only variable a photographer has up there is
+//  the focal length, so the gate is a share of the frame that is a function of
+//  the LENS and of nothing else.
+//
+//  **Which makes the threshold a statement about instruments**, and this is
+//  the whole design. What the rule says is: *the wide lens is not enough.*
+//  Not for any of the eight objects. Fit the 200-400, or walk to a telescope
+//  and zoom it in, or the sky is not on your sheet. That is the same shape as
+//  the owl's "fit the long lens" and it is the reason these three lines are
+//  finds rather than accidents — otherwise `moon` ticks itself on the first
+//  night landscape anybody frames, which is precisely the fireflies' old sin.
+//
+//  ── the measurements, and how they were taken ──────────────────────────────
+//
+//  `tools/_scratch/_skyshots.mjs` (in this checkout, re-runnable) poses the
+//  camera on a high vista at 23:00 with the world paused, aims dead centre at
+//  each of the eight objects in turn and walks the field of view across every
+//  stop a player can reach: 24 mm (45.8 deg vertical at 16:9), 70 mm (16.5),
+//  the eyepiece at rest (18.0) and fully zoomed (6.0), and 200 / 300 / 400 mm
+//  (5.8 / 3.87 / 2.9). It writes a 1920x1080 frame per pair. Every number
+//  below was read off those frames, and the frames are named in the text so
+//  the judgement can be disagreed with rather than just accepted.
+//
+//  The share arithmetic and the frames agree to the pixel here, which they do
+//  NOT do for the mammals: `share()`'s note records the angular form running
+//  ~7% high against a planar projection at the deer's cut. At half a degree
+//  and under, angle and tangent are the same number — the moon at 400 mm
+//  predicts 745 px of a 1080 frame and measures ~740 — so this block's
+//  "predicted px" columns can be trusted as measurements.
+//
+//  **Two size classes, six times apart, with nothing in between.**
+//
+//     planets     0.092 - 0.150 deg across   (Venus, Mars, Saturn, Jupiter)
+//     the rest    0.92  - 2.70 deg           (the Companion, the Pinwheel,
+//                                             the Moon, the Great Spiral)
+//
+//  One threshold cannot serve both — at any cut that makes the moon fill a
+//  frame, no planet ever counts — so there are two, and the split is not a
+//  judgement call, it is that gap. The code keys them off the ITEM rather than
+//  off a size boundary, so there is no third magic number.
+//
+//  **SKY_DISC = 0.14, for the moon and the galaxies.** Bounded from below by
+//  the moon at 70 mm, the wide lens's longest: 0.121 of the frame, a 131 px
+//  crescent inside a halo (`moon-wide70.png`). That is a night landscape with
+//  a moon in it — the shot every player takes by accident on their first
+//  night — and it must not tick the box. Bounded from above by the smallest of
+//  the four, the Companion, at the eyepiece's own tightest field of 6.0 deg:
+//  0.153, and `companion-scope6.png` is unmistakably a spiral galaxy. 0.14
+//  sits about a sixth above the floor and a twelfth below the ceiling, so
+//  neither the wide lens's last stop nor the eyepiece's is a knife edge.
+//
+//  **SKY_DOT = 0.014, for the planets.** The ceiling is not mine: `planets.js`
+//  art-directed the disc sizes for one specific field and says so — "at the
+//  eyepiece it is a disc with companions strung out beside it. That is the
+//  whole brief" — and that eyepiece is 6.0 deg. The smallest planet at 6.0 deg
+//  is Mars at 0.0153, so 0.014 is the sky author's own design point with a
+//  tenth of margin, and every planet clears at the eyepiece's stop. The floor
+//  is the same lens the moon's is: at 16.5-18 deg all four are dots among
+//  stars — Jupiter is 10 px with its moons 30 px off, and
+//  `jupiter-scope18.png` reads as a slightly fat star, which is exactly what
+//  `planets.js` says it is meant to read as at that magnification.
+//
+//  What the two constants come to, as instruments:
+//
+//     item      counts from a field of      i.e.
+//     moon      14.3 deg                    the long lens anywhere on its
+//                                           ring, or the eyepiece zoomed in
+//                                           past 14 deg
+//     galaxy     6.6 (Companion) to 19.3    the long lens always; the Great
+//               (the Great Spiral)          Spiral also on the wide lens's
+//                                           last stop, see below
+//     planet     6.6 (Mars) to 10.7         the long lens always; the eyepiece
+//               (Jupiter)                   at and below 10.7 deg for Jupiter
+//
+//  **The one leak, disclosed rather than closed.** The Great Spiral is 2.7 deg
+//  across — bigger than the moon — so at 0.14 it clears on the wide lens at
+//  70 mm (0.164). I looked at that frame before deciding: `spiral-wide70.png`
+//  is 177 px of spiral arms, centred, with the dust lane visible. It is a
+//  photograph of a galaxy by any honest reading, and the only way to reject it
+//  is to raise the threshold until the Companion — a third its size — needs
+//  more magnification than the game has. Rejecting a real photograph to
+//  protect a rule is the wrong trade. It is also not an accident-generator: a
+//  70 mm frame is 333 square degrees of a 20 600 square degree sky, so it has
+//  to be aimed.
+//
+//  ── the gate is centred-ness, not a second copy of skyTargetAt ─────────────
+//
+//  `sky_objects.skyTargetAt(dir, fov, state)` already answers a pointing
+//  question and `Stats._telescope` uses it. It is not reused here and the
+//  difference is not an oversight:
+//
+//   · It asks about ONE view direction with a tolerance — "is the telescope
+//     aimed at this" — which is the right question for a dwell. A photograph
+//     is a RECTANGLE, and 16:9 means the honest answer differs by nearly two
+//     to one between the two axes.
+//   · Its tolerance is `max(0.55, fov/8)`, deliberately generous so a planet
+//     is catchable while the eyepiece drifts. A photograph is not drifting.
+//   · And it would forbid the thirds. This file already argues at `EDGE` that
+//     demanding the centre is arguing with the game's own composition grid;
+//     the moon on a thirds line is a better photograph than the moon in the
+//     middle, and skyTargetAt's tolerance would refuse it at every fov the sky
+//     items are reachable at.
+//
+//  So the test is `EDGE` — the same 0.84 of NDC every other subject answers
+//  to — applied to the object's own direction. **Without the size slack**,
+//  which is the one place this departs from `share()`. A waterfall earns slack
+//  because its midpoint is a poor stand-in for an 80 m ribbon; a disc's centre
+//  IS the picture. `EDGE + s` on the moon at 400 mm reaches 1.53 — and the
+//  moon's own radius is `s` = 0.69 in those units, so the disc would run from
+//  0.84 to 2.22 with the frame ending at 1.0: a sliver 8% of the frame's
+//  height along the top edge, credited as a photograph of the Moon.
+//
+//  ── night: one gate, and it turns out to be the cloud gate too ─────────────
+//
+//  The sky draws the planets and the galaxies inside `if (starVis > 0.002)`,
+//  where `starVis = starAmount^3 * darkGuard` (`Sky.js`, the night block). So
+//  the honest question is not "is `nightFactor` up" — it is that expression,
+//  and the gate is `SKY_STATE.starAmount^3 >= 0.50`: **the object must be
+//  drawn at at least half the brightness the shader will ever draw it at.**
+//
+//  Walked in quarter hours with `tools/_scratch/_skyhours.mjs`, which prints
+//  the ramps and shoots Jupiter, the Great Spiral and the moon at 400 mm at
+//  every rung:
+//
+//     hour    starAmount   ^3      uCover   the frames
+//     19:30     0.004     0.000    0.353    nothing drawn at all
+//     20:00     0.323     0.034    0.256    Jupiter a pale disc on bright
+//                                           twilight; the Spiral barely there
+//     20:15     0.577     0.192    0.156    legible, sky still pale
+//     20:30     0.814     0.539    0.077    both read cleanly  <- the gate
+//     21:00     1.000     1.000    0.026    full night
+//     04:30     0.889     0.703    0.040    still in
+//     04:45     0.678     0.311    0.061    out
+//
+//  So the window is about 20:30 to 04:40, which is what "after dark" means in
+//  this valley, and it was picked by looking at `spiral-h20_5.png` next to
+//  `spiral-h20_25.png` rather than by rounding a ramp.
+//
+//  **And the clouds.** An item that fires through overcast is a lie, and the
+//  right-hand column above is why there is no separate cloud gate: `Clouds.js`
+//  hands the deck `s.cloudCover * (1 - 0.78 * starAmount)`, so the coverage
+//  the dome actually draws collapses as the stars come up. Measured live over
+//  the whole clock, it runs 0.30-0.35 through the evening and **0.024-0.028
+//  for every hour this rule can fire in.** The hours that have cloud in them
+//  are the hours the objects are not drawn in. A `cloudCover` test here would
+//  be a constant `true` dressed as diligence — and a gate that cannot fire is
+//  a worse lie than no gate, because it advertises a rule the code does not
+//  enforce. If anybody ever un-damps the night deck, this paragraph is the
+//  note that says to come back and add one.
+//
+//  **What is NOT reproduced, and is disclosed instead.** `darkGuard` is a
+//  per-fragment term computed from the dome's own rendered luma, and there is
+//  no JS for it. The gate therefore bounds `starAmount^3`, which is starVis's
+//  other factor, and cannot see a direction the guard is dimming. Its own
+//  comment says it "only engages over a genuinely blown sky, an order of
+//  magnitude above any plausible night", and everything in the catalogue sits
+//  26 to 55 deg up — the four planets and three galaxies are at fixed
+//  elevations of 26.0 to 54.4 deg, computed from the table, so none of them is
+//  ever in the sunset. Not measured; stated.
+//
+//  ── is the telescope required? No, and it is the weaker instrument ─────────
+//
+//  It is the natural instrument and the game builds a path to it — pressing F
+//  at the eyepiece now fits the long lens and holds the pose — so both hints
+//  point that way. Requiring it would be wrong twice over:
+//
+//   · **A player without a camp could not progress.** Three lines gated on a
+//     prop that has to be pitched is three lines a sheet cannot promise.
+//   · **The lens beats the telescope.** `ScopeView.FOV_MIN` is 6.0 deg; the
+//     400 mm is 2.9. The eyepiece's tightest view is twice as wide as the
+//     glass in the bag, so requiring the eyepiece would be requiring the
+//     smaller picture. The scope's job is FINDING — an 18 deg field with a
+//     mask, which is how you get on target at all — and that job is real
+//     without being mandatory.
+//
+//  What the scope does buy is `Stats._telescope`, which is a different feature
+//  and stays the eyepiece's own.
+//
+//  ── and it still marches for terrain ───────────────────────────────────────
+//
+//  A camera at the foot of a cliff pointed at where the moon is is a
+//  photograph of a cliff, which is the failure this whole file is arranged
+//  around. `clearSky` is the same test as `clearLine` with the same `OCC_TOL`,
+//  written separately because the ray does not end on a subject: there is no
+//  radius, no `AIM`, no far-end exclusion, and the step cannot be `clearLine`'s
+//  (its `OCC_MAX` of 64 would stretch to a 10 m stride over a ray this long).
+//  It walks 6 m at a time and stops when the ray clears `WORLD.maxAltitude`,
+//  so the cost is bounded by geometry rather than by a cap: from the valley
+//  floor to the lowest thing in the catalogue (the Pinwheel, 26 deg up) that
+//  is 124 samples, and at Mars's 54 deg it is 67. It runs only for an object
+//  that has already passed both frame gates, which is at most one per
+//  photograph at any field these items are reachable at.
+//
+//  **Checked against the renderer, not against itself** — a march is exactly
+//  the kind of test that can be confidently wrong. `_skyocc.mjs` draws random
+//  valley-floor poses, sorts them by what `clearSky` claims, then aims a 400 mm
+//  lens at the moon and renders each frame twice, once with the moon's own two
+//  uniforms zeroed, counting the changed pixels in the middle of the frame. A
+//  moon that is really there is 745 px across and puts 700 000 pixels in that
+//  window; a moon behind a ridge puts none. Submerged poses are skipped, which
+//  costs three of the first run's twenty and is not the march's business: a
+//  camera under two metres of lake photographs nothing.
+//
+//     clearSky said BLOCKED   20 of 20 had ZERO moon on screen
+//     clearSky said CLEAR     18 of 20 had the moon on screen, 16 of them
+//                             whole and 2 partly behind foliage
+//
+//  So the march has no false positives on this population at all, and its
+//  residual is the hole this file already declares for the animals: **2 of 20
+//  poses it called clear had a tree in front of the lens** — the frames are a
+//  single dark trunk filling a 2.9 deg field. That is 10% of RANDOM poses, and
+//  it is worth saying why it is not 10% of photographs: at 400 mm the trunk is
+//  the entire viewfinder. Nobody composes that shot and presses the shutter.
+//  The terrain case is different in kind — a ridge with the moon behind it
+//  still looks like a night landscape — which is why the terrain is the half
+//  that gets paid for.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { HUNT_IDS } from './hunt_items.js';
+import { SKY_OBJECTS } from './sky_objects.js';
+import { SKY_STATE } from '../render/Lighting.js';
+import { WORLD } from '../world/WorldConfig.js';
 
 // ── the framing rules ────────────────────────────────────────────────────────
 
@@ -687,6 +1013,80 @@ const LIP_R = 3;
  */
 const FOLD_R = 0.5;
 
+// ── the night sky ────────────────────────────────────────────────────────────
+//
+// See the header's "the sky needed its own rule" for how all five of these
+// were set and off which frames. The short version: you cannot walk closer to
+// a planet, so the only quantity a photographer controls is the field of view,
+// and these are shares of the frame that are a function of the lens alone.
+
+/** Degrees to radians, for the one part of this file that thinks in degrees. */
+const DEG = Math.PI / 180;
+
+/**
+ * Which line of the sheet each of the eight objects crosses off.
+ *
+ * A translation table, which `hunt_items.js` rule 1 exists to avoid — and it
+ * is here on purpose, because two of the three sky items are CLASSES rather
+ * than objects (see that file's "why it is three lines and not eight"). `moon`
+ * is an identity; `planet` and `galaxy` are seven rows of grouping.
+ *
+ * The drift it can suffer is the quiet kind: a ninth object added to
+ * `SKY_OBJECTS` silently credits nothing. That is the safe direction to fail
+ * in — a new planet is un-photographable rather than mis-credited — and
+ * `tools/_scratch/_skysweep.mjs` asserts every id in the catalogue has a row
+ * here, so the failure is one test run away rather than invisible.
+ *
+ * What would retire it: a `class` field on `SKY_OBJECTS` itself, which is that
+ * file's to give (asked for in the report, not done here — `sky_objects.js` is
+ * another owner's).
+ */
+const SKY_ITEM = {
+  venus: 'planet', jupiter: 'planet', mars: 'planet', saturn: 'planet',
+  spiral: 'galaxy', pinwheel: 'galaxy', companion: 'galaxy',
+  moon: 'moon',
+};
+
+/**
+ * How much of the frame's height the object's own diameter must subtend, per
+ * item — because the sky comes in two size classes six times apart and one
+ * number cannot promise the same thing to both.
+ *
+ * 0.14 is bounded below by the moon at 70 mm (0.121 — a night landscape with a
+ * moon in it) and above by the Companion at the eyepiece's tightest 6.0 deg
+ * field (0.153 — unmistakably a galaxy). 0.014 is `planets.js`'s own stated
+ * design point, the smallest planet at that same 6.0 deg (0.0153), less a
+ * tenth so the eyepiece's stop is inside the rule rather than on its edge.
+ */
+const SKY_MIN = { moon: 0.14, galaxy: 0.14, planet: 0.014 };
+
+/**
+ * Night, as the sky shader's own draw gate rather than as `nightFactor`.
+ *
+ * The planets and the galaxies are drawn inside `starVis = starAmount^3 *
+ * darkGuard`, so this is a threshold on that expression's reproducible factor:
+ * the object must be drawn at at least half the brightness it will ever have.
+ * It puts the window at about 20:30 to 04:40 — measured, not rounded; the
+ * quarter-hour ladder and the frames either side of the edge are in the
+ * header. It is also the cloud gate, for the reason set out there.
+ */
+const SKY_NIGHT = 0.50;
+
+// The terrain march for a ray that leaves the world. 6 m a step, and it stops
+// once the ray is above anything the terrain can reach, so the sample count is
+// set by the object's elevation (124 at the lowest, 67 at the highest) rather
+// than by a cap. `OCC_TOL` below is shared with `clearLine`.
+//
+// `SKY_REACH` is a backstop and not the rule: from the valley floor a ridge
+// that can hide the lowest object in the catalogue (26 deg up) stands at
+// `maxAltitude / tan 26` = 697 m of ground, i.e. 775 m of ray, so 800 m ends
+// every march that `SKY_CEIL` has not already ended. It only binds for a moon
+// close to setting, where the ray runs nearly flat and the honest answer is
+// "as far as the terrain is worth asking about".
+const SKY_STEP = 6;
+const SKY_REACH = 800;
+const SKY_CEIL = (WORLD?.maxAltitude ?? 340) + 2;
+
 // ── occlusion march ──────────────────────────────────────────────────────────
 
 const OCC_STEP = 3.0;     // metres between height samples
@@ -732,11 +1132,22 @@ const FF_H = 1.05;
 // slightly high, which is a smaller error than the one it avoids.
 const FF_CLUMP = 0.52;
 /**
- * How many insects in frame make a photograph OF fireflies. See the header for
- * the calibration — it is a count of the population present, not of the flashes
- * you can see, and the two are related by a measurement rather than by a guess.
+ * How many insects in frame make a photograph OF fireflies.
+ *
+ * A count of the POPULATION present, not of the flashes you can see: about a
+ * fifth of the swarm is alight at any instant and much of the rest is behind
+ * grass, so 375 insects reads as a dozen lights. The two are related by a
+ * measurement — 58 filmed poses, in the header — and not by a guess.
+ *
+ * 110 before, and 110 was still not rare: a third of random night photographs
+ * cleared it, which is a set-piece nobody had to go and find. Bounded now from
+ * both sides — 375 is about one night photograph in eleven over two draws of
+ * 400 poses, and it is still cleared by five of the six meadow anchors with the
+ * tightest of them at 400. 425 is a cliff; see the header's two tables, which
+ * are the whole argument and are re-runnable from `tools/_scratch/_ffcal.mjs`
+ * and `_ffaim.mjs`.
  */
-const FF_MIN = 110;
+const FF_MIN = 375;
 
 // ── scratch ──────────────────────────────────────────────────────────────────
 // Module-level and reused. This runs once per shutter press, but it runs in the
@@ -881,6 +1292,34 @@ function clearLine(world, from, to, radius) {
     const t = t0 + ((t1 - t0) * i) / n;
     const g = get.call(world, from.x + dx * t, from.z + dz * t);
     if (Number.isFinite(g) && g > from.y + dy * t + OCC_TOL) return false;
+  }
+  return true;
+}
+
+/**
+ * Is there ground between the lens and a point at infinity in direction `dir`?
+ *
+ * `clearLine`'s sibling, and separate from it because the ray does not end on
+ * a subject: nothing to leave slack around, nothing to aim over, and no far
+ * end to exclude. It also cannot borrow `clearLine`'s step — `OCC_MAX` is 64
+ * samples, which over a 700 m ray is a 10 m stride, and a heightmap at 2 m per
+ * texel deserves better than stepping over three texels at a time.
+ *
+ * The loop ends when the ray clears everything the terrain can be, so its
+ * length is decided by the object's elevation rather than by a constant: 124
+ * samples up to the Pinwheel at 26 deg, 67 up to Mars at 54.
+ *
+ * `dir` must be a unit vector, which is what makes `t` metres.
+ */
+function clearSky(world, eye, dir) {
+  const get = world?.getHeight;
+  if (typeof get !== 'function') return true;    // no terrain query, no claim
+  if (!(dir.y > 0)) return false;                // below the skyline is ground
+  for (let t = SKY_STEP; t <= SKY_REACH; t += SKY_STEP) {
+    const y = eye.y + dir.y * t;
+    if (y > SKY_CEIL) return true;
+    const g = get.call(world, eye.x + dir.x * t, eye.z + dir.z * t);
+    if (Number.isFinite(g) && g > y + OCC_TOL) return false;
   }
   return true;
 }
@@ -1119,6 +1558,65 @@ function highCamp(f, camp, hit) {
     if (!visible(f, _p, r, CAMP_SHARE, CAMP_MAX)) continue;
     hit.add('highCamp');
     return;
+  }
+}
+
+/**
+ * The Moon, a planet, a galaxy — whichever of the eight is in this frame.
+ *
+ * Reads `SKY_STATE` and `SKY_OBJECTS` directly rather than through `ctx`,
+ * because neither is a system: one is Lighting's published record (the same
+ * one `Stats` imports) and the other is a table. Everything else in this
+ * function is the header's "the sky needed its own rule", in order.
+ *
+ * The three gates, cheapest first:
+ *
+ *  1. **Night**, once for the whole family — `starAmount^3`, the reproducible
+ *     factor of the shader's own `starVis`. Every daylight photograph ever
+ *     taken leaves here having done one multiply.
+ *  2. **Magnification**, which is a share of the frame decided entirely by
+ *     `camera.fov`, because the object's angular size is a constant. No
+ *     distance is involved anywhere in this function, which is why it does not
+ *     call `share()`.
+ *  3. **Framing**, `EDGE` on the object's own direction, with no size slack.
+ *
+ * and then the terrain march, which is the expensive one and runs last.
+ *
+ * The direction is projected as a DIRECTION: `transformDirection` rotates it
+ * into view space and `applyMatrix4` does the perspective divide by -z, which
+ * is exact for a point at infinity and needs no arbitrary "far away" distance
+ * standing in for one. `_ndc.z` is meaningless afterwards and is not read.
+ */
+function skyObjects(f, hit) {
+  const st = SKY_STATE;
+  const amt = st?.starAmount ?? 0;
+  if (!(amt * amt * amt >= SKY_NIGHT)) return;
+
+  for (const o of SKY_OBJECTS) {
+    const item = SKY_ITEM[o.id];
+    if (!item || hit.has(item)) continue;
+
+    let dir = o.dir;
+    if (o.live) {
+      dir = st[o.live];
+      // The same rule `skyTargetAt` applies, for the same reason: a moon under
+      // the skyline is not a moon anybody is looking at.
+      if (!dir || dir.y <= 0.02) continue;
+    }
+    if (!dir) continue;
+
+    // Angular diameter over the frame's own vertical angle. `f.vfov` is in
+    // radians and `o.rad` in degrees, which is the only unit crossing here.
+    const s = (2 * o.rad * DEG) / f.vfov;
+    if (!(s >= SKY_MIN[item])) continue;
+
+    _view.copy(dir).transformDirection(f.view);
+    if (!(-_view.z > 0)) continue;                 // behind the camera
+    _ndc.copy(_view).applyMatrix4(f.proj);
+    if (Math.abs(_ndc.x) > EDGE || Math.abs(_ndc.y) > EDGE) continue;
+
+    if (!clearSky(f.world, f.eye, dir)) continue;
+    hit.add(item);
   }
 }
 
@@ -1381,6 +1879,9 @@ export function detectSubjects(ctx) {
     run(highCamp, sys.camp);
     run(burntMallow, sys.camp?.roast);
     run(waterfalls, ctx.world?.waterfalls);
+    // Last, and not under `wildlife.enabled`: the sky is drawn by the renderer
+    // whatever the wildlife budget is doing.
+    run(skyObjects);
   } catch (e) {
     warn('detectSubjects', e);
   }
@@ -1407,6 +1908,7 @@ function warn(where, e) {
  * count" without reimplementing the arithmetic — `tools/` scripts and the
  * console are the only callers.
  */
-export const _internals = { share, clearLine, visible, frameOf, meshHeight,
-  ffCount, MIN_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, FALL_W, CAMP_SHARE,
-  FF_MIN, LIP_R };
+export const _internals = { share, clearLine, clearSky, visible, frameOf,
+  meshHeight, ffCount, MIN_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, FALL_W,
+  CAMP_SHARE, FF_MIN, LIP_R, SKY_ITEM, SKY_MIN, SKY_NIGHT, SKY_STEP,
+  SKY_REACH };

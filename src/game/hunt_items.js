@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  hunt_items — the checklist. Fifteen lines in a journal, and nothing else.
+//  hunt_items — the checklist. Eighteen lines in a journal, and nothing else.
 //
 //  This is the only file in the hunt that a person would ever want to read as
 //  prose, so it is written as prose: an `id` the machine uses, a `subject` that
@@ -14,6 +14,14 @@
 //     keys — `deer`, `baldEagle`, `owl` are exactly `SPECIES` and
 //     `TREE_BIRD_SPECIES[].key`, so the detector's lookup is an identity and
 //     there is no translation table to drift.
+//
+//     The three sky lines are the one place that rule is bent, and knowingly.
+//     `moon` IS `SKY_OBJECTS`' own id; `planet` and `galaxy` are not ids at
+//     all, they are CLASSES covering four and three of them — that is the
+//     whole point of the block at the bottom of this header — so the detector
+//     does carry a translation table for them. It is seven rows, it is in
+//     `hunt_detect.js` under `SKY_ITEM`, and the note there says what would
+//     retire it.
 //
 //  2. **`subject` completes "Photo of ".** "Photo of a white-tailed deer"
 //     reads; "Photo of Deer" does not, and "Photo of the deer" is a lie the
@@ -82,6 +90,15 @@
 //  carries the rule it enforces. "A few is not a photograph" is the whole
 //  change of that item, in six words, and it is a promise the code keeps.
 //
+//  It moved once more, and the same rule is why. Counting the swarm took the
+//  item from 83% of night photographs to about a third, and a third is still
+//  not a find (user: *"yea we should dial back the fireflies, let them be more
+//  rare"*), so `FF_MIN` went 110 to 375 — one night photograph in about eleven.
+//  Measured against the anchors, "a wet meadow" no longer describes a shot that
+//  counts and the middle of one does: five of the six meadow anchors clear 375
+//  and they clear it on one to four of their four bearings, so where you stand
+//  inside the meadow is now the whole question. The hint says so.
+//
 //  **The high camp** said "pitch camp above 100 m" and was the only hint on the
 //  sheet quoting a constant at the player. Next to "deep forest. It will hear
 //  you first" it reads like a spec, and it was also incomplete in a way that
@@ -134,6 +151,60 @@
 //  who has ticked fourteen of fourteen and then finds themselves on fourteen of
 //  fifteen has been robbed of a finished book. The cost of guessing wrong was
 //  one dormant line; the cost of waiting was everybody's completed sheet.
+//
+//  ── the night sky, and why it is three lines and not eight ──────────────────
+//
+//  (User, on seeing the telescope's own discovery list: *"it looks like the
+//  objects in the night sky are not in the scavenger hunt, can they be
+//  added?"*)
+//
+//  `src/game/sky_objects.js` holds eight: four planets, three galaxies and the
+//  moon. Putting all eight on the sheet is the obvious reading of that request
+//  and it is the wrong one, for three reasons that are worth separating.
+//
+//  **1. Eight is not eight finds; it is one.** The planets are on the ecliptic
+//  ON PURPOSE — `planets.js`'s own header: "they line up, so one sweep finds
+//  all four" — and the three galaxies are all in the upper sky within about a
+//  quarter turn of each other. So the eight are a single act: fit the long
+//  lens after dark and pan. A sheet that hands out eight ticks for one pan is
+//  padding, and it would be 53% more sheet, every line of it the same line.
+//
+//  **2. The collection already exists, one system over.** `Stats._telescope`
+//  marks each of the eight by id, at the eyepiece, on a half-second dwell, and
+//  `hud_stats.js` prints all eight in the logbook. The "find every one"
+//  instinct is served, in the feature built for it. Copying that list onto the
+//  hunt sheet would make the two features one feature with two UIs.
+//
+//  **3. What IS distinct is the act, and there are three of them.** Fill the
+//  frame with the moon; resolve a planet's disc; find a galaxy. They differ in
+//  what the player has to know and in how far the lens has to go — measured,
+//  in `hunt_detect.js`'s "the sky needed its own rule": the moon counts from a
+//  14.3 deg field, the easiest galaxy from 19.3 and the hardest from 6.6, and
+//  a planet from 10.7 deg at best. Three lines, fifteen to eighteen, a fifth
+//  more sheet for a whole new direction to point the camera in.
+//
+//  **The strongest counter-argument, and why it loses.** The four planets
+//  really are individually identifiable through this glass, and I have the
+//  frames: at 400 mm Jupiter is a 56 px disc with four moons strung out beside
+//  it, Saturn has rings and two moons, Mars is orange, Venus is a bare white
+//  disc (`/tmp/skyshots/*-tele400.png`). "You can tell them apart" is a real
+//  argument for four lines. It is an argument about IDENTIFICATION, though, and
+//  a scavenger hunt line is a unit of SEARCHING — see point 1. The three
+//  galaxies lose the same argument for the same reason, and they keep their
+//  invented names where they are useful: in the hint, which is where a player
+//  reads them.
+//
+//  **The moon is its own line and not part of "a planet".** It is the one
+//  object up there that is not a find at all — it is up most of the night and
+//  it is the brightest thing in the sky — so it is the sky's camp dog: the
+//  gimme that teaches the mechanic. Without it a player has no way to learn
+//  that the sheet wants them to look up.
+//
+//  They are grouped at the end under their own heading rather than folded into
+//  the set-pieces, because rule 3 says the order is a walk and this is the
+//  point where the walk stops and you stand still and look up. It also means
+//  the last line on the sheet is the hardest one on it, which is where the
+//  bear should have been.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -208,7 +279,7 @@ export const HUNT_ITEMS = [
   {
     id: 'fireflies',
     subject: 'fireflies over the meadow',
-    hint: 'a wet meadow, well after dusk. A few is not a photograph',
+    hint: 'well after dark, in the middle of a wet meadow. A few is not a photograph',
   },
   {
     id: 'waterfall',
@@ -224,6 +295,23 @@ export const HUNT_ITEMS = [
     id: 'burntMallow',
     subject: 'an over-roasted marshmallow',
     hint: 'leave it in the flame and see',
+  },
+
+  // ── the night sky: the three lines you take with a lens, not with your feet
+  {
+    id: 'moon',
+    subject: 'the Moon',
+    hint: 'after dark, and the long lens. A moon in a landscape is not a moon',
+  },
+  {
+    id: 'planet',
+    subject: 'a planet',
+    hint: 'four of them, strung out in a line. The steady ones — zoom right in',
+  },
+  {
+    id: 'galaxy',
+    subject: 'a galaxy',
+    hint: 'three faint smudges up there. The Great Spiral is the one you will find',
   },
 ];
 
