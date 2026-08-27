@@ -422,6 +422,22 @@ const easeBack = (t) => {
   return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2;
 };
 
+/**
+ * A small number in words, up to ninety-nine. `none` for zero, because the
+ * progress line reads "none of eighteen found" and "zero" is a quantity where
+ * this wants a word.
+ */
+const _ONES = ['none', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen',
+  'eighteen', 'nineteen'];
+const _TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+function _words(v) {
+  const n = Math.max(0, Math.round(v || 0));
+  if (n < 20) return _ONES[n];
+  if (n < 100) return _TENS[(n / 10) | 0] + (n % 10 ? `-${_ONES[n % 10]}` : '');
+  return String(n);
+}
+
 export class Journal {
   constructor(ctx) {
     this.ctx = ctx ?? {};
@@ -711,12 +727,24 @@ export class Journal {
     }
   }
 
+  /**
+   * "three of eighteen found", under the heading, in words.
+   *
+   * Words rather than digits because the page is hand-lettered and a numeral in
+   * the middle of it reads as a receipt. Which means the list has to reach as
+   * far as the sheet is long: it stopped at 'sixteen' and the sky items took the
+   * hunt to eighteen, so every incomplete line read "three of 18 found" — half
+   * written out, half not, in the one place on the page a player looks to see
+   * how they are doing.
+   *
+   * Built to twenty rather than extended by two, and `_words` composes past
+   * that, so the next item added does not reintroduce this. The digit fallback
+   * stays for a sheet longer than the words can reach, because a slightly ugly
+   * number is better than `undefined of undefined`.
+   */
   _progressLine() {
-    const WORDS = ['none', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
-      'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen'];
     const n = hunt.doneCount?.() ?? 0, t = hunt.total ?? 0;
-    const w = (v) => WORDS[v] ?? String(v);
-    return n >= t && t > 0 ? 'all of them found' : `${w(n)} of ${w(t)} found`;
+    return n >= t && t > 0 ? 'all of them found' : `${_words(n)} of ${_words(t)} found`;
   }
 
   /**
