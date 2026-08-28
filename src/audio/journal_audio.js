@@ -978,12 +978,35 @@ export class JournalAudio {
    * turn genuinely sweeps across the frame. This is a board hinging away from
    * you on the spot.
    */
+  /** Peak of a decoded buffer, cached — only the sound test needs it. */
+  _peakOf(buf) {
+    if (!buf) return 1;
+    if (this._peaks?.has(buf)) return this._peaks.get(buf);
+    let pk = 0;
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > pk) pk = v; }
+    }
+    (this._peaks ??= new WeakMap()).set(buf, pk);
+    return pk;
+  }
+
   _sampledCover(c) {
     const actx = this.actx;
     const t = c.t;
-    // `?soundtest=cover` plays the file at unity — no gain, no ducking, no
-    // per-firing level. Whatever comes out of the speakers is the mp3 as it is
-    // on disk, so the test cannot be answered with "yes but you changed it".
+    // `?soundtest=cover` NORMALISES the file and plays nothing else.
+    //
+    // It played at unity first, on the reasoning that a listening test must not
+    // be answerable with "yes, but you changed it". That was the wrong goal.
+    // The file peaks at 0.039 and the master bus sits at 0.71, so unity put the
+    // cue at **-31 dBFS** — where the same recording that sounds fine in
+    // QuickTime, straight out at system volume, is audible only as its loudest
+    // transient. The test was unmodified and inconclusive, which is worse than
+    // modified and decisive.
+    //
+    // A gain is not a modification in the sense that matters here: it changes
+    // no sample's relationship to any other. So the test normalises to -6 dBFS
+    // and still applies no filter, no window, no pitch and no ducking.
     const test = this.ctx?.systems?.audio?.soundTest
       ?? (typeof location !== 'undefined'
           && new URLSearchParams(location.search).get('soundtest') === 'cover');
@@ -997,7 +1020,12 @@ export class JournalAudio {
     // `c.level` so `_crowd()` can still duck a cue fired on top of itself.
     // `setValueAtTime` rather than a ramp: the recording has its own attack and
     // 4 ms of fade-in on top of it is 4 ms of somebody else's idea.
-    g.gain.setValueAtTime(test ? 1 : Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004), t);
+    // Peak-normalise to -6 dBFS at the bus, so it arrives at about -9 after the
+    // master. Computed from the buffer rather than hardcoded, so it stays right
+    // when the recording is replaced.
+    const g0 = test ? (0.5 / Math.max(1e-4, this._peakOf(this._cover)))
+                    : Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004);
+    g.gain.setValueAtTime(g0, t);
 
     // The whole buffer. No offset, no duration.
     src.start(t);

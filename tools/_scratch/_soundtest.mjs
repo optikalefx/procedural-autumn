@@ -71,5 +71,7 @@ const lvl = await page.evaluate(async () => {
   return { playedPeak: +pk.toFixed(4), rawPeak: +rp.toFixed(4) };
 });
 console.log('level under test:', JSON.stringify(lvl),
-  Math.abs(lvl.playedPeak - lvl.rawPeak) < 0.002 ? ' -> unity, unmodified' : ' -> NOT unity');
+  Math.abs(lvl.playedPeak - 0.5) < 0.01
+    ? ` -> normalised to -6 dBFS (${(20 * Math.log10(lvl.playedPeak / lvl.rawPeak)).toFixed(1)} dB of gain, nothing else)`
+    : ' -> NOT at the expected level');
 await b.close();
