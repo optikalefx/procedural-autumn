@@ -71,21 +71,26 @@ const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=metal'] 
     p.lens.setLens('tele');
     await new Promise((s) => setTimeout(s, 300));
     out.lens = p.lens.label();
-    for (let i = 0; i < 6; i++) p.focus.nudgeAperture(-1);
-    out.afterOpeningSixNotches = p.focus.fStop;
+    // Open further than the ladder is long, rather than counting notches: the
+    // ladder gained a rung when f/28 arrived and a fixed count silently stopped
+    // reaching the end. The claim under test is "it cannot pass the lens", not
+    // "six notches lands here".
+    for (let i = 0; i < 20; i++) p.focus.nudgeAperture(-1);
+    out.afterOpeningFully = p.focus.fStop;
     out.setApertureTo1_4 = (p.focus.setAperture(1.4), p.focus.fStop);
-    for (let i = 0; i < 12; i++) p.focus.nudgeAperture(1);
-    out.afterStoppingDownTwelve = p.focus.fStop;
+    for (let i = 0; i < 20; i++) p.focus.nudgeAperture(1);
+    out.afterStoppingDownFully = p.focus.fStop;
     // And the wide, an f/2.8.
     p.lens.setLens('wide');
     await new Promise((s) => setTimeout(s, 300));
-    for (let i = 0; i < 6; i++) p.focus.nudgeAperture(-1);
+    for (let i = 0; i < 20; i++) p.focus.nudgeAperture(-1);
     out.wideAfterOpening = p.focus.fStop;
     out.wideLabel = p.lens.label();
     return out;
   });
   console.log('APERTURE CLAMP →', JSON.stringify(r, null, 1));
-  console.log(r.afterOpeningSixNotches === 4 && r.setApertureTo1_4 === 4 && r.wideAfterOpening === 2.8
+  console.log(r.afterOpeningFully === 4 && r.setApertureTo1_4 === 4 && r.wideAfterOpening === 2.8
+    && r.afterStoppingDownFully === 28
     ? '  PASS — neither ring nor setter can open past the fitted lens'
     : '  FAIL');
   await page.close();
