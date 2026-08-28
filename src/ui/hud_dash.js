@@ -25,7 +25,30 @@ const HOLD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' 
   'stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="6.2"/>' +
   '<path d="M3.4 8.2a9.6 9.6 0 0 0 0 7.6M20.6 8.2a9.6 9.6 0 0 1 0 7.6"/></svg>';
 
-const MAX_KMH = 120;
+// Full scale, and how the ticks are stepped under it, per craft. One dial
+// face, two scales: a needle only says "how fast for *this* vehicle" — the
+// reason the dial exists at all, per the header — if the sweep it swings over
+// is sized for the thing being ridden.
+//
+// 120 km/h is the camper's. A paddle craft lives in a tenth of that.
+// `boat_physics` tops a canoe at 3.2 m/s and a kayak at 3.8; measured on flat
+// water at full effort, after 80 m of paddling to let the drag equilibrium
+// arrive, the stroke's surge-and-glide settles a canoe at 2.1–2.3 m/s and a
+// kayak at 3.2–3.3 — 7.7–8.3 and 11.4–12.0 km/h. On the camper's dial that
+// entire range moved the needle 20–27° out of 270 and left it pointing at the
+// floor for the whole time the player was on the water, which is exactly the
+// failure START was chosen to avoid.
+//
+// 20 km/h full scale sits that measured canoe cruise at 38–41% of the sweep
+// and the kayak's at 57–60%: the two hulls read plainly differently from each
+// other, which they should, since the kayak being the quicker one is the whole
+// reason to swap. It also keeps the top third in hand — a boat's declared top
+// speed is only 58% (canoe) and 68% (kayak) of the scale — for a hull running
+// downstream with a river current rather than across a lake.
+const SCALES = {
+  camper: { max: 120, minor: 10, major: 40 },
+  boat: { max: 20, minor: 2, major: 4 },
+};
 // Degrees clockwise from 12 o'clock. The gap belongs at the *bottom* — the
 // first version started the sweep at 148° and the needle sat pointing at the
 // floor for every speed a camper can actually reach.
@@ -39,20 +62,26 @@ const arc = (r, a0, a1) => {
   return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
 };
 
+// Redrawn only when the player boards or steps ashore, never per frame.
+const ticksFor = ({ max, minor, major }) => {
+  let out = '';
+  for (let v = 0; v <= max; v += minor) {
+    const a = START + (v / max) * SWEEP;
+    const big = v % major === 0;
+    const [xa, ya] = polar(50, 50, R - (big ? 7.5 : 4.5), a);
+    const [xb, yb] = polar(50, 50, R - 1.5, a);
+    out += `<path d="M${xa.toFixed(2)} ${ya.toFixed(2)}L${xb.toFixed(2)} ${yb.toFixed(2)}" ` +
+           `stroke="rgba(255,246,234,${big ? 0.55 : 0.26})" stroke-width="${big ? 1.6 : 1}" stroke-linecap="round"/>`;
+  }
+  return out;
+};
+
 export class Dash {
   constructor(root) {
     this.node = el('div', 'pa-dash pa-panel pa-game-only');
 
     // ── dial ───────────────────────────────────────────────────────────────
-    let ticks = '';
-    for (let v = 0; v <= MAX_KMH; v += 10) {
-      const a = START + (v / MAX_KMH) * SWEEP;
-      const major = v % 40 === 0;
-      const [xa, ya] = polar(50, 50, R - (major ? 7.5 : 4.5), a);
-      const [xb, yb] = polar(50, 50, R - 1.5, a);
-      ticks += `<path d="M${xa.toFixed(2)} ${ya.toFixed(2)}L${xb.toFixed(2)} ${yb.toFixed(2)}" ` +
-               `stroke="rgba(255,246,234,${major ? 0.55 : 0.26})" stroke-width="${major ? 1.6 : 1}" stroke-linecap="round"/>`;
-    }
+    this.scale = SCALES.camper;
 
     const speedo = el('div', 'pa-speedo');
     speedo.innerHTML = `
@@ -62,7 +91,7 @@ export class Dash {
         <path class="pa-dial-fill" d="${arc(R, START, START + SWEEP)}" stroke="url(#pa-dial-grad)"
               stroke-width="3.4" fill="none" stroke-linecap="round"
               stroke-dasharray="0 999" style="transition:stroke-dasharray .12s linear"/>
-        ${ticks}
+        <g class="pa-ticks">${ticksFor(this.scale)}</g>
         <g class="pa-needle" style="transform-origin:50px 50px">
           <!-- A tail as well as a pointer: an analogue needle is balanced, and
                the counterweight is most of why it reads as one. -->
@@ -96,6 +125,7 @@ export class Dash {
     this.node.appendChild(el('div', 'pa-dash-divider'));
 
     this.needle = speedo.querySelector('.pa-needle');
+    this.ticks = speedo.querySelector('.pa-ticks');
     this.fill = speedo.querySelector('.pa-dial-fill');
     // Path length of the swept arc, so the fill can be driven by dasharray
     // without measuring it in the browser every frame.
@@ -128,10 +158,21 @@ export class Dash {
     this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null };
   }
 
-  update(speedMs, tripM, found, total, hold = false) {
+  /** @param {'camper'|'boat'} scale — full scale of the dial; see SCALES. */
+  update(speedMs, tripM, found, total, hold = false, scale = 'camper') {
+    const sc = SCALES[scale] ?? SCALES.camper;
+    if (sc !== this.scale) {
+      this.scale = sc;
+      this.ticks.innerHTML = ticksFor(sc);
+      // The arc fill is written from the digital readout's change branch, which
+      // caches on the rounded number — so a scale change that happens not to
+      // move that number would otherwise leave the fill sized for the old dial.
+      this._shown.kmh = -1;
+    }
+
     const kmh = Math.abs(speedMs) * 3.6;
-    const a = START + Math.min(1, kmh / MAX_KMH) * SWEEP;
-    this.needle.style.transform = `rotate(${(a).toFixed(1)}deg)`;
+    const frac = Math.min(1, kmh / sc.max);
+    this.needle.style.transform = `rotate(${(START + frac * SWEEP).toFixed(1)}deg)`;
 
     // Only on a change: this runs every frame and a class toggle is a style
     // recalculation whether or not the class actually differs.
@@ -145,8 +186,7 @@ export class Dash {
     if (shown !== this._shown.kmh) {
       this._shown.kmh = shown;
       this.num.innerHTML = `${shown}<span class="pa-speed-unit">KM/H</span>`;
-      this.fill.setAttribute('stroke-dasharray',
-        `${(this.arcLen * Math.min(1, kmh / MAX_KMH)).toFixed(1)} 999`);
+      this.fill.setAttribute('stroke-dasharray', `${(this.arcLen * frac).toFixed(1)} 999`);
     }
 
     // Two decimals under a kilometre, one above: a trip meter that reads

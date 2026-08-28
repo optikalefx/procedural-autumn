@@ -200,6 +200,39 @@ export class WorldData {
   }
 
   /**
+   * The current at (x, z): `{ vx, vz, q, turb }` — see TerrainGen._flowField
+   * for what the baked channels mean.
+   *
+   * `vx, vz` are a direction times a COHERENCE in 0..1, NOT a unit vector.
+   * The magnitude decays where neighbouring water disagrees about which way it
+   * is going, which is exactly what happens as a channel opens into a lake, so
+   * anything that scales a force by it fades out at the mouth for free instead
+   * of switching off at a mask boundary. Standing water is velocity zero, and
+   * that is the whole reason a lake and a river can be one surface here.
+   *
+   * `q` is discharge 0..1 and `turb` is turbulence 0..1 (steep, pinched or
+   * fast water).
+   *
+   * Bilinear on the FULL-resolution grid, unlike getHydro: the flow field is
+   * baked per height texel, so it takes `toGrid` with no registration offset —
+   * the -0.25 in getHydro is the half-resolution hydro field's, and applying
+   * it here would shift the current a texel off the channel it belongs to.
+   *
+   * Returns velocity zero on a bake with no flow field rather than null, so
+   * callers can add the current unconditionally.
+   */
+  getFlow(x, z, out = {}) {
+    if (!this.flowVX) { out.vx = 0; out.vz = 0; out.q = 0; out.turb = 0; return out; }
+    const [gx, gz] = this.toGrid(x, z);
+    const R = this.res;
+    out.vx = bilinear(this.flowVX, R, R, gx, gz);
+    out.vz = bilinear(this.flowVZ, R, R, gx, gz);
+    out.q = bilinear(this.flowQ, R, R, gx, gz);
+    out.turb = bilinear(this.flowT, R, R, gx, gz);
+    return out;
+  }
+
+  /**
    * Bilinear sample of the hydro field at world (x, z):
    * `{ sdf, span, depth, wet }` — see hydroField.js for what each channel is.
    *

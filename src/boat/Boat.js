@@ -30,8 +30,9 @@ import { ClickTracker, pointerRay, rayMiss, objectHit, placed, pointing } from '
 import { pickVerb, placeVerb, actVerb, touchCapable } from '../core/verbs.js';
 import { groundRay, siteRng } from '../camp/camp_site.js';
 import { CampPrompt } from '../camp/camp_ui.js';
-import { waterRay, sdfGrad, shoreSnap, validateLaunch, MAX_LAUNCH_DIST } from './boat_site.js';
-import { BoatPhysics } from './boat_physics.js';
+import { waterRay, sdfGrad, shoreSnap, validateLaunch, MAX_LAUNCH_DIST,
+         MAX_RIVER, RIVER_KIND } from './boat_site.js';
+import { BoatPhysics, BEACH_MARGIN } from './boat_physics.js';
 import { buildCanoe, CANOE_DIM } from './boat_canoe.js';
 import { buildKayak, KAYAK_DIM } from './boat_kayak.js';
 import { setBoatEnv } from './boat_materials.js';
@@ -54,6 +55,59 @@ const SINK_TIME = 1.5;
 // (positive inside the water), so this reads "on the water, or within 6 m of
 // it on land".
 const NEAR_SHORE_SDF = -6;
+
+// ── STEPPING ASHORE IS A GEOMETRIC QUESTION, NOT A STATE ─────────────────────
+//
+// "Can I get out here" used to be `phys.beached`, for both the prompt and the
+// key. That reads as the same question and is not: `beached` is a decision the
+// physics makes about how the hull should MOVE, and there are banks you can
+// obviously step onto that it deliberately never fires at.
+//
+// The one the player reported (2026-08-25, screenshot: kayak bow hard into a
+// grassy bank, dead stationary, no prompt) is a river. d20eed9 removed pressure
+// beaching in flowing water for a measured reason that stands — on a river 0.6 s
+// of bow contact is just the outside of a bend, which every drifting boat
+// touches, and beaching there ended runs. But the sdf wall still stops the hull
+// a few metres out in water far too deep to ground in, so nothing ever sets
+// `beached`, and E was dead with no prompt to say why. Reproduced headless on
+// seed 20261018 at (1169.7, 1031.5): 1200 sim frames of full-effort paddling
+// into the bank, position frozen to the tenth of a metre, sdf 0.08, 1.24 m of
+// water under the hull, `beached` false the whole time, prompt empty, E ignored.
+// (The dead band is narrow and unfixable by tuning: riverness there oscillates
+// 0.31-0.65 around the 0.5 gate, so `_pinT` grows at a third rate at best and
+// goes NEGATIVE above 0.5 — it can never reach its 0.6 s threshold.)
+//
+// Standing water was checked for the same hole and does not have one — worth
+// recording, because "the lake must be fixed too" was the obvious guess and it
+// is wrong. Pressure beaching is at FULL rate there (riverness 0), so all three
+// lake landings still set `beached` exactly as they did: a shelving beach
+// grounds by depth; a cliff bank in 16 m of water beaches by pressure within
+// the 0.6 s; and a hull that merely COASTS at a bank without a stroke is walked
+// back out to sdf 3.3 by SHORE_PUSH and correctly gets no prompt, because it is
+// not against anything. This change is therefore additive on a lake and reads
+// identically there — verified, not assumed.
+//
+// So ask about the world instead: is there dry ground within stepping reach off
+// the bow, and is the boat actually parked rather than passing? Both the prompt
+// and the key read that one predicate (`_atBank`), so the prompt appears exactly
+// when the action will work.
+//
+// REACH is measured from the BOW and generous on purpose — it has to clear the
+// standoff the shore wall imposes. The transect at the reported spot reads 1.2-
+// 2.7 m of drawn water for 7 m ahead of the hull before the ground comes out of
+// it, and that whole 7 m is water the hull is not allowed to enter; a reach that
+// only covered the boat's own length would refuse a bank the bow is visibly
+// touching. Land found by DRAWN water depth, never by the hydro sdf, which at
+// that spot reads "dry" 1 m ahead of a boat floating in 1.26 m of water (the
+// sdf-versus-drawn discrepancy measured at length in boat_physics).
+const ASHORE_REACH = 8;    // m ahead of the bow to look for dry ground
+// And the boat has to be parked. `made` (ground track) and not `speed`: pinned
+// against that bank the hull reported 0.44-1.11 m/s of paddle speed while going
+// nowhere at all. Sits well above the drift of a hull scrubbing along a bank in
+// a current (a 1.2 m/s reach is the top of the range this world generates) and
+// well under a boat under way — the kayak tops out at 3.8 and was making 2.4-3.6
+// on the approach.
+const ASHORE_MADE = 1.2;   // m/s of ground track above which you are passing
 
 // How long the camera glances at a fresh launch before the player gets it
 // back (only when nothing else holds focus — see lateUpdate).
@@ -354,27 +408,43 @@ export class Boat extends System {
       this._say(''); this._cursor(''); return false;
     }
 
-    const v = validateLaunch(world, hit.x, hit.z, veh);
+    // Aiming a canoe at moving water offers the kayak instead of refusing it.
+    // A river takes a kayak only (boat_site RIVER_KIND), and "only a kayak can
+    // run a river" as a bare refusal makes the player go and find the K key to
+    // do the thing the game just told them to do. The prompt already names the
+    // other hull and is already the touch control for swapping, so the fix is
+    // to VALIDATE the kayak here and let the prompt lead with it.
+    let kind = this._kind;
+    let v = validateLaunch(world, hit.x, hit.z, veh, kind, this._floatDepth(kind));
+    if (!v.ok && kind !== RIVER_KIND && v.river > MAX_RIVER) {
+      const asKayak = validateLaunch(world, hit.x, hit.z, veh, RIVER_KIND,
+                                     this._floatDepth(RIVER_KIND));
+      if (asKayak.ok) { kind = RIVER_KIND; v = asKayak; }
+    }
     // Kept for the harness: what the pointer path actually computed this frame.
-    this._lastAim = { hx: hit.x, hz: hit.z, water: hit === w, ...v };
+    this._lastAim = { hx: hit.x, hz: hit.z, water: hit === w, kind, ...v };
     if (input.justPressed('KeyK')) this._swapKind();
     if (v.ok) {
-      const other = this._kind === 'canoe' ? 'kayak' : 'canoe';
+      const other = kind === 'canoe' ? 'kayak' : 'canoe';
       // The kind swap has no key on a phone, so on touch the prompt itself is
       // the control: it is the one thing on screen already naming the other
       // boat, it sits where a thumb can reach it, and `CampPrompt` takes a tap
       // handler for exactly this. With a keyboard it stays K and the prompt
       // stays untouchable, because a mouse has better things to click.
+      // On a river the other hull is not on offer, so the prompt does not
+      // pretend it is — it says why instead.
+      const swap = v.river > MAX_RIVER
+        ? '<i>rivers take a kayak</i>'
+        : (touchCapable() ? `<u>${other} instead</u>` : `<b>K</b>&nbsp; ${other} instead`);
       this._say(
-        `${placeVerb()}&nbsp; launch a ${this._kind} here&ensp;` +
-        (touchCapable() ? `<u>${other} instead</u>` : `<b>K</b>&nbsp; ${other} instead`),
-        touchCapable() ? () => this._swapKind() : null);
+        `${placeVerb()}&nbsp; launch a ${kind} here&ensp;` + swap,
+        (touchCapable() && v.river <= MAX_RIVER) ? () => this._swapKind() : null);
       this._cursor('pointer');
       if (placed(input)) {
         // Launch AND board in one act (user direction, 2026-08-23): you put a
         // boat in, you're in the boat — W paddles immediately, no second
         // click. board() cancels spawn()'s launch glance.
-        const nb = this.spawn(v.x, v.z, { kind: this._kind, heading: v.heading, y: v.y });
+        const nb = this.spawn(v.x, v.z, { kind, heading: v.heading, y: v.y });
         if (nb) this.board();
       }
       return true;
@@ -388,6 +458,15 @@ export class Boat extends System {
     else this._say('');
     this._cursor('');
     return true;
+  }
+
+  /** Water this hull needs under it to float, straight off the model's own
+   *  draft plus the physics' own BEACH_MARGIN — so the launch gate's "is the
+   *  channel wide enough" and the physics' "may the boat enter this" are asking
+   *  about the same depth, and cannot drift apart. */
+  _floatDepth(kind) {
+    const dim = this.models[kind]?.dim ?? CANOE_DIM;
+    return (dim.draft ?? 0.15) + BEACH_MARGIN;
   }
 
   // ── aboard ────────────────────────────────────────────────────────────────
@@ -435,7 +514,12 @@ export class Boat extends System {
     // is a hold on touch and E with a keyboard, the same split as pitching a
     // camp. It deliberately does not take a plain tap: a tap while aboard is
     // how you reach the camper, and beaching happens constantly.
-    if (p.beached && (input.justPressed('KeyE') || (touchCapable() && input.press.commit))) {
+    //
+    // ONE condition, read once, for both the key and the prompt below. See
+    // _atBank: this used to be `p.beached`, and a prompt that can disagree with
+    // its own action is the whole bug it was.
+    const bank = this._atBank(b);
+    if (bank && (input.justPressed('KeyE') || (touchCapable() && input.press.commit))) {
       this._comeAshore(b);
       return;
     }
@@ -446,7 +530,7 @@ export class Boat extends System {
     this._hintT = Math.max(0, this._hintT - dt);
     const drive = this._hintT > 0 ? `${pickVerb()} camper&nbsp; drive` : '';
     const ashore = `${actVerb()}&nbsp; step ashore`;
-    this._say(p.beached ? (drive ? `${ashore}&ensp;${drive}` : ashore) : drive);
+    this._say(bank ? (drive ? `${ashore}&ensp;${drive}` : ashore) : drive);
     this._cursor('');
     void rig;
   }
@@ -737,11 +821,45 @@ export class Boat extends System {
     }
   }
 
-  /** E on a beached bow: bring the camper around to the shore in front of the
-   *  boat, then step off (user direction, 2026-08-23). The camper lands via
-   *  Vehicle._land — the same full teleport a rescue uses (physics cut,
+  /** Is there a bank off this boat's bow that the player could step onto?
+   *
+   *  The single condition behind BOTH the "step ashore" prompt and the E / hold
+   *  binding — see the ASHORE_REACH note up top for why it stopped being
+   *  `phys.beached` and what that got wrong.
+   *
+   *  Aground still counts unconditionally, so every landing that worked before
+   *  works identically: this is strictly additive, and a shelving beach so flat
+   *  that the waterline is beyond ASHORE_REACH is still offered because the hull
+   *  is sitting on it. */
+  _atBank(b) {
+    const p = b.phys;
+    if (p.beached) return true;               // sitting on the bottom is ashore
+    // Under way: you are passing this bank, not landing on it. Prompting here
+    // would flicker on every bend of a river the player is running.
+    if (p.made > ASHORE_MADE) return false;
+    const world = this.ctx.world;
+    const L = (b.group.userData.dim ?? this.models[b.kind].dim).length;
+    const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
+    const bx = p.x + fx * L * 0.5, bz = p.z + fz * L * 0.5;   // the bow
+    for (let d = 0; d <= ASHORE_REACH; d += 1) {
+      const x = bx + fx * d, z = bz + fz * d;
+      if (!world.isInBounds(x, z)) return false;
+      if (p.depthAt(x, z) <= 0) return true;   // ground out of the water
+    }
+    return false;
+  }
+
+  /** E on a bow against a bank: bring the camper around to the shore in front
+   *  of the boat, then step off (user direction, 2026-08-23). The camper lands
+   *  via Vehicle._land — the same full teleport a rescue uses (physics cut,
    *  camera cut, park brake held until the player drives). If no dry ground
-   *  can be found off the bow, this is just exit(). */
+   *  can be found off the bow, this is just exit().
+   *
+   *  This search is a DIFFERENT question from `_atBank` and stays separate:
+   *  it is "where does a camper fit", which wants a flat-enough patch 6-26 m
+   *  inland, not "is the player standing next to land". Requiring it of the
+   *  prompt would recreate the reported bug on any bank with nowhere to park —
+   *  no prompt, no way out of the boat. */
   _comeAshore(b) {
     const veh = this.ctx.systems?.vehicle;
     const world = this.ctx.world;
@@ -786,8 +904,9 @@ export class Boat extends System {
   // ── harness API (window.__boat) ───────────────────────────────────────────
 
   /** The player-path validity test, callable from the harness. */
-  validate(x, z) {
-    return validateLaunch(this.ctx.world, x, z, this.ctx.systems?.vehicle);
+  validate(x, z, kind = this._kind) {
+    return validateLaunch(this.ctx.world, x, z, this.ctx.systems?.vehicle,
+                          kind, this._floatDepth(kind));
   }
 
   /** Spawn ignoring validity; snaps to the nearest water. */
