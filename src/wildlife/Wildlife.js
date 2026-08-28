@@ -85,6 +85,24 @@ const CFG = {
   // 24 lands 54-66 sites depending on the quality tier's density
   // multiplier — a tenth of the squirrels', a little over the foxes'.
   raccoon: { spawn: 92, despawn: 124, live: 5, perKm2: 24 },
+  // ── the alpine pair, and why these numbers look absurd ─────────────────────
+  // `perKm2` is per square kilometre of *perfectly* suitable habitat, and for
+  // these two that habitat is tiny: summed over the map, the goat's
+  // suitability field integrates to 0.19 km² of perfect-equivalent ground
+  // against the deer's 2.13. Same site count therefore costs eleven times the
+  // density, and these are what land ~140 goat and ~85 yak home sites — about
+  // half the deer's, which is the intent. A goat is not rare because there are
+  // few of them; it is rare because almost none of the valley is a mountain.
+  //
+  // The place to change the *feel* is the suitability bands in the two species
+  // files, not here: raising these only packs more animals onto the same
+  // crags, which is the failure the clumping noise exists to avoid.
+  //
+  // Wide streaming bands, like the bear's: both of these are big shapes seen
+  // across a valley rather than met at the roadside, and an animal on a crag
+  // that only exists inside a hundred metres is one nobody will ever see.
+  goat:   { spawn: 165, despawn: 205, live: 7, perKm2: 720 },
+  yak:    { spawn: 185, despawn: 230, live: 6, perKm2: 210 },
 };
 
 // Seeded firefly population inside the 60 m wrap box, per quality tier.
@@ -125,6 +143,14 @@ const _pm = new THREE.Matrix4();
 // rule is that nothing in the streaming path allocates, and one shared pair
 // of floats is cheaper than the habit of making an exception.
 const _stand = { x: 0, z: 0 };
+// `RockScatter.classify` writes the uphill direction into an out-param. Site
+// placement calls it tens of thousands of times, so it gets one shared object
+// for the same reason `_stand` above has one.
+const _up = { x: 0, z: 0 };
+// Scratch for the boulder search — see _findPerches. Reused rather than
+// allocated per site, which is this file's rule for anything on the streaming
+// path even when the call is once per site.
+const _rockHits = [];
 
 export class Wildlife extends System {
   constructor(ctx) {
@@ -154,6 +180,14 @@ export class Wildlife extends System {
     this.mul = clamp(preset?.treeMul ?? 1, 0.4, 1);
 
     this.keys = Object.keys(SPECIES);
+    // The rock scatter, for the alpine pair's habitat term, and Rocks itself
+    // for the boulders they stand on. Rocks is constructed and initialised
+    // before Wildlife (the SYSTEMS table in main.js), so this is read once here
+    // rather than fetched lazily — but it stays optional, because a system
+    // whose init threw is disabled rather than removed and the valley should
+    // still get its wildlife.
+    this._rocks = this.ctx.systems?.rocks ?? null;
+    this._scatter = this._rocks?.scatter ?? null;
     this._buildProtos();
     this._buildPool();
     this._placeSites();
@@ -297,6 +331,81 @@ export class Wildlife extends System {
   // ── habitat and placement ──────────────────────────────────────────────────
 
   /**
+   * How much exposed rock is happening at this point, 0..1 — the alpine pair's
+   * habitat term and the only place the wildlife layer asks the rock layer
+   * anything.
+   *
+   * `classify` returns the geological process operating at a point and how
+   * strongly, which is exactly the question "are there boulders here" asked in
+   * the rock system's own words. The four kinds that mean *big* rock are
+   * weighted by how much of it each actually leaves on the ground: a crag is a
+   * banded face with blocks the size of a camper, a talus fan is the pile
+   * underneath one, scree is smaller and a bedrock rib is thinner still.
+   * `riverbed` and `erratic` score zero — a boulder in a meadow is not a
+   * mountain, and it is thirty metres above sea level anyway.
+   */
+  _rockAt(x, z) {
+    const c = this._scatter.classify(x, z, _up);
+    if (!c) return 0;
+    if (c.kind === 'crag') return clamp01(c.s * 1.6);
+    if (c.kind === 'talus') return clamp01(c.s * 1.3);
+    if (c.kind === 'scree') return clamp01(c.s * 1.1);
+    if (c.kind === 'rib') return clamp01(c.s * 0.8);
+    return 0;
+  }
+
+  /**
+   * The above, as a raster, built once over the sampling grid `_placeSites`
+   * already uses.
+   *
+   * A grid rather than a call per candidate for two reasons, and the second is
+   * the real one. `classify` is a dozen height samples and placement asks about
+   * ninety thousand points, so per-species calls would be most of the cost of
+   * building the world's wildlife. And a yak does not want to stand *in* the
+   * crag, it wants the apron beside it — which is a question about the
+   * neighbourhood, and a neighbourhood maximum over a raster is a handful of
+   * array reads where re-classifying five points around every candidate would
+   * be another five thousand height samples.
+   *
+   * Skipped below 100 m: `classify` cannot return crag, talus or scree down
+   * there (its own thresholds), and that is 60% of the map.
+   */
+  _buildRockField(W, DF, step, half) {
+    const f = new Float32Array(DF * DF);
+    if (!this._scatter) return f;
+    for (let j = 0; j < DF; j++) {
+      for (let i = 0; i < DF; i++) {
+        const x = -half + (i + 0.5) * step, z = -half + (j + 0.5) * step;
+        if (!W.isInBounds(x, z)) continue;
+        if (W.getHeight(x, z) < 100) continue;
+        f[j * DF + i] = this._rockAt(x, z);
+      }
+    }
+    return f;
+  }
+
+  /**
+   * Strongest rock process within `cells` grid cells of a point — 0 for "on
+   * it", 1 for "beside it". See `_buildRockField`.
+   */
+  _rockiness(x, z, cells) {
+    const g = this._rockGrid;
+    if (!g) return 0;
+    const i0 = Math.round((x + g.half) / g.step - 0.5);
+    const j0 = Math.round((z + g.half) / g.step - 0.5);
+    let best = 0;
+    for (let j = j0 - cells; j <= j0 + cells; j++) {
+      if (j < 0 || j >= g.DF) continue;
+      for (let i = i0 - cells; i <= i0 + cells; i++) {
+        if (i < 0 || i >= g.DF) continue;
+        const v = g.f[j * g.DF + i];
+        if (v > best) best = v;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Suitability, 0..1, for one species at one point. This is the whole habitat
    * model and it is deliberately small: three numbers off the world, one
    * clumping noise, and a hard zero anywhere an animal must not be.
@@ -305,9 +414,18 @@ export class Wildlife extends System {
     const depth = W.getWaterDepth(x, z);
     if (depth > WATER_MAX) return 0;
     const slope = W.getSlope(x, z);
-    if (slope > 0.80) return 0;
     const h = W.getHeight(x, z);
-    if (h > 300) return 0;
+    // ── the two gates, and who is allowed past them ─────────────────────────
+    // "Not too steep, not too high" is the whole of the valley cast's habitat
+    // before the per-species terms even run, and it is correct for every animal
+    // that lives on the floor of this world. The alpine pair live above both
+    // limits — a goat held to 0.80 slope and 300 m would be a goat with nowhere
+    // to stand — so a species carrying a `rock` block brings its own ceiling.
+    // The brain reads the same `slopeMax`, so placement, wander targets and the
+    // probe fan cannot disagree about where an animal may be.
+    const climb = SPECIES[key].brain.rock;
+    if (slope > (climb ? climb.slopeMax : 0.80)) return 0;
+    if (h > (climb ? 400 : 300)) return 0;
     const m = W.getMoisture(x, z);
     const river = W.getRiver(x, z);
     const flat = 1 - smoothstep(0.35, 0.78, slope);
@@ -317,6 +435,28 @@ export class Wildlife extends System {
     // empty ground rather than a uniform sprinkle.
     const clump = clamp01(this.noise.fbm(x * 0.0029 + key.length * 41.7, z * 0.0029, 2, 2.1, 0.5, 1) * 0.5 + 0.62);
 
+    if (climb) {
+      // ── high, rocky, and steep ──────────────────────────────────────────
+      // The rock term is asked of the scatter rather than guessed from slope,
+      // and that is the whole difference between "goats on steep ground" and
+      // "goats in the rocks": `RockScatter.classify` is the function that
+      // decides where the crags, the talus fans and the scree actually go, so
+      // the animals that live among boulders are placed off the same answer
+      // the boulders are. It costs a handful of height samples per candidate
+      // and only runs for these two species, above the altitude floor.
+      const alt = smoothstep(climb.altBand[0], climb.altBand[1], h);
+      if (alt <= 0) return 0;
+      const rock = this._rockiness(x, z, climb.nearCells);
+      if (rock <= 0) return 0;
+      // Preferred steepness, as a band rather than a cap. `slopeBest[0]` is
+      // where the ground stops being a meadow and `slopeBest[1]` is where it
+      // stops being standable; a goat's band is most of a talus fan and a
+      // yak's is the bench below it, which is how the two share a mountain
+      // without standing in the same places.
+      const rise = smoothstep(climb.slopeBest[0] * 0.5, climb.slopeBest[0], slope);
+      const stand = 1 - smoothstep(climb.slopeBest[1], climb.slopeMax, slope);
+      return clamp01(rock * climb.rockGain * alt * rise * stand * clump);
+    }
     if (key === 'deer') {
       // The forest edge — the moisture band where trees give way to meadow —
       // plus open meadow. Deer at the treeline, not deep inside the wood: the
@@ -430,6 +570,12 @@ export class Wildlife extends System {
     const step = size / DF;
     const cellKm2 = (step * step) / 1e6;
 
+    // Where the exposed rock is, for the alpine pair. Built on the same grid
+    // the candidates are drawn on, and only if somebody is going to ask.
+    this._rockGrid = keys.some((k) => SPECIES[k].brain.rock)
+      ? { f: this._buildRockField(W, DF, step, half), DF, step, half }
+      : null;
+
     for (let ki = 0; ki < keys.length; ki++) {
       const key = keys[ki];
       const brain = SPECIES[key].brain;
@@ -524,6 +670,114 @@ export class Wildlife extends System {
 
   // ── streaming ──────────────────────────────────────────────────────────────
 
+  /**
+   * The boulders around one home site that an animal could actually stand on
+   * top of.
+   *
+   * `Rocks.rocksAround` answers off the scatter, so it reaches ground that has
+   * not streamed in — which matters here, because a group wakes at up to 185 m
+   * and the rock cells out there may well be coarser than the ones this asks
+   * about. It costs what a streamer cell build costs, and it is paid once per
+   * site for the life of the page.
+   *
+   * What makes a rock a perch:
+   *
+   *  · **Rise.** Measured from the hillside under the rock to its summit.
+   *    Under `rise[0]` it is a kerb and standing on it reads as nothing;
+   *    over `rise[1]` the animal is on a spire.
+   *  · **Not taller than it is wide.** `Brain._groundY` models a boulder as a
+   *    dome whose flank is the ramp the animal walks up, so a rock with no
+   *    flank would be a wall a goat strolls through. This is the rule that
+   *    keeps that from happening, and it is why crag towers are skipped and
+   *    fat talus blocks are not.
+   *
+   * Biggest first, capped at four: a goat picking the hero boulder of a field
+   * is the shot, and past four the extra entries only widen the choice enough
+   * to stop the band converging on one outcrop.
+   */
+  _findPerches(g, x, z, cfg) {
+    if (g.rocks) {
+      // Already searched. Free the claims from the last time this site was
+      // awake — the brains that held them are long recycled.
+      for (const r of g.rocks) r.taken = -1;
+      return;
+    }
+    g.rocks = [];
+    const R = this._rocks;
+    if (!R?.rocksAround) return;
+    const W = this.ctx.world;
+    // ── why the query asks for EVERYTHING ─────────────────────────────────
+    // `minSize` is not a filter the rock scatter applies after the fact — it
+    // changes the random stream a cell is generated with (a course that is
+    // entirely below the cutoff returns early instead of drawing its numbers),
+    // so the same cell at two cutoffs is two different fields of rock, not a
+    // subset and a superset. Asking at 0.6 therefore answered a question about
+    // a hillside the player will never see: every cell within ~180 m of the
+    // camera is generated at minSize 0, and that is the rock an animal can
+    // actually be standing on. Half the boulders this used to find did not
+    // exist by the time anybody arrived.
+    //
+    // So the query is for the complete set and the size cut is made here. The
+    // cost is a full cell build for ground that has not streamed in yet, which
+    // is why `search` is a couple of cells wide and the answer is cached for
+    // the life of the site.
+    _rockHits.length = 0;
+    R.rocksAround(x, z, cfg.search, 0, _rockHits);
+    for (const inst of _rockHits) {
+      if (inst.size < cfg.minSize) continue;
+      const r = R.reachOf(inst);
+      if (r > cfg.maxR) continue;
+      const top = R.topOf(inst);
+      // Against the ground at the rock's own centre, which is the only place
+      // the number means anything: placement sinks a block against the LOWEST
+      // corner of its footprint, so on a hillside a great many rocks have
+      // their summit below the ground at the middle of them. Those come out
+      // negative here and are rejected by the same test that rejects kerbs.
+      const rise = top - W.getHeight(inst.x, inst.z);
+      if (rise < cfg.rise[0] || rise > cfg.rise[1]) continue;
+      if (rise < r * cfg.steep) continue;
+      g.rocks.push({ x: inst.x, z: inst.z, top, r, rise, taken: -1 });
+    }
+    _rockHits.length = 0;
+    g.rocks.sort((a, b) => b.rise - a.rise);
+    if (g.rocks.length > 4) g.rocks.length = 4;
+  }
+
+  /**
+   * Move the band's stand point next to its best boulder.
+   *
+   * The site itself is a jittered point inside a 32 m suitability cell and its
+   * exact position carries no information; the boulder is a real feature of
+   * the ground. So when the two are close enough, the rock wins — which is the
+   * difference between "goats on a rocky hillside" and "goats at that rock".
+   * It also means an animal is never far from the thing it wants to climb, so
+   * a band is not commuting for a minute each way.
+   *
+   * Bounded by `snap`, and that bound is a streaming rule rather than a taste
+   * one: `_scan` measures spawn, despawn and the frustum guard at the SITE, so
+   * dragging the animals far from it would eventually let a group wake up
+   * inside the player's view. See the goat's `snap` note.
+   */
+  _standAtRock(g, out, seed, W, cfg) {
+    const R = g.rocks?.[0];
+    if (!R) return;
+    const dx = R.x - out.x, dz = R.z - out.z;
+    if (dx * dx + dz * dz > cfg.snap * cfg.snap) return;
+    // Deterministic per site, so a band does not stand somewhere different
+    // each time its site streams in.
+    const ang = (((seed >>> 8) & 255) / 255) * Math.PI * 2;
+    const rad = R.r + 4 + (((seed >>> 16) & 127) / 127) * 5;
+    for (let i = 0; i < 6; i++) {
+      const a = ang + i * 1.05;
+      const x = R.x + Math.sin(a) * rad, z = R.z + Math.cos(a) * rad;
+      if (!W.isInBounds(x, z)) continue;
+      if (W.getWaterDepth(x, z) > WATER_MAX) continue;
+      if (W.getSlope(x, z) > cfg.slopeMax) continue;
+      out.x = x; out.z = z;
+      return;
+    }
+  }
+
   _liveCount(key) {
     let c = 0;
     for (const per of this.pool[key]) for (const a of per) if (a.active) c++;
@@ -544,6 +798,21 @@ export class Wildlife extends System {
     const W = this.ctx.world;
     // Where in the site they stand, as opposed to where the site is.
     const stand = this._standPoint(si, key, _stand);
+    // The two alpine species stand on boulders, and this is where the group
+    // learns which ones. Cached on the record: the scatter is a pure function
+    // of position and seed, so a site's rocks never change and a site that
+    // wakes fifty times pays for the search once.
+    const climb = SPECIES[key].brain.rock;
+    if (climb) {
+      this._findPerches(g, stand.x, stand.z, climb);
+      this._standAtRock(g, stand, S.seed[si], W, climb);
+    }
+    // Scatter members on ground this species will actually stand on. The
+    // hard-coded 0.9 here was the whole cast's limit; on a talus fan every
+    // candidate fails it, all eight tries are rejected and the herd lands in a
+    // pile on the exact stand point — which reads as a spawner, the one thing
+    // the scatter exists to avoid.
+    const slopeMax = climb ? climb.slopeMax : 0.9;
 
     for (let m = 0; m < count; m++) {
       const vi = pickVariant(key, rng());
@@ -559,7 +828,8 @@ export class Wildlife extends System {
           const r = m === 0 ? rng() * 2 : (2 + rng() * SPECIES[key].brain.herdRadius);
           x = stand.x + Math.sin(ang) * r;
           z = stand.z + Math.cos(ang) * r;
-          ok = W.isInBounds(x, z) && W.getWaterDepth(x, z) <= WATER_MAX && W.getSlope(x, z) < 0.9;
+          ok = W.isInBounds(x, z) && W.getWaterDepth(x, z) <= WATER_MAX
+            && W.getSlope(x, z) < slopeMax;
         }
         if (!ok) { x = stand.x; z = stand.z; }
         heading = rng() * Math.PI * 2;
@@ -930,13 +1200,19 @@ export class Wildlife extends System {
       full = _frustum.intersectsSphere(_sphere);
     }
 
+    // The gait solver asks the world exactly one question — the height at a
+    // point — so an animal standing on a boulder is handed something else that
+    // answers it. `B.ground` exists only on the alpine pair and is only used
+    // while one of them is actually engaged with a rock; everything else, and
+    // those two the rest of the time, get the world itself. See Brain._groundY.
+    const G = (B.rock && B.ground) ? B.ground : W;
     if (full) {
-      a.rig.update(dt, B.fill(a.drive, a.lod), W);
+      a.rig.update(dt, B.fill(a.drive, a.lod), G);
       a.acc = 0;
     } else {
       a.acc += dt;
       if (a.acc >= 1 / IDLE_HZ) {
-        a.rig.update(Math.min(a.acc, 0.2), B.fill(a.drive, 1), W);
+        a.rig.update(Math.min(a.acc, 0.2), B.fill(a.drive, 1), G);
         a.acc = 0;
       }
     }
@@ -1138,7 +1414,8 @@ export class Wildlife extends System {
 
   /** A readable dump of every live animal, for the motion-strip harness. */
   debugState() {
-    const names = ['idle', 'graze', 'wander', 'alert', 'flee', 'patrol', 'watch'];
+    const names = ['idle', 'graze', 'wander', 'alert', 'flee', 'patrol', 'watch',
+      'climb', 'perch'];
     const out = [];
     for (const key of Object.keys(this.pool)) {
       for (const per of this.pool[key]) {

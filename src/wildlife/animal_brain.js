@@ -19,7 +19,7 @@
 //     river or up a rock face and then have to be teleported out.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { clamp, clamp01, lerp, wrapAngle, mulberry32 } from '../core/MathUtils.js';
+import { clamp, clamp01, lerp, smoothstep, wrapAngle, mulberry32 } from '../core/MathUtils.js';
 
 export const ST = {
   IDLE:   0,   // standing, shifting weight, looking about
@@ -34,6 +34,16 @@ export const ST = {
   // exists at all — it is the only one of the six that is here for the
   // *player's* eyes rather than the animal's.
   WATCH:  6,
+  // ── the alpine pair ────────────────────────────────────────────────────────
+  // Goats and yaks live on the crags, and the one thing they do that nothing
+  // else in the cast does is treat a boulder as ground: they walk up onto one
+  // and stand on top of it. CLIMB is the walk up, PERCH is standing there.
+  //
+  // Only a species with a `rock` block in its brain (see `mammals/goat.js`)
+  // ever enters either, and while it is in them `Brain.rock` names the boulder
+  // — which is what `_groundY` reads to lift the animal off the heightfield.
+  CLIMB:  7,
+  PERCH:  8,
 };
 
 // Water deeper than this is off limits to everything, always. Placement, wander
@@ -103,6 +113,23 @@ export class Brain {
     this._cornered = 0;
     this._fleeX = 0; this._fleeZ = 0;   // where this flight started from
     this._scale = 1;
+
+    // ── standing on a rock ────────────────────────────────────────────────
+    // `rock` is the boulder this animal is currently engaged with, taken from
+    // its group's list (Wildlife._findPerches) — null for every species that
+    // has no `rock` block, and null most of the time for the two that do.
+    //
+    // `ground` is the same override wearing the interface the gait solver
+    // wants. `animal_anim` samples the world in exactly one way — six calls to
+    // `getHeight(x, z)` and nothing else — so handing it something else that
+    // answers that one question is all it takes to make the feet, the body
+    // plane and the body height follow the rock instead of the hillside.
+    // Built once, here, because the streaming path may not allocate.
+    this.rock = null;
+    this._W = null;
+    this.ground = this.cfg.rock
+      ? { getHeight: (x, z) => this._groundY(this._W, x, z) }
+      : null;
   }
 
   /**
@@ -121,6 +148,7 @@ export class Brain {
     this._pinned = 0;
     this._cornered = 0;
     this._watchMove = 0;
+    this._release();
   }
 
   /** Place the animal for the first time (or after a long absence). */
@@ -139,6 +167,7 @@ export class Brain {
     this.graze = this.state === ST.GRAZE ? 1 : 0;
     this.alert = 0; this.flag = 0; this.spent = 0; this.done = false;
     this._pinned = 0; this._cornered = 0;
+    this._release();
     this._scale = scale;
   }
 
@@ -169,6 +198,10 @@ export class Brain {
 
     this.timer -= dt;
     this._stepT -= dt;
+    // The gait solver reads the ground through `this.ground`, which closes over
+    // the brain rather than over a world — so the world it should be asking is
+    // whichever one was handed in this frame.
+    this._W = W;
 
     switch (this.state) {
       case ST.IDLE:   this._idle(dt, W); break;
@@ -178,6 +211,8 @@ export class Brain {
       case ST.FLEE:   this._flee(dt, W, threat, d); break;
       case ST.PATROL: this._patrol(dt, W); break;
       case ST.WATCH:  this._watch(dt, W, threat); break;
+      case ST.CLIMB:  this._climb(dt, W); break;
+      case ST.PERCH:  this._perch(dt, W, threat, d); break;
     }
 
     // ── threat overrides ────────────────────────────────────────────────────
@@ -195,7 +230,17 @@ export class Brain {
     // undo it one frame later and every frame after, and it would spend the
     // whole encounter as a statue — which is the failure WATCH exists to
     // prevent. It holds until the corner times out and it tries again.
-    const holding = this._cornered > 0 && this.state === ST.WATCH;
+    // ── and the animal that will not be moved ───────────────────────────────
+    // A goat on top of a boulder is doing the one thing this whole species
+    // exists to do, and a threat band that pulled it off the rock at 30 m
+    // would mean the player never sees it: the encounter would resolve into
+    // an animal standing on the ground, which is every other animal. It is
+    // also true — nothing standing on a rock above you is worried about you.
+    // So the bands are suppressed while perched, right up until the camper is
+    // inside `fleeDist`, at which point it comes down and leaves like anything
+    // else. `_perch` does the watching in the meantime.
+    const holding = (this._cornered > 0 && this.state === ST.WATCH)
+      || (this.state === ST.PERCH && dEff > c.fleeDist);
     if (this.state !== ST.FLEE && !holding) {
       if (dEff < c.fleeDist || (herdAlarm > 0.5 && this.state !== ST.ALERT && dEff < c.alertDist)) {
         // Deer and rabbits freeze first — that beat of stillness before the
@@ -233,6 +278,10 @@ export class Brain {
     const wantAlert = this.state === ST.ALERT ? 1
       : this.state === ST.WATCH ? (this.wantSpeed > 0.05 ? 0.62 : 0.85)
       : this.state === ST.FLEE ? 0.55
+      // A perched animal that can see you is head-up and watching — the same
+      // pose WATCH holds, and for the same reason: it is legible. One that
+      // cannot see anybody is just standing on a rock, and stays soft.
+      : this.state === ST.PERCH ? (d < notice ? 0.80 : 0.15)
       : this.group && herdAlarm > 0.5 ? 0.4 : 0;
     this.graze = toward(this.graze, wantGraze, dt * (wantGraze ? 1.6 : 4.5));
     this.alert = toward(this.alert, wantAlert, dt * (wantAlert > this.alert ? 6 : 2.2));
@@ -247,6 +296,17 @@ export class Brain {
     this.flag = toward(this.flag, wantFlag, dt * 5);
 
     this._steer(dt, W, S);
+
+    // Let go of the boulder once the animal is genuinely clear of it. Held
+    // until then rather than dropped the moment it leaves PERCH, so a goat
+    // walking off the top rides its own flank down instead of falling through
+    // it — and so a flight starts by coming down the rock, which is the only
+    // way off one that does not look like a teleport.
+    if (this.rock && this.state !== ST.CLIMB && this.state !== ST.PERCH) {
+      const R = this.rock;
+      const dx2 = this.pos.x - R.x, dz2 = this.pos.z - R.z;
+      if (dx2 * dx2 + dz2 * dz2 > (R.r * 1.6) * (R.r * 1.6)) this._release();
+    }
   }
 
   // ── states ─────────────────────────────────────────────────────────────────
@@ -256,6 +316,7 @@ export class Brain {
     // An idle animal looks around. Nothing else about IDLE is visible, so this
     // is the only thing keeping it from reading as a statue.
     if (this.timer < 0) {
+      if (this._maybeClimb()) return;
       const r = this.rnd();
       if (r < this.cfg.grazeChance) { this.state = ST.GRAZE; this.timer = this._span(this.cfg.grazeTime); }
       else { this._pickWander(W); }
@@ -289,6 +350,7 @@ export class Brain {
       this.wantSpeed = this.gait.walk * 0.30 * this._scale;
     }
     if (this.timer < 0) {
+      if (this._maybeClimb()) return;
       if (this.rnd() < 0.45) { this.state = ST.IDLE; this.timer = this._span(this.cfg.idleTime); }
       else this._pickWander(W);
     }
@@ -535,7 +597,157 @@ export class Brain {
     void W;
   }
 
+  // ── the rocks ──────────────────────────────────────────────────────────────
+  //
+  // Everything below is the alpine pair's, and it is inert for every other
+  // species: without a `rock` block in the brain, `_maybeClimb` returns false
+  // on its first line and `this.rock` is never set, so `_groundY` is
+  // `W.getHeight` and the two states are unreachable.
+  //
+  // What the player should see, in order: a goat leaves off feeding, walks to a
+  // boulder, slows at the foot of it, walks *up* it, and stands on top looking
+  // at you for half a minute. There is no climbing animation and there is no
+  // collision — the whole effect is that while the animal is engaged with a
+  // rock, the ground under it is that rock. See `_groundY`.
+
+  /**
+   * Take the rock, or don't. Called at the end of a feed or an idle, which is
+   * where every other species picks a new wander target.
+   */
+  _maybeClimb() {
+    const R = this.cfg.rock;
+    if (!R) return false;
+    if (this.rnd() > R.climbChance) return false;
+    const list = this.group?.rocks;
+    if (!list || !list.length) return false;
+
+    // Nearest free boulder inside reach. One animal per rock — two goats
+    // solving for the same summit stand inside each other, and a herd of three
+    // on one boulder is a bug that looks exactly like a bug.
+    let best = null, bestD2 = R.reach * R.reach;
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (r.taken >= 0 && r.taken !== this.slot) continue;
+      const dx = r.x - this.pos.x, dz = r.z - this.pos.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) { bestD2 = d2; best = r; }
+    }
+    if (!best) return false;
+
+    this._release();
+    this.rock = best;
+    best.taken = this.slot;
+    this.target.set(best.x, 0, best.z);
+    this.state = ST.CLIMB;
+    // A deadline, not a duration: if the way up is blocked the animal gives up
+    // and walks off rather than grinding at the foot of the rock forever. It
+    // scales with the walk, because `reach` is generous and a fixed ten
+    // seconds would abandon every boulder further off than about fifteen
+    // metres — which is most of them.
+    const walk = Math.max(0.2, this.gait.walk * this._scale * 0.7);
+    this.timer = 8 + Math.sqrt(bestD2) / walk;
+    this.headUp = false;
+    return true;
+  }
+
+  /** Walking to, and then up, the chosen boulder. */
+  _climb(dt, W) {
+    const R = this.rock;
+    if (!R) { this._pickWander(W); return; }
+    const dx = R.x - this.pos.x, dz = R.z - this.pos.z;
+    const d = Math.hypot(dx, dz);
+    this.wantHeading = Math.atan2(dx, dz);
+    this.hasLook = false;
+    // Slow to a picking walk at the foot of it. That change of pace is what
+    // reads as climbing — the body pitch and the leg lift come free, because
+    // the ground the gait solver is standing on has genuinely tilted up.
+    this.wantSpeed = this.gait.walk * this._scale * (d > R.r * 1.35 ? 0.85 : 0.42);
+    if (d < R.r * 0.35) {
+      this.state = ST.PERCH;
+      this.timer = this._span(this.cfg.rock.perchTime);
+      this.headUp = true;
+      this._lookT = 1.5 + this.rnd() * 3;
+      return;
+    }
+    if (this.timer < 0) this._offRock(W);
+    void dt;
+  }
+
+  /**
+   * Standing on top. The pose is the payoff, so it does almost nothing: no
+   * drift, no feeding, just the head up and the animal turned across whatever
+   * it is looking at.
+   */
+  _perch(dt, W, threat, d) {
+    this.wantSpeed = 0;
+    this.headUp = true;
+    if (threat && d < this.cfg.noticeDist) {
+      this.lookAt.set(threat.x, this.pos.y + 1.2 * this._scale, threat.z);
+      this.hasLook = true;
+      // Off the shoulder rather than dead ahead, for the reason `_alert`
+      // gives: a broadside animal is four times the silhouette of a head-on
+      // one, and up here it is standing against sky.
+      const bearing = Math.atan2(threat.x - this.pos.x, threat.z - this.pos.z);
+      this.wantHeading = bearing + (this.slot & 1 ? 1.05 : -1.05);
+    } else {
+      this._lookT -= dt;
+      if (this._lookT <= 0) { this._lookT = 2.5 + this.rnd() * 5; this._lookSomewhere(); }
+    }
+    if (this.timer < 0) this._offRock(W);
+  }
+
+  /** Down, and away — a wander target off the far side of the rock. */
+  _offRock(W) {
+    const R = this.rock;
+    if (!R) { this._pickWander(W); return; }
+    for (let i = 0; i < 6; i++) {
+      const a = this.rnd() * Math.PI * 2;
+      const r = R.r * (1.6 + this.rnd() * 1.4);
+      const x = R.x + Math.sin(a) * r, z = R.z + Math.cos(a) * r;
+      if (!this._standable(W, x, z)) continue;
+      this.target.set(x, 0, z);
+      this.state = ST.WANDER;
+      this.timer = this._span(this.cfg.walkTime);
+      this.headUp = false;
+      return;
+    }
+    this._pickWander(W);
+  }
+
+  /** Give up the current boulder so somebody else in the group can have it. */
+  _release() {
+    if (this.rock && this.rock.taken === this.slot) this.rock.taken = -1;
+    this.rock = null;
+  }
+
+  /**
+   * The ground, as far as this animal is concerned.
+   *
+   * A boulder is modelled as a dome: flat on top out to half its plan radius,
+   * then falling to the real hillside by the time it is a little past the
+   * edge. That is not the rock's actual mesh and it does not have to be —
+   * nothing here is doing collision, and the two things the player can
+   * actually see are that the animal is standing on the summit and that it
+   * walked up the side to get there. Both come out of this one lerp.
+   *
+   * Which is also why `Wildlife._findPerches` rejects a rock taller than it is
+   * wide: the dome's flank IS the ramp the animal walks up, so a boulder with
+   * no flank would be a wall the goat strolls through.
+   *
+   * Never below the hillside, so a rock sitting in a hollow cannot sink an
+   * animal into the ground.
+   */
+  _groundY(W, x, z) {
+    const g = W.getHeight(x, z);
+    const R = this.rock;
+    if (!R) return g;
+    const d = Math.hypot(x - R.x, z - R.z);
+    const y = lerp(R.top, g, smoothstep(R.r * 0.50, R.r * 1.18, d));
+    return y > g ? y : g;
+  }
+
   _patrol(dt, W) {
+
     // Bears walk a river. `line` is a polyline handed over at spawn.
     const line = this.group?.line;
     if (!line || line.length < 2) { this._pickWander(W); return; }
@@ -567,6 +779,19 @@ export class Brain {
   /** Can an animal stand here? The one definition of that, used everywhere. */
   _dry(W, x, z) { return W.isInBounds(x, z) && W.getWaterDepth(x, z) <= WATER_MAX; }
 
+  /**
+   * How steep this species will walk on. 0.85 is the whole cast's answer and
+   * has been since there was a cast; the alpine pair raise it because their
+   * entire habitat is above it, and a goat held to the deer's limit would
+   * spend its life walking downhill off its own mountain.
+   */
+  get _slopeMax() { return this.cfg.rock?.slopeMax ?? 0.85; }
+
+  /** Dry, in bounds, and not too steep for this animal. */
+  _standable(W, x, z) {
+    return this._dry(W, x, z) && W.getSlope(x, z) <= this._slopeMax;
+  }
+
   _span(r) { return lerp(r[0], r[1], this.rnd()); }
 
   _lookSomewhere() {
@@ -582,6 +807,29 @@ export class Brain {
    */
   _pickWander(W) {
     const c = this.cfg;
+    // ── a lap of a boulder, rather than a walk across the hill ─────────────
+    // The alpine pair climb ONTO the rocks and they also work their way
+    // AROUND them, and the second is most of what the player actually sees:
+    // a rock they never top out on is still the thing they are orbiting. So
+    // some fraction of their wanders are aimed at a ring just outside a
+    // boulder instead of at open ground, which keeps a band of goats circling
+    // one outcrop instead of dispersing evenly across a hectare of scree.
+    const rk = c.rock;
+    const list = rk ? this.group?.rocks : null;
+    if (list && list.length && this.rnd() < rk.orbit) {
+      const R = list[(this.rnd() * list.length) | 0];
+      for (let i = 0; i < 4; i++) {
+        const a = this.rnd() * Math.PI * 2;
+        const r = R.r * (1.25 + this.rnd() * 0.85);
+        const x = R.x + Math.sin(a) * r, z = R.z + Math.cos(a) * r;
+        if (!this._standable(W, x, z)) continue;
+        this.target.set(x, 0, z);
+        this.state = ST.WANDER;
+        this.timer = this._span(c.walkTime);
+        return;
+      }
+    }
+    const slopeMax = this._slopeMax;
     for (let i = 0; i < 6; i++) {
       const a = this.rnd() * Math.PI * 2;
       const r = c.wanderRadius * (0.25 + 0.75 * this.rnd());
@@ -589,7 +837,7 @@ export class Brain {
       const z = this.home.z + Math.cos(a) * r;
       if (!W.isInBounds(x, z)) continue;
       if (W.getWaterDepth(x, z) > WATER_MAX) continue;
-      if (W.getSlope(x, z) > 0.85) continue;
+      if (W.getSlope(x, z) > slopeMax) continue;
       this.target.set(x, 0, z);
       this.state = ST.WANDER;
       this.timer = this._span(c.walkTime);
@@ -629,7 +877,11 @@ export class Brain {
           if (depth > WATER_MAX) s -= 100;
           else s -= depth * 6;
           const slope = W.getSlope(x, z);
-          s -= Math.max(0, slope - 0.45) * 6;
+          // Where steepness starts costing. 0.45 is right for everything that
+          // lives on the valley floor and is nonsense on a talus fan, where
+          // every direction is over it and the fan would simply pick the
+          // downhill one every time — see the `rock` block in `mammals/goat.js`.
+          s -= Math.max(0, slope - (this.cfg.rock?.slopeSoft ?? 0.45)) * 6;
         }
         if (s > bestScore) { bestScore = s; bestA = a; }
       }
@@ -714,7 +966,9 @@ export class Brain {
       }
     }
     if (this._cornered > 0) this._cornered -= dt;
-    this.pos.y = W.getHeight(this.pos.x, this.pos.z);
+    // Not `W.getHeight` directly: an animal engaged with a boulder is standing
+    // on the boulder. Identical for everything else — see `_groundY`.
+    this.pos.y = this._groundY(W, this.pos.x, this.pos.z);
   }
 
   /** Fill an animation drive object. Reused every frame; never allocates. */

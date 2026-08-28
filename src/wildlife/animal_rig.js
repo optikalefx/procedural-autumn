@@ -21,6 +21,7 @@
 //  slightly carved forms, and rigid binding keeps the silhouette crisp.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+import { clamp01, lerp } from '../core/MathUtils.js';
 
 // Colour-region mix channels. A vertex carries a weight for each, and the hide
 // shader resolves them against four per-animal uniforms. Blending in the
@@ -148,7 +149,7 @@ export class RigBuilder {
  *   bone   bone index this ring binds to; bone2/w2 split the weight at a joint
  *   k      superellipse exponent, 1 = ellipse, <1 = boxier
  *
- * opts: { radial, capStart, capEnd, tipStart, tipEnd, domeStart, domeEnd,
+ * opts: { radial, ripple, capStart, capEnd, tipStart, tipEnd, domeStart, domeEnd,
  *         domeSteps, mix, shade, ao }
  *   tipX collapses that end to a single point (muzzles, hooves, antler tips)
  *   domeX rounds that end into a hemisphere instead of a flat disc; a number
@@ -187,9 +188,53 @@ export function tube(B, stations, opts = {}) {
   // and `off` slides it along the tangent, which between them are all a dome
   // cap is; `nRad`/`nAxis` tilt the normal off the cross-section plane so the
   // dome shades as a sphere rather than as a stack of discs.
+  // ── the coat ripple ────────────────────────────────────────────────────────
+  //
+  // A radius modulation that turns a moulded surface into a shaggy one, for
+  // nothing but the vertices already there. Added for the yak, whose coat is
+  // not a texture on a barrel — it IS the barrel — and generic because nothing
+  // about it belongs to that animal.
+  //
+  //   n, amp    grooves AROUND the ring. On a flank these run head-to-tail.
+  //   nz, ampZ  grooves ALONG the tube, in radians per metre of arc. These are
+  //             the ones that hang, and they are why there are two terms: a
+  //             ring-only ripple is corduroy laid front-to-back down the side
+  //             of the animal, which is the exact opposite of how hair falls.
+  //   twist     leans the axial grooves round the ring instead of ringing the
+  //             tube in clean bands. Without it the two terms cross at right
+  //             angles everywhere and the surface reads as quilting rather
+  //             than as hair; a lean of a radian or two is enough to break the
+  //             lattice.
+  //   bias      how much of it survives on the UPPER side of the ring (1 at
+  //             the bottom, `bias` at the top). Hair hangs, so the effect
+  //             belongs on the flank and the hem; rippling the spine turns a
+  //             smooth back into corrugated iron.
+  //
+  // Each station also carries `shag`, a plain 0..1 scale, so the coat can be
+  // ramped in over the flank and off at the ends — and being a number,
+  // `smoothStations` interpolates it like any other.
+  //
+  // Both frequencies are bounded by the mesh's own resolution: under about
+  // three vertices per groove they alias into a zigzag. Around the ring that
+  // means `n <= radial / 3` (see `radialMul` in `quadruped.js` for the
+  // blueprint lever that buys ring vertices); along the tube it means the
+  // period must clear three stations' spacing.
+  const rip = opts.ripple;
+  // Arc length to each station, so the axial term is in metres and does not
+  // change frequency when a LOD drops half the rings.
+  let arc = null;
+  if (rip?.nz) {
+    arc = new Array(N).fill(0);
+    for (let i = 1; i < N; i++) {
+      const a = stations[i - 1], b = stations[i];
+      arc[i] = arc[i - 1] + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    }
+  }
   const makeRing = (i, scale = 1, off = 0, nRad = 1, nAxis = 0) => {
     const st = stations[i];
     const k = st.k ?? opts.k ?? 1;
+    const shag = rip ? (st.shag ?? 1) : 0;
+    const az = (shag > 0 && arc) ? rip.nz * arc[i] : 0;
     const mix = st.mix ?? defMix;
     const shade = st.shade ?? defShade;
     const b0 = st.bone, b1 = st.bone2 ?? 0, w2 = st.w2 ?? 0;
@@ -202,8 +247,19 @@ export function tube(B, stations, opts = {}) {
         ca = Math.sign(ca) * Math.pow(Math.abs(ca), k);
         sa = Math.sign(sa) * Math.pow(Math.abs(sa), k);
       }
-      _p.copy(S[i]).multiplyScalar(ca * st.rx * scale).addScaledVector(U[i], sa * st.ry * scale);
+      let rx = st.rx, ry = st.ry;
+      if (shag > 0) {
+        const w = shag * lerp(rip.bias ?? 1, 1, clamp01(-sa));
+        const m = 1 + w * ((rip.amp ?? 0) * Math.cos((rip.n ?? 0) * a)
+          + (rip.ampZ ?? 0) * Math.cos(az + (rip.twist ?? 0) * a));
+        rx *= m; ry *= m;
+      }
+      _p.copy(S[i]).multiplyScalar(ca * rx * scale).addScaledVector(U[i], sa * ry * scale);
       // Ellipse normal, not the offset direction — matters where rx >> ry.
+      // Left on the UNRIPPLED ellipse on purpose: the hide is flat-shaded, so
+      // the grooves get their shading from the face normals the rasteriser
+      // derives, and a per-vertex normal that chased the ripple would only
+      // fight them at the cap seams.
       _n.copy(S[i]).multiplyScalar(ca / Math.max(st.rx, 1e-4))
         .addScaledVector(U[i], sa / Math.max(st.ry, 1e-4)).normalize();
       if (nAxis !== 0) _n.multiplyScalar(nRad).addScaledVector(T[i], nAxis).normalize();

@@ -10,6 +10,20 @@
 import { clamp, clamp01, lerp, mulberry32 } from '../core/MathUtils.js';
 import { noiseBuffer, noiseSource, filter, gain, ping, stopLater, panner } from './synth.js';
 
+// One row per animal that has a voice. See `_call`.
+const VOICE = {
+  deer: { wave: 'triangle', f: 380, spread: 90, dur: 0.28, sag: 0.88, throat: 1400, level: 1 },
+  bear: { wave: 'sawtooth', f: 96, spread: 26, dur: 0.42, sag: 0.82, throat: 320, level: 1.25 },
+  // Higher and shorter than the deer, and it falls further: a goat's bleat is
+  // a nasal complaint that runs out halfway through, not a call across a
+  // meadow. The narrow high throat band is the nose in it.
+  goat: { wave: 'triangle', f: 470, spread: 120, dur: 0.22, sag: 0.80, throat: 1900, level: 0.85 },
+  // Below the bear, and longer. A yak's grunt is chest and almost no edge —
+  // most of what carries across a bench is the breath, which is why the throat
+  // band sits under the tone rather than an octave above it.
+  yak: { wave: 'sawtooth', f: 74, spread: 20, dur: 0.55, sag: 0.86, throat: 240, level: 1.30 },
+};
+
 export class WildlifeAudio {
   constructor(actx, bus, reverb, ctx) {
     this.actx = actx;
@@ -194,25 +208,47 @@ export class WildlifeAudio {
     this.state.calls++;
   }
 
-  /** A deer bleat or a bear huff — same generator, very different numbers. */
+  /**
+   * One generator, one row of numbers per animal.
+   *
+   * It was `bear ? this : that` while there were two voices, and the two were
+   * the extremes of the same instrument: a short bright triangle bleat and a
+   * long low sawtooth huff. Adding the alpine pair made that a table, because
+   * both of them sit *between* those extremes rather than beside either — a
+   * goat's bleat is a deer's pushed up and shortened until it is nasal, and a
+   * yak's grunt is the bear's dropped an octave and given a wider throat.
+   *
+   *   wave   sawtooth is a chest, triangle is a throat
+   *   f      base pitch, hz, plus `spread` of jitter
+   *   dur    seconds. A short call reads as an exclamation, a long one as a
+   *          complaint, and that is most of the character
+   *   sag    where the pitch falls to by the end, as a ratio of `f`
+   *   throat centre of the breath band under the tone
+   *   level  multiplier on the distance-scaled gain
+   *
+   * An unlisted key falls through to `deer`, which is a real hazard rather
+   * than a convenience — see the skip list in `update()`, and add a species to
+   * one place or the other rather than letting it inherit a bleat it does not
+   * have.
+   */
   _call(a, dist, L) {
     const actx = this.actx;
-    const bear = a.key === 'bear';
+    const V = VOICE[a.key] ?? VOICE.deer;
     const t = actx.currentTime + 0.02;
-    const f = bear ? 96 + this.rnd() * 26 : 380 + this.rnd() * 90;
-    const dur = bear ? 0.42 : 0.28;
+    const f = V.f + this.rnd() * V.spread;
+    const dur = V.dur;
     const far = clamp01(dist / 240);
-    const level = lerp(0.10, 0.022, far) * (bear ? 1.25 : 1);
+    const level = lerp(0.10, 0.022, far) * V.level;
 
     const o = actx.createOscillator();
-    o.type = bear ? 'sawtooth' : 'triangle';
+    o.type = V.wave;
     o.frequency.setValueAtTime(f * 0.94, t);
     o.frequency.linearRampToValueAtTime(f, t + dur * 0.25);
-    o.frequency.linearRampToValueAtTime(f * (bear ? 0.82 : 0.88), t + dur);
+    o.frequency.linearRampToValueAtTime(f * V.sag, t + dur);
 
     // Breath. A pure tone reads as a synth; the noise is what makes it a throat.
     const n = noiseSource(actx, this.noise);
-    const nb = filter(actx, 'bandpass', bear ? 320 : 1400, 1.1);
+    const nb = filter(actx, 'bandpass', V.throat, 1.1);
     const ng = gain(actx, 0);
 
     const body = filter(actx, 'lowpass', lerp(4200, 900, far), 1.0);

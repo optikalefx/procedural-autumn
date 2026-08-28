@@ -33,6 +33,8 @@ import { RABBIT } from './mammals/rabbit.js';
 import { FOX } from './mammals/fox.js';
 import { SQUIRREL } from './mammals/squirrel.js';
 import { RACCOON } from './mammals/raccoon.js';
+import { GOAT } from './mammals/goat.js';
+import { YAK } from './mammals/yak.js';
 
 export { createHideMaterial, setHideSilScale, SIL_FOV_REF }
   from './mammals/hide.js';
@@ -57,6 +59,15 @@ export const SPECIES = {
   fox: FOX,
   squirrel: SQUIRREL,
   raccoon: RACCOON,
+  // The alpine pair, and last on purpose. Species are placed in this order out
+  // of one capped site table (see `Wildlife._placeSites`), and a saturated cap
+  // silently deletes whatever placed after it — so a new species goes at the
+  // end, where a density mistake truncates itself first. (The river bears are
+  // placed after the whole loop and are still the last thing in the table, so
+  // that is the one row a runaway up here would take with it; the census's
+  // `sites` count against the cap is the check.)
+  goat: GOAT,
+  yak: YAK,
 };
 
 /**

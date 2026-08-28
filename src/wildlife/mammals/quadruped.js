@@ -134,10 +134,23 @@ function buildLeg(B, L, D) {
   ], { radial: Math.max(4, R - 1), ao: 0.2, k: 0.8 });
 }
 
+// How a beam bends over its own length, as a total turn in model units: `up`
+// positive lifts the tip, `fwd` positive carries it forward over the muzzle,
+// `out` positive spreads it wider (negative brings the tips back toward each
+// other). The default is a deer's — the beam sweeps back and settles — and it
+// is what every rack in the game was before a species needed otherwise.
+//
+// The yak is why this is authorable. Its horn leaves the skull almost
+// horizontally and then turns UP, tips curling in, and there is no starting
+// direction that produces that shape under a fixed downward curl: a beam that
+// only ever bends down can begin high or begin low, and neither is a horn.
+const ANTLER_CURL = { up: -0.42, fwd: -0.30, out: 0.18 };
+
 /** A recursive antler: main beam sweeping back and up, with forward tines. */
 function buildAntler(B, skel, P, side, D, rnd) {
   if (!P.antler) return;
   const A = P.antler;
+  const C = A.curl ?? ANTLER_CURL;
   const name = side > 0 ? 'antlerR' : 'antlerL';
   const bone = skel.idx(name);
   const base = skel.at(name, new THREE.Vector3());
@@ -158,8 +171,9 @@ function buildAntler(B, skel, P, side, D, rnd) {
       });
       const step = len / segs;
       px += dx * step; py += dy * step; pz += dz * step;
-      // Curl back over the head.
-      dy -= 0.14 / segs * 3; dz -= 0.10 / segs * 3; dx += spreadSign * 0.06 / segs * 3;
+      // Curl. See ANTLER_CURL — the totals are divided across the beam, so a
+      // longer or shorter one keeps the same shape.
+      dy += C.up / segs; dz += C.fwd / segs; dx += spreadSign * C.out / segs;
       const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
       // Tines fork off the beam, shorter each time up.
       if (levels > 0 && i > 0 && i < segs && (i % A.tineEvery) === 0) {
@@ -215,7 +229,25 @@ const DETAIL = [
 ];
 
 function buildQuadruped(P, detailLevel, seed) {
-  const D = DETAIL[detailLevel];
+  const D0 = DETAIL[detailLevel];
+  // ── radialMul ──────────────────────────────────────────────────────────────
+  // How many sides this animal's BODY rings get, as a multiplier on the tier.
+  // Every other lever in DETAIL is a global judgement about facet size and
+  // stays one; this is the exception the yak forced, and the reason is that
+  // `ripple` (see `tube`) spends ring vertices on grooves. At the cast's
+  // `radialBody: 20` a barrel that size can carry six locks of hair, which
+  // reads as dents rather than as a coat. It touches the barrel, the neck and
+  // the head and nothing else, and it is 1 for everybody who does not ask.
+  const D = P.radialMul
+    ? { ...D0, radialBody: Math.round(D0.radialBody * P.radialMul) }
+    : D0;
+  // The coat ripple is a NEAR-LOD feature, like ears and the Catmull-Rom
+  // resampling. The mid mesh has a fifth of the ring sides and none of the
+  // inserted stations, so both of the ripple's frequencies land under two
+  // vertices per groove there — it would not read as hair, it would read as
+  // noise, and the two meshes would pop against each other at the swap. The
+  // mid LOD starts at 58 m, where a 5 cm lock is a fifth of a pixel.
+  const coat = detailLevel ? null : P.coat;
   const rnd = mulberry32(seed >>> 0);
   const S = new Skel();
   const B = new RigBuilder();
@@ -273,6 +305,9 @@ function buildQuadruped(P, detailLevel, seed) {
     const s = src[i];
     barProf.push({
       y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: s.k ?? 0.92,
+      // How much of the coat ripple this station carries, 0..1. A number, so
+      // `smoothStations` ramps it between the authored stations like any other.
+      shag: s.shag ?? (P.coat ? 1 : 0),
       mix: s.mix ?? MIX.coat, shade: s.shade ?? 1,
     });
   }
@@ -280,7 +315,7 @@ function buildQuadruped(P, detailLevel, seed) {
   const bar = barProf.map((s) => {
     const w = chainWeight(S, spineNames, s.z);
     return {
-      x: 0, y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: s.k,
+      x: 0, y: s.y, z: s.z, rx: s.rx, ry: s.ry, k: s.k, shag: s.shag,
       bone: w.bone, bone2: w.bone2, w2: w.w2,
       mix: s.mix, shade: s.shade,
     };
@@ -288,7 +323,8 @@ function buildQuadruped(P, detailLevel, seed) {
   // `rumpTip` collapses the rear ring to a point. That is right for a bear or a
   // rabbit, whose backside really does taper away, and wrong for a deer, where
   // it hung a cone off the back of the animal.
-  tube(B, bar, { radial: D.radialBody, ao: 0.55, tipStart: P.rumpTip !== false, tipEnd: false });
+  tube(B, bar, { radial: D.radialBody, ao: 0.55, ripple: coat,
+    tipStart: P.rumpTip !== false, tipEnd: false });
 
   // Underside: a pale belly panel painted straight onto the barrel would need a
   // texture, so instead the barrel stations carry their own mix and the belly
@@ -360,12 +396,14 @@ function buildQuadruped(P, detailLevel, seed) {
       y: lerp(a.y, b.y, ft) + lerp(p0.dy ?? 0, p1.dy ?? 0, pt),
       z: lerp(a.z, b.z, ft) + lerp(p0.dz ?? 0, p1.dz ?? 0, pt),
       rx: lerp(p0.rx, p1.rx, pt), ry: lerp(p0.ry, p1.ry, pt), k: 0.92,
+      shag: lerp(p0.shag ?? (P.coat ? 1 : 0), p1.shag ?? (P.coat ? 1 : 0), pt),
       bone: nBone[seg], bone2: nBone[seg + 1],
       w2: clamp01((ft - 0.20) / 0.60),
       mix: p0.mix ?? MIX.coat, shade: p0.shade ?? 0.97,
     });
   }
-  tube(B, nk, { radial: D.radialBody, ao: 0.5, capStart: false, capEnd: false });
+  tube(B, nk, { radial: D.radialBody, ao: 0.5, ripple: coat,
+    capStart: false, capEnd: false });
 
   // A collar. Two rings straddling one neck station, grown a few percent so it
   // stands proud of the throat, riding the same bones the neck does so it does

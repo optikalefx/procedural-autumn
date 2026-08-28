@@ -73,7 +73,8 @@ const result = await page.evaluate(async (P) => {
   const THREE = window.__THREE;
   const e = window.__engine, W = window.__world;
   const wl = window.__systems.wildlife;
-  const ST = { free: -1, idle: 0, graze: 1, wander: 2, alert: 3, flee: 4, patrol: 5 };
+  const ST = { free: -1, idle: 0, graze: 1, wander: 2, alert: 3, flee: 4, patrol: 5,
+    watch: 6, climb: 7, perch: 8 };
 
   window.__lighting.hour = parseFloat(P.HOUR);
   window.__lighting.cycleSpeed = 0;
@@ -255,7 +256,11 @@ const result = await page.evaluate(async (P) => {
 
     // Per-frame telemetry, drawn on the tile. Reading "flee / bound / 9.4 m/s"
     // off the picture is the difference between judging motion and guessing.
-    const NM = ['idle', 'graze', 'wander', 'alert', 'flee', 'patrol'];
+    // Must match ST in animal_brain.js. A short list does not error, it prints
+    // `undefined` on the tile — which is how a strip of a watching deer read
+    // for a while.
+    const NM = ['idle', 'graze', 'wander', 'alert', 'flee', 'patrol', 'watch',
+      'climb', 'perch'];
     const st = { state: NM[A.brain.state], gait: A.rig.gaitName, speed: A.brain.speed, lod: A.lod };
     const line = P.MODE === 'ladder'
       ? `${ladderD} m   lod ${st.lod}   ${st.state}`

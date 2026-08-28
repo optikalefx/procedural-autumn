@@ -106,6 +106,18 @@ const LADDER = {
   // sequence hurried up. The entry is named for the dog because that is who
   // needed it first; the gait is not a dog's, it is a slow heavy quadruped's.
   raccoon: ['dogwalk', 'walk', 'bound'],
+  // A goat walks and trots like any short-legged ungulate, and at the top it
+  // BOUNDS rather than gallops. That is not a stylisation: the ground a
+  // mountain goat runs on is broken rock, and what it does there is hop from
+  // stance to stance with the hind pair together. It is also the only top gear
+  // that reads at all on a 20 m ledge, where a gallop would be two strides and
+  // a cut.
+  goat: ['walk', 'trot', 'bound'],
+  // A yak is a bovid and does neither of those. Both lower rungs are
+  // lateral-sequence walks with only the DUTY between them — the raccoon's
+  // trick, and for the raccoon's reason: this animal ambles, it does not trot.
+  // The top is a gallop, because a frightened cow gallops; it does not bound.
+  yak: ['dogwalk', 'walk', 'gallop'],
 };
 
 const _a = new THREE.Vector3();

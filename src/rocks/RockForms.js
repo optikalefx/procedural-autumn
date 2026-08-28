@@ -692,6 +692,7 @@ export function buildRockLibrary(seed) {
  * itself (from a position hash) so it can look up the right entry.
  *
  *   rx, rz   half-extent in local X (along the strike) and Z (into the hill)
+ *   hi       highest local Y — the summit, for anything that stands on top
  *   lo[9]    lowest local Y within each ninth, indexed (sx+1)*3 + (sz+1) with
  *            sx, sz in {-1, 0, 1}; null where that variant does not reach
  *
@@ -705,6 +706,11 @@ export function archFootprints(lib) {
       const b = g.boundingBox;
       const rx = Math.max(Math.abs(b.min.x), Math.abs(b.max.x));
       const rz = Math.max(Math.abs(b.min.z), Math.abs(b.max.z));
+      // Where the top of this mesh is, in the same local units `rx`/`rz` are.
+      // Placement only ever needed the undersides (`lo`); asking "how high is
+      // the top of that boulder" is what a thing standing ON one needs, and it
+      // is the same one-pass measurement. See Rocks.topOf.
+      const hi = b.max.y;
       const cell = (v, r) => (v < -r / 3 ? 0 : v > r / 3 ? 2 : 1);
       const lo = new Array(9).fill(null);
       const pos = g.attributes.position.array;
@@ -712,7 +718,7 @@ export function archFootprints(lib) {
         const c = cell(pos[k], rx) * 3 + cell(pos[k + 2], rz);
         if (lo[c] === null || pos[k + 1] < lo[c]) lo[c] = pos[k + 1];
       }
-      return { rx, rz, lo };
+      return { rx, rz, hi, lo };
     });
   }
   return out;
