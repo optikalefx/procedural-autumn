@@ -496,45 +496,30 @@ const CROWD_MAX = 3;
 // ─────────────────────────────────────────────────────────────────────────────
 // ── the cover: the file, played ──────────────────────────────────────────────
 //
-// `public/audio/journal.mp3`, whole, at one gain. No window, no shelf, no pitch
-// jitter, no pan.
+// `public/audio/journal.mp3`, whole, at a gain that reproduces the file's own
+// level at the speakers. No window, no shelf, no pitch jitter, no pan.
 //
-// It got all four, and the user's verdict was that it was not the sound they
-// loaded. They were right. What "levelling a recording into the ladder" had
-// quietly turned into:
+// **1.4, because the master bus sits at 0.71 and 1/0.71 is 1.41.** The user
+// played the decoded file and said it was correct; this is the number that
+// makes the game output the same thing. Anything more is louder than the
+// recording is, and this recording does not take gain well — normalised to
+// -6 dBFS it was described as ear-shattering, because 22 dB of gain on a quiet
+// take is 22 dB of gain on its noise floor too.
 //
-//   · **half the file was never played.** A take detector with a 2% floor found
-//     one burst from 0.02 to 0.52 s in a one-second recording and treated the
-//     rest as room tone, so whatever decay it had was cut off at 0.52.
-//   · **the pitch moved every firing.** `c.pitch` is 0.95-1.05 and it is right
-//     for a synthesised voice, where it stops a repeat sounding like a repeat.
-//     On a recording of a real object it is just detuning it.
-//   · a high shelf, and a pan, both arguing with the room already in the file.
+// It is quiet against the other three cues (page peaks 0.115 at the bus, this
+// peaks 0.055). That is a property of the take, not a mistake here: it is 13 dB
+// down on the page recording in peak and 9 dB down in body. A louder take is
+// the fix; raising this number is not.
 //
-// Each was defensible alone; the stack of them was not a recording any more.
-//
-// **6.2, and it deliberately breaks the ladder.** `slap > cover > page > cross`
-// through a 200 Hz high-pass was a rule this file held, and the cover is now
-// the loudest beat instead of the slap. That is a considered trade, not an
-// oversight: the user could not hear their own recording in the ceremony and
-// said so three times, and being audible beats being balanced.
-//
-// The reason it needs so much is the file itself. Measured against the page
-// recording sitting beside it in `public/audio/`:
-//
-//                 peak     body (rms per 100 ms, at its loudest)
-//   page.mp3     0.1680    0.0217
-//   journal.mp3  0.0391    0.0073
-//
-// The cover take is about 13 dB quieter in peak and 9 dB quieter in body than
-// the page take. A gain of 6.2 is what closes that, and it is amplifying the
-// recording's own noise floor along with it. A louder take would let this
-// number come down and the ladder go back.
-//
-// What plays is the file: verified by correlating the rendered cue against the
-// raw mp3, 0.9994 over the full second.
+// The long detour this cue caused was NOT about level, and the note is worth
+// keeping: the voice pushed its nodes straight onto `c.nodes` instead of going
+// through `_own`, so `c.end` stayed 0 and `cue()`'s `stopLater(c.nodes, actx,
+// c.end + 0.12)` collapsed to its 60 ms floor. The recording was stopped and
+// disconnected sixty milliseconds in, mid-sample, with a click. Every offline
+// render said it was perfect, because an OfflineAudioContext never runs that
+// `setTimeout`. See `_sampledCover`.
 const COVER_SAMPLE_URL = '/audio/journal.mp3';
-const COVER_SAMPLE_GAIN = 6.2;
+const COVER_SAMPLE_GAIN = 1.4;
 
 const PAGE_SAMPLE_URL = '/audio/page.mp3';
 const PAGE_SAMPLE_GAIN = 0.68;
@@ -1028,9 +1013,27 @@ export class JournalAudio {
     g.gain.setValueAtTime(g0, t);
 
     // The whole buffer. No offset, no duration.
+    const d = this._cover.duration;
     src.start(t);
-    src.stop(t + this._cover.duration + 0.05);
-    c.nodes.push(src, g);
+    src.stop(t + d + 0.05);
+
+    // `_own`, NOT `c.nodes.push`. This is the bug that made the recording sound
+    // like a fragment of noise in the game while every offline render of it was
+    // perfect.
+    //
+    // `cue()` ends with `stopLater(c.nodes, actx, c.end + 0.12)`, and `c.end`
+    // starts at 0. Every other voice raises it through `_own`; this one pushed
+    // its nodes straight onto the list and never did, so `c.end` stayed 0, the
+    // delay collapsed to `stopLater`'s 60 ms floor, and the source was stopped
+    // and disconnected **60 milliseconds** after it started — mid-sample, with
+    // the hard disconnect adding a click on the way out.
+    //
+    // It is invisible to an OfflineAudioContext, which renders faster than real
+    // time and never runs the `setTimeout` at all. That is why the offline
+    // render, the correlation against the raw mp3, and every level measurement
+    // all said the file was playing perfectly while the person listening heard
+    // half a second of noise.
+    this._own(c, [src, g], t + d);
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
