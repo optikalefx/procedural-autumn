@@ -280,9 +280,27 @@ export class Audio extends System {
     catch { /* nothing important lost */ }
   }
 
+  /**
+   * `?soundtest=cover` — everything silent except the book opening.
+   *
+   * A listening test, not a feature. The cover cue is one beat inside a
+   * ceremony that also fires two page turns, a pencil and a slap, over an
+   * ambience bed and a music layer, and "is that my recording?" is a hard
+   * question to answer with all of that in the way. This takes everything else
+   * out so the answer is unambiguous.
+   *
+   * Opt-in by URL and off by default, so it cannot reach a player. Read once.
+   */
+  get soundTest() {
+    return (this._soundTest ??=
+      new URLSearchParams(location.search).get('soundtest') || '') === 'cover';
+  }
+
   /** One-shots the HUD asks for by name. */
   cue(name) {
     if (!this.started) return;
+    // See `soundTest`. The cover only, so nothing can mask it.
+    if (this.soundTest && name !== 'cover') return;
     try {
       if (name === 'shutter') this.vehicle.shutter();
       else if (name === 'door') this.vehicle.door();
@@ -334,6 +352,9 @@ export class Audio extends System {
     dt = Math.min(dt, 0.1);
     this._sample(dt);
     const L = this.L;
+    // The world's own layers, silenced under `?soundtest=cover` — a bed of wind
+    // and a music cue are exactly what a quiet recording disappears into.
+    if (this.soundTest) return;
     try { this.ambience.update(dt, L); } catch (e) { this._layerFail('ambience', e); }
     try { this.water.update(dt, L); } catch (e) { this._layerFail('water', e); }
     try { this.vehicle.update(dt, L); } catch (e) { this._layerFail('vehicle', e); }

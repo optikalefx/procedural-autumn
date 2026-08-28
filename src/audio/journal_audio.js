@@ -981,6 +981,12 @@ export class JournalAudio {
   _sampledCover(c) {
     const actx = this.actx;
     const t = c.t;
+    // `?soundtest=cover` plays the file at unity — no gain, no ducking, no
+    // per-firing level. Whatever comes out of the speakers is the mp3 as it is
+    // on disk, so the test cannot be answered with "yes but you changed it".
+    const test = this.ctx?.systems?.audio?.soundTest
+      ?? (typeof location !== 'undefined'
+          && new URLSearchParams(location.search).get('soundtest') === 'cover');
     const src = actx.createBufferSource();
     src.buffer = this._cover;
     // No `playbackRate`. The jitter every other voice gets is right for a
@@ -991,7 +997,7 @@ export class JournalAudio {
     // `c.level` so `_crowd()` can still duck a cue fired on top of itself.
     // `setValueAtTime` rather than a ramp: the recording has its own attack and
     // 4 ms of fade-in on top of it is 4 ms of somebody else's idea.
-    g.gain.setValueAtTime(Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004), t);
+    g.gain.setValueAtTime(test ? 1 : Math.max(COVER_SAMPLE_GAIN * c.level, 0.0004), t);
 
     // The whole buffer. No offset, no duration.
     src.start(t);
