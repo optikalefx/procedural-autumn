@@ -252,6 +252,36 @@ const VOICES = {
   },
 
   /**
+   * Roasting stick — a whittled hardwood switch, propped against something.
+   *
+   * The quietest cue in the table, and it should be: it is a stick. What it has
+   * to do is not be mistaken for one of its neighbours, and it has two of them
+   * to stay out of the way of — the table's woody ring at 380 Hz (it lands 70 ms
+   * from this one whenever a camp has both) and the woodpile's clacks, which
+   * are drawn anywhere from 250 to 770 Hz.
+   *
+   * So the tap sits at 1150 Hz: an octave and a half above the table, well
+   * clear of the woodpile's band, and below the chair's 2050/2850 tube ticks. A
+   * thin dry stick really is higher and shorter than a table leg — there is no
+   * mass behind it — so the band is where the object is as well as where the
+   * gap is. Q 7 rather than the table's 9: a stick rings, but it is 12 mm of
+   * green wood and it damps almost at once.
+   *
+   * The scrape after it is the whole character. A stick is not set down, it is
+   * leaned, and the sound of leaning one is the last 100 mm of it sliding
+   * against whatever it fetched up on. Pink through a falling band with a soft
+   * attack, at a third of the tap's level — under the threshold of being a
+   * separate event, which is what makes it read as part of the same gesture.
+   */
+  roaststick(c) {
+    this._noise(c, 0.000, { f: 1150, q: 7.0, peak: 0.086, attack: 0.001, dur: 0.055 });
+    this._sweep(c, 0.014, { f0: 2600, f1: 1250, q: 1.3, peak: 0.030, attack: 0.012, dur: 0.10, pan: 0.04 });
+    // The butt finding the dirt. Low, tiny, and the only part of this that says
+    // the object has a bottom end standing on the ground rather than floating.
+    this._noise(c, 0.040, { f: 320, q: 3.0, peak: 0.026, attack: 0.002, dur: 0.040, pan: -0.03 });
+  },
+
+  /**
    * The clearing itself — dry earth opening under the grass.
    *
    * The one cue with no transient at all. The ground does not pop; it eases
@@ -329,7 +359,7 @@ export class CampProps {
    * Sound one prop appearing or disappearing.
    *
    * @param {string} kind   'tent' | 'chair' | 'cooler' | 'table' | 'woodpile'
-   *                        | 'telescope' | 'ground' | 'fire'
+   *                        | 'telescope' | 'roaststick' | 'ground' | 'fire'
    * @param {object} opts   `x`/`z` are the prop's own world position, not the
    *   camp's — the woodpile really is over on your left, and using the camp
    *   centre for all eight throws that away for nothing.

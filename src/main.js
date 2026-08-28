@@ -457,7 +457,30 @@ async function boot() {
     linearTarget.dispose();
   }
 
-  engine.setRenderCallback((dt) => postfx.render(dt));
+  // The journal draws AFTER the post chain, not into it. It is a physical
+  // object held up in front of the finished frame — grading it with the world's
+  // tone curve and running it through the upscale pass would soften the one
+  // surface in this game made of type, and a bloom pass over a cream page
+  // blooms the page.
+  //
+  // It draws into its OWN 4x MSAA target and blits the result over the frame.
+  // That is not a detail: the engine's context is created `antialias: false`
+  // because the world's AA is SMAA inside the post chain, so anything composited
+  // after it has no antialiasing at all — and the book was staircasing over a
+  // smooth meadow. It does not clear the canvas depth buffer either; doing that
+  // was quietly clobbering the world's. `Journal.render` owns restoring every
+  // renderer flag it touches, and falls back to the direct path if a driver
+  // refuses the target.
+  engine.setRenderCallback((dt) => {
+    postfx.render(dt);
+    const journal = ctx.systems.hud?.journal;
+    // `active` drops on the frame `close()` is called, but the book takes
+    // another 0.46 s to be put down — gating on it alone meant the whole
+    // closing animation was computed and never drawn, so the journal vanished
+    // instead of closing. `visible` is the wider window and stays true until
+    // the last frame of the put-down.
+    if (journal?.active || journal?.visible) journal.render(engine.renderer);
+  });
 
   // ── internal render scale ───────────────────────────────────────────────
   // The scene and post chain render at this fraction of the canvas and are

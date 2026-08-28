@@ -1,0 +1,107 @@
+<!doctype html>
+<!-- Type specimen for the camping journal, and READ THIS BEFORE CITING IT.
+     ────────────────────────────────────────────────────────────────────────
+     This page used to draw FOUR heading candidates (Caveat Brush, Amatic SC,
+     Special Elite, Cutive Mono) over the same Caveat body. Three of those
+     woff2 files were never kept in `public/fonts/`, and the fourth was
+     referenced at the wrong filename — so every panel it produced was drawn in
+     a SYSTEM FALLBACK and the capture in the report is evidence of nothing.
+     The old capture (shots/journal/00_font_specimen.png) shows two panels,
+     cropped, in the wrong faces, and docs/JOURNAL_NOTES.md no longer cites it.
+
+     What it draws now is the honest thing and the only thing this repo can
+     still show: the SHIPPED pairing — Caveat Brush heading over Caveat body —
+     laid out on a real page at the real aspect and the real sizes, so the
+     question it answers is "does the hierarchy survive at page size", which is
+     a question a specimen can actually settle. The choice of Caveat Brush over
+     Special Elite was a judgement (a typewriter heading over a handwritten
+     list says "a printed form somebody filled in"), not a measurement, and
+     the notes now say so.
+
+     Capture:
+       node tools/_scratch/_jshot.mjs --url /tools/_scratch/_journalfont.html \
+         --out shots/journal/round2/00_type_specimen.png --w 900 --h 1320 \
+         --waitfor "window.__done === true"
+-->
+<meta charset="utf-8">
+<style>
+  @font-face { font-family:'Caveat'; src:url('/fonts/caveat.woff2') format('woff2'); font-weight:400 700; font-display:block; }
+  /* The real filename. It was 'caveatbrush.woff2' here, which 404s — so even
+     the face that DID ship was drawn in a fallback in the old capture. */
+  @font-face { font-family:'CaveatBrush'; src:url('/fonts/caveat-brush.woff2') format('woff2'); font-display:block; }
+  body { margin:0; background:#20181a; display:flex; gap:14px; padding:14px; }
+  canvas { width:760px; height:auto; box-shadow:0 10px 40px #000; }
+</style>
+<body></body>
+<script type="module">
+const W = 1024, H = 1448;
+const HEADS = [
+  ['Caveat Brush heading / Caveat body — as shipped', 'CaveatBrush', 1.00],
+];
+const ITEMS = [
+  'a white-tailed deer', 'a black bear', 'a cottontail rabbit', 'a red fox',
+];
+
+await document.fonts.ready;
+await Promise.all([
+  document.fonts.load('400 80px Caveat'),
+  ...HEADS.map(([, face]) => document.fonts.load(`400 80px ${face}`)),
+]);
+
+for (const [label, face, scale] of HEADS) {
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  document.body.appendChild(cv);
+  draw(cv.getContext('2d'), face, scale, label);
+}
+
+function draw(g, face, scale, label) {
+  // paper
+  g.fillStyle = '#efe3c8'; g.fillRect(0, 0, W, H);
+  const grd = g.createLinearGradient(0, 0, W, H);
+  grd.addColorStop(0, 'rgba(120,90,50,0.06)');
+  grd.addColorStop(1, 'rgba(120,90,50,0.14)');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+
+  const M = 78;
+  g.textBaseline = 'alphabetic';
+
+  // heading
+  g.fillStyle = '#3a2c22';
+  g.font = `${Math.round(74 * scale)}px "${face}"`;
+  g.fillText('CAMP SCAVENGER HUNT', M, 150);
+  g.strokeStyle = 'rgba(70,50,34,0.5)'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(M, 178); g.lineTo(W - M, 184); g.stroke();
+
+  g.font = '34px "Caveat"';
+  g.fillStyle = 'rgba(60,44,32,0.7)';
+  g.fillText('four of fourteen found', M, 226);
+
+  // four checklist rows with a photo slot on the right
+  const rowTop = 268, rowH = 274;
+  for (let i = 0; i < 4; i++) {
+    const y = rowTop + i * rowH;
+    // photo slot
+    const sw = 296, sh = 224, sx = W - M - sw, sy = y + 6;
+    g.save();
+    g.translate(sx + sw / 2, sy + sh / 2); g.rotate((i % 2 ? -1 : 1) * 0.018);
+    g.strokeStyle = 'rgba(90,70,50,0.30)'; g.setLineDash([9, 9]); g.lineWidth = 2.5;
+    g.strokeRect(-sw / 2, -sh / 2, sw, sh); g.setLineDash([]);
+    g.restore();
+    // checkbox
+    g.strokeStyle = 'rgba(58,44,34,0.75)'; g.lineWidth = 3.5;
+    g.strokeRect(M, y + 34, 42, 42);
+    // line
+    g.fillStyle = '#37281f';
+    g.font = '52px "Caveat"';
+    g.fillText('Photo of ' + ITEMS[i], M + 62, y + 74);
+    g.font = `${Math.round(26 * scale)}px "Caveat"`;
+    g.fillStyle = 'rgba(70,54,40,0.62)';
+    g.fillText('meadow edges, at dawn', M + 62, y + 124);
+  }
+
+  g.fillStyle = 'rgba(0,0,0,0.55)';
+  g.font = '30px system-ui'; g.fillText(label, M, H - 40);
+}
+window.__done = true;
+</script>

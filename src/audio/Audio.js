@@ -33,6 +33,7 @@ import { CampAudio } from './camp_audio.js';
 import { BoatAudio } from './boat_audio.js';
 import { Music } from './music.js';
 import { Soundtrack } from './soundtrack.js';
+import { JournalAudio, JOURNAL_CUES } from './journal_audio.js';
 
 const STORE = 'pa.audio';
 
@@ -207,6 +208,31 @@ export class Audio extends System {
       }
 
       this.started = true;
+
+      // ── warm the journal's voices, and with them its two recordings ────────
+      //
+      // Built HERE rather than on the first `cue()`, which is what it used to
+      // do. `JournalAudio`'s constructor kicks off the fetch and decode of
+      // `page.mp3` and `journal.mp3`, and both are async — so building it on
+      // first use meant the cue that built it fired in the same tick, found no
+      // buffer, and fell back to the synthesised voice. The first cover cue of
+      // every session was therefore GUARANTEED to be the synth, which is a
+      // player opening the book for the first time and hearing the one sound
+      // that is not the recording.
+      //
+      // The laziness it replaces was worth something — two noise buffers a
+      // player who never opens the book would not pay for — but that argument
+      // was written before there were assets, and it is now buying a few
+      // kilobytes at the cost of the feature being wrong exactly once, in the
+      // most visible place.
+      try {
+        this._journal = new JournalAudio(this.actx, this.master);
+      } catch (e) {
+        // A voice that will not build must not stop the audio system starting;
+        // `cue()` still builds it on demand if this ever fails.
+        console.warn('[audio] journal voices unavailable at start', e);
+      }
+
       this._applyVolume(0.9);          // fade in, never a step
       this._resume();
       for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
@@ -254,13 +280,43 @@ export class Audio extends System {
     catch { /* nothing important lost */ }
   }
 
+  /**
+   * `?soundtest=cover` — everything silent except the book opening.
+   *
+   * A listening test, not a feature. The cover cue is one beat inside a
+   * ceremony that also fires two page turns, a pencil and a slap, over an
+   * ambience bed and a music layer, and "is that my recording?" is a hard
+   * question to answer with all of that in the way. This takes everything else
+   * out so the answer is unambiguous.
+   *
+   * Opt-in by URL and off by default, so it cannot reach a player. Read once.
+   */
+  get soundTest() {
+    return (this._soundTest ??=
+      new URLSearchParams(location.search).get('soundtest') || '') === 'cover';
+  }
+
   /** One-shots the HUD asks for by name. */
   cue(name) {
     if (!this.started) return;
+    // See `soundTest`. The cover only, so nothing can mask it.
+    if (this.soundTest && name !== 'cover') return;
     try {
       if (name === 'shutter') this.vehicle.shutter();
       else if (name === 'door') this.vehicle.door();
       else if (name === 'tick' || name === 'select') this._tickCue(name === 'select');
+      // The journal's four voices — a leather cover opening, a page turning, a
+      // pencil struck through a line, a print slapped down. The list is
+      // `JOURNAL_CUES` rather than a switch here on purpose: a voice added there
+      // is wired by existing. Built on first use because the constructor
+      // fills two 1.4 s noise buffers, and a player who never opens the book
+      // should never pay for them. Straight to `master` like `_tickCue` and
+      // unlike the camp props: these are dry interface sounds with no position
+      // in the world, and putting a reverb send on a book you are holding would
+      // place it across the clearing.
+      else if (JOURNAL_CUES.includes(name)) {
+        (this._journal ??= new JournalAudio(this.actx, this.master)).cue(name);
+      }
     } catch { /* a UI click is never worth an exception */ }
   }
 
@@ -296,6 +352,9 @@ export class Audio extends System {
     dt = Math.min(dt, 0.1);
     this._sample(dt);
     const L = this.L;
+    // The world's own layers, silenced under `?soundtest=cover` — a bed of wind
+    // and a music cue are exactly what a quiet recording disappears into.
+    if (this.soundTest) return;
     try { this.ambience.update(dt, L); } catch (e) { this._layerFail('ambience', e); }
     try { this.water.update(dt, L); } catch (e) { this._layerFail('water', e); }
     try { this.vehicle.update(dt, L); } catch (e) { this._layerFail('vehicle', e); }

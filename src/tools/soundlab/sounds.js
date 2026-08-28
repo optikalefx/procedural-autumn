@@ -23,6 +23,7 @@
 import { SURFACES } from './rig.js';
 import { tanhCurve } from '../../audio/synth.js';
 import { AMBIENCE_LEVELS } from '../../audio/ambience.js';
+import { JournalAudio, JOURNAL_CUES, JOURNAL_GAIN } from '../../audio/journal_audio.js';
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 
@@ -61,6 +62,27 @@ const readout = (key, label, read, opt = {}) => ({
   type: 'readout', kind: 'readout', key, label, read,
   unit: opt.unit ?? '', group: opt.group ?? 'Model', src: opt.src ?? null,
 });
+
+// ── the journal's own voice, for the three entries at the bottom ─────────────
+//
+// `Audio.cue` builds a JournalAudio lazily and keeps it in `_journal`, and the
+// obvious thing is to drive that one. It is the wrong thing here for two
+// reasons: `cue(name)` takes no arguments, so `level` and `rate` — the only two
+// knobs the ceremony actually turns — would be unreachable from the lab; and
+// reaching into `_journal` means the lab silently does nothing until something
+// else in the app has already made a sound.
+//
+// So the lab builds its own, onto the same master bus, which is the same graph
+// the game gets: these cues are dry and positionless (see the module header),
+// so "on the master" is the whole of their routing. One per rig, cached,
+// because the constructor fills two 1.4 s noise buffers and a trigger button
+// is something people press forty times in a row.
+const _labJournal = new WeakMap();
+const journalOf = (rig) => {
+  let j = _labJournal.get(rig);
+  if (!j) _labJournal.set(rig, (j = new JournalAudio(rig.actx, rig.audio.master)));
+  return j;
+};
 
 // Shorthand for the common "write an AudioParam" apply.
 const P = (path) => (rig, v) => {
@@ -1296,7 +1318,114 @@ export const SOUNDS = [
     params: [],
     needs: [],
   },
+
+  // ── the journal ───────────────────────────────────────────────────────────
+  //
+  // The scavenger hunt's award ceremony, in the order it plays: the cover
+  // swings open, a page turns, the line is crossed off, the photograph is taped
+  // in.
+  // They belong beside `ui.tick` rather than under a bus, because that is
+  // literally where they land — dry into the master, no world position, no
+  // reverb send (`journal_audio.js`, "these are not camp props").
+  //
+  // Judge them in that order and against each other, not one at a time: the
+  // whole design argument is a level ladder (the slap is the payoff) and a
+  // shape argument (one gesture, not two events), and neither is audible in a
+  // single press. `level` is the trim the journal itself uses for a
+  // flick-through page as against the one that opens the book.
+  {
+    id: 'journal.cover',
+    group: 'Interface',
+    label: 'Journal cover',
+    kind: 'oneshot',
+    bus: 'master',
+    module: 'src/audio/journal_audio.js',
+    blurb: 'The front board swung open: a Q 2.4 hinge creak 760 → 1450 → '
+      + '980 Hz with eight stick-slip grabs across it, a low swell underneath, '
+      + 'and the board arriving on its face. Peak 0.230, 292 ms (first firing '
+      + 'on a fresh instance; the peak is a draw spanning 0.193-0.283, and the '
+      + 'duration is measured above 0.0015) — the same gesture as the page '
+      + 'turn, an octave down and four times as resonant.',
+    layers: [],
+    trigger: (rig, v) => journalOf(rig).cue('cover', { level: v.level, rate: v.rate }),
+    params: [
+      range('level', 'Cue level', 0, 1.5, 1, { step: 0.01, src: 'JournalAudio.cue opts.level' }),
+      range('rate', 'Speed', 0.5, 2, 1, { step: 0.01, src: 'JournalAudio.cue opts.rate' }),
+      range('journalGain', 'journal bus gain', 0, 2, JOURNAL_GAIN, { step: 0.01, group: 'Mix', src: 'journal_audio.js — JOURNAL_GAIN', apply: (r, v) => { journalOf(r).bus.gain.value = v; } }),
+    ],
+    needs: ['journal_audio.js — VOICES.cover: the hinge arc (Q 2.4, shoulder 0.80), the eight-grab stick-slip table, and the landing at 0.212. Audition it back to back with journal.page — the pair is the test, not either one alone.'],
+  },
+  {
+    id: 'journal.page',
+    group: 'Interface',
+    label: 'Journal page turn',
+    kind: 'oneshot',
+    bus: 'master',
+    module: 'src/audio/journal_audio.js',
+    blurb: 'One band that goes up and comes back down — 700 → 3400 → 950 Hz — '
+      + 'with seven ticks of paper grain over it and a soft 200 Hz landing '
+      + 'underneath the end of it. Peak 0.114, 372 ms — first firing on a '
+      + 'fresh instance; per-firing the peak draws 0.110-0.134.',
+    layers: [],
+    trigger: (rig, v) => journalOf(rig).cue('page', { level: v.level, rate: v.rate }),
+    params: [
+      range('level', 'Cue level', 0, 1.5, 1, { step: 0.01, src: 'JournalAudio.cue opts.level — the journal passes < 1 for a flick-through' }),
+      range('rate', 'Speed', 0.5, 2, 1, { step: 0.01, src: 'JournalAudio.cue opts.rate — under 1 is a slower, bigger page' }),
+      range('journalGain', 'journal bus gain', 0, 2, JOURNAL_GAIN, { step: 0.01, group: 'Mix', src: 'journal_audio.js — JOURNAL_GAIN', apply: (r, v) => { journalOf(r).bus.gain.value = v; } }),
+    ],
+    needs: ['journal_audio.js — VOICES.page: the arc (f0/f1/f2 700/3400/950, turn 0.32, shoulder 0.70), the seven-tick grain table, and the landing at 0.252.'],
+  },
+  {
+    id: 'journal.cross',
+    group: 'Interface',
+    label: 'Journal cross-off',
+    kind: 'oneshot',
+    bus: 'master',
+    module: 'src/audio/journal_audio.js',
+    blurb: 'A pencil struck through a line: the band rises 1150 → 2500 Hz, the '
+      + 'level falls, the pan travels left to right, and four graphite catches '
+      + 'land unevenly along it. Peak 0.097, 124 ms — first firing on a fresh '
+      + 'instance; per-firing the peak draws 0.077-0.125, the widest of the '
+      + 'four, because a four-tick table is mostly transients.',
+    layers: [],
+    trigger: (rig, v) => journalOf(rig).cue('cross', { level: v.level, rate: v.rate }),
+    params: [
+      range('level', 'Cue level', 0, 1.5, 1, { step: 0.01, src: 'JournalAudio.cue opts.level' }),
+      range('rate', 'Speed', 0.5, 2, 1, { step: 0.01, src: 'JournalAudio.cue opts.rate' }),
+      range('journalGain', 'journal bus gain', 0, 2, JOURNAL_GAIN, { step: 0.01, group: 'Mix', src: 'journal_audio.js — JOURNAL_GAIN', apply: (r, v) => { journalOf(r).bus.gain.value = v; } }),
+    ],
+    needs: ['journal_audio.js — VOICES.cross: the drag arc, the four-catch table, and the 430 Hz board under it.'],
+  },
+  {
+    id: 'journal.slap',
+    group: 'Interface',
+    label: 'Journal photo slap',
+    kind: 'oneshot',
+    bus: 'master',
+    module: 'src/audio/journal_audio.js',
+    blurb: 'A photograph put down and taped: a 150 → 78 Hz body glide, a broad '
+      + 'Q 1.1 paper burst that carries the level, and three falling tape ticks. '
+      + 'Peak 0.269 — the loudest of the three, and it stays that way through a '
+      + '200 Hz high-pass, which took a rebalance. Level with the cover rather '
+      + 'than over it: across 24 draws the two have the same mean and the cover '
+      + 'is louder on 43% of firings.',
+    layers: [],
+    trigger: (rig, v) => journalOf(rig).cue('slap', { level: v.level, rate: v.rate }),
+    params: [
+      range('level', 'Cue level', 0, 1.5, 1, { step: 0.01, src: 'JournalAudio.cue opts.level' }),
+      range('rate', 'Speed', 0.5, 2, 1, { step: 0.01, src: 'JournalAudio.cue opts.rate' }),
+      range('journalGain', 'journal bus gain', 0, 2, JOURNAL_GAIN, { step: 0.01, group: 'Mix', src: 'journal_audio.js — JOURNAL_GAIN', apply: (r, v) => { journalOf(r).bus.gain.value = v; } }),
+    ],
+    needs: ['journal_audio.js — VOICES.slap: body 0.160, paper 0.760 at Q 1.1, board, and the three-tick tape table. The paper/body ratio is the small-speaker fix and is the thing to re-measure if it moves.'],
+  },
 ];
+
+// A guard rather than a comment: the lab lists the cues by hand above (each
+// wants its own blurb and its own knobs), so a fourth voice added to
+// `JOURNAL_CUES` would otherwise just quietly not appear here.
+if (JOURNAL_CUES.some((n) => !SOUNDS.some((s) => s.id === `journal.${n}`))) {
+  console.warn('[soundlab] journal cue with no entry:', JOURNAL_CUES.filter((n) => !SOUNDS.some((s) => s.id === `journal.${n}`)));
+}
 
 /**
  * The master chain. Shown beside every sound rather than as a sound of its own,

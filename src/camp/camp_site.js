@@ -137,6 +137,134 @@ export const CAMP_RADIUS_SMALL = 3.4;
 // a half outside the floor. This number is set entirely by the compact camp.
 export const TENT_FIRE_CLEAR = FIRE_RING + 1.40 + 0.22;
 
+// ── the roasting stick, and the arithmetic that stops it hanging in mid-air ──
+//
+// One stick per camp, leaning on whatever that camp actually has. Placement is
+// not polar about the fire like everything else here: it is expressed against
+// the prop it leans on, because the only thing that matters about it is that
+// the shaft crosses that prop's edge rather than passing a hand's width beside
+// it. `tryPlace` cannot express that — its whole job is to jitter a bearing and
+// sweep a radius, which is exactly what must NOT happen to this one.
+//
+// `LEAN_RUN_K` is the horizontal run from the butt to the contact, per metre of
+// rest height — cot(38.7°). Two constraints pin it, from opposite sides:
+//
+//  · A stick that leans steeper than about 54° off horizontal has its contact
+//    point INSIDE its own midpoint on a 1.1 m stick, which is a stick that
+//    slides down rather than one that is propped. That is K > 0.73.
+//  · A stick leaning on the WOODPILE has to clear the pile's own base on the
+//    way to its ridge. The pile measures 0.47 m of half-width against a 0.40 m
+//    ridge, a 40-degree flank, so anything steeper than the flank passes over
+//    the pile and touches nothing. That is K > 1.15, and it is the binding one.
+//
+// 1.25 satisfies both with a margin, and puts the contact at about two thirds
+// of a 1.1 m stick — which is what a propped stick looks like.
+//
+// It is an ASSUMPTION about the lean `buildRoastStick` authors, because the
+// contract publishes `restH` and `leanYaw` and does not publish the run. It is
+// not load-bearing: `Camp._seatStick` re-reads the built stick's own axis and
+// slides the prop along its lean until the contact lands on the edge, so this
+// only has to be close enough for the separation test below to be honest.
+const LEAN_RUN_K = 1.25;
+export const ROAST_FOOT = 0.28;
+
+// What the stick may lean on, measured off the built props rather than read off
+// their source — every one of these is rolled from the prop's own rnd, so the
+// layout cannot know the exact figure and takes the middle of the range.
+//
+// Measured over 26 pitched camps through `tools/probe.mjs`, as the local-space
+// bounding box of each built prop (min/mean/max across camps):
+//
+//   table      y 0.000 … 0.461/0.524/0.544   x ±0.320   z ±0.269
+//   woodpile   y 0.000 … 0.350/0.403/0.464   x ±0.465   z ±0.300
+//   chair      y 0.000 … 0.806/0.826/0.863   x ±0.324   z -0.287…0.283
+//   fire pit   y 0.000 … 0.299 (tallest cobble), ring radius FIRE_RING
+//
+// The table's mean includes what is standing on it; its own top is
+// `0.425 + rnd() * 0.045` in camp_table.js, so 0.447 is the middle of the
+// surface itself and the 0.461 minimum above is the undressed case agreeing
+// with it. Half-width and half-depth are taken back off the measured feet,
+// which stand 25 mm and 22 mm proud of the top plus their own mouldings — the
+// TOP's edge is what the stick rests on, not the foot.
+//
+// The still life changed under these numbers and they survive it. Every table
+// now carries the closed journal, and the paperback that used to be its second
+// object is gone (`camp_table.js`, `journalRest`). The book stands 31 mm proud
+// of the top against the mug's 78, so the mug still sets the measured maximum;
+// and the two SEAT TARGETS the stick uses — local (±0.174, ±0.194) — are clear
+// of it, because the book's own footprint reaches z 0.155 at its furthest and
+// -0.079 at its nearest. That matters more than it looks: `Camp._seatStick`
+// rays down onto the table with `intersectObject(obj, true)` and the book is
+// now a CHILD of that object, so a target that landed on a cover would seat the
+// stick 31 mm high on a surface that is not the table.
+const TABLE_TOP = 0.447;
+const TABLE_HALF_W = 0.281;    // the long edge runs along the table's local X
+const TABLE_HALF_D = 0.194;    // …at local ±Z, and see below for why not 0.221
+// The woodpile, measured off six BUILT piles in the prop's own local space
+// (`tools/probe.mjs`, vertices carried back through the inverse world matrix)
+// rather than read off `buildWoodpile`'s source. The previous pair of numbers
+// here were read off the source and had the axes transposed, which is what put
+// a stick through the middle of a stack — see the candidate block below.
+//
+//   half-extent along local X   0.444 - 0.477   (the logs' length: the LONG axis)
+//   half-extent along local Z   0.257 - 0.303   (across the stack: the SHORT axis)
+//   crown height                0.361 - 0.480
+//
+// `WOOD_HALF_D` is the short half-extent, taken at the bottom of its measured
+// band so a shoulder target never lands past the end of a narrow pile.
+// `WOOD_SHOULDER` is a SEED, not an answer — `Camp._seatStick` rays down at the
+// target and takes the real surface, which on a shoulder sits well below the
+// crown and differs per pile. It only has to be close enough to pick a sane
+// lean before the ray corrects it.
+// …and one more turn of the same crank, forced by a ray rather than a box.
+//
+// A first fix put the target at 0.78 of the half-depth — out on the shoulder,
+// which is where a stick physically rests. Measured with a raycast along the
+// shaft against the pile's actual log meshes (a box, and then a LOCAL box, had
+// both lied: a world-axis box is enormous for a rotated pile, and a local box
+// counts all the air over the sloping shoulder as solid), that left one camp in
+// ten with 0.44 m of shaft inside the wood, and every one of the bad cases was
+// a shallow lean of 20-23 degrees.
+//
+// The coupling is in `camp_marshmallow.js`: the lean is solved so the
+// marshmallow lands near 0.93 m, the solve clamps at a topple floor, and the
+// consequence is that a LOWER contact yields a SHALLOWER stick. A shoulder is
+// low, so aiming at the shoulder asked for exactly the lean that then skims
+// along the outer logs for half a metre before touching.
+//
+// So the target comes back inboard, to the near edge of the crown at 0.55 of
+// the half-depth, where the measured surface is near the full crown height.
+// The lean steepens to the low thirties, the butt lands ~0.69 m out in local Z
+// against a pile reaching 0.29, and at the pile's own outer edge the shaft is
+// ~0.26 m up against logs that are 0.05-0.15 m tall there. It clears.
+const WOOD_HALF_D = 0.26;
+const WOOD_NEAR_CROWN = 0.55;  // fraction of the half-depth: inboard of the shoulder
+const WOOD_SHOULDER = 0.36;
+// No chair here on purpose — see the note where the candidates are built. The
+// two numbers that used to live at this line (a 0.44 m back panel at local
+// -0.23 Z) are deleted rather than commented out, because a nominal height on
+// a surface no ray can measure is exactly what put a stick through a chair.
+
+// ── why the two targets above are INBOARD of the edge they name ──────────────
+//
+// The obvious numbers are the extremities — the table top's own half-depth
+// (0.210-0.231, so 0.221 in the middle) and the chair's rear extent (0.287) —
+// and both were, and both were wrong for the same reason. `Camp._seatStick`
+// drops a ray on the prop at this point to measure the real edge height, and a
+// target sitting on a knife edge misses it: the table's depth is
+// `0.420 + rnd() * 0.042`, so on the narrow half of that draw a 0.221 target is
+// 11 mm PAST the top and the ray falls through to the stabiliser bar 0.15 m
+// down. Measured, that read as 0.34 of the nominal height, the sanity band
+// threw it away, and the stick was seated 294 mm above the table.
+//
+// 0.194 is inside the top on every roll of its size, and 0.23 is on the flat
+// part of the chair back's profile rather than at its top rail. What it costs
+// is that the shaft crosses the top 2.7 cm inboard of the rim instead of
+// exactly on it — which at a 34-degree lean puts the shaft 4 mm INSIDE the
+// 22 mm rail as it passes over it. Still touching the edge, from every angle
+// anyone will look at it from, and a contact that is reliably a few millimetres
+// into the rail beats one that is occasionally a hand's width above it.
+
 /**
  * March the mouse ray against the heightfield.
  *
@@ -550,6 +678,10 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
 
   const out = [];
   const placed = [];   // { x, z, r } for separation tests
+  // What the roasting stick is allowed to lean on, kept as each is placed.
+  // Nothing else in this function reads them; see the roasting stick block at
+  // the bottom for why the stick cannot be placed from polar coordinates.
+  let table = null, wood = null;
   // The fire, first, as an obstacle like any other.
   //
   // It is the origin of every polar coordinate below, which is exactly why it
@@ -736,7 +868,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       const r = R * (small ? lerp(0.34, 0.42, rnd()) : lerp(0.30, 0.38, rnd()));
       // A chair may drift 0.28 rad — sixteen degrees — and no further. Beyond
       // that it has left the group it belongs to.
-      tryPlace('chair', a, r, 0.42, (x, z) => ({
+      const ch = tryPlace('chair', a, r, 0.42, (x, z) => ({
         kind: 'chair', x, z, y: world.getHeight(x, z),
         // A chair points at the fire, off by up to 20 degrees. Chairs that all
         // aim exactly at the centre look like a Stonehenge diagram.
@@ -790,7 +922,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
   if (!small && rnd() < 0.82) {
     const flank = rnd() < 0.5 ? -1 : 1;
     const a = seatCentre + flank * lerp(0.35, 0.72, rnd());
-    tryPlace('table', a, R * lerp(0.34, 0.42, rnd()), 0.40, (x, z) => ({
+    table = tryPlace('table', a, R * lerp(0.34, 0.42, rnd()), 0.40, (x, z) => ({
       kind: 'table', x, z, y: world.getHeight(x, z),
       yaw: Math.atan2(cx - x, cz - z) + (rnd() - 0.5) * 1.1,
       tilt: 1.0,
@@ -881,7 +1013,7 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
     // 0.50 rather than 0.44: the stack is 0.46 wide and the piece lying beside
     // it reaches past that, and the builder now measures and publishes the real
     // figure rather than asserting one.
-    tryPlace('woodpile', a, R * lerp(0.42, 0.52, rnd()), 0.50, (x, z) => ({
+    wood = tryPlace('woodpile', a, R * lerp(0.42, 0.52, rnd()), 0.50, (x, z) => ({
       kind: 'woodpile', x, z, y: world.getHeight(x, z),
       // `logs` is the number of pieces on the stack, and it is now read: the
       // builder used to ignore it and always laid 9-12, so this range keeps the
@@ -891,6 +1023,238 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
       // courses — shin-high, which is what a camp keeps by a fire.
       yaw: rnd() * TAU, tilt: 1.0, opts: { logs: 12 + Math.floor(rnd() * 4), wear: rnd() },
     }), { swing: 0.85 });
+  }
+
+  // ── the roasting stick ─────────────────────────────────────────────────────
+  //
+  // Exactly one, in every camp, always. It is the only prop here that is placed
+  // against ANOTHER PROP rather than against the fire, because the only thing
+  // that matters about it is that its shaft crosses that prop's edge: a stick
+  // leaning on nothing, a hand's width beside the table, is the single most
+  // visible way this feature can ship broken, and it is a failure that a polar
+  // placement with a jittered bearing produces by construction.
+  //
+  // The order is what the camp actually has, best first. The table is the one
+  // this was designed around; the woodpile and a chair are the fallbacks for
+  // the camps that have no table — every compact camp (they never get one) and
+  // 18% of full camps, which is `rnd() < 0.82` in the table block above and NOT
+  // the ~30% the brief guessed at. The stones are the last resort and are only
+  // reachable by a compact pitch whose single chair also failed to place.
+  {
+    // A prop's local (lx, lz) carried into world XZ by its own yaw. `standOn`
+    // rotates about +Y by `yaw`, which sends local +X to (cos yaw, -sin yaw)
+    // and local +Z to (sin yaw, cos yaw) — the same convention Camp.js's "+Z at
+    // the fire" rule is written in, and NOT the (cos a, sin a) polar convention
+    // everything else in this function is placed with. Mixing the two is a
+    // 90-degree error that looks exactly like a plausible placement.
+    const toWorld = (prop, lx, lz) => ({
+      x: prop.x + lx * Math.cos(prop.yaw) + lz * Math.sin(prop.yaw),
+      z: prop.z - lx * Math.sin(prop.yaw) + lz * Math.cos(prop.yaw),
+    });
+
+    // How badly a butt at (x, z) collides, ignoring the one prop it is supposed
+    // to be touching. Only that one is exempt — resting on it is the point, and
+    // the stick genuinely stands inside the radius the layout reserved for it.
+    // The fire ring, the tent, the chairs and every trunk and boulder the
+    // valley put in the clearing are all still in `placed` and all still count.
+    const overlapAt = (x, z, skip) => {
+      let worst = 0;
+      for (const p of placed) {
+        if (skip && p.x === skip.x && p.z === skip.z) continue;
+        const over = (p.r + ROAST_FOOT) * 1.04 - Math.hypot(p.x - x, p.z - z);
+        if (over > worst) worst = over;
+      }
+      return worst;
+    };
+
+    /**
+     * One candidate, from a contact point, the height of the edge at it, and
+     * the bearing from that edge OUT to where the butt would stand.
+     *
+     * `spin` is the only thing about this prop that is jittered, and it is the
+     * whole of its variety: the stick's own yaw is turned off the lean bearing
+     * by it and `leanYaw` carries the same angle straight back, so the shaft
+     * still points at the edge whatever the spin is. A stick square-on to a
+     * table edge in every camp is the level-editor tell the chairs and the
+     * telescope already avoid; a stick pointing anywhere but at the thing it
+     * rests on is broken. Expressing them as one number makes the second
+     * impossible while still buying the first.
+     */
+    const cand = (tx, tz, restH, outB, lean, local = null) => {
+      const spin = (rnd() - 0.5) * 0.44;
+      const run = restH * LEAN_RUN_K;
+      return {
+        x: tx + Math.sin(outB) * run,
+        z: tz + Math.cos(outB) * run,
+        // The edge itself, kept so `Camp._seatStick` can correct for whatever
+        // lean the geometry actually authored — see LEAN_RUN_K.
+        rest: { x: tx, z: tz },
+        restH, lean, local, yaw: outB + Math.PI + spin, leanYaw: -spin,
+      };
+    };
+
+    const cands = [];
+    if (table) {
+      // The long edge runs along the table's local X, at local ±Z, and the
+      // stick stands off one END of it — `TABLE_HALF_W * 0.62` along X, which
+      // is outboard of the mug and the journal but inboard of the corner where
+      // the legs splay out. The ±Z half is what actually keeps it off the
+      // journal — see the extent note above `TABLE_TOP`.
+      //
+      // -Z is tried first. +Z is the edge that faces the fire, so leaning on it
+      // puts the stick in the strip of ground between the table and the flames,
+      // which is where the chairs and everybody's boots are; from -Z the shaft
+      // instead leans back across the top TOWARD the fire, which is both the
+      // clearer silhouette and the more obviously deliberate object.
+      const end = rnd() < 0.5 ? 1 : -1;
+      for (const sz of [-1, 1]) {
+        for (const sx of [end, -end]) {
+          const lx = sx * TABLE_HALF_W * 0.62, lz = sz * TABLE_HALF_D;
+          const p = toWorld(table, lx, lz);
+          cands.push(cand(p.x, p.z, TABLE_TOP,
+                          table.yaw + (sz > 0 ? 0 : Math.PI), table, [lx, TABLE_TOP, lz]));
+        }
+      }
+    }
+    if (wood) {
+      // ── the near SHOULDER of the stack, approached across its short axis ───
+      //
+      // The player, with a screenshot: *"the stick was sticking straight out of
+      // the wood pile."* It was: 15 to 22 of 31 samples along the shaft were
+      // inside the pile's own solid, over six camps. Two mistakes multiplied,
+      // and the first one is in the sentence that used to be this comment.
+      //
+      //  1. **The axes were the wrong way round.** It said "the logs lie along
+      //     the pile's local Z, so the stick has to come at it from local ±X".
+      //     Measured off the built mesh in its own local space, over six piles:
+      //     half-extent **0.46 m along X** and **0.27 m along Z**. The logs lie
+      //     along X. So "come at it from ±X" was an approach straight down the
+      //     0.92 m length of the stack — the single worst bearing there is,
+      //     and the reason the shaft had most of a metre of logs to cross.
+      //  2. **The contact was the CENTRELINE.** Even on the right bearing, a
+      //     target at local (0, ridge) is the far side of the pile's crown, so
+      //     the shaft has to pass through the whole near half to reach it. A
+      //     stick leaned on a woodpile rests on the near shoulder; nobody
+      //     threads one over the top to touch the middle.
+      //
+      // So: approach across ±Z, and contact at 0.78 of the half-depth — out on
+      // the shoulder, inboard of the rounded corner where the ray starts
+      // finding air. The arithmetic that follows: at the solved lean of 29-42
+      // degrees the run from contact to butt is `restH / tan(lean)` ≈ 0.48 m,
+      // so the butt lands about 0.70 m out in local Z against a pile that
+      // reaches 0.27 m. That is 0.43 m of clear ground behind the butt, and the
+      // shaft crosses only the outermost few centimetres of log — which is
+      // what "leaning on it" looks like.
+      //
+      // The nominal height is a seed, not an answer. `Camp._seatStick` casts a
+      // ray down at this XZ and takes the real surface, which on a shoulder is
+      // lower than the crown and varies per pile (crowns measured 0.37-0.48 m).
+      // Giving it the right XZ is this file's whole job; the height is the
+      // seater's.
+      const side = rnd() < 0.5 ? 1 : -1;
+      for (const sz of [side, -side]) {
+        const lz = sz * WOOD_HALF_D * WOOD_NEAR_CROWN;
+        // A little jitter ALONG the ridge, which is X — so the stick is not
+        // always propped at the pile's midpoint.
+        const lx = (rnd() - 0.5) * 0.34;
+        const p = toWorld(wood, lx, lz);
+        // The bearing of local +Z is the prop's own yaw; ±Z is yaw or yaw+pi.
+        cands.push(cand(p.x, p.z, WOOD_SHOULDER, wood.yaw + (sz > 0 ? 0 : Math.PI), wood,
+                        [lx, WOOD_SHOULDER, lz]));
+      }
+    }
+    // ── the chair is NOT a candidate, and the reason is a playtest ───────────
+    //
+    // It was one, leaning on the back panel from behind, and the player's first
+    // two loads found the defect: *"the stick was through the back of a chair.
+    // On 2nd load, it was leaned on the log pile. Chair not ok, log pile ok."*
+    //
+    // The file already knew. The comment that stood here said, in as many
+    // words, that the chair back is "the one target `Camp._seatStick` cannot
+    // verify" — a down-ray cannot measure a near-vertical face, so the seater
+    // reads the top rail instead, the sanity band correctly throws that answer
+    // away, and the nominal 0.44 m is what stands. A nominal against a surface
+    // that moves 0.70-0.90 m across chair styles is a ±10 cm error with nothing
+    // watching it, and 10 cm of error on a 42 mm shaft is the shaft inside the
+    // fabric. The measured tail over 36 camps was -120 mm to +72 mm; a table's
+    // was ±2 mm and a woodpile's ±7 mm, and both of those are measurable
+    // surfaces.
+    //
+    // Deleting it costs nothing, because it was never the last resort: the
+    // stones below always exist. A camp with no table and no woodpile now
+    // stands its stick against the fire ring, which is a real thing people do,
+    // reads as deliberate, and is verifiable by the same down-ray as the rest.
+    //
+    // If a chair is ever wanted back, the honest version is a target on the ARM
+    // — a horizontal surface a ray can find — and it needs `camp_chair.js` to
+    // publish where its arm is, which it does not today.
+    // ── there is NO fallback past the woodpile, and that is a ruling ────────
+    //
+    // The player: *"I don't mind it leaning on the wood pile or table, but if
+    // those are not present, do not render the stick for the game."*
+    //
+    // What stood here was a fire-stone fallback: butt on the ground, shaft
+    // leaning across the ring's cobbles. It worked — the marshmallow landed at
+    // 0.71 m, outside the 0.58 m ring, and the seater could measure a cobble's
+    // crown with the same down-ray it uses everywhere else. It is deleted
+    // anyway, because "it works" was never the question. A stick propped on the
+    // fire ring is a stick nobody put there; the table and the woodpile read as
+    // somebody's kit set down, and that is the whole reason the prop exists.
+    //
+    // So a camp with neither simply has no roasting stick, and the mechanic is
+    // not available there. That is a real consequence and it is the intended
+    // one: compact hillside camps never get a table, so on those the stick now
+    // depends on the woodpile roll. Fine — a backpacker's pitch with no kit
+    // out is a truthful picture, and the feature is discovered at the camps
+    // that look like they are worth sitting at.
+
+    // First clean candidate wins, so the preference order above is the answer
+    // whenever the camp has room for it.
+    //
+    // There is NO least-bad fallback any more. It used to take the least
+    // overlapping candidate the way the tent's `insist` does, on the reasoning
+    // that "a camp with no stick in it is a camp with the feature missing" —
+    // which was true while the stones guaranteed a candidate always existed.
+    // With the stones gone that reasoning inverts: forcing the least-bad
+    // candidate would push a stick through the one piece of furniture it was
+    // supposed to lean on, which is the defect a playtest already found once.
+    // A camp that cannot seat a stick cleanly does not get one.
+    let best = null;
+    for (const c of cands) {
+      if (overlapAt(c.x, c.z, c.lean) <= 0) { best = c; break; }
+    }
+    if (best) {
+      out.push({
+        kind: 'roaststick', x: best.x, z: best.z, y: world.getHeight(best.x, best.z),
+        yaw: best.yaw, tilt: 1.0,
+        // Layout-private, not part of the geometry contract: the world XZ of
+        // the edge the shaft is meant to cross, and the height it crosses it
+        // at. `Camp._seatStick` reads them back off the built stick's own axis
+        // and slides the prop until the two agree.
+        rest: best.rest, restH: best.restH,
+        // …and WHICH prop that edge belongs to, by its placement coordinates,
+        // so `_seatStick` can measure the built thing rather than trust the
+        // nominal height above. Every one of those heights is rolled inside
+        // the prop's own builder (the table's top is `0.425 + rnd() * 0.045`,
+        // the woodpile's ridge came out anywhere from 0.350 to 0.464 over 26
+        // camps) and the layout cannot see the draw. Null for the fire's
+        // stones, which are not a prop.
+        // …and WHICH prop that edge belongs to: its placement coordinates, so
+        // `_seatStick` can find the built object, and the contact point in that
+        // prop's OWN local space, so the target follows the prop through the
+        // tilt `standOn` gives it. The world XZ in `rest` above is derived from
+        // the yaw alone, and on a compact camp's hillside a 0.4 m prop's top
+        // swings 0.15 m sideways under the tilt — a third of a woodpile's
+        // half-width, which is the difference between aiming at its ridge and
+        // aiming at its flank.
+        on: best.lean === placed[0] || !best.local
+          ? null : { x: best.lean.x, z: best.lean.z, l: best.local },
+        // `restH` and `leanYaw` are the contract with `buildRoastStick`:
+        // what it is leaning on, and which way, in the prop's OWN space.
+        opts: { restH: best.restH, leanYaw: best.leanYaw, toast: 0, wear: rnd() },
+      });
+      placed.push({ x: best.x, z: best.z, r: ROAST_FOOT });
+    }
   }
 
   return out;

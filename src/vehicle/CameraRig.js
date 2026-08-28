@@ -193,6 +193,9 @@ export class CameraRig extends System {
     this.freeYaw = 0;
     this.freePitch = 0;
     this.freeDist = ZOOM_DEFAULT;
+    // How far the free camera may dolly back. The boom's ZOOM_MAX by default;
+    // photo mode raises it for a long lens. See the wheel clamp in `_free`.
+    this.freeDistMax = ZOOM_MAX;
     this._freeEye = new THREE.Vector3();
     this._freeDir = new THREE.Vector3();
     this._freeRight = new THREE.Vector3();
@@ -759,7 +762,14 @@ export class CameraRig extends System {
       // beyond its own boom once the ground has lifted it), and clamping to 68
       // on the first notch would be a snap on the one input that is supposed to
       // be a nudge. So the range only ever tightens toward the real limits.
-      const lo = Math.min(ZOOM_MIN, this.freeDist), hi = Math.max(ZOOM_MAX, this.freeDist);
+      // `freeDistMax` rather than ZOOM_MAX, because the boom's limit is the
+      // wrong ceiling once a lens is fitted. 68 m is a sane distance to stand
+      // from a camper at 24 mm; at 400 mm the frame is 2.9 degrees wide and the
+      // subject is something across the valley, so a player trying to back off
+      // and find it hits the stop almost immediately. Photo mode raises this
+      // with the focal length; everything else leaves it at the boom's number.
+      const lo = Math.min(ZOOM_MIN, this.freeDist);
+      const hi = Math.max(this.freeDistMax ?? ZOOM_MAX, this.freeDist);
       this.freeDist = clamp(this.freeDist * Math.exp(m.wheel * 0.0016), lo, hi);
       touched = true;
     }

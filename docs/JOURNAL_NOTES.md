@@ -1,0 +1,1551 @@
+# The journal — notes
+
+Owner A of the scavenger hunt (`docs/HUNT_CONTRACT.md`). This is the record of
+what the book is, what it costs, what was tried and thrown away, and what the
+integrator has to wire.
+
+---
+
+## 1. What was built
+
+`src/journal/` — five modules, and the split is by *what changes together*:
+
+| file | what it owns |
+|---|---|
+| `Journal.js` | the public class, the overlay scene/camera/lights, the ceremony script, input, `render()` |
+| `journal_model.js` | `buildJournal(rnd, opts)`, `poseJournal`, `deformPage`, `samplePage`, materials, `JOURNAL_COLORWAYS` |
+| `journal_page.js` | `JournalPage` — one leaf, painted to a CanvasTexture: layout, pencil, tape, photos |
+| `journal_textures.js` | procedural leather (albedo + normal + roughness from one height field), endpaper, contact shadow, blank stock |
+| `journal_fonts.js` | the two self-hosted faces and the promise everything paints behind |
+
+Plus `public/fonts/caveat.woff2`, `public/fonts/caveat-brush.woff2`,
+`public/fonts/OFL.txt`.
+
+The model is discovered by `gallery.html` through the `build<Thing>(rnd, opts)`
+convention with no registry edit: three colourways from `JOURNAL_COLORWAYS`, and
+an `open` slider from `clamp01(opts.open ?? 0)`. Verified — see §6.
+
+## 2. Public API (as built)
+
+Exactly the contract, plus three additions, all additive:
+
+```js
+export class Journal {
+  constructor(ctx)
+  get active()
+  get wantsInput()              // NEW — true while the journal owns input
+  get sheets()                  // NEW — leaf count, for harnesses
+  get studying()                // NEW (r4) — in on one print
+  onClose = null                // NEW — integrator hook, fired once by close()
+  open({ award = null } = {})   // award: { id, photoDataURL | photo,
+                                //           replace? } | null    (r6)
+  close(); toggle()
+  study(page, row); unstudy()   // r4; goes the WHOLE way in r6 — §15.3
+  zoomOut()                     // one rung out
+  get closeUp(); get zoomLevel() // 0 spread, 1 the print   (r6: was 0/1/2)
+  get comparing()               // NEW (r6) — the "which of these two" leaf
+  get panned()                  // NEW (r6) — the player has driven the camera
+  panHome()                     // NEW (r6) — back to square; true if it moved
+  update(dt)                    // REAL seconds
+  render(renderer)              // straight after postfx.render(dt)
+  dispose()
+}
+```
+
+`ctx` is used for exactly two things: `ctx.renderer ?? ctx.engine.renderer` (to
+bake the environment map once) and `ctx.systems.audio?.cue(name)`. Everything
+else it needs it reads from the hunt store directly. It never touches the
+world, the camera, PostFX or the HUD.
+
+## 3. The four things that make it read as a book
+
+Measured by covering each one up in a capture and seeing what dies, in order of
+what it was worth:
+
+1. **The square** — covers overhanging the text block by 4.2 mm on three edges.
+   Without it the closed book is a box with a texture on it.
+2. **The rounded spine** — an ellipse, not a circle (`SPINE_FLAT = 0.52`), with
+   three raised cords and a headband at head and tail. A circular spine as
+   proud as the block is thick reads as a log. **And it is POSED** — see §10,
+   B2. Shut, it is the rounded back of the block; open flat, a book rests *on*
+   its spine and the leather is a shallow band underneath, not a ridge above.
+3. **The fore edge is 26 sheets**, individually jittered in width, height,
+   offset and cream, with a slightly concave stack profile. One cream box for
+   the text block was the loudest tell in the first pass.
+4. **The blind-tooled border and the stamped emblem**, both debossed into the
+   cover's height field rather than modelled. A 0.4 mm groove as polygons is
+   sub-pixel at every distance this is ever seen from.
+
+Blind-stamped *text* was tried for the emblem and thrown away: a title at this
+size is four pixels of cap height, which reads as a scratch rather than as
+words, and a title nobody can read is worse than no title because the eye keeps
+returning to it.
+
+## 4. The four bugs worth remembering
+
+Each of these presented as something other than what it was, which is why they
+are written down rather than just fixed.
+
+**The scrim on top of the book.** The world-dimming quad was a transparent mesh
+inside the book's own scene with `renderOrder: -100`. three renders the entire
+transparent queue *after* the opaque one, so renderOrder never got a look in and
+the scrim landed over the book. The symptom is a book uniformly the colour of
+the scrim with the type gone — which reads as a lighting bug. It now gets its
+own scene and its own pass.
+
+**The gutter dive sank the whole page.** `deformPage` adds an angle to an
+*integrated* tangent, so a 0.62 rad dive at the spine does not tilt the leaf near
+the fold — it displaces the entire rest of the sheet down by the integral of
+itself, 9 mm, well under the text block. It looked exactly like a texture that
+had failed to load. `deformPage` now re-levels the fore edge (`zShift`), and
+`GUTTER` only sets how deep the fold is.
+
+**Every checkbox on a recto came out as a bracket.** The leaves dive into the
+gutter; the stack slabs are flat boxes that run all the way to the fold; so the
+inner ~15 mm of every right-hand page was inside the block. Versos were fine
+(their fold is on the other side of the canvas), which made it look like a font
+or mip-filtering problem. Fixed by three numbers together — `GUT_INSET` steps
+each slab's inner edge away from the fold as it goes up the stack, `PAGE_LIFT`
+floats the printed leaf higher, and `GUTTER` is shallower.
+
+**The photograph arrived as a ghost.** The flying print's material took its own
+canvas as `alphaMap` "so the corners could be cut". `alphaMap` reads the green
+channel, so every dark pixel in the photograph became a hole. The card is a
+solid rectangle and needs no alpha at all.
+
+A fifth, from the model: `instanceColor` is only multiplied into the fragment
+when `USE_COLOR` is also defined, so the slab geometry carries a white `color`
+attribute it appears not to need. Without it the whole text block renders black.
+
+## 5. Type
+
+**Caveat** (body) and **Caveat Brush** (headings), both SIL OFL 1.1,
+self-hosted in `public/fonts/`, 126 KB for the two. `journal_fonts.js` loads
+them with the `FontFace` API — no `@font-face` rule and therefore no edit to
+`index.html` or `hud.css`.
+
+**Correction (round 2).** This section used to cite
+`shots/journal/00_font_specimen.png` as "a specimen of four candidates over the
+real page layout". That capture shows **two** panels, cropped at the right edge,
+and — worse — `tools/_scratch/_journalfont.html` referenced woff2 files for
+three of the four candidates that were never kept in `public/fonts/`, *and* had
+the shipped Caveat Brush at the wrong filename. Every panel in it was therefore
+drawn in a system fallback. **The four-way comparison does not exist and never
+did.** The old capture is no longer cited by anything.
+
+What replaces it is honest and smaller: `_journalfont.html` now draws the
+shipped pairing only — Caveat Brush heading over Caveat body, on a real page at
+the real aspect and real sizes — captured as
+`shots/journal/round2/00_type_specimen.png`. It settles the question a specimen
+can settle (does the hierarchy hold at page size) and claims nothing else.
+
+The pick itself was a **judgement, not a measurement**, and stands on one
+argument: read at real size, a typewriter heading over a handwritten list says
+"a printed form somebody filled in", where a personal field journal is one
+person's hand throughout. Caveat Brush is the same skeleton as the body with a
+fatter pen. Special Elite is Apache-2.0 rather than OFL, which was previously
+written down as if it were a reason — **no doc in this repo requires OFL**;
+`HUNT_CONTRACT.md` only says fonts are the asset exception. Licence is a
+tiebreaker between two faces that are otherwise level, and it was not close
+enough to need one.
+
+The trap this guards: **a CanvasTexture drawn before the webfont loads renders
+in the fallback face and never redraws.** Nothing paints before
+`journalFontsReady()` resolves, and every page can repaint.
+
+## 6. What was verified, and how
+
+- `gallery.html` on 5199 lists **Journal** as its own group with three
+  colourways, an `open` slider, `buildJournal(rnd, {"colorway":1})` on the info
+  panel, `5,566 triangles · 23 meshes · 15 materials`, size `0.16 × 0.23 × 0.03 m`
+  shut (it was `0.32 × 0.38` and framed as a stamp — see §9).
+- **`tools/_scratch/_jcritic.mjs` is the harness to use now.** It drives the
+  REAL wiring (`window.__systems.hud.journal`) in the real game at gameplay
+  framing, with the HMR client neutered and Chromium on ANGLE/Metal, and has
+  five modes: `model` (posed stills), `beats` (the ceremony), `aspect` (B4),
+  `timing` (how long the ceremony takes) and `cost` (what a repaint costs).
+  The lab page and `_jshot.mjs` cannot answer the questions round 2 was about:
+  both create their renderer with `antialias: true` and the game's is
+  `antialias: false`, so **the aliasing blocker was invisible in every capture
+  the lab ever produced.**
+- `tools/_scratch/_jingame.mjs` boots the real game on 5199, constructs a
+  Journal against the real `ctx`, chains `render` behind `postfx.render`, runs
+  the whole ceremony and closes it. **No console errors.** Renderer state after
+  close: render target null, scissor test off, `toneMapping` NoToneMapping,
+  `shadowMap.enabled` true — all as found.
+- **The black photograph in the round-1 captures was this harness, not the
+  product**, and it is fixed at `_jingame.mjs:57`. The stand-in photo was read
+  with `canvas.toDataURL()` from a *different task* than the one that drew the
+  frame; the context has no `preserveDrawingBuffer`, so the buffer had been
+  cleared and it returned a 12,435-byte fully black JPEG (probe mean luma 0.0).
+  `PhotoMode.capture()` renders and reads in the SAME task and always did —
+  4,246,826 bytes, mean luma 114.6. The harness now hooks the render callback,
+  reads inside it and puts the callback back: **405,051 bytes** of real
+  photograph at q 0.8. Same rule as `readPixels`: if you did not draw it in
+  this task, it is not there.
+- `AUTUMN_URL=http://127.0.0.1:5199 node tools/health.mjs` — `shaderFailures: 0`,
+  every system up; the only console error is the pre-existing
+  `VITE_POSTHOG_KEY` warning.
+- `tools/_scratch/_jceremony.mjs` films the ceremony as a strip on a
+  hand-stepped clock, so a timing change can be A/B'd frame for frame.
+
+## 7. Cost
+
+**5,566 triangles**, 23 meshes, 15 materials (was 5,982 / 22 / 14). The count
+barely moved; the ALLOCATION did, which was the real complaint. The spine was
+2,288 triangles — 38% of the whole model — on a uniform 26 x 44 grid over a
+smooth tube whose 0.6 mm cords are invisible at every distance the book is seen
+from, while the cover's corner radius staircased visibly at `curveSegments: 6`.
+The spine's rows are now placed where the profile actually bends (a coarse
+backbone, five rows across each cord, two at each turn-in) for ~900, the covers
+went to `curveSegments: 12`, and the surplus also paid for a three-column slab
+(the gutter gradient) and the ribbon's contact shadow. The overlay scene has
+four lights, none of which cast, so no shadow pass runs for it. Construction
+does ~90 ms of canvas work on the main thread (two leather map sets at 512²/256²,
+one endpaper, one contact shadow) plus ~40 ms per page paint × 6 pages, all of
+it behind the font promise and therefore off the first frame. Nothing allocates
+in `update()` except the two `THREE.Vector3`s the ribbon poser builds per frame —
+see §9.
+
+## 8. What the integrator has to wire
+
+1. **Construct it** — `const journal = new Journal(ctx);` once, at boot, after
+   the renderer exists. Construction is cheap; the expensive half is async.
+2. **Update it** — `journal.update(dt)` with **real** seconds, every frame,
+   *including while `ctx.worldPaused` is true*. It runs its own clock.
+3. **Render it** — immediately after `postfx.render(dt)`:
+   ```js
+   engine.setRenderCallback((dt) => { postfx.render(dt); journal.render(engine.renderer); });
+   ```
+4. **A key** — `J` is the obvious one and the journal already closes on `J`,
+   `Escape` and `Enter` from its own capture-phase listener. The integrator only
+   needs the *open* half.
+5. **Award on capture** — from `PhotoMode.capture()`, once `hunt_detect` says
+   what is in frame:
+   ```js
+   journal.open({ award: { id, photoDataURL } });
+   ```
+   It is safe to call `hunt.award(id, photo)` yourself first; the journal
+   re-arms the row either way so the pencil still animates.
+   **And the other half of that answer (r6):** when `hunt.award` returns FALSE
+   the subject is already crossed off, and instead of nothing happening the
+   book can offer to swap the print:
+   ```js
+   journal.open({ award: { id, photo: thumb, replace: true } });
+   ```
+   `photo` may be the shutter's own canvas — the journal re-encodes it
+   synchronously inside `open()`, before its first await, precisely because
+   that canvas is a reused scratch buffer. See §15.2 for the exact three lines
+   in `hud_photo`.
+6. **Nothing for the free camera.** `J` already owns the wheel and the pointer
+   while the book is open (§15.4), through the same capture-phase listeners.
+7. **Gate the HUD** on `journal.wantsInput` if you want the driving chrome to go
+   away while the book is open. Nothing breaks if you do not — the journal's
+   listeners are capture-phase and already take the events — but the HUD stays
+   drawn over the book, which the capture in the report shows.
+8. **Nothing for type.** No stylesheet change.
+
+## 9. Known weak points
+
+- **`poseJournal` allocates.** The ribbon and band posers build ~80
+  `THREE.Vector3` per frame. It is an overlay over a paused world, so it has
+  never shown up as a hitch, but it is against the house rule and it is the
+  first thing to fix if the journal ever animates over live gameplay.
+- **The elastic band renders lighter than its albedo suggests** — a near-black
+  hide comes out mid-grey. It is the broad GGX lobe at roughness 0.86 plus the
+  environment; it looks like a plausible elastic, but it was tuned by eye rather
+  than understood.
+- ~~The contact shadow plane is inside the model's bounding box~~ — fixed in
+  round 2, and it was three things, not one. `gallery.html` unions every mesh's
+  `geometry.boundingBox` and knows nothing about `visible` or about
+  `instanceMatrix`, so the journal reported **0.32 × 0.38 m**: the contact
+  shadow (three cover-widths across), the LEFT leaf (posed flat-open at all
+  times and merely not drawn while the book is shut) and the text block's slab
+  geometry (nominal size, centred on the mesh origin, which is the *hinge* — a
+  whole page-width left of where any instance actually is). All three now carry
+  an explicit box; the gallery reports **0.16 × 0.23 m** shut and the true
+  spread open.
+- **A repaint is NOT ~40 ms — that figure was wrong by an order of magnitude,
+  and it is corrected here rather than quietly deleted.** Chromium *defers* 2D
+  canvas raster, so a `performance.now()` either side of a `paint()` measures
+  command recording and nothing else; the 40 ms that was once seen was a queue
+  draining later, attributed to the call that filled it. Measured in the real
+  game (`node tools/_scratch/_jcritic.mjs --mode cost`), per call, main thread:
+
+  | call | recorded | with the raster forced (`getImageData` flush) |
+  |---|---|---|
+  | `JournalPage.paint()` | 0.167 ms | 4.77 ms |
+  | `strikeAt()` | — | 2.29 ms |
+  | `progressAt()` | — | 2.28 ms |
+
+  The flush probe itself costs about 2.3 ms, so the partial blits are very
+  nearly free and a full repaint is ~2.5 ms of actual raster. The partial-blit
+  paths are still the right design — they touch a rectangle instead of 1.5 M
+  pixels — but they were not saving a dropped frame, and the comments that said
+  so have been corrected in place.
+- **The journal has been playing in SILENCE, and that is now fixed.** It cued
+  `journal.page` / `journal.cross` / `journal.slap`; `Audio.cue` dispatches the
+  book's voices with `JOURNAL_CUES.includes(name)` against
+  `['page', 'cross', 'slap']` (`src/audio/Audio.js:272`). Not one name ever
+  matched. Nothing throws and nothing logs when a cue misses, which is why it
+  survived a whole round of review — the only way to find it is to read the
+  other end. The cues are bare names now.
+- **The cover swing has its own voice name and no voice behind it yet.** It
+  asks for `cover`, which `journal_audio.js` does not ship — an unknown name is
+  a no-op, so the beat is silent rather than speaking with a paper rustle 0.6 s
+  before the first actual page turn. **Integrator: one leather-and-board voice
+  in `src/audio/journal_audio.js` plus `'cover'` in `JOURNAL_CUES`.**
+- **Fifteen items is four list pages**, so the last page carries three lines and
+  a lot of white. It looks deliberate rather than broken, but a sixteenth item
+  would make the sheet square. Not fixed here: `src/game/hunt_items.js` is D's
+  file and the journal lays out whatever it is given.
+- **`src/main.js` gates `journal.render()` on `journal.active`**, which goes
+  false on the frame `close()` is called — so the 0.46 s put-down animation is
+  never drawn in game and the book vanishes instead. `Journal` now exports
+  `get visible()` for exactly this; the fix is `journal.active ||
+  journal.visible` at `src/main.js:469`, and it is one word in a file this
+  module does not own.
+
+---
+
+## 10. Round 2 — the six blockers, and what the evidence was
+
+The critic panel rejected the feature. Every fix below was verified with a
+capture taken through the real game wiring at gameplay framing
+(`tools/_scratch/_jcritic.mjs`, plates in `shots/journal/round2/`), and where
+the critic gave a number, the number was re-measured.
+
+### B1 — the whole book was un-antialiased over an SMAA'd world
+
+`src/core/Engine.js:17` builds the context with `antialias: false` (world AA is
+SMAA inside the post chain) and the overlay draws *after* that chain into that
+same raw framebuffer. Every silhouette on the hero object staircased over a
+perfectly smooth meadow.
+
+`Journal.render()` now draws the book into a **4x multisampled
+`WebGLRenderTarget`** and blits it over the frame. Three things about it are
+load-bearing:
+
+- The **scrim stays on the direct path**. It is a flat full-screen quad with no
+  silhouette, so it has nothing to antialias, and moving the world-dimming
+  blend into the target's linear space would have changed how much it dims.
+- The blit material is **`premultipliedAlpha: true`**. The book is drawn over a
+  transparent clear with three's separate alpha blend, so the target's colour
+  is already multiplied by coverage; composited with an ordinary source-alpha
+  blend every edge pixel darkens twice and the book grows a grey halo.
+- **RGBA8 tagged sRGB, not half float.** Same encoding and same 8 bits as the
+  canvas, so the composite is identical to before except at the edges; half
+  float would have been 46 MB of multisampled attachment for a book.
+
+A driver that refuses a multisampled target falls back to the old direct path
+with a warning rather than losing the journal. `clearDepth()` on the canvas is
+gone — the book has its own depth buffer now, which also means the overlay has
+stopped clobbering the *world's*.
+
+### B2 — the spine was a rope, because it was never posed
+
+`poseJournal` never touched it. It stayed a half-ellipse spanning z ±15.6 mm
+forever, so an **11 mm leather ridge stood above the paper down the whole
+gutter** of every spread. It was also **2,288 of 5,982 triangles — 38% of the
+budget on the part that read worst.**
+
+- `spineGeometry` now builds a **table** and `poseSpine(geo, open, zHinge)`
+  re-lays it. The profile is always `x = -sin(a)·AX`,
+  `z = CZ + cos(a)·AZ - sin(a)·DROP`; opening the book only moves those four
+  numbers, so a tube standing over the block becomes a lens lying under it
+  through one continuous family of shapes. Gated on the cover having actually
+  moved, so it costs nothing at rest.
+- **The headbands ride it.** Left alone they became two striped half-tori
+  standing 11 mm above a flat spread — the same bug and twice as odd-looking,
+  because they are the only saturated colour in the frame.
+- **The rows are no longer uniform.** A coarse backbone, five rows across each
+  cord, two at each turn-in: same silhouette, ~900 triangles instead of 2,288.
+  The surplus went to the cover's corner radius (`curveSegments` 6 → 12), which
+  was staircasing where anyone could see it.
+- **The gutter gradient.** Cream running right up to the fold was half of why
+  the spine read as a foreign object. The stack's slab is now three vertex
+  columns with the middle one pushed in to 18 mm, carrying a ramp from 0.34 to
+  1.0 — and the two stacks get *mirrored* geometries, because the left stack's
+  fold is on its other side.
+
+### B3 — the bright seam down the front hinge of the closed book
+
+Two things, and the first one was not what it looked like. Probed by hiding one
+mesh at a time and reading the framebuffer in the same task as the draw
+(`tools/_scratch/_jslit.mjs`): **the bright pixels belonged to the cover
+skin**, whose extruded hinge-side wall points straight down the key light at
+(-0.62, 0.92, 0.72). Measured peak in the hinge strip: **0.50 luma against a
+0.34 cover.** So the joint is now crushed, darkened and made matte in the cover
+map (B5) — a real joint is the *dark* part of a book, being the strip a thumb
+touches every time it is opened.
+
+Second, the arc genuinely did stop dead at x = 0, abutting the skin's edge in a
+T-junction that has nothing behind it. It now **overruns by `SPINE_LAP` at both
+ends and sinks as it does**, so each end runs ~2.3 mm in +x and tucks under the
+board. Nothing can leak through a crack with leather behind it.
+
+**After: the peak in the same strip is 0.35, and the 0.44–0.46 spike at
+x = 644–653 is flat 0.31–0.32.** (Honest note: the round-1 report described the
+leak as *cream*, i.e. the text block showing through. It cannot be — the block
+is gated invisible while the cover is shut — and a scan for bright,
+low-saturation pixels over the closed book found **zero** before the fix as
+well as after. The seam was real, the diagnosis of what was behind it was not.)
+
+### B4 — the spread was clipped in any window narrower than ~1.15:1
+
+`CAM_FOV` is vertical and only `camera.aspect` was written, so horizontal
+coverage shrank with the viewport while the spread stayed two pages wide. At
+0.75 the heading was cut to "p Scavenger Hunt" — on the branch whose whole
+point is that the checklist is the interface on a device with no keyboard.
+
+`_fitCamera(aspect)` now fits horizontally below `DESIGN_AR = 1.55`, and buys
+the coverage in two stages: **open the lens up to `FOV_MAX = 54°`, then dolly
+the camera back** for whatever is left. A 90° lens 600 mm from a spread laid
+nearly flat turns the far page into a wedge, and a checklist you have to read
+is the last place to spend perspective on drama.
+
+It also **reclaims the margin as the window narrows** (`TIGHT_MAX = 1.30`): at
+the design aspect the spread fills about two thirds of the width and the rest
+is the frame the book sits in; on a phone held upright the frame is nothing but
+margin, so the book grows into it to ~88%. Without that the fix was *correct*
+and the hint lines were still unreadable.
+
+| aspect | before | after |
+|---|---|---|
+| 1.78 | fine | unchanged, fov 30 |
+| 1.33 | tight | fov 32.0 |
+| 0.75 | **clipped — "p Scavenger Hunt"** | complete, fov 46.2 |
+| 0.69 | **clipped** | complete, fov 49.7 |
+| 0.46 | **mostly off-screen** | complete, fov 54 + dolly to z 0.815 |
+
+### B5 — the hide read as cork at the size it is actually seen
+
+Judged at opening framing, not at 4x zoom. Three faults, all in
+`journal_textures.js`:
+
+- The 40-cell (3.7 mm) octave entered through `smoothstep(0, 0.34, F2-F1)`,
+  which **saturates over most of a cell interior** — so what it contributed was
+  a second crease network, i.e. exactly the crazing its own comment said it was
+  added to prevent. Widened to `(0, 0.72)` at weight 0.44 it stops clipping and
+  becomes the dominant *dome*.
+- The 104-cell (1.4 mm) octave carried the largest weight (0.48) and is a
+  single cell size, so the "size distribution" the comment claimed was not
+  visually present. It is the crease network and nothing else now, at 0.34.
+- The 248-cell (0.6 mm) octave is about **two screen pixels** at opening
+  framing — below Nyquist, so it integrated to a uniform fizz that shimmered.
+  0.22 → **0.08**.
+- **There was no low-frequency albedo variation at all**, only a height
+  undulation. Real leather pools dye over 15–40 mm, which on a 148 mm board is
+  4–10 cycles across the map: two smooth octaves, ±8% of value, cover map only
+  (the spine's map tiles, and a non-tiling term in a tiling map is a seam).
+- **The grain crossed the blind-tooled fillet unchanged.** A hot brass wheel
+  crushes grain flat; the tooling was subtracted from the height field and the
+  pebble ran across it at full amplitude, which is why the fillet looked
+  *painted on* rather than pressed in. The function now keeps `grain`,
+  `deboss` and `tooled` as three fields and composes
+  `h = grain·(1 − 0.8·crush) − deboss`, where `crush` is the tooling plus the
+  joint mask. This is the single cheapest change in the round and the most
+  visible one at 4x.
+
+### B6 — the progress line was stale through the whole ceremony
+
+`_armAward` updates `spec.progress` on **every** page and then repaints only
+the page the *award* is on — and the count lives on page 1 and nowhere else. So
+with the item struck off, ticked, photographed and taped, the line under the
+heading still read **"none of fifteen found"**.
+
+`JournalPage.progressAt(text)` is a partial blit alongside `strikeAt` /
+`tickAt` / `tapeAt`, run from `Journal` on the tick beat — the moment the item
+is "counted". It deliberately does **not** blit from `_clean`: the clean copy is
+the page as it was *before* the ceremony and still has the old number in it, so
+it re-lays the band from `paperBase` and the fold shadow instead, and then
+patches `_clean` so the pencil animation's cache stays honest.
+
+**Evidence: `shots/journal/round2/b8_progress.png` — leafed back to page 1
+after the ceremony, the line reads "one of fifteen found".**
+
+## 11. Round 2 — polish, in the order the critic asked for
+
+1. **Endpaper river** — was ten `lineTo` points with no smoothing: a line
+   chart, not water, and the first interior surface the cover reveals. Now
+   quadratics through the midpoints with the weight tapering from source to
+   mouth.
+2. **Empty photo slots** — `setLineDash([10, 11])` over 30 px legs meant a dash
+   *period* longer than the leg, so each leg was one or two dashes: a 1–2 px
+   speck at gameplay resolution, and fifteen rows of them read as dirt. Solid
+   now, longer legs, drawn with `inkLine` so they are in the same hand as the
+   rest of the page. Still corners rather than a closed box — a closed dashed
+   rectangle reads as a file-upload dropzone, which was right the first time.
+3. **Tape shadow and sheen halved.** Masking tape is two hundredths of a
+   millimetre thick and the old values made each strip a raised beige bar. The
+   tape itself was praised and is untouched.
+4. **The second tape strip was running out of its corner, not across it.** A
+   strip taped over a corner is perpendicular to that corner's bisector; the
+   two corners used are opposite ends of the same diagonal, so both want the
+   same sign, and the second was at `tilt − 0.70` — parallel to its bisector.
+   Both are positive now (0.60 and 0.86, still visibly different).
+5. **The hint fades on a struck row.** It stays — leafing back should read as a
+   list, not a scoreboard — but it drops to 0.26 alpha so completed rows go
+   quiet.
+6. **The ribbon.** It wanders (2.4 mm of lateral drift and a 0.7 mm bow off the
+   paper), it curls and twists as it comes over the tail edge so the hanging
+   end shows its back, its cross-section is cambered (`roll`) so the broad face
+   has a satin gradient instead of one flat tone, the material went from 0.72
+   roughness to 0.50 because a ribbon is woven silk, and **it casts a contact
+   shadow** — a transparent strip a millimetre wider, depth-tested so only the
+   millimetre that escapes the ribbon shows, and only over the on-page run.
+7. **The cover has its own voice name** — and the three that already existed
+   were never being heard at all. See §9.
+8. **Gallery bbox** fixed (§9), **title-page rule** moved under the whole title
+   block rather than between title and subtitle, **the squirrel hint's "here"
+   widow** fixed by fitting the hint to one line before allowing a wrap
+   (33 px down to 25 px), and the sixteenth item is D's call, not the
+   journal's.
+
+**Ceremony timing**, measured on the journal's own clock from `open()` to the
+second piece of tape (`--mode timing`). `SCRIPT.seekLeaf` went 0.46 → 0.30 —
+somebody riffling to a page they know the number of does not turn it at reading
+speed:
+
+| award | extra turns | taped at |
+|---|---|---|
+| `deer` (first page) | 0 | **3.57 s** (was 3.92) |
+| `waterfall` | 1 | **3.84 s** |
+| `burntMallow` | 1 | **3.88 s** (was reported 5.42) |
+
+## 12. Round 3 — the paper's highlight headroom
+
+Two items, both named by the round-2 critic in a pass that otherwise signed the
+feature off. Nothing else was touched.
+
+### 12.1 The page had no headroom, and the ribbon's shadow paid for it
+
+The page material was `color: 0xffffff` under a 1.95 key with `NoToneMapping`
+behind it. It overflowed. Measured on the settled spread at 1600×900 through
+the real game (`__systems.hud.journal`, not the lab page):
+
+| | R clipped at 255 | R **and** G clipped | page px clipped | page max R |
+|---|---|---|---|---|
+| before | 376,366 | 260,182 | 369,665 | 255 |
+| after | **823** | **793** | **0** | **250** |
+
+The 823 that remain are not paper: they are the bottom cut edge of the leaf
+stack (rows 690–699) taking a grazing specular, and they sit at exactly 823 at
+every gain from 1.0 down to 0.55. The fallback composite — `_rtFailed`, no MSAA
+target, straight to the canvas — clipped identically before (380,667) and
+clears identically now (3,636, all of it that same fore edge).
+
+What the clipping cost, at the pixel the critic quoted. The band beside the
+ribbon at y440 went from a dead-neutral **(160,158,137)** — R−G of 2 — to
+**(145,134,117)**, R−G of 11. There were 1,034 pixels of that neutral strip;
+there are now **zero**. The paper beside it went from (255,255,225), hue
+surviving in blue only, to (231,218,193). Mean R−B over the bright paper: 32.4
+→ 42.2.
+
+**The fix is `PAPER_GAIN` in `journal_model.js` — 0.70, applied to the page's
+albedo AND its emissive together.** `setJournalPages` hands the same canvas to
+`map` and to `emissiveMap`, so both terms are proportional to the page art and
+scaling both by one factor scales every page pixel by exactly that factor in
+linear space: the ink-to-paper contrast ratio is arithmetically untouched and so
+is the lit-to-emissive balance. The flying print card in `Journal.js` carries
+the same gain, because it is swapped for the baked print the instant it lands
+and a mismatch would pop on the one frame the award beat is built around —
+measured across that swap, the print region differs by **0.24 / 255**.
+
+**The type got better, not worse**, which is the opposite of the risk. The soft
+hint ink was being washed into clipped paper. Michelson contrast, same boxes,
+before → after:
+
+| | before | after |
+|---|---|---|
+| headline | 0.596 | **0.613** |
+| row label | 0.407 | **0.427** |
+| smallest hint (left) | 0.168 | **0.194** |
+| smallest hint (right) | 0.165 | **0.193** |
+| running head | 0.098 | **0.124** |
+| turning leaf, row label | 0.304 | **0.309** |
+
+Ink-pixel counts rise with it (the hint line goes 235 → 275 surviving pixels).
+The one number that falls is the headline's WCAG ratio, 10.23:1 → 9.77:1, from
+the paper's absolute luminance dropping; AAA is 7:1.
+
+Three other places the headroom could have come from were rejected — the key
+light, the emissive alone, and a highlight shoulder on the overlay's own blit
+(which composites premultiplied colour, so a curve there grades antialiased edge
+pixels differently from their interiors and would put an artifact back on the
+silhouettes the MSAA target exists to fix, and would not run on the fallback
+path at all). The full argument is in the `PAPER_GAIN` header.
+
+### 12.2 The endpaper contours were drawn with a compass
+
+Every ring of a hill shared one wobble and one radius step, so each was an exact
+scaled copy of the one inside it: perfectly concentric, perfectly evenly spaced.
+Three small irregularities now, none of them amplitude — amplitude is what made
+the round-1 version a spirograph:
+
+- **the summit migrates**, so outer rings sit off to one side of the peak;
+- **the spacing is uneven**, a per-hill steepening trend plus a small jitter;
+- **the ring shape drifts with height**, phase and depth walking per ring.
+
+Magnitudes are bounded so rings cannot touch: tightest step ~12.6 px at
+size 512, jitter takes at most 3.6 and shape drift at most ~4.3.
+
+It draws from a **second generator**. Taking these from `rnd()` would have
+shifted every later value in the sequence and moved both the hill placement and
+the river — the river was tuned last round and should not move because the
+contours grew a wobble. Verified: hill positions and river are unchanged.
+
+### 12.3 Noted, not touched
+
+- The leaf stack's bottom cut edge clips ~800 px of grazing specular. It is a
+  cut edge, not paper, and it is not what the critic reported.
+- Phone portrait below ar ~0.55 is still a ceiling, not a break. The real fix is
+  showing one page, which is a design change.
+- The HUD hint bar visible for ~500 ms during the ceremony cross-fade was judged
+  deliberately last round and stays.
+
+---
+
+## 13. Round 4 — three things the user asked for
+
+Nothing in §§1–12 was retuned. The three items below are additive, and where one
+of them touches something that was signed off, the note says so and says why it
+is not a regression.
+
+### 13.1 Click a taped photo to go in on that entry
+
+*"you should be able to click a photo in the log book to essentially have the
+book tilt more towards the user and zoom in on the book so the photo is larger
+and easier to see that entry and photo."*
+
+> **Round 6 removed the LEAN.** What this section described was the first of two
+> zoom rungs: the book came up centred on the ROW, and a second click on the
+> same print came the rest of the way. There is one rung now and clicking a
+> print goes straight to the close look — see §15.3, which is where the current
+> behaviour is written down. Everything below is still true except where it is
+> marked, because the machinery it describes is what the surviving rung runs on.
+
+`Journal.study(page, row)` / `unstudy()` / `get studying`, driven from the
+existing capture-phase pointer listener. Click a print, the book comes up
+toward you; Escape and it goes back.
+
+**~~The row is the frame, the print is the target.~~** *(r6: the print is now
+both.)* The click target is the print's own slot grown by `SLOT_PICK` (1.18),
+which is ~10 mm of page all round — that is unchanged and is why a thumb on a
+phone does not have to be accurate to the millimetre. The framed rectangle used
+to be `JournalPage.rowUV(i)`, the whole band; it is now `slotUV(i)`, the print.
+The argument for framing the row — a photograph sits *beside* its line, so the
+entry is half of what somebody leaning in wants to read — is answered by the
+free camera instead (§15.4): the line is one pan away and does not need a rung
+of a ladder authored for it.
+
+**The picking is `samplePage`, not a raycaster.** `samplePage` already answers
+"where in the world is this bit of page", it reads the table `deformPage` left
+behind rather than re-integrating the bend, and it is the same function the
+flying print lands with. The four corners of the slot go out through it and
+into the camera, and the test is point-in-quad on screen — two triangles, not a
+winding test, because a bent page does not project to a convex quad. A
+raycaster would have been a second, differently-wrong answer to a question that
+already has one. **Unchanged.**
+
+**The pose.** `STUDY_TILT` 0.42 rad added to the laid pose's `rotation.x`, and
+the book SCALES rather than the camera dollying (`_fitCamera` owns the camera,
+and the composition rule in `Journal`'s header still holds). The tilt is
+unchanged and always was the close look's tilt too — §14.5's note that the tilt
+does not move on the second rung is what makes removing the first rung leave it
+exactly where it was. The offset that centres the target is recomputed from the
+LIVE posed page every frame rather than baked at the click: at k = 0.5 the book
+is half-tilted and half-scaled and the offset that centres it then is not half
+the offset that centres it at k = 1. **Unchanged.** ~~`STUDY_ZOOM` 2.55, eased
+in over 0.42 s and out over 0.34 s~~ — the constant is gone and the timings are
+now `CLOSE_IN` / `CLOSE_OUT`, re-measured in §15.3.
+
+**Historical.** These were the lean's numbers, measured through the real wiring
+with `tools/_scratch/_jstudy.mjs` at 1600×900. They describe a view that no
+longer exists and are kept because the tilt column is still the tilt that ships:
+
+| | at the spread | leaned in (r4–r5 only) |
+|---|---|---|
+| the row's screen box | 0.219 × 0.094 of the frame | 0.569 × 0.298 |
+| the row's centre | wherever it was | 0.500, 0.498 |
+| the page, off face-on | 34° | **10.1°** ← still true at the close look |
+| the print's own box | 0.070 × 0.070 | — |
+
+Going the whole way to face-on was rejected: a page exactly perpendicular to
+the lens has no perspective in it and the book stops being an object in a room.
+0.42 takes about seventy per cent of the 34°. **Unchanged, and it applies with
+more force at the close look, not less.**
+
+Everything backs out **one level at a time** — Escape from a print returns to
+the spread and a second Escape shuts the book; a page key or a wheel detent
+returns to the spread rather than teleporting back and turning a page in one
+input. Dead keys while zoomed were considered and rejected: a key that does
+nothing is how a player decides a mode is stuck. The ceremony keeps right of
+way on the same test `leaf()` uses — the flying print locates its page with
+`samplePage` every frame and moving the book underneath it would move the
+target it is aiming at. **Unchanged, with one rung fewer to climb.**
+
+The one affordance: `zoom-in` on the canvas cursor over a print, `zoom-out` once
+you are in, written the way `Camp._paintCursor` writes it and only on a change.
+The journal has no chrome to say this with and the browser already has the
+vocabulary. **Unchanged** — and in round 6 the hover does a second job as well,
+arming the detail patch (§15.3).
+
+Plates: `s0_spread`, `s2_lean_100ms`, `s4_leaned`, `s6_spread_again` — all four
+show the removed rung and are historical.
+
+### 13.2 The page turn is a recording now
+
+`public/audio/page.mp3`, 25 KB, recorded by the user. **This is a departure from
+the repo rule** — every sound in this game is synthesised and `public/audio/`
+had held exactly one asset ever — so it is handled as one:
+
+* **the synthesised voice stays and is the fallback.** Measured with the fetch
+  rejected, `cue('page')` renders 0.1139 peak / 0.0212 rms / 372 ms /
+  hp200 0.1146 — bit-identical to `synth page`. No asset, no silence.
+* **it is TWO takes.** Measured in 20 ms windows: a lift and a snap at
+  0 → 215 ms (peak 0.1680), 380 ms of room tone, a second turn at 585 → 700 ms
+  (peak 0.1565), then 280 ms of near-silence. Fired whole it is two page turns
+  for one call. The cue plays one take, drawn by the rng, which also supplies
+  the "never bit-identical" the file's discipline asks for.
+* **the level is measured on the same four columns the other voices are.**
+  `tools/_scratch/_jaudio.mjs` reproduces the existing table to the last digit
+  (cover 0.2298 / page 0.1139 / cross 0.0973 / slap 0.2689), which is what makes
+  the new row comparable rather than merely adjacent.
+
+Four columns wanted four different gains — peak 0.677, hp200 0.690, mono 0.596,
+loudest-200 ms 1.491 — and `hp200` decides it, because the small-speaker order
+(§ the header's block) is a rule and not a preference. The recording is almost
+entirely above 200 Hz, so a gain chosen for loudness sails past cover (0.1319)
+and slap (0.1356) through the 4th-order filter and inverts the ceremony; any
+gain over 0.794 does. **0.68**, which agrees with the full-range peak to
+0.16 dB. What it costs, stated: the loudest 200 ms lands 6.6 dB under the
+synthesised page on take 0 and 8.9 under on take 1, because the recording's
+crest factor is 20 dB against the synth's 13.
+
+Ducking still holds: three turns 0.12 s apart peak 0.1279, **+0.7 dB** over one
+turn against the synthesised voice's +2.4 dB.
+
+### 13.3 The journal sits closed on the camp table
+
+`camp_table.js` publishes `userData.journalRest` — a point and a yaw **in the
+table's own space**, the way `camp_telescope.js` publishes `eye`/`aim` and for
+the reason `camp_scope_view.js` gives at length. `Camp._seatJournal` builds the
+closed book with `buildJournal` (reuse, not new geometry) and parents it to the
+table group, so a table yawed by a jitter and tilted onto a slope carries the
+book for free. `J` still opens it; clicking it opens it too, through
+`hud.toggleJournal()` so the `pa-journal` class still takes the driving chrome
+off the screen.
+
+**Where it goes in the pick order: after the telescope, before the stick**, and
+the argument is in `Camp._interact`. The stick's sphere is on the marshmallow,
+0.34 m across and 294 mm above the table it leans on; the book's is 0.17 m and
+lies flat on it. Measured off the placements, when the two take the same end of
+the table their centres are ~0.34 m apart — so the marshmallow's sphere reaches
+down over the book and the book's never reaches up to the marshmallow. The
+padded sphere is the one that can steal, so it goes second. That is the opposite
+conclusion to the telescope-versus-stick rule beside it and it is not the same
+question; the rule that covers both is *the padded sphere loses to the one that
+is not*.
+
+**The still life had to move.** `dressTable`'s header says one or two objects,
+never three, and the book has nowhere to go beside both: with its squares it is
+157 × 218 mm on a top that is 536–586 × 420–462, and the mug's band (0.14W to
+0.30W) and the paperback's (0.16W to 0.28W) both run through it. So the journal
+takes the paperback's place — the still life stays at two objects and the second
+one stops being a random novel and becomes the player's own book, which is
+closer to "somebody stepped away for a minute" than the paperback ever was. The
+`paperback()` builder is deleted rather than left dead. The mug moves outboard,
+0.14W–0.30W → 0.26W–0.35W, and the numbers are off the two footprints: the
+book reaches 0.123 m from centre at its worst yaw and the mug's inner reach —
+centre minus the 56 mm its handle swings — is 0.090 m at the old band's near end
+and 0.146 at the new one's. **This moves the table's rnd stream**, so camps look
+different for a given seed; unavoidable, and written down in `journalRest` so
+the next person comparing an old capture does not think something broke.
+
+**It needed different leather.** The book was authored for the overlay's four
+lights and its environment map, and the world has neither
+(`src/render/SkyProbe.js`'s header states the problem for the whole game).
+Measured in the real game with `tools/_scratch/_jlum.mjs`: the shadows are
+innocent (mean luma 41.9 with cast and receive on, 41.9 with both off) and the
+albedo map is the whole of it — removing it takes the same crop from 42 to 216,
+and the cover map averages sRGB (60, 26, 9). `HIDE_LIFT = 2.6` multiplies the
+leather's and the board's albedo in a **second cached material set that shares
+every texture**; at `lift = 1` the arithmetic is unchanged, so the overlay's
+book is what it always was (verified: `_jcritic --mode model`, `m0_closed`).
+What the lift buys is not brightness — the atmosphere lays a pedestal no albedo
+gain touches — it is the grain: over the cover's own crop at hour 13 the mean
+goes rgb(56,40,30) → rgb(73,38,28) while the spread goes **1.48 → 3.79**, which
+is the pebble, the fillet and the emblem coming back. 3.2 keeps climbing and
+starts reading as orange against a yellow meadow. The full table, and the honest
+limit at dusk where the sweep moves nothing, are in `HIDE_LIFT`'s header.
+
+**Cost**, paired inside one page load (`_jtable.mjs --mode cost`): **+17 draw
+calls and +4,440 triangles** per table. It was +20 and +5,464 before the shadow
+trim in `_seatJournal`: a shut book is a slab, so only the two boards and the
+spine cast and only the front cover receives — the endpapers are pasted inside
+the covers, the thread is in the gutter, the ribbon's painted contact shadow is
+on a page nobody can see, and the fore edge stands inside the square. The
+overlay's own painted contact shadow is off entirely for the prop
+(`buildJournal({ shadow: false })`): the overlay's lights do not cast and the
+world's do, and the painted one is three cover-widths across — wider than the
+table is deep.
+
+**The prop hides while the book is open.** A player reading it is holding it,
+and a second copy on the table under a 78% scrim is the kind of detail that is
+invisible for a year and then impossible to unsee. Flipped on the edge, so it is
+one boolean compare while driving.
+
+### 13.4 New instruments
+
+| tool | what it answers |
+|---|---|
+| `tools/_scratch/_jaudio.mjs` | the four voices and the mp3, offline, on the header's own column definitions |
+| `tools/_scratch/_jstudy.mjs` | the lean-in, through the real wiring, with real pointer events |
+| `tools/_scratch/_jtable.mjs` | the prop on the table: seat, pick, prompt, click, cost |
+| `tools/_scratch/_jlum.mjs` | why the leather went dark, and the `HIDE_LIFT` sweep |
+| `tools/_scratch/_jclose.mjs` | the third zoom level, and how many source pixels are stretched over how many screen pixels (§14) |
+
+Three traps each of these had to learn the hard way and each now documents:
+
+* **the hunt sheet must be SEEDED into `localStorage` before any module runs.**
+  Reaching `hunt` with a dynamic `import()` from an evaluate hands back a second
+  instance of the singleton whenever Vite has stamped `?t=` on the module — and
+  mid-edit it always has. Every award went into that second store and the book,
+  reading the first, came up empty. Two runs.
+* **the camera cannot be pinned from the render callback.** `Camp._interact`
+  builds its pointer ray from `e.camera` during the system update, so a pose
+  written after the render is invisible to it: the pick misses inside the game
+  and hits from an `evaluate()`. The symptom is an empty prompt beside a
+  `_journalUnderPointer()` that returns true. One run.
+* **`document.querySelector('.pa-camp-prompt')` is the wrong element.** There
+  are two in a booted page and the first is not the live one. Read
+  `window.__camp.prompt.el`. (`tools/campshot.mjs`'s own UI-in-frame guard has
+  the same selector and therefore the same blind spot.) One run.
+
+### 13.5 Noted, not done
+
+* `hud.toggleJournal()` reports `source: 'key'` to posthog whichever way the
+  book was opened, so a click on the table is indistinguishable from `J` in the
+  stats. The fix is one argument in `src/ui/HUD.js`, which this round does not
+  own.
+* `Journal.dispose()` calls `disposeJournalMaterials()`, which now clears BOTH
+  cached sets — so a teardown of the HUD's journal also frees the leather the
+  camp props are drawn with. That only happens on a full teardown, at which
+  point the camps are going too, but it is a coupling that did not exist before.
+* Every camp table carries the journal. One in five full camps has no table and
+  compact camps never do, so those have no book on them; `J` is the shortcut
+  that makes that fine rather than a gap.
+* At dusk the prop is as dark as the table it lies on. That is the camp's
+  standing environment-map request (`docs/CAMP_REQUESTS.md`), not this book's.
+
+---
+
+## 14. Round 5 — a second zoom level, and what it exposed
+
+*"I want another level of zoom here. if you click again on the photo it would
+fill 80% of the screen with the photo on the book."*
+
+> **Round 6 removed the rung this one was added on top of**, so "click the print
+> again" is now "click the print". The close look itself — the contain-fit, the
+> per-frame solve, `printPatch`, and every number in §14.1 and §14.3 — is
+> exactly what ships; what changed is that it is one click from the spread
+> rather than two, and §14.4's third bullet and §14.5's ladder are rewritten in
+> §15.3. Read this section for what the close look IS and §15.3 for how it is
+> reached.
+
+Click a print and the book comes until the photograph is 80% of the screen —
+still on the book, with the paper, the tape and the page around it in frame.
+Escape, a page key, a wheel detent or a click anywhere backs out to the spread;
+a second shuts the book.
+
+Nothing in §§1–13 was retuned *in round 5*.
+
+### 14.1 What "80% of the screen" resolves to
+
+**80% of whichever axis runs out first.** The print is 36.4 x 27.5 mm on the page
+(a 252 x 190 px slot on a 148 x 210 mm leaf), i.e. 1.32:1 landscape, and it has
+to sit inside anything from an ultrawide to a phone held upright. All three of
+the obvious readings put it off the screen on some real display:
+
+| reading | on 16:9 | on a 700 x 1520 phone |
+|---|---|---|
+| 80% of the **width** | 0.80 x **1.07** — clipped | fine |
+| 80% of the **height** | fine | **2.30x** the width — clipped |
+| 80% of the **area** | 0.77 x **1.04** — clipped | clipped, worse |
+
+Area is the worst of the three rather than the cleverest: it is the only one
+whose answer depends on the frame's aspect and still bounds neither axis.
+
+So `CLOSE_FILL` is a contain-fit: the print's projected box, largest side
+against the matching side of the frame, at 0.80. Measured through the real game
+(`_jclose.mjs`), the print's own screen box:
+
+| | at the spread | leaning in (§13.1) | the close look |
+|---|---|---|---|
+| 1600 x 900 | 0.070 x 0.070 | 0.173 x 0.223 | **0.629 x 0.800** |
+| 700 x 1520 | — | 0.255 x 0.086 | **0.800 x 0.267** |
+
+On 16:9 it binds on the height and leaves 297 px of page either side and 100/80
+above and below; on the phone it binds on the width and leaves 70 px either
+side. Neither ever clips, and both keep at least a tenth of the frame of paper
+and tape around the print, which is the "still on the book" half of the brief.
+
+**The scale is solved, not authored.** `STUDY_ZOOM` could be a constant because
+it only had to look right; a fit cannot be, because the scale that satisfies it
+moves with the window's aspect (through `_fitCamera`'s lens *and* its dolly),
+with which page of the spread the print is on, and with where in the leaf's bend
+it sits. `_trackCloseZoom` measures the projected box every frame and divides.
+It is one division rather than a search because the relationship is linear by
+construction — the print is held at `STUDY_LOOK`, a fixed world point, so its
+distance from the camera does not change with the scale. Measured: it lands on
+**9.094** at 1600 x 900 and **7.927** at 700 x 1520, and holds those to four
+decimal places over eight consecutive frames (no oscillation), and re-solves for
+free on a resize.
+
+### 14.2 The bug this cost: which matrices is `samplePage` reading?
+
+The first version passed the recentring offset down and added it to each sample
+by hand, to save a second walk of the matrix tree. It put the print **a
+screen-width off to the left**, and the reason is worth writing down because it
+is invisible at the call site: `samplePage`'s quaternion branch ends in
+`mesh.getWorldQuaternion`, and three implements that as
+`updateWorldMatrix(true, false)` — **it silently refreshes the whole ancestor
+chain mid-frame**. So one sampler in `_applyStudy` was reading pre-recentre
+matrices and its neighbour four lines later was reading post-recentre ones, and
+both looked correct in isolation. `_trackCloseZoom` survived it only because it
+measures a SIZE, and a translation does not change one — which is why the print
+was the right size in the wrong place.
+
+The rule now is `root.updateMatrixWorld(true)` before anything reads the page,
+and no offsets by hand. One walk of a 20-node tree, only while the close look is
+up.
+
+### 14.3 The resolution finding, which is the headline
+
+**At this magnification the page texture is the binding constraint, not the
+store**, and that is the opposite of what everyone assumed — including this
+round's own brief, which asked whether 512 px was too small to save.
+
+Measured at 1600 x 900, on the emulsion (the photograph inside the print's white
+border), with a REAL photograph taken by the game and put through
+`hunt_store.makeThumb`:
+
+| | |
+|---|---|
+| the emulsion on screen | **878 CSS px** wide |
+| what the page texture holds | **220 x 126 texels** (`_paste` draws into `cardW - 20`) |
+| so, without a fix | **3.99x** magnification at dpr 1, **7.99x** at dpr 2 |
+| what the store was holding all along | 1024 px |
+
+The 1024 px the store pays quota for were being thrown away one step later, at
+paint time, when `_paste` drew them into a 220 px box. **Raising `THUMB_MAX` on
+its own would have changed nothing anybody could see.**
+
+Raising the page's own resolution was the other way to fix it and is not an
+option worth having: 2x on six leaves is 143 MB of canvas, and 2x still would
+not carry a 1024 px photo — it would hold 440 of it.
+
+So `JournalPage.printPatch(i)` draws the print **once more**, on its own
+transparent canvas, at `px` device pixels per page pixel taken from the decoded
+photo's own width, and `Journal` composites it over the leaf as a flat quad
+placed with `samplePage` — the same trick and the same placement the flying
+print already lands with. Nothing in either file names a resolution.
+
+| | dpr 1 | dpr 2 |
+|---|---|---|
+| page texture only (`_jclose --nopatch`) | 3.99x | 7.99x |
+| with the patch, store at 1024 | **0.86x** (a downscale) | **1.72x** |
+| with the patch, store at 512 | 1.72x | 3.43x |
+
+The A/B is `shots/journal/round5/z4_print_1to1.png` against
+`z5_print_1to1_nopatch.png`, same crop, same frame: the page-texture version is
+blocky to the point that the camper's roof rack is four brown smears, and the
+patched one resolves the spare wheel, the ladder and individual trees. At dpr 2
+(`z6_print_dpr2.png`) the patched version is visibly soft — bilinear, plus some
+JPEG mush in the foliage — but has no blocking and everything in it is readable.
+
+**How much source the print wants.** The emulsion's width on screen is
+**~0.98 x the frame's height** in CSS px on 16:9 and wider (0.87 x the width on
+portrait), so a 1:1 view needs `0.98 x viewport height x dpr` pixels of source:
+878 at 1600 x 900 dpr 1, 1054 at 1920 x 1080, 1405 at 2560 x 1440, and **1757 on
+any dpr-2 1600 x 900**. So **1024 is the right number**: it is native for every
+dpr-1 window up to about 1050 px tall and lands at 1.72x on a retina one, which
+is soft rather than broken. 2048 would be the only size that makes dpr 2 native,
+for 4x the quota, on the deepest zoom of one feature — not worth it.
+
+### 14.4 Three things about the patch that are not obvious
+
+* **The baked print is HIDDEN, not covered** (`JournalPage.hidePrint`).
+  Everything in the patch is translucent somewhere — the drop shadow, both
+  pieces of tape, the tape's own shadow — so the copy underneath would show
+  through every one of them and darken it twice.
+* **There is no cross-fade.** The swap happens on the first frame of the dolly,
+  when the print is still 17% of the frame, and the two images are the same
+  drawing from the same seed at two resolutions. Fading would mean bare paper
+  showing through a half-transparent print for a fifth of a second, which is a
+  far louder artifact than a sharpness change nobody can see at that size. Same
+  argument `_bakePhoto` makes for the flying card.
+* **It is built one beat early.** Drawing it is 14–28 ms of canvas raster,
+  measured with the raster forced (`_jclose` prints it; Chromium defers 2D
+  raster, and docs/JOURNAL_NOTES.md 9 is the standing warning about timing it
+  any other way). Spent on the click into the close look that is a stutter at
+  the start of the move, where the eye is. In r5 it was spent on the frame the
+  LEAN landed instead — a still picture over a paused world. **In r6 the lean
+  does not exist, so it moved one beat the other way: it is spent on HOVER**,
+  after `HOVER_ARM` (0.12 s) of the pointer resting on a print, which is the
+  same beat one step earlier and is already the moment the cursor changes to
+  `zoom-in`. See §15.3.
+
+The canvas is **1825 x 1257, 9.2 MB**, transient, held only while the player is
+leaning in on a photographed row. `DETAIL_PX_MAX` (4.7) is the cap and it is
+what a 1024 px photo asks for (1024 / 220); at 512 the scale comes out 2.33 and
+the canvas is 913 x 629.
+
+One thing had to change in `journal_page.js` for the patch to be the same
+drawing at a different size: **`g.filter = 'blur(6px)'` is in DEVICE pixels and
+is not affected by the context transform.** Probed in Chromium — a 6 px blur
+reaches 11 page px at scale 1, 5.5 at scale 2, 3.67 at scale 3 — so `_paste` and
+`tapeStrip` take a `px` argument that scales the two blur radii and nothing
+else. At `px = 1` the arithmetic is unchanged and the page is what it always was.
+
+### 14.5 The ladder, and the one cap on it
+
+> **r6: this is now a TWO-rung ladder** — 0 the spread, 1 the print. The
+> paragraph below described three. `_studyTo` and `_studyK` are otherwise
+> exactly what they were and `_zoomTo` still measures per level crossed, which
+> still matters because `_studyFrom` is continuous: interrupt a move halfway and
+> send it back and `dist` is 0.5. §15.3.
+
+Every pose term is a function of the one scalar `_studyK`, and every way in or
+out moves it by exactly one level. Verified in the real game (`_jreal.mjs`):
+Escape from the close look gives level 0 with the book still open, and Escape
+again shuts it.
+
+The tilt does NOT move as a separate rung — it goes on with the zoom, in one
+move. At the close look the page is 10 degrees off face-on, and `STUDY_TILT`'s
+argument against going face-on (a page perpendicular to the lens has no
+perspective in it and the book stops being an object in a room) applies with
+more force this close, not less.
+
+**`close()` caps the ease-out at `SCRIPT.close`.** The put-down is 0.46 s and
+`_visible` goes false at the end of it; `CLOSE_OUT` is 0.52 s, so without the
+cap the zoom would have quietly broken the close animation §13.1 was careful to
+get right — the book would vanish still half-zoomed instead of going back and
+going down as one movement. The cap did the same job when the ladder had three
+rungs (two levels at the old `STUDY_OUT` was 0.68 s) and it is still doing real
+work with one rung fewer. Verified: `close()` from the close look leaves
+`zoomLevel 0`, no patch, and **no leaf with its print still hidden**.
+
+### 14.6 The download was cancelled mid-round
+
+The brief also asked for a "save this print" control. The user withdrew it —
+*"Yea maybe 512 is too small, forget the download then"* — while it was still at
+the design stage, so there is no half-wired control anywhere and nothing was
+removed. What the design had settled on, in case it comes back: a real
+`<a download>` element over the canvas rather than anything painted into the
+book, because a download needs a user activation on an anchor either way, and
+the honest place for a browser gesture is the browser's own vocabulary. The
+journal's capture-phase pointer handler would have to return early for events
+whose target is inside it, or `preventDefault` on `pointerdown` suppresses the
+click.
+
+### 14.7 Noted, not done
+
+* ~~**The wheel backs out rather than zooming in.**~~ Fixed in round 6: the
+  wheel is the free camera's dolly now (§15.4).
+* **A click on a DIFFERENT print while zoomed in backs out** instead of hopping
+  to that entry. At this framing the other print is a sliver at the edge of the
+  frame and a sliver that teleports the book is a way to lose your place. Still
+  true in r6.
+* **No stat and no posthog event** for reaching the close look. `src/game/` is
+  not this module's to write to, and `Stats.js` has exactly one external writer
+  today (`hud_photo`) which is flagged as unusual where it happens.
+* At dpr 2 the print is a 1.72x upscale. The fix is a bigger stored photo and
+  the number is in §14.3; nothing in `src/journal/` has to change for it.
+
+---
+
+## 15. Round 6 — a bug, a choice, and the player's own hands
+
+Four things, in the order they were done, because each one leans on the one
+before: §15.1 fixes a print that was not on screen at all (nothing else in this
+round is worth looking at until it is), §15.2 adds the leaf that asks which of
+two prints to keep, §15.3 takes the middle rung out of the zoom ladder, and
+§15.4 hands the camera to the player — which is what makes §15.3 a removal
+rather than a loss.
+
+### 15.1 The close look was bare paper on half the sheet
+
+*"I took a new photo, but when I zoom further its not there. The old photo is
+though. Just not this new one."*
+
+**It was never about new against old, and it was never about the store.** It was
+about WHICH PAGE the print is on. Pages 1 and 3 are versos — the left-hand leaf
+of a spread — and every print on one of them was bare paper at the close look.
+That is eight of the fifteen lines: deer, rabbit, squirrel, raccoon, owl, heron,
+flamingo, fireflies. The other seven (pages 2 and 4) were always fine, which is
+why a player whose older print happened to be a waterfall and whose new one
+happened to be a deer reads it as "the new one is broken".
+
+**The mechanism.** `samplePage` hands back the LEAF's own basis. `poseJournal`
+bends the left-hand leaf with `p = 1`, so `deformPage` writes it a normal of
+(0, 0, -1) and a tangent that runs the other way — it is a sheet that has been
+turned over, which is also why `journal_model` draws it `pageMat(BackSide)` and
+why `journal_page._toUV` flips u on a verso. `_detailShow` copied that basis
+onto the patch quad unchanged, so on a verso the quad was:
+
+* **front-face culled** — its own +Z pointed away from the reader, and
+* **0.9 mm UNDER the paper**, because the hold-off is applied along that same
+  +Z and the leaf's opaque depth write then covered it.
+
+And `hidePrint` had already taken the baked print out of the page texture (§14.4
+— it is hidden rather than covered because the patch is translucent in three
+places). Hidden print, invisible replacement: bare paper.
+
+Measured through the real game with `tools/_scratch/_jsweep.mjs`, as the quad's
+own +Z against the direction the camera is looking — negative is facing the
+reader:
+
+| | before | after |
+|---|---|---|
+| recto — fox (page 2), highCamp (page 4) | −0.985 | −0.985 |
+| verso — deer (page 1), owl (page 3) | **+0.985** | **−0.985** |
+
+The fix is a half-turn about the page's own vertical before the hold-off is
+applied. It is one rotation rather than a sign on the lift because the basis
+differs from a recto's by exactly that half-turn: X and Z reverse and Y does
+not, so undoing it fixes the facing, the hold-off's direction and the print's
+handedness in one move.
+
+**Turning the material `DoubleSide` also makes the print reappear, and it is the
+wrong fix.** Tried first, captured, and thrown away: seeing the back of a quad
+reverses it, so the photograph came back MIRRORED — the plate is
+`shots/journal/round6/` against `v1_verso_fixed.png`, same frame, same seat, the
+treeline swapped from left to right. An absent print is a bug somebody reports
+in a day; a flipped one is a bug nobody ever notices. The quad stays front-sided
+on purpose, so a future disagreement between it and the paper is loud.
+
+Plates: `shots/journal/round6/v0_verso_before.png` (bare paper, deer),
+`v1_verso_fixed.png` (the same seat, same run of the same harness),
+`v2_recto_unchanged.png` (fox, to show nothing moved on the side that worked).
+`v0` is captured by `BROKEN=1`, which seeds `_flipY` with an identity quaternion
+from the page rather than editing the fix out — the before and the after are the
+same binary.
+
+**What it was NOT, since two rounds of diagnosis went there first.** The row
+state after an in-session award is correct: driven through the real shutter,
+`{done: true, hasPhoto: true, photoW: 1024, patchW: 1825}` with no reload.
+`printPatch` returns its 1825 px canvas on a verso exactly as on a recto. The
+`THUMB_MAX` 512 → 1024 change is unrelated and touching it would have changed
+nothing. The committed reproduction `tools/_scratch/_patchbug.mjs` reported an
+empty row because it awards through a dynamic `import()` inside an evaluate and
+therefore into a second instance of the singleton — §13.4's first trap, again.
+Its header now says so.
+
+**Adjacent, checked, not touched.** The flying print in the ceremony rides the
+same basis and carries the same unsigned hold-off, so on a verso award it is
+also a hair under the paper as it lands and is showing its back face for the
+flight. It survives because it is `DoubleSide` and because `_bakePhoto` swaps it
+for the baked copy within 60 ms of touchdown. Filmed at 90 ms per frame
+(`FILM=1 FILM_T0=1700 FILM_DT=90`), the card is on screen mid-flight over the
+deer row and lands correctly. The ceremony is signed off and the artifact is one
+tumbling card ~50 px across; it is written down rather than fixed.
+
+### 15.2 Photographing something the book already has
+
+*"we also need some way to replace a photo. If you take a photo that could go in
+the book, but already is, we should pull up the photo in a preview frame next to
+the old one and ask if they want it replaced. The UI can be a blank journal page
+with both photos tape side by side. and you can hover and then click the one to
+keep. Then that one slaps."*
+
+Built as asked. `hunt.award` returning false — which is how the shutter already
+knows there is nothing to do — now opens the book on a blank leaf with the two
+prints side by side instead of doing nothing.
+
+**The leaf is borrowed, not built.** `spec.compare` is a transient overlay that
+`JournalPage.paint()` draws instead of the Notes page, and it is taken off again
+by `_cmpDrop` — on the choice, on Escape, on `close()` and on the next `open()`.
+Adding a real leaf for it would change `sheets`, and `sheets` sets the fore
+edge, the stack split and the leaf-turn arithmetic for every journal in the game
+including the one lying on the camp table — a permanent change to a signed-off
+object to carry a page that exists for four seconds every few sessions.
+
+**Which is which, three times over.** The request said hover then click, and
+that the hover has to do real work, so it does three things at once and no one
+of them is load-bearing on its own:
+
+| | in the book | just taken |
+|---|---|---|
+| always | **taped down**, two crooked strips | a loose print lying on the paper |
+| always | caption "in the book" | caption "just taken" |
+| hovered | comes 6% of its own width off the page, grows 3.5%, caption goes to full ink with a pencil stroke under it | the same |
+| not hovered | falls to 55% while the other is up | the same |
+
+The tape is the half that is true rather than decorative: one of these prints is
+stuck in a book and the other is not yet. `CMP_LIFT` is a fraction of the
+print's own measured width rather than a distance in metres, because the
+framing is solved per window and a fixed 4 mm would be a different gesture on
+each one.
+
+**Escape keeps the one in the book, and the page says so** — a pencil line at
+the foot reading `Esc — keep the one in the book`. Not "cancel": a player who
+has just taken a photograph they are unsure about needs to know which of the two
+survives walking away, and "cancel" does not tell them. Every key that would
+otherwise move the book (Escape, J, Enter, both page keys, space) and a wheel
+detent all do the same thing, and so does shutting the book. A click that is not
+on a print does **nothing at all** — the one deliberately inert click in this
+file, because the alternatives (turn the page, back out) would answer an
+unanswered question with the answer the player did not give.
+
+**The slap fires on whichever print is kept, including the incumbent.** Choosing
+the one already in the book writes nothing to the store and still plays the
+beat, because the request asked for it on the chosen print and because a choice
+that makes no sound reads as a click that did not register. The squash is the
+ceremony's own — 7.5% over the tail of the move, the number `_flyPhoto` lands
+the awarded print with — so the two are one gesture rather than two dialects.
+
+**The framing, and the number that was measured.** The compare reuses the close
+look's contain-fit by handing `_study` a rectangle with a null row. That
+immediately exposed two things:
+
+* `_trackCloseZoom` clamped its solve to a FLOOR of `STUDY_ZOOM` (2.55), which
+  is right for a print — the close look must never end up wider than the lean it
+  came through — and wrong for a page: a whole A5 leaf at 80% of a 1600 x 900
+  frame is **1.19x**, so the clamp cropped the question off the top of the leaf.
+  The floor is now the scale the move set out from, which is 2.55 for a print
+  and 1 for this leaf.
+* a portrait page on a landscape screen binds on its HEIGHT, and everything on
+  it shrinks accordingly. Measured at 1600 x 900, per print:
+
+  | framed rectangle | a print, on screen |
+  |---|---|
+  | the whole text block, `M_TOP` to `M_BOT` (h 1276) | 201 px |
+  | heading + question + prints + captions + Esc (h 625) | **449 px** |
+  | the two prints alone (h 429) | 598 px — and no question, no way out |
+
+  201 px is smaller than the thumbnail in the checklist, which is useless for
+  the one judgement the page exists for. So the block is packed short and wide
+  at the top of the leaf and the rest is bare paper, which is what a leaf out of
+  the back of a notebook looks like anyway.
+
+**Store.** `hunt.setPhoto(id, url)` and nothing else — the door its own header
+describes as "the housekeeping after the moment". **`src/game/hunt_store.js` was
+not touched.** Two cases are handled without asking: an id with no stored
+photograph at all (crossed off with no picture, or the picture evicted by the
+quota ladder) skips the question and just takes the new one, because there is
+nothing to compare against; an id that is not on the sheet falls through to a
+plain open.
+
+**What the integrator wires**, in `src/ui/hud_photo.js` — three lines, and the
+existing "everything found is ticked, only the first NEW one opens the book"
+logic is untouched:
+
+```js
+      let award = null, again = null;
+      for (const id of detectSubjects(this.ctx)) {
+        if (hunt.award(id, thumb)) { if (!award) award = { id, photoDataURL: hunt.photoFor(id) }; }
+        // Already crossed off: offer the swap instead of doing nothing.
+        else if (!again) again = { id, photo: thumb, replace: true };
+      }
+      if (award ?? again) this.hud.openJournal(award ?? again);
+```
+
+An award still wins over a replace when one frame holds both — a new deer at an
+already-photographed waterfall opens the ceremony, not the question. No new
+import: `thumb` is the canvas that line already has, and the journal re-encodes
+it. `HUD.js` needs nothing: `openJournal(award)` passes the object straight
+through and `replace` rides on it.
+
+Verified end to end with `tools/_scratch/_jreplace.mjs`, which fires the real
+shutter TWICE at two vantages of the same waterfall (with a reload between, or
+`hunt.award` swallows the second) so both prints are real photographs of the
+same subject and telling them apart is a genuine test:
+
+| | stored afterwards | leaf | Notes leaf handed back |
+|---|---|---|---|
+| keep the new one | B | walks home to 2 | yes |
+| keep the one in the book | A, unchanged | walks home to 2 | yes |
+| Escape | A, unchanged | walks home to 2 | yes |
+| `CANVAS=1` (the shutter's real call shape) | B, re-encoded | 2 | yes |
+
+Plates: `shots/journal/round6/r0_compare.png`, `r1_hover_old.png`,
+`r2_hover_new.png`, `r3_slap.png`, `r4_swapped.png` — the last one is the
+checklist page after, with the new print taped into the waterfall's row.
+
+**One thing this exposed and did not fix.** `leaf()` clamps to `sheets - 1`, so
+the Notes leaf at the back of the book cannot be reached by turning pages at
+all — the compare gets there through the ceremony's seek, which is not clamped.
+That is why a borrowed Notes leaf is safe to borrow, and it is also why nobody
+has ever seen the Notes page. It is one character to fix and it is a change to
+what the book does, so it is written down here rather than slipped in.
+
+### 15.3 One click to the print — the lean is gone
+
+*"Then get rid of the first zoom, clicking a photo takes you the close up only.
+Now that the user can zoom on their own."*
+
+Done. `_studyTo` is 0 or 1, `studyClose()` is deleted rather than left reachable
+by another route, and `_onStudiedPrint` — whose only job was telling a second
+click on the same print apart from a click anywhere else — went with it. What is
+kept is everything §14 measured: the contain-fit on whichever axis runs out
+first, the solve, `printPatch`, `hidePrint`, the tilt, the cursor and the
+one-rung-at-a-time way out. `STUDY_ZOOM` (2.55, the lean's own scale) is the
+only constant deleted.
+
+**The timing, which is the question this raised.** One click now covers twice
+the distance, so does the ease still read? The scale is
+`lerp(1, closeZ, easeInOut(t))` and this file's `easeInOut` is the 4t³ cubic,
+whose slope peaks at **3× its mean** at the midpoint — so a move's peak rate is
+3(end − start)/T, and the rate the eye reads is that divided by the scale it
+happens at, because a zoom is perceived multiplicatively. At 1600×900, where the
+fit solves to 9.095:
+
+| | peak d(scale)/dt | at scale | peak d(ln scale)/dt |
+|---|---|---|---|
+| the lean, 1 → 2.55 over 0.42 s | 11.1 | 1.78 | 6.2 /s |
+| the close look, 2.55 → 9.09 over 0.34 s | 57.7 | 5.82 | **9.9 /s** |
+| **one move, 1 → 9.095 over 0.60 s** | 40.5 | 5.05 | **8.0 /s** |
+
+So `CLOSE_IN` 0.60 is **19% gentler at its fastest than the move it replaces**,
+while covering the whole distance. Matching the old close look's peak exactly
+would be 0.49 s; the two old moves back to back with the stop taken out would be
+0.76. `CLOSE_OUT` 0.52 by the same table (9.3 /s against the old 11.2 /s) —
+coming back is a move to something you have already seen, and it was brisker
+than going in in the old pair too.
+
+That is arithmetic, so it is checked against the game: `_jsweep.mjs` with
+`TRACE=1` samples `_studyK`, the scale actually on the book and the fit's solve
+on rAF through the whole move. **Measured peak log rate 7.9 /s against the 8.0
+predicted.**
+
+**The fit is now solved BEFORE the move, and that was not optional.** The same
+trace is what found it. `_trackCloseZoom` is a one-division correction that is
+only exact when the framed rectangle is sitting on `STUDY_LOOK` — true at the
+END of the move and nowhere else, because the recentring offset is scaled by
+`k`. That was fine when this was the second rung and the move started from a
+book already leaning. From the spread it is not:
+
+```
+ ms      k       scale on the book   the solve
+ 14      0       1.000               8      <- the seed
+ 59      0.0003  1.002               4.01   <- a meaningless measurement, clamped
+ 240     0.2677  3.725               12.14  <- overshoot
+ 294     0.4851  6.403               11.80
+ 594     1.0000  9.110               9.11   <- correct, far too late
+```
+
+The scale never went backwards, but it covered half its distance in the first
+40% of the move instead of at the halfway point — the ease was chasing a target
+that was moving. `_solveCloseZoom` now applies the pose the move is heading for
+to the root, off-frame, measures it there, and puts the root back: two
+iterations (the first trial can be far enough out that a corner projects behind
+the lens and the measurement is refused), one extra `updateMatrixWorld` of a
+20-node tree, once per click. The same trace afterwards:
+
+```
+ ms      k       scale on the book   the solve
+ 14      0.0001  9.095               9.095  <- solved before the move starts
+ 294     0.4783  4.872               9.095
+ 588     1.0000  9.095               9.095
+```
+
+and **9.095 is the value §14.1's per-frame tracker independently measured as
+9.094**, which is the cross-check that says the up-front solve and the running
+one agree. `_trackCloseZoom` still runs, but only on frames where the move has
+landed, which is what carries a window resize. `CLOSE_ZOOM_SEED` (8) is now only
+the solver's first trial and any value converges; the compare leaf seeds its own
+1 for the reason in §15.2.
+
+**The detail patch moved from one rung early to one beat early.** §14.4 spent
+its 14–28 ms of canvas raster on the frame the lean landed, specifically so it
+would not land on the click. With the lean gone the click is the only moment
+left — and the click is the START of the move, which is exactly where §14.4
+refused to put it. So it goes the other way: `HOVER_ARM` (0.12 s) of the pointer
+resting on a print arms it, which is already the beat where the cursor becomes
+`zoom-in`. A print's pick rectangle is 112 CSS px across at the spread on
+1600×900, so a pointer would have to be travelling over 900 px/s — about three
+times a comfortable sweep — to cross one inside the dwell, which is what keeps a
+sweep across a spread of eight prints from rastering eight canvases. At most one
+9.2 MB canvas exists at a time, exactly as before.
+
+**What the pointer does now**, in full: at the spread, hover a print for
+`zoom-in` and to arm it, click it to go in, click anywhere else to turn the page
+(the half of the frame you clicked). Zoomed in, the cursor is `zoom-out` and a
+click anywhere — including on a different print — goes back to the spread.
+
+Verified in the real game with `_jsweep.mjs` (all four pages, one click each,
+`zoom 1`, patch up, print hidden, quad facing the reader on both leaves) and
+`_jreal.mjs` (`ladder: Escape -> zoom 0 active true | Escape -> active false`).
+
+**Stale instrument, flagged not fixed.** `tools/_scratch/_jclose.mjs` was
+written against the three-rung ladder and clicks twice to reach the close look;
+its second click now backs out. Its measurements in §14 were taken before this
+round and stand. `_jsweep.mjs` and `_jreal.mjs` are the harnesses to use.
+
+### 15.4 The player drives the book — pan, tilt, zoom
+
+*"add the ability to pan, tilt and zoom on the journal."*
+
+**The verbs are photo mode's, exactly.** `CameraRig._free` is the camera every
+player of this game already has in their hands, and the photo rail prints its
+three gestures on screen. Same three here at the same sensitivities — 0.0042 rad
+per pixel of yaw, 0.0032 of pitch, `exp(deltaY × 0.0016)` on the dolly — so the
+muscle memory transfers instead of having to be relearned on one screen.
+
+| | | |
+|---|---|---|
+| left drag | tilt and turn the book | orbit |
+| middle drag | slide it | the DCC pan, one world unit per screen unit at the pivot's depth |
+| wheel | zoom | `exp(deltaY × 0.0016)`, undamped |
+| Escape / J / Enter | square it, then back out one level, then shut | |
+
+**It moves the CAMERA, and that is a departure from this file's own rule.**
+Everything else in the journal moves the book and holds the camera still — a
+camera that swoops at a stationary object reads as a cutscene. That argument is
+about the *ceremony's* authored framing and it does not survive contact with a
+camera the player is holding. It is also the only version that works: tried
+first on the book, and `_applyStudy` recentres by measuring where a point on the
+page has ended up and pushing it back to `STUDY_LOOK` — so a free transform on
+the book is measured and cancelled on the same frame, and the book sits there
+refusing to move. On the camera, every world-space thing in the file
+(`samplePage`, the patch placement, the picking, the compare's hover) is
+untouched and follows for free.
+
+The camera is rebuilt from the fit's pose every frame rather than integrated, so
+there is nothing to drift and a window resize re-homes it. Four terms in order:
+orbit about `STUDY_LOOK`, dolly toward the same point (which is what makes the
+zoom land on what is in the middle of the frame rather than on the book's
+origin, which at 9× is a long way off screen), a straight translation in the
+camera's right/up plane, then the ease home.
+
+**The clamps, and what each is protecting.** Measured through the real game with
+`tools/_scratch/_jpan.mjs`, which shoves each gesture past its limit and reports
+where it stopped — and captures it, because "does it still read as a book" is
+not a number:
+
+| | limit | measured at the stop | what it protects |
+|---|---|---|---|
+| turn | ±0.60 rad | yaw −0.600, page 42.0° off face-on | the far page's inner margin disappearing into the fold — the same failure the gutter margin exists to prevent, arriving from the camera instead of the layout |
+| tilt, toward | page 15° PAST face-on | pitch +0.853, page **14.8°** | a page perpendicular to the lens has no perspective in it and the book stops being an object in a room (§13.1's argument, from the other side) |
+| tilt, away | page 65° off face-on | pitch −0.547, page **65.4°** | a steep oblique is still a book; past it you are looking under the table |
+| zoom | ×0.55 to ×3.0 | 0.550 / 3.000 | out: the whole book in the middle third of the frame. in: past ~1.17× at the close look the stored photograph is an upscale (§14.3), so the ceiling is comfort, not resolution — the page's own ink holds up further than the print does |
+| slide | 90% of the frame from centre | x 0.271, y 0.152 m | panning the book off the screen and having nothing left on screen to pan back with |
+
+**The tilt clamp is written on the PAGE's angle, not the camera's pitch**, which
+is the only form that composes with the close look's own tilt. At the spread the
+page is 34° off face-on and `STUDY_TILT` takes 24 of those, so the range left to
+the player is computed per frame. Verified: the same 14.8° upper stop is reached
+from the spread (pitch +0.853) and from the close look (pitch +0.433), which is
+exactly the 0.42 rad `STUDY_TILT` had already spent.
+
+**A drag is not a click.** The same left button now tilts the book, so every
+click moved from `pointerdown` to `pointerup` and a press that travels more than
+`DRAG_SLOP` (4 px, the threshold a browser uses) is spent on the camera and
+never also on the book. Without it a tilt turns a page. Verified: a 260 px drag
+leaves `leaf` where it was.
+
+**Getting back is one action.** Escape (and J, Enter, and both page keys) squares
+the book *before* it does anything else, and only when there is something to
+undo — `panned` is false below `PAN_SQUARE`, so a book nobody has driven closes
+on the first Escape exactly as it always did. A click does the same, with one
+exception in the order that matters: a click on a PRINT goes in on it even from
+a tumbled book, because a player who has tilted the book and then aimed at a
+print has said what they want and it is not "put that back" — and going in
+squares it on the way. On the compare leaf a click off the prints squares up
+too, which is what gives a player who zoomed in to compare them a way back to
+the whole page that is not Escape (Escape there decides). Verified:
+`home -> panned false, open true; again -> open false`. Changing zoom level
+squares it as well, which is why the two never happen in one keystroke — and it
+has to, because the fit is solved through the camera and a player-driven camera
+underneath it would be solved *around* rather than solved for.
+
+**Two things it costs, stated.**
+
+* **The wheel no longer turns pages.** §14.7 flagged that as the one input a
+  player might reasonably expect to work in both directions; it is the dolly
+  now. Leafing keeps two bindings (the page keys, and a click on the half of the
+  frame you want); zooming had none. The trackpad hold-off that stopped a burst
+  of twenty events riffling the book to the end is gone with it, and does not
+  need replacing — twenty small multiplications of a zoom is a zoom.
+* **`_trackCloseZoom` is skipped while the camera is off square**, or the fit
+  would read the player's zoom as an error in its own and scale the book to undo
+  it — the book would fight the wheel. It re-solves the moment the pose comes
+  home; a window resize while panned leaves the fit stale until then.
+
+**A rung change eases the camera home rather than snapping it**, over
+`PAN_HOME` (0.28 s), so it is a movement and not a cut on the first frame of a
+0.60 s zoom — and `close()` does the same, which fits inside the put-down's
+0.46 s with room to spare. That only works because `_solveCloseZoom` squares the
+camera **for the length of its own measurement**: solving through a camera that
+is itself easing home would fit a scale correct for the tumbled view and wrong
+for the square one it is arriving at, with both easing at once and neither
+settling. Verified end to end — tumble the book to yaw −0.600 / pitch +0.448
+(page 21.9° off face-on), find the print at its NEW screen position (976, 117
+against 1056, 288 square, which is also the check that the picking follows the
+camera), click it, and the fit lands on **9.095**: the same number a square book
+solves.
+
+The ceremony keeps right of way, on the same test `leaf()` and `study()` use.
+Verified by shoving the camera while the print is still in the air:
+`PASS — the ceremony kept right of way`.
+
+Plates, all from `_jpan.mjs`: `f_p0_square`, `f_p1_yaw` (turned to the stop),
+`f_p2_tilt_up`, `f_p4_face_min` (15° past face-on — still has perspective in it),
+`f_p5_face_max` (65°, still a book on a table), `f_p6_zoom_in`, `f_p7_zoom_out`,
+`f_p8_pan_clamp` (the book pushed to the corner and still on screen), and
+`f_q2_close_zoom` (the print at 240% of the frame, from the close look).
+
+**Noted, not done.** Touch is one finger only — a one-finger drag is the orbit,
+and there is no pinch. Two-pointer gestures are a real piece of work and this
+branch's brief did not ask for them; the wheel covers a trackpad's pinch, which
+arrives as `wheel` with `ctrlKey`, at the dolly's own rate.
+
+### 15.5 The put-down's cover decay was frame-rate dependent
+
+`update()`'s closing branch read `this._pose.cover *= 1 - easeInOut(k) * 0.9` —
+a `*=` on the ACCUMULATED value with an absolute-progress factor, applied every
+frame. So the decay compounded and the real curve depended on how many frames
+the 0.46 s took: measured, under 20% closed by the halfway point where the
+expression reads as 55%, and faster again at 120 Hz. `lift` and `scrim` on
+either side of it were already plain functions of `k`; this was the odd one out,
+and the only reason it looked acceptable is that it was always wrong in the same
+direction.
+
+It is an assignment now, from the cover value captured when `close()` was
+called. Verified on a real close driven by rAF: 27 frames tracking the analytic
+curve to 0.0000, ending at 0.1001 against the 0.100 the expression promises.
+
+Two harness notes, because both produced a confident wrong answer first:
+
+- Driving `update(dt)` by hand from a page evaluate leaves the journal inactive,
+  so every sample reads `cover = 1` and a frame-rate comparison "passes" having
+  exercised nothing.
+- Fitting against wall time reads as 0.08 of drift that is not there. `_t` is
+  the journal's own clock and it is GATED — it stops while a page seek is
+  outstanding — so a curve indexed on `performance.now()` is comparing against
+  the wrong x-axis.
+
+### 15.7 A plain click stopped moving the book
+
+Two things used to happen on a click that missed a print, and both were wrong
+once the book could be driven:
+
+- **`panHome()`** — clicking the book eased the camera back to square, so the
+  book *tilted when you clicked it*. It reads as the click having grabbed
+  something. Escape still squares up, which is the right home for it: a key
+  pressed deliberately, not a side effect of every click that misses.
+- **`leaf(clientX > width/2 ? +1 : -1)`** — "click the half of the frame you
+  want to go to". That fired on ANY click, including one out on the table where
+  the player was reaching for the camera, so the book leafed while they were
+  trying to frame it.
+
+Now: on a print, go to it. Anywhere else, nothing. Turning a page is the swipe
+(§15.6), which says which direction it means and cannot be triggered by aiming
+badly. The close look zooms straight out instead of squaring up first, for the
+same reason.
+
+Measured, all four gestures doing exactly one thing: swipe **left** on the book
+leaf 1 → 2; swipe **right** 2 → 1; click on the book, leaf unchanged and pose
+moved 0.0000; drag outside, leaf unchanged and pose moved 0.59.

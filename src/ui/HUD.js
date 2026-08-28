@@ -28,6 +28,7 @@ import { Compass } from './hud_compass.js';
 import { Dash } from './hud_dash.js';
 import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
+import { Journal } from '../journal/Journal.js';
 import { MiniMap } from './hud_map.js';
 import { touchCapable } from '../core/verbs.js';
 
@@ -159,6 +160,17 @@ export class HUD extends System {
 
     this.settings = new Settings(root, this);
     this.photo = new PhotoMode(root, this);
+    // The journal is NOT a DOM widget like everything else in this file — it is
+    // a three.js object drawn over the finished frame (see the render callback
+    // in main.js). HUD owns it anyway, because HUD is what has the key, the
+    // chip and the mode arbitration, and because HUD is in main.js's
+    // LIVE_WHILE_PAUSED set: the book has to keep turning its pages while the
+    // world behind it is frozen at dt 0.
+    this.journal = new Journal(this.ctx);
+    // Closing by any route — J, Escape, Enter, all of which the journal binds
+    // itself — has to put the interface back. Without this the chrome stays
+    // hidden after the book shuts and the game looks broken.
+    this.journal.onClose = () => this.root.classList.remove('pa-journal');
 
     this._buildLandmarks();
     this._bindKeys();
@@ -185,7 +197,15 @@ export class HUD extends System {
     const v = this.ctx.systems?.vehicle ?? globalThis.__vehicle;
     if (!v?.warpTo) return;
     const p = v.warpTo(x, z);
-    if (p) this.toast(`Warped to ${Math.round(p.x)}, ${Math.round(p.z)}`);
+    // `warpTo` steps the player off a boat on the way (the warp moves the
+    // camper, and the player has to arrive with it) and leaves the hull moored
+    // where it was. Say so in the same toast rather than a second one: a boat
+    // silently gone from under you reads as the game having eaten it, and
+    // there is no boat marker on the map to go looking for.
+    if (p) {
+      this.toast(`Warped to ${Math.round(p.x)}, ${Math.round(p.z)}`
+        + (p.leftBoat ? ` — ${p.leftBoat} left moored` : ''));
+    }
   }
 
   // ── landmarks ─────────────────────────────────────────────────────────────
@@ -320,7 +340,9 @@ export class HUD extends System {
       if (this.root.contains(e.target) && e.target !== document.body) return;
       switch (e.code) {
         case 'KeyF': this.togglePhoto(); break;
+        case 'KeyJ': this.toggleJournal(); break;
         case 'Escape':
+          if (this.journal.active) { this.toggleJournal(); break; }
           if (!this.photo.active) return;
           this.togglePhoto();
           break;
@@ -328,6 +350,11 @@ export class HUD extends System {
         case 'KeyM': this.applyMute(!this.isMuted()); break;
         case 'KeyG': if (this.photo.active) this.photo.toggleGrid(); break;
         case 'KeyP': if (this.photo.active) this.photo.capture(); break;
+        case 'KeyL': case 'BracketLeft': case 'BracketRight':
+          // The rail handles these too (it swallows keys while focused); this
+          // is the path for a player who has clicked out onto the canvas.
+          if (!this.photo.active || !this.photo.lensKey(e.code)) return;
+          break;
         case 'KeyH': this.applyHudMode(this.hudOpacity > 0 ? 0 : 1); break;
         case 'KeyN': this.applyMap(!this.showMap); break;
         default: return;
@@ -588,6 +615,7 @@ export class HUD extends System {
   toggleSettings() {
     const open = !this.settings.open;
     if (open && this.photo.active) this.togglePhoto();
+    if (open && this.journal.active) this.toggleJournal();
     this.settings.setOpen(open);
     this.gearChip.classList.toggle('pa-on', open);
     this.audio()?.cue(open ? 'select' : 'tick');
@@ -601,6 +629,39 @@ export class HUD extends System {
     this.photoChip.classList.toggle('pa-on', on);
     this._dismissHint();
     posthog.capture('photo_mode_toggled', { active: on });
+  }
+
+  /**
+   * Open or shut the logbook.
+   *
+   * The `pa-journal` class is what takes the interface away (see hud.css). It
+   * is set here rather than inside Journal because the book knows nothing about
+   * the DOM, and cleared from `journal.onClose` rather than here because the
+   * journal closes itself on three keys of its own and only one of them comes
+   * through this method.
+   */
+  toggleJournal() {
+    if (this.journal.active) { this.journal.close(); return; }
+    if (this.settings.open) this.settings.setOpen(false);
+    this.root.classList.add('pa-journal');
+    this.journal.open();
+    this._dismissHint();
+    posthog.capture('journal_opened', { source: 'key' });
+  }
+
+  /**
+   * Open the book onto a line that has just been earned.
+   *
+   * Called from `PhotoMode.capture()` and nowhere else. Photo mode stays active
+   * underneath — the player is still standing where they took the shot, and
+   * shutting the book puts them back at the viewfinder rather than back in the
+   * driving seat, which is what someone who has just found one of fifteen
+   * things wants.
+   */
+  openJournal(award) {
+    this.root.classList.add('pa-journal');
+    this.journal.open({ award });
+    posthog.capture('journal_opened', { source: 'award', item: award?.id ?? null });
   }
 
   /**
@@ -654,6 +715,13 @@ export class HUD extends System {
     const { ctx } = this;
     this._frame++;
 
+    // Real seconds, deliberately. HUD is in main.js's LIVE_WHILE_PAUSED set, so
+    // `dt` here keeps running while the world is frozen at 0 — which is exactly
+    // the condition the book is opened under. Driving it with world time would
+    // freeze the ceremony mid-page-turn.
+    this.journal.update(dt);
+    if (this.photo.active) this.photo.update(dt);
+
     // Invert look. CameraRig reads `mouse.dy` in lateUpdate and `axes.lookY` is
     // refilled by Input at the end of the frame, so flipping both here lands
     // exactly once per frame, before the only consumer.
@@ -670,7 +738,23 @@ export class HUD extends System {
     }
 
     const veh = ctx.systems?.vehicle;
-    const speed = veh?.speed ?? 0;
+    // Everything below reports on whatever the player is *riding*, not on the
+    // camper and not on the camera. Aboard a boat that is the boat: the camper
+    // is parked on a shore that may be half a lake behind you, and both an
+    // arrow stuck on it and a speedo reading its zero are answering a question
+    // nobody asked. `boat.current` is published every frame by Boat._publish
+    // and carries `speed` in m/s signed along the hull and `heading` measured
+    // from +Z — the same units and conventions as Vehicle's, so both consumers
+    // can take either without converting. It is non-null for a moored boat too
+    // (the water agent wants a wake source), hence the `boat.active` gate.
+    const boat = ctx.systems?.boat;
+    const aboard = boat?.active ? boat.current : null;
+    const speed = aboard?.speed ?? veh?.speed ?? 0;
+    // A deliberate consequence: the trip meter now turns while you paddle. It
+    // is the player's journey rather than the camper's odometer — the "you
+    // have been somewhere" reading hud_dash's header describes — and freezing
+    // it for the length of a lake crossing would undercount exactly the stretch
+    // the player worked hardest for.
     this.trip += Math.abs(speed) * dt;
 
     if (this._hintTimer > 0) {
@@ -696,16 +780,11 @@ export class HUD extends System {
       this.compass.update(heading, this.marks);
     }
 
-    // The map arrow follows whatever the player is *riding*, not the camera:
-    // free-look swings the compass strip, but the question the map answers is
-    // where you are and which way you are pointed. Aboard a boat that is the
-    // boat — the camper is parked on a shore that may be half a lake behind
-    // you, and an arrow stuck on it is answering a question nobody asked.
-    // Both `boat.current.heading` and `vehicle.heading` are measured from +Z;
-    // the map, like the compass, works clockwise from north, which is -Z.
+    // Free-look swings the compass strip, but the question the map answers is
+    // where you are and which way you are *pointed*, so the arrow takes the
+    // ridden heading rather than the camera's. Headings arrive measured from
+    // +Z; the map, like the compass, works clockwise from north, which is -Z.
     if (this.showMap) {
-      const boat = ctx.systems?.boat;
-      const aboard = boat?.active ? boat.current : null;
       const p = aboard ?? veh?.position ?? ctx.camera.position;
       let bearing;
       if (aboard) bearing = 180 - (aboard.heading * 180) / Math.PI;
@@ -716,7 +795,13 @@ export class HUD extends System {
       }
       this.map.update(p.x, p.z, bearing);
     }
-    this.dash.update(speed, this.trip, this.found, this.total, veh?.brakeHold ?? false);
+    // HOLD is the camper's handbrake lamp, and boarding a boat *requires* the
+    // camper parked with the hold armed (see the `parked` gate in Boat.update),
+    // so left alone the lamp would burn for every second the player is on the
+    // water. A warning lamp that is always on is not a warning lamp, and a
+    // kayak has no brake to hold in the first place.
+    this.dash.update(speed, this.trip, this.found, this.total,
+      aboard ? false : (veh?.brakeHold ?? false), aboard ? 'boat' : 'camper');
     this.settings.tick(dt);
     this._gamepad();
   }

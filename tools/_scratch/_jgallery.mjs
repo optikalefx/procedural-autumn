@@ -1,0 +1,20 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({args:['--use-gl=angle','--enable-unsafe-swiftshader']});
+const p = await b.newPage({viewport:{width:1500,height:950}});
+p.on('pageerror', e=>console.log('[pageerror]', e.message));
+p.on('console', m=>{ if(m.type()==='error') console.log('[error]', m.text()); });
+await p.goto('http://127.0.0.1:5199/gallery.html', {waitUntil:'load', timeout:120000});
+await p.waitForTimeout(9000);
+await p.fill('input[type="search"], input[placeholder*="Search"]', 'journal');
+await p.waitForTimeout(1200);
+await p.evaluate(() => {
+  const el = [...document.querySelectorAll('*')].find(e => /Journal/.test(e.textContent) && e.className && /card|item|tile/i.test(String(e.className)));
+  el?.click();
+});
+await p.waitForTimeout(5000);
+const txt = await p.evaluate(() => document.body.innerText);
+const lines = txt.split('\n').filter(l => /journal/i.test(l));
+console.log('MATCHES:', JSON.stringify(lines, null, 1));
+await p.screenshot({ path: '/tmp/gallery.png' });
+console.log('shot /tmp/gallery.png');
+await b.close();

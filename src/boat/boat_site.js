@@ -7,8 +7,10 @@
 //    · shoreSnap      — walk a clicked point to a fixed signed distance inside
 //                       the waterline using the hydro sdf (|∇sdf| = 1, so a
 //                       Newton step lands almost exactly).
-//    · validateLaunch — is this water a boat can live on: a LAKE (not a river),
-//                       open enough, deep enough.
+//    · validateLaunch — is this water a boat can live on: a lake for either
+//                       hull, or a river for a kayak.
+//    · floatWidth     — how much floatable water lies across the current, the
+//                       only "is there room" question worth asking in a channel.
 //
 //  All water questions go to `world.getHydro` (the bilinear hydro-field sample
 //  with the mandatory -0.25 texel registration — see WorldData.microDetail for
@@ -74,10 +76,74 @@ import { clamp } from '../core/MathUtils.js';
 // without the other is what produced the 14.
 export const MIN_SPAN = 6;
 export const SPAN_PROBE = 14;
-// Standing water only. getRiver is the baked river mask; anything flowing is
-// the river system's water, and a boat on it would need a current model this
-// feature does not have.
+// The lake/river discriminator. getRiver is the baked river mask; above this
+// the water is flowing and the RIVER RULES below apply instead of the span
+// gate. It used to be a flat refusal — "a boat on it would need a current
+// model this feature does not have" — and that is no longer true: the current
+// model is in boat_physics.js, driven by the baked flow field.
 export const MAX_RIVER = 0.05;
+
+// ── river launches ───────────────────────────────────────────────────────────
+//
+// A kayak may be put on a river; a canoe may not. That is a design line rather
+// than a physics one — the two hulls differ only in speed and dimensions here —
+// and it is the one the player asked for: an open canoe is the wrong boat for
+// moving water, and keeping it to lakes gives the kind swap something to mean.
+export const RIVER_KIND = 'kayak';
+
+// ── WHY THE SPAN GATE CANNOT BE REUSED ON A RIVER ────────────────────────────
+//
+// `span` is the mean inside-distance over a 25 m window, so a channel can
+// never fill it however navigable it is. Measured on seed 20261018 over every
+// riverbank point in the map on a 16 m grid (n = 1008): span reads p50 1.03
+// against a MIN_SPAN of 6, and the gate accepts **3.7%** of them. That is the
+// measured reason a river refuses a boat, and no threshold on span fixes it —
+// the statistic is answering a different question.
+//
+// The question that matters in a channel is whether the hull has floatable
+// water across the current, and the answer is that it nearly always does:
+//
+//   floatable width across the flow ... p05 7.5   p50 19.5   p75 29   p95 64 m
+//   depth at the launch point ......... p05 0.52  p50 1.01   p95 2.66 m
+//
+// against a kayak that draws 0.11 m. So the width floor is set BELOW p05 and
+// is there to catch a genuine trickle, not to rank reaches: it rejects under
+// 5% of riverbank points and every one of those is the thinnest water in the
+// map. Do not try to make it selective — floatable width was measured against
+// "how much continuous channel actually lies downstream" and does not separate
+// them at all (p50 19.5 m on good reaches, 20.5 m on dead ends), so a stricter
+// threshold buys nothing and costs real launches.
+//
+// ── WHY 5 AND NOT THE HULL'S BEAM ────────────────────────────────────────────
+//
+// The obvious floor is "wide enough for the boat", i.e. the kayak's 0.60 m
+// beam. It is the wrong one, because BoatPhysics has no width test at all: the
+// hull is integrated as a POINT and may go anywhere with water under it, so
+// nothing here gates passage, only launching. A beam-width floor would let the
+// player put a 4.2 m boat into a channel it cannot turn around in — and since
+// the physics is a point while the MODEL is four metres of drawn hull, the
+// first sweep stroke would swing the bow visibly through the bank.
+//
+// So the floor is the hull's LENGTH plus a little, not its beam: room to turn
+// the boat around is the honest minimum for a craft you can paddle upstream.
+//
+// It costs almost nothing either way, which is the real reason not to agonise.
+// Measured on seed 20262018 (the seed the game boots), n = 1112 riverbank
+// points, share accepted by floor:
+//
+//   0.60 m (beam) 99.4%   ·   4.2 m (hull) 98.9%   ·   5 m 98.6%   ·   8 m 96.6%
+//
+// Dropping to the beam buys eight tenths of a point of riverbank. What limits
+// where a kayak can go on this map is depth and how far the reach runs, never
+// width.
+export const RIVER_MIN_WIDTH = 5;
+
+// Turbulence, 0..1 off the flow field — steep, pinched or fast water. Also a
+// design rule rather than a discriminator, and honestly so: the cap sits above
+// p95 (0.50) and refuses about 2% of riverbank points. It exists so the game
+// declines to put a touring kayak into whitewater at the top of a chute, which
+// is the one place on a river where launching is actually a bad idea.
+export const RIVER_MAX_TURB = 0.55;
 // Where the boat is placed: just inside the water, measured along the sdf.
 export const LAUNCH_SDF = 2.5;
 // How far from the camper a launch click may land. You carry a canoe to the
@@ -160,15 +226,67 @@ export function shoreSnap(world, x, z, target = LAUNCH_SDF) {
 }
 
 /**
+ * How much floatable water lies ACROSS the current at (x, z), in metres.
+ *
+ * Perpendicular to the flow, not to the sdf gradient: on a river the gradient
+ * points at the nearer bank and its direction is degenerate on the channel's
+ * medial axis, so a width measured along it is neither the channel's width nor
+ * stable. The flow vector is splatted from the smoothed centreline and blurred
+ * (TerrainGen._flowField), so it is smooth by construction — and where it has
+ * no direction to give, the shoreline normal is the right fallback anyway.
+ *
+ * Floatable means the DRAWN water is deeper than the hull's draft plus a
+ * margin, matching what BoatPhysics will actually let the boat enter. Walks
+ * out in half-metre steps and stops at the first sample that fails, so an
+ * island or a gravel bar splits the channel honestly rather than being
+ * measured through.
+ */
+export function floatWidth(world, x, z, floatDepth, gx = 0, gz = 0, max = 60) {
+  const f = world.getFlow ? world.getFlow(x, z, {}) : null;
+  const coh = f ? Math.hypot(f.vx, f.vz) : 0;
+  let nx, nz;
+  if (coh > 1e-3) { nx = -f.vz / coh; nz = f.vx / coh; }
+  else { nx = -gz; nz = gx; }
+  if (!(Math.abs(nx) + Math.abs(nz) > 1e-6)) return 0;
+  const wet = (px, pz) => {
+    const lv = world._water?.levelAt?.(px, pz) ?? world.getWaterHeight(px, pz);
+    if (lv === null || lv === undefined) return false;
+    return lv - world.getHeight(px, pz) >= floatDepth;
+  };
+  let width = 0;
+  for (const sgn of [1, -1]) {
+    let reach = 0;
+    for (let d = 0.5; d <= max; d += 0.5) {
+      if (!wet(x + nx * sgn * d, z + nz * sgn * d)) break;
+      reach = d;
+    }
+    width += reach;
+  }
+  return width;
+}
+
+/**
  * Can a boat be launched at (or near) this clicked point?
  *
  * Snaps to the shore first, then judges the SNAPPED point — the click only has
  * to be roughly at the water's edge. Returns
- * `{ ok, reason, x, z, y, heading }`; x/z/y/heading are the beached pose
- * (heading = bow pointing into open water, i.e. up the sdf gradient).
+ * `{ ok, reason, x, z, y, heading, river }`; x/z/y/heading are the beached
+ * pose. On a lake the bow points into open water (up the sdf gradient); on a
+ * river it points DOWNSTREAM instead — a 4.2 m hull set down square across a
+ * channel is both the wrong pose to start paddling from and the one that reads
+ * worst from the bank.
+ *
+ * `kind` selects the rule set: rivers take a kayak only (see RIVER_KIND).
+ * Passing null skips that hull rule and asks only whether the WATER is
+ * launchable, which is what a site-scouting harness wants; the player path
+ * always names the hull.
+ *
+ * @param kind  'canoe' | 'kayak', or null to skip the hull rule.
+ * @param floatDepth  m of water the hull needs to float; defaults to a kayak's.
  */
-export function validateLaunch(world, cx, cz, veh = null) {
-  const out = { ok: false, reason: '', x: cx, z: cz, y: 0, heading: 0 };
+export function validateLaunch(world, cx, cz, veh = null, kind = null,
+                               floatDepth = 0.26) {
+  const out = { ok: false, reason: '', x: cx, z: cz, y: 0, heading: 0, river: 0 };
   if (!Number.isFinite(cx) || !Number.isFinite(cz)) { out.reason = 'nowhere'; return out; }
   if (!world.isInBounds(cx, cz)) { out.reason = 'out of bounds'; return out; }
 
@@ -180,15 +298,37 @@ export function validateLaunch(world, cx, cz, veh = null) {
   if (lv === null || lv === undefined) { out.reason = 'no water here'; return out; }
   out.y = lv;
 
-  // Openness, probed into the water the bow points at — see MIN_SPAN.
-  const open = world.getHydro(s.x + s.gx * SPAN_PROBE, s.z + s.gz * SPAN_PROBE);
-  if (open.span < MIN_SPAN) { out.reason = 'not enough open water'; return out; }
-  if (world.getRiver(s.x, s.z) > MAX_RIVER) { out.reason = 'the river is too fast'; return out; }
-  // No depth gate. Big lakes shelve gently, so the snapped point is often the
-  // shallowest water in sight and a depth test there refused giant lakes
-  // ("too shallow" on a 40 m span — the user's screenshot). Span already
-  // rejects puddles, and the physics beaches a hull gracefully in shallows,
-  // so the honest question is only "is the body of water large enough".
+  const riverAt = world.getRiver(s.x, s.z);
+  out.river = riverAt;
+
+  if (riverAt > MAX_RIVER) {
+    // ── flowing water ────────────────────────────────────────────────────────
+    // Its own rules; the span gate below is meaningless here and would refuse
+    // 96% of the map's riverbank. See the note on RIVER_MIN_WIDTH.
+    if (kind && kind !== RIVER_KIND) {
+      out.reason = `only a ${RIVER_KIND} can run a river`;
+      return out;
+    }
+    const f = world.getFlow ? world.getFlow(s.x, s.z, {}) : null;
+    if (f && f.turb > RIVER_MAX_TURB) { out.reason = 'that water is too rough'; return out; }
+    const wide = floatWidth(world, s.x, s.z, floatDepth, s.gx, s.gz);
+    if (wide < RIVER_MIN_WIDTH) { out.reason = 'the channel is too narrow'; return out; }
+    // Bow downstream, where the flow field has a direction to give. Its
+    // magnitude is a coherence, so a slack pocket falls back to the shoreline
+    // normal rather than pointing the boat at noise.
+    const coh = f ? Math.hypot(f.vx, f.vz) : 0;
+    if (coh > 0.12) out.heading = Math.atan2(f.vx, f.vz);
+  } else {
+    // ── standing water ───────────────────────────────────────────────────────
+    // Openness, probed into the water the bow points at — see MIN_SPAN.
+    const open = world.getHydro(s.x + s.gx * SPAN_PROBE, s.z + s.gz * SPAN_PROBE);
+    if (open.span < MIN_SPAN) { out.reason = 'not enough open water'; return out; }
+    // No depth gate. Big lakes shelve gently, so the snapped point is often the
+    // shallowest water in sight and a depth test there refused giant lakes
+    // ("too shallow" on a 40 m span — the user's screenshot). Span already
+    // rejects puddles, and the physics beaches a hull gracefully in shallows,
+    // so the honest question is only "is the body of water large enough".
+  }
 
   // The distance gate runs LAST, so "too far from the camper" always means
   // "drive closer and this works" — the honest prompt, and it makes a
