@@ -1,6 +1,6 @@
 ---
 name: create-animal
-description: Add a new wildlife species (a wild ground mammal) to the game, or retune an existing one. Use this whenever the user asks to add any animal — "add squirrels", "let's have wolves", "put some elk in", "new species", "more wildlife" — and also when they want to change where animals live, how often they appear, how they move, or how they look (habitat, spawn rates, gaits, coats, silhouettes). Covers the full recipe: blueprint geometry, gait ladder, streaming/habitat, audio, and the verification harnesses. Not for birds (src/wildlife/birds/ is a separate instanced system) or the camp dog (camp_dog.js owns it).
+description: Add a new wildlife species (a wild ground mammal) to the game, or retune an existing one. Use this whenever the user asks to add any animal — "add squirrels", "let's have wolves", "put some elk in", "new species", "more wildlife" — and also when they want to change where animals live, how often they appear, how they move, or how they look (habitat, spawn rates, gaits, coats, silhouettes). Covers the full recipe: blueprint geometry, gait ladder, streaming/habitat, audio, and the verification harnesses. Not for birds (src/wildlife/birds/ is a separate instanced system) or the camp dog (camp_dog.js owns it), or hand-authored Blender models exported as GLB (use import-animal).
 ---
 
 # Create Animal
