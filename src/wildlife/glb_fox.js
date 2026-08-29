@@ -22,29 +22,31 @@
 //  Those are the real cost of the swap; this file is the look test that decides
 //  whether paying it is worth it.
 //
-//  ── the stride problem, measured ───────────────────────────────────────────
+//  ── the stride problem, measured and NOT compensated ──────────────────────
 //
-//  The Walk clip's legs swing about 14° peak-to-peak, which moves a paw 0.35
-//  model units — 7.6 cm once the fox is scaled to `TARGET_H`. Over the clip's
-//  2.042 s that is a ground speed of **0.037 m/s**. A red fox walks at roughly
-//  0.85 m/s, so the clip as authored is some twenty times short: played at a
-//  rate that matches how fast the animal actually travels, the legs blur; played
-//  at a believable rate, the fox skates.
+//  The Walk clip's legs swing about 13°, which moves a paw 0.35 model units —
+//  7.6 cm once the fox is scaled to `TARGET_H`. Over the clip's 2.042 s that is
+//  a ground speed of 0.037 m/s. A red fox walks at roughly 0.85 m/s, so the clip
+//  as authored covers some twenty times too little ground.
 //
-//  Rather than pick one of those and call it done, this file measures the clip
-//  at load (`measureStride`) and derives everything downstream from the number,
-//  so the tuning follows the asset instead of a constant going stale behind it:
+//  **This file does not touch the animation.** An earlier cut widened the leg
+//  keys to buy stride, and it was wrong twice over: it changed what the artist
+//  authored, and it did it by scaling glTF's ABSOLUTE bone rotations (rest x
+//  pose) rather than the pose delta, so at any real gain the slerp ran past 180°
+//  and the legs went somewhere nobody designed. The movement stopped matching
+//  the .blend, which is the one thing this test exists to judge.
 //
-//    * `STRIDE_GAIN` widens the authored leg swing by scaling the leg bones'
-//      rotation keys — on the LOADED clip, never on the asset on disk. It is
-//      the honest lever, and the number it needs (~4) is exactly how much more
-//      swing the Blender clip should have been authored with.
-//    * the fox's walk speed is then set FROM the clip rather than from a fox's
-//      real-world pace, so the feet do not slide. A slow fox is a fair look
-//      test; a skating one is not.
+//  So the clip plays exactly as exported, and the only lever here is the one
+//  that does not alter a pose: how fast it plays, and how far the animal travels
+//  while it does. `measureStride` reads the ground one cycle covers straight off
+//  the asset, and the fox's speed is that number times the playback rate — so
+//  the paws keep pace with the ground at any rate, and the clip is still the
+//  clip. The consequence is an honest one: **a faithful fox is a slow fox** until
+//  the stride is widened in Blender. That is a note for the artist, not a thing
+//  for this file to paper over.
 //
-//  Widen the stride in Blender and `STRIDE_GAIN` drops toward 1 on its own.
-//  `?foxstride=` and `?foxspeed=` tune both live — see the header of `init`.
+//  `?foxrate=` sets the playback rate and `?foxspeed=` breaks the lock between
+//  rate and travel, which is how you see the sliding the lock prevents.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -65,22 +67,37 @@ const MODEL_URL = '/models/fox_reference.glb';
 // finding about the pipeline, not a licence to fudge the number.
 const TARGET_H = 0.62;
 
-// The authored swing, multiplied. See the stride note above — 4 is the factor
-// that turns a 14° shuffle into a stride a fox could plausibly walk on.
-const STRIDE_GAIN = 4.0;
+// How fast the Walk clip plays, as a multiple of its authored tempo. This is a
+// playback speed, not an edit: every pose the fox strikes is a pose that is in
+// the .blend, which is the whole point.
+//
+// 2.2 is a judgement call about cadence and nothing else. The authored cycle is
+// 2.042 s, or 0.49 Hz, where a walking quadruped runs 1.0-1.8 Hz; 2.2x puts it
+// at 1.08 Hz, the slow end of a real walk. Raise it and the fox travels faster
+// in exact proportion — see `walkSpeed` in `init`.
+const WALK_RATE = 2.2;
 
-// How fast the Walk clip is allowed to play. Below 1 the fox is dawdling, above
-// ~2.5 the legs start to read as a trot the clip is not.
-const RATE = [0.75, 2.4];
+// Bounds on that rate once the Brain is steering. The animal is only ever asked
+// to move at a speed the clip carries, so these are a guard against a state that
+// wants something else (FLEE), not a routine clamp.
+const RATE = [0.6, 3.2];
 
-// The speed the fox walks at, as a multiple of what the (gained) clip carries at
-// 1x. Two means the clip runs at 2x when the animal is at its cruising walk,
-// which leaves headroom in both directions.
-const WALK_RATE = 2.0;
+// Where the Stand->Walk crossfade starts and finishes, **as a fraction of the
+// fox's own cruising walk speed** rather than in m/s. Absolute numbers were a
+// bug: they were written when the animal walked at 0.44 m/s, and once the clip's
+// real 0.08 m/s took over, cruising speed landed inside the band — so the fox
+// walked permanently at 62% Walk / 38% Stand and never once played the clip
+// clean. Anchoring to the animal's own speed cannot drift like that.
+const MOVING = [0.25, 0.85];
 
-// Blend in the walk over this speed band. Narrow, because the interesting
-// question is whether the Stand->Walk transition reads cleanly at all.
-const MOVING = [0.02, 0.10];
+// Seconds for the crossfade, floor to ceiling. The blend is damped on its own
+// clock rather than read straight off `Brain.speed`, because that speed is a
+// step function here: the Brain's accel/decel rates are absolute and tuned for
+// animals moving metres per second, so at this fox's 0.08 m/s every change of
+// pace completes within one frame. Measured — walk weight went 0.62 -> 0 in
+// 16 ms, which is the snap. Damping the blend gives the transition a duration
+// of its own, whatever the speed signal does.
+const BLEND_TIME = 0.22;
 
 const PACK = 5;
 const RING = [10, 30];        // where a fox is seated relative to the player
@@ -119,32 +136,6 @@ function measureStride(root, clip, boneNames) {
   action.stop();
   mixer.uncacheRoot(root);
   return best;
-}
-
-/**
- * Widen every leg-bone rotation in `clip` by `gain`.
- *
- * The authored leg keys are rotations about a single axis, so scaling the angle
- * is a slerp away from identity — `slerp(identity, q, gain)` is the same
- * rotation `gain` times over. Anything past 180° would wrap, which no plausible
- * gain reaches here, and the spine, neck, head and tail are left exactly as
- * authored: only the stride is short, and amplifying the head bob with it would
- * turn a fox into a hobby horse.
- */
-function widenStride(clip, gain, isLeg) {
-  if (gain === 1) return;
-  const q = new THREE.Quaternion();
-  const acc = new THREE.Quaternion();
-  for (const track of clip.tracks) {
-    if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
-    if (!isLeg(track.name.split('.')[0])) continue;
-    const v = track.values;
-    for (let i = 0; i < v.length; i += 4) {
-      q.set(v[i], v[i + 1], v[i + 2], v[i + 3]);
-      acc.set(0, 0, 0, 1).slerp(q, gain);   // slerp past t=1 extrapolates the arc
-      v[i] = acc.x; v[i + 1] = acc.y; v[i + 2] = acc.z; v[i + 3] = acc.w;
-    }
-  }
 }
 
 /** One fox: a cloned rig, its own mixer, and a Brain. */
@@ -190,6 +181,10 @@ class GlbFoxIndividual {
     this.drive = {};
     this.pitch = 0;
     this.roll = 0;
+    // Damped Stand<->Walk crossfade, and the damped speed its playback rate
+    // rides on. See BLEND_TIME.
+    this.blend = 0;
+    this.paceSpeed = 0;
   }
 
   dispose(scene) {
@@ -220,7 +215,7 @@ export class GlbFoxes extends System {
     const q = new URLSearchParams(location.search);
     this.enabled = q.get('glbfox') !== '0';
     this.count = Math.max(0, Math.min(24, +(q.get('glbfox') ?? PACK) || PACK));
-    this.gain = +(q.get('foxstride') ?? STRIDE_GAIN) || STRIDE_GAIN;
+    this.rate = +(q.get('foxrate') ?? WALK_RATE) || WALK_RATE;
     this.speedMul = +(q.get('foxspeed') ?? 1) || 1;
   }
 
@@ -228,9 +223,9 @@ export class GlbFoxes extends System {
    * Load the GLB, measure it, and build the pack.
    *
    * `?glbfox=0` turns the whole system off, `?glbfox=<n>` sets the pack size,
-   * `?foxstride=<k>` overrides the stride gain (1 plays the clip exactly as
-   * authored, and is how you see the problem the header describes), and
-   * `?foxspeed=<k>` scales how fast the animals travel against the clip.
+   * `?foxrate=<k>` sets the clip's playback rate — travel speed follows it, so
+   * the paws stay with the ground — and `?foxspeed=<k>` breaks that lock, which
+   * is how you see the sliding it prevents.
    */
   async init() {
     if (!this.enabled) return;
@@ -247,26 +242,35 @@ export class GlbFoxes extends System {
       return;
     }
 
-    // Blender's exporter strips the dots out of `hind_foot.L`, so the bone is
-    // `hind_footL` here. Matching on the prefix rather than the full name means
-    // a rig rename on either side of the dot does not silently stop matching.
-    const isLeg = (n) => n.startsWith('fore_') || n.startsWith('hind_');
-
     scene.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(scene);
     const modelH = box.max.y - box.min.y;
     const s = TARGET_H / modelH;
 
-    const strideRaw = measureStride(scene, walk, ['fore_footL', 'fore_footR', 'hind_footL', 'hind_footR']);
-    widenStride(walk, this.gain, isLeg);
-    const stride = measureStride(scene, walk, ['fore_footL', 'fore_footR', 'hind_footL', 'hind_footR']) * s;
+    // The rest pose, captured before anything animates the scene, and put back
+    // after measuring: `measureStride` leaves the skeleton wherever its last
+    // sample landed, and a clone taken from a half-walked fox starts life with
+    // one leg in the air until its mixer's first update. Read-only — the clip
+    // itself is never written to.
+    const rest = new Map();
+    scene.traverse((o) => { if (o.isBone) rest.set(o.name, o.quaternion.clone()); });
+
+    // Blender's exporter strips the dots out of `hind_foot.L`, so the bone is
+    // `hind_footL` here.
+    const FEET = ['fore_footL', 'fore_footR', 'hind_footL', 'hind_footR'];
+    const stride = measureStride(scene, walk, FEET) * s;
+    scene.traverse((o) => { if (o.isBone && rest.has(o.name)) o.quaternion.copy(rest.get(o.name)); });
+    scene.updateMatrixWorld(true);
+
+    // Ground covered per second of clip, straight off the asset.
     const clipSpeed = stride / walk.duration;
 
-    // The gait the Brain will steer by, derived from the clip instead of from a
-    // real fox. Walk is what the clip carries at WALK_RATE; trot and run exist
-    // only because Brain reads all three, and there is no clip for either, so
-    // they stay inside a band the walk cycle can still cover without tearing.
-    const walkSpeed = clipSpeed * WALK_RATE * this.speedMul;
+    // The gait the Brain steers by, derived from the clip rather than from a real
+    // fox — this is the whole mechanism that keeps the paws with the ground. The
+    // animal travels exactly as far as the animation says it should, at whatever
+    // rate the clip is played. trot and run exist only because Brain reads all
+    // three; there is no clip for either, so they stay near the walk.
+    const walkSpeed = clipSpeed * this.rate * this.speedMul;
     const species = {
       ...FOX,
       gait: { ...FOX.gait, walk: walkSpeed, trot: walkSpeed * 1.5, run: walkSpeed * 2.2 },
@@ -281,9 +285,9 @@ export class GlbFoxes extends System {
     this.walkSpeed = walkSpeed;
 
     console.info(`[glb_fox] model ${modelH.toFixed(2)}u -> ${TARGET_H} m (x${s.toFixed(3)}); ` +
-      `stride ${(strideRaw * s * 100).toFixed(1)} cm authored, ` +
-      `${(stride * 100).toFixed(1)} cm at gain ${this.gain}; ` +
-      `clip carries ${clipSpeed.toFixed(3)} m/s at 1x; walk ${walkSpeed.toFixed(2)} m/s`);
+      `authored stride ${(stride * 100).toFixed(1)} cm/cycle over ${walk.duration.toFixed(2)}s ` +
+      `= ${clipSpeed.toFixed(3)} m/s at 1x; playing ${this.rate}x -> walk ${walkSpeed.toFixed(3)} m/s ` +
+      `(${(this.rate / walk.duration).toFixed(2)} Hz). Clip unmodified.`);
 
     for (let i = 0; i < this.count; i++) {
       const fox = new GlbFoxIndividual(this.proto, (0xf0 * 2654435761 + i * 40503) >>> 0,
@@ -388,10 +392,25 @@ export class GlbFoxes extends System {
       // the Brain has frozen in ALERT simply stands. That gap is the finding —
       // the procedural cast has all of those, and matching it in Blender is
       // eight more clips per species.
-      const moving = clamp01((B.speed - MOVING[0]) / (MOVING[1] - MOVING[0]));
-      fox.walk.setEffectiveWeight(moving);
-      fox.stand.setEffectiveWeight(1 - moving);
-      fox.walk.timeScale = clamp(B.speed / this.proto.clipSpeed, RATE[0], RATE[1]);
+      const cruise = this.walkSpeed || 1;
+      const want = clamp01((B.speed / cruise - MOVING[0]) / (MOVING[1] - MOVING[0]));
+      // `damp` is framerate-independent; the lambda is chosen so the blend
+      // covers most of its travel in BLEND_TIME.
+      fox.blend = damp(fox.blend, want, 3 / BLEND_TIME, dt);
+      fox.walk.setEffectiveWeight(fox.blend);
+      fox.stand.setEffectiveWeight(1 - fox.blend);
+      // Rate follows speed through the SAME number the speed was derived from,
+      // so a fox at its cruising walk plays at exactly `this.rate` and its paws
+      // keep pace with the ground. Only a Brain state asking for something the
+      // clip cannot carry reaches the clamp.
+      //
+      // Damped on the blend's clock for the same reason the blend is: an
+      // undamped rate collapsed from 1.87x to the clamp floor in one frame, so
+      // the legs changed tempo instantly underneath a crossfade that was busy
+      // taking 300 ms. While the fox holds a steady pace the damped speed equals
+      // the real one, so this costs the paw-to-ground lock nothing.
+      fox.paceSpeed = damp(fox.paceSpeed, B.speed, 3 / BLEND_TIME, dt);
+      fox.walk.timeScale = clamp(fox.paceSpeed / this.proto.clipSpeed, RATE[0], RATE[1]);
       fox.mixer.update(dt);
     }
   }
@@ -439,6 +458,7 @@ export class GlbFoxes extends System {
     return {
       n: this.foxes.length,
       clipSpeed: +this.stats.clipSpeed.toFixed(4),
+      rate: this.rate,
       strideCm: +(this.stats.stride * 100).toFixed(1),
       walkSpeed: +(this.walkSpeed ?? 0).toFixed(3),
       foxes: this.foxes.map((f) => ({
@@ -448,6 +468,7 @@ export class GlbFoxes extends System {
         y: +f.brain.pos.y.toFixed(1),
         z: +f.brain.pos.z.toFixed(1),
         walkW: +f.walk.getEffectiveWeight().toFixed(2),
+        cruiseFrac: +(f.brain.speed / (this.walkSpeed || 1)).toFixed(2),
         rate: +f.walk.timeScale.toFixed(2),
       })),
     };
