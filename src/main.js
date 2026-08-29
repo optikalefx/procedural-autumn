@@ -743,6 +743,12 @@ async function boot() {
   setTimeout(() => loaderEl?.classList.add('hidden'), 400);
   window.__ready = true;
 
+  // A brand-new player has never seen the book — greet them with it instead
+  // of leaving J to be discovered by accident. No-ops on every session after
+  // the first (see HUD.maybeShowIntro). Timed with the loader fade so the
+  // book doesn't visibly start rising underneath the still-opaque overlay.
+  setTimeout(() => ctx.systems.hud?.maybeShowIntro?.(), 400);
+
   posthog.capture('session_started', {
     quality_tier: quality,
     seed,

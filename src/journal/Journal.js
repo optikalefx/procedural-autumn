@@ -828,6 +828,11 @@ export class Journal {
    * one is already crossed off" — the book leafs to a blank leaf and asks which
    * of the two prints to keep instead; see the `CMP_*` block.
    *
+   * @param holdTitle Skip the scripted flyleaf turn, so the ceremony rests on
+   * the title leaf instead of skipping past it to the checklist. Only HUD's
+   * one-time first-run popup passes this; every other caller wants the
+   * checklist. See `HUD.maybeShowIntro`.
+   *
    * `photo` is accepted alongside `photoDataURL` and is anything `drawImage`
    * takes. It is converted HERE, synchronously, and not one turn of the event
    * loop later: the shutter's thumbnail canvas is a single reused scratch
@@ -836,7 +841,7 @@ export class Journal {
    * the black print in §6 of the notes — if you did not read it in this task,
    * it is not there.
    */
-  open({ award = null } = {}) {
+  open({ award = null, holdTitle = false } = {}) {
     if (this._active && !this._closing) return;
     // Which OPENING this is. `_armAward` and `_armCompare` are promises — they
     // wait on the font load, the store and a photo decode — and a book that is
@@ -849,6 +854,11 @@ export class Journal {
     this._visible = true;
     this._closing = false;
     this._t = 0;
+    // The one-time first-run open: the cover still rises and swings open, but
+    // the scripted flyleaf turn that would otherwise flip straight past the
+    // title into the checklist (see the docstring above) is held off, so the
+    // ceremony's rest state is the page a brand-new player needs to read.
+    this._holdTitle = holdTitle;
     this._pose.leaf = 0;
     this._leafFrom = this._leafTo = 0;
     this._leafT = 1;
@@ -1163,7 +1173,7 @@ export class Journal {
     // then whatever the player does by hand. All three write `_leafFrom/To/T`,
     // so there is exactly one place that turns a page.
     const fly = this._at('flyleaf');
-    if (fly > 0 && fly < 1 && this._leafT >= 1 && this._pose.leaf < 1) {
+    if (!this._holdTitle && fly > 0 && fly < 1 && this._leafT >= 1 && this._pose.leaf < 1) {
       this._leafFrom = 0; this._leafTo = 1; this._leafT = 0;
       this._leafDur = SCRIPT.flyleaf;
       this._cue('page');

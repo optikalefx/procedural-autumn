@@ -96,6 +96,7 @@ export class HUD extends System {
         this.hudOpacity = typeof s.hudOpacity === 'number' ? s.hudOpacity : 1;
         this.showMap = s.showMap !== false;
         this._seenHint = !!s.seenHint;
+        this._introSeen = !!s.introSeen;
         this.renderPin = typeof s.renderPin === 'number' ? s.renderPin : null;
       }
     } catch { /* defaults are fine */ }
@@ -665,6 +666,28 @@ export class HUD extends System {
   }
 
   /**
+   * The one-time greeting: a brand-new player has never seen the book, so
+   * main.js calls this the moment the world is up and lets it open itself
+   * straight to the title leaf (see `Journal.open`'s `holdTitle`), rather than
+   * making them find J on their own first. Every session after this one is a
+   * no-op — `_introSeen` latches on the first call and is saved immediately,
+   * not on close, so a refresh mid-read can't win the popup back.
+   *
+   * Deliberately bypasses `toggleJournal()`: that path calls `_dismissHint()`
+   * on open, which would burn the bottom control legend's one showing while
+   * it sits invisible behind the book (see the `!this.journal.active` guard
+   * in `update()`) — the legend is for AFTER this closes, not instead of it.
+   */
+  maybeShowIntro() {
+    if (this._introSeen) return;
+    this._introSeen = true;
+    this._save();
+    this.root.classList.add('pa-journal');
+    this.journal.open({ holdTitle: true });
+    posthog.capture('journal_opened', { source: 'intro' });
+  }
+
+  /**
    * A line of text, briefly.
    *
    * Two options, both of which exist for the same reason: on a touch device the
@@ -704,7 +727,7 @@ export class HUD extends System {
     try {
       localStorage.setItem(STORE, JSON.stringify({
         invertY: this.invertY, hudOpacity: this.hudOpacity, showMap: this.showMap,
-        seenHint: !!this._seenHint, renderPin: this.renderPin,
+        seenHint: !!this._seenHint, introSeen: !!this._introSeen, renderPin: this.renderPin,
       }));
     } catch { /* nothing important lost */ }
   }
@@ -757,7 +780,13 @@ export class HUD extends System {
     // the player worked hardest for.
     this.trip += Math.abs(speed) * dt;
 
-    if (this._hintTimer > 0) {
+    // Frozen, not just invisible, while the book is up: the legend is hidden
+    // behind `.pa-journal` (see hud.css) but this timer runs on real seconds
+    // regardless of pause, and a first-time player can spend longer than 13 s
+    // reading the intro popup. Without the guard the countdown burns through
+    // while nobody can see it and the legend is already gone the moment the
+    // book closes — see `maybeShowIntro`.
+    if (this._hintTimer > 0 && !this.journal.active) {
       this._hintTimer -= dt;
       // The hint goes as soon as the player drives — it has done its job the
       // moment they touch a key.

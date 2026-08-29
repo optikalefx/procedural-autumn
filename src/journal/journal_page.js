@@ -624,18 +624,22 @@ export class JournalPage {
 
     this._vignetteDoodle(g, cx, 800, 240);
 
-    g.font = hand(38);
+    // How to play, in the keeper's own hand. This block replaced the
+    // "kept by / season" flyleaf lines: a player meeting the book for the
+    // first time needs the three keys more than they need a blank to admire.
+    g.font = hand(40);
     g.fillStyle = INK_SOFT;
-    g.textAlign = 'left';
-    g.fillText('kept by', this._x0 + 40, 1112);
-    inkLine(g, this._x0 + 152, 1120, this._x1 - 40, 1116, { seed: 9, width: 2.4, alpha: 0.42, colour: '#5c452e' });
-    g.fillText('season', this._x0 + 40, 1204);
-    inkLine(g, this._x0 + 160, 1212, this._x1 - 40, 1209, { seed: 10, width: 2.4, alpha: 0.42, colour: '#5c452e' });
+    g.fillText('Welcome to Camping Season!', cx, 1032);
+    g.fillText('Enjoy a quiet drive through the forest.', cx, 1096);
+    g.fillText('See if you can find everything in this journal.', cx, 1160);
+    g.font = hand(32);
+    g.fillStyle = 'rgba(74,58,44,0.58)';
+    g.fillText('Good luck!', cx, 1230);
 
     g.textAlign = 'center';
     g.font = hand(30);
     g.fillStyle = 'rgba(74,58,44,0.44)';
-    g.fillText('turn the page', cx, PAGE_H - 168);
+    g.fillText('The letter "J" opens this book, any time', cx, PAGE_H - 168);
   }
 
   /**
