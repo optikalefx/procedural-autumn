@@ -118,6 +118,22 @@ await page.waitForTimeout(500);
 
 for (let i = 0; i < 6; i++) await frameFox(`walk_${i}`, { dist: 4.2, height: 0.66, wait: 340 });
 
+// ── 1a. the trot, from the same angle ───────────────────────────────────────
+// Held at the trot clip's own cruising speed so the mixer sits on Trot alone
+// rather than part-way through the Walk->Trot crossfade. Same broadside camera
+// as the walk strip, so the two gaits can be compared frame for frame.
+await page.evaluate(({ stage, G }) => {
+  const g = eval(G);
+  g.debugCalm(true);
+  g.debugWalk(0, stage.x - 3.2, stage.z, Math.PI / 2);
+  g.forceGait = 'trot';
+}, { stage, G });
+await page.waitForTimeout(700);
+for (let i = 0; i < 8; i++) await frameFox(`trot_${i}`, { dist: 4.2, height: 0.66, wait: 200 });
+const trotState = await page.evaluate(({ G }) => eval(G).debugState(), { G });
+console.log('  trot weights', JSON.stringify(trotState.foxes[0]));
+await page.evaluate(({ G }) => { eval(G).forceGait = null; }, { G });
+
 // ── 1b. the same clip, at a real fox's walking pace ─────────────────────────
 // 0.85 m/s is what `mammals/fox.js` gives the procedural cast. The clip cannot
 // carry it: the rate clamp pins the cycle at RATE[1] and the paws skate. This
@@ -133,8 +149,8 @@ for (let i = 0; i < 4; i++) await frameFox(`slide_${i}`, { dist: 4.2, height: 0.
 await page.evaluate(({ G }) => {
   const g = eval(G);
   g.proto.species.gait.walk = g.walkSpeed;
-  g.proto.species.gait.trot = g.walkSpeed * 1.5;
-  g.proto.species.gait.run = g.walkSpeed * 2.2;
+  g.proto.species.gait.trot = g.trotSpeed;
+  g.proto.species.gait.run = g.trotSpeed * 1.25;
 }, { G });
 
 // ── 2. the stand clip, three-quarter front ──────────────────────────────────
@@ -182,7 +198,8 @@ for (const d of [12, 25, 45]) {
 }
 
 const state = await page.evaluate(({ G }) => eval(G).debugState(), { G });
-console.log('state', JSON.stringify(state.foxes[0]), 'clip', state.clipSpeed, 'stride', state.strideCm);
+console.log('state', JSON.stringify(state.foxes[0]));
+console.log(`walk ${state.strideCm}cm -> ${state.walkSpeed} m/s | trot ${state.trotStrideCm}cm -> ${state.trotSpeed} m/s`);
 
 await browser.close();
 console.log('done ->', OUT);

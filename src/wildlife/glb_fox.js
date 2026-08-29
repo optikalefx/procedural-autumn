@@ -4,7 +4,7 @@
 //  Every other animal in this valley is procedural: `mammals/<species>.js` is
 //  a page of profile numbers, `quadruped.js` lofts them into a skeleton, and
 //  `animal_anim.js` solves a gait against the ground every frame. This file is
-//  the opposite experiment — a mesh and two clips authored by hand in Blender,
+//  the opposite experiment — a mesh and three clips authored by hand in Blender,
 //  exported to one GLB, and played back by three's AnimationMixer.
 //
 //  It exists to answer one question before the whole cast is converted: does a
@@ -25,28 +25,33 @@
 //  ── the stride problem, measured and NOT compensated ──────────────────────
 //
 //  The Walk clip's legs swing about 13°, which moves a paw 0.35 model units —
-//  7.6 cm once the fox is scaled to `TARGET_H`. Over the clip's 2.042 s that is
-//  a ground speed of 0.037 m/s. A red fox walks at roughly 0.85 m/s, so the clip
-//  as authored covers some twenty times too little ground.
+//  7.6 cm once the fox is scaled to `TARGET_H`. Over the clip's two seconds that
+//  is a ground speed of 0.037 m/s. A red fox walks at roughly 0.85 m/s, so the
+//  clip as authored covers some twenty times too little ground. Trot was rebuilt
+//  in Blender since — one stride over 16 frames with the leg reach opened 1.8x —
+//  and covers far more ground per second, but it is the same measurement that
+//  decides how fast the animal travels. See the console line `init` prints.
 //
 //  **This file does not touch the animation.** An earlier cut widened the leg
 //  keys to buy stride, and it was wrong twice over: it changed what the artist
 //  authored, and it did it by scaling glTF's ABSOLUTE bone rotations (rest x
 //  pose) rather than the pose delta, so at any real gain the slerp ran past 180°
 //  and the legs went somewhere nobody designed. The movement stopped matching
-//  the .blend, which is the one thing this test exists to judge.
+//  the .blend, which is the one thing this test exists to judge. That rule is
+//  now written down in CLAUDE.md.
 //
-//  So the clip plays exactly as exported, and the only lever here is the one
-//  that does not alter a pose: how fast it plays, and how far the animal travels
-//  while it does. `measureStride` reads the ground one cycle covers straight off
-//  the asset, and the fox's speed is that number times the playback rate — so
-//  the paws keep pace with the ground at any rate, and the clip is still the
-//  clip. The consequence is an honest one: **a faithful fox is a slow fox** until
-//  the stride is widened in Blender. That is a note for the artist, not a thing
-//  for this file to paper over.
+//  So the clips play exactly as exported, and the only lever here is the one
+//  that does not alter a pose: how fast they play, and how far the animal travels
+//  while they do. `measureStride` reads the ground one cycle covers straight off
+//  the asset — once per clip, because Walk and Trot carry different strides over
+//  different durations — and the fox's speed for that gait is that number times
+//  its playback rate. So the paws keep pace with the ground at any rate, and the
+//  clip is still the clip. Where a gait is slower than the real animal, that is
+//  a note for the artist, not a thing for this file to paper over.
 //
-//  `?foxrate=` sets the playback rate and `?foxspeed=` breaks the lock between
-//  rate and travel, which is how you see the sliding the lock prevents.
+//  `?foxrate=` and `?foxtrotrate=` set the two playback rates, `?foxgait=` pins
+//  the pack to one gait for looking at it, and `?foxspeed=` breaks the lock
+//  between rate and travel, which is how you see the sliding the lock prevents.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -77,6 +82,14 @@ const TARGET_H = 0.62;
 // in exact proportion — see `walkSpeed` in `init`.
 const WALK_RATE = 2.2;
 
+// The Trot plays as authored, and that is the point of the number being 1.
+// Walk needs 2.2x because its cycle was keyed slow; Trot was rebuilt in Blender
+// as one stride over 16 frames — 1.5 Hz at 24 fps, which is already a real
+// trotting cadence — so speeding it up would only undo the artist's timing.
+// If the trot ever needs to cover more ground, that is a stride to widen in the
+// .blend, not a rate to raise here.
+const TROT_RATE = 1.0;
+
 // Bounds on that rate once the Brain is steering. The animal is only ever asked
 // to move at a speed the clip carries, so these are a guard against a state that
 // wants something else (FLEE), not a routine clamp.
@@ -89,6 +102,12 @@ const RATE = [0.6, 3.2];
 // walked permanently at 62% Walk / 38% Stand and never once played the clip
 // clean. Anchoring to the animal's own speed cannot drift like that.
 const MOVING = [0.25, 0.85];
+
+// The same idea one tier up: where Walk hands over to Trot, as a fraction of the
+// gap between the two clips' own cruising speeds. 0 is cruising walk and 1 is
+// cruising trot, so the fox is fully trotting a little before it reaches the
+// trot's authored speed and never plays a clip far off its tempo.
+const TROTTING = [0.2, 0.9];
 
 // Seconds for the crossfade, floor to ceiling. The blend is damped on its own
 // clock rather than read straight off `Brain.speed`, because that speed is a
@@ -170,12 +189,14 @@ class GlbFoxIndividual {
     this.mixer = new THREE.AnimationMixer(this.rig);
     this.stand = this.mixer.clipAction(proto.stand);
     this.walk = this.mixer.clipAction(proto.walk);
-    for (const a of [this.stand, this.walk]) { a.play(); a.setEffectiveWeight(0); }
+    this.trot = this.mixer.clipAction(proto.trot);
+    for (const a of [this.stand, this.walk, this.trot]) { a.play(); a.setEffectiveWeight(0); }
     this.stand.setEffectiveWeight(1);
     // Offset each fox into the cycle so a pack does not march in lockstep.
     const r = mulberry32(seed >>> 0);
     this.stand.time = r() * proto.stand.duration;
     this.walk.time = r() * proto.walk.duration;
+    this.trot.time = r() * proto.trot.duration;
 
     this.brain = new Brain('fox', proto.species, seed, group, slot);
     this.drive = {};
@@ -184,6 +205,7 @@ class GlbFoxIndividual {
     // Damped Stand<->Walk crossfade, and the damped speed its playback rate
     // rides on. See BLEND_TIME.
     this.blend = 0;
+    this.trotBlend = 0;
     this.paceSpeed = 0;
   }
 
@@ -210,13 +232,18 @@ export class GlbFoxes extends System {
     // `alertDist`. A capture that wants to see the gait turns the camper off.
     this._calm = false;
     this._rnd = mulberry32(0x5eed ^ 0xf0);
-    this.stats = { n: 0, clipSpeed: 0, stride: 0 };
+    this.stats = { n: 0, clipSpeed: 0, stride: 0, trotClipSpeed: 0, trotStride: 0 };
 
     const q = new URLSearchParams(location.search);
     this.enabled = q.get('glbfox') !== '0';
     this.count = Math.max(0, Math.min(24, +(q.get('glbfox') ?? PACK) || PACK));
     this.rate = +(q.get('foxrate') ?? WALK_RATE) || WALK_RATE;
+    this.trotRate = +(q.get('foxtrotrate') ?? TROT_RATE) || TROT_RATE;
     this.speedMul = +(q.get('foxspeed') ?? 1) || 1;
+    // Pin the whole pack to one gait, for looking at it rather than for play:
+    // `?foxgait=trot` holds every fox at its cruising trot so the clip can be
+    // judged without waiting for the Brain to choose that speed on its own.
+    this.forceGait = q.get('foxgait');
   }
 
   /**
@@ -235,8 +262,9 @@ export class GlbFoxes extends System {
 
     const stand = gltf.animations.find((a) => a.name === 'Stand');
     const walk = gltf.animations.find((a) => a.name === 'Walk');
-    if (!stand || !walk) {
-      console.warn('[glb_fox] expected clips Stand and Walk, got',
+    const trot = gltf.animations.find((a) => a.name === 'Trot');
+    if (!stand || !walk || !trot) {
+      console.warn('[glb_fox] expected clips Stand, Walk and Trot, got',
         gltf.animations.map((a) => a.name));
       this.enabled = false;
       return;
@@ -259,35 +287,46 @@ export class GlbFoxes extends System {
     // `hind_footL` here.
     const FEET = ['fore_footL', 'fore_footR', 'hind_footL', 'hind_footR'];
     const stride = measureStride(scene, walk, FEET) * s;
+    const trotStride = measureStride(scene, trot, FEET) * s;
     scene.traverse((o) => { if (o.isBone && rest.has(o.name)) o.quaternion.copy(rest.get(o.name)); });
     scene.updateMatrixWorld(true);
 
-    // Ground covered per second of clip, straight off the asset.
+    // Ground covered per second of clip, straight off each asset. Both clips get
+    // the same treatment because both have to keep their own paws on the ground:
+    // they carry different strides over different durations, so one shared number
+    // would slide whichever clip it was not derived from.
     const clipSpeed = stride / walk.duration;
+    const trotClipSpeed = trotStride / trot.duration;
 
-    // The gait the Brain steers by, derived from the clip rather than from a real
-    // fox — this is the whole mechanism that keeps the paws with the ground. The
-    // animal travels exactly as far as the animation says it should, at whatever
-    // rate the clip is played. trot and run exist only because Brain reads all
-    // three; there is no clip for either, so they stay near the walk.
+    // The gait the Brain steers by, derived from the clips rather than from a
+    // real fox — this is the whole mechanism that keeps the paws with the ground.
+    // The animal travels exactly as far as the animation says it should, at
+    // whatever rate the clip is played. `run` has no clip of its own, so it sits
+    // just above the trot rather than promising a gallop nothing can draw.
     const walkSpeed = clipSpeed * this.rate * this.speedMul;
+    const trotSpeed = trotClipSpeed * this.trotRate * this.speedMul;
     const species = {
       ...FOX,
-      gait: { ...FOX.gait, walk: walkSpeed, trot: walkSpeed * 1.5, run: walkSpeed * 2.2 },
+      gait: { ...FOX.gait, walk: walkSpeed, trot: trotSpeed, run: trotSpeed * 1.25 },
     };
 
     this.proto = {
-      scene, stand, walk, species,
-      scale: s, minY: box.min.y, clipSpeed,
+      scene, stand, walk, trot, species,
+      scale: s, minY: box.min.y, clipSpeed, trotClipSpeed,
     };
     this.stats.clipSpeed = clipSpeed;
     this.stats.stride = stride;
+    this.stats.trotStride = trotStride;
+    this.stats.trotClipSpeed = trotClipSpeed;
     this.walkSpeed = walkSpeed;
+    this.trotSpeed = trotSpeed;
 
     console.info(`[glb_fox] model ${modelH.toFixed(2)}u -> ${TARGET_H} m (x${s.toFixed(3)}); ` +
-      `authored stride ${(stride * 100).toFixed(1)} cm/cycle over ${walk.duration.toFixed(2)}s ` +
-      `= ${clipSpeed.toFixed(3)} m/s at 1x; playing ${this.rate}x -> walk ${walkSpeed.toFixed(3)} m/s ` +
-      `(${(this.rate / walk.duration).toFixed(2)} Hz). Clip unmodified.`);
+      `Walk stride ${(stride * 100).toFixed(1)} cm over ${walk.duration.toFixed(2)}s ` +
+      `= ${clipSpeed.toFixed(3)} m/s at 1x, playing ${this.rate}x -> ${walkSpeed.toFixed(3)} m/s; ` +
+      `Trot stride ${(trotStride * 100).toFixed(1)} cm over ${trot.duration.toFixed(2)}s ` +
+      `= ${trotClipSpeed.toFixed(3)} m/s at 1x, playing ${this.trotRate}x -> ${trotSpeed.toFixed(3)} m/s ` +
+      `(${(this.trotRate / trot.duration).toFixed(2)} Hz). Clips unmodified.`);
 
     for (let i = 0; i < this.count; i++) {
       const fox = new GlbFoxIndividual(this.proto, (0xf0 * 2654435761 + i * 40503) >>> 0,
@@ -365,6 +404,11 @@ export class GlbFoxes extends System {
       const fox = this.foxes[i];
       const B = fox.brain;
       B.update(dt, W, threat, B.leader ? null : this.foxes[0].brain);
+      // Debug surface only: hold the animal at one gait's cruising speed so the
+      // clip can be judged without waiting for the Brain to pick that pace.
+      if (this.forceGait === 'trot') B.speed = this.trotSpeed;
+      else if (this.forceGait === 'walk') B.speed = this.walkSpeed;
+      else if (this.forceGait === 'stand') B.speed = 0;
 
       fox.root.position.set(B.pos.x, B.pos.y, B.pos.z);
       fox.root.rotation.y = B.heading;
@@ -387,22 +431,35 @@ export class GlbFoxes extends System {
       fox.root.rotation.x = fox.pitch;
       fox.root.rotation.z = fox.roll;
 
-      // Stand and Walk, crossfaded on speed alone. Two clips is the whole
-      // vocabulary: there is no graze, no alert, no flee pose, so a fox that
-      // the Brain has frozen in ALERT simply stands. That gap is the finding —
-      // the procedural cast has all of those, and matching it in Blender is
-      // eight more clips per species.
+      // Stand, Walk and Trot, crossfaded on speed alone. Three clips is the
+      // whole vocabulary: there is no graze, no alert, no flee pose, so a fox
+      // that the Brain has frozen in ALERT simply stands. That gap is the
+      // finding — the procedural cast has all of those, and matching it in
+      // Blender is six more clips per species.
       const cruise = this.walkSpeed || 1;
       const want = clamp01((B.speed / cruise - MOVING[0]) / (MOVING[1] - MOVING[0]));
+      // How far past the cruising walk the animal is, measured against the gap
+      // to the cruising trot so the handover cannot drift if either clip's
+      // stride changes — the same reasoning as MOVING, one tier up.
+      const gap = Math.max(this.trotSpeed - this.walkSpeed, 1e-4);
+      const wantTrot = clamp01(((B.speed - this.walkSpeed) / gap - TROTTING[0])
+        / (TROTTING[1] - TROTTING[0]));
       // `damp` is framerate-independent; the lambda is chosen so the blend
       // covers most of its travel in BLEND_TIME.
       fox.blend = damp(fox.blend, want, 3 / BLEND_TIME, dt);
-      fox.walk.setEffectiveWeight(fox.blend);
-      fox.stand.setEffectiveWeight(1 - fox.blend);
-      // Rate follows speed through the SAME number the speed was derived from,
-      // so a fox at its cruising walk plays at exactly `this.rate` and its paws
-      // keep pace with the ground. Only a Brain state asking for something the
-      // clip cannot carry reaches the clamp.
+      fox.trotBlend = damp(fox.trotBlend, wantTrot, 3 / BLEND_TIME, dt);
+      // Trot takes precedence and the lower pair share what is left, so the
+      // three weights always sum to 1 — an unnormalised set makes the mixer
+      // average toward the rest pose and the fox sinks as it changes gait.
+      const t = fox.trotBlend;
+      fox.trot.setEffectiveWeight(t);
+      fox.walk.setEffectiveWeight(fox.blend * (1 - t));
+      fox.stand.setEffectiveWeight((1 - fox.blend) * (1 - t));
+      // Rate follows speed through the SAME number each speed was derived from,
+      // so a fox at its cruising walk plays Walk at exactly `this.rate`, one at
+      // its cruising trot plays Trot at `this.trotRate`, and both keep their paws
+      // with the ground. Only a Brain state asking for something the clips
+      // cannot carry reaches the clamp.
       //
       // Damped on the blend's clock for the same reason the blend is: an
       // undamped rate collapsed from 1.87x to the clamp floor in one frame, so
@@ -411,6 +468,7 @@ export class GlbFoxes extends System {
       // the real one, so this costs the paw-to-ground lock nothing.
       fox.paceSpeed = damp(fox.paceSpeed, B.speed, 3 / BLEND_TIME, dt);
       fox.walk.timeScale = clamp(fox.paceSpeed / this.proto.clipSpeed, RATE[0], RATE[1]);
+      fox.trot.timeScale = clamp(fox.paceSpeed / this.proto.trotClipSpeed, RATE[0], RATE[1]);
       fox.mixer.update(dt);
     }
   }
@@ -458,9 +516,13 @@ export class GlbFoxes extends System {
     return {
       n: this.foxes.length,
       clipSpeed: +this.stats.clipSpeed.toFixed(4),
+      trotClipSpeed: +(this.stats.trotClipSpeed ?? 0).toFixed(4),
       rate: this.rate,
+      trotRate: this.trotRate,
       strideCm: +(this.stats.stride * 100).toFixed(1),
+      trotStrideCm: +((this.stats.trotStride ?? 0) * 100).toFixed(1),
       walkSpeed: +(this.walkSpeed ?? 0).toFixed(3),
+      trotSpeed: +(this.trotSpeed ?? 0).toFixed(3),
       foxes: this.foxes.map((f) => ({
         state: Object.keys(ST).find((k) => ST[k] === f.brain.state),
         speed: +f.brain.speed.toFixed(3),
@@ -468,8 +530,10 @@ export class GlbFoxes extends System {
         y: +f.brain.pos.y.toFixed(1),
         z: +f.brain.pos.z.toFixed(1),
         walkW: +f.walk.getEffectiveWeight().toFixed(2),
+        trotW: +f.trot.getEffectiveWeight().toFixed(2),
         cruiseFrac: +(f.brain.speed / (this.walkSpeed || 1)).toFixed(2),
         rate: +f.walk.timeScale.toFixed(2),
+        trotRate: +f.trot.timeScale.toFixed(2),
       })),
     };
   }
