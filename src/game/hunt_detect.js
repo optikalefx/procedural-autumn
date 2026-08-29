@@ -1160,6 +1160,11 @@ const _inv = new THREE.Matrix4();
 // A second world-space point, for the two subjects whose "is it visible" point
 // is not the same as their "how big is it" point — see `waterfalls`.
 const _aim = new THREE.Vector3();
+// The camera's own facing, and the direction to a subject — for `highCamp`'s
+// facing check, which is the one place this file asks "which way is the lens
+// pointed" rather than "is the subject in the frame".
+const _fwd = new THREE.Vector3();
+const _toSubject = new THREE.Vector3();
 
 /**
  * The per-call frame: everything the gates need, resolved once.
@@ -1546,6 +1551,19 @@ function waterfalls(f, list, hit) {
  */
 const HIGH_CAMP = 100;
 
+/**
+ * The half-angle `share`'s "standing inside the subject" branch effectively
+ * grants a big, close subject once it stops checking framing at all — worked
+ * back out from `EDGE` the same way the normal branch's NDC bound implies an
+ * angle, plus a full frame-height of slack (`+ 1`) for the fact that up close
+ * the subject legitimately fills more of the picture than that bound assumes.
+ * It is generous on purpose: this is the floor for "roughly facing it", not a
+ * framing rule.
+ */
+function insideHalfAngle(f) {
+  return Math.atan((EDGE + 1) * Math.tan(f.vfov / 2));
+}
+
 function highCamp(f, camp, hit) {
   for (const c of camp?.camps ?? []) {
     // Mid-raise is not a camp. `raise` runs 0 → 1 over about a second as the
@@ -1556,6 +1574,19 @@ function highCamp(f, camp, hit) {
     const r = c.radius ?? 5.8;
     _p.set(c.x, c.y + 1.2, c.z);
     if (!visible(f, _p, r, CAMP_SHARE, CAMP_MAX)) continue;
+    // `share`'s `dist < radius` branch — "you are in it, angular size stops
+    // meaning anything" — is right for a waterfall's plume, which surrounds
+    // you, and wrong for a camp clearing, which does not: a lens pointed at
+    // the zenith from beside the fire is still standing inside `r` and used
+    // to credit the site sight-unseen, which is how a photograph of a galaxy
+    // ticked "a high mountain campsite". So when that branch is the reason
+    // this camp is "visible", require the lens to actually be roughly
+    // pointed at it — `visible`'s own framing check never ran to ask.
+    if (_p.distanceTo(f.eye) < r) {
+      _toSubject.copy(_p).sub(f.eye).normalize();
+      f.cam.getWorldDirection(_fwd);
+      if (_fwd.angleTo(_toSubject) > insideHalfAngle(f)) continue;
+    }
     hit.add('highCamp');
     return;
   }
