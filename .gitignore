@@ -74,3 +74,6 @@ npm-debug.log*
 # output is ignored.
 tools/_scratch/**/out/
 tools/_scratch/**/*.png
+
+# Blender writes a .blend1 rollback beside every save; it is not source.
+*.blend1
