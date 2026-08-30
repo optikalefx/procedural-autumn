@@ -9,8 +9,7 @@
 //     around the camper on its own — two things you cannot compose a
 //     photograph through. The clearance logic is still the rig's; free mode
 //     reuses `_floorAt`, so there is no second, worse camera here either.
-//   · takes the HUD away, leaving four corner brackets and an optional
-//     rule-of-thirds grid
+//   · takes the HUD away, leaving four corner brackets
 //   · works from inside the camp's two modal views. Both hold CameraRig's
 //     takeover, which outranks free mode, so both are told to let go where they
 //     stand before `enterFree` reads the camera. The telescope hides its tube
@@ -62,7 +61,7 @@
 //               shift+click always was)
 //        LIGHT  the hour, the exposure and the colour: the things about the
 //               world and the print rather than about the camera
-//        (verbs) the shutter, and grid / book / exit under it
+//        (verbs) the shutter, and time / book / exit under it
 //
 //      They are the same order as the readout's cells, deliberately: the panel
 //      names lens, focal, aperture, focus and the sliders underneath are zoom,
@@ -73,6 +72,36 @@
 //      of their own: every value they set is already up there, larger, with a
 //      label under it. Printing them twice is what made the old strip read as
 //      clutter. The LIGHT sliders do print theirs, because nothing else does.
+//
+//  ── T, and the world it stops ───────────────────────────────────────────────
+//
+//  The third verb chip used to be a rule-of-thirds grid. It is a clock now, and
+//  the trade is not a close call. The grid was a drawing over the frame that a
+//  photographer composes past in about a second; what the mode could not do at
+//  all was LET GO. Photo mode freezes the world on entry — that is what makes a
+//  still of a running river possible — and until now that freeze was the only
+//  thing on offer. You could not wait for a deer to walk into the light, or let
+//  the wind take the aspens, or watch the fireflies come up, because the moment
+//  you pressed F the world stopped being a world.
+//
+//  So T hands it back and takes it again without leaving the camera. It is one
+//  write to `ctx.worldPaused`, which main.js reads to drive every world system
+//  at dt 0 against a stopped world clock (see the world-pause note there), so
+//  resuming continues from the pose everything froze in rather than snapping to
+//  wherever the wall clock went. Entry is still frozen — that is the shape of
+//  the mode and what most shots want — and both exit paths reset it, so a world
+//  left running cannot leak back into play.
+//
+//  Two things are deliberately NOT part of it:
+//
+//   · THE DRIVING CONTROLS. `input.suppressed` stays up for the whole visit.
+//     Running the world is about the subject moving, not about the player
+//     driving the camper out of a frame they are composing — the very defect
+//     the suppression was added for.
+//   · THE SUN. `lighting.cycleSpeed` stays 0 whether the world is running or
+//     not, because the LIGHT group's Hour dial is what owns the sun while the
+//     rail is open. That dial is painted once, on entry; a day cycle advancing
+//     underneath it would make it lie within a few seconds.
 //
 //  `PhotoFocus` owns that panel's contents and this file owns where it sits —
 //  it is handed a `slot` rather than positioning itself, which is what killed
@@ -105,9 +134,8 @@ const S = (d) =>
   `stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
 const GLYPH = {
-  // Rule of thirds: the frame, and the two cuts each way.
-  grid: S('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/>' +
-          '<path d="M9.2 4.5v15M14.8 4.5v15M3.5 9.5h17M3.5 14.5h17"/>'),
+  // A clock: the world running, or held. Lit when it is running.
+  time: S('<circle cx="12" cy="12" r="8.6"/><path d="M12 6.9V12l3.4 2.3"/>'),
   // The journal, seen from the spine side: a cover and the block of pages.
   book: S('<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v14H6.5A1.5 1.5 0 0 0 5 18.5z"/>' +
           '<path d="M5 18.5A1.5 1.5 0 0 1 6.5 17H19v4H6.5A1.5 1.5 0 0 1 5 19.5z"/>'),
@@ -127,14 +155,14 @@ export class PhotoMode {
     this.hud = hud;
     this.ctx = hud.ctx;
     this.active = false;
-    this.grid = false;
+    // The world is stopped on entry, every time — see "T, and the world it
+    // stops" in the header. `setActive` re-asserts it rather than trusting this.
+    this.running = false;
     this.stowed = false;
     this._saved = null;
 
     this.node = el('div', 'pa-photo-frame');
     for (const c of ['tl', 'tr', 'bl', 'br']) this.node.appendChild(el('div', `pa-bracket ${c}`));
-    this.gridNode = el('div', 'pa-grid');
-    this.node.appendChild(this.gridNode);
     this.flash = el('div', 'pa-flash');
     this.node.appendChild(this.flash);
 
@@ -329,7 +357,10 @@ export class PhotoMode {
     gVerbs.appendChild(shutterWrap);
     const small = el('div', 'pa-cam-verb-row');
     gVerbs.appendChild(small);
-    this.gridBtn = this._verb(small, 'grid', 'Rule-of-thirds grid', 'G', () => this.toggleGrid(), 'Grid');
+    // The label is set by `_paintTime`, which is the only thing that knows
+    // which way the toggle is pointing; what is passed here is just the caption
+    // and the key, and both are constant.
+    this.timeBtn = this._verb(small, 'time', 'Let the world run', 'T', () => this.toggleTime(), 'Time');
     this._verb(small, 'book', 'Open the journal', 'J', () => this.hud.toggleJournal(), 'Book');
     this._verb(small, 'exit', 'Leave photo mode', 'F', () => this.hud.togglePhoto(), 'Exit');
 
@@ -351,6 +382,9 @@ export class PhotoMode {
     this.node.appendChild(rail);
     this.rail = rail;
     this._syncLens();
+    // So `aria-pressed` is right before the mode is ever opened. `_verb` set the
+    // title and the label from what was passed to it; only this knows the state.
+    this._paintTime();
 
     rail.addEventListener('keydown', (e) => {
       if (e.code === 'Escape' || e.code === 'KeyF') {
@@ -362,16 +396,16 @@ export class PhotoMode {
         e.preventDefault();
         return;
       }
-      // P and G need the same local path, for the same reason F does: focus
+      // P and T need the same local path, for the same reason F does: focus
       // lands on this rail's first control the moment photo mode opens (see
       // `.focus()` below), and every key typed there is swallowed by the
       // `stopPropagation()` a few lines down before it can reach HUD's own
-      // `KeyP`/`KeyG` cases — which never fire because HUD._onKey already
+      // `KeyP`/`KeyT` cases — which never fire because HUD._onKey already
       // ignores keys whose target is inside its root. Without this, the
       // shutter hint on screen ("P save") is a lie until the player clicks
       // somewhere else first.
       if (e.code === 'KeyP') { this.capture(); e.preventDefault(); return; }
-      if (e.code === 'KeyG') { this.toggleGrid(); e.preventDefault(); return; }
+      if (e.code === 'KeyT') { this.toggleTime(); e.preventDefault(); return; }
       // And J, which was never here and was advertised anyway. `HUD._onKey`
       // ignores keys whose target is inside its root and the `stopPropagation`
       // below eats the rest, so from the moment the rail took focus the old
@@ -475,8 +509,8 @@ export class PhotoMode {
    * A round chip with a caption under it — the word for what it does, and,
    * where there is a keyboard, the key it answers to.
    *
-   * The caption is what let the ten-line legend go. "GRID G" under a picture of
-   * a grid is the same information the legend carried, attached to the thing it
+   * The caption is what let the ten-line legend go. "TIME T" under a picture of
+   * a clock is the same information the legend carried, attached to the thing it
    * is about instead of listed six lines away from it, and it costs one short
    * word. On a touch device the key is simply absent: there is nothing to press
    * and a legend that names one is a legend that lies.
@@ -563,7 +597,7 @@ export class PhotoMode {
     // frozen would be a soft lock.
     if (!on) {
       if (this.ctx.input) this.ctx.input.suppressed = false;
-      this.ctx.worldPaused = false;
+      this._releaseTime();
       // And the telescope this shot may have been composed through comes back
       // — it is hidden for as long as the free camera stands inside it. See
       // `ScopeView.handOff`.
@@ -642,11 +676,19 @@ export class PhotoMode {
       // stopped world clock, so wildlife, water, weather, the camper and every
       // shader-time animation freeze mid-frame while the camera rig, the
       // music and this rail keep running on real time (see the world-pause
-      // note in main.js). The lighting line below is now redundant with the
-      // pause — a frozen clock cannot advance the hour — but it stays: it is
-      // what the exit path restores, and it keeps the sun still even if the
-      // pause ever becomes partial.
-      this.ctx.worldPaused = true;
+      // note in main.js).
+      //
+      // Frozen on ENTRY, always, and only on entry: T hands the world back and
+      // takes it again for as long as the rail is open. Re-asserted here rather
+      // than left to the constructor's initial value, so a visit that ended with
+      // the world running cannot open the next one live.
+      this.setTime(false);
+      // The sun, held separately, and NOT released by T. This used to be
+      // redundant with the pause — a frozen clock cannot advance the hour — and
+      // it is load-bearing now that the clock can be started again: the Hour
+      // dial two groups over is painted once, on entry, and a day cycle running
+      // underneath it would make it lie within a few seconds. The exit path
+      // restores whatever speed the player actually had.
       if (this.ctx.lighting) this.ctx.lighting.cycleSpeed = 0;
       // ── full resolution, for as long as the mode is open ──────────────────
       // In play the scene is drawn well under the display's pixel density: the
@@ -976,14 +1018,74 @@ export class PhotoMode {
     this.rail.style.setProperty('--cam-off', `${Math.round(TAB - right)}px`);
   }
 
-  toggleGrid() {
-    this.grid = !this.grid;
-    this.gridNode.classList.toggle('pa-on', this.grid);
-    // The chip lights with it. G and the button are the same verb and the
-    // button is the only one of the two that can show state, so a grid turned
-    // on from the keyboard has to light it too — which is why this lives here
-    // rather than in the click handler.
-    this.gridBtn?.classList.toggle('pa-on', this.grid);
+  /**
+   * Let the world run, or hold it still again — without leaving the camera.
+   *
+   * The whole mechanism is one flag: main.js drives every world system with
+   * `ctx.worldPaused ? 0 : dt` and accumulates its world clock the same way, so
+   * this is the entire implementation and there is nothing here to keep in sync
+   * with anything. See "T, and the world it stops" in the header for what is
+   * deliberately left OUT of it — the driving controls and the sun.
+   *
+   * Split from `toggleTime` because `setActive` needs the state written without
+   * the sound: entering photo mode already plays a door, and a tick underneath
+   * it is one cue too many for something the player did not press.
+   */
+  setTime(on) {
+    this.running = !!on;
+    this.ctx.worldPaused = !this.running;
+    this._paintTime();
+  }
+
+  toggleTime() {
+    this.setTime(!this.running);
+    this.hud.audio()?.cue('tick');
+  }
+
+  /**
+   * Leaving. The world goes back to play and the toggle goes back to its
+   * default, and those are OPPOSITE values of the same pair — which is the
+   * whole reason this exists instead of a `setTime(false)` on the exit path.
+   *
+   * `running = false` means "photo mode is holding the world still". That is
+   * the right state for the chip to be reset to and exactly the wrong thing to
+   * hand back to play, and writing it as one call did precisely that: every
+   * exit from photo mode left `ctx.worldPaused` up, so main.js kept driving
+   * every world system at dt 0 with the mode already closed. The camper could
+   * not be driven, and its wheels — placed each frame from a physics step that
+   * was no longer running — hung detached in the air, because `_readWheels`
+   * had never filled in a position for them.
+   *
+   * It is on the unconditional exit path with `input.suppressed` for the same
+   * reason that one is: a photo mode that can be left with the world still
+   * frozen is a soft lock.
+   */
+  _releaseTime() {
+    this.running = false;
+    this.ctx.worldPaused = false;
+    this._paintTime();
+  }
+
+  /**
+   * The chip, told which way it is pointing.
+   *
+   * Lit means the world is RUNNING, which is the added state and the one the
+   * player chose — the same reading the grid chip's light had. T and the button
+   * are the same verb and the button is the only one of the two that can show
+   * state, so this lives here rather than in the click handler: a world started
+   * from the keyboard has to light it too.
+   *
+   * The label flips with it, for the reason `stowBtn`'s does — a control whose
+   * tooltip names one direction while it is already pointing that way is a
+   * control that reads as broken.
+   */
+  _paintTime() {
+    if (!this.timeBtn) return;
+    const label = this.running ? 'Hold the world still' : 'Let the world run';
+    this.timeBtn.classList.toggle('pa-on', this.running);
+    this.timeBtn.title = touchCapable() ? label : `${label} (T)`;
+    this.timeBtn.setAttribute('aria-label', label);
+    this.timeBtn.setAttribute('aria-pressed', String(this.running));
   }
 
   /**
@@ -1078,7 +1180,7 @@ export class PhotoMode {
     this.lastPhotoBytes = url.length;
     posthog.capture('photo_taken', {
       file_size_bytes: url.length,
-      grid_visible: this.grid,
+      world_running: this.running,
       hour_of_day: this.ctx.lighting?.hour ?? null,
     });
 

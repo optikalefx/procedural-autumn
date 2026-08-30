@@ -349,7 +349,7 @@ export class HUD extends System {
           break;
         case 'Backquote': this.toggleSettings(); break;
         case 'KeyM': this.applyMute(!this.isMuted()); break;
-        case 'KeyG': if (this.photo.active) this.photo.toggleGrid(); break;
+        case 'KeyT': if (this.photo.active) this.photo.toggleTime(); break;
         case 'KeyP': if (this.photo.active) this.photo.capture(); break;
         case 'KeyL': case 'BracketLeft': case 'BracketRight':
           // The rail handles these too (it swallows keys while focused); this

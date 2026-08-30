@@ -956,19 +956,6 @@
 .pa-bracket.bl { bottom: 3.4vh; left: 3vw; border-right: none; border-top: none; border-radius: 0 0 0 6px; }
 .pa-bracket.br { bottom: 3.4vh; right: 3vw; border-left: none; border-top: none; border-radius: 0 0 6px 0; }
 
-.pa-grid {
-  position: absolute;
-  top: 3.4vh; bottom: 3.4vh; left: 3vw; right: 3vw;
-  opacity: 0;
-  transition: opacity 0.3s var(--ease);
-  background-image:
-    linear-gradient(90deg, rgba(255, 246, 234, 0.22) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(255, 246, 234, 0.22) 1px, transparent 1px);
-  background-size: 33.333% 33.333%;
-  background-position: 33.333% 33.333%;
-}
-.pa-grid.pa-on { opacity: 1; }
-
 /* ── the camera back ─────────────────────────────────────────────────────────
    One panel, three rows: the instrument readout, the desk, and — where there
    is a mouse — a line of pointer verbs. The desk holds three captioned groups.

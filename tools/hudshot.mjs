@@ -13,7 +13,7 @@
  *   compass.png    the heading strip, cropped and enlarged
  *   dash.png       the speedo cluster, cropped and enlarged
  *   settings.png   the settings sheet open
- *   photo.png      photo mode, with the grid on
+ *   photo.png      photo mode, world held still
  *   dark.png       the same HUD at dawn, to check legibility on a pale sky
  *
  * It also exercises the photo-mode save path and reports whether a real PNG
@@ -201,10 +201,9 @@ async function main() {
   await page.waitForTimeout(500);
 
   // ── photo mode ──────────────────────────────────────────────────────────
-  await page.evaluate(() => {
-    window.__hud.togglePhoto();
-    window.__hud.photo.toggleGrid();
-  });
+  // Photo mode only — the world stays frozen (T is what starts it), which is
+  // also what keeps this shot reproducible frame to frame.
+  await page.evaluate(() => window.__hud.togglePhoto());
   await page.waitForTimeout(900);
   await shot('photo');
 
