@@ -10,13 +10,15 @@
 //     photograph through. The clearance logic is still the rig's; free mode
 //     reuses `_floorAt`, so there is no second, worse camera here either.
 //   · takes the HUD away, leaving four corner brackets
-//   · works from inside the camp's two modal views. Both hold CameraRig's
-//     takeover, which outranks free mode, so both are told to let go where they
-//     stand before `enterFree` reads the camera. The telescope hides its tube
-//     (the camera is inside it); the fireside stands its stick in the world and
-//     pauses the cook, so the marshmallow the player pressed F on is still over
-//     the fire to be photographed. See `ScopeView.handOff` and
-//     `RoastView.handOff`, and the two calls in `setActive`.
+//   · works from inside the camp's two modal views, and from a boat. All
+//     three hold CameraRig's takeover, which outranks free mode, so all three
+//     are told to let go where they stand before `enterFree` reads the camera.
+//     The telescope hides its tube (the camera is inside it); the fireside
+//     stands its stick in the world and pauses the cook, so the marshmallow the
+//     player pressed F on is still over the fire to be photographed; the boat
+//     hides nothing, because the hull you are sitting in is part of the shot.
+//     See `ScopeView.handOff`, `RoastView.handOff` and `Boat.handOff`, and the
+//     three calls in `setActive`.
 //   · gives the controls a camera has, grouped the way a camera groups them —
 //     see "the camera back" below
 //   · pins the render resolution to the display's native density for as long
@@ -611,6 +613,13 @@ export class PhotoMode {
       // doing it the other way round would show one frame of chase camera in
       // the middle of a cut. See `RoastView.endHandOff`.
       this.ctx.systems?.camp?.roast?.endHandOff?.();
+      // …and the boat takes its mounted camera back, as a cut. Same placement
+      // and the same reason as the fireside above: the ride camera retakes the
+      // rig, so whatever mode `exitFree` selects below is moot while the boat
+      // has it, and doing it the other way round would show one frame of chase
+      // camera behind the CAMPER — which, aboard, is most of a lake away. See
+      // `Boat.endHandOff`.
+      this.ctx.systems?.boat?.endHandOff?.();
     }
 
     if (on) {
@@ -646,6 +655,15 @@ export class PhotoMode {
       // pauses the cook for as long as the shutter is open. See
       // `RoastView.handOff`.
       this.ctx.systems?.camp?.roast?.handOff?.();
+      // …and from a boat, which holds the rig's takeover for the whole ride
+      // (`Boat.board`). Aboard, the mounted ride camera outranked free mode
+      // exactly the way the eyepiece does, and photo mode opened over three
+      // dead controls: the zoom ring wrote `rig.fov` with nothing left to
+      // apply it, middle-drag pan did nothing at all, and the ride camera
+      // dragged every composed shot back over the bow two seconds after the
+      // player let go of the mouse (user, 2026-08-29). Same fix, same
+      // ordering, same reason — `Boat.handOff` has the full account.
+      this.ctx.systems?.boat?.handOff?.();
       rig?.enterFree?.();
       // Take the driving controls away. `Input.suppressed` exists for exactly
       // this and says so in its own comment ("A UI layer (menus, photo mode)

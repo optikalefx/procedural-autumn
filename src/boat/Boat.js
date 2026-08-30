@@ -20,7 +20,10 @@
 //
 //  Camera: `rig.setFollow(duck)` swaps the chase boom's subject vehicle for a
 //  duck-typed record driven from the boat's analytic physics. No Rapier body —
-//  see boat_physics.js for why that would fall through the world.
+//  see boat_physics.js for why that would fall through the world. Aboard, the
+//  eye is mounted on the deck through `rig.takeCamera` instead — and because a
+//  takeover outranks free mode, photo mode has to be given it back: see
+//  `handOff` / `endHandOff`.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
@@ -179,6 +182,7 @@ export class Boat extends System {
     this._camP = new THREE.Vector3();   // mounted-camera eye, damped
     this._camL = new THREE.Vector3();   // mounted-camera look target, damped
     this._camSnap = true;
+    this._handedOff = false;            // photo mode is holding the camera
     this._camZoom = 1;                  // 1 = the seated mount; wheel moves it
     this._camZoomT = 1;
     this._lookYaw = 0;                  // head turn off the bow line, radians
@@ -504,6 +508,14 @@ export class Boat extends System {
     d.phys.lateral = p.yawRate * p.speed * 2.0;   // the chase bank reads this
 
     // ── leaving ───────────────────────────────────────────────────────────
+    // Not while the shutter is open. Photo mode composes with the same plain
+    // left click that reaches back to the camper from the seat, so without
+    // this, framing a shot with the camper anywhere in it would drop the
+    // player out of the boat mid-photograph. E is the same argument: it steps
+    // ashore, and photo mode's rail is a place where keys get pressed.
+    // `_handedOff` rather than the HUD's flag because it is the precise
+    // question — "has the camera been given away" — see `handOff`.
+    if (this._handedOff) { this._say(''); this._cursor(''); return; }
     const { camera, input } = this.ctx;
     if (this.click.clicked) {
       const ray = pointerRay(input, camera, this._ray);
@@ -821,6 +833,82 @@ export class Boat extends System {
     }
   }
 
+  /**
+   * Hand the camera to photo mode, where it stands.
+   *
+   * `board` mounts the ride camera through `rig.takeCamera`, and a takeover
+   * outranks EVERYTHING in `CameraRig.lateUpdate` — including free mode, which
+   * is what photo mode is. So pressing F aboard used to open the rail over a
+   * camera that was still bolted to the deck, and every control on it was
+   * quietly dead in a different way (user, 2026-08-29):
+   *
+   *  · the ZOOM ring wrote `rig.fov` and nothing ever applied it — `_apply`
+   *    only runs at the end of `_free`, which never ran;
+   *  · MIDDLE-DRAG pan did nothing at all: that gesture lives in `_free` and
+   *    `_boatCam` has no answer for it;
+   *  · and the shot would not stay put. `_boatCam` damps the eye back onto the
+   *    mount every frame, and `_readLook` eases the head back over the bow
+   *    `LOOK_RECENTER_DELAY` seconds after you stop dragging — two seconds,
+   *    which is exactly the drift the player timed. Worse while paused: the
+   *    hull's speed is frozen at whatever it was when F was pressed, so the
+   *    "only once you are actually under way" courtesy that gates the recentre
+   *    never expires.
+   *
+   * The fix is the one the camp's two modal views already use: let go where we
+   * stand, before `enterFree` reads the camera. No ease, no step-back, nothing
+   * moved — photo mode's contract is that the frame you pressed F on is the
+   * frame you compose from, and the mounted pose IS that frame.
+   *
+   * The boat itself is not touched. Unlike the telescope there is nothing to
+   * hide (the eye rides the deck, it is not inside a tube) and unlike the
+   * fireside there is nothing in hand: the hull the player is sitting in is a
+   * thing they will want in the photograph.
+   *
+   * @returns the boat handed over, or null if the player is not aboard.
+   */
+  handOff() {
+    if (!this._aboard) return null;
+    if (this._handedOff) return this._aboard;
+    const cam = this.ctx.camera;
+    const rig = this.ctx.systems?.cameraRig;
+
+    // The rig has been returning early at its takeover for as long as the
+    // player has been aboard, so BOTH the fields `enterFree` measures its arm
+    // between are stale — `camPos` and `subject` are still the shore where they
+    // boarded, which can be most of a lake away. That arm is the free camera's
+    // orbit pivot, its depth-of-field plane and the focus rail's first guess,
+    // so hand it the truth before it reads it: the eye where it actually is,
+    // and the mounted camera's own damped look target as the subject, which is
+    // the point over the bow this shot has been aimed at all along.
+    rig?.camPos?.copy(cam.position);
+    rig?.subject?.copy(this._camL);
+
+    this._handedOff = true;
+    rig?.takeCamera?.(null);
+    return this._aboard;
+  }
+
+  /** Back in the seat. Photo mode calls this on its way out.
+   *
+   *  A CUT (`_camSnap`), not the damped ride back, and for the reason
+   *  `CameraRig.exitFree` gives: the player may have flown sixty metres up the
+   *  far bank to take the photograph, and easing home from there is a long
+   *  slide through terrain nobody composed.
+   *
+   *  Idempotent, and survives the boat being lost while the shutter was open —
+   *  `exit()` clears the flag, so there is nothing to climb back into and the
+   *  chase camera `exitFree` selects is the right answer.
+   *
+   *  @returns true if a hand-off was actually ended. */
+  endHandOff() {
+    if (!this._handedOff) return false;
+    this._handedOff = false;
+    if (!this._aboard) return false;
+    this._camSnap = true;
+    this.ctx.systems?.cameraRig?.takeCamera?.((dt) => this._boatCam(dt));
+    return true;
+  }
+
   /** Is there a bank off this boat's bow that the player could step onto?
    *
    *  The single condition behind BOTH the "step ashore" prompt and the E / hold
@@ -893,6 +981,10 @@ export class Boat extends System {
     if (veh) veh.controlsHeldBy = null;
     rig?.setFollow?.(null);
     rig?.takeCamera?.(null);   // the chase re-primes behind the camper: a cut
+    // Including a hand-off in flight: photo mode may still be open over a boat
+    // that has just sunk under it. Cleared rather than left set so `endHandOff`
+    // does not try to remount a camera on a boat that is gone.
+    this._handedOff = false;
     if (this._aboard) this._aboard.phys.speed = 0;
     this._aboard = null;
     this.active = false;

@@ -654,12 +654,17 @@
 //  the LENS and of nothing else.
 //
 //  **Which makes the threshold a statement about instruments**, and this is
-//  the whole design. What the rule says is: *the wide lens is not enough.*
-//  Not for any of the eight objects. Fit the 200-400, or walk to a telescope
-//  and zoom it in, or the sky is not on your sheet. That is the same shape as
-//  the owl's "fit the long lens" and it is the reason these three lines are
-//  finds rather than accidents — otherwise `moon` ticks itself on the first
-//  night landscape anybody frames, which is precisely the fireflies' old sin.
+//  the whole design. For the planets and the galaxies what the rule says is:
+//  *the wide lens is not enough.* Fit the 200-400, or walk to a telescope and
+//  zoom it in, or they are not on your sheet. That is the same shape as the
+//  owl's "fit the long lens" and it is what makes those two lines finds rather
+//  than accidents.
+//
+//  **The moon is deliberately not held to that any more.** Its gate is a
+//  position on the wide lens's own zoom ring rather than a different lens in
+//  the bag, because it is the one object up there whose photograph is allowed
+//  to be a landscape. The frame that decided it, and what the change costs,
+//  are under "the moon may be a landscape" below.
 //
 //  ── the measurements, and how they were taken ──────────────────────────────
 //
@@ -685,20 +690,76 @@
 //     the rest    0.92  - 2.70 deg           (the Companion, the Pinwheel,
 //                                             the Moon, the Great Spiral)
 //
-//  One threshold cannot serve both — at any cut that makes the moon fill a
-//  frame, no planet ever counts — so there are two, and the split is not a
-//  judgement call, it is that gap. The code keys them off the ITEM rather than
-//  off a size boundary, so there is no third magic number.
+//  One threshold cannot serve both — at any cut that makes a galaxy fill a
+//  frame, no planet ever counts — so the first split is not a judgement call,
+//  it is that gap. The moon then takes a third number INSIDE the big class,
+//  and that one is a judgement call: it is made below and it is marked as one.
+//  All three are keyed off the ITEM rather than off a size boundary, so no
+//  number in this file ever has to guess which object it is looking at.
 //
-//  **SKY_DISC = 0.14, for the moon and the galaxies.** Bounded from below by
-//  the moon at 70 mm, the wide lens's longest: 0.121 of the frame, a 131 px
-//  crescent inside a halo (`moon-wide70.png`). That is a night landscape with
-//  a moon in it — the shot every player takes by accident on their first
-//  night — and it must not tick the box. Bounded from above by the smallest of
-//  the four, the Companion, at the eyepiece's own tightest field of 6.0 deg:
-//  0.153, and `companion-scope6.png` is unmistakably a spiral galaxy. 0.14
-//  sits about a sixth above the floor and a twelfth below the ceiling, so
-//  neither the wide lens's last stop nor the eyepiece's is a knife edge.
+//  **SKY_MOON = 0.052 — the moon may be a landscape.** This number was 0.14,
+//  sharing the galaxies' line, and it was bounded from below by the moon at
+//  70 mm — 0.121 of the frame, a 131 px crescent inside a halo
+//  (`moon-wide70.png`) — on the argument that a night landscape with a moon in
+//  it is the shot every player takes by accident on their first night and must
+//  not tick the box. The user overruled that, with a frame:
+//
+//    *"I took this photo of the moon, but it didn't count because it's not big
+//    enough. For the moon, people will want to see the scenery around it I
+//    think, so lets allow the photo to enter the book if the moon is less
+//    'big' in the frame. You can use around what I have in this photo."*
+//
+//  and a frame is a specification. The moon in it is a crescent over a lake
+//  with the far treeline and its own reflection in shot, and it stands about
+//  **0.060** of the frame's height — which is around 38 mm on the wide lens at
+//  the shape of window it was taken in. So the bracket is no longer the one
+//  above; it is:
+//
+//     floor    24 mm, the wide lens wide open   0.0437 at 16:9   must stay out
+//     ceiling  the frame the user sent          ~0.060           must get in
+//
+//  and **0.052 is the geometric middle of those two** — 19% above the stop,
+//  15% below the photograph, so neither the wide end of the ring nor the shot
+//  that prompted the change is a knife edge. Read off frames, not arithmetic:
+//  `tools/_scratch/_moonsize.mjs` walks the 24-70 in nine steps and prints, per
+//  stop, the share this gate computes, the moon's measured size on screen, and
+//  what `detectSubjects` actually returns. Its own header says which part of
+//  the moon each measured column is, and where the two disagree.
+//
+//  **What that costs, plainly.** The moon now counts from 30 mm at 16:9 (from
+//  33 mm at the 1.60 window the photograph came from; 29 mm lands 0.1% under
+//  the cut and 32 mm lands 0.7% under it, which is what a continuous zoom ring
+//  against a fixed cut looks like) and the wide lens opens at 35 mm — so a
+//  player who never touches the zoom ring, points the default camera at the
+//  moon after dark and frames it decently gets the tick. The rule is no longer
+//  "a moon in a landscape is not a moon"; all that survives is "a moon 47 px
+//  tall in a 1080-line 24 mm frame is not a moon", and the hint in
+//  `hunt_items.js` was rewritten to stop promising the old one. That is a real
+//  loss of difficulty, and it is the point of the request rather than a side
+//  effect of it: the moon is the sky's camp dog (`hunt_items.js`, "the moon is
+//  its own line"), the gimme that teaches a player the sheet wants them to
+//  look up — and it was the one gimme on the sheet you could not actually
+//  take. The galaxies and the planets are untouched and still carry the
+//  difficulty of the three lines.
+//
+//  **A second leak, disclosed with the first.** The gate is a share of frame
+//  HEIGHT, so a letterboxed window makes every object a bigger share of it: on
+//  a 21:9 canvas even 24 mm reaches 0.056 and the floor stops binding
+//  altogether. That was already true of the old rule in the same way — 70 mm
+//  on 21:9 is 0.159, over the 0.14 it was supposed to be under — so this is a
+//  property of measuring against the vertical, not something the moon's number
+//  introduced. It is left alone because the fix is to measure against the
+//  frame's SHORTER angular axis, and that would move all three items and every
+//  number in this block at once.
+//
+//  **SKY_DISC = 0.14, for the galaxies**, unchanged. Bounded from above by the
+//  smallest of the three, the Companion, at the eyepiece's own tightest field
+//  of 6.0 deg: 0.153, and `companion-scope6.png` is unmistakably a spiral
+//  galaxy. It does not follow the moon down, and the reason is not symmetry —
+//  it is that 0.14 is already at the bottom of its own range. The Great Spiral
+//  leaks onto the wide lens at 0.164 (see "the one leak", below), and any cut
+//  under 0.14 starts putting the other two galaxies there as well, which turns
+//  "find a galaxy" into "point at the sky".
 //
 //  **SKY_DOT = 0.014, for the planets.** The ceiling is not mine: `planets.js`
 //  art-directed the disc sizes for one specific field and says so — "at the
@@ -711,12 +772,11 @@
 //  `jupiter-scope18.png` reads as a slightly fat star, which is exactly what
 //  `planets.js` says it is meant to read as at that magnification.
 //
-//  What the two constants come to, as instruments:
+//  What the three constants come to, as instruments:
 //
 //     item      counts from a field of      i.e.
-//     moon      14.3 deg                    the long lens anywhere on its
-//                                           ring, or the eyepiece zoomed in
-//                                           past 14 deg
+//     moon      38.5 deg                    the wide lens from 30 mm up (at
+//                                           16:9), and everything longer
 //     galaxy     6.6 (Companion) to 19.3    the long lens always; the Great
 //               (the Great Spiral)          Spiral also on the wide lens's
 //                                           last stop, see below
@@ -1049,16 +1109,19 @@ const SKY_ITEM = {
 
 /**
  * How much of the frame's height the object's own diameter must subtend, per
- * item — because the sky comes in two size classes six times apart and one
- * number cannot promise the same thing to both.
+ * item — because the sky comes in two size classes six times apart, and inside
+ * the big one the moon is allowed to be a landscape and a galaxy is not.
  *
- * 0.14 is bounded below by the moon at 70 mm (0.121 — a night landscape with a
- * moon in it) and above by the Companion at the eyepiece's tightest 6.0 deg
- * field (0.153 — unmistakably a galaxy). 0.014 is `planets.js`'s own stated
- * design point, the smallest planet at that same 6.0 deg (0.0153), less a
- * tenth so the eyepiece's stop is inside the rule rather than on its edge.
+ * 0.052 is the moon's, bracketed between the wide lens wide open at 24 mm
+ * (0.0437, which must stay out) and the photograph the user asked to have
+ * credited (~0.060, which must get in); the header carries the frame and the
+ * argument, and `tools/_scratch/_moonsize.mjs` walks the ring it sits on. 0.14
+ * is the galaxies', bounded above by the Companion at the eyepiece's tightest
+ * 6.0 deg field (0.153 — unmistakably a galaxy). 0.014 is `planets.js`'s own
+ * stated design point, the smallest planet at that same 6.0 deg (0.0153), less
+ * a tenth so the eyepiece's stop is inside the rule rather than on its edge.
  */
-const SKY_MIN = { moon: 0.14, galaxy: 0.14, planet: 0.014 };
+const SKY_MIN = { moon: 0.052, galaxy: 0.14, planet: 0.014 };
 
 /**
  * Night, as the sky shader's own draw gate rather than as `nightFactor`.

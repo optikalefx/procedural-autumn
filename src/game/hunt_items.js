@@ -179,7 +179,7 @@
 //  frame with the moon; resolve a planet's disc; find a galaxy. They differ in
 //  what the player has to know and in how far the lens has to go — measured,
 //  in `hunt_detect.js`'s "the sky needed its own rule": the moon counts from a
-//  14.3 deg field, the easiest galaxy from 19.3 and the hardest from 6.6, and
+//  38.5 deg field, the easiest galaxy from 19.3 and the hardest from 6.6, and
 //  a planet from 10.7 deg at best. Three lines, fifteen to eighteen, a fifth
 //  more sheet for a whole new direction to point the camera in.
 //
@@ -199,6 +199,15 @@
 //  it is the brightest thing in the sky — so it is the sky's camp dog: the
 //  gimme that teaches the mechanic. Without it a player has no way to learn
 //  that the sheet wants them to look up.
+//
+//  It did not read as a gimme at first, because it shipped behind the same
+//  threshold as the galaxies and so wanted the long lens like everything else
+//  up there. That was corrected on a frame the user sent — a crescent over a
+//  lake that the book refused — and the moon's cut now sits on the wide lens's
+//  own zoom ring instead. The argument, the frame and what it costs are in
+//  `hunt_detect.js` under "the moon may be a landscape"; the consequence here
+//  is the hint, which used to send the player for the long lens and no longer
+//  can.
 //
 //  They are grouped at the end under their own heading rather than folded into
 //  the set-pieces, because rule 3 says the order is a walk and this is the
@@ -301,7 +310,7 @@ export const HUNT_ITEMS = [
   {
     id: 'moon',
     subject: 'the Moon',
-    hint: 'after dark, and the long lens. A moon in a landscape is not a moon',
+    hint: 'after dark. Zoom in a little — the scenery can stay in the shot',
   },
   {
     id: 'planet',
