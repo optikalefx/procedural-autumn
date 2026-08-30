@@ -1,9 +1,33 @@
 // Triangle counts + circumferential/axial facet arithmetic for every mammal.
 // Run from the worktree root:  node <this> [--facets]
-import { SPECIES, DOG_SPECIES, buildSpecies, buildCampDog } from '../../src/wildlife/animal_species.js';
+import { readFileSync } from 'node:fs';
+import { SPECIES, DOG_SPECIES, buildSpecies, buildCampDog, isGlb } from '../../src/wildlife/animal_species.js';
 
-const KEYS = ['deer', 'bear', 'fox', 'rabbit', 'squirrel', 'raccoon'];
+// Blueprint species only. The fox is hand-authored and has no profile arrays to
+// do facet arithmetic on — its cost is read straight out of the GLB below,
+// which is the comparison anyone runs this tool for.
+const KEYS = ['deer', 'bear', 'rabbit', 'squirrel', 'raccoon'];
 const SEED = 20261018;
+
+/**
+ * Triangles and primitives in a GLB, decoded from the container.
+ *
+ * Primitive count matters as much as the triangle count here: each one is its
+ * own draw call, and each is drawn twice while the animal is close enough to
+ * cast a shadow. That is the number that makes a hand-authored animal expensive
+ * next to a procedural one, which is a single skinned mesh.
+ */
+function glbCost(url) {
+  const b = readFileSync(`public${url}`);
+  const j = JSON.parse(b.slice(20, 20 + b.readUInt32LE(12)).toString('utf8'));
+  const prims = [];
+  for (const m of j.meshes) {
+    for (const p of m.primitives) {
+      prims.push({ mat: j.materials[p.material].name, tris: j.accessors[p.indices].count / 3 });
+    }
+  }
+  return { prims: prims.length, tris: prims.reduce((a, p) => a + p.tris, 0), parts: prims };
+}
 
 // ── triangle counts ──────────────────────────────────────────────────────────
 const rows = [];
@@ -19,6 +43,17 @@ for (const p of buildCampDog(SEED)) {
     lod0: p.geoms[0].index.count / 3, lod1: p.geoms[1].index.count / 3 });
 }
 console.log(JSON.stringify(rows));
+
+// ── the hand-authored cast ───────────────────────────────────────────────────
+// One mesh, no LOD twin, and as many draw calls as it has materials. Reported
+// separately because none of the columns above mean the same thing here.
+for (const [k, sp] of Object.entries(SPECIES)) {
+  if (!isGlb(k)) continue;
+  const c = glbCost(sp.glb.url);
+  console.log(`GLB ${k}: ${c.tris} tris across ${c.prims} primitives `
+    + `(${c.prims} draw calls, ${c.prims * 2} with the shadow pass) — `
+    + c.parts.map((p) => `${p.mat} ${p.tris}`).join(', '));
+}
 
 // ── facet arithmetic ─────────────────────────────────────────────────────────
 if (!process.argv.includes('--facets')) process.exit(0);

@@ -86,9 +86,11 @@ const LADDER = {
   // `dogwalk`), and a deer's top gear is a BOUND — both hind feet together,
   // then both fore. Dogs gallop.
   dog:    ['dogwalk', 'trot', 'gallop'],
-  // A fox moves like a light dog, not like a deer: lateral walk, long trot,
-  // and a gallop at the top rather than a bound.
-  fox:    ['walk', 'trot', 'gallop'],
+  // No `fox` row, and its absence is not an oversight. The fox is the one
+  // hand-authored animal in the cast — `mammals/fox.js` carries a `glb` block
+  // instead of a blueprint — so its gaits are six clips on an AnimationMixer
+  // and this solver never runs for it at all. See `glb_rig.js`.
+  //
   // A squirrel never walks — ground travel is a bound at every speed, like the
   // rabbit. (Every species needs its own row: a missing key falls through to
   // the deer's ladder, and a squirrel that trots is a rat.)
@@ -323,6 +325,19 @@ export class AnimRig {
     // Was the animal standing still last frame? See the re-key in update().
     this._wasStill = true;
   }
+
+  /**
+   * Geometry LOD. Both geometries share one skeleton description, so the swap
+   * is a single assignment and costs nothing at the moment it happens.
+   *
+   * This and `setShadow` exist so `Wildlife._step` can drive presentation
+   * without knowing which backend it is holding — the hand-authored track
+   * (`glb_rig.js`) answers the same two calls and does something different.
+   */
+  setLod(lod) { this.mesh.geometry = this.proto.geoms[lod]; }
+
+  /** Shadow LOD — the second draw call per animal, dropped at range. */
+  setShadow(on) { if (on !== this.mesh.castShadow) this.mesh.castShadow = on; }
 
   /** Place all four feet on the ground under a standing animal. */
   reset(pos, heading, world) {

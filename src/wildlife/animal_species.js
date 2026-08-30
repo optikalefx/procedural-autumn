@@ -7,6 +7,14 @@
 //  back line sits, how deep the barrel is, how long the legs are, where the
 //  head is carried relative to the withers.
 //
+//  ...with one exception, which this file exists to make invisible to everyone
+//  above it. The fox is HAND-AUTHORED: a mesh and six clips built in Blender and
+//  played back by three's AnimationMixer (`glb_rig.js`), rather than a blueprint
+//  lofted and solved. A species declares which track it is on by carrying a
+//  `glb` block or a `blueprint`, and nothing outside this file and `Wildlife`'s
+//  two build steps ever asks again — placement, streaming, the logbook, the
+//  photo detector and the compass paw all walk one cast.
+//
 //  That is deliberate. Plate 3 shows the bar: the bear is legible as a bear
 //  from a hundred metres away as a flat black shape, because its proportions
 //  are right — low head, high shoulder hump, short heavy legs, long body. Get
@@ -14,10 +22,11 @@
 //  of shading saves it. So the profile arrays are the actual art, and they live
 //  one per animal in `mammals/`:
 //
-//    mammals/<species>.js   one animal, whole: blueprint, coat variants, gait
-//                           ladder, brain numbers. Self-contained — a species
-//                           is added or deleted by adding or deleting a file
-//                           and a line of this table.
+//    mammals/<species>.js   one animal, whole: blueprint (or the `glb` block
+//                           that replaces it), coat variants, gait ladder,
+//                           brain numbers. Self-contained — a species is added
+//                           or deleted by adding or deleting a file and a line
+//                           of this table.
 //    mammals/quadruped.js   the shared builder every blueprint is fed to, and
 //                           nothing species-specific.
 //    mammals/hide.js        the material the whole cast wears.
@@ -27,6 +36,7 @@
 //  cast without knowing what is in it.
 // ─────────────────────────────────────────────────────────────────────────────
 import { buildVariants } from './mammals/quadruped.js';
+import { loadGlbSpecies } from './glb_rig.js';
 import { DEER } from './mammals/deer.js';
 import { BEAR } from './mammals/bear.js';
 import { RABBIT } from './mammals/rabbit.js';
@@ -38,6 +48,7 @@ import { YAK } from './mammals/yak.js';
 
 export { createHideMaterial, setHideSilScale, SIL_FOV_REF }
   from './mammals/hide.js';
+export { GlbRig } from './glb_rig.js';
 // The camp dog is NOT in `SPECIES` — see the note over DOG_SPECIES. It is
 // re-exported here anyway so `camp_dog.js` has the same one door as everyone
 // else.
@@ -70,12 +81,33 @@ export const SPECIES = {
   yak: YAK,
 };
 
+/** Is this species hand-authored in Blender rather than lofted from a blueprint? */
+export function isGlb(key) { return !!SPECIES[key].glb; }
+
 /**
  * Build the prototypes for one species. Called once at load; each variant gets
  * a near and a mid geometry sharing one skeleton description.
+ *
+ * Procedural only — a hand-authored species has to be fetched over the network
+ * and so cannot be built synchronously. `Wildlife.init` awaits `loadSpecies`
+ * for those; this throws rather than returning something half-shaped, because a
+ * species that silently built no geometry is a fox-shaped hole nobody notices
+ * until the valley is empty.
  */
 export function buildSpecies(key, seed) {
+  if (isGlb(key)) throw new Error(`[species] ${key} is hand-authored; await loadSpecies`);
   return buildVariants(SPECIES[key], key, seed);
+}
+
+/**
+ * Build the prototypes for one hand-authored species, and measure it.
+ *
+ * Also writes the measured gait speeds back onto the species record — see
+ * `loadGlbSpecies`. That is why this is awaited before anything reads
+ * `SPECIES[key].gait`.
+ */
+export function loadSpecies(key) {
+  return loadGlbSpecies(key, SPECIES[key]);
 }
 
 /** Weighted deterministic variant pick. */

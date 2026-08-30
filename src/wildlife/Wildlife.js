@@ -33,8 +33,8 @@ import { SEED } from '../world/WorldConfig.js';
 import { SKY_STATE } from '../render/Lighting.js';
 import { NoiseField } from '../core/Noise.js';
 import { clamp, clamp01, lerp, damp, smoothstep, mulberry32, hash2i } from '../core/MathUtils.js';
-import { SPECIES, buildSpecies, createHideMaterial, pickVariant,
-         setHideSilScale, SIL_FOV_REF } from './animal_species.js';
+import { SPECIES, buildSpecies, loadSpecies, isGlb, createHideMaterial,
+         pickVariant, setHideSilScale, SIL_FOV_REF, GlbRig } from './animal_species.js';
 import { instantiate } from './animal_rig.js';
 import { AnimRig } from './animal_anim.js';
 import { Brain, ST, WATER_MAX } from './animal_brain.js';
@@ -188,7 +188,7 @@ export class Wildlife extends System {
     // still get its wildlife.
     this._rocks = this.ctx.systems?.rocks ?? null;
     this._scatter = this._rocks?.scatter ?? null;
-    this._buildProtos();
+    await this._buildProtos();
     this._buildPool();
     this._placeSites();
 
@@ -261,10 +261,33 @@ export class Wildlife extends System {
 
   // ── prototypes and the mesh pool ───────────────────────────────────────────
 
-  _buildProtos() {
+  /**
+   * One prototype per coat, for every species, on whichever track it is on.
+   *
+   * The hand-authored species are the only asynchronous thing in the whole
+   * wildlife load, and they are awaited HERE rather than lazily for one
+   * reason: `loadSpecies` measures the clips and writes the measured walk,
+   * trot and run speeds onto the species record (see `glb_rig.loadGlbSpecies`).
+   * `_buildPool` constructs a `Brain` per pool entry off `SPECIES[key]`, and a
+   * Brain built before that write would steer the animal at speeds its clips
+   * cannot carry — the paws would slide, which is the exact failure the whole
+   * measure-the-asset mechanism exists to prevent.
+   *
+   * Loaded in parallel, because there is no reason for a second hand-authored
+   * animal to wait on the first.
+   */
+  async _buildProtos() {
     this.protos = {};
     this.mats = {};
+    const pending = [];
     for (const key of Object.keys(SPECIES)) {
+      if (isGlb(key)) {
+        // The materials come off the asset, one set per coat, so there is no
+        // hide material for this species and `this.mats[key]` stays empty.
+        pending.push(loadSpecies(key).then((protos) => { this.protos[key] = protos; }));
+        this.mats[key] = [];
+        continue;
+      }
       this.protos[key] = buildSpecies(key, SEED);
       // One material per variant, shared by every animal of that variant. They
       // all compile to the same program (see createHideMaterial), so the whole
@@ -275,6 +298,7 @@ export class Wildlife extends System {
         return m;
       });
     }
+    await Promise.all(pending);
   }
 
   /**
@@ -300,14 +324,27 @@ export class Wildlife extends System {
         // size for the whole session costs nothing and is invisible.
         const jit = 0.90 + hash2i(i * 31 + 7, key.length * 17, SEED) * 0.20;
         const scale = proto.scale * jit;
-        const inst = instantiate(proto, this.mats[key][vi], 0);
-        const rig = new AnimRig(proto, inst, scale, SPECIES[key].gait, key);
-        inst.mesh.name = `${key}:${proto.variant.name}`;
-        inst.mesh.position.set(0, -500, 0);
-        this.group.add(inst.mesh);
+        // How big this individual is as an ANIMAL, which is not the same number
+        // as the transform above the moment a species is hand-authored — see
+        // the two-scales note in `glb_rig.loadGlbSpecies`. `Brain` multiplies
+        // every gait speed by this, so it has to stay around 1. A procedural
+        // prototype carries no `size` and falls back to `scale`, which for a
+        // blueprint authored in metres is the same thing it always was.
+        const size = (proto.size ?? proto.scale) * jit;
+        // The two backends, and the only place the difference is visible.
+        // Both satisfy the same contract — see the header of glb_rig.js — so
+        // everything downstream of this line walks one cast.
+        const glb = isGlb(key);
+        const inst = glb ? null : instantiate(proto, this.mats[key][vi], 0);
+        const rig = glb
+          ? new GlbRig(proto, scale, SPECIES[key].gait, key)
+          : new AnimRig(proto, inst, scale, SPECIES[key].gait, key);
+        rig.mesh.name = `${key}:${proto.variant.name}`;
+        rig.mesh.position.set(0, -500, 0);
+        this.group.add(rig.mesh);
         per[vi].push({
-          key, vi, proto, inst, rig, scale,
-          mesh: inst.mesh,
+          key, vi, proto, inst, rig, scale, size,
+          mesh: rig.mesh,
           brain: new Brain(key, SPECIES[key], (i * 2654435761) >>> 0, null, 0),
           drive: { pos: null, heading: 0, speed: 0, graze: 0, alert: 0, flag: 0, look: null, lod: 0 },
           group: null, slot: 0, active: false, lod: 0, acc: 0, tick: 0,
@@ -842,7 +879,7 @@ export class Wildlife extends System {
       a.group = g;
       a.slot = m;
       a.brain.bind(g, m, (S.seed[si] ^ (m * 2654435761)) >>> 0);
-      a.brain.reset(x, W.getHeight(x, z), z, heading, a.scale);
+      a.brain.reset(x, W.getHeight(x, z), z, heading, a.size);
       a.brain.home.set(stand.x, 0, stand.z);
       if (g.line && key === 'bear') a.brain.state = ST.PATROL;
       a.rig._warm = false;
@@ -1101,8 +1138,23 @@ export class Wildlife extends System {
       // main.js compiles the scene once at load, and three's compile() only
       // walks *visible* objects — so the pool is built visible and parked
       // underground, and hidden here, on the first frame after the warm-up.
+      //
+      // `!a.active` is load-bearing. This sweep is about the pool that was
+      // built visible for the compile, and an animal a site has already woken
+      // is not part of that — hiding it here left it `active && !visible`
+      // with nothing that would ever show it again, because only `_activate`
+      // sets `visible = true` and it has already run. The animal then walks
+      // around the valley, fully simulated, invisible, for the rest of the
+      // session.
+      //
+      // The window is real, not theoretical: `init` sets the flag and only the
+      // first `update` clears it, and the journal auto-opens on first run and
+      // holds the sim — so anything that spawns before the player closes it
+      // (`debugSpawn` from the console, most obviously) lands squarely inside.
       for (const key of Object.keys(this.pool)) {
-        for (const per of this.pool[key]) for (const a of per) a.mesh.visible = false;
+        for (const per of this.pool[key]) for (const a of per) {
+          if (!a.active) a.mesh.visible = false;
+        }
       }
       this._compileWarm = false;
     }
@@ -1174,21 +1226,24 @@ export class Wildlife extends System {
       const lead = B.leader ? null : a.group.members[0]?.brain ?? null;
       B.update(dt, W, threat, lead);
     }
+    // Debug surface only — see `debugGait`. Held after the Brain has run so it
+    // overrides whatever pace the state machine chose, and nowhere near the
+    // Brain's own steering, which keeps working.
+    if (this._gaitPin && a.key === this._gaitPin.key) B.speed = this._gaitPin.speed;
 
     const dx = B.pos.x - camPos.x, dy = B.pos.y - camPos.y, dz = B.pos.z - camPos.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-    // Geometry LOD. Both meshes share the skeleton, so the swap is one
-    // assignment and costs nothing at the moment it happens.
+    // Geometry LOD. On the procedural track both meshes share the skeleton, so
+    // the swap is one assignment and costs nothing at the moment it happens; a
+    // hand-authored animal has the one mesh its artist made and does nothing
+    // here. Asked of the rig rather than done to the mesh, because "how this
+    // animal is drawn" is precisely what the two backends disagree about.
     const wantLod = dist > NEAR_GEOM ? 1 : 0;
-    if (wantLod !== a.lod) {
-      a.lod = wantLod;
-      a.mesh.geometry = a.proto.geoms[wantLod];
-    }
+    if (wantLod !== a.lod) { a.lod = wantLod; a.rig.setLod(wantLod); }
     // Shadows are the second draw call per animal. Past the point where an
     // animal's own shadow is a smudge, drop it.
-    const wantShadow = dist < SHADOW_DIST;
-    if (wantShadow !== a.mesh.castShadow) a.mesh.castShadow = wantShadow;
+    a.rig.setShadow(dist < SHADOW_DIST);
 
     // Animation rate. Anything close, or on screen, is animated every frame.
     // Anything else is stepped a few times a second purely so it arrives in the
@@ -1412,6 +1467,29 @@ export class Wildlife extends System {
 
   debugFreeze(on = true) { this._frozen = !!on; }
 
+  /**
+   * Hold one species at a named gait's cruising speed. Debug surface.
+   *
+   * A look test wants the gait still in the frame, not whatever the state
+   * machine happened to pick, and waiting for an animal to choose a trot on its
+   * own is how a capture run produces eight pictures of a standing fox.
+   *
+   * The speed pinned is the species' UNSCALED cruise, which is exactly the
+   * number the gait bands are measured against — so the clip being judged sits
+   * at weight 1 rather than part-way through a crossfade. Pass no gait to
+   * release. Applies to both backends: a procedural animal picks the matching
+   * rung of its gait ladder from the same speed.
+   */
+  debugGait(key, gait = null) {
+    if (!gait) { this._gaitPin = null; return null; }
+    const g = SPECIES[key]?.gait;
+    if (!g) return null;
+    const speed = gait === 'stand' ? 0 : g[gait];
+    if (speed === undefined) return null;
+    this._gaitPin = { key, speed };
+    return speed;
+  }
+
   /** A readable dump of every live animal, for the motion-strip harness. */
   debugState() {
     const names = ['idle', 'graze', 'wander', 'alert', 'flee', 'patrol', 'watch',
@@ -1441,9 +1519,18 @@ export class Wildlife extends System {
   dispose() {
     this.debugClear();
     this.group.removeFromParent();
+    const seen = new Set();
     for (const key of Object.keys(this.protos)) {
-      for (const p of this.protos[key]) for (const g of p.geoms) g.dispose();
+      // `seen`, because the hand-authored track shares one bounds carrier
+      // across both LOD slots and all of a species' coats — the procedural
+      // track's geometries are all distinct and pass straight through.
+      for (const p of this.protos[key]) {
+        for (const g of p.geoms) { if (!seen.has(g)) { seen.add(g); g.dispose(); } }
+      }
       for (const m of this.mats[key]) m.dispose();
+    }
+    for (const key of Object.keys(this.pool ?? {})) {
+      for (const per of this.pool[key]) for (const a of per) a.rig.dispose?.();
     }
     this.birds?.dispose();
     this.treeBirds?.dispose();

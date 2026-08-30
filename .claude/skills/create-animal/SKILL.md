@@ -27,12 +27,18 @@ existing species file closest to your animal:
 | `mammals/deer.js` | long-legged, read at 60–100 m (elk, pronghorn) |
 | `mammals/bear.js` | heavy, low-headed, short-legged (boar, badger) |
 | `mammals/rabbit.js` | small, crouched, read under 20 m (marmot) |
-| `mammals/fox.js` | light canid/felid frame, read at 30–60 m (coyote, bobcat, wolf) |
+| `mammals/dog.js` | light canid/felid frame, read at 30–60 m (coyote, bobcat, wolf) |
 | `mammals/squirrel.js` | tiny, hunched, big-tailed (marten, marmot) |
 | `mammals/raccoon.js` | identified by markings rather than by proportions |
 
 Every blueprint's comments explain *why* each number is what it is — mine them
 before inventing your own.
+
+**Not `mammals/fox.js`.** The fox is the one hand-authored animal in the cast:
+it carries a `glb` block instead of a blueprint, so there are no profile arrays
+in it to copy. Its `brain` block is still a good model for a wary mid-sized
+mammal. For a new animal built in Blender rather than lofted, use
+`promote-glb-animal` instead of this skill.
 
 ## The six touchpoints
 
@@ -82,15 +88,15 @@ before inventing your own.
   or the IK clamps straight mid-stride and the legs visibly lock — the bear's
   "front legs disappear" bug. See the long comment over the bear's `hind`.
 - **Tail markings ramp linearly by default**, so half the tail is half-pale —
-  right for a deer's flag, wrong for a tip marking. Use `tailMixBias` (fox
-  brush: 2.4) to hold the coat until the tip. `tailR` may *grow* toward the
+  right for a deer's flag, wrong for a tip marking. Use `tailMixBias` (the
+  retired procedural fox's brush used 2.4) to hold the coat until the tip. `tailR` may *grow* toward the
   tip for a plume (squirrel), and the tail chain may be authored climbing
   instead of hanging — the arch itself can be the species' silhouette.
 - **`flag` is deer-only** (see `animal_brain.js`); other species' tails get
   only the small `alert * 0.35` lift. Don't design a tail signal around
   `flag` for a non-deer without touching the brain.
 - **`rumpTip: false`** for animals whose backside is a rounded mass (deer,
-  fox, dog); the default point-taper is right only for bear/rabbit-like rumps.
+  dog); the default point-taper is right only for bear/rabbit-like rumps.
 - **Scale small animals past life size.** The rabbit is hare-scaled and the
   squirrel ~1.1×: at true size in this grass they are invisible rather than
   shy, and the whole species exists for the sighting.
@@ -136,7 +142,10 @@ AGENTS.md.
 
 1. **Gallery** — `http://127.0.0.1:<port>/gallery.html#animal%3A<key>%3A0`.
    Check every variant and every pose; graze is where neck-seam humps appear,
-   walk/run where legs lock.
+   walk/run where legs lock. (The gallery's **Habitat Pen** card is not for this
+   track — it stocks hand-authored `glb` species only, because a solved gait is
+   correct on any ground by construction and needs no behaviour sandbox to
+   prove it. See `promote-glb-animal`.)
 2. **Motion strips** — `AUTUMN_URL=http://127.0.0.1:<port> node
    tools/wstrip.mjs --species <key> --mode walk` (then `flee`, and `ladder`
    for the distance read). Look for: correct gait name in the frame headers,

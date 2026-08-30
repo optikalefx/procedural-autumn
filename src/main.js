@@ -38,7 +38,6 @@ import { Trees }       from './vegetation/Trees.js';
 import { GroundCover } from './vegetation/GroundCover.js';
 import { Grass }       from './vegetation/Grass.js';
 import { Wildlife }    from './wildlife/Wildlife.js';
-import { GlbFoxes }    from './wildlife/glb_fox.js';
 import { Vehicle }     from './vehicle/Vehicle.js';
 import { Boat }        from './boat/Boat.js';
 import { Camp }        from './camp/Camp.js';
@@ -57,10 +56,6 @@ const SYSTEMS = [
   ['groundCover', GroundCover],
   ['grass',       Grass],
   ['wildlife',    Wildlife],
-  // On trial beside the procedural cast, not in place of it: the same valley
-  // carries both so the two foxes can be seen in one frame. `?glbfox=0`
-  // removes it entirely. See src/wildlife/glb_fox.js.
-  ['glbFoxes',    GlbFoxes],
   ['vehicle',     Vehicle],
   // After Vehicle (Boat reads `vehicle.brakeHold` and the camper's pose on the
   // frame they are written) and BEFORE Camp: Camp arbitrates clicks against

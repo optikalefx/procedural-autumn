@@ -50,6 +50,24 @@ m/s, against the 0.85 m/s a fox walks at. The right response is to widen the
 stride in Blender, not to fake it at load.
 
 Where the game must stay consistent with a short clip, derive the *game* from
-the *clip* rather than the other way round: `src/wildlife/glb_fox.js` measures
-the ground one authored cycle covers and sets the animal's travel speed from it,
-so the paws keep pace at any playback rate and the clip is never touched.
+the *clip* rather than the other way round: `src/wildlife/glb_rig.js` measures
+the ground one authored cycle covers and writes the species' walk/trot/run
+speeds from it, so the paws keep pace at any playback rate and the clip is never
+touched.
+
+## The two animal tracks
+
+Wildlife has two backends and one of everything else. A species declares which
+track it is on in its `mammals/<species>.js`, and nothing above that ever asks
+again — habitat, streaming, the mesh pool, the logbook, photo detection and the
+compass paw all walk one cast.
+
+- **Procedural** (`blueprint:`) — profile arrays lofted by `quadruped.js`, gait
+  solved against the ground every frame by `animal_anim.js`. Deer, bear, rabbit,
+  squirrel, raccoon, goat, yak.
+- **Hand-authored** (`glb:`) — a mesh and its clips built in Blender, played by
+  an `AnimationMixer` in `glb_rig.js`. The fox, and the template for the rest.
+
+`GlbRig` and `AnimRig` answer the same contract (`reset` / `update` / `setLod` /
+`setShadow` / `gaitName` / `mesh`). Adding a hand-authored animal is a model and
+a species file; see the `promote-glb-animal` skill.

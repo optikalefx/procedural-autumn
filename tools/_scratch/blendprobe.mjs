@@ -20,11 +20,14 @@ await page.evaluate(() => window.__settleStable?.() ?? window.__settle?.(60));
 const out = await page.evaluate(async () => {
   const S = window.__systems, W = window.__world, e = window.__engine;
   S.hud?.journal?.close();
-  const g = S.glbFoxes;
-  g.debugCalm(true);
+  const wl = S.wildlife;
   const v = S.vehicle?.position ?? e.camera.position;
-  g.debugWalk(0, v.x + 25, v.z, 0);
-  const f = g.foxes[0], B = f.brain;
+  wl.debugThreat(v.x + 5000, v.z + 5000, 0);
+  wl.debugClear();
+  wl.debugSpawn('fox', { x: v.x + 25, z: v.z, count: 1, state: 2 });   // ST.WANDER
+  let f = null;
+  for (const per of wl.pool.fox) for (const a of per) if (a.active) f ??= a;
+  const B = f.brain, act = f.rig.act;
 
   const log = [];
   const sample = (tag) => log.push({
@@ -33,9 +36,9 @@ const out = await page.evaluate(async () => {
     speed: +B.speed.toFixed(4),
     want: +B.wantSpeed.toFixed(4),
     state: B.state,
-    walkW: +f.walk.getEffectiveWeight().toFixed(3),
-    standW: +f.stand.getEffectiveWeight().toFixed(3),
-    rate: +f.walk.timeScale.toFixed(2),
+    walkW: +act.walk.getEffectiveWeight().toFixed(3),
+    standW: +act.stand.getEffectiveWeight().toFixed(3),
+    rate: +act.walk.timeScale.toFixed(2),
   });
 
   // Let it get up to walking speed.
@@ -54,7 +57,7 @@ const out = await page.evaluate(async () => {
     sample('stopping');
     await new Promise((r) => requestAnimationFrame(r));
   }
-  return { log, walkSpeed: g.walkSpeed, clipSpeed: g.proto.clipSpeed, moving: g.constructor.name };
+  return { log, gait: { ...wl.protos.fox[0].speed }, stride: { ...wl.protos.fox[0].stride } };
 });
 
 const L = out.log;

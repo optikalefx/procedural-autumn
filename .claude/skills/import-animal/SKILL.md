@@ -10,9 +10,13 @@ is knowing which one you are on. The procedural cast (`create-animal`) has no
 model files and no clips: a page of profile numbers is lofted into a skeleton
 and the gait is *solved* against the ground every frame. This track is the
 opposite — a mesh and its clips are authored by hand in Blender, exported to
-one GLB, and played back by three's `AnimationMixer`. `src/wildlife/glb_fox.js`
+one GLB, and played back by three's `AnimationMixer`. `src/wildlife/glb_rig.js`
 is the whole worked example, and its header is required reading before you
 touch anything here.
+
+This skill covers getting the model and its clips **out of Blender and playing
+correctly**. Making that animal a real species — placed by habitat, streamed,
+logged, photographable, with coat morphs — is `promote-glb-animal`.
 
 ## The rule that outranks everything else
 
@@ -119,7 +123,8 @@ lets an engine wrap without a hitch).
 
 ### 6. Wire it up
 
-`glb_fox.js` is the template. What it does that matters:
+`glb_rig.js` is the template, and `mammals/fox.js` is what a hand-authored
+species file looks like. What the rig does that matters:
 
 - `SkeletonUtils.clone`, **not** `Object3D.clone` — a plain clone shares the
   original's bones, so every animal plays every other animal's animation.
@@ -141,13 +146,21 @@ lets an engine wrap without a hitch).
 Blender's exporter strips dots from bone names: `hind_foot.L` becomes
 `hind_footL`.
 
-### What this track does NOT get, and must be built if it wins
+### What this track gets, now that it has won
 
-The site table and habitat suitability, streaming and the mesh pool, the
-animation-rate LOD, the hide material with its silhouette shader and coat
-variants, audio, logbook hooks, photo detection. A GLB animal beside a
-procedural one reads noticeably brighter because it is missing the distance
-treatment — that is expected, not a bug to chase.
+Nothing here is a demo beside the cast any more. A species declaring a `glb`
+block gets the site table and habitat suitability, streaming and the pool, the
+animation-rate LOD, coat variants, audio, the logbook, the compass paw and photo
+detection — all of it, unchanged, because `GlbRig` answers the same contract
+`AnimRig` does. See `promote-glb-animal` for how, and for the traps.
+
+The one thing it still does not get is the **hide material's distance
+silhouette**, and that was a deliberate call rather than an omission: the hide
+shader resolves its regions from a vertex attribute a GLB does not carry, and
+keeping the Blender materials exactly as authored is the whole promise of this
+track. The consequence is real and expected — past ~70 m a hand-authored animal
+reads brighter and more detailed than the procedural cast, which collapses
+toward one dark tone. Judge it in `glblook.mjs`'s `range_*` frames.
 
 ## Verify
 
@@ -159,17 +172,19 @@ tools at it with `AUTUMN_URL`. Confirm it is really serving your code:
 curl -s <url>/src/wildlife/<file>.js | grep <a symbol you just added>
 ```
 
-1. **Look test** — `AUTUMN_URL=<url> node tools/_scratch/foxlook.mjs shots/foxlook`.
+1. **Look test** — `AUTUMN_URL=<url> node tools/_scratch/glblook.mjs shots/foxlook fox`.
    Writes a strip per gait from broadside (the only angle a gait can be judged
-   from), a stand pose, a side-by-side against the procedural animal, and the
-   same animal at 12/25/45 m. Add a strip per new clip.
-2. **Gait weights** — `window.__systems.glbFoxes.debugState()`. At a gait's
-   cruising speed that clip's weight should be ~1 and its rate ~its authored
-   rate. A weight stuck part-way means the crossfade band is wrong; anchor bands
-   to the animal's own cruising speeds, never to absolute m/s, or they drift the
-   moment a stride changes.
-3. **Pin a gait** — `?foxgait=trot` holds the pack at one gait so a clip can be
-   judged without waiting for the Brain to choose that pace.
+   from), both pose clips, a stand pose, the coats together, and the same animal
+   at 12/25/45 m. Species-agnostic — pass the species key. Add a strip per new
+   clip.
+2. **Gait weights** — the harness prints them per gait and fails loudly if they
+   do not sum to 1. At a gait's cruising speed that clip's weight should be ~1
+   and its rate exactly its authored rate. A weight stuck part-way means the
+   crossfade band is wrong; anchor bands to the animal's own cruising speeds,
+   never to absolute m/s, or they drift the moment a stride changes.
+3. **Pin a gait** — `wildlife.debugGait('fox', 'trot')` holds the species at one
+   gait so a clip can be judged without waiting for the Brain to choose that
+   pace. `debugGait(null)` releases.
 
 The journal auto-opens on first run and holds the sim. `hud.journal.close()`
 starts the animation but does not finish it in one frame; pump it with

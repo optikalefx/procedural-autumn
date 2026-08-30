@@ -49,13 +49,25 @@ const stage = await page.evaluate(() => {
   }
   best ??= { x: v.x + 20, z: v.z };
 
-  const g = S.glbFoxes;
-  g.debugCalm(true);
-  g.debugWalk(0, best.x, best.z, 0);                          // faces +Z
-  for (let i = 1; i < g.foxes.length; i++) g.debugWalk(i, best.x + 400 + i * 4, best.z + 400, 0);
-  S.wildlife?.debugThreat?.(best.x + 5000, best.z + 5000, 0);
-  S.wildlife?.debugFreeze?.(true);
-  return { ...best, y: W.getHeight(best.x, best.z), dur: g.proto.walk.duration, gain: g.gain };
+  // The camper is parked well inside a fox's fleeDist, so move the threat off
+  // the map before spawning or the subject bolts before the shutter.
+  const wl = S.wildlife;
+  wl.debugThreat(best.x + 5000, best.z + 5000, 0);
+  wl.debugClear();
+  wl.debugSpawn('fox', { x: best.x, z: best.z, count: 1, state: 0 });
+  // Point it along +Z to match the Blender camera, then freeze the world so
+  // nothing re-blends or walks it out of frame between shots.
+  // Put it exactly on the stage and point it along +Z. `debugSpawn` scatters
+  // members around the stand point, and framing the stage rather than the
+  // animal is how the first run of this photographed a fox's shoulder.
+  let subject = null;
+  for (const per of wl.pool.fox) for (const a of per) if (a.active) subject ??= a;
+  subject.brain.pos.set(best.x, W.getHeight(best.x, best.z), best.z);
+  subject.brain.heading = 0;
+  subject.rig._warm = false;
+  subject.rig.reset(subject.brain.pos, 0, W);
+  wl.debugFreeze(true);
+  return { ...best, y: W.getHeight(best.x, best.z), dur: wl.protos.fox[0].clips.walk.duration };
 });
 console.log('stage', JSON.stringify(stage));
 
@@ -76,14 +88,18 @@ await page.waitForTimeout(900);
 for (let i = 0; i < 6; i++) {
   const t = (i / 6) * stage.dur;
   await page.evaluate(({ t }) => {
-    const g = window.__systems.glbFoxes;
-    g.enabled = true;
-    const f = g.foxes[0];
-    f.stand.setEffectiveWeight(0);
-    f.walk.setEffectiveWeight(1);
-    f.walk.timeScale = 1;
-    f.mixer.setTime(t);
-    g.enabled = false;              // hold this exact pose through the screenshot
+    const wl = window.__systems.wildlife;
+    let a = null;
+    for (const per of wl.pool.fox) for (const m of per) if (m.active) a ??= m;
+    const r = a.rig;
+    // Drive the mixer to an exact clip time rather than letting it run: two
+    // animations each free-running at their own rate compare phase noise, not
+    // the pose. `debugFreeze` has already stopped the Brain, and zeroing every
+    // other weight stops `update` re-blending underneath the screenshot.
+    for (const k of Object.keys(r.act)) r.act[k].setEffectiveWeight(k === 'walk' ? 1 : 0);
+    r.act.walk.timeScale = 1;
+    r.mixer.setTime(t);
+    a.mesh.updateMatrixWorld(true);
   }, { t });
   await page.waitForTimeout(220);
   await page.screenshot({ path: `${OUT}/game_${i}.png` });

@@ -42,6 +42,7 @@ import { mulberry32 } from '../../core/MathUtils.js';
 import { SEED } from '../../world/WorldConfig.js';
 import { CARS } from '../../vehicle/vehicle_models.js';
 import { buildEnvMap } from '../../vehicle/model_kit.js';
+import { penEntry } from './pen.js';
 
 // ── the glob ─────────────────────────────────────────────────────────────────
 //
@@ -494,10 +495,72 @@ const ANIMAL_POSES = [
 
 const FLAT_WORLD = { getHeight: () => 0 };
 
+/**
+ * One gallery entry for a hand-authored animal.
+ *
+ * Much shorter than the procedural one, and the reason is the treadmill. A
+ * solved gait plants feet at absolute world points, so showing it in place
+ * needs the conveyor belt below; an authored clip is animated IN PLACE already,
+ * so the animal simply stands at the origin and plays. There is no leg state to
+ * rebase because there are no legs here — only bones the mixer drives.
+ *
+ * Pose speeds come from the species' own measured gait rather than the shared
+ * ANIMAL_POSES numbers, which are metres-per-second figures written for the
+ * procedural cast. A fox whose top gear is 0.38 m/s would sit pinned to `run`
+ * for every one of them.
+ */
+function glbAnimalEntry(mod, path, key, sp, v, vi) {
+  return {
+    id: `animal:${key}:${vi}`,
+    label: titleCase(key),
+    sub: v.name,
+    group: groupOf(path),
+    family: 'Animals',
+    file: path,
+    call: `new GlbRig((await loadSpecies('${key}'))[${vi}], ...)`,
+    poses: ANIMAL_POSES,
+    async build(_seed, opts = {}) {
+      const { GlbRig } = await import('../../wildlife/glb_rig.js');
+      const protos = await mod.loadSpecies(key);
+      const proto = protos[vi];
+      const rig = new GlbRig(proto, proto.scale, sp.gait, key);
+
+      const root = new THREE.Group();
+      root.add(rig.mesh);
+
+      const pose = ANIMAL_POSES.find((p) => p.key === (opts.pose ?? 'stand')) ?? ANIMAL_POSES[0];
+      const speed = sp.gait[pose.key] ?? 0;
+      const pos = new THREE.Vector3(0, 0, 0);
+      const drive = {
+        pos, heading: 0, speed,
+        graze: pose.graze, alert: pose.alert, flag: 0, look: null, lod: 0,
+      };
+      // Settle the damped blends so the first frame shown is the pose asked
+      // for rather than the crossfade on its way there.
+      for (let i = 0; i < 90; i++) rig.update(0.016, drive, FLAT_WORLD);
+
+      return {
+        root,
+        update(dt) { rig.update(dt, drive, FLAT_WORLD); },
+        dispose() { rig.dispose(); },
+        notes: [
+          `${proto.glb.url}`,
+          `${proto.height.toFixed(2)} m, ear-tip to paw`,
+          `coat "${v.name}"${v.col ? ' (tinted)' : ' (as authored)'} · scale x${v.scale}`,
+          `walk ${sp.gait.walk.toFixed(3)} · trot ${sp.gait.trot.toFixed(3)} `
+            + `· run ${sp.gait.run.toFixed(3)} m/s, measured off the clips`,
+        ],
+      };
+    },
+  };
+}
+
 function animalEntries(mod, path) {
   const out = [];
   for (const [key, sp] of Object.entries(mod.SPECIES)) {
     sp.variants.forEach((v, vi) => {
+      // Two backends — see the header of wildlife/glb_rig.js.
+      if (mod.isGlb(key)) { out.push(glbAnimalEntry(mod, path, key, sp, v, vi)); return; }
       out.push({
         id: `animal:${key}:${vi}`,
         label: titleCase(key),
@@ -573,6 +636,17 @@ function animalEntries(mod, path) {
       });
     });
   }
+  // The behaviour sandbox: one extra card driving the real Brain + GlbRig
+  // inside a fenced synthetic world. Lives in pen.js; the rock-kit thunk keeps
+  // that file free of this one's caching plumbing.
+  out.push(penEntry(mod, path, async () => {
+    const rockMod = await import('../../rocks/RockForms.js');
+    const kit = await rockKit(rockMod);
+    return {
+      library: kit.library,
+      single: (geo, attrs) => singleInstance(geo, kit.material, attrs),
+    };
+  }));
   return out;
 }
 
@@ -874,7 +948,7 @@ const ADAPTERS = [
   { path: '/src/vegetation/cover_forms.js', claims: ['COVER_ARCHETYPES', 'buildCoverLibrary', 'ARCH_INDEX'], entries: coverEntries },
   {
     path: '/src/wildlife/animal_species.js',
-    claims: ['SPECIES', 'buildSpecies', 'createHideMaterial', 'pickVariant'],
+    claims: ['SPECIES', 'buildSpecies', 'loadSpecies', 'isGlb', 'createHideMaterial', 'pickVariant'],
     entries: animalEntries,
     // The cast is one file per animal under mammals/; the shared builder they
     // are all fed to is an assembly step, not a prop.
