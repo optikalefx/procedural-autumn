@@ -9,13 +9,14 @@ shipping export.  It mirrors the conventions of ``fox_reference.blend``:
 
 * +Y is forward, +Z is up, and the paws rest on Z=0.
 * one fused, smooth-shaded low-poly body carries flat material regions;
-* eyes and inner ears are small bone-parented detail meshes;
+* eyes and claws are small rigid-skinned detail meshes;
 * the armature has a non-deforming root and an in-place looping action;
 * the presentation floor, camera and lights are saved but are not rig children.
 
-Only ``idle`` is authored now.  The neck, jaw, ears, scapulae, three-part legs
-and tail are already separated in the deform rig so graze, alert, walk, trout
-and run can be added without changing the skeleton.
+The source carries ``idle``, the variable-duration ``graze_in`` -> ``graze``
+-> ``graze_out`` behavior, ``alert``, ``Walk``, ``Trot`` and ``run``. The
+neck, jaw, ears, scapulae, three-part legs and tail remain separate in the
+deform rig so ``trout`` can be added without changing it.
 """
 
 from pathlib import Path
@@ -92,6 +93,20 @@ def tapered_between(name, a, b, radius_a, radius_b, depth=None, vertices=14):
     return ob
 
 
+def rounded_ear(name, center, scale, tilt, segments=16, rings=12):
+    """Make a rounded ear: a flattened ellipsoid tilted out of the skull.
+
+    A black bear's ear is a short rounded fan -- wide across, shallow front to
+    back, blunt at the top.  Building it from a cone gave it a point, which
+    reads as a fox from every angle the game ever shows.  The tilt leans the
+    top outboard so the pair does not sit on the crown like two flat discs.
+    """
+    ob = uv(name, center, scale, segments, rings)
+    ob.rotation_euler = (0.0, math.radians(tilt), 0.0)
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+    return ob
+
+
 def aim(ob, target):
     ob.rotation_euler = (Vector(target) - ob.location).to_track_quat("-Z", "Y").to_euler()
 
@@ -158,8 +173,11 @@ def build_body(materials):
         tapered_between("Bear short tapered muzzle", (0, 1.25, 1.48), (0, 1.73, 1.38), 0.245, 0.12, 0.18, 16),
         uv("Bear nose volume", (0, 1.78, 1.375), (0.095, 0.065, 0.065), 14, 9),
         uv("Bear chin", (0, 1.47, 1.335), (0.205, 0.245, 0.115), 14, 9),
-        tapered_between("Bear ear left", (-0.245, 1.02, 1.75), (-0.29, 0.98, 2.03), 0.13, 0.035, 0.095, 10),
-        tapered_between("Bear ear right", (0.245, 1.02, 1.75), (0.29, 0.98, 2.03), 0.13, 0.035, 0.095, 10),
+        # Rounded, not pointed.  The base is sunk well under the skull surface
+        # -- at this y the head only reaches z=1.70 out at x=0.245 -- so the
+        # remesh fuses ear to head instead of leaving a disc perched on it.
+        rounded_ear("Bear ear left", (-0.255, 1.02, 1.84), (0.130, 0.085, 0.225), -15),
+        rounded_ear("Bear ear right", (0.255, 1.02, 1.84), (0.130, 0.085, 0.225), 15),
         uv("Bear tail nub", (0, -1.62, 1.43), (0.14, 0.18, 0.14), 12, 8),
     ])
 
@@ -239,6 +257,197 @@ def build_body(materials):
     return body
 
 
+MAX_INFLUENCES = 4      # glTF stores four joints per vertex
+WEIGHT_EPSILON = 1e-4
+
+# How far each bone's influence carries.  Distal bones hold a tight field so a
+# paw cannot claim a belly; core bones hold a broad one so the torso deforms as
+# one surface instead of three.
+BONE_REACH = (
+    ("ear.", 0.16), ("jaw", 0.26), ("head", 0.34), ("neck_", 0.34),
+    ("chest", 0.44), ("spine_", 0.46), ("pelvis", 0.50), ("tail_", 0.20),
+    ("scapula.", 0.30),
+    ("fore_upper.", 0.28), ("fore_lower.", 0.24), ("fore_foot.", 0.20),
+    ("hind_upper.", 0.32), ("hind_lower.", 0.27), ("hind_foot.", 0.22),
+)
+
+
+def smoothstep(value, lo, hi):
+    """0 below *lo*, 1 above *hi*, with a smooth ramp in between.
+
+    Every anatomical rule in :func:`anatomical_bias` is written with this
+    rather than a comparison, so no rule can hand two neighbouring vertices
+    a different set of bones.
+    """
+    if hi <= lo:
+        return 0.0 if value < lo else 1.0
+    t = min(1.0, max(0.0, (value - lo) / (hi - lo)))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def bone_reach(name):
+    for prefix, reach in BONE_REACH:
+        if name.startswith(prefix):
+            return reach
+    return 0.34
+
+
+def anatomical_bias(name, co):
+    """A smooth prior in [0, 1] for one bone at one point.
+
+    This carries the same anatomy the old region gates encoded — ears drive
+    ears, a forepaw is not a jaw, a hind leg does not drive the shoulder — but
+    every rule is a ramp instead of a threshold.  A threshold is what put two
+    vertices sharing an edge on bones with nothing in common.
+    """
+    x, y, z = co
+    lateral = -x if name.endswith(".L") else x
+
+    if name.startswith("ear."):
+        # Ears reach the ear cones only; the skull beneath hands over gradually.
+        return (smoothstep(z, 1.56, 1.80)
+                * smoothstep(y, 0.82, 1.00)
+                * smoothstep(lateral, 0.06, 0.20))
+    if name == "jaw":
+        return smoothstep(y, 1.08, 1.34) * (1.0 - smoothstep(z, 1.44, 1.62))
+    if name == "head":
+        # Held above the forepaws, which reach past Y=1 at ground level.
+        return smoothstep(y, 0.82, 1.10) * smoothstep(z, 0.52, 0.86)
+    if name.startswith("neck_"):
+        return smoothstep(y, 0.30, 0.70) * smoothstep(z, 0.60, 0.95)
+    if name.startswith("tail_"):
+        return (1.0 - smoothstep(y, -1.52, -1.24)) * smoothstep(z, 1.00, 1.24)
+    if name in ("chest", "spine_01", "pelvis"):
+        # The core owns anything not clearly a limb, so it needs no bias.
+        return 1.0
+
+    # Limb chains.  Two ramps replace two hard planes: a same-side ramp in
+    # place of ``x < 0``, and a fore/hind crossfade across the flank in place
+    # of ``y > -0.10``.  The flank is where the old split tore worst.
+    bias = smoothstep(lateral, -0.04, 0.22)
+    if name.startswith("fore_") or name.startswith("scapula."):
+        # A forelimb claims the flank behind it and nothing in front of the
+        # brisket.  Without the forward cutoff the upper arm competes with the
+        # neck over the shoulder crease, which is where the two surfaces of
+        # the fused body run closest and a disagreement shows soonest.
+        bias *= smoothstep(y, -0.62, 0.10) * (1.0 - smoothstep(y, 0.60, 1.02))
+        # And nothing over the top of the withers.  The scapula belongs under
+        # the hump, not on its crown; the ramp starts above the shoulder joint
+        # rather than through it, which is where the old z<1.34 plane cut.
+        bias *= 1.0 - smoothstep(z, 1.58, 1.96)
+    else:
+        bias *= 1.0 - smoothstep(y, -0.66, -0.04)
+        bias *= 1.0 - smoothstep(z, 1.52, 1.90)
+    if "_foot." in name:
+        # The plantigrade paw is still rigid: the foot owns the sole outright
+        # and its field dies out through the ankle rather than at a plane.
+        bias *= 1.0 - smoothstep(z, 0.26, 0.74)
+    elif "_lower." in name:
+        bias *= smoothstep(z, 0.24, 0.58)
+    return bias
+
+
+def normalize_influences(scores, limit=MAX_INFLUENCES):
+    """Keep the strongest *limit* bones and make them sum to one.
+
+    Shrinking each weight by the largest one that missed the cut was tried
+    here and made the field measurably worse: relaxation leaves a broad,
+    nearly flat set of influences, and subtracting a floor from a flat set
+    magnifies the small differences between neighbours instead of hiding
+    them.  A plain rank cut on an already-relaxed field is the gentler one.
+    """
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]
+    kept = [item for item in ranked if item[1] > WEIGHT_EPSILON] or ranked[:1]
+    total = sum(weight for _, weight in kept) or 1.0
+    return {name: weight / total for name, weight in kept}
+
+
+def relax_weight_field(mesh, field, iterations=12, factor=0.55, polish=3):
+    """Laplacian-relax the weight field across mesh topology.
+
+    Any rule written in world space is blind to the surface it is painting.
+    Averaging each vertex against its edge neighbours works in the only space
+    that matters for skinning — the mesh itself — and turns whatever step
+    survived the smooth bias into a ramp spread over several edge rings.  It
+    moves no vertex, so the rest silhouette the remesh/decimate pass produced
+    is untouched and the modelling work is unchanged.
+    """
+    neighbours = [[] for _ in mesh.vertices]
+    for edge in mesh.edges:
+        i, j = edge.vertices
+        neighbours[i].append(j)
+        neighbours[j].append(i)
+
+    def relax(field, rounds):
+        for _ in range(rounds):
+            updated = []
+            for index, scores in enumerate(field):
+                linked = neighbours[index]
+                if not linked:
+                    updated.append(scores)
+                    continue
+                # A convex combination of normalised dicts is still normalised.
+                blended = {name: weight * (1.0 - factor)
+                           for name, weight in scores.items()}
+                share = factor / len(linked)
+                for other in linked:
+                    for name, weight in field[other].items():
+                        blended[name] = blended.get(name, 0.0) + weight * share
+                updated.append(blended)
+            field = updated
+        return field
+
+    field = relax(field, iterations)
+    # Cutting to four influences is itself a step.  Where the fourth and fifth
+    # bones are nearly tied, two neighbours keep different ones and disagree
+    # about the tail of the distribution even though they agree about its
+    # head.  Alternating the cut with short relaxations lets them converge on
+    # the same four bones rather than settling on different ones.
+    for _ in range(polish):
+        field = relax([normalize_influences(scores) for scores in field], 2)
+    return [normalize_influences(scores) for scores in field]
+
+
+def assign_weights(body, deform_bones):
+    """Skin the fused body with a field that is continuous across the surface.
+
+    The failure this exists to prevent shipped once already.  When a rule
+    picks a *candidate list* per vertex, two vertices sharing an edge can end
+    up with lists that have no bone in common.  At rest the mesh looks
+    perfect.  The moment those bones disagree by a few degrees the edge
+    between them shears, and the surface creases, buckles, and finally folds
+    through itself — worst at the withers, where the old ``z < 1.34`` and
+    ``abs(x) > 0.20`` planes crossed.  Scoring every bone against a smooth
+    bias removes the steps; relaxing the field afterwards guarantees it.
+    """
+    groups = {name: body.vertex_groups.new(name=name) for name in deform_bones}
+    mesh = body.data
+
+    field = []
+    for vertex in mesh.vertices:
+        co = vertex.co
+        scores = {}
+        for name, bone in deform_bones.items():
+            bias = anatomical_bias(name, co)
+            if bias <= 0.0:
+                continue
+            distance = segment_distance(co, bone.head_local, bone.tail_local)
+            score = bias * math.exp(-((distance / bone_reach(name)) ** 2))
+            if score > 1e-9:
+                scores[name] = score
+        if not scores:
+            # Never leave a vertex unweighted; fall back to the nearest bone.
+            nearest = min(deform_bones, key=lambda name: segment_distance(
+                co, deform_bones[name].head_local, deform_bones[name].tail_local))
+            scores = {nearest: 1.0}
+        # Relaxation needs more than the final four to average over.
+        field.append(normalize_influences(scores, limit=8))
+
+    for index, scores in enumerate(relax_weight_field(mesh, field)):
+        for name, weight in scores.items():
+            groups[name].add([index], weight, "REPLACE")
+
+
 def build_rig(body):
     armature = bpy.data.armatures.new("Bear_Rig_Data")
     rig = bpy.data.objects.new("Bear_Rig", armature)
@@ -250,7 +459,7 @@ def build_rig(body):
     rig["ground_z"] = 0.0
     rig["authored_fps"] = 24
     rig["current_actions"] = "idle"
-    rig["planned_actions"] = "graze, alert, walk, trout, run"
+    rig["planned_actions"] = "trout"
     rig["animation_contract"] = "In-place loops; keep root at ground; preserve bone names."
 
     bpy.context.view_layer.objects.active = rig
@@ -307,76 +516,63 @@ def build_rig(body):
     modifier = body.modifiers.new("Armature", "ARMATURE")
     modifier.object = rig
 
-    # Region-aware nearest-segment weights keep the fused mesh organic while
-    # preventing the belly from following a nearby thigh or a cheek from
-    # following an ear.  Two or three neighbouring groups share joint rims.
+    # Continuous skin weights.  Every vertex scores every deform bone and the
+    # anatomy is a smooth bias, never a hard candidate list; see
+    # ``assign_weights`` for why that distinction is the whole ballgame.
     deform_bones = {b.name: b for b in armature.bones if b.use_deform}
-    groups = {name: body.vertex_groups.new(name=name) for name in deform_bones}
-
-    def weights_for(co):
-        x, y, z = co
-        side = "L" if x < 0 else "R"
-        if z > 1.70 and y > 0.94 and abs(x) > 0.16:
-            candidates = [f"ear.{side}", "head"]
-            sigma = 0.30
-        elif y > 1.00:
-            if y > 1.26 and z < 1.48:
-                candidates = ["jaw", "head"]
-                sigma = 0.34
-            else:
-                candidates = ["head", "neck_02", "neck_01"]
-                sigma = 0.43
-        elif y < -1.46 and abs(x) < 0.28 and z > 1.16:
-            candidates = ["tail_01", "tail_02", "pelvis"]
-            sigma = 0.32
-        elif z < 1.34 and abs(x) > 0.20:
-            if y > -0.10:
-                candidates = [f"scapula.{side}", f"fore_upper.{side}",
-                              f"fore_lower.{side}", f"fore_foot.{side}"]
-            else:
-                candidates = [f"hind_upper.{side}", f"hind_lower.{side}",
-                              f"hind_foot.{side}", "pelvis"]
-            sigma = 0.34
-        elif y > 0.52:
-            candidates = ["chest", "neck_01", "neck_02"]
-            sigma = 0.52
-        else:
-            candidates = ["pelvis", "spine_01", "chest"]
-            sigma = 0.58
-
-        scored = []
-        for name in candidates:
-            bone = deform_bones[name]
-            d = segment_distance(co, bone.head_local, bone.tail_local)
-            score = math.exp(-((d / sigma) ** 2)) + 1e-8
-            scored.append((name, score))
-        scored.sort(key=lambda item: item[1], reverse=True)
-        scored = scored[:3]
-        total = sum(score for _, score in scored)
-        return [(name, score / total) for name, score in scored]
-
-    for vertex in body.data.vertices:
-        for name, weight in weights_for(vertex.co):
-            groups[name].add([vertex.index], weight, "REPLACE")
+    assign_weights(body, deform_bones)
 
     return rig
 
 
 def bone_parent(ob, rig, bone_name, world_matrix=None):
+    """Rigid-skin a detail mesh to one bone while preserving its rest pose.
+
+    Blender's direct BONE parenting adds the bone-tail transform to an
+    object's existing transform.  That is easy to miss on tiny eyes, but it
+    pulled the claws away from the paw as soon as a locomotion action was
+    evaluated.  A one-group armature skin uses the same rest-to-pose matrix as
+    the fused body and therefore keeps each rigid detail welded to its paw.
+    """
     world_matrix = ob.matrix_world.copy() if world_matrix is None else world_matrix
-    ob.parent = rig
-    ob.parent_type = "BONE"
-    ob.parent_bone = bone_name
+    # Armature deformation is evaluated in the armature's coordinate space.
+    # Bake the detail's construction transform into its mesh first; otherwise
+    # a claw whose object origin is near the world origin is treated as though
+    # its vertices live there and sweeps through a long arc when the paw bends.
     ob.matrix_world = world_matrix
+    bpy.ops.object.select_all(action="DESELECT")
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    ob.parent = rig
+    ob.parent_type = "OBJECT"
+    ob.matrix_parent_inverse = rig.matrix_world.inverted()
+    group = ob.vertex_groups.new(name=bone_name)
+    group.add([vertex.index for vertex in ob.data.vertices], 1.0, "REPLACE")
+    modifier = ob.modifiers.new("Rigid bone skin", "ARMATURE")
+    modifier.object = rig
 
 
 def build_details(rig, materials):
     _coat, _muzzle, _charcoal, claw_mat, eye_mat = materials
     details = []
 
-    # Small, side-set eyes rather than large front-facing mascot eyes.
-    for side, x in (("L", -0.32), ("R", 0.32)):
-        eye = uv(f"Bear eye {side}", (x, 1.34, 1.61), (0.018, 0.016, 0.018), 10, 7)
+    # A bear faces its eyes forward.  The old pair sat at x=+-0.32, which is
+    # the head ellipsoid's equator: the surface normal there points almost
+    # straight out to the side, so they read as two beads on the widest part
+    # of the silhouette -- a deer's eye placement, not a predator's.
+    #
+    # These sit on the front-upper quadrant instead, on the brow just above
+    # where the muzzle springs from the face.  (0.165, 1.518, 1.625) is on the
+    # skull surface; the stored centre is that offset scaled to 0.945 so the
+    # lens beds into the face rather than balancing on it.
+    for side, x in (("L", -0.156), ("R", 0.156)):
+        eye = uv(f"Bear eye {side}", (x, 1.499, 1.620), (0.030, 0.024, 0.027), 12, 8)
+        # The fused body is smooth-shaded; a flat-shaded eye broke the
+        # catchlight into a blocky square, which is the one highlight on the
+        # whole animal a viewer actually looks at.
+        for poly in eye.data.polygons:
+            poly.use_smooth = True
         eye.data.materials.append(eye_mat)
         bone_parent(eye, rig, "head")
         details.append(eye)
@@ -411,6 +607,8 @@ def build_idle(rig):
     scene.frame_preview_start, scene.frame_preview_end = 0, 48
     action = bpy.data.actions.new("idle")
     action.use_fake_user = True
+    action.use_frame_range = True
+    action.frame_start, action.frame_end = 0, 48
     action["loop"] = True
     action["duration_frames"] = 48
     action["description"] = "Quiet breathing with a small head drift and one listening ear flick."
@@ -419,6 +617,8 @@ def build_idle(rig):
 
     for pose_bone in rig.pose.bones:
         pose_bone.rotation_mode = "XYZ"
+    reset_pose(rig)
+    key_rest_channels(rig, 0)
 
     def rotation_keys(name, keyed):
         bone = rig.pose.bones[name]
@@ -437,8 +637,8 @@ def build_idle(rig):
     # The loop is subdued: weight settles through the pelvis while breath rolls
     # forward through spine/chest and is compensated in the short neck.
     location_keys("root", [
-        (0, (0, 0, 0)), (12, (0, 0, 0.010)), (24, (0, 0, 0)),
-        (36, (0, 0, -0.006)), (48, (0, 0, 0)),
+        (0, (0, 0, 0)), (12, (0, 0.010, 0)), (24, (0, 0, 0)),
+        (36, (0, -0.006, 0)), (48, (0, 0, 0)),
     ])
     rotation_keys("pelvis", [
         (0, (0, 0, 0)), (12, (-0.35, 0, 0.18)), (24, (0, 0, 0)),
@@ -477,8 +677,336 @@ def build_idle(rig):
     scene.timeline_markers.new("breath_high", frame=12)
     scene.timeline_markers.new("ear_flick", frame=29)
     scene.timeline_markers.new("idle_loop", frame=48)
+    set_action_handles(action, loop=True)
     scene.frame_set(0)
     return action
+
+
+def action_fcurves(action):
+    """Yield Blender 5.x f-curves from a slotted action."""
+    for layer in action.layers:
+        for strip in layer.strips:
+            for bag in strip.channelbags:
+                yield from bag.fcurves
+
+
+def set_action_handles(action, loop=False):
+    """Set smooth handles; looped clips get matching tangents at the seam."""
+    if not loop:
+        for curve in action_fcurves(action):
+            for key in curve.keyframe_points:
+                key.interpolation = "BEZIER"
+                key.handle_left_type = "AUTO_CLAMPED"
+                key.handle_right_type = "AUTO_CLAMPED"
+            curve.update()
+        return
+
+    first, last = action.frame_range
+    period = last - first
+    for curve in action_fcurves(action):
+        points = curve.keyframe_points
+        count = len(points) - 1  # the final key duplicates the first
+        if count < 2:
+            continue
+        times = [key.co[0] for key in points]
+        values = [key.co[1] for key in points]
+        for index, key in enumerate(points):
+            wrapped = index % count
+            previous = (wrapped - 1) % count
+            following = (wrapped + 1) % count
+            dt_previous = (times[wrapped] - times[previous]) % period or period
+            dt_following = (times[following] - times[wrapped]) % period or period
+            before, here, after = values[previous], values[wrapped], values[following]
+            slope = 0.0 if (here - before) * (after - here) <= 0 else \
+                (after - before) / (dt_previous + dt_following)
+            left_reach, right_reach = dt_previous / 3.0, dt_following / 3.0
+            key.handle_left = (times[index] - left_reach, here - slope * left_reach)
+            key.handle_right = (times[index] + right_reach, here + slope * right_reach)
+            key.handle_left_type = "FREE"
+            key.handle_right_type = "FREE"
+            key.interpolation = "BEZIER"
+        curve.update()
+
+
+def reset_pose(rig):
+    for bone in rig.pose.bones:
+        bone.rotation_mode = "XYZ"
+        bone.location = (0, 0, 0)
+        bone.rotation_euler = (0, 0, 0)
+        bone.scale = (1, 1, 1)
+
+
+def key_rest_channels(rig, frame):
+    """Give an action explicit ownership of every pose transform channel.
+
+    Blender deliberately preserves channels that the newly selected action
+    does not animate.  Without these constant rest keys, switching directly
+    from run to idle could leave a hind leg gathered or an alert ear pinned
+    back.  Selective authored keys replace the matching rest keys below.
+    """
+    bpy.context.scene.frame_set(frame)
+    for bone in rig.pose.bones:
+        bone.keyframe_insert("rotation_euler", frame=frame, group=bone.name)
+        bone.keyframe_insert("location", frame=frame, group=bone.name)
+
+
+def new_action(rig, name, end_frame, loop, description):
+    action = bpy.data.actions.new(name)
+    action.use_fake_user = True
+    action.use_frame_range = True
+    action.frame_start = 0
+    action.frame_end = end_frame
+    action["loop"] = loop
+    action["duration_frames"] = end_frame
+    action["description"] = description
+    rig.animation_data.action = action
+    reset_pose(rig)
+    key_rest_channels(rig, 0)
+    return action
+
+
+def key_pose(rig, frame, rotations=None, locations=None):
+    """Key one complete authored pose. Rotation values are degrees."""
+    bpy.context.scene.frame_set(frame)
+    for name, degrees in (rotations or {}).items():
+        bone = rig.pose.bones[name]
+        bone.rotation_euler = tuple(math.radians(value) for value in degrees)
+        bone.keyframe_insert("rotation_euler", frame=frame, group=name)
+    for name, value in (locations or {}).items():
+        bone = rig.pose.bones[name]
+        bone.location = value
+        bone.keyframe_insert("location", frame=frame, group=name)
+
+
+def build_other_actions(rig):
+    """Author the bear's special poses and three locomotion clips."""
+    actions = {}
+
+    # ── variable-duration graze: enter -> repeat feeding -> authored exit ──
+    # Do not fold these phases back into one long action. The wildlife brain
+    # holds graze for a variable number of seconds; a monolithic clip would
+    # raise the head every time it repeated. Three.js can play graze_in once,
+    # repeat graze for as long as the state lasts, then play graze_out once.
+    graze_bones = (
+        "chest", "neck_01", "neck_02", "head", "jaw", "ear.L", "ear.R",
+        "fore_upper.L", "fore_lower.L", "fore_foot.L",
+        "fore_upper.R", "fore_lower.R", "fore_foot.R",
+    )
+
+    def graze_pose(amount, head_pitch=25, head_yaw=0, jaw=0, ear_tilt=2):
+        return {
+            "chest": (-4 * amount, 0, 0),
+            "neck_01": (-52 * amount, 0, 0),
+            "neck_02": (-42 * amount, 0, 0),
+            "head": (head_pitch * amount, 0, head_yaw * amount),
+            "jaw": (jaw * amount, 0, 0),
+            "ear.L": (ear_tilt * amount, 0, -2 * amount),
+            "ear.R": (ear_tilt * amount, 0, 2 * amount),
+            "fore_upper.L": (-2 * amount, 0, 0),
+            "fore_lower.L": (3 * amount, 0, 0),
+            "fore_foot.L": (-1 * amount, 0, 0),
+            "fore_upper.R": (-2 * amount, 0, 0),
+            "fore_lower.R": (3 * amount, 0, 0),
+            "fore_foot.R": (-1 * amount, 0, 0),
+        }
+
+    rest_graze = {name: (0, 0, 0) for name in graze_bones}
+    down_graze = graze_pose(1.0)
+    down_root = {"root": (0, -0.045, 0)}
+
+    graze_in = new_action(
+        rig, "graze_in", 36, False,
+        "Enter variable-duration grazing: idle to the exact graze-loop base pose.",
+    )
+    graze_in["behavior"] = "graze"
+    graze_in["phase"] = "enter"
+    graze_in["next_action"] = "graze"
+    key_pose(rig, 0, rest_graze, {"root": (0, 0, 0)})
+    key_pose(rig, 8, graze_pose(0.12, 22), {"root": (0, -0.005, 0)})
+    key_pose(rig, 18, graze_pose(0.50, 23), {"root": (0, -0.022, 0)})
+    key_pose(rig, 28, graze_pose(0.86, 24), {"root": (0, -0.039, 0)})
+    key_pose(rig, 36, down_graze, down_root)
+    set_action_handles(graze_in)
+    actions[graze_in.name] = graze_in
+
+    graze = new_action(
+        rig, "graze", 72, True,
+        "Seamless head-down feeding loop for an arbitrarily long graze hold.",
+    )
+    graze["behavior"] = "graze"
+    graze["phase"] = "hold"
+    graze["next_action"] = "graze_out"
+    key_pose(rig, 0, down_graze, down_root)
+    key_pose(rig, 12, graze_pose(1.0, 22, -3.5, 4), {"root": (0, -0.044, 0)})
+    key_pose(rig, 24, graze_pose(0.97, 27, 2.5, 0), {"root": (0, -0.042, 0)})
+    key_pose(rig, 36, graze_pose(1.0, 23, -1.5, 5), {"root": (0, -0.046, 0)})
+    key_pose(rig, 48, graze_pose(0.98, 26, 3.0, 1), {"root": (0, -0.043, 0)})
+    key_pose(rig, 60, graze_pose(1.0, 24, -2.0, 4), {"root": (0, -0.045, 0)})
+    key_pose(rig, 72, down_graze, down_root)
+    set_action_handles(graze, loop=True)
+    actions[graze.name] = graze
+
+    graze_out = new_action(
+        rig, "graze_out", 36, False,
+        "Exit variable-duration grazing: graze-loop base pose back to exact idle.",
+    )
+    graze_out["behavior"] = "graze"
+    graze_out["phase"] = "exit"
+    graze_out["next_action"] = "idle"
+    key_pose(rig, 0, down_graze, down_root)
+    key_pose(rig, 8, graze_pose(0.92, 24), {"root": (0, -0.041, 0)})
+    key_pose(rig, 18, graze_pose(0.58, 22), {"root": (0, -0.026, 0)})
+    key_pose(rig, 28, graze_pose(0.16, 20), {"root": (0, -0.007, 0)})
+    key_pose(rig, 36, rest_graze, {"root": (0, 0, 0)})
+    set_action_handles(graze_out)
+    actions[graze_out.name] = graze_out
+
+    # ── alert: neutral -> high carriage/ears back -> scan -> neutral ────────
+    alert = new_action(
+        rig, "alert", 144, False,
+        "Idle-to-alert sequence: raised carriage, ears back, two directional looks, idle return.",
+    )
+    alert_bones = ("pelvis", "chest", "neck_01", "neck_02", "head", "ear.L", "ear.R")
+
+    def alert_pose(amount, look=0, ear_bias=0):
+        return {
+            "pelvis": (0, 0, 1.5 * amount),
+            "chest": (3 * amount, 0, -1.5 * amount),
+            "neck_01": (18 * amount, 0, 4 * look * amount),
+            "neck_02": (14 * amount, 0, 6 * look * amount),
+            "head": (-8 * amount, 0, 8 * look * amount),
+            "ear.L": ((14 + ear_bias) * amount, 0, 5 * amount),
+            "ear.R": ((14 - ear_bias) * amount, 0, -5 * amount),
+        }
+
+    rest_alert = {name: (0, 0, 0) for name in alert_bones}
+    for frame in (0, 12):
+        key_pose(rig, frame, rest_alert, {"root": (0, 0, 0)})
+    key_pose(rig, 24, alert_pose(0.50), {"root": (0, 0.007, 0)})
+    key_pose(rig, 36, alert_pose(1.0), {"root": (0, 0.014, 0)})
+    key_pose(rig, 48, alert_pose(1.0, 1.0, 2), {"root": (0, 0.014, 0)})
+    key_pose(rig, 60, alert_pose(1.0, 0.25, -2), {"root": (0, 0.014, 0)})
+    key_pose(rig, 72, alert_pose(1.0, -1.0, 1), {"root": (0, 0.014, 0)})
+    key_pose(rig, 84, alert_pose(1.0, -0.75, -1), {"root": (0, 0.014, 0)})
+    key_pose(rig, 96, alert_pose(1.0, 0.65, 2), {"root": (0, 0.014, 0)})
+    key_pose(rig, 108, alert_pose(0.68, 0), {"root": (0, 0.010, 0)})
+    key_pose(rig, 120, alert_pose(0.10, 0), {"root": (0, 0.002, 0)})
+    for frame in (132, 144):
+        key_pose(rig, frame, rest_alert, {"root": (0, 0, 0)})
+    set_action_handles(alert)
+    actions[alert.name] = alert
+
+    # ── Walk: heavy four-beat lateral sequence, one stride over 48 frames ──
+    walk = new_action(
+        rig, "Walk", 48, True,
+        "Natural bear walk: four-beat lateral sequence, long stance and compact swing.",
+    )
+    fore_upper = (14, 11, 5, -4, -12, -8, 0, 8)
+    fore_lower = (-20, -14, -5, 0, 4, -16, -26, -24)
+    fore_foot = (6, 4, 1, 0, -2, 5, 9, 8)
+    hind_upper = (12, 9, 4, -3, -10, -6, 0, 7)
+    hind_lower = (-16, -11, -4, 0, 3, -14, -23, -20)
+    hind_foot = (5, 3, 1, 0, -1, 5, 8, 7)
+    contacts = {"hind.L": 0, "fore.L": 12, "hind.R": 24, "fore.R": 36}
+    walk_up = (0, 0.006, 0.012, 0.006, 0, 0.006, 0.012, 0.006, 0)
+    walk_surge = (0, 0.004, 0.008, 0.004, 0, -0.004, -0.008, -0.004, 0)
+    roll = (1.2, 0, -1.2, 0, 1.2, 0, -1.2, 0, 1.2)
+    pitch = (0, 0.6, 0, -0.6, 0, 0.6, 0, -0.6, 0)
+    for index, frame in enumerate(range(0, 49, 6)):
+        rotations = {
+            "pelvis": (pitch[index], 0, roll[index]),
+            "spine_01": (-0.45 * pitch[index], 0, -0.35 * roll[index]),
+            "chest": (-0.9 * pitch[index], 0, -0.45 * roll[index]),
+            "neck_01": (0.45 * pitch[index], 0, 0.18 * roll[index]),
+            "neck_02": (0.25 * pitch[index], 0, 0.12 * roll[index]),
+            "head": (0.20 * pitch[index], 0, 0.10 * roll[index]),
+        }
+        for leg, contact in contacts.items():
+            kind, side = leg.split(".")
+            phase = int(((frame - contact) % 48) / 6) % 8
+            if kind == "fore":
+                upper, lower, foot = fore_upper[phase], fore_lower[phase], fore_foot[phase]
+                rotations[f"scapula.{side}"] = (upper * 0.20, 0, 0)
+            else:
+                upper, lower, foot = hind_upper[phase], hind_lower[phase], hind_foot[phase]
+            rotations[f"{kind}_upper.{side}"] = (upper, 0, 0)
+            rotations[f"{kind}_lower.{side}"] = (lower, 0, 0)
+            rotations[f"{kind}_foot.{side}"] = (foot, 0, 0)
+        key_pose(rig, frame, rotations, {"root": (0, walk_up[index], walk_surge[index])})
+    set_action_handles(walk, loop=True)
+    actions[walk.name] = walk
+
+    # ── Trot: fox-referenced 16-frame diagonal-pair stride ─────────────────
+    trot = new_action(
+        rig, "Trot", 16, True,
+        "Diagonal-pair trot based on the fox cadence, with a lower heavy-bear suspension arc.",
+    )
+    for frame in range(0, 17, 2):
+        swing = math.sin(math.pi * frame / 8.0)
+        body = math.sin(math.pi * frame / 4.0)
+        hop = 0.055 * abs(swing)
+        rotations = {
+            "pelvis": (1.5 * body, 0, 0.2 * swing),
+            "chest": (-2.5 * body, 0, -0.1 * swing),
+            "neck_01": (1.0 * body, 0, 0),
+            "head": (0.5 * body, 0, 0),
+            "scapula.L": (0.9 * swing, 0, 0),
+            "scapula.R": (-0.9 * swing, 0, 0),
+            "fore_upper.L": (18 * swing, 0, 0),
+            "fore_lower.L": (-18 * swing, 0, 0),
+            "fore_upper.R": (-18 * swing, 0, 0),
+            "fore_lower.R": (18 * swing, 0, 0),
+            "hind_upper.L": (-22 * swing, 0, 0),
+            "hind_lower.L": (22 * swing, 0, 0),
+            "hind_upper.R": (22 * swing, 0, 0),
+            "hind_lower.R": (-22 * swing, 0, 0),
+        }
+        key_pose(rig, frame, rotations, {"root": (0, hop, 0.008 * abs(swing))})
+    set_action_handles(trot, loop=True)
+    actions[trot.name] = trot
+
+    # ── run: paired hind beat, paired fore beat, three 16-frame strides ─────
+    run = new_action(
+        rig, "run", 48, True,
+        "Three paired-foot gallop strides: hind pair gathers/launches, then fore pair catches.",
+    )
+    run_poses = {
+        0:  {"up": 0.080, "root": -1, "pelvis": -3, "chest": 4,
+             "fu": 30, "fl": -10, "hu": -28, "hl": 8, "ff": 0, "hf": 0},
+        4:  {"up": 0.000, "root": -2, "pelvis": 3, "chest": -5,
+             "fu": -12, "fl": 22, "hu": 36, "hl": -58, "ff": -8, "hf": 35},
+        8:  {"up": 0.035, "root": 3, "pelvis": 0, "chest": 2,
+             "fu": 14, "fl": -35, "hu": 18, "hl": -32, "ff": 12, "hf": 12},
+        12: {"up": 0.070, "root": -1, "pelvis": -3, "chest": 4,
+             "fu": 28, "fl": -18, "hu": -38, "hl": 8, "ff": 4, "hf": 0},
+    }
+    for frame in range(0, 49, 4):
+        pose = run_poses[frame % 16]
+        rotations = {
+            "root": (pose["root"], 0, 0),
+            "pelvis": (pose["pelvis"], 0, 0),
+            "chest": (pose["chest"], 0, 0),
+            "neck_01": (-6, 0, 0),
+            "neck_02": (-4, 0, 0),
+            "head": (2, 0, 0),
+        }
+        for side, offset in (("L", 1.0), ("R", -1.0)):
+            rotations[f"scapula.{side}"] = (pose["fu"] * 0.16 + offset, 0, 0)
+            rotations[f"fore_upper.{side}"] = (pose["fu"] + offset, 0, 0)
+            rotations[f"fore_lower.{side}"] = (pose["fl"] - offset, 0, 0)
+            rotations[f"fore_foot.{side}"] = (pose["ff"], 0, 0)
+            rotations[f"hind_upper.{side}"] = (pose["hu"] + offset, 0, 0)
+            rotations[f"hind_lower.{side}"] = (pose["hl"] - offset, 0, 0)
+            rotations[f"hind_foot.{side}"] = (pose["hf"], 0, 0)
+        key_pose(rig, frame, rotations, {"root": (0, pose["up"], 0)})
+    set_action_handles(run, loop=True)
+    actions[run.name] = run
+
+    rig["current_actions"] = "idle, graze_in, graze, graze_out, alert, Walk, Trot, run"
+    rig["variable_duration_actions"] = "graze: graze_in -> graze (loop) -> graze_out"
+    rig["planned_actions"] = "trout"
+    bpy.context.scene.frame_set(0)
+    return actions
 
 
 def build_presentation(materials):
@@ -520,9 +1048,16 @@ def add_readme():
     text.write(
         "STYLIZED BLACK BEAR — RIG NOTES\n\n"
         "+Y forward, +Z up, ground at Z=0. 24 fps.\n"
-        "Current action: idle (frames 0-48, seamless in-place loop).\n"
-        "Planned actions: graze, alert, walk, trout, run.\n\n"
-        "Keep action names lowercase. Keep locomotion in place; derive travel "
+        "Actions: idle 0-48, graze_in 0-36, graze 0-72, graze_out 0-36, "
+        "alert 0-144, Walk 0-48, "
+        "Trot 0-16, run 0-48.\n"
+        "Locomotion clips are seamless in-place loops. Graze is a variable-"
+        "duration three-phase behavior: play graze_in once, repeat graze, "
+        "then play graze_out once. Its joins are exact; graze_in starts and "
+        "graze_out ends at idle. Alert begins and ends at idle. Planned "
+        "action: trout.\n\n"
+        "Preserve action-name capitalization to match the fox asset contract. "
+        "Keep locomotion in place; derive travel "
         "from planted paw displacement after export. The root is a non-deforming "
         "ground control. Pelvis/spine/chest carry body motion. Two neck joints "
         "support graze/alert, jaw supports the future trout pose, separate ears "
@@ -530,7 +1065,7 @@ def add_readme():
     )
 
 
-def validate(body, rig, action):
+def validate(body, rig, actions):
     expected = {
         "root", "pelvis", "spine_01", "chest", "neck_01", "neck_02", "head", "jaw",
         "ear.L", "ear.R", "scapula.L", "scapula.R",
@@ -544,8 +1079,19 @@ def validate(body, rig, action):
     assert actual == expected, (expected - actual, actual - expected)
     assert rig.data.bones["root"].use_deform is False
     assert body.find_armature() == rig
-    assert action.name == "idle"
-    assert tuple(round(v) for v in action.frame_range) == (0, 48)
+    expected_actions = {
+        "idle": ((0, 48), True), "graze_in": ((0, 36), False),
+        "graze": ((0, 72), True), "graze_out": ((0, 36), False),
+        "alert": ((0, 144), False), "Walk": ((0, 48), True),
+        "Trot": ((0, 16), True), "run": ((0, 48), True),
+    }
+    assert set(actions) == set(expected_actions), (set(actions), set(expected_actions))
+    for name, (frame_range, loop) in expected_actions.items():
+        assert tuple(round(v) for v in actions[name].frame_range) == frame_range, \
+            (name, tuple(actions[name].frame_range), frame_range)
+        assert bool(actions[name]["loop"]) is loop, (name, actions[name]["loop"], loop)
+    assert [actions[name]["phase"] for name in ("graze_in", "graze", "graze_out")] == \
+        ["enter", "hold", "exit"]
     assert min((body.matrix_world @ v.co).z for v in body.data.vertices) > -0.08
     assert max((body.matrix_world @ v.co).z for v in body.data.vertices) > 1.85
     unweighted = [
@@ -553,13 +1099,52 @@ def validate(body, rig, action):
         if not any(group.weight > 0 for group in vertex.groups)
     ]
     assert not unweighted, f"Unweighted body vertices: {len(unweighted)}"
+    weights = [
+        {body.vertex_groups[item.group].name: item.weight
+         for item in vertex.groups if item.weight > 1e-6}
+        for vertex in body.data.vertices
+    ]
+
+    # The sole still reads as one rigid plantigrade unit, but as a dominant
+    # weight rather than an exclusive one.  Demanding a single group here is
+    # what forced the z=0.30 cliff that sheared the ankle open in motion.
+    slack_paw = []
+    for vertex in body.data.vertices:
+        if vertex.co.z >= 0.16:
+            continue
+        side = "L" if vertex.co.x < 0 else "R"
+        limb = "fore" if vertex.co.y > -0.10 else "hind"
+        expected = f"{limb}_foot.{side}"
+        held = weights[vertex.index].get(expected, 0.0)
+        # 0.85, not 1.0: the remaining fraction follows the lower leg, which
+        # during a plant is static anyway and during a swing reads as flesh
+        # trailing the toe.  Demanding the whole sole is what forced the cliff.
+        if held < 0.85:
+            slack_paw.append((vertex.index, expected, round(held, 3)))
+    assert not slack_paw, f"Slack paw vertices: {slack_paw[:8]}"
+
+    # The regression this asset has already paid for once.  Neighbouring
+    # vertices must never be driven by disjoint sets of bones: such a step is
+    # invisible at rest and buckles the surface the moment a bone turns.
+    worst_seam = (0.0, -1, -1)
+    for edge in body.data.edges:
+        i, j = edge.vertices
+        shared = sum(min(weights[i].get(name, 0.0), weights[j].get(name, 0.0))
+                     for name in set(weights[i]) | set(weights[j]))
+        if 1.0 - shared > worst_seam[0]:
+            worst_seam = (round(1.0 - shared, 3), i, j)
+    # 0.50 is generous on purpose.  What buckled the surface was a seam of
+    # 1.00 — neighbours with nothing in common, one following a swinging limb
+    # and one held by the chest.  What survives is around 0.44, between bones
+    # that move together at the shoulder, and shows up as nothing.
+    assert worst_seam[0] < 0.50, f"Step in the weight field across an edge: {worst_seam}"
     print(
         "BEAR_VALID",
         f"verts={len(body.data.vertices)}",
         f"faces={len(body.data.polygons)}",
         f"bones={len(rig.data.bones)}",
-        f"action={action.name}",
-        f"range={tuple(action.frame_range)}",
+        f"worst_weight_seam={worst_seam[0]}",
+        f"actions={[(name, tuple(action.frame_range)) for name, action in actions.items()]}",
     )
 
 
@@ -570,15 +1155,20 @@ def main():
         material("Bear warm muzzle", (0.048, 0.036, 0.030), 0.84),
         material("Bear charcoal", (0.008, 0.006, 0.004), 0.86),
         material("Bear claws", (0.080, 0.060, 0.045), 0.74),
-        material("Bear eye", (0.003, 0.002, 0.001), 0.20),
+        # Darker than the coat, an eye on a black bear is invisible.  The
+        # reference reads as a warm brown lens that is a shade lighter than
+        # the fur around it and glossy enough to hold a catchlight.
+        material("Bear eye", (0.020, 0.011, 0.005), 0.15),
     )
     body = build_body(materials)
     rig = build_rig(body)
     details = build_details(rig, materials)
-    action = build_idle(rig)
+    idle = build_idle(rig)
+    actions = {"idle": idle}
+    actions.update(build_other_actions(rig))
     build_presentation(materials)
     add_readme()
-    validate(body, rig, action)
+    validate(body, rig, actions)
 
     bpy.ops.object.select_all(action="DESELECT")
     rig.select_set(True)
@@ -586,6 +1176,8 @@ def main():
     for detail in details:
         detail.select_set(True)
     bpy.context.view_layer.objects.active = rig
+    rig.animation_data.action = idle
+    reset_pose(rig)
     bpy.context.scene.frame_set(0)
     BLEND_PATH.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_PATH), compress=True)

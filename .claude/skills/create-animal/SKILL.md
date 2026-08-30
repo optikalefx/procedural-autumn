@@ -1,6 +1,16 @@
 ---
 name: create-animal
-description: Add a new wildlife species (a wild ground mammal) to the game, or retune an existing one. Use this whenever the user asks to add any animal — "add squirrels", "let's have wolves", "put some elk in", "new species", "more wildlife" — and also when they want to change where animals live, how often they appear, how they move, or how they look (habitat, spawn rates, gaits, coats, silhouettes). Covers the full recipe: blueprint geometry, gait ladder, streaming/habitat, audio, and the verification harnesses. Not for birds (src/wildlife/birds/ is a separate instanced system) or the camp dog (camp_dog.js owns it), or hand-authored Blender models exported as GLB (use import-animal).
+description: >-
+  Add a new wildlife species (a wild ground mammal) to the game, or retune an
+  existing one. Use this whenever the user asks to add any animal — "add
+  squirrels", "let's have wolves", "put some elk in", "new species", "more
+  wildlife" — and also when they want to change where animals live, how often
+  they appear, how they move, or how they look (habitat, spawn rates, gaits,
+  coats, silhouettes). Covers the full recipe: blueprint geometry, gait ladder,
+  streaming/habitat, audio, and the verification harnesses. Not for birds
+  (src/wildlife/birds/ is a separate instanced system), the camp dog
+  (camp_dog.js owns it), or hand-authored Blender models exported as GLB (use
+  import-animal).
 ---
 
 # Create Animal
@@ -39,6 +49,82 @@ it carries a `glb` block instead of a blueprint, so there are no profile arrays
 in it to copy. Its `brain` block is still a good model for a wary mid-sized
 mammal. For a new animal built in Blender rather than lofted, use
 `promote-glb-animal` instead of this skill.
+
+### Variable-duration behavior contract
+
+When routing a Blender/GLB animal to `promote-glb-animal`, carry this into the
+asset brief: a state the brain may hold for an arbitrary duration must not be
+one clip containing enter, activity, and exit. A repeating monolithic clip
+would replay its entrance and exit throughout the hold.
+
+Author three actions instead: `<state>_in` plays once from idle to the exact
+hold pose, `<state>` is a seamless activity loop, and `<state>_out` plays once
+from that exact hold pose back to idle. The two phase joins must be identical,
+the hold loop's first and last frames must match, and the outer idle endpoints
+must match the idle action. Graze, drink, sleep, forage, and scratch are common
+examples. Prefer an authored exit over reversing the entrance; negative
+playback is a fallback, not the asset contract. The runtime owns how long the
+middle action repeats and how an interruption crossfades.
+
+### Skin-weight continuity contract
+
+Also for the asset brief: **skin weights must be a continuous field over the
+mesh surface.** Two vertices sharing an edge must never be driven by sets of
+bones with nothing in common.
+
+This is the bear's buckling shoulder, and it cost a round. Its weights were
+painted by a rule that picked a *candidate bone list* per vertex from hard
+spatial gates — `z < 1.34 and abs(x) > 0.20` selected the forelimb chain, the
+`else` selected `pelvis/spine/chest`. Each gate is a plane through the mesh,
+and across that plane the weight field steps. At rest the model is perfect,
+which is exactly why it passed review. The moment the two bones disagree by a
+few degrees the edge between them shears, and the surface creases, buckles,
+and finally folds through itself. The bear had **455 such edges** on five
+planes at once (`z=1.34`, `|x|=0.20`, `y=-0.10`, the ear gate, the head gate),
+so the artifact surfaced somewhere different in every clip — which is the tell
+that a rule, not a spot, is wrong.
+
+The same trap sits behind Blender's own **Automatic Weights** wherever two
+limbs pass close (armpit, groin, tail root, ear base), and behind any
+hand-painted group whose boundary was drawn with a hard brush.
+
+**How to check.** Disjointness across every edge: `1 - sum(min(w_a, w_b))`.
+Zero means the neighbours agree, one means they share no bone at all. Under
+~0.5 is fine; near 1.0 will tear. Then measure what it costs — deform the mesh
+through every frame of every action and take each edge's `len / rest_len`,
+plus the absolute metres it moved. Ratio alone over-reports on short edges.
+
+**How to fix** — `assign_weights`, `anatomical_bias` and `relax_weight_field`
+in `tools/build_bear_reference.py` are the worked example:
+
+- Score **every** deform bone for every vertex. Never build a candidate list.
+- Express anatomy — ears drive ears, a forepaw is not a jaw, a hind leg does
+  not drive the shoulder — as a **smooth multiplicative bias** of `smoothstep`
+  ramps, never a threshold. Keep ramps wide (0.2–0.4 m) and place them where
+  the anatomy changes, not through a joint: the old `z < 1.34` plane cut
+  straight through the shoulder it was trying to describe.
+- **Relax the finished field across mesh topology** — average each vertex
+  against its edge neighbours, ~12 iterations at 0.55. This is what turns
+  continuity from a hope into a guarantee, because it works on the mesh rather
+  than in world space. It moves no vertex, so the rest silhouette stays
+  bit-identical; verify with a hash of the vertex coordinates.
+- Cutting to glTF's four influences is *itself* a step wherever the 4th and
+  5th bones are near-tied. Alternate the cut with short relaxations until
+  neighbours settle on the same four. Do **not** soft-shrink by subtracting
+  the 5th weight — that was tried and made it worse (0.44 → 0.69): a relaxed
+  field is nearly flat, and subtracting a floor from a flat set magnifies the
+  differences between neighbours instead of hiding them.
+
+**Rigid regions are the exception that proves the rule.** A plantigrade paw
+should read as one unit, but never enforce that with an exclusive group — that
+is what forced the `z < 0.30` cliff which sheared the bear's ankle open.
+Assert a *dominant* weight instead (≥ 0.85 on the foot bone below z = 0.16)
+and let the remainder blend.
+
+Keep both checks as assertions in the builder's `validate()` so the regression
+cannot return. On the bear they moved worst-edge disjointness 1.00 → 0.43 and
+the worst tear 0.605 m → 0.15 m; peak stretch per clip fell 22.8× → 5.5×
+(graze), 15.7× → 3.8× (alert), 8.5× → 2.9× (trot), 5.9× → 2.5× (walk).
 
 ## The six touchpoints
 
