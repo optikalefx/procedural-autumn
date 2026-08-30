@@ -82,6 +82,13 @@ const RUNNING = [0.15, 0.85];
 // gives the transition a duration of its own, whatever the speed signal does.
 const BLEND_TIME = 0.22;
 
+// Seconds for a handover between the phases of a sequenced pose clip. Far
+// shorter than BLEND_TIME because these joins are pose-EXACT by construction --
+// `graze_in`'s last frame is `graze`'s first, and `graze_out` opens on that
+// same pose -- so this covers only the few degrees the feeding loop is away
+// from its own base pose when the Brain calls time.
+const PHASE_TIME = 0.08;
+
 const _fwd = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 
@@ -343,6 +350,28 @@ export class GlbRig {
     }
     this.act.stand.setEffectiveWeight(1);
 
+    // ── the phased graze ────────────────────────────────────────────────────
+    // A species whose asset authors the entry and exit to a pose declares them
+    // as `grazeIn` / `grazeOut`, and the presence of BOTH is what turns the
+    // sequencer on. One without the other would strand the head down, so this
+    // is deliberately not an `||`. A species with neither -- the fox -- takes
+    // the plain damped crossfade below and never touches this path.
+    this.phased = !!(this.act.grazeIn && this.act.grazeOut);
+    if (this.phased) {
+      for (const slot of ['grazeIn', 'grazeOut']) {
+        // One-shot and held at the last frame: these are transitions, and a
+        // transition that loops is a head that bobs back down after it rises.
+        this.act[slot].setLoop(THREE.LoopOnce, 1);
+        this.act[slot].clampWhenFinished = true;
+      }
+      // Parked on the exit's FINAL frame, which the .blend guarantees is the
+      // exact idle rest pose. See `_grazeApply` for why `out` needs a carrier
+      // rather than a set of zero weights.
+      this.act.grazeOut.time = proto.clips.grazeOut.duration;
+    }
+    this.gPhase = 'out';
+    this.pIn = 0; this.pHold = 0; this.pOut = 1;
+
     this.pitch = 0;
     this.roll = 0;
     // Damped blend per clip, and the damped speed the playback rates ride on.
@@ -383,6 +412,12 @@ export class GlbRig {
     this.bMove = 0; this.bTrot = 0; this.bRun = 0;
     this.bGraze = 0; this.bAlert = 0;
     this.paceSpeed = 0;
+    if (this.phased) {
+      this.gPhase = 'out';
+      this.pIn = 0; this.pHold = 0; this.pOut = 1;
+      this.act.grazeOut.reset();
+      this.act.grazeOut.time = this.proto.clips.grazeOut.duration;
+    }
     this._warm = true;
   }
 
@@ -422,6 +457,88 @@ export class GlbRig {
     const wantRoll = clamp(Math.atan2(hR - hL, reach * 2), -0.4, 0.4);
     this.pitch += (wantPitch - this.pitch) * k;
     this.roll += (wantRoll - this.roll) * k;
+  }
+
+  /**
+   * Advance the three-phase graze, and say how much graze the budget should be
+   * carrying while it does.
+   *
+   * The bear's .blend authors grazing as `graze_in` -> `graze` (loop) ->
+   * `graze_out` and states why in its own comment: the Brain holds a graze for
+   * a variable number of seconds, so one long clip would raise the head every
+   * time it repeated. Each clip even carries a `next_action` naming the one
+   * after it. Crossfading straight to the loop instead — which is what this
+   * file did before — threw away a 1.5 s authored descent and arrived at
+   * whatever frame the loop happened to be on.
+   *
+   * This sequences PLAYBACK and nothing else. No clip is edited and every pose
+   * on screen is still a pose that is in the .blend, so it sits on the allowed
+   * side of the read-only rule in the header.
+   *
+   * `Brain` still owns WHETHER to graze. This owns only how the pose is
+   * entered and left, which is why it reads `want` and never writes it — the
+   * second-state-machine trap in the `promote-glb-animal` skill.
+   */
+  _grazeAdvance(want) {
+    const a = this.act, C = this.proto.clips;
+    // A low threshold on purpose. The phase has to leave `out` on the first
+    // frame the Brain asks for any graze at all, because `out` parks on
+    // `graze_out`'s clamped final frame — the idle rest pose — and a budget
+    // rising against that would blend the head DOWN before `graze_in` starts.
+    const on = want > 0.05;
+    const done = (act, clip) => act.time >= clip.duration - 1e-3;
+    switch (this.gPhase) {
+      case 'out':
+        if (on) { a.grazeIn.reset().play(); this.gPhase = 'in'; }
+        break;
+      case 'in':
+        // Straight back to `out` if the Brain changes its mind mid-descent.
+        // `graze_out` opens on the fully-lowered pose, so entering it from
+        // halfway down is the one join in this chain that is not pose-exact;
+        // the damped budget lifts the head instead, which is what the
+        // unsequenced path did for every graze and is fine for this one.
+        if (!on) this.gPhase = 'out';
+        else if (done(a.grazeIn, C.grazeIn)) { a.graze.time = 0; this.gPhase = 'hold'; }
+        break;
+      case 'hold':
+        if (!on) { a.grazeOut.reset().play(); this.gPhase = 'exit'; }
+        break;
+      case 'exit':
+        if (on) { a.grazeIn.reset().play(); this.gPhase = 'in'; }
+        else if (done(a.grazeOut, C.grazeOut)) this.gPhase = 'out';
+        break;
+    }
+    // Hold the budget up while the exit plays. `graze_out` IS the head coming
+    // back to idle, so letting the Brain's already-falling graze channel fade
+    // it out would play the descent and then cut the recovery — the animal
+    // would pop upright halfway through its own authored lift.
+    return this.gPhase === 'exit' ? 1 : want;
+  }
+
+  /**
+   * Share the graze budget across whichever phase clips are handing over.
+   *
+   * Normalised, because the three of them together have to carry exactly the
+   * weight the ladder handed to `graze` or the mixer averages the difference
+   * toward the rest pose and the animal visibly sinks — the same failure the
+   * budget block above exists to prevent, one level down.
+   */
+  _grazeApply(gz, dt) {
+    const a = this.act;
+    const LP = 3 / PHASE_TIME;
+    const enter = this.gPhase === 'in' ? 1 : 0;
+    const hold = this.gPhase === 'hold' ? 1 : 0;
+    this.pIn = damp(this.pIn, enter, LP, dt);
+    this.pHold = damp(this.pHold, hold, LP, dt);
+    // `out` and `exit` share a target, and that is what keeps this simplex
+    // from ever summing to zero: `graze_out` clamped at its final frame holds
+    // the idle rest pose, so it is the right carrier both for the budget on
+    // its way down and for the clip that put it there.
+    this.pOut = damp(this.pOut, 1 - enter - hold, LP, dt);
+    const k = gz / Math.max(this.pIn + this.pHold + this.pOut, 1e-4);
+    a.grazeIn.setEffectiveWeight(this.pIn * k);
+    a.graze.setEffectiveWeight(this.pHold * k);
+    a.grazeOut.setEffectiveWeight(this.pOut * k);
   }
 
   /**
@@ -473,7 +590,8 @@ export class GlbRig {
     this.bMove = damp(this.bMove, wMove, L, dt);
     this.bTrot = damp(this.bTrot, wTrot, L, dt);
     this.bRun = damp(this.bRun, wRun, L, dt);
-    this.bGraze = damp(this.bGraze, drive.graze, L, dt);
+    this.bGraze = damp(this.bGraze, this.phased
+      ? this._grazeAdvance(drive.graze) : drive.graze, L, dt);
     this.bAlert = damp(this.bAlert, drive.alert, L, dt);
 
     // ── the budget ──────────────────────────────────────────────────────────
@@ -496,7 +614,8 @@ export class GlbRig {
     a.trot.setEffectiveWeight(move * (1 - this.bRun) * this.bTrot);
     a.walk.setEffectiveWeight(move * (1 - this.bRun) * (1 - this.bTrot));
     a.alert.setEffectiveWeight(al);
-    a.graze.setEffectiveWeight(gz);
+    if (this.phased) this._grazeApply(gz, dt);
+    else a.graze.setEffectiveWeight(gz);
     a.stand.setEffectiveWeight(still - al - gz);
 
     // ── the rates ───────────────────────────────────────────────────────────
@@ -522,7 +641,9 @@ export class GlbRig {
       const w = a[slot].getEffectiveWeight();
       if (w > bw) { bw = w; best = slot; }
     }
-    this.gaitName = best;
+    // The three graze phases are one behaviour to everything outside this file
+    // -- the debug dumps and the look harness both key off this name.
+    this.gaitName = (best === 'grazeIn' || best === 'grazeOut') ? 'graze' : best;
 
     this.mixer.update(dt);
     void _q;

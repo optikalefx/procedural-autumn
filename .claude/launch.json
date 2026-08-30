@@ -26,6 +26,19 @@
         "--strictPort"
       ],
       "port": 5203
+    },
+    {
+      "name": "bear-glb",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5212",
+        "--strictPort"
+      ],
+      "port": 5212
     }
   ]
 }

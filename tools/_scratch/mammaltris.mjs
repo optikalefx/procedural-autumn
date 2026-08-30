@@ -6,7 +6,8 @@ import { SPECIES, DOG_SPECIES, buildSpecies, buildCampDog, isGlb } from '../../s
 // Blueprint species only. The fox is hand-authored and has no profile arrays to
 // do facet arithmetic on — its cost is read straight out of the GLB below,
 // which is the comparison anyone runs this tool for.
-const KEYS = ['deer', 'bear', 'rabbit', 'squirrel', 'raccoon'];
+// 'bear' left out with 'fox': both are hand-authored now and carry no blueprint.
+const KEYS = ['deer', 'rabbit', 'squirrel', 'raccoon'];
 const SEED = 20261018;
 
 /**

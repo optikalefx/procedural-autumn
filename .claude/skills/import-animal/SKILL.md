@@ -1,6 +1,6 @@
 ---
 name: import-animal
-description: Bring a hand-authored Blender animal into the game as a GLB with its own animation clips, or add/retune a clip on one that is already in. Use whenever the user has modelled or animated a creature in Blender and wants to see it in the game — "put the fox in the game", "add the trot to the fox", "import my model", "wire up the GLB", "why is my animation not showing" — and when a clip's stride, speed, looping or gait blending needs judging. This is the hand-authored track; for the procedural blueprint cast (deer, bear, rabbit — profile arrays, no model files) use create-animal instead.
+description: Bring a hand-authored Blender animal into the game as a GLB with its own animation clips, or add/retune a clip on one that is already in. Use whenever the user has modelled or animated a creature in Blender and wants to see it in the game — "put the fox in the game", "add the trot to the fox", "import my model", "wire up the GLB", "why is my animation not showing" — and when a clip's stride, speed, looping or gait blending needs judging. This is the hand-authored track; for the procedural blueprint cast (deer, rabbit, squirrel, raccoon, goat, yak — profile arrays, no model files) use create-animal instead.
 ---
 
 # Import Animal
@@ -113,18 +113,36 @@ mw = (rig.matrix_world @ rig.pose.bones["root"].bone.matrix_local).to_3x3()
 
 ### 5. Export
 
-`tools/export_fox_glb.py` is the pattern: select only the rig hierarchy so the
-studio lights, camera and ground plane stay out; leave
-`export_optimize_animation_size` on; and set each action's **manual frame
-range** so every clip exports over its own length rather than the scene's. Verify
-by decoding the GLB — each clip should carry its own duration and sample count,
-and its first and last sample should be identical (that closing duplicate is what
-lets an engine wrap without a hitch).
+`tools/export_bear_glb.py` is the fuller pattern and `export_fox_glb.py` the
+older one. Select only the rig hierarchy so the studio lights, camera and ground
+plane stay out; leave `export_optimize_animation_size` on. Verify by decoding the
+GLB — each clip should carry its own duration and sample count, and its first and
+last sample should be identical (that closing duplicate is what lets an engine
+wrap without a hitch).
+
+**Merge the rigid detail meshes first.** A source asset keeps its claws, eyes and
+teeth as separate objects because that is what is editable in Blender, but glTF
+gives every object its own primitive and every primitive its own draw call. The
+bear's twelve claws and two eyes were seventeen primitives against the fox's six,
+which the frame cannot carry at three live animals. Joining them costs nothing:
+each detail is bone-parented by a single full-weight vertex group, so
+`bpy.ops.object.join()` merges the groups **by name** and every claw stays welded
+to its own foot bone. That took the bear to five primitives, 11.3k triangles and
+ten draw calls. Do the join in the export script, in memory, and never save it —
+the .blend stays as editable as it was.
+
+**Set each action's manual frame range**, and assert it. The fox's clips all
+happen to be one scene length, so `export_fox_glb.py` leans on the scene's 0-48
+and gets away with it; follow that and a 16-frame Trot arrives three times too
+long. Author the clips with `use_frame_range`, export with
+`export_frame_range=False`, then check the decoded durations rather than trusting
+it.
 
 ### 6. Wire it up
 
-`glb_rig.js` is the template, and `mammals/fox.js` is what a hand-authored
-species file looks like. What the rig does that matters:
+`glb_rig.js` is the template. `mammals/fox.js` is the plain case and
+`mammals/bear.js` the one with sequenced pose clips. What the rig does that
+matters:
 
 - `SkeletonUtils.clone`, **not** `Object3D.clone` — a plain clone shares the
   original's bones, so every animal plays every other animal's animation.
@@ -134,11 +152,38 @@ species file looks like. What the rig does that matters:
 - `measureStride` per clip, sampling a foot bone's travel through one cycle,
   then the animal's speed for that gait **is** that number times its playback
   rate. This is the whole mechanism that keeps paws with the ground.
+- **The derived ladder has to come out monotonic.** The crossfade bands are
+  `(speed - walk) / max(trot - walk, 1e-4)` and the same one tier up, so a trot
+  that measures *slower* than the walk collapses the band to nothing and the
+  animal skips straight to the upper gait. Rate is a judgement about cadence,
+  but it is constrained: the bear's first pass at walk 2.8x / trot 1.0x put the
+  walk at 0.428 m/s against the trot's 0.387 and broke the ladder. Pick rates
+  that keep walk < trot < run, then justify each one as a cadence in Hz.
 - Blend weights normalised to sum to 1 — an unnormalised set makes the mixer
   average toward the rest pose and the animal sinks as it changes gait.
 - Damped blends and rates. `Brain`'s accel is tuned for animals moving metres
   per second, so at a slow clip's speed every change of pace completes in one
   frame; damping gives the transition a duration of its own.
+- **Sequenced pose clips, where the asset authors its own transitions.** A
+  species that declares BOTH `grazeIn` and `grazeOut` slots gets
+  `enter -> hold -> exit` played in order instead of a crossfade straight to the
+  loop; declaring neither takes the plain damped path. This exists because the
+  bear's .blend authors `graze_in` (1.5 s) -> `graze` (loop) -> `graze_out`
+  (1.5 s) and says why in its own comment — the Brain holds a graze for a
+  variable 10-26 s, so one long clip would raise the head every time it
+  repeated. Do NOT "fix" that by folding the phases into one action in Blender;
+  the split is the correct authoring and the sequencing belongs here. The first
+  import mapped only `graze` and silently threw the 1.5 s descent away.
+
+  Three things it took to get right, all of which will recur for any other
+  enter/hold/exit pose: the idle phase parks on the exit clip's **clamped final
+  frame** (which the .blend guarantees is the exact rest pose) so the phase
+  weights always have a carrier and can never sum to zero and leave the budget
+  unspent; the budget is **held up** while the exit plays, or the Brain's
+  already-falling channel cuts the recovery halfway through its own authored
+  lift; and the entry threshold is **low** (0.05, not 0.5), because the idle
+  phase sits on a rest pose and a budget rising against it blends the head down
+  before the enter clip starts.
 - Terrain tilt on the parent, sampled fore/aft/left/right. The procedural track
   gets this free from its per-paw ground queries; without it a GLB animal on a
   hillside stands bolt upright through the ground.

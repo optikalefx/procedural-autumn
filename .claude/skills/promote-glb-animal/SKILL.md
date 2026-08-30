@@ -11,8 +11,10 @@ rather than a demo beside the cast — placed by the habitat field, streamed on
 the site table, counted in the logbook, detected by the camera, hinted at by the
 compass paw, and wearing coat morphs.
 
-The fox is the worked example. Read `src/wildlife/glb_rig.js` before touching
-anything here; its header is the contract.
+The fox is the simplest worked example and the bear the fuller one — it replaced
+a procedural animal and it sequences its own pose transitions. Read
+`src/wildlife/glb_rig.js` before touching anything here; its header is the
+contract.
 
 ## The idea that makes this cheap
 
@@ -65,12 +67,24 @@ glb: {
     run:   { name: 'run', rate: 1.0, strides: 3 },
     graze: { name: 'graze' },
     alert: { name: 'alert' },
+    // optional, and only as a pair — see the sequenced-pose bullet below
+    grazeIn:  { name: 'graze_in' },
+    grazeOut: { name: 'graze_out' },
   },
 },
 ```
 
 - A clip with a `rate` is a **cycle**: measured, rate-driven, part of the speed
   ladder. A clip without one is a **pose**: never measured, entered at frame 0.
+- **`grazeIn` + `grazeOut` turn on the phase sequencer.** Declare BOTH and the
+  rig plays `enter -> hold -> exit` in order; declare neither (the fox) and it
+  crossfades to the loop as before. One without the other does nothing, because
+  an entry with no exit would strand the head down. Use it whenever the .blend
+  authors its own transitions — the bear's clips carry a `next_action` property
+  naming the one after them, which is the artist saying exactly this.
+- The derived `walk`/`trot`/`run` speeds must come out **monotonic**, or the
+  crossfade bands collapse. That is a constraint on your `rate` choices; see
+  `import-animal`.
 - `strides` is how many strides the clip contains. Get it wrong and the animal
   travels at a fraction or a multiple of what its legs do. The fox's run is
   three rotary-gallop strides in one clip.
@@ -123,6 +137,12 @@ the moment the species file is right.
   sits at 0.62 alert while drifting and 0.85 while still, so the alert pose
   partial-blends over a walk exactly as much as the state deserves. Do not build
   a second state machine in the rig to disagree with the first.
+
+  The phase sequencer is not an exception to this, and the line is worth being
+  precise about: `Brain` owns **whether** the animal is grazing, and the
+  sequencer owns only **how** that pose is entered and left. It reads the
+  channel and never writes it. Anything in the rig that decides for itself that
+  the animal should stop grazing is the bug this bullet is about.
 - **Damp the blends and the rates on their own clock.** The Brain's accel is
   tuned for animals moving metres per second, so at a slow clip's speed every
   change of pace completes in one frame. Undamped, the fox's rate collapsed from
@@ -216,6 +236,8 @@ curl -s http://127.0.0.1:<port>/src/wildlife/glb_rig.js | head -2
    *entire* procedural cast at the busiest point on the map. Check it against
    `CFG[key].live` before shipping, and if it is too much the fix is merging
    same-material primitives in the export, not a code workaround.
+   `tools/export_bear_glb.py` does exactly that, taking seventeen primitives to
+   five by joining the twelve claws and the two eyes before it exports.
 
 Three harness traps worth knowing: `renderer.info` does not auto-reset in this
 app, so reset it by hand or you will report a growing total; `Stats.update`
