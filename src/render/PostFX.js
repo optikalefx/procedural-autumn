@@ -1602,6 +1602,10 @@ export class PostFX {
     this._depthProbe = null;
     this._focusHeld = false;
     this._fStop = PHOTO_DOF.fStop;
+    // Is the ring parked on the pinhole rung? STATE, not a one-shot write — see
+    // `setPinhole`, and `_applyAperture`, which is the thing that used to
+    // silently undo it.
+    this._pinhole = false;
 
     // A cozy frame wants its corners to fall away. It also buys real measured
     // contrast in the vista views, which are otherwise a single 0.60–0.70 value
@@ -1914,6 +1918,12 @@ export class PostFX {
         if (u1.uCocGain) u1.uCocGain.value = this._dofSaved?.cocGain ?? 1;
         if (u1.uCocKnee) u1.uCocKnee.value = this._dofSaved?.cocKnee ?? 1;
       }
+      // The ring goes with the mode. `_applyAperture` no-ops outside photo mode
+      // so a stale `true` could not reach the tier's blur, but the next visit
+      // re-asserts the stop through `photo_focus._applyStop` anyway and a flag
+      // that outlives its owner is a flag waiting to be read by mistake.
+      this._pinhole = false;
+      this._cocGainHeld = undefined;
       this._dofSaved = null;
       this._syncDOF();
     }
@@ -2459,9 +2469,19 @@ export class PostFX {
    * not a pinhole; a dial whose far end does not mean "sharp" is worse.
    */
   setPinhole(on) {
+    // Recorded BEFORE the early return, and read back by `_applyAperture`.
+    // This used to be a bare write to `uCocGain` and nothing remembered it had
+    // happened, so every later recompute of the gain quietly turned the blur
+    // back on with the ring still reading f/28. Photo mode's own entry does
+    // three of those recomputes after `_applyStop` sets the pinhole — the
+    // opening `setFocusManual`, up to ten autofocus retries, and the Retina
+    // buffer resize — so the mode opened at f/28 WITH depth of field every
+    // time, and the only way to get the promised sharp frame was to turn the
+    // ring off f/28 and back, which re-ran the write with nothing after it.
+    this._pinhole = !!on;
     const u = this._dofEffect?.cocMaterial.uniforms;
     if (!u?.uCocGain) return;
-    if (on) {
+    if (this._pinhole) {
       this._cocGainHeld ??= u.uCocGain.value;
       u.uCocGain.value = 0;
     } else if (this._cocGainHeld !== undefined) {
@@ -2503,8 +2523,13 @@ export class PostFX {
     // infinity circle expressed in units of the ceiling. Nothing else about
     // the aperture reaches the frame any more, and nothing needs to: N is
     // inside kInf, so every stop moves every defocused pixel.
+    //
+    // Except on the last rung, where the lens equation does not get a vote: at
+    // f/28 the aperture means zero by fiat (`setPinhole`), and every path that
+    // lands here — the dials, `_applySizes`, `setPhotoDOF` — is recomputing
+    // the gain from the aperture and would otherwise undo it.
     if (u.uCocGain) {
-      u.uCocGain.value = g.kInf / (bokeh / h);
+      u.uCocGain.value = this._pinhole ? 0 : g.kInf / (bokeh / h);
       u.uCocKnee.value = PHOTO_DOF.knee;
     }
     // `focusRange` is deliberately NOT written here. In photo mode the shader
