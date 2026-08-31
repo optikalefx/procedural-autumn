@@ -247,6 +247,13 @@ you earn the right to `measure: 'contact'`** — the claim is that every paw of
 every moving clip is genuinely planted, which is only true once nothing is
 inherited from the pack.
 
+It is **all-or-nothing**, and that is worth saying plainly because it costs a
+good clip. The pack's raccoon walk is genuinely planted — duty 0.47-0.53, better
+than anything the deer ships — and it was still dropped and re-solved, because
+one inherited gait beside two solved ones forces the whole species back onto
+excursion and every gait loses its duty factor. Keeping the artist's walk would
+have made the raccoon's run measure three times too slow.
+
 ## Let the solver report the speed; do not tell it one
 
 For a gait, do not pass a stride in. Find the **largest sweep no leg has to
@@ -353,6 +360,20 @@ And measure the read rather than trusting the number. The alert's first yaw was
 38° and barely showed, because the lift pitches the neck toward vertical and a
 vertical bone hardly moves when rotated about Z. Measured at the muzzle: 38°
 bought 0.19 m of swing, 75° buys 0.34 m.
+
+## What "done" looks like
+
+Both finished animals, measured in game, against the real thing:
+
+| | walk | trot | run | real animal |
+|---|---|---|---|---|
+| raccoon | 0.673 | 1.670 | 4.936 | ~0.7 / — / ~6 |
+| deer | 1.089 | 2.728 | 7.716 | 1.15 / 3.48 / 11.9 |
+
+Both on `measure: 'contact'`, no `glb.drive` anywhere, every planted paw within
+0.001 mm of its authored path and every cycle closing to 0.000 mm. That is the
+bar: a species that needs a `drive` override has an asset problem that has not
+been solved yet.
 
 ## Wire it up and check the ladder
 
