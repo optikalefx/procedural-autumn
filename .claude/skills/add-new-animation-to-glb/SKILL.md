@@ -13,10 +13,20 @@ the missing ones are not decoration: `brain.grazeChance` is 0.55, so a deer with
 no graze stands with its head up for most of the time anybody looks at it.
 
 The answer is to author the missing clips **onto the bought rig**. That works,
-it is much cheaper than modelling an animal, and this skill is the account of
-doing it three times — a phased graze, a solved trot and an alert pose — on the
-Animals_FREE deer. Worked examples live on branch `pack-deer`:
-`tools/pack_deer_graze.py`, `tools/pack_deer_trot.py`, `tools/pack_deer_alert.py`.
+it is much cheaper than modelling an animal, and it is how the raccoon and the
+deer are built.
+
+Worked examples, in the order to read them:
+
+    tools/pack_rig_kit.py        the machinery, and every trap it exists to fix
+    tools/build_raccoon_blend.py the simple case — one mesh, two clips solved
+    tools/build_deer_blend.py    three meshes on one skeleton, walk replaced
+    tools/export_pack_glb.py     the generic export, one script for all animals
+
+An earlier experiment against the FREE sample pack lives on branch `pack-deer`
+(`pack_deer_graze.py`, `pack_deer_trot.py`, `pack_deer_alert.py`). It is where
+the phased graze was worked out and is worth reading for that, but the pipeline
+there is superseded by the two stages below.
 
 ## The rule still holds, and it binds harder here
 
@@ -25,28 +35,86 @@ editable than an authored one — *less*, because there is no .blend of yours to
 fix it in. Adding a NEW action alongside them is not editing them. Never retime,
 resample or scale a clip that shipped with the asset.
 
-## Never write to the download
+## The standard: two stages, and the working .blend is the artefact
 
-Author in memory, inside the export script's session, and let the export be the
-only thing that produces a file. The download stays pristine and the whole
-animal is reproducible from one command — which is the build script the skill
-`import-animal` says every animal needs, obtained without owning the .blend.
+    Blender -b assets/models/Animals_v3.0.blend --python tools/build_<x>_blend.py
+    Blender -b assets/models/<x>_pack.blend    --python tools/export_pack_glb.py
 
-```
-Blender -b ~/Downloads/Pack.blend --python tools/export_<x>_glb.py
-```
+The same split `build_bear_reference.py` / `export_bear_glb.py` already uses.
+The build is the slow half: it opens the pack, isolates one animal, solves the
+clips it needs and **saves** `assets/models/<x>_pack.blend`. The export is fast
+and generic — it takes the single armature and every mesh parented to it, so one
+script serves every animal.
 
-Do write a **review .blend** at the end, with every clip pushed to an NLA track
-in whatever layout the pack itself uses, so there is a consistent file to open
-and scrub. Write it **after** `export_scene.gltf` — strips present during an
-`ACTIONS`-mode export risk every clip being emitted twice.
+Saving matters. An earlier cut authored everything inside the export and saved
+nothing, which meant re-solving on every run and no file anyone could open and
+tweak. The working .blend is where hand-adjustments belong.
+
+**The bought pack itself is never written to.** It is licensed third-party
+source, gitignored, and the only copy — so it stays exactly as downloaded and
+can be re-derived if the vendor ships v3.1. Both .blends are gitignored; the GLB
+is what the repo tracks.
+
+`tools/pack_rig_kit.py` carries the shared machinery: `open_animal`,
+`face_forward`, `gait_rest` / `solve_sweep` / `build_gait`, `purge`,
+`frame_view`, `point`, `ik2`, `local_translation`.
+
+### Four things `open_animal` has to fix before anything can be measured
+
+Each produced confidently wrong numbers, and they mask one another — fix one and
+the symptom merely changes.
+
+* **Every armature ships in REST position.** All 57. The clips animate the bone
+  channels and a rest-position armature ignores its pose, so nothing moves and
+  nothing says why. It is not an animation setting and appears nowhere in the
+  NLA or Action editors: `armature.pose_position`.
+* **Every rig ships with its Idle NLA track SOLOED.** Solo overrides the other
+  tracks *and* any action you assign. The tell is different clips reporting
+  identical numbers.
+* **The cast is on a grid**, so an animal sits at some large X.
+* **Assigning an action is not enough in Blender 4.4+.** An action carries
+  SLOTS, and `action_slot` left at None evaluates to nothing — which looks
+  exactly like a broken clip.
+
+### Leave the saved file ready to open
+
+`frame_view()` centres and zooms every 3D view on the animal, sets shading to
+MATERIAL (Solid ignores materials, which is why the pack's animals first came up
+flat grey), solos one clip and sets the frame range to it. A per-animal file is
+only useful if opening it puts the animal in front of you.
+
+`purge()` drops the datablocks the animal does not use. Deleting the objects is
+not enough: the pack's materials and images survive unreferenced and Blender
+writes them out. The raccoon's first working .blend was 34 MB, 33 of it
+demo-scene textures including `Cat_Litter.png`, for a 619-vertex animal.
+
+## Measure the clips before trusting any of them
+
+Clip quality varies **per animal within one pack**. Duty per foot, sampled over
+a cycle:
+
+| clip | duty | verdict |
+|---|---|---|
+| raccoon walk | 0.47 / 0.53 / 0.47 / 0.53 | genuinely planted — keep it |
+| deer walk | 0.25 / 0.30 / 0.23 / 0.10 | not planted; fore travels 0.52, hind 0.63 |
+
+A walk is *defined* by a duty above 0.5. Where it does not hold there is no
+single ground speed in the clip, so whichever number you measure, some foot
+skates — drop it and solve one instead. Where it does hold, keep the artist's.
 
 ## Survey the rig before you pose anything
 
 Every real decision below came out of measurement, and each took minutes. Do all
 of it first; guessing costs a rebuild.
 
-**1. What hangs off what.** This is the one that reorganises the whole plan.
+**1. What hangs off what, ON THIS RIG.** This is the one that reorganises the
+whole plan, and it differs between animals in the same pack — carrying one
+animal's hierarchy to another is how the raccoon's alert moved its paws 44 mm.
+The forelegs hang off `spine.005` on the deer and `spine.007` on the raccoon, so
+the neck chain has to start above whichever it is. Limb naming differs too: the
+raccoon's fore leg has **no `foot` bone** where the hind has one, so the IK
+targets a different bone per pair.
+
 On the pack deer, `front_shoulder` parents to `spine.005` and the hind
 `shoulder` to `spine.003` — so bending the *thorax* to lower the head drags the
 forelegs through the floor, while bending the tail cannot disturb a hind leg
@@ -67,6 +135,28 @@ posing is the difference between a design and a surprise.
 **4. Bone axis sanity.** Do not assume. Every thigh bone on that rig has its
 local X a full **180°** off world X. This never matters if you follow the next
 rule and always matters if you do not.
+
+## Check whether the pack ships variants as separate models
+
+The single best thing found in this pack: it ships `Deer_01`, `Deer_Female_01`
+and `Deer_Cub_01` as three models, and their armatures are **identical** — same
+33 bone names, every bone head in the same place to four decimals.
+
+So the build re-parents the doe and fawn onto the buck's rig, all three ride one
+skeleton in one GLB, and `variants[].hide` picks between them. That gives three
+genuinely different silhouettes off one set of clips, which is better than the
+hand-authored deer managed with one mesh and droppable antlers.
+
+Check for this before settling for scale-only variants. It is worth a minute:
+
+```python
+sorted(a.name for a in A.data.bones) == sorted(b.name for b in B.data.bones)
+max((A.data.bones[n].head_local - B.data.bones[n].head_local).length for n in names)
+```
+
+Re-parent BEFORE `open_animal` deletes the other armatures, and re-point each
+mesh's ARMATURE modifier as well as its parent — a mesh whose modifier still
+names a deleted rig stops deforming.
 
 ## Author the contact point, not the joint angles
 
@@ -130,6 +220,24 @@ for the script to hide.
 Every hoof of a gait shares one sweep, or the feet scrub against each other, and
 the shortest leg sets it. On the pack deer the fore caps it at 0.455 units
 against the hind's 1.038.
+
+## Three bugs that look like Blender and are not
+
+All three produced "the solver will not converge" or "the clip is frozen", and
+all three were mine.
+
+* **`pose_bone.head` returns a live reference.** Appending it to a list without
+  `.copy()` aliases every sample to the same vector, so a moving foot reports a
+  travel of exactly 0.000. A float appended alongside it copies by value and
+  reads correctly, which is what made it look like partial evaluation.
+* **`pose_bone.location` is in the BONE's space.** A `Root` that points straight
+  up has its local Y along world Z, so writing `location.z` slides the animal
+  sideways. Crouching the body to buy stride made the solved sweep go DOWN,
+  because the body never came down. `local_translation()` converts.
+* **`is_solo` is exclusive.** Assigning False to a track after assigning True to
+  another clears the whole solo state, so the tidy one-line loop
+  `t.is_solo = (t.name == want)` silently does nothing whenever `want` is not
+  last. Set the others down first and the one you want last.
 
 ## Two sampling traps, and they are the same mistake
 

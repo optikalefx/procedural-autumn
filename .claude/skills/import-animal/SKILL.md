@@ -491,9 +491,19 @@ Three things that differ from an asset built here:
 
 Standing a slot in is a stopgap, and a visible one: `graze` as a copy of idle
 means a deer with its head up for the 55% of its life the Brain spends feeding.
-**Author the missing clips onto the bought rig instead** — see the
-`add-new-animation-to-glb` skill, which is the account of doing exactly that for
-a phased graze, a solved trot and an alert pose.
+**Author the missing clips onto the bought rig instead.**
+
+That path is now the standard for pack animals and has its own skill,
+`add-new-animation-to-glb`. Two stages:
+
+    Blender -b assets/models/<pack>.blend   --python tools/build_<x>_blend.py
+    Blender -b assets/models/<x>_pack.blend --python tools/export_pack_glb.py
+
+The build isolates one animal, solves the clips the pack does not ship, and
+SAVES a small per-animal working .blend; the export is generic. `raccoon.js` and
+`deer.js` are both built this way. Read that skill before touching a bought rig:
+the pack ships every armature in REST position and every Idle track SOLOED, and
+either one alone will make you believe the clips are broken.
 
 ## Verify
 
