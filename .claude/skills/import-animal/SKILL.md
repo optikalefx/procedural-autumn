@@ -1,6 +1,6 @@
 ---
 name: import-animal
-description: Bring a hand-authored Blender animal into the game as a GLB with its own animation clips, or add/retune a clip on one that is already in. Use whenever the user has modelled or animated a creature in Blender and wants to see it in the game — "put the fox in the game", "add the trot to the fox", "import my model", "wire up the GLB", "why is my animation not showing" — and when a clip's stride, speed, looping or gait blending needs judging. This is the hand-authored track; for the procedural blueprint cast (deer, rabbit, squirrel, raccoon, goat, yak — profile arrays, no model files) use create-animal instead.
+description: Bring a hand-authored Blender animal into the game as a GLB with its own animation clips, or add/retune a clip on one that is already in. Use whenever the user has modelled or animated a creature in Blender and wants to see it in the game — "put the fox in the game", "add the trot to the fox", "import my model", "wire up the GLB", "why is my animation not showing" — and when a clip's stride, speed, looping or gait blending needs judging. Also covers BOUGHT and downloaded assets — an animal pack, someone else's .blend — including the NLA-not-actions layout they arrive in, facing, and when contact measurement cannot be trusted. To author a clip the pack did not ship, use add-new-animation-to-glb. This is the hand-authored track; for the procedural blueprint cast (deer, rabbit, squirrel, raccoon, goat, yak — profile arrays, no model files) use create-animal instead.
 ---
 
 # Import Animal
@@ -384,8 +384,17 @@ matters:
   gets this free from its per-paw ground queries; without it a GLB animal on a
   hillside stands bolt upright through the ground.
 
-Blender's exporter strips dots from bone names: `hind_foot.L` becomes
-`hind_footL`.
+**three.js strips dots from bone names, and Blender does not.** `glb.feet` must
+say `hind_footL` where the rig says `hind_foot.L` — but be precise about which
+layer does it, because the wrong story sends you hunting in the wrong file. The
+GLB genuinely carries `hind_foot.L`; it is `GLTFLoader` that renames it, via
+`PropertyBinding.sanitizeNodeName`, which strips the characters its own
+animation-path syntax reserves. (This skill and `fox.js` both used to credit the
+Blender exporter. They were wrong, and it cost a round.)
+
+The failure is worse than it sounds. `measureExcursion` **skips a bone it cannot
+find** and then reports zero ground, which throws as *"check that the model faces
+-z"* — a naming fault wearing a facing fault's error message.
 
 ### What this track gets, now that it has won
 
@@ -402,6 +411,89 @@ keeping the Blender materials exactly as authored is the whole promise of this
 track. The consequence is real and expected — past ~70 m a hand-authored animal
 reads brighter and more detailed than the procedural cast, which collapses
 toward one dark tone. Judge it in `glblook.mjs`'s `range_*` frames.
+
+## Assert the facing; the excursion path cannot check it for you
+
+This repo authors **+Y forward, +Z up, hooves on Z=0** (`build_new_deer.py`).
+An asset that faces the other way galloped tail-first all the way into the game
+and nothing upstream caught it, because `measureExcursion` returns a foot's
+absolute range and an absolute range **has no sign**. Only `measureGround`
+checks direction, and an asset on the excursion path has no facing check at all.
+
+Turn the rig at export and assert a landmark bone's sign:
+
+```python
+rig.rotation_euler.z += math.pi
+skull = rig.matrix_world @ rig.data.bones["scull"].head_local
+assert skull.y > 0
+```
+
+This is a placement transform on the armature OBJECT — squarely inside what
+CLAUDE.md allows. Clips animate pose bones in their parents' space and the mesh
+is parented to the rig, so both ride the rotation untouched.
+
+## Contact measurement lies UPWARD on an unsolved asset
+
+`measure: 'contact'` is a claim about the asset: every paw of every locomotion
+clip is genuinely planted for a sustained stretch. Where that is false there is
+no plateau to find, and the failure is not a wobble — `measureGround` latches
+onto the densest cluster it can see, which on a clip with no stance is the
+*swing*, and reports a number **2.5x too high** with total confidence (run 3.34
+against excursion's 1.31 on the pack deer).
+
+So check duty in Blender before believing a contact number. Sample each foot
+over the cycle and count the frames within 12% of its own lowest point:
+
+| clip | duty per foot | verdict |
+|---|---|---|
+| pack deer walk | 0.23 / 0.10 / 0.25 / 0.29 | not planted; left disagrees with right 2.3x |
+| pack deer run | 0.29 / 0.17 / 0.17 / 0.17 | airborne gait, no stance to measure |
+
+A walk is *defined* by a duty above 0.5. Anything near 0.1 is a clip authored to
+read in a turntable, not solved against a floor — stay on excursion, which is
+wrong in a familiar way rather than wrong in a way that looks like free speed.
+
+## `glb.drive`, and what declaring it admits
+
+A species may override the measured ladder with speeds it states outright. It
+exists for ONE case and the case has to be **demonstrated, not asserted**: an
+asset whose feet are not on the ground in the first place. Measurement is a
+promise between a clip and the floor, and a clip that never touches the floor is
+not a party to it — so nothing is forfeited that was still true.
+
+Where feet DO plant, this is a licence to skate and must not be used. The fox
+walks at a tenth of a real fox and does not get one, because its stride is a
+thing to widen in Blender.
+
+Give up exactly as much as you must and not one gait more. On the pack deer,
+walk and trot reach honest speeds on playback rate alone and only `run` is
+driven — it needs 10.5x against `RATE`'s 3.2 ceiling. `loadGlbSpecies` prints the
+skate ratio as a warning at every boot, because a cost that is not printed stops
+being noticed.
+
+## Third-party assets: a bought rig is a good deal with a hole in it
+
+A pack supplies the expensive parts — mesh, skeleton, weights, a coherent style
+at ~1.7K triangles — and ships the clips its author thought a game needs. That is
+reliably `idle`, `walk`, `run`, against the six slots `GlbRig` requires.
+
+Three things that differ from an asset built here:
+
+- **The clips may live in NLA tracks with no assigned action.** `ACTIONS` export
+  mode reads `bpy.data.actions`, so remove the strips and export the actions.
+  The Action Editor showing "New" on every rig is this, not a broken file.
+- **Other animals are in the .blend.** `ACTIONS` mode tries every action against
+  the selected rig, so a `Tiger_001_run` left in `bpy.data` becomes a garbage
+  clip on your deer. Delete everything else first, in memory.
+- **Never alias two slots to one clip.** three.js caches `clipAction` by clip
+  identity, so two slots sharing an `AnimationClip` get one action and fight over
+  its weight. Duplicate the action if you must stand a slot in temporarily.
+
+Standing a slot in is a stopgap, and a visible one: `graze` as a copy of idle
+means a deer with its head up for the 55% of its life the Brain spends feeding.
+**Author the missing clips onto the bought rig instead** — see the
+`add-new-animation-to-glb` skill, which is the account of doing exactly that for
+a phased graze, a solved trot and an alert pose.
 
 ## Verify
 
