@@ -89,6 +89,19 @@ const BLEND_TIME = 0.22;
 // from its own base pose when the Brain calls time.
 const PHASE_TIME = 0.08;
 
+// Lean into a turn. Centripetal acceleration is speed * yaw, so the angle a
+// body would balance at is atan(speed * yaw / g) — the same arithmetic that
+// leans a cyclist. Scaled well under 1 and capped, because a bear is not a
+// motorcycle: what this has to sell is that the animal is turning on its own
+// feet rather than being rotated by something outside it.
+//
+// Signs: a rig's roll is a rotation about its own forward axis, and positive
+// tilts its up-axis toward local -X — which is why terrain roll is measured as
+// (right - left). A turn toward +X is a positive yaw, and leaning INTO it means
+// tilting the up-axis toward +X, so the bank is negative.
+const BANK_GAIN = 0.75;
+const BANK_MAX = 0.20;          // rad, ~11 degrees
+
 const _fwd = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 
@@ -98,6 +111,9 @@ const _q = new THREE.Quaternion();
 // tuning.
 const GROUND_SAMPLES = 256;
 const GROUND_TOLERANCE = 0.02;
+// How near the bottom of its own range a foot has to be to count as down,
+// as a fraction of that range. Shared with the Blender build's own report.
+const PLANTED = 0.12;
 
 /**
  * How fast the ground moves under one cycle of `clip`, in model units/second.
@@ -147,22 +163,60 @@ function measureGround(root, clip, boneNames) {
 
   const p = new THREE.Vector3();
   const tracks = bones.map(() => new Float64Array(GROUND_SAMPLES));
+  const highs = bones.map(() => new Float64Array(GROUND_SAMPLES));
   for (let i = 0; i < GROUND_SAMPLES; i++) {
     mixer.setTime((i / GROUND_SAMPLES) * clip.duration);
     root.updateMatrixWorld(true);
     for (let b = 0; b < bones.length; b++) {
       p.setFromMatrixPosition(bones[b].matrixWorld);
       tracks[b][i] = p.z;
+      highs[b][i] = p.y;
     }
   }
   action.stop();
   mixer.uncacheRoot(root);
 
+  // Only sample velocities while the foot is DOWN, and only where both ends of
+  // the step are down so the velocity is a stance velocity.
+  //
+  // The cluster search alone assumes a planted foot is the only thing holding
+  // one velocity for a sustained stretch. That holds at a walk, where the
+  // stance is two thirds of the cycle, and it fails at the other end: a
+  // bounding deer is on the ground 12% of the time and sails the rest, and a
+  // long flight is ALSO a near-constant velocity. Measured on the deer's bound,
+  // the stance made a cluster of 11% of samples at +5.9 u/s and the flight made
+  // one of 35% at -0.79 — so the swing out-voted the stance, the answer came
+  // back negative, and the loader rejected a perfectly good clip.
+  //
+  // Height is what separates them, and it needs no threshold to be guessed: a
+  // foot within `PLANTED` of the bottom of its OWN range in this clip is down.
+  // Nothing changes for gaits that were already measurable — the bear's three
+  // read identically — because for them the stance was already the biggest
+  // cluster; this only stops the swing being eligible to win.
   const step = clip.duration / GROUND_SAMPLES;
   const speeds = [];
-  for (const track of tracks) {
+  for (let b = 0; b < bones.length; b++) {
+    const track = tracks[b], high = highs[b];
+    let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < GROUND_SAMPLES; i++) {
-      speeds.push((track[(i + 1) % GROUND_SAMPLES] - track[i]) / step);
+      if (high[i] < lo) lo = high[i];
+      if (high[i] > hi) hi = high[i];
+    }
+    const floor = lo + (hi - lo) * PLANTED;
+    for (let i = 0; i < GROUND_SAMPLES; i++) {
+      const j = (i + 1) % GROUND_SAMPLES;
+      if (high[i] > floor || high[j] > floor) continue;
+      speeds.push((track[j] - track[i]) / step);
+    }
+  }
+  // A clip whose feet never settle — the fox's, and any pose clip — leaves this
+  // empty. Fall back to every sample rather than throwing, so such an asset
+  // still measures the way it always did.
+  if (!speeds.length) {
+    for (const track of tracks) {
+      for (let i = 0; i < GROUND_SAMPLES; i++) {
+        speeds.push((track[(i + 1) % GROUND_SAMPLES] - track[i]) / step);
+      }
     }
   }
   speeds.sort((a, b) => a - b);
@@ -303,10 +357,24 @@ export async function loadGlbSpecies(key, sp, log = true) {
   // The REST-pose box, matching the procedural track, and right for the same
   // reason: an animal mid-stride and one standing still are the same size of
   // animal, and a per-frame box would make the photo gate flicker with the gait.
-  const bounds = new THREE.BufferGeometry();
-  bounds.boundingBox = new THREE.Box3(
-    new THREE.Vector3(box.min.x * s, 0, box.min.z * s),
-    new THREE.Vector3(box.max.x * s, G.height, box.max.z * s));
+  //
+  // Computed PER VARIANT, because a variant may drop meshes (`hide`, below).
+  // A doe wearing no antlers must not carry a box the height of a rack: the
+  // photo gate reads half this height to decide whether the animal is framed,
+  // so a generous box passes shots that do not contain the animal.
+  const boundsFor = (hide) => {
+    const b = new THREE.Box3();
+    scene.traverse((o) => {
+      if (!o.isMesh && !o.isSkinnedMesh) return;
+      if (hide?.includes(o.name)) return;
+      b.expandByObject(o);
+    });
+    const g = new THREE.BufferGeometry();
+    g.boundingBox = new THREE.Box3(
+      new THREE.Vector3(b.min.x * s, 0, b.min.z * s),
+      new THREE.Vector3(b.max.x * s, (b.max.y - box.min.y) * s, b.max.z * s));
+    return g;
+  };
 
   // One prototype per coat. The mesh, the skeleton and the clips are shared by
   // every variant — only the materials differ — because the whole cast of one
@@ -326,8 +394,15 @@ export async function loadGlbSpecies(key, sp, log = true) {
   const protos = sp.variants.map((v) => ({
     scene, clips, variant: v, species: key,
     scale: s * (v.scale ?? 1), size: v.scale ?? 1, minY: box.min.y, fit: s,
-    speed, stride, geoms: [bounds, bounds], height: G.height,
+    speed, stride, height: G.height,
     mats: buildCoat(scene, v),
+    // Meshes this coat does not wear, by their Blender object name. The deer's
+    // rack is one object carrying its own material, so the three antlerless
+    // coats drop it and the whole cast still shares one mesh, one skeleton and
+    // one set of clips — which is the entire promise of this track. Without it
+    // a species can only ever be recolours of exactly the same silhouette.
+    hide: v.hide ?? null,
+    geoms: (() => { const g = boundsFor(v.hide); return [g, g]; })(),
     glb: G,
   }));
 
@@ -406,6 +481,10 @@ export class GlbRig {
       // culling works off a bind-pose bounding sphere that a running animation
       // leaves behind, so the parent Group's visibility is the cull that counts.
       o.frustumCulled = false;
+      // A coat that does not wear this mesh — the antlerless deer and the
+      // stag's rack. Hidden on the CLONE, so the prototype scene keeps every
+      // mesh and the next variant can still find it.
+      if (proto.hide?.includes(o.name)) o.visible = false;
       o.material = Array.isArray(o.material)
         ? o.material.map((m) => proto.mats.get(m.name) ?? m)
         : (proto.mats.get(o.material.name) ?? o.material);
@@ -465,6 +544,7 @@ export class GlbRig {
 
     this.pitch = 0;
     this.roll = 0;
+    this.bank = 0;
     // Damped blend per clip, and the damped speed the playback rates ride on.
     // See BLEND_TIME for why every one of these has a clock of its own.
     this.bMove = 0;
@@ -487,6 +567,7 @@ export class GlbRig {
   reset(pos, heading, world) {
     this.mesh.position.copy(pos);
     this.mesh.rotation.y = heading;
+    this.bank = 0;             // pooled rigs are reset, not reconstructed
     const r = mulberry32(((pos.x * 73856093) ^ (pos.z * 19349663)) >>> 0);
     for (const slot of Object.keys(this.act)) {
       // Only the cycles are offset. The authored pose clips play a lift and a
@@ -658,8 +739,12 @@ export class GlbRig {
     this.mesh.position.copy(pos);
     this.mesh.rotation.y = heading;
     this._tilt(pos, heading, world, 1 - Math.exp(-6 * dt));
+    const wantBank = clamp(
+      -Math.atan2(drive.speed * (drive.yawRate ?? 0), 9.81) * BANK_GAIN,
+      -BANK_MAX, BANK_MAX);
+    this.bank = damp(this.bank, wantBank, 4, dt);
     this.mesh.rotation.x = this.pitch;
-    this.mesh.rotation.z = this.roll;
+    this.mesh.rotation.z = this.roll + this.bank;
 
     const g = this.cfg;
     const sp = this.proto.speed;

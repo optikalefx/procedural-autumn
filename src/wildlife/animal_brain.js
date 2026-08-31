@@ -54,6 +54,35 @@ export const WATER_MAX = 0.15;
 // Probe fan for local avoidance. Straight ahead first so it wins ties.
 const FAN = [0, -0.42, 0.42, -0.95, 0.95, -1.7, 1.7];
 
+// ── how tightly an animal may turn ───────────────────────────────────────────
+// The constraint on a body is the ARC it can describe, not the rate it can spin
+// at, and getting that backwards is what made the cast pivot. A minimum turn
+// radius of one body length is about right for a quadruped, and
+// `TURN_TIME * gait.walk` IS that body length without adding a per-species
+// number to keep in sync: walk speed already scales with body size across the
+// whole cast, from a squirrel to a yak. `camp_dog.js` has steered this way all
+// along (`Math.min(1.35, speed * 5.0)`), which is why the dog never pivoted.
+const TURN_TIME = 1.2;
+// A floor on that radius, in metres, and a guard rather than a tuning knob. It
+// exists because the derivation above inherits whatever the gait table says,
+// and one species' gait table is wrong: the fox's clips do not touch the
+// ground, so it measures a 0.08 m/s walk and would be handed a 10 cm turn
+// radius — the pivot, back again, for exactly one animal. Every correctly
+// measured species is already well clear (squirrel 0.84 m is the smallest, the
+// deer 1.50), so this can never reshape the cast; it stops binding by itself
+// the day the fox's clips are rebuilt. See `glb.measure` in mammals/fox.js.
+const MIN_RADIUS = 0.45;
+// The on-the-spot shuffle, rad/s — what an animal that is NOT going anywhere
+// turns at. At ~29 deg/s a half turn takes six seconds, slow enough that the
+// residual foot slide reads as shifting weight rather than as a turntable. It
+// has to exist: a deer that has just noticed you turns to face you without
+// walking anywhere, and an animal pinned against a river has to be able to
+// unwind on the spot or it is stuck there.
+const PIVOT = 0.5;
+// The states that are journeys. Only these insist on carrying a walk through a
+// turn; see `_steer`.
+const TRAVELLING = new Set([ST.WANDER, ST.FLEE, ST.PATROL, ST.CLIMB]);
+
 /** Move a scalar toward a target at a bounded rate. */
 const toward = (v, t, rate) => (v < t ? Math.min(t, v + rate) : Math.max(t, v - rate));
 
@@ -82,6 +111,7 @@ export class Brain {
 
     this.heading = 0;
     this.wantHeading = 0;
+    this.yawRate = 0;          // rad/s actually applied, for the rigs' bank
     this.speed = 0;
     this.wantSpeed = 0;
 
@@ -157,6 +187,7 @@ export class Brain {
     this.home.set(x, y, z);
     this.target.set(x, y, z);
     this.heading = this.wantHeading = heading;
+    this.yawRate = 0;
     this.speed = this.wantSpeed = 0;
     this.state = this.rnd() < this.cfg.grazeChance ? ST.GRAZE : ST.IDLE;
     if (this.cfg.patrol && this.rnd() < 0.6) this.state = ST.PATROL;
@@ -894,16 +925,65 @@ export class Brain {
     }
 
     const goal = this.wantHeading + (moving ? this._avoid : 0);
-    // Turn rate falls with speed the way a real animal's does — a bounding deer
-    // cannot pivot, which is what makes its flight path arc.
-    const sn = clamp01(this.speed / (this.gait.run * S));
-    const turnRate = lerp(3.0, 1.5, sn) * (this.state === ST.ALERT ? 0.55 : 1);
     const dh = wrapAngle(goal - this.heading);
-    this.heading += clamp(dh, -turnRate * dt, turnRate * dt);
 
-    // An animal will not accelerate into a turn it has not made yet.
-    const facing = 1 - clamp01(Math.abs(dh) / 1.6) * 0.7;
-    const want = this.wantSpeed * facing;
+    // ── the turn ────────────────────────────────────────────────────────────
+    // Two motions, not one, and conflating them is what produced the pivot.
+    //
+    // An animal that is GOING somewhere turns by walking round, and what bounds
+    // that is the arc its body can describe — a radius, never an angular rate.
+    // One that is standing still turns on the spot, slowly, by shuffling its
+    // feet. The old rule had a single rate that went UP as speed went down
+    // (`lerp(3.0, 1.5, speed)`, so 172 deg/s at a standstill) and a `facing`
+    // brake that turned every animal wanting to turn into a stationary one
+    // first. Together they were a machine for pivoting: a bear asked to reverse
+    // settled at 0.29 m/s and 2.9 rad/s, a turn radius of 10 cm on an animal
+    // two metres long.
+    //
+    // The rate ceiling stays speed-dependent for the reason it always was — a
+    // galloping animal turns wider still — but it no longer sets what happens
+    // at the bottom of the speed range, and that is the whole fix.
+    // "Going somewhere" is a property of the STATE, not of the speed. Wander,
+    // flee, patrol and climb are journeys and must arc. Watch and graze move
+    // too, but their slowness is the point — a wary animal drifting across your
+    // line is not travelling, and speeding it up to make its turns prettier
+    // would trade away the one state that exists for the player's eyes.
+    const blocked = this._pinned > 0.4;
+    const going = TRAVELLING.has(this.state) && this.wantSpeed > 0.05 && !blocked;
+    const sn = clamp01(this.speed / (this.gait.run * S));
+    const ceiling = lerp(3.0, 1.5, sn) * (this.state === ST.ALERT ? 0.55 : 1);
+    const radius = Math.max(TURN_TIME * this.gait.walk, MIN_RADIUS) * S;
+    // A journey gets no floor: it has to carry speed to come round, which is
+    // what makes it arc. Everything else keeps the shuffle, and still respects
+    // the radius whenever it happens to be moving.
+    // The shuffle fades out as the animal picks up speed, so a state that is
+    // moving slowly but deliberately — a graze step, a wary drift — is governed
+    // by its radius rather than by the on-the-spot allowance. Without the fade
+    // a drifting deer still came round on a 0.64 m radius, which is a pivot
+    // with a bit of translation under it.
+    const shuffle = PIVOT * (1 - clamp01(this.speed / (0.5 * this.gait.walk * S)));
+    const turnRate = going
+      ? Math.min(ceiling, this.speed / radius)
+      : Math.min(ceiling, Math.max(this.speed / radius, shuffle));
+    const step = clamp(dh, -turnRate * dt, turnRate * dt);
+    this.heading += step;
+    // Published for the rigs, which lean into a turn by it. Nothing else reads
+    // the heading's derivative, and recovering it in the rig by differencing
+    // would have to survive teleports, respawns and pooling; this does not.
+    this.yawRate = step / Math.max(dt, 1e-4);
+
+    // An animal will not accelerate into a turn it has not made yet — but a big
+    // turn is a REASON to keep moving rather than to stop. Braking to a crawl
+    // is what left the radius above with nothing to work with: at `facing`'s
+    // old 0.7 a reversing bear dropped to 30% of its walk, and at that speed
+    // the tightest legal arc is still a pirouette. Past about 35 degrees of
+    // error the animal now insists on carrying a walk through the turn, so it
+    // comes round the long way like an animal does. A wary drift or a graze
+    // step, whose heading error is small, keeps its own deliberate pace.
+    const facing = 1 - clamp01(Math.abs(dh) / 1.6) * 0.45;
+    const need = clamp01((Math.abs(dh) - 0.6) / 1.2);
+    const want = Math.max(this.wantSpeed * facing,
+                          going ? this.gait.walk * S * 0.85 * need : 0);
     // Explosive off the mark, then merely quick once it is running.
     const accel = this.state === ST.FLEE ? (this.spent < 1.0 ? 18 : 8) * S : 3.2 * S;
     const decel = 7 * S;
@@ -976,6 +1056,10 @@ export class Brain {
     drive.pos = this.pos;
     drive.heading = this.heading;
     drive.speed = this.speed;
+    // Signed rad/s, for the lean into a turn. The rigs cannot difference the
+    // heading themselves: it is copied into a pooled record that survives a
+    // respawn, so a recycled animal would read one enormous spike.
+    drive.yawRate = this.yawRate;
     drive.graze = this.graze;
     drive.alert = this.alert;
     // A float, not a boolean. The scut is at half-mast in ALERT and WATCH and

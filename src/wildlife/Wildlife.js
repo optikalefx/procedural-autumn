@@ -346,7 +346,7 @@ export class Wildlife extends System {
           key, vi, proto, inst, rig, scale, size,
           mesh: rig.mesh,
           brain: new Brain(key, SPECIES[key], (i * 2654435761) >>> 0, null, 0),
-          drive: { pos: null, heading: 0, speed: 0, graze: 0, alert: 0, flag: 0, look: null, lod: 0 },
+          drive: { pos: null, heading: 0, speed: 0, yawRate: 0, graze: 0, alert: 0, flag: 0, look: null, lod: 0 },
           group: null, slot: 0, active: false, lod: 0, acc: 0, tick: 0,
         });
       }

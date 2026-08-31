@@ -180,6 +180,19 @@ const bindAngle = (y, z) => Math.atan2(z, -y);
 
 // ── the rig instance ─────────────────────────────────────────────────────────
 
+// Lean into a turn. Centripetal acceleration is speed * yaw, so the angle a
+// body would balance at is atan(speed * yaw / g) — the same arithmetic that
+// leans a cyclist. Scaled well under 1 and capped, because a bear is not a
+// motorcycle: what this has to sell is that the animal is turning on its own
+// feet rather than being rotated by something outside it.
+//
+// Signs: a rig's roll is a rotation about its own forward axis, and positive
+// tilts its up-axis toward local -X — which is why terrain roll is measured as
+// (right - left). A turn toward +X is a positive yaw, and leaning INTO it means
+// tilting the up-axis toward +X, so the bank is negative.
+const BANK_GAIN = 0.75;
+const BANK_MAX = 0.20;          // rad, ~11 degrees
+
 export class AnimRig {
   constructor(proto, inst, scale, gaitCfg, speciesKey) {
     this.proto = proto;
@@ -319,7 +332,7 @@ export class AnimRig {
     this.neckChain = 0;
     this.tailSway = 0; this.tailSwayV = 0; this.tailLift = 0;
     this.breath = 0;
-    this.bodyPitch = 0; this.bodyRoll = 0; this.bodyY = 0;
+    this.bodyPitch = 0; this.bodyRoll = 0; this.bank = 0; this.bodyY = 0;
     this.lastSpeed = 0; this.surge = 0;
     this._warm = false;
     // Was the animal standing still last frame? See the re-key in update().
@@ -619,14 +632,24 @@ export class AnimRig {
     this.mesh.rotation.y = heading;
 
     this.bodyPitch = damp(this.bodyPitch, pitchGround, 9, dt);
+    // Lean into a turn on top of the ground's own roll — see BANK_GAIN. The
+    // feet are world-anchored here, so an arc is already correct underneath;
+    // this is what makes it read as one.
+    // Kept apart from the ground's own roll rather than summed into it, so the
+    // two are separately inspectable — terrain roll swamps the bank on a slope,
+    // which is exactly where a sign error would hide.
+    const wantBank = clamp(
+      -Math.atan2(speed * (drive.yawRate ?? 0), 9.81) * BANK_GAIN,
+      -BANK_MAX, BANK_MAX);
     this.bodyRoll = damp(this.bodyRoll, rollGround, 9, dt);
+    this.bank = damp(this.bank, wantBank, 4, dt);
 
     this.root.position.set(0, bob + flightY, 0);
     this.root.rotation.set(
       this.bodyPitch + this.surge + drive.graze * 0.20 +
         Math.sin(this.phase * Math.PI * 2 - 0.55) * this.cfg.pitchAmp * (G.pitch ?? 1) * sn,
       0,
-      this.bodyRoll,
+      this.bodyRoll + this.bank,
     );
 
     // The camp dog's authored sit bends the pelvis itself. It is blended over
