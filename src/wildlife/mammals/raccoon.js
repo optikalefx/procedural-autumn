@@ -57,18 +57,30 @@ export const RACCOON = {
     // runs shoulder/thigh/shin/foot/toe — so the fore contact is the toe and
     // the hind contact is the toe one link further down.
     feet: ['toeL', 'toeR', 'front_toeL', 'front_toeR'],
+    // Read this animal's speed from where its paws touch rather than from how
+    // far they swing. A claim about the ASSET, and true because ALL THREE
+    // locomotion clips are solved here — each validated to a planted paw within
+    // 0.001 mm of its authored path.
+    //
+    // The pack's own walk was good (duty 0.47-0.53, a genuine walk, unlike the
+    // deer's) and was still dropped: contact is a claim about EVERY moving
+    // clip, so one inherited gait would force the whole species back onto
+    // excursion — which divides a paw's swing by the CYCLE when the paw covers
+    // that ground during its STANCE, and so underreports by the duty factor.
+    measure: 'contact',
     clips: {
       stand: { name: 'idle' },
-      // The pack's walk, played as authored. 19 frames at 24 fps is a 1.26 Hz
-      // cadence, already inside the 1.0-1.8 Hz a walking quadruped runs at.
+      // All three solved. The sweep is a FINDING — the largest one no leg has
+      // to clamp for — and crouch is what buys it: measured on the two IK links
+      // alone this fore leg stands at 0.94 of its own reach, so at standing
+      // height there is nothing left to swing with.
       walk: { name: 'walk', rate: 1.0 },
-      // Solved here. The sweep is a FINDING: the solver takes the largest one
-      // no leg has to clamp for and this rig gives 0.274 m per cycle at 2.67 Hz.
-      // Most of that came from crouching the body 3.5 cm — measured on the two
-      // IK links alone the fore leg stands at 0.94 of its own reach, so at
-      // standing height there is nothing left to swing with.
       trot: { name: 'trot', rate: 1.0 },
-      run: { name: 'run', rate: 2.0 },
+      // A bounding lope, which is how a raccoon actually flees. DUTY is what
+      // makes it fast, not a raised rate: at 0.22 the paw is down a fifth of
+      // the cycle, so the same reach is spent three times faster than at a
+      // walk's duty. Sweeps of 0.251 / 0.299 / 0.324 give 0.72 / 1.77 / 5.05.
+      run: { name: 'run', rate: 1.0 },
       // The pack's `Gesture`. Not phased — there is no authored entry and exit,
       // so `GlbRig` takes the plain damped crossfade, which is right for a clip
       // that starts and ends on its own feet.

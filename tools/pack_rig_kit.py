@@ -26,7 +26,7 @@ Each of these produced confidently wrong measurements, and they mask each other
 
 ## And one the repo imposes
 
-The game authors **+Y forward, +Z up** (`build_new_deer.py`). The pack faces -Y.
+The game authors **+Y forward, +Z up, feet on Z = 0**. The pack faces -Y.
 `face_forward()` turns the rig and asserts the result, because nothing
 downstream can catch it: `measureExcursion` reports a foot's absolute range and
 an absolute range has no sign, so a backwards animal measures perfectly and
