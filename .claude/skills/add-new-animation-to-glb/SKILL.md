@@ -158,6 +158,12 @@ Re-parent BEFORE `open_animal` deletes the other armatures, and re-point each
 mesh's ARMATURE modifier as well as its parent — a mesh whose modifier still
 names a deleted rig stops deforming.
 
+**Check the rest GEOMETRY, not just the names.** The same pack's `Deer_Cub_01`
+carries the identical 33 bone names at 0.467 of the adult's total bone length,
+with bone heads up to 0.683 apart. Moving that mesh onto the adult skeleton
+stretches the fawn to adult proportions, and the names alone say it is fine. A
+differently-sized animal needs its own build and its own GLB.
+
 ## Author the contact point, not the joint angles
 
 The same method `build_bear_reference.py` uses, for the same reason: a hoof is
@@ -209,6 +215,37 @@ end effector must get to, confined to the sagittal plane so the chain cannot
 cheat by swinging sideways. Then bisect something that *is* monotonic — the
 chest pitch, where more pitch lowers the neck base and strictly shortens the
 remaining distance.
+
+## Speed is sweep over the STANCE, and duty is the whole story
+
+    speed = sweep / (duty * cycle)
+
+Not `sweep / cycle`. A planted foot covers `sweep` relative to the body while it
+is down, and being down takes `duty * cycle`. Dividing by the cycle underreports
+by exactly the duty factor, and it is easy to do — this solver did it for two
+animals before anyone noticed.
+
+It matters most where duty is lowest, which is exactly where speed matters most.
+The deer's three gaits, from identical sweeps:
+
+| gait | sweep | duty | cycle | speed |
+|---|---|---|---|---|
+| walk | 0.630 | 0.62 | 0.750 s | 1.36 |
+| trot | 0.697 | 0.45 | 0.458 s | 3.38 |
+| bound | 0.691 | **0.20** | 0.375 s | **9.22** |
+
+Nearly the same sweep produces seven times the speed, purely from duty. **That
+is what makes a bound fast, and it is not a trick** — a hoof down a fifth of the
+time spends its reach five times faster. The legs never ask for more than they
+have; the solver still refuses any sweep that would clamp one.
+
+This is also `measureExcursion`'s error, which is why `measure: 'contact'`
+exists: excursion reads the swing and divides by the cycle, so it underreports
+by duty. The same deer clips read 0.62 / 1.11 / 1.70 on the excursion path and
+1.09 / 2.71 / 7.40 on the contact path. **Solve all three locomotion clips and
+you earn the right to `measure: 'contact'`** — the claim is that every paw of
+every moving clip is genuinely planted, which is only true once nothing is
+inherited from the pack.
 
 ## Let the solver report the speed; do not tell it one
 

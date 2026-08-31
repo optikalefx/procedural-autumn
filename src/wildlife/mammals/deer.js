@@ -60,11 +60,19 @@ export const DEER = {
     // `PropertyBinding.sanitizeNodeName` strips what its own animation-path
     // syntax reserves, and the GLB really does carry `toe.L`.
     feet: ['toeL', 'toeR', 'front_toeL', 'front_toeR'],
-    // NOT `measure: 'contact'`. It is a claim about the asset, and only two of
-    // these four clips are solved here — the pack's own run has no sustained
-    // stance to find, so there is no plateau and the answer would be an
-    // artefact rather than merely imprecise. Excursion is wrong in the familiar
-    // way for all of them instead.
+    // Read this animal's speed from where its hooves actually touch rather than
+    // from how far they swing. That is a claim about the ASSET, and it is only
+    // true because ALL THREE locomotion clips are solved here — nothing is
+    // inherited from the pack, and each is validated to a planted hoof within
+    // 0.001 mm of its authored path.
+    //
+    // It is also the difference between a deer and an amble. `measureExcursion`
+    // reads a hoof's total swing and divides by the CYCLE, but a planted hoof
+    // covers that ground during its STANCE — so excursion underreports by
+    // exactly the duty factor. At a bound's duty of 0.20 that is five times too
+    // slow, which is why the same clips read 0.62/1.11/1.70 on the excursion
+    // path and 1.09/2.71/7.40 on this one.
+    measure: 'contact',
     clips: {
       stand: { name: 'idle' },
       // Solved. 18 frames is a 1.33 Hz cadence, inside the 1.0-1.8 Hz a walking
@@ -72,29 +80,42 @@ export const DEER = {
       // without clamping — and 6 cm of crouch is most of what buys it: at 2 cm
       // the solver returned 0.530 against a geometric maximum of 0.790.
       walk: { name: 'walk', rate: 1.0 },
-      // Solved. 11 frames, 2.18 Hz.
+      // Solved. 11 frames, 2.18 Hz, diagonal pairs.
       trot: { name: 'trot', rate: 1.0 },
-      // The pack's, and the one clip left unsolved on purpose. A bound gets
-      // most of its ground from a ballistic flight phase, and the solver models
-      // ground as a planted sweep — solving it would make it slower, not
-      // faster. Rate raised to put the cadence where a fleeing deer's is.
-      run: { name: 'run', rate: 1.9 },
+      // A BOUND, not a gallop, because that is what a frightened white-tail
+      // does: both hinds drive together, the body sails, both fores catch.
+      // The pack's own run clip is dropped.
+      //
+      // DUTY is what makes it fast, and it is worth being clear that this is
+      // not a trick. At 0.20 a hoof is down a fifth of the cycle, so the sweep
+      // the leg can reach is spent five times faster than at a walk's duty and
+      // the animal covers five times the ground per cycle. That is what a bound
+      // IS. The legs never ask for more reach than they have — the solver
+      // refuses a sweep that would clamp one.
+      run: { name: 'run', rate: 1.0 },
       graze: { name: 'graze' },
       alert: { name: 'alert' },
     },
   },
 
-  // Three meshes, one skeleton, `hide` picking between them. Weights follow the
-  // hand-authored deer's: does commonest, a buck now and then, fawns with them.
+  // Two meshes, one skeleton, `hide` picking between them. Weights follow the
+  // hand-authored deer's: does commonest, a buck now and then.
+  //
+  // No fawn, and that is a measurement. The pack ships `Deer_Cub_01` and its
+  // bones carry the same 33 NAMES, but its rest geometry does not match — max
+  // bone-head delta 0.683, and 0.467 of the adult's total bone length. It is a
+  // half-size rig, so a fawn mesh moved onto this skeleton is stretched to
+  // adult proportions. Sharing a skeleton needs matching rest GEOMETRY; names
+  // alone nearly let a stretched fawn into the valley. A fawn wants its own
+  // build and its own GLB.
   variants: [
-    { name: 'doe', scale: 1.00, weight: 0.44, hide: ['Deer_01', 'Deer_Cub_01'] },
-    { name: 'yearling', scale: 0.88, weight: 0.20, hide: ['Deer_01', 'Deer_Cub_01'] },
-    { name: 'buck', scale: 1.06, weight: 0.22, hide: ['Deer_Female_01', 'Deer_Cub_01'] },
-    { name: 'fawn', scale: 1.00, weight: 0.14, hide: ['Deer_01', 'Deer_Female_01'] },
+    { name: 'doe', scale: 1.00, weight: 0.50, hide: ['Deer_01'] },
+    { name: 'yearling', scale: 0.87, weight: 0.24, hide: ['Deer_01'] },
+    { name: 'buck', scale: 1.06, weight: 0.26, hide: ['Deer_Female_01'] },
   ],
 
   // Measured off the clips at load and written back here by `loadGlbSpecies`.
-  gait: { walk: 0.841, trot: 1.520, run: 1.850 },
+  gait: { walk: 1.089, trot: 2.728, run: 7.716 },
 
   brain: {
     // The freeze is the whole sighting: a deer notices you a long way off,

@@ -368,6 +368,11 @@ LATERAL_WALK = {("hind", "L"): 0.00, ("fore", "L"): 0.25,
                 ("hind", "R"): 0.50, ("fore", "R"): 0.75}
 DIAGONAL_TROT = {("hind", "L"): 0.00, ("fore", "R"): 0.00,
                  ("hind", "R"): 0.50, ("fore", "L"): 0.50}
+# A bound: both hinds drive together, the body sails, both fores catch. What a
+# frightened white-tail does, and not a gallop — a gallop's four beats are
+# spread, a bound's are two pairs.
+BOUND = {("hind", "L"): 0.00, ("hind", "R"): 0.03,
+         ("fore", "L"): 0.42, ("fore", "R"): 0.45}
 
 SAFETY = 0.955          # of reach_limit; a leg at 1.0 is a locked leg
 PROBE = 64              # reach is a property of the geometry, not of the keying
@@ -485,7 +490,14 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     clear(rig)
 
     cycle = frames / 24.0
-    speed = sweep * unit_m / cycle
+    # Speed is sweep over the STANCE, not over the cycle. A planted foot covers
+    # `sweep` relative to the body while it is down, which takes `duty * cycle`
+    # — so the animal travels sweep / (duty * cycle). Dividing by the cycle
+    # instead underreports by exactly the duty factor, which is the same error
+    # `measureExcursion` makes and the reason `measure: 'contact'` exists. It
+    # matters most where duty is lowest: a bound is down a fifth of the time, so
+    # the cycle-based number is five times too slow.
+    speed = sweep * unit_m / (spec["duty"] * cycle)
 
     # Validate the KEYED result against the path it was solved for. This is the
     # phase-independent question — while planted, is the paw where the gait says
@@ -515,7 +527,7 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     clear(rig)
 
     print(f"[{name}] sweep {sweep:.3f} ({sweep*unit_m:.3f} m) over {cycle:.3f}s "
-          f"= {1/cycle:.2f} Hz -> {speed:.3f} m/s")
+          f"= {1/cycle:.2f} Hz, duty {spec['duty']:.2f} -> {speed:.3f} m/s")
     print(f"[{name}]   planted paw off its path {worst*1000:7.3f} mm ({where})")
     print(f"[{name}]   planted paw height drift {drift*1000:7.3f} mm")
     print(f"[{name}]   cycle seam               {s*1000:7.3f} mm")

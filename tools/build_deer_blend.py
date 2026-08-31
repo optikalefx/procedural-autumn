@@ -8,15 +8,20 @@ it is `build_raccoon_blend.py` and the machinery is `pack_rig_kit.py`.
 ## Three meshes, one skeleton — which is what makes the variants real
 
 The pack ships `Deer_01` (buck, 1914 tris), `Deer_Female_01` (doe, 1278) and
-`Deer_Cub_01` (fawn, 1310) as separate models with separate armatures. Measured,
-those three armatures are **identical**: same 33 bone names, and every bone head
-in the same place to four decimals.
+`Deer_Cub_01` (fawn, 1310) as separate models with separate armatures. The buck
+and doe armatures are **identical** — same 33 bone names AND every bone head in
+the same place to four decimals — so the doe is re-parented onto the buck's rig,
+both ride one skeleton in one GLB, and `variants` picks between them with `hide`.
 
-So the doe and fawn are re-parented onto the buck's skeleton and all three ride
-one rig in one GLB, and `variants` picks between them with `hide`. That recovers
-the thing the free pack cost us — every deer being the same buck at four sizes —
-and it is better than the authored deer managed: three genuinely different
-silhouettes rather than one mesh with its antlers dropped.
+Two genuinely different silhouettes off one set of clips, where the authored
+deer had one mesh and dropped its antlers.
+
+**The fawn is not included, and checking names alone is what nearly let it in.**
+Its bones carry the same 33 names, but its rest geometry does not match: max
+bone-head delta 0.683, and 0.467 of the adult's total bone length. It is a
+half-size rig, and a mesh moved onto the adult skeleton is stretched to adult
+proportions. Sharing a skeleton requires matching rest GEOMETRY. A fawn needs
+its own build and its own GLB.
 
 ## What is kept, and what is solved over the top
 
@@ -50,15 +55,25 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pack_rig_kit import (                                        # noqa: E402
     open_animal, face_forward, play, point, clear, rx, rz, ease, key,
     new_action, sample, seam, purge, frame_view, gait_rest, build_gait,
-    LATERAL_WALK, DIAGONAL_TROT,
+    LATERAL_WALK, DIAGONAL_TROT, BOUND,
 )
 
 RIG = "Skeleton_Deer"
-BUCK, DOE, FAWN = "Deer_01", "Deer_Female_01", "Deer_Cub_01"
-MESHES = [BUCK, DOE, FAWN]
+BUCK, DOE = "Deer_01", "Deer_Female_01"
+MESHES = [BUCK, DOE]
+# `Deer_Cub_01` is deliberately NOT here. Its bone NAMES match the adults but
+# its skeleton does not: max bone-head delta 0.683 and 0.467 of the adult's
+# total bone length — a half-size rig. Re-parenting it to the buck's armature
+# stretches the fawn to adult proportions. Sharing a skeleton needs matching
+# rest GEOMETRY, and checking names alone is what let this through once.
+# A fawn needs its own GLB and its own species entry, or a scaled doe.
 HEAD = "scull"
 
-KEEP = {"Deer_Idle": "idle", "Deer_Gesture": "graze", "Deer_Run": "run"}
+# The pack's run is NOT kept. All three locomotion clips are solved, which is
+# what lets the species use `measure: 'contact'`: that measurement is a claim
+# that every paw of every moving clip is genuinely planted for a sustained
+# stretch, and it is only true once nothing is inherited from the pack.
+KEEP = {"Deer_Idle": "idle", "Deer_Gesture": "graze"}
 
 LEGS = {
     ("hind", "L"): dict(scap="shoulder.L", a="thigh.L", b="shin.L",
@@ -82,6 +97,14 @@ WALK = dict(frames=18, duty=0.62, lift=0.075, bob=0.010, crouch=0.060,
             scapula=13.0, phase=LATERAL_WALK)
 TROT = dict(frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
             scapula=17.0, phase=DIAGONAL_TROT)
+# The bound, and the whole reason a fleeing deer can reach a real speed. Duty is
+# the lever: at 0.20 a hoof is down a fifth of the cycle, so the sweep it can
+# reach is spent five times faster and the animal travels five times further per
+# cycle than the same sweep at a walk's duty. That is not a trick — it is what
+# makes a bound fast, and it is why the pack's own run tops out at 1.7 m/s while
+# this reaches a white-tail's.
+RUN = dict(frames=9, duty=0.20, lift=0.20, bob=0.02, crouch=0.09,
+           scapula=20.0, phase=BOUND)
 
 # Alert. Starts at spine.006: on THIS rig `front_shoulder` parents to spine.005,
 # so a neck beginning any lower swings the forelegs. That is a survey result and
@@ -97,13 +120,17 @@ ALERT_BONES = [n for n, _, _ in NECK] + [n for n, _ in TAIL] + EARS
 def unify_skeleton():
     """Put the doe and fawn on the buck's rig.
 
-    Legal because the three armatures are identical — same names, same rest
-    geometry to four decimals — so the vertex groups bind to the same bones and
-    the buck's clips drive all three. Done BEFORE `open_animal` deletes the
-    other two armatures, or the meshes would be orphaned.
+    Legal ONLY because the buck's and doe's armatures are identical — same
+    names AND the same rest geometry, max bone-head delta 0.0000. Matching names
+    are not enough: the fawn's rig carries the same 33 names at 0.467 of the
+    length, so putting its mesh on this one would stretch it to adult size.
+
+    Done BEFORE `open_animal` deletes the other armatures, or the mesh would be
+    orphaned, and its ARMATURE modifier is re-pointed as well as its parent —
+    a mesh whose modifier still names a deleted rig stops deforming.
     """
     rig = bpy.data.objects[RIG]
-    for name in (DOE, FAWN):
+    for name in (DOE,):
         ob = bpy.data.objects[name]
         ob.parent = rig
         ob.matrix_parent_inverse = Matrix()
@@ -193,6 +220,7 @@ def main():
     rest = gait_rest(rig, LEGS)
     build_gait(rig, LEGS, rest, "walk", WALK)
     build_gait(rig, LEGS, rest, "trot", TROT)
+    build_gait(rig, LEGS, rest, "run", RUN)
     build_alert(rig, rest)
 
     rig.animation_data.action = None
