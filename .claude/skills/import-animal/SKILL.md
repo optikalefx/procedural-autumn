@@ -39,6 +39,53 @@ and past 180° the slerp wraps and the limb goes somewhere nobody designed.
 When a clip cannot carry what the game needs, **measure it, name the number and
 hand it back**. Derive the game from the clip, never the reverse.
 
+## Every animal needs a build script, and one of them does not have one
+
+**One deterministic script must rebuild the .blend from scratch — mesh, rig,
+weights, every clip, the presentation camera and lights — and it must be checked
+in.** `tools/build_bear_reference.py` is the shape: clear the scene, build
+everything, `validate()`, save.
+
+This is not tidiness. It is the difference between an animal you can work on and
+one you cannot, and the two are side by side in this repo:
+
+- The **bear**'s script is the source of truth, so the asset is disposable. Over
+  one afternoon it was regenerated from scratch a dozen times: its rig gained
+  four bones mid-session, all three locomotion clips were re-solved against the
+  ground and re-verified, and every intermediate version was thrown away without
+  a thought. Nothing was at risk because nothing was unique.
+- The **fox** was rigged and animated in a live Blender session that was never
+  captured back into code. `tools/build_fox_reference.py` refuses to run and
+  says why: it would destroy a rig and clips that "exist nowhere else". So when
+  its gaits turned out to need exactly the same rebuild — its Walk sinks 30 mm
+  through the floor, its run's fore paws never come within 5 mm of the ground on
+  any frame of 48 — the work could not be started with any confidence, and was
+  left undone.
+
+The debt is invisible until the animal needs real work, and then it is total.
+Write the script on the way in, while the asset is still small.
+
+### If you must change an asset that has no build script
+
+Do not pose it by hand. Write the **narrowest script that operates on the
+existing .blend** and re-run it, so the change is at least reproducible even if
+the asset is not. `build_gaits(rig)` in the bear's script is that shape — it
+replaces three actions and touches nothing else, so it can be run against a
+loaded file rather than a rebuilt one. Take a copy of the .blend first, and
+verify what landed **on disk** afterwards rather than trusting the save (see the
+session traps below).
+
+### Traps around the file itself
+
+- A live Blender session can revert underneath you and silently discard an
+  hour's in-memory work — the tell is scratch objects you added disappearing.
+  After saving through MCP, open the saved file headlessly and measure it.
+  `is_dirty == False` proves nothing about what is in the file.
+- `bpy.ops.render.opengl` needs a GUI; under `-b` there is no OpenGL context.
+  Render strips from the interactive session, or use a real render engine.
+- The export script needs the .blend saved in **OBJECT mode**, or
+  `bpy.ops.object.select_all` fails its poll with a bare "context is incorrect".
+
 ## Solving a gait, rather than keying one
 
 The bear's three locomotion clips were all hand-keyed as joint angles, and all

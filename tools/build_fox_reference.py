@@ -17,10 +17,17 @@ RENDER_PATH = "/tmp/fox_reference.png"
 
 # ─── DO NOT RUN THIS AGAINST THE CURRENT ASSET ───────────────────────────────
 # This script rebuilds the fox from scratch: it deletes every object in the
-# scene first. The shipped asset has since been rigged by hand (Fox_Rig, 25
-# bones) and carries two authored clips (Stand, Walk) that exist nowhere else.
-# Re-running this would destroy all of it, and the flat-shaded blue-bellied
-# mesh it produces is two art passes behind what ships.
+# scene first. It does NOT reproduce the shipped asset: that was rigged and
+# animated in a live Blender session (Fox_Rig, 31 bones, six clips) and the
+# session was never captured back into code, so the rig and every clip exist
+# nowhere but inside the .blend. Re-running this would destroy all of it, and
+# the flat-shaded blue-bellied mesh it produces is two art passes behind.
+#
+# That gap is a debt, not a decision, and it has already cost a round: when the
+# fox's gaits turned out to need the same ground-solving the bear's did, the
+# bear could be regenerated from scratch a dozen times in an afternoon and the
+# fox could not be touched with confidence. Compare `build_bear_reference.py`,
+# which IS the bear's source of truth. See the `import-animal` skill.
 #
 # It is kept because it is the record of how the silhouette was derived. To
 # rebuild the fox from zero on purpose, pass --force.

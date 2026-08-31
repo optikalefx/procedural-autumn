@@ -126,6 +126,25 @@ cannot return. On the bear they moved worst-edge disjointness 1.00 → 0.43 and
 the worst tear 0.605 m → 0.15 m; peak stretch per clip fell 22.8× → 5.5×
 (graze), 15.7× → 3.8× (alert), 8.5× → 2.9× (trot), 5.9× → 2.5× (walk).
 
+## Why this track is the cheap one: the animal is reproducible
+
+Worth knowing before you envy the hand-authored cast. A procedural animal has
+**no asset files at all** — the profile arrays in its species file *are* the
+animal — so it is reproducible, diffable and reviewable by construction. Change
+a number, reload, see it. Nothing can be lost and nothing has to be trusted.
+
+The hand-authored track (`import-animal`) only has that property if someone
+writes the build script, and one animal there does not have one: the fox was
+rigged and animated in a live Blender session that was never captured back into
+code, so its rig and clips exist nowhere but inside one binary .blend. When its
+gaits later turned out to need real work, the bear's asset could be regenerated
+from scratch a dozen times in an afternoon while the fox's could not be touched
+with confidence at all — so the fox was left as it was.
+
+**If an animal has any file a script does not produce, that is a debt, and it
+comes due the first time the animal needs real work.** It applies here too the
+moment a species stops being pure numbers.
+
 ## The six touchpoints
 
 1. **`src/wildlife/mammals/<key>.js`** — a new file: the blueprint (`const
