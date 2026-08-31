@@ -30,6 +30,7 @@ import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
 import { Journal } from '../journal/Journal.js';
 import { MiniMap } from './hud_map.js';
+import { hunt } from '../game/hunt_store.js';
 import { touchCapable } from '../core/verbs.js';
 
 const STORE = 'pa.hud';
@@ -172,6 +173,12 @@ export class HUD extends System {
     // itself — has to put the interface back. Without this the chrome stays
     // hidden after the book shuts and the game looks broken.
     this.journal.onClose = () => this.root.classList.remove('pa-journal');
+    // Ringing a line says so out loud. The toast is deliberately NOT
+    // `pa-game-only`, so unlike the compass and the dash it is still on screen
+    // with the book up — which is the only reason this can be said at the
+    // moment it happens rather than after the book is shut.
+    this.journal.onTarget = (id, subject) =>
+      this.toast(id ? `Tracking ${subject}` : 'Stopped tracking');
 
     this._buildLandmarks();
     this._bindKeys();
@@ -307,7 +314,13 @@ export class HUD extends System {
     // can be spooked, and a live range readout to one would be the closest
     // thing to a waypoint in a game that deliberately has none. Bearing is the
     // hint; the finding is yours.
-    const paw = this.ctx.systems?.wildlife?.nearestHint?.(here.x, here.z);
+    //
+    // With a target ringed in the journal the paw belongs to that species and
+    // to nothing else, and it reaches as far as the animal can exist rather
+    // than as far as an unasked-for nudge should carry. Wildlife owns both
+    // rules; all this end does is say which line the book is open at. See
+    // `Wildlife._nearestQuarry`.
+    const paw = this.ctx.systems?.wildlife?.nearestHint?.(here.x, here.z, hunt.target);
     if (paw) this._pin(marks, 'paw', paw.x, paw.z, here, PAW_HIDE, true);
     this.marks = marks;
   }

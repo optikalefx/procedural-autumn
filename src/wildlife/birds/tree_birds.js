@@ -991,6 +991,41 @@ export class TreeBirds {
     p[b.i * 4 + 3] = b.fold;
   }
 
+  /** Is `key` one of the species in here? See `Wildlife.canTrack`. */
+  hasSpecies(key) { return TREE_BIRD_SPECIES.some((s) => s.key === key); }
+
+  /**
+   * The nearest live bird of `key` within `maxD`, or null.
+   *
+   * The mammals' half of this question is `Wildlife.nearestHint`, and this is
+   * deliberately the plainer function: a perched bird has no logbook flag, no
+   * herd and no notion of having been noticed, so there is nothing to filter
+   * on but species and distance. `Wildlife` is the only caller and it owns the
+   * policy — which bird the player asked for, and how far is fair.
+   *
+   * Flat distance, matching every other range in the wildlife layer: an eagle
+   * thirty metres up a spruce is not thirty metres away in the sense the player
+   * means. That matters more here than it does for a deer, because these are
+   * the only animals in the game whose `y` is routinely a storey above the
+   * ground the player is standing on.
+   *
+   * Walks this species' slots only — four for an eagle, six for a flamingo —
+   * so it is a handful of comparisons however often it is asked.
+   */
+  nearestOf(key, x, z, maxD) {
+    const si = TREE_BIRD_SPECIES.findIndex((s) => s.key === key);
+    if (si < 0) return null;
+    let best = null, bestD2 = maxD * maxD;
+    for (const b of this.slots[si]) {
+      if (!b.active) continue;
+      const dx = b.x - x, dz = b.z - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= bestD2) continue;
+      bestD2 = d2; best = b;
+    }
+    return best ? { x: best.x, z: best.z, dist: Math.sqrt(bestD2) } : null;
+  }
+
   // ── debug hooks (capture harnesses) ───────────────────────────────────────
 
   /** Positions and states of every live bird. */

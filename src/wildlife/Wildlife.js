@@ -58,6 +58,13 @@ import { Fireflies } from './fireflies.js';
 // between sightings is ~7 s and the 90th percentile is ~51 s, and the busiest
 // point on the map costs 7 draw calls and 4.7 k triangles against a 60-call
 // budget. There is a lot of headroom; the cap is taste, not performance.
+// How far a named bird quarry may be pinned from. The mammals answer this off
+// their own `CFG[key].spawn`, but the birds stream on one ring for the whole
+// cast (`tree_birds.js` SPAWN_R), so their ceiling is a constant rather than a
+// column: 190 m is the outer edge of that ring, which is the furthest a bird
+// can exist to be pointed at. See `_nearestQuarry`.
+const BIRD_QUARRY_R = 190;
+
 const CFG = {
   deer:   { spawn: 172, despawn: 215, live: 9,  perKm2: 88 },
   bear:   { spawn: 185, despawn: 230, live: 3,  perKm2: 0.5 },
@@ -951,8 +958,9 @@ export class Wildlife extends System {
    * Stats does the same walk at 6 Hz for the logbook, so this is a rounding
    * error on a pass the frame already pays for.
    */
-  nearestHint(x, z) {
+  nearestHint(x, z, quarry = null) {
     if (!this.enabled || !this.pool) return null;
+    if (quarry) return this._nearestQuarry(x, z, quarry);
     let best = null, bestD2 = Infinity;
     for (const key of this.keys) {
       // SPECIES[key].brain, not the CFG table above: CFG is this file's
@@ -974,6 +982,78 @@ export class Wildlife extends System {
           if (d2 > r2 || d2 >= bestD2) continue;
           bestD2 = d2; best = p;
         }
+      }
+    }
+    return best ? { x: best.x, z: best.z, dist: Math.sqrt(bestD2) } : null;
+  }
+
+  /**
+   * Is `id` something this system can point at? The journal asks before it
+   * draws a target on a checklist row, so the answer has to cover both backends
+   * — the mammals in `SPECIES` and the perch-and-fly birds in `treeBirds` —
+   * and it is derived rather than listed. The hunt's ids ARE these systems'
+   * own keys (`hunt_items.js` rule 1 says so and says why), so a species added
+   * to either table becomes trackable with nothing else to remember.
+   *
+   * What is deliberately NOT here: the camp dog, whose camp is already a
+   * permanent compass pin, and the flocks, the sky and the places. A row this
+   * returns false for simply draws no target — see `Journal._rowAt`.
+   */
+  canTrack(id) {
+    return !!SPECIES[id] || !!this.treeBirds?.hasSpecies?.(id);
+  }
+
+  /**
+   * The player's chosen quarry, or null — the paw when the journal has a target
+   * ringed on it.
+   *
+   * Three things separate this from the ambient walk above, and each of them is
+   * the whole reason the feature exists:
+   *
+   *  · **One species, not the nearest.** The ambient paw is fair to all six
+   *    mammals, which on this map means it points at a squirrel: the valley
+   *    carries 659 squirrel sites and 348 rabbit against 22 bear. A player who
+   *    has said "I am looking for the bear" is not helped by an honest answer
+   *    to a question they did not ask.
+   *
+   *  · **The spawn ring, not the hint band.** `hintDist` is tuned for an
+   *    unasked-for nudge — a bear's is 79 m, which is close enough to walk into
+   *    one by accident. The ceiling on any of this is the streaming radius,
+   *    because outside it there is no animal to point at, so a named quarry
+   *    gets the whole ring: 185 m for a bear, 190 for a bird. That is the
+   *    widening, and it is the most a pin can honestly do — it still cannot
+   *    know about an animal that has not been streamed in, so this is a better
+   *    nudge and not a waypoint.
+   *
+   *  · **`_statSeen` does not silence it.** That flag means "credited in the
+   *    logbook" — within 20 m and in frame — and for the ambient paw it is
+   *    exactly right, because a paw still burning over a deer you are looking
+   *    at is the HUD nagging. But the hunt asks for a PHOTOGRAPH, and seeing a
+   *    bear is not photographing one. The quarry's pin therefore stands until
+   *    the line is crossed off, which is enforced at the other end: `hunt`
+   *    clears the target the moment it is awarded, so a quarry that reaches
+   *    this function is by construction one the player still needs.
+   *
+   * `PAW_HIDE` in HUD.js still stands the pin down inside 8 m, for both kinds.
+   * That is not this rule being undone — a bearing to something two paces away
+   * swings across the whole strip, and at 8 m you are looking at the animal.
+   */
+  _nearestQuarry(x, z, quarry) {
+    const bird = this.treeBirds?.nearestOf?.(quarry, x, z, BIRD_QUARRY_R);
+    if (bird) return bird;
+    const per = this.pool[quarry];
+    if (!per) return null;
+    const r = CFG[quarry]?.spawn ?? 0;
+    let best = null, bestD2 = r * r;
+    for (const slots of per) {
+      for (const a of slots) {
+        if (!a.active) continue;
+        const p = a.brain?.pos;
+        if (!p) continue;
+        const dx = p.x - x, dz = p.z - z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 >= bestD2) continue;
+        bestD2 = d2; best = p;
       }
     }
     return best ? { x: best.x, z: best.z, dist: Math.sqrt(bestD2) } : null;

@@ -253,6 +253,102 @@ function checkbox(g, x, y, s, seed) {
   g.restore();
 }
 
+/**
+ * A paw print, drawn in the middle of an empty slot on a line that can be gone
+ * looking for.
+ *
+ * This is the affordance, and it took a round to learn that it had to exist.
+ * The click target was put on the empty slot — which is the right place, since
+ * a row has a print or a slot and never both — but an empty slot with nothing
+ * in it looks exactly like an empty slot, so the verb was invisible: the state
+ * only appeared AFTER you had guessed there was something to click.
+ *
+ * Why a paw specifically, rather than a plus or a target reticle: it is the
+ * same mark the compass puts on the strip when the animal is near
+ * (`hud_dom.js` ICON.paw, and the shape here is that glyph's — three toes and
+ * a pad). Marking the line in the book and the pin that appears on the horizon
+ * are then plainly the same thing, which is the whole mechanic taught without
+ * a word of instruction on a page that has no room for one.
+ *
+ * Pencil when it is only an offer, ink when it has been taken. Filled blobs
+ * rather than outlines for the reason the HUD glyph gives: a stroked paw at
+ * any small size closes its own gaps and reads as a smudge.
+ */
+function pawMark(g, cx, cy, s, { colour = GRAPHITE, alpha = 0.22, seed = 1 } = {}) {
+  const r = rng(seed);
+  // A hand-placed stamp is never quite square to the page.
+  const tilt = (r() - 0.5) * 0.30;
+  const blobs = [
+    [-6.4, -4.0, 2.2, 2.4], [0, -6.0, 2.3, 2.6], [6.4, -4.0, 2.2, 2.4],
+    [0, 4.6, 5.4, 4.3],
+  ];
+  g.save();
+  g.translate(cx, cy);
+  g.rotate(tilt);
+  g.scale(s / 24, s / 24);
+  g.fillStyle = colour;
+  g.globalAlpha = alpha;
+  for (const [x, y, rx, ry] of blobs) {
+    g.beginPath();
+    g.ellipse(x + (r() - 0.5) * 0.7, y + (r() - 0.5) * 0.7,
+      rx * (0.94 + r() * 0.12), ry * (0.94 + r() * 0.12), (r() - 0.5) * 0.4, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.restore();
+}
+
+/**
+ * A pen ring round something, the way a person marks the line they are working
+ * on. This is what a targeted row wears.
+ *
+ * Deliberately NOT a checkbox, a chip or a second tick: the page already has a
+ * box that means "found", and a control that looks like it would be read as
+ * one. What a ring means is unambiguous on any list ever written — *this one* —
+ * and it is the only mark on the page that says something about the player's
+ * intention rather than about the world.
+ *
+ * Drawn as one continuous overshooting sweep rather than a closed ellipse,
+ * because a closed ellipse is a UI ring and the overshoot is the whole tell of
+ * a pen: it starts, goes round, and crosses its own beginning. `over` is how
+ * far past the start it runs, in radians.
+ */
+function circleMark(g, cx, cy, rx, ry, { seed = 1, colour = INK, alpha = 0.72, width = 4.2, over = 0.5, tilt = -0.09, t = 1 } = {}) {
+  const r = rng(seed);
+  const n = 40;
+  const span = Math.PI * 2 + over;
+  // Start at the lower left, where a right-handed person's pen lands.
+  const a0 = Math.PI * 0.78;
+  const cos = Math.cos(tilt), sin = Math.sin(tilt);
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + span * (i / n);
+    // The wobble grows a little as the stroke goes round, so the ring does not
+    // close exactly on itself — the same reason `inkLine` wobbles at all.
+    const w = 1.1 + 1.5 * (i / n);
+    const ex = Math.cos(a) * rx + (r() - 0.5) * w;
+    const ey = Math.sin(a) * ry + (r() - 0.5) * w;
+    pts.push([cx + ex * cos - ey * sin, cy + ex * sin + ey * cos]);
+  }
+  const cut = Math.max(1, Math.round(n * clamp01(t)));
+  g.save();
+  g.strokeStyle = colour;
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  for (let p = 0; p < 2; p++) {
+    g.globalAlpha = alpha * (p === 0 ? 1 : 0.55);
+    g.lineWidth = width * (p === 0 ? 1 : 0.5);
+    g.beginPath();
+    for (let i = 0; i <= cut; i++) {
+      const [x, y] = pts[i];
+      const jx = p === 0 ? 0 : (r() - 0.5) * 2.2;
+      const jy = p === 0 ? 0 : (r() - 0.5) * 2.2;
+      i ? g.lineTo(x + jx, y + jy) : g.moveTo(x + jx, y + jy);
+    }
+    g.stroke();
+  }
+  g.restore();
+}
+
 /** A tick, drawn in two strokes with the second one long and fast. */
 function tick(g, x, y, s, seed, t = 1) {
   const r = rng(seed);
@@ -779,7 +875,14 @@ export class JournalPage {
       g.translate(slot.x + slot.w / 2, slot.y + slot.h / 2);
       g.rotate(tiltA);
       const hw = slot.w / 2 - 8, hh = slot.h / 2 - 6, c = 52;
-      const ink = { width: 3.4, alpha: 0.40, wobble: 1.5, colour: '#6a533a', passes: 2 };
+      // The corner marks go up from pencil to ink on the targeted row. It is
+      // the same marks, pressed harder — the frame the player is actually
+      // trying to fill — and it puts the state at BOTH ends of the row, so the
+      // ring by the checkbox is not the only thing carrying it on a page of
+      // fifteen lines.
+      const ink = row.target
+        ? { width: 4.0, alpha: 0.72, wobble: 1.5, colour: INK, passes: 2 }
+        : { width: 3.4, alpha: 0.40, wobble: 1.5, colour: '#6a533a', passes: 2 };
       let k = 0;
       for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
         inkLine(g, sx * hw, sy * hh - sy * c, sx * hw, sy * hh + sy * 2,
@@ -789,12 +892,25 @@ export class JournalPage {
         k++;
       }
       g.restore();
+      // The offer, and then the answer. Only on lines something can actually
+      // point at — `Journal._canTrack` asks the wildlife layer, so the Moon and
+      // the waterfall get a plain empty frame and no promise this book cannot
+      // keep.
+      if (row.track) {
+        pawMark(g, slot.x + slot.w / 2, slot.y + slot.h / 2, 96, row.target
+          ? { colour: INK, alpha: 0.60, seed: seed + 80 }
+          : { colour: GRAPHITE, alpha: 0.20, seed: seed + 80 });
+      }
     }
 
     // ── the checkbox ────────────────────────────────────────────────────────
     const boxY = top + 34;
     checkbox(g, x0, boxY, 44, seed + 2);
     if (row.done && !row.pending) tick(g, x0 + 4, boxY + 2, 44, seed + 3);
+    // Ringed: this is the one the player is out looking for. Drawn AFTER the
+    // box so the sweep crosses it, which is what a pen does and what stops the
+    // two marks reading as one printed widget.
+    if (row.target) circleMark(g, x0 + 21, boxY + 22, 54, 45, { seed: seed + 11, width: 5.4, alpha: 0.80 });
 
     // ── the line ────────────────────────────────────────────────────────────
     const tx = x0 + 70;

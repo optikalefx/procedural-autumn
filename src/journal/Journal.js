@@ -456,6 +456,11 @@ export class Journal {
   constructor(ctx) {
     this.ctx = ctx ?? {};
     this.onClose = null;             // integrator hook; called once, on close
+    // Integrator hook, called whenever the target moves: `(id, subject)`, with
+    // a null id when it was cleared. Same shape and same reason as `onClose` —
+    // the book knows which line was ringed and has no business knowing that
+    // there is a HUD to say so on.
+    this.onTarget = null;
 
     this._active = false;
     this._visible = false;
@@ -715,6 +720,10 @@ export class Journal {
         done: hunt.isDone(it.id),
         photo: null,
         pending: false,
+        // Can this line be gone looking for, and is it the one being looked
+        // for? `_decorate` refreshes both — this is only the first paint.
+        track: this._canTrack(it.id),
+        target: hunt.target === it.id,
       }));
       specs.push({
         kind: 'list',
@@ -739,6 +748,24 @@ export class Journal {
       const page = this._pages[1 + k];
       page.spec.rows.forEach((r, i) => this._seat.set(r.id, { page: 1 + k, row: i }));
     }
+  }
+
+  /**
+   * Can this line be made the target — is there a system that could point at
+   * it if the player asked?
+   *
+   * Asked of `Wildlife` rather than answered here, because the honest answer
+   * changes when the cast does and this file should not be a second list of
+   * animals that has to be kept in step with the first. It covers the wild
+   * mammals and the perch-and-fly birds; a bald eagle is the same kind of thing
+   * to go and find as a bear, and is treated as one.
+   *
+   * Everything else on the sheet comes back false and simply draws no ring: the
+   * waterfall and the high camp are already compass landmarks, the camp dog's
+   * camp is a permanent pin, and the Moon needs no help being found.
+   */
+  _canTrack(id) {
+    return !!this.ctx.systems?.wildlife?.canTrack?.(id);
   }
 
   /**
@@ -795,7 +822,16 @@ export class Journal {
       for (const row of p.spec.rows ?? []) {
         const done = hunt.isDone(row.id);
         const url = done ? hunt.photoFor(row.id) : null;
-        if (force || done !== row.done || (!!url !== !!row.photo)) dirty.add(i);
+        // The ring, for the book being opened with a target already set — from
+        // a previous session, or from before it was last shut. Aiming at a row
+        // with the book OPEN does not come through here; see `_repaintTargets`
+        // for why that one is not routed through the store's change event.
+        const target = hunt.target === row.id;
+        const track = this._canTrack(row.id);
+        if (force || done !== row.done || (!!url !== !!row.photo)
+            || target !== row.target || track !== row.track) dirty.add(i);
+        row.target = target;
+        row.track = track;
         row.done = done;
         if (!done) { row.photo = null; continue; }
         jobs.push(loadPhoto(url).then((im) => { row.photo = im; }));
@@ -932,6 +968,9 @@ export class Journal {
     const row = page.spec.rows[seat.row];
     row.done = true;
     row.pending = true;                 // painted un-struck; the script strikes it
+    // `hunt.award` clears a target it satisfies; this is the row's copy of that,
+    // so the ring comes off on the same paint the tick goes on.
+    row.target = false;
     row.photo = await loadPhoto(award.photoDataURL ?? hunt.photoFor(award.id));
     if (gen != null && gen !== this._gen) return;
     for (const p of this._pages) if (p.spec.progress != null) p.spec.progress = this._progressLine();
@@ -2030,8 +2069,13 @@ export class Journal {
         // used to be the free moment to spend it in, and a hover is the same
         // beat one step earlier.
         const seat = this._studyTo > 0 ? null : this._rowAt(e.clientX, e.clientY);
-        this._hoverAt(seat);
-        this._cursorTo(this._studyTo > 0 ? 'zoom-out' : (seat ? 'zoom-in' : ''));
+        // Only a print arms the detail raster. A target seat has no photograph
+        // to sharpen — `printPatch` would hand back null anyway — and passing
+        // it through would spend the dwell timer on nothing.
+        this._hoverAt(seat?.kind === 'study' ? seat : null);
+        this._cursorTo(this._studyTo > 0 ? 'zoom-out'
+          : seat?.kind === 'study' ? 'zoom-in'
+          : seat ? 'pointer' : '');
         return;
       }
       if (e.type !== 'pointerup') return;
@@ -2055,6 +2099,24 @@ export class Journal {
       // at a print has said what they want and it is not "put that back";
       // `study` squares it on the way in anyway.
       const seat = this._rowAt(e.clientX, e.clientY);
+      // An empty frame: aim at it, or — clicking the one already ringed — stop
+      // aiming. The book does NOT move for this. That is the point of putting
+      // it on the slot rather than making it a fifth thing on the zoom ladder:
+      // marking your quarry is something you do to the list while reading it,
+      // and a page that flew at your face every time would make it a mode.
+      if (seat?.kind === 'target') {
+        const row = this._pages[seat.page]?.spec?.rows?.[seat.row];
+        if (row && hunt.setTracked(row.id)) {
+          this._repaintTargets();
+          // The ring and the inked paw are the durable answer; this is the
+          // immediate one. A click that lands on a page whose mark is a few
+          // millimetres of pencil deserves to be acknowledged in the moment,
+          // and the subject is the sheet's own wording, so what the toast says
+          // is what the line says.
+          this.onTarget?.(hunt.target, row.subject);
+        }
+        return;
+      }
       if (seat) { this.study(seat.page, seat.row); this._cursorTo('zoom-out'); return; }
 
       // ── and nothing else. A plain click does not move the book ────────────
@@ -2131,6 +2193,36 @@ export class Journal {
     this._closeZ = CLOSE_ZOOM_SEED;
     this._solveCloseZoom();
     this._zoomTo(1);
+  }
+
+  /**
+   * Bring every row's ring back into step with the store, and repaint only the
+   * leaves whose answer changed.
+   *
+   * Called straight from the click rather than through `hunt.onChange`, and
+   * that is deliberate. `_decorate` is the general "the store moved" repaint
+   * and it only runs on `open()`, because the other thing that moves the store
+   * — an award — arrives with a ceremony that owns its own row paint (see
+   * `_armAward`: it sets `pending` so the pencil animates). A decorate racing
+   * that would repaint the row already struck and eat the animation. Targeting
+   * has no ceremony and touches at most two leaves — the one being ringed and
+   * the one being un-ringed — so it repaints them itself and leaves the rest of
+   * the book alone.
+   */
+  _repaintTargets() {
+    for (const p of this._pages) {
+      let dirty = false;
+      for (const row of p.spec.rows ?? []) {
+        const target = hunt.target === row.id;
+        if (target === row.target) continue;
+        row.target = target;
+        dirty = true;
+      }
+      if (!dirty) continue;
+      try { p.paint(); } catch (e) {
+        if (!this._pageErr) { this._pageErr = true; console.error('[journal] page paint failed', e); }
+      }
+    }
   }
 
   /** Back out ONE level: the close look to the spread. */
@@ -3007,9 +3099,24 @@ export class Journal {
    * answer to a question that already has one — and it would need the page
    * meshes to carry a UV lookup the print does not use.
    *
-   * Only rows that HAVE a print are offered. An empty slot is a corner mark on
-   * a page and leaning in on nothing is a worse outcome than the click falling
-   * through to a page turn, which is what it does instead.
+   * Two kinds of seat come back, and which one a slot offers is decided by
+   * whether there is a photograph in it:
+   *
+   *  · `'study'` — a row that HAS a print. Leaning in on it is the whole
+   *    close-look ladder, and it is what this function used to be all of.
+   *
+   *  · `'target'` — a row that has NO print and names something that can be
+   *    gone looking for. This used to return nothing at all: "an empty slot is
+   *    a corner mark on a page and leaning in on nothing is a worse outcome
+   *    than the click falling through to a page turn." That was right about
+   *    leaning in and it left the better verb unspoken. An empty frame on a
+   *    scavenger hunt is not nothing — it is the shot you have not taken — and
+   *    saying "this is the one I am after" is exactly what a reader wants to do
+   *    to it. The two never contend: a row has a print or it has a slot, never
+   *    both, so this adds a verb where there was none rather than splitting one.
+   *
+   * A row that can't be tracked (the Moon, the waterfall) still offers nothing,
+   * and the click still falls through to the page turn it always did.
    */
   _rowAt(clientX, clientY) {
     if (!this._active || this._leafT < 1 || this._seekQueue > 0) return null;
@@ -3028,9 +3135,12 @@ export class Journal {
       const mesh = p.spec.verso ? this._J.pageLeft : this._J.pageRight;
       if (!mesh?.visible) continue;
       for (let r = 0; r < p.spec.rows.length; r++) {
-        if (!p.spec.rows[r].done || !p.spec.rows[r].photo) continue;
+        const row = p.spec.rows[r];
+        const kind = row.done && row.photo ? 'study'
+          : !row.done && row.track ? 'target' : null;
+        if (!kind) continue;
         const slot = p.slotUV(r);
-        if (this._inSlot(mesh, slot, px, py)) return { page: idx, row: r };
+        if (this._inSlot(mesh, slot, px, py)) return { page: idx, row: r, kind };
       }
     }
     return null;

@@ -100,8 +100,8 @@
 //  inside the meadow is now the whole question. The hint says so.
 //
 //  **The high camp** said "pitch camp above 100 m" and was the only hint on the
-//  sheet quoting a constant at the player. Next to "deep forest. It will hear
-//  you first" it reads like a spec, and it was also incomplete in a way that
+//  sheet quoting a constant at the player. Next to the bear's line it reads
+//  like a spec, and it was also incomplete in a way that
 //  cost people the shot: detection on a summit is tight (12 of 12 bearings at
 //  10 m, 3 of 12 at 24 m, none by 80 m), so the portrait taken from where you
 //  can see the drop is exactly the one that will not count. "Photograph it from
@@ -112,6 +112,32 @@
 //  Every other line on the sheet earns its modifier, and the modifier is what
 //  makes a checklist read like a field guide instead of a table. Both now carry
 //  their own common name.
+//
+//  **The bear** is the fifth, and it is the only one that was wrong about the
+//  WORLD rather than about the detector — which makes it the worst kind, because
+//  nothing in this file or in `hunt_detect.js` could have caught it. It said
+//  "deep forest. It will hear you first", and both halves sent the player the
+//  wrong way.
+//
+//  The terrain half was simply not true of the valley. `Wildlife._placeSites`
+//  puts bears down twice: a deep-wood pass scored on the suitability field, and
+//  a second pass walking the river polylines, which exists because "bear beside
+//  a river" is the whole point of plate 3. On the shipped seed the first pass
+//  produces NOTHING — all 22 bear sites are river banks — because the `cover`
+//  term times a 0.5/km2 density loses the draw essentially everywhere. So the
+//  hint was describing a bear the generator does not currently make, and a
+//  player following it searched the one habitat guaranteed to be empty. (That
+//  is a finding about the placement, not about this line: lift the `cover` term
+//  and the forest bear exists again. Until it does, the sheet says rivers.)
+//
+//  The manner half was backwards. "It will hear you first" asks for caution,
+//  and caution is exactly what loses this photograph: the bear counts from 9.5
+//  m — the shortest reach of any mammal on the sheet, because at 1.23 m on all
+//  fours it is a LOWER animal than a deer with its head up, whatever it weighs
+//  (see `hunt_detect.js`) — while its brain is the least skittish in the game,
+//  minding you from 66 m against a deer's 108 and standing off at 4. The
+//  bear is the one animal you can walk up to, and it has to be. So the second
+//  clause now says to, in the register the animal deserves.
 //
 //  ── and two more, when the detector stopped measuring a sphere ──────────────
 //
@@ -254,7 +280,7 @@ export const HUNT_ITEMS = [
   {
     id: 'bear',
     subject: 'a black bear',
-    hint: 'deep forest. It will hear you first',
+    hint: 'the banks of the big rivers. Closer than feels wise',
   },
   {
     id: 'campDog',

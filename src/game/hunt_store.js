@@ -123,7 +123,7 @@ export const THUMB_QUALITY = 0.72;
 // and still small enough that one bad encode cannot eat the sheet.
 const PHOTO_MAX_CHARS = 400_000;
 
-const blank = () => ({ v: VERSION, items: {} });
+const blank = () => ({ v: VERSION, items: {}, target: null });
 
 /**
  * Is this the browser saying "no room", rather than something we broke?
@@ -222,7 +222,14 @@ class HuntStore {
           photo: typeof rec.photo === 'string' && rec.photo.startsWith('data:') ? rec.photo : null,
         };
       }
-      this.data = { v: VERSION, items };
+      // The target survives a reload, because it is a standing intention
+      // ("I am out looking for the bear") rather than a thing about this
+      // session. A target naming a line that has since been crossed off — or
+      // that is no longer on the sheet at all — is dropped on the way in, so
+      // the invariant `setTracked` enforces holds from the first frame.
+      const t = typeof s.target === 'string' && HUNT_BY_ID[s.target] && !items[s.target]
+        ? s.target : null;
+      this.data = { v: VERSION, items, target: t };
     } catch { /* an unreadable sheet is not worth a broken boot */ }
   }
 
@@ -234,6 +241,14 @@ class HuntStore {
   get total() { return HUNT_ITEMS.length; }
 
   isDone(id) { return !!this.data.items[id]; }
+  /**
+   * The line the player is out looking for, or null.
+   *
+   * One at a time, on purpose. "Which am I hunting right now" is the question
+   * the compass paw answers, and a set of three targets turns that back into
+   * the ambient nearest-of-everything the player asked to get away from.
+   */
+  get target() { return this.data.target; }
   /** The stored thumbnail, or null — either never had one, or it was evicted. */
   photoFor(id) { return this.data.items[id]?.photo ?? null; }
   /** When this line was crossed off, ms since epoch, or 0. */
@@ -256,6 +271,28 @@ class HuntStore {
    *        so the caller does not need its own "have I already celebrated this"
    *        flag, and the journal's ceremony can be driven straight off it.
    */
+  /**
+   * Aim at `id`, or clear the aim with null. Passing the current target again
+   * clears it — the journal's affordance is one target that toggles, so the
+   * way to stop looking for the bear is to press the same thing twice.
+   *
+   * A line already crossed off cannot be aimed at: there is nothing left to
+   * find, and a pin over it would outlive its own purpose. `award` enforces
+   * the other half of that, which together are what let `Wildlife` skip the
+   * logbook check entirely for a quarry — see `_nearestQuarry`.
+   *
+   * @returns {boolean} whether the target moved.
+   */
+  setTracked(id) {
+    const next = !id || this.data.items[id] || !HUNT_BY_ID[id] || id === this.data.target
+      ? null : id;
+    if (next === this.data.target) return false;
+    this.data.target = next;
+    this._persist();
+    this._emit(id ?? null);
+    return true;
+  }
+
   award(id, photo = null) {
     if (!HUNT_BY_ID[id]) {
       // Silence with no explanation is how a typo'd id ships as a line that can
@@ -271,6 +308,10 @@ class HuntStore {
     // The tick, first and on its own. Everything below this line is the
     // picture, and the picture is allowed to fail.
     this.data.items[id] = { at: Date.now(), photo: null };
+    // Photographing your quarry is the end of hunting it. Clearing it HERE, in
+    // the same write as the tick, is what lets `Wildlife._nearestQuarry` trust
+    // that anything it is handed is still outstanding.
+    if (this.data.target === id) this.data.target = null;
     this._persist();
     this._emit(id);
 
