@@ -77,3 +77,12 @@ tools/_scratch/**/*.png
 
 # Blender writes a .blend1 rollback beside every save; it is not source.
 *.blend1
+
+# ── the bought animal pack ────────────────────────────────────────────────────
+# assets/models/Animals_v3.0.blend is 103 MB of licensed third-party source that
+# the export scripts read from a path and never need in history. Same argument
+# as shots/ and review/: keeping it out is the difference between a repo you can
+# clone and one you cannot. It also is not ours to redistribute — a royalty-free
+# licence covers shipping the models inside a product, not publishing the source
+# .blend in a git remote. Keep it on local disk; the export scripts name the path.
+assets/models/Animals_*.blend
