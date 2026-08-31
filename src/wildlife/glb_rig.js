@@ -92,20 +92,106 @@ const PHASE_TIME = 0.08;
 const _fwd = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 
+// How finely a clip is sampled to read its ground speed, and how tightly two
+// samples must agree to count as the same velocity — as a fraction of the whole
+// range of velocities in the clip, so it needs no units and no per-species
+// tuning.
+const GROUND_SAMPLES = 256;
+const GROUND_TOLERANCE = 0.02;
+
 /**
- * How far a paw travels through one cycle of `clip`, in model units.
+ * How fast the ground moves under one cycle of `clip`, in model units/second.
  *
- * The clip is in place, so the paw's own displacement IS the stride the body
- * would cover if the foot were planted. Sampling beats reading the keyframes:
- * it accounts for the whole chain (upper, lower and foot bones compound) and
- * it keeps working if the rig is rebuilt with different joints.
+ * A planted paw is standing still on the ground, so in an in-place clip it
+ * travels backwards at exactly the body's forward speed — and it is the ONLY
+ * thing on the animal that holds one velocity for a sustained stretch. Every
+ * planted paw of every limb shares that velocity exactly, whatever the gait, so
+ * the ground speed is simply the most common paw velocity in the clip: the
+ * densest cluster of samples, found by sliding a tolerance band down the sorted
+ * velocities. A swinging paw is accelerating the whole time and smears across
+ * the range instead of piling up anywhere.
  *
- * Blender's exporter strips the dots out of bone names, so `hind_foot.L`
- * arrives here as `hind_footL`. The species file names them; a name that does
- * not resolve is skipped rather than thrown on, and a clip where NONE resolve
- * comes back 0 — which the loader reports as the asset problem it is.
+ * That the cluster's share of the samples comes out as the gait's duty factor —
+ * 64% for the bear's walk, 25% for its gallop — is not a coincidence; it IS the
+ * duty factor, and it is what makes this exact where thresholds are not. No
+ * contact detection, no height band, no window whose length has to be guessed
+ * against a stance it cannot see.
+ *
+ * **This replaced a measurement of the paw's total EXCURSION over the cycle**,
+ * which is the ground a cycle covers only if the foot is planted for the whole
+ * of it. A gallop's paws are down for about a quarter of theirs, so the bear was
+ * driven at a third of the speed its own legs were cycling at and its paws
+ * skated backwards over the ground. The tell that this was the measurement and
+ * not the asset: the run clip was rebuilt to cover 23% more ground and the old
+ * number moved 4%, because excursion is blind to how long a foot stays down.
+ *
+ * What the species names matters, and naming the ankle is not good enough. A
+ * plantigrade foot rolls over its planted toe through a stance, so the ankle
+ * arcs forwards over the contact point and reads 23% fast at a walk. The bear's
+ * rig carries four zero-weight `*_tip` bones sitting exactly on the pads for
+ * this to sample; see `glb.feet` in mammals/bear.js.
+ *
+ * Blender's exporter strips the dots out of bone names, so `hind_tip.L` arrives
+ * here as `hind_tipL`. A name that does not resolve is skipped rather than
+ * thrown on, and a clip where NONE resolve comes back 0 — which the loader
+ * reports as the asset problem it is. This pipeline exports +Y-forward Blender
+ * rigs to -Z-forward glTF, so a planted paw travels +z; an asset built facing
+ * the other way measures negative and trips that same report.
  */
-function measureStride(root, clip, boneNames) {
+function measureGround(root, clip, boneNames) {
+  const mixer = new THREE.AnimationMixer(root);
+  const action = mixer.clipAction(clip);
+  action.play();
+  const bones = boneNames.map((n) => root.getObjectByName(n)).filter(Boolean);
+  if (!bones.length) { action.stop(); mixer.uncacheRoot(root); return 0; }
+
+  const p = new THREE.Vector3();
+  const tracks = bones.map(() => new Float64Array(GROUND_SAMPLES));
+  for (let i = 0; i < GROUND_SAMPLES; i++) {
+    mixer.setTime((i / GROUND_SAMPLES) * clip.duration);
+    root.updateMatrixWorld(true);
+    for (let b = 0; b < bones.length; b++) {
+      p.setFromMatrixPosition(bones[b].matrixWorld);
+      tracks[b][i] = p.z;
+    }
+  }
+  action.stop();
+  mixer.uncacheRoot(root);
+
+  const step = clip.duration / GROUND_SAMPLES;
+  const speeds = [];
+  for (const track of tracks) {
+    for (let i = 0; i < GROUND_SAMPLES; i++) {
+      speeds.push((track[(i + 1) % GROUND_SAMPLES] - track[i]) / step);
+    }
+  }
+  speeds.sort((a, b) => a - b);
+  const band = (speeds[speeds.length - 1] - speeds[0]) * GROUND_TOLERANCE;
+  let bestFrom = 0, bestTo = 0;
+  for (let from = 0, to = 0; from < speeds.length; from++) {
+    while (to < speeds.length && speeds[to] - speeds[from] <= band) to++;
+    if (to - from > bestTo - bestFrom) { bestFrom = from; bestTo = to; }
+  }
+  let total = 0;
+  for (let i = bestFrom; i < bestTo; i++) total += speeds[i];
+  return total / (bestTo - bestFrom);
+}
+
+/**
+ * How far a paw travels through one cycle, in model units — the measurement
+ * `measureGround` replaced, kept for assets whose clips it cannot read.
+ *
+ * A species opts into the real measurement with `glb.measure: 'contact'`, and
+ * that opt-in is a statement about the ASSET, not a preference: it says every
+ * paw of every locomotion clip is genuinely planted on the ground for a
+ * sustained stretch. Where that is not true there is no plateau to find and the
+ * answer is not merely imprecise but meaningless — the fox's trot measures a
+ * NEGATIVE ground speed this way, because its fore and hind paws travel in
+ * opposite directions while they are down. Such a clip has to be fixed in
+ * Blender; until it is, this is the number it had before, and its species file
+ * says so.
+ */
+function measureExcursion(root, clip, boneNames) {
   const mixer = new THREE.AnimationMixer(root);
   const action = mixer.clipAction(clip);
   action.play();
@@ -178,22 +264,27 @@ export async function loadGlbSpecies(key, sp, log = true) {
   // ground: they carry different strides over different durations, so one
   // shared number would slide whichever clip it was not derived from.
   //
-  // `strides` is how many strides the clip contains. The fox's run is three
-  // rotary-gallop strides in one two-second clip, and its sampled paw reach is
-  // one of them — so ground speed over the full duration has to count all
-  // three or the animal travels at a third of what the legs are doing.
+  // `strides` is how many strides the clip holds. It no longer enters this
+  // arithmetic — a ground SPEED is a speed however many strides went past while
+  // it was measured — and survives only to divide the readout below into a
+  // per-stride distance an artist can compare against a tape measure.
+  const contact = G.measure === 'contact';
   const speed = {};
   const stride = {};
   for (const [slot, cfg] of Object.entries(G.clips)) {
     if (!cfg.rate) continue;                    // a pose clip covers no ground
-    const raw = measureStride(scene, clips[slot], G.feet) * s;
-    if (raw <= 0) {
+    const ground = contact
+      ? measureGround(scene, clips[slot], G.feet) * s
+      : measureExcursion(scene, clips[slot], G.feet) * s
+        * (cfg.strides ?? 1) / clips[slot].duration;
+    if (ground <= 0) {
       throw new Error(`[glb_rig] ${key}: clip "${cfg.name}" moved none of the `
-        + `feet named in glb.feet (${G.feet.join(', ')}) — check the bone names, `
-        + `remembering the exporter strips dots`);
+        + `feet named in glb.feet (${G.feet.join(', ')}) backwards — check the `
+        + `bone names, remembering the exporter strips dots, and that the model `
+        + `faces -z`);
     }
-    stride[slot] = raw;
-    speed[slot] = raw * (cfg.strides ?? 1) / clips[slot].duration * cfg.rate;
+    speed[slot] = ground * cfg.rate;
+    stride[slot] = ground * clips[slot].duration / (cfg.strides ?? 1);
   }
   scene.traverse((o) => { if (o.isBone && rest.has(o.name)) o.quaternion.copy(rest.get(o.name)); });
   scene.updateMatrixWorld(true);

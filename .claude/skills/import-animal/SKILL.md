@@ -39,12 +39,161 @@ and past 180° the slerp wraps and the limb goes somewhere nobody designed.
 When a clip cannot carry what the game needs, **measure it, name the number and
 hand it back**. Derive the game from the clip, never the reverse.
 
+## Solving a gait, rather than keying one
+
+The bear's three locomotion clips were all hand-keyed as joint angles, and all
+three were broken in the same way — the feet were not on the ground. Measured
+off the shipped asset:
+
+| clip | what it actually did |
+|---|---|
+| Walk | front paws **112 mm below the floor**, travelling **forwards** while planted |
+| Trot | in contact for **1 frame in 16** |
+| run | every paw airborne **14 frames in 16**, both legs of each pair in lockstep |
+
+This is not a bear that skates a little. A foot that is not on the ground cannot
+be measured, and a clip that cannot be measured cannot drive an animal at the
+right speed. Rebuilt as solved gaits the same bear walks 0.98, trots 2.38 and
+gallops 5.06 m/s — 93%, 91% and 82% of a real black bear — where it used to do
+0.31 / 0.50 / 0.98.
+
+**Author the PAW, in world space, on the ground; let the joints be whatever
+reaches it.** A two-bone solve per limb against the hip position the spine
+actually puts there that frame. Contact stops being something to check for
+afterwards and becomes a property of the construction.
+`tools/build_bear_reference.py` is the worked example — `GaitPoser`, `two_bone`
+and one spec per gait.
+
+### Why hand-keyed angles cannot win on a rig like this
+
+Check `rest_extension` first; it is the number that governs everything and it is
+invisible in a render. The bear stands at **0.97** of its own leg reach, so
+three degrees at the hip is the difference between a planted paw and a paw
+40 cm in the air. No amount of careful eyeballing survives that, and it is why
+this cast is worth solving rather than keying.
+
+It also sets a hard ceiling. Stride has to be bought by lowering the body, and
+the trade is steep and worth measuring rather than guessing — calibrate by
+posing only the trunk, recording the hip path, then solving for the largest
+sweep whose worst stance reach stays under ~0.955:
+
+| body drop | largest walk sweep | largest gallop sweep |
+|---|---|---|
+| 0 cm | **0.1** (nothing at all) | 3.6 |
+| 8 cm | 1.74 | 5.3 |
+| 16 cm | 2.27 | 6.2 |
+
+Past about 5 cm on the gallop the bear starts reading as crawling, so the honest
+answer is to fix the **rest pose's zigzag** (aim 0.82–0.88) and not to keep
+dropping the body. See `procedural-fall-animal-kit`.
+
+### Ground per cycle is `sweep`, and duty is therefore free speed
+
+A planted paw sweeps at `sweep` per unit of limb phase for `duty` of the cycle,
+so the ground a cycle covers is **`sweep` and nothing else**. Duty only decides
+how far each individual foot travels while it is down. That makes duty the lever
+nobody looks for: cutting the gallop from 0.32/0.27 to 0.27/0.23 and raising
+`sweep` to match bought **23% more ground with every paw asking the leg for
+exactly the same reach as before**. Faster gaits really do have lower duty
+factors, so it is honest as well as convenient.
+
+Every paw of every gait must use one `sweep`, or the fore and hind feet scrub
+against each other. Assert it: four paws on one piece of ground have to agree.
+
+### Five things that each cost a round
+
+- **Key every frame.** The paw track is solved in world space but Blender
+  interpolates the JOINT ANGLES between keys, and an angle midway between two
+  solved poses does not put the paw midway between two solved positions. At one
+  key in four the planted paw sank **55 mm** through the ground halfway to the
+  next key. It is free downstream too — `export_bake_animation` resamples per
+  frame into the GLB whatever the .blend holds.
+- **Aim bones in world space; never write `rotation_euler.x` on a leg.** These
+  bones' local X axes sit up to **16° off world X**, so a "swing forward" also
+  swings the leg sideways — the old hind paws tracked **39 cm** laterally across
+  one stride. Build the desired world orientation, then convert back through the
+  parent's posed matrix. Write only the bone's own rotation, so the head keeps
+  following the parent's tail.
+- **Do not let the body lift off a planted paw.** The gathered flight raises the
+  front of the animal, and at duty 0.32 the lead foreleg was still pinned to the
+  ground while its own shoulder climbed **28 cm** away from it — the leg ran out
+  of reach and the solver clamped, which is a foot sliding. Give the fores the
+  shorter contact so they leave before the launch.
+- **Split trunk flex so the loin arches and the chest takes it back out.** The
+  shoulder is what the forelimbs hang from and it has to hold still while they
+  carry weight. Levering the whole front of the animal upward is what put the
+  foreleg out of reach above.
+- **The neck carries flex with the OPPOSITE sign to the trunk.** A moving animal
+  stabilises its head: the body oscillates underneath and the eyes stay level.
+  Carried the same way as the trunk the terms compound down a 1.3 m chain of
+  neck and skull — the muzzle swung **82 cm** and ploughed the ground at the
+  bottom of the fore stance. Counter-rotated it swings 57 at a gallop, and at a
+  walk 12.6 cm against the shoulder's 13.7: the head moving *less* than the body
+  under it.
+
+### Name the contact points in the rig
+
+`glb.feet` decides what the loader samples, and **naming the ankle is not good
+enough**. A plantigrade foot rolls over its planted toe through a stance, so the
+ankle arcs forwards over the contact point and reads **23% fast at a walk**. The
+tip of the paw is the only part of the leg that is genuinely stationary on the
+ground — and glTF has no way to refer to a leaf bone's tail.
+
+So the rig carries four zero-weight `*_tip` bones whose *origins* sit exactly on
+the pads, children of the toe bones, and the species names those. Four extra
+nodes, no skinning cost, and the measurement goes from 23% out to **0.0%**.
+
+### Make the promises assertions
+
+Both properties are cheap to check at build time, and `validate()` in
+`build_bear_reference.py` now fails the build on either:
+
+- no leg is asked for more reach than it has *while carrying weight* (a clamped
+  leg under load is a sliding foot);
+- every planted toe tip is on Z=0 to the millimetre, and all four paws agree on
+  how fast the ground is moving.
+
+That last one is what the old Walk could never have passed: its front paws
+travelled forwards while its hind paws travelled back.
+
+## Reading a clip's speed
+
+`measureGround` in `glb_rig.js` takes **the most common paw velocity in the
+clip**. A planted paw is the only thing on the animal that holds one velocity
+for a sustained stretch, and every planted paw of every limb shares it exactly,
+so the ground speed is the densest cluster of velocity samples — found by
+sliding a tolerance band down the sorted list. A swinging paw is accelerating
+the whole time and smears across the range instead of piling up anywhere. That
+the cluster's share of the samples comes out as the gait's duty factor (64% for
+the bear's walk, 25% for its gallop) is not a coincidence; it *is* the duty
+factor.
+
+It replaced a measurement of the paw's total **excursion** over a cycle, which
+is the ground a cycle covers only if the foot is planted for the whole of it. A
+gallop's paws are down for a quarter of theirs, so the bear was driven at a
+third of the speed its own legs were cycling at, and skated.
+
+**The experiment that found it is the transferable part.** The clip was rebuilt
+to cover 23% more ground and the reported number moved 4%. A lever that big
+moving that little is not a tuning problem — it says the measurement is blind to
+whatever you just changed, and no further work in Blender can reach it. Reach
+for that test whenever an asset change fails to show up downstream.
+
+`glb.measure: 'contact'` opts a species in, and it is a claim about the ASSET:
+every paw of every locomotion clip is genuinely planted for a sustained stretch.
+Where that is not true there is no plateau to find and the answer is not merely
+imprecise but meaningless — **the fox's trot measures a negative ground speed**,
+because its fore and hind paws travel in opposite directions while they are
+down. The fox therefore stays on the old excursion path, and `fox.js` records
+why. Wrong in a stable, familiar way beats wrong in a way that throws at load.
+
 ## The pipeline, end to end
 
 ### 1. Fix the clip in Blender, not in JavaScript
 
-Everything about how the animation *looks* is settled before export. The tools
-that do it live in `tools/`:
+Everything about how the animation *looks* is settled before export. If the clip
+is a GAIT, solve it against the ground rather than keying angles — see above.
+The rest of the tools live in `tools/`:
 
 - `fix_fox_loops.py` — endpoint tangents across a loop seam
 - `tune_fox_trot.py` — retime a stride, scale leg reach in angle space, author
@@ -230,6 +379,16 @@ curl -s <url>/src/wildlife/<file>.js | grep <a symbol you just added>
 3. **Pin a gait** — `wildlife.debugGait('fox', 'trot')` holds the species at one
    gait so a clip can be judged without waiting for the Brain to choose that
    pace. `debugGait(null)` releases.
+4. **Read the ladder against the real animal.** The harness prints `stride` and
+   `speed` per gait; compare them to what the species does in the world before
+   deciding anything looks right. A bear walks 1.05 m/s, trots 2.6 and gallops
+   6.2, and the clips now measure 0.98 / 2.38 / 5.06 off strides of 0.98, 1.22
+   and 2.70 m. A ladder an order of magnitude low is not a tuning problem — go
+   back and check the feet are on the ground.
+5. **Judge a gait from broadside with a ground line drawn on.** Render one
+   stride at even frame spacing, composite a line at Z=0, and look at whether
+   the paws meet it. Every defect in this document was visible in that one image
+   and invisible in a 3/4 view.
 
 The journal auto-opens on first run and holds the sim. `hud.journal.close()`
 starts the animation but does not finish it in one frame; pump it with

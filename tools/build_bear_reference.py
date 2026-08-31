@@ -23,7 +23,7 @@ from pathlib import Path
 import math
 
 import bpy
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -492,6 +492,13 @@ def build_rig(body):
         add_bone(armature, f"fore_lower.{side}", elbow, wrist, f"fore_upper.{side}")
         add_bone(armature, f"fore_foot.{side}", wrist, (x, toe_y, 0.075), f"fore_lower.{side}")
         add_bone(armature, f"fore_toe.{side}", (x, toe_y, 0.075), (x, toe_y + 0.25, 0.055), f"fore_foot.{side}", deform=False)
+        # The contact point, named so it can be measured. A paw's tip is the one
+        # part of the leg that is stationary on the ground through a stance --
+        # the ankle arcs over it as the foot rolls, which reads 23% fast at a
+        # walk -- and glTF has no way to refer to a leaf bone's tail. A zero-
+        # weight child bone whose ORIGIN sits there gives the loader the exact
+        # point to sample. See `glb.feet` in mammals/bear.js.
+        add_bone(armature, f"fore_tip.{side}", (x, toe_y + 0.25, 0.055), (x, toe_y + 0.33, 0.055), f"fore_toe.{side}", deform=False)
 
     # Reserve bend is carried mostly across the animal's width, preserving the
     # reference's columnar side silhouette without leaving a locked chain.
@@ -505,6 +512,7 @@ def build_rig(body):
         add_bone(armature, f"hind_lower.{side}", stifle, hock, f"hind_upper.{side}")
         add_bone(armature, f"hind_foot.{side}", hock, (x, toe_y, 0.075), f"hind_lower.{side}")
         add_bone(armature, f"hind_toe.{side}", (x, toe_y, 0.075), (x, toe_y + 0.28, 0.055), f"hind_foot.{side}", deform=False)
+        add_bone(armature, f"hind_tip.{side}", (x, toe_y + 0.28, 0.055), (x, toe_y + 0.36, 0.055), f"hind_toe.{side}", deform=False)
 
     add_bone(armature, "tail_01", (0, -1.40, 1.48), (0, -1.62, 1.44), "pelvis")
     add_bone(armature, "tail_02", (0, -1.62, 1.44), (0, -1.74, 1.40), "tail_01")
@@ -778,6 +786,503 @@ def key_pose(rig, frame, rotations=None, locations=None):
         bone.keyframe_insert("location", frame=frame, group=name)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  The locomotion clips.
+#
+#  Walk, Trot and run are SOLVED rather than hand-keyed in degrees, and they are
+#  the only clips in this file that are. The bear stands at 0.97 of its own leg
+#  reach, so a few degrees at the hip is the difference between a planted paw
+#  and a paw 40 cm in the air. Hand-keyed, none of the three found the ground:
+#
+#      Walk   front paws 112 mm BELOW the floor, travelling FORWARD while down
+#      Trot   in contact for 1 frame in 16
+#      run    every paw airborne 14 frames in 16, both legs of a pair in lockstep
+#
+#  A foot that is not on the ground cannot be measured, and a clip that cannot
+#  be measured cannot drive an animal at the right speed -- which is what made
+#  the bear skate. Below, the PAW is authored in world space on the ground and
+#  the joint angles are whatever reach it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+GROUND = 0.055                   # world Z of a planted toe tip, from the rest pose
+
+
+# ── curve evaluation ─────────────────────────────────────────────────────────
+def hermite(points, u):
+    """Evaluate a periodic Hermite spline at *u*.
+
+    Each point is ``(u, value, tangent)``; a tangent of ``None`` takes the
+    Catmull-Rom centred difference. Pinning the tangent is what keeps a planted
+    paw honest: through the stance the tip's fore-aft track is three collinear
+    points carrying the ground slope, so the spline is exactly linear there and
+    the paw cannot creep. Everywhere else the free tangents give the swing ease.
+    """
+    n = len(points)
+    us = [p[0] for p in points]
+    vs = [p[1] for p in points]
+    tangents = []
+    for i in range(n):
+        if points[i][2] is not None:
+            tangents.append(points[i][2])
+            continue
+        before, after = (i - 1) % n, (i + 1) % n
+        span = (us[after] - us[before]) % 1.0 or 1.0
+        tangents.append((vs[after] - vs[before]) / span)
+
+    u %= 1.0
+    for i in range(n):
+        span = (us[(i + 1) % n] - us[i]) % 1.0 or 1.0
+        t = (u - us[i]) % 1.0
+        if t > span + 1e-9:
+            continue
+        t /= span
+        v0, v1 = vs[i], vs[(i + 1) % n]
+        m0, m1 = tangents[i] * span, tangents[(i + 1) % n] * span
+        t2, t3 = t * t, t * t * t
+        return ((2 * t3 - 3 * t2 + 1) * v0 + (t3 - 2 * t2 + t) * m0
+                + (-2 * t3 + 3 * t2) * v1 + (t3 - t2) * m1)
+    return vs[-1]
+
+
+def track(duty, stance, swing, tangent=None):
+    """Build a limb-phase track from stance-fraction and swing-fraction parts.
+
+    Written this way so duty stays a knob rather than a number baked into every
+    table: the stance keys are placed across 0..duty and the swing keys across
+    the rest, so changing how long a pair stays down does not desynchronise its
+    paw lift from its ankle roll.
+    """
+    return ([(f * duty, v, tangent) for f, v in stance]
+            + [(duty + f * (1.0 - duty), v, None) for f, v in swing])
+
+
+def paw_tracks(gait):
+    """Turn one gait's spec into the four per-limb curves the solver reads."""
+    out = {}
+    for kind in ("hind", "fore"):
+        duty = gait["duty"][kind]
+        reach = gait["sweep"] * duty
+        plant = gait["plant"][kind]
+        out[kind] = {
+            # The stance is generated, never typed: the plant point sweeping
+            # backwards at `sweep`, tangent pinned so the paw cannot creep
+            # between keys. Every paw of every gait uses the same `sweep`, or
+            # the feet scrub against each other.
+            "y": track(duty,
+                       [(0.0, plant), (0.5, plant - reach / 2), (1.0, plant - reach)],
+                       [(f, plant + reach * v) for f, v in gait["y_swing"][kind]],
+                       tangent=-gait["sweep"]),
+            "z": track(duty, [(0.0, GROUND), (0.5, GROUND), (1.0, GROUND)],
+                       gait["z_swing"][kind], tangent=0.0),
+            "x": track(duty, gait["x_stance"][kind], gait["x_swing"][kind]),
+            "foot": track(duty, gait["foot_stance"][kind], gait["foot_swing"][kind]),
+            "toe": track(duty, gait["toe_stance"][kind], gait["toe_swing"][kind]),
+        }
+    return out
+
+
+# ── kinematics ───────────────────────────────────────────────────────────────
+def two_bone(hip, target, l1, l2, pole):
+    """Return world directions for an upper/lower pair reaching *target*.
+
+    Straight trigonometry in the plane through the hip, the target and the pole
+    hint. Returns the unclamped ratio alongside, so the caller can tell a leg
+    that reached from a leg that ran out of leg -- the second one slides.
+    """
+    to = target - hip
+    span = to.length
+    ratio = span / (l1 + l2)
+    limit = (l1 + l2) * 0.985
+    if span > limit:
+        to *= limit / span
+        span = limit
+    floor = abs(l1 - l2) + 1e-3
+    if span < floor:
+        to *= floor / max(span, 1e-6)
+        span = floor
+    axis = to / span
+
+    side = Vector(pole) - axis * Vector(pole).dot(axis)
+    if side.length < 1e-6:
+        side = Vector((0.0, 1.0, 0.0)) - axis * axis.y
+    side.normalize()
+
+    cosine = max(-1.0, min(1.0, (l1 * l1 + span * span - l2 * l2) / (2 * l1 * span)))
+    angle = math.acos(cosine)
+    upper = (axis * math.cos(angle) + side * math.sin(angle)).normalized()
+    knee = hip + upper * l1
+    lower = (hip + to - knee).normalized()
+    return upper, lower, ratio
+
+
+class GaitPoser:
+    """Poses the rig one frame at a time, in world space."""
+
+    def __init__(self, rig, gait):
+        self.rig = rig
+        self.arm = rig.data
+        self.gait = gait
+        self.tracks = paw_tracks(gait)
+
+    def sync(self):
+        bpy.context.view_layer.update()
+
+    def rest_dir(self, name):
+        return self.arm.bones[name].matrix_local.to_3x3().col[1].normalized()
+
+    def euler(self, name, degrees):
+        pb = self.rig.pose.bones[name]
+        pb.rotation_euler = tuple(math.radians(v) for v in degrees)
+        self.sync()
+
+    def aim(self, name, world_dir):
+        """Point a posed bone along *world_dir*, minimal twist from its rest.
+
+        Writes the bone's own rotation only -- the head keeps following the
+        parent's tail, so the chain stays the chain. Solving in world space and
+        converting back is what stops the legs splaying: these bones' local X
+        axes sit up to 16 degrees off world X, so a plain `rotation.x` swings a
+        leg sideways as it swings it forward, and the old hind paws tracked
+        39 cm out and back across one stride.
+        """
+        pb = self.rig.pose.bones[name]
+        bone = self.arm.bones[name]
+        rest = bone.matrix_local.to_3x3()
+        heading = Vector(world_dir).normalized()
+        desired = rest.col[1].normalized().rotation_difference(heading).to_matrix() @ rest
+        if bone.parent:
+            parent = self.rig.pose.bones[bone.parent.name]
+            relative = (bone.parent.matrix_local.inverted() @ bone.matrix_local).to_3x3()
+            basis = (parent.matrix.to_3x3() @ relative).inverted() @ desired
+        else:
+            basis = rest.inverted() @ desired
+        pb.rotation_euler = basis.to_euler("XYZ", pb.rotation_euler)
+        self.sync()
+
+    def leg(self, kind, side, phase):
+        """Place one limb's paw and solve the joints that reach it."""
+        curves = self.tracks[kind]
+        limb = (phase - self.gait["contact"][(kind, side)]) % 1.0
+
+        upper, lower = f"{kind}_upper.{side}", f"{kind}_lower.{side}"
+        foot, toe = f"{kind}_foot.{side}", f"{kind}_toe.{side}"
+        outward = -1.0 if side == "L" else 1.0
+
+        rest_tip = self.arm.bones[toe].tail_local
+        tip = Vector((rest_tip.x + outward * hermite(curves["x"], limb),
+                      hermite(curves["y"], limb),
+                      hermite(curves["z"], limb)))
+
+        toe_dir = (Matrix.Rotation(math.radians(hermite(curves["toe"], limb)), 3, "X")
+                   @ self.rest_dir(toe))
+        toe_base = tip - toe_dir * self.arm.bones[toe].length
+        foot_dir = (Matrix.Rotation(math.radians(hermite(curves["foot"], limb)), 3, "X")
+                    @ self.rest_dir(foot))
+        ankle = toe_base - foot_dir * self.arm.bones[foot].length
+
+        hip = self.rig.pose.bones[upper].head.copy()
+        # The stifle leads forward and the elbow trails back; both track a
+        # little outboard so the knees never cross under the belly.
+        pole = Vector((outward * 0.14, 1.0 if kind == "hind" else -1.0, 0.15))
+        up_dir, low_dir, ratio = two_bone(
+            hip, ankle, self.arm.bones[upper].length, self.arm.bones[lower].length, pole)
+
+        self.aim(upper, up_dir)
+        self.aim(lower, low_dir)
+        self.aim(foot, foot_dir)
+        self.aim(toe, toe_dir)
+        return ratio
+
+    def frame(self, phase, clip_phase):
+        """Pose the whole animal for one cycle phase.
+
+        *clip_phase* runs 0..1 across the WHOLE clip rather than one stride and
+        carries a slow head sweep: identical repeated strides read as a loop,
+        and one drifting look across all of them is what breaks that up.
+        """
+        g = self.gait
+        b = g["body"]
+        flex = hermite(g["flex"], phase)
+        pump = hermite(g["head_pump"], phase)
+        roll = hermite(g["roll"], phase) if g.get("roll") else 0.0
+        sweep = b["look"] * math.sin(2 * math.pi * clip_phase)
+
+        root = self.rig.pose.bones["root"]
+        root.location = (0.0, hermite(g["root_lift"], phase),
+                         -hermite(g["root_surge"], phase))
+        self.euler("root", (hermite(g["root_pitch"], phase), 0, 0))
+
+        # The loin does most of the arching and the chest takes it back out, so
+        # the back rounds over the middle instead of the whole front of the
+        # animal being levered upward -- the shoulder is what the forelimbs hang
+        # from, and it has to hold still while they carry weight.
+        self.euler("pelvis", (b["pelvis"] * flex, 0, 0.8 * sweep + roll))
+        self.euler("spine_01", (b["spine"] * flex, 0, 0.5 * sweep - 0.35 * roll))
+        self.euler("chest", (b["chest"] * flex, 0, -0.4 * sweep - 0.45 * roll))
+        # The neck carries flex with the OPPOSITE sign to the trunk, and that
+        # sign is the whole point. A moving animal stabilises its head: the body
+        # oscillates underneath and the eyes stay level. Carried the same way as
+        # the trunk the terms compound down a 1.3 m chain of neck and skull, and
+        # in the gallop the muzzle swung 82 cm and ploughed the ground.
+        # Counter-rotated it swings 57, and at a walk it swings 12.6 cm
+        # against the shoulder's 13.7 -- the head moving LESS than the
+        # body underneath it, which is what a stabilised head means.
+        self.euler("neck_01", (b["neck1"] - b["neck_flex"] * flex + b["pump1"] * pump,
+                               0, sweep + 0.2 * roll))
+        self.euler("neck_02", (b["neck2"] - 0.6 * b["neck_flex"] * flex + b["pump2"] * pump,
+                               0, 0.5 * sweep))
+        self.euler("head", (b["head"] + 0.6 * b["neck_flex"] * flex + b["pump3"] * pump,
+                            0, -0.6 * sweep))
+        self.euler("jaw", (b["jaw"] - 3 * pump * b["jaw_move"], 0, 0))
+        self.euler("ear.L", (b["ear"] + 2 * pump * b["ear_move"], 0, b["ear_out"]))
+        self.euler("ear.R", (b["ear"] + 2 * pump * b["ear_move"], 0, -b["ear_out"]))
+        self.euler("tail_01", (b["tail1"] - 4 * flex, 0, 2 * sweep))
+        self.euler("tail_02", (b["tail2"] - 3 * flex, 0, 1.5 * sweep))
+
+        for side in ("L", "R"):
+            # The scapula swings with its own foreleg -- on a quadruped it is a
+            # third of the fore stride -- and it moves the shoulder, so it has
+            # to be posed before the arm solves against it.
+            limb = (phase - g["contact"][("fore", side)]) % 1.0
+            self.euler(f"scapula.{side}",
+                       (b["scapula"] * math.cos(2 * math.pi * (limb - 0.90)), 0, 0))
+
+        ratios = {}
+        for kind in ("hind", "fore"):
+            for side in ("L", "R"):
+                ratios[f"{kind}.{side}"] = self.leg(kind, side, phase)
+        return ratios
+
+
+# ── the three gaits ──────────────────────────────────────────────────────────
+# `sweep` is how much ground a planted paw covers per unit of limb phase, and it
+# alone decides the clip's speed: ground per cycle IS sweep, because a paw
+# sweeps for `duty` of the cycle at `sweep`/unit-phase. Duty only decides how
+# far each individual foot travels while down -- which is why cutting duty buys
+# speed for free, and why a fast gait can be quick without asking any leg for
+# reach it does not have. That matters here more than on most rigs: the bear
+# stands at 0.97 of its leg reach, so per-paw sweep is the scarce resource.
+
+_STANDING = {                    # what every gait's body block starts from
+    "look": 2.5, "pelvis": 4.0, "spine": 7.0, "chest": -8.0,
+    "neck1": -7.0, "neck2": -4.0, "head": 7.0, "neck_flex": 5.0,
+    "pump1": 2.5, "pump2": 1.5, "pump3": 2.0,
+    "jaw": -7.0, "jaw_move": 1.0, "ear": 17.0, "ear_move": 1.0, "ear_out": 6.0,
+    "tail1": -16.0, "tail2": -9.0, "scapula": 10.0,
+}
+
+
+def _body(**over):
+    return {**_STANDING, **over}
+
+
+GAITS = {
+    # ── Walk: lateral-sequence four-beat, the bear's rolling amble ───────────
+    # LH, LF, RH, RF evenly spaced, duty 0.62 so two or three paws are always
+    # down. The old clip had its front paws 112 mm through the floor and moving
+    # FORWARD while planted, which is why the walk read as a shuffle.
+    "Walk": {
+        "frames": 48, "stride_frames": 48, "loop": True,
+        "description": ("Lateral-sequence four-beat walk: long overlapping "
+                        "stances, plantigrade heel-down, heavy shoulder roll."),
+        "contact": {("hind", "L"): 0.00, ("fore", "L"): 0.25,
+                    ("hind", "R"): 0.50, ("fore", "R"): 0.75},
+        "duty": {"hind": 0.62, "fore": 0.62},
+        "sweep": 1.748,
+        "plant": {"hind": -0.295, "fore": 1.24},
+        "y_swing": {"hind": [(0.22, -1.10), (0.52, -0.55), (0.82, 0.06)],
+                    "fore": [(0.22, -1.09), (0.52, -0.52), (0.82, 0.05)]},
+        "z_swing": {"hind": [(0.20, 0.13), (0.48, 0.20), (0.76, 0.11), (0.92, 0.03)],
+                    "fore": [(0.20, 0.12), (0.48, 0.18), (0.76, 0.10), (0.92, 0.03)]},
+        "foot_stance": {"hind": [(0.00, -8), (0.22, 10), (0.62, 14), (0.86, 2), (1.00, -30)],
+                        "fore": [(0.00, -7), (0.22, 9), (0.62, 12), (0.86, 1), (1.00, -26)]},
+        "foot_swing": {"hind": [(0.25, -14), (0.55, 8), (0.80, 10), (0.94, -6)],
+                       "fore": [(0.25, -12), (0.55, 7), (0.80, 9), (0.94, -5)]},
+        "toe_stance": {"hind": [(0.00, -3), (0.30, 0), (0.75, -4), (1.00, -20)],
+                       "fore": [(0.00, -3), (0.30, 0), (0.75, -4), (1.00, -18)]},
+        "toe_swing": {"hind": [(0.25, -4), (0.60, 3), (0.88, 0)],
+                      "fore": [(0.25, -4), (0.60, 3), (0.88, 0)]},
+        "x_stance": {"hind": [(0.00, 0.0), (1.00, 0.0)],
+                     "fore": [(0.00, -0.02), (1.00, -0.02)]},
+        "x_swing": {"hind": [(0.50, 0.03), (0.90, 0.01)],
+                    "fore": [(0.50, 0.01), (0.90, 0.0)]},
+        # Four footfalls give the body two shallow dips, not four: the pairs
+        # load together enough that the trunk reads as rocking, not stuttering.
+        "root_lift": [
+        (0.00, -0.1, None), (0.14, -0.14, None), (0.26, -0.1, None),
+        (0.38, -0.13, None), (0.50, -0.1, None), (0.64, -0.14, None),
+        (0.76, -0.1, None), (0.88, -0.13, None)
+    ],
+        "root_surge": [(0.00, 0.0, None), (0.25, 0.008, None),
+                       (0.50, 0.0, None), (0.75, -0.008, None)],
+        "root_pitch": [(0.00, 0.4, None), (0.25, -0.5, None),
+                       (0.50, 0.4, None), (0.75, -0.5, None)],
+        # A walking bear's shoulders roll visibly, once per lateral pair.
+        "roll": [(0.00, 2.2, None), (0.25, 0.0, None),
+                 (0.50, -2.2, None), (0.75, 0.0, None)],
+        "flex": [(0.00, 0.5, None), (0.25, -0.4, None),
+                 (0.50, 0.5, None), (0.75, -0.4, None)],
+        "head_pump": [(0.00, 0.5, None), (0.25, -0.5, None),
+                      (0.50, 0.5, None), (0.75, -0.5, None)],
+        "body": _body(pelvis=1.6, spine=2.4, chest=-2.6, neck1=-3.0, neck2=-2.0,
+                      head=4.0, neck_flex=2.0, pump1=1.6, pump2=1.0, pump3=1.2,
+                      jaw=0.0, jaw_move=0.0, ear=2.0, ear_move=0.6, ear_out=2.0,
+                      tail1=-4.0, tail2=-2.0, scapula=6.0, look=2.0),
+    },
+
+    # ── Trot: diagonal pairs, the bear's ground-covering gait ────────────────
+    "Trot": {
+        "frames": 16, "stride_frames": 16, "loop": True,
+        "description": ("Diagonal-pair trot: LH with RF, RH with LF, a short "
+                        "suspension between the two beats."),
+        "contact": {("hind", "L"): 0.00, ("fore", "R"): 0.00,
+                    ("hind", "R"): 0.50, ("fore", "L"): 0.50},
+        "duty": {"hind": 0.42, "fore": 0.42},
+        "sweep": 2.186,
+        "plant": {"hind": -0.32, "fore": 0.995},
+        "y_swing": {"hind": [(0.20, -1.10), (0.50, -0.50), (0.84, 0.09)],
+                    "fore": [(0.20, -1.09), (0.50, -0.48), (0.84, 0.07)]},
+        "z_swing": {"hind": [(0.18, 0.20), (0.44, 0.33), (0.72, 0.22), (0.90, 0.08)],
+                    "fore": [(0.18, 0.18), (0.44, 0.29), (0.72, 0.19), (0.90, 0.07)]},
+        "foot_stance": {"hind": [(0.00, -14), (0.30, 6), (0.60, 10), (0.84, -2), (1.00, -34)],
+                        "fore": [(0.00, -13), (0.30, 5), (0.60, 9), (0.84, -2), (1.00, -31)]},
+        "foot_swing": {"hind": [(0.22, -20), (0.48, 8), (0.75, 12), (0.92, -4)],
+                       "fore": [(0.22, -18), (0.48, 7), (0.75, 11), (0.92, -3)]},
+        "toe_stance": {"hind": [(0.00, -5), (0.35, 0), (0.75, -6), (1.00, -22)],
+                       "fore": [(0.00, -4), (0.35, 0), (0.75, -5), (1.00, -20)]},
+        "toe_swing": {"hind": [(0.24, -2), (0.55, 4), (0.86, 0)],
+                      "fore": [(0.24, -2), (0.55, 4), (0.86, 0)]},
+        "x_stance": {"hind": [(0.00, 0.0), (1.00, 0.0)],
+                     "fore": [(0.00, -0.03), (1.00, -0.03)]},
+        "x_swing": {"hind": [(0.50, 0.04), (0.90, 0.01)],
+                    "fore": [(0.50, 0.0), (0.90, -0.01)]},
+        "root_lift": [
+        (0.00, -0.11, None), (0.16, -0.18, None), (0.34, -0.1, None),
+        (0.46, -0.05, None), (0.50, -0.11, None), (0.66, -0.18, None),
+        (0.84, -0.1, None), (0.96, -0.05, None)
+    ],
+        "root_surge": [(0.00, 0.0, None), (0.25, 0.012, None),
+                       (0.50, 0.0, None), (0.75, 0.012, None)],
+        "root_pitch": [(0.00, 0.6, None), (0.25, -1.4, None),
+                       (0.50, 0.6, None), (0.75, -1.4, None)],
+        "roll": [(0.00, 1.1, None), (0.25, 0.0, None),
+                 (0.50, -1.1, None), (0.75, 0.0, None)],
+        "flex": [(0.00, 0.7, None), (0.25, -0.7, None),
+                 (0.50, 0.7, None), (0.75, -0.7, None)],
+        "head_pump": [(0.00, 0.6, None), (0.28, -0.8, None),
+                      (0.50, 0.6, None), (0.78, -0.8, None)],
+        "body": _body(pelvis=2.6, spine=4.0, chest=-4.5, neck1=-5.0, neck2=-3.0,
+                      head=5.5, neck_flex=3.2, pump1=2.0, pump2=1.2, pump3=1.5,
+                      jaw=-3.0, jaw_move=0.5, ear=9.0, ear_move=0.8, ear_out=4.0,
+                      tail1=-10.0, tail2=-6.0, scapula=8.0, look=2.2),
+    },
+
+    # ── run: half-bound rotary gallop ────────────────────────────────────────
+    # The hind pair lands close together and drives, a short extended flight
+    # follows, the fores catch in sequence, and the long gathered flight is
+    # where the hind legs swing back through under the belly. Footfall order
+    # LH-RH-RF-LF is the rotary part; the tight hind pairing is what separates a
+    # bear from a dog. The fores get the shorter contact because the gathered
+    # flight lifts the front of the animal: at duty 0.32 the lead foreleg was
+    # still pinned to the ground while its own shoulder climbed 28 cm away from
+    # it, and the leg ran out of reach.
+    "run": {
+        "frames": 48, "stride_frames": 16, "loop": True,
+        "description": ("Half-bound rotary gallop, three 16-frame strides: hind "
+                        "pair drives together, short extended flight, fores "
+                        "catch in sequence, long gathered flight."),
+        "contact": {("hind", "L"): 0.00, ("hind", "R"): 0.08,
+                    ("fore", "R"): 0.46, ("fore", "L"): 0.54},
+        "duty": {"hind": 0.27, "fore": 0.23},
+        "sweep": 4.845,
+        "plant": {"hind": -0.375, "fore": 1.44},
+        "y_swing": {"hind": [(0.18, -1.131), (0.41, -0.809), (0.65, -0.255), (0.85, 0.120)],
+                    "fore": [(0.18, -1.103), (0.38, -0.781), (0.62, -0.299), (0.85, 0.040)]},
+        # Both pairs are held UP late into their swing rather than easing down
+        # early, and that is what makes the gathered flight read as flight.
+        "z_swing": {"hind": [(0.15, 0.28), (0.35, 0.50), (0.58, 0.52), (0.80, 0.44), (0.93, 0.19)],
+                    "fore": [(0.12, 0.30), (0.32, 0.42), (0.56, 0.38), (0.78, 0.20), (0.91, 0.08)]},
+        "foot_stance": {"hind": [(0.00, -20), (0.31, 4), (0.56, 8), (0.81, -4), (1.00, -44)],
+                        "fore": [(0.00, -18), (0.38, 6), (0.63, 12), (0.88, -6), (1.00, -40)]},
+        "foot_swing": {"hind": [(0.21, -26), (0.44, 8), (0.71, 16), (0.88, 0)],
+                       "fore": [(0.21, -24), (0.44, 10), (0.71, 14), (0.88, -2)]},
+        "toe_stance": {"hind": [(0.00, -6), (0.44, 0), (0.75, -8), (1.00, -26)],
+                       "fore": [(0.00, -5), (0.44, 0), (0.75, -7), (1.00, -24)]},
+        "toe_swing": {"hind": [(0.21, 0), (0.49, 6), (0.79, 0)],
+                      "fore": [(0.24, 0), (0.50, 5), (0.79, 0)]},
+        "x_stance": {"hind": [(0.00, 0.0), (1.00, 0.0)],
+                     "fore": [(0.00, -0.05), (0.50, -0.06), (1.00, -0.05)]},
+        "x_swing": {"hind": [(0.34, 0.07), (0.71, 0.05), (0.93, 0.01)],
+                    "fore": [(0.34, 0.0), (0.78, -0.03)]},
+        "root_lift": [
+        (0.00, -0.05, None), (0.08, -0.12, None), (0.16, -0.18, None),
+        (0.27, -0.12, None), (0.35, -0.09, None), (0.41, 0.0, None),
+        (0.46, -0.05, None), (0.54, -0.13, None), (0.62, -0.18, None),
+        (0.72, -0.15, None), (0.77, -0.11, None), (0.89, 0.03, None)
+    ],
+        "root_surge": [(0.00, 0.0, None), (0.18, -0.025, None), (0.36, 0.02, None),
+                       (0.46, 0.03, None), (0.62, -0.02, None), (0.84, 0.025, None)],
+        "root_pitch": [(0.00, 0.5, None), (0.16, -1.2, None), (0.33, 3.0, None),
+                       (0.44, 1.2, None), (0.60, -3.0, None), (0.76, -0.6, None),
+                       (0.90, 1.8, None)],
+        "roll": None,
+        "flex": [(0.00, 0.55, None), (0.12, 0.0, None), (0.25, -0.6, None),
+                 (0.38, -1.0, None), (0.50, -0.85, None), (0.66, -0.10, None),
+                 (0.80, 0.6, None), (0.92, 1.0, None)],
+        "head_pump": [(0.00, 0.3, None), (0.18, 0.6, None), (0.36, 1.0, None),
+                      (0.48, 0.5, None), (0.62, -1.0, None), (0.80, -0.3, None),
+                      (0.91, 0.5, None)],
+        "body": _body(),
+    },
+}
+
+# Worst hip-to-ankle extension asked of each leg while it carries weight, per
+# gait; filled in by build_gaits and checked by validate.
+GAIT_REPORT = {}
+
+
+def build_gaits(rig):
+    """Replace Walk, Trot and run with solved clips. Returns them by name.
+
+    Every frame is keyed, not every fourth. The paw track is solved in world
+    space but Blender interpolates the JOINT ANGLES between keys, and an angle
+    midway between two solved poses does not put the paw midway between two
+    solved positions: at one key in four the planted paw sank 55 mm through the
+    ground halfway to the next key. It is free downstream too --
+    `export_bake_animation` resamples per frame into the GLB regardless.
+    """
+    GAIT_REPORT.clear()
+    built = {}
+    for name, gait in GAITS.items():
+        old = bpy.data.actions.get(name)
+        if old is not None:
+            if rig.animation_data and rig.animation_data.action is old:
+                rig.animation_data.action = None
+            old.use_fake_user = False
+            bpy.data.actions.remove(old)
+
+        action = new_action(rig, name, gait["frames"], gait["loop"], gait["description"])
+        poser = GaitPoser(rig, gait)
+        stride = gait["stride_frames"]
+        worst = {}
+        for frame in range(0, gait["frames"] + 1):
+            bpy.context.scene.frame_set(frame)
+            ratios = poser.frame((frame % stride) / stride,
+                                 (frame % gait["frames"]) / gait["frames"])
+            for bone in rig.pose.bones:
+                bone.keyframe_insert("rotation_euler", frame=frame, group=bone.name)
+            rig.pose.bones["root"].keyframe_insert("location", frame=frame, group="root")
+            phase = (frame % stride) / stride
+            for (kind, side), contact in gait["contact"].items():
+                leg = f"{kind}.{side}"
+                if (phase - contact) % 1.0 < gait["duty"][kind] - 1e-9:
+                    worst[leg] = max(worst.get(leg, 0.0), ratios[leg])
+        set_action_handles(action, loop=gait["loop"])
+        GAIT_REPORT[name] = worst
+        built[name] = action
+    return built
+
+
 def build_other_actions(rig):
     """Author the bear's special poses and three locomotion clips."""
     actions = {}
@@ -896,111 +1401,8 @@ def build_other_actions(rig):
     set_action_handles(alert)
     actions[alert.name] = alert
 
-    # ── Walk: heavy four-beat lateral sequence, one stride over 48 frames ──
-    walk = new_action(
-        rig, "Walk", 48, True,
-        "Natural bear walk: four-beat lateral sequence, long stance and compact swing.",
-    )
-    fore_upper = (14, 11, 5, -4, -12, -8, 0, 8)
-    fore_lower = (-20, -14, -5, 0, 4, -16, -26, -24)
-    fore_foot = (6, 4, 1, 0, -2, 5, 9, 8)
-    hind_upper = (12, 9, 4, -3, -10, -6, 0, 7)
-    hind_lower = (-16, -11, -4, 0, 3, -14, -23, -20)
-    hind_foot = (5, 3, 1, 0, -1, 5, 8, 7)
-    contacts = {"hind.L": 0, "fore.L": 12, "hind.R": 24, "fore.R": 36}
-    walk_up = (0, 0.006, 0.012, 0.006, 0, 0.006, 0.012, 0.006, 0)
-    walk_surge = (0, 0.004, 0.008, 0.004, 0, -0.004, -0.008, -0.004, 0)
-    roll = (1.2, 0, -1.2, 0, 1.2, 0, -1.2, 0, 1.2)
-    pitch = (0, 0.6, 0, -0.6, 0, 0.6, 0, -0.6, 0)
-    for index, frame in enumerate(range(0, 49, 6)):
-        rotations = {
-            "pelvis": (pitch[index], 0, roll[index]),
-            "spine_01": (-0.45 * pitch[index], 0, -0.35 * roll[index]),
-            "chest": (-0.9 * pitch[index], 0, -0.45 * roll[index]),
-            "neck_01": (0.45 * pitch[index], 0, 0.18 * roll[index]),
-            "neck_02": (0.25 * pitch[index], 0, 0.12 * roll[index]),
-            "head": (0.20 * pitch[index], 0, 0.10 * roll[index]),
-        }
-        for leg, contact in contacts.items():
-            kind, side = leg.split(".")
-            phase = int(((frame - contact) % 48) / 6) % 8
-            if kind == "fore":
-                upper, lower, foot = fore_upper[phase], fore_lower[phase], fore_foot[phase]
-                rotations[f"scapula.{side}"] = (upper * 0.20, 0, 0)
-            else:
-                upper, lower, foot = hind_upper[phase], hind_lower[phase], hind_foot[phase]
-            rotations[f"{kind}_upper.{side}"] = (upper, 0, 0)
-            rotations[f"{kind}_lower.{side}"] = (lower, 0, 0)
-            rotations[f"{kind}_foot.{side}"] = (foot, 0, 0)
-        key_pose(rig, frame, rotations, {"root": (0, walk_up[index], walk_surge[index])})
-    set_action_handles(walk, loop=True)
-    actions[walk.name] = walk
-
-    # ── Trot: fox-referenced 16-frame diagonal-pair stride ─────────────────
-    trot = new_action(
-        rig, "Trot", 16, True,
-        "Diagonal-pair trot based on the fox cadence, with a lower heavy-bear suspension arc.",
-    )
-    for frame in range(0, 17, 2):
-        swing = math.sin(math.pi * frame / 8.0)
-        body = math.sin(math.pi * frame / 4.0)
-        hop = 0.055 * abs(swing)
-        rotations = {
-            "pelvis": (1.5 * body, 0, 0.2 * swing),
-            "chest": (-2.5 * body, 0, -0.1 * swing),
-            "neck_01": (1.0 * body, 0, 0),
-            "head": (0.5 * body, 0, 0),
-            "scapula.L": (0.9 * swing, 0, 0),
-            "scapula.R": (-0.9 * swing, 0, 0),
-            "fore_upper.L": (18 * swing, 0, 0),
-            "fore_lower.L": (-18 * swing, 0, 0),
-            "fore_upper.R": (-18 * swing, 0, 0),
-            "fore_lower.R": (18 * swing, 0, 0),
-            "hind_upper.L": (-22 * swing, 0, 0),
-            "hind_lower.L": (22 * swing, 0, 0),
-            "hind_upper.R": (22 * swing, 0, 0),
-            "hind_lower.R": (-22 * swing, 0, 0),
-        }
-        key_pose(rig, frame, rotations, {"root": (0, hop, 0.008 * abs(swing))})
-    set_action_handles(trot, loop=True)
-    actions[trot.name] = trot
-
-    # ── run: paired hind beat, paired fore beat, three 16-frame strides ─────
-    run = new_action(
-        rig, "run", 48, True,
-        "Three paired-foot gallop strides: hind pair gathers/launches, then fore pair catches.",
-    )
-    run_poses = {
-        0:  {"up": 0.080, "root": -1, "pelvis": -3, "chest": 4,
-             "fu": 30, "fl": -10, "hu": -28, "hl": 8, "ff": 0, "hf": 0},
-        4:  {"up": 0.000, "root": -2, "pelvis": 3, "chest": -5,
-             "fu": -12, "fl": 22, "hu": 36, "hl": -58, "ff": -8, "hf": 35},
-        8:  {"up": 0.035, "root": 3, "pelvis": 0, "chest": 2,
-             "fu": 14, "fl": -35, "hu": 18, "hl": -32, "ff": 12, "hf": 12},
-        12: {"up": 0.070, "root": -1, "pelvis": -3, "chest": 4,
-             "fu": 28, "fl": -18, "hu": -38, "hl": 8, "ff": 4, "hf": 0},
-    }
-    for frame in range(0, 49, 4):
-        pose = run_poses[frame % 16]
-        rotations = {
-            "root": (pose["root"], 0, 0),
-            "pelvis": (pose["pelvis"], 0, 0),
-            "chest": (pose["chest"], 0, 0),
-            "neck_01": (-6, 0, 0),
-            "neck_02": (-4, 0, 0),
-            "head": (2, 0, 0),
-        }
-        for side, offset in (("L", 1.0), ("R", -1.0)):
-            rotations[f"scapula.{side}"] = (pose["fu"] * 0.16 + offset, 0, 0)
-            rotations[f"fore_upper.{side}"] = (pose["fu"] + offset, 0, 0)
-            rotations[f"fore_lower.{side}"] = (pose["fl"] - offset, 0, 0)
-            rotations[f"fore_foot.{side}"] = (pose["ff"], 0, 0)
-            rotations[f"hind_upper.{side}"] = (pose["hu"] + offset, 0, 0)
-            rotations[f"hind_lower.{side}"] = (pose["hl"] - offset, 0, 0)
-            rotations[f"hind_foot.{side}"] = (pose["hf"], 0, 0)
-        key_pose(rig, frame, rotations, {"root": (0, pose["up"], 0)})
-    set_action_handles(run, loop=True)
-    actions[run.name] = run
+    # ── Walk, Trot and run: solved against the ground; see the section above
+    actions.update(build_gaits(rig))
 
     rig["current_actions"] = "idle, graze_in, graze, graze_out, alert, Walk, Trot, run"
     rig["variable_duration_actions"] = "graze: graze_in -> graze (loop) -> graze_out"
@@ -1073,6 +1475,7 @@ def validate(body, rig, actions):
         "fore_upper.R", "fore_lower.R", "fore_foot.R", "fore_toe.R",
         "hind_upper.L", "hind_lower.L", "hind_foot.L", "hind_toe.L",
         "hind_upper.R", "hind_lower.R", "hind_foot.R", "hind_toe.R",
+        "fore_tip.L", "fore_tip.R", "hind_tip.L", "hind_tip.R",
         "tail_01", "tail_02",
     }
     actual = {bone.name for bone in rig.data.bones}
@@ -1092,6 +1495,46 @@ def validate(body, rig, actions):
         assert bool(actions[name]["loop"]) is loop, (name, actions[name]["loop"], loop)
     assert [actions[name]["phase"] for name in ("graze_in", "graze", "graze_out")] == \
         ["enter", "hold", "exit"]
+
+    # The gallop is solved rather than keyed, so its two physical promises are
+    # checked here rather than taken on trust: no leg is asked for more reach
+    # than it has while it is carrying weight, and every planted toe tip is on
+    # the ground. Either one failing is a foot that slides, and a foot that
+    # slides is exactly what the clip this replaced did for its whole length.
+    assert set(GAIT_REPORT) == set(GAITS), (set(GAIT_REPORT), set(GAITS))
+    strained = {f"{clip}/{leg}": round(r, 4)
+                for clip, legs in GAIT_REPORT.items() for leg, r in legs.items() if r > 0.985}
+    assert not strained, f"legs clamped under load: {strained}"
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    adrift, disagree = [], []
+    for name, gait in GAITS.items():
+        rig.animation_data.action = actions[name]
+        if rig.animation_data.action_slot is None and len(actions[name].slots):
+            rig.animation_data.action_slot = actions[name].slots[0]
+        stride = gait["stride_frames"]
+        speeds = []
+        for (kind, side), contact in gait["contact"].items():
+            window = sorted(((f / stride - contact) % 1.0, f) for f in range(stride))
+            window = [(p, f) for p, f in window if p < gait["duty"][kind] - 1e-9]
+            track_y = []
+            for _, frame in window:
+                bpy.context.scene.frame_set(frame)
+                depsgraph.update()
+                posed = rig.evaluated_get(depsgraph)
+                tip = posed.matrix_world @ posed.pose.bones[f"{kind}_tip.{side}"].head
+                if abs(tip.z - GROUND) > 1e-3:
+                    adrift.append((name, frame, f"{kind}.{side}", round(tip.z, 4)))
+                track_y.append(tip.y)
+            span = window[-1][0] - window[0][0]
+            speeds.append(-(track_y[-1] - track_y[0]) / span)
+        if max(speeds) - min(speeds) > 1e-3:
+            disagree.append((name, [round(v, 4) for v in speeds]))
+    assert not adrift, f"planted paws off the ground: {adrift[:8]}"
+    # Four paws on one piece of ground must agree about how fast it is moving.
+    # They did not before: the old Walk's front paws travelled forward while its
+    # hind paws travelled back, which is a clip that cannot be measured at all.
+    assert not disagree, f"paws disagree on ground speed: {disagree}"
     assert min((body.matrix_world @ v.co).z for v in body.data.vertices) > -0.08
     assert max((body.matrix_world @ v.co).z for v in body.data.vertices) > 1.85
     unweighted = [

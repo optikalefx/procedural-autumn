@@ -36,6 +36,14 @@ export const FOX = {
     // The bones `measureStride` samples to find how much ground a cycle covers.
     // Blender's exporter strips the dots, so `hind_foot.L` is `hind_footL` here.
     feet: ['fore_footL', 'fore_footR', 'hind_footL', 'hind_footR'],
+    // No `measure: 'contact'` here, and that is a finding rather than an
+    // oversight. The fox's clips were keyed as joint angles and its paws never
+    // settle on the ground: measured by contact its Walk reads 0.01 m/s and its
+    // Trot reads a NEGATIVE ground speed, because the fore and hind paws travel
+    // in opposite directions while they are down. Until the three clips are
+    // rebuilt against the ground the way the bear's were, this species keeps the
+    // old excursion measurement — which is wrong in a stable, familiar way
+    // rather than wrong in a way that throws at load.
     clips: {
       // `rate` is a playback speed and NOT an edit: every pose the fox strikes
       // is a pose that is in the .blend. A clip with no `rate` is a pose clip —

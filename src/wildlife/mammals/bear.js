@@ -36,10 +36,21 @@ export const BEAR = {
     // max(y + ry) = 1.185 m at the hump, so the valley's bears are the same
     // size of animal they were before the model changed.
     height: 1.18,
-    // The bones `measureStride` samples to find how much ground a cycle
-    // covers. Blender's exporter strips the dots, so `hind_foot.L` is
-    // `hind_footL` here.
-    feet: ['fore_footL', 'fore_footR', 'hind_footL', 'hind_footR'],
+    // The points on the animal that touch the ground, which `measureGround`
+    // samples to read how fast the ground moves under it. These are four
+    // zero-weight bones sitting exactly on the pads, and naming them rather
+    // than the ankles is the difference between a measurement and an estimate:
+    // a bear is plantigrade, so through a stance the foot rolls over its
+    // planted toe and the ankle arcs forward over the contact point, reading
+    // 23% fast at a walk. Blender's exporter strips the dots, so `hind_tip.L`
+    // is `hind_tipL` here.
+    feet: ['fore_tipL', 'fore_tipR', 'hind_tipL', 'hind_tipR'],
+    // Read this animal's speed from where its paws actually touch, rather than
+    // from how far they swing. Saying so is a claim about the ASSET: all three
+    // locomotion clips are solved against the ground in `build_bear_reference`,
+    // every planted paw is on Z=0 to the millimetre, and all four agree on how
+    // fast the ground is moving. The fox has no such claim to make yet.
+    measure: 'contact',
     clips: {
       // `rate` is a playback speed and NOT an edit: every pose the bear
       // strikes is a pose that is in the .blend. A clip with no `rate` is a
@@ -47,21 +58,24 @@ export const BEAR = {
       // rate-driven.
       //
       stand: { name: 'idle' },
-      // Authored at one stride per 48 frames, which at 24 fps is 0.50 Hz; a
-      // walking quadruped runs 1.0-1.8 Hz and a bear's heavy rolling walk sits
-      // at the bottom of that. 2x puts it at exactly 1.0 Hz. This is a
-      // judgement about cadence and nothing else — raise it and the bear
-      // covers ground faster in exact proportion.
+      // A four-beat lateral-sequence walk, one stride per 48 frames, which at
+      // 24 fps is 0.50 Hz; a walking quadruped runs 1.0-1.8 Hz and a bear's
+      // heavy rolling walk sits at the bottom of that. 2x puts it at exactly
+      // 1.0 Hz. This is a judgement about cadence and nothing else — raise it
+      // and the bear covers ground faster in exact proportion.
       walk: { name: 'Walk', rate: 2.0 },
       // One diagonal-pair stride over 16 frames — 1.5 Hz as authored, already
       // a real trotting cadence. 1.3x lifts it to 1.95 Hz, which is what keeps
       // the trot clear of the walk on the speed ladder below; much more and
       // the artist's timing is the thing being undone.
       trot: { name: 'Trot', rate: 1.3 },
-      // Three paired-foot gallop strides in one two-second clip, so the
-      // sampled paw reach is ONE of them and ground speed over the full
-      // duration has to count all three or the bear travels at a third of what
-      // its legs are doing.
+      // A half-bound rotary gallop: the hind pair drives together, a short
+      // extended flight, the fores catch in sequence, then the long gathered
+      // flight. Three 16-frame strides in one two-second clip — 1.5 Hz as
+      // authored, and 1.25x lifts it to 1.88 Hz, a real bear's gallop cadence.
+      // `strides` no longer feeds the speed (a ground speed is a speed however
+      // many strides went past while it was read); it only divides the loader's
+      // readout into a per-stride distance.
       run: { name: 'run', rate: 1.25, strides: 3 },
       // The graze is authored in three phases, and declaring `grazeIn` and
       // `grazeOut` is what tells `GlbRig` to sequence them instead of
@@ -134,19 +148,38 @@ export const BEAR = {
   // regression is visible in a diff — they are overwritten every boot, and
   // editing them changes nothing.
   //
-  // They are also the standing finding for this animal. A black bear walks at
-  // about 1.05 m/s, trots at 2.6 and gallops at 6.2 — which is exactly what the
-  // procedural bear was authored to do, because there the stride was a number
-  // in a file. Here it is whatever the .blend contains, and the .blend contains
-  // strides of 30.6 cm per 2.00 s walk cycle, 25.8 cm per 0.67 s trot and
-  // 52.4 cm x3 per 2.00 s gallop. At honest cadences that is a bear moving at
-  // roughly a third of a real walk and a seventh of a real gallop.
+  // They were the standing finding for this animal, and are no longer. A black
+  // bear walks at about 1.05 m/s, trots at 2.6 and gallops at 6.2. The clips now
+  // measure 0.98 / 2.38 / 5.06 — 93%, 91% and 82% of a real bear — off strides
+  // of 97.6 cm per 1.0 s walk cycle, 121.9 cm per 0.51 s trot and 269.7 cm per
+  // gallop stride, which are a real bear's strides too.
   //
-  // Every one of those is a stride to WIDEN IN BLENDER, and explicitly not a
-  // rate to raise here: at 3.2x the walk clip would be a bear sprinting its
-  // legs to amble, and the rate clamp in `glb_rig.js` would be carrying the
-  // difference. See CLAUDE.md.
-  gait: { walk: 0.306, trot: 0.503, run: 0.983 },
+  // Getting there took a correction in each layer, and the order matters,
+  // because the second one is invisible until the first is done:
+  //
+  //   The CLIPS did not touch the ground. Keyed as joint angles against legs
+  //   standing at 0.97 of their own reach, the walk's front paws sat 112 mm
+  //   BELOW the floor and travelled forwards while planted, the trot touched for
+  //   one frame in sixteen, and the gallop was airborne fourteen frames in
+  //   sixteen with both legs of each pair in lockstep. All three are now solved:
+  //   the paw is authored in world space on the ground and the joints are
+  //   whatever reach it. See `build_bear_reference.py`.
+  //
+  //   The MEASUREMENT could not read them. `measureStride` took a paw's whole
+  //   excursion over a cycle as the ground that cycle covered, which is true
+  //   only of a foot planted for the whole cycle; a gallop's paws are down for a
+  //   quarter of theirs. So the bear was driven at a third of the speed its own
+  //   legs were cycling at, and skated. Rebuilding the run to cover 23% more
+  //   ground moved the old number 4% — which is what proved the fault was here
+  //   and not in the .blend. `measureGround` now reads the speed the paws hold
+  //   while planted; see `glb_rig.js`.
+  //
+  // What the remaining 18% on the gallop costs is the rest pose. The bear stands
+  // at 0.97 of its leg reach, so stride has to be bought by lowering the body,
+  // and past about 5 cm it starts to read as crawling rather than running. That
+  // is a number to fix in the REST POSE's zigzag, not here and not by raising a
+  // rate. See CLAUDE.md.
+  gait: { walk: 0.976, trot: 2.377, run: 5.057 },
 
   brain: {
     // A bear mostly does not care that you exist. It looks up when you get
