@@ -346,3 +346,180 @@ def seam(rig, act, length):
     sample(rig, act, 1 + length)
     last = {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
     return max((first[k].translation - last[k].translation).length for k in first)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Solved gaits
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Author the CONTACT POINT, not the joint angles. A paw is either on the ground
+# or it is not, and that is a property to construct rather than to check for
+# afterwards: each foot follows a path in armature space — a straight sweep back
+# at standing height while planted, a lifted arc forward while swinging — and
+# the leg is solved to reach it.
+#
+# The pack's own locomotion cannot be relied on for this. Measured duty per foot:
+# the raccoon's walk is 0.47-0.53 and genuinely planted, but the deer's is
+# 0.25/0.30/0.23/0.10 with the fore travelling 0.52 where the hind travels 0.63.
+# Clip quality varies per animal, so measure before trusting, and solve where it
+# does not hold.
+
+LATERAL_WALK = {("hind", "L"): 0.00, ("fore", "L"): 0.25,
+                ("hind", "R"): 0.50, ("fore", "R"): 0.75}
+DIAGONAL_TROT = {("hind", "L"): 0.00, ("fore", "R"): 0.00,
+                 ("hind", "R"): 0.50, ("fore", "L"): 0.50}
+
+SAFETY = 0.955          # of reach_limit; a leg at 1.0 is a locked leg
+PROBE = 64              # reach is a property of the geometry, not of the keying
+
+
+def gait_rest(rig, legs):
+    """Rest geometry for every leg in `legs`.
+
+    `legs` maps a (pair, side) key to a dict of bone names:
+        scap    the scapula, swung in phase to carry the hip
+        a, b    the two IK links
+        target  the bone the IK places (NOT always the same depth per pair —
+                the raccoon's fore leg has no `foot` bone at all)
+        below   bones under the target, re-aimed so the paw stays flat
+        contact the bone whose head actually touches the ground
+    """
+    clear(rig)
+    out = {}
+    for k, L in legs.items():
+        a = rig.pose.bones[L["a"]].head.copy()
+        b = rig.pose.bones[L["b"]].head.copy()
+        t = rig.pose.bones[L["target"]].head.copy()
+        u = (t - a).normalized()
+        perp = (b - a) - u * (b - a).dot(u)
+        out[k] = dict(
+            target=t, l1=(b - a).length, l2=(t - b).length,
+            reach=reach_limit((b - a).length, (t - b).length) * SAFETY,
+            bend=(perp.normalized() if perp.length > 1e-5 else Vector((0, -1, 0))),
+            scap_dir=(rig.pose.bones[L["scap"]].tail
+                      - rig.pose.bones[L["scap"]].head).normalized(),
+            below_dirs=[(rig.pose.bones[n].tail - rig.pose.bones[n].head).normalized()
+                        for n in L["below"]],
+            contact=rig.pose.bones[L["contact"]].head.copy(),
+        )
+    return out
+
+
+def gait_pose(rig, legs, rest, spec, t, sweep):
+    """One instant of a gait. Returns the worst load on a WEIGHTED leg."""
+    clear(rig)
+    root = rig.pose.bones["Root"]
+    dz = -spec["crouch"] + math.sin(t * math.tau * 2.0) * spec["bob"]
+    root.location = local_translation(root, (0.0, 0.0, dz))
+
+    worst = 0.0
+    for k, L in legs.items():
+        R = rest[k]
+        half = sweep * 0.5
+        p = (t + spec["phase"][k]) % 1.0
+        if p < spec["duty"]:
+            u = p / spec["duty"]
+            goal = Vector((R["target"].x, R["target"].y - half + sweep * u,
+                           R["target"].z))
+            planted = True
+        else:
+            v = (p - spec["duty"]) / (1.0 - spec["duty"])
+            goal = Vector((R["target"].x, R["target"].y + half - sweep * v,
+                           R["target"].z + spec["lift"] * math.sin(math.pi * v)))
+            planted = False
+
+        # The scapula swings in phase with its own paw, carrying the hip toward
+        # it. This is where most of a quadruped's stride comes from; without it
+        # the two links below are asked for reach they do not have. The SIGN was
+        # settled by measurement, not reasoning — inverting it cut the solved
+        # sweep by two thirds.
+        lead = (R["target"].y - goal.y) / max(sweep, 1e-6)
+        point(rig.pose.bones[L["scap"]], rx(-spec["scapula"] * lead) @ R["scap_dir"])
+
+        a = rig.pose.bones[L["a"]]
+        if planted:
+            worst = max(worst, (goal - a.head).length / R["reach"])
+        knee = ik2(a.head.copy(), goal, R["l1"], R["l2"], R["bend"])
+        point(a, knee - a.head)
+        point(rig.pose.bones[L["b"]], goal - rig.pose.bones[L["b"]].head)
+        for n, d in zip(L["below"], R["below_dirs"]):
+            point(rig.pose.bones[n], d)
+    return worst, (goal if False else None)
+
+
+def solve_sweep(rig, legs, rest, spec):
+    """Largest sweep no weighted leg has to clamp for, anywhere in the cycle.
+
+    Probed at a fixed resolution, NOT at the keyframes. Sampling the reach check
+    at the frame count made the answer depend on it — one rig reported 0.593 at
+    8 frames and 0.524 at 10 — because a coarse cycle never lands on the worst
+    instant.
+    """
+    lo, hi = 0.02, 2.0
+    for _ in range(28):
+        mid = (lo + hi) * 0.5
+        if max(gait_pose(rig, legs, rest, spec, i / PROBE, mid)[0]
+               for i in range(PROBE)) <= 1.0:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
+    """Solve one gait, key it every frame, validate it, and report its speed.
+
+    The speed is a FINDING and not a setting: the sweep is whatever the legs can
+    carry. A stride the legs cannot carry is a fact about the animal's
+    proportions, not something for this to paper over.
+    """
+    sweep = solve_sweep(rig, legs, rest, spec)
+    frames = spec["frames"]
+    bones = ["Root"] + [n for L in legs.values()
+                        for n in ([L["scap"], L["a"], L["b"]] + L["below"])]
+    act = new_action(rig, name, frames)
+    for i in range(frames + 1):
+        gait_pose(rig, legs, rest, spec, (i % frames) / frames, sweep)
+        key(rig, bones, 1 + i, loc={"Root"})
+    rig.animation_data.action = None
+    clear(rig)
+
+    cycle = frames / 24.0
+    speed = sweep * unit_m / cycle
+
+    # Validate the KEYED result against the path it was solved for. This is the
+    # phase-independent question — while planted, is the paw where the gait says
+    # it should be? Comparing travel BETWEEN keyframes measures the sampling
+    # instead: at an odd frame count the diagonal pairs get sampled at different
+    # points of their stance and report different distances while both track
+    # perfectly.
+    worst, where, drift = 0.0, None, 0.0
+    for i in range(frames + 1):
+        sample(rig, act, 1 + i)
+        t = (i % frames) / frames
+        for k, L in legs.items():
+            R = rest[k]
+            half = sweep * 0.5
+            p = (t + spec["phase"][k]) % 1.0
+            if p >= spec["duty"]:
+                continue
+            u = p / spec["duty"]
+            goal = Vector((R["target"].x, R["target"].y - half + sweep * u,
+                           R["target"].z))
+            got = rig.pose.bones[L["target"]].head
+            if (got - goal).length > worst:
+                worst, where = (got - goal).length, f"f{i} {k}"
+            drift = max(drift, abs(got.z - R["target"].z))
+    s = seam(rig, act, frames)
+    rig.animation_data.action = None
+    clear(rig)
+
+    print(f"[{name}] sweep {sweep:.3f} ({sweep*unit_m:.3f} m) over {cycle:.3f}s "
+          f"= {1/cycle:.2f} Hz -> {speed:.3f} m/s")
+    print(f"[{name}]   planted paw off its path {worst*1000:7.3f} mm ({where})")
+    print(f"[{name}]   planted paw height drift {drift*1000:7.3f} mm")
+    print(f"[{name}]   cycle seam               {s*1000:7.3f} mm")
+    assert worst < 0.001, f"{name}: a planted paw left its path by {worst*1000:.2f} mm"
+    assert drift < 0.001, f"{name}: a planted paw left the ground by {drift*1000:.2f} mm"
+    assert s < 1e-4, f"{name}: the cycle does not close: {s*1000:.3f} mm"
+    return speed

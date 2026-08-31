@@ -1,150 +1,100 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  deer — the animal the rest of the cast is measured against, now
-//  hand-authored.
+//  deer — the animal the rest of the cast is measured against.
 //
-//  This was a blueprint: profile arrays that `quadruped.js` lofted into a
-//  skeleton, with the gait solved against the ground every frame. It is now a
-//  mesh and eight clips modelled and animated in Blender
-//  (`assets/models/new_deer.blend`, built by `tools/build_new_deer.py`),
-//  exported to one GLB and played back by three's `AnimationMixer`
-//  (`../glb_rig.js`). The fox went first, then the bear; this is the third
-//  animal on that track.
+//  Now the bought pack's, with the locomotion solved on top. The mesh, rig and
+//  weights are ithappy's (`assets/models/Animals_v3.0.blend`); the clips this
+//  game needs and the pack does not ship correctly are solved onto that rig by
+//  `tools/build_deer_blend.py`, which saves `assets/models/deer_pack.blend`.
+//  `tools/export_pack_glb.py` turns that into `/models/deer_pack.glb`.
 //
-//  So this file carries no blueprint and no coat geometry any more. What it
-//  does carry is everything true about the ANIMAL rather than about how it is
-//  drawn — where it lives, what it minds, how far off it notices you — and
-//  none of that changed when the model did. The `brain` block below is
-//  byte-for-byte the one the procedural deer used.
+//  The `brain` block below is byte-for-byte the one the procedural deer used
+//  and the hand-authored deer kept. Where an animal lives and what it minds
+//  does not depend on who modelled it.
+//
+//  ── three meshes on one skeleton, which is what makes the variants real ───
+//  The pack ships buck, doe and fawn as separate models. Measured, their three
+//  armatures are IDENTICAL — same 33 bone names, every bone head in the same
+//  place to four decimals — so the build re-parents all three onto one rig and
+//  `hide` picks between them. Three genuinely different silhouettes, where the
+//  hand-authored deer had one mesh and dropped its antlers, and where the free
+//  pack gave one welded buck at four sizes.
+//
+//  What is lost against the hand-authored deer is the COAT: that asset was
+//  built in regions with a material per region, so a morph was a recolour.
+//  This is one textured palette material, so the variants carry no colour of
+//  their own. A stag is a different mesh, not a darker doe.
+//
+//  ── the clips ─────────────────────────────────────────────────────────────
+//    idle   331f  the pack's
+//    graze  392f  the pack's `Gesture`, and a real graze — muzzle 1.430 -> 0.385
+//    run     25f  the pack's; see `run` below
+//    walk    18f  SOLVED here. The pack's own walk was dropped, and that is a
+//                 measurement rather than a preference: duty per hoof
+//                 0.25/0.30/0.23/0.10 where a walk is DEFINED by a duty over
+//                 0.5, with the fore hooves travelling 0.52 over a cycle while
+//                 the hind travel 0.63. No single ground speed exists in it.
+//    trot    11f  SOLVED here — diagonal pairs, each hoof authored as a path
+//                 over the ground and the leg solved to reach it.
+//    alert  120f  authored here — head up, tail up, stiff left-then-right scan.
 //
 //  The rule that governs the asset is in CLAUDE.md and it is absolute: a GLB's
-//  animations are read-only. The gait speeds below are not authored here —
-//  they are MEASURED off the clips at load and written back onto this record,
-//  because how far a deer travels has to be whatever its legs actually do.
-//
-//  ── the size changed, deliberately ────────────────────────────────────────
-//  The procedural deer stood 1.821 m to the ear tips before variant scale, so
-//  a doe rendered at 1.71 m — elk proportions, and taller than the bear beside
-//  it at 1.18 m, which is backwards for a white-tail. The hand-authored model
-//  is built at TRUE SCALE, one Blender unit to the metre, and measures 0.906 m
-//  at the withers. Every deer in the valley is therefore about a fifth smaller
-//  than it was, and correct against the rest of the cast for the first time.
+//  animations are read-only. The gait speeds below are MEASURED at load.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const DEER = {
   key: 'deer',
-  // How the logbook names the species ("Deer seen"). Carried here rather
-  // than in the UI so a new species arrives in the logbook the moment it
-  // exists — the one thing a table walk cannot derive is an English plural.
   plural: 'Deer',
 
-  // ── the asset ──────────────────────────────────────────────────────────────
-  // The presence of this block is what puts the species on the hand-authored
-  // track; `Wildlife` picks its backend off it and branches nowhere else.
   glb: {
-    url: '/models/new_deer.glb',
-    // The whole model's height in metres, antler tips to hoof — NOT the ear
-    // tip, and not the withers. `loadGlbSpecies` scales by the scene's entire
-    // bounding box, and the stag's rack is the tallest thing in it, so quoting
-    // the doe's 1.360 here would shrink every animal by the height of a rack
-    // she is not wearing. The build prints this number as `DOE_HEIGHT full=`.
+    url: '/models/deer_pack.glb',
+    // Antler tip to hoof. `loadGlbSpecies` scales by the whole scene's bounding
+    // box and the buck's rack is the tallest thing in it, so this is the BUCK's
+    // full height and not the doe's.
     //
-    // The model is authored at one unit per metre, so this makes the fit
-    // exactly 1.0 and the doe stands at her measured 0.906 m withers.
+    // 1.579 is the number the hand-authored deer used, and it lands this animal
+    // in exactly the same place: the pack buck's box is 1.892 with its withers
+    // at 1.087, so the fit of 0.835 puts the withers at 0.907 against the
+    // authored doe's measured 0.906. A drop-in replacement in the frame.
     height: 1.579,
-    // The points that touch the ground, which `measureGround` samples to read
-    // how fast the ground moves under the animal. These are the four
-    // zero-weight toe bones, whose ORIGINS sit exactly on the hooves — a deer
-    // is unguligrade, so the hoof is genuinely stationary through a stance
-    // while the fetlock above it rolls forward over the contact point.
-    // Blender's exporter strips the dots, so `fore_toe.L` is `fore_toeL`.
-    feet: ['fore_toeL', 'fore_toeR', 'hind_toeL', 'hind_toeR'],
-    // Read this animal's speed from where its hooves actually touch rather
-    // than from how far they swing. That is a claim about the ASSET: all three
-    // locomotion clips are solved against the ground by `animal_kit`'s gait
-    // solver, and the measured stance duty comes back within 0.02 of what each
-    // clip was authored at. The fox has no such claim to make.
-    measure: 'contact',
+    // The four hooves. Dots stripped by three's `GLTFLoader`, not by Blender —
+    // `PropertyBinding.sanitizeNodeName` strips what its own animation-path
+    // syntax reserves, and the GLB really does carry `toe.L`.
+    feet: ['toeL', 'toeR', 'front_toeL', 'front_toeR'],
+    // NOT `measure: 'contact'`. It is a claim about the asset, and only two of
+    // these four clips are solved here — the pack's own run has no sustained
+    // stance to find, so there is no plateau and the answer would be an
+    // artefact rather than merely imprecise. Excursion is wrong in the familiar
+    // way for all of them instead.
     clips: {
-      // `rate` is a playback speed and NEVER an edit: every pose the deer
-      // strikes is a pose that is in the .blend. A clip with no `rate` is a
-      // pose clip — it covers no ground, so it is neither measured nor
-      // rate-driven.
       stand: { name: 'idle' },
-      // One lateral-sequence stride per 36 frames — 0.67 Hz as authored, which
-      // 2.0x lifts to 1.33 Hz. A walking quadruped runs 1.0-1.8 Hz.
-      walk: { name: 'walk', rate: 2.0 },
-      // One diagonal-pair stride per 18 frames, 1.33 Hz, doubled to 2.67 Hz —
-      // a real trotting cadence for a deer.
-      trot: { name: 'trot', rate: 2.0 },
-      // A BOUND, not a gallop, because that is what a frightened white-tail
-      // does: both hinds drive together, the body sails, both fores catch.
-      // The loader measures the leap at 5.08 m of ground, so 2.35x — 2.35
-      // bounds a second — puts her at 11.9 m/s, which is 43 km/h and a real
-      // fleeing deer. The speed is bought with the length of the leap, not by
-      // winding the playback up.
-      //
-      // This clip is also why `measureGround` now gates on contact. A bound is
-      // on the ground 12% of the time, and its long flight holds a steadier
-      // velocity than its brief stance does — so the swing formed the bigger
-      // velocity cluster, the answer came back negative, and the loader
-      // rejected the asset. See the note there.
-      run: { name: 'run', rate: 2.35 },
-      // The graze is authored in three phases, and declaring `grazeIn` and
-      // `grazeOut` is what tells `GlbRig` to sequence them instead of
-      // crossfading straight to the loop — the Brain holds a graze for a
-      // variable number of seconds, and a single long clip would raise the
-      // head every time it repeated. They meet exactly: `graze_in`'s last
-      // frame IS `graze`'s first, and `graze_out` ends on the exact idle rest.
+      // Solved. 18 frames is a 1.33 Hz cadence, inside the 1.0-1.8 Hz a walking
+      // quadruped runs at. The sweep is a FINDING — the largest the legs carry
+      // without clamping — and 6 cm of crouch is most of what buys it: at 2 cm
+      // the solver returned 0.530 against a geometric maximum of 0.790.
+      walk: { name: 'walk', rate: 1.0 },
+      // Solved. 11 frames, 2.18 Hz.
+      trot: { name: 'trot', rate: 1.0 },
+      // The pack's, and the one clip left unsolved on purpose. A bound gets
+      // most of its ground from a ballistic flight phase, and the solver models
+      // ground as a planted sweep — solving it would make it slower, not
+      // faster. Rate raised to put the cadence where a fleeing deer's is.
+      run: { name: 'run', rate: 1.9 },
       graze: { name: 'graze' },
-      grazeIn: { name: 'graze_in' },
-      grazeOut: { name: 'graze_out' },
       alert: { name: 'alert' },
     },
   },
 
-  // ── the coats ──────────────────────────────────────────────────────────────
-  // The asset ships untextured — every material is a flat baseColorFactor — so
-  // a morph is a recolour of the same mesh rather than a second export.
-  //
-  // Colours are LINEAR triples keyed by Blender material name, because that is
-  // the space glTF stores `baseColorFactor` in and the space `GLTFLoader`
-  // hands three. Writing them as sRGB hex here would silently shift every one.
-  //
-  // `hide` is what makes the stag possible without a second asset: the rack is
-  // one object carrying its own material, so the three antlerless coats drop
-  // it and the whole cast still shares one mesh, one skeleton and one set of
-  // clips. The doe names no colours at all — the commonest coat wears the
-  // material exactly as Blender authored it, uncloned, which is the whole
-  // promise of this track and one less shader to compile.
+  // Three meshes, one skeleton, `hide` picking between them. Weights follow the
+  // hand-authored deer's: does commonest, a buck now and then, fawns with them.
   variants: [
-    { name: 'doe', scale: 1.0, weight: 0.46, hide: ['Doe antlers'] },
-    { name: 'yearling', scale: 0.85, weight: 0.26, hide: ['Doe antlers'],
-      col: {
-        'Doe coat': [0.5271, 0.2542, 0.1119],
-        'Doe white': [0.9216, 0.8963, 0.8550],
-        'Doe dark': [0.0252, 0.0203, 0.0176],
-      } },
-    // The one coat that wears the rack. Bigger and darker than a doe, which is
-    // what a mature buck is.
-    { name: 'stag', scale: 1.12, weight: 0.20,
-      col: {
-        'Doe coat': [0.2705, 0.1144, 0.0395],
-        'Doe white': [0.8469, 0.7991, 0.7305],
-        'Doe dark': [0.0152, 0.0123, 0.0103],
-        'Doe horn': [0.3515, 0.2623, 0.1384],
-      } },
-    { name: 'dark doe', scale: 1.03, weight: 0.08, hide: ['Doe antlers'],
-      col: {
-        'Doe coat': [0.2542, 0.1070, 0.0409],
-        'Doe white': [0.8070, 0.7605, 0.6867],
-        'Doe dark': [0.0144, 0.0116, 0.0097],
-      } },
+    { name: 'doe', scale: 1.00, weight: 0.44, hide: ['Deer_01', 'Deer_Cub_01'] },
+    { name: 'yearling', scale: 0.88, weight: 0.20, hide: ['Deer_01', 'Deer_Cub_01'] },
+    { name: 'buck', scale: 1.06, weight: 0.22, hide: ['Deer_Female_01', 'Deer_Cub_01'] },
+    { name: 'fawn', scale: 1.00, weight: 0.14, hide: ['Deer_01', 'Deer_Female_01'] },
   ],
 
-  // Measured off the clips at load and written back here by `loadGlbSpecies`;
-  // these are the values it last produced, kept so the record reads honestly
-  // before the asset has been fetched.
-  gait: { walk: 1.150, trot: 3.481, run: 11.934 },
+  // Measured off the clips at load and written back here by `loadGlbSpecies`.
+  gait: { walk: 0.841, trot: 1.520, run: 1.850 },
 
   brain: {
     // The freeze is the whole sighting: a deer notices you a long way off,
