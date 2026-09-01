@@ -46,6 +46,8 @@ import { CameraRig }   from './vehicle/CameraRig.js';
 import { Audio }       from './audio/Audio.js';
 import { HUD }         from './ui/HUD.js';
 import { Stats }       from './game/Stats.js';
+import { hunt }        from './game/hunt_store.js';
+import { stats as statsStore } from './game/stats_store.js';
 
 const SYSTEMS = [
   ['clouds',      Clouds],
@@ -649,6 +651,17 @@ async function boot() {
   window.__sky = sky;
   window.__systems = ctx.systems;
   window.__ctx = ctx;
+  // The two save singletons, and the reason they are HERE rather than left to a
+  // harness to import for itself: a harness that does
+  // `await import('/src/game/hunt_store.js')` from inside `page.evaluate` does
+  // not necessarily get the app's copy. Vite rewrites a changed module's URL
+  // with a `?t=<timestamp>` cache-bust inside its importers, so after any edit
+  // in a session the app's graph holds `hunt_store.js?t=...` and a bare
+  // specifier resolves to a SECOND instance — with its own localStorage read,
+  // its own subscribers and its own idea of what the player has found. That
+  // cost an afternoon once; it is one line to make impossible.
+  window.__hunt = hunt;
+  window.__stats = statsStore;
 
   // Indexed accessor so the capture harness can pick a different landmark when
   // the top-ranked one turns out to be unusable (buried in vegetation, inside a

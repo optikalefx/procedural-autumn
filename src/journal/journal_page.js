@@ -645,6 +645,11 @@ export class JournalPage {
     // photographs of somebody else's decision. See `Journal._armCompare`.
     if (s.compare) this._paintCompare(g);
     else if (s.kind === 'title') this._paintTitle(g);
+    // The mystery leaf IS a notes leaf until it is not. See `_paintMystery`:
+    // the whole effect depends on a player having leafed past this page and
+    // found it empty, so the blank state has to be a real blank page rather
+    // than a locked one — no box, no dashes, nothing to be curious about.
+    else if (s.kind === 'mystery') { if (s.open) this._paintMystery(g); else this._paintNotes(g); }
     else if (s.kind === 'notes') this._paintNotes(g);
     else this._paintList(g);
 
@@ -844,6 +849,35 @@ export class JournalPage {
     for (let i = 0; i < s.rows.length; i++) this._paintRow(g, i, s.rows[i]);
   }
 
+
+  /**
+   * The open-cornered pencil frame that marks out where a print will go.
+   *
+   * Pulled out of `_paintRow` when the mystery leaf needed the same marks in a
+   * different place. `hot` is the targeted state: the same marks pressed
+   * harder, which puts "this is the one I am after" at BOTH ends of a row
+   * rather than leaving the ring by the checkbox to carry it alone on a page of
+   * four lines.
+   */
+  _slotCorners(g, slot, tilt, seed, hot) {
+    g.save();
+    g.translate(slot.x + slot.w / 2, slot.y + slot.h / 2);
+    g.rotate(tilt);
+    const hw = slot.w / 2 - 8, hh = slot.h / 2 - 6, c = 52;
+    const ink = hot
+      ? { width: 4.0, alpha: 0.72, wobble: 1.5, colour: INK, passes: 2 }
+      : { width: 3.4, alpha: 0.40, wobble: 1.5, colour: '#6a533a', passes: 2 };
+    let k = 0;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      inkLine(g, sx * hw, sy * hh - sy * c, sx * hw, sy * hh + sy * 2,
+        { ...ink, seed: seed + 60 + k });
+      inkLine(g, sx * hw + sx * 2, sy * hh, sx * hw - sx * c, sy * hh,
+        { ...ink, seed: seed + 70 + k });
+      k++;
+    }
+    g.restore();
+  }
+
   _paintRow(g, i, row) {
     const x0 = this._x0, top = this._rowTop(i);
     const slot = this.slotRect(i);
@@ -871,27 +905,7 @@ export class JournalPage {
       // wobbled, double-passed, overshooting the corner. Still corners rather
       // than a closed box: a closed dashed rectangle reads as a file-upload
       // dropzone, which was right the first time.
-      g.save();
-      g.translate(slot.x + slot.w / 2, slot.y + slot.h / 2);
-      g.rotate(tiltA);
-      const hw = slot.w / 2 - 8, hh = slot.h / 2 - 6, c = 52;
-      // The corner marks go up from pencil to ink on the targeted row. It is
-      // the same marks, pressed harder — the frame the player is actually
-      // trying to fill — and it puts the state at BOTH ends of the row, so the
-      // ring by the checkbox is not the only thing carrying it on a page of
-      // fifteen lines.
-      const ink = row.target
-        ? { width: 4.0, alpha: 0.72, wobble: 1.5, colour: INK, passes: 2 }
-        : { width: 3.4, alpha: 0.40, wobble: 1.5, colour: '#6a533a', passes: 2 };
-      let k = 0;
-      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-        inkLine(g, sx * hw, sy * hh - sy * c, sx * hw, sy * hh + sy * 2,
-          { ...ink, seed: seed + 60 + k });
-        inkLine(g, sx * hw + sx * 2, sy * hh, sx * hw - sx * c, sy * hh,
-          { ...ink, seed: seed + 70 + k });
-        k++;
-      }
-      g.restore();
+      this._slotCorners(g, slot, tiltA, seed, row.target);
       // The offer, and then the answer. Only on lines something can actually
       // point at — `Journal._canTrack` asks the wildlife layer, so the Moon and
       // the waterfall get a plain empty frame and no promise this book cannot
@@ -1419,6 +1433,120 @@ export class JournalPage {
     }
   }
 
+
+  // ── the mystery leaf ──────────────────────────────────────────────────────
+
+  /**
+   * The nineteenth entry, on a page that was blank until the other eighteen
+   * were crossed off.
+   *
+   * Everything about this leaf is set against the checklist pages, because the
+   * point of it is that it does not belong to them:
+   *
+   *   · **it is written in pencil, not pen.** The list is ruled out in ink at a
+   *     table; this was put down in the field, in a hurry, on the first blank
+   *     page to hand. `GRAPHITE` and a lower alpha, all the way through.
+   *   · **it is not ruled and not aligned.** No row grid, no folio band, a
+   *     heading that sits low and off the margin. A player who has read the
+   *     same four-row grid eighteen times will feel the difference before they
+   *     read a word of it.
+   *   · **it has one line and one slot**, at the foot, in the checklist's own
+   *     form — the checkbox, the struck line, the taped print. That much has to
+   *     match, because it is the same promise: photograph it and the book
+   *     closes.
+   *
+   * The text is the keeper's, and it is short on purpose. The only two facts a
+   * player needs are in it — deep timber, and the long lens — and everything
+   * else is somebody deciding whether to write this down at all.
+   */
+  _paintMystery(g) {
+    const s = this.spec;
+    const x0 = this._x0, x1 = this._x1;
+    const tw = x1 - x0;
+    g.textAlign = 'left';
+    g.textBaseline = 'alphabetic';
+
+    // The heading, low and crooked. Not `brush` — this is the same pencil the
+    // rest of the page is in, only bigger.
+    g.save();
+    g.translate(x0 + 6, M_TOP + 92);
+    g.rotate(-0.017);
+    g.font = hand(62, 600);
+    g.fillStyle = 'rgba(58,43,32,0.86)';
+    g.fillText('One more thing', 0, 0);
+    g.restore();
+    inkLine(g, x0 + 2, M_TOP + 118, x0 + 372, M_TOP + 124,
+      { seed: 91, width: 2.4, alpha: 0.34, wobble: 2.6, colour: GRAPHITE });
+
+    const BODY = [
+      'Everything on the list, found. So I will',
+      'write the other thing down now.',
+      '',
+      'Twice, on the logging road above the',
+      'creek. Standing back in the timber,',
+      'watching the truck go by. Too tall, and',
+      'far too wide, and on two legs.',
+      '',
+      'Gone both times before I had the camera',
+      'up, and I am not telling anyone without',
+      'a photograph.',
+      '',
+      'It keeps to the deep woods. Go and find',
+      'it. Put the long lens on FIRST — there',
+      'is no time to change it.',
+    ];
+    g.font = hand(37);
+    g.fillStyle = 'rgba(74,58,44,0.72)';
+    let y = M_TOP + 196;
+    for (const line of BODY) {
+      if (line) g.fillText(line, x0 + 4, y);
+      y += line ? 50 : 26;
+    }
+
+    // ── the line ─────────────────────────────────────────────────────────────
+    // Same furniture as a checklist row, at the foot of the page: box, subject,
+    // strike, print. `Journal._bakePhoto` and the strike/tick animations all
+    // address rows by index, so this one IS row 0 of a one-row page — which is
+    // why `slotRect(0)` and `_rowTop(0)` are not used here and the geometry is
+    // written out instead. A leaf with one entry laid out on the four-row grid
+    // would put the print at the top and leave two thirds of the page empty.
+    const row = s.rows?.[0];
+    if (!row) return;
+    const baseline = PAGE_H - M_BOT - 250;
+    const boxY = baseline - 46;
+    const slot = { x: x1 - SLOT_W, y: baseline + 34, w: SLOT_W, h: SLOT_H };
+    const seed = s.seed * 31 + 5;
+
+    checkbox(g, x0 + 4, boxY, 44, seed + 2);
+    if (row.done && !row.pending) tick(g, x0 + 8, boxY + 2, 44, seed + 3);
+    const tx = x0 + 76;
+    g.font = hand(41);
+    g.fillStyle = INK;
+    const label = `Photo of ${row.subject}`;
+    g.fillText(label, tx, baseline);
+    const lw = g.measureText(label).width;
+
+    if (row.done && !row.pending) {
+      this._strike(g, tx, baseline, lw, seed, 1);
+      if (!row.hidePrint) this._paste(g, slot, row.photo, -0.021, seed, row.tapeT ?? 1);
+    } else {
+      // The same open-cornered pencil frame the checklist rows use, and drawn
+      // by the same code path for the same reason its comment gives: a closed
+      // dashed box reads as a file-upload dropzone. No paw mark — there is
+      // nothing in the game that could point at him, and a promise this book
+      // cannot keep is worse on this page than on any other.
+      this._slotCorners(g, slot, -0.021, seed, false);
+    }
+    row._strikeBox = { x: tx - 26, y: baseline - 46, w: lw + 52, h: 74 };
+    row._strikeArgs = { tx, baseline, lw, seed };
+    this._mysterySlot = slot;
+  }
+
+  /** The mystery leaf's own print slot, for `slotUV`. Null on every other leaf. */
+  mysterySlotUV() {
+    return this._mysterySlot ? this._toUV(this._mysterySlot) : null;
+  }
+
   // ── the animated strike ───────────────────────────────────────────────────
 
   /**
@@ -1449,12 +1577,21 @@ export class JournalPage {
     this.texture.needsUpdate = true;
   }
 
-  /** Animate the tick going into the checkbox. Same blit trick, tiny region. */
+  /**
+   * Animate the tick going into the checkbox. Same blit trick, tiny region.
+   *
+   * The box's y is re-derived from the row's own strike baseline rather than
+   * from `_rowTop(i)`, because the mystery leaf lays its single entry out at
+   * the FOOT of the page and not on the four-row grid. `_strikeArgs` is written
+   * by whichever painter drew the row, so it is the one description of where a
+   * row ended up that both leaves agree on.
+   */
   tickAt(i, t) {
     const row = this.spec.rows?.[i];
     if (!row) return;
     if (!this._clean) return;                 // strikeAt allocates it; order matters
-    const x0 = this._x0, top = this._rowTop(i), boxY = top + 34;
+    const x0 = this._x0;
+    const boxY = (row._strikeArgs?.baseline ?? (this._rowTop(i) + 80)) - 46;
     const b = { x: x0 - 12, y: boxY - 26, w: 90, h: 96 };
     const g = this.g;
     g.setTransform(1, 0, 0, 1, 0, 0);

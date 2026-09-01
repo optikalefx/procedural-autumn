@@ -792,6 +792,69 @@ function dogEntries(mod, path) {
   }));
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Family adapter — bigfoot
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// His own adapter because he is his own everything: not in `SPECIES`, not a
+// `GlbRig`, not a lofted quadruped. `BigfootRig` answers `reset`/`update`/`mesh`
+// like the other two backends do, and the walk is authored IN PLACE — the rig
+// returns the ground it covered rather than planting feet at world points — so
+// like the hand-authored cast he needs no treadmill and simply plays where he
+// stands.
+
+const BIGFOOT_POSES = [
+  { key: 'stand', label: 'Stand' },
+  { key: 'walk', label: 'Walk' },
+  { key: 'look', label: 'Look back' },
+];
+
+function bigfootEntries(mod, path) {
+  return mod.BIGFOOT.variants.map((v, vi) => ({
+    id: `bigfoot:${vi}`,
+    label: 'Bigfoot',
+    sub: v.name,
+    group: groupOf(path),
+    family: 'Animals',
+    file: path,
+    call: `new BigfootRig(bigfootProtos()[${vi}], hide)`,
+    poses: BIGFOOT_POSES,
+    async build(_seed, opts = {}) {
+      const { createHideMaterial } = await import('../../wildlife/mammals/hide.js');
+      const proto = mod.bigfootProtos()[vi];
+      const hide = createHideMaterial(v.col);
+      const rig = new mod.BigfootRig(proto, hide, v.scale);
+
+      const root = new THREE.Group();
+      root.add(rig.mesh);
+
+      const pose = opts.pose ?? 'stand';
+      const moving = pose === 'walk' ? 1 : 0;
+      const look = pose === 'look' ? 1 : 0;
+      // Half a cycle in, so the card opens mid-stride rather than on the
+      // symmetric frame where both legs are under him and the walk is invisible.
+      for (let i = 0; i < 46; i++) rig.update(0.016, moving, look);
+
+      const body = proto.tris - proto.tufts * 3;
+      return {
+        root,
+        update(dt) { rig.update(dt, moving, look); },
+        dispose() { hide.dispose(); },
+        notes: [
+          `${(proto.stand * v.scale).toFixed(2)} m standing, crown of the crest`,
+          `${proto.tris} triangles — ${body} of body, ${proto.tufts * 3} of coat`,
+          `${proto.tufts} tufts (${Object.entries(proto.coat)
+            .map(([k, n]) => `${k} ${n}`).join(', ')})`,
+          `walk ${(mod.WALK * v.scale).toFixed(3)} m/s — ${(mod.GROUND_PER_CYCLE * v.scale).toFixed(2)} m a stride at ${mod.CADENCE} Hz`,
+          'photographable from 67 m on the 24-70 at full zoom, 191 m on the 200-400',
+          'the knee never passes 94% of leg length; see LEG.reachMax',
+        ],
+      };
+    },
+  }));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Family adapter — the cars
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1024,6 +1087,16 @@ const ADAPTERS = [
     parts: {
       '/src/wildlife/mammals/dog.js': ['DOG_SPECIES', 'loadCampDog'],
     },
+  },
+  {
+    // The one thing in the game that walks on two legs, and the one animal
+    // whose card most needs looking at — he is built out of numbers rather
+    // than out of anybody's .blend, so this page is the only place the
+    // proportions can be judged.
+    path: '/src/wildlife/bigfoot_model.js',
+    claims: ['BIGFOOT', 'buildBigfoot', 'bigfootProtos', 'BigfootRig',
+             'pickBigfootVariant', 'WALK', 'GROUND_PER_CYCLE', 'CADENCE', 'STAND_H'],
+    entries: bigfootEntries,
   },
   { path: '/src/wildlife/birds/flocks.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
   {

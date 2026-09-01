@@ -85,6 +85,12 @@ import { hunt, makeThumb } from '../game/hunt_store.js';
 // ── the script ───────────────────────────────────────────────────────────────
 // Every duration in the ceremony, in seconds, in one place. `gap` values are
 // the pause BEFORE that beat starts, measured from the end of the previous one.
+// The beat between the last award's tape settling and the book leafing on to
+// the mystery leaf. Long enough to read as a separate thought rather than as
+// part of the same animation — somebody finishing a list, sitting back, and
+// then remembering the other thing.
+const REVEAL_GAP = 0.9;
+
 const SCRIPT = {
   rise: 0.60,
   bandGap: 0.16, band: 0.40,
@@ -735,9 +741,44 @@ export class Journal {
       });
     }
     specs.push({ kind: 'notes', index: nList + 1, seed: 9, rows: [] });
+
+    // ── the mystery leaf ─────────────────────────────────────────────────────
+    //
+    // Always in the block, whether or not it has anything on it — that is the
+    // whole trick. `journal_page` paints it as an ordinary Notes leaf until the
+    // sheet is finished, so a player who leafs to the back BEFORE finishing
+    // finds blank paper, and the same page later has writing on it. A leaf that
+    // appeared out of nowhere would be a page count changing under somebody's
+    // hands; a leaf that was always there and is now written on is a book.
+    //
+    // Padded to land on a RECTO (an even index — page 0 is the flyleaf and is a
+    // right-hand page). The eye lands on the right-hand page of a spread, and
+    // this is the one leaf in the book that has to be noticed rather than
+    // looked up. Computed rather than written down because it moves the moment
+    // anybody adds a nineteenth checklist line.
+    const myst = hunt.mystery;
+    if (myst) {
+      let pad = 0;
+      while (specs.length % 2 !== 0) {
+        specs.push({ kind: 'notes', index: nList + 2 + pad, seed: 11 + pad, rows: [] });
+        pad++;
+      }
+      specs.push({
+        kind: 'mystery',
+        index: nList + 2 + pad,
+        seed: 21,
+        open: hunt.mysteryOpen,
+        rows: [{
+          id: myst.id, subject: myst.subject ?? myst.id, hint: myst.hint ?? '',
+          done: hunt.isDone(myst.id), photo: null, pending: false,
+          track: false, target: false,
+        }],
+      });
+    }
+
     // A leaf has two sides. Pad so the last one is not half a sheet — the
     // physical block would show a page with nothing behind it.
-    if (specs.length % 2) specs.push({ kind: 'notes', index: nList + 2, seed: 10, rows: [] });
+    if (specs.length % 2) specs.push({ kind: 'notes', index: nList + 9, seed: 10, rows: [] });
 
     this._pages = specs.map((s, i) => new JournalPage({ ...s, verso: i % 2 === 1 }));
     this._pageTex = this._pages.map((p) => p.texture);
@@ -747,6 +788,16 @@ export class Journal {
     for (let k = 0; k < nList; k++) {
       const page = this._pages[1 + k];
       page.spec.rows.forEach((r, i) => this._seat.set(r.id, { page: 1 + k, row: i }));
+    }
+    // …and the mystery, which is row 0 of its own leaf. Seated through the same
+    // map as every other line precisely so the award ceremony does not have to
+    // know it is special: the book leafs to it, strikes the line, ticks the box
+    // and tapes the print with the code that does that for the rabbit.
+    this._mysteryPage = null;
+    for (let i = 0; i < this._pages.length; i++) {
+      if (this._pages[i].spec.kind !== 'mystery') continue;
+      this._mysteryPage = i;
+      this._seat.set(this._pages[i].spec.rows[0].id, { page: i, row: 0 });
     }
   }
 
@@ -819,6 +870,22 @@ export class Journal {
 
     for (let i = 0; i < this._pages.length; i++) {
       const p = this._pages[i];
+      // The one page whose KIND can change under the player. Checked before the
+      // row loop because the row it carries is invisible until this flips, and
+      // a leaf repainted for a row change while still in its blank state would
+      // paint the entry onto a page that is meant to be empty.
+      if (p.spec.kind === 'mystery') {
+        const open = hunt.mysteryOpen;
+        if (open !== p.spec.open) {
+          // …and the transition itself is the reveal. Latched here rather than
+          // tested in `update` against some "is the sheet finished" condition,
+          // because THIS is the frame it became true on and every later frame
+          // it is still true. `update` consumes the flag once and clears it.
+          if (open && p.spec.open === false) this._revealPending = true;
+          p.spec.open = open;
+          dirty.add(i);
+        }
+      }
       for (const row of p.spec.rows ?? []) {
         const done = hunt.isDone(row.id);
         const url = done ? hunt.photoFor(row.id) : null;
@@ -914,6 +981,9 @@ export class Journal {
     this._seekDone = false;
     this._seekQueue = 0;
     this._seekExtra = 0;
+    // NOT cleared here. The reveal is latched by `_decorate`, which runs from
+    // this same method one turn of the event loop later — zeroing it on open
+    // would race the thing that sets it.
     this._coverCued = false;
     this._crossStarted = false;
     this._crossed = false;
@@ -1228,6 +1298,32 @@ export class Journal {
       this._leafT = 0;
       this._leafDur = SCRIPT.seekLeaf;
       this._cue('page');
+    }
+    // ── the reveal ──────────────────────────────────────────────────────────
+    //
+    // The eighteenth line has just been crossed off, so there is a nineteenth
+    // now, on a leaf that was blank last time anybody looked at it. Leafing to
+    // it is not decoration: `_paintMystery`'s whole effect is a page the player
+    // has already seen empty, and that only lands if they are shown it rather
+    // than left to find it three sessions later.
+    //
+    // It rides the ordinary forward-seek queue above — same one turn at a time,
+    // same page cue, same "everything else is locked out while a scripted turn
+    // is running" — and waits for the award ceremony it follows to be
+    // completely over first. `_seekQueue` is what the rest of the file tests to
+    // know a turn is scripted, so borrowing it means nothing else has to learn
+    // about this beat at all.
+    if (this._revealPending && this._mysteryPage != null
+        && this._seekQueue === 0 && this._leafT >= 1 && fly >= 1
+        && this._t >= (this._script?.end ?? 0) + (this._seekPad ?? 0) + REVEAL_GAP) {
+      // Clamped to the block. `_seekQueue` is a countdown of one-page turns
+      // with nothing watching where they land, so a target past the last leaf
+      // would turn pages that are not there, for ever, with every other
+      // interaction locked out behind `_seekQueue > 0`.
+      const to = Math.min(Math.ceil(this._mysteryPage / 2), this._sheets - 1);
+      const at = Math.round(this._pose.leaf);
+      if (at < to) this._seekQueue = to - at;
+      else this._revealPending = false;
     }
     // Leafing HOME from the compare leaf, one turn at a time and through the
     // same three fields every other page turn writes. The compare lives at the

@@ -1465,6 +1465,30 @@ function mammals(f, wl, hit) {
   }
 }
 
+/**
+ * The nineteenth line, and the only subject in this file that may not exist.
+ *
+ * Simpler than any of its neighbours and that is the point: there is at most
+ * one of him, `Bigfoot.mesh` is null unless one is out there, and the mesh it
+ * returns is a node whose `position` is his feet and whose `geometry` is the
+ * prototype's — exactly the two things `meshHeight` reads. So this is the
+ * mammal detector with the loops taken out.
+ *
+ * No extra gate. He is 2.32 m tall, which puts `MIN_SHARE` at 19.5 m on the
+ * 24-70's wide end and 154 m at 200mm — the spread `bigfoot.js` picks all its
+ * distances against — and a bespoke threshold here would be a second opinion
+ * about the same photograph. The line is hard because he leaves, not because
+ * the rules are different for him.
+ */
+function bigfoot(f, bf, hit) {
+  const mesh = bf?.mesh;
+  if (!mesh) return;
+  const r = meshHeight(mesh);
+  if (!r) return;
+  if (!visible(f, _p, r)) return;
+  hit.add('bigfoot');
+}
+
 /** The camp dog — one per camp, and only some camps have one. */
 function campDog(f, camp, hit) {
   for (const c of camp?.camps ?? []) {
@@ -1984,6 +2008,7 @@ export function detectSubjects(ctx) {
       run(mammals, wl);
       run(treeBirds, wl?.treeBirds);
       run(fireflies, wl?.fireflies);
+      run(bigfoot, wl?.bigfoot);
     }
     run(campDog, sys.camp);
     run(highCamp, sys.camp);

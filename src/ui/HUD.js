@@ -861,6 +861,21 @@ export class HUD extends System {
     // `this.total` are still live and still credited above: they drive the
     // toast, the compass strip's crossed-off pins and the logbook. They just
     // are not what the paw counts.
+    // ── arming the nineteenth line ──────────────────────────────────────────
+    //
+    // `src/wildlife/` does not import `src/game/`, and this is the seam that
+    // keeps it that way: whether the mystery is open is a fact about the SAVE,
+    // and the HUD is already the layer that reads the save and hands pieces of
+    // it down (the paw's target two hundred lines up, the counts on the line
+    // below). So the world system exposes a boolean and this sets it.
+    //
+    // Cleared again once he is photographed, because the line is finished and a
+    // bigfoot still wandering the timber after the book has closed on him is a
+    // creature with nothing left to be. See `Bigfoot.update`, which despawns
+    // any live one on the frame this goes false.
+    const bf = this.ctx.systems?.wildlife?.bigfoot;
+    if (bf) bf.armed = hunt.mysteryOpen && !hunt.won;
+
     this.dash.update(speed, this.trip, hunt.animalCount(), hunt.animalTotal,
       aboard ? false : (veh?.brakeHold ?? false),
       aboard ? (riding ? 'bike' : 'boat') : 'camper');

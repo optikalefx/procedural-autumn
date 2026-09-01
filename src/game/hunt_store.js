@@ -90,7 +90,8 @@
 //  returning a promise. It made every call site think about ordering — and the
 //  one thing a call site must NOT be able to get wrong is losing the tick.
 // ─────────────────────────────────────────────────────────────────────────────
-import { HUNT_ITEMS, HUNT_BY_ID, HUNT_ANIMALS, HUNT_ANIMAL_IDS } from './hunt_items.js';
+import { HUNT_SHEET, HUNT_MYSTERY, HUNT_BY_ID, HUNT_ANIMALS,
+         HUNT_ANIMAL_IDS } from './hunt_items.js';
 
 const STORE = 'pa.hunt';
 const VERSION = 1;
@@ -235,10 +236,52 @@ class HuntStore {
 
   // ── reading ────────────────────────────────────────────────────────────────
 
-  /** The checklist itself, in page order. */
-  get items() { return HUNT_ITEMS; }
-  /** How many lines there are to cross off. */
-  get total() { return HUNT_ITEMS.length; }
+  // ── the sheet, and the thing that is not on it ─────────────────────────────
+  //
+  // Everything below counts the mystery only once it is OPEN, and the reason is
+  // in `hunt_items.js` over that row: a total that included a hidden line would
+  // tell a player at seventeen that there were nineteen. So `total`, `complete`
+  // and `animalTotal` all move by one at the moment the eighteenth line is
+  // crossed off — which is also the moment the player is looking at the book,
+  // and is therefore the moment for a number to change under them.
+  //
+  // `items` is the CHECKLIST — what gets printed as rows across the list pages
+  // — and the mystery is never in it, open or not. It has a leaf of its own.
+
+  /** The checklist itself, in page order. Never the mystery; see above. */
+  get items() { return HUNT_SHEET; }
+  /** How many lines there are to cross off, the secret included once it is out. */
+  get total() { return HUNT_SHEET.length + (this.mysteryOpen ? 1 : 0); }
+
+  /**
+   * Has the sheet been finished, and the last entry therefore revealed?
+   *
+   * This is the ONE condition in the game, and everything downstream reads it
+   * rather than re-deriving it: the journal paints its back leaf off it, the
+   * HUD arms `Wildlife.bigfoot` off it, and the dash's paw grows by one.
+   *
+   * Deliberately not "`doneCount` >= 18": `doneCount` walks the stored keys, and
+   * a save carrying a crossed-off bigfoot from a later version would satisfy an
+   * 18 test with only seventeen printed lines found.
+   */
+  get mysteryOpen() {
+    for (const it of HUNT_SHEET) if (!this.data.items[it.id]) return false;
+    return true;
+  }
+
+  /** The secret's row, or null. Whether it is OPEN is the question above. */
+  get mystery() { return HUNT_MYSTERY; }
+
+  /**
+   * The whole game, won.
+   *
+   * A photograph of the last line is the end of the book, and this is the flag
+   * a win screen hangs off. It is derived rather than stored: the record that
+   * proves it is the tick and the print beside it, which are already on disk
+   * and already survive a reload, and a second `won: true` key would be a
+   * second source of truth that could disagree with the first.
+   */
+  get won() { return HUNT_MYSTERY ? this.isDone(HUNT_MYSTERY.id) : false; }
 
   isDone(id) { return !!this.data.items[id]; }
   /**
@@ -254,8 +297,14 @@ class HuntStore {
   /** When this line was crossed off, ms since epoch, or 0. */
   doneAt(id) { return this.data.items[id]?.at ?? 0; }
   doneCount() { return Object.keys(this.data.items).length; }
-  /** How many animals there are on the sheet — what the dash's paw counts against. */
-  get animalTotal() { return HUNT_ANIMALS.length; }
+  /**
+   * How many animals there are on the sheet — what the dash's paw counts
+   * against. Eleven, and twelve once the secret is out: the one number in the
+   * game that grows.
+   */
+  get animalTotal() {
+    return HUNT_ANIMALS.length - (this.mysteryOpen ? 0 : 1);
+  }
   /**
    * How many of the animal lines are crossed off.
    *
@@ -269,7 +318,13 @@ class HuntStore {
     for (const id of Object.keys(this.data.items)) if (HUNT_ANIMAL_IDS.has(id)) n++;
     return n;
   }
-  /** True when every line is crossed off. The journal's one moment of ceremony. */
+  /**
+   * True when every line is crossed off — the secret included, because by the
+   * time there IS a secret it is a line like any other. The journal's one
+   * moment of ceremony, and the same condition as `won`: the mystery is the
+   * last line by construction, so finishing the book and finishing the game
+   * are the same event and there is no second definition of either.
+   */
   get complete() { return this.doneCount() >= this.total; }
 
   // ── writing ────────────────────────────────────────────────────────────────

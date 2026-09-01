@@ -359,10 +359,55 @@ export const HUNT_ITEMS = [
     subject: 'a galaxy',
     hint: 'three faint smudges up there. The Great Spiral is the one you will find',
   },
+
+  // ── and the one that is not on the sheet ───────────────────────────────────
+  //
+  // `mystery: true`, which means three things and they are all about SECRECY
+  // rather than about difficulty:
+  //
+  //   · it is not on the checklist pages. It has a leaf of its own at the back
+  //     of the book, blank until the eighteen above it are crossed off — see
+  //     `journal_page._paintMystery`.
+  //   · it does not count in "eighteen of eighteen found", and it does not
+  //     count against the dash's paw, until it is open. A sheet that read
+  //     "seventeen of nineteen" would announce the secret to somebody who has
+  //     found seventeen animals, which is the exact player it is being kept
+  //     from.
+  //   · once it IS open it counts in both, so the last line of the game is a
+  //     line you can watch yourself not have.
+  //
+  // `hunt_store` enforces all three off this one flag; nothing else in the tree
+  // hard-codes the id.
+  //
+  // The subject reads oddly on purpose. Every other line names a species,
+  // because every other line is a thing a field guide has a page for. This one
+  // is what you would actually write under a photograph you could not explain,
+  // and it is the only line on the sheet that is written in the first person of
+  // somebody who was there.
+  //
+  // The hint is the owl's lesson applied a second time (see rule 4 above): he
+  // arrives 58-92 m out and leaves at 165, and `hunt_detect`'s frame-share gate
+  // puts the 24-70 at 54 m even wound all the way out. So the long lens is not
+  // advice, it is the rule, and the hint says so in the words a hint is allowed.
+  {
+    id: 'bigfoot',
+    subject: 'whatever that was',
+    hint: 'deep timber, well off the road. Fit the long lens before you go looking — there will be no time to change it',
+    animal: true,
+    mystery: true,
+  },
 ];
 
+/** The eighteen printed lines: everything that is not the secret. */
+export const HUNT_SHEET = HUNT_ITEMS.filter((it) => !it.mystery);
+/** The secret, as a row. There is exactly one and this file owns that fact. */
+export const HUNT_MYSTERY = HUNT_ITEMS.find((it) => it.mystery) ?? null;
+
 /**
- * The animal lines, and only those: the eleven the dash's paw counts.
+ * The animal lines, and only those: the eleven the dash's paw counts — twelve
+ * once the mystery is open, which is the one moment in the game that number
+ * goes UP by a line rather than down by a find. `hunt_store.animalTotal` owns
+ * the switch; this list carries all twelve and says nothing about when.
  *
  * The dash used to read "0 of 12" against the LANDMARK list in `HUD.js` — the
  * waterfalls and vistas you drive past — which was a second progress number

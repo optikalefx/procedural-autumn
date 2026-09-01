@@ -11,6 +11,9 @@
 //                    tree_birds.js (the perch-and-fly birds you stop for)
 //    fireflies       the night shift: one GPU-resident draw call over the
 //                    meadow and the water margins, dark before dusk
+//    bigfoot         a cast of one, and only once the journal says so — his
+//                    own habitat, streaming and behaviour in one file, because
+//                    none of the machinery below is worth running for one animal
 //
 //  This file is the world layer: where animals live, when they exist, and how
 //  much of the frame they are allowed to cost.
@@ -41,6 +44,7 @@ import { Brain, ST, WATER_MAX } from './animal_brain.js';
 import { Birds } from './birds/flocks.js';
 import { TreeBirds } from './birds/tree_birds.js';
 import { Fireflies } from './fireflies.js';
+import { Bigfoot } from './bigfoot.js';
 
 // Per-species streaming and population budget.
 //
@@ -216,6 +220,12 @@ export class Wildlife extends System {
     this.fireflies = new Fireflies(this.ctx, SEED ^ 0x1ee5,
                                    FIREFLY_N[this.ctx.quality] ?? FIREFLY_N.high);
     this.fireflies.build();
+
+    // The nineteenth line. Constructed always and built never, until something
+    // above sets `armed` — see the header of bigfoot.js. Nothing is loaded, no
+    // geometry exists and no site is placed for a player who has not finished
+    // the sheet; the cost until then is one boolean read a frame.
+    this.bigfoot = new Bigfoot(this.ctx, SEED ^ 0xb1f7);
 
     scene.add(this.group);
     this._compileWarm = true;
@@ -1308,6 +1318,11 @@ export class Wildlife extends System {
     this.birds.update(dt, cam, threat);
     this.treeBirds.update(dt, cam, threat);
     this.fireflies?.update(dt, elapsed);
+    // Last, and outside the frozen check above on purpose: `_frozen` is the
+    // gallery's and the harness's switch for holding the CAST still, and there
+    // is at most one of him — a bigfoot that ignored it would be a bigfoot
+    // walking through a paused world.
+    if (!this._frozen) this.bigfoot?.update(dt, cam);
   }
 
   /** One animal: brain, then LOD, then the gait solver. */
@@ -1626,6 +1641,7 @@ export class Wildlife extends System {
     this.birds?.dispose();
     this.treeBirds?.dispose();
     this.fireflies?.dispose();
+    this.bigfoot?.dispose();
   }
 }
 
