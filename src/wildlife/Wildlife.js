@@ -1021,6 +1021,11 @@ export class Wildlife extends System {
    * returns false for simply draws no target — see `Journal._rowAt`.
    */
   canTrack(id) {
+    // The nineteenth line, and the only trackable thing here that can stop
+    // being trackable: `armed` is false until the journal's mystery opens and
+    // false again the moment he is photographed, so the ring is offered exactly
+    // over the window in which there is something to find.
+    if (this.bigfoot && id === this.bigfoot.key) return this.bigfoot.armed;
     return !!SPECIES[id] || !!this.treeBirds?.hasSpecies?.(id);
   }
 
@@ -1060,6 +1065,10 @@ export class Wildlife extends System {
    * swings across the whole strip, and at 8 m you are looking at the animal.
    */
   _nearestQuarry(x, z, quarry) {
+    // He is a cast of one with his own reach, so he answers for himself rather
+    // than being looked up in a pool and a radius table he is not in. Null
+    // while none exists, which is most of the time — see `Bigfoot.nearest`.
+    if (this.bigfoot && quarry === this.bigfoot.key) return this.bigfoot.nearest(x, z);
     const bird = this.treeBirds?.nearestOf?.(quarry, x, z, BIRD_QUARRY_R);
     if (bird) return bird;
     const per = this.pool[quarry];

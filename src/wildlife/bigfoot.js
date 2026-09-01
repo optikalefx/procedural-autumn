@@ -100,6 +100,16 @@ const SPAWN_MIN = 58, SPAWN_MAX = 92;
 // work, which is the best kind of bad plan.
 const NEAR_GONE = 18;
 const FAR_GONE = 165;
+// How far the compass paw will point at him, once the journal's mystery line is
+// ringed. It is `FAR_GONE` plus a margin rather than a taste number: he only
+// leaves at 165 m AND out of frame, so a player tracking him from behind can
+// legitimately be holding him a little past it, and a pin that blinked out
+// while he was still on screen would read as the compass being wrong.
+//
+// Wider than any mammal's — the bear's is 185 m and the birds' 190 — which is
+// the point the user made when this was wired: he is met at a distance nothing
+// else in the valley is, so the reach that finds him has to be.
+const QUARRY_R = FAR_GONE + 30;
 // Seconds the camera must hold him before he counts as noticed. Long enough
 // that swinging the view past a tree line does not trip it, short enough that
 // looking AT him feels like it did something.
@@ -176,6 +186,15 @@ const _sphere = new THREE.Sphere();
 export class Bigfoot {
   constructor(ctx, seed = 0) {
     this.ctx = ctx;
+    /**
+     * The id he answers to on the scavenger sheet.
+     *
+     * `hunt_items.js` rule 1: an item's id IS the owning system's own key, so a
+     * lookup is an identity and there is no translation table to drift. This is
+     * that key, kept here rather than written as a literal in `Wildlife` — the
+     * one place outside this file that has to name him.
+     */
+    this.key = 'bigfoot';
     this.rng = mulberry32((seed ^ 0xb1f7) >>> 0);
     /** Set from above once the journal's mystery entry is open. See the header. */
     this.armed = false;
@@ -482,9 +501,24 @@ export class Bigfoot {
   /** The mesh the photo detector measures, or null when nobody is out there. */
   get mesh() { return this.present ? this.rig?.mesh ?? null : null; }
 
-  /** For the compass paw, if anything ever wants to point at him. */
-  nearest() {
-    return this.present ? { x: this.pos.x, z: this.pos.z } : null;
+  /**
+   * The compass paw's answer, in the shape `Wildlife._nearestQuarry` returns.
+   *
+   * Only ever reached through a RINGED target — `nearestHint`'s ambient walk
+   * covers the `SPECIES` pool and this is not in it — which is the whole
+   * design. An ambient paw that swung toward him would give him away to a
+   * player who had not asked, and the one thing this creature has is that you
+   * do not know he is there. Ring the line and the book will point; leave it
+   * un-ringed and the valley says nothing.
+   *
+   * Null while nobody is out there, which is most of the time, and that null is
+   * information too: the pin is absent until he exists, so it appearing IS the
+   * "there is something over there" the compass is for.
+   */
+  nearest(x, z) {
+    if (!this.present) return null;
+    const d = Math.hypot(this.pos.x - x, this.pos.z - z);
+    return d <= QUARRY_R ? { x: this.pos.x, z: this.pos.z, dist: d } : null;
   }
 
   /**

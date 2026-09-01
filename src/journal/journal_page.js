@@ -72,6 +72,14 @@ const M_BOT = 84;
 // facing pages whose lists start at different heights look broken in a way
 // nobody can name but everybody sees.
 const HEAD_BAND = 196;
+// ── the mystery leaf's one entry ─────────────────────────────────────────────
+// It sits at the FOOT of the page rather than on the four-row grid: a leaf with
+// a single line laid out on that grid puts the print at the top and leaves two
+// thirds of the page empty. One description of where it went, because four
+// separate things need it and they must not disagree — `_paintMystery` draws
+// it, `slotRect` is what the click hit-test picks against, `rowUV` is what the
+// close look frames, and `tickAt` blits the box back.
+const MYST_BASE = 1118;                  // the entry's baseline; PAGE_H - M_BOT - 250
 
 const ROW_H = 252;
 const SLOT_W = 252;
@@ -548,7 +556,7 @@ export class JournalPage {
   slotRect(i) {
     return {
       x: this._x1 - SLOT_W,
-      y: this._rowTop(i) + 8,
+      y: this.spec.kind === 'mystery' ? MYST_BASE + 34 : this._rowTop(i) + 8,
       w: SLOT_W,
       h: SLOT_H,
     };
@@ -576,7 +584,9 @@ export class JournalPage {
   rowUV(i) {
     return this._toUV({
       x: this._x0,
-      y: this._rowTop(i),
+      // The mystery entry's band starts above its own line rather than at a
+      // grid row, so leaning in on it frames the line and the slot together.
+      y: this.spec.kind === 'mystery' ? MYST_BASE - 86 : this._rowTop(i),
       w: this._x1 - this._x0,
       h: ROW_H,
     });
@@ -1512,13 +1522,17 @@ export class JournalPage {
     // would put the print at the top and leave two thirds of the page empty.
     const row = s.rows?.[0];
     if (!row) return;
-    const baseline = PAGE_H - M_BOT - 250;
+    const baseline = MYST_BASE;
     const boxY = baseline - 46;
-    const slot = { x: x1 - SLOT_W, y: baseline + 34, w: SLOT_W, h: SLOT_H };
+    const slot = this.slotRect(0);
     const seed = s.seed * 31 + 5;
 
     checkbox(g, x0 + 4, boxY, 44, seed + 2);
     if (row.done && !row.pending) tick(g, x0 + 8, boxY + 2, 44, seed + 3);
+    // Ringed: this is the one the player is out looking for. After the box, so
+    // the sweep crosses it — a pen would, and it stops the two marks reading as
+    // one printed widget. Same as any other row.
+    if (row.target) circleMark(g, x0 + 25, boxY + 22, 54, 45, { seed: seed + 11, width: 5.4, alpha: 0.80 });
     const tx = x0 + 76;
     g.font = hand(41);
     g.fillStyle = INK;
@@ -1532,10 +1546,21 @@ export class JournalPage {
     } else {
       // The same open-cornered pencil frame the checklist rows use, and drawn
       // by the same code path for the same reason its comment gives: a closed
-      // dashed box reads as a file-upload dropzone. No paw mark — there is
-      // nothing in the game that could point at him, and a promise this book
-      // cannot keep is worse on this page than on any other.
-      this._slotCorners(g, slot, -0.021, seed, false);
+      // dashed box reads as a file-upload dropzone.
+      this._slotCorners(g, slot, -0.021, seed, row.target);
+      // …and the paw, which is the offer to go looking. This page argued
+      // itself out of one at first — "nothing in the game could point at him,
+      // and a promise this book cannot keep is worse here than anywhere" — and
+      // that was true of the code and wrong about the game. A player has spent
+      // eighteen lines learning that an empty frame with a paw in it is a thing
+      // you click, and the one entry that is actually hard to find is the last
+      // place to withhold it. `Wildlife.canTrack` now answers for him and
+      // `Bigfoot.nearest` is what the compass reads; see `row.track`.
+      if (row.track) {
+        pawMark(g, slot.x + slot.w / 2, slot.y + slot.h / 2, 96, row.target
+          ? { colour: INK, alpha: 0.60, seed: seed + 80 }
+          : { colour: GRAPHITE, alpha: 0.20, seed: seed + 80 });
+      }
     }
     row._strikeBox = { x: tx - 26, y: baseline - 46, w: lw + 52, h: 74 };
     row._strikeArgs = { tx, baseline, lw, seed };

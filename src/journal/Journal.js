@@ -771,7 +771,11 @@ export class Journal {
         rows: [{
           id: myst.id, subject: myst.subject ?? myst.id, hint: myst.hint ?? '',
           done: hunt.isDone(myst.id), photo: null, pending: false,
-          track: false, target: false,
+          // Trackable like every other line. `_canTrack` asks the wildlife
+          // layer, which answers true only while there is something out there
+          // to find — so this is false on the first paint (the leaf is blank
+          // then anyway) and `_decorate` brings it up with the rest.
+          track: this._canTrack(myst.id), target: hunt.target === myst.id,
         }],
       });
     }
