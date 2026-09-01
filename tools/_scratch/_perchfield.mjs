@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 /**
- * End-to-end: does the baked perch field reach a live goat?
+ * End-to-end: does the baked perch field reach every live perch?
+ *
+ * NOT `goatperch.mjs`, which is the older and more interesting instrument —
+ * that one wakes ONE site, drives the sim on a granted clock and renders a
+ * strip so the climb can be looked at. This one looks at nothing and drives
+ * nothing; it wakes EVERY alpine site and asserts the wiring across all of
+ * them, which is the failure the strip cannot show.
  *
  * `goatdome.mjs` proves the ARITHMETIC headlessly, against the real geometry.
  * It cannot prove the WIRING — that `Rocks.perchField` is reachable when
@@ -9,7 +15,7 @@
  * fails SILENTLY: a null field falls straight back to the old flat top and the
  * goat simply floats again, with no error anywhere.
  *
- *   node tools/_scratch/_goatperch.mjs
+ *   node tools/_scratch/_perchfield.mjs
  */
 import { chromium } from 'playwright';
 
