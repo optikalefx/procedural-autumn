@@ -28,7 +28,7 @@ same note for the same reason).
     Ram_Walk      31f  -> walk    kept — duty 0.57 on all four hooves
     Ram_Gesture  131f  -> graze   kept; a real graze, muzzle 1.297 -> 0.259
     trot          --   -> SOLVED here. No animal in the pack has a trot.
-    run           --   -> SOLVED here, and see below.
+    run           --   -> SOLVED here, to the GOAT's measured leap. See below.
     alert         --   -> authored here.
 
     Ram_Run       14f  -> DROPPED
@@ -66,13 +66,13 @@ import os
 import sys
 
 import bpy
-from mathutils import Vector
+from mathutils import Vector, Quaternion
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pack_rig_kit import (                                        # noqa: E402
     open_animal, face_forward, point, clear, rx, rz, ease, key,
     new_action, sample, seam, set_linear, purge, frame_view, gait_rest,
-    build_gait, DIAGONAL_TROT, BOUND,
+    build_gait, DIAGONAL_TROT,
 )
 
 RIG = "Skeleton_Ram"
@@ -83,6 +83,10 @@ MESHES = [RAM]
 # name for name, and both already ride `Skeleton_Ram`. It is the demo scene's
 # second copy, standing 0.996 m to the side.
 HEAD = "scull"
+ROOT = "Root"
+# The run is retargeted off this, not solved — see the block above it.
+GOAT_RIG, GOAT_CLIP = "Skeleton_Goat", "Goat_Run"
+CONTACTS = ["toe.L", "toe.R", "front_toe.L", "front_toe.R"]
 
 # `Ram_Run` is deliberately absent — see the header. Everything not named here
 # is deleted before anything is solved, which also means `new_action("run")`
@@ -122,19 +126,60 @@ TROT = dict(tuck=0.12, pitch=3.0, flight=0.030, meshes=MESHES, frames=11,
             duty=0.45, lift=0.090, bob=0.013, crouch=0.062, scapula=17.0,
             phase=DIAGONAL_TROT)
 
-# The bound, and the only gait here that replaces one the pack shipped. Duty is
-# the lever: at 0.22 a hoof is down a fifth of the cycle, so the sweep it can
-# reach is spent five times faster and the animal covers five times the ground
-# per cycle that the same sweep would at a walk's duty. That is what makes a
-# bound fast, and it is why the pack's own run tops out at a quarter of this.
+# ── the run: the goat's leap, RETARGETED ─────────────────────────────────────
 #
-# Less air than the deer's (`flight` 0.24 against 0.34, `pitch` 12 against 17).
-# A fleeing white-tail sails; a bighorn is a stocky animal that runs on broken
-# rock, and what it does there is bound from stance to stance rather than
-# launch. The goat's procedural top gear was a bound for exactly this reason.
-RUN = dict(tuck=0.20, pitch=12.0, flight=0.24, meshes=MESHES, frames=9,
-           duty=0.22, lift=0.085, bob=0.02, crouch=0.085, scapula=20.0,
-           phase=BOUND)
+# Not solved. `Goat_Run` is the pack's own bound, it is the one gait in this
+# game that reads correctly, and the ram is given THAT MOTION rather than a
+# procedural imitation of it.
+#
+# Two earlier attempts were both solved by `build_gait`, and both read stiff:
+# legs stayed extended where a bound folds them. The reason is structural — a
+# gait spec is six scalars (duty, lift, flight, pitch, crouch, tuck) and an
+# animator's curves are not six scalars. Measuring the goat's leap and feeding
+# the numbers back in gets the cadence right and the shape wrong.
+#
+# ## Why the curves cannot simply be copied
+#
+# The two rigs share all 33 of the ram's bone names and the same topology, so a
+# straight copy of `Goat_Run`'s fcurves is the obvious move and it is wrong: a
+# Blender action stores each bone's rotation RELATIVE TO ITS OWN REST POSE, and
+# these two rests are not the same. Measured, the shared bones' rest
+# orientations differ by a median of 10.1 degrees, by 20.6 at the shins and by
+# 54.3 at `spine.006`. The same numbers on a differently-oriented rest bone make
+# a different pose.
+#
+# ## What is copied instead
+#
+# The rest-RELATIVE world rotation, which is the thing that is actually the
+# animation. Per frame, per bone:
+#
+#     delta      = goat_posed_world_rotation @ goat_rest_world_rotation^-1
+#     ram_target = delta @ ram_rest_world_rotation
+#
+# Rest differences cancel: whatever the goat's shin does relative to where its
+# shin starts, the ram's shin does relative to where its shin starts. The bones
+# are then walked parent-first and each one's local basis solved from its
+# parent's already-known world rotation, so nothing depends on Blender's
+# evaluation order and no depsgraph round-trip is needed.
+#
+# ## The two things that do NOT transfer, and are handled
+#
+# * **`Root`.** Its rest-relative delta is a constant 180 degrees — the pack's
+#   own facing convention, not motion. Applying it would turn the ram around
+#   and it would bound tail-first, which is exactly the fault `face_forward`
+#   exists to prevent and which no downstream measurement can catch (see
+#   `pack_rig_kit`'s header). `Root` is excluded and keeps the ram's rest.
+# * **Ground height.** The ram's legs are longer than the goat's (hind reach
+#   0.5517 against 0.4897) so the same joint angles put its hooves elsewhere:
+#   retargeted raw, the lowest hoof of the cycle sits at +0.0433 where this
+#   rig's rest contact is +0.1205. The whole body is therefore raised by one
+#   constant offset so the deepest planted hoof meets the same ground plane the
+#   solved walk and trot were solved against. A uniform translation of the body
+#   is placement, not posing — it changes where the animal is, not what it does.
+#
+# What this is NOT: the pack's `Ram_Run` edited. That clip is untouched and
+# unused (see the header). This is a new clip on the ram's rig carrying the
+# goat's authored motion, rebuilt from the pack by this script every time.
 
 # ── the alert ────────────────────────────────────────────────────────────────
 #
@@ -172,6 +217,120 @@ def alert_scan(f):
         if a <= f <= b:
             return u + (v - u) * ease(0.0 if b == a else (f - a) / (b - a))
     return 0.0
+
+
+def sample_goat_leap():
+    """`Goat_Run` as rest-relative world rotations, one dict per frame.
+
+    Read BEFORE `open_animal` isolates the ram, because that deletes every other
+    object in the file. Plain quaternions come back, so nothing here depends on
+    the goat surviving.
+    """
+    goat = bpy.data.objects[GOAT_RIG]
+    goat.data.pose_position = 'POSE'          # the pack ships every rig in REST
+    if goat.animation_data:
+        for t in goat.animation_data.nla_tracks:
+            t.is_solo = False                 # ...with Idle SOLOED over everything
+    act = bpy.data.actions[GOAT_CLIP]
+    goat.animation_data_create()
+    goat.animation_data.action = act
+    for slot in act.slots:
+        goat.animation_data.action_slot = slot
+        break
+
+    f0, f1 = int(act.frame_range[0]), int(act.frame_range[1])
+    rest = {b.name: b.matrix_local.to_quaternion() for b in goat.data.bones}
+    dep = bpy.context.evaluated_depsgraph_get()
+    out = []
+    for f in range(f0, f1):                   # f1 repeats f0: drop it, we loop
+        bpy.context.scene.frame_set(f)
+        dep.update()
+        out.append({n: goat.pose.bones[n].matrix.to_quaternion() @ rest[n].inverted()
+                    for n in rest})
+    print(f"[run] sampled {GOAT_CLIP}: {len(out)} frames of {len(rest)} bones")
+    return out
+
+
+def retarget_run(rig, delta, name="run"):
+    """Put the goat's leap on the ram's skeleton. See the block above."""
+    bones = {b.name: b for b in rig.data.bones}
+    rest = {n: b.matrix_local.to_quaternion() for n, b in bones.items()}
+
+    order, seen = [], set()
+    def visit(b):
+        if b.name in seen:
+            return
+        if b.parent:
+            visit(b.parent)
+        seen.add(b.name)
+        order.append(b.name)
+    for b in bones.values():
+        visit(b)
+
+    def rest_local(n):
+        b = bones[n]
+        if b.parent:
+            return (b.parent.matrix_local.inverted() @ b.matrix_local).to_quaternion()
+        return b.matrix_local.to_quaternion()
+
+    missing = sorted(n for n in bones if n not in delta[0])
+    assert not missing, f"the goat's clip does not animate {missing}"
+    for pb in rig.pose.bones:
+        pb.rotation_mode = 'QUATERNION'
+
+    def pose(d):
+        world = {}
+        for n in order:
+            world[n] = rest[n] if n == ROOT else d[n] @ rest[n]
+        for n in order:
+            b = bones[n]
+            parent = world[b.parent.name] if b.parent else Quaternion((1, 0, 0, 0))
+            rig.pose.bones[n].rotation_quaternion = (
+                (parent @ rest_local(n)).inverted() @ world[n])
+        bpy.context.view_layer.update()
+
+    # The lift, measured on the retargeted pose rather than assumed: how far the
+    # body must rise for the deepest planted hoof to meet the rest ground plane.
+    floor = min(bones[c].head_local.z for c in CONTACTS)
+    low = None
+    for d in delta:
+        pose(d)
+        z = min(rig.pose.bones[c].head.z for c in CONTACTS)
+        low = z if low is None else min(low, z)
+    lift = floor - low
+    print(f"[run] retargeted: lowest hoof {low:+.4f}, rest contact {floor:+.4f}, "
+          f"raising the body {lift:+.4f}")
+
+    # `Root`'s location is in ITS OWN bone space — a bone's local Y runs along
+    # the bone — so a world-Z lift has to be rotated into that basis first.
+    # Assigning it to `.location.z` raises the animal along whatever direction
+    # the root happens to point, which here was not up at all.
+    root_lift = rest[ROOT].inverted() @ Vector((0.0, 0.0, lift))
+
+    act = new_action(rig, name, len(delta))
+    for i in range(len(delta) + 1):
+        pose(delta[i % len(delta)])
+        rig.pose.bones[ROOT].location = root_lift
+        key(rig, order, i, loc={ROOT})
+    set_linear(act)
+    rig.animation_data.action = None
+    clear(rig)
+
+    # What the game will read off it: ground covered by a planted hoof.
+    lows = []
+    for i in range(len(delta)):
+        sample(rig, act, i)
+        lows.append({c: (rig.pose.bones[c].head.z, rig.pose.bones[c].head.y)
+                     for c in CONTACTS})
+    for c in CONTACTS:
+        zs = [f[c][0] for f in lows]
+        lo, hi = min(zs), max(zs)
+        band = lo + 0.12 * (hi - lo)
+        down = [i for i, z in enumerate(zs) if z <= band]
+        ys = [lows[i][c][1] for i in down]
+        print(f"[run]   {c:14s} z {lo:.4f}..{hi:.4f} lift {hi-lo:.4f}  "
+              f"duty {len(down)/len(zs):.2f}  stance sweep {max(ys)-min(ys):.4f}")
+    return act
 
 
 def build_alert(rig, rest):
@@ -223,6 +382,7 @@ def build_alert(rig, rest):
 
 
 def main():
+    leap = sample_goat_leap()      # BEFORE open_animal deletes the goat
     rig = open_animal(RIG, MESHES, "Ram_")
     face_forward(rig, HEAD)
 
@@ -254,8 +414,8 @@ def main():
     # The walk, the idle and the graze are the artist's and are not touched.
     # `new_action` deletes any action of the same name, so solving "walk" here
     # would silently clobber the clip that was decided on above.
-    for name, spec in (("trot", TROT), ("run", RUN)):
-        build_gait(rig, LEGS, rest, name, spec)
+    build_gait(rig, LEGS, rest, "trot", TROT)
+    retarget_run(rig, leap)
     build_alert(rig, rest)
 
     rig.animation_data.action = None

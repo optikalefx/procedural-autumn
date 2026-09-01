@@ -38,7 +38,7 @@
 //                 with all four hooves dead still.
 //    trot    11f  SOLVED here. No animal in this pack has a trot — 233 actions
 //                 checked and there is not one anywhere.
-//    run      9f  SOLVED here as a bound, and see below.
+//    run     18f  the GOAT's leap, retargeted onto this rig. See below.
 //    alert  120f  authored here: head up, ears forward, a stiff scan each way.
 //
 //  ── the one clip the pack ships that this animal cannot use ───────────────
@@ -54,8 +54,55 @@
 //  at zero velocity inside their own stance, the densest cluster in the pooled
 //  distribution sits at **0.0000 u/s over 14% of the samples** — so
 //  `loadGlbSpecies` refuses the clip outright at boot ("moved none of the feet
-//  named in glb.feet backwards"). There is nothing there to keep. The solved
-//  bound covers 2.80 m per leap with all four hooves agreeing to within 10%.
+//  named in glb.feet backwards"). There is nothing there to keep.
+//
+//  ── the run is the GOAT's leap, retargeted ────────────────────────────────
+//  `Goat_Run` is the pack's own bound and it is the one gait in this game that
+//  reads correctly, so this ram is given that MOTION rather than an imitation
+//  of it. Two solved bounds were tried first and both read stiff — legs held
+//  out straight where a bound folds them — and the reason is structural: a gait
+//  spec is six scalars and an animator's curves are not six scalars. Measuring
+//  the goat's cadence, duty, pitch and hoof lift and feeding them back into the
+//  solver got the timing right and the shape wrong.
+//
+//  The two rigs share all 33 of this one's bone names, but their REST poses
+//  differ — orientations by a median of 10.1°, by 20.6° at the shins and 54.3°
+//  at `spine.006` — and a Blender action stores rotations relative to rest, so
+//  copying the curves verbatim makes a different animal. What transfers is each
+//  bone's rest-RELATIVE world rotation:
+//
+//      delta      = goat_posed_world @ goat_rest_world⁻¹
+//      ram_target = delta @ ram_rest_world
+//
+//  Rest differences cancel. `tools/build_ram_blend.py` does it, parent-first,
+//  every time it rebuilds from the pack; the block above `retarget_run` there
+//  carries the detail, including why `Root` is excluded (its delta is a
+//  constant 180°, the pack's facing convention, and applying it bounds the ram
+//  tail-first) and why the body is raised by one constant offset.
+//
+//  Played at `rate: 2.0` on an 18-frame clip, which is exactly what
+//  `mammals/goat.js` does with the same source clip — matching the goat means
+//  matching how it is played, not only what is in it. It measures 5.890 m/s
+//  against the goat's 5.142, and the earlier invented bound's 7.454.
+//
+//  ── what it does NOT fix: three hooves float ──────────────────────────────
+//  The ram is not the goat, and the mismatch is in the rest pose: its hind legs
+//  rest at 0.656 of full extension where the goat's rest at 0.815. The same
+//  joint angles therefore leave its hooves in different places, and once the
+//  body is raised so the deepest hoof meets the floor, the other three sit
+//  above it:
+//
+//      toe.L        0.1205   on the floor
+//      toe.R        0.2010   80 mm high      (69 mm at the shipped x0.858)
+//      front_toe.L  0.1936   73 mm high
+//      front_toe.R  0.1835   63 mm high
+//
+//  On the goat all four touch. This is what a retarget between two differently
+//  proportioned animals costs, and the fix is a foot-planting IK pass over the
+//  retargeted clip — solve each leg down to the floor through its own stance —
+//  not a number changed here. Until that is written the ram runs a few
+//  centimetres light. `measure: 'contact'` still reads it honestly, because it
+//  clusters the planted hoof's velocity rather than assuming a height.
 //
 //  ── what the pack's walk cannot carry, named with its number ──────────────
 //  The walk IS kept — duty 0.57 is a real stance and the best in this pack —
@@ -116,13 +163,17 @@ export const RAM = {
       // Every `rate` here is 1.0, which is unusual in this cast and is not
       // laziness — it is what the clips came out at. `rate` is CADENCE and
       // nothing else, and all three of these are already at a believable one:
-      // the pack's walk is 0.80 Hz, the solved trot 2.18 Hz and the solved
-      // bound 2.67 leaps a second, against a real bighorn's roughly 0.8 / 2.4 /
-      // 2.5-3. The deer needs 1.7x because the pack authored its walk at
-      // 0.78 Hz; this one did not.
+      // the pack's walk is 0.80 Hz and the solved trot 2.18 Hz, against a real
+      // bighorn's roughly 0.8 and 2.4. The deer needs 1.7x because the pack
+      // authored its walk at 0.78 Hz; this one did not.
+      //
+      // The run is the exception and it is deliberate: the clip is authored at
+      // the goat leap's own 1.333 Hz and played at 2.0 for 2.67 leaps a second,
+      // which is exactly what `mammals/goat.js` does with `Goat_Run`. Matching
+      // the goat means matching how it is played, not only what is in it.
       walk: { name: 'walk', rate: 1.0 },
       trot: { name: 'trot', rate: 1.0 },
-      run: { name: 'run', rate: 1.0 },
+      run: { name: 'run', rate: 2.0 },
       graze: { name: 'graze' },
       alert: { name: 'alert' },
     },

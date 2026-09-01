@@ -107,8 +107,10 @@ const shots = await page.evaluate(async ({ KEY }) => {
   await stripFor('run', 0, 'run');
   await stripFor('graze', 0, 'graze');
   await stripFor('alert', 0, 'alert');
-  await stripFor('coat_smoke', 3, 'stand');
-  await stripFor('kid', 2, 'stand');
+  // The last two are the extra coats, and every species has a different number
+  // of them — the goat has 4, the ram 3. Ask for what exists rather than the
+  // goat's indices, or the whole strip run dies on `protos[3]` being undefined.
+  for (let i = 1; i < protos.length; i++) await stripFor(`coat_${i}`, i, 'stand');
   return out;
 }, { KEY });
 
