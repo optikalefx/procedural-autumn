@@ -84,21 +84,36 @@ LEGS = {
 # fit is 0.755 and every solved speed is multiplied by it. A first pass tuned to
 # the model's own units looked right in the build log and landed 25% low in the
 # game. Tune against the number the game prints.
-WALK = dict(frames=16, duty=0.64, lift=0.075, bob=0.012, crouch=0.075,
+WALK = dict(meshes=MESHES, frames=16, duty=0.64, lift=0.075, bob=0.012, crouch=0.075,
             scapula=12.0, phase=LATERAL_WALK)
-TROT = dict(frames=11, duty=0.48, lift=0.110, bob=0.018, crouch=0.100,
+TROT = dict(meshes=MESHES, frames=11, duty=0.48, lift=0.110, bob=0.018, crouch=0.100,
             scapula=15.0, phase=DIAGONAL_TROT)
-RUN = dict(frames=9, duty=0.26, lift=0.180, bob=0.026, crouch=0.130,
+RUN = dict(meshes=MESHES, frames=9, duty=0.26, lift=0.180, bob=0.026, crouch=0.130,
            scapula=19.0, phase=BOUND)
 
 GRAZE = dict(
+    meshes=MESHES,
     chest=[("spine.003", 0.35), ("spine.004", 0.65)],
     neck=["spine.005", "spine.006", "scull"],
     tip="scull",
-    chest_max=52.0,
-    # A bear forages nose-down close in front of its own forefeet. z is not 0:
-    # a muzzle driven to the soil reads as a nose buried in it.
-    target=(0.0, -0.55, 0.16),
+    chest_max=26.0,
+    # How straight the neck may get. This rig sits at 0.972 of its own arc AT
+    # REST — a straight snout-forward chain with no curl in it — so the margin
+    # is thin and the target has to respect it.
+    neck_max=0.985,
+    # The muzzle can only move on a SPHERE of the neck's own radius about its
+    # base — this neck is 0.972 extended at rest, so it rotates and does not
+    # reach. The target is therefore chosen ON that sphere, a rotation of the
+    # resting head rather than a point picked off the ground.
+    #
+    # Two earlier targets are worth recording. (0, -0.55, 0.16) was pulled 0.66
+    # BACK toward the body and sat at 1.307 of the arc: unreachable, so the CCD
+    # cranked every bone trying and edges stretched to 1.85x. (0, -1.05, 0.30)
+    # was still 1.045 at its best. This one sits at 0.946 and drops the muzzle
+    # from 0.849 to 0.56 — 22 cm at the shipped scale, a bear nosing low
+    # vegetation rather than burying its face in the soil, which is the most
+    # this neck can honestly do.
+    target=(0.0, -0.88, 0.56),
     in_frames=36, hold_frames=96, out_frames=36,
     crop=0.030, glance=0.10,
 )

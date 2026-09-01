@@ -281,6 +281,44 @@ def local_translation(pb, world_delta):
     return m.inverted() @ Vector(world_delta)
 
 
+def max_edge_stretch(mesh_names, sample_frames):
+    """Worst edge stretch on the DEFORMED mesh across `sample_frames`.
+
+    The most direct check there is, and the one that catches every cause at
+    once: whatever the rig does, if the skin ends up longer than it was, the
+    player sees it. Bone-space checks are proxies for this and each of them has
+    a blind spot — a leg can pass a reach test while a neighbouring chain
+    contorts, and a neck can arrive at its target by a route that stretches
+    every vertex on the way.
+
+    Both mesh faults in this work read >1.8x here and were invisible to the
+    proxies that were being asserted at the time.
+    """
+    rest = {}
+    dg = bpy.context.evaluated_depsgraph_get()
+    for name in mesh_names:
+        ev = bpy.data.objects[name].evaluated_get(dg)
+        m = ev.to_mesh()
+        rest[name] = [(m.vertices[e.vertices[0]].co - m.vertices[e.vertices[1]].co).length
+                      for e in m.edges]
+        ev.to_mesh_clear()
+    worst, where = 0.0, None
+    for f in sample_frames:
+        bpy.context.scene.frame_set(f)
+        dg = bpy.context.evaluated_depsgraph_get()
+        for name in mesh_names:
+            ev = bpy.data.objects[name].evaluated_get(dg)
+            m = ev.to_mesh()
+            for e, b in zip(m.edges, rest[name]):
+                if b < 1e-5:
+                    continue
+                r = (m.vertices[e.vertices[0]].co - m.vertices[e.vertices[1]].co).length / b
+                if r > worst:
+                    worst, where = r, f"{name} f{f}"
+            ev.to_mesh_clear()
+    return worst, where
+
+
 def ease(t):
     """Smoothstep, so a move starts and stops rather than snapping into a
     constant rate the instant the clip begins."""
@@ -569,7 +607,12 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
                 over, ow = d, f"f{i} {k}"
     rig.animation_data.action = None
     clear(rig)
+    stretch, sw = max_edge_stretch(spec["meshes"], [1 + i for i in range(frames + 1)])
     print(f"[{name}]   worst leg extension      {over:7.3f} of reach ({ow})")
+    print(f"[{name}]   worst mesh edge stretch  x{stretch:.3f} ({sw})")
+    assert stretch < 1.25, (
+        f"{name}: the mesh stretches x{stretch:.2f} at {sw} — the skin is longer "
+        f"than it was and the player sees it.")
     assert over <= 1.001, (
         f"{name}: {ow} is at {over:.3f} of its reach — the IK clamps and the "
         f"mesh tears. Lower the sweep, raise the crouch, or shorten the stance.")
@@ -655,26 +698,54 @@ def graze_pose(rig, legs, rest, cfg, chest_deg, target):
     return rig.pose.bones[cfg["tip"]].tail.copy()
 
 
-def solve_chest(rig, legs, rest, cfg, target, tol=0.010):
-    """Smallest chest pitch that puts `target` inside the neck's reach.
+def neck_extension(rig, cfg, target):
+    """How straight the neck must be to touch `target`, as a fraction of its arc.
 
-    Monotonic where the shared-angle version was not: more pitch lowers the neck
-    base and strictly shortens the distance left to cover.
+    Above 1.0 the target is simply out of reach and the CCD will crank every
+    bone to its limit trying — which arrives near the target by a contorted
+    route and stretches the skin. The bear's first graze target sat at 1.307 of
+    its neck arc and stretched edges to 1.85x.
+
+    Bears are the reason this needs checking rather than assuming: this neck is
+    at 0.972 of its own arc AT REST — a straight snout-forward chain with no
+    curl in it — so all of a graze's drop has to come from the chest, and any
+    target the chest cannot deliver gets taken out of the mesh.
     """
-    hi = cfg["chest_max"]
-    r = (graze_pose(rig, legs, rest, cfg, hi, target) - target).length
-    if r > tol:
-        raise SystemExit(f"[graze] the muzzle cannot reach {tuple(round(v,3) for v in target)} "
-                         f"even at {hi} deg of chest pitch (short by {r:.3f}). "
-                         f"Raise chest_max or lift the target.")
-    lo = 0.0
-    for _ in range(26):
-        mid = (lo + hi) * 0.5
-        if (graze_pose(rig, legs, rest, cfg, mid, target) - target).length <= tol:
-            hi = mid
-        else:
-            lo = mid
-    return hi
+    arc = sum((rig.pose.bones[n].tail - rig.pose.bones[n].head).length
+              for n in cfg["neck"])
+    return (target - rig.pose.bones[cfg["neck"][0]].head).length / arc
+
+
+def solve_chest(rig, legs, rest, cfg, target, tol=0.010):
+    """Smallest chest pitch that reaches `target` without straightening the neck.
+
+    SCANNED, not bisected. Bisection needs the condition to be monotonic in the
+    pitch and it is not: on the bear, pitching the chest swings the neck base
+    AWAY from a low target, so extension gets WORSE with more pitch — 1.045 at
+    30 degrees against 1.273 at 75. Whether pitch helps depends on where the
+    neck base sits relative to the chest pivot, which differs per animal, so the
+    honest thing is to try the range and report what was found.
+    """
+    best, best_ext = None, 1e9
+    steps = 40
+    for i in range(steps + 1):
+        pitch = cfg["chest_max"] * i / steps
+        got = graze_pose(rig, legs, rest, cfg, pitch, target)
+        ext = neck_extension(rig, cfg, target)
+        if ext < best_ext:
+            best_ext = ext
+        if (got - target).length <= tol and ext <= cfg["neck_max"]:
+            best = pitch
+            break
+    if best is None:
+        raise SystemExit(
+            f"[graze] no chest pitch in 0..{cfg['chest_max']} deg reaches "
+            f"{tuple(round(v, 3) for v in target)} without straightening the neck "
+            f"past {cfg['neck_max']} — the best was {best_ext:.3f} of its arc. "
+            f"The muzzle can only move on a sphere of the neck's own radius about "
+            f"its base, so lift the target or bring it closer, rather than asking "
+            f"the chest to make up the difference.")
+    return best
 
 
 def build_phased_graze(rig, legs, rest, cfg):
@@ -742,7 +813,10 @@ def build_phased_graze(rig, legs, rest, cfg):
     rig.animation_data.action = None
     clear(rig)
 
+    stretch, sw = max_edge_stretch(cfg["meshes"],
+                                   [1 + i for i in range(0, HOLD + 1, 4)])
     print("[graze] validation")
+    print(f"   {'worst mesh edge stretch':32s} x{stretch:.3f} ({sw})")
     for k, v in checks.items():
         print(f"   {k:32s} {v*1000:7.3f} mm")
     print(f"   {'foot movement, worst frame':32s} {worst_foot*1000:7.3f} mm")
@@ -755,3 +829,6 @@ def build_phased_graze(rig, legs, rest, cfg):
     # failed the build the moment the target was deliberately raised.
     assert lowest <= target.z + 0.05, (
         f"the muzzle stopped at z={lowest:.3f}, short of its target {target.z:.3f}")
+    assert stretch < 1.25, (
+        f"the mesh stretches x{stretch:.2f} at {sw}. Whatever the rig is doing, "
+        f"the skin is longer than it was and the player sees it.")

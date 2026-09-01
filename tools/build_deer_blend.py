@@ -93,9 +93,9 @@ LEGS = {
 # stride: the first pass at 0.02 m of crouch solved to a 0.530 sweep against a
 # geometric maximum of 0.790, and 0.49 m/s where a white-tail walks at 1.15.
 # 6-7 cm on a 1.08 m animal is not visible and is most of the gap.
-WALK = dict(frames=18, duty=0.62, lift=0.075, bob=0.010, crouch=0.060,
+WALK = dict(meshes=MESHES, frames=18, duty=0.62, lift=0.075, bob=0.010, crouch=0.060,
             scapula=13.0, phase=LATERAL_WALK)
-TROT = dict(frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
+TROT = dict(meshes=MESHES, frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
             scapula=17.0, phase=DIAGONAL_TROT)
 # The bound, and the whole reason a fleeing deer can reach a real speed. Duty is
 # the lever: at 0.20 a hoof is down a fifth of the cycle, so the sweep it can
@@ -103,7 +103,7 @@ TROT = dict(frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
 # cycle than the same sweep at a walk's duty. That is not a trick — it is what
 # makes a bound fast, and it is why the pack's own run tops out at 1.7 m/s while
 # this reaches a white-tail's.
-RUN = dict(frames=9, duty=0.20, lift=0.20, bob=0.02, crouch=0.09,
+RUN = dict(meshes=MESHES, frames=9, duty=0.20, lift=0.20, bob=0.02, crouch=0.09,
            scapula=20.0, phase=BOUND)
 
 # Alert. Starts at spine.006: on THIS rig `front_shoulder` parents to spine.005,

@@ -87,14 +87,14 @@ LEGS = {
                         target="front_toe.R", below=["front_toe.R"], contact="front_toe.R"),
 }
 
-WALK = dict(frames=14, duty=0.60, lift=0.040, bob=0.006, crouch=0.030,
+WALK = dict(meshes=MESH, frames=14, duty=0.60, lift=0.040, bob=0.006, crouch=0.030,
             scapula=11.0, phase=LATERAL_WALK)
-TROT = dict(frames=9, duty=0.45, lift=0.055, bob=0.008, crouch=0.045,
+TROT = dict(meshes=MESH, frames=9, duty=0.45, lift=0.055, bob=0.008, crouch=0.045,
             scapula=13.0, phase=DIAGONAL_TROT)
 # A raccoon flees in a bounding lope rather than a flat gallop, and duty is what
 # makes that quick: the same reach spent in a fifth of the cycle covers roughly
 # three times the ground per cycle a walk's duty does. See the skill.
-RUN = dict(frames=7, duty=0.22, lift=0.090, bob=0.014, crouch=0.060,
+RUN = dict(meshes=MESH, frames=7, duty=0.22, lift=0.090, bob=0.014, crouch=0.060,
            scapula=16.0, phase=BOUND)
 
 ALERT_FRAMES = 96       # 4.0 s, looping

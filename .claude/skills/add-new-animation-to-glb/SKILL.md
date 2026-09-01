@@ -331,6 +331,37 @@ The general form: **a validator sampled at the same rate as the thing it
 validates cannot see between its own samples.** If a number moves when you
 change something that should not affect it, the measurement is the bug.
 
+## Assert on the MESH, not only on the rig
+
+    stretch, where = max_edge_stretch(meshes, frames)
+    assert stretch < 1.25
+
+The most direct check there is, and the one that catches every cause at once:
+whatever the rig does, if the skin ends up longer than it was, the player sees
+it. Every bone-space check is a proxy with a blind spot.
+
+Both mesh faults in this work read **above 1.8x** here and were invisible to the
+proxies being asserted at the time — a leg passed its path check while the leg
+carrying it was clamped, and a neck arrived at its target by a route that
+stretched every vertex on the way. Both were found by a person looking at the
+animal, not by the build. Solved gaits and a well-targeted graze come out at
+exactly 1.000.
+
+## A muzzle moves on a SPHERE, not to a point
+
+Before choosing a graze target, measure the neck's rest extension. If it is near
+1.0 the chain is straight already and **cannot reach** — it can only rotate, so
+the muzzle's reachable set is a sphere of the neck's own radius about its base.
+The bear's neck is at 0.972 at rest. Targets picked off the ground rather than
+off that sphere sat at 1.307 and 1.045 of the arc and tore the mesh.
+
+And do not assume the chest can make up the difference. On the bear, pitching
+the chest swings the neck base AWAY from a low target, so extension gets *worse*
+with more pitch — 1.045 at 30 degrees against 1.273 at 75. Whether pitch helps
+depends on where the neck base sits relative to the chest pivot and it differs
+per animal, which is why `solve_chest` **scans** the range rather than bisecting
+it. Bisection needs a monotonicity nothing here guarantees.
+
 ## Make the promises assertions
 
 Fail the build rather than ship a clip that does not join up. Every one of these
