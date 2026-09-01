@@ -1033,7 +1033,22 @@ export class Journal {
       this._awardLeaf = 1;
       return;
     }
+    // The store may not have this yet — `open`'s docstring says photo mode is
+    // free to award before opening and the shipping wiring does, but a caller
+    // that does not is legitimate. So the mystery can open HERE, one turn of
+    // the event loop after `_decorate` has already run and decided it had not.
+    // Latch it either way; `_decorate` guards on the same false-to-true edge,
+    // so whichever of the two sees it first, only one of them fires.
+    const wasOpen = hunt.mysteryOpen;
     hunt.award(award.id, award.photoDataURL ?? null);
+    if (!wasOpen && hunt.mysteryOpen && this._mysteryPage != null) {
+      const leaf = this._pages[this._mysteryPage];
+      if (leaf.spec.open === false) {
+        leaf.spec.open = true;
+        this._revealPending = true;
+        try { leaf.paint(); } catch { /* the seek still happens; the page repaints */ }
+      }
+    }
     const page = this._pages[seat.page];
     const row = page.spec.rows[seat.row];
     row.done = true;

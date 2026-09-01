@@ -47,6 +47,7 @@ import { Audio }       from './audio/Audio.js';
 import { HUD }         from './ui/HUD.js';
 import { Stats }       from './game/Stats.js';
 import { hunt }        from './game/hunt_store.js';
+import { installHuntDebug } from './game/hunt_debug.js';
 import { stats as statsStore } from './game/stats_store.js';
 
 const SYSTEMS = [
@@ -662,6 +663,10 @@ async function boot() {
   // cost an afternoon once; it is one line to make impossible.
   window.__hunt = hunt;
   window.__stats = statsStore;
+  // `window.__dbg` — the scavenger sheet's last two hours, reachable without
+  // playing them. `__dbg.help()` lists it; it also reads `?hunt=` and
+  // `?bigfoot=` off the URL. See src/game/hunt_debug.js.
+  installHuntDebug(ctx);
 
   // Indexed accessor so the capture harness can pick a different landmark when
   // the top-ranked one turns out to be unusable (buried in vegetation, inside a

@@ -487,13 +487,61 @@ export class Bigfoot {
     return this.present ? { x: this.pos.x, z: this.pos.z } : null;
   }
 
-  /** Console and harness surface: put one where he can be looked at, now. */
-  debugSpawn(cam) {
+  /**
+   * Console and harness surface: put one where he can be looked at, now.
+   *
+   * Two modes, and the difference matters.
+   *
+   *   `debugSpawn()` or `debugSpawn(camera)` runs the REAL search — deep
+   *   timber, standable ground, out of frame — and returns null when the
+   *   valley has nowhere to put him. That is the one worth calling when the
+   *   question is "does placement work".
+   *
+   *   `debugSpawn({ dist, ahead })` skips the search and puts him on the
+   *   ground in front of the camera. Every habitat rule is ignored: he will
+   *   stand in a meadow, on a road, or in a lake. It is for LOOKING at him, and
+   *   `hunt_debug.js`'s `__dbg.bigfoot()` is the caller.
+   *
+   * Either way he lands in WAIT with a full life ahead of him, so the four
+   * beats play out from there exactly as they would have.
+   */
+  debugSpawn(opts = {}) {
+    const o = opts?.isCamera ? { cam: opts } : (opts ?? {});
+    const cam = o.cam ?? this.ctx.camera;
     this._cool = 0;
     this.armed = true;
     if (this.present) this._despawn();
-    this._trySpawn(cam ?? this.ctx.camera);
-    return this.present ? { ...this.pos, variant: this.variant?.name } : null;
+
+    if (!(o.dist > 0)) {
+      this._trySpawn(cam);
+      return this.present ? { ...this.pos, variant: this.variant?.name } : null;
+    }
+
+    const W = this.ctx.world;
+    if (!W || !cam) return null;
+    this._build();
+    // Straight down the camera's own forward axis, flattened. `ahead: false`
+    // puts him behind you instead, which is how you check that he does not
+    // simply appear the moment you turn round.
+    const m = cam.matrixWorld.elements;
+    const s = o.ahead === false ? 1 : -1;
+    let fx = m[8] * s, fz = m[10] * s;
+    const len = Math.hypot(fx, fz) || 1;
+    fx /= len; fz /= len;
+    const x = cam.position.x + fx * o.dist, z = cam.position.z + fz * o.dist;
+    this.pos.set(x, W.getHeight(x, z), z);
+    // Side-on to the camera, which is the readable silhouette — and the pose he
+    // has somewhere to turn FROM when he leaves.
+    this.heading = Math.atan2(cam.position.x - x, cam.position.z - z)
+      + (this.rng() < 0.5 ? -1 : 1) * 1.2;
+    this.rig.reset(this.pos, this.heading, W);
+    this.group.visible = true;
+    this.present = true;
+    this.state = ST.WAIT;
+    this._t = 0; this._life = 0; this._held = 0;
+    this._look = 0; this._moving = 0; this._looked = false;
+    this.stats.spawns++;
+    return { ...this.pos, variant: this.variant?.name, forced: true };
   }
 
   dispose() {
