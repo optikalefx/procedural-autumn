@@ -66,8 +66,10 @@ bear's 0.97 is what made its stride nearly impossible.
 
 import math
 import os
+import random
 import sys
 
+import bmesh
 import bpy
 from mathutils import Vector
 
@@ -276,6 +278,81 @@ def check_meshes_agree(rig):
 # (33, 33, 33), which is the same texel described in a colour space nothing
 # ever displays it in. Sample through the gamma or compare the wrong numbers.
 DARK_UV = (0.8521, 0.5005)
+
+# ── the coat ─────────────────────────────────────────────────────────────────
+#
+# A mountain goat's coat is not a texture on a barrel — it IS the barrel, and at
+# the range this animal is seen the shag reads entirely as OUTLINE: the skirt on
+# the legs, the chest fringe, the ruff welding head to shoulder, the ragged hem.
+# So it is built as geometry, as tufts, and every parameter below is aimed at
+# the silhouette rather than at the surface.
+#
+# Three things carried over from the procedural track's `ripple`, which was
+# written for the yak and went unused the moment these two went GLB. They cost
+# a round each there and they apply unchanged here:
+#
+#   * hair HANGS. `droop` mixes the surface normal toward straight down, and
+#     without it a coat is a pincushion of radial spikes.
+#   * a coat needs two scales. One even field of identical tufts reads as
+#     upholstery; `jitter` on direction and `vary` on length break it.
+#   * it belongs on the flank and the hem, not the spine. The back gets the
+#     shortest, most upright tufts of any region for exactly that reason —
+#     shagging a spine turns a smooth back into corrugated iron.
+#
+# `dens` is tufts per square unit of the surface they sit on, so a region's
+# count follows its area and does not need hand-balancing.
+FUR_SEED = 20260901
+TUFT_TRIS = 3                    # a 4-vertex lock: 3 sides, base left open
+FUR_DENSITY = 1.0                # global multiplier; the triangle budget lever
+
+# `lift` is the whole difference between a coat and a pincushion, and the first
+# attempt got it wrong: a tuft aimed along the surface NORMAL is a thorn. Hair
+# lies against the body and only lifts away at the hem, so the direction is
+# built the other way round — `comb` is combed flat into the tangent plane
+# first, and `lift` then mixes a little of the normal back in. 0.09 is a lock
+# lying on the flank; 0.26 is the fringe at the brisket standing off the body.
+#
+# `comb` is the direction hair falls before projection: down, and swept toward
+# the tail. `width` is the base half-width as a fraction of length; `curl`
+# droops the tip under gravity so a lock hangs rather than pointing.
+#
+# The second attempt covered only the hindquarters — the chest caught seven
+# tufts and the forelegs none — because the region test was a ladder of
+# y-bands that left holes. `_fur_region` now returns a region for EVERY point
+# on the animal except the four places hair does not belong: the face, the
+# horns, the ears and the cannons.
+FUR = [
+    # name          dens  length  lift  comb              width jitter vary curl
+    dict(name="ruff",     dens=1500, length=0.066, lift=0.15,
+         comb=(0.0, 0.45, -1.0), width=0.34, jitter=0.10, vary=0.35, curl=0.22,
+         back_only=True),
+    dict(name="throat",   dens=1600, length=0.070, lift=0.16,
+         comb=(0.0, 0.25, -1.0), width=0.34, jitter=0.10, vary=0.35, curl=0.26,
+         back_only=True),
+    # The beard is the one region built from MANY SMALL locks rather than a few
+    # big ones. At the body's tuft size it came out as a handful of slabs the
+    # width of the jaw, hanging like a bib; a beard is a dense stack of short
+    # hairs. So: a fifth of the length, and forty times the density to fill it.
+    dict(name="beard",    dens=17000, length=0.034, lift=0.05,
+         comb=(0.0, 0.05, -1.0), width=0.26, jitter=0.06, vary=0.30, curl=0.10,
+         back_only=True),
+    dict(name="brisket",  dens=1500, length=0.070, lift=0.24,
+         comb=(0.0, 0.20, -1.0), width=0.34, jitter=0.12, vary=0.35, curl=0.26),
+    dict(name="belly",    dens=1400, length=0.058, lift=0.18,
+         comb=(0.0, 0.30, -1.0), width=0.32, jitter=0.12, vary=0.35, curl=0.24),
+    dict(name="flank",    dens=1500, length=0.046, lift=0.09,
+         comb=(0.0, 0.55, -1.0), width=0.30, jitter=0.14, vary=0.40, curl=0.18),
+    dict(name="shoulder", dens=1500, length=0.050, lift=0.11,
+         comb=(0.0, 0.45, -1.0), width=0.30, jitter=0.14, vary=0.38, curl=0.20),
+    dict(name="spine",    dens=1000, length=0.036, lift=0.10,
+         comb=(0.0, 1.00, -0.25), width=0.28, jitter=0.14, vary=0.35, curl=0.10),
+    dict(name="rump",     dens=1400, length=0.060, lift=0.18,
+         comb=(0.0, 0.85, -0.60), width=0.32, jitter=0.12, vary=0.35, curl=0.20),
+    dict(name="pants",    dens=1500, length=0.070, lift=0.22,
+         comb=(0.0, 0.25, -1.0), width=0.34, jitter=0.12, vary=0.40, curl=0.24),
+    dict(name="forepants",dens=1400, length=0.052, lift=0.20,
+         comb=(0.0, 0.20, -1.0), width=0.32, jitter=0.12, vary=0.40, curl=0.22),
+]
 HORN_TOP = 0.938
 HORN_BASE_Y = -0.73
 WITHERS_Z = 0.7216          # spine.005's head; the unit every amplitude is in
@@ -290,6 +367,239 @@ def _updown(z, lo, hi):
     """0 at `lo`, 1 at `hi`, smooth — 'how much of the back is this vertex'."""
     t = max(0.0, min(1.0, (z - lo) / (hi - lo)))
     return t * t * (3.0 - 2.0 * t)
+
+
+def _fur_region(co, n, leg, hind, scull):
+    """Which coat region a point belongs to. Everything is covered but four.
+
+    A mountain goat in winter is haired over essentially all of itself, so the
+    default here is "coat" and the exceptions are named: the face, the horns and
+    the ears (all `scull`-weighted, and only the jaw under them grows a beard),
+    and the cannons below the hock, where tufts read as mud rather than as hair.
+
+    The BEARD is the one region that cannot be described by a box. A band on
+    y and z catches the cheeks and the sides of the muzzle as well as the chin,
+    and the result is a goat with fur fanning off its whole face — so the test
+    is the surface NORMAL instead: a beard grows where the jaw faces DOWN.
+    Held near the midline as well, because a goat's beard is a hanging tuft and
+    not a pair of sideburns.
+    """
+    y, z = co.y, co.z
+    if scull > 0.5:
+        # UNDER THE CHIN and nowhere else. Three separate clamps, because each
+        # one alone leaks: the normal test keeps it off the cheeks, the y band
+        # keeps it off the muzzle (it was reaching past the nose), and the x
+        # clamp keeps it a hanging tuft rather than a bib the width of the jaw.
+        chin = (n.z < -0.35 and -0.82 < y < -0.68 and z < 0.60
+                and abs(co.x) < 0.050)
+        return "beard" if chin else None
+    if leg > 0.5:
+        if z < 0.26:
+            return None                       # cannon and hoof stay clean
+        return "pants" if hind else "forepants"
+    if y < -0.64:
+        # Forward of the jaw line and not on the skull group: the cheek and the
+        # side of the muzzle. Left bare on purpose — a mountain goat's face is
+        # smooth and its chin hangs a beard, and letting the ruff creep forward
+        # of here is what put fur across the animal's own cheekbone.
+        return None
+    if y > 0.34:
+        return "rump"
+    if z > 0.74:
+        return "spine"
+    if y < -0.30:
+        return "throat" if z < 0.55 else "ruff"
+    if z < 0.44:
+        return "brisket" if y < -0.05 else "belly"
+    return "shoulder" if y < -0.08 else "flank"
+
+
+def add_fur(report=True):
+    """Grow the coat as tufts welded into the body mesh.
+
+    Built here rather than with a Geometry Nodes tree, and the reasons are
+    practical rather than dogmatic: a node tree authored from Python is verbose
+    and moves between versions, `export_pack_glb.py` STRIPS `NODES` modifiers
+    (so an unapplied one would vanish silently at export and look perfect in
+    Blender), and generating the tufts directly lets each one inherit the skin
+    weights of the body vertex it grows from. That last point is the one that
+    matters: a tuft is small, so binding it rigidly to its root's weights makes
+    it ride the skin exactly, through all six clips, with no stretching and no
+    transfer step to get wrong.
+
+    Both coats get the SAME geometry — same seed, same input mesh — so
+    `check_meshes_agree` still holds. Only the UVs differ, and each mesh's tufts
+    take that mesh's own body colour.
+    """
+    rig = bpy.data.objects[RIG]
+    hind_groups = {"thigh.L", "thigh.R", "shin.L", "shin.R", "foot.L", "foot.R",
+                   "toe.L", "toe.R"}
+    counts = {}
+
+    for ob in MESHES:
+        obj = bpy.data.objects[ob]
+        me = obj.data
+        gi = {g.name: g.index for g in obj.vertex_groups}
+        leg_idx = {gi[n] for n in gi if n.split(".")[0] in (
+            "thigh", "shin", "foot", "toe",
+            "front_thigh", "front_shin", "front_foot", "front_toe")}
+        hind_idx = {gi[n] for n in hind_groups if n in gi}
+        scull_idx = gi.get("scull", -1)
+
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bm.verts.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        dvert = bm.verts.layers.deform.active or bm.verts.layers.deform.new()
+        uvl = bm.loops.layers.uv.active
+        body_uv = _body_uv(me)
+
+        rnd = random.Random(FUR_SEED)
+        source = list(bm.faces)
+        made = {}
+        for f in source:
+            n = f.normal.copy()
+            if n.length < 1e-9:
+                continue
+            n.normalize()
+            c = f.calc_center_median()
+            vs = list(f.verts)
+            near = min(vs, key=lambda v: (v.co - c).length)
+            w = near[dvert]
+            leg = sum(w.get(i, 0.0) for i in leg_idx)
+            hind = sum(w.get(i, 0.0) for i in hind_idx) > 0.5
+            scull = w.get(scull_idx, 0.0)
+            reg = _fur_region(c, n, leg, hind, scull)
+            if reg is None:
+                continue
+            spec = next(r for r in FUR if r["name"] == reg)
+
+            area = f.calc_area()
+            exact = area * spec["dens"] * FUR_DENSITY
+            k = int(exact) + (1 if rnd.random() < (exact - int(exact)) else 0)
+            for _ in range(k):
+                # Barycentric point on the face, and the nearest corner's
+                # weights: a tuft rides one body vertex rigidly.
+                a, b = rnd.random(), rnd.random()
+                if a + b > 1.0:
+                    a, b = 1.0 - a, 1.0 - b
+                p = vs[0].co + (vs[1].co - vs[0].co) * a + (vs[2].co - vs[0].co) * b
+                root = min(vs, key=lambda v: (v.co - p).length)
+
+                # Comb flat FIRST, then lift. The reverse — normal, then bend
+                # toward gravity — is what makes thorns.
+                comb = Vector(spec["comb"])
+                comb.x += rnd.uniform(-1, 1) * spec["jitter"]
+                tangent = comb - n * comb.dot(n)
+                if tangent.length < 1e-6:
+                    tangent = Vector((0.0, 1.0, 0.0)) - n * n.y
+                tangent.normalize()
+                d = tangent * (1.0 - spec["lift"]) + n * spec["lift"]
+                d += Vector((rnd.uniform(-1, 1), rnd.uniform(-1, 1),
+                             rnd.uniform(-1, 1))) * spec["jitter"] * 0.5
+                if d.length < 1e-6:
+                    continue
+                d.normalize()
+                # Nothing on the head or throat may point FORWARD. Those
+                # surfaces face the muzzle, so `lift` — which mixes the normal
+                # back in — aims their tufts straight across the face, and the
+                # goat ends up with fur growing past its own nose. Hair on a
+                # throat hangs down and sweeps back; it never leads.
+                if spec.get("back_only") and d.y < 0.0:
+                    d.y *= 0.10
+                    if d.length < 1e-6:
+                        continue
+                    d.normalize()
+                ln = spec["length"] * (1.0 + rnd.uniform(-1, 1) * spec["vary"])
+                rad = max(ln * spec["width"], 0.005)
+                # A lock is a flat ribbon, not a needle: wide ACROSS the fall,
+                # thin through it. A round base is what made the first two
+                # attempts read as grass stuck to a goat.
+                across = d.cross(n)
+                if across.length < 1e-6:
+                    across = d.cross(Vector((0.0, 1.0, 0.0)))
+                across.normalize()
+                thick = d.cross(across).normalized()
+
+                # A base triangle in the plane across the tuft, sunk slightly so
+                # the join never gaps, and one tip. Three side faces.
+                base0 = p - d * (rad * 0.5)
+                corners = (across * rad,
+                           across * -rad,
+                           thick * (rad * 0.55))
+                ring = []
+                for off in corners:
+                    nv = bm.verts.new(base0 + off)
+                    nv[dvert].clear()
+                    for gidx, gw in root[dvert].items():
+                        nv[dvert][gidx] = gw
+                    ring.append(nv)
+                # The tip falls away under its own weight, which is what makes
+                # a lock hang instead of point.
+                tip = bm.verts.new(p + d * ln + Vector((0.0, 0.0, -1.0))
+                                   * ln * spec["curl"])
+                tip[dvert].clear()
+                for gidx, gw in root[dvert].items():
+                    tip[dvert][gidx] = gw
+
+                for j in range(3):
+                    nf = bm.faces.new((ring[j], ring[(j + 1) % 3], tip))
+                    nf.smooth = False       # faceted, like the rest of the world
+                    nf.material_index = f.material_index
+                    if uvl:
+                        for lp in nf.loops:
+                            lp[uvl].uv = body_uv
+                made[reg] = made.get(reg, 0) + 1
+
+        bm.normal_update()
+        bm.to_mesh(me)
+        bm.free()
+        me.update()
+        counts[ob] = made
+
+    if report:
+        for ob, made in counts.items():
+            total = sum(made.values())
+            print(f"[fur] {ob}: {total} tufts (+{total * TUFT_TRIS} tris) "
+                  + " ".join(f"{k}:{v}" for k, v in sorted(made.items())))
+
+
+def _body_uv(me):
+    """The commonest UV on the mesh — its body colour."""
+    uv = me.uv_layers.active.data
+    tally = {}
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            k = tuple(round(c, 4) for c in uv[li].uv)
+            tally[k] = tally.get(k, 0) + 1
+    return max(tally.items(), key=lambda kv: kv[1])[0]
+
+
+def _find_eyes(ob):
+    """The eye vertices, found by colour on the white coat.
+
+    The pack paints them a pale yellow (255, 241, 194) with a light grey ring —
+    a domestic goat's slot pupil. A mountain goat's eye is black, and on a white
+    head at range it is one of only three dark marks the animal has, alongside
+    the horns and the nose.
+
+    Found here rather than by a bounding box because a box around the eye also
+    catches the brow and the cheek, and found ONCE on `Goat_01` because the two
+    coats differ precisely in their UVs — the same trap the nose fell into.
+    """
+    me = ob.data
+    uv = me.uv_layers.active.data
+    out = set()
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            vi = me.loops[li].vertex_index
+            co = me.vertices[vi].co
+            if not (-0.82 < co.y < -0.72 and 0.66 < co.z < 0.74 and abs(co.x) > 0.03):
+                continue
+            u, v = round(uv[li].uv[0], 3), round(uv[li].uv[1], 3)
+            if (u, v) in ((0.677, 0.383), (0.875, 0.720)):
+                out.add(vi)
+    return out
 
 
 def _find_nose(ob):
@@ -319,7 +629,7 @@ def _repaint(ob, verts, uv_to, label):
     print(f"[shape] {ob.name}: {label} -> uv {uv_to} ({len(verts)} verts, {n} loops)")
 
 
-def _darken_details(ob, gi, wof, paint_ids, nose_ids):
+def _darken_details(ob, gi, wof, paint_ids, nose_ids, eye_ids):
     """Horns, nose and hooves are the wrong colour, and the horns matter most.
 
     A mountain goat's horns, nose and hooves are black, and that contrast is the
@@ -340,6 +650,7 @@ def _darken_details(ob, gi, wof, paint_ids, nose_ids):
                    if n.split(".")[0] in ("toe", "front_toe")) > 0.5}
     _repaint(ob, paint_ids, DARK_UV, "horns")
     _repaint(ob, nose_ids, DARK_UV, "nose")
+    _repaint(ob, eye_ids, DARK_UV, "eyes")
     _repaint(ob, hoof, DARK_UV, "hooves")
 
 
@@ -537,9 +848,10 @@ def reshape_mountain_goat(report=True):
     # loops are painted pink" finds the nose on `Goat_01` and nothing at all on
     # `Goat_02` — which is how the brown goat kept a pink nose for one build.
     nose_ids = _find_nose(obs[0])
+    eye_ids = _find_eyes(obs[0])
     for ob in obs:
         _repaint_udder(ob, gi, wof)
-        _darken_details(ob, gi, wof, paint_ids, nose_ids)
+        _darken_details(ob, gi, wof, paint_ids, nose_ids, eye_ids)
 
     if report:
         moved.sort(reverse=True)
@@ -622,6 +934,7 @@ def main():
     # Before ANYTHING is solved: the trot is solved against this mesh and its
     # edge-stretch check is only meaningful on the mesh that ships.
     reshape_mountain_goat()
+    add_fur()
     check_meshes_agree(rig)
 
     for act in list(bpy.data.actions):
