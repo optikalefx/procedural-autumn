@@ -90,7 +90,7 @@
 //  returning a promise. It made every call site think about ordering — and the
 //  one thing a call site must NOT be able to get wrong is losing the tick.
 // ─────────────────────────────────────────────────────────────────────────────
-import { HUNT_ITEMS, HUNT_BY_ID } from './hunt_items.js';
+import { HUNT_ITEMS, HUNT_BY_ID, HUNT_ANIMALS, HUNT_ANIMAL_IDS } from './hunt_items.js';
 
 const STORE = 'pa.hunt';
 const VERSION = 1;
@@ -254,6 +254,21 @@ class HuntStore {
   /** When this line was crossed off, ms since epoch, or 0. */
   doneAt(id) { return this.data.items[id]?.at ?? 0; }
   doneCount() { return Object.keys(this.data.items).length; }
+  /** How many animals there are on the sheet — what the dash's paw counts against. */
+  get animalTotal() { return HUNT_ANIMALS.length; }
+  /**
+   * How many of the animal lines are crossed off.
+   *
+   * Counted over the stored keys rather than by walking `HUNT_ANIMALS` and
+   * asking `isDone` of each, so a save carrying an id that has since left the
+   * sheet cannot count toward a total it is not part of — the same reason
+   * `_load` drops unknown ids.
+   */
+  animalCount() {
+    let n = 0;
+    for (const id of Object.keys(this.data.items)) if (HUNT_ANIMAL_IDS.has(id)) n++;
+    return n;
+  }
   /** True when every line is crossed off. The journal's one moment of ceremony. */
   get complete() { return this.doneCount() >= this.total; }
 

@@ -52,6 +52,19 @@
         "--strictPort"
       ],
       "port": 5212
+    },
+    {
+      "name": "paw-count",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5231",
+        "--strictPort"
+      ],
+      "port": 5231
     }
   ]
 }
