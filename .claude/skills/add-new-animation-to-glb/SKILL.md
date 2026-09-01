@@ -290,11 +290,33 @@ all three were mine.
 
 Both of these produced confident, wrong numbers.
 
-**Probe finer than you key.** `solve_sweep` originally checked the reach limit at
-the keyframes, so the answer moved with the frame count — the same rig reported
-0.593 at 8 frames and 0.524 at 10, because a coarse cycle never landed on the
-worst instant. The limit is a property of the geometry. Probe it at a fixed,
-fine resolution (64 points) that has nothing to do with how you key.
+**Probe finer than you key, AND probe the instants that matter.** This bit
+twice, in opposite directions.
+
+First: `solve_sweep` checked the reach limit at the keyframes, so the answer
+moved with the frame count — 0.593 at 8 frames, 0.524 at 10 — because a coarse
+cycle never landed on the worst instant. Fixed with a uniform 64-point probe.
+
+Then a uniform probe turned out not to be enough either, and it **tore a mesh**.
+The worst load on a leg is always at the END of its stance, where the foot is
+furthest back under a hip that has swung forward. At a bound's duty of 0.20 the
+stance spans only 13 of 64 uniform samples, so that endpoint falls BETWEEN them.
+The solver returned a sweep whose own keyframes stretched the deer's fore leg to
+0.479 against a 0.466 limit; the IK clamped, the leg went straight, the forelegs
+collapsed under the belly and the chest skin tore.
+
+Probe **all three**: the uniform grid, every keyframe the clip will hold, and
+each leg's stance entry and exit exactly (`probe_times`).
+
+And assert it on the KEYED result, because a paw can track its path perfectly
+while the leg carrying it is clamped:
+
+```python
+assert extension <= 1.001, "the IK clamps and the mesh tears"
+```
+
+The deer's three gaits now sit at 0.968 / 0.990 / 0.981 of reach — close to the
+limit, which is where a stride should be, and provably under it.
 
 **Validate a phase-independent property.** The trot validator compared how far
 each hoof travelled between keyframes and asserted the four agreed. At an odd

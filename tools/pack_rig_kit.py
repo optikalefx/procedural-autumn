@@ -452,19 +452,42 @@ def gait_pose(rig, legs, rest, spec, t, sweep):
     return worst, (goal if False else None)
 
 
-def solve_sweep(rig, legs, rest, spec):
+def probe_times(legs, spec, frames):
+    """Every instant the reach check must look at.
+
+    A uniform probe is not enough, and this cost a torn mesh. The worst load on
+    a leg is always at the END of its stance, where the foot is furthest back
+    under a hip that has swung forward — and with a bound's duty of 0.20 the
+    stance spans only 13 of 64 uniform samples, so that endpoint falls BETWEEN
+    them. The solver returned a sweep whose own keyframes over-extended the
+    fore leg to 0.479 against a 0.466 limit; the IK clamped, the leg stretched
+    straight, and the chest skin tore.
+
+    So: the uniform probe, PLUS every keyframe the clip will actually hold,
+    PLUS each leg's own stance entry and exit exactly.
+    """
+    ts = {i / PROBE for i in range(PROBE)}
+    ts |= {i / frames for i in range(frames)}
+    for k in legs:
+        ph = spec["phase"][k]
+        ts.add((0.0 - ph) % 1.0)
+        ts.add((spec["duty"] - ph) % 1.0)
+    return sorted(ts)
+
+
+def solve_sweep(rig, legs, rest, spec, frames):
     """Largest sweep no weighted leg has to clamp for, anywhere in the cycle.
 
-    Probed at a fixed resolution, NOT at the keyframes. Sampling the reach check
-    at the frame count made the answer depend on it — one rig reported 0.593 at
-    8 frames and 0.524 at 10 — because a coarse cycle never lands on the worst
-    instant.
+    Never probed at the frame count alone — sampling the reach check at the
+    keyframes made the answer depend on it, and one rig reported 0.593 at 8
+    frames and 0.524 at 10 because a coarse cycle missed the worst instant.
+    `probe_times` covers both failure modes at once.
     """
+    times = probe_times(legs, spec, frames)
     lo, hi = 0.02, 2.0
     for _ in range(28):
         mid = (lo + hi) * 0.5
-        if max(gait_pose(rig, legs, rest, spec, i / PROBE, mid)[0]
-               for i in range(PROBE)) <= 1.0:
+        if max(gait_pose(rig, legs, rest, spec, t, mid)[0] for t in times) <= 1.0:
             lo = mid
         else:
             hi = mid
@@ -478,8 +501,8 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     carry. A stride the legs cannot carry is a fact about the animal's
     proportions, not something for this to paper over.
     """
-    sweep = solve_sweep(rig, legs, rest, spec)
     frames = spec["frames"]
+    sweep = solve_sweep(rig, legs, rest, spec, frames)
     bones = ["Root"] + [n for L in legs.values()
                         for n in ([L["scap"], L["a"], L["b"]] + L["below"])]
     act = new_action(rig, name, frames)
@@ -532,6 +555,24 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     print(f"[{name}]   planted paw height drift {drift*1000:7.3f} mm")
     print(f"[{name}]   cycle seam               {s*1000:7.3f} mm")
     assert worst < 0.001, f"{name}: a planted paw left its path by {worst*1000:.2f} mm"
+    # A paw that tracks its path can still have come from a CLAMPED leg if the
+    # target happened to be reachable while a neighbour's was not, so check the
+    # reach directly at every keyframe. This is what a torn chest looks like
+    # before it is a torn chest.
+    over, ow = 0.0, None
+    for i in range(frames + 1):
+        sample(rig, act, 1 + i)
+        for k, L in legs.items():
+            d = ((rig.pose.bones[L["target"]].head - rig.pose.bones[L["a"]].head).length
+                 / rest[k]["reach"])
+            if d > over:
+                over, ow = d, f"f{i} {k}"
+    rig.animation_data.action = None
+    clear(rig)
+    print(f"[{name}]   worst leg extension      {over:7.3f} of reach ({ow})")
+    assert over <= 1.001, (
+        f"{name}: {ow} is at {over:.3f} of its reach — the IK clamps and the "
+        f"mesh tears. Lower the sweep, raise the crouch, or shorten the stance.")
     assert drift < 0.001, f"{name}: a planted paw left the ground by {drift*1000:.2f} mm"
     assert s < 1e-4, f"{name}: the cycle does not close: {s*1000:.3f} mm"
     return speed
