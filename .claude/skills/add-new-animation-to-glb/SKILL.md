@@ -1,22 +1,56 @@
 ---
 name: add-new-animation-to-glb
-description: Author a NEW animation clip onto a rig somebody else built — a bought asset pack, a downloaded .blend, or any GLB-track animal whose .blend has no build script. Use when a model already has a skeleton and weights but is missing a clip the game needs ("add a graze", "it has no idle/alert", "the pack only ships walk and run", "give it a trot", "model the alert pose", "add an animation to the deer"), and when a clip that exists is the wrong GAIT rather than the wrong speed. For getting a model out of Blender and playing in the first place, use import-animal. For the procedural blueprint cast, use create-animal.
+description: Author the few animation clips a bought animal pack does NOT ship, onto its own rig — in practice the trot (no pack animal has one) plus whichever of graze/alert its single Gesture clip is not. Also covers deciding which slot a Gesture belongs in, and keeping the artist's walk/run/idle rather than re-solving them. Use when adding a pack animal to the game and a slot has nothing to fill it ("add a graze", "it has no alert", "give it a trot", "the pack only ships four clips", "add an animation to the deer"), or when judging whether an existing clip is usable. For getting a model out of Blender and playing in the first place, use import-animal. For the procedural blueprint cast, use create-animal.
 ---
 
 # Add a new animation to a rig you did not build
 
-A bought animal is a bargain with a hole in it. The pack supplies the expensive
-parts — mesh, skeleton, weights, a coherent art style — and ships the clips
-*its* author thought a game needs, which is reliably `idle`, `walk`, `run` and
-maybe a gesture. This game's `GlbRig` wants six slots and a phased graze, and
-the missing ones are not decoration: `brain.grazeChance` is 0.55, so a deer with
-no graze stands with its head up for most of the time anybody looks at it.
+**Start by assuming the artist's clip is right and yours would be worse.** That
+is not modesty, it is the finding this whole skill was rewritten around: the
+pack's clips were dropped and re-solved three times over — the deer's bounding
+leap, then every walk, then the runs again — and each time the artist's version
+was better and the day was wasted. Author a clip only where the pack ships none.
 
-The answer is to author the missing clips **onto the bought rig**. That works,
-it is much cheaper than modelling an animal, and it is how the raccoon and the
-deer are built.
+## What you are actually responsible for
 
-Worked examples, in the order to read them:
+The pack gives every animal four clips, and they map onto this game's slots
+almost exactly:
+
+| pack clip | slot | notes |
+|---|---|---|
+| `<X>_Idle` | `stand` | always |
+| `<X>_Walk` | `walk` | always — keep it |
+| `<X>_Run` | `run` | always — and it is the LEAP, see below |
+| `<X>_Gesture` | `graze` **or** `alert` | look at it before deciding |
+
+So the list of things to author is short and fixed:
+
+* **`trot` — always.** No animal in the pack has one. Checked across all 233
+  actions: Idle 56, Walk 52, Run 52, Gesture 48, and a handful of
+  Sit/Eat/Lying/Swim/Fly/Jump elsewhere in the cast. There is no trot anywhere.
+* **whichever of `graze` / `alert` the Gesture is not.** There is one Gesture per
+  animal, so it can only ever cover one of them.
+
+What the Gestures turned out to be, which is only knowable by measuring them:
+
+| animal | `Gesture` is | so authored |
+|---|---|---|
+| deer | a real graze — muzzle 1.430 → 0.385 | trot, alert |
+| raccoon | foraging — rears, works its front paws | trot, alert |
+| bear | rearing to look — muzzle 0.516 → 2.203, forepaws to 0.613 | trot, graze |
+
+The bear's is the one worth dwelling on: a bear standing up **is** its alarm
+display, so that Gesture is a better alert than anything solvable, and the graze
+had to be authored instead. Measure the clip, then decide which slot it is.
+
+## `rate` is the only knob you need on a kept clip
+
+Cadence, not stride. The ground per cycle belongs to the artist; how often the
+animal takes a cycle is yours. The deer's walk is 0.78 Hz as authored — slow
+even for a deer — so 1.7x puts it mid-band. Nothing else about a kept clip
+should change.
+
+Worked examples, in the order to read them:Worked examples, in the order to read them:
 
     tools/pack_rig_kit.py        the machinery, and every trap it exists to fix
     tools/build_raccoon_blend.py the simple case — one mesh, everything solved
@@ -93,7 +127,8 @@ demo-scene textures including `Cat_Litter.png`, for a 619-vertex animal.
 
 ## An airborne duty is a BOUND, not a defect
 
-The most expensive mistake in this work, and the easiest to repeat.
+The most expensive mistake in this work, made twice, and the reason the section
+above exists.
 
 Duty is the fraction of a cycle a foot spends down. A walk is *defined* by a
 duty above 0.5, so a walk measuring 0.25 is broken. But a **bound is defined by
@@ -195,6 +230,11 @@ carries the identical 33 bone names at 0.467 of the adult's total bone length,
 with bone heads up to 0.683 apart. Moving that mesh onto the adult skeleton
 stretches the fawn to adult proportions, and the names alone say it is fine. A
 differently-sized animal needs its own build and its own GLB.
+
+## Everything below is for the clips you DO have to author
+
+Which is the trot, and one of graze or alert. It is a lot of machinery for two
+clips, and that is the right proportion — the pack does the rest.
 
 ## Author the contact point, not the joint angles
 
@@ -506,8 +546,10 @@ Both finished animals, measured in game, against the real thing:
 | deer | 1.089 | 2.728 | 7.716 | 1.15 / 3.48 / 11.9 |
 | bear | 0.940 | 2.096 | 6.148 | 1.05 / 2.6 / 6.2 |
 
-Every `run` there is the PACK's own leap, kept as shipped, with only its cadence
-raised. Only the walks and trots are solved.
+Every `idle`, `walk` and `run` there is the PACK's, kept as shipped with only
+its cadence raised, and every `graze`/`alert` that its Gesture could fill is the
+pack's too. Authored: three trots, two alerts, one phased graze. Six clips
+across three animals — the pack does everything else.
 
 Both on `measure: 'contact'`, no `glb.drive` anywhere, every planted paw within
 0.001 mm of its authored path and every cycle closing to 0.000 mm. That is the
