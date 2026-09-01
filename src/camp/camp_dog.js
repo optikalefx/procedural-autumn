@@ -9,20 +9,22 @@
 //
 //  ── what this file owns, and what it borrows ────────────────────────────────
 //
-//  The dog's BODY is not here. It is the same lofted quadruped every mammal in
-//  the game is built from (`mammals/dog.js`/`animal_rig`), and it walks on the
-//  same procedural gait solver they do (`animal_anim`) — which is what makes it
-//  worth having at all: a dog that mills around a fire gets world-anchored feet
-//  and a real four-beat walk for free, and cannot skate.
+//  The dog's BODY is not here, and neither is a single one of its poses any
+//  more. It is a bought model with seven hand-authored clips
+//  (`mammals/dog.js`, `public/models/dog_pack.glb`) played by `GlbRig` — the
+//  same backend the fox, bear, deer, raccoon, goat and ram are on.
 //
-//  What is here is the two things that solver cannot do:
+//  It used to be a lofted quadruped walking on the procedural gait solver, with
+//  the three rest poses authored HERE as tables of signed bone rotations and
+//  blended over the solver's output after it ran. That was the only way to get
+//  a sit: `AnimRig` solves each leg by IK to a foot planted on the ground, and
+//  a sitting dog has its hocks flat along the ground and its pelvis resting
+//  between them. It cannot work one out, so ~40 numbers per pose were written
+//  by hand and judged by running the game.
 //
-//    · **the rest poses.** `AnimRig` knows stand, graze, alert and three gaits.
-//      It has no idea how to sit, and it structurally cannot work one out: it
-//      solves each leg by IK to a foot planted on the ground, and a sitting dog
-//      has its hocks flat along the ground and its pelvis resting between them.
-//      So the poses below are authored per-bone and blended OVER the solver's
-//      output, after it has run. See `POSES`.
+//  They are clips now, built by `tools/build_dog_blend.py`, and this file is
+//  400 lines shorter for it. What is left here is the ONE thing no rig backend
+//  can supply:
 //
 //    · **the loop.** Meander, choose a spot, settle, sleep, get up. A camp dog
 //      is not a wild animal and must not be given a `Brain` — that state
@@ -42,152 +44,33 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, damp, wrapAngle } from '../core/MathUtils.js';
-import { buildCampDog, createHideMaterial } from '../wildlife/animal_species.js';
-import { instantiate } from '../wildlife/animal_rig.js';
-import { AnimRig } from '../wildlife/animal_anim.js';
+import { loadCampDog, DOG_SPECIES } from '../wildlife/mammals/dog.js';
+import { GlbRig } from '../wildlife/glb_rig.js';
 
 // ── the rest poses ───────────────────────────────────────────────────────────
 //
-// Authored as local bone rotations in the rig's own convention, which is worth
-// writing down once because every sign below depends on it and none of it is
-// guessable:
+// Three CLIPS now, not three tables of bone rotations. They live in
+// `public/models/dog_pack.glb`, are built by `tools/build_dog_blend.py`, and
+// each is a loopable hold with the dog breathing on it. `GlbRig` blends the
+// named one in against `drive.restW` and spends the whole standing budget on
+// it — see the `rest poses` block in its constructor.
 //
-//   root.position.y   sinks the whole animal. The root bone sits at ground
-//                     level between the feet, so this is "how far the body
-//                     drops", in unscaled model metres. `push` is the same
-//                     thing along z.
-//   root.rotation.x   NEGATIVE tips the rear down and the chest up. Useful in
-//                     small amounts and a trap in large ones — see the sit.
-//   leg .x            POSITIVE swings the limb backward, negative forward.
-//                     (A leg bone points down; +X rotation carries -Y toward -Z.)
-//   neck/head .x      POSITIVE is down. (Those bones point up and forward.)
-//   tail .x           POSITIVE lifts. (The tail points down and back.)
-//   .y                POSITIVE yaws toward the dog's right.
+// What was here before was ~40 signed bone rotations per pose, applied over the
+// gait solver's output after it had run, plus the conventions needed to read
+// them (which way is +x on a leg, which bones the neck lags on, why `push` is
+// assigned where `drop` accumulates). All of it is gone. The poses can now be
+// judged by opening the .blend and looking at the dog, which is the whole
+// reason to build an animal in Blender.
 //
-// `drop` and the leg angles have to agree with each other or the dog either
-// floats or sinks through the ground — there is no IK here to catch it, which
-// is the price of authoring the poses at all.
-const POSES = {
-  // ── curled ────────────────────────────────────────────────────────────────
-  // The comma. Reference `curled-up-2.jpg`: the spine arcs through most of a
-  // half-circle in the horizontal plane, the hindquarters make a high rounded
-  // dome, and the nose comes all the way round to rest by the front paws. The
-  // yaw is cumulative down the chain — each bone adds to its parent's — which
-  // is why the numbers look small and the result is a 110° arc.
-  curl: {
-    drop: -0.250, pitch: 0.02, roll: -0.08, w: 1,
-    bones: {
-      // The BACK makes the C, not the neck. The first cut put most of the yaw
-      // in the neck and the result was a straight dog with its head turned
-      // round — a swan, not a comma. The spine carries 1.38 rad of it now and
-      // the neck only finishes the arc.
-      pelvis: [0.00, 0.30, 0], spine1: [0.03, 0.36, 0], spine2: [0.04, 0.38, 0],
-      chest: [0.03, 0.34, 0],
-      // Folded down and under rather than reaching out: the steep x brings the
-      // head to the floor, the y wraps it back alongside the flank.
-      neck1: [0.72, 0.62, 0], neck2: [0.66, 0.60, 0], head: [0.10, 0.40, -0.14],
-      // Front paws folded FORWARD and drawn in under the chin, the way both
-      // curl references show them — not folded backwards under the chest,
-      // which put the elbows out sideways and left two pale legs sticking out
-      // of the front of the curl. The elbow drops almost to the ground and the
-      // forearm comes in short, so the paws end up beside the muzzle.
-      foreL_upper: [-0.16, 0.12, 0.09], foreL_lower: [-1.12, 0, 0], foreL_cannon: [-0.22, 0, 0],
-      foreR_upper: [-0.20, 0.16, -0.07], foreR_lower: [-1.06, 0, 0], foreR_cannon: [-0.18, 0, 0],
-      // TUCKED UNDER, not folded behind. The femur has to swing hard forward
-      // so the stifle comes up under the ribs and the whole leg packs into the
-      // belly; at -0.30 it barely moved and the folded hind legs stuck out of
-      // the back of the curl like a deckchair's. This is the difference between
-      // a dog curled up and a dog that has been dropped.
-      hindL_upper: [-1.15, 0, 0.20], hindL_lower: [2.15, 0, 0], hindL_cannon: [-0.95, 0, 0],
-      hindR_upper: [-1.10, 0, -0.16], hindR_lower: [2.10, 0, 0], hindR_cannon: [-0.92, 0, 0],
-      // Wrapped round the outside of the curl and lying flat.
-      tail1: [-0.50, 0.95, 0], tail2: [-0.18, 0.75, 0], tail3: [-0.08, 0.55, 0],
-    },
-  },
+// One thing genuinely went with it: a settled dog used to ease a little `alert`
+// in — the neck lifting and the ears pricking — because a frozen pose reads as
+// a prop. A standing alert cannot be blended over a curl (it would lift the
+// body off the ground by exactly its weight), so the clips carry their own
+// breathing instead and `drive.alert` is left at zero while the dog is down.
 
-  // ── lying, sphinx ─────────────────────────────────────────────────────────
-  // Reference `laying-1.png`: chest and elbows on the ground, forelegs reaching
-  // straight out in front, hind legs folded flat alongside, head up and awake.
-  // The one that reads as "keeping an eye on you" rather than "asleep".
-  lie: {
-    // Deep enough that the brisket is ON the ground, which is what puts the
-    // elbows there too — the shoulder ends up 0.16 up, the humerus hangs
-    // straight down from it, and the forearm lies flat from the elbow.
-    drop: -0.262, pitch: -0.03, roll: 0, w: 1,
-    bones: {
-      pelvis: [0, 0.04, 0], spine1: [0.01, 0.05, 0], spine2: [0.01, 0.03, 0], chest: [0, 0.02, 0],
-      // Head carried up, so the neck has to come back against the body's drop.
-      neck1: [-0.16, -0.05, 0], neck2: [-0.10, -0.04, 0], head: [0.06, -0.03, 0],
-      // Humerus near vertical, forearm flat on the ground reaching forward past
-      // the nose. Rotating the humerus forward RAISES the elbow, which is the
-      // opposite of what this pose needs — the first cut had it at -0.42 and
-      // the paws hovered four centimetres up.
-      foreL_upper: [-0.10, 0, 0.05], foreL_lower: [-1.36, 0, 0], foreL_cannon: [0.06, 0, 0],
-      foreR_upper: [-0.12, 0, -0.05], foreR_lower: [-1.34, 0, 0], foreR_cannon: [0.08, 0, 0],
-      // Hind legs folded and splayed a little outward, the way they fall when a
-      // dog drops onto its belly rather than tucking.
-      hindL_upper: [-0.90, 0, 0.26], hindL_lower: [2.20, 0, 0], hindL_cannon: [-0.70, 0, 0],
-      hindR_upper: [-0.88, 0, -0.24], hindR_lower: [2.16, 0, 0], hindR_cannon: [-0.68, 0, 0],
-      tail1: [-0.30, 0.42, 0], tail2: [-0.10, 0.34, 0], tail3: [-0.02, 0.26, 0],
-    },
-  },
-
-  // ── sitting ───────────────────────────────────────────────────────────────
-  // Reference `sitting-side.jpg`: hocks flat on the ground, backside down
-  // between them, forelegs straight and VERTICAL, topline sloping up at about
-  // 38° to a level head.
-  //
-  // ── why this is not a root rotation ────────────────────────────────────────
-  //
-  // The obvious construction — sink the dog and pitch it back about the root —
-  // is wrong, and wrong in a way worth recording because it looks nearly right
-  // in the numbers. Pitching about the root swings the shoulder through an arc:
-  // measured, a 30° pitch dropped the shoulder from 0.43 m to 0.35 and carried
-  // it 0.25 m BACKWARD, so the chest ended up behind the front paws and the
-  // forelegs raked forward like a deckchair.
-  //
-  // A sitting dog does not rotate. It keeps its rib cage upright over its front
-  // paws and bends its LUMBAR SPINE — the back inclines, the shoulder stays
-  // where it was. So the whole animal sinks by the full amount the rear has to
-  // fall, and the spine chain then lifts everything forward of the loin back to
-  // standing height. `drop` and the spine rotations are one measurement in two
-  // halves and cannot be tuned apart.
-  sit: {
-    // `drop` and the incline are one solved pair: at this drop the front paws
-    // plant at the same -0.02 the standing pose puts them at, and the croup
-    // rides 0.11 up, which is where a dog's croup actually is when it sits —
-    // it rests on the backs of its thighs and its hocks, not on its rump.
-    drop: -0.210, push: 0.030, pitch: 0, roll: 0, w: 1,
-    bones: {
-      // The incline, spread across the three lumbar joints rather than jammed
-      // into one — a dog's back curves into a sit, it does not hinge.
-      pelvis: [-0.44, 0, 0], spine1: [-0.29, 0, 0], spine2: [-0.23, 0, 0], chest: [-0.04, 0, 0],
-      // The neck inherits the chest's whole incline, so "hold the head up"
-      // means rotating FORWARD against it. Not by all of it: a sitting dog
-      // carries its head higher than a standing one, so about half is right.
-      neck1: [0.34, 0, 0], neck2: [0.20, 0, 0], head: [0.08, 0, 0],
-      // ── these cancel the spine, and that is the whole job ──────────────────
-      // The forelegs hang off `chest`, so they inherit every radian of the
-      // incline above and rake forward with it. Cancelling 0.62 of the 0.66
-      // stands them vertical again, with the remainder left as the slight
-      // forward lean a real sit has. Getting this wrong is not subtle — at
-      // +0.04 the dog sat like a deckchair with its paws in the air.
-      foreL_upper: [0.94, 0, 0.03], foreL_lower: [0.02, 0, 0], foreL_cannon: [0, 0, 0],
-      foreR_upper: [0.94, 0, -0.03], foreR_lower: [0.02, 0, 0], foreR_cannon: [0, 0, 0],
-      // Fully collapsed, and counter-rotated for the pelvis's own share of the
-      // incline: femur forward, tibia folded hard back to drop the hock to the
-      // ground, metatarsus raking down and forward to lie along it.
-      hindL_upper: [-0.30, 0, 0.20], hindL_lower: [1.70, 0, 0], hindL_cannon: [-1.10, 0, 0],
-      hindR_upper: [-0.28, 0, -0.18], hindR_lower: [1.68, 0, 0], hindR_cannon: [-1.08, 0, 0],
-      // Swept round to one side on the ground, which is where it goes when the
-      // rear end is sitting on it.
-      tail1: [0.30, 0.55, 0], tail2: [0.10, 0.40, 0], tail3: [0, 0.30, 0],
-    },
-  },
-};
-
-// How the three are chosen. The brief is explicit about the ranking: curling up
-// is what the dog mainly does, lying flat is occasional, sitting is sometimes.
+// How the three are chosen, and by clip name. The brief is explicit about the
+// ranking: curling up is what the dog mainly does, lying flat is occasional,
+// sitting is sometimes.
 const POSE_PICK = [
   { key: 'curl', w: 0.55 },
   { key: 'lie', w: 0.27 },
@@ -203,28 +86,20 @@ const POSE_PICK = [
 const REST_TIME = [26, 75];      // s asleep / sitting before getting up
 const WANDER_TIME = [7, 18];     // s milling about before settling again
 const SETTLE_TIME = 1.05;        // s to fold down into a pose
-// Longer than the settle, not shorter: the head UNWINDS with the body on the
-// way up (see the HEAD_LAG note), so the rise owns the whole neck arc and at
-// 0.85 s it swung the skull faster than anything a dog does on purpose.
+// Longer than the settle, and it stays longer even though the reason changed.
+// It used to be that the head unwound on its own lagged clock and needed the
+// room; now it is a crossfade from a rest clip back to the idle, and a dog that
+// stands up faster than it lies down is the wrong way round for the animal.
 const RISE_TIME = 1.25;          // s to stand back up
 const APPROACH_TIME = 16;        // s before abandoning an unreachable bed
 
-// The head does not ride the body's settle clock DOWN. Folding the whole curl
-// in SETTLE_TIME swings the skull through its ~2.5 rad arc at 5-6 rad/s —
-// measured (tools/_scratch/dogfull.mjs), double the fastest thing the head
-// ever does naturally (the trot's nod peaks at 3.2), and exactly the "head
-// snaps backwards" every settle produced. So on the way INTO a pose the neck
-// chain lags the body's blend exponentially: the body folds first and the
-// nose is the last thing tucked.
-//
-// The way OUT is not the mirror image, and the first cut wrongly made it one:
-// lagging the head on the rise left the dog standing on straight legs with
-// its neck still two-thirds wrapped in the curl — a head twisted back over
-// its shoulder, which read as exactly the snap this constant exists to kill.
-// Rising, the head tracks the body directly and the extra time lives in
-// RISE_TIME instead.
-const HEAD_LAG = 2.1;            // 1/s damp rate of the head-chain blend, settling
-const HEAD_BONES = { neck1: 1, neck2: 1, head: 1 };
+// Both of these were the hand-authored poser's, and both are gone with it: a
+// per-bone head lag on the way down (HEAD_LAG / HEAD_BONES) and the
+// shortest-arc angle mix it needed (`mixAngle`). A crossfade between two whole
+// clips has neither problem — three's `AnimationMixer` slerps quaternions, so
+// there is no branch cut to cross and no chain to hold back. The `sit`, `lie`
+// and `curl` clips each fold the head as part of the pose, in the .blend, where
+// it can be watched.
 
 // A dog in a moving state is CONSTANTLY covering ground — walking is 0.78 m/s
 // and even the slow cases (backing out of a corner at 0.27, creeping the last
@@ -318,6 +193,7 @@ export class CampDog {
    */
   constructor(parent, site, rnd, world, opts = {}) {
     const protos = dogProto();
+    if (!protos) throw new Error('[camp_dog] the model is not loaded; await warmDog()');
     const vi = pickDogVariant(rnd());
     this.proto = protos[vi];
     this.world = world;
@@ -335,33 +211,32 @@ export class CampDog {
     // field on uneven sites.
     this.surfaceAt = opts.surfaceAt ?? ((x, z) => world.getHeight(x, z));
 
-    // One material per dog. Three dogs in three camps is three materials and
-    // one program — `createHideMaterial` pins the cache key, same as the wild
-    // cast, so a second camp does not link a shader.
-    this.mat = createHideMaterial(this.proto.variant.col);
-    this.mat.name = `hide:dog:${this.proto.variant.name}`;
-
+    // Every dog in the session shares one mesh, one skeleton and one set of
+    // clips; only the bones and the mixer are per-animal. There is no material
+    // per dog any more — the pack's dogs are painted, not tinted, so a coat is
+    // a choice of which of the six meshes to wear (`variant.hide`) and all six
+    // share the one `Color` material the GLB ships.
     const jit = 0.94 + rnd() * 0.12;
     this.scale = this.proto.scale * jit;
-    this.inst = instantiate(this.proto, this.mat, 0);
-    this.mesh = this.inst.mesh;
+    this.rig = new GlbRig(this.proto, this.scale, DOG_SPECIES.gait, 'dog');
+    this.mesh = this.rig.mesh;
     this.mesh.name = `camp_dog:${this.proto.variant.name}`;
-    this.rig = new AnimRig(this.proto, this.inst, this.scale, DOG_GAIT, 'dog');
     parent.add(this.mesh);
 
-    // Bones the poser writes, resolved once by name. A pose naming a bone that
-    // does not exist is a silent no-op rather than a crash — the blueprint may
-    // grow or lose a tail segment and a pose table should not be able to break
-    // the game over it.
-    this.byName = this.inst.byName;
+    // How much room a lying dog takes, for the ground-plane fit below. Off the
+    // prototype's own bounds carrier — `GlbRig` has no `bodyLen`, and would be
+    // the wrong place for one: it is a property of the model, measured once at
+    // load, not of the animal playing it.
+    const bb = this.proto.geoms[0].boundingBox;
+    this.bodyLen = (bb.max.z - bb.min.z) * jit;
+    this.bodyW = (bb.max.x - bb.min.x) * jit;
 
     this.rnd = rnd;
     this._t = 0;
     this.state = ST.WANDER;
     this.timer = rand(rnd, WANDER_TIME);
     this.pose = null;          // the pose being blended toward, or null
-    this.blend = 0;            // 0 = the gait solver's pose, 1 = fully settled
-    this.headBlend = 0;        // the neck chain's own lagged share of `blend`
+    this.blend = 0;            // 0 = up on its feet, 1 = fully settled
 
     // Polar wander state — see the note at the top of the file.
     this.ang = rnd() * Math.PI * 2;
@@ -411,6 +286,9 @@ export class CampDog {
     this.drive = {
       pos: this.pos, heading: this.heading, speed: 0,
       graze: 0, alert: 0, flag: 0, look: null, lod: 0,
+      // Which rest clip to hold, and how far into it. `null` is a dog on its
+      // feet; `GlbRig` spends the whole standing budget on the named one.
+      rest: null, restW: 0,
     };
     this.rig.reset(this.pos, this.heading, world);
   }
@@ -520,8 +398,8 @@ export class CampDog {
 
   /** Fit a stable local ground plane under a whole resting dog. */
   _surfaceAt(x, z, yaw) {
-    const spanZ = Math.max(this.rig.bodyLen, 0.90) * 0.5;
-    const spanX = Math.max(this.rig.bodyW, 0.45) * 0.5;
+    const spanZ = Math.max(this.bodyLen, 0.90) * 0.5;
+    const spanX = Math.max(this.bodyW, 0.45) * 0.5;
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
     // Sampled from the camp floor as drawn, not the analytic field — beds are
@@ -1050,7 +928,6 @@ export class CampDog {
     this.state = ST.WANDER;
     this.timer = rand(this.rnd, WANDER_TIME);
     this.blend = 0;
-    this.headBlend = 0;
     this.pose = null;
     this.restPlan = null;
     this.restGround = null;
@@ -1162,7 +1039,7 @@ export class CampDog {
             this.restRelax = 0;
             this.state = ST.SETTLE;
             this.timer = SETTLE_TIME;
-            this.pose = POSES[pickPose(this.rnd())];
+            this.pose = pickPose(this.rnd());
             this.restGround = ground;
             // Speed is NOT zeroed here. Cutting it in one frame put a full
             // -0.5 m/s step through everything the rig derives from speed —
@@ -1364,122 +1241,89 @@ export class CampDog {
     // ── the gait solver, then the pose over the top of it ───────────────────
     this.drive.heading = this.heading;
     this.drive.speed = Math.max(0, this.speed);
-    // A settled dog still looks around. `alert` lifts the head and pricks the
-    // ears, and easing a little of it in while it rests is most of what keeps a
-    // curled dog from reading as a prop. Eased for real: the old `blend > 0.5`
-    // gate switched it on in a single frame halfway through every settle and
-    // off halfway through every rise, and the ears and neck snapped with it.
-    this.drive.alert = clamp01((this.blend - 0.55) / 0.4) *
-      (0.12 + 0.1 * Math.sin(this._t * 0.4));
+    // The rest pose, as a clip and a weight. `blend` is the same settle clock
+    // it has always been — smoothstepped over SETTLE_TIME going down and
+    // RISE_TIME coming up — and now it is a clip weight rather than the mix
+    // factor of a hand-authored pose. Nothing about WHEN the dog settles
+    // changed; only what happens when it does.
+    this.drive.rest = this.pose;
+    this.drive.restW = this.blend;
     this.drive.lod = camPos && camPos.distanceToSquared(this.pos) > 58 * 58 ? 1 : 0;
     this.rig.update(dt, this.drive, W);
 
-    // A lying dog's support plane is chosen once. Re-solving its body height
-    // from four independently shuffling gait feet every frame is correct while
-    // walking and visibly wrong after the authored legs are folded away.
+    // A lying dog's support plane is chosen once, and it is the CAMP FLOOR as
+    // drawn rather than the analytic field `GlbRig._tilt` rides — a body laid
+    // on the second reads as buried to the brisket on an uneven site. So the
+    // rig's own answer is overwritten here, on the same settle clock as
+    // everything else, and only once there is a plane to overwrite it with.
     if (this.restGround && this.blend > 0.001) {
-      this.mesh.position.y = lerp(this.mesh.position.y, this.restGround.y, this.blend);
+      const w = this.blend;
+      this.mesh.position.y = lerp(this.mesh.position.y, this.restGround.y, w);
+      this.mesh.rotation.x = lerp(this.mesh.rotation.x, this.restGround.pitch, w);
+      this.mesh.rotation.z = lerp(this.mesh.rotation.z, this.restGround.roll, w);
     }
-    // The neck chain trails the body going DOWN and never on the way up —
-    // see the HEAD_LAG note. `min` is the whole asymmetry: while the body
-    // folds (blend above headBlend) the head lags behind it; the moment the
-    // body starts back up, the head is carried with it exactly.
-    this.headBlend = Math.min(
-      this.blend,
-      damp(this.headBlend, this.blend, HEAD_LAG, dt),
-    );
-    if (this.pose) {
-      if (this.blend > 0.001 || this.headBlend > 0.001) {
-        this._applyPose(this.blend, this.headBlend);
-      } else if (this.state === ST.WANDER || this.state === ST.APPROACH) {
-        this.headBlend = 0;
-        this.pose = null;
-        this.restGround = null;
-      }
+    // Let go of the pose once the dog is fully up. `GlbRig` damps its own
+    // weights, so this waits for the clip to be gone rather than for the
+    // clock — dropping `pose` while the crossfade is still running would
+    // strand the dog half-curled.
+    if (this.pose && this.blend <= 0.001 &&
+        (this.state === ST.WANDER || this.state === ST.APPROACH) &&
+        this.rig.bRest[this.pose] < 0.01) {
+      this.pose = null;
+      this.restGround = null;
     }
-  }
-
-  /**
-   * Blend an authored pose over whatever the gait solver just wrote.
-   *
-   * This runs AFTER `rig.update`, and it has to: `AnimRig` recomputes every
-   * bone from scratch each frame out of world-anchored foot positions, so it
-   * neither reads nor is disturbed by what is written here. Blending out simply
-   * lets its own answer show through again, which is why standing up needs no
-   * transition of its own.
-   */
-  _applyPose(w, wHead = w) {
-    const P = this.pose;
-    const root = this.rig.root;
-    // `y` is ACCUMULATED and `z` is ASSIGNED, and the asymmetry is not a slip.
-    // `AnimRig` writes `root.position.y` every frame (the gait bob), so adding
-    // to it is idempotent; it never touches `z` at all, so adding to that
-    // accumulated the push forever — 0.03 m per frame is 1.8 m/s, and the
-    // sitting dog slid quietly out of the camp and over the horizon.
-    root.position.y += P.drop * w;
-    root.position.z = (P.push ?? 0) * w;
-    const groundPitch = this.restGround?.pitch ?? 0;
-    const groundRoll = this.restGround?.roll ?? 0;
-    root.rotation.x = mixAngle(root.rotation.x, P.pitch + groundPitch, w);
-    root.rotation.z = mixAngle(root.rotation.z, P.roll + groundRoll, w);
-
-    for (const name in P.bones) {
-      const b = this.byName[name];
-      if (!b) continue;
-      const [rx, ry, rz] = P.bones[name];
-      const k = HEAD_BONES[name] ? wHead : w;
-      b.rotation.x = mixAngle(b.rotation.x, rx, k);
-      b.rotation.y = mixAngle(b.rotation.y, ry, k);
-      b.rotation.z = mixAngle(b.rotation.z, rz, k);
-    }
-    // The solver's last act is a world-matrix update; having moved the bones
-    // underneath it, we owe it another one or the skinning lags a frame.
-    this.mesh.updateWorldMatrix(false, true);
   }
 
   dispose() {
-    this.mesh.removeFromParent();
-    this.mat.dispose();
+    this.rig.dispose();
   }
 }
 
 // ── the shared prototype ─────────────────────────────────────────────────────
 //
-// Built on first use rather than at module load: this file is imported by
-// `Camp`, and a top-level build would put a few hundred lofted rings on the
-// boot path for a feature that four camps out of five never even reach. Built
-// once and then shared by every dog in the session.
+// Fetched on first use rather than at module load: this file is imported by
+// `Camp`, and a 1.9 MB GLB on the boot path for a feature that one camp in five
+// never reaches is the wrong trade. Fetched once and then shared by every dog
+// in the session — one mesh, one skeleton, one set of clips.
+//
+// The await is the whole difference from the blueprint this replaces, and it is
+// why `warmDog` exists: `CampDog`'s constructor is synchronous and is called
+// mid-pitch, so the load has to have already happened. `Camp` awaits it under
+// the loading screen with everything else it pre-warms.
 let _protos = null;
-export function dogProto() {
-  if (!_protos) _protos = buildCampDog(0xd06);
-  return _protos;
-}
+let _loading = null;
 
-/** Prebuild the geometry — called from the camp pre-warm, under the loader. */
-export function warmDog() { return dogProto(); }
+/** The loaded prototypes, or null if `warmDog` has not finished. */
+export function dogProto() { return _protos; }
+
+/** Fetch the model — awaited by the camp pre-warm, under the loader. */
+export function warmDog() {
+  if (_protos) return Promise.resolve(_protos);
+  if (!_loading) _loading = loadCampDog().then((p) => { _protos = p; return p; });
+  return _loading;
+}
 
 export function disposeDogProtos() {
   if (!_protos) return;
   for (const p of _protos) for (const g of p.geoms) g.dispose();
   _protos = null;
+  _loading = null;
 }
 
-const DOG_GAIT = {
-  walk: 0.95, trot: 2.6, run: 6.5,
-  strideBase: 0.62, strideGain: 2.4, dutyWalk: 0.62, dutyTrot: 0.50, dutyRun: 0.32,
-  bobAmp: 0.020, pitchAmp: 0.038, liftScale: 1.05,
-  grazeAng: 1.32, grazeRake: 1.40,
-  // Camps pitch on slopes; the head carriage must pitch with the body there
-  // or a dog walking downhill points its muzzle at the sky. See the
-  // carriageFollow block in animal_anim._poseHead.
-  carriageFollow: true,
-};
-
+// The gait ladder `GlbRig` bands against. `DOG_SPECIES.gait` is the record, and
+// `loadGlbSpecies` overwrites its walk and run with what it measures off the
+// clips at load — so this is a reference to the loaded numbers, not a copy of
+// the written ones. The whole solver-shaped block that used to be here (stride,
+// duty, bob, pitch, lift, graze rake, carriage follow) belonged to `AnimRig`
+// and went with it: an authored clip carries all of that already.
 function pickDogVariant(r) {
-  const w = [0.60, 0.22, 0.18];
+  // Off the species record rather than a copy of its numbers, which had already
+  // drifted once: `DOG_SPECIES.variants` carried the weights and this carried
+  // them again.
+  const v = DOG_SPECIES.variants;
   let acc = 0;
-  for (let i = 0; i < w.length; i++) { acc += w[i]; if (r < acc) return i; }
-  return w.length - 1;
+  for (let i = 0; i < v.length; i++) { acc += v[i].weight; if (r < acc) return i; }
+  return v.length - 1;
 }
 
 function pickPose(r) {
@@ -1490,12 +1334,13 @@ function pickPose(r) {
 
 const rand = (rnd, [a, b]) => a + rnd() * (b - a);
 const ease01 = (u) => u * u * (3 - 2 * u);
-// Pose blending walks the SHORTEST arc between the solver's angle and the
-// authored one. The neck IK's angles come out of atan2/acos, so when a branch
-// cut is crossed the solver's answer steps by 2π — free for the joint, since
-// it is the same orientation, but a plain lerp between the two representations
-// swings the bone through a fraction of a whole turn in one frame. Measured:
-// a 134 rad/s head flip mid-wander, from exactly this.
-const mixAngle = (from, to, k) => to + wrapAngle(from - to) * (1 - k);
 
-export { POSES as DOG_POSES, ST as DOG_ST, DOG_GAIT as DOG_GAIT_CFG };
+// `DOG_POSES` used to be the pose TABLES; it is the three clip names now, which
+// is all anything outside this file ever wanted from it (the gallery offers
+// them as buttons).
+export const DOG_POSES = POSE_PICK.map((p) => p.key);
+export { ST as DOG_ST };
+export const DOG_GAIT_CFG = DOG_SPECIES.gait;
+// Re-exported so the gallery adapter reads the record through this file's
+// front door, the way every other camp entry does.
+export { DOG_SPECIES };

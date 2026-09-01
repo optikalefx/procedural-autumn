@@ -146,7 +146,14 @@ def frame_view(rig, mesh_names, clip=None, clip_range=None):
             for sp in area.spaces:
                 if sp.type != 'VIEW_3D':
                     continue
-                sp.shading.type = 'MATERIAL'
+                # 'MATERIAL' through Blender 4.x; 5.x renamed the preview
+                # shading mode to 'RENDERED' and dropped the old identifier.
+                for mode in ('MATERIAL', 'RENDERED'):
+                    try:
+                        sp.shading.type = mode
+                        break
+                    except TypeError:
+                        continue
                 sp.region_3d.view_location = centre
                 sp.region_3d.view_distance = size * 2.6
                 sp.region_3d.view_rotation = eye.to_track_quat('Z', 'Y')

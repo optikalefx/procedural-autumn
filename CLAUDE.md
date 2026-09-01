@@ -71,6 +71,15 @@ compass paw all walk one cast.
   replaced the procedural yak and the pack's goat replaced the procedural one;
   both alpine species are hand-authored now, and CLIMB / PERCH did not change.
 
+**The camp dog is on the hand-authored track too**, and it is the one animal
+that is on it without being in `SPECIES` — `camp_dog.js` owns when one exists,
+and `mammals/dog.js` is a `glb:` record with no blueprint. It is also the only
+user of `glb.rest`: `sit`, `lie` and `curl` are pose clips that take over the
+WHOLE standing budget rather than sharing it the way `graze` and `alert` do,
+because a curl is not something a standing dog is partly doing. Its rest poses
+used to be ~40 hand-written bone rotations blended over `AnimRig`'s output; see
+`tools/build_dog_blend.py` for what replaced them and what it cost.
+
 `GlbRig` and `AnimRig` answer the same contract (`reset` / `update` / `setLod` /
 `setShadow` / `gaitName` / `mesh`). Adding a hand-authored animal is a model and
 a species file; see the `promote-glb-animal` skill.

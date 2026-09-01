@@ -725,11 +725,15 @@ function animalEntries(mod, path) {
 //  Family adapter — the camp dog
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The dog is a camp prop with a gait solver, so it belongs to neither family
-// cleanly. It gets its own adapter because the thing anyone opens it to judge
-// is not the mesh but the three REST POSES, which no other entry in the gallery
-// has: they are authored per-bone rather than solved, so the only way to know a
-// sign is wrong is to look at one.
+// The dog is a camp prop with a rig, so it belongs to neither family cleanly.
+// It gets its own adapter because the thing anyone opens it to judge is not the
+// mesh but the three REST CLIPS, which no other entry in the gallery has —
+// `sit`, `lie` and `curl` are unreachable from the wild cast's pose list.
+//
+// It drives the real `GlbRig` through the real `drive` block, so a card here
+// cannot disagree with what a camp draws. What it does NOT drive is the
+// behaviour loop: `CampDog` decides WHEN to settle over tens of seconds, and a
+// gallery card is a pose picker.
 const DOG_POSES_UI = [
   { key: 'stand', label: 'Stand' },
   { key: 'walk', label: 'Meander' },
@@ -739,86 +743,53 @@ const DOG_POSES_UI = [
 ];
 
 function dogEntries(mod, path) {
-  const out = [];
-  const protos = mod.dogProto();
-  protos.forEach((p, vi) => {
-    out.push({
-      id: `campdog:${vi}`,
-      label: 'Camp dog',
-      sub: p.variant.name,
-      group: groupOf(path),
-      family: 'Animals',
-      file: path,
-      call: `new CampDog(root, site, rnd, world)`,
-      poses: DOG_POSES_UI,
-      async build(_seed, opts = {}) {
-        const { instantiate } = await import('../../wildlife/animal_rig.js');
-        const { AnimRig } = await import('../../wildlife/animal_anim.js');
-        const { createHideMaterial } = await import('../../wildlife/animal_species.js');
-        const hide = createHideMaterial(p.variant.col);
-        const inst = instantiate(p, hide, 0);
-        const rig = new AnimRig(p, inst, p.scale, mod.DOG_GAIT_CFG, 'dog');
-        const root = new THREE.Group();
-        root.add(inst.mesh);
+  return mod.DOG_SPECIES.variants.map((v, vi) => ({
+    id: `campdog:${vi}`,
+    label: 'Camp dog',
+    sub: v.name,
+    group: groupOf(path),
+    family: 'Animals',
+    file: path,
+    call: `new GlbRig((await warmDog())[${vi}], ...)`,
+    poses: DOG_POSES_UI,
+    async build(_seed, opts = {}) {
+      const { GlbRig } = await import('../../wildlife/glb_rig.js');
+      const proto = (await mod.warmDog())[vi];
+      const sp = mod.DOG_SPECIES;
+      const rig = new GlbRig(proto, proto.scale, sp.gait, 'dog');
 
-        const poseKey = opts.pose ?? 'stand';
-        const rest = mod.DOG_POSES[poseKey] ?? null;
-        const walking = poseKey === 'walk';
-        const pos = new THREE.Vector3(0, 0, 0);
-        const drive = {
-          pos, heading: 0, speed: walking ? 0.78 : 0,
-          graze: 0, alert: rest ? 0.15 : 0, flag: 0, look: null, lod: 0,
-        };
-        // Same treadmill rebase the wild animals use — see `animalEntries`.
-        const rebase = () => {
-          const dz = pos.z;
-          if (dz === 0) return;
-          pos.z = 0;
-          for (const lg of rig.legs) {
-            lg.foot.z -= dz; lg.anchor.z -= dz; lg.from.z -= dz; lg.to.z -= dz;
-          }
-        };
-        const apply = () => {
-          if (!rest) return;
-          const r = rig.root;
-          r.position.y += rest.drop;
-          // Assigned, not accumulated — AnimRig rewrites y each frame but never
-          // touches z. See the note in camp_dog.js `_applyPose`.
-          r.position.z = rest.push ?? 0;
-          r.rotation.x = rest.pitch;
-          r.rotation.z = rest.roll;
-          for (const name in rest.bones) {
-            const b = inst.byName[name];
-            if (!b) continue;
-            const [rx, ry, rz] = rest.bones[name];
-            b.rotation.set(rx, ry, rz);
-          }
-          inst.mesh.updateWorldMatrix(false, true);
-        };
-        rig.update(0.016, drive, FLAT_WORLD);
-        for (let i = 0; i < 60 && walking; i++) { rebase(); pos.z += drive.speed * 0.016; rig.update(0.016, drive, FLAT_WORLD); }
-        apply();
+      const root = new THREE.Group();
+      root.add(rig.mesh);
 
-        return {
-          root,
-          update(dt) {
-            rebase();
-            pos.z += drive.speed * dt;
-            rig.update(dt, drive, FLAT_WORLD);
-            apply();
-          },
-          dispose() { hide.dispose(); },
-          notes: [
-            `${p.tris} triangles (near LOD)`,
-            `${p.height.toFixed(2)} m at the withers`,
-            rest ? `authored pose · drop ${rest.drop} m` : 'gait solver',
-            '80% chance per camp',
-          ],
-        };
-      },
-    });
-  });
-  return out;
+      const poseKey = opts.pose ?? 'stand';
+      const rest = ['sit', 'lie', 'curl'].includes(poseKey) ? poseKey : null;
+      const pos = new THREE.Vector3(0, 0, 0);
+      const drive = {
+        pos, heading: 0, speed: poseKey === 'walk' ? sp.gait.walk : 0,
+        graze: 0, alert: 0, flag: 0, look: null, lod: 0,
+        rest, restW: rest ? 1 : 0,
+      };
+      // Settle the damped blends so the first frame shown is the pose asked
+      // for rather than the crossfade on its way there. An authored clip is
+      // animated IN PLACE, so unlike the procedural cast there is no treadmill
+      // to rebase — the dog simply stands at the origin and plays.
+      for (let i = 0; i < 90; i++) rig.update(0.016, drive, FLAT_WORLD);
+
+      return {
+        root,
+        update(dt) { rig.update(dt, drive, FLAT_WORLD); },
+        dispose() { rig.dispose(); },
+        notes: [
+          `${proto.glb.url}`,
+          `${proto.height.toFixed(2)} m, ear-tip to paw`,
+          `coat "${v.name}" — the pack's own paint, picked by hiding the other five`,
+          rest ? `${rest} — an authored hold, breathing on a 4 s loop`
+            : `walk ${sp.gait.walk.toFixed(3)} m/s, measured off the clip`,
+          '80% chance per camp',
+        ],
+      };
+    },
+  }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1046,13 +1017,12 @@ const ADAPTERS = [
   { path: '/src/camp/camp_fire.js', claims: ['Firepit'], entries: fireEntries },
   {
     path: '/src/camp/camp_dog.js',
-    claims: ['CampDog', 'dogProto', 'DOG_POSES'],
+    claims: ['CampDog', 'dogProto', 'warmDog', 'DOG_POSES'],
     entries: dogEntries,
-    // The dog's prototypes are built one folder over and re-exported through
-    // the wildlife front door; both are steps toward the cards above.
+    // The dog's species record and its loader live one folder over; the model
+    // itself is a file, and both are steps toward the cards above.
     parts: {
-      '/src/wildlife/mammals/dog.js': ['buildCampDog'],
-      '/src/wildlife/animal_species.js': ['buildCampDog'],
+      '/src/wildlife/mammals/dog.js': ['DOG_SPECIES', 'loadCampDog'],
     },
   },
   { path: '/src/wildlife/birds/flocks.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
