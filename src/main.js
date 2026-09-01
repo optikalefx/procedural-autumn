@@ -40,6 +40,7 @@ import { Grass }       from './vegetation/Grass.js';
 import { Wildlife }    from './wildlife/Wildlife.js';
 import { Vehicle }     from './vehicle/Vehicle.js';
 import { Boat }        from './boat/Boat.js';
+import { Bike }        from './bike/Bike.js';
 import { Camp }        from './camp/Camp.js';
 import { CameraRig }   from './vehicle/CameraRig.js';
 import { Audio }       from './audio/Audio.js';
@@ -57,10 +58,25 @@ const SYSTEMS = [
   ['grass',       Grass],
   ['wildlife',    Wildlife],
   ['vehicle',     Vehicle],
-  // After Vehicle (Boat reads `vehicle.brakeHold` and the camper's pose on the
-  // frame they are written) and BEFORE Camp: Camp arbitrates clicks against
-  // `boat.pointerClaim`, and registering Boat first makes that claim
-  // same-frame rather than a frame stale. See Camp._interact.
+  // ── the pointer chain: Vehicle → Bike → Boat → Camp ─────────────────────
+  //
+  // All three read `vehicle.brakeHold` and the camper's pose on the frame they
+  // are written, and each publishes a `pointerClaim` that the ones after it
+  // read SAME-FRAME rather than a frame stale. The order between them is the
+  // order of how specific the target is, which is the only ordering that gives
+  // one prompt per frame:
+  //
+  //   Bike   a single object under the crosshair. The most specific thing
+  //          there is, so it goes first and everything else stands down.
+  //   Boat   a moored hull under the crosshair, or the whole shore band as a
+  //          launch aim — a place, not a thing.
+  //   Camp   the ground, which is everywhere.
+  //
+  // Registering Boat before Bike shipped exactly the bug this ordering exists
+  // to stop: a bike parked at a lakeside camp put "launch a kayak here" and
+  // "ride the bike" on screen at the same time, drawn on top of each other,
+  // because both systems own a `CampPrompt` and neither knew about the other.
+  ['bike',        Bike],
   ['boat',        Boat],
   // After Vehicle: Camp reads `vehicle.brakeHold` and the camper's position on
   // the same frame they are written, and before CameraRig so the reticle has

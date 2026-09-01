@@ -40,6 +40,7 @@ import { buildCanoe, CANOE_DIM } from './boat_canoe.js';
 import { buildKayak, KAYAK_DIM } from './boat_kayak.js';
 import { setBoatEnv } from './boat_materials.js';
 import { SkyProbe } from '../render/SkyProbe.js';
+import { RideCamera } from '../core/ride_camera.js';
 
 // Top speeds, per the design: a kayak is faster and twitchier than a canoe.
 const MAX_SPEED = { canoe: 3.2, kayak: 3.8 };
@@ -133,12 +134,10 @@ const CAM_ZOOM_MAX = 2.6;
 // Look around from the seat. Drag turns your head, it does not turn the boat:
 // the eye stays mounted on the deck and only the look target swings, so the
 // gunwale stays under the frame and a glance at the far shore costs nothing.
-// Same sensitivities as the chase camera (vehicle/CameraRig `_readLook`) so
-// the gesture feels identical whichever you are steering, and the same
-// courtesy: it eases back over the bow only once you are actually under way,
-// because a player drifting on a still lake is sightseeing.
-const LOOK_PITCH_MIN = -0.55;   // looking up into the trees
-const LOOK_PITCH_MAX = 0.75;    // looking down over the side at the water
+// The gesture, its limits and the ease home all live in `core/ride_camera` now
+// — the bike wanted the same neck — and this is the one number that is about
+// THIS vehicle: a player drifting on a still lake is sightseeing, so the ease
+// back over the bow waits two seconds after they stop dragging.
 const LOOK_RECENTER_DELAY = 2.0;
 
 // How long the "drive the camper" hint sits over the bow after boarding. It is
@@ -179,15 +178,18 @@ export class Boat extends System {
     this._focusT = 0;         // seconds left of the launch glance
     this._focusP = new THREE.Vector3();
     this._cursorNow = '';
-    this._camP = new THREE.Vector3();   // mounted-camera eye, damped
-    this._camL = new THREE.Vector3();   // mounted-camera look target, damped
-    this._camSnap = true;
-    this._handedOff = false;            // photo mode is holding the camera
-    this._camZoom = 1;                  // 1 = the seated mount; wheel moves it
-    this._camZoomT = 1;
-    this._lookYaw = 0;                  // head turn off the bow line, radians
-    this._lookPitch = 0;
-    this._lookIdle = 0;                 // seconds since the look was touched
+    // The seat camera — zoom, head turn, damping and the photo-mode hand-off,
+    // all of it shared with the bike. This file supplies only `_mount`: where
+    // on THIS hull the eye sits. See core/ride_camera.js.
+    this.ride = new RideCamera(ctx, {
+      mount: (z, yaw, pitch) => this._mount(z, yaw, pitch),
+      speed: () => this._aboard?.phys.speed ?? 0,
+      zoomMin: CAM_ZOOM_MIN, zoomMax: CAM_ZOOM_MAX,
+      recenterDelay: LOOK_RECENTER_DELAY,
+    });
+    this._mEye = { x: 0, y: 0, z: 0 };
+    this._mLook = { x: 0, y: 0, z: 0 };
+    this._mPose = { eye: this._mEye, look: this._mLook };
     this._hintT = 0;                    // seconds left of the drive hint
     this._refuse = '';                  // why the last attempted launch failed
     this._refuseT = 0;                  // seconds left of that refusal
@@ -376,6 +378,12 @@ export class Boat extends System {
     // is `pointerClaim`, which Camp reads to stand down. A stale claim would
     // take the placement affordance away from the whole meadow.
     if (!pointing(input)) { this._say(''); this._cursor(''); return false; }
+    // The bike outranks the shore. It runs before this one (see SYSTEMS in
+    // main.js) and claims only when the pointer is actually ON it or the player
+    // is riding, which is strictly more specific than "somewhere near water" —
+    // and without this both systems draw a prompt and they land on top of each
+    // other. The camper gets the same courtesy below, by depth test.
+    if (this.ctx.systems?.bike?.pointerClaim) { this._say(''); this._cursor(''); return false; }
     const ray = pointerRay(input, camera, this._ray);
 
     // The camper's own triangles outrank everything — a click on the camper is
@@ -513,9 +521,9 @@ export class Boat extends System {
     // this, framing a shot with the camper anywhere in it would drop the
     // player out of the boat mid-photograph. E is the same argument: it steps
     // ashore, and photo mode's rail is a place where keys get pressed.
-    // `_handedOff` rather than the HUD's flag because it is the precise
+    // `ride.handedOff` rather than the HUD's flag because it is the precise
     // question — "has the camera been given away" — see `handOff`.
-    if (this._handedOff) { this._say(''); this._cursor(''); return; }
+    if (this.ride.handedOff) { this._say(''); this._cursor(''); return; }
     const { camera, input } = this.ctx;
     if (this.click.clicked) {
       const ray = pointerRay(input, camera, this._ray);
@@ -727,38 +735,29 @@ export class Boat extends System {
     // mechanism the telescope uses (rig.takeCamera outranks everything and
     // hands back cleanly). We do NOT raise __forceCamera — the HUD and the
     // prompts stay up. The mount eases in from wherever the camera was.
-    this._camSnap = true;
-    this._lookYaw = 0;
-    this._lookPitch = 0;
-    this._lookIdle = 0;
+    this.ride.reset();
     this._hintT = DRIVE_HINT_TIME;
-    rig?.takeCamera?.((dt) => this._boatCam(dt));
+    this.ride.take(rig);
     this._cue('board', { x: b.phys.x, z: b.phys.z, kind: b.kind });
     return true;
   }
 
-  /** The mounted ride camera: seated at the back third of the deck, looking
-   *  over the bow. Damped so the hull's bob reads as gentle sway, not shake. */
-  _boatCam(dt) {
+  /**
+   * Where the eye sits on this hull — the one thing `RideCamera` cannot know.
+   * Seated at the back third of the deck, looking over the bow; the wheel
+   * zooms about that mount, and the head turn swings the look target off the
+   * bow line without moving the eye.
+   *
+   * Returns preallocated objects: this runs every frame inside the camera
+   * takeover, and the rig is the last place in the loop that wants garbage.
+   */
+  _mount(zf, yaw, pitch) {
     const b = this._aboard;
-    const cam = this.ctx.camera;
-    if (!b) return;
+    if (!b) return null;
     const p = b.phys;
     const dim = b.group.userData.dim ?? this.models[b.kind].dim;
     const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
     const L = dim.length;
-    // Wheel zoom, same exponential feel as the rig's. The rig is taken over
-    // while aboard, so nothing else consumes the wheel.
-    const input = this.ctx.input;
-    const wheel = input.mouse.wheel;
-    if (wheel) {
-      this._camZoomT = Math.min(CAM_ZOOM_MAX,
-        Math.max(CAM_ZOOM_MIN, this._camZoomT * Math.exp(wheel * 0.0016)));
-    }
-    const k0 = Math.min(dt, 1 / 20);
-    this._readLook(k0, p);
-    this._camZoom = THREE.MathUtils.damp(this._camZoom, this._camZoomT, 9, k0);
-    const zf = this._camZoom;
     const mx = p.x - fx * L * CAM_MOUNT_AFT * zf;
     const mz = p.z - fz * L * CAM_MOUNT_AFT * zf;
     const my = p.y + CAM_MOUNT_UP * (0.55 + 0.45 * zf);
@@ -766,98 +765,22 @@ export class Boat extends System {
     // puts it over the bow (the framing above), and pitch tips it up into the
     // trees or down at the water beside the hull.
     const reach = L * 1.7;
-    const a = p.heading + this._lookYaw;
-    const cp = Math.cos(this._lookPitch);
-    const lx = mx + Math.sin(a) * reach * cp;
-    const lz = mz + Math.cos(a) * reach * cp;
-    const ly = my + (p.y + CAM_LOOK_UP - my) * cp - Math.sin(this._lookPitch) * reach;
-    const k = Math.min(dt, 1 / 20);
-    if (this._camSnap) {
-      this._camP.set(mx, my, mz);
-      this._camL.set(lx, ly, lz);
-      this._camSnap = false;
-    } else {
-      // Position tracks hard (the eye is IN the boat); the look target trails
-      // a little more so a sweep-turn reads as the bow swinging through frame.
-      // Except under the player's own hand: a head turn has to feel attached to
-      // the mouse, the same bargain the chase camera strikes while dragging.
-      const dp = THREE.MathUtils.damp;
-      const lk = this._lookIdle === 0 ? 22 : 7;
-      this._camP.set(dp(this._camP.x, mx, 14, k), dp(this._camP.y, my, 10, k), dp(this._camP.z, mz, 14, k));
-      this._camL.set(dp(this._camL.x, lx, lk, k), dp(this._camL.y, ly, lk, k), dp(this._camL.z, lz, lk, k));
-    }
-    cam.position.copy(this._camP);
-    cam.lookAt(this._camL);
-  }
-
-  /**
-   * Head turn while aboard: drag to look around, exactly the gesture that
-   * orbits the chase camera when you are driving. The rig is handed over while
-   * aboard (see `board`), so nothing else is reading the mouse — without this,
-   * a boat was the one place in the game where the mouse did nothing at all.
-   *
-   * A drag past the press slop is not a tap (core/Input `pressEnd`), so looking
-   * around can never be mistaken for the click that reaches back to the camper.
-   */
-  _readLook(dt, p) {
-    const input = this.ctx.input;
-    const m = input.mouse;
-    let touched = false;
-    if (m.down) {
-      touched = true;
-      if (m.dx || m.dy) {
-        this._lookYaw -= m.dx * 0.0042;
-        this._lookPitch = Math.min(LOOK_PITCH_MAX,
-          Math.max(LOOK_PITCH_MIN, this._lookPitch + m.dy * 0.0032));
-      }
-    }
-    const ax = input.axes;
-    if (ax.lookX || ax.lookY) {
-      this._lookYaw -= ax.lookX * 1.6 * dt;
-      this._lookPitch = Math.min(LOOK_PITCH_MAX,
-        Math.max(LOOK_PITCH_MIN, this._lookPitch + ax.lookY * 1.1 * dt));
-      ax.lookX = 0; ax.lookY = 0;
-      touched = true;
-    }
-    // Keep the turn in (-pi, pi] so the ease home always takes the short way.
-    this._lookYaw = Math.atan2(Math.sin(this._lookYaw), Math.cos(this._lookYaw));
-    this._lookIdle = touched ? 0 : this._lookIdle + dt;
-
-    // Ease back over the bow once you are paddling somewhere — and only then.
-    // Drifting, the player is looking at the lake on purpose.
-    const moving = Math.min(1, Math.max(0, (Math.abs(p.speed) - 0.6) / 1.8));
-    if (moving > 0.02 && this._lookIdle > LOOK_RECENTER_DELAY) {
-      const k = 1 - Math.exp(-1.5 * moving * dt);
-      this._lookYaw += (0 - this._lookYaw) * k;
-      this._lookPitch += (0 - this._lookPitch) * k;
-    }
+    const a = p.heading + yaw;
+    const cp = Math.cos(pitch);
+    this._mEye.x = mx; this._mEye.y = my; this._mEye.z = mz;
+    this._mLook.x = mx + Math.sin(a) * reach * cp;
+    this._mLook.z = mz + Math.cos(a) * reach * cp;
+    this._mLook.y = my + (p.y + CAM_LOOK_UP - my) * cp - Math.sin(pitch) * reach;
+    return this._mPose;
   }
 
   /**
    * Hand the camera to photo mode, where it stands.
    *
-   * `board` mounts the ride camera through `rig.takeCamera`, and a takeover
-   * outranks EVERYTHING in `CameraRig.lateUpdate` — including free mode, which
-   * is what photo mode is. So pressing F aboard used to open the rail over a
-   * camera that was still bolted to the deck, and every control on it was
-   * quietly dead in a different way (user, 2026-08-29):
-   *
-   *  · the ZOOM ring wrote `rig.fov` and nothing ever applied it — `_apply`
-   *    only runs at the end of `_free`, which never ran;
-   *  · MIDDLE-DRAG pan did nothing at all: that gesture lives in `_free` and
-   *    `_boatCam` has no answer for it;
-   *  · and the shot would not stay put. `_boatCam` damps the eye back onto the
-   *    mount every frame, and `_readLook` eases the head back over the bow
-   *    `LOOK_RECENTER_DELAY` seconds after you stop dragging — two seconds,
-   *    which is exactly the drift the player timed. Worse while paused: the
-   *    hull's speed is frozen at whatever it was when F was pressed, so the
-   *    "only once you are actually under way" courtesy that gates the recentre
-   *    never expires.
-   *
-   * The fix is the one the camp's two modal views already use: let go where we
-   * stand, before `enterFree` reads the camera. No ease, no step-back, nothing
-   * moved — photo mode's contract is that the frame you pressed F on is the
-   * frame you compose from, and the mounted pose IS that frame.
+   * The whole argument — why a takeover has to let go BEFORE `enterFree` reads
+   * the camera, and the three controls that were quietly dead when it did not —
+   * is in `RideCamera.handOff`, which is where it now happens for both the
+   * kayak and the bike.
    *
    * The boat itself is not touched. Unlike the telescope there is nothing to
    * hide (the eye rides the deck, it is not inside a tube) and unlike the
@@ -868,45 +791,23 @@ export class Boat extends System {
    */
   handOff() {
     if (!this._aboard) return null;
-    if (this._handedOff) return this._aboard;
-    const cam = this.ctx.camera;
-    const rig = this.ctx.systems?.cameraRig;
-
-    // The rig has been returning early at its takeover for as long as the
-    // player has been aboard, so BOTH the fields `enterFree` measures its arm
-    // between are stale — `camPos` and `subject` are still the shore where they
-    // boarded, which can be most of a lake away. That arm is the free camera's
-    // orbit pivot, its depth-of-field plane and the focus rail's first guess,
-    // so hand it the truth before it reads it: the eye where it actually is,
-    // and the mounted camera's own damped look target as the subject, which is
-    // the point over the bow this shot has been aimed at all along.
-    rig?.camPos?.copy(cam.position);
-    rig?.subject?.copy(this._camL);
-
-    this._handedOff = true;
-    rig?.takeCamera?.(null);
+    this.ride.handOff(this.ctx.systems?.cameraRig);
     return this._aboard;
   }
 
   /** Back in the seat. Photo mode calls this on its way out.
    *
-   *  A CUT (`_camSnap`), not the damped ride back, and for the reason
-   *  `CameraRig.exitFree` gives: the player may have flown sixty metres up the
-   *  far bank to take the photograph, and easing home from there is a long
-   *  slide through terrain nobody composed.
+   *  A cut, not the damped ride back — see `RideCamera.endHandOff`.
    *
-   *  Idempotent, and survives the boat being lost while the shutter was open —
-   *  `exit()` clears the flag, so there is nothing to climb back into and the
-   *  chase camera `exitFree` selects is the right answer.
+   *  Idempotent, and survives the boat being lost while the shutter was open:
+   *  `exit()` releases the ride camera, which clears the flag, so there is
+   *  nothing to climb back into and the chase camera `exitFree` selects is the
+   *  right answer.
    *
    *  @returns true if a hand-off was actually ended. */
   endHandOff() {
-    if (!this._handedOff) return false;
-    this._handedOff = false;
     if (!this._aboard) return false;
-    this._camSnap = true;
-    this.ctx.systems?.cameraRig?.takeCamera?.((dt) => this._boatCam(dt));
-    return true;
+    return this.ride.endHandOff(this.ctx.systems?.cameraRig);
   }
 
   /** Is there a bank off this boat's bow that the player could step onto?
@@ -980,11 +881,11 @@ export class Boat extends System {
     const rig = this.ctx.systems?.cameraRig;
     if (veh) veh.controlsHeldBy = null;
     rig?.setFollow?.(null);
-    rig?.takeCamera?.(null);   // the chase re-primes behind the camper: a cut
-    // Including a hand-off in flight: photo mode may still be open over a boat
-    // that has just sunk under it. Cleared rather than left set so `endHandOff`
-    // does not try to remount a camera on a boat that is gone.
-    this._handedOff = false;
+    // The chase re-primes behind the camper: a cut. `release` also clears the
+    // hand-off flag, which matters when photo mode is still open over a boat
+    // that has just sunk under it — otherwise `endHandOff` would try to remount
+    // a camera on a boat that is gone.
+    this.ride.release(rig);
     if (this._aboard) this._aboard.phys.speed = 0;
     this._aboard = null;
     this.active = false;

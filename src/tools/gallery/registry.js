@@ -1258,6 +1258,36 @@ export function discover() {
     }
   }
 
+  // ── the env hook, before anything is built ────────────────────────────────
+  //
+  // A fourth convention, and the same bargain as the other three: nobody edits
+  // this file to use it. A prop kit whose materials are METALS cannot be lit by
+  // three's light list alone — `campMaterials` says so at length and
+  // `camp_table` spends a page on the flat-black table it produced — so the
+  // kits that care own a `set<Kit>Env(texture)` and the game drives a `SkyProbe`
+  // into it. On this page there is no sky and no probe, so a bicycle's rims,
+  // spokes and chain would render as the black scribble the game was careful to
+  // avoid, and the gallery would be lying about the one object that most needs
+  // judging here.
+  //
+  // The camper's own baked env map is the right stand-in: it is a neutral
+  // sky-and-ground dome, it is already built for the cars on this page, and it
+  // costs one bake for all of them.
+  if (BUILD_CTX.renderer) {
+    let env = null;
+    for (const [path, mod] of Object.entries(MODULES)) {
+      for (const [name, value] of Object.entries(mod)) {
+        if (!/^set[A-Z]\w*Env$/.test(name) || typeof value !== 'function') continue;
+        try {
+          env ??= buildEnvMap(BUILD_CTX.renderer);
+          value(env);
+        } catch (e) {
+          notShown.push({ file: path, name, soft: true, why: `env hook threw: ${e.message}` });
+        }
+      }
+    }
+  }
+
   // ── adapters first, so their claims are respected by the probe ────────────
   for (const a of ADAPTERS) {
     const mod = MODULES[a.path];

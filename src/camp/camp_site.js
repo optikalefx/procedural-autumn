@@ -1005,6 +1005,83 @@ export function layoutCamp(rnd, world, cx, cz, opts = {}) {
     }
   }
 
+  // ── the bike ───────────────────────────────────────────────────────────────
+  //
+  // Every full camp gets one, and no compact camp does (user direction,
+  // 2026-09-01: "place the bike at the large camp"). It is the one prop here
+  // that is not decoration — it is a vehicle you can get on and ride away — so
+  // it is not on a die roll like the table and the telescope. A player who
+  // pitches a big camp should know a bike will be there.
+  //
+  // Not on a compact pitch for the reason nothing else big is: a 3.4 m hillside
+  // clearing is 4 m of camp on 7 m of ground, and a 1.78 m bicycle laid across
+  // it is a third of the site. The compact camp is somebody who stopped for the
+  // night, and they did not unload the bike.
+  //
+  // WHERE it goes, and the two decisions in it:
+  //
+  //  · **Behind the seating arc, at the lip.** A bike is a thing you walk past,
+  //    not a thing you sit around, and it is 1.8 m long — put it inside the
+  //    circle and it is furniture in the middle of the room. 0.62-0.74 R is
+  //    about 3.6-4.3 m on a full camp: the wheels are on bare ground and the
+  //    far end of it is in the fringe, which is exactly where a bike gets left.
+  //  · **Broadside, not nose-in.** `Camp.js` yaws every prop's +Z at the fire,
+  //    and a bicycle's +Z is the way it points. Aimed at the fire it is a
+  //    2-pixel-wide line seen end-on. The quarter turn below is the whole
+  //    silhouette — two wheels and a diamond — which is the only view of a
+  //    bicycle that reads at all, and it is also how one actually stands when
+  //    it is leaning on its side stand.
+  //
+  // `Camp` does not build this one: `_buildNext` hands the entry to the Bike
+  // system, which owns the model, the kickstand and the ride. The layout's job
+  // is only to decide the spot, and it decides it with the same separation test
+  // as everything else — so a bike never lands in the fire or inside a trunk.
+  if (!small) {
+    // ── the bearing is CHOSEN, not jittered, and this one is about slope ────
+    //
+    // Every other prop here picks a bearing for compositional reasons and lets
+    // `tryPlace` wander off it. That is right for a chair and wrong for this,
+    // because `footprintRelief` — the only ground test `tryPlace` has — fits a
+    // PLANE and returns the residual, so it measures bumpiness and is blind to
+    // steepness by construction. A smooth 38° bank scores zero relief.
+    //
+    // Which is exactly what shipped in the first build: on seed 20261018 the
+    // full camp at (-628, 411) put the bike 3.8 m out on a face dropping 0.95 m
+    // over the 1.2 m wheelbase, and it stood there pitched nose-down 38° with
+    // its kickstand in the air. A tent gets away with that; a bicycle does not,
+    // because a bicycle's whole read is a pair of circles on a level line.
+    //
+    // So sweep the ring first and take the flattest bearing that is not in the
+    // seating arc, then hand THAT to `tryPlace` with a small swing so the
+    // separation test still has room to work. Slope plus leftover relief, so a
+    // flat-but-lumpy spot loses to a flat-and-smooth one.
+    const rSweep = R * 0.68;
+    let bestA = seatCentre + Math.PI, bestScore = Infinity;
+    for (let i = 0; i < 24; i++) {
+      const a = seatCentre + TAU * (i / 24);
+      // Out of the seating arc: a bike parked between two chairs is furniture
+      // in the middle of the room.
+      const off = Math.abs(Math.atan2(Math.sin(a - seatCentre), Math.cos(a - seatCentre)));
+      if (off < 1.15) continue;
+      const x = cx + Math.cos(a) * rSweep, z = cz + Math.sin(a) * rSweep;
+      if (!world.isInBounds(x, z)) continue;
+      const score = world.getSlope(x, z)
+                  + Math.max(0, footprintRelief(world, x, z, 0.7) - 0.20) * 0.8;
+      if (score < bestScore) { bestScore = score; bestA = a; }
+    }
+    // Which way it faces. `Camp.js` yaws every prop's +Z at the fire and a
+    // bicycle's +Z is the way it points, so a quarter turn puts it broadside —
+    // see the note above. The side of the quarter turn follows the bearing so
+    // the bike's flank faces the camp rather than its back wheel.
+    const flank = Math.sin(bestA - seatCentre) > 0 ? 1 : -1;
+    tryPlace('bike', bestA, R * lerp(0.62, 0.74, rnd()), 0.70, (x, z) => ({
+      kind: 'bike', x, z, y: world.getHeight(x, z),
+      yaw: Math.atan2(cx - x, cz - z) + flank * (Math.PI * 0.5) + (rnd() - 0.5) * 0.4,
+      tilt: 1.0,
+      opts: { wear: rnd() },
+    }), { swing: 0.45, tries: 20 });
+  }
+
   // ── firewood ───────────────────────────────────────────────────────────────
   // A stack of split logs, downwind-ish of the fire and well back from it.
   // Small, but it is the prop that says somebody is *staying*.

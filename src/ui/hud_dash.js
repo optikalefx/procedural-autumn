@@ -45,9 +45,17 @@ const HOLD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' 
 // reason to swap. It also keeps the top third in hand — a boat's declared top
 // speed is only 58% (canoe) and 68% (kayak) of the scale — for a hull running
 // downstream with a river current rather than across a lake.
+//
+// The bike gets its own, and the same arithmetic decides it. A mountain bike in
+// this model settles around 7.6 m/s (27 km/h) on the flat, walks a climb at
+// 4-8 km/h and will touch 45 downhill before the rider sits up. A 60 km/h dial
+// puts the flat cruise at 45% of the sweep, leaves the whole top half for a
+// descent — which is the reading a rider actually watches — and never sends the
+// needle to the floor the way the camper's 120 would.
 const SCALES = {
   camper: { max: 120, minor: 10, major: 40 },
   boat: { max: 20, minor: 2, major: 4 },
+  bike: { max: 60, minor: 5, major: 20 },
 };
 // Degrees clockwise from 12 o'clock. The gap belongs at the *bottom* — the
 // first version started the sweep at 148° and the needle sat pointing at the
@@ -158,7 +166,7 @@ export class Dash {
     this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null };
   }
 
-  /** @param {'camper'|'boat'} scale — full scale of the dial; see SCALES. */
+  /** @param {'camper'|'boat'|'bike'} scale — full scale of the dial; see SCALES. */
   update(speedMs, tripM, found, total, hold = false, scale = 'camper') {
     const sc = SCALES[scale] ?? SCALES.camper;
     if (sc !== this.scale) {

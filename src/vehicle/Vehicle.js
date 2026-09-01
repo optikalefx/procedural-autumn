@@ -175,7 +175,8 @@ export class Vehicle extends System {
     this._brakeHold = false;
     this.brakeHold = false;      // what the HUD lamp reads
     // Who owns the driving inputs. null = the camper; 'boat' while the player
-    // is paddling. While held, the pedals and steering are fed to the physics
+    // is paddling, 'bike' while they are riding. While held, the pedals and
+    // steering are fed to the physics
     // as zeros and the brake hold cannot release — the camper stays parked
     // exactly as it was. Deliberately NOT input.suppressed (the holder needs
     // those same axes) and NOT enabled=false (Camp's gate reads this system).
@@ -385,9 +386,9 @@ export class Vehicle extends System {
     const { ctx } = this;
     const input = ctx.input;
     const ax = input.axes;
-    // Another system (the boat) holds the controls: every axis reads as zero
-    // to the camper, and R belongs to the holder's context too. See the note
-    // on `controlsHeldBy` in the constructor.
+    // Another system (the boat or the bike) holds the controls: every axis
+    // reads as zero to the camper, and R belongs to the holder's context too.
+    // See the note on `controlsHeldBy` in the constructor.
     const held = this.controlsHeldBy != null;
 
     // ── camera cycling / input ──────────────────────────────────────────────
@@ -621,7 +622,7 @@ export class Vehicle extends System {
    * the thing it exists for. The only thing enforced is the world boundary,
    * because outside it there is no terrain patch to stand on at all.
    *
-   * ── warping out of a boat ───────────────────────────────────────────────
+   * ── warping out of a boat, or off a bike ────────────────────────────────
    * The warp moves the CAMPER. Aboard a boat the player is not in the camper,
    * so without the giveback below they stayed sitting in a kayak on the far
    * side of the map, steering it, with the camper they had just "warped"
@@ -664,8 +665,16 @@ export class Vehicle extends System {
    * an abandoned hull costs the player nothing but a walk they were never
    * going to take. The caller gets its kind back so it can say so.
    *
-   * @returns {{x:number,z:number,leftBoat:string|null}|null} where it landed,
-   *          and which boat (if any) was moored and stepped out of on the way.
+   * ── and the same for the bike ───────────────────────────────────────────
+   * Word for word the same argument and the same two calls, against
+   * `Bike.dismount()`. Only two things differ, and neither changes the code:
+   * the bike is left standing rather than moored, and it costs the player even
+   * less to abandon, because the next full camp brings the bike along (see
+   * `Bike.park`). At most one of the two can be active — both are gated on
+   * `controlsHeldBy` — so the pair below can never both fire.
+   *
+   * @returns {{x:number,z:number,leftBoat:string|null,leftBike:boolean}|null}
+   *          where it landed, and what (if anything) was stepped off on the way.
    */
   warpTo(x, z) {
     if (!this.phys?.ready) return null;
@@ -673,12 +682,15 @@ export class Vehicle extends System {
     const wx = Math.max(-half, Math.min(half, x));
     const wz = Math.max(-half, Math.min(half, z));
     const boat = this.ctx.systems?.boat;
-    // Read the kind BEFORE the exit: `Boat.current` is republished as null the
-    // next time its update runs with nobody aboard.
+    const bike = this.ctx.systems?.bike;
+    // Read these BEFORE the exit: `Boat.current` is republished as null the
+    // next time its update runs with nobody aboard, and `Bike.active` likewise.
     const leftBoat = boat?.active ? (boat.current?.kind ?? 'boat') : null;
+    const leftBike = !!bike?.active;
     this._land(wx, wz, this.heading);
     if (leftBoat) boat.exit();
-    return { x: wx, z: wz, leftBoat };
+    if (leftBike) bike.dismount();
+    return { x: wx, z: wz, leftBoat, leftBike };
   }
 
   /**

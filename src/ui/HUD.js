@@ -205,14 +205,17 @@ export class HUD extends System {
     const v = this.ctx.systems?.vehicle ?? globalThis.__vehicle;
     if (!v?.warpTo) return;
     const p = v.warpTo(x, z);
-    // `warpTo` steps the player off a boat on the way (the warp moves the
-    // camper, and the player has to arrive with it) and leaves the hull moored
+    // `warpTo` steps the player off a boat OR a bike on the way (the warp moves
+    // the camper, and the player has to arrive with it) and leaves the thing
     // where it was. Say so in the same toast rather than a second one: a boat
     // silently gone from under you reads as the game having eaten it, and
-    // there is no boat marker on the map to go looking for.
+    // there is no boat marker on the map to go looking for. The bike is the
+    // gentler case — the next camp brings it along — but it is still worth a
+    // word, because you were sitting on it a moment ago.
     if (p) {
-      this.toast(`Warped to ${Math.round(p.x)}, ${Math.round(p.z)}`
-        + (p.leftBoat ? ` — ${p.leftBoat} left moored` : ''));
+      const left = p.leftBoat ? ` — ${p.leftBoat} left moored`
+                 : p.leftBike ? ' — bike left behind' : '';
+      this.toast(`Warped to ${Math.round(p.x)}, ${Math.round(p.z)}${left}`);
     }
   }
 
@@ -299,7 +302,8 @@ export class HUD extends System {
     // underneath you: the pin sits dead ahead and swings the width of the strip
     // with every turn of the wheel. `controlsHeldBy` is the system of record
     // for who has the pedals — null is the camper, 'boat' is the player off
-    // paddling with the camper parked on some shore behind them.
+    // paddling and 'bike' is the player off riding, with the camper parked
+    // somewhere behind them either way.
     if (veh?.position && veh.controlsHeldBy != null) {
       this._pin(marks, 'car', veh.position.x, veh.position.z, here);
     }
@@ -327,12 +331,17 @@ export class HUD extends System {
 
   /**
    * Where the player is, as opposed to where the camera is. Aboard a boat that
-   * is the boat; otherwise it is the camper, which the player is always in.
-   * Same question the map arrow asks — see `update`.
+   * is the boat, on a bike it is the bike; otherwise it is the camper, which
+   * the player is always in. Same question the map arrow asks — see `update`.
+   *
+   * At most one of the two can be true — both take `vehicle.controlsHeldBy` —
+   * so the order between them is arbitrary rather than a priority.
    */
   _anchor(cam) {
     const boat = this.ctx.systems?.boat;
     if (boat?.active && boat.current) return boat.current;
+    const bike = this.ctx.systems?.bike;
+    if (bike?.active && bike.current) return bike.current;
     return this.vehicle()?.position ?? cam;
   }
 
@@ -784,7 +793,12 @@ export class HUD extends System {
     // can take either without converting. It is non-null for a moored boat too
     // (the water agent wants a wake source), hence the `boat.active` gate.
     const boat = ctx.systems?.boat;
-    const aboard = boat?.active ? boat.current : null;
+    const bike = ctx.systems?.bike;
+    // The bike publishes the same shape for the same reason, with `speed` as
+    // the ground track it actually made — so a rider grinding against a boulder
+    // reads zero rather than reading the effort they are putting in.
+    const aboard = boat?.active ? boat.current : (bike?.active ? bike.current : null);
+    const riding = !!bike?.active;
     const speed = aboard?.speed ?? veh?.speed ?? 0;
     // A deliberate consequence: the trip meter now turns while you paddle. It
     // is the player's journey rather than the camper's odometer — the "you
@@ -843,7 +857,8 @@ export class HUD extends System {
     // water. A warning lamp that is always on is not a warning lamp, and a
     // kayak has no brake to hold in the first place.
     this.dash.update(speed, this.trip, this.found, this.total,
-      aboard ? false : (veh?.brakeHold ?? false), aboard ? 'boat' : 'camper');
+      aboard ? false : (veh?.brakeHold ?? false),
+      aboard ? (riding ? 'bike' : 'boat') : 'camper');
     this.settings.tick(dt);
     this._gamepad();
   }

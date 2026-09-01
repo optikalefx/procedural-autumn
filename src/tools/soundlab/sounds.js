@@ -561,6 +561,316 @@ const BOAT_SOUNDS = [
     ['boat_audio.js — VOICES.bump.']),
 ];
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Bike
+//
+//  Same shape as the boat's block above and the same reasoning behind it. The
+//  one thing worth saying out loud: the bike's two loudest voices are GATED ON
+//  OPPOSITE THINGS, and that is the layer's whole design. `effort` runs the
+//  drivetrain and silences the freewheel; letting go runs the freewheel and
+//  silences the drivetrain. So the pedalling slider below is not a level, it
+//  is the crossfade between two different bicycles, and auditioning either one
+//  without moving it is auditioning half the layer.
+// ─────────────────────────────────────────────────────────────────────────────
+const K = (key) => (rig, v) => { rig.audio.bike.tune[key] = v; };
+
+const BIKE_MIX = [
+  range('bikeCueGain', 'bike cue trim', 0, 6, 1.5, { step: 0.01, group: 'Mix', src: 'bike_audio.js — CUE_GAIN, one level for every bike one-shot', apply: P('bike.cueBus.gain') }),
+  range('bikeWet', 'reverb send', 0, 1, 0.09, { step: 0.01, group: 'Mix', src: 'bike_audio.js — this.wet', apply: P('bike.wet.gain') }),
+  range('vehicleBus', 'vehicle bus gain', 0, 2, 1.0, { step: 0.01, group: 'Mix', src: 'Audio.js — the bike rides the vehicle bus', apply: P('buses.vehicle.gain') }),
+];
+
+const BIKE_STYLES = ['trail', 'packer'];
+
+/**
+ * Stand a fake bike on the ground, exactly the shape `BikeAudio.update` reads
+ * off `ctx.systems.bike.current`. `wheelRate` and `cadence` are DERIVED from
+ * the speed rather than exposed as sliders, because in the game they are —
+ * a freewheel rate that does not match the speed is a sound that cannot happen.
+ */
+function fakeBike(rig, v, on) {
+  const az = ((v.azimuth ?? 0) * Math.PI) / 180;
+  const speed = v.speed ?? 0;
+  rig.ctx.systems.bike = on ? {
+    active: true,
+    current: {
+      style: v.style ?? 'trail',
+      x: rig.L.x + Math.sin(az) * (v.distance ?? 4),
+      z: rig.L.z + Math.cos(az) * (v.distance ?? 4),
+      heading: 0,
+      speed,
+      riding: true,
+      effort: v.effort ?? 0,
+      braking: v.braking ?? 0,
+      wheelRate: speed / 0.348,          // bike_model.js — WHEEL_R
+      cadence: Math.min(1, speed / 4.5) * 8.2 * (v.effort ?? 0),
+      wading: v.wading ?? 0,
+      wade: Math.min(1, (v.wading ?? 0) / 0.90),   // bike_physics.js — WADE_REF
+      grassiness: v.grassiness ?? 0.5,
+      blocked: false, grade: 0,
+    },
+  } : null;
+}
+
+const bikeBedFrame = (layer) => (rig, dt, v) => {
+  applyListener(rig, v);
+  fakeBike(rig, v, rig.active.has(layer));
+  rig.audio.bike.update(dt, rig.L);
+};
+const bikeBedStop = (rig) => {
+  rig.ctx.systems.bike = null;
+  rig.audio.bike.update(0.016, rig.L);   // one frame, so the beds fade out
+};
+const bikeCueFrame = (rig, dt, v) => {
+  applyListener(rig, v);
+  fakeBike(rig, v, false);
+  rig.audio.bike.update(dt, rig.L);
+};
+
+const bikeCue = (kind, label, blurb, needs = [], extraParams = []) => ({
+  id: `bike.${kind}`,
+  group: 'Bike',
+  label,
+  kind: 'oneshot',
+  bus: 'bike',
+  module: 'src/audio/bike_audio.js',
+  blurb,
+  layers: [],
+  frame: bikeCueFrame,
+  trigger: (rig, v) => {
+    const az = (v.azimuth * Math.PI) / 180;
+    rig.audio.bike.cue(kind, {
+      x: rig.L.x + Math.sin(az) * v.distance,
+      z: rig.L.z + Math.cos(az) * v.distance,
+      strength: v.strength ?? 1,
+    });
+  },
+  triggerLabel: 'Trigger',
+  params: [
+    cond('distance', 'Distance to the bike', 0.5, 30, 4, { unit: 'm', step: 0.5, src: 'bike_audio.js — 26 m reach, 3 m near field, falloff 1.5' }),
+    cond('azimuth', 'Bearing from the listener', -180, 180, -25, { unit: '°', step: 1 }),
+    ...extraParams,
+    ...BIKE_MIX,
+  ],
+  needs,
+});
+
+const BIKE_SOUNDS = [
+  {
+    id: 'bike.roll',
+    group: 'Bike',
+    label: 'Tyres on bare ground',
+    kind: 'bed',
+    bus: 'bike',
+    module: 'src/audio/bike_audio.js',
+    blurb: 'Knobbly tyre on dirt, scree and gravel: the water.js three-band pink '
+      + 'voice, granular and bright when dry, duller when wet. Silent below '
+      + 'about 0.15 m/s. It also fades out as the ground turns to meadow — pull '
+      + 'the SURFACE slider to 1 and this voice must go to the floor, because '
+      + 'the grass bed is what takes over. Drag speed and the meter must rise '
+      + 'monotonically.',
+    layers: ['bikeRoll'],
+    frame: bikeBedFrame('bikeRoll'),
+    stop: bikeBedStop,
+    params: [
+      cond('speed', 'Bike speed', 0, 10, 6, { unit: 'm/s', step: 0.05, src: 'bike_physics.js — about 8 m/s on the flat, more downhill' }),
+      cond('grassiness', 'Surface (0 bare, 1 meadow)', 0, 1, 0, { step: 0.01, src: 'bike_physics.js — from getSurfaceWeights, the terrain material\'s own field' }),
+      cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      readout('mRoll', 'model roll gain', (r) => r.audio.bike.state.roll, { src: 'bike_audio.js — gate · (0.25 + 0.75·sp) · (1 − grassy) · rollDrive · build · distance' }),
+      readout('mBody', 'body band centre', (r) => r.audio.bike.roll.body.frequency.value, { unit: 'Hz', src: 'bike_audio.js — 700 · bright · (1 + sp·0.55), ±190 Hz wander' }),
+      range('rollDrive', 'roll level at full speed', 0, 0.5, 0.16, { step: 0.002, src: 'bike_audio.js — bike.tune.rollDrive', apply: K('rollDrive') }),
+      range('rollRef', 'reference distance', 3, 30, 9, { unit: 'm', step: 0.5, src: 'bike_audio.js — bike.tune.rollRef', apply: K('rollRef') }),
+      range('brightness', 'band-centre scale', 0.5, 2, 1.0, { step: 0.01, src: 'bike_audio.js — bike.tune.brightness', apply: K('brightness') }),
+      ...BIKE_MIX.slice(1),
+    ],
+    needs: [
+      'bike_audio.js — the speed gate smoothstep(0.15, 1.0) and the /8 normalisation.',
+      'bike_audio.js — the (1 − grassiness) crossfade against the grass bed.',
+    ],
+  },
+  {
+    id: 'bike.grass',
+    group: 'Bike',
+    label: 'Tyres through grass',
+    kind: 'bed',
+    bus: 'bike',
+    module: 'src/audio/bike_audio.js',
+    blurb: 'Blades, not ground — and a genuinely different voice rather than the '
+      + 'rumble with a filter on it. Two bright bands and no low end at all: a '
+      + 'wide one for the whip against the spokes and a narrower higher one for '
+      + 'the tips catching the fork and the bag, fluttering at 6–9 Hz over a '
+      + 'slower swell. Steeper in speed than the rumble (sp², because a stalk '
+      + 'hits harder AND more of them hit per second). Wet grass lies down and '
+      + 'hisses; dry autumn grass stands up and rattles, which is most of what '
+      + 'this valley is. The counterpart of `bike.roll`: the two crossfade on '
+      + 'the SURFACE slider and should never both be up.',
+    layers: ['bikeGrass'],
+    frame: bikeBedFrame('bikeGrass'),
+    stop: bikeBedStop,
+    params: [
+      cond('speed', 'Bike speed', 0, 10, 6, { unit: 'm/s', step: 0.05 }),
+      cond('grassiness', 'Surface (0 bare, 1 meadow)', 0, 1, 1, { step: 0.01, src: 'bike_physics.js — from getSurfaceWeights' }),
+      select('style', 'Build', BIKE_STYLES, 'trail', { src: 'bike_audio.js — BUILD.grass 1.00 trail / 1.22 packer, a loaded rack gives the grass more to hit' }),
+      cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      readout('mGrass', 'model grass gain', (r) => r.audio.bike.state.grass, { src: 'bike_audio.js — min(GROUND_CEIL 0.085, gate · (0.18 + 0.82·sp^1.7) · grassy · grassDrive · build · distance)' }),
+      readout('mGBody', 'whip band centre', (r) => r.audio.bike.grass.body.frequency.value, { unit: 'Hz', src: 'bike_audio.js — 2300 · wetness lerp · (1 + sp·0.28), ±620 Hz flutter' }),
+      range('grassDrive', 'grass level at full speed', 0, 0.6, 0.14, { step: 0.002, src: 'bike_audio.js — bike.tune.grassDrive; the peak is held by GROUND_CEIL, not by this', apply: K('grassDrive') }),
+      range('gBodyQ', 'whip band Q', 0.2, 3, 0.55, { step: 0.01, src: 'bike_audio.js — grass.body', apply: P('bike.grass.body.Q') }),
+      range('gTips', 'tips band gain', 0, 1.5, 0.45, { step: 0.01, src: 'bike_audio.js — grass.gTips', apply: P('bike.grass.gTips.gain') }),
+      ...BIKE_MIX.slice(1),
+    ],
+    needs: [
+      'bike_audio.js — the 6.4 Hz / 9.1 Hz flutter LFOs and the 1.4 Hz depth-0.34 swell.',
+      'bike_audio.js — the sp^1.7 speed law, which is what makes fast grass a rush rather than a louder hiss.',
+      'bike_audio.js — GROUND_CEIL 0.085, the hard cap on both ground beds. Drag speed to 10 with the surface at 1 and the meter must FLATTEN, not keep climbing.',
+    ],
+  },
+  {
+    id: 'bike.freewheel',
+    group: 'Bike',
+    label: 'Freewheel ratchet',
+    kind: 'bed',
+    bus: 'bike',
+    module: 'src/audio/bike_audio.js',
+    blurb: 'The hero sound, and the only one carrying information nothing else '
+      + 'can: it plays while the rider is COASTING and stops dead the instant '
+      + 'they pedal. Not a scheduled click train — a high band of white noise '
+      + 'amplitude-modulated by a sawtooth at the tick rate (wheel revs × 30 '
+      + 'teeth), so it crosses on its own from countable clicks at walking pace '
+      + 'to a hard buzz at speed. Push the pedalling slider up and it must '
+      + 'vanish; the drivetrain bed is what replaces it.',
+    layers: ['bikeFree'],
+    frame: bikeBedFrame('bikeFree'),
+    stop: bikeBedStop,
+    params: [
+      cond('speed', 'Bike speed', 0, 10, 5, { unit: 'm/s', step: 0.05 }),
+      cond('effort', 'Pedalling', 0, 1, 0, { step: 0.01, src: 'bike_audio.js — coasting = clamp01(1 − effort·2.2)' }),
+      cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      readout('mFree', 'model ratchet gain', (r) => r.audio.bike.state.free, { src: 'bike_audio.js — coasting · freeDrive · distance' }),
+      readout('mTick', 'tick rate', (r) => r.audio.bike.free.tick.osc.frequency.value, { unit: 'Hz', src: 'bike_audio.js — revs × 30 teeth, clamped 4–320' }),
+      range('freeDrive', 'ratchet level', 0, 0.3, 0.055, { step: 0.001, src: 'bike_audio.js — bike.tune.freeDrive', apply: K('freeDrive') }),
+      range('freeQ', 'ratchet band Q', 0.3, 8, 1.6, { step: 0.05, src: 'bike_audio.js — free.band', apply: P('bike.free.band.Q') }),
+      ...BIKE_MIX.slice(1),
+    ],
+    needs: [
+      'bike_audio.js — the sawtooth depth 0.92 on a gain centred at 1 (the swell construction).',
+      'bike_audio.js — the coasting gate, which is `effort` and NOT inferred from speed.',
+    ],
+  },
+  {
+    id: 'bike.drive',
+    group: 'Bike',
+    label: 'Drivetrain under load',
+    kind: 'bed',
+    bus: 'bike',
+    module: 'src/audio/bike_audio.js',
+    blurb: 'Chain and cranks while pedalling: low, dull, and wobbling once per '
+      + 'pedal stroke. The wobble is the whole tell — a steady mutter at this '
+      + 'pitch reads as a motor. The exact opposite gate to the freewheel, so '
+      + 'the two should never both be up.',
+    layers: ['bikeDrive'],
+    frame: bikeBedFrame('bikeDrive'),
+    stop: bikeBedStop,
+    params: [
+      cond('speed', 'Bike speed', 0, 10, 5, { unit: 'm/s', step: 0.05 }),
+      cond('effort', 'Pedalling', 0, 1, 1, { step: 0.01 }),
+      cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      readout('mDrive', 'model drivetrain gain', (r) => r.audio.bike.state.drive, { src: 'bike_audio.js — effort · gate · driveDrive · distance' }),
+      readout('mBeat', 'stroke wobble rate', (r) => r.audio.bike.drive.beat.osc.frequency.value, { unit: 'Hz', src: 'bike_audio.js — cadence / 2π' }),
+      range('driveDrive', 'drivetrain level', 0, 0.3, 0.045, { step: 0.001, src: 'bike_audio.js — bike.tune.driveDrive', apply: K('driveDrive') }),
+      range('driveHz', 'drivetrain band centre', 120, 900, 320, { unit: 'Hz', step: 5, src: 'bike_audio.js — drive.band', apply: P('bike.drive.band.frequency') }),
+      ...BIKE_MIX.slice(1),
+    ],
+    needs: ['bike_audio.js — the cadence wobble depth 0.42 and the 0.4–4.0 Hz clamp.'],
+  },
+  {
+    id: 'bike.brake',
+    group: 'Bike',
+    label: 'Disc brake',
+    kind: 'bed',
+    bus: 'bike',
+    module: 'src/audio/bike_audio.js',
+    blurb: 'Disc rub: high, narrow and deliberately unstable — the band centre '
+      + 'wanders ±260 Hz at 5.3 Hz, because a squeal that holds one pitch is a '
+      + 'test tone. Scaled by brake AND speed, so a lever held at a standstill '
+      + 'makes no sound at all. Drop the speed to zero with the brake at 1 and '
+      + 'the meter must go to the floor.',
+    layers: ['bikeBrake'],
+    frame: bikeBedFrame('bikeBrake'),
+    stop: bikeBedStop,
+    params: [
+      cond('speed', 'Bike speed', 0, 10, 6, { unit: 'm/s', step: 0.05 }),
+      cond('braking', 'Brake', 0, 1, 1, { step: 0.01 }),
+      cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      range('brakeDrive', 'brake level', 0, 0.4, 0.075, { step: 0.002, src: 'bike_audio.js — bike.tune.brakeDrive', apply: K('brakeDrive') }),
+      range('brakeQ', 'squeal Q', 2, 30, 9, { step: 0.5, src: 'bike_audio.js — brake.band', apply: P('bike.brake.band.Q') }),
+      ...BIKE_MIX.slice(1),
+    ],
+    needs: ['bike_audio.js — the speed gate smoothstep(0.6, 4.0), which is what silences a held lever at rest.'],
+  },
+  {
+    id: 'bike.wade',
+    group: 'Bike',
+    label: 'Wheels through water',
+    kind: 'bed',
+    bus: 'bike',
+    module: 'src/audio/bike_audio.js',
+    blurb: 'Riding a ford. A mid pink band swelling at 1.7 Hz, faded in with the '
+      + 'depth — and the bed is only half of it. Entering fires one full-strength '
+      + 'splash, and then the wheel-splash clock keeps firing quieter ones for as '
+      + 'long as the bike is in the water, tightening from 0.40 s to 0.12 s apart '
+      + 'as it speeds up. Raise the speed and the crossing should turn from a few '
+      + 'discrete plops into a continuous churn without either one stacking into a '
+      + 'peak — the crowding duck is what holds that.',
+    layers: ['bikeWade'],
+    frame: bikeBedFrame('bikeWade'),
+    stop: bikeBedStop,
+    params: [
+      cond('speed', 'Bike speed', 0, 10, 4, { unit: 'm/s', step: 0.05 }),
+      cond('wading', 'Water depth', 0, 1.2, 0.35, { unit: 'm', step: 0.01, src: 'bike_physics.js — WADE_REF 0.90; water is drag, never a wall, so this runs past it' }),
+      cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      range('wadeDrive', 'wade level', 0, 0.5, 0.14, { step: 0.005, src: 'bike_audio.js — bike.tune.wadeDrive', apply: K('wadeDrive') }),
+      ...BIKE_MIX.slice(1),
+    ],
+    needs: [
+      'bike_audio.js — the entry edge at wade 0.12 and its 0.06 release.',
+      'bike_audio.js — the splash clock: lerp(0.40, 0.12) on speed, strength 0.22 + wade·0.42.',
+    ],
+  },
+  bikeCue('mount', 'Getting on',
+    'Three things in 300 ms, in the order they happen: the kickstand spring '
+    + 'snapping the leg up (a bright 3.1 kHz tick with a shorter one behind it '
+    + '— a spring, not a hinge), the frame taking a rider\'s weight (a narrow '
+    + 'band swept UP, the only rising gesture in the module), and the tyres '
+    + 'settling into the ground under the load.',
+    ['bike_audio.js — VOICES.mount: the 0/0.035/0.010/0.090/0.120 s offsets.']),
+  bikeCue('dismount', 'Getting off',
+    'The reverse gesture and heavier on purpose: the stand comes down under '
+    + 'gravity rather than up under a spring, so it is a clunk with a dull '
+    + 'triangle body under it, and the frame then rocks onto it and stops.',
+    ['bike_audio.js — VOICES.dismount and why it is not `mount` reversed.']),
+  bikeCue('bump', 'Running into something',
+    'A bank the wheel will not climb, a trunk, a boulder: a dull tyre-on-solid '
+    + 'thud at 118 → 74 Hz, the fork loading, and a scuff of the knobs skating '
+    + 'sideways as the bike is turned off it.',
+    ['bike_audio.js — VOICES.bump; fired on the blocked EDGE above 1.6 m/s, from Bike.update.']),
+  bikeCue('splash', 'Wheel into water',
+    'The vehicle-splash recipe (pink, 1600 → 460 Hz) twice, a fifth of a second '
+    + 'apart, because a bicycle puts two wheels in. STRENGTH is what makes this '
+    + 'one voice do two jobs: at 1 it is the entry, a real event; below 0.6 it '
+    + 'is one of the repeats that sound all the way across a ford, and the '
+    + 'second wheel is dropped because at that level it is not a separate sound, '
+    + 'only twice the density.',
+    ['bike_audio.js — VOICES.splash; c.strength scales the peaks and gates the second wheel.'],
+    [cond('strength', 'Splash strength', 0, 1, 1, { step: 0.01, src: 'bike_audio.js — 1 on entry, 0.22 + wade·0.42 for the repeats' })]),
+];
+
 export const SOUNDS = [
   // ── ambience ──────────────────────────────────────────────────────────────
   {
@@ -1288,6 +1598,7 @@ export const SOUNDS = [
   // Play/Stop work without trim nodes. The tune sliders write the module's
   // real `boat.tune` block, the tyre pattern.
   ...BOAT_SOUNDS,
+  ...BIKE_SOUNDS,
 
   // ── interface ─────────────────────────────────────────────────────────────
   {

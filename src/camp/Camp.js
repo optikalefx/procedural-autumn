@@ -978,13 +978,14 @@ export class Camp extends System {
       return;
     }
 
-    // ── the boat has the pointer ────────────────────────────────────────────
-    // Boat is registered BEFORE Camp (see SYSTEMS in main.js), so this claim
-    // is same-frame: it is true while the pointer is over a boat, over a valid
-    // launch aim at the water's edge, or while the player is aboard. One guard
-    // keeps a shore click from also pitching a camp, and suppresses the
-    // placement affordance the same way being parked at a camp does.
-    if (this.ctx.systems?.boat?.pointerClaim) {
+    // ── the boat or the bike has the pointer ────────────────────────────────
+    // Both are registered BEFORE Camp (see SYSTEMS in main.js), so these claims
+    // are same-frame: true while the pointer is over a boat, over a valid
+    // launch aim at the water's edge, over the bike, or while the player is
+    // aboard or riding. One guard keeps such a click from also pitching a camp,
+    // and suppresses the placement affordance the same way being parked at a
+    // camp does.
+    if (this.ctx.systems?.boat?.pointerClaim || this.ctx.systems?.bike?.pointerClaim) {
       this._suppressAim = true;
       clearCampAim();
       this._aim.ok = false;
@@ -1285,7 +1286,8 @@ export class Camp extends System {
     // made from the water — a fire picked from mid-lake would drag the boom's
     // subject off the boat the player is sitting in).
     if (this._click && !moving && !this._justPitched
-        && !this.ctx.systems?.boat?.pointerClaim) {
+        && !this.ctx.systems?.boat?.pointerClaim
+        && !this.ctx.systems?.bike?.pointerClaim) {
       // The fire first, and it beats everything.
       //
       // The camp spheres below are 5.2 m across and overlap the camper's, so
@@ -2451,6 +2453,17 @@ export class Camp extends System {
       table: buildTable, woodpile: buildWoodpile, telescope: buildTelescope,
       roaststick: buildRoastStick,
     };
+    // The bike is not built here. It is a VEHICLE — it moves, it is ridden, it
+    // is left somewhere else and it outlives this camp — so the Bike system
+    // owns the model and the pose, and the layout entry is only a spot. Handed
+    // over with this camp's own rng so a given camp always gets a given bike.
+    // Returning here also keeps it out of `camp.props`, which is right: the
+    // raise animation, the pack-up and the prop picker are all about things
+    // that belong to the camp, and this one does not.
+    if (it.kind === 'bike') {
+      this.ctx.systems?.bike?.park?.(it, camp.rnd);
+      return;
+    }
     const build = BUILD[it.kind];
     if (!build) { console.warn('[camp] no builder for', it.kind); return; }
     let obj;

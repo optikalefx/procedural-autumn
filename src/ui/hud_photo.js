@@ -620,6 +620,11 @@ export class PhotoMode {
       // camera behind the CAMPER — which, aboard, is most of a lake away. See
       // `Boat.endHandOff`.
       this.ctx.systems?.boat?.endHandOff?.();
+      // …and the bike, identically. Both rideables answer the same pair of
+      // methods over the same `RideCamera`, so this is one more line rather
+      // than one more argument. At most one of them can be mounted, and each
+      // returns false when it is not.
+      this.ctx.systems?.bike?.endHandOff?.();
     }
 
     if (on) {
@@ -664,6 +669,11 @@ export class PhotoMode {
       // player let go of the mouse (user, 2026-08-29). Same fix, same
       // ordering, same reason — `Boat.handOff` has the full account.
       this.ctx.systems?.boat?.handOff?.();
+      // …and from the saddle of a bike, which holds the takeover for the whole
+      // ride the same way. It also banks `camera.up` into its corners, and
+      // `RideCamera.handOff` puts that back to plumb before free mode reads the
+      // lens — an orbit around a tilted up vector corkscrews.
+      this.ctx.systems?.bike?.handOff?.();
       rig?.enterFree?.();
       // Take the driving controls away. `Input.suppressed` exists for exactly
       // this and says so in its own comment ("A UI layer (menus, photo mode)
