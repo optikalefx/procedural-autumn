@@ -20,6 +20,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, smoothstep, wrapAngle, mulberry32 } from '../core/MathUtils.js';
+import { samplePerchField } from '../rocks/Rocks.js';
 
 export const ST = {
   IDLE:   0,   // standing, shifting weight, looking about
@@ -754,16 +755,36 @@ export class Brain {
   /**
    * The ground, as far as this animal is concerned.
    *
-   * A boulder is modelled as a dome: flat on top out to half its plan radius,
-   * then falling to the real hillside by the time it is a little past the
-   * edge. That is not the rock's actual mesh and it does not have to be —
-   * nothing here is doing collision, and the two things the player can
-   * actually see are that the animal is standing on the summit and that it
-   * walked up the side to get there. Both come out of this one lerp.
+   * **On top of the boulder this is the boulder**, sampled off the real mesh;
+   * on the way up it is still a dome. The two halves answer different
+   * questions and only one of them was ever worth being exact about.
    *
-   * Which is also why `Wildlife._findPerches` rejects a rock taller than it is
-   * wide: the dome's flank IS the ramp the animal walks up, so a boulder with
-   * no flank would be a wall the goat strolls through.
+   * *Standing* is exact because it is what the player looks at. The flat-top
+   * model held `rock.top` — the mesh's bounding-box maximum, one number for the
+   * whole rock — across the entire summit, which measured a mean 0.52 m of
+   * clear air under a goat and up to 1.86 m, a third of the animal's height
+   * (`tools/_scratch/goatdome.mjs`). `rock.field` is the true surface over that
+   * disc, baked once per rock by `Rocks.perchField`.
+   *
+   * *Climbing* is still a dome, deliberately. The same probe found that only
+   * 26% of approach bearings up a real boulder are within the goat's own
+   * `slopeMax` — three quarters of the way in is a facet, and an animal with no
+   * collision and no climbing animation does not walk up a facet, it snaps up
+   * it. The dome flank is walkable by construction, which is exactly why
+   * `Wildlife._findPerches` still rejects a rock taller than it is wide: that
+   * rule serves the ramp, and the ramp has not changed.
+   *
+   * The join between them is the one subtlety. The ramp runs from the REAL
+   * surface height rather than from `top`, by clamping the sample point into
+   * the standing disc — so the height at the rim is the height the animal was
+   * just standing on, and there is no step where the two models meet. Take the
+   * sample at the true point instead and the ramp starts from the hillside the
+   * moment it leaves the rock, which is a cliff at the rim.
+   *
+   * The older note still holds for the flank, and is worth keeping because it
+   * is why this is a lerp at all: nothing here is doing collision, and the two
+   * things the player can actually see are that the animal is standing on the
+   * summit and that it walked up the side to get there.
    *
    * Never below the hillside, so a rock sitting in a hollow cannot sink an
    * animal into the ground.
@@ -772,8 +793,22 @@ export class Brain {
     const g = W.getHeight(x, z);
     const R = this.rock;
     if (!R) return g;
-    const d = Math.hypot(x - R.x, z - R.z);
-    const y = lerp(R.top, g, smoothstep(R.r * 0.50, R.r * 1.18, d));
+    const dx = x - R.x, dz = z - R.z;
+    const d = Math.hypot(dx, dz);
+    // The sample point, clamped into the standing disc. Inside it this is the
+    // point itself and the animal stands on the real rock; outside, it is the
+    // nearest point on the rim, so the ramp descends from the height the animal
+    // was standing on rather than from a bounding-box corner.
+    let top = R.top;
+    if (R.field) {
+      const k = d > 1e-4 ? Math.min(d, R.r * 0.50) / d : 0;
+      const s = samplePerchField(R.field, R.x + dx * k, R.z + dz * k);
+      // NaN is a column that missed the rock entirely — every corner of the
+      // cell was off it. `top` is the honest fallback: it is what this did
+      // before the field existed, and it is never below the true surface.
+      if (!Number.isNaN(s)) top = s;
+    }
+    const y = lerp(top, g, smoothstep(R.r * 0.50, R.r * 1.18, d));
     return y > g ? y : g;
   }
 
