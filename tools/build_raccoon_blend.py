@@ -75,7 +75,8 @@ HEAD = "scull"
 # `Raccoon_Run` is the pack's own bounding lope and is KEPT, for the reason
 # written up in build_deer_blend.py: an airborne duty is what a bound IS.
 RENAME = {"Raccoon_Idle": "idle", "Raccoon_Gesture": "graze",
-          "Raccoon_Run": "run"}
+          "Raccoon_Run": "run",
+        "Raccoon_Walk": "walk"}
 
 # One entry per leg: the scapula, the two IK links, the bone the IK places, and
 # the bones below it that must be re-aimed so the paw stays flat.
@@ -196,7 +197,7 @@ def main():
     print(f"[build] raccoon {height:.3f} units tall, authored at 1 unit = 1 m")
 
     rest = gait_rest(rig, LEGS)
-    for name, spec in (("walk", WALK), ("trot", TROT)):
+    for name, spec in (("trot", TROT),):
         build_gait(rig, LEGS, rest, name, spec)
     build_alert(rig, rest)
 

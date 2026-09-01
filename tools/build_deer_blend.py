@@ -78,7 +78,8 @@ HEAD = "scull"
 # planted walk, it is an animal in the air, and that is what a bound is. It was
 # dropped once on exactly that misreading and replaced with a solved one, which
 # took hours and came out worse. The artist's leap is the leap.
-KEEP = {"Deer_Idle": "idle", "Deer_Gesture": "graze", "Deer_Run": "run"}
+KEEP = {"Deer_Idle": "idle", "Deer_Gesture": "graze", "Deer_Run": "run",
+        "Deer_Walk": "walk"}
 
 LEGS = {
     ("hind", "L"): dict(scap="shoulder.L", a="thigh.L", b="shin.L",
@@ -243,7 +244,8 @@ def main():
     print(f"[build] buck {max(p.z for p in bb) - min(p.z for p in bb):.3f} units tall")
 
     rest = gait_rest(rig, LEGS)
-    build_gait(rig, LEGS, rest, "walk", WALK)
+    # Only the trot is solved. The pack ships walk and run and both are the
+    # artist's — see KEEP above.
     build_gait(rig, LEGS, rest, "trot", TROT)
     # No solved run. `Deer_Run` is the pack's bounding leap and it is kept as
     # shipped — see KEEP above. `new_action` deletes any action of the same

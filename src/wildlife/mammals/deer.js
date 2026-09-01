@@ -75,11 +75,9 @@ export const DEER = {
     measure: 'contact',
     clips: {
       stand: { name: 'idle' },
-      // Solved. 18 frames is a 1.33 Hz cadence, inside the 1.0-1.8 Hz a walking
-      // quadruped runs at. The sweep is a FINDING — the largest the legs carry
-      // without clamping — and 6 cm of crouch is most of what buys it: at 2 cm
-      // the solver returned 0.530 against a geometric maximum of 0.790.
-      walk: { name: 'walk', rate: 1.0 },
+      // The pack's own walk. 31 frames is 0.78 Hz, slow even for a deer, so 1.7x
+      // lifts it to 1.32 Hz — mid-band — for 1.12 m/s against a real 1.15.
+      walk: { name: 'walk', rate: 1.7 },
       // Solved. 11 frames, 2.18 Hz, diagonal pairs.
       trot: { name: 'trot', rate: 1.0 },
       // ── the pack's own bounding leap, kept ────────────────────────────

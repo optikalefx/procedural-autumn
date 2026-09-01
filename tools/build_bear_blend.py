@@ -62,7 +62,8 @@ HEAD = "scull"
 # `Bear_Run` is the pack's own bounding lope and is KEPT. Its duty of
 # 0.42/0.36/0.33/0.08 is an animal in the air, not a badly planted walk —
 # the same misreading that saw the deer's leap dropped and rebuilt worse.
-KEEP = {"Bear_Idle": "idle", "Bear_Gesture": "alert", "Bear_Run": "run"}
+KEEP = {"Bear_Idle": "idle", "Bear_Gesture": "alert", "Bear_Run": "run",
+        "Bear_Walk": "walk"}
 
 # The fore legs hang off `spine.004` and the hind off `spine.002`, so the neck
 # may start at `spine.005` and the graze's chest pitch must stop at `spine.004`
@@ -142,7 +143,7 @@ def main():
           f"{max(p.y for p in bb) - min(p.y for p in bb):.3f} long")
 
     rest = gait_rest(rig, LEGS)
-    for name, spec in (("walk", WALK), ("trot", TROT)):
+    for name, spec in (("trot", TROT),):
         build_gait(rig, LEGS, rest, name, spec)
     build_phased_graze(rig, LEGS, rest, GRAZE)
 

@@ -59,6 +59,10 @@ export const BEAR = {
       stand: { name: 'idle' },
       // 16 frames is 1.50 Hz — a bear's heavy roll sits mid-band. Sweep 0.559,
       // duty 0.64.
+      // The pack's own walk, played as authored. A 2.15 m stride over 1.29 s is
+      // a long, slow roll — 0.78 Hz — and it measures 1.67 m/s, brisk for a
+      // black bear's 1.05. Slowing it would drop the cadence below anything
+      // that reads as walking, so it stands.
       walk: { name: 'walk', rate: 1.0 },
       // 11 frames, 2.18 Hz. Sweep 0.648, duty 0.48.
       trot: { name: 'trot', rate: 1.0 },

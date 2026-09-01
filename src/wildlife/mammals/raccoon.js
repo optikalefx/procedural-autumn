@@ -74,7 +74,9 @@ export const RACCOON = {
       // to clamp for — and crouch is what buys it: measured on the two IK links
       // alone this fore leg stands at 0.94 of its own reach, so at standing
       // height there is nothing left to swing with.
-      walk: { name: 'walk', rate: 1.0 },
+      // The pack's own walk, and short-strided at 19 cm. 2.2x puts the cadence
+      // at 1.7 Hz, the top of the walking band, for 0.53 m/s.
+      walk: { name: 'walk', rate: 2.2 },
       trot: { name: 'trot', rate: 1.0 },
       // The pack's own bounding lope, KEPT — see the note in deer.js about
       // why an airborne duty is a bound rather than a defect. It covers 0.86 m
