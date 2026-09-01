@@ -7,16 +7,24 @@
 //  actually want to read it.
 //
 //  There is no fuel gauge. This game has no fail state, and a bar that can run
-//  out implies one; a trip odometer and a count of landmarks found say the same
+//  out implies one; a trip odometer and a count of animals found say the same
 //  "you have been somewhere" without ever threatening the player.
+//
+//  The third readout used to be a leaf counting LANDMARKS — the waterfalls,
+//  vistas, peaks and river bends `HUD.js` scatters and credits at 75 m. It was
+//  the wrong number to put on the dash for one reason: nothing else in the game
+//  shows it, so "0 of 12" was a score against a list the player could never
+//  read. It now counts the animals on the scavenger sheet, which is a list they
+//  can open and look at, and the glyph is the paw the compass strip and the
+//  journal's empty slots already use for exactly that thing.
 // ─────────────────────────────────────────────────────────────────────────────
-import { el, polar } from './hud_dom.js';
+import { el, polar, ICON } from './hud_dom.js';
 
-// A drawn leaf rather than a typographic ornament: ❧ renders as a different
-// creature in every font on every platform, and looked like a green smudge.
-const LEAF = '<span class="pa-leaf"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-  '<path d="M5 19c0-7 5-12 14-13 1 9-4 14-11 14z"/><path d="M5 19c3-3 6-5 9-6"/></svg></span>';
+// The compass strip's paw, at readout size. Shared rather than redrawn so the
+// three places that mean "animal" — strip pin, journal slot, this counter —
+// cannot drift apart; `hud_dom.js` explains why it is the one filled glyph in
+// the set, and that is what lets it survive being set beside a numeral.
+const PAW = `<span class="pa-paw">${ICON.paw}</span>`;
 
 // The brake-hold lamp. A disc with two pads on it: the one shape that says
 // "brake" without a word, and it survives being drawn at nine pixels because it
@@ -166,7 +174,11 @@ export class Dash {
     this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null };
   }
 
-  /** @param {'camper'|'boat'|'bike'} scale — full scale of the dial; see SCALES. */
+  /**
+   * @param {number} found — animals crossed off the scavenger sheet.
+   * @param {number} total — animal lines on the sheet; see `HUNT_ANIMALS`.
+   * @param {'camper'|'boat'|'bike'} scale — full scale of the dial; see SCALES.
+   */
   update(speedMs, tripM, found, total, hold = false, scale = 'camper') {
     const sc = SCALES[scale] ?? SCALES.camper;
     if (sc !== this.scale) {
@@ -207,8 +219,8 @@ export class Dash {
     if (found !== this._shown.found || total !== this._shown.total) {
       this._shown.found = found;
       this._shown.total = total;
-      // "0 of 12", not "0/12": a slash reads as a score, and this is not one.
-      this.foundEl.innerHTML = `${LEAF}${found}<span class="pa-unit">of ${total}</span>`;
+      // "0 of 11", not "0/11": a slash reads as a score, and this is not one.
+      this.foundEl.innerHTML = `${PAW}${found}<span class="pa-unit">of ${total}</span>`;
     }
   }
 }

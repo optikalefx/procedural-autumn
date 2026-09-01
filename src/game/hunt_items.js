@@ -256,36 +256,43 @@ export const HUNT_ITEMS = [
     id: 'deer',
     subject: 'a white-tailed deer',
     hint: 'meadow edges, and the road at dawn',
+    animal: true,
   },
   {
     id: 'rabbit',
     subject: 'a cottontail rabbit',
     hint: 'the grass verge — get close, it is small',
+    animal: true,
   },
   {
     id: 'squirrel',
     subject: 'a grey squirrel',
     hint: 'under the hardwoods. Get right up to it',
+    animal: true,
   },
   {
     id: 'raccoon',
     subject: 'a northern raccoon',
     hint: 'after dark, near water. Low to the ground, so get close',
+    animal: true,
   },
   {
     id: 'fox',
     subject: 'a red fox',
     hint: 'open ground at either end of the day',
+    animal: true,
   },
   {
     id: 'bear',
     subject: 'a black bear',
     hint: 'the banks of the big rivers. Closer than feels wise',
+    animal: true,
   },
   {
     id: 'campDog',
     subject: "the dog at somebody's camp",
     hint: 'most camps come with one',
+    animal: true,
   },
 
   // ── the birds you stop the car for ────────────────────────────────────────
@@ -293,21 +300,25 @@ export const HUNT_ITEMS = [
     id: 'baldEagle',
     subject: 'a bald eagle',
     hint: 'the top of the tallest spruce',
+    animal: true,
   },
   {
     id: 'owl',
     subject: 'a great horned owl',
     hint: 'only after dark, and high up. Fit the long lens',
+    animal: true,
   },
   {
     id: 'heron',
     subject: 'a great blue heron',
     hint: 'standing still in the shallows',
+    animal: true,
   },
   {
     id: 'flamingo',
     subject: 'an American flamingo',
     hint: 'they keep to two islands. Take the boat',
+    animal: true,
   },
 
   // ── the set-pieces: places and moments, not animals ───────────────────────
@@ -349,6 +360,29 @@ export const HUNT_ITEMS = [
     hint: 'three faint smudges up there. The Great Spiral is the one you will find',
   },
 ];
+
+/**
+ * The animal lines, and only those: the eleven the dash's paw counts.
+ *
+ * The dash used to read "0 of 12" against the LANDMARK list in `HUD.js` — the
+ * waterfalls and vistas you drive past — which was a second progress number
+ * nobody could see the source of. It now reads the sheet, so the number beside
+ * the paw is a number the player can go and look at in the journal.
+ *
+ * Marked per row with `animal: true` rather than gathered into a list down
+ * here, because a list is a second cast to keep in step and the next animal
+ * added will be written by copying the row above it.
+ *
+ * The boundary is this file's own section headers, not taxonomy, and the one
+ * arguable case is the **fireflies** — genuinely animals, and deliberately not
+ * flagged. Their line sits under "places and moments, not animals" because the
+ * subject is "fireflies over the meadow": the detector counts a SWARM (see
+ * `FF_MIN` in `hunt_detect.js`), so what the sheet asks for is a lit meadow
+ * rather than a portrait of an insect. The paw counts the eleven lines where
+ * you photograph a creature.
+ */
+export const HUNT_ANIMALS = HUNT_ITEMS.filter((it) => it.animal);
+export const HUNT_ANIMAL_IDS = new Set(HUNT_ANIMALS.map((it) => it.id));
 
 /** Lookup by id, for the journal and for anything that has an id in hand. */
 export const HUNT_BY_ID = Object.fromEntries(HUNT_ITEMS.map((it) => [it.id, it]));

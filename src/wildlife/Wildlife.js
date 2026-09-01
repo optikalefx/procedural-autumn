@@ -784,7 +784,14 @@ export class Wildlife extends System {
       const rise = top - W.getHeight(inst.x, inst.z);
       if (rise < cfg.rise[0] || rise > cfg.rise[1]) continue;
       if (rise < r * cfg.steep) continue;
-      g.rocks.push({ x: inst.x, z: inst.z, top, r, rise, taken: -1 });
+      // The rock's REAL top over the disc the animal stands on. `top` alone is
+      // one number for the whole boulder and holding it flat floated the goat a
+      // mean 0.52 m; `Brain._groundY` stands the animal on this instead and
+      // keeps `top` only for the ramp. Baked here because this search already
+      // runs once per site and is cached for the life of the page — see
+      // `Rocks.perchField` for what a ray costs and why the grid is coarse.
+      const field = R.perchField ? R.perchField(inst, r) : null;
+      g.rocks.push({ x: inst.x, z: inst.z, top, r, rise, field, taken: -1 });
     }
     _rockHits.length = 0;
     g.rocks.sort((a, b) => b.rise - a.rise);

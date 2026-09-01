@@ -79,6 +79,98 @@ function upload(attr, count) {
   attr.needsUpdate = true;
 }
 
+/**
+ * Read a `perchField` at a world point. Bilinear, and NaN-tolerant.
+ *
+ * Lives beside the baker so the grid's layout has exactly one definition, and
+ * is a free function because its only caller — `Brain._groundY` — holds a plain
+ * rock record and has no business reaching for the rocks system.
+ *
+ * Corners that missed the rock are dropped from the blend rather than counted
+ * as zero, and their weight is redistributed. A cell straddling the edge of a
+ * union's lobe therefore reads the height of the part that IS there, which is
+ * the surface the animal is standing on; averaging in a miss would dent the
+ * rock at exactly the point the goat walks over.
+ */
+export function samplePerchField(f, x, z) {
+  const u = (x - f.x0) / f.step;
+  const v = (z - f.z0) / f.step;
+  const i = Math.min(f.n - 2, Math.max(0, Math.floor(u)));
+  const j = Math.min(f.n - 2, Math.max(0, Math.floor(v)));
+  const tx = Math.min(1, Math.max(0, u - i));
+  const tz = Math.min(1, Math.max(0, v - j));
+  let sum = 0, w = 0;
+  for (let b = 0; b < 2; b++) {
+    for (let a = 0; a < 2; a++) {
+      const y = f.y[(j + b) * f.n + (i + a)];
+      if (Number.isNaN(y)) continue;
+      const k = (a ? tx : 1 - tx) * (b ? tz : 1 - tz);
+      sum += y * k; w += k;
+    }
+  }
+  return w > 1e-6 ? sum / w : NaN;
+}
+
+/**
+ * Bake a perch field: the rock's real top surface over the disc an animal
+ * stands on, as a small world-space grid. `Rocks.perchField` is the wrapper
+ * that finds `g` in the library.
+ *
+ * Free rather than a method so `tools/_scratch/goatdome.mjs` can measure THIS
+ * code headlessly — the probe builds the rock library without a renderer and
+ * never constructs the system. A verification that runs a reimplementation
+ * verifies the reimplementation.
+ *
+ * A vertical ray answers the surface exactly. These are convex polytopes — an
+ * intersection of half-spaces, unioned at most three deep — so a column has one
+ * top and there is nothing for a raycast to get wrong. The awkward part is that
+ * an instance carries a full quaternion (crags are tilted toward the local dip)
+ * and a per-axis scale, so a world-vertical ray is NOT vertical in the rock's
+ * own space. Casting against the placed mesh in world space sidesteps that, and
+ * baking the result in WORLD space means the reader never has to know.
+ *
+ * `N` is deliberately coarse. The grid is a low-pass filter on the facets as
+ * well as a sampler, and that is wanted: a rig that tilts to the ground normal
+ * snaps visibly between two flat faces, where a grid a little wider than the
+ * facets rolls the animal across the join. Do not raise it to "get more detail"
+ * without looking at what the tilt does.
+ */
+const _bake = { mesh: null, ray: null, from: null, down: null };
+export function bakePerchField(g, inst, r, N = 11) {
+  if (!g || !(r > 0)) return null;
+  const mesh = _bake.mesh || (_bake.mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial()));
+  mesh.geometry = g;
+  mesh.position.set(inst.x, inst.y, inst.z);
+  mesh.quaternion.set(inst.qx, inst.qy, inst.qz, inst.qw);
+  mesh.scale.set(inst.sx, inst.sy, inst.sz);
+  mesh.updateMatrixWorld(true);
+
+  const ray = _bake.ray || (_bake.ray = new THREE.Raycaster());
+  const from = _bake.from || (_bake.from = new THREE.Vector3());
+  const down = _bake.down || (_bake.down = new THREE.Vector3(0, -1, 0));
+  const half = r * 0.5;
+  const step = (2 * half) / (N - 1);
+  const y = new Float32Array(N * N);
+  const high = inst.y + 500;
+  let hits = 0;
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      const x = inst.x - half + i * step;
+      const z = inst.z - half + j * step;
+      ray.set(from.set(x, high, z), down);
+      const hit = ray.intersectObject(mesh, false);
+      if (hit.length) { y[j * N + i] = hit[0].point.y; hits++; }
+      // A miss is a column of the disc that is off the rock — a lobe of a union,
+      // or a boulder narrower than its own bounding box. NaN rather than a
+      // guess, so the sampler drops that corner instead of pulling the surface
+      // down to a height nothing measured.
+      else y[j * N + i] = NaN;
+    }
+  }
+  if (!hits) return null;
+  return { x0: inst.x - half, z0: inst.z - half, step, n: N, y };
+}
+
 export class Rocks extends System {
   constructor(ctx) {
     super(ctx);
@@ -543,7 +635,23 @@ export class Rocks extends System {
     return list[Math.min(list.length - 1, Math.max(0, inst.variant | 0))];
   }
 
-  /** World Y of the rock's summit, or its base if the archetype is unknown. */
+  /**
+   * World Y of the rock's summit, or its base if the archetype is unknown.
+   *
+   * **Ignores the instance rotation, and is therefore approximate.** `fp.hi` is
+   * the mesh's local bounding-box maximum and this lifts it by `sy` alone, but
+   * an instance carries a full quaternion — crags are tilted toward the local
+   * dip — and tilting a box can put a corner ABOVE its own upright height. So
+   * on a tilted rock this reads low, which is why `Brain._groundY` used to sink
+   * goats into some boulders as well as float them above others (the perch
+   * audit measures both: +1.86 m of float, -0.49 m of sink).
+   *
+   * Left as it is on purpose. The one consumer that needs the real surface now
+   * bakes it (`perchField`), and the other two uses — the `rise` test in
+   * `Wildlife._findPerches` and the ramp's top — want a cheap scalar per rock
+   * rather than a raycast per rock, and are chosen against this number's own
+   * scale. Tightening it would silently re-tune which boulders are perches.
+   */
   topOf(inst) {
     const fp = this._foot(inst);
     return fp ? inst.y + fp.hi * inst.sy : inst.y;
@@ -553,6 +661,50 @@ export class Rocks extends System {
   reachOf(inst) {
     const fp = this._foot(inst);
     return fp ? Math.max(fp.rx * inst.sx, fp.rz * inst.sz) : inst.size * 0.5;
+  }
+
+  /**
+   * The rock's real top surface over the disc an animal stands on, baked into a
+   * small world-space grid.
+   *
+   * `topOf` is the mesh's bounding-box maximum — one number for the whole
+   * boulder — and `Brain._groundY` used to hold it FLAT out to half the plan
+   * radius. Measured against the geometry over 30 goat perches
+   * (`tools/_scratch/goatdome.mjs`) that stands the animal a mean 0.52 m above
+   * the rock and up to 1.86 m, which on a 1.37 m goat is a third of its own
+   * height in clear air. Everywhere but the single highest point, a boulder has
+   * already fallen away.
+   *
+   * A vertical ray answers it exactly. These are convex polytopes — an
+   * intersection of half-spaces, unioned at most three deep — so a column has
+   * one top and there is nothing for a raycast to get wrong; the probe hit rock
+   * on 630 of 630 summit samples. The awkward part is that an instance carries
+   * a full quaternion (crags are tilted toward the local dip) and a per-axis
+   * scale, so a world-vertical ray is NOT vertical in the rock's own space.
+   * Casting against the placed mesh in world space sidesteps that entirely, and
+   * baking the result in WORLD space means the reader never has to know.
+   *
+   * Cost is paid once per rock, by `Wildlife._findPerches`, which already
+   * searches once per site and caches for the life of the page. `N`x`N` rays
+   * against a couple of hundred triangles is about a millisecond for a whole
+   * site's four boulders.
+   *
+   * `N` is deliberately coarse. The grid is a low-pass filter on the facets as
+   * well as a sampler, and that is wanted: a rig that tilts to the ground
+   * normal snaps visibly between two flat faces, where a grid a little wider
+   * than the facets rolls the animal across the join. Do not raise it to "get
+   * more detail" without looking at what the tilt does.
+   *
+   * Only the standing disc is baked — `Brain._groundY` clamps its sample into
+   * `0.5 * r` and rides the old dome ramp outside it, so a field over the whole
+   * rock would be measuring ground nothing reads.
+   */
+  perchField(inst, r, N = 11) {
+    if (!this._foot(inst) || !(r > 0)) return null;
+    const geoms = this.library?.[inst.arch];
+    if (!geoms || !geoms.length) return null;
+    return bakePerchField(
+      geoms[Math.min(geoms.length - 1, Math.max(0, inst.variant | 0))], inst, r, N);
   }
 
   _probeCell(cx, cz, key, minSize) {

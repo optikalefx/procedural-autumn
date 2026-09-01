@@ -856,7 +856,12 @@ export class HUD extends System {
     // so left alone the lamp would burn for every second the player is on the
     // water. A warning lamp that is always on is not a warning lamp, and a
     // kayak has no brake to hold in the first place.
-    this.dash.update(speed, this.trip, this.found, this.total,
+    // The dash's third readout is the scavenger sheet's animals, not this
+    // system's landmarks — `hud_dash.js`'s header says why. `this.found` /
+    // `this.total` are still live and still credited above: they drive the
+    // toast, the compass strip's crossed-off pins and the logbook. They just
+    // are not what the paw counts.
+    this.dash.update(speed, this.trip, hunt.animalCount(), hunt.animalTotal,
       aboard ? false : (veh?.brakeHold ?? false),
       aboard ? (riding ? 'bike' : 'boat') : 'camper');
     this.settings.tick(dt);

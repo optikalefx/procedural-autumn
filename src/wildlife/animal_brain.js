@@ -20,6 +20,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, smoothstep, wrapAngle, mulberry32 } from '../core/MathUtils.js';
+import { samplePerchField } from '../rocks/Rocks.js';
 
 export const ST = {
   IDLE:   0,   // standing, shifting weight, looking about
@@ -79,6 +80,20 @@ const MIN_RADIUS = 0.45;
 // walking anywhere, and an animal pinned against a river has to be able to
 // unwind on the spot or it is stuck there.
 const PIVOT = 0.5;
+// How steep the invisible ramp onto a boulder is allowed to be, in rise per
+// metre. The ramp used to be `0.68 * r` wide whatever the rock's height, which
+// is a width chosen from the rock's PLAN and a lift taken from its RISE — two
+// unrelated numbers. On a wide low boulder that spreads a metre of lift over
+// nearly five metres of open hillside, and an animal standing anywhere in it is
+// visibly in mid air: measured over 30 perches, 20% of the ramp ring held the
+// animal more than 0.35 m above bare ground and the worst sample was 4.26 m.
+//
+// Deriving the width from the rise instead keeps the ramp a ramp. 0.75 is about
+// 37 degrees — unmistakably a climb, and half the goat's own `slopeMax` of 1.45,
+// so the animal is never asked for a grade it would refuse to walk on. It can
+// only ever make the ramp NARROWER than the old rule (see the `min`), so no
+// boulder that used to be climbable stops being so.
+const RAMP_GRADE = 0.75;
 // The states that are journeys. Only these insist on carrying a walk through a
 // turn; see `_steer`.
 const TRAVELLING = new Set([ST.WANDER, ST.FLEE, ST.PATROL, ST.CLIMB]);
@@ -141,6 +156,21 @@ export class Brain {
     // says the way out is closed. See the blocked-step guard in _steer.
     this._pinned = 0;
     this._cornered = 0;
+    // Which way round this animal works a boulder. Fixed for its life, because
+    // an orbit that changes direction is not an orbit — see `_pickWander`.
+    //
+    // Hashed from the slot rather than drawn from `rnd()`, and that is not
+    // fussiness: one extra draw in the constructor shifts the random stream of
+    // EVERY animal of every species, so the next person to A/B a steering
+    // change against this file measures the reshuffle instead of their change.
+    // It cost a confusing raccoon reading in the soak that produced this line.
+    this._orbitDir = ((slot * 2654435761) >>> 0) & 1 ? 1 : -1;
+    // How much of the invisible RAMP this animal is currently allowed. See
+    // `_groundY`: the ramp exists to carry an animal that is walking up or
+    // down a boulder, and an animal that has STOPPED on it is simply standing
+    // in mid air. Eased rather than switched so an interrupted climb steps
+    // down over about half a second instead of dropping.
+    this._ramp = 1;
     this._fleeX = 0; this._fleeZ = 0;   // where this flight started from
     this._scale = 1;
 
@@ -177,6 +207,21 @@ export class Brain {
     this._avoid = 0;
     this._pinned = 0;
     this._cornered = 0;
+    // Which way round this animal works a boulder. Fixed for its life, because
+    // an orbit that changes direction is not an orbit — see `_pickWander`.
+    //
+    // Hashed from the slot rather than drawn from `rnd()`, and that is not
+    // fussiness: one extra draw in the constructor shifts the random stream of
+    // EVERY animal of every species, so the next person to A/B a steering
+    // change against this file measures the reshuffle instead of their change.
+    // It cost a confusing raccoon reading in the soak that produced this line.
+    this._orbitDir = ((slot * 2654435761) >>> 0) & 1 ? 1 : -1;
+    // How much of the invisible RAMP this animal is currently allowed. See
+    // `_groundY`: the ramp exists to carry an animal that is walking up or
+    // down a boulder, and an animal that has STOPPED on it is simply standing
+    // in mid air. Eased rather than switched so an interrupted climb steps
+    // down over about half a second instead of dropping.
+    this._ramp = 1;
     this._watchMove = 0;
     this._release();
   }
@@ -325,6 +370,16 @@ export class Brain {
       : this.state === ST.ALERT ? 0.8
       : this.state === ST.WATCH ? 0.55 : 0;
     this.flag = toward(this.flag, wantFlag, dt * 5);
+
+    // The ramp is for travelling. A goat that freezes because it has seen you
+    // does it wherever it happens to be, and half the time that is half way up
+    // an invisible slope — which is the one thing in this mechanic a player
+    // can catch, because a stationary animal is the one they get to look at.
+    // CLIMB and PERCH always keep it: PERCH is standing on the summit, and an
+    // animal in CLIMB is committed to the rock even at a dead stop.
+    const wantRamp = (this.state === ST.CLIMB || this.state === ST.PERCH
+      || this.speed > 0.05) ? 1 : 0;
+    this._ramp = toward(this._ramp, wantRamp, dt * 2.2);
 
     this._steer(dt, W, S);
 
@@ -693,7 +748,19 @@ export class Brain {
     // reads as climbing — the body pitch and the leg lift come free, because
     // the ground the gait solver is standing on has genuinely tilted up.
     this.wantSpeed = this.gait.walk * this._scale * (d > R.r * 1.35 ? 0.85 : 0.42);
-    if (d < R.r * 0.35) {
+    // Arrive on the STANDING DISC, not on the centre point. `0.35 * r` is
+    // 0.87 m on an average perch and this animal's turning circle is 1.64 m
+    // (`TURN_TIME * gait.walk * scale`, and that constant is deliberate — see
+    // `_steer`, where making the radius follow actual speed is the pivot bug
+    // they already fixed once). A target inside your own turning circle is one
+    // you orbit: the goat overshot the summit, the committed mount heading
+    // snapped 180 degrees to point back at it, and it wove. That is the
+    // `climb->climb` reversal in `_scratch/_aboutface.mjs`.
+    //
+    // `0.5 * r` is the disc `Rocks.perchField` bakes and `_groundY` stands the
+    // animal on — measured 99.9% over real geometry — so arriving anywhere in
+    // it is arriving ON the rock, and it is 42% more room to converge in.
+    if (d < R.r * 0.50) {
       this.state = ST.PERCH;
       this.timer = this._span(this.cfg.rock.perchTime);
       this.headUp = true;
@@ -731,6 +798,12 @@ export class Brain {
   _offRock(W) {
     const R = this.rock;
     if (!R) { this._pickWander(W); return; }
+    // Aiming the dismount forward instead of at a random bearing was tried and
+    // is NOT here: it measured WORSE (1.43 -> 1.79 reversals a minute) because
+    // it changes where the animal ends up standing, and it then approached its
+    // next boulder from bearings that needed a bigger turn. The metric is ~25
+    // events over 14 animal-minutes and moves +-13% between identical runs, so
+    // a change this size is only worth keeping with a clear result behind it.
     for (let i = 0; i < 6; i++) {
       const a = this.rnd() * Math.PI * 2;
       const r = R.r * (1.6 + this.rnd() * 1.4);
@@ -754,16 +827,36 @@ export class Brain {
   /**
    * The ground, as far as this animal is concerned.
    *
-   * A boulder is modelled as a dome: flat on top out to half its plan radius,
-   * then falling to the real hillside by the time it is a little past the
-   * edge. That is not the rock's actual mesh and it does not have to be —
-   * nothing here is doing collision, and the two things the player can
-   * actually see are that the animal is standing on the summit and that it
-   * walked up the side to get there. Both come out of this one lerp.
+   * **On top of the boulder this is the boulder**, sampled off the real mesh;
+   * on the way up it is still a dome. The two halves answer different
+   * questions and only one of them was ever worth being exact about.
    *
-   * Which is also why `Wildlife._findPerches` rejects a rock taller than it is
-   * wide: the dome's flank IS the ramp the animal walks up, so a boulder with
-   * no flank would be a wall the goat strolls through.
+   * *Standing* is exact because it is what the player looks at. The flat-top
+   * model held `rock.top` — the mesh's bounding-box maximum, one number for the
+   * whole rock — across the entire summit, which measured a mean 0.52 m of
+   * clear air under a goat and up to 1.86 m, a third of the animal's height
+   * (`tools/_scratch/goatdome.mjs`). `rock.field` is the true surface over that
+   * disc, baked once per rock by `Rocks.perchField`.
+   *
+   * *Climbing* is still a dome, deliberately. The same probe found that only
+   * 26% of approach bearings up a real boulder are within the goat's own
+   * `slopeMax` — three quarters of the way in is a facet, and an animal with no
+   * collision and no climbing animation does not walk up a facet, it snaps up
+   * it. The dome flank is walkable by construction, which is exactly why
+   * `Wildlife._findPerches` still rejects a rock taller than it is wide: that
+   * rule serves the ramp, and the ramp has not changed.
+   *
+   * The join between them is the one subtlety. The ramp runs from the REAL
+   * surface height rather than from `top`, by clamping the sample point into
+   * the standing disc — so the height at the rim is the height the animal was
+   * just standing on, and there is no step where the two models meet. Take the
+   * sample at the true point instead and the ramp starts from the hillside the
+   * moment it leaves the rock, which is a cliff at the rim.
+   *
+   * The older note still holds for the flank, and is worth keeping because it
+   * is why this is a lerp at all: nothing here is doing collision, and the two
+   * things the player can actually see are that the animal is standing on the
+   * summit and that it walked up the side to get there.
    *
    * Never below the hillside, so a rock sitting in a hollow cannot sink an
    * animal into the ground.
@@ -772,8 +865,51 @@ export class Brain {
     const g = W.getHeight(x, z);
     const R = this.rock;
     if (!R) return g;
-    const d = Math.hypot(x - R.x, z - R.z);
-    const y = lerp(R.top, g, smoothstep(R.r * 0.50, R.r * 1.18, d));
+    const dx = x - R.x, dz = z - R.z;
+    const d = Math.hypot(dx, dz);
+    // The sample point, clamped into the standing disc. Inside it this is the
+    // point itself and the animal stands on the real rock; outside, it is the
+    // nearest point on the rim, so the ramp descends from the height the animal
+    // was standing on rather than from a bounding-box corner.
+    const k = d > 1e-4 ? Math.min(d, R.r * 0.50) / d : 0;
+    const sx = R.x + dx * k, sz = R.z + dz * k;   // clamped into the standing disc
+    let top = R.top;
+    if (R.field) {
+      const s = samplePerchField(R.field, sx, sz);
+      // NaN is a column that missed the rock entirely — every corner of the
+      // cell was off it. `top` is the honest fallback: it is what this did
+      // before the field existed, and it is never below the true surface.
+      if (!Number.isNaN(s)) top = s;
+    }
+    // The ramp ends where a `RAMP_GRADE` slope would have reached the ground,
+    // and never further out than the old flat `1.18 * r`. `rise` is the rock's
+    // height over the hillside at its own centre, so this is one number per
+    // rock rather than something that wobbles as the sample point moves.
+    const inner = R.r * 0.50;
+    const outer = inner + Math.min(R.r * 0.68, Math.max(R.rise, 0) / RAMP_GRADE);
+
+    // The ramp is a LIFT THAT RIDES THE TERRAIN, not a slide down to it from an
+    // absolute height, and on this species' ground that is the whole
+    // difference. `lerp(top, g, s)` starts every ramp at the summit's absolute
+    // Y; goats live on 24-43 degree slopes (`rock.slopeBest`), so on the
+    // downhill side the hill falls away under the ramp while the ramp does not
+    // follow, and the animal hangs in the air over open ground — measured at up
+    // to 4.26 m, which is the goat standing in the sky beside a boulder.
+    //
+    // Taking the lift at the RIM and decaying it with distance keeps the same
+    // two endpoints and fixes the middle: at the rim this is exactly the real
+    // surface (`gRim` is `g` there, so it returns `top`), and past it the
+    // animal walks down a slope that stays the same height above whatever
+    // ground it is actually over.
+    const lift = Math.max(0, top - (d > inner ? W.getHeight(sx, sz) : g));
+    // Inside the standing disc the animal is on the rock and stays there
+    // whatever it is doing — 99.9% of that disc is over real geometry, so this
+    // is not a concession. Outside it, the lift is the ramp and is only held
+    // while the animal is actually using it (`_ramp`). The step between the two
+    // is the rock's own edge, which really is close to vertical: 74% of
+    // approach bearings are steeper than the goat will walk on.
+    const st = smoothstep(inner, outer, d);
+    const y = g + lift * (1 - st) * (st > 0 ? this._ramp : 1);
     return y > g ? y : g;
   }
 
@@ -849,11 +985,59 @@ export class Brain {
     const list = rk ? this.group?.rocks : null;
     if (list && list.length && this.rnd() < rk.orbit) {
       const R = list[(this.rnd() * list.length) | 0];
+      // ── go on round, rather than to a random point on the ring ──────────
+      // This used to pick a uniformly random azimuth. The ring is small — one
+      // to two rock radii, so three to five metres — and the animal is usually
+      // already standing ON it, which means half of a random azimuth is a point
+      // BEHIND it and the walk is mostly a turn. That is the reported "360
+      // about-face", and it is alpine-only because nothing else in the cast has
+      // an `orbit`: measured at a perch site, goats reversed 1.72 times a
+      // minute against the ram's 0.74 (orbit 0.55 against 0.45) and the deer's
+      // 0.43, and the turns landed on `idle->wander` and `graze->wander`, not
+      // on anything to do with climbing.
+      //
+      // Advancing the animal's CURRENT bearing about the rock, always the same
+      // way round for a given animal, is also what the word orbit meant. A goat
+      // working its way around an outcrop is the shot; a goat crossing back and
+      // forth over the same four metres is not.
+      // ...unless the animal is already stuck, in which case take ANY way out.
+      //
+      // A committed direction has no escape of its own: `_standable` tests the
+      // target and not the path, so a dry point across a pond is a legal target
+      // the animal cannot walk to, and the blocked-step escape only outranks
+      // state steering for 0.9 s before the orbit re-aims at the same arc. A
+      // random bearing survives that by being different next time; a committed
+      // one presses into the same water forever. Measured in the pen soak, the
+      // ram went from 40.7 s of `_pinned` to 155.7 — and neither reversing the
+      // direction nor sampling the chord for water fixed it, because both still
+      // insist on going ROUND something the animal cannot get round.
+      //
+      // So the commitment is a fair-weather rule. While the animal is moving
+      // freely it orbits; the moment it is pinned it falls back to exactly the
+      // scatter this replaced, which is the behaviour that was never stuck.
+      const stuck = this._pinned > 0.5;
+      const a0 = stuck ? this.rnd() * Math.PI * 2
+        : Math.atan2(this.pos.x - R.x, this.pos.z - R.z);
       for (let i = 0; i < 4; i++) {
-        const a = this.rnd() * Math.PI * 2;
+        // Widen the step on each retry rather than re-rolling it, so a blocked
+        // arc is stepped OVER in the direction of travel instead of becoming a
+        // fresh chance to turn round.
+        const step = stuck ? 0
+          : (0.55 + 0.5 * this.rnd() + i * 0.45) * this._orbitDir;
         const r = R.r * (1.25 + this.rnd() * 0.85);
-        const x = R.x + Math.sin(a) * r, z = R.z + Math.cos(a) * r;
+        const x = R.x + Math.sin(a0 + step) * r, z = R.z + Math.cos(a0 + step) * r;
         if (!this._standable(W, x, z)) continue;
+        // The PATH, not just the target. `_standable` answers about one point,
+        // and a dry spot on the far side of a pond is a legal target the animal
+        // cannot walk to — it presses into the water and stays there. That is
+        // survivable when the bearing is random and someone else's problem next
+        // time; with a committed direction it is the same bad arc over and
+        // over, and it took the ram from 40.7 s of `_pinned` to 155.7 in the
+        // pen. Two samples across the chord catch a pond without pretending
+        // this is pathfinding.
+        const mx = (this.pos.x + x) * 0.5, mz = (this.pos.z + z) * 0.5;
+        if (!this._standable(W, mx, mz)) continue;
+        if (!this._standable(W, (this.pos.x + mx) * 0.5, (this.pos.z + mz) * 0.5)) continue;
         this.target.set(x, 0, z);
         this.state = ST.WANDER;
         this.timer = this._span(c.walkTime);

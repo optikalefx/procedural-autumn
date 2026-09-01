@@ -317,8 +317,13 @@
   text-shadow: 0 1px 8px rgba(46, 18, 28, 0.55);
 }
 .pa-readout-value .pa-unit { font-size: 0.62em; color: var(--ink-faint); margin-left: 0.62em; letter-spacing: 0.12em; }
-.pa-readout-value .pa-leaf { color: var(--gold); margin-right: 0.34em; vertical-align: -0.08em; }
-.pa-readout-value .pa-leaf svg { width: 0.82em; height: 0.82em; display: inline-block; }
+/* The same 0.82em the leaf sat at, so nothing in the row moved, and it is also
+   the size the glyph was drawn for: `hud_dom.js` cut this paw down to three
+   toes so it would survive the compass disc's ~14 px, and against the readout
+   value's 14.5 px font 0.82em measures ~12 px. Anything much under that is
+   asking the toes to hold gaps they were not drawn to hold. */
+.pa-readout-value .pa-paw { color: var(--gold); margin-right: 0.34em; vertical-align: -0.06em; }
+.pa-readout-value .pa-paw svg { width: 0.82em; height: 0.82em; display: inline-block; }
 
 /* ── minimap ──────────────────────────────────────────────────────────────
    Bottom right, diagonally opposite the dash, so the two instruments bracket
