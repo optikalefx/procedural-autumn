@@ -1,22 +1,15 @@
 // Tight head-join captures — the neck/skull joint at walk-up distance.
+//
+// Heron only. The flamingo's three shots were removed with the lofted model:
+// their camera targets were written from that mesh's own footY and neck
+// stations, and there is nothing to re-aim them at — the flamingo is a GLB now
+// and its head-join is the pack's, not ours to judge station by station.
 import { chromium } from 'playwright';
 
 const OUT = process.argv[2] ?? '/tmp/waders';
 const URL = 'http://127.0.0.1:5199/gallery.html';
 
 const SHOTS = [
-  {
-    id: 'prop:flamingo.js:buildFlamingo:wading', name: 'flamingo-head-wading',
-    target: [0, 0.436 * 1.45 + 0.39 * 1.45, 0.13 * 1.45], yaw: 1.55, pitch: 0.05, dist: 0.34,
-  },
-  {
-    id: 'prop:flamingo.js:buildFlamingo:wading', name: 'flamingo-head-rear',
-    target: [0, 0.436 * 1.45 + 0.39 * 1.45, 0.13 * 1.45], yaw: 4.9, pitch: 0.30, dist: 0.34,
-  },
-  {
-    id: 'prop:flamingo.js:buildFlamingo:flight', name: 'flamingo-head-flight',
-    target: [0, 1.3 + 0.16 * 1.45, 0.40 * 1.45], yaw: 1.55, pitch: 0.05, dist: 0.40,
-  },
   {
     id: 'prop:blue_heron.js:buildBlueHeron:wading', name: 'heron-head-wading',
     target: [0, 0.271 * 1.9 + 0.30 * 1.9, 0.16 * 1.9], yaw: 1.55, pitch: 0.05, dist: 0.42,

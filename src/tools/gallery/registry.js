@@ -555,6 +555,77 @@ function glbAnimalEntry(mod, path, key, sp, v, vi) {
   };
 }
 
+// Wading and flying, the two poses the waders have always been shown in. They
+// are the two states `tree_birds._step` actually has, so between them they are
+// the whole bird.
+const WADER_POSES = [
+  { key: 'wading', label: 'Wading', fly: 0 },
+  { key: 'flight', label: 'Flight', fly: 1 },
+];
+
+/**
+ * One gallery entry per hand-authored bird.
+ *
+ * Built through `fitGlbBird`, the same call the valley makes, so this card
+ * cannot drift from what the game draws — the failure a gallery exists to
+ * prevent. The lofted birds get here instead as ordinary `build*` props out of
+ * their own model files; this species has no model file, only a GLB and a row.
+ *
+ * Presentation follows `wader_kit.galleryBird`, which the heron still uses:
+ * scaled to the species' mid wingspan, standing on the studio floor, and for
+ * the flight pose hovering at 0.9 x span — proportional rather than a fixed
+ * 1.3 m, because at 3x scale a fixed lift buries the trailing legs in the
+ * floor. The fit already puts the soles on the object's origin, so "standing"
+ * here is simply y = 0.
+ */
+function treeBirdGlbEntries(mod, path) {
+  return mod.TREE_BIRD_SPECIES.filter((S) => S.glb).map((S) => ({
+    id: `bird:${S.key}`,
+    label: titleCase(S.key),
+    sub: 'hand-authored',
+    group: groupOf(path),
+    family: 'Birds',
+    file: path,
+    call: `fitGlbBird(await load('${S.glb.url}'), TREE_BIRD_SPECIES['${S.key}'].glb, span)`,
+    poses: WADER_POSES,
+    async build(_seed, opts = {}) {
+      const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+      const G = S.glb;
+      const gltf = await new GLTFLoader().loadAsync(G.url);
+      const clips = mod.resolveBirdClips(S.key, G, gltf.animations);
+      const span = (S.wingspan[0] + S.wingspan[1]) * 0.5;
+      const { obj, mixer, act, scale } = mod.fitGlbBird(gltf.scene, clips, G, span);
+
+      const pose = WADER_POSES.find((p) => p.key === (opts.pose ?? 'wading')) ?? WADER_POSES[0];
+      // The same three weights `_poseGlb` writes, and normalised for the same
+      // reason: an unnormalised set averages the mixer toward the rest pose.
+      act.fly.setEffectiveWeight(pose.fly);
+      act.idle.setEffectiveWeight(1 - pose.fly);
+      act.preen.setEffectiveWeight(0);
+      // Mid of the species' own wingbeat range over the clip's authored rate —
+      // the same ratio the game plays it at.
+      const beat = (S.flapHz[0] + S.flapHz[1]) * 0.5;
+      act.fly.timeScale = beat / G.flapHz;
+      obj.position.y = pose.fly ? span * 0.9 : 0;
+
+      const root = new THREE.Group();
+      root.add(obj);
+      return {
+        root,
+        update(dt) { mixer.update(dt); },
+        dispose() { mixer.stopAllAction(); mixer.uncacheRoot(mixer.getRoot()); },
+        notes: [
+          `${G.url}`,
+          `${span.toFixed(2)} m wingspan · x${scale.toFixed(3)} off a ${G.span} m model`,
+          `clips ${Object.values(G.clips).join(', ')} · beat ${beat.toFixed(2)} Hz `
+            + `at x${(beat / G.flapHz).toFixed(2)} of the authored ${G.flapHz} Hz`,
+          `one mesh, one material — one draw call per bird`,
+        ],
+      };
+    },
+  }));
+}
+
 function animalEntries(mod, path) {
   const out = [];
   for (const [key, sp] of Object.entries(mod.SPECIES)) {
@@ -985,6 +1056,15 @@ const ADAPTERS = [
     },
   },
   { path: '/src/wildlife/birds/flocks.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
+  {
+    // The perch-and-fly birds. Only the hand-authored ones get cards from here:
+    // the lofted three arrive as ordinary `build*` props out of their own model
+    // files, which is where their geometry lives. The flamingo has no such
+    // file — it is a GLB and a row in this table — so its card is built here.
+    path: '/src/wildlife/birds/tree_birds.js',
+    claims: ['TREE_BIRD_SPECIES', 'TreeBirds', 'fitGlbBird', 'resolveBirdClips'],
+    entries: treeBirdGlbEntries,
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ await page.evaluate(() => {
 
 for (const [id, name, dist] of [
   ['prop:blue_heron.js:buildBlueHeron:wading', 'scale-heron', 13],
-  ['prop:flamingo.js:buildFlamingo:wading', 'scale-flamingo', 13],
+  ['bird:flamingo', 'scale-flamingo', 13],
   ['prop:bald_eagle.js:buildBaldEagle:perched', 'scale-eagle', 15],
 ]) {
   await page.evaluate((i) => window.__gallery.select(i), id);

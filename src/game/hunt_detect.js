@@ -1497,10 +1497,26 @@ function treeBirds(f, tb, hit) {
   for (const group of slots) {
     const key = group[0]?.spec?.key;
     if (!key || hit.has(key)) continue;
-    const g = group[0].mesh?.geometry;
-    if (!g) continue;
-    if (!g.boundingSphere) { try { g.computeBoundingSphere(); } catch { continue; } }
-    const unit = g.boundingSphere?.radius;
+    // Unit-space silhouette sphere: radius, and how far above the bird's own
+    // origin its centre sits. An instanced species reads both off the shared
+    // geometry, where the origin is already in the body so the lift is zero.
+    //
+    // A hand-authored species has no shared geometry to read — every bird is
+    // its own skinned clone — so its species row states the two numbers, both
+    // measured off the asset by its build script. It also genuinely needs the
+    // lift: the GLB flamingo's origin is between its soles, and a sphere
+    // centred there would have to reach from the mud to the crown.
+    const G = group[0].spec?.glb;
+    let unit, lift = 0;
+    if (G) {
+      unit = G.unitR;
+      lift = G.unitC ?? 0;
+    } else {
+      const g = group[0].mesh?.geometry;
+      if (!g) continue;
+      if (!g.boundingSphere) { try { g.computeBoundingSphere(); } catch { continue; } }
+      unit = g.boundingSphere?.radius;
+    }
     if (!Number.isFinite(unit)) continue;
 
     for (const b of group) {
@@ -1510,7 +1526,7 @@ function treeBirds(f, tb, hit) {
       // two sizes rather than snapping.
       const fold = Number.isFinite(b.fold) ? Math.min(1, Math.max(0, b.fold)) : 1;
       const r = unit * b.sc * (1 - fold * (1 - FOLD_R));
-      _p.set(b.x, b.y, b.z);
+      _p.set(b.x, b.y + lift * b.sc, b.z);
       if (!visible(f, _p, r)) continue;
       hit.add(key);
       break;

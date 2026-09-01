@@ -28,6 +28,19 @@
       "port": 5203
     },
     {
+      "name": "flamingo-glb",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5221",
+        "--strictPort"
+      ],
+      "port": 5221
+    },
+    {
       "name": "bear-glb",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

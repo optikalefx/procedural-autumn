@@ -22,13 +22,14 @@
 //             says the valley is actually dark. See NIGHT_SPAWN.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneRigged } from 'three/addons/utils/SkeletonUtils.js';
 import { clamp, clamp01, lerp, smoothstep, damp, dampAngle, mulberry32 }
   from '../../core/MathUtils.js';
 import { SPECIES as TREE_SPECIES } from '../../vegetation/tree_species.js';
 import { SKY_STATE } from '../../render/Lighting.js';
 import { treeBirdMaterial } from './bird_material.js';
 import { buildBaldEagleGeometry } from './bald_eagle.js';
-import { buildFlamingoGeometry } from './flamingo.js';
 import { buildBlueHeronGeometry } from './blue_heron.js';
 import { buildGreatHornedOwlGeometry } from './great_horned_owl.js';
 
@@ -67,7 +68,7 @@ import { buildGreatHornedOwlGeometry } from './great_horned_owl.js';
 //              is still out when the sky comes up leaves under its own power
 //              rather than blinking off — see the nocturnal block in _scan.
 //
-// Waders (habitat: 'water', models in flamingo.js / blue_heron.js) swap the tree
+// Waders (habitat: 'water') swap the tree
 // fields for water ones:
 //   wade       metres of standing-water depth a bird will stand in. The cap
 //              is what keeps the belly above the surface at full leg length.
@@ -125,11 +126,55 @@ export const TREE_BIRD_SPECIES = [
   },
   {
     key: 'flamingo',
-    geometry: buildFlamingoGeometry,
+    // The one hand-authored model in here. Everything else on this table is a
+    // `geometry` function lofted into an InstancedMesh and flapped by
+    // `bird_material.js`'s vertex shader; this bird is a skinned GLB out of the
+    // bought pack, playing its own clips through an `AnimationMixer`. Only
+    // `build`, `_park` and `_pose` know the difference — the streaming, the
+    // colony, the startle hold and the flight arc below are shared verbatim.
+    glb: {
+      url: 'models/flamingo_pack.glb',
+      // All four measured off the asset and printed by
+      // `tools/build_flamingo_blend.py`. None can be recovered downstream.
+      //
+      // `span` is the widest frame of the wingbeat, and it has to be: the bind
+      // pose folds the wings to 0.598 m, so a scale fitted to the rest pose
+      // would draw a "4.35 m wingspan" bird 3.6x too big. Measuring the spread
+      // frame instead is what lets a pack model authored wings-folded carry the
+      // same `wingspan` field as the lofted birds.
+      span: 2.128,
+      minY: -0.003,          // lowest vertex standing; the fit node lifts it to 0
+      // Lowest BODY vertex above the soles, legs excluded — 0.52 m, a mere 32%
+      // of this bird's standing height where the lofted one carried its body at
+      // 52%. `_wadeY` keeps this point out of the water, and it is the number
+      // that decides how deep a flamingo will stand.
+      bellyY: 0.244,
+      flapHz: 1.2,           // the authored wingbeat — 20 frames at 24 fps
+      // The photo silhouette, for `hunt_detect`. It sizes a bird from a sphere
+      // in this same unit space and centres it on the bird's origin, which
+      // works unremarked for the lofted birds because their origin sits in the
+      // body — the procedural flamingo's sphere is r=0.488 about a centre
+      // 0.014 off its own. This model's origin is between the SOLES, so a
+      // radius about it would have to reach the whole bird and would read 60%
+      // over. `unitC` lifts the centre back into the body and `unitR` is the
+      // spread radius about it: 0.546 against the old bird's 0.488, which is
+      // the honest 12% — this really is the longer bird — and small enough
+      // that swapping the model does not move the hunt's gate.
+      unitC: 0.379,
+      unitR: 0.546,
+      clips: { idle: 'idle', fly: 'fly', preen: 'preen' },
+    },
     habitat: 'water',
     live: 6,
     chance: 0.7,
     // 3x life size, on purpose — see the note over TREE_BIRD_SPECIES.
+    //
+    // Kept exactly as it was through the model swap, which makes the bird
+    // TALLER than the one it replaces: span:height is 1.316 on the pack model
+    // against the lofted bird's 1.61, so at a matched 4.35 m span it stands
+    // 3.31 m rather than 2.71. That is the more honest flamingo — a real one is
+    // about 1.1 — and `wingspan` is the field this table reasons in, so the
+    // span is what is held fixed and the height is allowed to follow.
     wingspan: [4.05, 4.65],
     perchS: [20, 60],
     hop: [30, 90],
@@ -141,9 +186,21 @@ export const TREE_BIRD_SPECIES = [
     // inside 14 m AND then holds that for five seconds before going.
     startle: 14,
     startleDelay: 5,
-    wade: [0.36, 1.35],
+    // Both of these moved with the model, and neither is a taste change.
+    //
+    // `wade` is capped by the rule it always was — keep the water below the
+    // belly — re-evaluated against the new mesh. The lofted bird carried its
+    // body origin 0.436 units up, so 1.35 m of water was 71% of the 1.90 m it
+    // stood clear at a mid-range span. The pack model's lowest body vertex
+    // (excluding the legs) is 0.519 units up, which at the same span is
+    // 1.061 m, and the same 71% is 0.75. A bird that waded to 1.35 now would
+    // be in the water to its keel.
+    wade: [0.30, 0.75],
     minSpan: 7,
-    footY: -0.436,
+    // Zero, where the lofted bird needed -0.436: the GLB's origin is already
+    // at the soles, so `_wadeY` puts the feet straight onto the bed and the
+    // rig's fit node absorbs the -0.003 the mesh hangs below them.
+    footY: 0,
     perchPitch: -0.04,
     dip: 0.25,
     cruiseUp: [2.5, 6],
@@ -229,6 +286,78 @@ const _pm = new THREE.Matrix4();
 const _frustum = new THREE.Frustum();
 const _sphere = new THREE.Sphere();
 
+/**
+ * The asset-side half of a hand-authored bird: one skinned clone, fitted, with
+ * a mixer and an action per clip slot.
+ *
+ * Exported because the gallery has to show the bird through EXACTLY this fit.
+ * A gallery that builds its own copy is a gallery that can quietly disagree
+ * with the valley, which is the one thing it exists not to do — so the fit
+ * lives here and both callers go through it.
+ *
+ * `SkeletonUtils.clone`, never `Object3D.clone`: a plain clone shares the
+ * prototype's bones, so every bird would play whichever one updated last. See
+ * the same note in `glb_rig.js`.
+ */
+export function fitGlbBird(scene, clips, G, wingspan) {
+  const rig = cloneRigged(scene);
+  rig.traverse((o) => {
+    if (!o.isMesh && !o.isSkinnedMesh) return;
+    o.castShadow = false;            // matches the instanced birds
+    o.receiveShadow = false;
+    // Streamed in and out of a parked pool, and three's culling works off a
+    // bind-pose sphere that a flapping wing leaves behind. The parent's
+    // `visible` is the cull that counts.
+    o.frustumCulled = false;
+  });
+
+  // Two nested transforms, the split `glb_rig.js` argues for. `fit` holds
+  // everything about the ASSET and never changes again: the exporter's -Z
+  // facing turned to the +Z this file measures yaw from, the metres that make
+  // `wingspan` mean wingspan, and the lift that puts the soles on the object's
+  // own origin so `_wadeY` can stand it on the bed. The outer Group holds
+  // everything about the BIRD and is written every frame.
+  const scale = wingspan / G.span;
+  const fit = new THREE.Object3D();
+  fit.rotation.y = Math.PI;
+  fit.scale.setScalar(scale);
+  fit.position.y = -G.minY * scale;
+  fit.add(rig);
+
+  const obj = new THREE.Group();
+  obj.rotation.order = 'YXZ';        // yaw, then pitch, then bank
+  obj.add(fit);
+
+  const mixer = new THREE.AnimationMixer(rig);
+  const act = {};
+  for (const slot of Object.keys(clips)) {
+    const a = mixer.clipAction(clips[slot]);
+    a.play();
+    a.setEffectiveWeight(0);
+    act[slot] = a;
+  }
+  act.idle.setEffectiveWeight(1);
+  return { obj, mixer, act, scale };
+}
+
+/** Resolve a species' clip slots against a loaded GLB, or say what is missing. */
+export function resolveBirdClips(key, G, animations) {
+  const clips = {};
+  for (const [slot, name] of Object.entries(G.clips)) {
+    const clip = animations.find((a) => a.name === name);
+    // Fatal for the species rather than silently absent — the same call
+    // `loadGlbSpecies` makes, and for the same reason: a flamingo that cannot
+    // open its wings is a regression the player sees, and load is the only
+    // place it is cheap to notice.
+    if (!clip) {
+      throw new Error(`[tree_birds] ${key}: no clip "${name}" for slot "${slot}"; `
+        + `the GLB carries ${animations.map((a) => a.name).join(', ')}`);
+    }
+    clips[slot] = clip;
+  }
+  return clips;
+}
+
 export class TreeBirds {
   constructor(ctx, seed) {
     this.ctx = ctx;
@@ -253,29 +382,25 @@ export class TreeBirds {
     this.meshes = [];
     this.slots = [];
     for (const S of TREE_BIRD_SPECIES) {
-      const geo = S.geometry();
-      const mesh = new THREE.InstancedMesh(geo, this.mat, S.live);
-      const pose = new THREE.InstancedBufferAttribute(new Float32Array(S.live * 4), 4);
-      pose.setUsage(THREE.DynamicDrawUsage);
-      mesh.geometry.setAttribute('aPose', pose);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.castShadow = false;       // perched: shadow lands inside the crown
-      mesh.receiveShadow = false;
-      mesh.frustumCulled = false;    // instances are scattered; sphere is stale
-      mesh.userData.pose = pose;
-      this.group.add(mesh);
+      // A hand-authored species has no shared geometry and nothing to instance:
+      // each of its slots gets its own skinned clone once the GLB lands. Until
+      // then it simply has no mesh, `_scan` declines to hand it a site, and
+      // every other line in this file runs unchanged.
+      const mesh = S.glb ? null : this._instanced(S);
       this.meshes.push(mesh);
 
       const slots = [];
       for (let i = 0; i < S.live; i++) {
-        // The geometry already carries the real plumage in its vertex colours,
-        // and instanceColor MULTIPLIES that — so the per-bird variation must
-        // stay near white. The first pass tinted with a mid-brown here and
-        // turned the white head tan and the brown body black in-game.
-        const m0 = 0.92 + this.rnd() * 0.18;
-        const warm = (this.rnd() - 0.5) * 0.06;
-        this._col.setRGB(m0 * (1 + warm), m0, m0 * (1 - warm));
-        mesh.setColorAt(i, this._col);
+        if (mesh) {
+          // The geometry already carries the real plumage in its vertex colours,
+          // and instanceColor MULTIPLIES that — so the per-bird variation must
+          // stay near white. The first pass tinted with a mid-brown here and
+          // turned the white head tan and the brown body black in-game.
+          const m0 = 0.92 + this.rnd() * 0.18;
+          const warm = (this.rnd() - 0.5) * 0.06;
+          this._col.setRGB(m0 * (1 + warm), m0, m0 * (1 - warm));
+          mesh.setColorAt(i, this._col);
+        }
         slots.push({
           spec: S, mesh, i,
           active: false,
@@ -291,20 +416,75 @@ export class TreeBirds {
           // flight path
           fx0: 0, fy0: 0, fz0: 0, fcx: 0, fcz: 0, fx1: 0, fy1: 0, fz1: 0,
           ft: 0, fdur: 1, fcruise: 0, fspeed: 12, bout: this.rnd() * 6.28,
+          // Hand-authored slots only; null on an instanced bird for its whole
+          // life. `obj` doubles as "this slot has a model", which is what
+          // `_scan` and `_pose` branch on rather than re-reading `spec.glb`.
+          obj: null, mixer: null, act: null,
+          preen: 0, preenHold: 0, preenT: 6 + this.rnd() * 22,
         });
       }
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      if (mesh?.instanceColor) mesh.instanceColor.needsUpdate = true;
       this.slots.push(slots);
 
-      // Park everything out of sight until the first scan.
-      this._dummy.position.set(0, -9000, 0);
-      this._dummy.rotation.set(0, 0, 0);
-      this._dummy.scale.setScalar(0.0001);
-      this._dummy.updateMatrix();
-      for (let i = 0; i < S.live; i++) mesh.setMatrixAt(i, this._dummy.matrix);
-      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh) {
+        // Park everything out of sight until the first scan.
+        this._dummy.position.set(0, -9000, 0);
+        this._dummy.rotation.set(0, 0, 0);
+        this._dummy.scale.setScalar(0.0001);
+        this._dummy.updateMatrix();
+        for (let i = 0; i < S.live; i++) mesh.setMatrixAt(i, this._dummy.matrix);
+        mesh.instanceMatrix.needsUpdate = true;
+      } else {
+        this._loadGlb(S, slots);
+      }
     }
     this.ctx.scene.add(this.group);
+  }
+
+  /** The instanced backend: one draw call and one shared material per species. */
+  _instanced(S) {
+    const mesh = new THREE.InstancedMesh(S.geometry(), this.mat, S.live);
+    const pose = new THREE.InstancedBufferAttribute(new Float32Array(S.live * 4), 4);
+    pose.setUsage(THREE.DynamicDrawUsage);
+    mesh.geometry.setAttribute('aPose', pose);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.castShadow = false;         // perched: shadow lands inside the crown
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;      // instances are scattered; sphere is stale
+    mesh.userData.pose = pose;
+    this.group.add(mesh);
+    return mesh;
+  }
+
+  /**
+   * The hand-authored backend: one skinned clone and one mixer per slot.
+   *
+   * Async, and deliberately not awaited. A species with no model yet is a
+   * species `_scan` will not place, which is the same state it is in during a
+   * cooldown — so a slow load costs a few seconds of no flamingos and nothing
+   * else. Nothing in here can fail a frame that has already been drawn.
+   *
+   * The clone is `SkeletonUtils.clone` and NOT `Object3D.clone` — see
+   * `fitGlbBird`, which both this and the gallery build through.
+   */
+  async _loadGlb(S, slots) {
+    const G = S.glb;
+    const gltf = await new GLTFLoader().loadAsync(G.url);
+    const clips = resolveBirdClips(S.key, G, gltf.animations);
+
+    for (const b of slots) {
+      const { obj, mixer, act } = fitGlbBird(gltf.scene, clips, G, b.sc);
+      obj.visible = false;           // parked until the first scan places it
+      this.group.add(obj);
+      // Six birds standing on one island must not breathe in unison. `phase` is
+      // already the per-bird offset the instanced shader uses, so it is the
+      // offset here too, scaled into the idle clip's own length.
+      act.idle.time = (b.phase / 6.28) * clips.idle.duration;
+      b.mixer = mixer;
+      b.act = act;
+      b.clips = clips;
+      b.obj = obj;
+    }
   }
 
   // ── per frame ──────────────────────────────────────────────────────────────
@@ -324,10 +504,12 @@ export class TreeBirds {
         if (!b.active) continue;
         live++;
         this._step(b, dt, threat);
-        this._pose(b, mesh);
+        this._pose(b, mesh, dt);
         dirty = true;
       }
-      if (dirty) {
+      // A hand-authored species has no shared buffers to flush; each of its
+      // birds advanced its own mixer inside `_pose`.
+      if (dirty && mesh) {
         mesh.instanceMatrix.needsUpdate = true;
         mesh.userData.pose.needsUpdate = true;
       }
@@ -357,6 +539,10 @@ export class TreeBirds {
           if (S.nocturnal && SKY_STATE.nightFactor < NIGHT_STAY) this._dayOut(b, d, cx, cz);
           continue;
         }
+        // A hand-authored species whose GLB has not arrived yet has nothing to
+        // place. Indistinguishable from a cooldown as far as the valley is
+        // concerned, which is why the load does not need to be awaited.
+        if (S.glb && !b.obj) continue;
         // …and the same gate on the way in. Placed ahead of the cooldown so
         // the cooldown only burns at night: otherwise both owls would spend
         // the afternoon draining theirs and then materialise together the
@@ -441,6 +627,11 @@ export class TreeBirds {
     b.active = false;
     // Most departures come back soon; some leave the area for a long while.
     b.cool = this.rnd() < b.spec.chance ? 8 + this.rnd() * 25 : 90 + this.rnd() * 150;
+    // A hand-authored bird parks by going invisible. There is no shared matrix
+    // buffer to shrink a slot out of, and hiding the Group is also what stops
+    // its mixer costing anything: `_pose` is the only caller that advances it
+    // and it is only reached while the slot is active.
+    if (b.obj) { b.obj.visible = false; return; }
     this._dummy.position.set(0, -9000, 0);
     this._dummy.rotation.set(0, 0, 0);
     this._dummy.scale.setScalar(0.0001);
@@ -741,7 +932,25 @@ export class TreeBirds {
    */
   _wadeY(site, S, sc) {
     let y = site.gy - S.footY * sc;
-    if (site.wy != null) y = Math.max(y, site.wy + 0.07 * sc);
+    // Keep the BODY clear of the water — not the object's origin, because on a
+    // lofted bird those are the same point and on a hand-authored one they are
+    // not.
+    //
+    // `y` is where the origin goes. A lofted wader's origin sits in its body, so
+    // "origin 0.07 spans above the surface" was the body rule written directly
+    // and nobody had to say so. The GLB's origin is between the SOLES, and that
+    // same line read literally floated every flamingo 0.07 * sc above the water
+    // standing on nothing — 0.30 m of daylight under a bird in a lake, and the
+    // clamp won every time because it beat the bed by the whole wade depth.
+    //
+    // So the rule is stated once, about the belly, and each backend says where
+    // its belly is above its own origin. Zero for a lofted bird, which is the
+    // original line exactly; 0.244 spans for the flamingo, measured off the
+    // asset. It also cross-checks `wade`: the deepest water this permits is
+    // 0.174 * sc = 0.74 m against the 0.75 the species asks for, so the two
+    // numbers were derived independently and agree to a centimetre.
+    const belly = S.glb ? S.glb.bellyY : 0;
+    if (site.wy != null) y = Math.max(y, site.wy + (0.07 - belly) * sc);
     return y;
   }
 
@@ -976,7 +1185,8 @@ export class TreeBirds {
     }
   }
 
-  _pose(b, mesh) {
+  _pose(b, mesh, dt) {
+    if (b.obj) { this._poseGlb(b, dt); return; }
     const D = this._dummy, E = this._e;
     D.position.set(b.x, b.y, b.z);
     E.set(b.pitch, b.yaw, b.bank);
@@ -989,6 +1199,71 @@ export class TreeBirds {
     p[b.i * 4 + 1] = b.rate;
     p[b.i * 4 + 2] = b.amp;
     p[b.i * 4 + 3] = b.fold;
+  }
+
+  /**
+   * The same pose, played by a mixer instead of written into a shader.
+   *
+   * `_step` is untouched and does not know which backend it is driving: it
+   * produces the same `(x, y, z, yaw, pitch, bank, fold, rate, amp)` it always
+   * did, and this reads three of those as clip weights and a playback rate. So
+   * the flamingo flushes, banks and flares on exactly the timeline it did as a
+   * lofted bird — only the surface changed.
+   *
+   * **`amp` has no counterpart here, and that is a property of the asset.** On
+   * the instanced birds it is wing amplitude, and `_step` drops it to 0.05
+   * between bouts to sell the flap-flap-glide rhythm. The pack's fly clip is
+   * one continuous beat with no glide pose in it, and a glide is a shape the
+   * wing holds rather than a smaller version of a flap — so it cannot be
+   * reached by scaling anything, and faking it by stalling the clip would just
+   * freeze the wings wherever the beat happened to be. Left unread on purpose:
+   * a flamingo beats continuously in level flight, which is why this species
+   * carries the fastest, shallowest `flapAmp` on the table. It is the eagle
+   * this would cost something, and the eagle is still instanced.
+   */
+  _poseGlb(b, dt) {
+    const G = b.spec.glb, o = b.obj, a = b.act;
+    o.visible = true;
+    o.position.set(b.x, b.y, b.z);
+    o.rotation.set(b.pitch, b.yaw, b.bank);
+
+    // An occasional preen, only while genuinely settled. This file argues that
+    // a flamingo colony is the payoff at the end of a boat trip and holds the
+    // birds five seconds after you crowd them so the payoff survives arrival;
+    // six birds frozen in one identical idle is a poor thing to have travelled
+    // to, and `preen` is a clip the pack already ships.
+    if (b.fold > 0.9) {
+      b.preenT -= dt;
+      if (b.preenT <= 0) {
+        b.preenT = 16 + this.rnd() * 30;
+        b.preenHold = b.clips.preen.duration;
+        a.preen.time = 0;
+      }
+    }
+    b.preenHold = Math.max(0, b.preenHold - dt);
+    // Released a little before the clip runs out, so the crossfade lands on the
+    // pose the preen returns to instead of cutting from wherever it stopped.
+    b.preen = damp(b.preen, b.preenHold > 0.4 ? 1 : 0, 3, dt);
+
+    // `fold` is 1 perched and 0 airborne, damped by `_step` on its own clock —
+    // the same signal the shader rolls the wing in with, used here as the
+    // crossfade weight, so both backends change state at the same instant.
+    //
+    // The three weights sum to 1 by construction. They have to: an unnormalised
+    // set makes the mixer average toward the rest pose, and the bird visibly
+    // sinks and straightens as it takes off. See the budget note in glb_rig.js.
+    const still = b.fold;
+    a.fly.setEffectiveWeight(1 - still);
+    a.preen.setEffectiveWeight(still * b.preen);
+    a.idle.setEffectiveWeight(still * (1 - b.preen));
+
+    // Beat frequency, derived the way this repo derives everything else about a
+    // clip: the species table asks for a wingbeat in Hz, the asset was authored
+    // at `flapHz`, and the ratio is the playback rate. Cadence here where the
+    // mammals use ground speed, and the clip itself is never touched.
+    a.fly.timeScale = b.rate / G.flapHz;
+
+    b.mixer.update(dt);
   }
 
   /** Is `key` one of the species in here? See `Wildlife.canTrack`. */
@@ -1080,7 +1355,17 @@ export class TreeBirds {
 
   dispose() {
     this.group.removeFromParent();
-    for (const m of this.meshes) m.geometry.dispose();
+    // Null for a hand-authored species, which owns no shared geometry — its
+    // meshes came off the GLB and are released with their mixers below.
+    for (const m of this.meshes) m?.geometry.dispose();
+    for (const slots of this.slots) {
+      for (const b of slots) {
+        if (!b.mixer) continue;
+        b.mixer.stopAllAction();
+        b.mixer.uncacheRoot(b.mixer.getRoot());
+        b.obj?.removeFromParent();
+      }
+    }
     this.mat.dispose();
   }
 }

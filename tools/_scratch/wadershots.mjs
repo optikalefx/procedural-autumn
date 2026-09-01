@@ -7,8 +7,9 @@ const URL = 'http://127.0.0.1:5199/gallery.html';
 const SHOTS = [
   { q: 'buildBlueHeron:flight', name: 'heron-flight', yaw: 2.15, pitch: 0.32, dist: 2.9 },
   { q: 'buildBlueHeron:wading', name: 'heron-wading', yaw: 2.2, pitch: 0.10, dist: 2.5 },
-  { q: 'buildFlamingo:flight', name: 'flamingo-flight', yaw: 2.05, pitch: 0.38, dist: 2.4 },
-  { q: 'buildFlamingo:wading', name: 'flamingo-wading', yaw: 2.2, pitch: 0.10, dist: 2.2 },
+  // One row, not two: the flamingo is a GLB card whose pose is a control on
+  // the stage rather than a suffix on its id.
+  { q: 'bird:flamingo', name: 'flamingo-wading', yaw: 2.2, pitch: 0.10, dist: 2.2 },
 ];
 
 const browser = await chromium.launch();

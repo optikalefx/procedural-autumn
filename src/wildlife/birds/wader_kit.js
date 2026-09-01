@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  wader_kit — what the flamingo and the heron are both built out of.
+//  wader_kit — what a lofted wader is built out of.
 //
 //  Two birds that stand IN the water: the same prism legs with toes, the same
 //  smooth Catmull-Rom lofts with rings oriented to the centreline (a kinked
 //  neck ring reads as a broken neck at five metres), the same tail fan, the
 //  same eyes. Only the numbers and the plumage differ, and those live one file
-//  over in `flamingo.js` and `blue_heron.js`.
+//  over in `blue_heron.js`.
 //
 //  The eagle and the owl do NOT use this: each is a single model with its own
 //  builder, and neither has a leg worth sharing.
@@ -25,9 +25,13 @@
 //                     vertex forward about the root BY ITS OWN GRADE, so the
 //                     raised standing neck unrolls into the extended flight
 //                     neck — which also means any joint spanning two grades
-//                     is a joint that shears open in flight. The flamingo
-//                     uses it; the heron does NOT — a heron flies with its neck
-//                     folded, so its S-curve is authored and left alone.
+//                     is a joint that shears open in flight. NOTHING lofted
+//                     uses it any more: the heron does NOT — it flies with its
+//                     neck folded, so its S-curve is authored and left alone —
+//                     and the flamingo, which did, is a GLB now. The band and
+//                     its shear rule are kept because they are what the next
+//                     straight-necked wader will need, and because the rule is
+//                     the expensive half to rediscover.
 //    0.12 .. 1.0      wing spanwise fraction (flap and fold)
 //
 //  Both models author to the shader's shared pivots: hip at (y -0.015,
@@ -75,7 +79,9 @@ const WING_SMOOTH = 2;                // Catmull-Rom stations per authored span
 // Chord splits, leading edge to trailing edge. Six panels instead of three,
 // and the two boundaries that carry colour are kept exactly where the old
 // three-panel array put them: 0.42 (the heron's covert-to-remige step) and
-// 0.62 (the flamingo's black rear half).
+// 0.62, which was the flamingo's black rear half. Only the heron reads this
+// array now, but the cuts stay where they are — moving 0.62 to tidy away a
+// departed bird would resample the heron's wing for nothing.
 const WING_CHORD = [0, 0.14, 0.28, 0.42, 0.62, 0.80, 1];
 
 // ── the shared mesh bag ──────────────────────────────────────────────────────
