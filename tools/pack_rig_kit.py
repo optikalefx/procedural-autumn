@@ -363,8 +363,38 @@ def new_action(rig, name, length):
     if act.slots:
         rig.animation_data.action_slot = act.slots[0]
     act.use_frame_range = True
-    act.frame_start, act.frame_end = 1, 1 + length
+    # ZERO-based, and it matters. With frame_start=1 the exporter still bakes
+    # from frame 0, which carries no key and therefore holds frame 1's pose —
+    # so every clip shipped with its FIRST FRAME DUPLICATED. A 9-frame bound
+    # came out 10 frames long with the hind hoof standing dead still for the
+    # whole first interval, which `measureGround` read as a zero-velocity
+    # cluster and rejected the clip over.
+    act.frame_start, act.frame_end = 0, length
     return act
+
+
+def set_linear(act):
+    """Force LINEAR interpolation on every key of `act`.
+
+    Blender keys BEZIER by default, which eases in and out of each key. That is
+    right for sparse hand-keying and WRONG here: these clips are solved at every
+    frame, so the motion between two keys is already known and easing invents a
+    slow-down that is not in it.
+
+    It is not cosmetic. A bezier stance holds a near-zero velocity for most of
+    its first keyframe interval — measured on the deer's bound, the hind hoof
+    sat dead still for three quarters of a frame before accelerating to 9.4 —
+    and `measureGround` finds the ground by looking for the densest cluster of
+    velocities. Those stationary patches formed a tighter cluster at ZERO than
+    the real stance did at 9.5, so the clip measured as covering no ground at
+    all and the loader rejected it.
+    """
+    for layer in act.layers:
+        for strip in layer.strips:
+            for cb in strip.channelbags:
+                for fc in cb.fcurves:
+                    for k in fc.keyframe_points:
+                        k.interpolation = 'LINEAR'
 
 
 def sample(rig, act, frame):
@@ -379,9 +409,9 @@ def sample(rig, act, frame):
 
 def seam(rig, act, length):
     """How far the pose at the last frame is from the pose at the first."""
-    sample(rig, act, 1)
+    sample(rig, act, 0)
     first = {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
-    sample(rig, act, 1 + length)
+    sample(rig, act, length)
     last = {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
     return max((first[k].translation - last[k].translation).length for k in first)
 
@@ -448,11 +478,65 @@ def gait_rest(rig, legs):
     return out
 
 
-def gait_pose(rig, legs, rest, spec, t, sweep):
+def flight_windows(legs, spec, samples=720):
+    """The parts of the cycle where NO foot is on the ground, as (start, end).
+
+    A gait's phases already decide this — it is not a separate parameter. The
+    deer's bound has every foot down for 0.20 of the cycle with the hinds at
+    0.00/0.03 and the fores at 0.42/0.45, which leaves two genuine flight
+    windows. A walk at duty 0.62 has none, and a trot has two brief ones at the
+    diagonal handover, which is exactly right.
+    """
+    down = [any(((i / samples + spec["phase"][k]) % 1.0) < spec["duty"] for k in legs)
+            for i in range(samples)]
+    if all(down):
+        return []
+    # rotate so index 0 is a landing, then every airborne run is contiguous
+    start = next(i for i in range(samples) if down[i] and not down[i - 1])
+    order = [(start + i) % samples for i in range(samples)]
+    out, run = [], None
+    for j, i in enumerate(order):
+        if not down[i] and run is None:
+            run = j
+        elif down[i] and run is not None:
+            out.append(((start + run) % samples / samples,
+                        (start + j) % samples / samples))
+            run = None
+    if run is not None:
+        out.append(((start + run) % samples / samples, start / samples))
+    return out
+
+
+def body_lift(windows, spec, t):
+    """How high the body is off its stance height at `t`.
+
+    Zero whenever a foot is down, so a planted foot is never asked to reach a
+    body that has floated away from it, and the solved sweeps are unaffected.
+    Through a flight window it follows an arc — the animal is a projectile
+    between the push and the catch, and that rise IS the gait.
+
+    Without this the body sits at one height all cycle, which is not a bound at
+    all: the back and head stay level, the swinging legs have nowhere to go but
+    into the belly, and they clip through it.
+    """
+    if not spec.get("flight"):
+        return 0.0
+    for a, b in windows:
+        span = (b - a) % 1.0
+        if span <= 0:
+            continue
+        u = ((t - a) % 1.0) / span
+        if u < 1.0:
+            return spec["flight"] * math.sin(math.pi * u)
+    return 0.0
+
+
+def gait_pose(rig, legs, rest, spec, t, sweep, windows=()):
     """One instant of a gait. Returns the worst load on a WEIGHTED leg."""
     clear(rig)
     root = rig.pose.bones["Root"]
-    dz = -spec["crouch"] + math.sin(t * math.tau * 2.0) * spec["bob"]
+    lift = body_lift(windows, spec, t)
+    dz = -spec["crouch"] + math.sin(t * math.tau * 2.0) * spec["bob"] + lift
     root.location = local_translation(root, (0.0, 0.0, dz))
 
     worst = 0.0
@@ -467,8 +551,13 @@ def gait_pose(rig, legs, rest, spec, t, sweep):
             planted = True
         else:
             v = (p - spec["duty"]) / (1.0 - spec["duty"])
+            # The swing target rides the body up. During stance `lift` is zero
+            # by construction, so a planted foot still sits exactly on the
+            # ground — but a foot in the air must travel with the animal it is
+            # attached to, or the leg reaches back down for a ground that is no
+            # longer under it and folds into the belly.
             goal = Vector((R["target"].x, R["target"].y + half - sweep * v,
-                           R["target"].z + spec["lift"] * math.sin(math.pi * v)))
+                           R["target"].z + lift + spec["lift"] * math.sin(math.pi * v)))
             planted = False
 
         # The scapula swings in phase with its own paw, carrying the hip toward
@@ -522,10 +611,11 @@ def solve_sweep(rig, legs, rest, spec, frames):
     `probe_times` covers both failure modes at once.
     """
     times = probe_times(legs, spec, frames)
+    windows = flight_windows(legs, spec)
     lo, hi = 0.02, 2.0
     for _ in range(28):
         mid = (lo + hi) * 0.5
-        if max(gait_pose(rig, legs, rest, spec, t, mid)[0] for t in times) <= 1.0:
+        if max(gait_pose(rig, legs, rest, spec, t, mid, windows)[0] for t in times) <= 1.0:
             lo = mid
         else:
             hi = mid
@@ -540,13 +630,15 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     proportions, not something for this to paper over.
     """
     frames = spec["frames"]
+    windows = flight_windows(legs, spec)
     sweep = solve_sweep(rig, legs, rest, spec, frames)
     bones = ["Root"] + [n for L in legs.values()
                         for n in ([L["scap"], L["a"], L["b"]] + L["below"])]
     act = new_action(rig, name, frames)
     for i in range(frames + 1):
-        gait_pose(rig, legs, rest, spec, (i % frames) / frames, sweep)
-        key(rig, bones, 1 + i, loc={"Root"})
+        gait_pose(rig, legs, rest, spec, (i % frames) / frames, sweep, windows)
+        key(rig, bones, i, loc={"Root"})
+    set_linear(act)
     rig.animation_data.action = None
     clear(rig)
 
@@ -568,7 +660,7 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     # perfectly.
     worst, where, drift = 0.0, None, 0.0
     for i in range(frames + 1):
-        sample(rig, act, 1 + i)
+        sample(rig, act, i)
         t = (i % frames) / frames
         for k, L in legs.items():
             R = rest[k]
@@ -587,8 +679,11 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     rig.animation_data.action = None
     clear(rig)
 
+    air = sum((b - a) % 1.0 for a, b in windows)
     print(f"[{name}] sweep {sweep:.3f} ({sweep*unit_m:.3f} m) over {cycle:.3f}s "
           f"= {1/cycle:.2f} Hz, duty {spec['duty']:.2f} -> {speed:.3f} m/s")
+    print(f"[{name}]   airborne {air*100:.0f}% of the cycle in {len(windows)} "
+          f"window(s); body rises {spec.get('flight', 0.0):.3f}")
     print(f"[{name}]   planted paw off its path {worst*1000:7.3f} mm ({where})")
     print(f"[{name}]   planted paw height drift {drift*1000:7.3f} mm")
     print(f"[{name}]   cycle seam               {s*1000:7.3f} mm")
@@ -599,7 +694,7 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     # before it is a torn chest.
     over, ow = 0.0, None
     for i in range(frames + 1):
-        sample(rig, act, 1 + i)
+        sample(rig, act, i)
         for k, L in legs.items():
             d = ((rig.pose.bones[L["target"]].head - rig.pose.bones[L["a"]].head).length
                  / rest[k]["reach"])
@@ -607,7 +702,7 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
                 over, ow = d, f"f{i} {k}"
     rig.animation_data.action = None
     clear(rig)
-    stretch, sw = max_edge_stretch(spec["meshes"], [1 + i for i in range(frames + 1)])
+    stretch, sw = max_edge_stretch(spec["meshes"], [i for i in range(frames + 1)])
     print(f"[{name}]   worst leg extension      {over:7.3f} of reach ({ow})")
     print(f"[{name}]   worst mesh edge stretch  x{stretch:.3f} ({sw})")
     assert stretch < 1.25, (
@@ -770,7 +865,7 @@ def build_phased_graze(rig, legs, rest, cfg):
     acts = {}
     acts["graze_in"] = new_action(rig, "graze_in", IN)
     for i in range(IN + 1):
-        pose(ease(i / IN)); key(rig, bones, 1 + i)
+        pose(ease(i / IN)); key(rig, bones, i)
     acts["graze"] = new_action(rig, "graze", HOLD)
     for i in range(HOLD + 1):
         p = (i % HOLD) / HOLD
@@ -779,11 +874,13 @@ def build_phased_graze(rig, legs, rest, cfg):
         # consistent and the forefeet keep their planted positions throughout.
         pose(1.0, Vector((0.0, math.sin(p * math.pi * 6.0) * cfg["crop"],
                           max(0.0, math.sin(p * math.pi * 2.0)) ** 3 * cfg["glance"])))
-        key(rig, bones, 1 + i)
+        key(rig, bones, i)
     acts["graze_out"] = new_action(rig, "graze_out", OUT)
     for i in range(OUT + 1):
-        pose(ease(1.0 - i / OUT)); key(rig, bones, 1 + i)
+        pose(ease(1.0 - i / OUT)); key(rig, bones, i)
 
+    for a in acts.values():
+        set_linear(a)
     rig.animation_data.action = None
     clear(rig)
     p_rest = {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
@@ -796,15 +893,15 @@ def build_phased_graze(rig, legs, rest, cfg):
         return max((a[k].translation - b[k].translation).length for k in a)
 
     checks = {
-        "in starts at rest": diff(at("graze_in", 1), p_rest),
-        "in ends where graze starts": diff(at("graze_in", 1 + IN), at("graze", 1)),
-        "graze loops": diff(at("graze", 1), at("graze", 1 + HOLD)),
-        "out starts where graze ends": diff(at("graze_out", 1), at("graze", 1 + HOLD)),
-        "out ends at rest": diff(at("graze_out", 1 + OUT), p_rest),
+        "in starts at rest": diff(at("graze_in", 0), p_rest),
+        "in ends where graze starts": diff(at("graze_in", IN), at("graze", 0)),
+        "graze loops": diff(at("graze", 0), at("graze", HOLD)),
+        "out starts where graze ends": diff(at("graze_out", 0), at("graze", HOLD)),
+        "out ends at rest": diff(at("graze_out", OUT), p_rest),
     }
     worst_foot, lowest = 0.0, 1e9
     for name, n in (("graze_in", IN), ("graze", HOLD), ("graze_out", OUT)):
-        for f in range(1, 2 + n):
+        for f in range(0, n + 1):
             sample(rig, acts[name], f)
             for k, L in legs.items():
                 worst_foot = max(worst_foot,
@@ -814,7 +911,7 @@ def build_phased_graze(rig, legs, rest, cfg):
     clear(rig)
 
     stretch, sw = max_edge_stretch(cfg["meshes"],
-                                   [1 + i for i in range(0, HOLD + 1, 4)])
+                                   [i for i in range(0, HOLD + 1, 4)])
     print("[graze] validation")
     print(f"   {'worst mesh edge stretch':32s} x{stretch:.3f} ({sw})")
     for k, v in checks.items():

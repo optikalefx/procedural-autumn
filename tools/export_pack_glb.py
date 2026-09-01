@@ -55,7 +55,19 @@ def main():
         filepath=out, export_format="GLB", use_selection=True,
         export_apply=True, export_animations=True,
         export_animation_mode="ACTIONS", export_bake_animation=True,
-        export_frame_range=False, export_optimize_animation_size=True,
+        export_frame_range=False,
+        # MUST be False for solved clips. The optimiser drops keys that look
+        # collinear ON EACH ROTATION CHANNEL INDEPENDENTLY, and that is not
+        # lossless for the position those rotations put a foot in: it took the
+        # deer's 10-frame bound down to ~3.4 samples per channel and flattened
+        # the first three quarters of the hind stance to zero velocity, so
+        # `measureGround` found its densest cluster at 0 and the loader rejected
+        # the clip as covering no ground.
+        #
+        # These clips are solved and keyed at EVERY frame precisely because the
+        # pose between frames is not derivable from the channels. There is
+        # nothing redundant in them to optimise away.
+        export_optimize_animation_size=False,
         export_yup=True,
     )
     tris = 0

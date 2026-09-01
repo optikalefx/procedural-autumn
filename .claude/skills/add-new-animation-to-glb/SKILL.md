@@ -257,6 +257,56 @@ one inherited gait beside two solved ones forces the whole species back onto
 excursion and every gait loses its duty factor. Keeping the artist's walk would
 have made the raccoon's run measure three times too slow.
 
+## A bound has to leave the ground
+
+The phases already say when: a gait's airborne windows are the parts of the
+cycle where NO foot is planted, which falls out of duty and phase rather than
+being a separate parameter. A walk at duty 0.62 has none, a trot has two brief
+ones at the diagonal handover, and a deer's bound is airborne **54% of the
+cycle** in two windows.
+
+Lift the body through them. Without it the back and head stay at one height all
+cycle, which is not a bound at all — and the swinging legs have nowhere to go
+but into the belly, so they clip through it. The deer's withers now travel
+0.910 to 1.229 and its lowest hoof leaves the ground entirely.
+
+Two rules make it safe:
+
+- **Lift is zero whenever any foot is down**, so a planted foot is never asked
+  to reach a body that has floated away from it and the solved sweeps are
+  untouched.
+- **Swinging feet ride the lift too.** A foot in the air travels with the animal
+  it is attached to; leave it behind and the leg reaches back down for ground
+  that is no longer under it and folds into the belly.
+
+## Getting the clip out intact — three ways it silently is not
+
+All three produced a clip that measured as covering NO ground, so the loader
+rejected it. None was visible in Blender.
+
+**Key LINEAR, not Bezier.** Blender keys bezier by default, which eases in and
+out of every key. That is right for sparse hand-keying and wrong for solved
+clips: the motion between two frames is already known and easing invents a
+slow-down that is not in it. Measured, the deer's hind hoof sat dead still for
+three quarters of its first keyframe interval before accelerating to 9.4.
+
+**Turn `export_optimize_animation_size` OFF.** It drops keys that look collinear
+on each rotation channel INDEPENDENTLY, which is not lossless for the position
+those rotations put a foot in. It took a 10-key bound down to 3.4 samples per
+channel. Solved clips are keyed at every frame precisely because the pose
+between frames is not derivable from the channels — there is nothing redundant
+to optimise.
+
+**Number frames from ZERO.** With `frame_start = 1` the exporter still bakes
+from frame 0, which carries no key and so holds frame 1's pose. Every clip
+shipped with its first frame duplicated — a 9-frame bound arriving 10 frames
+long with a stationary opening.
+
+Each of these looks like a broken solver and is a broken export. The tell is the
+same every time: `measureGround` finding its densest velocity cluster at zero.
+Decode the GLB and check `duration` and samples-per-channel against what you
+keyed before blaming the pose.
+
 ## Let the solver report the speed; do not tell it one
 
 For a gait, do not pass a stride in. Find the **largest sweep no leg has to

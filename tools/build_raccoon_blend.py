@@ -58,7 +58,7 @@ from mathutils import Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pack_rig_kit import (                                        # noqa: E402
     open_animal, face_forward, point, clear, rx, rz, purge, frame_view,
-    ease, key, new_action, sample, seam, gait_rest, build_gait,
+    ease, key, new_action, sample, seam, set_linear, gait_rest, build_gait,
     LATERAL_WALK, DIAGONAL_TROT, BOUND,
 )
 
@@ -87,14 +87,14 @@ LEGS = {
                         target="front_toe.R", below=["front_toe.R"], contact="front_toe.R"),
 }
 
-WALK = dict(meshes=MESH, frames=14, duty=0.60, lift=0.040, bob=0.006, crouch=0.030,
+WALK = dict(flight=0.0, meshes=MESH, frames=14, duty=0.60, lift=0.040, bob=0.006, crouch=0.030,
             scapula=11.0, phase=LATERAL_WALK)
-TROT = dict(meshes=MESH, frames=9, duty=0.45, lift=0.055, bob=0.008, crouch=0.045,
+TROT = dict(flight=0.015, meshes=MESH, frames=9, duty=0.45, lift=0.055, bob=0.008, crouch=0.045,
             scapula=13.0, phase=DIAGONAL_TROT)
 # A raccoon flees in a bounding lope rather than a flat gallop, and duty is what
 # makes that quick: the same reach spent in a fifth of the cycle covers roughly
 # three times the ground per cycle a walk's duty does. See the skill.
-RUN = dict(meshes=MESH, frames=7, duty=0.22, lift=0.090, bob=0.014, crouch=0.060,
+RUN = dict(flight=0.11, meshes=MESH, frames=7, duty=0.22, lift=0.090, bob=0.014, crouch=0.060,
            scapula=16.0, phase=BOUND)
 
 ALERT_FRAMES = 96       # 4.0 s, looping
@@ -148,13 +148,14 @@ def build_alert(rig, rest):
     act = new_action(rig, "alert", ALERT_FRAMES)
     for i in range(ALERT_FRAMES + 1):
         alert_pose(rig, i % ALERT_FRAMES)
-        key(rig, ALERT_BONES, 1 + i)
+        key(rig, ALERT_BONES, i)
+    set_linear(act)
     rig.animation_data.action = None
     clear(rig)
 
     mz, xs, paw = [], [], 0.0
     for i in range(ALERT_FRAMES + 1):
-        sample(rig, act, 1 + i)
+        sample(rig, act, i)
         mz.append(rig.pose.bones[HEAD].tail.z)
         xs.append(rig.pose.bones[HEAD].tail.x)
         for k, L in LEGS.items():

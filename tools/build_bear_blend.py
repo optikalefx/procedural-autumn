@@ -84,11 +84,11 @@ LEGS = {
 # fit is 0.755 and every solved speed is multiplied by it. A first pass tuned to
 # the model's own units looked right in the build log and landed 25% low in the
 # game. Tune against the number the game prints.
-WALK = dict(meshes=MESHES, frames=16, duty=0.64, lift=0.075, bob=0.012, crouch=0.075,
+WALK = dict(flight=0.0, meshes=MESHES, frames=16, duty=0.64, lift=0.075, bob=0.012, crouch=0.075,
             scapula=12.0, phase=LATERAL_WALK)
-TROT = dict(meshes=MESHES, frames=11, duty=0.48, lift=0.110, bob=0.018, crouch=0.100,
+TROT = dict(flight=0.03, meshes=MESHES, frames=11, duty=0.48, lift=0.110, bob=0.018, crouch=0.100,
             scapula=15.0, phase=DIAGONAL_TROT)
-RUN = dict(meshes=MESHES, frames=9, duty=0.26, lift=0.180, bob=0.026, crouch=0.130,
+RUN = dict(flight=0.26, meshes=MESHES, frames=9, duty=0.26, lift=0.180, bob=0.026, crouch=0.130,
            scapula=19.0, phase=BOUND)
 
 GRAZE = dict(

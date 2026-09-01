@@ -54,7 +54,7 @@ from mathutils import Vector, Matrix
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pack_rig_kit import (                                        # noqa: E402
     open_animal, face_forward, play, point, clear, rx, rz, ease, key,
-    new_action, sample, seam, purge, frame_view, gait_rest, build_gait,
+    new_action, sample, seam, set_linear, purge, frame_view, gait_rest, build_gait,
     LATERAL_WALK, DIAGONAL_TROT, BOUND,
 )
 
@@ -88,14 +88,24 @@ LEGS = {
                         contact="front_toe.R"),
 }
 
+# `flight` is how far the body rises through each airborne window, and for a
+# bound it is the gait rather than a garnish. Without it the back and head stay
+# at one height all cycle, which reads as nothing at all and leaves the swinging
+# legs nowhere to go but into the belly — they clip through it. A fleeing
+# white-tail leaves the ground properly, so 0.34 on a 1.08 m animal.
+#
+# The walk gets none: at duty 0.62 a foot is always down and there is no
+# airborne window to rise through. The trot gets a little, for the brief
+# suspension at each diagonal handover.
+#
 # Cadence and crouch are the two levers, and both are stated rather than tuned
 # by eye. A short stride has to cycle fast to cover ground, and crouching buys
 # stride: the first pass at 0.02 m of crouch solved to a 0.530 sweep against a
 # geometric maximum of 0.790, and 0.49 m/s where a white-tail walks at 1.15.
 # 6-7 cm on a 1.08 m animal is not visible and is most of the gap.
-WALK = dict(meshes=MESHES, frames=18, duty=0.62, lift=0.075, bob=0.010, crouch=0.060,
+WALK = dict(flight=0.0, meshes=MESHES, frames=18, duty=0.62, lift=0.075, bob=0.010, crouch=0.060,
             scapula=13.0, phase=LATERAL_WALK)
-TROT = dict(meshes=MESHES, frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
+TROT = dict(flight=0.035, meshes=MESHES, frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
             scapula=17.0, phase=DIAGONAL_TROT)
 # The bound, and the whole reason a fleeing deer can reach a real speed. Duty is
 # the lever: at 0.20 a hoof is down a fifth of the cycle, so the sweep it can
@@ -103,7 +113,7 @@ TROT = dict(meshes=MESHES, frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0
 # cycle than the same sweep at a walk's duty. That is not a trick — it is what
 # makes a bound fast, and it is why the pack's own run tops out at 1.7 m/s while
 # this reaches a white-tail's.
-RUN = dict(meshes=MESHES, frames=9, duty=0.20, lift=0.20, bob=0.02, crouch=0.09,
+RUN = dict(flight=0.34, meshes=MESHES, frames=9, duty=0.20, lift=0.20, bob=0.02, crouch=0.09,
            scapula=20.0, phase=BOUND)
 
 # Alert. Starts at spine.006: on THIS rig `front_shoulder` parents to spine.005,
@@ -173,13 +183,14 @@ def build_alert(rig, rest):
         for name in EARS:
             pb = rig.pose.bones[name]
             point(pb, rz(15.0 * yaw) @ (pb.tail - pb.head).normalized())
-        key(rig, ALERT_BONES, 1 + i)
+        key(rig, ALERT_BONES, i)
+    set_linear(act)
     rig.animation_data.action = None
     clear(rig)
 
     mz, xs, tz, hoof = [], [], [], 0.0
     for i in range(ALERT_FRAMES + 1):
-        sample(rig, act, 1 + i)
+        sample(rig, act, i)
         mz.append(rig.pose.bones[HEAD].tail.z)
         xs.append(rig.pose.bones[HEAD].tail.x)
         tz.append(rig.pose.bones["spine"].tail.z)
