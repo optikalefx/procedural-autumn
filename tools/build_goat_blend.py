@@ -64,6 +64,7 @@ aims for, which is why the trot solves to a real stride with no heroics — the
 bear's 0.97 is what made its stride nearly impossible.
 """
 
+import math
 import os
 import sys
 
@@ -81,6 +82,64 @@ RIG = "Skeleton_Goat"
 WHITE, BROWN = "Goat_01", "Goat_02"
 MESHES = [WHITE, BROWN]
 HEAD = "scull"
+
+# The reshape's numbers, in mesh units against a withers height H of 0.7216.
+# Tuned to a measured `Oreamnos americanus` profile; `reshape_mountain_goat`
+# explains each op and the research notes are in the commit message.
+#
+# The governing constraint is not anatomy, it is the PIXEL BUDGET. This animal
+# is read at 20-90 m through a 52-degree camera, which at 1080p is 55 px of
+# withers height at 20 m and 12 px at 90 m. A live mountain goat's hump stands
+# about 0.07 H proud of its hip line — a fifth of a pixel at 90 m. So every cue
+# here is deliberately pushed past life size, to about double, because a cue
+# that does not survive being twelve pixels tall did not happen.
+UDDER = dict(tuck=0.026, narrow=0.25)
+# Asymmetric on purpose: a long ramp up from the rump, a short fall into the
+# neck. A symmetric Gaussian reads as a camel's lump rather than a shoulder.
+HUMP = dict(rise=0.125, at=-0.25, sigma_fore=0.13, sigma_aft=0.26)
+BARREL = dict(drop=0.045, at=-0.25, sigma=0.30)
+# The dairy wedge widens REARWARD (bred for udder capacity); Oreamnos widens
+# FORWARD (it hauls itself up rock on its shoulders). Hence a negative hind
+# term: the flank behind the last rib is narrowed, not merely left alone.
+WIDTH = dict(fore=0.22, fore_at=-0.24, hind=-0.090, hind_at=0.20, sigma=0.22)
+NECK_MASS = dict(at=-0.52, sigma=0.14, thicken=0.22, drop=0.042)
+# A crest of erect hair up to 20 cm runs the spine, shoulders and rump. On a
+# palette-flat model hair is not shading, it is mesh, so it is carried here.
+# `rump_at` was 0.30, which put the wool directly over the hind-leg column: it
+# lifted the HIP by 0.025 H, which both steepened the croup and ate a quarter of
+# the hump's differential against it. Moved back onto the croup proper.
+CREST = dict(spine=0.026, at=-0.10, sigma=0.34, rump=0.034, rump_at=0.44,
+             rump_sigma=0.13)
+# Legs are thickened ABOUT THEIR OWN AXIS, not by scaling x from the origin —
+# that splays the stance instead of fattening the limb, which is what the first
+# pass did. Fat at the top and tapering is a limb; uniform is a sausage.
+LEG_FAT = dict(top=0.30, low=0.12, z_lo=0.12, z_hi=0.52)
+# "Pantaloons": the long hair on the thigh that makes the hind leg read as a
+# skirted column rather than a stick. At 20-50 m this is worth as much as the
+# hump, and it sits at the bottom of the frame where the ground line gives the
+# eye something to measure against.
+PANTS = dict(add=0.055, z_lo=0.24, z_hi=0.58)
+# The horns are the highest-value-per-vertex change on the model: a dark spike
+# above the head is unambiguous at every range and nothing else in the valley
+# silhouette has one. A dairy horn sweeps back immediately and adds nothing
+# above the head outline; Oreamnos rises near-vertical off the poll and curls
+# only in the top third, with the bases close together.
+# Measured before touching it, which changed the plan: the pack's horn already
+# rises near-vertical (base centre y -0.739, tip -0.712 — a 10 degree backward
+# lean over its whole length) and its base is 0.049 wide, i.e. 0.068 H against
+# the 0.045-0.055 H a records-class billy carries. It did not need
+# straightening or thickening. It needed to be LONGER, and the bases brought
+# together — and `narrow` as a scale about the mesh origin is what turned it
+# into a wire on the first attempt, because scaling x about x=0 squashes a horn
+# centred at x=0.052 to half its own thickness. Bases move by TRANSLATION.
+HORN = dict(poll=0.80, tall=1.40, inward=0.010, straighten=0.25, curl_from=0.60,
+            # The PAINT band is lower than the geometry band on purpose. The
+            # horn's base ring sits below `poll`, so painting on the same
+            # threshold leaves a white collar between skull and horn — the horn
+            # reads as floating clear of the head and loses the bottom 15% of
+            # its apparent length, on the one cue the whole pass was spent
+            # buying. Lengthening from here instead would drag the skull cap up.
+            paint_from=0.775)
 
 KEEP = {"Goat_Idle": "idle", "Goat_Gesture": "graze", "Goat_Run": "run",
         "Goat_Walk": "walk"}
@@ -174,6 +233,321 @@ def check_meshes_agree(rig):
     assert worst < 1e-5, f"{WHITE} and {BROWN} are {worst:.4f} apart"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Making the dairy goat a mountain goat
+#
+#  The pack's model is a domestic dairy goat: a level back, a light neck, a
+#  shallow barrel on long legs, and an udder. `Oreamnos americanus` is a
+#  different silhouette on the same skeleton — a hump over the shoulders with
+#  the head carried BELOW it, a deep blocky barrel, and heavy forequarters,
+#  because it is an animal that hauls itself up rock rather than one bred to
+#  carry milk.
+#
+#  Every change here is a VERTEX move on the rest mesh. Nothing touches the
+#  armature, the weights or a single clip — which is what makes it legal to do
+#  at all (CLAUDE.md), and it is also why it is cheap: a vertex moved in the
+#  rest pose is moved in all six clips for free, because they are bone
+#  rotations and the skin follows.
+#
+#  Two consequences worth stating, because they decide the whole approach:
+#
+#  * **The legs cannot be shortened.** Their length is in the bones, the clips
+#    are solved against those bones, and the hooves would leave the floor. So
+#    the legs are made to READ shorter the way an animal actually differs —
+#    by deepening the body above them. Same trick a stockman uses by eye.
+#  * **There is no texture to help.** 3,238 triangles and one flat palette
+#    colour, seen mostly at 20-90 m. Silhouette and mass are the only tools,
+#    so every op below is about the outline.
+#
+#  The ops are declarative on purpose: each is a smooth field over the rest
+#  mesh, so the result stays a mesh the deformer can carry and there are no
+#  creases at region edges. `sigma` is a Gaussian falloff along the body axis
+#  in mesh units. In THIS mesh's local space the animal faces -y (the muzzle is
+#  at -0.882 and the tail at +0.525) and the withers sit at z 0.7216.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The one dark block in `ColorPalette_1`, found by scanning it: 50 px wide,
+# centred here in BLENDER uv space. Its sRGB is (101, 101, 101) against the
+# white coat's (249, 249, 249) — a mid grey rather than a true black, because
+# that is the darkest colour this palette contains.
+#
+# Beware the two conventions. glTF flips V against Blender, and Blender's
+# `image.pixels` are LINEAR: read those bytes raw and this swatch reports as
+# (33, 33, 33), which is the same texel described in a colour space nothing
+# ever displays it in. Sample through the gamma or compare the wrong numbers.
+DARK_UV = (0.8521, 0.5005)
+HORN_TOP = 0.938
+HORN_BASE_Y = -0.73
+WITHERS_Z = 0.7216          # spine.005's head; the unit every amplitude is in
+BELLY_Z = 0.3269            # lowest trunk vertex beside the udder, not under it
+
+
+def _gauss(v, c, sigma):
+    return math.exp(-0.5 * ((v - c) / sigma) ** 2)
+
+
+def _updown(z, lo, hi):
+    """0 at `lo`, 1 at `hi`, smooth — 'how much of the back is this vertex'."""
+    t = max(0.0, min(1.0, (z - lo) / (hi - lo)))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _find_nose(ob):
+    """The muzzle vertices that are actually painted pink, on the white coat."""
+    me = ob.data
+    uv = me.uv_layers.active.data
+    out = set()
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            vi = me.loops[li].vertex_index
+            if me.vertices[vi].co.y < -0.80 and uv[li].uv[0] < 0.10:
+                out.add(vi)
+    return out
+
+
+def _repaint(ob, verts, uv_to, label):
+    """Point every loop of `verts` at one palette texel."""
+    if not verts:
+        return
+    uv = ob.data.uv_layers.active.data
+    n = 0
+    for poly in ob.data.polygons:
+        for li in poly.loop_indices:
+            if ob.data.loops[li].vertex_index in verts:
+                uv[li].uv = uv_to
+                n += 1
+    print(f"[shape] {ob.name}: {label} -> uv {uv_to} ({len(verts)} verts, {n} loops)")
+
+
+def _darken_details(ob, gi, wof, paint_ids, nose_ids):
+    """Horns, nose and hooves are the wrong colour, and the horns matter most.
+
+    A mountain goat's horns, nose and hooves are black, and that contrast is the
+    whole reason the horn is worth lengthening: a dark spike above a pale head,
+    against pale rock and pale sky, is the one identity cue that survives every
+    range, every pose and every terrain tilt — because unlike the back line it
+    does not rotate away.
+
+    As shipped, the pack paints all three the colour of the animal: the horn
+    (244, 225, 218), the nose (255, 231, 233) bubblegum pink, the hooves
+    (222, 212, 209) — against a (249, 249, 249) coat. The horn was within 5% of
+    the coat's value, so at 45 m the model's best cue was not merely weak, it
+    was invisible, and lengthening it bought nothing.
+    """
+    me = ob.data
+    hoof = {v.index for v in me.vertices
+            if sum(wof(v, n) for n in gi
+                   if n.split(".")[0] in ("toe", "front_toe")) > 0.5}
+    _repaint(ob, paint_ids, DARK_UV, "horns")
+    _repaint(ob, nose_ids, DARK_UV, "nose")
+    _repaint(ob, hoof, DARK_UV, "hooves")
+
+
+def _repaint_udder(ob, gi, wof):
+    """Give the flattened udder the body's colour.
+
+    Tucking the udder into the belly moves the GEOMETRY and leaves the PAINT,
+    and on a palette-mapped model that is not subtle: the udder's 25 UVs sit
+    around (0.074, 0.41) — a pink swatch — while the belly around it maps to
+    (0.86, 0.93). The result is a goat with a pink smear under it where the
+    udder used to hang, which is arguably worse than the udder.
+
+    The two coats have DIFFERENT UVs — that is what makes them two coats — so
+    the body colour is found per mesh rather than hard-coded.
+    """
+    me = ob.data
+    uv = me.uv_layers.active.data
+    leg_groups = [n for n in gi if n.split(".")[0] in (
+        "thigh", "shin", "foot", "toe",
+        "front_thigh", "front_shin", "front_foot", "front_toe")]
+
+    # ANY weight at all, not a majority. At a 0.25 threshold the teats survived
+    # as a pink smudge under the rear belly: their vertices are mostly weighted
+    # to the belly bones and only slightly to `udder`, so they read as body by
+    # weight and as udder by PAINT. The geometry test that matters here is the
+    # UV, not the skinning.
+    udder = {v.index for v in me.vertices if wof(v, "udder") > 0.0}
+    if not udder:
+        return
+    # The body's dominant colour: the commonest UV over trunk vertices that are
+    # not the udder, not a leg and not the head (which carries its own swatches).
+    body = {}
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            vi = me.loops[li].vertex_index
+            v = me.vertices[vi]
+            if vi in udder or v.co.y < -0.55:
+                continue
+            if min(1.0, sum(wof(v, n) for n in leg_groups)) > 0.5:
+                continue
+            k = tuple(round(c, 4) for c in uv[li].uv)
+            body[k] = body.get(k, 0) + 1
+    target = max(body.items(), key=lambda kv: kv[1])[0]
+
+    # The udder's own swatches, to catch faces the weights do not reach.
+    swatch = {tuple(round(c, 4) for c in uv[li].uv)
+              for poly in me.polygons for li in poly.loop_indices
+              if me.loops[li].vertex_index in udder}
+    swatch.discard(target)
+
+    n = 0
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            vi = me.loops[li].vertex_index
+            v = me.vertices[vi]
+            here = tuple(round(c, 4) for c in uv[li].uv)
+            # Under the belly and painted udder-colour is udder, however it is
+            # weighted. Bounded to the belly so a swatch shared with the muzzle
+            # or the ears is not repainted along with it.
+            belly = v.co.y > -0.10 and v.co.z < 0.55
+            if vi in udder or (belly and here in swatch):
+                uv[li].uv = target
+                n += 1
+    print(f"[shape] {ob.name}: repainted {n} udder loops to the body colour "
+          f"at uv {target}")
+
+
+def reshape_mountain_goat(report=True):
+    """Move the dairy goat's vertices onto a mountain goat's silhouette.
+
+    Applied to BOTH coats identically — they are the same 828 vertices with
+    different UVs, and `check_meshes_agree` is what proves it stayed that way.
+    """
+    obs = [bpy.data.objects[n] for n in MESHES]
+    gi = {g.name: g.index for g in obs[0].vertex_groups}
+
+    leg_groups = [n for n in gi if n.split(".")[0] in (
+        "thigh", "shin", "foot", "toe",
+        "front_thigh", "front_shin", "front_foot", "front_toe")]
+
+    def wof(v, name):
+        j = gi.get(name)
+        return 0.0 if j is None else sum(w.weight for w in v.groups if w.group == j)
+
+    # The horn's own extents, measured rather than assumed: the tip's height
+    # sets the parameter t along the horn, and the base's y is what the lower
+    # two thirds are straightened toward.
+    horns = [v for v in obs[0].data.vertices
+             if v.co.z > HORN["poll"] and wof(v, "scull") > 0.5
+             and v.co.y > -0.80 and abs(v.co.x) > 0.015]
+    global HORN_TOP, HORN_BASE_Y
+    HORN_TOP = max(v.co.z for v in horns)
+    base = [v for v in horns if v.co.z < HORN["poll"] + 0.02]
+    HORN_BASE_Y = (sum(v.co.y for v in base) / len(base)) if base else -0.73
+    horn_ids = {v.index for v in horns}
+    paint_ids = {v.index for v in obs[0].data.vertices
+                 if v.co.z > HORN["paint_from"] and wof(v, "scull") > 0.5
+                 and v.co.y > -0.80 and abs(v.co.x) > 0.015}
+    print(f"[shape] horns: {len(horns)} verts, poll {HORN['poll']:.3f} -> tip "
+          f"{HORN_TOP:.3f}, base y {HORN_BASE_Y:+.3f}")
+
+    # Leg vertices are thickened about their own bone, so the centres are
+    # needed before the sweep.
+    rig = bpy.data.objects[RIG]
+    axis = {n: (rig.data.bones[n].head_local.x, rig.data.bones[n].head_local.y)
+            for n in leg_groups if n in rig.data.bones}
+    hind = {n for n in leg_groups if not n.startswith("front_")}
+
+    horn_z0 = HORN["poll"]
+
+    moved = []
+    for ob in obs:
+        for v in ob.data.vertices:
+            co = v.co
+            x, y, z = co.x, co.y, co.z
+            wl = {n: wof(v, n) for n in leg_groups}
+            leg = min(1.0, sum(wl.values()))
+            trunk = 1.0 - leg
+            up = _updown(z, BELLY_Z, WITHERS_Z)          # how much of the back
+            dx = dy = dz = 0.0
+
+            # ── 1. the udder goes ────────────────────────────────────────────
+            # Not deleted — deleting leaves a hole in a closed mesh and there is
+            # no topology to spare. The 76 udder vertices are drawn up into the
+            # belly line and squeezed toward the midline, so the surface closes
+            # over itself. `_repaint_udder` then deals with the paint, which is
+            # a separate problem and bit once already.
+            u = wof(v, "udder")
+            if u > 0.0:
+                dz += u * (BELLY_Z + UDDER["tuck"] - z)
+                dx += u * (UDDER["narrow"] - 1.0) * x
+
+            # ── 2. the shoulder hump, asymmetric ─────────────────────────────
+            # THE cue, and it has to be a RAMP rather than a lump: at twelve
+            # pixels tall the eye reads the whole top edge, so a continuous
+            # rise from the tail head to the shoulder moves far more of the
+            # outline than a local bulge over the scapula does.
+            sig = HUMP["sigma_fore"] if y < HUMP["at"] else HUMP["sigma_aft"]
+            dz += HUMP["rise"] * trunk * up * _gauss(y, HUMP["at"], sig)
+
+            # ── 3. the hair crest, spine and rump ────────────────────────────
+            dz += trunk * up * (CREST["spine"] * _gauss(y, CREST["at"], CREST["sigma"])
+                                + CREST["rump"] * _gauss(y, CREST["rump_at"],
+                                                         CREST["rump_sigma"]))
+
+            # ── 4. the barrel deepens and the wedge turns round ──────────────
+            # Dropping the chest floor is what makes the legs read short
+            # without touching a bone, and the fore/hind width terms reverse
+            # the dairy wedge: heavy in front of the diaphragm, plain behind.
+            dz -= BARREL["drop"] * trunk * (1.0 - up) * _gauss(y, BARREL["at"], BARREL["sigma"])
+            dx += x * trunk * (WIDTH["fore"] * _gauss(y, WIDTH["fore_at"], WIDTH["sigma"])
+                               + WIDTH["hind"] * _gauss(y, WIDTH["hind_at"], WIDTH["sigma"]))
+
+            # ── 5. the neck thickens and slants DOWN out of the hump ─────────
+            # A dairy goat carries a light neck high and its poll sits above the
+            # back line. On this animal the poll belongs BELOW the top of the
+            # hump, and that inverted relationship is the loudest single tell.
+            n = _gauss(y, NECK_MASS["at"], NECK_MASS["sigma"]) * trunk
+            dx += x * NECK_MASS["thicken"] * n
+            dz -= NECK_MASS["drop"] * n * up
+
+            # ── 6. the legs: columns, fat at the top ─────────────────────────
+            if leg > 0.01:
+                bone = max(wl.items(), key=lambda kv: kv[1])[0]
+                cx, cy = axis.get(bone, (x, y))
+                t = _updown(z, LEG_FAT["z_lo"], LEG_FAT["z_hi"])
+                fat = LEG_FAT["low"] + (LEG_FAT["top"] - LEG_FAT["low"]) * t
+                if bone in hind:
+                    fat += PANTS["add"] * _updown(z, PANTS["z_lo"], PANTS["z_hi"])
+                dx += (x - cx) * fat * leg
+                dy += (y - cy) * fat * leg
+
+            # ── 7. the horns rise before they curl ───────────────────────────
+            # Everything above the poll on the skull. The lower two thirds are
+            # pulled back toward vertical and the whole horn lengthened; the
+            # top third keeps the sweep the artist drew, which is where a
+            # mountain goat's curl actually lives. Bases drawn together.
+            # `abs(x) > 0.015` keeps the four midline vertices of the skull
+            # cap out of it — they sit at the same height as the horn bases and
+            # straightening them dents the top of the head.
+            if (z > horn_z0 and wof(v, "scull") > 0.5 and y > -0.80
+                    and abs(x) > 0.015):
+                t = min(1.0, (z - horn_z0) / max(HORN_TOP - horn_z0, 1e-6))
+                dz += (z - horn_z0) * (HORN["tall"] - 1.0)
+                keep = _updown(t, HORN["curl_from"], 1.0)
+                dy -= (y - HORN_BASE_Y) * HORN["straighten"] * (1.0 - keep)
+                dx -= math.copysign(HORN["inward"], x) * (1.0 - keep)
+
+            v.co = (x + dx, y + dy, z + dz)
+            if ob is obs[0]:
+                moved.append(((dx * dx + dy * dy + dz * dz) ** 0.5, y, z))
+
+    # The nose is found ONCE, on the white coat, and applied to both by vertex
+    # index. The two coats differ only in their UVs, so a test that asks "which
+    # loops are painted pink" finds the nose on `Goat_01` and nothing at all on
+    # `Goat_02` — which is how the brown goat kept a pink nose for one build.
+    nose_ids = _find_nose(obs[0])
+    for ob in obs:
+        _repaint_udder(ob, gi, wof)
+        _darken_details(ob, gi, wof, paint_ids, nose_ids)
+
+    if report:
+        moved.sort(reverse=True)
+        print(f"[shape] moved {sum(1 for d, *_ in moved if d > 1e-6)} of "
+              f"{len(moved)} vertices; largest {moved[0][0]:.4f} "
+              f"({moved[0][0]/WITHERS_Z*100:.1f}% of withers height)")
+
+
 def alert_scan(f):
     """Fast turns separated by long holds.
 
@@ -245,6 +619,9 @@ def main():
     rig = open_animal(RIG, MESHES, "Goat_")
     stack_meshes()
     face_forward(rig, HEAD)
+    # Before ANYTHING is solved: the trot is solved against this mesh and its
+    # edge-stretch check is only meaningful on the mesh that ships.
+    reshape_mountain_goat()
     check_meshes_agree(rig)
 
     for act in list(bpy.data.actions):

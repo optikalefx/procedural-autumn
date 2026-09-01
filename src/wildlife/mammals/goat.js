@@ -81,10 +81,21 @@ export const GOAT = {
     // did, and nothing about placement, streaming or the photo gate shifts.
     //
     // What DOES shift is the back line, and it is a finding rather than a
-    // setting: the pack's horns are short and swept back where the blueprint's
-    // curved up, so matching the box puts the withers at 1.005 m against the
-    // blueprint joint's 0.885. A slightly taller, slightly shorter-horned goat.
-    height: 1.306,
+    // setting: matching the box puts the withers near 1.005 m against the
+    // blueprint joint's 0.885. A slightly taller goat.
+    //
+    // 1.370, not the 1.306 this shipped with, and it is not a tweak. The
+    // reshape lengthened the horns, and the box top IS the horn tip — so
+    // holding the box at 1.306 made the horns eat the difference and quietly
+    // shrank the whole ANIMAL (fit x1.392 -> x1.370, and every gait speed with
+    // it, since they are measured off the scaled model). 1.370 is 1.392 x the
+    // reshaped model's own 0.984 units: the body keeps exactly the size it had
+    // and the longer horn is added on top of it, which is what was meant.
+    // Measure the dimension you are FITTING BY, not the one you are quoting —
+    // `mammals/ram.js` carries the same warning for the same reason.
+    //
+    // Re-derive this whenever `HORN.tall` changes: the box top IS the horn tip.
+    height: 1.370,
     // The four hooves. Dots stripped by three's `GLTFLoader`, not by Blender —
     // `PropertyBinding.sanitizeNodeName` strips what its own animation-path
     // syntax reserves, and the GLB really does carry `toe.L`. A name that does
