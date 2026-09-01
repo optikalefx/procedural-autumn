@@ -63,11 +63,13 @@ again — habitat, streaming, the mesh pool, the logbook, photo detection and th
 compass paw all walk one cast.
 
 - **Procedural** (`blueprint:`) — profile arrays lofted by `quadruped.js`, gait
-  solved against the ground every frame by `animal_anim.js`. Rabbit, squirrel,
-  goat, yak.
+  solved against the ground every frame by `animal_anim.js`. Rabbit and
+  squirrel.
 - **Hand-authored** (`glb:`) — a mesh and its clips built in Blender, played by
-  an `AnimationMixer` in `glb_rig.js`. Fox, bear, deer, raccoon — the last two
-  out of the bought pack, via `tools/build_<x>_blend.py`.
+  an `AnimationMixer` in `glb_rig.js`. Fox, bear, deer, raccoon, goat, ram — all
+  but the fox out of the bought pack, via `tools/build_<x>_blend.py`. The ram
+  replaced the procedural yak and the pack's goat replaced the procedural one;
+  both alpine species are hand-authored now, and CLIMB / PERCH did not change.
 
 `GlbRig` and `AnimRig` answer the same contract (`reset` / `update` / `setLod` /
 `setShadow` / `gaitName` / `mesh`). Adding a hand-authored animal is a model and

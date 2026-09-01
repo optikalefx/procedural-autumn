@@ -97,7 +97,7 @@ const CFG = {
   // these two that habitat is tiny: summed over the map, the goat's
   // suitability field integrates to 0.19 km² of perfect-equivalent ground
   // against the deer's 2.13. Same site count therefore costs eleven times the
-  // density, and these are what land ~140 goat and ~85 yak home sites — about
+  // density, and these are what land ~140 goat and ~85 ram home sites — about
   // half the deer's, which is the intent. A goat is not rare because there are
   // few of them; it is rare because almost none of the valley is a mountain.
   //
@@ -109,7 +109,11 @@ const CFG = {
   // across a valley rather than met at the roadside, and an animal on a crag
   // that only exists inside a hundred metres is one nobody will ever see.
   goat:   { spawn: 165, despawn: 205, live: 7, perKm2: 720 },
-  yak:    { spawn: 185, despawn: 230, live: 6, perKm2: 210 },
+  // The ram's row is the yak's, unchanged when the model changed: where a
+  // species lives and how thickly is a fact about the mountain, not about the
+  // mesh. Its `live` is one under the goat's for the same reason it always
+  // was — the two share a pool budget and the goat is the commoner animal.
+  ram:    { spawn: 185, despawn: 230, live: 6, perKm2: 210 },
 };
 
 // Seeded firefly population inside the 60 m wrap box, per quality tier.
@@ -405,7 +409,7 @@ export class Wildlife extends System {
    * A grid rather than a call per candidate for two reasons, and the second is
    * the real one. `classify` is a dozen height samples and placement asks about
    * ninety thousand points, so per-species calls would be most of the cost of
-   * building the world's wildlife. And a yak does not want to stand *in* the
+   * building the world's wildlife. And a ram does not want to stand *in* the
    * crag, it wants the apron beside it — which is a question about the
    * neighbourhood, and a neighbourhood maximum over a raster is a handful of
    * array reads where re-classifying five points around every candidate would
@@ -495,7 +499,7 @@ export class Wildlife extends System {
       // Preferred steepness, as a band rather than a cap. `slopeBest[0]` is
       // where the ground stops being a meadow and `slopeBest[1]` is where it
       // stops being standable; a goat's band is most of a talus fan and a
-      // yak's is the bench below it, which is how the two share a mountain
+      // ram's is the bench below it, which is how the two share a mountain
       // without standing in the same places.
       const rise = smoothstep(climb.slopeBest[0] * 0.5, climb.slopeBest[0], slope);
       const stand = 1 - smoothstep(climb.slopeBest[1], climb.slopeMax, slope);

@@ -35,7 +35,7 @@ export const ST = {
   // *player's* eyes rather than the animal's.
   WATCH:  6,
   // ── the alpine pair ────────────────────────────────────────────────────────
-  // Goats and yaks live on the crags, and the one thing they do that nothing
+  // Goats and rams live on the crags, and the one thing they do that nothing
   // else in the cast does is treat a boulder as ground: they walk up onto one
   // and stand on top of it. CLIMB is the walk up, PERCH is standing there.
   //
@@ -60,7 +60,7 @@ const FAN = [0, -0.42, 0.42, -0.95, 0.95, -1.7, 1.7];
 // radius of one body length is about right for a quadruped, and
 // `TURN_TIME * gait.walk` IS that body length without adding a per-species
 // number to keep in sync: walk speed already scales with body size across the
-// whole cast, from a squirrel to a yak. `camp_dog.js` has steered this way all
+// whole cast, from a squirrel to a bear. `camp_dog.js` has steered this way all
 // along (`Math.min(1.35, speed * 5.0)`), which is why the dog never pivoted.
 const TURN_TIME = 1.2;
 // A floor on that radius, in metres, and a guard rather than a tuning knob. It

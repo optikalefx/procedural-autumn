@@ -1,151 +1,165 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  goat — the white shape on the skyline.
 //
-//  Everything one animal is: the blueprint (the profile arrays that are the
-//  actual art), the coat variants, the gait ladder and the brain numbers.
-//  `quadruped.js` turns the blueprint into geometry; nothing in here knows
-//  how that is done, and nothing in there knows about this animal.
+//  Now the bought pack's, where it used to be a blueprint of profile arrays.
+//  The mesh, rig and weights are ithappy's (`assets/models/Animals_v3.0.blend`);
+//  the two clips this game needs and the pack does not ship are authored onto
+//  that rig by `tools/build_goat_blend.py`, which saves
+//  `assets/models/goat_pack.blend`. `tools/export_pack_glb.py` turns that into
+//  `/models/goat_pack.glb`.
 //
-//  The goat is the first of the two alpine species, and the pair are the only
-//  animals in the game that live *above* the world the rest of the cast shares:
-//  the crags, the talus fans and the scree at the top of the massif. Two things
-//  follow from that and both are in the numbers below — a goat is barely
-//  frightened of a camper (nothing on a cliff is), and it climbs, which is the
-//  `rock` block at the bottom of `brain`.
+//  The `brain` block below is byte-for-byte the one the procedural goat used.
+//  Where an animal lives and what it minds does not depend on who modelled it —
+//  this is still the first of the two alpine species, it still lives above the
+//  slope and altitude gates the rest of the cast is held to, it is still barely
+//  frightened of a camper, and it still CLIMBs and PERCHes on the `rock` block
+//  at the bottom.
+//
+//  ── two meshes, one skeleton, and the variant is a TEXTURE ─────────────────
+//  `Goat_01` and `Goat_02` are both already parented to `Skeleton_Goat`, so
+//  there was none of the re-parenting the deer needed. What is unusual is how
+//  they differ: measured index-wise in their own local space the two meshes'
+//  828 vertices are IDENTICAL to 0.000000 — same silhouette, same weights, same
+//  39 vertex groups. Only the UVs differ, `Goat_01` reading 38 distinct UVs off
+//  the shared palette and `Goat_02` reading 328. So `hide` buys a second COAT
+//  here where for the deer it buys a second SILHOUETTE, and the four variants
+//  below are two colours at four sizes.
+//
+//  Both meshes are nannies — each carries an udder, a beard and the same short
+//  backswept horns. `billy` is therefore a larger nanny and `kid` a small one,
+//  because neither is in the pack. Said plainly rather than hidden: the
+//  alternative is a variant name that quietly promises a mesh nobody has.
+//
+//  ── what the swap costs, as art ───────────────────────────────────────────
+//  The blueprint this replaces was drawn to `docs/DESIGN_BRIEF.md` and its own
+//  header states the brief exactly: "the back line RISES to a hump over the
+//  shoulders and the head is carried below it… read as a flat shape at 90 m it
+//  is a pale brick with a bump on the front of it". That is Oreamnos, and it is
+//  not what the pack ships. The pack's goat is a domestic dairy goat: level
+//  back, no withers hump, a straight neck carried level with the spine, an
+//  udder and a beard. At range it reads as a pale quadruped rather than as a
+//  mountain goat specifically, and there is no fixing that at this layer —
+//  the silhouette is the mesh. It is recorded here because it is the one thing
+//  this animal lost that no number below can get back.
+//
+//  ── the clips ─────────────────────────────────────────────────────────────
+//    idle   150f  the pack's. Every hoof dead still, duty 1.00.
+//    graze  150f  the pack's `Gesture`, and a real graze — the muzzle drops
+//                 0.640 -> 0.093 in model units with all four hooves planted.
+//                 Measured before it was given a slot: this pack's Gesture is a
+//                 graze on the deer, a forage on the raccoon and a REAR on the
+//                 bear, so which of graze/alert it can fill is per-animal.
+//    walk    30f  the pack's. Duty per hoof 0.50/0.37/0.40/0.43 — marginal
+//                 against the 0.5 that DEFINES a walk, and the honest caveat on
+//                 the 1.27 m/s below; it is also much better planted than the
+//                 deer's 0.25/0.30/0.23/0.10, which ships.
+//    run     18f  the pack's, and it is the LEAP: duty 0.06/0.11/0.28/0.44 is
+//                 an animal in the air, which is what a bound is. Dropping a
+//                 clip over that reading cost the deer most of a day and
+//                 produced a worse animation.
+//    trot    11f  SOLVED here — diagonal pairs, each hoof authored as a path
+//                 over the ground and the leg solved to reach it. Nothing in
+//                 the pack has a trot; checked across all 233 actions.
+//    alert  120f  AUTHORED here — head up, ears forward, a slow scan either way
+//                 with long holds. There is one Gesture per animal and it is
+//                 the graze, so the alert had nowhere else to come from.
+//
+//  The rule that governs the asset is in CLAUDE.md and it is absolute: a GLB's
+//  animations are read-only. The gait speeds below are MEASURED at load.
 // ─────────────────────────────────────────────────────────────────────────────
-import { MIX, mixLerp } from '../animal_rig.js';
-
-// Mountain goat. Not a deer with white paint on it: the back line *rises* to a
-// hump over the shoulders and the head is carried below it, the barrel is short
-// and blocky, and the legs are short columns rather than the deer's stilts. Read
-// as a flat shape at 90 m it is a pale brick with a bump on the front of it and
-// a black hook on the front of that, which is exactly what the animal is.
-const BLUEPRINT = () => ({
-  key: 'goat',
-  pelvis: [0, 0.82, -0.38],
-  spine: [[0, 0.845, -0.14], [0, 0.855, 0.10]],
-  chest: [0, 0.885, 0.30],
-  // Short and carried level-to-low: a goat's poll sits *under* the top of its
-  // own shoulder hump, which is the single proportion that stops this reading
-  // as a small pale deer. Two bones, always — the animator solves the neck as a
-  // two-link chain and silently welds the skull to the shoulders below that.
-  neck: [[0, 0.975, 0.44], [0, 1.045, 0.58]],
-  head: [0, 1.045, 0.68],
-  // A goat's backside is a rounded woolly mass, not a taper.
-  rumpTip: false,
-  barrel: [
-    { z: -0.60, y: 0.780, rx: 0.115, ry: 0.130 },
-    { z: -0.52, y: 0.820, rx: 0.165, ry: 0.185, key: 1 },
-    { z: -0.38, y: 0.845, rx: 0.196, ry: 0.212, key: 1 },   // haunch
-    { z: -0.14, y: 0.845, rx: 0.190, ry: 0.222 },
-    { z: 0.10, y: 0.855, rx: 0.196, ry: 0.238, key: 1 },
-    // The withers hump. It is the highest point on the animal and it is the
-    // whole silhouette — flagged `key` so the mid LOD keeps it, for the same
-    // reason the bear's is.
-    { z: 0.28, y: 0.885, rx: 0.204, ry: 0.262, key: 1 },
-    { z: 0.42, y: 0.855, rx: 0.150, ry: 0.196, key: 1 },
-  ],
-  belly: [
-    { z: -0.28, y: 0.700, rx: 0.115, ry: 0.050 },
-    { z: 0.00, y: 0.685, rx: 0.130, ry: 0.058 },
-    { z: 0.26, y: 0.705, rx: 0.120, ry: 0.052 },
-  ],
-  // As deep at the root as the withers station it grows out of. A narrower
-  // first station looks fine standing and then becomes a discrete hump the
-  // moment graze folds the neck down and exposes the seam.
-  neckProfile: [
-    { rx: 0.170, ry: 0.230 },
-    { rx: 0.140, ry: 0.180 },
-    { rx: 0.108, ry: 0.128 },
-    { rx: 0.086, ry: 0.098 },
-  ],
-  // Narrow, straight-profiled skull. No beard: it is 12 cm of hair on an animal
-  // whose closest honest approach is tens of metres, and the horns above it are
-  // already doing the identification work at every range that exists.
-  headProfile: [
-    { dy: -0.006, dz: -0.086, rx: 0.078, ry: 0.084 },
-    { dy: 0.002, dz: -0.012, rx: 0.092, ry: 0.098 },
-    { dy: -0.010, dz: 0.066, rx: 0.066, ry: 0.068 },
-    { dy: -0.026, dz: 0.136, rx: 0.050, ry: 0.048 },
-    { dy: -0.038, dz: 0.178, rx: 0.040, ry: 0.036, mix: MIX.dark },
-  ],
-  ear: { at: [0.062, 0.046, -0.024], dir: [0.72, 0.60, -0.26], len: 0.115, w: 0.048, h: 0.032 },
-  // Short, held clear of the rump, dark underneath. `tailMixBias` holds the
-  // pale coat until the last of it so this is a dark tip rather than half a
-  // dark tail — see the fox's brush.
-  tail: [[0, 0.800, -0.600], [0, 0.815, -0.660]],
-  tailR: [0.038, 0.020], tailFlat: 0.90,
-  tailMix: MIX.coat, tailTipMix: mixLerp(MIX.coat, MIX.dark, 0.65), tailMixBias: 2.0,
-  // ── why the joints zigzag ──────────────────────────────────────────────────
-  // Same arithmetic the bear's header sets out. Standing hip→hock has to sit
-  // under ~85% of what `|knee| + |hock|` can reach or the IK clamps straight
-  // for most of the stride and the legs visibly lock. These sit at 83% and 84%,
-  // front and back, on legs deliberately short: a goat is a body on stumps.
-  hind: {
-    tag: 'hind', front: false, bend: 1,
-    hip: [0.135, 0.86, -0.36], knee: [0, -0.28, 0.14], hock: [0, -0.22, -0.19], foot: [0, -0.36, 0.04],
-    rTop: 0.135, rMid: 0.062, rLow: 0.038, rFoot: 0.028, flat: 0.86,
-    hoofH: 0.052, hoofR: 0.038, hoofLong: 1.25, hoofFwd: 0.006, sockTop: 0.86,
-  },
-  fore: {
-    tag: 'fore', front: true, bend: -1,
-    hip: [0.125, 0.95, 0.28], knee: [0, -0.30, -0.16], hock: [0, -0.24, 0.19], foot: [0, -0.41, 0.0],
-    rTop: 0.128, rMid: 0.060, rLow: 0.037, rFoot: 0.027, flat: 0.86,
-    hoofH: 0.052, hoofR: 0.036, hoofLong: 1.25, hoofFwd: 0.006, sockTop: 0.86,
-  },
-});
-
-// Both sexes carry horns, so unlike the stag's rack this is not variant data —
-// every goat gets it. `tineEvery: 99` is the whole trick: the antler builder
-// forks a tine every `tineEvery` segments and there are only seven, so a number
-// past the end buys a bare curving beam. That beam already sweeps back and down
-// as it grows (see `buildAntler`), which is precisely a goat's horn.
-const GOAT_HORN = {
-  base: [0.042, 0.062, -0.030],
-  out: 0.22, up: 0.92, back: -0.34,
-  len: 0.24, r0: 0.026, r1: 0.009, tineEvery: 99,
-};
 
 export const GOAT = {
   key: 'goat',
   plural: 'Mountain goats',
-  // ── a pale animal, and the one hide in the cast that keeps its value ──────
-  // Every other coat here is dark because it has to survive being a silhouette
-  // against a #f0ad46 meadow. A goat is never against a meadow: it is against
-  // wet grey rock, blue shadow and sky, and the reason a real one is visible at
-  // two kilometres is that it is *lighter* than all three. So the identity is
-  // carried the other way up — a near-white coat with black horns, hooves and
-  // muzzle — and the distance treatment is turned down to match.
-  //
-  // `silFlat` collapses the four hide regions toward `dark` with range and
-  // `silDark` pulls the whole animal down in value; at the cast defaults
-  // (0.55 / 0.72) a goat at 120 m is a grey blob, which throws away the only
-  // cue this animal has. Turned down rather than off: some flattening still
-  // buys the shape, and a hide that ignored the ramp entirely would be the one
-  // animal in the game that gets *brighter* relative to its neighbours as it
-  // recedes.
-  variants: [
-    { name: 'nanny', scale: 0.94, antler: GOAT_HORN, weight: 0.44,
-      col: { coat: 0xcfc8b6, pale: 0xe6e0d0, dark: 0x413c36, horn: 0x2c2926,
-        silFlat: 0.26, silDark: 0.90 } },
-    { name: 'billy', scale: 1.08, antler: GOAT_HORN, weight: 0.30,
-      col: { coat: 0xd6cfbd, pale: 0xeee8d8, dark: 0x3a352f, horn: 0x272421,
-        silFlat: 0.26, silDark: 0.90 } },
-    { name: 'kid', scale: 0.68, antler: GOAT_HORN, weight: 0.16,
-      col: { coat: 0xd9d3c3, pale: 0xefeade, dark: 0x484239, horn: 0x36322d,
-        silFlat: 0.26, silDark: 0.90 } },
-    // Summer coat, half shed and stained by the rock it lies on.
-    { name: 'smoke', scale: 0.99, antler: GOAT_HORN, weight: 0.10,
-      col: { coat: 0xb2aa98, pale: 0xd8d1c0, dark: 0x3c372f, horn: 0x2a2724,
-        silFlat: 0.30, silDark: 0.88 } },
-  ],
-  blueprint: BLUEPRINT,
-  gait: {
-    walk: 1.05, trot: 2.8, run: 7.5,
-    strideBase: 0.85, strideGain: 2.2, dutyWalk: 0.65, dutyTrot: 0.52, dutyRun: 0.34,
-    bobAmp: 0.032, pitchAmp: 0.045, liftScale: 0.95,
-    grazeAng: 1.25, grazeRake: 1.40,
+
+  glb: {
+    url: '/models/goat_pack.glb',
+    // Horn tip to hoof. `loadGlbSpecies` scales by the whole scene's bounding
+    // box, and 1.306 is what the procedural goat this replaces measured off its
+    // own built mesh (`tools/_scratch/_goatheight.mjs`) — so at every one of the
+    // four variant scales the new animal fills exactly the space the old one
+    // did, and nothing about placement, streaming or the photo gate shifts.
+    //
+    // What DOES shift is the back line, and it is a finding rather than a
+    // setting: the pack's horns are short and swept back where the blueprint's
+    // curved up, so matching the box puts the withers at 1.005 m against the
+    // blueprint joint's 0.885. A slightly taller, slightly shorter-horned goat.
+    height: 1.306,
+    // The four hooves. Dots stripped by three's `GLTFLoader`, not by Blender —
+    // `PropertyBinding.sanitizeNodeName` strips what its own animation-path
+    // syntax reserves, and the GLB really does carry `toe.L`. A name that does
+    // not resolve is skipped and the clip then measures zero ground, which
+    // throws as "check that the model faces -z" — a naming fault wearing a
+    // facing fault's error message.
+    feet: ['toeL', 'toeR', 'front_toeL', 'front_toeR'],
+    // Read this animal's speed from where its hooves touch rather than from how
+    // far they swing. `measureExcursion` divides a hoof's total swing by the
+    // CYCLE, but a planted hoof covers that ground during its STANCE — so it
+    // underreports by exactly the duty factor. The same three clips read
+    // 0.63/1.37/1.20 on the excursion path and 1.27/3.10/2.57 on this one.
+    //
+    // The claim `contact` makes is that every hoof of every moving clip is
+    // genuinely planted for a sustained stretch. It is fully true of the solved
+    // trot and only mostly true of the pack's walk, whose duty is 0.37-0.50
+    // against the 0.5 a walk is defined by — so the 1.27 m/s below is at the
+    // generous end of what that clip contains. It lands inside a real mountain
+    // goat's 1.0-1.5 m/s walking range, and the honest alternative (excursion,
+    // 0.63) is wrong by more in the other direction on every gait at once.
+    measure: 'contact',
+    clips: {
+      stand: { name: 'idle' },
+      // The pack's own walk, at its authored tempo. 30 frames is 0.77 Hz, and
+      // the stride it carries is a long 1.64 m — raising the cadence the way
+      // the deer's needed would push the speed past what a goat walks at.
+      walk: { name: 'walk', rate: 1.0 },
+      // Solved. 11 frames at 24 fps is 2.18 Hz, diagonal pairs, sweep 0.638 m
+      // at duty 0.45 — the largest stride no leg has to clamp for anywhere in
+      // the cycle, which is a finding about this animal's proportions and not a
+      // number anyone chose. Its rest extension is 0.815 hind / 0.874 fore,
+      // inside the band that makes a stride possible at all.
+      trot: { name: 'trot', rate: 1.0 },
+      // ── the pack's leap, and the one clip that needed a cadence ────────
+      // `rate` is cadence and nothing else; the 2.04 m of ground each leap
+      // covers is the artist's. As authored the clip is 0.79 s — 1.26 leaps a
+      // second — which measures 2.57 m/s and lands the run BELOW the trot's
+      // 3.10, collapsing the crossfade band and skipping the middle gait
+      // entirely. At 2.0x it makes 2.5 leaps a second for 5.14 m/s.
+      //
+      // That is also the right number: a mountain goat is a climber, not a
+      // runner, and is credited with about 5.5 m/s flat out — where the
+      // procedural goat this replaces was driven at 7.5.
+      run: { name: 'run', rate: 2.0 },
+      graze: { name: 'graze' },
+      alert: { name: 'alert' },
+    },
   },
+
+  // Two coats at four sizes, `hide` picking the mesh. The weights are the
+  // procedural goat's unchanged. No `col` on any of them: this asset is one
+  // TEXTURED palette material, so a tint would multiply the map rather than
+  // recolour a region, and every coat wears the material exactly as Blender
+  // authored it — which is the promise of this track.
+  //
+  // What is lost against the blueprint is the distance treatment. That goat
+  // carried `silFlat`/`silDark` turned down hard, because a mountain goat is
+  // the one animal in the cast that is visible at range by being LIGHTER than
+  // the rock behind it, and the cast default collapsed it to a grey blob. The
+  // hide shader resolves its regions from a vertex attribute a GLB does not
+  // carry, so this track has no silhouette ramp at all — the animal simply
+  // stays pale with range, which for this species is the failure mode that
+  // matters least.
+  variants: [
+    { name: 'nanny', scale: 0.94, weight: 0.44, hide: ['Goat_02'] },
+    { name: 'billy', scale: 1.08, weight: 0.30, hide: ['Goat_02'] },
+    { name: 'kid', scale: 0.68, weight: 0.16, hide: ['Goat_02'] },
+    // The pack's second UV set: a brown goat off the same palette. It stands in
+    // for the old summer coat, half shed and stained by the rock it lies on.
+    { name: 'smoke', scale: 0.99, weight: 0.10, hide: ['Goat_01'] },
+  ],
+
+  // Measured off the clips at load and written back here by `loadGlbSpecies`.
+  gait: { walk: 1.268, trot: 3.095, run: 5.142 },
+
   brain: {
     // ── barely frightened, and honestly so ──────────────────────────────────
     // A mountain goat lives where nothing can follow it, and it behaves like
@@ -168,7 +182,9 @@ export const GOAT = {
     // ── the rock ────────────────────────────────────────────────────────────
     // The block that makes this species what it is. See `animal_brain.js`
     // (CLIMB / PERCH) for the machinery and `Wildlife._findPerches` for where
-    // the boulder list comes from.
+    // the boulder list comes from. None of it knows which backend draws the
+    // animal: CLIMB and PERCH ride a ground override that `GlbRig` consumes
+    // through the same `drive.pos` the procedural rig did.
     rock: {
       // Where a goat may stand at all. `slopeMax` widens the two hard gates
       // every other species is held to — placement, wander targets and the

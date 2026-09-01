@@ -108,18 +108,17 @@ const LADDER = {
   // sequence hurried up. The entry is named for the dog because that is who
   // needed it first; the gait is not a dog's, it is a slow heavy quadruped's.
   raccoon: ['dogwalk', 'walk', 'bound'],
-  // A goat walks and trots like any short-legged ungulate, and at the top it
-  // BOUNDS rather than gallops. That is not a stylisation: the ground a
-  // mountain goat runs on is broken rock, and what it does there is hop from
-  // stance to stance with the hind pair together. It is also the only top gear
-  // that reads at all on a 20 m ledge, where a gallop would be two strides and
-  // a cut.
-  goat: ['walk', 'trot', 'bound'],
-  // A yak is a bovid and does neither of those. Both lower rungs are
-  // lateral-sequence walks with only the DUTY between them — the raccoon's
-  // trick, and for the raccoon's reason: this animal ambles, it does not trot.
-  // The top is a gallop, because a frightened cow gallops; it does not bound.
-  yak: ['dogwalk', 'walk', 'gallop'],
+  // No `goat` row either, and for the fox's reason: `mammals/goat.js` now
+  // carries a `glb` block, so the goat is six clips on an AnimationMixer and
+  // this solver never runs for it. Its old row asked for walk / trot / bound,
+  // and the pack's own leap is a bound — so the ladder it describes survives
+  // the swap; it is just played rather than solved.
+  //
+  // No `ram` row, and no `yak` one either. The second alpine species used to be
+  // a procedural yak and carried `['dogwalk', 'walk', 'gallop']` here; it is now
+  // the bought pack's ram, which is hand-authored (`mammals/ram.js` carries a
+  // `glb` block), so its gaits are six clips on an AnimationMixer and this
+  // solver never runs for it — the same reason the fox has no row.
 };
 
 const _a = new THREE.Vector3();

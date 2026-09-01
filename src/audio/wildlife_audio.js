@@ -18,10 +18,14 @@ const VOICE = {
   // a nasal complaint that runs out halfway through, not a call across a
   // meadow. The narrow high throat band is the nose in it.
   goat: { wave: 'triangle', f: 470, spread: 120, dur: 0.22, sag: 0.80, throat: 1900, level: 0.85 },
-  // Below the bear, and longer. A yak's grunt is chest and almost no edge —
-  // most of what carries across a bench is the breath, which is why the throat
-  // band sits under the tone rather than an octave above it.
-  yak: { wave: 'sawtooth', f: 74, spread: 20, dur: 0.55, sag: 0.86, throat: 240, level: 1.30 },
+  // The ram, where the yak's grunt used to be, and it is a different animal in
+  // the throat as well as on the hill. A yak's call was chest and almost no
+  // edge (f 74, throat 240); a bighorn is a sheep, so this is the goat's bleat
+  // dropped an octave and a half and given time to sag — coarse rather than
+  // nasal, because the ram is four times the goat's mass and its voice is the
+  // one thing about it that says so. `throat` sits just above the tone, which
+  // is the rasp; the goat's sits an octave and a half above, which is the nose.
+  ram: { wave: 'sawtooth', f: 205, spread: 45, dur: 0.34, sag: 0.78, throat: 620, level: 1.05 },
 };
 
 export class WildlifeAudio {
@@ -216,7 +220,7 @@ export class WildlifeAudio {
    * long low sawtooth huff. Adding the alpine pair made that a table, because
    * both of them sit *between* those extremes rather than beside either — a
    * goat's bleat is a deer's pushed up and shortened until it is nasal, and a
-   * yak's grunt is the bear's dropped an octave and given a wider throat.
+   * ram's is the goat's dropped an octave and a half and let sag.
    *
    *   wave   sawtooth is a chest, triangle is a throat
    *   f      base pitch, hz, plus `spread` of jitter

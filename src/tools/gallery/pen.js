@@ -382,8 +382,15 @@ export function penEntry(mod, path, rockKit) {
       // objects are what make the claim tokens global: separate copies per
       // group let two goats from different groups own "the same" rock and
       // stand inside each other on its summit.
+      //
+      // `taken: -1` means FREE, and it has to be -1 rather than null: the claim
+      // test in `Brain._maybeClimb` is `r.taken >= 0 && r.taken !== this.slot`,
+      // and `null >= 0` is TRUE in JavaScript — so a record built with `null`
+      // reads as owned by somebody else to every animal, and no alpine animal
+      // could ever climb in this pen. It failed silently: the states simply
+      // never reached CLIMB. `Wildlife._findPerches` has always used -1.
       const perchRecords = rocks.map((k) => ({
-        x: k.x, z: k.z, top: W.getHeight(k.x, k.z) + k.rise, r: k.r, rise: k.rise, taken: null,
+        x: k.x, z: k.z, top: W.getHeight(k.x, k.z) + k.rise, r: k.r, rise: k.rise, taken: -1,
       }));
 
       for (const key of herdKeys) {

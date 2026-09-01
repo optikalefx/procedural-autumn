@@ -527,7 +527,7 @@ export class Rocks extends System {
   /**
    * The world Y of the top of one placed rock, and its half-width in plan.
    *
-   * Added for the mountain goats and yaks, which stand on boulders — the one
+   * Added for the mountain goats and rams, which stand on boulders — the one
    * thing in the game that treats a rock as ground rather than as scenery. The
    * instance carries its own per-axis scale and the library carries the mesh's
    * local extents, and neither half is meaningful without the other, so the

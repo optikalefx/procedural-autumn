@@ -44,7 +44,7 @@ import { FOX } from './mammals/fox.js';
 import { SQUIRREL } from './mammals/squirrel.js';
 import { RACCOON } from './mammals/raccoon.js';
 import { GOAT } from './mammals/goat.js';
-import { YAK } from './mammals/yak.js';
+import { RAM } from './mammals/ram.js';
 
 export { createHideMaterial, setHideSilScale, SIL_FOV_REF }
   from './mammals/hide.js';
@@ -78,7 +78,7 @@ export const SPECIES = {
   // that is the one row a runaway up here would take with it; the census's
   // `sites` count against the cap is the check.)
   goat: GOAT,
-  yak: YAK,
+  ram: RAM,
 };
 
 /** Is this species hand-authored in Blender rather than lofted from a blueprint? */
