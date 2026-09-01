@@ -80,6 +80,20 @@ const MIN_RADIUS = 0.45;
 // walking anywhere, and an animal pinned against a river has to be able to
 // unwind on the spot or it is stuck there.
 const PIVOT = 0.5;
+// How steep the invisible ramp onto a boulder is allowed to be, in rise per
+// metre. The ramp used to be `0.68 * r` wide whatever the rock's height, which
+// is a width chosen from the rock's PLAN and a lift taken from its RISE — two
+// unrelated numbers. On a wide low boulder that spreads a metre of lift over
+// nearly five metres of open hillside, and an animal standing anywhere in it is
+// visibly in mid air: measured over 30 perches, 20% of the ramp ring held the
+// animal more than 0.35 m above bare ground and the worst sample was 4.26 m.
+//
+// Deriving the width from the rise instead keeps the ramp a ramp. 0.75 is about
+// 37 degrees — unmistakably a climb, and half the goat's own `slopeMax` of 1.45,
+// so the animal is never asked for a grade it would refuse to walk on. It can
+// only ever make the ramp NARROWER than the old rule (see the `min`), so no
+// boulder that used to be climbable stops being so.
+const RAMP_GRADE = 0.75;
 // The states that are journeys. Only these insist on carrying a walk through a
 // turn; see `_steer`.
 const TRAVELLING = new Set([ST.WANDER, ST.FLEE, ST.PATROL, ST.CLIMB]);
@@ -142,6 +156,12 @@ export class Brain {
     // says the way out is closed. See the blocked-step guard in _steer.
     this._pinned = 0;
     this._cornered = 0;
+    // How much of the invisible RAMP this animal is currently allowed. See
+    // `_groundY`: the ramp exists to carry an animal that is walking up or
+    // down a boulder, and an animal that has STOPPED on it is simply standing
+    // in mid air. Eased rather than switched so an interrupted climb steps
+    // down over about half a second instead of dropping.
+    this._ramp = 1;
     this._fleeX = 0; this._fleeZ = 0;   // where this flight started from
     this._scale = 1;
 
@@ -178,6 +198,12 @@ export class Brain {
     this._avoid = 0;
     this._pinned = 0;
     this._cornered = 0;
+    // How much of the invisible RAMP this animal is currently allowed. See
+    // `_groundY`: the ramp exists to carry an animal that is walking up or
+    // down a boulder, and an animal that has STOPPED on it is simply standing
+    // in mid air. Eased rather than switched so an interrupted climb steps
+    // down over about half a second instead of dropping.
+    this._ramp = 1;
     this._watchMove = 0;
     this._release();
   }
@@ -326,6 +352,16 @@ export class Brain {
       : this.state === ST.ALERT ? 0.8
       : this.state === ST.WATCH ? 0.55 : 0;
     this.flag = toward(this.flag, wantFlag, dt * 5);
+
+    // The ramp is for travelling. A goat that freezes because it has seen you
+    // does it wherever it happens to be, and half the time that is half way up
+    // an invisible slope — which is the one thing in this mechanic a player
+    // can catch, because a stationary animal is the one they get to look at.
+    // CLIMB and PERCH always keep it: PERCH is standing on the summit, and an
+    // animal in CLIMB is committed to the rock even at a dead stop.
+    const wantRamp = (this.state === ST.CLIMB || this.state === ST.PERCH
+      || this.speed > 0.05) ? 1 : 0;
+    this._ramp = toward(this._ramp, wantRamp, dt * 2.2);
 
     this._steer(dt, W, S);
 
@@ -799,16 +835,45 @@ export class Brain {
     // point itself and the animal stands on the real rock; outside, it is the
     // nearest point on the rim, so the ramp descends from the height the animal
     // was standing on rather than from a bounding-box corner.
+    const k = d > 1e-4 ? Math.min(d, R.r * 0.50) / d : 0;
+    const sx = R.x + dx * k, sz = R.z + dz * k;   // clamped into the standing disc
     let top = R.top;
     if (R.field) {
-      const k = d > 1e-4 ? Math.min(d, R.r * 0.50) / d : 0;
-      const s = samplePerchField(R.field, R.x + dx * k, R.z + dz * k);
+      const s = samplePerchField(R.field, sx, sz);
       // NaN is a column that missed the rock entirely — every corner of the
       // cell was off it. `top` is the honest fallback: it is what this did
       // before the field existed, and it is never below the true surface.
       if (!Number.isNaN(s)) top = s;
     }
-    const y = lerp(top, g, smoothstep(R.r * 0.50, R.r * 1.18, d));
+    // The ramp ends where a `RAMP_GRADE` slope would have reached the ground,
+    // and never further out than the old flat `1.18 * r`. `rise` is the rock's
+    // height over the hillside at its own centre, so this is one number per
+    // rock rather than something that wobbles as the sample point moves.
+    const inner = R.r * 0.50;
+    const outer = inner + Math.min(R.r * 0.68, Math.max(R.rise, 0) / RAMP_GRADE);
+
+    // The ramp is a LIFT THAT RIDES THE TERRAIN, not a slide down to it from an
+    // absolute height, and on this species' ground that is the whole
+    // difference. `lerp(top, g, s)` starts every ramp at the summit's absolute
+    // Y; goats live on 24-43 degree slopes (`rock.slopeBest`), so on the
+    // downhill side the hill falls away under the ramp while the ramp does not
+    // follow, and the animal hangs in the air over open ground — measured at up
+    // to 4.26 m, which is the goat standing in the sky beside a boulder.
+    //
+    // Taking the lift at the RIM and decaying it with distance keeps the same
+    // two endpoints and fixes the middle: at the rim this is exactly the real
+    // surface (`gRim` is `g` there, so it returns `top`), and past it the
+    // animal walks down a slope that stays the same height above whatever
+    // ground it is actually over.
+    const lift = Math.max(0, top - (d > inner ? W.getHeight(sx, sz) : g));
+    // Inside the standing disc the animal is on the rock and stays there
+    // whatever it is doing — 99.9% of that disc is over real geometry, so this
+    // is not a concession. Outside it, the lift is the ramp and is only held
+    // while the animal is actually using it (`_ramp`). The step between the two
+    // is the rock's own edge, which really is close to vertical: 74% of
+    // approach bearings are steeper than the goat will walk on.
+    const st = smoothstep(inner, outer, d);
+    const y = g + lift * (1 - st) * (st > 0 ? this._ramp : 1);
     return y > g ? y : g;
   }
 

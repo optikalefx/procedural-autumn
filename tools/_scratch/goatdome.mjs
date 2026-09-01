@@ -117,14 +117,17 @@ const domeY = (rock, gy, d) => {
  * and they are mirrored because importing `Brain` would drag in three.
  */
 const fieldY = (rock, gy, x, z, d) => {
+  const k = d > 1e-4 ? Math.min(d, rock.r * 0.50) / d : 0;
+  const sx = rock.x + (x - rock.x) * k, sz = rock.z + (z - rock.z) * k;
   let top = rock.top;
   if (rock.field) {
-    const k = d > 1e-4 ? Math.min(d, rock.r * 0.50) / d : 0;
-    const sv = samplePerchField(rock.field, rock.x + (x - rock.x) * k,
-                                rock.z + (z - rock.z) * k);
+    const sv = samplePerchField(rock.field, sx, sz);
     if (!Number.isNaN(sv)) top = sv;
   }
-  const y = lerp(top, gy, smoothstep(rock.r * 0.50, rock.r * 1.18, d));
+  const inner = rock.r * 0.50;
+  const outer = inner + Math.min(rock.r * 0.68, Math.max(rock.rise, 0) / 0.75);
+  const lift = Math.max(0, top - (d > inner ? world.getHeight(sx, sz) : gy));
+  const y = gy + lift * (1 - smoothstep(inner, outer, d));
   return y > gy ? y : gy;
 };
 
@@ -132,11 +135,13 @@ const fieldY = (rock, gy, x, z, d) => {
 const CELL = 64;
 const NC = Math.ceil(world.half / CELL);
 const perches = [];
+const allInst = [];
 outer:
 for (let cz = -NC; cz <= NC; cz++) {
   for (let cx = -NC; cx <= NC; cx++) {
     const cell = [];
     scat.generateCell(cx, cz, CELL, 0, cell);
+    for (const inst of cell) allInst.push(inst);
     for (const inst of cell) {
       if (inst.size < CFG.minSize) continue;
       const r = reachOf(inst);
@@ -164,6 +169,12 @@ console.log(`goat perches sampled: ${perches.length} `
 
 const summit = [], flank = [], grades = [];
 const summitNew = [], flankNew = [];
+// Is the dome inventing ground? It is a CIRCLE of radius max(rx, rz) and a rock
+// is not a circle, so the question is how much of it has no rock under it.
+const aspects = [], missInner = [], missOuter = [], neigh = [];
+// The float, isolated: how high the dome holds an animal at a point that has
+// NO rock under it at all. This is the picture of a goat standing in mid air.
+const phantom = [], radii = [], rampSpan = [];
 let missTop = 0, nTop = 0;
 for (const p of perches) {
   const mesh = placedMesh(p.inst);
@@ -180,6 +191,7 @@ for (const p of perches) {
       const truth = real === null ? gy : Math.max(real, gy);
       const err = dome - truth;                    // + is the goat floating
       const errNew = fieldY(p, gy, x, z, d) - truth;
+      if (real === null && d > p.r * 0.50) phantom.push(fieldY(p, gy, x, z, d) - gy);
       if (d <= p.r * 0.50) {
         nTop++;
         if (real === null) missTop++;
@@ -187,6 +199,42 @@ for (const p of perches) {
       } else { flank.push(err); flankNew.push(errNew); }
     }
   }
+  // How round is this rock, and how much of its dome is over nothing?
+  {
+    const fp = footOf(p.inst);
+    const rx = fp.rx * p.inst.sx, rz = fp.rz * p.inst.sz;
+    aspects.push(Math.max(rx, rz) / Math.max(1e-3, Math.min(rx, rz)));
+    let inN = 0, inMiss = 0, outN = 0, outMiss = 0;
+    for (let i = -10; i <= 10; i++) {
+      for (let j = -10; j <= 10; j++) {
+        const x = p.x + (i / 10) * p.r * 1.18;
+        const z = p.z + (j / 10) * p.r * 1.18;
+        const d = Math.hypot(x - p.x, z - p.z);
+        if (d > p.r * 1.18) continue;
+        const hit = surfaceY(mesh, p.inst, x, z) !== null;
+        if (d <= p.r * 0.50) { inN++; if (!hit) inMiss++; }
+        else { outN++; if (!hit) outMiss++; }
+      }
+    }
+    radii.push(p.r);
+    rampSpan.push(p.r * 0.68);
+    missInner.push(inMiss / Math.max(1, inN));
+    missOuter.push(outMiss / Math.max(1, outN));
+
+    // A neighbour is another rock big enough to be an obstacle whose own body
+    // reaches inside this dome. `Brain._groundY` knows only about `Brain.rock`,
+    // so the animal walks straight through every one of them.
+    let n = 0;
+    for (const o of allInst) {
+      if (o === p.inst) continue;
+      if (o.size < 0.5) continue;
+      const or = reachOf(o);
+      const dd = Math.hypot(o.x - p.x, o.z - p.z);
+      if (dd < p.r * 1.18 + or) n++;
+    }
+    neigh.push(n);
+  }
+
   // The real grade on the way in: worst rise per metre along 16 bearings,
   // sampled from the foot of the rock to its centre.
   for (let a = 0; a < 16; a++) {
@@ -227,6 +275,33 @@ stat(flankNew, '  across the flank');
 console.log(`  summit samples that miss the rock entirely: ${missTop}/${nTop} `
   + `(${(100 * missTop / Math.max(1, nTop)).toFixed(0)}%) — the dome`
   + ` says "rock" where there is only hillside\n`);
+
+console.log('is the dome over actual rock? (the dome is a CIRCLE of radius max(rx,rz))');
+stat(aspects, '  plan aspect ratio');
+stat(missInner, '  standing disc, miss');
+stat(missOuter, '  ramp ring, miss');
+const badInner = missInner.filter((v) => v > 0.25).length;
+console.log(`  perches whose STANDING disc is >25% off-rock: ${badInner}/${missInner.length}`);
+console.log(`  (a miss inside the standing disc is an animal held at the`
+  + ` bounding-box top over open hillside)\n`);
+
+console.log('the FLOAT — dome height above bare hillside where there is no rock:');
+stat(phantom, '  phantom lift (m)');
+stat(radii, '  perch radius r (m)');
+stat(rampSpan, '  ramp span 0.68r (m)');
+const bigFloat = phantom.filter((v) => v > 0.35).length;
+console.log(`  samples holding an animal >0.35 m above open ground: `
+  + `${bigFloat}/${phantom.length} (${(100 * bigFloat / Math.max(1, phantom.length)).toFixed(0)}%)`);
+console.log(`  the ramp is 0.68*r wide REGARDLESS of rise, so a wide low boulder`);
+console.log(`  spreads a metre of lift over several metres of open hillside.\n`);
+
+console.log('neighbours the ground function cannot see:');
+stat(neigh, '  other rocks in the dome');
+const withN = neigh.filter((v) => v > 0).length;
+console.log(`  perches with at least one neighbour inside their own dome: `
+  + `${withN}/${neigh.length} (${(100 * withN / Math.max(1, neigh.length)).toFixed(0)}%)`);
+console.log(`  Brain._groundY only ever knows about Brain.rock, so every one of`
+  + ` these is a rock the animal walks through.\n`);
 
 console.log('the real grade an animal would have to walk up (rise per metre):');
 stat(grades, '  worst per bearing');
