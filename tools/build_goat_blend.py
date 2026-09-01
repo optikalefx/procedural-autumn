@@ -976,10 +976,27 @@ def main():
         t.strips.new(act.name, int(act.frame_start), act)
         t.is_solo = False
 
+    # The brown coat goes, and it goes HERE rather than at the top of the build.
+    # Everything above is written to operate on both meshes — `reshape_mountain_
+    # goat` and `add_fur` apply by vertex INDEX precisely because the two differ
+    # only in their UVs, and `check_meshes_agree` is the assert that keeps them
+    # honest. Dropping `Goat_02` earlier would delete that check along with the
+    # mesh; dropping it last keeps the whole build verified and simply does not
+    # ship the result.
+    #
+    # It shipped as the `smoke` variant and read as a dirty white goat rather
+    # than a second animal — 828 vertices identical to `Goat_01` to 0.000000, so
+    # a palette apart and nothing else. With that variant gone from
+    # `mammals/goat.js` this mesh can never be displayed, and an unshowable mesh
+    # in the GLB is bytes on every download and a second skinned primitive at
+    # load. See the species file.
+    bpy.data.objects.remove(bpy.data.objects[BROWN], do_unlink=True)
+    print(f"[build] dropped {BROWN}: one coat ships, and it is {WHITE}")
+
     trot = bpy.data.actions["trot"]
     frame_view(rig, [WHITE], clip="trot",
                clip_range=(int(trot.frame_start), int(trot.frame_end)))
-    mats, imgs = purge(MESHES)
+    mats, imgs = purge([WHITE])
     print(f"[build] kept materials {mats} images {imgs}")
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -15,20 +15,25 @@
 //  frightened of a camper, and it still CLIMBs and PERCHes on the `rock` block
 //  at the bottom.
 //
-//  ── two meshes, one skeleton, and the variant is a TEXTURE ─────────────────
+//  ── two meshes, one skeleton, and only one of them is ever shown ───────────
 //  `Goat_01` and `Goat_02` are both already parented to `Skeleton_Goat`, so
 //  there was none of the re-parenting the deer needed. What is unusual is how
 //  they differ: measured index-wise in their own local space the two meshes'
 //  828 vertices are IDENTICAL to 0.000000 — same silhouette, same weights, same
 //  39 vertex groups. Only the UVs differ, `Goat_01` reading 38 distinct UVs off
-//  the shared palette and `Goat_02` reading 328. So `hide` buys a second COAT
-//  here where for the deer it buys a second SILHOUETTE, and the four variants
-//  below are two colours at four sizes.
+//  the shared palette and `Goat_02` reading 328. So `hide` would buy a second
+//  COAT here where for the deer it buys a second SILHOUETTE.
 //
-//  Both meshes are nannies — each carries an udder, a beard and the same short
-//  backswept horns. `billy` is therefore a larger nanny and `kid` a small one,
-//  because neither is in the pack. Said plainly rather than hidden: the
-//  alternative is a variant name that quietly promises a mesh nobody has.
+//  It no longer buys anything, because there is one variant. The brown coat
+//  shipped as `smoke` and read as a dirty white goat rather than as a second
+//  animal — one mesh, one silhouette, a palette away — so it went, and
+//  `Goat_02` is dead weight the build script now drops before export rather
+//  than geometry nothing can display.
+//
+//  The mesh is a nanny: it carries an udder, a beard and the same short
+//  backswept horns. `billy` is therefore a larger nanny, because no male is in
+//  the pack. Said plainly rather than hidden — the alternative is a variant
+//  name that quietly promises a mesh nobody has.
 //
 //  ── what the swap costs, as art ───────────────────────────────────────────
 //  The blueprint this replaces was drawn to `docs/DESIGN_BRIEF.md` and its own
@@ -159,13 +164,19 @@ export const GOAT = {
   // carry, so this track has no silhouette ramp at all — the animal simply
   // stays pale with range, which for this species is the failure mode that
   // matters least.
+  // ONE coat, and the reason is that there was never more than one animal here.
+  // `nanny`, `billy` and `kid` were the identical mesh at 0.94, 1.08 and 0.68 —
+  // three names for one silhouette scaled, which is a size distribution wearing
+  // the costume of a cast. `smoke` was the only one that was genuinely
+  // different, and the brown UV set read as a dirty white goat rather than as a
+  // second animal. So the ladder is gone and what is left is the goat.
+  //
+  // No `hide` any more, and that is the point rather than an omission. It named
+  // `Goat_02`, which the build script now drops before export — so the filter
+  // would match nothing and quietly read as a mesh still being suppressed. The
+  // brown coat is gone from the asset, not hidden in it.
   variants: [
-    { name: 'nanny', scale: 0.94, weight: 0.44, hide: ['Goat_02'] },
-    { name: 'billy', scale: 1.08, weight: 0.30, hide: ['Goat_02'] },
-    { name: 'kid', scale: 0.68, weight: 0.16, hide: ['Goat_02'] },
-    // The pack's second UV set: a brown goat off the same palette. It stands in
-    // for the old summer coat, half shed and stained by the rock it lies on.
-    { name: 'smoke', scale: 0.99, weight: 0.10, hide: ['Goat_01'] },
+    { name: 'billy', scale: 1.08, weight: 1.00 },
   ],
 
   // Measured off the clips at load and written back here by `loadGlbSpecies`.
