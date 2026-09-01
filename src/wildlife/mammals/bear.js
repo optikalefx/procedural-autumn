@@ -1,93 +1,78 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  bear — the big one, now hand-authored.
+//  bear — the animal that makes the valley feel unsafe.
 //
-//  This was a blueprint: profile arrays that `quadruped.js` lofted into a
-//  skeleton, with the gait solved against the ground every frame. It is now a
-//  mesh and eight clips modelled and animated by hand in Blender
-//  (`assets/models/bear.blend`, built by `tools/build_bear_reference.py`),
-//  exported to one GLB and played back by three's `AnimationMixer`
-//  (`../glb_rig.js`). The fox went first; this is the second animal on that
-//  track.
+//  The bought pack's model with its locomotion solved on top. Mesh, rig and
+//  weights are ithappy's (`assets/models/Animals_v3.0.blend`); the gaits and
+//  the phased graze are solved onto that rig by `tools/build_bear_blend.py`,
+//  which saves `assets/models/bear_pack.blend`, and `tools/export_pack_glb.py`
+//  turns that into `/models/bear_pack.glb`.
 //
-//  So this file carries no blueprint and no coat geometry any more. What it
-//  does carry is everything that is true about the ANIMAL rather than about
-//  how it is drawn — where it lives, what it minds, how far off it notices
-//  you — and none of that changed when the model did. The `brain` block below
-//  is byte-for-byte the one the procedural bear used.
+//  The `brain` block below is byte-for-byte the hand-authored bear's. Where an
+//  animal lives and what it minds does not depend on who modelled it.
+//
+//  ── two coats, and the pack handed them over ──────────────────────────────
+//  `Bear_01` and `Bear_02` are both already parented to `Skeleton_Bear`, so
+//  `hide` picks between them with no rig surgery — the deer needed re-parenting
+//  for the same effect and the raccoon has no second mesh at all.
+//
+//  `Bear_Cub_01` is excluded: a different skeleton entirely, 32 bones against
+//  40, names that do not match, 0.423 of the total length. A cub needs its own
+//  build, exactly as the fawn does.
+//
+//  ── the clips ─────────────────────────────────────────────────────────────
+//    idle    301f  the pack's
+//    alert   115f  the pack's `Gesture`, and a better alert than anything that
+//                  could be solved: the bear REARS, muzzle 0.516 -> 2.203 with
+//                  its fore paws lifting to 0.613. Standing up to look is what
+//                  a bear's alarm IS.
+//    walk     16f  SOLVED. The pack's own walk was the best-planted clip in the
+//                  whole pack — duty 0.61/0.61/0.64/0.61 — and was dropped
+//                  anyway, because `measure: 'contact'` is a claim about EVERY
+//                  moving clip and one inherited gait forfeits it for all three.
+//    trot     11f  SOLVED, diagonal pairs.
+//    run       9f  SOLVED as a bound. Duty 0.26 is what makes it fast.
+//    graze  36/96/36  SOLVED, and PHASED — see `grazeIn` below.
 //
 //  The rule that governs the asset is in CLAUDE.md and it is absolute: a GLB's
-//  animations are read-only. The gait speeds below are not authored here —
-//  they are MEASURED off the clips at load and written back onto this record,
-//  because how far a bear travels has to be whatever its legs actually do.
+//  animations are read-only. The gait speeds below are MEASURED at load.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const BEAR = {
   key: 'bear',
   plural: 'Bears',
 
-  // ── the asset ──────────────────────────────────────────────────────────────
-  // The presence of this block is what puts the species on the hand-authored
-  // track; `Wildlife` picks its backend off it and branches nowhere else.
   glb: {
-    url: '/models/bear_reference.glb',
-    // Hump to paw, in metres — on a bear the shoulder hump is the highest
-    // point, not the ears. Chosen to stand exactly where the animal it
-    // replaced stood: the procedural blueprint's barrel topped out at
-    // max(y + ry) = 1.185 m at the hump, so the valley's bears are the same
-    // size of animal they were before the model changed.
+    url: '/models/bear_pack.glb',
+    // Unchanged from the hand-authored bear, and deliberately: the valley's
+    // bears stay the size of animal they have always been. The pack model's box
+    // is 1.563, so the fit is 0.755 and every solved speed is multiplied by it —
+    // which is why the gaits below are cadenced against the SHIPPED number
+    // rather than the model's own units.
     height: 1.18,
-    // The points on the animal that touch the ground, which `measureGround`
-    // samples to read how fast the ground moves under it. These are four
-    // zero-weight bones sitting exactly on the pads, and naming them rather
-    // than the ankles is the difference between a measurement and an estimate:
-    // a bear is plantigrade, so through a stance the foot rolls over its
-    // planted toe and the ankle arcs forward over the contact point, reading
-    // 23% fast at a walk. Blender's exporter strips the dots, so `hind_tip.L`
-    // is `hind_tipL` here.
-    feet: ['fore_tipL', 'fore_tipR', 'hind_tipL', 'hind_tipR'],
-    // Read this animal's speed from where its paws actually touch, rather than
-    // from how far they swing. Saying so is a claim about the ASSET: all three
-    // locomotion clips are solved against the ground in `build_bear_reference`,
-    // every planted paw is on Z=0 to the millimetre, and all four agree on how
-    // fast the ground is moving. The fox has no such claim to make yet.
+    // The four paws. Dots stripped by three's `GLTFLoader`, not by Blender.
+    feet: ['toeL', 'toeR', 'front_toeL', 'front_toeR'],
+    // Earned: all three locomotion clips are solved here, each validated to a
+    // planted paw within 0.001 mm of its authored path, so the claim that every
+    // moving clip is genuinely planted actually holds.
     measure: 'contact',
     clips: {
-      // `rate` is a playback speed and NOT an edit: every pose the bear
-      // strikes is a pose that is in the .blend. A clip with no `rate` is a
-      // pose clip — it covers no ground, so it is neither measured nor
-      // rate-driven.
-      //
       stand: { name: 'idle' },
-      // A four-beat lateral-sequence walk, one stride per 48 frames, which at
-      // 24 fps is 0.50 Hz; a walking quadruped runs 1.0-1.8 Hz and a bear's
-      // heavy rolling walk sits at the bottom of that. 2x puts it at exactly
-      // 1.0 Hz. This is a judgement about cadence and nothing else — raise it
-      // and the bear covers ground faster in exact proportion.
-      walk: { name: 'Walk', rate: 2.0 },
-      // One diagonal-pair stride over 16 frames — 1.5 Hz as authored, already
-      // a real trotting cadence. 1.3x lifts it to 1.95 Hz, which is what keeps
-      // the trot clear of the walk on the speed ladder below; much more and
-      // the artist's timing is the thing being undone.
-      trot: { name: 'Trot', rate: 1.3 },
-      // A half-bound rotary gallop: the hind pair drives together, a short
-      // extended flight, the fores catch in sequence, then the long gathered
-      // flight. Three 16-frame strides in one two-second clip — 1.5 Hz as
-      // authored, and 1.25x lifts it to 1.88 Hz, a real bear's gallop cadence.
-      // `strides` no longer feeds the speed (a ground speed is a speed however
-      // many strides went past while it was read); it only divides the loader's
-      // readout into a per-stride distance.
-      run: { name: 'run', rate: 1.25, strides: 3 },
+      // 16 frames is 1.50 Hz — a bear's heavy roll sits mid-band. Sweep 0.559,
+      // duty 0.64.
+      walk: { name: 'walk', rate: 1.0 },
+      // 11 frames, 2.18 Hz. Sweep 0.648, duty 0.48.
+      trot: { name: 'trot', rate: 1.0 },
+      // A bound. Sweep 0.822 at duty 0.26 — the same reach spent in a quarter
+      // of the cycle, which is what makes a charging bear fast and is not a
+      // raised rate. No leg is asked for more than it has.
+      run: { name: 'run', rate: 1.0 },
       // The graze is authored in three phases, and declaring `grazeIn` and
       // `grazeOut` is what tells `GlbRig` to sequence them instead of
-      // crossfading straight to the loop. The .blend is explicit about this:
-      // each clip carries a `next_action` naming the one after it, because the
-      // brain holds a graze for a variable number of seconds and a single long
-      // clip would raise the head every time it repeated.
-      //
-      // They are pose clips, not cycles — they cover no ground, so they are
-      // neither measured nor rate-driven — and they meet the loop exactly:
-      // `graze_in`'s last frame IS `graze`'s first, and `graze_out` starts on
-      // that same pose and ends on the exact idle rest.
+      // crossfading straight to the loop — the Brain holds a graze for a
+      // variable 10-26 s, and a single long clip would raise the head every
+      // time it repeated. They meet exactly: measured, all five joins are
+      // within 0.001 mm and `graze_out` ends on the rest pose, which the
+      // sequencer parks on as its idle carrier.
       graze: { name: 'graze' },
       grazeIn: { name: 'graze_in' },
       grazeOut: { name: 'graze_out' },
@@ -95,91 +80,17 @@ export const BEAR = {
     },
   },
 
-  // ── the coats ──────────────────────────────────────────────────────────────
-  // The asset ships untextured — every material is a flat baseColorFactor — so
-  // a morph is a recolour of the same mesh rather than a second export.
-  //
-  // Colours are LINEAR triples, keyed by Blender material name, because that is
-  // the space glTF stores `baseColorFactor` in and the space `GLTFLoader` hands
-  // three. Writing them as sRGB hex here would silently shift every morph.
-  //
-  // ── why these are no longer the light browns the blueprint wore ───────────
-  // The procedural bear's coat was deliberately authored far lighter than a
-  // black bear, because the hide shader floors a shaded surface at
-  // `uStyleFloor` of the key and a genuinely black hide came out as a hole
-  // with nothing left to multiply. That was a fix for a shader this track does
-  // not use: the GLB wears the materials Blender authored, lit as ordinary
-  // surfaces, so the coat can be the black-brown a black bear actually is.
-  //
-  // The trade the hand-authored track makes in return is real and known: it
-  // gets no `uSilNear/uSilFar` silhouette collapse, so past ~70 m a bear reads
-  // brighter and more detailed than the procedural cast around it. Judge it in
-  // `glblook.mjs`'s `range_*` frames.
-  //
-  // `boar` names no colours at all, and that is deliberate: the commonest coat
-  // wears the material exactly as Blender authored it, uncloned, which is the
-  // whole promise of this track and one less program to compile.
+  // Two meshes on one skeleton. The pack's own second bear is a darker coat, so
+  // this is a real morph rather than a recolour of one — which is as well,
+  // because a textured palette material has no per-region colour to push.
   variants: [
-    { name: 'boar', scale: 1.08, weight: 0.45 },
-    // A shade browner and a touch lighter than the boar — the same animal, not
-    // a different species.
-    { name: 'sow', scale: 0.96, weight: 0.40,
-      col: {
-        'Bear black-brown coat': [0.026, 0.023, 0.021],
-        'Bear warm muzzle': [0.060, 0.045, 0.035],
-        'Bear charcoal': [0.010, 0.008, 0.006],
-      } },
-    // The cinnamon morph, which is a real and locally common colour phase of
-    // the American black bear rather than a stylisation — a warm mid-brown
-    // that reads as a different animal at a glance and is the same one.
-    { name: 'cinnamon', scale: 1.00, weight: 0.15,
-      col: {
-        'Bear black-brown coat': [0.105, 0.050, 0.026],
-        'Bear warm muzzle': [0.165, 0.100, 0.055],
-        'Bear charcoal': [0.030, 0.018, 0.010],
-      } },
+    { name: 'black', scale: 1.00, weight: 0.52, hide: ['Bear_02'] },
+    { name: 'cinnamon', scale: 0.96, weight: 0.30, hide: ['Bear_01'] },
+    { name: 'big boar', scale: 1.12, weight: 0.18, hide: ['Bear_02'] },
   ],
 
-  // ── the gait ───────────────────────────────────────────────────────────────
-  // **Written at load, not authored.** `loadGlbSpecies` measures how much
-  // ground one cycle of each clip covers and puts the answer here, so the Brain
-  // steers at speeds the clips can actually carry and the paws never slide.
-  // The numbers below are what the current asset measures, recorded so a
-  // regression is visible in a diff — they are overwritten every boot, and
-  // editing them changes nothing.
-  //
-  // They were the standing finding for this animal, and are no longer. A black
-  // bear walks at about 1.05 m/s, trots at 2.6 and gallops at 6.2. The clips now
-  // measure 0.98 / 2.38 / 5.06 — 93%, 91% and 82% of a real bear — off strides
-  // of 97.6 cm per 1.0 s walk cycle, 121.9 cm per 0.51 s trot and 269.7 cm per
-  // gallop stride, which are a real bear's strides too.
-  //
-  // Getting there took a correction in each layer, and the order matters,
-  // because the second one is invisible until the first is done:
-  //
-  //   The CLIPS did not touch the ground. Keyed as joint angles against legs
-  //   standing at 0.97 of their own reach, the walk's front paws sat 112 mm
-  //   BELOW the floor and travelled forwards while planted, the trot touched for
-  //   one frame in sixteen, and the gallop was airborne fourteen frames in
-  //   sixteen with both legs of each pair in lockstep. All three are now solved:
-  //   the paw is authored in world space on the ground and the joints are
-  //   whatever reach it. See `build_bear_reference.py`.
-  //
-  //   The MEASUREMENT could not read them. `measureStride` took a paw's whole
-  //   excursion over a cycle as the ground that cycle covered, which is true
-  //   only of a foot planted for the whole cycle; a gallop's paws are down for a
-  //   quarter of theirs. So the bear was driven at a third of the speed its own
-  //   legs were cycling at, and skated. Rebuilding the run to cover 23% more
-  //   ground moved the old number 4% — which is what proved the fault was here
-  //   and not in the .blend. `measureGround` now reads the speed the paws hold
-  //   while planted; see `glb_rig.js`.
-  //
-  // What the remaining 18% on the gallop costs is the rest pose. The bear stands
-  // at 0.97 of its leg reach, so stride has to be bought by lowering the body,
-  // and past about 5 cm it starts to read as crawling rather than running. That
-  // is a number to fix in the REST POSE's zigzag, not here and not by raising a
-  // rate. See CLAUDE.md.
-  gait: { walk: 0.976, trot: 2.377, run: 5.057 },
+  // Measured off the clips at load and written back here by `loadGlbSpecies`.
+  gait: { walk: 0.989, trot: 2.224, run: 6.366 },
 
   brain: {
     // A bear mostly does not care that you exist. It looks up when you get

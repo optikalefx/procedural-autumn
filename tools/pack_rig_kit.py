@@ -535,3 +535,182 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     assert drift < 0.001, f"{name}: a planted paw left the ground by {drift*1000:.2f} mm"
     assert s < 1e-4, f"{name}: the cycle does not close: {s*1000:.3f} mm"
     return speed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  The phased graze
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `GlbRig` sequences `graze_in -> graze -> graze_out` when a species declares
+# BOTH `grazeIn` and `grazeOut`. The split is not decoration: the Brain holds a
+# graze for a variable 10-26 s, so one long looping clip would raise the head
+# every time it repeated. The three must meet pose-exactly, and `graze_out` must
+# END on the rest pose, because the sequencer parks on its clamped final frame
+# as the carrier for the idle phase.
+#
+# Reaching the ground is usually a whole-forehand problem rather than a neck
+# one. Solve it as: pitch the chest (which lowers the shoulders), CCD the neck
+# at the target, then put the forefeet back with two-bone IK so the chest pitch
+# costs no contact. The chest pitch is bisected for the SMALLEST value that
+# brings the target inside the neck's reach.
+#
+# Do NOT spread one angle across the neck and bisect that. A chain sharing an
+# angle curls into a hook, so past ~90 degrees of total bend the tip returns
+# toward the base and muzzle height stops being monotonic in the angle.
+
+
+def _sagittal(v_from, v_to):
+    """Signed angle about world +X between two vectors, in the YZ plane.
+
+    Confining the solve to one plane is what stops the neck reaching its target
+    by swinging the head sideways, which is anatomically wrong and reads
+    instantly as broken.
+    """
+    a, b = Vector((0, v_from.y, v_from.z)), Vector((0, v_to.y, v_to.z))
+    if a.length < 1e-9 or b.length < 1e-9:
+        return 0.0
+    a.normalize(); b.normalize()
+    return math.degrees(math.atan2(a.y * b.z - a.z * b.y, a.y * b.y + a.z * b.z))
+
+
+def _neck_reach(rig, neck, tip, target, passes=10, step=22.0):
+    """CCD the neck so `tip`'s tail arrives at `target`, base to tip.
+
+    `step` clamps one pass so the chain converges into a curve rather than
+    snapping the first bone straight at the target — the clamp is what makes the
+    result look like a neck instead of an elbow.
+    """
+    for _ in range(passes):
+        for name in neck:
+            pb = rig.pose.bones[name]
+            h = pb.head.copy()
+            ang = max(-step, min(step, _sagittal(rig.pose.bones[tip].tail - h,
+                                                 target - h)))
+            if abs(ang) > 1e-4:
+                point(pb, rx(ang) @ (pb.tail - pb.head).normalized())
+
+
+def graze_pose(rig, legs, rest, cfg, chest_deg, target):
+    """Pose the animal for one instant of a graze. Returns the muzzle tip."""
+    clear(rig)
+    for name, share in cfg["chest"]:
+        pb = rig.pose.bones[name]
+        point(pb, rx(chest_deg * share) @ (pb.tail - pb.head).normalized())
+    _neck_reach(rig, cfg["neck"], cfg["tip"], target)
+
+    # The chest has carried the shoulders down and forward; put the FORE feet
+    # back. The hind legs hang off a lower spine bone and are never touched.
+    for k, L in legs.items():
+        if k[0] != "fore":
+            continue
+        R = rest[k]
+        a = rig.pose.bones[L["a"]]
+        goal = R["target"]
+        knee = ik2(a.head.copy(), goal, R["l1"], R["l2"], R["bend"])
+        point(a, knee - a.head)
+        point(rig.pose.bones[L["b"]], goal - rig.pose.bones[L["b"]].head)
+        for n, d in zip(L["below"], R["below_dirs"]):
+            point(rig.pose.bones[n], d)
+    return rig.pose.bones[cfg["tip"]].tail.copy()
+
+
+def solve_chest(rig, legs, rest, cfg, target, tol=0.010):
+    """Smallest chest pitch that puts `target` inside the neck's reach.
+
+    Monotonic where the shared-angle version was not: more pitch lowers the neck
+    base and strictly shortens the distance left to cover.
+    """
+    hi = cfg["chest_max"]
+    r = (graze_pose(rig, legs, rest, cfg, hi, target) - target).length
+    if r > tol:
+        raise SystemExit(f"[graze] the muzzle cannot reach {tuple(round(v,3) for v in target)} "
+                         f"even at {hi} deg of chest pitch (short by {r:.3f}). "
+                         f"Raise chest_max or lift the target.")
+    lo = 0.0
+    for _ in range(26):
+        mid = (lo + hi) * 0.5
+        if (graze_pose(rig, legs, rest, cfg, mid, target) - target).length <= tol:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def build_phased_graze(rig, legs, rest, cfg):
+    """Author graze_in / graze / graze_out, and assert the joins are exact."""
+    clear(rig)
+    up = rig.pose.bones[cfg["tip"]].tail.copy()
+    target = Vector(cfg["target"])
+    chest = solve_chest(rig, legs, rest, cfg, target)
+    got = graze_pose(rig, legs, rest, cfg, chest, target)
+    print(f"[graze] chest {chest:.1f} deg (max {cfg['chest_max']}); muzzle "
+          f"y{got.y:+.3f} z{got.z:+.3f}, asked y{target.y:+.3f} z{target.z:+.3f}")
+
+    bones = ([n for n, _ in cfg["chest"]] + list(cfg["neck"])
+             + [n for k, L in legs.items() if k[0] == "fore"
+                for n in ([L["a"], L["b"]] + L["below"])])
+    IN, HOLD, OUT = cfg["in_frames"], cfg["hold_frames"], cfg["out_frames"]
+
+    def pose(t, nudge=Vector((0, 0, 0))):
+        return graze_pose(rig, legs, rest, cfg, chest * t,
+                          up.lerp(target, t) + nudge)
+
+    acts = {}
+    acts["graze_in"] = new_action(rig, "graze_in", IN)
+    for i in range(IN + 1):
+        pose(ease(i / IN)); key(rig, bones, 1 + i)
+    acts["graze"] = new_action(rig, "graze", HOLD)
+    for i in range(HOLD + 1):
+        p = (i % HOLD) / HOLD
+        # Working the ground, and a glance up every few seconds. Driven as small
+        # moves of the TARGET rather than extra rotation, so the neck curve stays
+        # consistent and the forefeet keep their planted positions throughout.
+        pose(1.0, Vector((0.0, math.sin(p * math.pi * 6.0) * cfg["crop"],
+                          max(0.0, math.sin(p * math.pi * 2.0)) ** 3 * cfg["glance"])))
+        key(rig, bones, 1 + i)
+    acts["graze_out"] = new_action(rig, "graze_out", OUT)
+    for i in range(OUT + 1):
+        pose(ease(1.0 - i / OUT)); key(rig, bones, 1 + i)
+
+    rig.animation_data.action = None
+    clear(rig)
+    p_rest = {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
+
+    def at(a, f):
+        sample(rig, acts[a], f)
+        return {pb.name: pb.matrix.copy() for pb in rig.pose.bones}
+
+    def diff(a, b):
+        return max((a[k].translation - b[k].translation).length for k in a)
+
+    checks = {
+        "in starts at rest": diff(at("graze_in", 1), p_rest),
+        "in ends where graze starts": diff(at("graze_in", 1 + IN), at("graze", 1)),
+        "graze loops": diff(at("graze", 1), at("graze", 1 + HOLD)),
+        "out starts where graze ends": diff(at("graze_out", 1), at("graze", 1 + HOLD)),
+        "out ends at rest": diff(at("graze_out", 1 + OUT), p_rest),
+    }
+    worst_foot, lowest = 0.0, 1e9
+    for name, n in (("graze_in", IN), ("graze", HOLD), ("graze_out", OUT)):
+        for f in range(1, 2 + n):
+            sample(rig, acts[name], f)
+            for k, L in legs.items():
+                worst_foot = max(worst_foot,
+                                 (rig.pose.bones[L["contact"]].head - rest[k]["contact"]).length)
+            lowest = min(lowest, rig.pose.bones[cfg["tip"]].tail.z)
+    rig.animation_data.action = None
+    clear(rig)
+
+    print("[graze] validation")
+    for k, v in checks.items():
+        print(f"   {k:32s} {v*1000:7.3f} mm")
+    print(f"   {'foot movement, worst frame':32s} {worst_foot*1000:7.3f} mm")
+    print(f"   muzzle reaches z {lowest:.3f} (rest {up.z:.3f})")
+    for k, v in checks.items():
+        assert v < 1e-4, f"{k}: {v*1000:.3f} mm apart, must be exact"
+    assert worst_foot < 0.005, f"a foot slid {worst_foot*1000:.1f} mm"
+    assert lowest > 0.0, f"the muzzle ploughs the ground (z={lowest:.3f})"
+    # Tied to the declared target, not a constant: a hard-coded floor here once
+    # failed the build the moment the target was deliberately raised.
+    assert lowest <= target.z + 0.05, (
+        f"the muzzle stopped at z={lowest:.3f}, short of its target {target.z:.3f}")

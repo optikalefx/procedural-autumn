@@ -1,4 +1,17 @@
-"""Build the stylized, rigged black-bear source asset.
+"""SUPERSEDED as a shipped asset, KEPT as the reference implementation.
+
+The bear in the game is now the bought pack's, built by `build_bear_blend.py`
+with its gaits solved by `pack_rig_kit.py`. This script no longer produces
+anything the game loads, and `public/models/bear_reference.glb` and
+`tools/export_bear_glb.py` have been removed.
+
+It stays because it is the most completely worked example of solving a gait
+against the ground that this repo has — `GaitPoser`, `two_bone`, and the
+`validate()` that fails a build on a clamped leg or an airborne stance. The
+`create-animal` skill, `animal_kit.py` and `fox.js` all cite it, and the pack
+kit's solver is a generalisation of what is here. Read it to understand the
+method; do not expect its output to ship.
+
 
 Run with Blender, not the system Python::
 
