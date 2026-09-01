@@ -156,6 +156,15 @@ export class Brain {
     // says the way out is closed. See the blocked-step guard in _steer.
     this._pinned = 0;
     this._cornered = 0;
+    // Which way round this animal works a boulder. Fixed for its life, because
+    // an orbit that changes direction is not an orbit — see `_pickWander`.
+    //
+    // Hashed from the slot rather than drawn from `rnd()`, and that is not
+    // fussiness: one extra draw in the constructor shifts the random stream of
+    // EVERY animal of every species, so the next person to A/B a steering
+    // change against this file measures the reshuffle instead of their change.
+    // It cost a confusing raccoon reading in the soak that produced this line.
+    this._orbitDir = ((slot * 2654435761) >>> 0) & 1 ? 1 : -1;
     // How much of the invisible RAMP this animal is currently allowed. See
     // `_groundY`: the ramp exists to carry an animal that is walking up or
     // down a boulder, and an animal that has STOPPED on it is simply standing
@@ -198,6 +207,15 @@ export class Brain {
     this._avoid = 0;
     this._pinned = 0;
     this._cornered = 0;
+    // Which way round this animal works a boulder. Fixed for its life, because
+    // an orbit that changes direction is not an orbit — see `_pickWander`.
+    //
+    // Hashed from the slot rather than drawn from `rnd()`, and that is not
+    // fussiness: one extra draw in the constructor shifts the random stream of
+    // EVERY animal of every species, so the next person to A/B a steering
+    // change against this file measures the reshuffle instead of their change.
+    // It cost a confusing raccoon reading in the soak that produced this line.
+    this._orbitDir = ((slot * 2654435761) >>> 0) & 1 ? 1 : -1;
     // How much of the invisible RAMP this animal is currently allowed. See
     // `_groundY`: the ramp exists to carry an animal that is walking up or
     // down a boulder, and an animal that has STOPPED on it is simply standing
@@ -730,7 +748,19 @@ export class Brain {
     // reads as climbing — the body pitch and the leg lift come free, because
     // the ground the gait solver is standing on has genuinely tilted up.
     this.wantSpeed = this.gait.walk * this._scale * (d > R.r * 1.35 ? 0.85 : 0.42);
-    if (d < R.r * 0.35) {
+    // Arrive on the STANDING DISC, not on the centre point. `0.35 * r` is
+    // 0.87 m on an average perch and this animal's turning circle is 1.64 m
+    // (`TURN_TIME * gait.walk * scale`, and that constant is deliberate — see
+    // `_steer`, where making the radius follow actual speed is the pivot bug
+    // they already fixed once). A target inside your own turning circle is one
+    // you orbit: the goat overshot the summit, the committed mount heading
+    // snapped 180 degrees to point back at it, and it wove. That is the
+    // `climb->climb` reversal in `_scratch/_aboutface.mjs`.
+    //
+    // `0.5 * r` is the disc `Rocks.perchField` bakes and `_groundY` stands the
+    // animal on — measured 99.9% over real geometry — so arriving anywhere in
+    // it is arriving ON the rock, and it is 42% more room to converge in.
+    if (d < R.r * 0.50) {
       this.state = ST.PERCH;
       this.timer = this._span(this.cfg.rock.perchTime);
       this.headUp = true;
@@ -768,6 +798,12 @@ export class Brain {
   _offRock(W) {
     const R = this.rock;
     if (!R) { this._pickWander(W); return; }
+    // Aiming the dismount forward instead of at a random bearing was tried and
+    // is NOT here: it measured WORSE (1.43 -> 1.79 reversals a minute) because
+    // it changes where the animal ends up standing, and it then approached its
+    // next boulder from bearings that needed a bigger turn. The metric is ~25
+    // events over 14 animal-minutes and moves +-13% between identical runs, so
+    // a change this size is only worth keeping with a clear result behind it.
     for (let i = 0; i < 6; i++) {
       const a = this.rnd() * Math.PI * 2;
       const r = R.r * (1.6 + this.rnd() * 1.4);
@@ -949,11 +985,59 @@ export class Brain {
     const list = rk ? this.group?.rocks : null;
     if (list && list.length && this.rnd() < rk.orbit) {
       const R = list[(this.rnd() * list.length) | 0];
+      // ── go on round, rather than to a random point on the ring ──────────
+      // This used to pick a uniformly random azimuth. The ring is small — one
+      // to two rock radii, so three to five metres — and the animal is usually
+      // already standing ON it, which means half of a random azimuth is a point
+      // BEHIND it and the walk is mostly a turn. That is the reported "360
+      // about-face", and it is alpine-only because nothing else in the cast has
+      // an `orbit`: measured at a perch site, goats reversed 1.72 times a
+      // minute against the ram's 0.74 (orbit 0.55 against 0.45) and the deer's
+      // 0.43, and the turns landed on `idle->wander` and `graze->wander`, not
+      // on anything to do with climbing.
+      //
+      // Advancing the animal's CURRENT bearing about the rock, always the same
+      // way round for a given animal, is also what the word orbit meant. A goat
+      // working its way around an outcrop is the shot; a goat crossing back and
+      // forth over the same four metres is not.
+      // ...unless the animal is already stuck, in which case take ANY way out.
+      //
+      // A committed direction has no escape of its own: `_standable` tests the
+      // target and not the path, so a dry point across a pond is a legal target
+      // the animal cannot walk to, and the blocked-step escape only outranks
+      // state steering for 0.9 s before the orbit re-aims at the same arc. A
+      // random bearing survives that by being different next time; a committed
+      // one presses into the same water forever. Measured in the pen soak, the
+      // ram went from 40.7 s of `_pinned` to 155.7 — and neither reversing the
+      // direction nor sampling the chord for water fixed it, because both still
+      // insist on going ROUND something the animal cannot get round.
+      //
+      // So the commitment is a fair-weather rule. While the animal is moving
+      // freely it orbits; the moment it is pinned it falls back to exactly the
+      // scatter this replaced, which is the behaviour that was never stuck.
+      const stuck = this._pinned > 0.5;
+      const a0 = stuck ? this.rnd() * Math.PI * 2
+        : Math.atan2(this.pos.x - R.x, this.pos.z - R.z);
       for (let i = 0; i < 4; i++) {
-        const a = this.rnd() * Math.PI * 2;
+        // Widen the step on each retry rather than re-rolling it, so a blocked
+        // arc is stepped OVER in the direction of travel instead of becoming a
+        // fresh chance to turn round.
+        const step = stuck ? 0
+          : (0.55 + 0.5 * this.rnd() + i * 0.45) * this._orbitDir;
         const r = R.r * (1.25 + this.rnd() * 0.85);
-        const x = R.x + Math.sin(a) * r, z = R.z + Math.cos(a) * r;
+        const x = R.x + Math.sin(a0 + step) * r, z = R.z + Math.cos(a0 + step) * r;
         if (!this._standable(W, x, z)) continue;
+        // The PATH, not just the target. `_standable` answers about one point,
+        // and a dry spot on the far side of a pond is a legal target the animal
+        // cannot walk to — it presses into the water and stays there. That is
+        // survivable when the bearing is random and someone else's problem next
+        // time; with a committed direction it is the same bad arc over and
+        // over, and it took the ram from 40.7 s of `_pinned` to 155.7 in the
+        // pen. Two samples across the chord catch a pond without pretending
+        // this is pathfinding.
+        const mx = (this.pos.x + x) * 0.5, mz = (this.pos.z + z) * 0.5;
+        if (!this._standable(W, mx, mz)) continue;
+        if (!this._standable(W, (this.pos.x + mx) * 0.5, (this.pos.z + mz) * 0.5)) continue;
         this.target.set(x, 0, z);
         this.state = ST.WANDER;
         this.timer = this._span(c.walkTime);
