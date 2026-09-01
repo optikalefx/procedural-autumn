@@ -1,6 +1,6 @@
 ---
 name: import-animal
-description: Bring a hand-authored Blender animal into the game as a GLB with its own animation clips, or add/retune a clip on one that is already in. Use whenever the user has modelled or animated a creature in Blender and wants to see it in the game — "put the fox in the game", "add the trot to the fox", "import my model", "wire up the GLB", "why is my animation not showing" — and when a clip's stride, speed, looping or gait blending needs judging. Also covers BOUGHT and downloaded assets — an animal pack, someone else's .blend — including the NLA-not-actions layout they arrive in, facing, and when contact measurement cannot be trusted. To author a clip the pack did not ship, use add-new-animation-to-glb. This is the hand-authored track; for the procedural blueprint cast (deer, rabbit, squirrel, raccoon, goat, yak — profile arrays, no model files) use create-animal instead.
+description: Bring a hand-authored Blender animal into the game as a GLB with its own animation clips, or add/retune a clip on one that is already in. Use whenever the user has modelled or animated a creature in Blender and wants to see it in the game — "put the fox in the game", "add the trot to the fox", "import my model", "wire up the GLB", "why is my animation not showing" — and when a clip's stride, speed, looping or gait blending needs judging. Also covers BOUGHT and downloaded assets — an animal pack, someone else's .blend — including the NLA-not-actions layout they arrive in, facing, and when contact measurement cannot be trusted. To author a clip the pack did not ship, use add-new-animation-to-glb. Covers hand-authored BIRDS too — the flamingo is a GLB played by tree_birds.js rather than by glb_rig.js, with no gait to measure. This is the hand-authored track (fox, bear, deer, raccoon, flamingo); for the procedural blueprint cast (rabbit, squirrel, goat, yak — profile arrays, no model files) use create-animal instead.
 ---
 
 # Import Animal
@@ -17,6 +17,28 @@ touch anything here.
 This skill covers getting the model and its clips **out of Blender and playing
 correctly**. Making that animal a real species — placed by habitat, streamed,
 logged, photographable, with coat morphs — is `promote-glb-animal`.
+
+### …and then a second question: who plays the clips
+
+"Hand-authored" no longer means "`glb_rig.js`". There are two consumers, and
+which one you are feeding decides whether half this document applies:
+
+| consumer | who | what it wants |
+|---|---|---|
+| `glb_rig.js` | the mammals | six slots, a walk/trot/run ladder derived from the ground the paws cover, terrain tilt |
+| `tree_birds.js` | the flamingo | three clips, a stand/fly crossfade, **no gait at all** |
+
+If your animal's position is owned by something else — as a bird's is, by the
+perch-and-fly behaviour in `tree_birds.js` — then nothing ever asks the rig how
+fast its own feet move, and every gait section below is inapplicable rather than
+merely easy. See **When there is nothing to measure**.
+
+Do not answer this by inventing a third backend. The flamingo reuses
+`GLTFLoader` and `SkeletonUtils.clone` — the same two pieces `glb_rig` uses —
+inside the file that already owns bird behaviour, and the whole rig half is two
+methods (`_pose` and one loader). A parallel `bird_glb_rig.js` was written once
+on a branch and was the wrong shape: `tree_birds.js` is already the birds'
+Wildlife, Brain and rig fused into one class, so a bird's "rig" belongs in it.
 
 ## The rule that outranks everything else
 
@@ -83,6 +105,24 @@ session traps below).
   `is_dirty == False` proves nothing about what is in the file.
 - `bpy.ops.render.opengl` needs a GUI; under `-b` there is no OpenGL context.
   Render strips from the interactive session, or use a real render engine.
+  `BLENDER_WORKBENCH` renders headlessly and needs no lights, which makes it the
+  cheap way to look at a pose — but in Blender 5 set
+  `image_settings.media_type = 'IMAGE'` **before** `file_format`, or assigning
+  `'PNG'` fails with `enum "PNG" not found in ('FFMPEG')`.
+- **A render re-evaluates the depsgraph, so an assigned action overwrites
+  anything you posed by hand** — and the measurements you took right after
+  posing are still correct, so the numbers describe one animal and the picture
+  shows another. Posing a leg tuck by hand produced two renders of a
+  two-legged bird while the report correctly said one leg was up. Snapshot
+  `matrix_basis` for every bone, set `animation_data.action = None`, put the
+  snapshot back, then pose and render.
+- **Our own working .blend re-creates the pack's NLA hazard.** `build_*_blend.py`
+  lays every clip out as a soloable NLA track so the file can be scrubbed the
+  way the pack lays itself out — which means measuring the SAVED file evaluates
+  the whole stack at once. The tell is every clip reporting identical extremes.
+  Mute the tracks before measuring; the export script already strips them, so
+  the GLB is never affected. Measurements taken inside the build script, before
+  the tracks are created, are fine — which is exactly why the two disagreed.
 - The export script needs the .blend saved in **OBJECT mode**, or
   `bpy.ops.object.select_all` fails its poll with a bare "context is incorrect".
 
@@ -307,6 +347,19 @@ mw = (rig.matrix_world @ rig.pose.bones["root"].bone.matrix_local).to_3x3()
 [mw @ Vector(a) for a in ((1,0,0), (0,1,0), (0,0,1))]
 ```
 
+**`pose_bone.matrix` is ARMATURE space, and `face_forward` turned the rig.**
+`pack_rig_kit.point` writes `pb.matrix`, so a direction handed to it is read in
+the armature's frame — and `face_forward` rotates the rig OBJECT 180 degrees
+about Z. Every world direction therefore arrives mirrored in X and Y: a leg
+aimed inboard swings outboard and a toe aimed forward points at the tail, both
+silently and both looking like a plausible pose. Convert, rather than reasoning
+about the sign:
+
+```python
+W2A = rig.matrix_world.inverted().to_3x3()
+point(rig.pose.bones[name], W2A @ Vector(world_dir))
+```
+
 ### 5. Export
 
 `tools/export_bear_glb.py` is the fuller pattern and `export_fox_glb.py` the
@@ -453,6 +506,75 @@ A walk is *defined* by a duty above 0.5. Anything near 0.1 is a clip authored to
 read in a turntable, not solved against a floor — stay on excursion, which is
 wrong in a familiar way rather than wrong in a way that looks like free speed.
 
+## When there is nothing to measure
+
+An animal whose position is owned by its behaviour layer has no gait to derive,
+and the flamingo is the case: `tree_birds.js` gives its birds exactly two states
+— standing in the shallows and flying between perches — and computes the
+position itself in both. No `glb.feet`, no `measureGround`, no ladder, no
+`glb.drive`. It was the cheapest import so far: isolate, face, rename, trim one
+clip to a single wingbeat, save.
+
+What replaces the ground measurement is a **cadence**. The species table asks
+for a wingbeat in Hz, the asset was authored at some Hz, and the ratio is the
+playback rate — the same "derive the game from the clip" discipline with a
+frequency in place of a speed, and the clip still never touched. Measure the
+authored rate rather than counting on the clip length: the pack's 81-frame fly
+clip is four bit-identical repeats of a 20-frame cycle, so its beat is 1.2 Hz
+and not 0.3, and the pose at frame 21 differs from frame 1 by **0.0** across
+every bone matrix, which makes trimming to one cycle lossless and provable.
+
+### The bind pose can lie about the model's size
+
+Whatever dimension you fit the model by, measure it **in the pose that expresses
+it**. The flamingo is scaled by wingspan, and its bind pose has the wings
+FOLDED: 0.598 m against the 2.128 m they reach at the widest frame of the fly
+clip. Fitting to the bind pose would have drawn a "4.35 m wingspan" bird 3.6x
+too big. Sample the clip, take the extreme, and record which frame it came from.
+
+(There is an old `BIRD_GLB_CONTRACT.md` that refuses any model taller than 0.9x
+its own width, on the grounds that it must be a perched bird whose folded width
+would be read as its wingspan. That is the right rule for a model authored
+wings-out and the wrong one for a bought asset, which will be authored standing.
+Measure the clip instead of rejecting the asset.)
+
+### What the model's ORIGIN MEANS is part of the contract
+
+This shipped a visible bug. `tree_birds._wadeY` keeps a wader's body clear of
+the water and stated that as *"put the object's origin 0.07 spans above the
+surface"* — correct and unremarked for a lofted bird, whose origin sits in its
+body. The GLB's origin is between the **soles**. Read literally, the same line
+stood every flamingo 0.30 m above the water on nothing, and it won every time
+because it beat the bed by the whole wade depth.
+
+The lesson generalises past this one function. A procedural model's origin is
+wherever its author put it, usually in the body; an exported asset's origin is
+usually on the floor between the feet. Downstream code will have baked in
+whichever one it grew up with, and it will not say so. So:
+
+- **Grep for who consumes the thing you are replacing before you replace it.**
+  The same swap silently broke `hunt_detect`, which sized a bird's photo
+  silhouette from `group[0].mesh.geometry` and simply `continue`d when there was
+  no shared geometry — the flamingo, a scavenger-hunt item, became impossible to
+  photograph, with no error anywhere.
+- **State the rule about the anatomy, not about the origin**, and let each
+  backend say where that anatomy is relative to its own origin. `_wadeY` now
+  clamps the BELLY, with `bellyY` 0 for a lofted bird (which is the original
+  line exactly) and 0.244 spans measured for the flamingo.
+- A good sign you got it right is two independently derived numbers agreeing:
+  the belly clamp permits 0.74 m of water and the species' own `wade` cap, set
+  from the same rule by hand, is 0.75.
+
+### Proportions move even when the silhouette survives
+
+A bought animal will not have your model's proportions, and the differences land
+on numbers elsewhere in the table. The pack flamingo's span:height is 1.316
+against the lofted bird's 1.61, so at a matched wingspan it stands 3.31 m rather
+than 2.71; and its belly is 32% of its standing height where the old bird's was
+52% — the "impossible legs" that file named as the whole silhouette are simply
+not in the bought mesh. Decide which dimension you are holding fixed, say so,
+and re-derive everything that hung off the other one.
+
 ## `glb.drive`, and what declaring it admits
 
 A species may override the measured ladder with speeds it states outright. It
@@ -500,8 +622,17 @@ That path is now the standard for pack animals and has its own skill,
     Blender -b assets/models/<x>_pack.blend --python tools/export_pack_glb.py
 
 The build isolates one animal, solves the clips the pack does not ship, and
-SAVES a small per-animal working .blend; the export is generic. `raccoon.js` and
-`deer.js` are both built this way. Read that skill before touching a bought rig:
+SAVES a small per-animal working .blend; the export is generic. `raccoon.js`,
+`deer.js` and the flamingo are all built this way. The working `*_pack.blend` is
+gitignored on purpose — the build script is the source of truth and the .blend
+is derived, which is the discipline the fox never got.
+
+`build_flamingo_blend.py` is the one to copy for an animal with no gait: it is
+the whole recipe with the solver removed, and it prints its measurements
+formatted as the species block so the copy across is mechanical rather than
+transcribed. Have your build script print every number the table needs — span,
+the foot offset, whatever anatomy a downstream rule clamps — because each one is
+a thing that cannot be recovered downstream and will otherwise be eyeballed. Read that skill before touching a bought rig:
 the pack ships every armature in REST position and every Idle track SOLOED, and
 either one alone will make you believe the clips are broken.
 

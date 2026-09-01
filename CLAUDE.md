@@ -63,11 +63,34 @@ again — habitat, streaming, the mesh pool, the logbook, photo detection and th
 compass paw all walk one cast.
 
 - **Procedural** (`blueprint:`) — profile arrays lofted by `quadruped.js`, gait
-  solved against the ground every frame by `animal_anim.js`. Deer, rabbit,
-  squirrel, raccoon, goat, yak.
+  solved against the ground every frame by `animal_anim.js`. Rabbit, squirrel,
+  goat, yak.
 - **Hand-authored** (`glb:`) — a mesh and its clips built in Blender, played by
-  an `AnimationMixer` in `glb_rig.js`. The fox and the bear.
+  an `AnimationMixer` in `glb_rig.js`. Fox, bear, deer, raccoon — the last two
+  out of the bought pack, via `tools/build_<x>_blend.py`.
 
 `GlbRig` and `AnimRig` answer the same contract (`reset` / `update` / `setLod` /
 `setShadow` / `gaitName` / `mesh`). Adding a hand-authored animal is a model and
 a species file; see the `promote-glb-animal` skill.
+
+### The birds are a third thing, and one of them is hand-authored too
+
+`src/wildlife/birds/tree_birds.js` is not on either track above. It is the
+birds' streaming, behaviour AND rig fused into one class, where the mammals
+split those across `Wildlife.js`, `animal_brain.js` and a rig — so a bird has no
+`Brain` to hand a drive block to, and its "rig" is `build`, `_park` and `_pose`.
+
+Most of its species are instanced geometry flapped by a vertex shader
+(`bird_material.js`). The **flamingo** is a skinned GLB out of the pack, played
+by an `AnimationMixer` on a stand/fly crossfade with **no gait at all** — the
+behaviour layer owns the position in both its states, so nothing ever measures
+its feet. It reuses `GLTFLoader` and `SkeletonUtils.clone` inside `tree_birds`
+rather than getting a backend of its own; `fitGlbBird` is the one place the
+asset's facing, scale and foot-lift are decided, and the gallery builds through
+it too so the card cannot disagree with the valley.
+
+One rule that fell out of it and generalises: **a procedural model's origin sits
+in its body, an exported one's sits between the feet**, and code that predates
+the swap will have baked in whichever it grew up with without saying so. State
+such rules about the anatomy — `_wadeY` clamps the *belly* — not about "the
+origin". See the `import-animal` skill.
