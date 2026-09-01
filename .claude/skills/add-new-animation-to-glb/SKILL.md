@@ -19,9 +19,12 @@ deer are built.
 Worked examples, in the order to read them:
 
     tools/pack_rig_kit.py        the machinery, and every trap it exists to fix
-    tools/build_raccoon_blend.py the simple case — one mesh, two clips solved
-    tools/build_deer_blend.py    three meshes on one skeleton, walk replaced
+    tools/build_raccoon_blend.py the simple case — one mesh, everything solved
+    tools/build_deer_blend.py    two meshes re-parented onto one skeleton
+    tools/build_bear_blend.py    a PHASED graze, and two meshes already shared
     tools/export_pack_glb.py     the generic export, one script for all animals
+    tools/build_bear_reference.py  superseded as an asset, kept as the fullest
+                                   worked example of solving a gait by hand
 
 An earlier experiment against the FREE sample pack lives on branch `pack-deer`
 (`pack_deer_graze.py`, `pack_deer_trot.py`, `pack_deer_alert.py`). It is where
@@ -369,11 +372,37 @@ Both finished animals, measured in game, against the real thing:
 |---|---|---|---|---|
 | raccoon | 0.673 | 1.670 | 4.936 | ~0.7 / — / ~6 |
 | deer | 1.089 | 2.728 | 7.716 | 1.15 / 3.48 / 11.9 |
+| bear | 0.977 | 2.198 | 6.292 | 1.05 / 2.6 / 6.2 |
 
 Both on `measure: 'contact'`, no `glb.drive` anywhere, every planted paw within
 0.001 mm of its authored path and every cycle closing to 0.000 mm. That is the
 bar: a species that needs a `drive` override has an asset problem that has not
 been solved yet.
+
+## Tune against the SHIPPED size, not the model's
+
+`glb.height` sets a fit factor, and every solved speed is multiplied by it. The
+bear ships at 1.18 against a 1.563 model, so its fit is 0.755 — a first pass
+cadenced to look right in the build log landed 25% low in the game. Read the
+number `loadGlbSpecies` prints, not the one the solver prints.
+
+## A phased graze, when the species declares one
+
+`grazeIn` + `grazeOut` turns on `GlbRig`'s sequencer, and the split earns its
+keep: the Brain holds a graze 10-26 s, so one looping clip raises the head every
+time it repeats. `build_phased_graze` is the generic version.
+
+Reaching the ground is a forehand problem, not a neck one. Pitch the chest,
+which lowers the shoulders; CCD the neck at the target; then put the forefeet
+back with two-bone IK so the pitch costs no contact. Bisect the chest pitch for
+the SMALLEST value that brings the target into reach — that is monotonic, where
+a shared neck angle is not.
+
+Five joins have to be exact and the validator fails the build on any of them:
+`in` starts at rest, `in` ends where `graze` starts, `graze` loops, `out` starts
+where `graze` ends, and **`out` ends at the rest pose** — the sequencer parks on
+its clamped final frame as the idle carrier, so a carrier that is not rest is an
+animal that never quite straightens up.
 
 ## Wire it up and check the ladder
 
