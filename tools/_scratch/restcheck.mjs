@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { readFileSync } from 'node:fs';
-const buf = readFileSync('public/models/fox_reference.glb');
+const buf = readFileSync('public/models/fox_packanim.glb');
 new GLTFLoader().parse(buf.buffer.slice(buf.byteOffset, buf.byteOffset+buf.byteLength), '', (g) => {
   const walk = g.animations.find(a => a.name === 'Walk');
   const bone = g.scene.getObjectByName('fore_upperL');

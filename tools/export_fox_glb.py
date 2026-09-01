@@ -2,6 +2,15 @@
 
     Blender -b assets/models/fox_reference.blend --python tools/export_fox_glb.py
 
+**This is no longer the asset the game loads.** Since the pack's fox clips were
+retargeted onto this mesh, the shipped GLB is `fox_packanim.glb`, exported from
+the derived `fox_packanim.blend` by `export_pack_glb.py` — see
+`tools/retarget_fox_from_pack.py` and `mammals/fox.js`. What this script writes
+is `fox_reference.blend` as it stands: our mesh carrying the ARTIST'S original
+six clips. That output is deliberately not kept in the tree (it shipped 523 KB
+of dist/ that nothing loaded), so run this when you want to compare the old
+clips against the new ones, and expect an untracked file.
+
 Exports only the ``Fox_Rig`` hierarchy -- the presentation camera, the three
 studio lights and the ground plane stay out of the shipped file. Animations are
 baked over the scene range (0-48 at 24 fps, i.e. one 2-second cycle per clip),

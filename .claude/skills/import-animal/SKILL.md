@@ -288,6 +288,20 @@ The rest of the tools live in `tools/`:
 - `fix_walk_seam.py` — the narrow seam-only fix
 - `export_fox_glb.py` — the export itself
 
+All four are kept for the techniques, but note what they now act on: the fox's
+six hand-authored clips are **no longer what ships**. Five of them were replaced
+by the bought pack's own fox animations, retargeted onto our skeleton by
+`tools/retarget_fox_from_pack.py`, and the game loads `fox_packanim.glb`. These
+scripts still edit `fox_reference.blend`, which is the tracked mesh/rig source
+and still carries the originals — so running one changes the artist's record and
+changes nothing the player sees.
+
+That retarget is the fuller worked example for a bought pack whose clips you
+want on your OWN mesh, and its docstring carries three findings this file did
+not have: the correspondence pose must be the source animal **standing** and not
+its bind pose, the plant schedule must be read off the **source** clip, and a
+leg with no slack in its rest pose cannot be given one downstream.
+
 Run them headlessly against the asset and never against a file the artist has
 open in Blender — Blender holds the whole .blend in RAM and will write its
 version back over yours on the next save. Ask first, then have them **File →
