@@ -37,9 +37,14 @@ existing species file closest to your animal:
 | `mammals/deer.js` | long-legged, read at 60–100 m (elk, pronghorn) |
 | `mammals/bear.js` | heavy, low-headed, short-legged (boar, badger) |
 | `mammals/rabbit.js` | small, crouched, read under 20 m (marmot) |
-| `mammals/dog.js` | light canid/felid frame, read at 30–60 m (coyote, bobcat, wolf) |
 | `mammals/squirrel.js` | tiny, hunched, big-tailed (marten, marmot) |
 | `mammals/raccoon.js` | identified by markings rather than by proportions |
+
+`mammals/dog.js` used to be on this list as the light canid/felid frame, and it
+is not any more: the camp dog is a bought GLB now. Its blueprint's reasoning is
+still worth reading and is in the history — `git log -p src/wildlife/mammals/dog.js`
+— particularly the body-length-over-withers ratio note, which is the single
+measurement that separates a dog from a small deer.
 
 Every blueprint's comments explain *why* each number is what it is — mine them
 before inventing your own.

@@ -50,9 +50,10 @@ export { createHideMaterial, setHideSilScale, SIL_FOV_REF }
   from './mammals/hide.js';
 export { GlbRig } from './glb_rig.js';
 // The camp dog is NOT in `SPECIES` — see the note over DOG_SPECIES. It is
-// re-exported here anyway so `camp_dog.js` has the same one door as everyone
-// else.
-export { DOG_SPECIES, buildCampDog } from './mammals/dog.js';
+// re-exported here anyway so anything that wants it has the same one door as
+// everyone else. `loadCampDog` rather than a builder: the dog is a fetched GLB
+// on the hand-authored track now, not a lofted blueprint.
+export { DOG_SPECIES, loadCampDog } from './mammals/dog.js';
 
 // ── the cast ─────────────────────────────────────────────────────────────────
 //

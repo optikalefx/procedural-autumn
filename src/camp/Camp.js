@@ -50,7 +50,7 @@ import { buildCooler } from './camp_cooler.js';
 import { buildTable } from './camp_table.js';
 import { buildTelescope } from './camp_telescope.js';
 import { buildJournal, BOOK, HIDE_LIFT } from '../journal/journal_model.js';
-import { CampDog, warmDog, disposeDogProtos } from './camp_dog.js';
+import { CampDog, warmDog, dogProto, disposeDogProtos } from './camp_dog.js';
 import { picked, placed, placing, pointing } from '../core/Pointer.js';
 import { pickVerb, placeVerb, actVerb, touchCapable } from '../core/verbs.js';
 import { posthog } from '../posthog.js';
@@ -410,7 +410,10 @@ export class Camp extends System {
     // this list. Its MATERIAL needs no warming: `createHideMaterial` pins
     // `customProgramCacheKey` to 'animalHide', which Wildlife's own pool has
     // already linked at boot, so the first dog reuses that program.
-    try { warmDog(); } catch (e) { console.warn('[camp] dog prewarm failed', e); }
+    // The dog is a 1.9 MB GLB, so this is a FETCH rather than a build and
+    // nothing here can wait for it. Started at boot and awaited per camp in
+    // `_makeDog`; a camp pitched before it lands gets its dog a moment late.
+    warmDog().catch((e) => console.warn('[camp] dog prewarm failed', e));
     const builders = [buildTent, buildChair, buildCooler, buildTable, buildWoodpile,
                         (r) => buildTelescope(r, { variant: 'reflector' }),
                         // The roasting stick is NOT in every camp — a camp
@@ -2115,20 +2118,34 @@ export class Camp extends System {
         r: Math.max(size.x, size.z) * 0.5 + 0.20,
       };
     });
-    try {
-      camp.dog = new CampDog(camp.root, camp, camp.rnd, this.ctx.world, {
-        obstacles,
-        // The dog lies down ON THE DIRT, and the dirt is not the heightfield:
-        // it is the drawn lattice plus the skin's own lift. Rest planning has
-        // to measure the surface the player can see or the dog reads as
-        // buried to the brisket — see CampGround.surfaceAt.
-        surfaceAt: (sx, sz) => camp.ground.surfaceAt(sx, sz),
-      });
-    } catch (e) {
-      // A dog that fails to build must not take the camp with it.
-      console.warn('[camp] dog failed to build', e);
+    const build = () => {
+      // The camp may have been struck while the model was still in flight.
+      if (!camp.hasDog || !camp.root.parent) return;
+      try {
+        camp.dog = new CampDog(camp.root, camp, camp.rnd, this.ctx.world, {
+          obstacles,
+          // The dog lies down ON THE DIRT, and the dirt is not the heightfield:
+          // it is the drawn lattice plus the skin's own lift. Rest planning has
+          // to measure the surface the player can see or the dog reads as
+          // buried to the brisket — see CampGround.surfaceAt.
+          surfaceAt: (sx, sz) => camp.ground.surfaceAt(sx, sz),
+        });
+      } catch (e) {
+        // A dog that fails to build must not take the camp with it.
+        console.warn('[camp] dog failed to build', e);
+        camp.hasDog = false;
+      }
+    };
+    // The dog is a fetched model now, and `CampDog`'s constructor is
+    // synchronous. `_prewarm` starts the fetch at boot, so by the time anyone
+    // has driven to a camp it is long since in memory and this is the straight
+    // path; the await is the cold case — a camp pitched within a second or two
+    // of boot — and it costs that one camp a late dog rather than no dog.
+    if (dogProto()) build();
+    else warmDog().then(build, (e) => {
+      console.warn('[camp] dog model failed to load', e);
       camp.hasDog = false;
-    }
+    });
   }
 
   /**

@@ -67,6 +67,19 @@
       "port": 5231
     },
     {
+      "name": "dog-glb",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5237",
+        "--strictPort"
+      ],
+      "port": 5237
+    },
+    {
       "name": "bike-worktree",
       "runtimeExecutable": "npx",
       "runtimeArgs": [

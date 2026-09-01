@@ -343,10 +343,14 @@ export async function loadGlbSpecies(key, sp, log = true) {
   scene.traverse((o) => { if (o.isBone && rest.has(o.name)) o.quaternion.copy(rest.get(o.name)); });
   scene.updateMatrixWorld(true);
 
-  // The gait the Brain steers by — see the note on the JSDoc above.
-  sp.gait.walk = speed.walk;
-  sp.gait.trot = speed.trot;
-  sp.gait.run = speed.run;
+  // The gait the Brain steers by — see the note on the JSDoc above. Only the
+  // rungs the asset actually has: the camp dog declares no trot (nothing in the
+  // pack has one, and a dog that potters at 0.78 m/s would never reach it), and
+  // writing `undefined` over the species' own number would turn every band in
+  // the ladder into a NaN.
+  for (const slot of ['walk', 'trot', 'run']) {
+    if (speed[slot] !== undefined) sp.gait[slot] = speed[slot];
+  }
 
   // Bounds carrier. `hunt_detect.meshHeight` reads half the animal's height
   // off `mesh.geometry.boundingBox`, and for this track `mesh` is a Group with
@@ -520,6 +524,20 @@ export class GlbRig {
     }
     this.act.stand.setEffectiveWeight(1);
 
+    // ── rest poses ──────────────────────────────────────────────────────────
+    // Mutually exclusive holds that take over the whole standing budget — the
+    // camp dog's sit, lie and curl. A species declares them as `glb.rest` and
+    // most declare none, in which case every line below is a no-op.
+    //
+    // They are NOT the graze: a graze is a pose the animal wears WHILE standing,
+    // so it shares the still budget with alert and with stand. A curl is not
+    // something a standing dog is partly doing — it is the whole animal, and
+    // anything blended over it (a standing alert, say) lifts the body off the
+    // ground by exactly its weight.
+    this.restSlots = (proto.glb.rest ?? []).filter((s) => this.act[s]);
+    this.bRest = {};
+    for (const slot of this.restSlots) this.bRest[slot] = 0;
+
     // ── the phased graze ────────────────────────────────────────────────────
     // A species whose asset authors the entry and exit to a pose declares them
     // as `grazeIn` / `grazeOut`, and the presence of BOTH is what turns the
@@ -583,6 +601,7 @@ export class GlbRig {
     this.mesh.rotation.z = this.roll;
     this.bMove = 0; this.bTrot = 0; this.bRun = 0;
     this.bGraze = 0; this.bAlert = 0;
+    for (const slot of this.restSlots) this.bRest[slot] = 0;
     this.paceSpeed = 0;
     if (this.phased) {
       this.gPhase = 'out';
@@ -720,6 +739,9 @@ export class GlbRig {
    *   pos, heading, speed   world position / yaw / ground speed (m/s)
    *   graze 0..1            head down into the grass
    *   alert 0..1            head up, ears forward, body stiff
+   *   rest  slot|null       a rest pose to hold — one of `glb.rest`. Camp dog
+   *                         only; every wild species leaves it undefined.
+   *   restW 0..1            how far into that pose, defaulting to all the way
    *   flag  0..1            tail up — deer only, and no clip carries it here
    *   look  Vector3|null    world point to watch — no clip carries it here
    *   lod   0 near | 1 mid
@@ -747,6 +769,7 @@ export class GlbRig {
     this.mesh.rotation.z = this.roll + this.bank;
 
     const g = this.cfg;
+    const a = this.act;
     const sp = this.proto.speed;
     // `damp` is framerate-independent; the lambda is chosen so a blend covers
     // most of its travel in BLEND_TIME.
@@ -759,9 +782,15 @@ export class GlbRig {
     // stride rebuilt in Blender moves the handover with it.
     const wMove = clamp01((drive.speed / (g.walk || 1) - MOVING[0])
       / (MOVING[1] - MOVING[0]));
-    const wTrot = clamp01(((drive.speed - g.walk) / Math.max(g.trot - g.walk, 1e-4)
-      - TROTTING[0]) / (TROTTING[1] - TROTTING[0]));
-    const wRun = clamp01(((drive.speed - g.trot) / Math.max(g.run - g.trot, 1e-4)
+    // A species with no trot clip hands the walk straight to the run, and the
+    // middle rung simply is not there. The camp dog is the only one: nothing in
+    // the pack has a trot, and authoring one it can never reach — it tops out
+    // at 0.78 m/s — would be a clip that exists to satisfy this arithmetic.
+    const trot = !!a.trot;
+    const wTrot = trot ? clamp01(((drive.speed - g.walk) / Math.max(g.trot - g.walk, 1e-4)
+      - TROTTING[0]) / (TROTTING[1] - TROTTING[0])) : 0;
+    const above = trot ? g.trot : g.walk;
+    const wRun = clamp01(((drive.speed - above) / Math.max(g.run - above, 1e-4)
       - RUNNING[0]) / (RUNNING[1] - RUNNING[0]));
     this.bMove = damp(this.bMove, wMove, L, dt);
     this.bTrot = damp(this.bTrot, wTrot, L, dt);
@@ -781,18 +810,35 @@ export class GlbRig {
     // arithmetic rather than needing a rule.
     const move = this.bMove;
     const still = 1 - move;
+
+    // A rest pose is the whole animal, so it is spent FIRST out of the standing
+    // budget and everything else shares what is left. Two of them are only ever
+    // both non-zero while one is handing over to the other, and `k` keeps that
+    // handover from over-spending: two half-blended poses must still sum to one
+    // pose, or the mixer averages the difference toward the rest pose and the
+    // dog visibly rises off the ground mid-change.
+    let rw = 0;
+    for (const slot of this.restSlots) {
+      const want = drive.rest === slot ? clamp01(drive.restW ?? 1) : 0;
+      rw += (this.bRest[slot] = damp(this.bRest[slot], want, L, dt));
+    }
+    const k = rw > 1 ? 1 / rw : 1;
+    for (const slot of this.restSlots) {
+      a[slot].setEffectiveWeight(this.bRest[slot] * k * still);
+    }
+    const free = still * (1 - Math.min(rw, 1));
+
     // Alert outranks graze: an animal that has just noticed you has its head
     // up, whatever it was doing a moment ago.
-    const al = this.bAlert * still;
-    const gz = Math.min(this.bGraze * still, still - al);
-    const a = this.act;
+    const al = a.alert ? this.bAlert * free : 0;
+    const gz = a.graze ? Math.min(this.bGraze * free, free - al) : 0;
     a.run.setEffectiveWeight(move * this.bRun);
-    a.trot.setEffectiveWeight(move * (1 - this.bRun) * this.bTrot);
+    if (trot) a.trot.setEffectiveWeight(move * (1 - this.bRun) * this.bTrot);
     a.walk.setEffectiveWeight(move * (1 - this.bRun) * (1 - this.bTrot));
-    a.alert.setEffectiveWeight(al);
+    if (a.alert) a.alert.setEffectiveWeight(al);
     if (this.phased) this._grazeApply(gz, dt);
-    else a.graze.setEffectiveWeight(gz);
-    a.stand.setEffectiveWeight(still - al - gz);
+    else if (a.graze) a.graze.setEffectiveWeight(gz);
+    a.stand.setEffectiveWeight(free - al - gz);
 
     // ── the rates ───────────────────────────────────────────────────────────
     // A clip's rate follows speed through the SAME number its cruising speed
@@ -807,7 +853,7 @@ export class GlbRig {
     this.paceSpeed = damp(this.paceSpeed, drive.speed, L, dt);
     const C = this.proto.glb.clips;
     a.walk.timeScale = clamp(this.paceSpeed / sp.walk * C.walk.rate, RATE[0], RATE[1]);
-    a.trot.timeScale = clamp(this.paceSpeed / sp.trot * C.trot.rate, RATE[0], RATE[1]);
+    if (trot) a.trot.timeScale = clamp(this.paceSpeed / sp.trot * C.trot.rate, RATE[0], RATE[1]);
     a.run.timeScale = clamp(this.paceSpeed / sp.run * C.run.rate, RATE[0], RATE[1]);
 
     // What it is doing, for `Wildlife.debugState` and the harnesses that read
