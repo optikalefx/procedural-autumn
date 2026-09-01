@@ -474,7 +474,15 @@ def gait_rest(rig, legs):
             below_dirs=[(rig.pose.bones[n].tail - rig.pose.bones[n].head).normalized()
                         for n in L["below"]],
             contact=rig.pose.bones[L["contact"]].head.copy(),
+            hip=a.copy(),
         )
+    # Where the body pitches ABOUT. A flying animal rotates around its own
+    # centre of mass; `Root` sits at the origin on the ground, so rotating that
+    # bone directly swings the whole body through an arc a metre long and throws
+    # the hips forward. The mean of the four hips is close enough to the centre
+    # and needs nothing declared per animal.
+    hips = [rig.pose.bones[L["a"]].head.copy() for L in legs.values()]
+    out["pivot"] = sum(hips, Vector()) / len(hips)
     return out
 
 
@@ -531,6 +539,69 @@ def body_lift(windows, spec, t):
     return 0.0
 
 
+def set_world_rotation(pb, R):
+    """Rotate a pose bone by the WORLD rotation `R`, whatever its local axes.
+
+    `Root` on these rigs points straight up, so its local Y is world Z and
+    writing `rotation_euler.x` tips the animal about an axis nobody meant. The
+    basis rotation that produces a world rotation R is M(-1) . R . M.
+    """
+    m = pb.bone.matrix_local.to_3x3()
+    pb.rotation_quaternion = (m.inverted() @ R @ m).to_quaternion()
+    pb.rotation_mode = 'QUATERNION'
+
+
+def body_pitch(windows, spec, t):
+    """Nose-up off the launch, nose-down into the landing.
+
+    A bounding deer is not a level body on cycling legs — it rotates through
+    each flight, and that rotation is most of what reads as a bound. The
+    reference is unambiguous: the animal leaves the ground nose-high, passes
+    through level at the apex and comes down nose-low to meet it with the
+    forefeet.
+
+    Zero at both ends of a window, so it is continuous with the grounded parts
+    of the cycle and a planted foot is never rotated off its spot.
+    """
+    if not spec.get("pitch"):
+        return 0.0
+    for a, b in windows:
+        span = (b - a) % 1.0
+        if span <= 0:
+            continue
+        u = ((t - a) % 1.0) / span
+        if u < 1.0:
+            return spec["pitch"] * math.cos(math.pi * u) * math.sin(math.pi * u) * 2.0
+    return 0.0
+
+
+def spine_flex(windows, spec, t):
+    """How much the back is ROUNDED (positive) or EXTENDED (negative).
+
+    A bound is a spine gait before it is a leg gait: the animal unfolds to throw
+    itself forward, then folds in the middle to bring the hind feet back under
+    the chest. The reference shows both — straight as a plank leaving the
+    ground, arched like a cat's before it lands.
+
+    Gated to the AIRBORNE windows, and zero at their edges, for the same reason
+    lift and pitch are: a spine that flexes while a foot is planted moves the
+    hip off that foot and the leg pays for it. Flexing through the hind drive
+    cost more than half the stride — the solved sweep fell from 0.593 to 0.209
+    and the run became slower than the trot.
+    """
+    if not spec.get("flex"):
+        return 0.0
+    for a, b in windows:
+        span = (b - a) % 1.0
+        if span <= 0:
+            continue
+        u = ((t - a) % 1.0) / span
+        if u < 1.0:
+            # Extended on the way up, gathered on the way down.
+            return -spec["flex"] * math.cos(math.pi * u) * math.sin(math.pi * u) * 2.0
+    return 0.0
+
+
 def gait_pose(rig, legs, rest, spec, t, sweep, windows=()):
     """One instant of a gait. Returns the worst load on a WEIGHTED leg."""
     clear(rig)
@@ -538,12 +609,32 @@ def gait_pose(rig, legs, rest, spec, t, sweep, windows=()):
     lift = body_lift(windows, spec, t)
     dz = -spec["crouch"] + math.sin(t * math.tau * 2.0) * spec["bob"] + lift
     root.location = local_translation(root, (0.0, 0.0, dz))
+    # The spine, before the legs — everything below hangs off it.
+    flex = spine_flex(windows, spec, t)
+    if flex:
+        for name, share in spec.get("spine", ()):
+            pb = rig.pose.bones[name]
+            point(pb, rx(flex * share) @ (pb.tail - pb.head).normalized())
+
+    pitch = body_pitch(windows, spec, t)
+    if pitch:
+        # Rotate about the body centre, not about Root's own head. The
+        # compensating translation is what keeps the pivot still: a point P is
+        # fixed by R if the body is also moved by P - R.P.
+        R = rx(pitch)
+        pivot = rest["pivot"]
+        set_world_rotation(root, R)
+        root.location = local_translation(root, Vector((0.0, 0.0, dz))
+                                          + (pivot - R @ pivot))
+        bpy.context.view_layer.update()
 
     worst = 0.0
     for k, L in legs.items():
         R = rest[k]
         half = sweep * 0.5
         p = (t + spec["phase"][k]) % 1.0
+        planted_now = p < spec["duty"]
+        v_now = 0.0 if planted_now else (p - spec["duty"]) / (1.0 - spec["duty"])
         if p < spec["duty"]:
             u = p / spec["duty"]
             goal = Vector((R["target"].x, R["target"].y - half + sweep * u,
@@ -556,21 +647,47 @@ def gait_pose(rig, legs, rest, spec, t, sweep, windows=()):
             # ground — but a foot in the air must travel with the animal it is
             # attached to, or the leg reaches back down for a ground that is no
             # longer under it and folds into the belly.
+            # A swinging leg is not tracking the ground: in the reference the
+            # deer folds all four legs up under its belly at the apex. So the
+            # return path is lifted and then PULLED TOWARD ITS OWN HIP, which
+            # folds the leg and makes over-extension impossible by construction
+            # — shortening a hip-to-foot distance can only bring a foot further
+            # into reach. The pull is zero at both ends, so the swing still
+            # meets the stance exactly where it left it.
             goal = Vector((R["target"].x, R["target"].y + half - sweep * v,
                            R["target"].z + lift + spec["lift"] * math.sin(math.pi * v)))
+            tuck = spec.get("tuck", 0.0)
+            if tuck:
+                hip = rig.pose.bones[L["a"]].head
+                goal = hip + (goal - hip) * (1.0 - tuck * math.sin(math.pi * v))
             planted = False
 
         # The scapula swings in phase with its own paw, carrying the hip toward
         # it. This is where most of a quadruped's stride comes from; without it
-        # the two links below are asked for reach they do not have. The SIGN was
-        # settled by measurement, not reasoning — inverting it cut the solved
-        # sweep by two thirds.
+        # the two links below are asked for reach they do not have.
+        #
+        # `lead` is +0.5 with the paw at its most forward and -0.5 at its most
+        # rearward. The SIGN was settled by measurement, not reasoning:
+        # inverting it cuts the solved sweep by two thirds.
         lead = (R["target"].y - goal.y) / max(sweep, 1e-6)
         point(rig.pose.bones[L["scap"]], rx(-spec["scapula"] * lead) @ R["scap_dir"])
 
         a = rig.pose.bones[L["a"]]
-        if planted:
-            worst = max(worst, (goal - a.head).length / R["reach"])
+        # EVERY leg, and BOTH ends of its range.
+        #
+        # Every leg, not only the planted ones: a swinging leg asked for more
+        # reach than it has clamps exactly as hard as a planted one and tears
+        # the mesh the same way. Constraining only the stance let a fore leg
+        # reach 1.048 the moment body pitch was added.
+        #
+        # Both ends, because a two-link chain also has a MINIMUM — it cannot
+        # fold below |l1 - l2| — and `ik2` clamps there too. Adding spine flex
+        # pulled a hip so close to its own planted hoof that the leg bottomed
+        # out and the hoof left its path by 63 mm, with the upper-bound check
+        # reporting everything fine.
+        d = (goal - a.head).length
+        floor = abs(R["l1"] - R["l2"]) * 1.06
+        worst = max(worst, d / R["reach"], floor / max(d, 1e-6))
         knee = ik2(a.head.copy(), goal, R["l1"], R["l2"], R["bend"])
         point(a, knee - a.head)
         point(rig.pose.bones[L["b"]], goal - rig.pose.bones[L["b"]].head)
@@ -619,7 +736,16 @@ def solve_sweep(rig, legs, rest, spec, frames):
             lo = mid
         else:
             hi = mid
-    return lo
+    # Report WHAT is limiting the stride. Without this a disappointing sweep is
+    # just a number, and the fix — more crouch, a longer stance, a deeper tuck —
+    # depends entirely on which leg binds and whether it is planted at the time.
+    worst, where = 0.0, None
+    for t in times:
+        for k, L in legs.items():
+            pass
+    binding = max(((gait_pose(rig, legs, rest, spec, t, lo, windows)[0], t)
+                   for t in times), key=lambda x: x[0])
+    return lo, binding
 
 
 def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
@@ -631,9 +757,16 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     """
     frames = spec["frames"]
     windows = flight_windows(legs, spec)
-    sweep = solve_sweep(rig, legs, rest, spec, frames)
-    bones = ["Root"] + [n for L in legs.values()
-                        for n in ([L["scap"], L["a"], L["b"]] + L["below"])]
+    sweep, (bind_load, bind_t) = solve_sweep(rig, legs, rest, spec, frames)
+    # The SPINE has to be in here. It was not, and the effect is subtle enough
+    # to be worth spelling out: `gait_pose` flexed the back, the hips moved with
+    # it, and the IK solved the legs against those moved hips — but the clip
+    # only stored the leg rotations. On playback the spine sat at rest, the hips
+    # were somewhere else, and every foot landed 63 mm off a path it had been
+    # solved perfectly for. Anything the pose depends on must be keyed.
+    bones = (["Root"] + [n for n, _ in spec.get("spine", ())]
+             + [n for L in legs.values()
+                for n in ([L["scap"], L["a"], L["b"]] + L["below"])])
     act = new_action(rig, name, frames)
     for i in range(frames + 1):
         gait_pose(rig, legs, rest, spec, (i % frames) / frames, sweep, windows)
@@ -673,7 +806,12 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
                            R["target"].z))
             got = rig.pose.bones[L["target"]].head
             if (got - goal).length > worst:
-                worst, where = (got - goal).length, f"f{i} {k}"
+                hip = rig.pose.bones[L["a"]].head
+                worst = (got - goal).length
+                where = (f"f{i} {k} hip->goal {(goal - hip).length:.3f} "
+                         f"(reach {rest[k]['reach']:.3f}, floor "
+                         f"{abs(rest[k]['l1'] - rest[k]['l2']):.3f}) "
+                         f"goal z{goal.z:.3f} got z{got.z:.3f}")
             drift = max(drift, abs(got.z - R["target"].z))
     s = seam(rig, act, frames)
     rig.animation_data.action = None
@@ -682,8 +820,17 @@ def build_gait(rig, legs, rest, name, spec, unit_m=1.0):
     air = sum((b - a) % 1.0 for a, b in windows)
     print(f"[{name}] sweep {sweep:.3f} ({sweep*unit_m:.3f} m) over {cycle:.3f}s "
           f"= {1/cycle:.2f} Hz, duty {spec['duty']:.2f} -> {speed:.3f} m/s")
+    # The leap, which is what a bound is FOR. A deer does not read as fast
+    # because its legs move quickly — it reads as fast because each bound
+    # crosses a lot of ground, and gracefully because it spends most of the
+    # cycle in the air doing nothing. Ground per cycle is sweep/duty.
+    planted_at = [f"{k[0]}.{k[1]}" for k in legs
+                  if ((bind_t + spec["phase"][k]) % 1.0) < spec["duty"]]
+    print(f"[{name}]   limited at t={bind_t:.3f} (load {bind_load:.3f}); "
+          f"planted then: {planted_at or 'none — airborne'}")
     print(f"[{name}]   airborne {air*100:.0f}% of the cycle in {len(windows)} "
-          f"window(s); body rises {spec.get('flight', 0.0):.3f}")
+          f"window(s); body rises {spec.get('flight', 0.0):.3f}; "
+          f"covers {sweep / spec['duty'] * unit_m:.2f} m per cycle")
     print(f"[{name}]   planted paw off its path {worst*1000:7.3f} mm ({where})")
     print(f"[{name}]   planted paw height drift {drift*1000:7.3f} mm")
     print(f"[{name}]   cycle seam               {s*1000:7.3f} mm")

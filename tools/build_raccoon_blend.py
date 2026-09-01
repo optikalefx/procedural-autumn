@@ -72,7 +72,10 @@ HEAD = "scull"
 # `measure: 'contact'` is a claim about EVERY moving clip. One solved gait beside
 # two inherited ones means the claim does not hold, and the species falls back to
 # excursion, which underreports by the duty factor.
-RENAME = {"Raccoon_Idle": "idle", "Raccoon_Gesture": "graze"}
+# `Raccoon_Run` is the pack's own bounding lope and is KEPT, for the reason
+# written up in build_deer_blend.py: an airborne duty is what a bound IS.
+RENAME = {"Raccoon_Idle": "idle", "Raccoon_Gesture": "graze",
+          "Raccoon_Run": "run"}
 
 # One entry per leg: the scapula, the two IK links, the bone the IK places, and
 # the bones below it that must be re-aimed so the paw stays flat.
@@ -87,14 +90,16 @@ LEGS = {
                         target="front_toe.R", below=["front_toe.R"], contact="front_toe.R"),
 }
 
+SPINE = [("spine.005", 0.38), ("spine.006", 0.34), ("spine.004", 0.28)]
+
 WALK = dict(flight=0.0, meshes=MESH, frames=14, duty=0.60, lift=0.040, bob=0.006, crouch=0.030,
             scapula=11.0, phase=LATERAL_WALK)
-TROT = dict(flight=0.015, meshes=MESH, frames=9, duty=0.45, lift=0.055, bob=0.008, crouch=0.045,
+TROT = dict(tuck=0.1, pitch=2.0, flight=0.015, meshes=MESH, frames=9, duty=0.45, lift=0.055, bob=0.008, crouch=0.045,
             scapula=13.0, phase=DIAGONAL_TROT)
 # A raccoon flees in a bounding lope rather than a flat gallop, and duty is what
 # makes that quick: the same reach spent in a fifth of the cycle covers roughly
 # three times the ground per cycle a walk's duty does. See the skill.
-RUN = dict(flight=0.11, meshes=MESH, frames=7, duty=0.22, lift=0.090, bob=0.014, crouch=0.060,
+RUN = dict(tuck=0.20, pitch=13.0, flight=0.11, meshes=MESH, frames=7, duty=0.22, lift=0.045, bob=0.014, crouch=0.060,
            scapula=16.0, phase=BOUND)
 
 ALERT_FRAMES = 96       # 4.0 s, looping
@@ -191,7 +196,7 @@ def main():
     print(f"[build] raccoon {height:.3f} units tall, authored at 1 unit = 1 m")
 
     rest = gait_rest(rig, LEGS)
-    for name, spec in (("walk", WALK), ("trot", TROT), ("run", RUN)):
+    for name, spec in (("walk", WALK), ("trot", TROT)):
         build_gait(rig, LEGS, rest, name, spec)
     build_alert(rig, rest)
 

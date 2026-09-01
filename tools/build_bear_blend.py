@@ -59,7 +59,10 @@ RIG = "Skeleton_Bear"
 MESHES = ["Bear_01", "Bear_02"]
 HEAD = "scull"
 
-KEEP = {"Bear_Idle": "idle", "Bear_Gesture": "alert"}
+# `Bear_Run` is the pack's own bounding lope and is KEPT. Its duty of
+# 0.42/0.36/0.33/0.08 is an animal in the air, not a badly planted walk —
+# the same misreading that saw the deer's leap dropped and rebuilt worse.
+KEEP = {"Bear_Idle": "idle", "Bear_Gesture": "alert", "Bear_Run": "run"}
 
 # The fore legs hang off `spine.004` and the hind off `spine.002`, so the neck
 # may start at `spine.005` and the graze's chest pitch must stop at `spine.004`
@@ -84,11 +87,13 @@ LEGS = {
 # fit is 0.755 and every solved speed is multiplied by it. A first pass tuned to
 # the model's own units looked right in the build log and landed 25% low in the
 # game. Tune against the number the game prints.
+SPINE = [("spine.003", 0.40), ("spine.004", 0.36), ("spine.002", 0.24)]
+
 WALK = dict(flight=0.0, meshes=MESHES, frames=16, duty=0.64, lift=0.075, bob=0.012, crouch=0.075,
             scapula=12.0, phase=LATERAL_WALK)
-TROT = dict(flight=0.03, meshes=MESHES, frames=11, duty=0.48, lift=0.110, bob=0.018, crouch=0.100,
+TROT = dict(tuck=0.1, pitch=2.0, flight=0.03, meshes=MESHES, frames=11, duty=0.48, lift=0.110, bob=0.018, crouch=0.100,
             scapula=15.0, phase=DIAGONAL_TROT)
-RUN = dict(flight=0.26, meshes=MESHES, frames=9, duty=0.26, lift=0.180, bob=0.026, crouch=0.130,
+RUN = dict(tuck=0.20, pitch=11.0, flight=0.26, meshes=MESHES, frames=9, duty=0.26, lift=0.110, bob=0.026, crouch=0.130,
            scapula=19.0, phase=BOUND)
 
 GRAZE = dict(
@@ -137,7 +142,7 @@ def main():
           f"{max(p.y for p in bb) - min(p.y for p in bb):.3f} long")
 
     rest = gait_rest(rig, LEGS)
-    for name, spec in (("walk", WALK), ("trot", TROT), ("run", RUN)):
+    for name, spec in (("walk", WALK), ("trot", TROT)):
         build_gait(rig, LEGS, rest, name, spec)
     build_phased_graze(rig, LEGS, rest, GRAZE)
 

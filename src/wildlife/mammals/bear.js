@@ -62,10 +62,14 @@ export const BEAR = {
       walk: { name: 'walk', rate: 1.0 },
       // 11 frames, 2.18 Hz. Sweep 0.648, duty 0.48.
       trot: { name: 'trot', rate: 1.0 },
-      // A bound. Sweep 0.822 at duty 0.26 — the same reach spent in a quarter
-      // of the cycle, which is what makes a charging bear fast and is not a
-      // raised rate. No leg is asked for more than it has.
-      run: { name: 'run', rate: 1.0 },
+      // The pack's own bounding lope, KEPT. Its duty of 0.42/0.36/0.33/0.08
+      // is an animal in the air rather than a badly planted walk — the same
+      // misreading that saw the deer's leap thrown away and rebuilt worse.
+      // It covers 3.25 m of ground per cycle, measured by contact.
+      //
+      // 1.5x is cadence: 19 frames at 24 fps is 1.26 lopes a second, and this
+      // lifts it to 1.9 for 6.15 m/s against a real black bear's 6.2.
+      run: { name: 'run', rate: 1.5 },
       // The graze is authored in three phases, and declaring `grazeIn` and
       // `grazeOut` is what tells `GlbRig` to sequence them instead of
       // crossfading straight to the loop — the Brain holds a graze for a
@@ -90,7 +94,7 @@ export const BEAR = {
   ],
 
   // Measured off the clips at load and written back here by `loadGlbSpecies`.
-  gait: { walk: 0.989, trot: 2.224, run: 6.366 },
+  gait: { walk: 0.940, trot: 2.096, run: 6.148 },
 
   brain: {
     // A bear mostly does not care that you exist. It looks up when you get

@@ -82,17 +82,18 @@ export const DEER = {
       walk: { name: 'walk', rate: 1.0 },
       // Solved. 11 frames, 2.18 Hz, diagonal pairs.
       trot: { name: 'trot', rate: 1.0 },
-      // A BOUND, not a gallop, because that is what a frightened white-tail
-      // does: both hinds drive together, the body sails, both fores catch.
-      // The pack's own run clip is dropped.
+      // ── the pack's own bounding leap, kept ────────────────────────────
+      // `Deer_Run` IS the bound. It was dropped once and replaced with a solved
+      // one, on the reading that duty 0.15/0.17/0.30/0.17 meant "badly
+      // planted". It does not: it means the animal is in the AIR, which is what
+      // a bound is. The fore hoof travels 1.16 over the cycle and the clip
+      // covers 2.38 m of ground per leap, measured by contact.
       //
-      // DUTY is what makes it fast, and it is worth being clear that this is
-      // not a trick. At 0.20 a hoof is down a fifth of the cycle, so the sweep
-      // the leg can reach is spent five times faster than at a walk's duty and
-      // the animal covers five times the ground per cycle. That is what a bound
-      // IS. The legs never ask for more reach than they have — the solver
-      // refuses a sweep that would clamp one.
-      run: { name: 'run', rate: 1.0 },
+      // `rate` is cadence and nothing else. 25 frames at 24 fps is 0.96 leaps a
+      // second, and a fleeing white-tail does 2 to 2.5. At 2.2x it makes 2.1
+      // leaps a second covering the artist's 2.38 m each — 5.03 m/s. The ground
+      // per leap is the asset's; only how often it takes one is ours.
+      run: { name: 'run', rate: 2.2 },
       graze: { name: 'graze' },
       alert: { name: 'alert' },
     },

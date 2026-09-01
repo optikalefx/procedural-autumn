@@ -73,7 +73,12 @@ HEAD = "scull"
 # what lets the species use `measure: 'contact'`: that measurement is a claim
 # that every paw of every moving clip is genuinely planted for a sustained
 # stretch, and it is only true once nothing is inherited from the pack.
-KEEP = {"Deer_Idle": "idle", "Deer_Gesture": "graze"}
+# `Deer_Run` is the pack's BOUNDING LEAP and it is kept. Measured, its duty is
+# 0.15/0.17/0.30/0.17 with a fore excursion of 1.161 — which is not a badly
+# planted walk, it is an animal in the air, and that is what a bound is. It was
+# dropped once on exactly that misreading and replaced with a solved one, which
+# took hours and came out worse. The artist's leap is the leap.
+KEEP = {"Deer_Idle": "idle", "Deer_Gesture": "graze", "Deer_Run": "run"}
 
 LEGS = {
     ("hind", "L"): dict(scap="shoulder.L", a="thigh.L", b="shin.L",
@@ -88,6 +93,13 @@ LEGS = {
                         contact="front_toe.R"),
 }
 
+# `pitch` and `tuck` are what make it read as a BOUND rather than a level
+# animal rising and falling. Frame-by-frame reference of a real white-tail:
+# it leaves the ground nose-high, passes level at the apex, comes down nose-low
+# to meet the ground with its forefeet — and it folds all four legs right up
+# under the belly at the top, hocks and knees closed. A body that stays level
+# with its legs windmilling underneath reads as floating, whatever its speed.
+#
 # `flight` is how far the body rises through each airborne window, and for a
 # bound it is the gait rather than a garnish. Without it the back and head stay
 # at one height all cycle, which reads as nothing at all and leaves the swinging
@@ -103,9 +115,11 @@ LEGS = {
 # stride: the first pass at 0.02 m of crouch solved to a 0.530 sweep against a
 # geometric maximum of 0.790, and 0.49 m/s where a white-tail walks at 1.15.
 # 6-7 cm on a 1.08 m animal is not visible and is most of the gap.
+SPINE = [("spine.004", 0.42), ("spine.005", 0.34), ("spine.003", 0.24)]
+
 WALK = dict(flight=0.0, meshes=MESHES, frames=18, duty=0.62, lift=0.075, bob=0.010, crouch=0.060,
             scapula=13.0, phase=LATERAL_WALK)
-TROT = dict(flight=0.035, meshes=MESHES, frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
+TROT = dict(tuck=0.12, pitch=3.0, flight=0.035, meshes=MESHES, frames=11, duty=0.45, lift=0.105, bob=0.014, crouch=0.075,
             scapula=17.0, phase=DIAGONAL_TROT)
 # The bound, and the whole reason a fleeing deer can reach a real speed. Duty is
 # the lever: at 0.20 a hoof is down a fifth of the cycle, so the sweep it can
@@ -113,7 +127,7 @@ TROT = dict(flight=0.035, meshes=MESHES, frames=11, duty=0.45, lift=0.105, bob=0
 # cycle than the same sweep at a walk's duty. That is not a trick — it is what
 # makes a bound fast, and it is why the pack's own run tops out at 1.7 m/s while
 # this reaches a white-tail's.
-RUN = dict(flight=0.34, meshes=MESHES, frames=9, duty=0.20, lift=0.20, bob=0.02, crouch=0.09,
+RUN = dict(tuck=0.22, pitch=17.0, flight=0.34, meshes=MESHES, frames=9, duty=0.20, lift=0.090, bob=0.02, crouch=0.09,
            scapula=20.0, phase=BOUND)
 
 # Alert. Starts at spine.006: on THIS rig `front_shoulder` parents to spine.005,
@@ -231,7 +245,10 @@ def main():
     rest = gait_rest(rig, LEGS)
     build_gait(rig, LEGS, rest, "walk", WALK)
     build_gait(rig, LEGS, rest, "trot", TROT)
-    build_gait(rig, LEGS, rest, "run", RUN)
+    # No solved run. `Deer_Run` is the pack's bounding leap and it is kept as
+    # shipped — see KEEP above. `new_action` deletes any action of the same
+    # name, so solving "run" here silently clobbered the artist's clip with a
+    # worse one for most of a day.
     build_alert(rig, rest)
 
     rig.animation_data.action = None

@@ -76,11 +76,11 @@ export const RACCOON = {
       // height there is nothing left to swing with.
       walk: { name: 'walk', rate: 1.0 },
       trot: { name: 'trot', rate: 1.0 },
-      // A bounding lope, which is how a raccoon actually flees. DUTY is what
-      // makes it fast, not a raised rate: at 0.22 the paw is down a fifth of
-      // the cycle, so the same reach is spent three times faster than at a
-      // walk's duty. Sweeps of 0.251 / 0.299 / 0.324 give 0.72 / 1.77 / 5.05.
-      run: { name: 'run', rate: 1.0 },
+      // The pack's own bounding lope, KEPT — see the note in deer.js about
+      // why an airborne duty is a bound rather than a defect. It covers 0.86 m
+      // per cycle. 2.4x is cadence: 15 frames is 1.6 lopes a second and this
+      // makes it 3.8, which is what a fleeing raccoon does.
+      run: { name: 'run', rate: 2.4 },
       // The pack's `Gesture`. Not phased — there is no authored entry and exit,
       // so `GlbRig` takes the plain damped crossfade, which is right for a clip
       // that starts and ends on its own feet.

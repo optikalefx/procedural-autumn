@@ -91,6 +91,35 @@ not enough: the pack's materials and images survive unreferenced and Blender
 writes them out. The raccoon's first working .blend was 34 MB, 33 of it
 demo-scene textures including `Cat_Litter.png`, for a 619-vertex animal.
 
+## An airborne duty is a BOUND, not a defect
+
+The most expensive mistake in this work, and the easiest to repeat.
+
+Duty is the fraction of a cycle a foot spends down. A walk is *defined* by a
+duty above 0.5, so a walk measuring 0.25 is broken. But a **bound is defined by
+being in the air** — a real one is airborne half the cycle or more, and its feet
+will measure 0.15 to 0.30 with the pairs staggered. That is the gait working,
+not the clip failing.
+
+The deer's `Deer_Run` measured duty 0.15/0.17/0.30/0.17 with a 1.16 fore
+excursion. It was read as "not planted, therefore badly made", dropped, and
+replaced with a solved bound. That cost most of a day, produced a worse
+animation, and the artist's clip had been right all along — the pack's own promo
+video shows it as a proper leap.
+
+**Before rejecting any clip, ask what gait it is.** Then check the whole pack for
+what else exists:
+
+    Idle 56 · Walk 52 · Run 52 · Gesture 48
+    Sit 1 · Stretch 1 · Eat 5 · Lying 2 · Swim 8 · Fly 3 · Jump 3
+
+There is no separate "leap" — `Run` is the leap. Solve a gait only when the
+asset genuinely has none, and prefer the artist's every time it does.
+
+Watch for the silent overwrite too: `new_action` deletes any action of the same
+name, so renaming `Deer_Run -> run` and then solving `"run"` clobbers the clip
+you just decided to keep, with no warning at all.
+
 ## Measure the clips before trusting any of them
 
 Clip quality varies **per animal within one pack**. Duty per foot, sampled over
@@ -475,7 +504,10 @@ Both finished animals, measured in game, against the real thing:
 |---|---|---|---|---|
 | raccoon | 0.673 | 1.670 | 4.936 | ~0.7 / — / ~6 |
 | deer | 1.089 | 2.728 | 7.716 | 1.15 / 3.48 / 11.9 |
-| bear | 0.977 | 2.198 | 6.292 | 1.05 / 2.6 / 6.2 |
+| bear | 0.940 | 2.096 | 6.148 | 1.05 / 2.6 / 6.2 |
+
+Every `run` there is the PACK's own leap, kept as shipped, with only its cadence
+raised. Only the walks and trots are solved.
 
 Both on `measure: 'contact'`, no `glb.drive` anywhere, every planted paw within
 0.001 mm of its authored path and every cycle closing to 0.000 mm. That is the
