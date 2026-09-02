@@ -1768,21 +1768,19 @@ export class JournalPage {
       { seed: 91, width: 2.4, alpha: 0.34, wobble: 2.6, colour: GRAPHITE });
 
     const BODY = [
-      'Everything on the list, found. So I will',
-      'write the other thing down now.',
+      'Everything on the list, found.',
+      'So I will write the other thing down.',
       '',
-      'Twice, on the logging road above the',
-      'creek. Standing back in the timber,',
-      'watching the truck go by. Too tall, and',
-      'far too wide, and on two legs.',
+      'Near to the tall trees.',
+      'A creek, a river or three.',
+      'By bike, by boat or by truck.',
+      'To far, too close and duck.',
       '',
-      'Gone both times before I had the camera',
-      'up, and I am not telling anyone without',
-      'a photograph.',
+      'Gone both times before I got the shot.',
+      'I\'m too slow, it\'s too fast - or not.',
       '',
-      'It keeps to the deep woods. Go and find',
-      'it. Put the long lens on FIRST — there',
-      'is no time to change it.',
+      'It keeps to the deep woods. Go and find.',
+      'Put the long lens on first if you don\'t mind.'
     ];
     g.font = hand(37);
     g.fillStyle = 'rgba(74,58,44,0.72)';
