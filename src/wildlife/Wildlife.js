@@ -1021,11 +1021,17 @@ export class Wildlife extends System {
    * returns false for simply draws no target — see `Journal._rowAt`.
    */
   canTrack(id) {
-    // The nineteenth line, and the only trackable thing here that can stop
-    // being trackable: `armed` is false until the journal's mystery opens and
-    // false again the moment he is photographed, so the ring is offered exactly
-    // over the window in which there is something to find.
-    if (this.bigfoot && id === this.bigfoot.key) return this.bigfoot.armed;
+    // The nineteenth line. True unconditionally — the question this method asks
+    // is "is there a system that could point at this", and there is; whether
+    // there is one out there RIGHT NOW is `Bigfoot.nearest` returning null, and
+    // whether the player has earned the line is the journal's own business.
+    //
+    // It used to return `this.bigfoot.armed`, which is a boolean the HUD pushes
+    // down a frame later, so the journal painted its leaf against a value that
+    // was still false. `Journal._canTrack` answers for this id off the save
+    // instead and never reaches this branch; the branch stays for anything else
+    // that asks.
+    if (this.bigfoot && id === this.bigfoot.key) return true;
     return !!SPECIES[id] || !!this.treeBirds?.hasSpecies?.(id);
   }
 

@@ -820,6 +820,29 @@ export class Journal {
    * camp is a permanent pin, and the Moon needs no help being found.
    */
   _canTrack(id) {
+    // ── the mystery line answers here, not out there ─────────────────────────
+    //
+    // Every other row asks the wildlife layer, and that is right: whether a
+    // bald eagle can be pointed at is a fact about the bird system. The
+    // nineteenth line is different in a way that bit once and would bite again.
+    //
+    // `Wildlife.canTrack` used to answer for him off `Bigfoot.armed`, and
+    // `armed` is a boolean the HUD pushes DOWN once a frame
+    // (`bf.armed = hunt.mysteryOpen && !hunt.won`). So on the frame the
+    // mystery opens, `_decorate` runs, reads `armed` — still false, the HUD has
+    // not ticked yet — paints the leaf with no paw on it, and nothing ever
+    // repaints it, because nothing about the store changes again. The entry
+    // appeared with an empty frame and no way to track it, every time.
+    //
+    // Whether this line can be gone looking for is a fact about the SAVE, and
+    // the save is right here, synchronously. `hunt.mystery` is the row and
+    // `mysteryOpen` is the condition — the same one that decides whether the
+    // leaf is written on at all, which is what makes them impossible to
+    // disagree. It also closes a leak: `_rowAt` walks `spec.rows` whatever the
+    // page was painted as, so while the leaf is still blank its row is in the
+    // hit-test, and a `true` here would have let a player ring a line that is
+    // not on the page yet.
+    if (id && id === hunt.mystery?.id) return hunt.mysteryOpen;
     return !!this.ctx.systems?.wildlife?.canTrack?.(id);
   }
 
@@ -1049,6 +1072,11 @@ export class Journal {
       const leaf = this._pages[this._mysteryPage];
       if (leaf.spec.open === false) {
         leaf.spec.open = true;
+        // …and the row's own flags, because this paints the leaf HERE rather
+        // than leaving it to `_decorate`. A leaf drawn open with a stale
+        // `track` is exactly the empty frame this whole block exists to avoid.
+        const row = leaf.spec.rows[0];
+        if (row) { row.track = this._canTrack(row.id); row.target = hunt.target === row.id; }
         this._revealPending = true;
         try { leaf.paint(); } catch { /* the seek still happens; the page repaints */ }
       }
