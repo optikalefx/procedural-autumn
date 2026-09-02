@@ -356,10 +356,26 @@ const CANYON_FULL = 6.0;    // ...and where it is fully earned
 
 // The water LEVEL footprint, as a multiple of a station's nominal carve radius,
 // and the metres of dry bank the level is carried up beyond its own surface.
+//
+// SWEPT at res 1536 on seed 20262018, against the map's water coverage and the
+// height of water still standing where the level field ends:
+//
+//   1.00   25.5% wet   wall p50 0.56 m   57% of stations
+//   1.25   26.2%       0.34              48%
+//   1.50   26.8%       0.24              45%     <- both minima
+//   2.00   28.2%       0.34              48%
+//   2.50   29.6%       0.47              52%
+//
+// It is not monotonic and 1.5 is the floor of both curves, which is worth
+// stating because it was NOT true before `_settleSurfaces`: while the surface
+// could stand above its own bed, a wider footprint was the only thing keeping
+// the sheet from ending in mid-air, and the sweep ran the other way. With the
+// surface settled onto the bed, a footprint past 1.5 only spreads water over
+// ground the channel never claimed.
 // See the two-footprint note in _rasterWater: the level decides where the
 // waterline is, so it has to outreach the carved channel or the field's own
 // edge becomes a wall of water standing on dry ground.
-const WATER_FOOT = 2.5;
+const WATER_FOOT = 1.5;
 // Cut the channel to the WATER's width rather than to the carve's own. The two
 // have always been different numbers — the carve disc is about twice the water
 // ribbon — and that gap is why the surface sheet ends over flat bed and shows
