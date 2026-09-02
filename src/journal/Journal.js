@@ -763,6 +763,12 @@ export class Journal {
         specs.push({ kind: 'notes', index: nList + 2 + pad, seed: 11 + pad, rows: [] });
         pad++;
       }
+      // The leaf the stamp lands on: the verso FACING the mystery entry, which
+      // is whatever the padding above just made the last page. The book is
+      // finished when that entry is crossed off, and the two things are read as
+      // one spread — the line struck on the right, the stamp on the left.
+      const facing = specs[specs.length - 1];
+      if (facing) facing.stamp = hunt.won;
       specs.push({
         kind: 'mystery',
         index: nList + 2 + pad,
@@ -901,6 +907,14 @@ export class Journal {
       // row loop because the row it carries is invisible until this flips, and
       // a leaf repainted for a row change while still in its blank state would
       // paint the entry onto a page that is meant to be empty.
+      // The win stamp, on the leaf facing the entry. Same shape of check as
+      // the mystery leaf's `open` below and for the same reason: it is a
+      // property of the SAVE that can turn over while the book is being looked
+      // at, and a page painted before it turned would never repaint.
+      if (p.spec.stamp !== undefined) {
+        const won = hunt.won;
+        if (won !== p.spec.stamp) { p.spec.stamp = won; dirty.add(i); }
+      }
       if (p.spec.kind === 'mystery') {
         const open = hunt.mysteryOpen;
         if (open !== p.spec.open) {

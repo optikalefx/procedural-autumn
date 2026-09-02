@@ -305,6 +305,179 @@ function pawMark(g, cx, cy, s, { colour = GRAPHITE, alpha = 0.22, seed = 1 } = {
   g.restore();
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The win stamp
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The one PRINTED thing in a hand-written book, and that contrast is the whole
+// idea. Every other mark on these pages is somebody's pen: wobbled, overshot,
+// drawn twice so the passes darken. A rubber stamp is a manufactured object
+// pressed onto paper, and it should look like it arrived from outside the
+// journal — which is exactly what winning is.
+//
+// ── the green ────────────────────────────────────────────────────────────────
+//
+// `#4e7346` is not a UI green, it is the CONIFER from `DESIGN_BRIEF`'s palette
+// table — the "deep, desaturated, cool" note the brief calls the visual rest in
+// a hot palette. That makes it the only green the game actually owns, and on
+// cream paper under `multiply` it soaks in as ink rather than sitting on top as
+// a sticker. A brighter one was tried and reads as a web badge.
+//
+// ── what makes it a stamp and not a circle with type in it ───────────────────
+//
+//   · **it is pressed, so it is uneven.** Everything is drawn opaque into a
+//     scratch canvas and then eaten into with `destination-out` — a scatter of
+//     soft blobs and a few long streaks where the pad was dry. Without this it
+//     is a printed logo; with it, it is a stamp.
+//   · **it rocked.** A faint second impression 3 px off, under the first. That
+//     is what happens when a hand does not press square.
+//   · **`multiply`.** Ink darkens paper; it does not replace it. The ruled
+//     lines of the Notes page show straight through, which is most of why it
+//     reads as ON the page rather than composited over it.
+//   · **the rings are not circles.** Radius jitter around the sweep, same
+//     principle as `inkLine` — a die cut by hand and worn by use.
+//
+// ── the composition ──────────────────────────────────────────────────────────
+//
+// Arced type top and bottom, a fat check and the words in the middle, and two
+// diamonds at the sides to close the arcs. The check is `tick` — the same mark
+// the player has watched go into eighteen boxes, at seven times the size.
+const STAMP_INK = '#4e7346';
+
+function winStamp(g, cx, cy, R, seed, t = 1) {
+  if (t <= 0 || typeof document === 'undefined') return;
+  const r = rng(seed);
+  const S = Math.ceil(R * 2.3);
+  const c = document.createElement('canvas');
+  c.width = S; c.height = S;
+  const q = c.getContext('2d');
+  if (!q) return;
+  q.translate(S / 2, S / 2);
+  q.strokeStyle = STAMP_INK;
+  q.fillStyle = STAMP_INK;
+  q.lineCap = 'round';
+  q.lineJoin = 'round';
+
+  // ── the rings ──────────────────────────────────────────────────────────────
+  const ring = (rad, w, jitter) => {
+    q.lineWidth = w;
+    q.beginPath();
+    const n = 190;
+    for (let i = 0; i <= n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const rr = rad + Math.sin(a * 3.1 + seed) * jitter + (r() - 0.5) * jitter * 0.8;
+      const x = Math.sin(a) * rr, y = -Math.cos(a) * rr;
+      i ? q.lineTo(x, y) : q.moveTo(x, y);
+    }
+    q.closePath();
+    q.stroke();
+  };
+  ring(R * 0.97, R * 0.055, R * 0.006);
+  ring(R * 0.845, R * 0.018, R * 0.005);
+
+  // ── the arced type ─────────────────────────────────────────────────────────
+  //
+  // Angles are measured clockwise from straight up, which is what `rotate(a)`
+  // then `translate(0, -rad)` gives you. The bottom arc runs the other way and
+  // flips each glyph, so it reads left to right along the underside instead of
+  // upside down along the top of nothing.
+  const arc = (txt, rad, size, bottom) => {
+    q.font = hand(size, 700);
+    q.textAlign = 'center';
+    q.textBaseline = 'middle';
+    const chars = [...txt];
+    const step = chars.map((ch) => (q.measureText(ch).width + size * 0.30) / rad);
+    const span = step.reduce((a, b) => a + b, 0);
+    let a = bottom ? Math.PI + span / 2 : -span / 2;
+    for (let i = 0; i < chars.length; i++) {
+      const half = step[i] / 2;
+      q.save();
+      q.rotate(bottom ? a - half : a + half);
+      q.translate(0, -rad);
+      if (bottom) q.rotate(Math.PI);
+      q.fillText(chars[i], 0, 0);
+      q.restore();
+      a += bottom ? -step[i] : step[i];
+    }
+  };
+  // Both arcs have to finish before the diamonds at three and nine o'clock, so
+  // the longer line is set smaller rather than let to run under them. The first
+  // cut had "ALL NINETEEN FOUND" spanning 136 degrees, which put its A and its
+  // D behind the two marks that are supposed to close the arcs.
+  arc('CAMPING SEASON', R * 0.740, R * 0.130, false);
+  arc('ALL NINETEEN FOUND', R * 0.755, R * 0.092, true);
+
+  // The two diamonds that close the arcs, at three and nine o'clock.
+  for (const sx of [-1, 1]) {
+    q.save();
+    q.translate(sx * R * 0.735, 0);
+    q.rotate(Math.PI * 0.25);
+    q.fillRect(-R * 0.036, -R * 0.036, R * 0.072, R * 0.072);
+    q.restore();
+  }
+
+  // ── the check, and the words ───────────────────────────────────────────────
+  // The band between the two arcs is about 340 units of a 536-unit stamp, and
+  // the check and the words have to share it without either touching type that
+  // is curving toward them. `tick` runs from y-0.30s to y+0.92s, so the check's
+  // own extent is written out here rather than eyeballed.
+  const ck = R * 0.42;
+  tick(q, -ck * 0.56, -R * 0.44, ck, seed + 3, 1,
+    { colour: STAMP_INK, width: R * 0.082, alpha: 1 });
+
+  q.font = brush(R * 0.345);
+  q.textAlign = 'center';
+  q.textBaseline = 'alphabetic';
+  q.fillText('YOU WIN', 0, R * 0.335);
+
+  // ── the pad was not evenly inked ───────────────────────────────────────────
+  q.globalCompositeOperation = 'destination-out';
+  // Many small bites rather than few big ones. The first pass used blobs up to
+  // 7.5% of the stamp across and it read as mould on the paper rather than as
+  // a pad that had not taken ink evenly — the tell is that real starve marks
+  // are at the scale of the paper's tooth, not of the artwork.
+  for (let i = 0; i < 340; i++) {
+    const a = r() * Math.PI * 2;
+    // Biased outward: the middle of a stamp takes ink best and the rim is where
+    // it starves, which is also where the eye reads the shape from.
+    const rad = R * (0.15 + Math.sqrt(r()) * 0.92);
+    const w = R * (0.006 + r() * 0.030);
+    q.globalAlpha = 0.14 + r() * 0.38;
+    q.beginPath();
+    q.ellipse(Math.sin(a) * rad, -Math.cos(a) * rad, w, w * (0.4 + r()), r() * 3.14, 0, Math.PI * 2);
+    q.fill();
+  }
+  // …and three dry streaks, which is what a pad that has sat open does.
+  q.lineCap = 'round';
+  for (let i = 0; i < 4; i++) {
+    const a = r() * Math.PI * 2, len = R * (0.5 + r() * 0.9);
+    q.globalAlpha = 0.26 + r() * 0.30;
+    q.lineWidth = R * (0.008 + r() * 0.016);
+    q.beginPath();
+    q.moveTo(Math.cos(a) * -len / 2, Math.sin(a) * -len / 2);
+    q.lineTo(Math.cos(a) * len / 2, Math.sin(a) * len / 2);
+    q.stroke();
+  }
+
+  // ── onto the page ──────────────────────────────────────────────────────────
+  // `t` is the slam: it comes down oversized and settles, so the beat has
+  // weight rather than fading in like a notification.
+  const k = 1 + (1 - clamp01(t)) * 0.5;
+  const tilt = -0.105;
+  g.save();
+  g.globalCompositeOperation = 'multiply';
+  g.translate(cx, cy);
+  g.rotate(tilt);
+  g.scale(k, k);
+  // The rock: a faint second impression, under the first and off to one side.
+  g.globalAlpha = 0.16 * clamp01(t * 1.4);
+  g.drawImage(c, -S / 2 + R * 0.016, -S / 2 + R * 0.012);
+  g.globalAlpha = 0.88 * clamp01(t * 1.4);
+  g.drawImage(c, -S / 2, -S / 2);
+  g.restore();
+}
+
 /**
  * A pen ring round something, the way a person marks the line they are working
  * on. This is what a targeted row wears.
@@ -357,13 +530,20 @@ function circleMark(g, cx, cy, rx, ry, { seed = 1, colour = INK, alpha = 0.72, w
   g.restore();
 }
 
-/** A tick, drawn in two strokes with the second one long and fast. */
-function tick(g, x, y, s, seed, t = 1) {
+/**
+ * A tick, drawn in two strokes with the second one long and fast.
+ *
+ * `opts` exists for the win stamp, which needs this same shape big and in
+ * green. One tick in the book at three sizes beats a second tick shape that
+ * only ever appears once — the check on the stamp should be recognisably the
+ * mark the player has watched go into eighteen boxes.
+ */
+function tick(g, x, y, s, seed, t = 1, { colour = GRAPHITE, width = 6.2, alpha = 0.86 } = {}) {
   const r = rng(seed);
   g.save();
-  g.strokeStyle = GRAPHITE;
-  g.globalAlpha = 0.86;
-  g.lineWidth = 6.2;
+  g.strokeStyle = colour;
+  g.globalAlpha = alpha;
+  g.lineWidth = width;
   g.lineCap = 'round';
   g.lineJoin = 'round';
   const p0 = [x + s * 0.02, y + s * 0.52];
@@ -1440,6 +1620,13 @@ export class JournalPage {
       const y = M_TOP + 190 + i * 62;
       if (y > PAGE_H - M_BOT) break;
       inkLine(g, x0, y, x1, y + 1, { seed: 40 + i, width: 1.6, alpha: 0.18, wobble: 1.2, colour: '#6b5238' });
+    }
+    // The book is finished. Over the ruled lines and not between them — a stamp
+    // lands where the hand puts it, and a notes page is exactly the blank a
+    // person reaches for. See `winStamp`.
+    if (this.spec.stamp) {
+      winStamp(g, (x0 + x1) / 2, PAGE_H * 0.56, 268, this.spec.seed * 17 + 5,
+        this.spec.stampT ?? 1);
     }
   }
 

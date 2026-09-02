@@ -32,11 +32,16 @@ const out = await p.evaluate(async (want) => {
   while (!j._ready && Date.now() - t0 < 90000) await new Promise((r) => setTimeout(r, 200));
   window.__dbg.sheet(18);
   if (want === 'ringed') window.__hunt.setTracked('bigfoot');
+  if (want === 'won') window.__hunt.award('bigfoot');
   await j._decorate({ force: true });
-  const page = j._pages[j._mysteryPage];
-  const row = page.spec.rows[0];
-  return { png: page.canvas.toDataURL('image/png'),
-           row: { track: row.track, target: row.target }, open: page.spec.open };
+  // `won` renders the FACING leaf — the stamp's page — instead of the entry.
+  const idx = want === 'won' ? j._mysteryPage - 1 : j._mysteryPage;
+  const page = j._pages[idx];
+  const row = page.spec.rows?.[0];
+  return { png: page.canvas.toDataURL('image/png'), page: idx, kind: page.spec.kind,
+           stamp: page.spec.stamp ?? null,
+           row: row ? { track: row.track, target: row.target } : null,
+           open: page.spec.open ?? null };
 }, arg('state', 'ringed'));
 
 console.log(JSON.stringify({ row: out.row, open: out.open }));
