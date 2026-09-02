@@ -41,6 +41,7 @@ import { CampGround } from './camp_ground.js';
 import { CampReticle, CampPrompt } from './camp_ui.js';
 import { ScopeView } from './camp_scope_view.js';
 import { RoastView } from './camp_roast_view.js';
+import { SleepFade } from './camp_sleep.js';
 import { Firepit, buildWoodpile } from './camp_fire.js';
 import { buildRoastStick } from './camp_marshmallow.js';
 import { buildTent } from './camp_tent.js';
@@ -207,6 +208,25 @@ const STICK_PICK_R = 0.34;
 // It is also why this one is tested BEFORE the stick; see `_interact`.
 const BOOK_PICK_R = 0.17;
 
+// ── clicking the tent ───────────────────────────────────────────────────────
+//
+// The fourth sphere, and the only generous one that is generous because its
+// object is big rather than because its object is tiny. A dome tent's plan
+// half-extents run 0.66-1.00 m and its peak 0.94-1.28 m (see TENT_COLORWAYS),
+// so a 1.05 m sphere lifted 0.62 m off the ground is very nearly the tent
+// itself — a little proud of it at the ends, a little inside it across the
+// door.
+//
+// Nothing else can contest it. The layout keeps a tent at least
+// `TENT_FIRE_CLEAR` (2.20 m) from the fire, the fire's own sphere is 1.15 m,
+// and the table the book and the stick live on is further out again — so even
+// on a compact camp, where the tent stands 2.04 m out, the two spheres do not
+// reach each other. It is tested last of the four anyway, because the rule
+// `_interact` already follows is that the padded sphere loses to the unpadded
+// one and this is the most padded of them.
+const TENT_PICK_R = 1.05;
+const TENT_PICK_LIFT = 0.62;
+
 // The height of the flame's hottest point above the fire's own centre, handed
 // to the roast view (and through it to the toast map) by `fireState`.
 //
@@ -285,6 +305,7 @@ export class Camp extends System {
     this.prompt = null;
     this.scope = null;       // the telescope eyepiece view, when one is open
     this.roast = null;       // the fireside marshmallow view, when one is open
+    this.sleep = null;       // the night-to-morning fade, when one is running
     // The last roast counters this system sounded, so the sizzle layer can be
     // driven by watching the view rather than by the view reaching into audio.
     // Same philosophy as Stats.js: watch, do not ask.
@@ -327,6 +348,10 @@ export class Camp extends System {
     // take the camera outright, so two open at once is two systems writing the
     // camera in `lateUpdate` and one of them silently losing.
     this.roast = new RoastView(this.ctx);
+    // Not a view — it takes no camera and poses nothing — but it obeys the same
+    // rule as the two above: while it is running, nothing else in this camp is
+    // listening. See the guard at the top of `_interact`.
+    this.sleep = new SleepFade(this.ctx);
 
     // ── the fire's light, created once and never removed ──────────────────
     //
@@ -597,6 +622,20 @@ export class Camp extends System {
     if (this._warm) this._finishPrewarm();
     this._pollClick();
 
+    // ── the player is asleep ────────────────────────────────────────────────
+    //
+    // Ticked here rather than from `_interact`, and unconditionally: a sleep is
+    // under way whatever the player does next, and `_interact` only runs while
+    // the handbrake is latched. Releasing it mid-fade must not leave the screen
+    // stranded half black with `controlsHeldBy` pinned forever.
+    //
+    // The press goes with it, both halves. `_interact` returns early below, but
+    // `_updateFocus` runs from here and reads `_click` for itself — so without
+    // this, a click landing on the black would quietly swing the camera onto
+    // some other camp and the player would open their eyes somewhere else.
+    this.sleep?.update();
+    if (this.sleep?.active) { this._click = false; this._place = false; }
+
     // Photo mode counts as not holding, which takes the whole placement machine
     // out of the frame in one line.
     //
@@ -792,6 +831,21 @@ export class Camp extends System {
     }
     if (bookOpen) { this.prompt.set(''); return; }
 
+    // ── the player is asleep ──────────────────────────────────────────────
+    //
+    // The same rule as the two views below, for the same reason and one more of
+    // its own: E must not reach the pack-up branch, and the whole point of the
+    // fade is that the screen belongs to the transition. `clearCampAim` is
+    // belt-and-braces — you have to be parked AT a camp to sleep, so the
+    // home-camp branch has already retracted the preview on the frame before
+    // this — but a placement disc scrubbed into the grass would be the one
+    // thing left showing when the sun came up.
+    if (this.sleep?.active) {
+      clearCampAim();
+      this.prompt.set('');
+      return;
+    }
+
     // Inside the telescope, nothing else in the camp is listening. In
     // particular E must NOT reach the pack-up branch below: a player who
     // reaches for a key to get out of a view they have just entered would
@@ -947,6 +1001,62 @@ export class Camp extends System {
         // to put a sizzle whose own view has taken the camera off the camp.
         this._roastCamp = stick.camp;
         this.roast.enter(stick.obj, stick.camp);
+      }
+      return;
+    }
+
+    // ── the tent, and a night's sleep ─────────────────────────────────────
+    //
+    // The same three conditions as the three above — the pointer is on it, you
+    // are parked at ITS camp, and the camera is already on that camp — and four
+    // more that are this interaction's own.
+    //
+    //  4. **It has to be night**, and `SleepFade.ready` is the whole of that
+    //     test. Asked FIRST, before the pointer test, so by day the feature
+    //     costs one float compare and never walks a prop list.
+    //  5. Nobody else may be holding the pedals. A player out on the bike or in
+    //     the boat is not standing at their tent, whatever the pointer says,
+    //     and `SleepFade` claims that same lock for itself while the screen is
+    //     black — so this is what keeps it from ever taking the claim off a
+    //     system that is using it.
+    //  6. **The bike and the boat outrank it**, which the three branches above
+    //     do not say and this one has to. The pointer chain in main.js is
+    //     ordered by how specific the target is and Camp is last in it; the
+    //     guard that honours that sits further down this method, below all four
+    //     prop branches. The other three get away with being above it because
+    //     the layout keeps a bike out of the seating arc where the table is —
+    //     but the tent and the bike are placed on the SAME ring (0.62 R against
+    //     0.62-0.74 R in camp_site.js) with a 1.05 m and a 0.95 m sphere on
+    //     them, and a harness pointed at the tent measured the bike taking the
+    //     click and mounting while "sleep until morning" was on screen. Without
+    //     this both prompts draw, on top of each other, which is precisely the
+    //     defect the SYSTEMS ordering comment in main.js was written about.
+    //  7. A finger that has lifted is not pointing at a tent. `pointing` is the
+    //     same test `_pickHoverFire` makes and for the same reason: on touch
+    //     there is no hover, so `_pointerRay` hands back wherever the last
+    //     press was — and a stale ray resting on the tent turns a tap meant for
+    //     anything else into a night's sleep. Its three siblings above predate
+    //     this and have the same gap; that is a finding about them, and one
+    //     they should be given, not something to leave a new interaction with.
+    //
+    // A daytime hover deliberately falls THROUGH rather than returning. The
+    // other three branches always have something to offer and can afford to
+    // swallow the frame; this one has nothing to say for two thirds of the
+    // cycle, and returning would have taken "E pack up this camp" away from
+    // anyone whose pointer happened to be resting on their own tent. The
+    // absence is the answer — the same argument the home-camp branch makes.
+    const claimed = !!this.ctx.systems?.bike?.pointerClaim
+                 || !!this.ctx.systems?.boat?.pointerClaim;
+    const tent = this.sleep?.ready() && !claimed && pointing(input)
+      ? this._tentUnderPointer() : null;
+    if (tent && veh && this._focusCamp === tent.camp && veh.controlsHeldBy == null &&
+        Math.hypot(veh.position.x - tent.camp.x, veh.position.z - tent.camp.z) < SITE_MAX + 6) {
+      this.prompt.set(`${pickVerb()}&nbsp; sleep until morning`);
+      if (this._click) {
+        this._click = false;      // do not also read as a click on the camp
+        this.scope?.leave();      // one thing at a time; see `init`
+        this.roast?.leave();
+        this.sleep.begin();
       }
       return;
     }
@@ -1472,6 +1582,10 @@ export class Camp extends System {
     if (window.__forceCamera) return null;
     if (this.ctx.systems?.hud?.photo?.active) return null;
     if (this.scope?.active || this.roast?.active) return null;
+    // …and not with your eyes shut. The ring and the pointer cursor this drives
+    // are both still live under an opaque overlay, and `_say` would go on
+    // offering the fire on every frame of a fade.
+    if (this.sleep?.active) return null;
     const moving = Math.abs(veh?.speed ?? 0) > 1.2 || (this.ctx.input.axes.throttle ?? 0) > 0.05;
     if (moving) return null;
     const c = this._firePick;
@@ -2296,6 +2410,38 @@ export class Camp extends System {
     return best;
   }
 
+  /**
+   * The tent the player is pointing at, if any.
+   *
+   * The fourth of the family, built the same way as the other three for the
+   * reason they each give — they differ only in where the sphere is centred.
+   *
+   * The centre is the layout's own point rather than the prop's world matrix,
+   * and that is the one place this differs from the book and the stick. Those
+   * two are targets published INSIDE a prop and only its matrix can carry them
+   * out; a tent's target is the tent, which stands at the item's own xz on the
+   * heightfield. `_buildNext` may lift it by up to 8 cm to clear a slope, and
+   * 8 cm against a 1.05 m sphere is not worth a `updateMatrixWorld` per frame.
+   *
+   * `raise` is the gate rather than `visible`, and it does two jobs: a camp
+   * that is still going up has no tent to sleep in yet, and every prop in it is
+   * scaled down from 0.001 (see `_applyRaise`), so a full-size sphere over a
+   * quarter-size tent would be an affordance floating in the air.
+   */
+  _tentUnderPointer() {
+    let best = null, bestMiss = 1;
+    for (const camp of this.camps) {
+      if (camp.striking || camp.raise < 1) continue;
+      for (const p of camp.props) {
+        if (p.item.kind !== 'tent' || !p.obj?.visible) continue;
+        const miss = this._rayMiss(
+          this._v.set(p.item.x, p.item.y + TENT_PICK_LIFT, p.item.z), TENT_PICK_R);
+        if (miss < bestMiss) { bestMiss = miss; best = { obj: p.obj, camp }; }
+      }
+    }
+    return best;
+  }
+
   _seatStick(camp, it, obj) {
     const { world } = this.ctx;
     const d = obj.userData?.roast;
@@ -2869,6 +3015,7 @@ export class Camp extends System {
     this.prompt?.dispose();
     this.scope?.dispose();
     this.roast?.dispose();
+    this.sleep?.dispose();
     this.ctx.scene.remove(this.root);
     disposeCampMaterials();
     disposeDogProtos();
