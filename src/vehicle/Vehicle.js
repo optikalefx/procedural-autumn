@@ -23,6 +23,17 @@ import { posthog } from '../posthog.js';
 
 const LEAF_COLORS = [0xe8622a, 0xf09a2c, 0xf3cf45, 0x9e2b28, 0xb8471f];
 
+// Does a heading at (x, z) point out of the map rather than into it? Used to
+// settle which way round the camper starts — see the spawn search in `init`.
+//
+// `heading` turns the model's +Z nose about +Y, so forward is (sin, cos), and
+// WORLD is a square centred on the origin, so the middle of the map is (0, 0).
+// "Inward" is then just the sign of forward · (centre - here). Exactly zero —
+// the origin fallback, or a heading square across the radius — counts as
+// inward: there is as much valley one way as the other, and nothing to be
+// gained by spinning the camper round.
+const facesOut = (x, z, yaw) => Math.sin(yaw) * -x + Math.cos(yaw) * -z < 0;
+
 // The most the visual rig may be dropped to meet the rendered ground. See
 // `_groundSettle`. One physics cell (1.375 m) across a 0.3 gradient sags about
 // 0.10 m, so this has headroom over the worst case and is still far short of
@@ -194,17 +205,40 @@ export class Vehicle extends System {
     const { ctx } = this;
     const { scene, renderer, world, poi } = ctx;
 
-    // ── pick a start: the first road point that is flat, dry and in bounds ──
+    // ── pick a start: a flat, dry, in-bounds road point, facing inward ──────
+    // A road anchor's yaw is a tangent, and a tangent has no preferred sense:
+    // `poi` takes it from road[i] to road[i + 3], so which way along the road
+    // it faces is an accident of the order the spline was generated in. On the
+    // shipping seed exactly 20 of the 40 road anchors face out of the map — a
+    // coin toss (tools/_scratch/_spawnyaw.mjs) — and the losing side of it
+    // opens the game nose-first at the boundary with the valley behind the
+    // player, which is the one view of this world nobody should start on.
+    //
+    // Two passes rather than one unconditional flip, because a road anchor
+    // earned its rank *along that yaw*: its score is open ground ahead, high
+    // ground in the far distance, and no thicket in the near view. Turning the
+    // camper round throws all three away, so that is what the second pass is
+    // for, and only when nothing in the top 24 both stands up and faces in.
     let start = null;
-    for (let i = 0; i < 24 && !start; i++) {
-      const p = poi.best('road', i);
-      if (!p) break;
-      if (world.getWaterDepth(p.x, p.z) > 0.05) continue;
-      if (world.getSlope(p.x, p.z) > 0.42) continue;
-      start = p;
+    for (const wantInward of [true, false]) {
+      for (let i = 0; i < 24 && !start; i++) {
+        const p = poi.best('road', i);
+        if (!p) break;
+        if (world.getWaterDepth(p.x, p.z) > 0.05) continue;
+        if (world.getSlope(p.x, p.z) > 0.42) continue;
+        if (wantInward && facesOut(p.x, p.z, p.yaw)) continue;
+        start = p;
+      }
+      if (start) break;
     }
     start = start ?? poi.best('meadow') ?? { x: 0, z: 0, yaw: 0 };
-    const heading = start.yaw ?? 0;
+    // A meadow anchor carries no yaw at all — PointsOfInterest scores meadows
+    // on flatness and dryness and never picks a direction for them — so this
+    // fallback used to start the game pointing at +Z whatever happened to be
+    // there. Aim anything without a yaw of its own straight at the middle.
+    const heading = start.yaw === undefined
+      ? Math.atan2(-start.x, -start.z)
+      : facesOut(start.x, start.z, start.yaw) ? start.yaw + Math.PI : start.yaw;
     // Kept because it is the one place in the world the game has already
     // proved a camper can stand: the rescue search falls back to it when
     // everything else has been refused. See `_rescueLandmark`.
