@@ -167,6 +167,10 @@ const WEATHERCOCK = 1.1;           // 1/s of yaw authority at full coherence
 // Below this the stream is slack enough that touching bottom is a landing
 // rather than a drag — see the grounding note in step().
 const GROUND_CURRENT = 0.25;       // m/s
+// Steepest surface the hull will follow, radians. See the trim block: the
+// measured p95 slope along the flow is 11 degrees, so this only ever bites on
+// a cascade, where following the water literally would stand the boat on end.
+const TRIM_MAX = 0.42;
 
 export class BoatPhysics {
   /**
@@ -604,14 +608,29 @@ export class BoatPhysics {
     // 11.0 degrees — most of the map does not care and the steep twentieth
     // very much does. Read off the DRAWN surface under the hull's own ends, so
     // the trim can never disagree with the water it is sitting on.
+    // NOT gated on the river mask, and that is the fix rather than an
+    // omission. The mask was standing in for "am I on a river and not a lake",
+    // and it stopped being able to answer: the drawn water is now roughly
+    // twice the width of the mask, so a hull floating perfectly normally sits
+    // outside it, reads `riv` 0, and is drawn dead level on a surface falling
+    // away at thirty degrees. Measured on the steepest reach: riv 0.000 against
+    // a true surface slope of -30 to -37 degrees, hull pitch 0.7 degrees.
+    //
+    // The slope itself is the better proxy and needs no mask at all: standing
+    // water is level by definition, so bow and stern read the same height and
+    // the trim falls out at zero on its own.
     let trim = 0;
-    if (riv > 0.01) {
+    {
       const hl = (this.dim.length ?? 4) * 0.5;
       const fx = Math.sin(this.heading) * hl, fz = Math.cos(this.heading) * hl;
       const bow = this._levelAt(this.x + fx, this.z + fz);
       const stern = this._levelAt(this.x - fx, this.z - fz);
       if (bow !== null && bow !== undefined && stern !== null && stern !== undefined) {
-        trim = Math.atan2(bow - stern, hl * 2) * riv;
+        // Clamped, because a cascade is not a trim angle. The measured p95
+        // along the flow is 11 degrees and that should be felt in full; past
+        // TRIM_MAX the hull is on something it would be swimming down, and
+        // standing the boat on its nose reads as a bug rather than as drama.
+        trim = clamp(Math.atan2(bow - stern, hl * 2), -TRIM_MAX, TRIM_MAX);
       }
     }
     // Whitewater chop, straight off the flow field's turbulence channel. Small
