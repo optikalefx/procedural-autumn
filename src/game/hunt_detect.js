@@ -34,6 +34,17 @@
 //  and then binary-searching the stand-off until the detector let go. Predicted
 //  is the arithmetic; cut is what the game did, as camera-to-subject distance.
 //
+//  **This table survived the planar rewrite of `share` unchanged**, which is
+//  what that rewrite was designed to do: every cut here was taken with the
+//  subject centred at fov 50, and re-binary-searching all of them against the
+//  new code reproduces them to 0.013% (`tools/_scratch/_gateverify.mjs`). The
+//  one number in this file that DID move is the owl's tele reach, and it moved
+//  because it was the only one derived at a lens that is not 50 deg — see the
+//  owl block. Every share written as a decimal in the prose below is the OLD
+//  angular form of today's constant: 0.149 is MIN_SHARE 0.1396, 0.12 is
+//  FALL_SHARE and CAMP_SHARE 0.1124. The arguments are unaffected; only the
+//  units the same threshold is written in changed.
+//
 //     species        height   predicted   cut      (Stats' sighting gate)
 //     deer           1.83 m     14.0 m    14.0 m     20 m — this is TIGHTER
 //     bear           1.23        9.5       9.5       20
@@ -46,7 +57,7 @@
 //     eagle, perched 2.43       18.6      18.6      130
 //     flamingo       2.10       16.2      16.2      130
 //     owl, perched   1.41       10.9      10.9      130
-//     duck, floating 0.97        7.5       7.5       130
+//     duck, floating 0.97        7.5       7.5       130   (now 8.0 — DUCK_SHARE)
 //
 //  A four-pixel deer in the corner is rejected by arithmetic rather than by a
 //  distance somebody guessed. The "height" column is the subject's own, and
@@ -165,7 +176,8 @@
 //  four failing is the whole test failing. At 14 m all four are photographs of
 //  a deer — body, four legs, a head with ears, a tail — with the animal 82 to
 //  99 px tall in a 1080 frame against the 166 px the box subtends. 0.149 is the
-//  frame share at that distance, and it comes from those frames and nothing
+//  frame share at that distance — 0.1396 in the planar units the gate now reads,
+//  the same frame either way — and it comes from those frames and nothing
 //  else. The captures are `fix2/accept/deer_b*.png`.
 //
 //  **What it costs, per subject, is in the table above** — every cut was
@@ -234,7 +246,19 @@
 //     the march                first fails somewhere between 300 and 400 m
 //
 //  So on THIS owl the size gate binds, exactly where `0.707 / tan(0.149 *
-//  2.9deg / 2) = 187 m` says it should, and nothing else gets a word in. The
+//  2.9deg / 2) = 187 m` says it should, and nothing else gets a word in.
+//
+//  **Those two reaches are the one place the planar rewrite is visible**, and
+//  they grew: `0.707 / (0.1396 * tan(2.9deg / 2))` is **200 m** on the 400 and
+//  **100 m** on the 200, against 187 and 91. Both are arithmetic rather than
+//  fresh captures, and both are safe to quote because the measurement above
+//  already covers them — the march was walked out to 300-400 m on this bird and
+//  200 m is inside where it was clear, and at 200 m the frames exist. The 7% is
+//  precisely the long lens no longer being charged for being long: an angular
+//  share runs `tan(vfov/2)/(vfov/2)` over the planar one, which is 6.9% at
+//  fov 50 and 1.0% at 2.9 deg, so the old rule quietly asked a tele shot to put
+//  MORE bird in the frame than a wide one. Same picture, same verdict, is the
+//  whole point. The
 //  critic's 129 m came from a different bird — theirs was 33.9 m up — and the
 //  binding gate there can be named by elimination rather than guessed at: a
 //  stand-off harness aims the camera AT the subject, so `_ndc` is (0, 0) and
@@ -284,6 +308,25 @@
 //  1.55 m of duck counts from 6.6 m, 1.75 from 7.5, 1.95 from 8.4, against a
 //  predicted 6.6 / 7.5 / 8.3. The three agree because there is nothing in the
 //  way of any of them.
+//
+//  **The 7.5 m did not survive, and the two things that changed it are below.**
+//  A player photographed a raft from a bank with the near duck drawn 13.34% of
+//  the frame height — over the cut as a picture — and the shutter did nothing,
+//  because `share` was charging for composition and for focal length; that is
+//  the planar rewrite, and afterwards the same frame counts at every lens. The
+//  second is that `fold` had been doubling a PADDLING duck's silhouette, since
+//  it means "wings spread" on a flying bird and "not floating" on this one, so
+//  a swimming duck was being credited from 13.6 m. Both are written up where
+//  they live — `share()` and `treeBirds()` — and neither moved this table's
+//  number by itself.
+//
+//  What moved it was the third finding: the gate carries no margin for the
+//  ANIMATION, and at 6.8 m the duck's own 5.9% idle breath straddles the line,
+//  so that one photograph counted in 11 of 16 phases of its cycle and not in
+//  the other 5. This species now answers to `DUCK_SHARE` instead of
+//  `MIN_SHARE` — **8.0 m for a 1.59 m bird, 7.8-9.8 m across the size draw** —
+//  and the block over that constant is the whole argument. The rows in the
+//  table at the top of this file are the OTHER species' and are untouched.
 //
 //  Seven metres is a shot from a boat and it is reachable, which is the test
 //  the squirrel's 2.7 m already set. It is reachable for a second reason too,
@@ -672,7 +715,7 @@
 //  lines and not eight"), and `MIN_SHARE` cannot be the rule for any of them.
 //
 //  Every other gate in this file is a distance gate wearing a share's clothes:
-//  the deer counts at 14 m because at 14 m it fills 0.149 of the frame, and the
+//  the deer counts at 14 m because at 14 m it fills 0.1396 of the frame, and the
 //  quantity the player moves is the metres. A planet has ONE fixed angular
 //  size and it is 0.092 to 0.150 deg across — Jupiter through a 400 mm lens is
 //  0.052 of the frame, a third of what the deer has to be, and no amount of
@@ -704,12 +747,14 @@
 //  below was read off those frames, and the frames are named in the text so
 //  the judgement can be disagreed with rather than just accepted.
 //
-//  The share arithmetic and the frames agree to the pixel here, which they do
-//  NOT do for the mammals: `share()`'s note records the angular form running
-//  ~7% high against a planar projection at the deer's cut. At half a degree
+//  The share arithmetic and the frames agree to the pixel here, and they did so
+//  even when `share()` was angular and the mammals' did not: at half a degree
 //  and under, angle and tangent are the same number — the moon at 400 mm
 //  predicts 745 px of a 1080 frame and measures ~740 — so this block's
-//  "predicted px" columns can be trusted as measurements.
+//  "predicted px" columns can be trusted as measurements. That is also why
+//  `SKY_MIN` was left alone when `share` went planar while every other share
+//  constant was rescaled: at these angles there is nothing to rescale, and this
+//  family never called `share` in the first place.
 //
 //  **Two size classes, six times apart, with nothing in between.**
 //
@@ -971,12 +1016,64 @@ import { WORLD } from '../world/WorldConfig.js';
  * species has its own such ratio, spanning 0.22 to 0.48 — so a share taken on
  * the sphere is a different promise for every animal it is applied to.
  *
- * 0.149 is the frame share of the photograph that was judged acceptable: the
+ * 0.1396 is the frame share of the photograph that was judged acceptable: the
  * deer at 14 m, from four bearings, every one of them a picture a reader finds
  * the deer in without being told where to look. It is not round and it is not
- * meant to be.
+ * meant to be, and it is not 0.149 any more only because `share` stopped
+ * measuring an angle — the deer, and the frame, are where they were.
  */
-const MIN_SHARE = 0.149;
+const MIN_SHARE = 0.1396;   // 0.149 as an angle; see `share` for the exact rescale
+
+/**
+ * The duck's own floor, and the one species on the sheet that has one.
+ *
+ * ── why one line gets an exception ──────────────────────────────────────────
+ *
+ * Not because a duck deserves a kinder rule. Because MIN_SHARE has no margin
+ * for the ANIMATION, and the duck is the only subject where that shows.
+ *
+ * `meshHeight` and `unitR` are rest-pose numbers on purpose — the note over
+ * `meshHeight` argues it, and it is right: a per-frame box would make the gate
+ * flicker with the gait. But the bird on screen does not hold still. Walked
+ * across the duck's 2.13 s idle clip, measuring the POSED skinned mesh rather
+ * than the bind pose (`tools/_scratch/_duckverdict.mjs`), its drawn height runs
+ * **0.508 to 0.538 spans** — a 5.9% breath, head down to head up. The gate's
+ * radius does not move with it, so a photograph within ~3% of the line is
+ * decided by where the duck happened to be in its breath.
+ *
+ * That is not hypothetical. The frame that prompted all of this — a raft from a
+ * bank, near bird drawn 13.34% of frame height — lands at share 0.1442 with the
+ * neck down and 0.1378 with it up, straddling 0.1396: **11 of 16 phases counted
+ * and 5 did not**, on one photograph. A shutter whose answer depends on the
+ * subject's breathing is a shutter the player cannot learn.
+ *
+ * Every other line has room to absorb this. A deer at its cut is 14 m away and
+ * the next metre either way is a metre the player can obviously walk; the duck
+ * sits at 6.8 m, the closest cut on the sheet, where the same 5.9% is a shot
+ * you cannot compose your way out of.
+ *
+ * ── where 0.1185 comes from ─────────────────────────────────────────────────
+ *
+ * A stand-off ladder, rendered at the resolution a saved photograph actually is
+ * (2800x1750) with the player's own low-over-the-water eye and off-centre
+ * framing: `tools/_scratch/_duckladder.mjs`, frames at 6.8 / 8.5 / 10 m. At 10 m
+ * the bird still reads completely — white body, orange bill, eye, the legs
+ * under the surface. At 8.5 m it is not in question.
+ *
+ * So the cut is NOT set where the picture fails. It is set at **8.0 m** for a
+ * 1.59 m duck (7.8-9.8 m across the species' size draw), which is inside what
+ * reads by a clear margin and puts the offending photograph 16% clear of the
+ * line at the WORST phase of its idle cycle rather than 1.3% under it. The
+ * distance a player is asked for barely moves — 6.8 m to 8.0 m is one boat
+ * length — and what they get for it is an answer that does not change while
+ * they hold the shutter.
+ *
+ * If a second species ever needs this, the honest fix is not a second entry
+ * here: it is that the gate should carry a pose margin for everything, derived
+ * per species from its own clips the way this one was. One line does not
+ * justify that machinery; two would.
+ */
+const DUCK_SHARE = 0.1185;
 
 // The two set-pieces are not animals and do not answer to MIN_SHARE. A
 // waterfall is enormous — the animal share would still count one at 380 m,
@@ -994,8 +1091,8 @@ const MIN_SHARE = 0.149;
 // horizontal radius, and the thing a photograph of one has to contain is the
 // ground it occupies rather than the height of a tent. Left as it was, and
 // named here so nobody reads it as the same promise as the other two.
-const FALL_SHARE = 0.12;
-const CAMP_SHARE = 0.12;
+const FALL_SHARE = 0.1124;  // 0.12 as an angle
+const CAMP_SHARE = 0.1124;  // 0.12 as an angle
 
 /**
  * And the same question asked across the fall, which is the dimension that
@@ -1022,12 +1119,20 @@ const CAMP_SHARE = 0.12;
  * mountain-ring sweep goes 121 of 216 to 117. The reach for a median 4.5 m fall
  * becomes 258 m; for the widest, `FALL_MAX` still binds first.
  */
-const FALL_W = 0.02;
+const FALL_W = 0.0187;      // 0.02 as an angle
 
 // A marshmallow is 21 mm across, held at arm's length, in a view that frames it
 // for you. The share rule that keeps a deer honest at 26 m has nothing useful
 // to say about an object you are holding, so it gets its own floor — 3% of the
 // frame, ~35 px in a 1080 shot, which is a marshmallow-sized marshmallow.
+//
+// The only share constant NOT rescaled when `share` went planar, and for two
+// reasons that agree. `RoastView`'s pose is fov 24 (`camp_roast_view.js` POSE),
+// where the angular and planar forms differ by 1.0% rather than 6.9% — and the
+// view's own note already reasons in the planar form (`frac = MALLOW_D /
+// (2 tan(fov/2) · d)`), so 0.03 was never really an angle. Against 2.8x of
+// measured headroom at the pose the view holds (0.083 of the frame against this
+// floor), 1% is not a number worth moving.
 const MALLOW_SHARE = 0.03;
 
 /**
@@ -1091,6 +1196,11 @@ const LIP_R = 3;
  * live birds, `unit` is 0.508-0.568 and `sc` is the wingspan in metres, so
  * `2 * r` comes out at 1.42 m for an owl, 2.43 m for an eagle and 3.14 m for a
  * heron — the perched heights of birds this game draws at 2-3x life on purpose.
+ *
+ * **`fold` is only this constant's partner while it means what it says.** A
+ * swimmer's `fold` is its floating/paddling crossfade and its wings never open
+ * at all, so `treeBirds` pins it to 1 for a `swims` species rather than letting
+ * a paddle stroke double the silhouette — see the note at the use site.
  *
  * The sphere is the right handle HERE and the wrong one for a mammal for the
  * same reason in both cases: it is half the body diagonal, and a spread bird's
@@ -1276,6 +1386,9 @@ function frameOf(ctx) {
   return {
     cam,
     eye: cam.position,
+    // Half the frame's height at unit depth: the one number that turns a
+    // subject's metres into a fraction of the picture. See `share`.
+    tanHalf: Math.tan(vfov / 2),
     // `_inv` itself, not a copy of it. It was `_inv.clone()` — one Matrix4 per
     // call, six lines under a comment promising the GC nothing at all — and
     // the clone bought nothing: `frameOf` runs once per `detectSubjects`, the
@@ -1295,20 +1408,54 @@ function frameOf(ctx) {
  *
  * `radius` is a HALF-HEIGHT for everything that answers to `MIN_SHARE`: half a
  * mammal's bounding-box height, half a perched bird's modelled height, half a
- * waterfall's drop. `2 * atan(radius / dist)` is then the angle the subject's
- * height subtends and `s` is that over the frame's own vertical angle.
+ * waterfall's drop. `s` is the fraction of the frame's HEIGHT that height fills
+ * — `radius / (depth · tan(vfov/2))` — which is a pinhole camera's own
+ * projection and therefore exactly what a reader would measure off the saved
+ * PNG with a ruler.
  *
- * That is an ANGULAR share, and a screen is planar — so it is not quite "15% of
- * the picture tall". A pinhole puts the subject at `h / (2·d·tan(vfov/2))` of
- * the frame, and the angular form runs about **7% high** at the mammal cut: the
- * deer at 14 m measures 0.140 of the frame while the gate reads 0.149. The gate
- * is not wrong — every threshold in this file was derived from frames THROUGH
- * this formula, so the number and the measure agree — but a table of
- * silhouette-over-height ratios computed the planar way will not reproduce from
- * it, and one published at 0.81-0.88 is 0.75-0.83 recomputed this way. Do not
- * mix the two. The one caller
- * that hands it something else is `highCamp`, whose subject is a clearing
- * rather than a standing object — see the note on `CAMP_SHARE`.
+ * ── this used to be an angular share, and it cost a real photograph ─────────
+ *
+ * It was `2 * atan(radius / dist) / vfov`: the angle the subject subtends over
+ * the frame's own vertical angle. Every threshold in this file was derived
+ * through that formula, so the numbers and the measure agreed with each other —
+ * but they did not agree with the picture, in two ways that both bite:
+ *
+ *  * **`dist` was the SLANT distance** (`_view.length()`), not the depth. A
+ *    subject off the axis is further from the lens than one in front of it at
+ *    the same depth, so it subtends a smaller angle — while being drawn exactly
+ *    the same size, because a perspective divide divides by z alone. The gate
+ *    charged the photographer for composing. A duck a third of the way right of
+ *    centre lost 4.3% of its share at fov 50; one in the corner loses 19%.
+ *  * **an angle is not a fraction of a flat frame.** `2·atan(x)/vfov` runs
+ *    `tan(vfov/2)/(vfov/2)` above the planar fraction — 6.9% at fov 50, 1.0% at
+ *    fov 24 — so the SAME picture, subject the same size in frame, passed on a
+ *    wide lens and failed on a long one.
+ *
+ * Together those refused a photograph of a raft of ducks in which the near bird
+ * was drawn 13.34% of the frame height, against a cut that a centred duck at
+ * fov 50 meets at 13.13%. It was over the line as a picture and under it as an
+ * angle, by 2.3-4.0% depending on which lens was fitted. A rule whose whole
+ * argument (see the header) is that a photograph is judged in the picture's own
+ * units cannot have a term in it that the picture does not contain.
+ *
+ * **The thresholds did not move.** Every one was derived with the subject
+ * CENTRED — a stand-off harness aims at its subject, so `_ndc` was (0,0) and
+ * slant was depth — at fov 50, so each constant was rescaled by the exact
+ * factor that keeps that derivation frame's verdict: `tan(x) = s_old·vfov/2`
+ * then `s_new = tan(x)/tan(vfov/2)`. 0.149 → 0.1396, 0.12 → 0.1124, and the
+ * cut distances reproduce to 0.013% — on six radii spanning a rabbit to a
+ * waterfall, and on live animals through `detectSubjects`
+ * (`tools/_scratch/_gateverify.mjs`, `_mammalcut.mjs`, `_duckrepro.mjs`). What changed is everything the derivations
+ * never covered: off-centre subjects, and lenses that are not 50°. The one
+ * visible consequence on the sheet is that the owl's 400 mm reach grows 187 →
+ * 200 m, which is the long lens no longer being charged 7% for being long.
+ *
+ * (`MALLOW_SHARE` was NOT rescaled — see its note. `skyObjects` never called
+ * this and still doesn't: its subject is at infinity and its rule is angular on
+ * purpose.)
+ *
+ * The one caller that hands this something else is `highCamp`, whose subject is
+ * a clearing rather than a standing object — see the note on `CAMP_SHARE`.
  *
  * Returns the frame share when it passes and 0 when it does not, so a caller
  * that wants "the best one" can compare — nothing does yet, and the flag is
@@ -1320,22 +1467,24 @@ function share(f, pos, radius, minShare, maxDist) {
   // Behind the lens, or so close it is inside the near plane. 0.2 m rather than
   // 0 because the projection divides by this.
   if (!(depth > 0.2)) return 0;
+  // The ceilings and the standing-inside test are about where the photographer
+  // IS, not about how big the subject draws, so both keep the real distance.
   const dist = _view.length();
   if (dist > maxDist) return 0;
 
   // Standing inside the subject — the plume of a waterfall, a camp clearing you
-  // parked in the middle of. Angular size stops meaning anything; you are in it.
+  // parked in the middle of. Apparent size stops meaning anything; you are in it.
   if (dist < radius) return 1;
 
-  const s = (2 * Math.atan(radius / dist)) / f.vfov;
+  const s = radius / (depth * f.tanHalf);
   if (s < minShare) return 0;
 
   // NDC. `applyMatrix4` does the perspective divide, and `depth > 0` above is
   // what makes that divide safe.
   _ndc.copy(_view).applyMatrix4(f.proj);
   // One NDC unit is half the frame height, and `s` is a diameter over a full
-  // frame height — so the subject's own angular radius is `s` in these units,
-  // which is the slack a large subject earns.
+  // frame height — so the subject's own radius is `s` in these units, which is
+  // the slack a large subject earns.
   const lim = EDGE + s;
   if (Math.abs(_ndc.x) > lim || Math.abs(_ndc.y) > lim) return 0;
   return s;
@@ -1557,6 +1706,9 @@ function treeBirds(f, tb, hit) {
     // measured off the asset by its build script. It also genuinely needs the
     // lift: the GLB flamingo's origin is between its soles, and a sphere
     // centred there would have to reach from the mud to the crown.
+    // A swimmer's wings never open, so its silhouette never grows — see the
+    // `fold` note in the loop below for why that has to be said out loud.
+    const swims = group[0].spec?.swims === true;
     const G = group[0].spec?.glb;
     let unit, lift = 0;
     if (G) {
@@ -1575,10 +1727,24 @@ function treeBirds(f, tb, hit) {
       // `fold` is the instance's own wing state — 0 spread, 1 perched — and it
       // is smoothed, so a bird half way off its branch is half way between the
       // two sizes rather than snapping.
-      const fold = Number.isFinite(b.fold) ? Math.min(1, Math.max(0, b.fold)) : 1;
+      //
+      // **On a swimmer it is a different signal wearing the same name, and
+      // reading it here was a bug.** `_stepSwim` damps `fold` to 0 while the
+      // duck is PADDLING and `_step` back to 1 while it floats — `_poseGlb`
+      // uses it as the idle/move crossfade — and the pack's duck has no fly
+      // clip at all: 0.29 m of folded wing against a 0.63 m body, nothing in
+      // any of its six clips ever opens them. So a duck that had merely started
+      // swimming was claimed to be 1.77 m tall instead of 0.88 and credited
+      // from 13.6 m against a settled bird's 6.8. Measured on one frame with
+      // nothing moving but the flag: settled, nothing; paddling, DUCK AWARDED.
+      // The same photograph counting or not on whether the bird was mid-stroke
+      // is worse than either distance being wrong. `tools/_scratch/_duckfoldcase.mjs`
+      // is the ladder: the two columns diverged from 7.5 m out, and agree now.
+      const fold = swims ? 1
+        : (Number.isFinite(b.fold) ? Math.min(1, Math.max(0, b.fold)) : 1);
       const r = unit * b.sc * (1 - fold * (1 - FOLD_R));
       _p.set(b.x, b.y + lift * b.sc, b.z);
-      if (!visible(f, _p, r)) continue;
+      if (!visible(f, _p, r, key === 'duck' ? DUCK_SHARE : MIN_SHARE)) continue;
       hit.add(key);
       break;
     }
@@ -1607,9 +1773,10 @@ function waterfalls(f, list, hit) {
     // Wide enough to be water rather than a scratch — see `FALL_W`. Done here
     // rather than through a second `share` call because `share` would apply
     // `EDGE` a second time with the narrower slack, and a fall filling the left
-    // of the frame is exactly the shot that slack exists for. `_p` is still the
-    // midpoint `share` just used, so this is one subtract and an atan.
-    if ((2 * Math.atan(Math.max((wf.width ?? 0) * 0.5, 0.5) / f.eye.distanceTo(_p))) / f.vfov < FALL_W) continue;
+    // of the frame is exactly the shot that slack exists for. Same projection
+    // `share` uses, for the reason in its header: `_view` still holds the
+    // midpoint it just transformed, so the depth is a read rather than a matrix.
+    if (Math.max((wf.width ?? 0) * 0.5, 0.5) / (-_view.z * f.tanHalf) < FALL_W) continue;
     // The march runs to the LIP, not to the middle of the drop. See the block
     // over `LIP_R`: the midpoint is the one point of a waterfall that is
     // reliably behind something, and asking about it is what made the first
@@ -2071,6 +2238,6 @@ function warn(where, e) {
  * console are the only callers.
  */
 export const _internals = { share, clearLine, clearSky, visible, frameOf,
-  meshHeight, ffCount, MIN_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, FALL_W,
+  meshHeight, ffCount, MIN_SHARE, DUCK_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, FALL_W,
   CAMP_SHARE, FF_MIN, LIP_R, SKY_ITEM, SKY_MIN, SKY_NIGHT, SKY_STEP,
   SKY_REACH };

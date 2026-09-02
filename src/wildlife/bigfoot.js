@@ -42,17 +42,26 @@
 //
 //  ── the range table, which decides most of the numbers here ─────────────────
 //
-//  `hunt_detect.MIN_SHARE` wants a subject 14.9% of the frame's height. The
+//  `hunt_detect.MIN_SHARE` wants a subject 13.96% of the frame's height. The
 //  common variant is 2.88 m of mesh, so the furthest a photograph of him can
 //  count from is a function of the glass, and it is a wide function:
 //
-//      24mm    24 m         200mm   191 m
-//      50mm    48 m         300mm   286 m
-//      70mm    67 m         400mm   382 m
+//      24mm    24 m         200mm   204 m
+//      50mm    51 m         300mm   306 m
+//      70mm    71 m         400mm   407 m
+//
+//  **These grew by 1-7% when `share` went planar** (24 / 48 / 67 / 191 / 286 /
+//  382 before), and the spread of that correction is the whole reason the
+//  rewrite happened: the old angular share ran `tan(vfov/2)/(vfov/2)` over the
+//  planar one, which is 6.9% at 24 mm and 0.03% at 400 mm, so the long glass
+//  was quietly being asked to put more Bigfoot in the frame than the short.
+//  Now the reach is exactly `1.019 * f` millimetres-to-metres, because a planar
+//  share IS proportional to focal length — which is the kind of table that
+//  tells you the rule underneath is the right shape.
 //
 //  So: he arrives between `SPAWN_MIN` and `SPAWN_MAX` (58-92 m), which is
 //  inside the 200-400's reach from the first frame and outside the 24-70's
-//  until you both zoom to 70 and close to 67 m. **Bigfoot is a long-lens shot
+//  until you both zoom to 70 and close to 71 m. **Bigfoot is a long-lens shot
 //  by construction**, exactly like the great horned owl, and the journal's hint
 //  says so for the same reason `hunt_items.js` rule 4 gives: a hint that sends
 //  somebody to take a photograph the rules will refuse is worse than no hint.

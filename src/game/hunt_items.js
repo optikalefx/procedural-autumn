@@ -306,7 +306,10 @@ export const HUNT_ITEMS = [
     // through the real gate on the shipped GLB, a bull's half-height is 2.25 m
     // and its frame share runs 3.75/d — so it clears MIN_SHARE at **25.2 m** on
     // the wide lens, the longest reach of any mammal on the sheet and nearly
-    // twice the deer's 14. Getting close enough is therefore not what makes
+    // twice the deer's 14. (Both figures predate `share` going planar. The
+    // 25.2 m is untouched by that — every wide-lens cut in `hunt_detect`
+    // reproduces to 0.013%, measured — while the coefficient is now quoted in
+    // units the function no longer returns.) Getting close enough is therefore not what makes
     // this line hard, and the hint does not pretend it is.
     //
     // FINDING one is: three home sites on 9.4 km2, every one of them on the
@@ -366,9 +369,12 @@ export const HUNT_ITEMS = [
   //
   // "Get close" is doing the same work the squirrel's and raccoon's hints do.
   // A floating duck is a LOW animal — 0.98 m of it above the water at the size
-  // this game draws one — and MIN_SHARE reads height, so the shot counts from
-  // about 7 m. That is a shot you take from a boat, and the hint says so
-  // rather than letting the player try it from the bank.
+  // this game draws one — and the gate reads height, so the shot counts from
+  // about 8 m (`DUCK_SHARE`, which is this species' own floor and not
+  // `MIN_SHARE`; it was 7 m until a photograph taken from a bank turned out to
+  // count or not depending on where the bird was in its idle breath). Eight
+  // metres is still a shot you close on rather than one you take from the road,
+  // so the hint stands as written.
   {
     id: 'duck',
     subject: 'a raft of white ducks',
