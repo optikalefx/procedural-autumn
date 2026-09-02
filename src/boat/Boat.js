@@ -126,6 +126,10 @@ const LAUNCH_FOCUS = 2.2;
 const CAM_MOUNT_AFT = 0.38;    // fraction of hull length behind centre
 const CAM_MOUNT_UP = 1.12;     // metres above the waterline — a seated eye
 const CAM_LOOK_UP = 0.5;       // look target height over the water ahead
+// Metres the mounted eye is held above whatever is under it — the drawn water
+// or the ground. See the clamp in `_mount`: the mount sits aft of the hull, so
+// on a sloping reach it is over water that stands higher than the hull's own.
+const CAM_MOUNT_CLEAR = 0.55;
 // The wheel zooms about the mount: 1.0 is the seated pose above (the resting
 // middle of the range), inward leans toward the coaming, outward eases a few
 // metres off the stern without ever returning to the old drone framing.
@@ -764,7 +768,21 @@ export class Boat extends System {
     const L = dim.length;
     const mx = p.x - fx * L * CAM_MOUNT_AFT * zf;
     const mz = p.z - fz * L * CAM_MOUNT_AFT * zf;
-    const my = p.y + CAM_MOUNT_UP * (0.55 + 0.45 * zf);
+    // The eye is mounted AFT, and aft on a river means UPSTREAM, where the
+    // water surface is higher than it is under the hull. The hull floats on
+    // the level at its own column; the eye does not, and on any reach steeper
+    // than about 1:4 the metre of seat height is less than the rise over the
+    // two metres between them — so the eye goes under and the player paddles a
+    // kayak from inside the water. It costs one field lookup to refuse.
+    //
+    // Clamped against the top of the WORLD at the eye's own column, water or
+    // ground, for the same reason CameraRig clamps its boom: a bank the stern
+    // has swung over will put the eye inside a hillside just as happily.
+    const w = this.ctx.world;
+    const floor = Math.max(w?.getHeight(mx, mz) ?? -1e9,
+                           w?.getWaterHeight(mx, mz) ?? -1e9);
+    const my = Math.max(p.y + CAM_MOUNT_UP * (0.55 + 0.45 * zf),
+                        floor + CAM_MOUNT_CLEAR);
     // The look target rides a boom off the eye, swung by the head turn: yaw 0
     // puts it over the bow (the framing above), and pitch tips it up into the
     // trees or down at the water beside the hull.

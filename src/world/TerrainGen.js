@@ -275,6 +275,120 @@ const CARVE_GROOVE_T = 8;
 // perch fix and the `speck` cost is flat under it, so anything smaller is free
 // and anything larger only gives the fix away.
 const CARVE_GROOVE = 1.0;
+// EXPERIMENT — extra metres of incision on every channel, over the nominal
+// 0.8-6.8 m. The water surface follows the bed down (`surf` is derived from
+// `dcarve`), so this sinks the whole river into the ground rather than making
+// it deeper to wade: a small stream that used to sit 0.8 m into a hillside
+// sits 2.8 m into it. Fades to nothing with `lake` like the rest of dcarve so
+// deltas still shallow out. The carve disc widens 0.9 texels per metre of it,
+// which is the same 1:2 bank the depth-proportional term below holds. Every
+// bake key changes with this file, so a value change is a rebake
+// (`node tools/bake.mjs`).
+//
+// LEFT AT ZERO, and the measurement is the point of it: uniform deepening does
+// NOT fix a river perched on a hillside. At 2.0 m it sank bed and surface
+// together and the wider disc took the downhill lip down with them — the lip
+// gained 0.44 m for two metres of trench. The rules below are what worked.
+const CARVE_DEEPEN = 0.0;
+// EXPERIMENT — rivers on hillsides. A channel across a slope gets the same
+// symmetric U cut as one on a valley floor, and its surface is derived from
+// the ground AT the centreline (`base - dcarve + wdep`, about 0.3 m under it
+// for a small stream). So wherever the ground falls more than that across the
+// carve half-width, the downhill lip is below the water and the reach draws
+// as a slab lying on the hillside. Deepening uniformly (CARVE_DEEPEN 2.0,
+// measured) does not fix it: the wider disc cuts the lip down with the bed.
+// Four rules instead:
+//   1. the surface may not stand higher than LIP_MARGIN below the lowest
+//      natural ground on the channel's rim (sampled either side, at the
+//      nominal carve radius). The bed follows, so the cut deepens exactly
+//      where the cross-slope demands it and nowhere else.
+//   2. the depth-proportional widening of the carve disc is withheld on any
+//      side whose ground at the widened radius would be below the surface —
+//      the downhill side of a hillside channel keeps its lip; the uphill
+//      side still relaxes at 1:2.
+//   3. nobody may cut a station's own rim below its own water (`lipFloor`).
+//   4. the drop rule 1 introduces is ramped upstream so the un-capped station
+//      above it does not floor the capped bed (see `_traceRivers`).
+//
+// ...and a channel is only a channel if it has a bed as well as a bank, which
+// is CARVE_CORE_T below.
+const LIP_MARGIN = 0.5;
+// ── the core: the part of a channel that is actually the channel ────────────
+//
+// Texels either side of the centreline that are FLOOR — cut flat to the
+// station's own bed — before the cosine bank starts. Expressed in texels and
+// not as a fraction of the radius, because the defect it answers is a sampling
+// one and sampling happens in texels.
+//
+// A pure cosine puts full depth on the centreline ONLY: one texel out the bed
+// has already climbed half way back to the natural ground. That is survivable
+// on a valley floor where the cut is shallow and the reach is wide. It is not
+// survivable on a hillside once rule 1 has sunk the surface a couple of metres,
+// because the wet ribbon is then a hairline and the depth a film — measured on
+// the 1536 bake, steep stations came out with a MEDIAN wet width of 2.5 m
+// against a 2 m texel, 24% of them under a quarter metre deep and the 10th
+// percentile bed ABOVE its own water. From above that reach is a dotted line of
+// puddles, which is exactly the "water does not flow through the channel"
+// this round set out to fix.
+//
+// 1.1 texels is the smallest core that survives bilinear sampling: it puts a
+// full-depth bed under both texels the shader interpolates between, whichever
+// side of the line the fragment falls.
+const CARVE_CORE_T = 0.75;
+// ...and no more than this fraction of the carve radius, so a wide trunk keeps
+// its U and does not become a flat-bottomed canal.
+const CARVE_CORE_MAX = 0.55;
+// Metres of EXTRA incision rule 1's cap may buy, over the nominal dcarve, and
+// the bank that extra cut is allowed to stand at — measured against the
+// channel's own nominal carve radius, so a cut is never deeper than the disc
+// that has to draw it is wide. See the use site in _traceRivers.
+const CAP_MAX = 4.0;
+const CAP_ASPECT = 0.8;
+// ...and the cap is only that generous where the ground has EARNED it. A deep
+// cut through steep, already-confined ground reads as a canyon and is worth
+// having; the same cut through an open hillside is a trench in a meadow that
+// the player cannot drive across. So the budget runs from CAP_GENTLE to
+// CAP_MAX over the ground's own cross-fall, and since steep ground is a small
+// fraction of the map, the canyons come out rare by construction.
+const CAP_GENTLE = 0.4;
+const CANYON_AT = 1.5;      // metres of wall (the LOWER side) before the budget opens
+const CANYON_FULL = 6.0;    // ...and where it is fully earned
+
+// The water LEVEL footprint, as a multiple of a station's nominal carve radius,
+// and the metres of dry bank the level is carried up beyond its own surface.
+// See the two-footprint note in _rasterWater: the level decides where the
+// waterline is, so it has to outreach the carved channel or the field's own
+// edge becomes a wall of water standing on dry ground.
+const WATER_FOOT = 2.5;
+// Cut the channel to the WATER's width rather than to the carve's own. The two
+// have always been different numbers — the carve disc is about twice the water
+// ribbon — and that gap is why the surface sheet ends over flat bed and shows
+// its cut edge. Setting this true closes the gap from the terrain side: the
+// bank arrives at the water's edge, so rivers keep the width they have today
+// and the sheet closes itself. It buys that with a much steeper bank, which is
+// the "canyon in the middle of a meadow" the radius comment above warns about.
+const CARVE_TO_RIBBON = false;
+// Smoothing passes over the bed inside the channel. See _smoothChannelBed.
+const CHAN_SMOOTH_PASSES = 6;
+// Fraction of a station's nominal radius at which its channel WALL begins —
+// the point from which the carve may no longer cut below the waterline. See
+// rule 6 in `_carveChannels`.
+const WALL_AT = 0.95;
+// Texels the containing lip takes to rise out of the bed. Short, because its
+// whole job is to stand between the water and the apron; the apron above it is
+// what has to be gentle. See the two-part bank in `_carveChannels`.
+const LIP_RUN_T = 1.0;
+// The nominal carve radius in texels, for a station of flow `m`.
+const carveRadius = (m, texel) => (CARVE_TO_RIBBON
+  ? Math.max(1.2, (1.2 + m * 11) * 0.5 * 1.35 / texel)
+  : 1.0 + m * 7.5);
+const WATER_FREEBOARD = 2.0;
+// ...and the metres below its own bed the level is allowed to follow the ground
+// down before it gives up. See the note in _rasterWater.
+const WATER_DROP = 0.25;
+// Metres below its own bed the level may follow the ground down INSIDE the
+// channel, against 3.0 m outside it. See the two floors in _rasterWater.
+const CHAN_FLOOR = 5.0;
 
 const WDEP_MIN = 0.45;
 
@@ -1901,8 +2015,20 @@ export class TerrainGen {
     // the result instead of by inflating a disc until the shape happens to
     // comply.
     const ownBed = new Float32Array(N).fill(-Infinity);
+    // Rule 3 (see LIP_MARGIN): a station's rim — the annulus just outside its
+    // nominal disc — may not be cut below its own water by ANYONE. Measured at
+    // res 768 with rules 1 and 2 alone: of the steep cross-slope stations that
+    // still spilled, the lip had been excavated 5-9 m by the disc of a lower
+    // reach of the same river switchbacking past 20-40 m downslope — the cone
+    // floor bounds that cut to 1:2 from the lower bed, which on a mountainside
+    // is exactly flush with the upper reach's water. Bed beats lip where the
+    // two collide: a texel inside any station's nominal disc is bed and the
+    // lip floor does not apply to it, so a lower reach still reaches its own
+    // water; only the ground between channels is held.
+    const lipFloor = new Float32Array(N).fill(-Infinity);
+    const bedMask = new Uint8Array(N);
 
-    const claim = (wx, wz, m, lk, surf, wdep, dcarve, base) => {
+    const claim = (wx, wz, m, lk, surf, wdep, dcarve, base, tx, tz) => {
       // The apex of the cone is NOT the water's own bed. A channel is cut
       // `dcarve` — 0.8 to 6.8 m — into the ground it runs through, and where
       // that ground is already at or below the water surface the incision is
@@ -1916,29 +2042,42 @@ export class TerrainGen {
                + Math.max(0, Math.min(R - 1, Math.round((wx + half) / texel - 0.5)));
       const bedC = Math.min(surf - wdep, hOrig[ci] - dcarve);
       const deep = Math.max(0, (base ?? bedC + dcarve) - bedC);
-      const radT = Math.min((1.0 + m * 7.5) * CARVE_RAD_CAP,
-                            1.0 + m * 7.5 + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
+      const radN = carveRadius(m, texel) + CARVE_DEEPEN * 0.9 * (1 - lk);
+      const radT = Math.min(radN * CARVE_RAD_CAP,
+                            radN + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
       // The cone has to be asserted at least as far as another channel's disc
       // can reach in, or a brook whose own disc is two texels wide has no say
       // about the trunk that cuts across it.
       const radC = Math.max(radT, CARVE_GROOVE_T);
+      const radNomC = radN * (1 + lk * 0.6);
+      const radLip = radNomC * 1.4;
+      const radLoop = Math.max(radC, radLip);
       const gx = (wx + half) / texel, gz = (wz + half) / texel;
-      const x0 = Math.max(0, Math.floor(gx - radC)), x1 = Math.min(R - 1, Math.ceil(gx + radC));
-      const z0 = Math.max(0, Math.floor(gz - radC)), z1 = Math.min(R - 1, Math.ceil(gz + radC));
+      const x0 = Math.max(0, Math.floor(gx - radLoop)), x1 = Math.min(R - 1, Math.ceil(gx + radLoop));
+      const z0 = Math.max(0, Math.floor(gz - radLoop)), z1 = Math.min(R - 1, Math.ceil(gz + radLoop));
       for (let iy = z0; iy <= z1; iy++) {
         const dz = iy + 0.5 - gz;
         for (let ix = x0; ix <= x1; ix++) {
           const dx = ix + 0.5 - gx;
           const d2 = dx * dx + dz * dz;
-          if (d2 > radC * radC) continue;
+          if (d2 > radLoop * radLoop) continue;
           const ni = iy * R + ix;
-          const f = bedC - Math.sqrt(d2) * texel * CARVE_BANK;
-          if (f > ownBed[ni]) ownBed[ni] = f;
+          const dd = Math.sqrt(d2);
+          if (dd <= radC) {
+            const f = bedC - dd * texel * CARVE_BANK;
+            if (f > ownBed[ni]) ownBed[ni] = f;
+          }
+          // Rule 3: bed inside the nominal disc, rim in the annulus beyond it.
+          if (dd <= radNomC * 0.9) bedMask[ni] = 1;
+          else if (dd <= radLip && lk < 0.01) {
+            const lf = surf + LIP_MARGIN;
+            if (lf > lipFloor[ni]) lipFloor[ni] = lf;
+          }
         }
       }
     };
 
-    const splat = (wx, wz, m, lk, surf, wdep, dcarve, base) => {
+    const splat = (wx, wz, m, lk, surf, wdep, dcarve, base, tx, tz) => {
       const bedC = surf - wdep;
       // How much deeper than a nominal incision this station has to cut before
       // it holds its own water. `base` is the fill surface the centreline was
@@ -1966,20 +2105,66 @@ export class TerrainGen {
       // a 3 m cut into a 1.1-texel radius is 54 degrees, which is a canyon in
       // the middle of a meadow. 0.9 texels of extra radius per metre of extra
       // cut holds the bank near 1:2 however deep the channel has to go.
-      const radT = Math.min((1.0 + m * 7.5) * CARVE_RAD_CAP,
-                            1.0 + m * 7.5 + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
+      const radN = carveRadius(m, texel) + CARVE_DEEPEN * 0.9 * (1 - lk);
+      const radT = Math.min(radN * CARVE_RAD_CAP,
+                            radN + Math.max(0, deep - dcarve) * 0.9) * (1 + lk * 0.6);
       const gx = (wx + half) / texel, gz = (wz + half) / texel;
       const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
       const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
-      const invR = 1 / radT;
+      // Rule 2 (see LIP_MARGIN): the widened radius is only granted to a side
+      // whose natural ground at that radius stands clear of the water. On the
+      // other side the disc stays at its nominal radius and the cut climbs to
+      // the lip instead of removing it. `tx, tz` is the channel tangent.
+      const radNom = radN * (1 + lk * 0.6);
+      const nx = -tz, nz = tx;
+      let radNeg = radT, radPos = radT;
+      if (radT > radNom + 1e-6) {
+        for (const sg of [-1, 1]) {
+          const sx = Math.min(R - 1, Math.max(0, Math.round((wx + nx * sg * radT * texel + half) / texel)));
+          const sz = Math.min(R - 1, Math.max(0, Math.round((wz + nz * sg * radT * texel + half) / texel)));
+          if (hOrig[sz * R + sx] < surf + LIP_MARGIN) { if (sg < 0) radNeg = radNom; else radPos = radNom; }
+        }
+      }
       for (let iy = z0; iy <= z1; iy++) {
         const dz = iy + 0.5 - gz;
         for (let ix = x0; ix <= x1; ix++) {
           const dx = ix + 0.5 - gx;
-          const d = Math.sqrt(dx * dx + dz * dz) * invR;
+          const side = dx * nx + dz * nz;
+          const rad = side < 0 ? radNeg : radPos;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          const d = dist / rad;
           if (d > 1) continue;
-          const prof = Math.cos(d * Math.PI * 0.5);        // U-shaped bed
-          const p2 = prof * prof;
+          // Flat core, a short steep LIP, then a long gentle bank.
+          //
+          // A single bank from the bed to the natural ground has to be one or
+          // the other and cannot be both: run it out over the wide carve
+          // radius and it is gentle and crossable but far too low near the
+          // water to hold it, so the river spreads to 22 m; run it out over the
+          // narrow water ribbon and the water is held but the whole incision
+          // is packed into 2.4 m, which is the wall of a trench — measured, the
+          // median bank went from 1.81 to 2.5 and a brook stopped being
+          // something you can drive across.
+          //
+          // An incised channel in the world is not shaped like either. It has a
+          // low bank right at the waterline and then a long shallow apron
+          // above it, and that shape answers both: the lip is only
+          // `wdep + LIP_MARGIN` tall — about a metre — so it holds the water in
+          // a narrow channel, and everything above it relaxes over the full
+          // radius, so what a vehicle meets on the way in is the gentle part.
+          // Flat core, then a bank over what is left of the radius. The bank
+          // is a smoothstep and not the cosine it replaces because a plateau
+          // needs the bank to LEAVE it with zero gradient: a cosine started at
+          // the core edge arrives there at full slope, which is a crease
+          // running down both sides of every channel, and `stair` and
+          // `bedStep` on the nine lab terrains both caught it (-380% and
+          // -104% before this). Smoothstep is flat at both ends, so the bed
+          // leaves the core level and meets the natural ground level.
+          const core = Math.min(CARVE_CORE_MAX, CARVE_CORE_T / rad);
+          // Where the lip tops out. Never past the middle of the bank, so a
+          // narrow channel keeps some apron.
+          const lipTop = Math.min(core + LIP_RUN_T / rad, core + (1 - core) * 0.5);
+          const t = d <= core ? 0 : (d - core) / (1 - core);
+          const p2 = 1 - t * t * (3 - 2 * t);              // 1 at the core, 0 at the rim
           const ni = iy * R + ix;
           const ho = hOrig[ni];
           const lowered = ho - dcarve * p2;
@@ -1998,9 +2183,65 @@ export class TerrainGen {
           // floor. Flooring both took `speck` up 33% on the nine waterlab
           // terrains — small detached puddles, where a hollow a few metres off
           // the line stopped being cut through to the channel.
-          const floor = ownBed[ni] < hOrig[ni] - CARVE_GROOVE ? ownBed[ni] : hOrig[ni] - CARVE_GROOVE;
-          let tgt = lowered < shaped ? lowered : shaped;
+          let floor = ownBed[ni] < hOrig[ni] - CARVE_GROOVE ? ownBed[ni] : hOrig[ni] - CARVE_GROOVE;
+          // Rule 3. A floor above the natural ground is harmless: the carve
+          // only ever lowers, so it simply leaves that texel alone.
+          if (!bedMask[ni] && lipFloor[ni] > floor) floor = lipFloor[ni];
+          // ...but inside its own core a station always reaches its own bed.
+          // Every floor here is a statement about somebody ELSE's channel, and
+          // none of them has anything to say about the two texels under this
+          // one. Without this the floors win precisely where rule 1 cut
+          // deepest — the cone of the un-capped station a few metres upstream
+          // sits above the capped bed — and the reach is a dry slot with a
+          // film in it. Bounded hard: only within the core, and never below
+          // bedC, so it cannot excavate anything.
+          if (d <= core && floor > bedC) floor = bedC;
+          // Inside the core the bed is simply the bed: flat, at exactly the
+          // depth this station published. NOT min(lowered, shaped) — `lowered`
+          // cuts a full `dcarve` below whatever ground it finds, and across a
+          // plateau on a hillside the downhill half of the core is already low,
+          // so it dug a trench there carrying metres more water than the
+          // station owns (`spill` -140%, `perch` -122%, measured). A channel
+          // bed is level across its width.
+          //
+          // Outside it, the two-part bank. `lipY` is the top of the lip and it
+          // is never above the ground that is there — this only ever removes
+          // material, it cannot build a levee, so on ground already lower than
+          // the waterline there is simply no lip to have.
+          const lipY = ho < surf + LIP_MARGIN ? ho : surf + LIP_MARGIN;
+          let banked;
+          if (d <= lipTop) {
+            const u = (d - core) / (lipTop - core);
+            banked = bedC + (lipY - bedC) * (u * u * (3 - 2 * u));
+          } else {
+            const u = (d - lipTop) / (1 - lipTop);
+            banked = lipY + (ho - lipY) * (u * u * (3 - 2 * u));
+          }
+          const shapedB = banked < shaped ? shaped : banked;
+          let tgt = t === 0 ? bedC : (lowered < shapedB ? lowered : shapedB);
           if (tgt < floor) tgt = floor;
+          // Rule 6 — the channel WALL, and the rule that makes the water end on
+          // ground instead of in mid-air.
+          //
+          // Rule 1 already holds the surface below the bank: it caps `surf` to
+          // the crest at the water's own edge radius. What it cannot do is make
+          // that promise survive, because it is measured on the ground BEFORE
+          // this carve and this carve then cuts the very bank it was measured
+          // against — the disc reaches out to `radT`, which the depth-
+          // proportional term can push well past the water's edge. Measured:
+          // about half of all stations ended with the water standing over their
+          // own bank, and on steep ground two thirds.
+          //
+          // So: from the water's edge outward, nothing may be cut below the
+          // waterline. Never above the natural ground (this only ever removes
+          // cutting, it cannot build a levee), and never inside the water's own
+          // radius, so it cannot shallow a channel or punch a hole in one. What
+          // it leaves is a bank standing at least LIP_MARGIN proud of the
+          // surface exactly where the sheet needs ground to die on.
+          if (dist >= radNom * WALL_AT) {
+            const wall = ho < surf + LIP_MARGIN ? ho : surf + LIP_MARGIN;
+            if (tgt < wall) tgt = wall;
+          }
           if (tgt < bedTarget[ni]) bedTarget[ni] = tgt;
         }
       }
@@ -2018,12 +2259,13 @@ export class TerrainGen {
           // every 6 m is a string of beads, not a channel.
           const seg = Math.hypot(b.x - a.x, b.z - a.z);
           const sub = Math.max(1, Math.ceil(seg / (texel * 0.7)));
+          const tx = (b.x - a.x) / (seg || 1), tz = (b.z - a.z) / (seg || 1);
           for (let t = 0; t < sub; t++) {
             const u = t / sub;
             fn(lerp(a.x, b.x, u), lerp(a.z, b.z, u),
                lerp(a.m, b.m, u), lerp(a.lake, b.lake, u),
                lerp(a.surf, b.surf, u), lerp(a.wdep, b.wdep, u),
-               lerp(a.dcarve, b.dcarve, u), lerp(a.base, b.base, u));
+               lerp(a.dcarve, b.dcarve, u), lerp(a.base, b.base, u), tx, tz);
           }
         }
       }
@@ -2038,6 +2280,7 @@ export class TerrainGen {
     this.carve = carve;
 
     this._carveRills();
+    this._smoothChannelBed(bedMask, carve);
 
     this._deriveSlope();
   }
@@ -2106,6 +2349,42 @@ export class TerrainGen {
    * it converges downhill, it never crosses itself, and it lines up with the
    * rivers it eventually feeds.
    */
+  /**
+   * Knock the tops off the bed INSIDE the channel, so a reach holds its water
+   * uniformly instead of in blobs.
+   *
+   * The carve gives a channel its shape; what it cannot do is make the ground
+   * it inherited smooth. Erosion, rills and the plane-break relief all leave
+   * decimetres of relief in the bed, and a bump only has to reach the surface
+   * to punch a dry hole in the middle of a river — measured on the shipped
+   * bake, a channel centreline is only 89.9% wet end to end, in 2 209 gaps
+   * averaging 3.1 m. Those gaps are the blotchy water on a steep reach, and
+   * each one is also a column with no water surface in it, which is what the
+   * chase camera drops through when a kayak paddles over it.
+   *
+   * ONLY EVER LOWERS, and that is the whole trick: a bump is what pokes through
+   * the surface and gets taken off, a hollow is just deeper water and is left
+   * alone. So the pass needs no opinion about where the water will be — it
+   * removes local maxima of the bed and nothing else, which cannot move a
+   * waterline outward or strand a puddle. Restricted to `bedMask`, the ground
+   * inside a station's own nominal disc, so banks and shorelines are untouched
+   * and the channel keeps the shape the carve gave it.
+   */
+  _smoothChannelBed(mask, carve) {
+    const R = this.res, h = this.height;
+    for (let pass = 0; pass < CHAN_SMOOTH_PASSES; pass++) {
+      const src = Float32Array.from(h);
+      for (let z = 1; z < R - 1; z++) {
+        for (let x = 1; x < R - 1; x++) {
+          const i = z * R + x;
+          if (!mask[i]) continue;
+          const s = (src[i - 1] + src[i + 1] + src[i - R] + src[i + R]) * 0.2 + src[i] * 0.2;
+          if (s < h[i]) { carve[i] += h[i] - s; h[i] = s; }
+        }
+      }
+    }
+  }
+
   _carveRills() {
     const R = this.res, N = R * R, h = this.height, flow = this.flow;
     const texel = this.worldSize / R;
@@ -2214,6 +2493,7 @@ export class TerrainGen {
    * line is precisely how a bare channel ends up drawn beside a river.
    */
   _waterSurface() {
+    this._settleSurfaces();
     // Rasterised TWICE, with the shore grading between the two, and it is worth
     // saying plainly what the second one does and does not buy. It does NOT
     // change the waterline: measured, dropping it moves `fine` by 0.25 points
@@ -2233,6 +2513,50 @@ export class TerrainGen {
     this.riverMask = rm;
     this.water = water;
     this._waterfalls(water, rm);
+  }
+
+  /**
+   * Bring every station's published surface back down onto the bed the carve
+   * actually left.
+   *
+   * `surf` is decided in `_traceRivers`, BEFORE the carve, and the carve is
+   * then asked to cut a bed `wdep` beneath it. It does not always get there:
+   * the cone floors, the groove limit, a neighbour's disc and the rills all
+   * have a say, and wherever the bed comes up short the surface stays where it
+   * was — standing over its own bank. That is the "water floating above the
+   * channel" this whole round has been chasing, and it is why widening the
+   * drawn footprint only ever made it more visible: the footprint was hiding
+   * it, not causing it.
+   *
+   * So the surface is re-derived from the ground that exists: at most `wdep`
+   * above the bed under its own centreline. ONLY EVER LOWERS — a station whose
+   * bed did get cut keeps exactly the surface it published, and no water is
+   * ever raised onto anything. Then the monotone pass runs again, because
+   * lowering one station can leave the one below it standing higher, and water
+   * does not run uphill.
+   *
+   * The honest cost is that a reach whose bed the carve could not cut now
+   * carries a thinner ribbon of water instead of a thick one hanging over the
+   * hillside. A thin stream in a shallow channel is a real thing; a slab of
+   * water with the bank showing under it is not.
+   */
+  _settleSurfaces() {
+    const R = this.res, texel = this.worldSize / R, half = this.worldSize / 2;
+    const bedAt = (x, z) => this.height[
+      Math.max(0, Math.min(R - 1, Math.round((z + half) / texel - 0.5))) * R +
+      Math.max(0, Math.min(R - 1, Math.round((x + half) / texel - 0.5)))];
+    for (const sta of this.channels) {
+      for (const p of sta) {
+        // Standing water is level by definition and its height belongs to the
+        // lake body, not to the bed under one station of a drowned mouth.
+        if (p.lake > 0.01) continue;
+        const lim = bedAt(p.x, p.z) + p.wdep;
+        if (p.surf > lim) p.surf = lim;
+      }
+      for (let k = 1; k < sta.length; k++) {
+        if (sta[k].surf > sta[k - 1].surf) sta[k].surf = sta[k - 1].surf;
+      }
+    }
   }
 
   _rasterWater() {
@@ -2259,7 +2583,30 @@ export class TerrainGen {
     // Then the channels, over a footprint a little wider than the ribbon so the
     // shoreline fade and the damp band have ground to finish on.
     const wsplat = (wx, wz, m, surf, hw, wdep) => {
-      const radT = Math.max(1.2, (hw * 1.35) / texel);
+      // TWO footprints, and they answer different questions.
+      //
+      // radM is the riverbed MASK: how much ground TerrainMaterial paints as
+      // bed and gravel bar. It has to stay tight to the wet channel, and the
+      // gate below keeps it there.
+      //
+      // radL is the water LEVEL, and it must reach past the waterline, because
+      // the waterline is where this field runs out. The shader draws water
+      // where surface minus bed is positive and the surface only exists where
+      // this grid carries a level; where the level stops while the water is
+      // still deep, the player gets a vertical wall of water standing on dry
+      // ground with the bank showing under it. MEASURED on the shipped bake,
+      // the median station ended its level field with 0.70 m of water still
+      // standing and 84% ended with over 0.4 m — so this is not a corner case,
+      // it is most of the rivers in the map, and it is the single most visible
+      // thing wrong with water on a slope.
+      //
+      // The two were the same number because the ribbon used to be wider than
+      // the carved channel. It is not any more: the bed is cut flat across a
+      // core (see CARVE_CORE_T) and banked out to the carve radius, which is
+      // wider than 1.35 half-widths for every channel on the map.
+      const radM = Math.max(1.2, (hw * 1.35) / texel);
+      const radNom = carveRadius(m, texel);
+      const radL = Math.max(radM, radNom * WATER_FOOT);
       // Below this the ground has fallen out from under the channel and the
       // splat is painting water over a lip. Writing it anyway is what puts a
       // hard-edged pale blue wedge on the grass below a plunge pool — a lake
@@ -2268,20 +2615,46 @@ export class TerrainGen {
       // whether there is ground *under* the water and there is, a long way
       // under. A channel is a few metres deep; past that this is a waterfall,
       // and the falls system draws it.
-      const floor = surf - wdep - 3.0;
+      const floorOut = surf - wdep - 3.0;
+      // ...and INSIDE the channel the level may follow its own bed a good deal
+      // further down. The guard above is about ground the channel has LEFT —
+      // a lip, the apron below a plunge. The bed of a steep cascade is not
+      // that: it steps down several metres between stations while the surface
+      // steps with it, and refusing to write a level there is what breaks a
+      // steep reach into a row of disconnected blue blobs.
+      const floorIn = surf - wdep - CHAN_FLOOR;
       const gx = (wx + half) / texel, gz = (wz + half) / texel;
-      const x0 = Math.max(0, Math.floor(gx - radT)), x1 = Math.min(R - 1, Math.ceil(gx + radT));
-      const z0 = Math.max(0, Math.floor(gz - radT)), z1 = Math.min(R - 1, Math.ceil(gz + radT));
-      const invR = 1 / radT;
+      const x0 = Math.max(0, Math.floor(gx - radL)), x1 = Math.min(R - 1, Math.ceil(gx + radL));
+      const z0 = Math.max(0, Math.floor(gz - radL)), z1 = Math.min(R - 1, Math.ceil(gz + radL));
+      const invM = 1 / radM;
       for (let iy = z0; iy <= z1; iy++) {
         const dz = iy + 0.5 - gz;
         for (let ix = x0; ix <= x1; ix++) {
           const dx = ix + 0.5 - gx;
-          const d = Math.sqrt(dx * dx + dz * dz) * invR;
-          if (d > 1) continue;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist > radL) continue;
           const ni = iy * R + ix;
-          if (h[ni] < floor) continue;
-          if (surf > water[ni]) water[ni] = surf;
+          // The level stops climbing once it is clear of the water, rather than
+          // at a radius. WATER_FREEBOARD is the dry margin Water.js needs: it
+          // contours the mesh on (surface - bed) at SURF_ISO = -1.4 m, so the
+          // level has to exist on ground up to that far ABOVE the surface or
+          // the contour has nothing to interpolate against and the mesh edge
+          // becomes the waterline all over again.
+          // ...and it does not run away downhill either. Past the channel's own
+          // radius, where the ground has dropped clearly below this channel's
+          // bed, the water there is not this channel's water — it is the
+          // hillside below it, and painting a level over it makes the wall
+          // taller rather than shorter. INSIDE the radius the drop gate is off:
+          // that ground is the bed, erosion leaves half a metre of relief in
+          // it, and a gate tight enough to be useful outside would punch holes
+          // in the middle of the river.
+          const inCh = dist <= radNom;
+          if (h[ni] < (inCh ? floorIn : floorOut)) continue;
+          if ((inCh || h[ni] >= surf - wdep - WATER_DROP)
+              && h[ni] <= surf + WATER_FREEBOARD
+              && surf > water[ni]) water[ni] = surf;
+          const d = dist * invM;
+          if (d > 1) continue;
           // The mask has to stop close to the wet channel. TerrainMaterial
           // paints tan riverbed wherever it exceeds 0.02 and a pale gravel bar
           // wherever it exceeds 0.04, so every metre of mask that reaches past
@@ -3033,6 +3406,7 @@ export class TerrainGen {
 
       const sta = [];
       const tmpP = { x: 0, z: 0, m: 0, b: 0 };
+      const tmpA = { x: 0, z: 0, m: 0, b: 0 }, tmpB = { x: 0, z: 0, m: 0, b: 0 };
       for (let s = sStart; ; ) {
         at(s, tmpP);
         const m = tmpP.m;
@@ -3042,8 +3416,79 @@ export class TerrainGen {
         // The bed shallows and the water thins as the channel spreads out.
         // Both have to go to nothing or the delta is a trench with a step in
         // the surface at the end of it.
-        const dcarve = (0.8 + m * m * 6.0) * (1 - lk);
+        const dcarve = (0.8 + m * m * 6.0 + CARVE_DEEPEN) * (1 - lk);
         const wdep = WDEP_MIN + m * 0.9 * (1 - lk * 0.75);
+        const surf0 = tmpP.b - dcarve + wdep;
+        let surf = surf0;
+        if (lk === 0) {
+          // Rule 1 (see LIP_MARGIN). Tangent from the sampler two metres either
+          // way; rim = the un-carved ground at the nominal carve radius on both
+          // sides, and the lower of the two is what the water would spill over.
+          // Sampled AT and just past the radius, where the U cut is zero: inside
+          // it the profile's own tail shaves the rim the margin was measured on.
+          at(s + 2, tmpA); at(s - 2, tmpB);
+          const tl = Math.hypot(tmpA.x - tmpB.x, tmpA.z - tmpB.z) || 1;
+          const nx = -(tmpA.z - tmpB.z) / tl, nz = (tmpA.x - tmpB.x) / tl;
+          // Sampled at the radius the WATER will actually reach, not at the
+          // carve radius. The two are different numbers and it is the water's
+          // one that matters: the surface is a sheet with no sides (see
+          // _rasterWater and water_surface.js), so wherever the ground at the
+          // water's own edge is below the surface, the sheet ends in mid-air
+          // and the player sees its cut edge as a lip of water standing on dry
+          // ground. Holding the surface below the ground AT THAT RADIUS is what
+          // makes the sheet close itself on a real waterline.
+          const hwT = (1.2 + m * 11) * 0.5;
+          const rr = Math.max(1.2 * texel, hwT * 1.35);
+          // Each side's CREST — the highest ground out to the rim — and then
+          // the LOWER of the two sides, because that is the one the water
+          // would spill over. A plain minimum over all four samples is a
+          // different and wrong statement: it lets a gully or a neighbouring
+          // channel a couple of metres to the side stand in for this channel's
+          // own bank, and the cap then drags a whole reach down onto that
+          // hole's floor. Measured on the lab's flat terrain, one brook was
+          // pulled six metres under and p99 perch went 1.04 -> 2.98 m on that
+          // alone.
+          let rim = Infinity;
+          const side = [0, 0];
+          for (const sg of [-1, 1]) {
+            let crest = -Infinity;
+            for (const fr of [1.0, 1.15, 1.3]) {
+              const gx = Math.min(R - 1, Math.max(0, Math.round((tmpP.x + nx * sg * rr * fr + half) / texel)));
+              const gz = Math.min(R - 1, Math.max(0, Math.round((tmpP.z + nz * sg * rr * fr + half) / texel)));
+              const hv = this.height[gz * R + gx];
+              if (hv > crest) crest = hv;
+            }
+            side[sg < 0 ? 0 : 1] = crest;
+            if (crest < rim) rim = crest;
+          }
+          // How confined this station already is — and confinement is walls on
+          // BOTH sides, so it is the LOWER of the two, not the difference
+          // between them. The first version of this measured cross-FALL, the
+          // asymmetry, which is the signature of a HILLSIDE: a cliff on one
+          // side and open ground on the other scored maximum and got the full
+          // canyon budget, while a real gorge with two even walls scored zero.
+          // That is backwards on both counts, and it is why the deep cuts were
+          // turning up on open slopes the player wants to drive across instead
+          // of in the gorges where they look good. Caught by Sean, who went to
+          // the "canyon" this rule picked and found the side of a waterfall.
+          const wall = Math.min(side[0], side[1]) - surf0;
+          const conf = clamp01((wall - CANYON_AT) / (CANYON_FULL - CANYON_AT));
+          const capRoom = CAP_GENTLE + (CAP_MAX - CAP_GENTLE) * conf * conf * (3 - 2 * conf);
+          // ...and the cap may never cut a channel deeper than it is wide.
+          // A brook's carve disc is 1.3 texels — 2.6 m — across; sinking it six
+          // metres asks a 2 m grid to hold a slot narrower than one texel and
+          // deeper than three, and what comes back is not a channel but a
+          // ragged line of holes with the bank cones of its own neighbours
+          // standing in the middle of it. (Measured: on the lab's flat terrain
+          // one 83-station brook was capped ~6 m and carried a p99 perch of
+          // 5.9 m — the whole of that case's regression.) CAP_ASPECT is the
+          // bank the cut is allowed to stand at, so the incision stays inside
+          // the disc that draws it, and CAP_MAX is the absolute stop for a
+          // trunk wide enough that aspect alone would allow a gorge.
+          const capExtra = Math.min(capRoom, (1.0 + m * 7.5) * texel * CAP_ASPECT);
+          const capFloor = tmpP.b - dcarve - capExtra;
+          if (surf > rim - LIP_MARGIN) surf = Math.max(rim - LIP_MARGIN, capFloor);
+        }
         sta.push({
           s, x: tmpP.x, z: tmpP.z, m, lake: lk, lkM, lkO,
           dcarve, wdep,
@@ -3051,7 +3496,10 @@ export class TerrainGen {
           // carve needs to know how far the passes below moved `surf` away
           // from it. See `deep` in `_carveChannels`.
           base: tmpP.b,
-          surf: tmpP.b - dcarve + wdep,
+          surf,
+          // The surface before rule 1, so the ramp below can tell a drop the
+          // cap made from one the mountain made.
+          surf0,
           w: 0,
         });
         if (s >= sEnd) break;
@@ -3089,6 +3537,29 @@ export class TerrainGen {
         const lv = bodies[startBody].surface;
         for (const p of sta) if (p.lkO > 0) p.surf = lerp(p.surf, lv, p.lkO);
       }
+      // Rule 1 leaves a STEP where it first bites: the station upstream of it
+      // was traced on the same hillside and kept its surface, so its cone
+      // (1:CARVE_BANK from its bed) floors the capped station's bed above the
+      // capped water — 713 of 1480 steep stations at res 768 came out with the
+      // bed above the surface, against 371 shipped. So the drop is ramped
+      // upstream at the cone's own slope: a 3 m cap is absorbed over the six
+      // metres above it as an incision into the step, which is what a stream
+      // does at a step. Only ever lowers, and stops at standing water. It took
+      // the count to 650; what remains is a one-texel-wide cut several metres
+      // deep read half a texel off its centreline, and a flat-floored profile
+      // that would fix it cost every other waterlab metric (measured, not
+      // shipped).
+      //
+      // Only the drop the CAP added is ramped. A drop the mountain made — the
+      // pre-cap surface stepping down between two stations — passes through
+      // untouched, because that step is a waterfall: ramping it at 1:2 took the
+      // 1536 bake from 13 falls to 5.
+      for (let k = sta.length - 2; k >= 0; k--) {
+        if (sta[k].lake > 0 || sta[k + 1].lake > 0) continue;
+        const natural = Math.max(0, sta[k].surf0 - sta[k + 1].surf0);
+        const lim = sta[k + 1].surf + natural + CARVE_BANK * (sta[k + 1].s - sta[k].s);
+        if (sta[k].surf > lim) sta[k].surf = lim;
+      }
 
       // ── backwater ────────────────────────────────────────────────────────
       // Water cannot stand below the water it drains into, and until this pass
@@ -3119,7 +3590,7 @@ export class TerrainGen {
       // value — the drowned part of a mouth is as wide and as shallow as the
       // ramped part, or the delta has a trench down the middle of it.
       for (const p of sta) {
-        p.dcarve = (0.8 + p.m * p.m * 6.0) * (1 - p.lake);
+        p.dcarve = (0.8 + p.m * p.m * 6.0 + CARVE_DEEPEN) * (1 - p.lake);
         p.wdep = WDEP_MIN + p.m * 0.9 * (1 - p.lake * 0.75);
         p.w = (1.2 + p.m * 11) * (1 + p.lake * (MOUTH_FLARE - 1));
       }

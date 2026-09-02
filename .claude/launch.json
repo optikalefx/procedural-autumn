@@ -130,6 +130,19 @@
         "--strictPort"
       ],
       "port": 5178
+    },
+    {
+      "name": "water-depth",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5261",
+        "--strictPort"
+      ],
+      "port": 5261
     }
   ]
 }
