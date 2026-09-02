@@ -45,6 +45,7 @@ import { Birds } from './birds/flocks.js';
 import { TreeBirds } from './birds/tree_birds.js';
 import { Fireflies } from './fireflies.js';
 import { Bigfoot } from './bigfoot.js';
+import { Frogs } from './frogs.js';
 
 // Per-species streaming and population budget.
 //
@@ -272,6 +273,12 @@ export class Wildlife extends System {
     // geometry exists and no site is placed for a player who has not finished
     // the sheet; the cost until then is one boolean read a frame.
     this.bigfoot = new Bigfoot(this.ctx, SEED ^ 0xb1f7);
+
+    // The frogs. Their habitat is the lily pads, so their world layer is a
+    // cast-of-few object like the bigfoot's rather than rows in `SPECIES` —
+    // see the header of frogs.js.
+    this.frogs = new Frogs(this.ctx, SEED ^ 0xf206);
+    this.frogs.build();
 
     scene.add(this.group);
     this._compileWarm = true;
@@ -1587,6 +1594,7 @@ export class Wildlife extends System {
     // is at most one of him — a bigfoot that ignored it would be a bigfoot
     // walking through a paused world.
     if (!this._frozen) this.bigfoot?.update(dt, cam);
+    if (!this._frozen) this.frogs?.update(dt, cam, elapsed);
   }
 
   /**
@@ -1955,6 +1963,7 @@ export class Wildlife extends System {
     this.treeBirds?.dispose();
     this.fireflies?.dispose();
     this.bigfoot?.dispose();
+    this.frogs?.dispose();
   }
 }
 

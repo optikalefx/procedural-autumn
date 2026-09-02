@@ -36,6 +36,50 @@ const VOICE = {
   moose: { wave: 'sawtooth', f: 168, spread: 30, dur: 0.62, sag: 0.70, throat: 480, level: 1.20 },
 };
 
+// ── the frog's dive: a recording ─────────────────────────────────────────────
+//
+// `public/audio/frog_splash.mp3`, a take the user supplied after the
+// synthesised splash was rejected twice — first as too sharp, then, softened,
+// as still not good enough. A real body going into real water carries the
+// grain and the secondary droplets that a noise band and a sine plop cannot,
+// and this is the same trade `journal_audio.js` made for the page turn: play
+// the recording, keep the synthesis as the fallback so a missing asset is a
+// worse splash rather than no splash.
+//
+// MEASURED off the file, because all three numbers below are properties of
+// this take and not taste:
+//
+//   duration        2.000 s, 48 kHz stereo
+//   onset           0.2015 s — a fifth of a second of room tone at the head
+//   peak            1.3735 in the decoded float (the mp3 overshoots full
+//                   scale; ffmpeg's integer max reads -0.1 dBFS)
+//   body            0.19-1.30 s, rms 0.090; nothing over 0.004 past 1.52 s
+//
+// SPLASH_OFFSET skips the room tone. It is 15 ms AHEAD of the measured onset,
+// which is deliberate: starting exactly on the first sample over threshold
+// clips the attack transient, and the 15 ms of near-silence in front is
+// inaudible where the event fires. Without it every dive would be heard a
+// fifth of a second after the frog vanished.
+//
+// SPLASH_GAIN is set against the file's decoded peak, and then MEASURED on the
+// wildlife bus rather than predicted from it — the arithmetic is wrong because
+// the distance lowpass takes the top off the transient. Peaks on the bus, in
+// the running game:
+//
+//   this recording, close, size 0.74 ....... 0.114
+//   the same, the bull frog at size 0.92 ... 0.125
+//   the same, far (far 0.70, ~42 m) ........ 0.065
+//   `_splashSynth`, the fallback, close .... 0.045
+//   the deer bleat at 8 m, for scale ....... 0.099
+//
+// So it sits a hair above the deer, which is the intent: a splash is a sound
+// the player CAUSED, like the flock takeoff, and those are allowed to be
+// present. The fallback is quieter than the thing it stands in for, which is
+// the right way round for a substitute nobody chose.
+const SPLASH_URL = '/audio/frog_splash.mp3';
+const SPLASH_OFFSET = 0.186;
+const SPLASH_GAIN = 0.116;
+
 export class WildlifeAudio {
   constructor(actx, bus, reverb, ctx) {
     this.actx = actx;
@@ -49,6 +93,12 @@ export class WildlifeAudio {
     this.bus.connect(this.wet).connect(reverb);
 
     this.noise = noiseBuffer(actx, 2, 'pink', 0x1c9f);
+    // The frog's dive is a RECORDING (see SPLASH_URL). Fetched now rather than
+    // on the first dive, so the frog that startles ten seconds into a paddle
+    // does not splash silently while the decode runs; `_splash` falls back to
+    // the synth until this lands, and for ever if it 404s.
+    this._splashBuf = null;
+    this.loadSamples();
     this._callCool = 20 + this.rnd() * 40;
     // The owl runs its own clock, an order of magnitude slower than the
     // mammals' — see _owl.
@@ -85,6 +135,12 @@ export class WildlifeAudio {
     // silence the night for the next minute.
     this._owl(dt, L);
 
+    // ── the frogs ───────────────────────────────────────────────────────────
+    // Also ahead of it, and not on a clock at all: the frog system pushes an
+    // event when a frog it is drawing croaks, lands, or goes into the water,
+    // so every sound here has a frog under it and none is on a timer.
+    this._frogs(L);
+
     // ── occasional calls ────────────────────────────────────────────────────
     this._callCool -= dt;
     if (this._callCool > 0) return;
@@ -117,6 +173,200 @@ export class WildlifeAudio {
     const pick = cands[(this.rnd() * cands.length) | 0];
     this._call(pick.a, pick.d, L);
     this._callCool = 26 + this.rnd() * 55;
+  }
+
+  /**
+   * The frogs' events, drained. A croak while it sits on the pad, a splash when
+   * it dives, and a faint pat when it lands on a leaf. Each is placed and
+   * attenuated by distance from the listener; past 60 m a frog is inaudible,
+   * which is also about where it stops being visible.
+   */
+  _frogs(L) {
+    const fr = this.ctx.systems?.wildlife?.frogs;
+    const ev = fr?.events;
+    if (!ev || !ev.length) return;
+    for (const e of ev) {
+      const d = Math.hypot(e.x - L.x, e.z - L.z);
+      if (d > 60) continue;
+      const pan = clamp(Math.sin(Math.atan2(e.x - L.x, e.z - L.z) - L.yaw), -0.9, 0.9);
+      const far = clamp01(d / 60);
+      if (e.kind === 'croak') this._croak(e, far, pan);
+      else if (e.kind === 'splash') this._splash(e, far, pan);
+      else if (e.kind === 'land') this._padPat(e, far, pan);
+    }
+    ev.length = 0;
+  }
+
+  /**
+   * A croak: a pulsed low tone — the "rrr" is amplitude tremolo at ~24 Hz on
+   * a sawtooth, which is what a vocal sac does to a glottal buzz — through a
+   * nasal band, then for the smaller frogs a short upward "-bit". Pitch and
+   * length scale with the frog's size: the bull variant is an octave down and
+   * says one long syllable.
+   */
+  _croak(e, far, pan) {
+    const actx = this.actx;
+    const t0 = actx.currentTime + 0.01;
+    const size = e.size ?? 0.75;
+    const big = size > 0.85;
+    const f0 = (big ? 62 : 108) * (0.94 + this.rnd() * 0.12) / (size / 0.75);
+    const dur = big ? 0.55 + this.rnd() * 0.2 : 0.30 + this.rnd() * 0.12;
+    const level = lerp(0.085, 0.006, far * far) * (big ? 1.15 : 1);
+
+    const o = actx.createOscillator();
+    o.type = 'sawtooth';
+    const trem = gain(actx, 0.5);
+    const tl = actx.createOscillator(); tl.type = 'sine'; tl.frequency.value = big ? 19 : 26;
+    const tg = gain(actx, 0.5); tl.connect(tg).connect(trem.gain);
+    const g = gain(actx, 0.0001);
+    const nose = filter(actx, 'bandpass', big ? 320 : 640, 1.6);
+    const body = filter(actx, 'lowpass', lerp(2400, 700, far), 0.8);
+    const p = panner(actx, pan);
+    o.connect(trem).connect(nose).connect(g).connect(body).connect(p).connect(this.bus);
+
+    const fp = o.frequency, gp = g.gain;
+    fp.setValueAtTime(f0 * 0.92, t0);
+    fp.linearRampToValueAtTime(f0, t0 + dur * 0.25);
+    fp.linearRampToValueAtTime(f0 * 0.90, t0 + dur);
+    gp.setValueAtTime(0.0001, t0);
+    gp.linearRampToValueAtTime(level, t0 + 0.05);
+    gp.setValueAtTime(level, t0 + dur * 0.75);
+    gp.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    let end = t0 + dur;
+    const nodes = [o, tl, tg, trem, nose, g, body, p];
+    if (!big) {
+      // "-bit": a short rising triangle after a hair of silence.
+      const o2 = actx.createOscillator(); o2.type = 'triangle';
+      const g2 = gain(actx, 0.0001);
+      const n2 = filter(actx, 'bandpass', 900, 1.2);
+      o2.connect(n2).connect(g2).connect(body);
+      const t1 = end + 0.05, d2 = 0.11;
+      o2.frequency.setValueAtTime(f0 * 1.6, t1);
+      o2.frequency.linearRampToValueAtTime(f0 * 2.4, t1 + d2);
+      g2.gain.setValueAtTime(0.0001, t1);
+      g2.gain.linearRampToValueAtTime(level * 0.9, t1 + 0.02);
+      g2.gain.exponentialRampToValueAtTime(0.0001, t1 + d2);
+      o2.start(t1); o2.stop(t1 + d2 + 0.05);
+      nodes.push(o2, g2, n2);
+      end = t1 + d2;
+    }
+    o.start(t0); o.stop(end + 0.1); tl.start(t0); tl.stop(end + 0.1);
+    stopLater(nodes, actx, end + 0.5);
+    this.state.calls++;
+  }
+
+  /**
+   * Fetch and decode the frog splash once, and hold the buffer.
+   *
+   * Every failure path lands in the same place: `_splashBuf` stays null and
+   * `_splash` uses `_splashSynth`. Idempotent — the promise is cached, so the
+   * Sound Lab or a harness joins the first fetch rather than starting a second.
+   */
+  loadSamples() {
+    return (this._sampleLoad ??= (async () => {
+      const res = await fetch(SPLASH_URL);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      this._splashBuf = await this.actx.decodeAudioData(await res.arrayBuffer());
+      return this._splashBuf;
+    })().catch((e) => {
+      console.warn(`[wildlife:audio] ${SPLASH_URL} unavailable; synthesising the frog splash`, e);
+      this._splashBuf = null;
+      return null;
+    }));
+  }
+
+  /**
+   * A frog going into the water.
+   *
+   * The recording, played from `SPLASH_OFFSET` so the sound starts on the
+   * frame the frog enters, panned and attenuated exactly as the synthesised
+   * one was. Two things scale it by the animal:
+   *
+   *   · PLAYBACK RATE. A bigger body makes a bigger, slower splash, so the
+   *     bull frog plays a little under speed and the small one a little over.
+   *     This is the honest lever for a recording — it moves the pitch AND the
+   *     length together, which is what body size does to a splash.
+   *   · LEVEL, on the same `0.6 + 0.6·size` weighting the synth used.
+   *
+   * The lowpass closing with distance is doing the same job it does for every
+   * other animal here: distance eats the top of a sound before it eats its
+   * body, and that is most of what places one across a lake.
+   */
+  _splash(e, far, pan) {
+    if (!this._splashBuf) { this._splashSynth(e, far, pan); return; }
+    const actx = this.actx;
+    const t0 = actx.currentTime + 0.01;
+    const size = e.size ?? 0.75;
+    const level = SPLASH_GAIN * lerp(1.0, 0.08, far * far) * (0.6 + 0.6 * size);
+
+    const src = actx.createBufferSource();
+    src.buffer = this._splashBuf;
+    // 0.60 (leaf) plays 1.10x, 0.92 (bull) plays 0.90x.
+    src.playbackRate.value = lerp(1.10, 0.90, clamp01((size - 0.60) / 0.32));
+    const g = gain(actx, level);
+    const body = filter(actx, 'lowpass', lerp(7000, 900, far), 0.7);
+    const p = panner(actx, pan);
+    src.connect(g).connect(body).connect(p).connect(this.bus);
+    src.start(t0, SPLASH_OFFSET);
+    const dur = (this._splashBuf.duration - SPLASH_OFFSET) / src.playbackRate.value;
+    stopLater([src, g, body, p], actx, t0 + dur + 0.1);
+    this.state.calls++;
+  }
+
+  /**
+   * The splash, synthesised — the FALLBACK, used only when the recording
+   * above could not be fetched or decoded.
+   *
+   * A soft "plup": pink noise through a wide band that starts at 1.3 kHz and
+   * sinks to 380 Hz as the water closes, under a 3 kHz ceiling, 25 ms attack,
+   * half a second of tail, with a low sine plop under it. It is kept because
+   * a missing asset should cost the dive its quality and not its sound; it is
+   * not what the game plays when `public/audio/frog_splash.mp3` is in place.
+   */
+  _splashSynth(e, far, pan) {
+    const actx = this.actx;
+    const t0 = actx.currentTime + 0.01;
+    const size = e.size ?? 0.75;
+    const level = lerp(0.10, 0.008, far * far) * (0.6 + 0.6 * size);
+    const n = noiseSource(actx, this.noise);
+    const band = filter(actx, 'bandpass', 1300, 0.7);
+    const g = filter(actx, 'lowpass', lerp(3000, 1100, far), 0.6);
+    const ng = gain(actx, 0.0001);
+    const p = panner(actx, pan);
+    n.connect(band).connect(ng).connect(g).connect(p).connect(this.bus);
+    band.frequency.setValueAtTime(1300 + 300 * size, t0);
+    band.frequency.exponentialRampToValueAtTime(380, t0 + 0.45);
+    ng.gain.setValueAtTime(0.0001, t0);
+    ng.gain.linearRampToValueAtTime(level, t0 + 0.025);
+    ng.gain.exponentialRampToValueAtTime(level * 0.4, t0 + 0.14);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.55);
+    const o = actx.createOscillator(); o.type = 'sine';
+    const og = gain(actx, 0.0001);
+    o.connect(og).connect(g);
+    const fp = 260 - 80 * size;
+    o.frequency.setValueAtTime(fp, t0 + 0.03);
+    o.frequency.exponentialRampToValueAtTime(fp * 0.4, t0 + 0.2);
+    og.gain.setValueAtTime(0.0001, t0 + 0.03);
+    og.gain.linearRampToValueAtTime(level * 0.4, t0 + 0.06);
+    og.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.24);
+    o.start(t0); o.stop(t0 + 0.3);
+    stopLater([n, band, ng, g, p, o, og], actx, t0 + 0.9);
+    this.state.calls++;
+  }
+
+  /** A frog landing on a leaf: a very quiet, very short pat. Only close up. */
+  _padPat(e, far, pan) {
+    if (far > 0.25) return;
+    const actx = this.actx;
+    const t0 = actx.currentTime + 0.01;
+    const level = lerp(0.03, 0.0, far / 0.25);
+    const n = noiseSource(actx, this.noise);
+    const band = filter(actx, 'bandpass', 780, 1.4);
+    const ng = gain(actx, 0.0001);
+    const p = panner(actx, pan);
+    n.connect(band).connect(ng).connect(p).connect(this.bus);
+    ping(actx, ng, t0, level, 0.004, 0.06);
+    stopLater([n, band, ng, p], actx, t0 + 0.3);
   }
 
   /**

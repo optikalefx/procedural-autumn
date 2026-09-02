@@ -875,6 +875,72 @@ function bigfootEntries(mod, path) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Family adapter — the frog
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Bigfoot's cousin on the page: not in `SPECIES`, built out of numbers, and
+// posed by a timeline rather than a gait. The poses are the five frames of the
+// reference strip plus the croak, so the card is where a joint angle gets
+// judged before the frog ever sits on a pad.
+
+const FROG_POSES = [
+  { key: 'sit', label: 'Sit' },
+  { key: 'crouch', label: 'Crouch' },
+  { key: 'launch', label: 'Launch' },
+  { key: 'flight', label: 'Flight (apex)' },
+  { key: 'descend', label: 'Flight (descent)' },
+  { key: 'land', label: 'Land (dip)' },
+  { key: 'croak', label: 'Croak' },
+];
+
+function frogEntries(mod, path) {
+  return mod.FROG.variants.map((v, vi) => ({
+    id: `frog:${vi}`,
+    label: 'Frog',
+    sub: v.name,
+    group: groupOf(path),
+    family: 'Animals',
+    file: path,
+    call: `new FrogRig(frogProtos()[${vi}], hide)`,
+    poses: FROG_POSES,
+    async build(_seed, opts = {}) {
+      const { createHideMaterial } = await import('../../wildlife/mammals/hide.js');
+      const proto = mod.frogProtos()[vi];
+      const hide = createHideMaterial(v.col);
+      hide.roughness = 0.55;          // a frog is wet; the cast's hide is not
+      const rig = new mod.FrogRig(proto, hide, v.scale);
+      const root = new THREE.Group();
+      root.add(rig.mesh);
+
+      const pose = opts.pose ?? 'sit';
+      const apply = () => {
+        switch (pose) {
+          case 'crouch': rig.setPose('crouch', 1); break;
+          case 'launch': rig.setPose('launch', 1); break;
+          case 'flight': rig.setPose('flight', 0.45); break;
+          case 'descend': rig.setPose('flight', 0.92); break;
+          case 'land': rig.setPose('land', 0.35); break;
+          case 'croak': rig.setPose('sit', 0); rig.sac = 1; break;
+          default: rig.setPose('sit', 0);
+        }
+      };
+      apply();
+      rig.update(0);
+      return {
+        root,
+        update(dt) { apply(); rig.update(dt); },
+        dispose() { hide.dispose(); },
+        notes: [
+          `${(mod.BODY_L * v.scale * 100).toFixed(0)} cm snout to vent, ${(mod.SIT_H * v.scale * 100).toFixed(1)} cm to the crown of the eyes`,
+          `${proto.tris} triangles, ${proto.skel.bones.length} bones, one draw call`,
+          `jump: crouch ${mod.JUMP.crouch}s, launch ${mod.JUMP.launch}s, flight from the arc, land ${mod.JUMP.land}s`,
+        ],
+      };
+    },
+  }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Family adapter — the cars
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -1116,6 +1182,12 @@ const ADAPTERS = [
     claims: ['BIGFOOT', 'buildBigfoot', 'bigfootProtos', 'BigfootRig',
              'pickBigfootVariant', 'WALK', 'GROUND_PER_CYCLE', 'CADENCE', 'STAND_H'],
     entries: bigfootEntries,
+  },
+  {
+    path: '/src/wildlife/frog_model.js',
+    claims: ['FROG', 'buildFrog', 'frogProtos', 'FrogRig', 'pickFrogVariant',
+             'jumpPose', 'JUMP', 'BODY_L', 'SIT_H'],
+    entries: frogEntries,
   },
   { path: '/src/wildlife/birds/flocks.js', claims: ['FLOCK_SPECIES', 'PLUMAGE', 'birdGeometry', 'birdMaterial', 'Birds'], entries: birdEntries },
   {

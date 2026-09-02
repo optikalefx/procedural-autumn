@@ -1490,6 +1490,114 @@ export const SOUNDS = [
     needs: ['wildlife_audio.js:132-142 — start rate 11 Hz, deceleration 0.28 Hz per beat, floor 6.5 Hz, 16 beats or 1.7 s.'],
   },
 
+  // ── the frogs ─────────────────────────────────────────────────────────────
+  //
+  // Three sounds, all EVENTS raised by `frogs.js` when a frog it is drawing
+  // croaks, lands on a leaf, or goes into the water; `WildlifeAudio._frogs`
+  // drains them. The lab calls the three synths directly with the same
+  // arguments the drain hands them: the event, `far` (distance / 60 m, the
+  // audibility radius) and the pan. `size` is the frog variant's scale —
+  // green 0.74, bull 0.92, leaf 0.60 — which is what pitches the croak and
+  // weights the splash.
+  {
+    id: 'wildlife.frogCroak',
+    group: 'Wildlife',
+    label: 'Frog croak',
+    kind: 'oneshot',
+    bus: 'wildlife',
+    module: 'src/audio/wildlife_audio.js',
+    blurb: 'A sawtooth pulsed at 19-26 Hz by a tremolo — the vocal sac on a glottal '
+      + 'buzz — through a nasal band, 0.3-0.5 s. Frogs over 0.85 scale (the bull) '
+      + 'drop an octave and say one long syllable; the smaller ones add a short '
+      + 'rising "-bit" after it.',
+    layers: ['wildlife'],
+    meterLayers: [{ name: 'wildlife', label: 'wildlife bus', get: (rig) => rig.audio.wildlife, model: null, param: (w) => w.bus.gain }],
+    trigger: (rig, v) => {
+      const az = (v.azimuth * Math.PI) / 180;
+      const far = clamp01(v.distance / 60);
+      rig.audio.wildlife._croak({ x: Math.sin(az) * v.distance, y: 0, z: Math.cos(az) * v.distance, size: v.size },
+                                far, Math.sin(az));
+    },
+    params: [
+      cond('distance', 'Distance to the frog', 1, 60, 8, { unit: 'm', step: 1, src: 'wildlife_audio.js _frogs — inaudible past 60 m' }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 30, { unit: '°', step: 1 }),
+      cond('size', 'Frog scale (leaf 0.60 · green 0.74 · bull 0.92)', 0.5, 1.0, 0.74, { step: 0.01, src: 'frog_model.js FROG.variants; > 0.85 is the bullfrog voice' }),
+      range('wildlifeBusGain', 'wildlife sub-bus gain', 0, 2, 1.0, { step: 0.01, group: 'Mix', src: 'wildlife_audio.js:19', apply: P('wildlife.bus.gain') }),
+      range('wildlifeWet', 'reverb send', 0, 1, 0.4, { step: 0.01, group: 'Mix', src: 'wildlife_audio.js:22', apply: P('wildlife.wet.gain') }),
+      range('wildlifeBus', 'wildlife bus gain', 0, 2, 0.9, { step: 0.01, group: 'Mix', src: 'Audio.js:132', apply: P('buses.wildlife.gain') }),
+    ],
+    needs: [
+      'wildlife_audio.js _croak — f0 108 Hz (62 for the bull) / (size/0.75), tremolo 26 Hz (19), nasal band 640 Hz Q 1.6 (320), level lerp(0.085, 0.006, far²).',
+      'frogs.js SIT — croak every 7-25 s per frog while it sits; the sac inflates over 0.3 s and holds.',
+    ],
+  },
+  {
+    id: 'wildlife.frogSplash',
+    group: 'Wildlife',
+    label: 'Frog dive (splash)',
+    kind: 'oneshot',
+    bus: 'wildlife',
+    module: 'src/audio/wildlife_audio.js',
+    blurb: 'The recording — public/audio/frog_splash.mp3, played from its 0.186 s '
+      + 'onset so it lands on the frame the frog enters. Body size sets the playback '
+      + 'rate (the bull plays 0.90x, the small one 1.10x) and the level. Two '
+      + 'synthesised splashes were rejected before it; the second of them survives '
+      + 'as the fallback, and the toggle below auditions it.',
+    layers: ['wildlife'],
+    meterLayers: [{ name: 'wildlife', label: 'wildlife bus', get: (rig) => rig.audio.wildlife, model: null, param: (w) => w.bus.gain }],
+    trigger: (rig, v) => {
+      const az = (v.azimuth * Math.PI) / 180;
+      const far = clamp01(v.distance / 60);
+      const W = rig.audio.wildlife;
+      const e = { x: Math.sin(az) * v.distance, y: 0, z: Math.cos(az) * v.distance, size: v.size };
+      // The lab is where the two are compared, so it reaches the fallback
+      // directly rather than making somebody delete the asset to hear it.
+      if (v.source >= 0.5) W._splashSynth(e, far, Math.sin(az));
+      else { W.loadSamples().then(() => W._splash(e, far, Math.sin(az))); }
+    },
+    params: [
+      cond('distance', 'Distance to the splash', 1, 60, 6, { unit: 'm', step: 1, src: 'wildlife_audio.js _frogs — inaudible past 60 m' }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, -20, { unit: '°', step: 1 }),
+      cond('size', 'Frog scale (leaf 0.60 · green 0.74 · bull 0.92)', 0.5, 1.0, 0.74, { step: 0.01, src: 'rate lerp(1.10, 0.90, size); level × (0.6 + 0.6·size)' }),
+      cond('source', 'Recording (0) or the synthesised fallback (1)', 0, 1, 0, { step: 1, src: 'wildlife_audio.js _splash / _splashSynth' }),
+      range('wildlifeBusGain', 'wildlife sub-bus gain', 0, 2, 1.0, { step: 0.01, group: 'Mix', src: 'wildlife_audio.js:19', apply: P('wildlife.bus.gain') }),
+      range('wildlifeWet', 'reverb send', 0, 1, 0.4, { step: 0.01, group: 'Mix', src: 'wildlife_audio.js:22', apply: P('wildlife.wet.gain') }),
+      range('wildlifeBus', 'wildlife bus gain', 0, 2, 0.9, { step: 0.01, group: 'Mix', src: 'Audio.js:132', apply: P('buses.wildlife.gain') }),
+    ],
+    needs: [
+      'wildlife_audio.js SPLASH_OFFSET 0.186 s / SPLASH_GAIN 0.116 — measured bus peaks 0.114 close, 0.065 at 42 m, against the deer bleat at 0.099.',
+      'wildlife_audio.js _splash — lowpass lerp(7000, 900, far); level × lerp(1.0, 0.08, far²) × (0.6 + 0.6·size).',
+      'frogs.js _splash — the water ring: pushWake(x, z, 0.35 + 0.35·size, 0.9 + 0.5·size).',
+    ],
+  },
+  {
+    id: 'wildlife.frogPat',
+    group: 'Wildlife',
+    label: 'Frog landing on a leaf',
+    kind: 'oneshot',
+    bus: 'wildlife',
+    module: 'src/audio/wildlife_audio.js',
+    blurb: 'A very quiet 60 ms pat of banded noise at 780 Hz. Close range only — '
+      + 'it is silent past 15 m — because a frog landing on a leaf is a sound you '
+      + 'hear from a boat beside it and nowhere else.',
+    layers: ['wildlife'],
+    meterLayers: [{ name: 'wildlife', label: 'wildlife bus', get: (rig) => rig.audio.wildlife, model: null, param: (w) => w.bus.gain }],
+    trigger: (rig, v) => {
+      const az = (v.azimuth * Math.PI) / 180;
+      const far = clamp01(v.distance / 60);
+      rig.audio.wildlife._padPat({ x: Math.sin(az) * v.distance, y: 0, z: Math.cos(az) * v.distance, size: v.size },
+                                 far, Math.sin(az));
+    },
+    params: [
+      cond('distance', 'Distance to the frog', 1, 15, 3, { unit: 'm', step: 0.5, src: 'wildlife_audio.js _padPat — returns past far 0.25 (15 m)' }),
+      cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
+      cond('size', 'Frog scale', 0.5, 1.0, 0.74, { step: 0.01 }),
+      range('wildlifeBusGain', 'wildlife sub-bus gain', 0, 2, 1.0, { step: 0.01, group: 'Mix', src: 'wildlife_audio.js:19', apply: P('wildlife.bus.gain') }),
+      range('wildlifeBus', 'wildlife bus gain', 0, 2, 0.9, { step: 0.01, group: 'Mix', src: 'Audio.js:132', apply: P('buses.wildlife.gain') }),
+    ],
+    needs: ['wildlife_audio.js _padPat — level lerp(0.03, 0, far/0.25), ping attack 4 ms decay 60 ms.'],
+  },
+
   // ── music ─────────────────────────────────────────────────────────────────
   {
     id: 'music.phrase',
