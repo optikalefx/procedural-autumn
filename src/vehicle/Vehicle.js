@@ -171,7 +171,11 @@ export class Vehicle extends System {
     this._invQuat = new THREE.Quaternion();
     this._rescueCool = 0;
     this._rescueOffered = false;   // touch only: is the rescue toast up? see `update`
-    this._rescueHold = false;
+    // The park brake the GAME put on, as opposed to the one the player asked
+    // for (`_brakeHold` below). Set wherever the camper is placed rather than
+    // driven there — the spawn in `init`, and every `_land` — and released by
+    // the player's first deliberate input. See the note in `_land`.
+    this._parkHold = false;
     this._brakeHold = false;
     this.brakeHold = false;      // what the HUD lamp reads
     // Who owns the driving inputs. null = the camper; 'boat' while the player
@@ -264,6 +268,20 @@ export class Vehicle extends System {
     // main.js) so it is here to hand, but this is deliberately tolerant of its
     // absence — the capture harness and the sky tools run without it.
     this.phys.setRockSource(ctx.systems.rocks ?? null);
+    // The camper starts parked, and this is not a nicety. The spawn search
+    // above prefers a flat road point but only *refuses* ground steeper than
+    // 0.42 (slope is tan, so about 23°), and the meadow and origin fallbacks
+    // are not slope-checked at all. The shipping seed spawns on 0.38: left
+    // unheld there the camper rolls 77 m downhill in 15 s, dropping 49 m and
+    // reaching 75 km/h, all of it before the player has pressed anything —
+    // they read the intro leaf and look up somewhere they have never been.
+    // (tools/_scratch/parkroll.mjs)
+    //
+    // Same latch a rescue landing uses, for the same reason: the game put the
+    // camper here, so the game holds it until the player's first pedal or
+    // steer takes it over. Nothing else changes — the hold releases on that
+    // first input and cannot re-arm on its own.
+    this._parkHold = true;
 
     // ── fx ──────────────────────────────────────────────────────────────────
     const budget = ctx.preset?.grassMul >= 0.8 ? 1100 : 550;
@@ -449,12 +467,13 @@ export class Vehicle extends System {
     // what opens the rest of the game on a phone.
     else if (!held && touchCapable() && this._holdEligible()) this._brakeHold = true;
 
-    // A rescue leaves the park brake on. Any deliberate input releases it —
-    // the player has taken over and the camper should behave normally from
-    // that instant, with no "press again to release" ceremony. Steering counts
-    // here, unlike the brake hold above, because a rescue was not something the
-    // player chose and any sign of life should hand the camper back.
-    if (driving || (!held && Math.abs(ax.steer) > 0.05)) this._rescueHold = false;
+    // A camper the game placed — at the spawn, or on a rescue landing — is left
+    // with the park brake on. Any deliberate input releases it: the player has
+    // taken over and the camper should behave normally from that instant, with
+    // no "press again to release" ceremony. Steering counts here, unlike the
+    // brake hold above, because neither the spawn nor a rescue was something
+    // the player chose, and any sign of life should hand the camper back.
+    if (driving || (!held && Math.abs(ax.steer) > 0.05)) this._parkHold = false;
 
     this.phys.step(dt, {
       throttle: held ? 0 : ax.throttle,
@@ -462,13 +481,18 @@ export class Vehicle extends System {
       steer: held ? 0 : ax.steer,
       handbrake: held ? 0 : ax.handbrake,
       hold: this._brakeHold,
-      park: this._rescueHold,
+      park: this._parkHold,
     });
     this.brakeHold = this.phys.holdArmed;
-    // Once per session, the first time it engages: a latching handbrake is not
-    // what Space does in any other driving game, and a player who does not know
-    // it latched will read it as the camper having jammed.
-    if (this.brakeHold && !this._toldAboutHold) {
+    // Once per session, the first time the PLAYER latches it: a latching
+    // handbrake is not what Space does in any other driving game, and a player
+    // who does not know it latched will read it as the camper having jammed.
+    // Gated on `_brakeHold` rather than on the lamp, because the lamp is also
+    // lit by a park the game put on — and the camper is parked from the moment
+    // it loads. Firing there would talk over the first-run hint bar as the
+    // loader lifts, and spend the one explanation Space is owed on a hold the
+    // player never asked for.
+    if (this._brakeHold && this.brakeHold && !this._toldAboutHold) {
       this._toldAboutHold = true;
       ctx.systems.hud?.toast?.('Brake hold on — press W to drive away');
     }
@@ -602,10 +626,10 @@ export class Vehicle extends System {
     // Otherwise a 20 m quad of tyre track is drawn across untouched ground.
     this.tracks?.cut();
 
-    this._rescueHold = true;      // park brake on until the player drives away
-    // The rescue's own hold supersedes the player's: they are the same latch,
-    // but the rescue one also releases on steering, and leaving both set would
-    // mean a steer released one and not the other.
+    this._parkHold = true;        // park brake on until the player drives away
+    // The game's own hold supersedes the player's: they are the same latch, but
+    // this one also releases on steering, and leaving both set would mean a
+    // steer released one and not the other.
     this._brakeHold = false;
     this.teleportSeq++;
   }
