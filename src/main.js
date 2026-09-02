@@ -37,6 +37,7 @@ import { Waterfalls }  from './world/Waterfalls.js';
 import { Trees }       from './vegetation/Trees.js';
 import { GroundCover } from './vegetation/GroundCover.js';
 import { Grass }       from './vegetation/Grass.js';
+import { LilyPads }    from './vegetation/LilyPads.js';
 import { Wildlife }    from './wildlife/Wildlife.js';
 import { Vehicle }     from './vehicle/Vehicle.js';
 import { Boat }        from './boat/Boat.js';
@@ -59,6 +60,9 @@ const SYSTEMS = [
   ['trees',       Trees],
   ['groundCover', GroundCover],
   ['grass',       Grass],
+  // After Water (pads float on the drawn surface it hands to WorldData) and
+  // before Wildlife, which is where the frogs that will stand on them go.
+  ['lilyPads',    LilyPads],
   ['wildlife',    Wildlife],
   ['vehicle',     Vehicle],
   // ── the pointer chain: Vehicle → Bike → Boat → Camp ─────────────────────

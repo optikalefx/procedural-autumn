@@ -236,6 +236,16 @@ await acquire('shot');
   // partially-reloaded page can produce a frame that looks fine and is not what
   // was asked for. A capture wants a frozen build, not a live one.
   await page.addInitScript(() => {
+    // A fresh headless context is a brand-new player, so HUD.maybeShowIntro
+    // opens the first-run journal over EVERY frame 400 ms after boot and the
+    // journal view dims the world behind it — a capture then shows a book on a
+    // dusk lake. Mark the intro as seen before any page script runs.
+    try {
+      const k = 'pa.hud';
+      const s = JSON.parse(localStorage.getItem(k) ?? '{}') || {};
+      s.introSeen = true; s.seenHint = true;
+      localStorage.setItem(k, JSON.stringify(s));
+    } catch { /* storage may be unavailable; the frame is still worth taking */ }
     const RealWS = window.WebSocket;
     window.WebSocket = function (url, protocols) {
       if (typeof url === 'string' && /[?&]token=|vite-hmr|__vite/.test(url)) {

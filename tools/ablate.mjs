@@ -261,6 +261,7 @@ await page.evaluate(() => {
   draw('draw.trees',       () => byName('Trees'));
   draw('draw.groundCover', () => byName('GroundCover'));
   draw('draw.grass',       () => byName('Grass'));
+  draw('draw.lilyPads',    () => byName('LilyPads'));
   draw('draw.wildlife',    () => byName('Wildlife', 'Birds'));
   draw('draw.vehicle',     () => byName('vehicleRig', 'vehicleParticles', 'tyreTracks', 'camperContactShadow'));
   draw('draw.camp',        () => byPrefix('camp'));
