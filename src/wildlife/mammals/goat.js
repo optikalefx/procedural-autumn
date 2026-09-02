@@ -256,7 +256,17 @@ export const GOAT = {
       // stays, and how often a wander is a lap of a boulder instead of a walk
       // across the hill. The lap is the other half of the brief: they climb
       // onto the rocks, and they climb *around* them.
-      climbChance: 0.55, perchTime: [12, 34], orbit: 0.55,
+      //
+      // 0.92 rather than the 0.55 this shipped with, and it buys back exactly
+      // what a shape fix cost. `Brain._maybeClimb` now declines a boulder more
+      // than 109 degrees behind the animal, because setting off for one was a
+      // flat about-face 37% of the time; a bearing drawn at random clears that
+      // gate about three times in five, and 0.55 / 0.6 is 0.92. The rate of
+      // goats going up a rock is therefore what it always was — measured 11
+      // takes in 14 animal-minutes before the gate, 6 with the gate at 0.55,
+      // and back to 11 here. The gate chooses WHICH attempts happen; this
+      // chooses HOW MANY. Keep them in step if either moves.
+      climbChance: 0.92, perchTime: [12, 34], orbit: 0.55,
     },
   },
 };

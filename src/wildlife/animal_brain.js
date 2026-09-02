@@ -723,18 +723,43 @@ export class Brain {
     const list = this.group?.rocks;
     if (!list || !list.length) return false;
 
-    // Nearest free boulder inside reach. One animal per rock — two goats
-    // solving for the same summit stand inside each other, and a herd of three
-    // on one boulder is a bug that looks exactly like a bug.
-    let best = null, bestD2 = R.reach * R.reach;
+    // The nearest free boulder inside reach — weighted by how far ROUND it is,
+    // which is the half this used to ignore. One animal per rock either way:
+    // two goats solving for the same summit stand inside each other, and a herd
+    // of three on one boulder is a bug that looks exactly like a bug.
+    //
+    // Why the turn is in the score at all. Measured over 19 climbs
+    // (`tools/_scratch/_goatpick.mjs`), the boulder a goat set off for was more
+    // than 90 degrees behind it 74% of the time and a flat about-face 37% —
+    // and that is structural rather than unlucky. The cycle ends by dismounting
+    // OUTWARD (`_offRock`) and wandering further out still, so at the moment
+    // the timer fires the animal has its back to the rock 82% of the time it
+    // re-takes one. Nearest-only cannot see that; a metre of turn costs the
+    // same as a metre of walk here, so a rock ahead wins whenever there is one.
+    let best = null, bestScore = Infinity, bestD2 = 0, bestTurn = 0;
+    // The ground the body covers getting pointed at something, per radian: the
+    // same arc `_steer` turns on. It keeps both terms of the score in metres.
+    const perRad = TURN_TIME * this.gait.walk * this._scale;
     for (let i = 0; i < list.length; i++) {
       const r = list[i];
       if (r.taken >= 0 && r.taken !== this.slot) continue;
       const dx = r.x - this.pos.x, dz = r.z - this.pos.z;
       const d2 = dx * dx + dz * dz;
-      if (d2 < bestD2) { bestD2 = d2; best = r; }
+      if (d2 > R.reach * R.reach) continue;
+      const turn = Math.abs(wrapAngle(Math.atan2(dx, dz) - this.heading));
+      const score = Math.sqrt(d2) + turn * perRad;
+      if (score < bestScore) { bestScore = score; best = r; bestD2 = d2; bestTurn = turn; }
     }
     if (!best) return false;
+    // ...and when even the best of them is behind the animal, this is not the
+    // moment. A goat that spins on the spot and marches back the way it came is
+    // the thing being reported; the same animal grazing on and starting up the
+    // rock the next time it happens to be pointing that way is the shot. Waiting
+    // costs nothing — `climbChance` is rolled again at the end of every idle and
+    // every graze, a few seconds apart, and the wander in between is what brings
+    // it round. 1.9 rad is 109 degrees: past a quarter turn the walk to the rock
+    // stops being a walk to the rock and becomes a turn with a walk after it.
+    if (bestTurn > 1.9) return false;
 
     this._release();
     this.rock = best;
@@ -1047,8 +1072,42 @@ export class Brain {
     // one outcrop instead of dispersing evenly across a hectare of scree.
     const rk = c.rock;
     const list = rk ? this.group?.rocks : null;
-    if (list && list.length && this.rnd() < rk.orbit) {
-      const R = list[(this.rnd() * list.length) | 0];
+    // ── the boulder it is standing at, not one of the four it was offered ────
+    // A band is handed up to four perches and they are not neighbours: 27% of
+    // goat bands hold a pair more than 30 m apart and the widest measured 88.
+    // Drawing one at random every wander is not an orbit, it is a commute, and
+    // it was 55% of every wander this animal made — median target 19.6 m away,
+    // worst 72. The animal walked to the far end of its own hillside and, next
+    // wander, walked back; its followers went with it, station-keeping, which
+    // is why they measured a median 55 m behind their leader.
+    //
+    // The nearest is the one it is at, and a lap of that is what the word
+    // meant. Changing outcrop is still allowed and still happens — that
+    // decision belongs to `_maybeClimb`, which now scores the turn it costs.
+    let R = null, rd2 = Infinity;
+    if (list) {
+      for (let i = 0; i < list.length; i++) {
+        const dx = list[i].x - this.pos.x, dz = list[i].z - this.pos.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < rd2) { rd2 = d2; R = list[i]; }
+      }
+    }
+    // ...and a lap is only a lap if the animal is AT the rock. The ring below
+    // sits at 1.25-2.1 r, so a few strides outside its outer edge is the whole
+    // of "here"; from further off, going round the boulder means hiking to it
+    // first, which is the commute this is ending and is anyway `_maybeClimb`'s
+    // decision to take deliberately. Out on the hill it wanders like the rest
+    // of the cast. The draw stays where it was so the fall-through costs the
+    // same random number the orbit would have.
+    //
+    // Tried and NOT here: letting a pinned animal into the branch anyway, on the
+    // theory that gating it put the orbit's own escape hatch (`stuck`, below)
+    // out of reach of the animal that needs it. It is a good theory and it is
+    // wrong — `|| this._pinned > 0.5` left all three pen soaks BIT-IDENTICAL,
+    // so that combination never arises. Whatever moved the ram's roam pin, it
+    // is not this.
+    const lap = R ? rd2 <= (R.r * 2.1 + 6) * (R.r * 2.1 + 6) : false;
+    if (list && list.length && this.rnd() < rk.orbit && lap) {
       // ── go on round, rather than to a random point on the ring ──────────
       // This used to pick a uniformly random azimuth. The ring is small — one
       // to two rock radii, so three to five metres — and the animal is usually
@@ -1248,7 +1307,17 @@ export class Brain {
     const going = TRAVELLING.has(this.state) && this.wantSpeed > 0.05 && !blocked;
     const sn = clamp01(this.speed / (this.gait.run * S));
     const ceiling = lerp(3.0, 1.5, sn) * (this.state === ST.ALERT ? 0.55 : 1);
-    const radius = Math.max(TURN_TIME * this.gait.walk, MIN_RADIUS) * S;
+    // The arc WIDENS with the speed, because what is constant about a body
+    // coming round is the time it takes, not the circle it describes. Holding
+    // the radius at one walking body length let a fast animal whip: a goat
+    // trotting back to its band at 2.6 m/s came round at 90 deg/s about a 1.6 m
+    // circle, which is a slot car and is the "sharp turn around" in the report.
+    // Taking the speed whenever it is above the walk gives every gait the same
+    // turn RATE (1/TURN_TIME, about 48 deg/s) and a circle that grows with it —
+    // the same goat now sweeps 3.1 m of radius over 3.8 s. The `max` is what
+    // holds the walking case exactly where it was, so nothing at or below a
+    // walk moves at all.
+    const radius = Math.max(TURN_TIME * Math.max(this.gait.walk * S, this.speed), MIN_RADIUS * S);
     // A journey gets no floor: it has to carry speed to come round, which is
     // what makes it arc. Everything else keeps the shuffle, and still respects
     // the radius whenever it happens to be moving.

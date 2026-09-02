@@ -1000,6 +1000,26 @@ export class Wildlife extends System {
     }
     _rockHits.length = 0;
     g.rocks.sort((a, b) => b.rise - a.rise);
+    // ── a band's perches are ONE outcrop, not the best four in a 48 m disc ──
+    // Nothing here used to ask whether the four were near each other, and they
+    // often are not: measured over 189 goat sites, 27% of the bands that get a
+    // list hold a pair more than 30 m apart and the widest is 88 m
+    // (`tools/_scratch/_rockspread.mjs`). Both readers treat the list as
+    // interchangeable — `Brain._maybeClimb` takes the best-scoring free one and
+    // the orbit wander laps the nearest — so a wide list splits the band across
+    // the hillside, with its followers station-keeping on a leader sixty metres
+    // off. They measured a median 55 m behind.
+    //
+    // So the tallest boulder is the outcrop and the rest of the list is
+    // whatever stands with it. `maxR` is the widest thing that may be a perch
+    // at all, and three of those side by side is still one knot of rock; past
+    // that it is somewhere else on the mountain. `rocks[0]` is untouched, so
+    // which boulder `_standAtRock` stands the band beside does not move.
+    const head = g.rocks[0];
+    if (head) {
+      const span = cfg.maxR * 3;
+      g.rocks = g.rocks.filter((r) => (r.x - head.x) ** 2 + (r.z - head.z) ** 2 <= span * span);
+    }
     if (g.rocks.length > 4) g.rocks.length = 4;
   }
 
