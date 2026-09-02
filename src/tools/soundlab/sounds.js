@@ -253,7 +253,7 @@ const campFrame = (rig, dt, v) => {
 
 const CAMP_MIX = [
   range('cueGain', 'prop cue trim', 0, 8, 3.6, { step: 0.01, group: 'Mix', src: 'camp_props.js:55 — CUE_GAIN, the one level for the whole layer', apply: P('camp.props.bus.gain') }),
-  range('campWet', 'reverb send', 0, 1, 0.16, { step: 0.01, group: 'Mix', src: 'camp_audio.js:52', apply: P('camp.wet.gain') }),
+  range('campWet', 'reverb send', 0, 1, 0.16, { step: 0.01, group: 'Mix', src: 'camp_audio.js:186', apply: P('camp.wet.gain') }),
   range('ambienceBus', 'ambience bus gain', 0, 2, 0.55, { step: 0.01, group: 'Mix', src: 'Audio.js:128 — the camp rides the ambience bus', apply: P('buses.ambience.gain') }),
 ];
 

@@ -26,6 +26,13 @@
 //  sound a player will sit inside for minutes at a time. It is mixed to sit
 //  under the wind, not over it.
 //
+//  **Since the user supplied `public/audio/campfire.mp3`, all of the above is
+//  the FALLBACK.** The recording is the fire; the bed and the crackle scheduler
+//  are what plays when it cannot be fetched or decoded. Everything the two
+//  paragraphs above argue is still why the fallback sounds the way it does, and
+//  the recording is measured against it rather than against taste — see the
+//  block above `FIRE_URL`.
+//
 //  This class also *owns* the camp's prop cues (`camp_props.js`) without
 //  knowing anything about them beyond where the listener is. They live on this
 //  bus rather than on a bus of their own for the same reason the fire does: a
@@ -43,6 +50,143 @@ import { CampProps } from './camp_props.js';
 // on as they walk in.
 const REACH = 26;
 const NEAR = 3.0;      // inside this, the fire is at full level
+
+// ── the fire itself: a recording ─────────────────────────────────────────────
+//
+// `public/audio/campfire.mp3`, a take the user supplied and asked for by name.
+// It is the same trade `journal_audio.js` made for the page turn and
+// `wildlife_audio.js` made for the frog's dive: **play the recording, keep the
+// synthesis as the fallback**, so a 404 or a decode failure costs the fire its
+// quality and not its sound. Everything below `_bed` and `_crackle` is still
+// live code and still what you hear when this file is missing.
+//
+// It replaces the WHOLE synthesised fire — the bed *and* the crackle
+// scheduler — not just the bed, because a recording of a fire already contains
+// both, at a density and a size distribution nobody has to invent. Running the
+// scheduler on top would be a second fire in the same pit. `_crackle` stays
+// because `roastEvent('eat')` still needs one crackle on demand.
+//
+// MEASURED off the file (48 kHz stereo, decoded identically by ffmpeg and by
+// Chrome's `decodeAudioData` — 53280 frames, so the encoder's gapless tags are
+// honoured and there is no padding silence at either end):
+//
+//   duration    1.1100 s exactly
+//   peak        0.1798 (L) / 0.1678 (R); mono 0.1487
+//   rms         0.0083 mono, and it never falls silent — the quietest 20 ms
+//               window is rms 0.0030, so this is a continuous texture and not
+//               a one-shot with a tail
+//   L/R corr    0.68 — genuinely stereo, which is why it is fed through the
+//               existing `pan` rather than being re-spatialised
+//   bands       74% of the energy sits 63–250 Hz (the body), 10% above 8 kHz
+//               (the grain). Crest 25 dB, and 16 dB in the low band alone, so
+//               the low end is fire and not wind on the microphone — an 80 Hz
+//               high-pass costs the whole file only 1.7 dB and was not worth
+//               the transients it softens.
+//   transients  seven over 0.045 in 1.11 s, the two loudest at **0.080 s
+//               (0.1487)** and **1.030 s (0.1406)**
+//
+// ── 1.11 s is short, and a naive loop ticks ─────────────────────────────────
+//
+// Two things repeat if this is simply `loop = true`:
+//
+//  1. **The seam steps.** The last 10 ms is rms 0.0039 and the first 10 ms is
+//     0.0078 — 6 dB of jump, once every 1.11 s. Not a click (both ends sit at
+//     ~1e-3, so there is no DC step to snap), but an audible pulse at 0.9 Hz.
+//  2. **The two loud crackles above become a rhythm** — 0.95 s apart, then
+//     0.16 s across the wrap, over and over.
+//
+// So it is played by TWO voices rather than one, at different playback rates
+// and started half a buffer apart. The rates are the whole trick: 1.0 and 0.87
+// give loop periods of 1.110 s and 1.276 s, which drift against each other and
+// only re-align after ~8.5 s, by which point neither the seam nor the crackle
+// figure lands where the ear last heard it. The one seam that does step is 3 dB
+// in the sum instead of 6, because only one voice steps at a time.
+//
+// Detuning also removes the reason two copies of one buffer are normally a bad
+// idea: a comb needs a CONSTANT delay between them, and a rate difference makes
+// the delay slide continuously, which on a noise-like texture is inaudible.
+// 0.87 is about two and a half semitones down — on a fire that reads as a
+// slightly bigger fire, not as a pitch artefact.
+//
+// ── the level ──────────────────────────────────────────────────────────────
+//
+// FIRE_GAIN is measured, not guessed, and it is measured TWICE because the two
+// candidate anchors disagree.
+//
+// Offline (`tools/_scratch/_firegain.mjs`, one OfflineAudioContext at 48 kHz so
+// the bed and the file are on one scale), against the synthesised bed at level
+// 1 — its steady state, the loudest it is ever allowed to be:
+//
+//                      peak      rms      <160Hz   160-2k    >4k
+//      synth bed      0.0201   0.00338   0.00214  0.00170  0.00035
+//      campfire ×1    0.1798   0.00820   0.00398  0.00329  0.00239
+//
+//      gain matching the bed:  rms 0.412   low 0.536   mid 0.516   high 0.146
+//
+// Low and mid agree at ~0.52 and the high band asks for a third of that. The
+// high band is not the anchor and the disagreement is the point: this file's
+// header calls the synthesised bed "deliberately quiet and dull" because the
+// crackles were supposed to carry the top, so matching the recording's grain to
+// a bed that has none would throw away exactly what a recording is for.
+//
+// But the recording stands in for the bed AND the crackles, so the honest
+// anchor is the whole synthesised fire measured where the player hears it: the
+// `camp` tap in the running game, 8 s a row, three distances, both fires in one
+// page load because nothing else is comparable (`tools/_scratch/_firemix.mjs`).
+// At the gain below:
+//
+//      dist   source   level   crackles    peak       rms
+//       2.5   synth    1.000       6      0.0172    0.00335
+//       2.5   mp3      1.000       0      0.0443    0.00335     rms  0.00 dB
+//       8     synth    0.612       7      0.0095    0.00199
+//       8     mp3      0.612       0      0.0259    0.00188     rms -0.49 dB
+//      16     synth    0.189       3      0.0033    0.00059
+//      16     mp3      0.189       0      0.0038    0.00055     rms -0.61 dB
+//
+// **0.295**, which puts the recording exactly on the synthesised fire's rms at
+// the seat and a shade under it further out — the loudness the rest of the mix
+// was tuned against, kept. It is below the 0.52 the bed alone asked for
+// precisely because the crackles are now inside the file. Two voices are worth
+// +1.2 dB over one on their own, and that is in this number.
+//
+// **The peak is +8 dB and that is the improvement, not an error.** Crest factor
+// at the seat: the synthesised fire 14.2 dB, the recording 22.4 dB, a real fire
+// 25. This file's header says the crackles "are the entire reason a fire is
+// nice to sit next to" and that the bed should be dull — a 22 dB crest at
+// unchanged loudness is that intent, finally met by something that did not have
+// to be invented. Master peak at 1.6 m from the flames goes 0.0158 → 0.0229,
+// which is nowhere near anything (`_firefall.mjs`).
+//
+// ── and it is checked ───────────────────────────────────────────────────────
+//
+// `tools/_scratch/_fireloop.mjs` autocorrelates the tap's envelope at the loop
+// period, which is the only way to answer "does it tick?" without an ear:
+//
+//      mode     1.110s   2.220s   3.330s
+//      one       0.940    0.936    0.928     ← a single loop. A metronome.
+//      two       0.553    0.356    0.232     ← what ships
+//      synth     0.457    0.419    0.169     ← no loop at all; the floor
+//
+// One voice repeats itself perfectly, and goes on doing it at every multiple.
+// Two land in the same band as the fire that has no loop in it, and — the part
+// that matters — DECAY across the multiples, which a true repeat cannot do.
+//
+// `tools/_scratch/_firefall.mjs` deletes the asset at the network and measures
+// what is left: `_fire` null, no voices, one warning, and a fire on the tap at
+// rms 0.00338 with six crackles in nine seconds. A missing file costs the fire
+// its grain and nothing else.
+const FIRE_URL = '/audio/campfire.mp3';
+const FIRE_GAIN = 0.295;
+/** Playback rates for the two voices. See the seam block above. */
+const FIRE_RATES = [1.0, 0.87];
+/** Where in the buffer each voice starts, as a fraction of it. */
+const FIRE_OFFSETS = [0.0, 0.5];
+/** The distance ceiling, near → far. A far fire loses its top before it loses
+ *  its body, which is most of what places one across a meadow — the same job
+ *  the synthesised bed's band-pass sweep does, and the reason the crackles no
+ *  longer having a distance-thinned rate costs less than it looks. */
+const FIRE_LP_NEAR = 7500;
+const FIRE_LP_FAR = 900;
 
 // ── the sizzle ───────────────────────────────────────────────────────────────
 //
@@ -134,6 +278,77 @@ export class CampAudio {
     // rather than letting it allocate its own saves three seconds of stereo
     // float for a layer that only ever hears it through a moving band-pass.
     this.props = new CampProps(actx, this.bus, this.noise);
+
+    // ── the recording ─────────────────────────────────────────────────────
+    // Fetched now rather than on the first camp, so the fire the player lights
+    // ninety seconds in is not synthesised for the half second the decode
+    // takes. Deliberately not awaited by anything: until it lands — and for
+    // ever if it 404s — `update` drives the bed above and the crackle
+    // scheduler below, which is the whole reason both are still here.
+    /** @type {AudioBuffer|null} */
+    this._fire = null;
+    /** The two voices, built once the buffer arrives. @see _startFire */
+    this._fireSrc = [];
+    this.fireLp = filter(actx, 'lowpass', FIRE_LP_NEAR, 0.7);
+    this.fireGain = gain(actx, 0);
+    this.fireLp.connect(this.fireGain).connect(this.pan);
+    /** Harness switch: force the synthesised fire, so the rows measured before
+     *  the recording existed keep meaning what they meant. Nothing in the game
+     *  sets it. */
+    this._noSample = false;
+    this._disposed = false;
+    this.loadSamples();
+  }
+
+  /**
+   * Fetch and decode `campfire.mp3` once, and hold the buffer.
+   *
+   * Every failure path lands in the same place: `_fire` stays null, `_sampled`
+   * stays false, and the fire is the synthesised bed and crackles it has always
+   * been. Warns once, because a fire that has quietly stopped being the
+   * recording the user supplied is worth a line in a console.
+   *
+   * Idempotent — the promise is cached, so the Sound Lab or a harness joins the
+   * first fetch rather than starting a second.
+   */
+  loadSamples() {
+    return (this._sampleLoad ??= (async () => {
+      const res = await fetch(FIRE_URL);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      this._fire = await this.actx.decodeAudioData(await res.arrayBuffer());
+      this._startFire();
+      return this._fire;
+    })().catch((e) => {
+      console.warn(`[camp:audio] ${FIRE_URL} unavailable; synthesising the fire`, e);
+      this._fire = null;
+      return null;
+    }));
+  }
+
+  /** Is the recording what the player is hearing? */
+  _sampled() { return !!this._fire && !this._noSample; }
+
+  /**
+   * Start the two looping voices.
+   *
+   * They run for the whole session at gain 0 whenever there is no lit camp,
+   * exactly as the synthesised bed's noise source does — a buffer source
+   * feeding a silent gain costs nothing, and the alternative is starting a
+   * loop at the moment the fire is struck, which puts the same 80 ms crackle
+   * at the head of every fire the player ever lights.
+   */
+  _startFire() {
+    if (this._disposed || !this._fire || this._fireSrc.length) return;
+    const t = this.actx.currentTime;
+    for (let i = 0; i < FIRE_RATES.length; i++) {
+      const src = this.actx.createBufferSource();
+      src.buffer = this._fire;
+      src.loop = true;
+      src.playbackRate.value = FIRE_RATES[i];
+      src.connect(this.fireLp);
+      src.start(t, FIRE_OFFSETS[i] * this._fire.duration);
+      this._fireSrc.push(src);
+    }
   }
 
   /**
@@ -215,13 +430,31 @@ export class CampAudio {
     this._t += dt;
     this._breath = 0.82 + 0.13 * Math.sin(this._t * 0.37) + 0.05 * Math.sin(this._t * 0.91 + 1.3);
 
-    // 0.055 is quiet on purpose. See the header.
-    this.bedGain.gain.setTargetAtTime(this._level * this._breath * 0.055, actx.currentTime, 0.12);
+    // ── which fire is playing ─────────────────────────────────────────────
+    // BOTH gains are written every frame, on every path. Writing only the one
+    // in use would leave the other holding whatever it last had on the frame
+    // the recording finished decoding — which is a fire that never quite goes
+    // out, and the kind of bug this file has already paid for once (see the
+    // note about the sizzle below).
+    const sam = this._sampled();
+
+    // 0.055 is quiet on purpose. See the header. The `breath` is the
+    // synthesised bed's alone: the recording has its own dynamics, and a slow
+    // swell laid over a real fire is a tremolo nobody lit.
+    this.bedGain.gain.setTargetAtTime(
+      sam ? 0 : this._level * this._breath * 0.055, actx.currentTime, 0.12);
+    this.fireGain.gain.setTargetAtTime(
+      sam ? this._level * FIRE_GAIN : 0, actx.currentTime, 0.12);
     this.pan.pan.setTargetAtTime(panTo, actx.currentTime, 0.15);
     // A near fire is brighter as well as louder — you hear the hiss, not just
     // the roar. Sweeping the band-pass with distance does more for the sense of
-    // proximity than the level does.
+    // proximity than the level does. The recording gets the same idea as a
+    // ceiling coming down rather than a band opening up, which is what distance
+    // actually does to a broadband sound and what `_splash` uses for the same
+    // reason.
     this.bedBp.frequency.setTargetAtTime(lerp(430, 780, this._level), actx.currentTime, 0.2);
+    this.fireLp.frequency.setTargetAtTime(
+      lerp(FIRE_LP_FAR, FIRE_LP_NEAR, this._level), actx.currentTime, 0.2);
 
     // The sizzle. Written before the level gate below, not after: a marshmallow
     // is held over a fire the player is sitting at, so the gate would never
@@ -237,6 +470,11 @@ export class CampAudio {
     if (this._level < 0.015) return;
 
     // ── crackles ──────────────────────────────────────────────────────────
+    // The scheduler is the SYNTHESISED fire's, and it stops when the recording
+    // is playing: `campfire.mp3` carries seven transients of its own per 1.11 s
+    // and running this on top of them is two fires in one pit. `_crackle`
+    // itself stays — `roastEvent('eat')` still asks for one.
+    if (sam) return;
     this._next -= dt;
     if (this._next > 0) return;
 
@@ -310,12 +548,18 @@ export class CampAudio {
 
   dispose() {
     this.props.dispose();
-    try { this.bedSrc.stop(); } catch { /* already stopped */ }
-    try { this.sizSrc.stop(); } catch { /* already stopped */ }
+    // Set before anything is torn down, so a decode that lands after this
+    // point does not start two loops into a graph that is already gone.
+    this._disposed = true;
+    for (const s of [this.bedSrc, this.sizSrc, ...this._fireSrc]) {
+      try { s.stop(); } catch { /* already stopped */ }
+    }
     for (const n of [this.bedSrc, this.bedBp, this.bedLow, this.bedGain,
                      this.bedLowGain, this.sizSrc, this.sizBp, this.sizGain,
+                     ...this._fireSrc, this.fireLp, this.fireGain,
                      this.pan, this.bus, this.wet]) {
       try { n.disconnect(); } catch { /* already gone */ }
     }
+    this._fireSrc = [];
   }
 }
