@@ -49,6 +49,7 @@ import { HUD }         from './ui/HUD.js';
 import { Stats }       from './game/Stats.js';
 import { hunt }        from './game/hunt_store.js';
 import { installHuntDebug } from './game/hunt_debug.js';
+import { installHuntAnalytics, huntPersonProps } from './game/hunt_analytics.js';
 import { stats as statsStore } from './game/stats_store.js';
 
 const SYSTEMS = [
@@ -667,6 +668,12 @@ async function boot() {
   // cost an afternoon once; it is one line to make impossible.
   window.__hunt = hunt;
   window.__stats = statsStore;
+  // The hunt, reported to PostHog: who crossed off what, how long the journey
+  // took, the print beside each line, and who finished the book. BEFORE
+  // `installHuntDebug`, which awards real items off `?hunt=` a moment later —
+  // installing after it would fold those into the baseline and report nothing.
+  installHuntAnalytics(ctx);
+
   // `window.__dbg` — the scavenger sheet's last two hours, reachable without
   // playing them. `__dbg.help()` lists it; it also reads `?hunt=` and
   // `?bigfoot=` off the URL. See src/game/hunt_debug.js.
@@ -794,6 +801,11 @@ async function boot() {
     device_memory_gb: navigator.deviceMemory ?? null,
     hardware_concurrency: navigator.hardwareConcurrency ?? null,
     bake_cached: !!baked.cached,
+    // The player's whole hunt, set on the person rather than captured as an
+    // event of its own: a returning player who finished the sheet on another
+    // machine — or before any of this existed — is corrected on this boot, and
+    // it costs no extra event to do it.
+    $set: huntPersonProps(),
   });
 }
 

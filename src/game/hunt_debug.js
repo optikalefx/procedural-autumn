@@ -24,6 +24,7 @@
 //  `__settle`, and that is the whole integration.
 // ─────────────────────────────────────────────────────────────────────────────
 import { hunt } from './hunt_store.js';
+import { markSynthetic } from './hunt_analytics.js';
 import { HUNT_SHEET, HUNT_MYSTERY } from './hunt_items.js';
 
 /** A print, so a debug tick looks like a real one on the page. */
@@ -200,7 +201,23 @@ export function installHuntDebug(ctx) {
     },
   };
 
-  window.__dbg = dbg;
+  // Every helper here awards REAL items through the real `hunt.award` — taking
+  // the path the game takes is this file's whole design — which means a
+  // developer exercising the ceremony is indistinguishable, at the store, from
+  // a player who has genuinely finished the book. Touching any of them marks the
+  // session, so `hunt_analytics` can stamp every event `synthetic` and "who has
+  // won" does not answer with the person who wrote it.
+  //
+  // On the Proxy rather than inside each helper: there are nine of them, they
+  // grow, and a new one added without the line would be a silent false win.
+  window.__dbg = new Proxy(dbg, {
+    get(target, key, recv) {
+      const v = Reflect.get(target, key, recv);
+      if (typeof v !== 'function') return v;
+      markSynthetic();
+      return v.bind(target);
+    },
+  });
 
   // ── the URL flags ──────────────────────────────────────────────────────────
   // Because the thing you want nine times in ten is to boot straight into the
