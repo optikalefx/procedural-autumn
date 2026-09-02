@@ -105,8 +105,17 @@ const SCRIPT = {
   tickGap: -0.10, tick: 0.26,
   photoGap: 0.10, photo: 0.46,
   tapeGap: 0.06, tape: 0.34,
+  // The win stamp, and only on the award that finishes the book. A beat of its
+  // own after a pause long enough to read as a separate act — the tape is the
+  // end of an entry, and this is the end of the whole thing.
+  stampGap: 0.34, stamp: 0.62,
   close: 0.46,
 };
+
+/** How far the book drops on the impact, in metres, and how fast that dies. */
+const JOLT_Y = 0.019;
+const JOLT_DECAY = 9.5;
+const JOLT_HZ = 5.4;
 
 // Framing. The camera never moves and the BOOK moves — for everything the book
 // does on its OWN account, which is both cheaper to reason about and the right
@@ -911,7 +920,7 @@ export class Journal {
       // the mystery leaf's `open` below and for the same reason: it is a
       // property of the SAVE that can turn over while the book is being looked
       // at, and a page painted before it turned would never repaint.
-      if (p.spec.stamp !== undefined) {
+      if (p.spec.stamp !== undefined && !this._stampPending) {
         const won = hunt.won;
         if (won !== p.spec.stamp) { p.spec.stamp = won; dirty.add(i); }
       }
@@ -1032,6 +1041,11 @@ export class Journal {
     this._slapped = false;
     this._taped = false;
     this._bakedPhoto = false;
+    this._stampPage = null;
+    this._stampPending = false;
+    this._stamped = false;
+    this._stampHit = false;
+    this._joltT = -1;
     this._card.visible = false;
     this._cmpDrop();
     this._backTo = null;
@@ -1116,7 +1130,45 @@ export class Journal {
     try { page.paint(); } catch (e) {
       if (!this._pageErr) { this._pageErr = true; console.error('[journal] page paint failed', e); }
     }
+    this._armStamp(seat.page);
     this._drawCard(row.photo);
+  }
+
+  /**
+   * Hand the stamp beat a clean page to land on.
+   *
+   * `hunt.award` has already run by the time this is called, so `hunt.won` is
+   * true and `_decorate` has painted the facing leaf WITH the stamp already on
+   * it. That is the correct resting state and it is exactly wrong for an
+   * animation: `stampAt` caches the page as its "clean" copy on the first
+   * frame, and a clean copy with ink in it means the stamp lands on top of a
+   * stamp and the settle never clears.
+   *
+   * So the leaf is put back to un-stamped and repainted here, and `_stampPending`
+   * keeps `_decorate` from helpfully turning it on again while the ceremony is
+   * running. The beat sets both back when it finishes.
+   *
+   * Silently does nothing when the award is not the last line, or when the leaf
+   * facing it is not a page that carries a stamp — which is every other award
+   * in the game.
+   */
+  _armStamp(awardPage) {
+    this._stampPage = null;
+    if (this._script?.beats?.every((b) => b.key !== 'stamp')) return;
+    // The verso of the same spread. Page 0 is a recto and sits alone, so the
+    // partner of an even page is the odd one before it — which is the pairing
+    // `_rowAt` and `setJournalPages` both use.
+    const facing = awardPage % 2 === 0 ? awardPage - 1 : awardPage + 1;
+    const leaf = this._pages[facing];
+    if (!leaf || leaf.spec.stamp === undefined) return;
+    this._stampPage = facing;
+    this._stampPending = true;
+    leaf.spec.stamp = false;
+    // `paint` drops the cached clean copy itself, so the repaint below is also
+    // what makes `stampAt`'s first frame cache a page with no ink in it.
+    try { leaf.paint(); } catch (e) {
+      if (!this._pageErr) { this._pageErr = true; console.error('[journal] page paint failed', e); }
+    }
   }
 
   /**
@@ -1223,6 +1275,12 @@ export class Journal {
       add('tick', S.tickGap, S.tick);
       add('photo', S.photoGap, S.photo);
       add('tape', S.tapeGap, S.tape);
+      // The last line of the book gets one more beat than any other line does.
+      // Decided here off the id rather than off `hunt.won`, because by the time
+      // the script is built the store has already been written to and `won` is
+      // true for every subsequent opening of the book as well — the stamp would
+      // then land again every time the player looked at the page.
+      if (award.id === hunt.mystery?.id) add('stamp', S.stampGap, S.stamp);
     }
     return { beats, end: t, hasAward: !!award && !award.replace, hasSeek: !!award };
   }
@@ -1282,6 +1340,7 @@ export class Journal {
   update(dt) {
     if (!this._visible) return;
     const d = Math.min(dt || 0, 1 / 15);
+    if (this._joltT >= 0) this._joltT += d;
 
     // The ceremony cannot pass the point where it needs to know WHICH page the
     // award is on until `_armAward` has resolved (it awaits the font load, the
@@ -1464,6 +1523,33 @@ export class Journal {
           page.spec.rows[this._seatOf.row].tapeT = 1;
         }
       }
+
+      // ── and, once in a game, the stamp ───────────────────────────────────
+      // On the leaf FACING the entry, which is the same spread — so this plays
+      // in the player's peripheral vision while they are still looking at the
+      // photograph they just taped in, and then they look left.
+      if (this._stampPage != null && !this._stamped) {
+        const st = this._at('stamp');
+        if (st > 0) {
+          const leaf = this._pages[this._stampPage];
+          leaf.stampAt(st);
+          // The impact: the sound, and the whole book taking the blow. Both on
+          // the frame the ink appears, which `journal_page` calls STAMP_HIT.
+          if (!this._stampHit && st >= 0.46) {
+            this._stampHit = true;
+            this._joltT = 0;
+            this._cue('slap');
+          }
+          if (st >= 1) {
+            this._stamped = true;
+            this._stampPending = false;
+            // Durable from here: a later repaint of this leaf comes back with
+            // the stamp on it, at rest.
+            leaf.spec.stamp = true;
+            leaf.spec.stampT = 1;
+          }
+        }
+      }
     }
   }
 
@@ -1607,6 +1693,18 @@ export class Journal {
     // it happening; they notice the page not being cut off.
     const flight = Math.sin(Math.PI * (P.leaf - Math.floor(P.leaf)));
     r.position.y -= 0.030 * flight * k;
+
+    // ── the stamp's blow ────────────────────────────────────────────────────
+    // A damped bounce on the whole book, started on the frame the ink lands.
+    // Nineteen millimetres and gone inside half a second: it is not meant to be
+    // seen as a movement, it is meant to make the sound and the ink feel like
+    // one event that happened TO the object rather than two things drawn on it.
+    if (this._joltT >= 0) {
+      const j = JOLT_Y * Math.exp(-JOLT_DECAY * this._joltT)
+        * Math.cos(this._joltT * Math.PI * 2 * JOLT_HZ);
+      r.position.y -= j * k;
+      if (this._joltT > 1.2) this._joltT = -1;
+    }
 
     const s = lerp(A.scale, B.scale, k) * lerp(0.9, 1, clamp01(P.lift));
     r.scale.setScalar(s);

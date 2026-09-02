@@ -345,8 +345,44 @@ function pawMark(g, cx, cy, s, { colour = GRAPHITE, alpha = 0.22, seed = 1 } = {
 // the player has watched go into eighteen boxes, at seven times the size.
 const STAMP_INK = '#4e7346';
 
+// Where in the beat the die touches the paper. Before this the stamp is in the
+// air and the only thing on the page is its shadow; after it, ink.
+const STAMP_HIT = 0.46;
+
+/**
+ * The descent: a soft shadow rushing in and tightening.
+ *
+ * There is no 3D stamp object to fly the way `_flyPhoto` flies a card, so the
+ * fall has to happen in the page texture, and a shadow is the whole of what a
+ * falling object puts on the surface under it. It starts wide and faint and
+ * ends tight and dark, which is the only cue needed — by the time it is small
+ * the eye already knows something is about to land on that spot.
+ */
+function stampShadow(g, cx, cy, R, t) {
+  const u = clamp01(t / STAMP_HIT);
+  const rad = R * (1.95 - 0.90 * u * u);
+  const grd = g.createRadialGradient(cx, cy, rad * 0.15, cx, cy, rad);
+  const a = 0.06 + 0.30 * u * u;
+  grd.addColorStop(0, `rgba(64,48,34,${a})`);
+  grd.addColorStop(0.62, `rgba(64,48,34,${a * 0.55})`);
+  grd.addColorStop(1, 'rgba(64,48,34,0)');
+  g.save();
+  g.globalCompositeOperation = 'multiply';
+  g.fillStyle = grd;
+  g.beginPath();
+  g.ellipse(cx, cy, rad, rad * 0.94, 0, 0, Math.PI * 2);
+  g.fill();
+  g.restore();
+}
+
 function winStamp(g, cx, cy, R, seed, t = 1) {
   if (t <= 0 || typeof document === 'undefined') return;
+  // ── in the air ─────────────────────────────────────────────────────────────
+  // Ink does not arrive gradually. A stamp puts nothing on the paper until it
+  // touches and then puts everything on at once, so the first half of the beat
+  // draws the shadow and no ink at all — fading the impression in would read as
+  // a notification appearing rather than as a thing landing.
+  if (t < STAMP_HIT) { stampShadow(g, cx, cy, R, t); return; }
   const r = rng(seed);
   const S = Math.ceil(R * 2.3);
   const c = document.createElement('canvas');
@@ -462,9 +498,13 @@ function winStamp(g, cx, cy, R, seed, t = 1) {
   }
 
   // ── onto the page ──────────────────────────────────────────────────────────
-  // `t` is the slam: it comes down oversized and settles, so the beat has
-  // weight rather than fading in like a notification.
-  const k = 1 + (1 - clamp01(t)) * 0.5;
+  // Full ink from the first frame after contact, and a 4% settle over the rest
+  // of the beat: the rubber spreads under the press and comes back as the hand
+  // lifts. Small on purpose — the weight of the beat is carried by the shadow
+  // that preceded it and by the book's own jolt, and a stamp that visibly
+  // shrinks afterwards reads as a UI pop.
+  const u = clamp01((t - STAMP_HIT) / (1 - STAMP_HIT));
+  const k = 1.042 - 0.042 * (1 - (1 - u) ** 3);
   const tilt = -0.105;
   g.save();
   g.globalCompositeOperation = 'multiply';
@@ -472,9 +512,9 @@ function winStamp(g, cx, cy, R, seed, t = 1) {
   g.rotate(tilt);
   g.scale(k, k);
   // The rock: a faint second impression, under the first and off to one side.
-  g.globalAlpha = 0.16 * clamp01(t * 1.4);
+  g.globalAlpha = 0.16;
   g.drawImage(c, -S / 2 + R * 0.016, -S / 2 + R * 0.012);
-  g.globalAlpha = 0.88 * clamp01(t * 1.4);
+  g.globalAlpha = 0.88;
   g.drawImage(c, -S / 2, -S / 2);
   g.restore();
 }
@@ -1626,9 +1666,60 @@ export class JournalPage {
     // lands where the hand puts it, and a notes page is exactly the blank a
     // person reaches for. See `winStamp`.
     if (this.spec.stamp) {
-      winStamp(g, (x0 + x1) / 2, PAGE_H * 0.56, 268, this.spec.seed * 17 + 5,
-        this.spec.stampT ?? 1);
+      const p = this.stampPlace();
+      winStamp(g, p.cx, p.cy, p.R, p.seed, this.spec.stampT ?? 1);
     }
+  }
+
+  /**
+   * Where the win stamp goes, and the seed it is drawn from.
+   *
+   * One description, because the painter and the animation must not disagree:
+   * `stampAt` blits a rectangle of clean paper back and redraws into it every
+   * frame, and a rectangle computed from different numbers than the drawing is
+   * a stamp with a corner sawn off. Same lesson as `MYST_BASE`.
+   */
+  stampPlace() {
+    return {
+      cx: (this._x0 + this._x1) / 2,
+      cy: PAGE_H * 0.56,
+      R: 268,
+      seed: this.spec.seed * 17 + 5,
+    };
+  }
+
+  /**
+   * Run the stamp's landing at progress `t`, cheaply.
+   *
+   * The same blit trick as `strikeAt`: the clean page is cached once and only
+   * the stamp's own rectangle is redrawn. That rectangle has to be big enough
+   * for the SHADOW, which at the top of the beat is nearly twice the stamp's
+   * own radius — sizing it to the ink would leave a ring of shadow that never
+   * gets cleared and stays on the page for ever.
+   *
+   * The caller is responsible for the page having been painted with
+   * `spec.stamp` FALSE before the first call here, so the cached clean copy has
+   * no ink in it. `Journal._armAward` does that.
+   */
+  stampAt(t) {
+    const P = this.stampPlace();
+    if (!this._clean) {
+      this._clean = document.createElement('canvas');
+      this._clean.width = PAGE_W; this._clean.height = PAGE_H;
+      this._clean.getContext('2d').drawImage(this.canvas, 0, 0);
+    }
+    const rad = Math.ceil(P.R * 2.05);
+    const x = Math.max(0, Math.round(P.cx - rad)), y = Math.max(0, Math.round(P.cy - rad));
+    const w = Math.min(PAGE_W - x, rad * 2), h = Math.min(PAGE_H - y, rad * 2);
+    const g = this.g;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = 'source-over';
+    g.clearRect(x, y, w, h);
+    g.drawImage(this._clean, x, y, w, h, x, y, w, h);
+    winStamp(g, P.cx, P.cy, P.R, P.seed, clamp01(t));
+    g.globalCompositeOperation = 'source-over';
+    this.texture.needsUpdate = true;
   }
 
 
