@@ -19,6 +19,7 @@
 //  journal's empty slots already use for exactly that thing.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, polar, ICON } from './hud_dom.js';
+import { RHYTHM_TARGET, RHYTHM_TOL } from '../boat/boat_physics.js';
 
 // The compass strip's paw, at readout size. Shared rather than redrawn so the
 // three places that mean "animal" — strip pin, journal slot, this counter —
@@ -39,20 +40,26 @@ const HOLD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' 
 // is sized for the thing being ridden.
 //
 // 120 km/h is the camper's. A paddle craft lives in a tenth of that.
-// `boat_physics` tops a canoe at 3.2 m/s and a kayak at 3.8; measured on flat
-// water at full effort, after 80 m of paddling to let the drag equilibrium
-// arrive, the stroke's surge-and-glide settles a canoe at 2.1–2.3 m/s and a
-// kayak at 3.2–3.3 — 7.7–8.3 and 11.4–12.0 km/h. On the camper's dial that
-// entire range moved the needle 20–27° out of 270 and left it pointing at the
-// floor for the whole time the player was on the water, which is exactly the
-// failure START was chosen to avoid.
+// `boat_physics` tops a canoe at 3.2 m/s and a kayak at 3.8 unboosted; on flat
+// water at full effort the stroke's surge-and-glide settles a canoe at
+// 2.1–2.3 m/s and a kayak at 3.2–3.3 — 7.7–8.3 and 11.4–12.0 km/h. On the
+// camper's dial that entire range moved the needle 20–27° out of 270 and left
+// it pointing at the floor for the whole time the player was on the water,
+// which is exactly the failure START was chosen to avoid.
 //
-// 20 km/h full scale sits that measured canoe cruise at 38–41% of the sweep
-// and the kayak's at 57–60%: the two hulls read plainly differently from each
-// other, which they should, since the kayak being the quicker one is the whole
-// reason to swap. It also keeps the top third in hand — a boat's declared top
-// speed is only 58% (canoe) and 68% (kayak) of the scale — for a hull running
-// downstream with a river current rather than across a lake.
+// The rhythm bonus (see boat_physics.js's RHYTHM_* constants) changed what
+// "full scale" has to cover: landing a sustained on-beat streak — scripted
+// against the same drag model in tools/_scratch/rhythm_test.mjs, not a lake
+// capture — oscillates a canoe through 18.2–26.5 km/h and a kayak through
+// 22.5–31.4, before a river current (up to another 1.6 m/s at full discharge)
+// stacks on top of that. A 20 km/h scale would pin the needle at the top for
+// most of a boosted run, which is exactly the moment a dial is supposed to
+// look like something is happening.
+//
+// 40 km/h full scale puts unboosted cruise back down around 19–34% — close to
+// where the original 20-scale sat it, just compressed to make room — and a
+// full-meter streak fills roughly half to three-quarters of the sweep, with
+// a sliver held back at the top for a boosted hull riding a fast current.
 //
 // The bike gets its own, and the same arithmetic decides it. A mountain bike in
 // this model settles around 7.6 m/s (27 km/h) on the flat, walks a climb at
@@ -62,7 +69,7 @@ const HOLD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' 
 // needle to the floor the way the camper's 120 would.
 const SCALES = {
   camper: { max: 120, minor: 10, major: 40 },
-  boat: { max: 20, minor: 2, major: 4 },
+  boat: { max: 40, minor: 4, major: 8 },
   bike: { max: 60, minor: 5, major: 20 },
 };
 // Degrees clockwise from 12 o'clock. The gap belongs at the *bottom* — the
@@ -140,6 +147,7 @@ export class Dash {
     this.node.appendChild(speedo);
     this.node.appendChild(el('div', 'pa-dash-divider'));
 
+    this.speedo = speedo;
     this.needle = speedo.querySelector('.pa-needle');
     this.ticks = speedo.querySelector('.pa-ticks');
     this.fill = speedo.querySelector('.pa-dial-fill');
@@ -171,15 +179,17 @@ export class Dash {
     this.node.appendChild(reads);
     root.appendChild(this.node);
 
-    this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null };
+    this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null, beat: null };
   }
 
   /**
    * @param {number} found — animals crossed off the scavenger sheet.
    * @param {number} total — animal lines on the sheet; see `HUNT_ANIMALS`.
    * @param {'camper'|'boat'|'bike'} scale — full scale of the dial; see SCALES.
+   * @param {number} beatT — s since the last W press edge; drives the boat's
+   *   once-a-second dial glow. Ignored for every other scale.
    */
-  update(speedMs, tripM, found, total, hold = false, scale = 'camper') {
+  update(speedMs, tripM, found, total, hold = false, scale = 'camper', beatT = 0) {
     const sc = SCALES[scale] ?? SCALES.camper;
     if (sc !== this.scale) {
       this.scale = sc;
@@ -200,6 +210,21 @@ export class Dash {
     if (held !== this._shown.hold) {
       this._shown.hold = held;
       this.hold.classList.toggle('pa-on', held);
+    }
+
+    // ── paddle-beat glow ─────────────────────────────────────────────────
+    // Boat mode only: the dial itself flashes once every RHYTHM_TARGET
+    // seconds, on the same window boat_physics.js judges a tap by, instead of
+    // a separate widget — see RHYTHM_TOL there for the window's width.
+    const beat = scale === 'boat' && (() => {
+      const lap = ((beatT % RHYTHM_TARGET) + RHYTHM_TARGET) % RHYTHM_TARGET;
+      // Straddles the wrap — a beat right on target sits at both lap≈0 and
+      // lap≈RHYTHM_TARGET — so both ends of the lap light up.
+      return lap <= RHYTHM_TOL || lap >= RHYTHM_TARGET - RHYTHM_TOL;
+    })();
+    if (beat !== this._shown.beat) {
+      this._shown.beat = beat;
+      this.speedo.classList.toggle('pa-beat', beat);
     }
 
     const shown = Math.round(kmh);

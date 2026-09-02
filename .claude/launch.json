@@ -117,6 +117,19 @@
         "--strictPort"
       ],
       "port": 5248
+    },
+    {
+      "name": "main",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5178",
+        "--strictPort"
+      ],
+      "port": 5178
     }
   ]
 }

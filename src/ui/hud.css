@@ -307,6 +307,21 @@
 .pa-hold.pa-on { opacity: 1; transform: translate(-50%, 0); }
 .pa-hold svg { width: 1.15em; height: 1.15em; flex: none; }
 
+/* Paddle-beat glow — boat mode only. Rather than a separate widget, the dial
+   itself flashes gold once every RHYTHM_TARGET seconds (hud_dash.js), on the
+   same window boat_physics.js judges a tap against — a metronome that costs
+   nothing new to look at, because it lights up the instrument the player is
+   already reading for speed. Snaps on, eases off, so it reads as a pulse
+   rather than something fading in and out symmetrically. */
+.pa-speedo {
+  filter: drop-shadow(0 0 0 rgba(243, 207, 69, 0));
+  transition: filter 0.35s var(--ease);
+}
+.pa-speedo.pa-beat {
+  filter: drop-shadow(0 0 0.55em rgba(243, 207, 69, 0.9));
+  transition: filter 0.05s linear;
+}
+
 .pa-readouts { display: flex; flex-direction: column; gap: 0.55em; }
 .pa-readout { display: flex; flex-direction: column; gap: 0.12em; }
 .pa-readout-value {

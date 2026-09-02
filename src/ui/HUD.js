@@ -878,7 +878,8 @@ export class HUD extends System {
 
     this.dash.update(speed, this.trip, hunt.animalCount(), hunt.animalTotal,
       aboard ? false : (veh?.brakeHold ?? false),
-      aboard ? (riding ? 'bike' : 'boat') : 'camper');
+      aboard ? (riding ? 'bike' : 'boat') : 'camper',
+      aboard?.beatT ?? 0);
     this.settings.tick(dt);
     this._gamepad();
   }

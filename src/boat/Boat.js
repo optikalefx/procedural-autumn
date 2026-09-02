@@ -616,6 +616,10 @@ export class Boat extends System {
       this.current = {
         kind: b.kind, colorway: b.colorway,
         x: p.x, z: p.z, heading: p.heading, speed, group: b.group,
+        // Drives the HUD dial's once-a-second beat glow — see boat_physics.js
+        // and hud_dash.js. Only means anything while actually aboard and
+        // paddling, so it is zeroed for a moored boat the same way `speed` is.
+        beatT: b === this._aboard ? p._tapT : 0,
       };
     } else {
       water?.setBoat?.(null);

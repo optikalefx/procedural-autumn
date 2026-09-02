@@ -10,7 +10,9 @@
 //    · heading/speed come from paddle strokes — each forward stroke is a
 //      ~1.5 s impulse cycle with a surge-glide velocity profile, alternating
 //      sides, with a small yaw wobble per stroke. The rhythm is the feel;
-//      constant thrust reads as an electric trolley motor.
+//      constant thrust reads as an electric trolley motor. Holding W rides
+//      that auto-repeating catch as a floor; releasing and re-pressing to a
+//      ~1 s beat stacks a speed bonus on top of it — see RHYTHM_TARGET below.
 //    · drag is quadratic (plus a small linear term so the glide dies out
 //      rather than asymptoting);
 //    · the shore is a wall: the hydro sdf supplies a signed distance and a
@@ -38,6 +40,54 @@ import { sdfGrad } from './boat_site.js';
 const STROKE_PERIOD = 1.5;         // s per forward stroke at full effort
 const BACK_PERIOD = 1.15;          // back-paddling is choppier
 const SURGE = 0.35;                // fraction of the cycle that is the pull
+
+// ── rhythm bonus ─────────────────────────────────────────────────────────────
+//
+// The auto-repeating catch above (a new stroke the instant `_phase` hits 1)
+// is what makes simply holding W work at all — it is the floor, not the game.
+// On top of it, a player who lets go and re-presses W to their own ~1 s beat
+// can paddle faster than that floor: each RELEASE-then-PRESS edge is timed
+// against the last one, and a beat inside RHYTHM_TOL of RHYTHM_TARGET builds a
+// meter that (a) kicks the hull's speed directly, on the spot, and (b) raises
+// how high that speed is allowed to sit. Too fast a double-tap or too slow a
+// gap both read as off-beat and knock the meter back down rather than
+// building it — a badly-timed tap is worse than not tapping.
+//
+// The kick is applied to `speed` directly, AFTER the stroke envelope below —
+// not folded into `_thrust` — on purpose: a real keyboard tap is down for a
+// handful of frames, far shorter than the ~0.5 s surge that envelope is built
+// to reward, so a thrust multiplier would mostly starve on a tap that releases
+// before the surge finishes. A direct kick pays off the instant the beat lands
+// regardless of how briefly the key was down.
+//
+// Holding W through the whole paddle only ever produces ONE press edge (the
+// initial one), so it is untouched: this is a bonus stacked on the existing
+// feel, not a replacement for it.
+// Exported so a HUD beat indicator reads the same numbers the physics judges
+// taps against, rather than a second copy that could drift out of tune with
+// this file.
+export const RHYTHM_TARGET = 1.0;  // s between taps for an on-beat stroke
+export const RHYTHM_TOL = 0.22;    // s either side of target that still counts
+const RHYTHM_GAIN = 0.35;          // meter gained per on-beat tap, 0..1
+const RHYTHM_PUNISH = 0.5;         // fraction of the meter lost on an off-beat tap
+const RHYTHM_DECAY = 0.15;         // 1/s ambient fade — a banked bonus doesn't
+                                    // outlive the rhythm that earned it. Net of
+                                    // gain and a beat's worth of decay is still
+                                    // positive, so ~5 on-beat taps in a row ramp
+                                    // the meter from empty to full.
+const RHYTHM_KICK = 3.2;           // m/s added on a good tap, scaled by the
+                                    // meter AFTER that tap's gain — so the
+                                    // kicks grow as the streak builds
+const RHYTHM_BONUS = 1.3;          // speed ceiling raised at a full meter (130%)
+// Quadratic drag alone would eat most of a kick between one beat and the
+// next — the hull is back down near its old cruise before the following tap
+// even lands, which is why a first pass at this (kick + ceiling only, no
+// drag change) topped out barely above holding: the numbers LOOKED like a
+// turbo but the sawtooth between kicks never let the hull live there. This
+// cuts the quadratic term itself while charged, so a hot streak also GLIDES
+// better, not just gets shoved harder — the boost is a state the hull is in,
+// not a series of unrelated pushes.
+const RHYTHM_SLIP = 0.65;          // fraction of quadratic drag cancelled at a full meter
 
 // Where the hull stops being able to move.
 //
@@ -158,6 +208,11 @@ export class BoatPhysics {
     this._phase = 1;             // 1 = between strokes; wraps 0..1 during one
     this._side = 1;              // which side the NEXT forward stroke pulls on
     this._stroking = false;
+    // Rhythm-bonus state — see RHYTHM_TARGET above.
+    this._fwdHeld = false;       // was fwd active last frame? (edge detector)
+    this._tapT = 0;              // s since the last press edge
+    this._tapCount = 0;          // presses seen since place() — first has no interval to judge
+    this.rhythm = 0;             // 0..1 meter, published for HUD/audio
     // Visual-only phase, but still deterministic: the caller hands in a draw
     // from the site rng, so the same launch spot bobs the same way.
     this._bobSeed = opts.bobSeed ?? 0;
@@ -184,6 +239,10 @@ export class BoatPhysics {
     this.riverness = clamp01(smoothstep(RIVER_IN, RIVER_FULL,
                                         this.world.getRiver?.(x, z) ?? 0));
     this.current = 0;
+    this._fwdHeld = false;
+    this._tapT = 0;
+    this._tapCount = 0;
+    this.rhythm = 0;
     this._surface(0, 0);
   }
 
@@ -213,7 +272,45 @@ export class BoatPhysics {
     // Coherence is the flow vector's own length — see WorldData.getFlow.
     const coh = Math.hypot(flow.vx, flow.vz);
 
+    // ── rhythm bonus: judge press edges, not the held level ──────────────────
+    // A rising edge (fwd was slack, now isn't) is the player CHOOSING to pull
+    // again, which is a different question from the auto-repeating catch below
+    // firing on its own timer while the key stays down. Only edges are judged,
+    // so holding W produces exactly one (the first) and is never punished or
+    // rewarded by this — see RHYTHM_TARGET above. Gated on `!beached` the same
+    // way the strokes below are: there is no paddling to time from a beach.
+    const fwdActive = fwd > 0.02 && !this.beached;
+    if (fwdActive && !this._fwdHeld) {
+      if (this._tapCount > 0) {
+        const off = Math.abs(this._tapT - RHYTHM_TARGET);
+        if (off <= RHYTHM_TOL) {
+          this.rhythm = clamp01(this.rhythm + RHYTHM_GAIN);
+          // The kick itself, scaled by the meter it just topped up — later
+          // taps in a streak land bigger kicks than the one that started it.
+          this.speed += RHYTHM_KICK * this.rhythm;
+        } else {
+          this.rhythm *= (1 - RHYTHM_PUNISH);
+        }
+      }
+      this._tapCount++;
+      this._tapT = 0;
+    }
+    this._fwdHeld = fwdActive;
+    this._tapT += dt;
+    this.rhythm = Math.max(0, this.rhythm - RHYTHM_DECAY * dt);
+    // How far a full meter is allowed to push `speed` past the hull's usual
+    // ceiling — without this the drag+integrate clamp below would clip every
+    // kick straight back down to maxSpeed the instant it landed.
+    const rhythmSpeedMul = 1 + RHYTHM_BONUS * this.rhythm;
+
     // ── strokes ────────────────────────────────────────────────────────────
+    // Untouched by the rhythm bonus — it earns its speed by injecting a
+    // direct kick after the drag+integrate step below, not by reshaping this
+    // curve, so holding W keeps exactly the feel it always had. See RHYTHM_*
+    // above for why the kick has to live outside this envelope: a real
+    // keyboard tap is a handful of frames, far shorter than the surge this
+    // loop is built to reward, so scaling accel here would starve tapping of
+    // the very thing it is supposed to pay off.
     let accel = 0;
     let wobble = 0;
     if (fwd > 0.02 && !this.beached) {
@@ -252,8 +349,8 @@ export class BoatPhysics {
 
     // ── drag + integrate speed ─────────────────────────────────────────────
     const v = this.speed;
-    accel -= this._k2 * v * Math.abs(v) + this._k1 * v;
-    this.speed = clamp(v + accel * dt, -this.maxSpeed * 0.4, this.maxSpeed);
+    accel -= this._k2 * (1 - RHYTHM_SLIP * this.rhythm) * v * Math.abs(v) + this._k1 * v;
+    this.speed = clamp(v + accel * dt, -this.maxSpeed * 0.4, this.maxSpeed * rhythmSpeedMul);
 
     // ── yaw: sweep strokes + per-stroke wobble ─────────────────────────────
     // Sweep authority is decent at rest (you can spin a canoe in place) and
@@ -572,6 +669,7 @@ export class BoatPhysics {
       roll: this.roll, pitch: this.pitch,
       depth: this.depth, beached: this.beached, made: this.made,
       riverness: this.riverness, current: this.current, turbulence: this.turbulence,
+      rhythm: this.rhythm,
     };
   }
 }
