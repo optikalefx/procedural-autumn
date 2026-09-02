@@ -84,7 +84,7 @@ used to be ~40 hand-written bone rotations blended over `AnimRig`'s output; see
 `setShadow` / `gaitName` / `mesh`). Adding a hand-authored animal is a model and
 a species file; see the `promote-glb-animal` skill.
 
-### The birds are a third thing, and one of them is hand-authored too
+### The birds are a third thing, and two of them are hand-authored too
 
 `src/wildlife/birds/tree_birds.js` is not on either track above. It is the
 birds' streaming, behaviour AND rig fused into one class, where the mammals
@@ -92,16 +92,33 @@ split those across `Wildlife.js`, `animal_brain.js` and a rig — so a bird has 
 `Brain` to hand a drive block to, and its "rig" is `build`, `_park` and `_pose`.
 
 Most of its species are instanced geometry flapped by a vertex shader
-(`bird_material.js`). The **flamingo** is a skinned GLB out of the pack, played
-by an `AnimationMixer` on a stand/fly crossfade with **no gait at all** — the
-behaviour layer owns the position in both its states, so nothing ever measures
-its feet. It reuses `GLTFLoader` and `SkeletonUtils.clone` inside `tree_birds`
-rather than getting a backend of its own; `fitGlbBird` is the one place the
-asset's facing, scale and foot-lift are decided, and the gallery builds through
-it too so the card cannot disagree with the valley.
+(`bird_material.js`). The **flamingo** and the **duck** are skinned GLBs out of
+the pack, played by an `AnimationMixer` on a settled/travelling crossfade with
+**no gait at all** — the behaviour layer owns the position in both states, so
+nothing ever measures their feet. Both reuse `GLTFLoader` and
+`SkeletonUtils.clone` inside `tree_birds` rather than getting a backend of their
+own; `fitGlbBird` is the one place an asset's facing, scale and lift are
+decided, and the gallery builds through it too so the card cannot disagree with
+the valley.
 
-One rule that fell out of it and generalises: **a procedural model's origin sits
-in its body, an exported one's sits between the feet**, and code that predates
-the swap will have baked in whichever it grew up with without saying so. State
-such rules about the anatomy — `_wadeY` clamps the *belly* — not about "the
-origin". See the `import-animal` skill.
+**The duck is the one that never leaves the water** (`swims: true`). Its
+travelling state is a paddle across the surface rather than a flight over it,
+which is one method (`_stepSwim`) and one constraint the flying birds do not
+have: `_swimClear` refuses a destination the duck would have to cross a bank to
+reach. It also floats in a raft of three or four rather than scattering, and its
+clips are two where the flamingo's are three — the pack ships no `Duck_Fly` at
+all, and its Gesture is authored standing, so `preen` is optional in `_poseGlb`.
+`tools/build_duck_blend.py` states both findings; neither was worked around.
+
+Two rules fell out of this pair and both generalise:
+
+- **A procedural model's origin sits in its body, an exported one's sits
+  between the feet** — and a swimmer's sits on the waterline, because that is
+  the pose its clips were authored in. Code that predates a swap will have baked
+  in whichever it grew up with without saying so. State such rules about the
+  anatomy — `_wadeY` clamps the *belly*, `_floatY` puts the *waterline* on the
+  surface — not about "the origin".
+- **Name a slot for its role, not for one species' mode.** The clip slot was
+  called `fly` while a flamingo was the only bird using it; a duck's is a paddle
+  stroke, and everything that reads it reads the same. See the `import-animal`
+  skill.

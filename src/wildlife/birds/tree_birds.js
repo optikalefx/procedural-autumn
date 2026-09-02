@@ -17,6 +17,11 @@
 //    tree     the bald eagle. Its perch is a treetop over `minTreeH`.
 //    water    the heron and the flamingo (habitat: 'water'), whose perch is a
 //             patch of shallow water found through the world's hydro queries.
+//    swim     the duck, a water row carrying `swims: true` — it does not
+//             perch at all. It floats in open water, and it travels to the
+//             next patch of it by paddling across the surface rather than
+//             flying over. Same two states, same streaming, same startle;
+//             see the swimmers' block in the table below.
 //    night    the great horned owl, a tree row carrying `nocturnal: true` —
 //             the streamer will not hand it a tree unless SKY_STATE.nightFactor
 //             says the valley is actually dark. See NIGHT_SPAWN.
@@ -39,7 +44,10 @@ import { buildGreatHornedOwlGeometry } from './great_horned_owl.js';
 //   chance    when a bird leaves the streamed area, the odds it comes back
 //             soon rather than going dormant for minutes — the valley should
 //             sometimes simply not have an eagle in it
-//   wingspan  metres; scale IS wingspan (geometry span is 1.0).
+//   wingspan  metres; scale IS wingspan (geometry span is 1.0). A swimmer
+//             states `length` here instead and `birdSize` reads whichever is
+//             present — see the swimmers' block below for why the duck has no
+//             honest wingspan to state.
 //
 //             The two waders are deliberately drawn at 3x life: a real great
 //             blue heron is a 2 m span and 1.1 m tall, and at that size it is
@@ -86,6 +94,28 @@ import { buildGreatHornedOwlGeometry } from './great_horned_owl.js';
 //              you can meet anywhere is scenery; one that lives on two known
 //              islands is somewhere to go, which is the same reason a perched
 //              eagle is written up as a landmark. See _ensureIslands.
+//
+// Swimmers (`swims: true`) are waders that never get out. They keep every
+// field above that is about STREAMING and about being crowded, and swap the
+// four that are about wings and shallows:
+//   length     metres, bill to tail, in place of `wingspan`. The duck's model
+//              has no wingspan to state — 0.26 m folded, and not one of the
+//              pack's six clips opens the wings — so `wingspan` would be a
+//              number nobody measured. `birdSize` reads whichever is set.
+//   strokeHz   paddle cadence, in place of `flapHz`, and read the same way:
+//              the species asks for a cadence, the asset was authored at
+//              `glb.cycleHz`, and the ratio is the playback rate. What beats
+//              on this bird is its feet.
+//   draft      metres of water it needs under it. Derived from the model, not
+//              guessed: the duck's keel sits `glb.draftY` spans below the
+//              waterline, so this is that depth at full size plus clearance.
+//              It replaces `wade`, which is a WINDOW — a wader is wrong in
+//              water that is too deep and a duck never is.
+//   raft       metres. This species packs into a group that tight and joins
+//              one whenever there is one to join, which is the whole of what
+//              makes three or four ducks on a lake read as ducks rather than
+//              as three separate birds that happen to be wet. `flock`'s 36 m
+//              spread is a colony; this is a raft.
 export const TREE_BIRD_SPECIES = [
   {
     key: 'baldEagle',
@@ -149,7 +179,10 @@ export const TREE_BIRD_SPECIES = [
       // 52%. `_wadeY` keeps this point out of the water, and it is the number
       // that decides how deep a flamingo will stand.
       bellyY: 0.244,
-      flapHz: 1.2,           // the authored wingbeat — 20 frames at 24 fps
+      // The authored cadence of the `move` clip — 20 frames at 24 fps. Named
+      // for the clip's role rather than for this bird's mode, because the
+      // duck's `move` is a paddle stroke and shares every line that reads it.
+      cycleHz: 1.2,
       // The photo silhouette, for `hunt_detect`. It sizes a bird from a sphere
       // in this same unit space and centres it on the bird's origin, which
       // works unremarked for the lofted birds because their origin sits in the
@@ -162,7 +195,7 @@ export const TREE_BIRD_SPECIES = [
       // that swapping the model does not move the hunt's gate.
       unitC: 0.379,
       unitR: 0.546,
-      clips: { idle: 'idle', fly: 'fly', preen: 'preen' },
+      clips: { idle: 'idle', move: 'fly', preen: 'preen' },
     },
     habitat: 'water',
     live: 6,
@@ -208,6 +241,115 @@ export const TREE_BIRD_SPECIES = [
     colony: 2,
   },
   {
+    key: 'duck',
+    // The second hand-authored bird, and the first that never leaves the
+    // water. Everything about the STREAMING, the flocking and the startle hold
+    // is the flamingo's, verbatim; what differs is one state — a duck's
+    // travelling state is on the surface, not over it — and that is `swims`.
+    //
+    // It has two clips where the flamingo has three. `tools/build_duck_blend.py`
+    // argues both halves: the pack ships no `Duck_Fly` at all (Flamingo, Swan
+    // and Pigeon all do), and its `Duck_Gesture` is authored STANDING, with the
+    // body 0.091 above the origin where the swim clips put the keel at -0.097 —
+    // so blending it onto a floating duck would lift the bird out of the water.
+    // A pose clip has to be authored in the pose it blends onto. `preen` is
+    // therefore optional in `_poseGlb`, and this bird simply does not have one.
+    glb: {
+      url: 'models/duck_pack.glb',
+      // All six measured off the asset and printed by
+      // `tools/build_duck_blend.py`. None can be recovered downstream.
+      //
+      // `span` is the floating body BILL TO TAIL, not a wingspan — this is the
+      // dimension `length` below is stated in. The model has no wingspan worth
+      // the name: 0.261 m at the widest frame of all six pack clips, against a
+      // body 0.631 m long, because nothing in the pack ever opens the wings.
+      span: 0.631,
+      // Zero, and not because nothing was measured. The swim clips are authored
+      // with the WATERLINE on the model's own origin — keel 0.153 spans below
+      // it, back 0.542 above — where every standing clip in the pack sits the
+      // feet on it. So the fit node has no lift to apply and `_floatY` puts the
+      // object's origin straight onto the water surface. That is the swimmer's
+      // version of the rule the flamingo taught: state it about the ANATOMY and
+      // let each pose say where that anatomy is relative to the origin.
+      minY: 0,
+      // How deep the keel rides, in span units. `draft` below is this number at
+      // full size plus clearance, so the depth a duck asks for is derived from
+      // the model rather than guessed at.
+      draftY: 0.153,
+      // The authored paddle cadence — 25 frames at 24 fps. One cycle: frames
+      // 1..51 of the pack's swim clip are two bit-identical repeats of it, so
+      // the trim to 26 is lossless and provable.
+      cycleHz: 0.96,
+      // The photo silhouette, for `hunt_detect`, measured ABOVE the waterline
+      // only: the submerged fifth of a duck is not in the photograph, and
+      // including it would claim a bird a third taller than the one on the
+      // water. The check that it is honest is that `2 * unitR * FOLD_R` comes
+      // out at 1.00 spans against the 1.084 the dry body actually stands —
+      // within 8%, where the constant's own note allows 11-20%.
+      unitC: 0.271,
+      unitR: 0.556,
+      clips: { idle: 'idle', move: 'move' },
+    },
+    habitat: 'water',
+    swims: true,
+    // Four, which IS the group: `raft` keeps them together, so the whole
+    // live population of the streamed area is the one raft the player finds.
+    // Six would be a flamingo colony and one would be a lost duck.
+    live: 4,
+    // High, and higher than any other row here. The whole raft parks together
+    // when the player leaves it behind, so this is the odds each bird is back
+    // in seconds rather than in minutes — and a raft that loses one for two
+    // minutes is a raft of three, which is not the thing being drawn.
+    //
+    // The cost is that ducks are effectively always somewhere in the valley,
+    // and it is deliberate rather than unnoticed. Parked and re-scanned at 21
+    // camera anchors, a raft formed inside 90 s at 17 of them, spread 10-28 m;
+    // the two anchors with no duck-grade water in the spawn ring got none, and
+    // two got one bird 130-160 m off the group (the view guard refusing to
+    // materialise it in front of the player, which is the right refusal). So
+    // the valley always has ducks where it has open water and never has them
+    // where it does not — which is what a duck is, and the opposite of the
+    // flamingo's `colony`.
+    chance: 0.9,
+    // 3x life, the same call as the two waders and for the same reason (see
+    // the note over TREE_BIRD_SPECIES): a real mallard is 0.58 m bill to tail,
+    // which on open water at any distance is nothing at all. The model is
+    // already life-size at 0.631, so this is a straight 2.5-3.1x.
+    length: [1.55, 1.95],
+    // Longer than the flamingo's. A raft of ducks is a thing that sits, and a
+    // group that repositions every twenty seconds reads as agitated.
+    perchS: [26, 80],
+    // Metres of paddling, and an order of magnitude under every flying row on
+    // this table: a duck crosses a bay, not a valley. The floor matters as much
+    // as the ceiling — under about 6 m the move reads as a twitch.
+    hop: [8, 34],
+    // m/s across the water. A mallard cruises about 0.7, which at 3x life is
+    // 2.1 body-lengths per second — the same rate, in the units the eye
+    // actually judges speed in.
+    cruise: [1.4, 2.1],
+    // Paddle cadence, bracketing the authored 0.96 Hz so the clip plays at
+    // 0.88-1.22x and the artist's motion is very nearly what ships.
+    strokeHz: [0.85, 1.17],
+    // Not a shy bird, and the least shy on this table. A duck lets a boat come
+    // close and then paddles off rather than flushing, so this is well inside
+    // the 7.2 m the hunt needs — and `_step` only counts a threat moving over
+    // 4 m/s, so a canoe paddled gently never presses it at all.
+    startle: 11,
+    startleDelay: 4,
+    // Metres of water under it. 0.153 spans of keel at the longest a duck is
+    // drawn (1.95 m) is 0.298 m, so this clears the bed by a comfortable
+    // 0.25 m — and it is a floor with no ceiling, which is the whole difference
+    // between a swimmer and a wader.
+    draft: 0.55,
+    // Low. A flamingo wants a lake margin; a duck is at home on a river bend,
+    // and holding it to the flamingo's 7 would put ducks on two lakes only.
+    minSpan: 4,
+    footY: 0,
+    perchPitch: 0,          // a duck on the water sits level
+    flock: true,
+    raft: 11,
+  },
+  {
     key: 'owl',
     geometry: buildGreatHornedOwlGeometry,
     nocturnal: true,
@@ -242,6 +384,29 @@ export const TREE_BIRD_SPECIES = [
     perchPitch: -0.70,
   },
 ];
+
+/**
+ * The metres a bird is drawn at — its `wingspan`, or a swimmer's `length`.
+ *
+ * Exported because the gallery scales its card by the same number the valley
+ * scales the bird by, and a gallery that derives that itself is a gallery that
+ * can quietly disagree. `fitGlbBird` divides it by `glb.span`, which is the
+ * model's own measurement of whichever dimension this is.
+ *
+ * Two names for one field rather than one name used loosely, because the loose
+ * version is a measurement nobody took: the duck's model spreads its wings to
+ * 0.26 m in the widest frame the pack ships, so a `wingspan` on that row would
+ * be a number invented to fill a column. See `tools/build_duck_blend.py`.
+ */
+export const birdSize = (S) => S.wingspan ?? S.length;
+
+/**
+ * The [min, max] cadence of the locomotion clip: a wingbeat, or a swimmer's
+ * paddle stroke. Exported beside `birdSize` and for the same reason — the
+ * gallery prints the playback rate this ratio produces, and a second reading of
+ * "which field holds the cadence" is a second thing to get out of step.
+ */
+export const birdRateRange = (S) => S.flapHz ?? S.strokeHz;
 
 // Streaming ring. Spawn perched birds far enough out that materialising is
 // invisible, keep them until well past that, and never place one inside the
@@ -390,6 +555,7 @@ export class TreeBirds {
       this.meshes.push(mesh);
 
       const slots = [];
+      const size = birdSize(S);
       for (let i = 0; i < S.live; i++) {
         if (mesh) {
           // The geometry already carries the real plumage in its vertex colours,
@@ -407,7 +573,7 @@ export class TreeBirds {
           cool: this.rnd() * 20,     // stagger the first arrivals
           state: P_PERCH,
           x: 0, y: 0, z: 0, yaw: 0, pitch: 0, bank: 0,
-          sc: lerp(S.wingspan[0], S.wingspan[1], this.rnd()),
+          sc: lerp(size[0], size[1], this.rnd()),
           timer: 0,
           tree: -1,
           // pose smoothing
@@ -559,16 +725,40 @@ export class TreeBirds {
           // Flock species arrive where their kind already is: most of the
           // time a new flamingo joins the shallows that hold one, and the
           // valley gets a group on one lake instead of six scattered dots.
+          //
+          // A RAFT is the same idea turned up: `raft` species join one almost
+          // always and within metres rather than tens of them, because three
+          // ducks 30 m apart on a lake are three ducks and not a raft. The
+          // mate's own position is the centre and `_findFloat` supplies the
+          // whole of the spread, so there is one number deciding how tight a
+          // group packs instead of two that could drift apart.
           let ax, az;
           const mate = S.flock ? this._flockmate(b) : null;
-          const nearMate = !!mate && this.rnd() < 0.65;
+          const nearMate = !!mate && this.rnd() < (S.raft ? 0.92 : 0.65);
+          const spread = nearMate && S.raft ? S.raft * 2 : 36;
           if (nearMate) {
-            ax = mate.x + (this.rnd() - 0.5) * 36;
-            az = mate.z + (this.rnd() - 0.5) * 36;
+            ax = S.raft ? mate.x : mate.x + (this.rnd() - 0.5) * 36;
+            az = S.raft ? mate.z : mate.z + (this.rnd() - 0.5) * 36;
           } else {
             const a = this.rnd() * Math.PI * 2;
             const r = lerp(SPAWN_R[0], SPAWN_R[1], this.rnd());
             ax = cx + Math.sin(a) * r; az = cz + Math.cos(a) * r;
+          }
+          if (S.swims) {
+            // No island rim and no colony: a duck asks the water one question
+            // — is there enough of it — and there is no depth it can be wrong
+            // in. That is why this branch is three lines where the waders'
+            // below is a fallback chain; the flamingo's problem was that the
+            // standable fringe is a thin broken thread, and a swimmer has the
+            // whole lake.
+            const site = this._findFloat(ax, az, S, spread);
+            if (!site) continue;
+            _sphere.center.set(site.x, site.wy + 1, site.z);
+            _sphere.radius = 3;
+            const dist = Math.hypot(site.x - cx, site.z - cz);
+            if (dist < VIS_OK && _frustum.intersectsSphere(_sphere)) continue;
+            this._floatAt(b, site, this.rnd() * Math.PI * 2);
+            break;
           }
           if (water) {
             // Island rim first, mainland waterline second — see _ensureIslands
@@ -1003,6 +1193,128 @@ export class TreeBirds {
     return best ? { x: best.x, y: best.y, z: best.z, dist: bd } : null;
   }
 
+  // ── open water (swims: true) ──────────────────────────────────────────────
+
+  /**
+   * A patch of open water near (ax, az) deep enough to float in.
+   *
+   * The wading version of this is a search for a WINDOW — too shallow and the
+   * bird is standing in a puddle, too deep and it is swimming — and the
+   * narrowness of that window is what made the mainland waterline such a bad
+   * habitat that `_ensureIslands` had to be written. A swimmer has no ceiling:
+   * `draft` is a floor and everything past it is equally good, so a duck can
+   * be placed anywhere on any lake and most of a river.
+   *
+   * The two queries are `_findWade`'s and are asked for the same reasons: the
+   * hydro sdf gates out the speck cells the drawn mesh deliberately drops (a
+   * bird floating in one sits in dry meadow), and the DEPTH comes from
+   * `getWaterDepth`, which reads the drawn surface's own field.
+   *
+   * @param {number} spread  width of the sample box — the whole of how tightly
+   *                         a raft packs, when its centre is a raft-mate.
+   */
+  _findFloat(ax, az, S, spread) {
+    const W = this.ctx.world;
+    if (!W?.getHydro) return null;
+    for (let k = 0; k < 12; k++) {
+      const x = ax + (this.rnd() - 0.5) * spread;
+      const z = az + (this.rnd() - 0.5) * spread;
+      if (!W.isInBounds(x, z)) continue;
+      const h = W.getHydro(x, z, this._hy ??= {});
+      if (h.sdf < 1.2 || h.wet < 0.5) continue;
+      if (S.minSpan && h.span < S.minSpan) continue;
+      if (W.getWaterDepth(x, z) < S.draft) continue;
+      const wy = W.getWaterHeight(x, z);
+      if (wy === null || !Number.isFinite(wy)) continue;
+      return { x, z, wy };
+    }
+    return null;
+  }
+
+  /**
+   * The floating height: the water surface, and nothing else.
+   *
+   * `_wadeY` has to reason about the bed, the leg and the belly because a
+   * wader's height is a stack of those three. A floating bird's is settled by
+   * the ASSET — `build_duck_blend.py` measures the swim clips straddling the
+   * model's own origin, keel under it and back over — so the anatomy rule here
+   * is "the origin is the waterline" and the arithmetic is an assignment.
+   * `glb.minY: 0` is that same fact stated on the fit node.
+   *
+   * `fallback` covers the one frame a hop could sample past the drawn mesh's
+   * edge, where `getWaterHeight` answers null rather than a level.
+   */
+  _floatY(x, z, fallback) {
+    const w = this.ctx.world?.getWaterHeight(x, z);
+    return (w !== null && Number.isFinite(w)) ? w : fallback;
+  }
+
+  /** Set a swimmer down on the water: same seat as `_wadeAt`, no legs in it. */
+  _floatAt(b, site, yaw) {
+    b.active = true;
+    b.state = P_PERCH;
+    b.tree = -1;
+    b.x = site.x; b.z = site.z;
+    b.y = site.wy;
+    b.yaw = yaw;
+    b.pitch = b.spec.perchPitch ?? PERCH_PITCH;
+    b.bank = 0;
+    b.fold = 1; b.amp = 0; b.spooked = 0;
+    b.timer = lerp(b.spec.perchS[0], b.spec.perchS[1], this.rnd());
+  }
+
+  /**
+   * Is the straight line from (x0, z0) to (x1, z1) water the whole way?
+   *
+   * The flying birds never need this: an eagle crossing a ridge is the point.
+   * A duck that paddles across a spit of land is the single most obvious way
+   * this species could go wrong, and it is not a rare case — a river bend puts
+   * two stretches of perfectly good water within one hop of each other with a
+   * bank between them.
+   *
+   * Sampled every 2.5 m, which is inside the 4 m lattice the hydro field is
+   * stored on: a narrower bar than that does not exist to be found. It is the
+   * actual path because a swimmer's `bow` is zero (see `_flightTo`), so this
+   * checks the line the duck will really take rather than a chord of a curve.
+   */
+  _swimClear(x0, z0, x1, z1, S) {
+    const W = this.ctx.world;
+    const d = Math.hypot(x1 - x0, z1 - z0);
+    const n = Math.max(2, Math.ceil(d / 2.5));
+    for (let i = 1; i < n; i++) {
+      const t = i / n;
+      const x = lerp(x0, x1, t), z = lerp(z0, z1, t);
+      if (!W.isInBounds(x, z)) return false;
+      if (W.getWaterDepth(x, z) < S.draft) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Where this bird's raft IS: the mean position of every other settled bird of
+   * its species, or null if it is on its own.
+   *
+   * Deliberately the whole species and not the ones nearby. A duck that has
+   * drifted 200 m off is exactly the bird that needs an answer to "which way is
+   * the group", and a neighbourhood filter would tell it that it is its own
+   * raft and leave it there — measured, that is what happened: four ducks that
+   * spawned 19 m apart were 78 m apart six minutes later, because half of every
+   * hop was a random bearing off the bird's own position and random bearings
+   * accumulate. Every duck steering by one shared point is what makes the walk
+   * bounded instead.
+   */
+  _raftCentre(b) {
+    let sx = 0, sz = 0, n = 0;
+    for (const slots of this.slots) {
+      if (slots[0]?.spec !== b.spec) continue;
+      for (const o of slots) {
+        if (o === b || !o.active || o.state !== P_PERCH) continue;
+        sx += o.x; sz += o.z; n++;
+      }
+    }
+    return n ? { x: sx / n, z: sz / n } : null;
+  }
+
   /** A random other settled bird of the same species, or null. */
   _flockmate(b) {
     let pick = null, n = 0;
@@ -1028,15 +1340,20 @@ export class TreeBirds {
     b.fx1 = tx; b.fy1 = ty; b.fz1 = tz;
     const side = this.rnd() < 0.5 ? -1 : 1;
     const nx = -(tz - b.z) / d, nz = (tx - b.x) / d;
-    b.fcx = (b.x + tx) * 0.5 + nx * side * d * (0.12 + this.rnd() * 0.16);
-    b.fcz = (b.z + tz) * 0.5 + nz * side * d * (0.12 + this.rnd() * 0.16);
+    // The bow exists so a flying bird banks through a real turn. A swimmer has
+    // nothing to bank with, and a straight path is worth more than the shape:
+    // it is the path `_swimClear` checked for water, exactly, rather than a
+    // curve that could bulge onto a bank the check never sampled.
+    const bow = S.swims ? 0 : (0.12 + this.rnd() * 0.16);
+    b.fcx = (b.x + tx) * 0.5 + nx * side * d * bow;
+    b.fcz = (b.z + tz) * 0.5 + nz * side * d * bow;
     const up = S.cruiseUp ?? [4, 11];
     b.fcruise = Math.max(b.fy0, b.fy1) + lerp(up[0], up[1], this.rnd());
     b.fspeed = lerp(S.cruise[0], S.cruise[1], this.rnd());
     b.fdur = Math.max(2.5, d * 1.08 / b.fspeed);
     b.ft = 0;
     b.state = P_FLY;
-    b.rate = lerp(S.flapHz[0], S.flapHz[1], this.rnd());
+    b.rate = lerp(birdRateRange(S)[0], birdRateRange(S)[1], this.rnd());
     b.bout = this.rnd() * 6.28;
     this.stats.flights++;
   }
@@ -1044,6 +1361,7 @@ export class TreeBirds {
   /** Launch a flight from the current perch to a site in an annulus around it. */
   _launch(b, awayX = 0, awayZ = 0) {
     const S = b.spec;
+    if (S.swims) return this._launchSwim(b, awayX, awayZ);
     if (S.habitat === 'water') return this._launchWade(b, awayX, awayZ);
     const T = this.ctx.systems?.trees?.trees;
     if (!T) { b.timer = 8; return false; }
@@ -1100,6 +1418,78 @@ export class TreeBirds {
     return false;
   }
 
+  /**
+   * The swimmer's version: the next patch of open water it can get to WITHOUT
+   * leaving the water.
+   *
+   * This is the destination the user asked for — a duck picks somewhere and
+   * goes — and it is chosen under one constraint the flying birds do not have.
+   * `_swimClear` is that constraint, and the reason the attempt count is eight
+   * rather than six: a site can be perfectly good water and still be across a
+   * bank, and the honest answer to that is to try somewhere else rather than to
+   * walk the duck over the spit.
+   *
+   * A raft-mate is the bias when nothing is chasing the bird — the group drifts
+   * as a group. A spooked one goes away from the threat and takes whoever is
+   * nearest with it on their own timers.
+   */
+  _launchSwim(b, awayX = 0, awayZ = 0) {
+    const S = b.spec;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      let ax, az;
+      const centre = (!awayX && !awayZ && S.raft) ? this._raftCentre(b) : null;
+      if (centre) {
+        // A step TOWARD the raft, never longer than one hop, and then jittered
+        // by up to a raft's width so four birds heading for one point do not
+        // stack on it. A duck in the middle of its group takes a step of
+        // nothing and just shuffles; one that has strayed closes the gap a hop
+        // at a time rather than crossing the lake in a single two-minute
+        // paddle.
+        //
+        // No dice roll: a duck with a group to steer by ALWAYS steers by it,
+        // and the branch below is what a bird with no raft — the first to
+        // arrive, or one being chased — falls to. A mix was tried first, on
+        // the theory that an occasional free wander would keep the group from
+        // reading as a formation, and it bought nothing but noise. Measured
+        // over ten minutes of sim, 4 birds, spread as the widest pair:
+        //
+        //     15% free   median 20-32 m, worst 35-50
+        //     none       median 16-19 m, worst 29-32
+        //
+        // The jitter is already the whole of the individuality; the raft still
+        // shuffles and still drifts across the lake, it just stops leaking
+        // birds. (Before any of this, half of every hop was a random bearing
+        // off the bird's OWN position, and four ducks 19 m apart were 78 m
+        // apart six minutes later.)
+        const dx = centre.x - b.x, dz = centre.z - b.z;
+        const d = Math.hypot(dx, dz);
+        const step = Math.min(d, lerp(S.hop[0], S.hop[1], this.rnd()));
+        const a = this.rnd() * Math.PI * 2, jit = this.rnd() * S.raft;
+        ax = b.x + (d > 1e-3 ? dx / d * step : 0) + Math.sin(a) * jit;
+        az = b.z + (d > 1e-3 ? dz / d * step : 0) + Math.cos(a) * jit;
+      } else {
+        let a = this.rnd() * Math.PI * 2;
+        if (awayX || awayZ) a = Math.atan2(b.x - awayX, b.z - awayZ) + (this.rnd() - 0.5) * 1.6;
+        const r = lerp(S.hop[0], S.hop[1], this.rnd());
+        ax = b.x + Math.sin(a) * r; az = b.z + Math.cos(a) * r;
+      }
+      const site = this._findFloat(ax, az, S, (S.raft ?? 18) * 2);
+      if (!site) continue;
+      const d = Math.hypot(site.x - b.x, site.z - b.z);
+      // 5 m, not `hop[0]`: a duck joining a raft is aiming at a mate and the
+      // spread around one is smaller than its own minimum hop, so holding it to
+      // `hop[0]` would mean a duck could never close on the group at all —
+      // the same trap `_launchWade` names for a colony bird on a small island.
+      if (d < 5) continue;
+      if (!this._swimClear(b.x, b.z, site.x, site.z, S)) continue;
+      this._flightTo(b, site.x, site.wy, site.z, d);
+      b.tree = -1;
+      return true;
+    }
+    b.timer = 6;
+    return false;
+  }
+
   _step(b, dt, threat) {
     const S = b.spec;
     if (b.state === P_PERCH) {
@@ -1125,6 +1515,12 @@ export class TreeBirds {
       }
       return;
     }
+
+    // A swimmer's travelling state is ON the surface, not over it. Everything
+    // above this line is shared verbatim — a floating duck waits out its timer
+    // and holds its nerve exactly as a perched eagle does — and everything
+    // below it is about being in the air.
+    if (S.swims) { this._stepSwim(b, dt); return; }
 
     // ── flight ────────────────────────────────────────────────────────────
     const W = this.ctx.world;
@@ -1185,6 +1581,59 @@ export class TreeBirds {
     }
   }
 
+  /**
+   * The travelling state for a bird that never leaves the water.
+   *
+   * `_step`'s flight half is forty lines of things that are about being in the
+   * air — a takeoff dip off the perch, a climb to a cruise altitude, terrain
+   * clearance, a bank read off the turn rate, a flare on the approach, and the
+   * flap-flap-glide gate. Not one of them is true of a duck, and threading
+   * eight conditionals through them to say so would leave a function nobody
+   * could read for either bird. This is the whole of what a paddling animal
+   * does instead.
+   *
+   * Two things it keeps, and they are the two that matter: the same bezier and
+   * the same clock, so a duck arrives when `_flightTo` said it would; and the
+   * same `fold` signal, so `_poseGlb` crossfades to `move` without knowing
+   * which kind of moving this is.
+   */
+  _stepSwim(b, dt) {
+    const S = b.spec;
+    b.ft += dt / b.fdur;
+    const t = clamp01(b.ft);
+    const u = 1 - t;
+    // The same quadratic bezier every bird flies, with the control point on the
+    // midpoint — so this reduces EXACTLY to the straight line `_swimClear`
+    // sampled for water. See the bow note in `_flightTo`.
+    const x = u * u * b.fx0 + 2 * u * t * b.fcx + t * t * b.fx1;
+    const z = u * u * b.fz0 + 2 * u * t * b.fcz + t * t * b.fz1;
+    // Sampled where the duck IS, rather than interpolated between the two ends.
+    // A pool and the reach below it are one hop apart and not at one level, and
+    // a bird riding a line between the endpoints would swim through the surface
+    // in the middle of the crossing.
+    b.y = this._floatY(x, z, lerp(b.fy0, b.fy1, t));
+    const dxdt = 2 * u * (b.fcx - b.fx0) + 2 * t * (b.fx1 - b.fcx);
+    const dzdt = 2 * u * (b.fcz - b.fz0) + 2 * t * (b.fz1 - b.fcz);
+    // Slower than the flying birds' 6: a duck turns by pushing water with one
+    // foot, and it is the one animal here whose heading change is visibly a
+    // manoeuvre rather than a bank.
+    b.yaw = dampAngle(b.yaw, Math.atan2(dxdt, dzdt), 3, dt);
+    b.pitch = damp(b.pitch, S.perchPitch ?? 0, 4, dt);
+    b.bank = damp(b.bank, 0, 4, dt);
+    // 1 floating, 0 paddling — the crossfade `_poseGlb` reads. Slower than the
+    // 8 a flying bird opens its wings at: a duck does not snap into a stroke,
+    // it leans into one and eases out at the far end.
+    b.fold = damp(b.fold, 0, 3, dt);
+    b.x = x; b.z = z;
+
+    if (b.ft >= 1) {
+      b.x = b.fx1; b.z = b.fz1;
+      b.y = this._floatY(b.fx1, b.fz1, b.fy1);
+      b.state = P_PERCH;
+      b.timer = lerp(S.perchS[0], S.perchS[1], this.rnd());
+    }
+  }
+
   _pose(b, mesh, dt) {
     if (b.obj) { this._poseGlb(b, dt); return; }
     const D = this._dummy, E = this._e;
@@ -1220,6 +1669,19 @@ export class TreeBirds {
    * a flamingo beats continuously in level flight, which is why this species
    * carries the fastest, shallowest `flapAmp` on the table. It is the eagle
    * this would cost something, and the eagle is still instanced.
+   *
+   * **The slots are named for their ROLE, not for the flamingo's mode.** `move`
+   * is whatever the animal does to get somewhere — a wingbeat on the flamingo,
+   * a paddle stroke on the duck — and `cycleHz` is the rate the artist authored
+   * it at. Every line below reads the same for both birds; calling the slot
+   * `fly` and then handing it a swim cycle is the kind of quiet lie that gets
+   * believed by the next person to read it.
+   *
+   * **`preen` is optional**, and the duck is why. Its pack Gesture is authored
+   * standing, with the body above the origin where its swim clips put the keel
+   * below — so it would lift a floating duck out of the water. A pose clip has
+   * to be authored in the pose it blends onto; where there is no such clip the
+   * budget is simply two ways instead of three.
    */
   _poseGlb(b, dt) {
     const G = b.spec.glb, o = b.obj, a = b.act;
@@ -1232,7 +1694,7 @@ export class TreeBirds {
     // birds five seconds after you crowd them so the payoff survives arrival;
     // six birds frozen in one identical idle is a poor thing to have travelled
     // to, and `preen` is a clip the pack already ships.
-    if (b.fold > 0.9) {
+    if (a.preen && b.fold > 0.9) {
       b.preenT -= dt;
       if (b.preenT <= 0) {
         b.preenT = 16 + this.rnd() * 30;
@@ -1253,15 +1715,15 @@ export class TreeBirds {
     // set makes the mixer average toward the rest pose, and the bird visibly
     // sinks and straightens as it takes off. See the budget note in glb_rig.js.
     const still = b.fold;
-    a.fly.setEffectiveWeight(1 - still);
-    a.preen.setEffectiveWeight(still * b.preen);
+    a.move.setEffectiveWeight(1 - still);
+    if (a.preen) a.preen.setEffectiveWeight(still * b.preen);
     a.idle.setEffectiveWeight(still * (1 - b.preen));
 
     // Beat frequency, derived the way this repo derives everything else about a
     // clip: the species table asks for a wingbeat in Hz, the asset was authored
     // at `flapHz`, and the ratio is the playback rate. Cadence here where the
     // mammals use ground speed, and the clip itself is never touched.
-    a.fly.timeScale = b.rate / G.flapHz;
+    a.move.timeScale = b.rate / G.cycleHz;
 
     b.mixer.update(dt);
   }
@@ -1339,6 +1801,14 @@ export class TreeBirds {
     const slots = this.slots[si];
     const b = slots.find((s) => !s.active) ?? slots[0];
     const S = b.spec;
+    if (S.swims) {
+      // A wide box on purpose: the harnesses drive to an anchor and ask, and
+      // the anchor is a bank rather than the middle of the water.
+      const site = this._findFloat(x, z, S, 90);
+      if (!site) return null;
+      this._floatAt(b, site, this.rnd() * Math.PI * 2);
+      return { x: b.x, y: b.y, z: b.z };
+    }
     if (S.habitat === 'water') {
       const site = this._findWade(x, z, S);
       if (!site) return null;
