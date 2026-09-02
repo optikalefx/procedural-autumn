@@ -13,6 +13,9 @@
 //      has, including free mode. Taking it is easy; giving it back at the right
 //      instant is the part that has bugs in it, so `handOff`/`endHandOff` live
 //      here too and photo mode talks to one pair of methods per rideable.
+//      Holding it also means owning the LENS: the rig's `_apply` is what writes
+//      `camera.fov`, and a takeover never reaches it. See the lens note in
+//      `_tick`.
 //    · **Zoom about the mount.** The wheel, with the rig's own exponential
 //      feel, clamped to a range the owner declares. The rig is taken over while
 //      mounted, so nothing else is consuming the wheel.
@@ -92,6 +95,9 @@ export class RideCamera {
     this._snap = true;
     this._camP = new THREE.Vector3();   // eye, damped
     this._camL = new THREE.Vector3();   // look target, damped
+    // The rig we took the camera from, kept because `_tick` has to read its
+    // `fov` every frame — see the lens note in `_tick`.
+    this._rig = null;
   }
 
   /** Centre the head and cut rather than ease on the next frame. Called on
@@ -109,7 +115,7 @@ export class RideCamera {
 
   /** Mount the camera. The rig eases nothing — `_tick` runs from the frame
    *  after this, and `reset()` decides whether its first frame is a cut. */
-  take(rig) { rig?.takeCamera?.((dt) => this._tick(dt)); }
+  take(rig) { this._rig = rig ?? null; rig?.takeCamera?.((dt) => this._tick(dt)); }
 
   /** Give the camera back to the rig, whatever state we are in.
    *
@@ -120,6 +126,7 @@ export class RideCamera {
    *  means no future rideable can forget. */
   release(rig) {
     this.handedOff = false;
+    this._rig = null;
     this.ctx.camera?.up?.set(0, 1, 0);
     rig?.takeCamera?.(null);
   }
@@ -129,6 +136,34 @@ export class RideCamera {
   _tick(dt) {
     const cam = this.ctx.camera;
     const input = this.ctx.input;
+
+    // ── the lens ────────────────────────────────────────────────────────────
+    // `CameraRig._apply` is the only thing in the game that writes `cam.fov`
+    // from `rig.fov`, and it is exactly what a takeover skips: while we hold
+    // the camera, `lateUpdate` returns at the takeover branch and never
+    // reaches it. Nothing here used to touch the fov, so the camera kept
+    // whatever angle the last writer had left on it — and photo mode is a
+    // writer. Fit the 200-400 aboard, press F to leave, and the ride came back
+    // at 3 degrees and stayed there for the rest of the trip: the rail does
+    // restore `rig.fov` on its way out (`hud_photo.setActive`), there was just
+    // nobody left to apply it (user, 2026-09-02). Measured 49.5 degrees in,
+    // 2.98 out, against 49.5 in and back to 49.5 on land.
+    //
+    // So this owns the fov for as long as it owns the camera, the same way
+    // `ScopeView` and `RoastView` own theirs. It TRACKS the rig's number
+    // rather than a value remembered at `take()`, because `take()` also runs
+    // on the way back FROM photo mode, where the camera's own fov is the
+    // telephoto and the rig's is the truth. Mounted, the rig's modes are not
+    // running and its `fov` does not move, so every other frame this is a
+    // no-op — which is what it should be: a ride camera has no lens of its own.
+    // Above the mount's `!p` bail-out on purpose; a boat that has sunk out from
+    // under the pose must not also leave the lens wrong.
+    const fov = this._rig?.fov;
+    if (fov > 0 && Math.abs(cam.fov - fov) > 0.01) {
+      cam.fov = fov;
+      cam.updateProjectionMatrix();
+    }
+
     // Wheel zoom, the same exponential feel as the rig's.
     const wheel = input.mouse.wheel;
     if (wheel) {
