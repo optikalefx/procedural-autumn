@@ -3,9 +3,9 @@
     Blender -b assets/models/Animals_v3.0.blend --python tools/build_moose_blend.py
 
 Writes `assets/models/moose_pack.blend`. Sixth mammal on this path; the shape of
-it is `build_deer_blend.py` (two meshes re-parented onto one skeleton) and the
-machinery is `pack_rig_kit.py`. Read the `add-new-animation-to-glb` skill before
-changing anything here.
+it is `build_goat_blend.py` (one mesh, keep what the pack ships and solve the
+rest) and the machinery is `pack_rig_kit.py`. Read the `add-new-animation-to-glb`
+skill before changing anything here.
 
 ## One mesh: the BULL, and nothing else ships
 
@@ -46,22 +46,22 @@ names alone say it is fine.
                                   the goat, a forage on the raccoon and a REAR
                                   on the bear, so which of graze/alert it can
                                   fill is per-animal.
-    Moose_Walk     30f -> walk    kept. Duty 0.40/0.37/0.13/0.43, marginal
-                                  against the 0.5 that DEFINES a walk and in the
-                                  same band as the goat's 0.50/0.37/0.40/0.43
-                                  and better than the deer's
-                                  0.25/0.30/0.23/0.10, both of which ship. The
-                                  caveat that buys is written out in full in
-                                  `mammals/moose.js`.
     Moose_Run      18f -> run     kept, and it is the LEAP. Duty
                                   0.39/0.39/0.22/0.28 is an animal in the air,
                                   which is what a bound is; reading that as
                                   "badly planted" is what cost the deer a day
                                   and produced a worse animation.
 
-    trot                          SOLVED here. Nothing in the pack has a trot —
-                                  checked across all 233 actions.
-    alert                         AUTHORED here. There is one Gesture per animal
+    Moose_Walk     30f -> DROPPED, and solved from scratch. The measurement that
+                                  decided it is on `KEEP` below, at length,
+                                  because dropping a pack clip is a thing this
+                                  repo has been wrong about twice.
+
+    walk           28f            SOLVED here. Lateral sequence, duty 0.62.
+    trot           13f            SOLVED here. Diagonal pairs, duty 0.45.
+                                  Nothing in the pack has a trot — checked
+                                  across all 233 actions.
+    alert         120f            AUTHORED here. There is one Gesture per animal
                                   and it is the graze, so the alert has nowhere
                                   else to come from.
 
