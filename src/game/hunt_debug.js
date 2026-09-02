@@ -190,8 +190,10 @@ export function installHuntDebug(ctx) {
         '__dbg.resetHunt()   wipe the sheet',
         '__dbg.state()       what the save thinks',
         '',
-        'URL flags:  ?hunt=17   set the sheet at boot',
-        '            ?hunt=17&bigfoot=55   …and put one in front of you',
+        'URL flags:  ?hunt=17       set the sheet at boot',
+        '            ?hunt=reveal   play the mystery reveal on load',
+        '            ?hunt=win      play the win, stamp and all',
+        '            ?bigfoot=55    put one 55 m in front of you',
       ];
       console.log(lines.join('\n'));
       return lines.length;
@@ -206,8 +208,15 @@ export function installHuntDebug(ctx) {
   // surface stops being used.
   const p = new URLSearchParams(location.search);
   if (p.has('hunt')) {
-    const n = parseInt(p.get('hunt'), 10);
-    if (Number.isFinite(n)) dbg.sheet(n);
+    const v = (p.get('hunt') ?? '').trim();
+    const n = parseInt(v, 10);
+    // `reveal` and `win` are the two CEREMONIES, and they run on a timer rather
+    // than inline: `HUD.maybeShowIntro` opens the book by itself on a first
+    // run, and both of these shut it before they start (see `openWith`).
+    // Shutting a book on the frame it opened is a fight nobody wins, so they
+    // wait for it to have had its moment first.
+    if (v === 'reveal' || v === 'win') setTimeout(() => dbg[v](), 1400);
+    else if (Number.isFinite(n)) dbg.sheet(n);
   }
   if (p.has('bigfoot')) {
     const d = parseFloat(p.get('bigfoot'));
