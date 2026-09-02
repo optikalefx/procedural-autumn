@@ -292,7 +292,11 @@ function buildOptionBar(entry) {
   if (entry.poses) {
     const sel = el('select');
     for (const p of entry.poses) sel.append(new Option(p.label, p.key));
-    sel.value = s.opts.pose ?? 'stand';
+    // The entry's own first pose, not the literal 'stand'. `ANIMAL_POSES` does
+    // begin with `stand`, so the animals are unaffected; the birds' lists never
+    // had it, so their select rendered blank while the card behind it was
+    // correctly showing pose[0] — the control disagreeing with the card.
+    sel.value = s.opts.pose ?? entry.poses[0].key;
     sel.addEventListener('change', () => {
       s.opts = { ...s.opts, pose: sel.value };
       select(entry.id);

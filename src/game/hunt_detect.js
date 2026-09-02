@@ -46,6 +46,7 @@
 //     eagle, perched 2.43       18.6      18.6      130
 //     flamingo       2.10       16.2      16.2      130
 //     owl, perched   1.41       10.9      10.9      130
+//     duck, floating 0.97        7.5       7.5       130
 //
 //  A four-pixel deer in the corner is rejected by arithmetic rather than by a
 //  distance somebody guessed. The "height" column is the subject's own, and
@@ -264,6 +265,32 @@
 //  anchors refuse it. Walking `__anchorAt('river', i)` outward, the fifth is
 //  the first that takes one. A run that gives up after one anchor reports "the
 //  flamingo cannot be measured", which is a statement about the harness.
+//
+//  ── the duck is the closest bird on the sheet, and that is the animal ───────
+//
+//  7.5 m against the flamingo's 16.2, on birds drawn at the same 3x life. The
+//  gate reads HEIGHT and a floating duck is 0.97 m of bird over the water where
+//  a flamingo is 2.10 m of neck and leg — the raccoon-and-rabbit row of the
+//  header again, with the difference that a duck is not merely low but a fifth
+//  of it under the water. Nothing here needed changing for it: `unitR` is
+//  measured off the dry body alone (`tools/build_duck_blend.py`), so the fifth
+//  of the animal below the surface is never counted toward a height nobody can
+//  photograph.
+//
+//  Measured on all four bearings at the same 6.8 m for the smallest duck the
+//  table draws, which is what a bird floating in the open should give — there
+//  is no terrain to cut the line and no perch height to lose it over. Across
+//  the species' whole size draw, as camera-to-subject like the column above:
+//  1.55 m of duck counts from 6.6 m, 1.75 from 7.5, 1.95 from 8.4, against a
+//  predicted 6.6 / 7.5 / 8.3. The three agree because there is nothing in the
+//  way of any of them.
+//
+//  Seven metres is a shot from a boat and it is reachable, which is the test
+//  the squirrel's 2.7 m already set. It is reachable for a second reason too,
+//  and that one is in the species table rather than here: this bird's startle
+//  radius is 11 m but `_step` only counts a threat moving over 4 m/s, so a
+//  canoe paddled at a canoe's speed can come as close as it likes. The hint on
+//  the sheet says exactly that.
 //
 //  ── where the photographer is ───────────────────────────────────────────────
 //

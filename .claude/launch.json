@@ -91,6 +91,32 @@
         "--strictPort"
       ],
       "port": 5202
+    },
+    {
+      "name": "lily-pads",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5253",
+        "--strictPort"
+      ],
+      "port": 5253
+    },
+    {
+      "name": "duck-glb",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5248",
+        "--strictPort"
+      ],
+      "port": 5248
     }
   ]
 }

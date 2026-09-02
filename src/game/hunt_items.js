@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  hunt_items — the checklist. Eighteen lines in a journal, and nothing else.
+//  hunt_items — the checklist. Nineteen lines in a journal, and nothing else.
 //
 //  This is the only file in the hunt that a person would ever want to read as
 //  prose, so it is written as prose: an `id` the machine uses, a `subject` that
@@ -43,8 +43,13 @@
 //    `src/wildlife/animal_species.js`      SPECIES — the six wild mammals
 //    `src/wildlife/mammals/dog.js`         DOG_SPECIES — the camp dog, which is
 //                                          deliberately NOT in SPECIES
-//    `src/wildlife/birds/tree_birds.js`    TREE_BIRD_SPECIES[].key — the four
-//                                          perch-and-fly birds
+//    `src/wildlife/birds/tree_birds.js`    TREE_BIRD_SPECIES[].key — the five
+//                                          perch-and-fly birds, the duck
+//                                          included: it is on that table and
+//                                          streamed by that file, and the only
+//                                          thing separating it from the other
+//                                          four is that it swims to where it is
+//                                          going instead of flying
 //    `src/wildlife/fireflies.js`           the night swarm
 //    `src/world/TerrainGen.js:_waterfalls` the falls, baked into the world
 //
@@ -346,6 +351,30 @@ export const HUNT_ITEMS = [
     hint: 'they keep to two islands. Take the boat',
     animal: true,
   },
+  // "White" because that is what the asset is, and a sheet that says mallard
+  // over a Pekin is a field guide that lies. The pack's model is a farmyard
+  // white duck with an orange bill; it is what floats on this lake, so it is
+  // what the line asks for.
+  //
+  // The only line on the sheet whose subject is plural, and it is not a slip.
+  // `TREE_BIRD_SPECIES` gives this species a `raft`, so what the valley puts in
+  // front of the player is three or four birds together on one piece of water
+  // — never the single duck the singular would promise. The detector still
+  // counts ONE (see `treeBirds` in `hunt_detect.js`, which breaks on the first
+  // bird of a species it can see), so the plural describes the sight and not
+  // the rule; a player who frames the group has satisfied both readings anyway.
+  //
+  // "Get close" is doing the same work the squirrel's and raccoon's hints do.
+  // A floating duck is a LOW animal — 0.98 m of it above the water at the size
+  // this game draws one — and MIN_SHARE reads height, so the shot counts from
+  // about 7 m. That is a shot you take from a boat, and the hint says so
+  // rather than letting the player try it from the bank.
+  {
+    id: 'duck',
+    subject: 'a raft of white ducks',
+    hint: 'open water, in a group. Paddle right up — they will let you',
+    animal: true,
+  },
 
   // ── the set-pieces: places and moments, not animals ───────────────────────
   {
@@ -430,9 +459,9 @@ export const HUNT_SHEET = HUNT_ITEMS.filter((it) => !it.mystery);
 export const HUNT_MYSTERY = HUNT_ITEMS.find((it) => it.mystery) ?? null;
 
 /**
- * The animal lines, and only those: the eleven the dash's paw counts — twelve
- * once the mystery is open, which is the one moment in the game that number
- * goes UP by a line rather than down by a find. `hunt_store.animalTotal` owns
+ * The animal lines, and only those: the twelve the dash's paw counts —
+ * thirteen once the mystery is open, which is the one moment in the game that
+ * number goes UP by a line rather than down by a find. `hunt_store.animalTotal` owns
  * the switch; this list carries all twelve and says nothing about when.
  *
  * The dash used to read "0 of 12" against the LANDMARK list in `HUD.js` — the
@@ -449,7 +478,7 @@ export const HUNT_MYSTERY = HUNT_ITEMS.find((it) => it.mystery) ?? null;
  * flagged. Their line sits under "places and moments, not animals" because the
  * subject is "fireflies over the meadow": the detector counts a SWARM (see
  * `FF_MIN` in `hunt_detect.js`), so what the sheet asks for is a lit meadow
- * rather than a portrait of an insect. The paw counts the eleven lines where
+ * rather than a portrait of an insect. The paw counts the twelve lines where
  * you photograph a creature.
  */
 export const HUNT_ANIMALS = HUNT_ITEMS.filter((it) => it.animal);

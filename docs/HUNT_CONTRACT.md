@@ -72,7 +72,7 @@ export const HUNT_ITEMS = [
 the journal prints after "Photo of ". Order is the order on the page.
 
 Required items: every mammal (`deer, bear, rabbit, fox, squirrel, raccoon`),
-every perch-and-fly bird (`baldEagle, heron, flamingo, owl`), plus
+every perch-and-fly bird (`baldEagle, heron, flamingo, duck, owl`), plus
 `highCamp` ("a high mountain campsite"), `burntMallow` ("an over-roasted
 marshmallow"), `fireflies`, `waterfall`.
 

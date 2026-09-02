@@ -555,12 +555,19 @@ function glbAnimalEntry(mod, path, key, sp, v, vi) {
   };
 }
 
-// Wading and flying, the two poses the waders have always been shown in. They
-// are the two states `tree_birds._step` actually has, so between them they are
-// the whole bird.
+// Settled and travelling, the two poses the hand-authored birds have always
+// been shown in. They are the two states `tree_birds._step` actually has, so
+// between them they are the whole bird — and `move` is its own word rather than
+// `fly` for the reason `_poseGlb` gives: the duck's travelling state is a
+// paddle stroke, and a field named for the flamingo's mode would be wrong on
+// half the cast.
 const WADER_POSES = [
-  { key: 'wading', label: 'Wading', fly: 0 },
-  { key: 'flight', label: 'Flight', fly: 1 },
+  { key: 'wading', label: 'Wading', move: 0 },
+  { key: 'flight', label: 'Flight', move: 1 },
+];
+const SWIM_POSES = [
+  { key: 'floating', label: 'Floating', move: 0 },
+  { key: 'paddling', label: 'Paddling', move: 1 },
 ];
 
 /**
@@ -586,28 +593,40 @@ function treeBirdGlbEntries(mod, path) {
     group: groupOf(path),
     family: 'Birds',
     file: path,
-    call: `fitGlbBird(await load('${S.glb.url}'), TREE_BIRD_SPECIES['${S.key}'].glb, span)`,
-    poses: WADER_POSES,
+    call: `fitGlbBird(await load('${S.glb.url}'), TREE_BIRD_SPECIES['${S.key}'].glb, size)`,
+    poses: S.swims ? SWIM_POSES : WADER_POSES,
     async build(_seed, opts = {}) {
       const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
       const G = S.glb;
       const gltf = await new GLTFLoader().loadAsync(G.url);
       const clips = mod.resolveBirdClips(S.key, G, gltf.animations);
-      const span = (S.wingspan[0] + S.wingspan[1]) * 0.5;
+      // `birdSize`, not `S.wingspan`: the duck states a `length` because it has
+      // no wingspan anybody could measure. Read through the same helper the
+      // valley scales by, so this card cannot disagree with what is out there.
+      const range = mod.birdSize(S);
+      const span = (range[0] + range[1]) * 0.5;
       const { obj, mixer, act, scale } = mod.fitGlbBird(gltf.scene, clips, G, span);
 
-      const pose = WADER_POSES.find((p) => p.key === (opts.pose ?? 'wading')) ?? WADER_POSES[0];
-      // The same three weights `_poseGlb` writes, and normalised for the same
-      // reason: an unnormalised set averages the mixer toward the rest pose.
-      act.fly.setEffectiveWeight(pose.fly);
-      act.idle.setEffectiveWeight(1 - pose.fly);
-      act.preen.setEffectiveWeight(0);
-      // Mid of the species' own wingbeat range over the clip's authored rate —
+      const POSES = S.swims ? SWIM_POSES : WADER_POSES;
+      const pose = POSES.find((p) => p.key === (opts.pose ?? POSES[0].key)) ?? POSES[0];
+      // The same weights `_poseGlb` writes, and normalised for the same reason:
+      // an unnormalised set averages the mixer toward the rest pose. `preen` is
+      // optional there and optional here — see the duck's row.
+      act.move.setEffectiveWeight(pose.move);
+      act.idle.setEffectiveWeight(1 - pose.move);
+      act.preen?.setEffectiveWeight(0);
+      // Mid of the species' own cadence range over the clip's authored rate —
       // the same ratio the game plays it at.
-      const beat = (S.flapHz[0] + S.flapHz[1]) * 0.5;
-      act.fly.timeScale = beat / G.flapHz;
-      obj.position.y = pose.fly ? span * 0.9 : 0;
+      const beat = (mod.birdRateRange(S)[0] + mod.birdRateRange(S)[1]) * 0.5;
+      act.move.timeScale = beat / G.cycleHz;
+      // A flying bird hovers at 0.9 x span, proportional rather than a fixed
+      // 1.3 m so a 3x bird does not bury its trailing legs in the floor. A
+      // swimmer is at the same height in both of its poses — the water — so the
+      // studio floor stands in for the surface and neither pose lifts.
+      obj.position.y = (!S.swims && pose.move) ? span * 0.9 : 0;
 
+      const dim = S.swims ? 'bill to tail' : 'wingspan';
+      const cad = S.swims ? 'stroke' : 'beat';
       const root = new THREE.Group();
       root.add(obj);
       return {
@@ -616,9 +635,9 @@ function treeBirdGlbEntries(mod, path) {
         dispose() { mixer.stopAllAction(); mixer.uncacheRoot(mixer.getRoot()); },
         notes: [
           `${G.url}`,
-          `${span.toFixed(2)} m wingspan · x${scale.toFixed(3)} off a ${G.span} m model`,
-          `clips ${Object.values(G.clips).join(', ')} · beat ${beat.toFixed(2)} Hz `
-            + `at x${(beat / G.flapHz).toFixed(2)} of the authored ${G.flapHz} Hz`,
+          `${span.toFixed(2)} m ${dim} · x${scale.toFixed(3)} off a ${G.span} m model`,
+          `clips ${Object.values(G.clips).join(', ')} · ${cad} ${beat.toFixed(2)} Hz `
+            + `at x${(beat / G.cycleHz).toFixed(2)} of the authored ${G.cycleHz} Hz`,
           `one mesh, one material — one draw call per bird`,
         ],
       };
@@ -1102,10 +1121,12 @@ const ADAPTERS = [
   {
     // The perch-and-fly birds. Only the hand-authored ones get cards from here:
     // the lofted three arrive as ordinary `build*` props out of their own model
-    // files, which is where their geometry lives. The flamingo has no such
-    // file — it is a GLB and a row in this table — so its card is built here.
+    // files, which is where their geometry lives. The flamingo and the duck
+    // have no such file — each is a GLB and a row in this table — so their
+    // cards are built here.
     path: '/src/wildlife/birds/tree_birds.js',
-    claims: ['TREE_BIRD_SPECIES', 'TreeBirds', 'fitGlbBird', 'resolveBirdClips'],
+    claims: ['TREE_BIRD_SPECIES', 'TreeBirds', 'fitGlbBird', 'resolveBirdClips',
+             'birdSize', 'birdRateRange'],
     entries: treeBirdGlbEntries,
   },
 ];

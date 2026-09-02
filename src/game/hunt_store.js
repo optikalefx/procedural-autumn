@@ -240,8 +240,8 @@ class HuntStore {
   //
   // Everything below counts the mystery only once it is OPEN, and the reason is
   // in `hunt_items.js` over that row: a total that included a hidden line would
-  // tell a player at seventeen that there were nineteen. So `total`, `complete`
-  // and `animalTotal` all move by one at the moment the eighteenth line is
+  // tell a player at eighteen that there were twenty. So `total`, `complete`
+  // and `animalTotal` all move by one at the moment the nineteenth line is
   // crossed off — which is also the moment the player is looking at the book,
   // and is therefore the moment for a number to change under them.
   //
@@ -260,9 +260,9 @@ class HuntStore {
    * rather than re-deriving it: the journal paints its back leaf off it, the
    * HUD arms `Wildlife.bigfoot` off it, and the dash's paw grows by one.
    *
-   * Deliberately not "`doneCount` >= 18": `doneCount` walks the stored keys, and
-   * a save carrying a crossed-off bigfoot from a later version would satisfy an
-   * 18 test with only seventeen printed lines found.
+   * Deliberately not "`doneCount` >= 19": `doneCount` walks the stored keys, and
+   * a save carrying a crossed-off bigfoot from a later version would satisfy a
+   * 19 test with only eighteen printed lines found.
    */
   get mysteryOpen() {
     for (const it of HUNT_SHEET) if (!this.data.items[it.id]) return false;
@@ -299,7 +299,7 @@ class HuntStore {
   doneCount() { return Object.keys(this.data.items).length; }
   /**
    * How many animals there are on the sheet — what the dash's paw counts
-   * against. Eleven, and twelve once the secret is out: the one number in the
+   * against. Twelve, and thirteen once the secret is out: the one number in the
    * game that grows.
    */
   get animalTotal() {
