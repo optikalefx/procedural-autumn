@@ -2,7 +2,7 @@
 /**
  * Look test for a hand-authored animal — see src/wildlife/glb_rig.js.
  *
- *   AUTUMN_URL=http://127.0.0.1:5203 node tools/_scratch/glblook.mjs shots/foxlook [species]
+ *   AUTUMN_URL=http://127.0.0.1:5203 node tools/_scratch/glblook.mjs shots/foxlook [species] [scale]
  *
  * `shot.mjs` frames the landscape; this frames one animal. It boots the game
  * once, finds a flat open patch, puts a group of the named species on it, and
@@ -16,6 +16,15 @@
  *
  * One page load for every frame on purpose: re-booting per shot pays the bake
  * each time and, worse, would re-roll the animal's position between shots.
+ *
+ * `scale` multiplies every camera distance and height below, and it exists
+ * because the numbers were derived on a 0.62 m fox and are a framing rather
+ * than a formula. They hold from the raccoon to the deer and they do not hold
+ * on a 3 m moose, which came back as six photographs of a shoulder. It defaults
+ * to 1 rather than being derived from `glb.height` on purpose: deriving it
+ * would silently re-frame every animal already captured through this tool, and
+ * a look test whose output moves under you is not a look test. Pass roughly
+ * `height / 0.62` — 2.2 for the moose.
  */
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
@@ -23,6 +32,7 @@ import { mkdirSync } from 'node:fs';
 const URL = (process.env.AUTUMN_URL || 'http://localhost:5178') + '?seed=20261018&car=camper&quality=high';
 const OUT = process.argv[2] || 'shots/glblook';
 const KEY = process.argv[3] || 'fox';
+const Z = Number(process.argv[4] || 1);
 mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch({
@@ -199,7 +209,7 @@ for (const gait of ['walk', 'trot', 'run']) {
   await page.evaluate(({ KEY, gait }) => window.__systems.wildlife.debugGait(KEY, gait), { KEY, gait });
   await page.waitForTimeout(700);
   await weights(gait);
-  for (let i = 0; i < 6; i++) await trackShot(`${gait}_${i}`, { dist: 4.2, height: 0.66, wait: 240 });
+  for (let i = 0; i < 6; i++) await trackShot(`${gait}_${i}`, { dist: 4.2 * Z, height: 0.66 * Z, lookY: 0.32 * Z, wait: 240 });
 }
 await page.evaluate(() => window.__systems.wildlife.debugGait(null));
 
@@ -217,15 +227,15 @@ for (const [name, st] of [['graze', 1], ['alert', 3]]) {
   }, { KEY, st });
   await page.waitForTimeout(1400);
   await weights(name);
-  await trackShot(`pose_${name}`, { dist: 3.0, height: 0.52, lookY: 0.28, fov: 38, wait: 300 });
+  await trackShot(`pose_${name}`, { dist: 3.0 * Z, height: 0.52 * Z, lookY: 0.28 * Z, fov: 38, wait: 300 });
 }
 
 // ── 3. the stand clip, front and side ───────────────────────────────────────
 await place({ count: 1, state: 0 });                       // ST.IDLE
 await page.evaluate(() => window.__systems.wildlife.debugFreeze(true));
 await page.waitForTimeout(700);
-await frame('stand_front', { dist: 3.4, height: 0.62, yaw: 0, lookY: 0.34, fov: 38, wait: 500 });
-await frame('stand_side', { dist: 3.4, height: 0.48, yaw: Math.PI / 2, lookY: 0.32, fov: 38, wait: 400 });
+await frame('stand_front', { dist: 3.4 * Z, height: 0.62 * Z, yaw: 0, lookY: 0.34 * Z, fov: 38, wait: 500 });
+await frame('stand_side', { dist: 3.4 * Z, height: 0.48 * Z, yaw: Math.PI / 2, lookY: 0.32 * Z, fov: 38, wait: 400 });
 await page.evaluate(() => window.__systems.wildlife.debugFreeze(false));
 
 // ── 4. the coats, side by side ──────────────────────────────────────────────
@@ -234,7 +244,7 @@ await page.evaluate(() => window.__systems.wildlife.debugFreeze(false));
 await place({ count: 3, state: 0 });
 await page.evaluate(() => window.__systems.wildlife.debugFreeze(true));
 await page.waitForTimeout(800);
-await frame('coats', { dist: 6.0, height: 1.0, yaw: 0, lookY: 0.30, fov: 44, wait: 500 });
+await frame('coats', { dist: 6.0 * Z, height: 1.0 * Z, yaw: 0, lookY: 0.30 * Z, fov: 44, wait: 500 });
 await page.evaluate(() => window.__systems.wildlife.debugFreeze(false));
 
 // ── 5. at the range the player actually sees one ────────────────────────────
@@ -247,7 +257,7 @@ await place({ count: 1, state: 0 });
 // animal read from above is a different legibility question from the one the
 // player asks.
 for (const d of [12, 25, 45]) {
-  await trackShot(`range_${d}m`, { dist: d, height: 1.5, lookY: 0.3, fov: 50, side: 1,
+  await trackShot(`range_${d}m`, { dist: d, height: 1.5 * Z, lookY: 0.3 * Z, fov: 50, side: 1,
                                    wait: 260, clearSight: true });
 }
 

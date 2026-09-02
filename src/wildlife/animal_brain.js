@@ -47,9 +47,16 @@ export const ST = {
   PERCH:  8,
 };
 
-// Water deeper than this is off limits to everything, always. Placement, wander
-// targets and the per-step probe all use the same number, because "the deer is
-// standing in the river" has been shipped by other authors here more than once.
+// Water deeper than this is off limits. Placement, wander targets and the
+// per-step probe all use the same number, because "the deer is standing in the
+// river" has been shipped by other authors here more than once.
+//
+// It used to say "off limits to everything, always", and the moose is why it no
+// longer does. A species may raise it with `brain.wade`, and exactly one does:
+// this number is the depth at which an animal stops being able to stand, and
+// for one that measures 2.01 m at the shoulder and eats what grows in the
+// river, 15 cm is not that depth. `_wade` below is the one reader; nothing
+// outside this file and `Wildlife`'s placement asks.
 export const WATER_MAX = 0.15;
 
 // Probe fan for local avoidance. Straight ahead first so it wins ties.
@@ -142,6 +149,15 @@ export class Brain {
     // it runs at ~7 Hz on a per-animal offset rather than every frame. At a
     // deer's top speed that is still under a metre of travel per re-plan.
     this._probeT = this.rnd() * 0.14;
+    // Boulders to steer around, for a species that declares `brain.shun`.
+    // Owned by `Wildlife._refreshShun`, which is the only writer: the query
+    // reaches into the rock scatter and that is the world layer's business,
+    // not the state machine's. Null for the whole cast except the moose, and
+    // `_rockDepth` is a null check for everybody else.
+    this.shun = null;
+    this._shunT = 0;
+    this._shunX = 0;
+    this._shunZ = 0;
     this._stuck = 0;
     this._patrolDir = this.rnd() < 0.5 ? -1 : 1;
     this._patrolI = 0;
@@ -943,8 +959,55 @@ export class Brain {
 
   get _bias() { return ((this.slot * 2654435761) % 97) / 97; }
 
+  /**
+   * How deep this species will stand in. `WATER_MAX` for the whole cast except
+   * the moose — see the note over the constant.
+   */
+  get _wade() { return this.cfg.wade ?? WATER_MAX; }
+
+  /**
+   * How far INSIDE a boulder a point is, in metres, or 0 if it is clear.
+   *
+   * `shun` is the clearance a species wants around a rock and only a species
+   * that declares one is ever tested — `this.shun` is null for everybody else,
+   * so this is a null check for the whole cast bar one animal.
+   *
+   * It exists because of a bug the moose created rather than found. Every other
+   * mammal is kept off boulders by the terrain itself: rocks sit on slopes, the
+   * probe fan already costs slope, and the two together are enough. A wading
+   * animal walks into the one place that reasoning fails — a river bed is FLAT
+   * and it is full of boulders, so nothing in the fan objected and a bull moose
+   * stood inside a midstream block.
+   *
+   * A depth rather than a boolean, and that is the important half: an animal
+   * that is ALREADY inside a rock has every probe direction blocked, and a
+   * boolean gives it no gradient to climb out along. Penetration depth makes
+   * "further out" always score better than "further in", so the fan walks it
+   * out of the rock it is standing in instead of pinning it there.
+   *
+   * The alpine pair must never declare this. They CLIMB boulders — a rock is
+   * ground to them, not an obstacle — and the two readings of the same object
+   * would fight.
+   */
+  _rockDepth(x, z) {
+    const list = this.shun;
+    if (!list || !list.length) return 0;
+    const pad = this.cfg.shun;
+    let worst = 0;
+    for (let i = 0; i < list.length; i++) {
+      const R = list[i];
+      const dx = R.x - x, dz = R.z - z;
+      const reach = R.r + pad;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= reach * reach) continue;
+      const pen = reach - Math.sqrt(d2);
+      if (pen > worst) worst = pen;
+    }
+    return worst;
+  }
+
   /** Can an animal stand here? The one definition of that, used everywhere. */
-  _dry(W, x, z) { return W.isInBounds(x, z) && W.getWaterDepth(x, z) <= WATER_MAX; }
+  _dry(W, x, z) { return W.isInBounds(x, z) && W.getWaterDepth(x, z) <= this._wade; }
 
   /**
    * How steep this species will walk on. 0.85 is the whole cast's answer and
@@ -954,9 +1017,10 @@ export class Brain {
    */
   get _slopeMax() { return this.cfg.rock?.slopeMax ?? 0.85; }
 
-  /** Dry, in bounds, and not too steep for this animal. */
+  /** Dry, in bounds, not too steep for this animal, and not in a boulder. */
   _standable(W, x, z) {
-    return this._dry(W, x, z) && W.getSlope(x, z) <= this._slopeMax;
+    return this._dry(W, x, z) && W.getSlope(x, z) <= this._slopeMax
+      && this._rockDepth(x, z) <= 0;
   }
 
   _span(r) { return lerp(r[0], r[1], this.rnd()); }
@@ -1045,15 +1109,42 @@ export class Brain {
       }
     }
     const slopeMax = this._slopeMax;
+    // ── a wading animal is drawn to the water rather than merely allowed in ──
+    // `wade` alone only says the river is not a wall, and "not a wall" is not
+    // what a moose is: it feeds standing in one. Without this the animal keeps
+    // to the bank because every other term in the steering mildly prefers dry
+    // ground, and the whole point of the species — three animals, every home on
+    // a river — never shows.
+    //
+    // So a wading species keeps the first LEGAL candidate as a fallback and
+    // goes on looking for a WET one, taking the wet target if any of the six
+    // was in the shallows. Not a new state and not a drive: it is a preference
+    // inside the pick the animal was making anyway, so nothing downstream has
+    // to know about it. `depth > 0.15` rather than `> 0` because a damp margin
+    // is not the river.
+    const wants = !!c.wade;
+    let dryX = 0, dryZ = 0, dry = false;
     for (let i = 0; i < 6; i++) {
       const a = this.rnd() * Math.PI * 2;
       const r = c.wanderRadius * (0.25 + 0.75 * this.rnd());
       const x = this.home.x + Math.sin(a) * r;
       const z = this.home.z + Math.cos(a) * r;
       if (!W.isInBounds(x, z)) continue;
-      if (W.getWaterDepth(x, z) > WATER_MAX) continue;
+      const depth = W.getWaterDepth(x, z);
+      if (depth > this._wade) continue;
       if (W.getSlope(x, z) > slopeMax) continue;
+      if (this._rockDepth(x, z) > 0) continue;
+      if (wants && depth <= WATER_MAX) {
+        if (!dry) { dryX = x; dryZ = z; dry = true; }
+        continue;
+      }
       this.target.set(x, 0, z);
+      this.state = ST.WANDER;
+      this.timer = this._span(c.walkTime);
+      return;
+    }
+    if (dry) {
+      this.target.set(dryX, 0, dryZ);
       this.state = ST.WANDER;
       this.timer = this._span(c.walkTime);
       return;
@@ -1088,9 +1179,30 @@ export class Brain {
         else {
           const depth = W.getWaterDepth(x, z);
           // Hard wall at the waterline; a soft cost in the shallows so animals
-          // prefer to stay dry without being unable to cross a trickle.
-          if (depth > WATER_MAX) s -= 100;
-          else s -= depth * 6;
+          // prefer to stay dry without being unable to cross a trickle. The
+          // wall is where this animal's feet leave the bed, which for a moose
+          // is five times further out — and the soft cost is unchanged, so a
+          // wading moose still prefers the bank and still has to be given a
+          // reason to be in the water. Its reason is that its home is on the
+          // waterline and its river IS the line it patrols.
+          if (depth > this._wade) s -= 100;
+          // The soft cost, and it is the difference between "must not get wet"
+          // and "lives in the river". 6 per metre against a fan whose whole
+          // angle term is worth 1.53 makes a 20 cm puddle expensive, which is
+          // right for a deer and is why the moose reported 0% of a 90 s soak in
+          // the water despite one of its three homes being IN 0.53 m of it. At
+          // 1.0 the same animal is roughly indifferent to standing depth and
+          // lets the rest of the steering decide, which is what a wading animal
+          // should be.
+          else s -= depth * (this.cfg.wade ? 1.0 : 6);
+          // Boulders, for the one species that wades. A cost proportional to
+          // how far inside the rock the probe lands, so it is both an obstacle
+          // to steer round and a gradient out of one already stood in. 22 per
+          // metre puts a half-metre overlap on a par with the slope term's
+          // worst and well under the waterline's hard 100 — a moose will cross
+          // the corner of a boulder to get out of deep water, which is the
+          // right priority.
+          s -= this._rockDepth(x, z) * 22;
           const slope = W.getSlope(x, z);
           // Where steepness starts costing. 0.45 is right for everything that
           // lives on the valley floor and is nonsense on a talus fan, where

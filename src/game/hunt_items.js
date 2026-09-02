@@ -289,6 +289,32 @@ export const HUNT_ITEMS = [
     animal: true,
   },
   {
+    // Added after the sheet had eighteen lines on it, which the block above
+    // argues against — a player on eighteen of eighteen who finds themselves on
+    // eighteen of nineteen has been robbed of a finished book. It goes on
+    // anyway, and the reason is the same one that put `burntMallow` on the
+    // sheet before its feature existed: a checklist that is missing an animal
+    // the game plainly contains is worse than one that grew. There are three
+    // moose in the valley and they are the biggest thing in it.
+    //
+    // The hint is `hunt_detect`'s rule applied rather than flavour. Measured
+    // through the real gate on the shipped GLB, a bull's half-height is 2.25 m
+    // and its frame share runs 3.75/d — so it clears MIN_SHARE at **25.2 m** on
+    // the wide lens, the longest reach of any mammal on the sheet and nearly
+    // twice the deer's 14. Getting close enough is therefore not what makes
+    // this line hard, and the hint does not pretend it is.
+    //
+    // FINDING one is: three home sites on 9.4 km2, every one of them on the
+    // bank of a substantial river, and no two within 850 m. So both clauses go
+    // on where, and neither on how close. It is the only line on the sheet that
+    // quotes a POPULATION, which is the honest thing to tell somebody who could
+    // otherwise drive the valley for an hour assuming they were unlucky.
+    id: 'moose',
+    subject: 'a moose',
+    hint: 'the big rivers, and only three of them in the whole valley',
+    animal: true,
+  },
+  {
     id: 'campDog',
     subject: "the dog at somebody's camp",
     hint: 'most camps come with one',

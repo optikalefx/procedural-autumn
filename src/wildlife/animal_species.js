@@ -45,6 +45,7 @@ import { SQUIRREL } from './mammals/squirrel.js';
 import { RACCOON } from './mammals/raccoon.js';
 import { GOAT } from './mammals/goat.js';
 import { RAM } from './mammals/ram.js';
+import { MOOSE } from './mammals/moose.js';
 
 export { createHideMaterial, setHideSilScale, SIL_FOV_REF }
   from './mammals/hide.js';
@@ -80,6 +81,11 @@ export const SPECIES = {
   // `sites` count against the cap is the check.)
   goat: GOAT,
   ram: RAM,
+  // Last of all, and it is the one species the cap cannot hurt: there are
+  // exactly three moose on the map and `_mooseSites` puts them down BEFORE this
+  // loop runs, off the river polylines rather than off the suitability field.
+  // Its `CFG.perKm2` is 0, so the grid pass below skips it entirely.
+  moose: MOOSE,
 };
 
 /** Is this species hand-authored in Blender rather than lofted from a blueprint? */

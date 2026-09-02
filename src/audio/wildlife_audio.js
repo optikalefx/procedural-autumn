@@ -26,6 +26,14 @@ const VOICE = {
   // one thing about it that says so. `throat` sits just above the tone, which
   // is the rasp; the goat's sits an octave and a half above, which is the nose.
   ram: { wave: 'sawtooth', f: 205, spread: 45, dur: 0.34, sag: 0.78, throat: 620, level: 1.05 },
+  // The moose, and it is the one call in the table whose CHARACTER is its
+  // length rather than its pitch. A cow moose's call is a long open moan that
+  // runs out slowly — nothing else here is half a second, and the header's rule
+  // ("a short call reads as an exclamation, a long one as a complaint") is what
+  // makes 0.62 the whole animal. Pitched between the ram and the bear, which is
+  // also where the animal sits by mass; `sag` is the deepest in the table
+  // because the moan genuinely falls away rather than stopping.
+  moose: { wave: 'sawtooth', f: 168, spread: 30, dur: 0.62, sag: 0.70, throat: 480, level: 1.20 },
 };
 
 export class WildlifeAudio {

@@ -118,7 +118,53 @@ const CFG = {
   // mesh. Its `live` is one under the goat's for the same reason it always
   // was — the two share a pool budget and the goat is the commoner animal.
   ram:    { spawn: 185, despawn: 230, live: 6, perKm2: 210 },
+  // ── the three moose, and the one row in this table with no density in it ──
+  // `perKm2: 0` is not a small number, it is a SWITCH: the grid pass in
+  // `_placeSites` skips any species with no density at all, and this animal is
+  // placed instead by `_mooseSites`, which walks the river polylines and puts
+  // down exactly `MOOSE_SITES` homes for the whole map, spread apart. Three
+  // animals on 9.4 km2 is not a density anybody could express here — the
+  // squirrel's 240/km2 lands 620 sites and the smallest number this column can
+  // usefully carry still lands dozens.
+  //
+  // `live: 3` therefore is not a cap that ever bites; it is the truth. And the
+  // streaming band is the widest in the cast, wider even than the bear's,
+  // because this is a 4.5 m animal with a 4.43 m rack standing at a river across
+  // a valley — the thing you stop the car for — and one that only exists inside
+  // 185 m is one nobody will ever see from the road.
+  moose:  { spawn: 190, despawn: 240, live: 3, perKm2: 0 },
 };
+
+// How many moose exist on the whole map, and how far apart they have to be.
+//
+// The user's brief, and the whole design of this species: "max qty 3 for whole
+// map, spread out, near / crossing rivers". Three is a number rather than a
+// density because at three animals a density is meaningless — the difference
+// between 2 and 4 is the difference between "rare" and "twice as rare", and
+// neither is a thing the placement field can be asked for reliably.
+//
+// 850 m on a 3072 m map means no two moose share a river reach and no drive
+// finds two of them, which is what "spread out" has to mean at this count. It
+// is a preference and not a hard rule: `_mooseSites` relaxes it rather than
+// shipping fewer than three, because a valley with two moose in it is a bug
+// nobody can see.
+const MOOSE_SITES = 3;
+const MOOSE_SPACING = 850;
+
+// The boulder search a wading animal steers by — see `Wildlife._refreshShun`.
+//
+//   SHUN_R     how far around the animal to look. Comfortably past the probe
+//              fan's own 9 m maximum reach plus the 6 m it may travel before
+//              the list is refreshed.
+//   SHUN_MIN   how big a rock has to be to be worth walking round. A 3 m animal
+//              steps over a cobble; 0.8 is roughly the size at which a boulder
+//              stops being ground texture and starts being a thing in the way,
+//              and it is the same cut `mammals/goat.js` uses for a rock worth
+//              standing on.
+//   SHUN_MOVE  re-query after this much travel, whatever the clock says.
+const SHUN_R = 24;
+const SHUN_MIN = 0.8;
+const SHUN_MOVE = 6;
 
 // Seeded firefly population inside the 60 m wrap box, per quality tier.
 //
@@ -573,10 +619,123 @@ export class Wildlife extends System {
       const edge = smoothstep(0.30, 0.46, m) * (1 - smoothstep(0.64, 0.88, m)) * 0.5;
       return clamp01((wood * 1.15 + edge) * flat * clump * (1 - smoothstep(150, 230, h)));
     }
+    if (key === 'moose') {
+      // Nothing. A moose is not scattered by this field at all — `_mooseSites`
+      // walks the river polylines and puts down three homes for the whole map,
+      // and `CFG.moose.perKm2` is 0 so the grid pass never asks. This branch
+      // exists so that it never asks by ACCIDENT either: without it the moose
+      // would fall through to the bear's clause below and quietly inherit a
+      // deep-wood scatter, which is exactly the class of bug an `if` chain
+      // ending in a default is good at hiding.
+      return 0;
+    }
     // Bear: water and cover. River sites are placed separately off the actual
     // polylines; this covers the deep-wood animal.
     const cover = smoothstep(0.55, 0.80, m);
     return clamp01((cover + river * 2.0) * flat * clump * (1 - smoothstep(150, 215, h)));
+  }
+
+  /**
+   * Where the moose live: three points on the whole map, on the bank of a real
+   * river, as far from each other as the rivers allow.
+   *
+   * A pass of its own rather than a row in the suitability field, for the same
+   * reason the bears have one — "moose at a river" is not a preference the
+   * field can express, it is the animal — and for one the bears do not have:
+   * at three individuals there is no density that means anything. A `perKm2`
+   * low enough to land three would land nought as often as it landed six.
+   *
+   * It carries its OWN random stream (`mulberry32` off the seed) rather than
+   * drawing from `_placeSites`'s. That is not fastidiousness: the shared stream
+   * is consumed in key order, so a new species that took draws from it would
+   * shift every animal placed after it and re-scatter the whole valley on every
+   * seed that already exists.
+   *
+   * Ordering is widest water first, because a moose wants the slow braided
+   * reaches with willow in them and not a headwater chute; and the first pass
+   * insists on a river each, so three moose are three rivers before they are
+   * three points. `MOOSE_SPACING` is relaxed in stages after that rather than
+   * being allowed to ship two moose — a seed whose rivers genuinely cannot hold
+   * three animals 850 m apart should still have three animals.
+   */
+  _mooseSites(W) {
+    const rng = mulberry32(SEED ^ 0x3005e1);
+    const wade = SPECIES.moose.brain.wade ?? WATER_MAX;
+    const cand = [];
+    for (const poly of (W.riverPolylines ?? [])) {
+      if (poly.length < 24) continue;
+      let flow = 0;
+      for (const p of poly) flow = Math.max(flow, p.w ?? 0);
+      // Substantial channels only, and a step above the bear's 5: a bear
+      // fishes a creek, a moose stands in a river.
+      if (flow < 7) continue;
+      for (let i = 6; i < poly.length - 6; i += 7) {
+        const p = poly[i];
+        // Step off the centreline by half the channel and a few metres more,
+        // which puts the home ON the waterline rather than back in the trees.
+        // The animal wades from there — see `brain.wade` in mammals/moose.js —
+        // so "near the river" and "crossing it" are the same home.
+        const q = poly[i + 1] ?? poly[i - 1];
+        const tx = q.x - p.x, tz = q.z - p.z;
+        const tl = Math.hypot(tx, tz) || 1;
+        const side = rng() < 0.5 ? 1 : -1;
+        const off = (p.w ?? 4) * 0.5 + 2 + rng() * 3;
+        const x = p.x - (tz / tl) * off * side;
+        const z = p.z + (tx / tl) * off * side;
+        const jitter = rng();
+        if (!W.isInBounds(x, z)) continue;
+        if (W.getWaterDepth(x, z) > wade) continue;
+        if (W.getSlope(x, z) > 0.55) continue;
+        cand.push({ x, z, poly, w: p.w ?? 4, k: jitter,
+                    seed: (rng() * 0xffffffff) >>> 0 });
+      }
+    }
+    cand.sort((a, b) => (b.w - a.w) || (a.k - b.k));
+
+    // Is a midstream boulder sitting on this spot? Asked LAZILY, only of
+    // candidates that survive the spacing rules, because it generates rock
+    // cells for ground nobody has streamed in — cheap for the handful this
+    // reaches and not for the hundred it would otherwise test.
+    //
+    // The steering (`brain.shun`) would walk an animal out of a rock anyway,
+    // but a HOME inside one is the case it cannot fix: the animal wanders back
+    // to it, so the bug returns every time the site does. `minSize` 0 for the
+    // reason `_findPerches` gives — the cutoff changes the field, so ask for
+    // everything and cut afterwards.
+    const rocky = (c) => {
+      const R = this._rocks;
+      if (!R?.rocksAround) return false;
+      if (c.rocky === undefined) {
+        _rockHits.length = 0;
+        R.rocksAround(c.x, c.z, 14, 0, _rockHits);
+        const pad = SPECIES.moose.brain.shun ?? 0;
+        c.rocky = _rockHits.some((inst) => inst.size >= SHUN_MIN
+          && Math.hypot(inst.x - c.x, inst.z - c.z) < R.reachOf(inst) + pad);
+        _rockHits.length = 0;
+      }
+      return c.rocky;
+    };
+
+    const out = [];
+    const take = (minD, freshPoly, checkRock = true) => {
+      for (const c of cand) {
+        if (out.length >= MOOSE_SITES) return;
+        if (freshPoly && out.some((o) => o.poly === c.poly)) continue;
+        if (out.some((o) => Math.hypot(o.x - c.x, o.z - c.z) < minD)) continue;
+        if (checkRock && rocky(c)) continue;
+        out.push(c);
+      }
+    };
+    take(MOOSE_SPACING, true);      // a river each, properly spread
+    take(MOOSE_SPACING, false);     // …then a second animal on a long river
+    take(MOOSE_SPACING * 0.55, false);
+    take(0, false);                 // …rather than ship fewer than three
+    take(0, false, false);          // …and a rocky home beats a missing moose
+    if (out.length < MOOSE_SITES) {
+      console.warn(`[wildlife] only ${out.length} moose sites on ${cand.length} `
+        + `river candidates; this seed has no room for ${MOOSE_SITES}`);
+    }
+    return out;
   }
 
   _placeSites() {
@@ -634,10 +793,39 @@ export class Wildlife extends System {
       ? { f: this._buildRockField(W, DF, step, half), DF, step, half }
       : null;
 
+    // ── the three moose, first of all ────────────────────────────────────────
+    // Before the grid pass, and that is the point: species are placed in key
+    // order into one capped table and a saturated cap silently deletes whatever
+    // placed last (the squirrels found this at 1400, and the census came back
+    // with zero bears). Three rows taken off the top can never be the rows that
+    // get cut, and three rows is not a cost worth reasoning about against 2400.
+    // Every draw here comes off the moose's OWN stream, `c.seed` included. Not
+    // fastidiousness: `rng` is consumed in key order by everything below, so
+    // three draws taken from it at the top would shift every animal in the
+    // valley on every seed that already exists — 1605 sites re-scattered to
+    // place 3.
+    const mooseKi = keys.indexOf('moose');
+    if (mooseKi >= 0) {
+      for (const c of this._mooseSites(W)) {
+        sx[n] = c.x; sz[n] = c.z; spec[n] = mooseKi;
+        scount[n] = 1;
+        sseed[n] = c.seed;
+        lines[n] = c.poly;
+        n++;
+      }
+    }
+
     for (let ki = 0; ki < keys.length; ki++) {
       const key = keys[ki];
       const brain = SPECIES[key].brain;
       const dens = CFG[key].perKm2 * this.mul;
+      // A species with no density is not scattered here — the moose, which
+      // `_mooseSites` has already put down off the rivers. Skipping the whole
+      // sweep rather than letting every candidate lose its `rng()` draw is
+      // deliberate: the draws are taken from the shared stream, so a species
+      // that consumed 9216 of them and placed nothing would move every animal
+      // placed after it and re-scatter the valley on every existing seed.
+      if (dens <= 0) continue;
       for (let j = 0; j < DF && n < cap; j++) {
         for (let i = 0; i < DF && n < cap; i++) {
           const x = -half + (i + 0.35 + rng() * 0.3) * step;
@@ -878,6 +1066,11 @@ export class Wildlife extends System {
     // pile on the exact stand point — which reads as a spawner, the one thing
     // the scatter exists to avoid.
     const slopeMax = climb ? climb.slopeMax : 0.9;
+    // What counts as standable water for THIS species — `WATER_MAX` for
+    // everyone but the moose. Without it the one animal whose home is on the
+    // waterline would fail every scatter attempt and fall back to the exact
+    // site point, which is a herd of one standing on a pin.
+    const wade = SPECIES[key].brain.wade ?? WATER_MAX;
 
     for (let m = 0; m < count; m++) {
       const vi = pickVariant(key, rng());
@@ -893,7 +1086,7 @@ export class Wildlife extends System {
           const r = m === 0 ? rng() * 2 : (2 + rng() * SPECIES[key].brain.herdRadius);
           x = stand.x + Math.sin(ang) * r;
           z = stand.z + Math.cos(ang) * r;
-          ok = W.isInBounds(x, z) && W.getWaterDepth(x, z) <= WATER_MAX
+          ok = W.isInBounds(x, z) && W.getWaterDepth(x, z) <= wade
             && W.getSlope(x, z) < slopeMax;
         }
         if (!ok) { x = stand.x; z = stand.z; }
@@ -909,7 +1102,11 @@ export class Wildlife extends System {
       a.brain.bind(g, m, (S.seed[si] ^ (m * 2654435761)) >>> 0);
       a.brain.reset(x, W.getHeight(x, z), z, heading, a.size);
       a.brain.home.set(stand.x, 0, stand.z);
-      if (g.line && key === 'bear') a.brain.state = ST.PATROL;
+      // Any species that walks a line, not just the bear — the moose is placed
+      // off the river polylines too and carries the same `patrol` flag. The
+      // brain's own re-entry into PATROL (`_watch`'s exit) already asked the
+      // general question; this one was the last place the bear was named.
+      if (g.line && SPECIES[key].brain.patrol) a.brain.state = ST.PATROL;
       a.rig._warm = false;
       a.rig.reset(a.brain.pos, heading, W);
       a.mesh.visible = true;
@@ -1092,7 +1289,59 @@ export class Wildlife extends System {
         bestD2 = d2; best = p;
       }
     }
-    return best ? { x: best.x, z: best.z, dist: Math.sqrt(bestD2) } : null;
+    if (best) return { x: best.x, z: best.z, dist: Math.sqrt(bestD2) };
+    return this._quarryHome(x, z, quarry);
+  }
+
+  /**
+   * The nearest HOME SITE of a named quarry, for a species rare enough that
+   * pointing only at live animals points at nothing.
+   *
+   * The paragraph above says a quarry pin "cannot know about an animal that has
+   * not been streamed in, so this is a better nudge and not a waypoint". That
+   * held while the rarest species on the map had 72 sites. It stopped holding
+   * the moment there were THREE, and the failure is total rather than partial:
+   * measured over the whole in-bounds map on the shipped seed, a point is
+   * within the moose's 190 m spawn ring of one of its three sites **3.7% of the
+   * time**. The mean distance to the nearest one is 846 m and the far corner is
+   * 2502 m. So a player who rings the moose in the journal and drives the
+   * valley sees the paw essentially never — which is what was reported, and it
+   * is the feature not working rather than the feature being restrained.
+   *
+   * The fallback is opt-in per species (`brain.trackDist`) and nothing else
+   * declares it. That matters: the deer has 261 sites and pointing at the
+   * nearest of those from anywhere would turn a nudge into a GPS, which is the
+   * concern the original paragraph is really about. At three sites there is no
+   * such concern — a bearing to one of three points on 9.4 km2 is still a long
+   * drive and still leaves the finding to the player.
+   *
+   * Three things keep it honest:
+   *
+   *  · **Live animals win.** This only runs when the loop above found nothing,
+   *    so within the spawn ring the pin is still the animal itself.
+   *  · **It points at the HOME, not the animal.** A site is where the group
+   *    sleeps; the moose wanders 55 m off it and patrols a river line, so the
+   *    pin is approximately right and is meant to be.
+   *  · **Still no distance label.** `HUD._refreshMarks` pins the paw with
+   *    `noLabel`, so this is a bearing and nothing more, however far away it
+   *    is.
+   */
+  _quarryHome(x, z, quarry) {
+    const reach = SPECIES[quarry]?.brain?.trackDist;
+    const S = this.sites;
+    if (!reach || !S) return null;
+    const ki = this.keys.indexOf(quarry);
+    if (ki < 0) return null;
+    let best = -1, bestD2 = reach * reach;
+    for (let i = 0; i < S.n; i++) {
+      if (S.spec[i] !== ki) continue;
+      const dx = S.x[i] - x, dz = S.z[i] - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= bestD2) continue;
+      bestD2 = d2; best = i;
+    }
+    return best < 0 ? null
+      : { x: S.x[best], z: S.z[best], dist: Math.sqrt(bestD2) };
   }
 
   /**
@@ -1340,9 +1589,58 @@ export class Wildlife extends System {
     if (!this._frozen) this.bigfoot?.update(dt, cam);
   }
 
+  /**
+   * The boulders one animal should steer around, refreshed on a slow clock.
+   *
+   * The sibling of `_findPerches`, and the opposite reading of the same object:
+   * that one finds rocks a goat can stand ON, this one finds rocks a moose must
+   * not walk THROUGH. A species declares one or the other and never both.
+   *
+   * Why it is not cached per SITE the way the perches are: a perch belongs to a
+   * home site and never moves, but a moose PATROLS — its river line runs for
+   * hundreds of metres and no list gathered around the home would cover the
+   * far end of it. So the query follows the animal.
+   *
+   * That makes the cost the thing to watch, and two clocks bound it. It runs
+   * only when the animal has moved 6 m since the last query or 1.6 s have
+   * passed, whichever comes first, so at a walk it is roughly once every four
+   * seconds and at a flat gallop about twice a second — for at most three
+   * animals in the world. `rocksAround` is cell-indexed, so a 24 m query is a
+   * couple of cells rather than a walk of every rock on the map (which is what
+   * `boulderNear` does, and why it is not used here).
+   *
+   * `minSize` is asked for as **0** and the size cut made afterwards, for the
+   * reason `_findPerches` spells out at length: the cutoff changes the random
+   * stream a cell is generated with, so the same cell at two cutoffs is two
+   * different fields of rock rather than a subset. Asking at 0.8 would return
+   * boulders that do not exist by the time the player can see them.
+   */
+  _refreshShun(B, dt) {
+    B._shunT -= dt;
+    const dx = B.pos.x - B._shunX, dz = B.pos.z - B._shunZ;
+    if (B._shunT > 0 && dx * dx + dz * dz < SHUN_MOVE * SHUN_MOVE) return;
+    B._shunT = 1.6;
+    B._shunX = B.pos.x; B._shunZ = B.pos.z;
+    const list = (B.shun ??= []);
+    list.length = 0;
+    const R = this._rocks;
+    if (!R?.rocksAround) return;
+    _rockHits.length = 0;
+    R.rocksAround(B.pos.x, B.pos.z, SHUN_R, 0, _rockHits);
+    for (const inst of _rockHits) {
+      if (inst.size < SHUN_MIN) continue;
+      list.push({ x: inst.x, z: inst.z, r: R.reachOf(inst) });
+    }
+    _rockHits.length = 0;
+  }
+
   /** One animal: brain, then LOD, then the gait solver. */
   _step(a, dt, W, threat, cam, camPos) {
     const B = a.brain;
+    // Before the Brain runs, so the fan and the wander picker see this frame's
+    // rocks rather than last frame's. Gated on the species declaring `shun`,
+    // which only the moose does.
+    if (B.cfg.shun) this._refreshShun(B, dt);
     if (!this._frozen) {
       const lead = B.leader ? null : a.group.members[0]?.brain ?? null;
       B.update(dt, W, threat, lead);
@@ -1563,7 +1861,7 @@ export class Wildlife extends System {
       const tx = out.x + Math.sin(a) * push;
       const tz = out.z + Math.cos(a) * push;
       if (!W.isInBounds(tx, tz)) continue;
-      if (W.getWaterDepth(tx, tz) > WATER_MAX) continue;
+      if (W.getWaterDepth(tx, tz) > (SPECIES[key].brain.wade ?? WATER_MAX)) continue;
       if (W.getSlope(tx, tz) > 0.7) continue;
       const open = this._canopy(tx, tz, 11);
       if (open < bestOpen) { bestOpen = open; bx = tx; bz = tz; moved = true; }
