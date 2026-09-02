@@ -402,11 +402,12 @@ function winStamp(g, cx, cy, R, seed, t = 1) {
     }
   };
   // Both arcs have to finish before the diamonds at three and nine o'clock, so
-  // the longer line is set smaller rather than let to run under them. The first
-  // cut had "ALL NINETEEN FOUND" spanning 136 degrees, which put its A and its
-  // D behind the two marks that are supposed to close the arcs.
+  // neither string may run much past 120 degrees of sweep. An earlier bottom
+  // line ran to 136 and put its first and last letters behind the two marks
+  // that are supposed to CLOSE the arcs — which is the whole constraint here,
+  // and the reason a longer line gets set smaller rather than let to spread.
   arc('CAMPING SEASON', R * 0.740, R * 0.130, false);
-  arc('ALL NINETEEN FOUND', R * 0.755, R * 0.092, true);
+  arc('CONGRATULATIONS', R * 0.750, R * 0.112, true);
 
   // The two diamonds that close the arcs, at three and nine o'clock.
   for (const sx of [-1, 1]) {
