@@ -19,7 +19,7 @@ import * as THREE from 'three';
 import { System } from '../core/System.js';
 import { VEG, SEED } from '../world/WorldConfig.js';
 import { createGrassMaterial, makeGrassUniforms, makeBladeGeometry, sunLevel } from '../shaders/grass_material.js';
-import { fillTile, RoadMask, STRIDE } from './grass_scatter.js';
+import { fillTile, makeGrassField, RoadMask, STRIDE } from './grass_scatter.js';
 
 // Guaranteed coverage radius of a 4×4 grid is 2 × tileSize (worst case, camera
 // at the far edge of its own tile) — every fadeOut below must finish inside it.
@@ -148,7 +148,7 @@ export class Grass extends System {
     this._queue = [];
     // Resume state for the tile currently under construction. Reused, never
     // reallocated — update() must not allocate.
-    this._st = { a: 0, n: 0, minY: 0, maxY: 0, weights: {}, deadline: 0 };
+    this._st = { a: 0, n: 0, minY: 0, maxY: 0, field: makeGrassField(), deadline: 0 };
     this._size = new THREE.Vector2();
     this._first = true;
     // A tile is built atomically, so the true worst-case frame cost is this

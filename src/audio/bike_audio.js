@@ -19,12 +19,36 @@
 //               the spokes, the fork and the down tube. That is bright, wide
 //               and fluttery, it has almost no low end, and no amount of
 //               moving a band centre on the rumble will produce it. So the two
-//               are separate voices crossfaded by `grassiness`, which the
-//               physics computes from `getSurfaceWeights` — the same call the
-//               terrain material draws itself from, so what the player is
-//               looking at is what they are hearing and the two cannot drift.
-//               It is also the same number the ROLLING RESISTANCE is built
-//               from, so the ground that sounds slow is the ground that is.
+//               are separate voices, crossfaded by how much grass is actually
+//               STANDING under the wheels.
+//
+//               That last word is the whole of the 2026-09-02 fix. The
+//               crossfade used to run on `grassiness` — the physics' 0..1
+//               reading of what the ground is MADE of, off `getSurfaceWeights`
+//               — and a wheel rut is cut through meadow, so its material is
+//               still meadow. Sampled with the real `BikePhysics` at 24 points
+//               along the road network, `grassiness` reads 0.892 there against
+//               0.886 off it: a bare track is, to that number, INDISTINGUISH-
+//               ABLE from open meadow, so riding one played the meadow whip at
+//               89% and the rumble at 11%. It saturates as well — 63% of the
+//               valley reads above 0.9 — so most of the map got one fixed
+//               sound whatever the ground looked like.
+//
+//               The number it runs on now is `grassCover`: `grassCoverAt` in
+//               grass_scatter.js, the same field the SCATTERER turns into
+//               blades per tuft, road mask and drift octaves and all. On those
+//               same 24 track points it reads 0.028, and off them 0.575 — a
+//               30 dB drop on the whip. So the bed the player is looking
+//               at is the bed they hear, and the two cannot drift, because
+//               there is only one of them. Ride into a thin drift and the
+//               whip thins with it; ride onto the track and the rumble takes
+//               over, which is a wheel rut you can hear.
+//
+//               `grassiness` still owns the ROLLING RESISTANCE — a bare rut is
+//               soft organic ground to ride on whatever is growing out of it,
+//               and that number was tuned as a whole system against the
+//               valley. So sound and handling no longer share one field; see
+//               the note in bike_physics.js.
 //
 //    freewheel  the ratchet, and it is the hero sound. It is also the one that
 //               carries information nothing else can: it plays when the rider
@@ -100,9 +124,16 @@ const FLOOR = 0.02;
 // otherwise, so the ordinary ride is untouched: at 4 m/s the grass bed computes
 // 0.053 and nothing clamps.
 //
-// The rumble is held to the same ceiling for consistency rather than because it
-// reaches it — it peaks around 0.06 — so a future retune of either voice cannot
-// quietly reintroduce the same complaint.
+// The rumble is held to the same ceiling, and since 2026-09-02 that is load
+// bearing rather than symmetry. It used to peak around 0.06 because
+// `(1 - grassiness)` was about 0.11 nearly everywhere and the voice was
+// effectively never up; now the crossfade runs on grass COVER, a bare wheel rut
+// reads 0.03, and the rumble gets the whole bed to itself. Measured at the ride
+// camera's near stop (1.4 m, `near` 0.715) on a track it would compute 0.114 at
+// full speed and the cap holds it to 0.085 above about 5.5 m/s — which is the
+// same ceiling, in the same regime, that the grass voice already sat under.
+// Riding a track is therefore no louder than riding a meadow was; it is a
+// different sound at the same level, which is the entire point.
 const GROUND_CEIL = 0.085;
 
 // One trim for every one-shot in the layer, calibrated against the same anchor
@@ -460,10 +491,11 @@ export class BikeAudio {
     const ref = this.tune.rollRef;
     const near = Math.pow(ref / (ref + d), 2.2);
 
-    // What the tyres are on. Published by the physics off `getSurfaceWeights`
-    // (see bike_physics), so this is the same number the rolling resistance is
-    // computed from and the same field the terrain draws itself with.
-    const grassy = clamp01(cur.grassiness ?? 0.5);
+    // How much grass is actually standing under the wheels — the scatterer's
+    // own density field, sampled at the contact patch (see the header, and
+    // `grassCoverAt`). NOT the surface mix: on a wheel rut that reads 0.88 and
+    // this reads 0.03, and it is this one the whip has to follow.
+    const cover = clamp01(cur.grassCover ?? 0.5);
     // And how WET it is, which is a second axis: wet grass hisses and dry grass
     // rattles, wet dirt is dull and dry dirt is granular.
     const wet = clamp01(this.ctx?.world?.getMoisture?.(cur.x, cur.z) ?? 0.4);
@@ -474,9 +506,12 @@ export class BikeAudio {
     const sp = clamp01(speed / 8);
     const gate = smoothstep(0.15, 1.0, speed);
 
-    // Bare ground: the rumble. Fades out as the vegetation takes over.
+    // Bare ground: the rumble. Fades out as the stand thickens — and, now that
+    // the crossfade runs on cover rather than on the surface mix, it is a voice
+    // the player actually meets: the tracks, the gravel bars and the bald
+    // drifts inside the meadow all hand the bed to it.
     const rv = Math.min(GROUND_CEIL,
-      gate * (0.25 + 0.75 * sp) * (1 - grassy) * this.tune.rollDrive * B.roll * near);
+      gate * (0.25 + 0.75 * sp) * (1 - cover) * this.tune.rollDrive * B.roll * near);
     this.state.roll = rv;
     this.sm.roll.set(rv, actx);
     // Dry dirt is granular and bright; wet dirt is dull.
@@ -491,14 +526,16 @@ export class BikeAudio {
 
     // Vegetation: the whip. Steeper in speed than the rumble — a stalk hits
     // harder AND more of them hit per second — and it is the sound that
-    // dominates this valley, because most of it is meadow.
+    // dominates this valley, because most of it is meadow. Linear in cover and
+    // not curved: half as many blades is half as much whip, which is what the
+    // player asked for and also what a contact patch does.
     //
     // sp^1.7 rather than sp²: the square was a real curve for a real effect and
     // it was also most of why the top end ran away, because it stacks with the
     // build and the distance terms. 1.7 keeps the "a rush, not a louder hiss"
     // read and arrives at the ceiling more gently. Capped — see GROUND_CEIL.
     const gv = Math.min(GROUND_CEIL,
-      gate * (0.18 + 0.82 * Math.pow(sp, 1.7)) * grassy
+      gate * (0.18 + 0.82 * Math.pow(sp, 1.7)) * cover
       * this.tune.grassDrive * B.grass * near);
     this.state.grass = gv;
     this.sm.grass.set(gv, actx);

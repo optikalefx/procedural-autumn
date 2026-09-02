@@ -12,7 +12,9 @@
 //      the meadow read as drifts and bare patches instead of an even lawn.
 //   2. Density is a field, not a constant. Surface weights, moisture, slope,
 //      river gravel, roads and two octaves of macro noise all multiply into one
-//      0..1 number that becomes *how many blades this tuft gets*.
+//      0..1 number that becomes *how many blades this tuft gets*. That number
+//      is `grassCoverAt`, and it is exported because the bike's grass voice
+//      has to fall silent on the same bare rut the blades part for.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp01, smoothstep, mulberry32, hash2i } from '../core/MathUtils.js';
 
@@ -46,7 +48,7 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
   const max = ring.maxBlades;
   const tileKey = (hash2i(Math.round(ox / S), Math.round(oz / S), seed ^ ring.salt) * 4294967296) >>> 0;
   const noise = world.noise;
-  const w = st.weights;
+  const f = st.field;
 
   let n = st.n;
   let minY = st.minY, maxY = st.maxY;
@@ -62,27 +64,25 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
     const cx = ox + (rng() - 0.5) * S;
     const cz = oz + (rng() - 0.5) * S;
 
-    // ── hard rejects ────────────────────────────────────────────────────────
-    if (world.getWaterDepth(cx, cz) > 0.02) continue;
+    // ── how much grass stands here ──────────────────────────────────────────
+    // The density field, and it lives in `grassCoverAt` rather than here
+    // because it is no longer only this file's business — see its header. It
+    // also hands back every world sample it took on the way, because taking
+    // them twice per clump is the most expensive thing this loop could do.
+    const d = grassCoverAt(world, roads, cx, cz, f, ring.floor ?? 0.34);
+    if (d <= 0) continue;
+    const river = f.river, slope = f.slope, moist = f.moist;
+    const drift = f.drift, patch = f.patch;
 
-    // getWaterDepth is a heightfield test and reads 0 in stretches of channel
-    // that Water.js still surfaces (measured: getRiver 0.33 with depth 0.0 on
-    // the river anchor). Trusting depth alone left blades standing in the
-    // stream, so the channel mask is a hard reject in its own right.
-    const river = world.getRiver(cx, cz);
-    if (river > 0.42) continue;
+    // A separate ~50 m field for *height* alone. Driving density and height off
+    // the same noise makes thin patches short and thick patches tall, which is
+    // one relationship and reads as one texture; the reference meadow has
+    // cropped ground under a full stand and tall stands over thin ground.
+    const stature = noise.fbm(cx * 0.021 + 91.7, cz * 0.021 + 13.3, 2, 2.0, 0.5, 1);
 
-    const slope = world.getSlope(cx, cz);
-    if (slope > 1.15) continue;
-
-    world.getSurfaceWeights(cx, cz, w);
-    // Grass and dry straw both grow blades; rock, snow and sand do not.
-    let d = clamp01(w.grass + w.dry * 0.8);
-    d *= 1 - smoothstep(0.22, 0.62, w.rock);
-    d *= 1 - w.snow;
-    if (d < 0.02) continue;
-
-    const moist = world.getMoisture(cx, cz);
+    // ── the tuft ────────────────────────────────────────────────────────────
+    const count = Math.min(max - n, Math.round(ring.perClump * d * (0.55 + rng() * 0.9)));
+    if (count < 1) continue;
 
     // ── shoreline ─────────────────────────────────────────────────────────
     // The clump centre being dry is not enough: a far-ring tuft frays out over
@@ -98,41 +98,6 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
       world.getWaterDepth(cx, cz + spill) > 0.02 || world.getWaterDepth(cx, cz - spill) > 0.02 ||
       world.getWaterDepth(cx + sd, cz + sd) > 0.02 || world.getWaterDepth(cx - sd, cz + sd) > 0.02 ||
       world.getWaterDepth(cx + sd, cz - sd) > 0.02 || world.getWaterDepth(cx - sd, cz - sd) > 0.02;
-
-
-    // Thin out on gravel bars, and on anything steep enough to be scree.
-    d *= 1 - smoothstep(0.05, 0.40, river) * 0.95;
-    d *= 1 - smoothstep(0.52, 1.05, slope);
-
-    // Forest floor keeps grass but loses the thick meadow stand. Trees.js owns
-    // the canopy; this is the moisture band it plants into.
-    d *= 1 - smoothstep(0.54, 0.80, moist) * 0.34;
-
-    // Wheel ruts: the track is a bare line through the field.
-    if (roads) d *= 1 - roads.sample(cx, cz) * 0.94;
-
-    // ── macro structure: drifts, patches and bare ground ────────────────────
-    // A perfectly even field is an instant reject; these two octaves are what
-    // give the meadow its lay.
-    const drift = noise.fbm(cx * 0.0115, cz * 0.0115, 2, 2.1, 0.5, 1);
-    const patch = noise.fbm(cx * 0.049 + 17.3, cz * 0.049 - 4.1, 2, 2.3, 0.5, 1);
-    // A separate ~50 m field for *height* alone. Driving density and height off
-    // the same noise makes thin patches short and thick patches tall, which is
-    // one relationship and reads as one texture; the reference meadow has
-    // cropped ground under a full stand and tall stands over thin ground.
-    const stature = noise.fbm(cx * 0.021 + 91.7, cz * 0.021 + 13.3, 2, 2.0, 0.5, 1);
-    const lay = drift * 0.55 + patch * 0.75;
-    // Never all the way to zero: a hole in the field shows raw terrain, and a
-    // black hole in the near ground is far uglier than a thin patch. The floor
-    // rises for the near ring, where a thin drift is read as a bald spot and
-    // whatever is underneath it is close enough to be legible.
-    const floor = ring.floor ?? 0.34;
-    d *= floor + (1 - floor) * smoothstep(-0.45, 0.28, lay);
-    if (d < 0.03) continue;
-
-    // ── the tuft ────────────────────────────────────────────────────────────
-    const count = Math.min(max - n, Math.round(ring.perClump * d * (0.55 + rng() * 0.9)));
-    if (count < 1) continue;
 
     const baseH = world.getHeight(cx, cz);
     // Local plane through the clump: one height sample per blade is the single
@@ -290,6 +255,94 @@ export function fillTile(world, roads, ring, ox, oz, seed, out, st) {
   st.minY = minY;
   st.maxY = maxY;
   return a >= attempts || n >= max;
+}
+
+/**
+ * Scratch for `grassCoverAt`. One per caller, reused forever — the field
+ * function must not allocate, it runs thousands of times per grass tile.
+ */
+export function makeGrassField() {
+  return { w: {}, river: 0, slope: 0, moist: 0, drift: 0, patch: 0 };
+}
+
+/**
+ * How much grass actually stands at one point, 0..1.
+ *
+ * This is THE density field — the number `fillTile` turns into blades per tuft
+ * — and it is a function rather than an inline block because it is no longer
+ * only the scatterer's business. The BIKE reads it too: its grass voice is
+ * blades whipping the spokes, and on a bare wheel rut there are no blades, so
+ * the voice has to know what is standing and not merely what the ground is
+ * MADE of.
+ *
+ * That distinction is the whole reason this exists and it is measurable. The
+ * surface mix says a dirt track is 0.89 vegetation, because a rut is cut
+ * through meadow and the material underneath it is still meadow material; this
+ * field says 0.03, because `RoadMask` has scraped the blades off it. Over 2044
+ * valley samples on seed 20262018 the two disagree by a mean of 0.31, and the
+ * surface mix saturates — 63% of the map reads above 0.9 — while this one
+ * spreads across the whole range with 19% of it genuinely bare.
+ *
+ * Fills `f` (see `makeGrassField`) with every world sample it took: the caller
+ * that needs `river`, `slope`, `moist`, `drift` and `patch` for colour and
+ * height gets them for free, and sampling the world twice per clump is the
+ * single most expensive thing the scatterer could do.
+ *
+ * @param {?RoadMask} roads may be null — then nothing is scraped bare
+ * @param {number} floor the ring's bare-patch floor; see the note below
+ * @returns {number} 0 where nothing grows at all
+ */
+export function grassCoverAt(world, roads, x, z, f, floor = 0.34) {
+  f.river = 0; f.slope = 0; f.moist = 0; f.drift = 0; f.patch = 0;
+
+  // ── hard rejects ──────────────────────────────────────────────────────────
+  if (world.getWaterDepth(x, z) > 0.02) return 0;
+
+  // getWaterDepth is a heightfield test and reads 0 in stretches of channel
+  // that Water.js still surfaces (measured: getRiver 0.33 with depth 0.0 on
+  // the river anchor). Trusting depth alone left blades standing in the
+  // stream, so the channel mask is a hard reject in its own right.
+  const river = f.river = world.getRiver(x, z);
+  if (river > 0.42) return 0;
+
+  const slope = f.slope = world.getSlope(x, z);
+  if (slope > 1.15) return 0;
+
+  const w = f.w;
+  world.getSurfaceWeights(x, z, w);
+  // Grass and dry straw both grow blades; rock, snow and sand do not.
+  let d = clamp01(w.grass + w.dry * 0.8);
+  d *= 1 - smoothstep(0.22, 0.62, w.rock);
+  d *= 1 - w.snow;
+  // Purely a short circuit: everything below only ever takes d down.
+  if (d < 0.02) return 0;
+
+  const moist = f.moist = world.getMoisture(x, z);
+
+  // Thin out on gravel bars, and on anything steep enough to be scree.
+  d *= 1 - smoothstep(0.05, 0.40, river) * 0.95;
+  d *= 1 - smoothstep(0.52, 1.05, slope);
+
+  // Forest floor keeps grass but loses the thick meadow stand. Trees.js owns
+  // the canopy; this is the moisture band it plants into.
+  d *= 1 - smoothstep(0.54, 0.80, moist) * 0.34;
+
+  // Wheel ruts: the track is a bare line through the field.
+  if (roads) d *= 1 - roads.sample(x, z) * 0.94;
+
+  // ── macro structure: drifts, patches and bare ground ──────────────────────
+  // A perfectly even field is an instant reject; these two octaves are what
+  // give the meadow its lay.
+  const noise = world.noise;
+  const drift = f.drift = noise.fbm(x * 0.0115, z * 0.0115, 2, 2.1, 0.5, 1);
+  const patch = f.patch = noise.fbm(x * 0.049 + 17.3, z * 0.049 - 4.1, 2, 2.3, 0.5, 1);
+  const lay = drift * 0.55 + patch * 0.75;
+  // Never all the way to zero: a hole in the field shows raw terrain, and a
+  // black hole in the near ground is far uglier than a thin patch. The floor
+  // rises for the near ring, where a thin drift is read as a bald spot and
+  // whatever is underneath it is close enough to be legible.
+  d *= floor + (1 - floor) * smoothstep(-0.45, 0.28, lay);
+  return d < 0.03 ? 0 : d;
 }
 
 /**

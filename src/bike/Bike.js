@@ -774,7 +774,7 @@ export class Bike extends System {
       wheelRate: this._riding ? p.wheelRate : 0,
       cadence: this._riding ? p.cadence : 0,
       wading: p.wading, wade: p.wade, blocked: p.blocked, grade: p.grade,
-      grassiness: p.grassiness,
+      grassiness: p.grassiness, grassCover: p.grassCover,
       colorway: b.colorway, style: b.style, group: b.group,
     };
   }

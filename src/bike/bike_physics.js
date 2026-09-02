@@ -56,6 +56,7 @@
 //  wheels, and `pitch`/`roll` are the frame's attitude in radians.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, damp, lerp, smoothstep } from '../core/MathUtils.js';
+import { grassCoverAt, makeGrassField } from '../vegetation/grass_scatter.js';
 
 // ── the rider ────────────────────────────────────────────────────────────────
 //
@@ -328,12 +329,30 @@ export class BikePhysics {
     this.braking = 0;        // 0..1
     this.wheelRate = 0;      // rad/s the wheels are turning, unsigned
     this.cadence = 0;        // rad/s the cranks are turning, unsigned
-    // What the tyres are ON, 0 = bare ground, 1 = meadow. Computed here rather
-    // than anywhere else because it is the SAME number the rolling resistance
-    // is built from — so the ground that looks soft rides soft and sounds soft,
-    // and the three can never disagree. Read by `bike_audio`.
+    // What the ground is MADE of, 0 = bare, 1 = all vegetation. Computed here
+    // rather than anywhere else because it is the SAME number the rolling
+    // resistance is built from, so the ground that looks soft rides soft.
+    //
+    // It is a ratio of the surface mix, so it saturates: 63% of the valley
+    // reads above 0.9, and a dirt track — meadow with a rut cut through it —
+    // reads 0.88. Fine for resistance, useless as "how much grass is there",
+    // which is what `grassCover` below is for.
     this.grassiness = 0.5;
+    // …and how much of it is actually STANDING, 0..1 — `grassCoverAt`, the
+    // grass scatterer's own density field, read at the contact patch. Measured
+    // over the road network on seed 20262018 it reads 0.028 where `grassiness`
+    // reads 0.892, and off the roads 0.575 against 0.886: the blades have been
+    // scraped off the rut and the surface mix cannot see it. Read by
+    // `bike_audio`, whose grass voice is blades hitting the spokes and which
+    // therefore has to go quiet where there are no blades.
+    //
+    // Deliberately NOT fed back into the rolling resistance above. That number
+    // was tuned as a whole system against the valley (see the header table) and
+    // a bare track genuinely is soft organic ground to ride on, whatever is
+    // growing out of it. Worth revisiting together, not one at a time.
+    this.grassCover = 0.5;
     this._surf = {};
+    this._field = makeGrassField();
     this.steerAngle = 0;     // rad the fork is turned, for the model
     this.grade = 0;          // rise/run along the heading, published for the HUD
     this.wading = 0;         // m of water under the wheels
@@ -396,6 +415,25 @@ export class BikePhysics {
     const bare = clamp01(w.rock + w.dirt * 0.85 + w.sand * 0.6);
     const veg = clamp01(w.grass + w.dry + w.litter * 0.5);
     this.grassiness = veg / Math.max(1e-3, veg + bare);
+    // The blades themselves. `Grass` owns the road raster and the near ring's
+    // bare-patch floor, so borrow both rather than keeping a second opinion —
+    // a headless bike has neither and simply reads the field without them.
+    //
+    // NOT `G`. That is this module's GRAVITY (line 148), and a `const G` here
+    // shadows it for the whole of `step()` — which silently turned three lines
+    // below into arithmetic on a Grass instance: `a -= G * sinT` (gravity along
+    // the slope), `leanRate = (G * TAN_LEAN_MAX) / …` and `wantLean`'s atan2.
+    // All three went NaN, and the parked branch masks the first, so the tell was
+    // `yawRate` -> `heading` -> `_settle` -> `phys.y` all NaN a frame later. A
+    // parked bike then has a NaN sphere centre in `Bike._campside`, and
+    // `rayMiss(...) >= 1` is FALSE for NaN — so the bike claimed the pointer
+    // over the entire screen ("click ride the bike" everywhere, any click
+    // mounts) while its own model was drawn at a NaN position and invisible.
+    // Reproduced by tools/_scratch/bikenan.mjs, which reports the first frame
+    // the field stops being finite.
+    const grassSys = this.ctx?.systems?.grass ?? null;
+    this.grassCover = grassCoverAt(W, grassSys?.roads ?? null, this.x, this.z,
+      this._field, grassSys?.rings?.[0]?.floor ?? 0.46);
     // Wet grass is the slowest thing here and dry grass is not far behind, so
     // moisture still gets a say — as a modifier on the vegetation, which is
     // where it belongs, rather than as the whole model.
@@ -716,7 +754,7 @@ export class BikePhysics {
       grade: this.grade, wading: this.wading, wade: this.wade, blocked: this.blocked,
       effort: this.effort, braking: this.braking,
       wheelRate: this.wheelRate, cadence: this.cadence,
-      grassiness: this.grassiness,
+      grassiness: this.grassiness, grassCover: this.grassCover,
     };
   }
 }

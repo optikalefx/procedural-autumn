@@ -606,7 +606,7 @@ function fakeBike(rig, v, on) {
       cadence: Math.min(1, speed / 4.5) * 8.2 * (v.effort ?? 0),
       wading: v.wading ?? 0,
       wade: Math.min(1, (v.wading ?? 0) / 0.90),   // bike_physics.js — WADE_REF
-      grassiness: v.grassiness ?? 0.5,
+      grassCover: v.grassCover ?? 0.5,
       blocked: false, grade: 0,
     },
   } : null;
@@ -665,8 +665,8 @@ const BIKE_SOUNDS = [
     module: 'src/audio/bike_audio.js',
     blurb: 'Knobbly tyre on dirt, scree and gravel: the water.js three-band pink '
       + 'voice, granular and bright when dry, duller when wet. Silent below '
-      + 'about 0.15 m/s. It also fades out as the ground turns to meadow — pull '
-      + 'the SURFACE slider to 1 and this voice must go to the floor, because '
+      + 'about 0.15 m/s. It also fades out as the stand thickens — pull '
+      + 'the COVER slider to 1 and this voice must go to the floor, because '
       + 'the grass bed is what takes over. Drag speed and the meter must rise '
       + 'monotonically.',
     layers: ['bikeRoll'],
@@ -674,10 +674,10 @@ const BIKE_SOUNDS = [
     stop: bikeBedStop,
     params: [
       cond('speed', 'Bike speed', 0, 10, 6, { unit: 'm/s', step: 0.05, src: 'bike_physics.js — about 8 m/s on the flat, more downhill' }),
-      cond('grassiness', 'Surface (0 bare, 1 meadow)', 0, 1, 0, { step: 0.01, src: 'bike_physics.js — from getSurfaceWeights, the terrain material\'s own field' }),
+      cond('grassCover', 'Grass cover (0 bare rut, 1 full stand)', 0, 1, 0, { step: 0.01, src: 'grass_scatter.js — grassCoverAt, the scatterer\'s own density field, sampled at the contact patch' }),
       cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
       cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
-      readout('mRoll', 'model roll gain', (r) => r.audio.bike.state.roll, { src: 'bike_audio.js — gate · (0.25 + 0.75·sp) · (1 − grassy) · rollDrive · build · distance' }),
+      readout('mRoll', 'model roll gain', (r) => r.audio.bike.state.roll, { src: 'bike_audio.js — gate · (0.25 + 0.75·sp) · (1 − cover) · rollDrive · build · distance' }),
       readout('mBody', 'body band centre', (r) => r.audio.bike.roll.body.frequency.value, { unit: 'Hz', src: 'bike_audio.js — 700 · bright · (1 + sp·0.55), ±190 Hz wander' }),
       range('rollDrive', 'roll level at full speed', 0, 0.5, 0.16, { step: 0.002, src: 'bike_audio.js — bike.tune.rollDrive', apply: K('rollDrive') }),
       range('rollRef', 'reference distance', 3, 30, 9, { unit: 'm', step: 0.5, src: 'bike_audio.js — bike.tune.rollRef', apply: K('rollRef') }),
@@ -686,7 +686,7 @@ const BIKE_SOUNDS = [
     ],
     needs: [
       'bike_audio.js — the speed gate smoothstep(0.15, 1.0) and the /8 normalisation.',
-      'bike_audio.js — the (1 − grassiness) crossfade against the grass bed.',
+      'bike_audio.js — the (1 − grassCover) crossfade against the grass bed.',
     ],
   },
   {
@@ -704,17 +704,18 @@ const BIKE_SOUNDS = [
       + 'hits harder AND more of them hit per second). Wet grass lies down and '
       + 'hisses; dry autumn grass stands up and rattles, which is most of what '
       + 'this valley is. The counterpart of `bike.roll`: the two crossfade on '
-      + 'the SURFACE slider and should never both be up.',
+      + 'the COVER slider — how much grass is actually STANDING, which on a dirt '
+      + 'track is almost none — and should never both be up.',
     layers: ['bikeGrass'],
     frame: bikeBedFrame('bikeGrass'),
     stop: bikeBedStop,
     params: [
       cond('speed', 'Bike speed', 0, 10, 6, { unit: 'm/s', step: 0.05 }),
-      cond('grassiness', 'Surface (0 bare, 1 meadow)', 0, 1, 1, { step: 0.01, src: 'bike_physics.js — from getSurfaceWeights' }),
+      cond('grassCover', 'Grass cover (0 bare rut, 1 full stand)', 0, 1, 1, { step: 0.01, src: 'grass_scatter.js — grassCoverAt; 0.03 on the dirt tracks, 0.52 mean over the valley' }),
       select('style', 'Build', BIKE_STYLES, 'trail', { src: 'bike_audio.js — BUILD.grass 1.00 trail / 1.22 packer, a loaded rack gives the grass more to hit' }),
       cond('distance', 'Distance to the bike', 0.5, 30, 3, { unit: 'm', step: 0.5 }),
       cond('azimuth', 'Bearing from the listener', -180, 180, 0, { unit: '°', step: 1 }),
-      readout('mGrass', 'model grass gain', (r) => r.audio.bike.state.grass, { src: 'bike_audio.js — min(GROUND_CEIL 0.085, gate · (0.18 + 0.82·sp^1.7) · grassy · grassDrive · build · distance)' }),
+      readout('mGrass', 'model grass gain', (r) => r.audio.bike.state.grass, { src: 'bike_audio.js — min(GROUND_CEIL 0.085, gate · (0.18 + 0.82·sp^1.7) · cover · grassDrive · build · distance)' }),
       readout('mGBody', 'whip band centre', (r) => r.audio.bike.grass.body.frequency.value, { unit: 'Hz', src: 'bike_audio.js — 2300 · wetness lerp · (1 + sp·0.28), ±620 Hz flutter' }),
       range('grassDrive', 'grass level at full speed', 0, 0.6, 0.14, { step: 0.002, src: 'bike_audio.js — bike.tune.grassDrive; the peak is held by GROUND_CEIL, not by this', apply: K('grassDrive') }),
       range('gBodyQ', 'whip band Q', 0.2, 3, 0.55, { step: 0.01, src: 'bike_audio.js — grass.body', apply: P('bike.grass.body.Q') }),
