@@ -41,12 +41,33 @@
 import * as THREE from 'three';
 import { clamp, clamp01, lerp, mulberry32, wrapAngle } from '../core/MathUtils.js';
 import { FROG, frogProtos, pickFrogVariant, FrogRig, JUMP } from './frog_model.js';
-import { createHideMaterial } from './mammals/hide.js';
+import { createHideMaterial, SIL_FOV_REF } from './mammals/hide.js';
 
 const LIVE = 6;                 // simultaneous frogs
 const SPAWN_R = 44;             // metres from the camera a pad may host a frog
 const DESPAWN_R = 58;
-const FAR_OK = 26;              // beyond this a spawn in view is a dot; allowed
+// Beyond this a spawn inside the view cone is a dot on a leaf and is allowed.
+// MAGNIFIED BY THE LENS, and that is not a refinement — without it the rule is
+// broken for the one player who is looking hardest.
+//
+// 26 m is a statement about PIXELS wearing metres' clothing: at the walking-
+// around fov a frog that far off is 3-5 px tall at 1080p, so nobody sees it
+// arrive. Raise the telescope or the 200-400 and the metres stop meaning what
+// they meant — measured, a bull frog spawning at 27 m is 44 px through the
+// 200 mm and 87 px through the 400, appearing out of nothing in the middle of
+// the viewfinder of somebody who has gone to the trouble of aiming at that
+// pond.
+//
+// `hide.js` had this exact problem and its fix is the precedent followed here
+// (see the note on SIL_FOV_REF): metres are only a proxy for pixels, and the
+// proxy is exact right up until something changes the field of view. So the
+// guard is scaled by the camera's magnification against the same reference
+// fov. At 400 mm (2.9 deg) that is 18x, which puts the guard past SPAWN_R and
+// stops in-view spawning altogether while you are zoomed — the right answer,
+// since every pad you can see is one you are staring at.
+//
+// Clamped at 1 so a WIDE lens can never weaken the tuned 26 m.
+const FAR_OK = 26;
 const SCAN_EVERY = 0.6;         // seconds between spawn scans
 const SPAWN_CHANCE = 0.45;      // per scan, per free slot, when a site exists
 const MIN_PAD_R = 0.19;         // metres — a leaf a frog can sit on
@@ -116,6 +137,8 @@ export class Frogs {
     if (!pads.length) return;
     this._pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     this._fr.setFromProjectionMatrix(this._pm);
+    // See FAR_OK: the guard is in metres but the thing it protects is pixels.
+    const farOk = FAR_OK * Math.max(1, SIL_FOV_REF / (cam.fov || SIL_FOV_REF));
     // A handful of throws rather than a scan of every pad: a colony has hundreds.
     for (let k = 0; k < 8 && this.frogs.length < LIVE; k++) {
       const pad = pads[(this.rnd() * pads.length) | 0];
@@ -123,7 +146,7 @@ export class Frogs {
       const c = L.padCentre(pad, this._c);
       const d = Math.hypot(c.x - cx, c.z - cz);
       if (d < 3) continue;
-      if (d < FAR_OK && this._fr.containsPoint(this._v.set(c.x, pad.y, c.z))) continue;
+      if (d < farOk && this._fr.containsPoint(this._v.set(c.x, pad.y, c.z))) continue;
       // A frog wants company: a lone leaf in open water is not a colony.
       if (L.padsNear(c.x, c.z, 2.5, this._near2 ??= []).length < 3) continue;
       if (this.rnd() > SPAWN_CHANCE) continue;
