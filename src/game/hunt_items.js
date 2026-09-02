@@ -260,165 +260,121 @@ export const HUNT_ITEMS = [
   {
     id: 'deer',
     subject: 'a white-tailed deer',
-    hint: 'meadow edges, and the road at dawn',
+    hint: 'Literally everywhere.',
     animal: true,
   },
   {
     id: 'rabbit',
     subject: 'a cottontail rabbit',
-    hint: 'the grass verge — get close, it is small',
+    hint: 'Small, loves the grass.',
     animal: true,
   },
   {
     id: 'squirrel',
     subject: 'a grey squirrel',
-    hint: 'under the hardwoods. Get right up to it',
+    hint: 'To the forest!',
     animal: true,
   },
   {
     id: 'raccoon',
     subject: 'a northern raccoon',
-    hint: 'after dark, near water. Low to the ground, so get close',
+    hint: 'After dark, near water.',
     animal: true,
   },
   {
     id: 'fox',
     subject: 'a red fox',
-    hint: 'open ground at either end of the day',
+    hint: 'Open fields.',
     animal: true,
   },
   {
     id: 'bear',
     subject: 'a black bear',
-    hint: 'the banks of the big rivers. Closer than feels wise',
+    hint: 'Banks of big rivers.',
     animal: true,
   },
   {
-    // Added after the sheet had eighteen lines on it, which the block above
-    // argues against — a player on eighteen of eighteen who finds themselves on
-    // eighteen of nineteen has been robbed of a finished book. It goes on
-    // anyway, and the reason is the same one that put `burntMallow` on the
-    // sheet before its feature existed: a checklist that is missing an animal
-    // the game plainly contains is worse than one that grew. There are three
-    // moose in the valley and they are the biggest thing in it.
-    //
-    // The hint is `hunt_detect`'s rule applied rather than flavour. Measured
-    // through the real gate on the shipped GLB, a bull's half-height is 2.25 m
-    // and its frame share runs 3.75/d — so it clears MIN_SHARE at **25.2 m** on
-    // the wide lens, the longest reach of any mammal on the sheet and nearly
-    // twice the deer's 14. (Both figures predate `share` going planar. The
-    // 25.2 m is untouched by that — every wide-lens cut in `hunt_detect`
-    // reproduces to 0.013%, measured — while the coefficient is now quoted in
-    // units the function no longer returns.) Getting close enough is therefore not what makes
-    // this line hard, and the hint does not pretend it is.
-    //
-    // FINDING one is: three home sites on 9.4 km2, every one of them on the
-    // bank of a substantial river, and no two within 850 m. So both clauses go
-    // on where, and neither on how close. It is the only line on the sheet that
-    // quotes a POPULATION, which is the honest thing to tell somebody who could
-    // otherwise drive the valley for an hour assuming they were unlucky.
     id: 'moose',
-    subject: 'a moose',
-    hint: 'the big rivers, and only three of them in the whole valley',
+    subject: 'Great Moose',
+    hint: 'They love big rivers.',
     animal: true,
   },
   {
     id: 'campDog',
-    subject: "the dog at somebody's camp",
-    hint: 'most camps come with one',
+    subject: "Dog at camp",
+    hint: 'Give camping a shot.',
     animal: true,
   },
 
   // ── the birds you stop the car for ────────────────────────────────────────
   {
     id: 'baldEagle',
-    subject: 'a bald eagle',
-    hint: 'the top of the tallest spruce',
+    subject: 'Bald eagle',
+    hint: 'In the tall trees.',
     animal: true,
   },
   {
     id: 'owl',
-    subject: 'a great horned owl',
-    hint: 'only after dark, and high up. Fit the long lens',
+    subject: 'Great horned owl',
+    hint: 'Only after dark and high in the trees.',
     animal: true,
   },
   {
     id: 'heron',
-    subject: 'a great blue heron',
-    hint: 'standing still in the shallows',
+    subject: 'Great blue heron',
+    hint: 'In the shallows.',
     animal: true,
   },
   {
     id: 'flamingo',
-    subject: 'an American flamingo',
-    hint: 'they keep to two islands. Take the boat',
+    subject: 'American flamingo',
+    hint: 'Lovely little island fellows.',
     animal: true,
   },
-  // "White" because that is what the asset is, and a sheet that says mallard
-  // over a Pekin is a field guide that lies. The pack's model is a farmyard
-  // white duck with an orange bill; it is what floats on this lake, so it is
-  // what the line asks for.
-  //
-  // The only line on the sheet whose subject is plural, and it is not a slip.
-  // `TREE_BIRD_SPECIES` gives this species a `raft`, so what the valley puts in
-  // front of the player is three or four birds together on one piece of water
-  // — never the single duck the singular would promise. The detector still
-  // counts ONE (see `treeBirds` in `hunt_detect.js`, which breaks on the first
-  // bird of a species it can see), so the plural describes the sight and not
-  // the rule; a player who frames the group has satisfied both readings anyway.
-  //
-  // "Get close" is doing the same work the squirrel's and raccoon's hints do.
-  // A floating duck is a LOW animal — 0.98 m of it above the water at the size
-  // this game draws one — and the gate reads height, so the shot counts from
-  // about 8 m (`DUCK_SHARE`, which is this species' own floor and not
-  // `MIN_SHARE`; it was 7 m until a photograph taken from a bank turned out to
-  // count or not depending on where the bird was in its idle breath). Eight
-  // metres is still a shot you close on rather than one you take from the road,
-  // so the hint stands as written.
   {
     id: 'duck',
-    subject: 'a raft of white ducks',
-    hint: 'open water, in a group. Paddle right up — they will let you',
+    subject: 'White ducks',
+    hint: '#Lakelife. Try a Canoe',
     animal: true,
   },
 
   // ── the set-pieces: places and moments, not animals ───────────────────────
   {
     id: 'fireflies',
-    subject: 'fireflies over the meadow',
-    hint: 'well after dark, in the middle of a wet meadow. A few is not a photograph',
+    subject: 'Fireflies in the meadow',
+    hint: 'Well after dark, in the middle of a wet meadow.',
   },
   {
     id: 'waterfall',
-    subject: 'a waterfall',
-    hint: 'follow any river uphill',
+    subject: 'Waterfall',
+    hint: 'Splish splash.',
   },
   {
     id: 'highCamp',
-    subject: 'a high mountain campsite',
-    hint: 'climb, then pitch camp. Photograph it from the fire',
+    subject: 'A high mountain campsite',
+    hint: 'Climb to the tallest peaks.',
   },
   {
     id: 'burntMallow',
-    subject: 'an over-roasted marshmallow',
-    hint: 'leave it in the flame and see',
+    subject: 'An over-roasted marshmallow',
+    hint: 'Be patient.',
   },
 
   // ── the night sky: the three lines you take with a lens, not with your feet
   {
     id: 'moon',
-    subject: 'the Moon',
-    hint: 'after dark. Zoom in a little — the scenery can stay in the shot',
+    subject: 'The Moon',
+    hint: 'Not made of cheese.',
   },
   {
     id: 'planet',
-    subject: 'a planet',
-    hint: 'four of them, strung out in a line. The steady ones — zoom right in',
+    subject: 'A planet',
+    hint: 'Not quit a star...',
   },
   {
     id: 'galaxy',
-    subject: 'a galaxy',
-    hint: 'three faint smudges up there. The Great Spiral is the one you will find',
+    subject: 'A galaxy',
+    hint: 'Look to a swirl in the sky.',
   },
 
   // ── and the one that is not on the sheet ───────────────────────────────────

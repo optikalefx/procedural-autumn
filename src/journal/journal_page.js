@@ -1160,7 +1160,7 @@ export class JournalPage {
     // ── the line ────────────────────────────────────────────────────────────
     const tx = x0 + 70;
     const tw = slot.x - 26 - tx;
-    const label = `Photo of ${row.subject}`;
+    const label = `${row.subject}`;
     let size = 52;
     g.font = hand(size);
     while (g.measureText(label).width > tw && size > 34) { size -= 1; g.font = hand(size); }
@@ -1813,7 +1813,7 @@ export class JournalPage {
     const tx = x0 + 76;
     g.font = hand(41);
     g.fillStyle = INK;
-    const label = `Photo of ${row.subject}`;
+    const label = `${row.subject}`;
     g.fillText(label, tx, baseline);
     const lw = g.measureText(label).width;
 

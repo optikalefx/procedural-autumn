@@ -243,7 +243,7 @@ await acquire('shot');
     try {
       const k = 'pa.hud';
       const s = JSON.parse(localStorage.getItem(k) ?? '{}') || {};
-      s.introSeen = true; s.seenHint = true;
+      s.introSeen = true; s.seenHint = true; s.escSeen = true;
       localStorage.setItem(k, JSON.stringify(s));
     } catch { /* storage may be unavailable; the frame is still worth taking */ }
     const RealWS = window.WebSocket;

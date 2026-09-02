@@ -98,6 +98,7 @@ export class HUD extends System {
         this.showMap = s.showMap !== false;
         this._seenHint = !!s.seenHint;
         this._introSeen = !!s.introSeen;
+        this._escSeen = !!s.escSeen;
         this.renderPin = typeof s.renderPin === 'number' ? s.renderPin : null;
       }
     } catch { /* defaults are fine */ }
@@ -160,6 +161,16 @@ export class HUD extends System {
     else this._hintTimer = 13;
     root.appendChild(this.hint);
 
+    // ── the way out of the book ────────────────────────────────────────────
+    // The same panel in the same place as the legend above, and deliberately
+    // NOT `pa-game-only`: this one is only ever on screen WITH the book up, and
+    // that class is what takes the driving chrome away when it is. They change
+    // over rather than overlap — see `.pa-esc-hint` in hud.css. Starts down;
+    // `_showEscHint` decides.
+    this.escHint = el('div', 'pa-hint pa-esc-hint pa-panel pa-gone',
+      '<span>Press <kbd>Esc</kbd>to close the Journal</span>');
+    root.appendChild(this.escHint);
+
     this.settings = new Settings(root, this);
     this.photo = new PhotoMode(root, this);
     // The journal is NOT a DOM widget like everything else in this file — it is
@@ -172,7 +183,10 @@ export class HUD extends System {
     // Closing by any route — J, Escape, Enter, all of which the journal binds
     // itself — has to put the interface back. Without this the chrome stays
     // hidden after the book shuts and the game looks broken.
-    this.journal.onClose = () => this.root.classList.remove('pa-journal');
+    this.journal.onClose = () => {
+      this.root.classList.remove('pa-journal');
+      this._dismissEscHint();
+    };
     // Ringing a line says so out loud. The toast is deliberately NOT
     // `pa-game-only`, so unlike the compass and the dash it is still on screen
     // with the book up — which is the only reason this can be said at the
@@ -668,6 +682,7 @@ export class HUD extends System {
     if (this.settings.open) this.settings.setOpen(false);
     this.root.classList.add('pa-journal');
     this.journal.open();
+    this._showEscHint();
     this._dismissHint();
     posthog.capture('journal_opened', { source: 'key' });
   }
@@ -684,6 +699,7 @@ export class HUD extends System {
   openJournal(award) {
     this.root.classList.add('pa-journal');
     this.journal.open({ award });
+    this._showEscHint();
     posthog.capture('journal_opened', { source: 'award', item: award?.id ?? null });
   }
 
@@ -706,6 +722,7 @@ export class HUD extends System {
     this._save();
     this.root.classList.add('pa-journal');
     this.journal.open({ holdTitle: true });
+    this._showEscHint();
     posthog.capture('journal_opened', { source: 'intro' });
   }
 
@@ -745,11 +762,46 @@ export class HUD extends System {
     this._save();
   }
 
+  /**
+   * "Press Esc to close the Journal", under the first book a player ever opens.
+   *
+   * The book is a three.js object held up over the whole frame with no close
+   * button drawn on it, and the first one a new player sees opened ITSELF
+   * (`maybeShowIntro`) — so the way out has to be written down, and the foot of
+   * the screen is where this HUD already writes keys down.
+   *
+   * Called from all three ways the book goes up, not just the intro: a player
+   * whose first journal is the one that opens on their first photograph needs
+   * the same line, and the flag means only one of them ever spends it.
+   *
+   * Escape from a close look at a print steps back a rung before it shuts the
+   * book (see Journal.js) — the line stays true, it can just take two presses.
+   * A player on their first ever journal is on the spread, not three levels
+   * into a photograph.
+   */
+  _showEscHint() {
+    if (this._escSeen) return;
+    this.escHint.classList.remove('pa-gone');
+  }
+
+  /**
+   * Latched on the first CLOSE, not on the open — unlike the legend's flag
+   * above. The line has not done its job until the book is actually shut, so a
+   * player who reads the intro and then refreshes is still told next time.
+   */
+  _dismissEscHint() {
+    if (this._escSeen) return;
+    this._escSeen = true;
+    this.escHint.classList.add('pa-gone');
+    this._save();
+  }
+
   _save() {
     try {
       localStorage.setItem(STORE, JSON.stringify({
         invertY: this.invertY, hudOpacity: this.hudOpacity, showMap: this.showMap,
-        seenHint: !!this._seenHint, introSeen: !!this._introSeen, renderPin: this.renderPin,
+        seenHint: !!this._seenHint, introSeen: !!this._introSeen,
+        escSeen: !!this._escSeen, renderPin: this.renderPin,
       }));
     } catch { /* nothing important lost */ }
   }

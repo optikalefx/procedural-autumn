@@ -487,6 +487,15 @@
   margin-right: 0.5em;
 }
 
+/* The Esc line and the WASD legend are the same panel on the same shelf, and
+   they change over rather than share it: the legend fades out on `.pa-journal`
+   (0.45 s, the `.pa-game-only` rule at the top of this sheet) at the very
+   moment the book that replaces it goes up. The delay IS that fade, so the line
+   arrives on an empty shelf instead of printing over the legend for half a
+   second. It applies leaving too, which costs nothing — the book's own put-down
+   is 0.46 s, so the line is still there while there is still a book. */
+.pa-esc-hint { transition-delay: 0.45s; }
+
 /* ── toast ───────────────────────────────────────────────────────────── */
 .pa-toast {
   position: absolute;
