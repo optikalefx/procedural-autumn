@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  hunt_items — the checklist. Nineteen lines in a journal, and nothing else.
+//  hunt_items — the checklist. A page of lines in a journal, and nothing else.
 //
 //  This is the only file in the hunt that a person would ever want to read as
 //  prose, so it is written as prose: an `id` the machine uses, a `subject` that
@@ -40,7 +40,12 @@
 //  Guessing the cast from memory is how a hunt ends up asking for an animal
 //  that was cut. Every id below was read out of the file that owns it:
 //
-//    `src/wildlife/animal_species.js`      SPECIES — the six wild mammals
+//    `src/wildlife/animal_species.js`      SPECIES — the wild mammals. EVERY
+//                                          key on that table needs a row here
+//                                          or its photographs count for
+//                                          nothing; see "the mountain" block
+//                                          below for what that failure looks
+//                                          like from the player's side
 //    `src/wildlife/mammals/dog.js`         DOG_SPECIES — the camp dog, which is
 //                                          deliberately NOT in SPECIES
 //    `src/wildlife/birds/tree_birds.js`    TREE_BIRD_SPECIES[].key — the five
@@ -306,6 +311,41 @@ export const HUNT_ITEMS = [
     animal: true,
   },
 
+  // ── the mountain: the two you have to climb for ───────────────────────────
+  //
+  // Added late, and the reason they were missing is worth keeping. Both are in
+  // `SPECIES` and both have always been DETECTED — `hunt_detect.mammals` walks
+  // the pool and adds whatever key it finds, because "`SPECIES` keys are the
+  // hunt ids by construction" (rule 1). But `detectSubjects` returns
+  // `HUNT_IDS.filter(...)`, so a species with no row here has its hit dropped
+  // on the way out, silently: the shutter fires, the animal is squarely in
+  // frame, and the photograph is of nothing. That reads to a player as a broken
+  // photo gate rather than as a missing line, which is exactly how it was
+  // reported. The identity that makes the detector free for everything on this
+  // sheet is the same identity that makes an omission from it invisible, so the
+  // rule is: **a species added to `SPECIES` gets a row here in the same
+  // change.**
+  //
+  // Two lines rather than one because they are two species, and the hints are
+  // the one thing that tells them apart in play. `mammals/goat.js` and
+  // `mammals/ram.js` share the `rock` block and differ in `nearCells`: the goat
+  // reads the rock process ON the point and the ram reads the strongest within
+  // a cell of it, which puts a goat on the crag face and a ram on the bench and
+  // apron beside it. That difference is where you have to stand to get each
+  // photograph, so it is what the hints say.
+  {
+    id: 'goat',
+    subject: 'a mountain goat',
+    hint: 'Up on the crag itself.',
+    animal: true,
+  },
+  {
+    id: 'ram',
+    subject: 'a bighorn ram',
+    hint: 'The benches below the crag.',
+    animal: true,
+  },
+
   // ── the birds you stop the car for ────────────────────────────────────────
   {
     id: 'baldEagle',
@@ -415,16 +455,17 @@ export const HUNT_ITEMS = [
   },
 ];
 
-/** The eighteen printed lines: everything that is not the secret. */
+/** The printed lines: everything that is not the secret. */
 export const HUNT_SHEET = HUNT_ITEMS.filter((it) => !it.mystery);
 /** The secret, as a row. There is exactly one and this file owns that fact. */
 export const HUNT_MYSTERY = HUNT_ITEMS.find((it) => it.mystery) ?? null;
 
 /**
- * The animal lines, and only those: the twelve the dash's paw counts —
- * thirteen once the mystery is open, which is the one moment in the game that
- * number goes UP by a line rather than down by a find. `hunt_store.animalTotal` owns
- * the switch; this list carries all twelve and says nothing about when.
+ * The animal lines, and only those: the ones the dash's paw counts — all of
+ * them once the mystery is open, one fewer until then, which is the one moment
+ * in the game that number goes UP by a line rather than down by a find.
+ * `hunt_store.animalTotal` owns the switch; this list carries every animal row
+ * and says nothing about when.
  *
  * The dash used to read "0 of 12" against the LANDMARK list in `HUD.js` — the
  * waterfalls and vistas you drive past — which was a second progress number
@@ -440,8 +481,8 @@ export const HUNT_MYSTERY = HUNT_ITEMS.find((it) => it.mystery) ?? null;
  * flagged. Their line sits under "places and moments, not animals" because the
  * subject is "fireflies over the meadow": the detector counts a SWARM (see
  * `FF_MIN` in `hunt_detect.js`), so what the sheet asks for is a lit meadow
- * rather than a portrait of an insect. The paw counts the twelve lines where
- * you photograph a creature.
+ * rather than a portrait of an insect. The paw counts the lines where you
+ * photograph a creature.
  */
 export const HUNT_ANIMALS = HUNT_ITEMS.filter((it) => it.animal);
 export const HUNT_ANIMAL_IDS = new Set(HUNT_ANIMALS.map((it) => it.id));

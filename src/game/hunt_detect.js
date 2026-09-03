@@ -1613,8 +1613,15 @@ function meshHeight(mesh) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The six wild mammals. `SPECIES` keys are the hunt ids by construction (see
+ * The wild mammals. `SPECIES` keys are the hunt ids by construction (see
  * `hunt_items.js` rule 1), so this walks the pool and needs no mapping.
+ *
+ * The cost of that identity: this adds a key for EVERY species in the pool,
+ * including one with no row on the sheet, and `detectSubjects`'s closing
+ * `HUNT_IDS.filter` then drops it without a word. A species missing from
+ * `hunt_items.js` is therefore not "undetected" — it is detected and discarded,
+ * which the player experiences as a photograph of a plainly-framed animal that
+ * counts for nothing. Do not add a gate here to make that louder; add the row.
  *
  * Unlike `Stats._wildlife` there is no per-animal "already credited" mark. A
  * sighting is once per streamed-in animal because seeing the same deer twice is
