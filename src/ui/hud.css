@@ -257,7 +257,13 @@
 }
 
 .pa-speedo { position: relative; width: 5.6em; height: 5.6em; flex: none; }
-.pa-speedo svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+/* The dial face fills the whole widget, hence inset:0 — and the combinator has
+   to be `>`. The brake-hold lamp is a child of .pa-speedo too (hud_dash.js puts
+   it in the gap at the bottom of the sweep), so a descendant selector here also
+   caught the lamp's 9 px brake glyph: `.pa-hold svg` overrode the size but not
+   the position, which tore the icon out of the pill's flex row and stacked it
+   on the H of HOLD. */
+.pa-speedo > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .pa-speed-row { margin-bottom: 0.1em; }
 .pa-speed-num {
   font-size: 1.9em;
