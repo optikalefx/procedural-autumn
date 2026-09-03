@@ -110,18 +110,24 @@ const BEATS = [
   // tail lights. This one opens on firelight against a dark ridge with an
   // animal moving in it — warm against cold, motion, and a dog, which is the
   // fastest emotional read available in two and a half seconds.
-  { name: 'ridge', secs: 2.8, hour: 21.6, fov: 70, pose: true  },
-  { name: 'kayak', secs: 2.0, hour: 15.0, fov: 70, pose: false },
-  { name: 'bike',  secs: 2.0, hour: 16.0, fov: 70, pose: false },
-  { name: 'photo', secs: 1.8, hour: 16.8, fov: 62, pose: true  },
+  { name: 'ridge', secs: 2.6, hour: 21.6, fov: 70, pose: true  },
+  // Second, not first. The drive is the game's core verb — its own subtitle
+  // says "a cozy drive" — and a trailer that never shows the camper moving is
+  // arguing with the box copy. It is a poor HOOK, though, for the reason above:
+  // a vehicle receding from a camera that is itself pulling back shrinks from
+  // both ends. Behind the night camp it plays as morning: you wake up and go.
+  { name: 'drive', secs: 1.9, hour: 8.2,  fov: 70, pose: true  },
+  { name: 'kayak', secs: 1.7, hour: 15.0, fov: 70, pose: false },
+  { name: 'bike',  secs: 1.5, hour: 16.0, fov: 70, pose: false },
+  { name: 'photo', secs: 1.5, hour: 16.8, fov: 62, pose: true  },
   // The raise is RAISE_TIME 1.15 s and the build queue drains one prop per
   // frame, so a two-second camp beat is all raise and no camp. 2.4 leaves most
   // of a second of finished camp to land on.
-  { name: 'camp',  secs: 2.4, hour: 17.6, fov: 70, pose: true  },
-  { name: 'roast', secs: 2.0, hour: 20.4, fov: null, pose: false },
+  { name: 'camp',  secs: 2.2, hour: 17.6, fov: 70, pose: true  },
+  { name: 'roast', secs: 1.7, hour: 20.4, fov: null, pose: false },
   // 19.8 filmed the massif as black cut-outs against lavender — atmospheric,
   // and the wrong last word for a game whose brief opens with "cozy".
-  { name: 'vista', secs: 2.0, hour: 17.6, fov: 58, pose: true  },
+  { name: 'vista', secs: 1.9, hour: 17.6, fov: 58, pose: true  },
 ];
 
 /** Refuse to film a tree that does not parse — reel.mjs's gate, same reason. */
@@ -301,8 +307,45 @@ async function main() {
       const blocked = new Array(N).fill(0);
       const camY = (rr, ax) => wd.getHeight(cx + Math.sin(ax) * rr, cz + Math.cos(ax) * rr)
                                + 1.9 + rr * 0.055 + LIFT;
+
+      /**
+       * Does the LANDFORM stand between the camera and the camp?
+       *
+       * The raycast below cannot answer this and reported 72/72 bearings clear
+       * for a ridge camp whose every frame was two thirds hillside — the same
+       * shape of failure as "a raycast cannot see a river". It tests OBJECTS:
+       * trunks, rocks, tents. A hill is not an object in its path, it is the
+       * ground, and on flat valley floor the ground is never in the way so the
+       * omission never showed until a camp went up at 245 m.
+       *
+       * `getHeight` answers it directly and needs no scene and no streaming:
+       * walk the segment from eye to aim and compare the terrain under each
+       * sample against the straight line's own height there.
+       */
+      const brow = (rr, ax) => {
+        const px = cx + Math.sin(ax) * rr, pz = cz + Math.cos(ax) * rr;
+        const ey = camY(rr, ax);
+        const ty = wd.getHeight(lx, lz) + 1.2 + LIFT;
+        let worst = 0;
+        for (let t = 0.06; t < 0.97; t += 0.045) {
+          const sx = px + (lx - px) * t, sz = pz + (lz - pz) * t;
+          const line = ey + (ty - ey) * t;
+          worst = Math.max(worst, wd.getHeight(sx, sz) - line);
+        }
+        return worst;
+      };
+      // Terrain first — it is cheap, and a bearing the hillside owns is not
+      // worth raycasting. Weighted at 3 per end so a buried bearing scores as
+      // badly as a fully obstructed one.
+      const buried = new Array(N).fill(0);
       for (let i = 0; i < N; i++) {
         const ax = i * STEP;
+        for (const rr of [R0, R1]) if (brow(rr, ax) > 0.3) buried[i] += 3;
+      }
+      for (let i = 0; i < N; i++) {
+        const ax = i * STEP;
+        blocked[i] += buried[i];
+        if (buried[i] >= 6) continue;          // the ground has it; skip the rays
         for (const rr of [R0, R1]) {
           const px = cx + Math.sin(ax) * rr, pz = cz + Math.cos(ax) * rr;
           const pos = new THREE.Vector3(px, camY(rr, ax), pz);
@@ -334,7 +377,8 @@ async function main() {
         if (cost < bestCost) { bestCost = cost; bestAz = i * STEP; }
       }
       window.__tOrbit = { cx, cz, lx, lz, az0: bestAz, sweep: SWEEP, r0: R0, r1: R1, lift: LIFT };
-      return { clear: blocked.filter((b) => b === 0).length, cost: +bestCost.toFixed(2) };
+      return { clear: blocked.filter((b) => b === 0).length, cost: +bestCost.toFixed(2),
+               buriedArc: buried.filter((b) => b > 0).length };
     }, { cx, cz, R0: r0, R1: r1, SWEEP: sweep, LIFT: lift });
 
   /**
@@ -446,6 +490,167 @@ async function main() {
       }
     }
     throw new Error('no drivable meadow');
+  };
+
+  /**
+   * THE HOOK — a night camp on high ground, with the dog in it.
+   *
+   * Three things have to be true at once and each is its own small fight:
+   *
+   *  · **High ground that a camp will still accept.** `poi.best('vista')` is
+   *    scored as "near ground falls away, far ground rises", which is the
+   *    definition of a ridge, and is also ground `pitchNear` may refuse as too
+   *    steep. So walk the vista list, prefer altitude, and let `pitchNear`
+   *    itself be the gate — it knows what a camp can stand on and no proxy for
+   *    it here would.
+   *
+   *  · **The camp already up.** `instant: true`, unlike the camp beat later in
+   *    the cut. This is the first two and a half seconds of the video; a camp
+   *    assembling itself is a payoff and payoffs do not belong in a hook.
+   *
+   *  · **The dog, which is an 80% roll.** `hasDog` is set on the record
+   *    `pitchNear` returns and the dog is constructed a frame or two later
+   *    (Camp.js builds it in its own update), so this waits on the dog existing
+   *    rather than assuming it. `dogvideo.mjs` found this first and its comment
+   *    says the same thing: a harness must never spend a page load recording
+   *    the other 20%.
+   */
+  setups.ridge = async () => {
+    const cands = await page.evaluate(({ MAX_SLOPE, MIN_Y, MAX_Y, MIN_DROP, STEP }) => {
+      const w = window.__world;
+      // SCAN THE WORLD, do not ask the POI list.
+      //
+      // The POI tables hold about a dozen entries per kind in a 2400 m world,
+      // and on seed 20261018 not one of them is the landform this shot needs:
+      // every `vista` that has a real drop sits at 188-291 m, which is at or
+      // above the altitude where `Trees.js` fades the canopy out
+      // (`smoothstep(196, 258, h)`), so it is bare rock; every `meadow` low
+      // enough to be forested is on the valley floor with nothing to look down
+      // into. A bluff is a specific SHAPE — flat enough to camp, low enough to
+      // have trees, with the ground falling away hard on one side — and the
+      // honest way to find a shape is to look for it, which is what
+      // kayakshot.mjs does for a paddleable reach.
+      //
+      // Two stages, because the drop test is the expensive one: sweep the grid
+      // for flat ground in the right altitude band, then measure the fall line
+      // only where a camp could actually stand.
+      const flat = [];
+      for (let x = -1150; x <= 1150; x += STEP) {
+        for (let z = -1150; z <= 1150; z += STEP) {
+          if (!w.isInBounds(x, z)) continue;
+          const y = w.getHeight(x, z);
+          if (y < MIN_Y || y > MAX_Y) continue;
+          let sl = 0;
+          for (let a = 0; a < 8; a++) {
+            sl += w.getSlope(x + Math.cos(a * 0.785) * 10, z + Math.sin(a * 0.785) * 10);
+          }
+          if (sl / 8 < MAX_SLOPE) flat.push({ x, z, y, slope: sl / 8 });
+        }
+      }
+      const out = [];
+      for (const c of flat) {
+        let drop = 0, viewAz = 0;
+        for (let a = 0; a < 16; a++) {
+          const ang = a * (Math.PI / 8);
+          let lo = c.y;
+          for (let d = 25; d <= 160; d += 18) {
+            lo = Math.min(lo, w.getHeight(c.x + Math.sin(ang) * d, c.z + Math.cos(ang) * d));
+          }
+          if (c.y - lo > drop) { drop = c.y - lo; viewAz = ang; }
+        }
+        if (drop > MIN_DROP) out.push({ ...c, drop, viewAz, kind: 'bluff', i: out.length });
+      }
+      // Deepest valley behind the camp wins, but keep them spread out — twenty
+      // samples off one plateau are one location, and if its camp fails they
+      // all fail together.
+      out.sort((a, b) => b.drop - a.drop);
+      const spread = [];
+      for (const c of out) {
+        if (spread.every((k) => Math.hypot(k.x - c.x, k.z - c.z) > 120)) spread.push(c);
+        if (spread.length >= 8) break;
+      }
+      return spread;
+    }, { MAX_SLOPE: parseFloat(arg('ridge-slope', '0.25')),
+         MIN_Y: parseFloat(arg('ridge-min-y', '40')),
+         MAX_Y: parseFloat(arg('ridge-max-y', '190')),
+         MIN_DROP: parseFloat(arg('ridge-drop', '55')),
+         STEP: parseFloat(arg('ridge-step', '32')) });
+    console.log(`[trailer]   ${cands.length} bluff candidate(s)` +
+                (cands.length ? `, best drop ${cands[0].drop.toFixed(0)}m at ` +
+                                `y+${cands[0].y.toFixed(0)}m` : ''));
+    if (!cands.length) throw new Error('no forested bluff — try --ridge-max-y or --seed');
+
+    for (const c of cands) {
+      await page.evaluate((q) => {
+        window.__camp?.strike?.();
+        window.__vehicleTeleport?.(q.x, q.z, q.yaw ?? 0.9);
+      }, c);
+      await settle(2.0);
+      // Park brake before the camp goes up: at night the headlights flood the
+      // camp from 8-18 m away and latching the brake is what dips them.
+      await hold('Space', true);
+      await grant(Math.round(FPS * 0.8));
+      await hold('Space', false);
+      const camp = await page.evaluate(() => {
+        const v = window.__systems.vehicle;
+        for (const r of [14, 20, 28]) {
+          const c = window.__camp.pitchNear(v.position.x, v.position.z,
+            { instant: true, radius: r });
+          if (!c) continue;
+          c.hasDog = true;              // the 80% roll, forced
+          return { x: +c.x.toFixed(1), z: +c.z.toFixed(1), small: !!c.small, radius: r };
+        }
+        return null;
+      });
+      if (!camp) {
+        console.log(`[trailer]   ${c.kind}[${c.i}] y+${c.y.toFixed(0)}m ` +
+                    `slope ${c.slope.toFixed(2)}  no camp site — next`);
+        continue;
+      }
+      // Wait for the dog to be built rather than assuming it, then let it walk
+      // a beat: a dog standing still on frame one is a prop, not an animal.
+      let dog = false;
+      for (let i = 0; i < FPS * 3; i++) {
+        await step();
+        if (await page.evaluate(() => !!window.__camp?.camps?.at(-1)?.dog)) { dog = true; break; }
+      }
+      await grant(Math.round(FPS * 1.2));
+      // Not the shared orbit. That one circles a camp at eye level on the
+      // bearing opposite the camper, which is right for a clearing on the
+      // valley floor and wrong here: this shot's whole subject is the camp WITH
+      // the valley behind it, so the camera has to stand on the uphill side and
+      // look out THROUGH the camp along the fall line, slightly above it and
+      // tilted down. The drop direction is the composition.
+      const arc = await page.evaluate(({ cx, cz, viewAz, D, EYE, AIM, AIMY, SWEEP }) => {
+        const wd = window.__world;
+        const g = wd.getHeight(cx, cz);
+        window.__tRidge = { cx, cz, g, camAz: viewAz + Math.PI, viewAz,
+                            d0: D, d1: D - 1.6, eye: EYE, aim: AIM, aimY: AIMY, sweep: SWEEP };
+        // How much valley is actually behind the camp along that line?
+        let lo = g;
+        for (let d = 20; d <= 160; d += 10) {
+          lo = Math.min(lo, wd.getHeight(cx + Math.sin(viewAz) * d, cz + Math.cos(viewAz) * d));
+        }
+        return { viewDrop: +(g - lo).toFixed(0) };
+      }, { cx: camp.x, cz: camp.z, viewAz: c.viewAz,
+           // Aim NEAR the camp, not far down the fall line. Aiming 26 m out
+           // flattened the tilt to 3.5 deg, and with the camp only 13 m away
+           // and 3.4 m below the lens that put it at two thirds frame height
+           // with the bottom third dead grass — in a 9:16 frame the cost of a
+           // level axis is paid entirely in foreground. A short aim tilts the
+           // camera down onto the camp and lets the 70 deg lens keep the valley
+           // and the sky above it, which is where they belong.
+           D: parseFloat(arg('ridge-dist', '12')), EYE: parseFloat(arg('ridge-eye', '3.4')),
+           AIM: parseFloat(arg('ridge-aim', '5')), AIMY: parseFloat(arg('ridge-aimy', '1.3')),
+           SWEEP: parseFloat(arg('ridge-sweep', '0.22')) });
+      console.log(`[trailer]   ${c.kind}[${c.i}] y+${c.y.toFixed(0)}m slope ${c.slope.toFixed(2)}` +
+                  `  drop ${c.drop.toFixed(0)}m  camp (${camp.x}, ${camp.z})` +
+                  `${camp.small ? ' [compact]' : ''}  dog ${dog ? 'yes' : 'NO'}` +
+                  `  valley behind the camp ${arc.viewDrop}m`);
+      if (!dog) console.warn('[trailer]   the dog never appeared — the hook is meant to have one');
+      return { ...camp, ...arc, dog, y: c.y, from: `${c.kind}[${c.i}]` };
+    }
+    throw new Error('no high ground would take a camp');
   };
 
   /** The drive beat, if the cut still has one: rehearse, then open at speed. */
@@ -742,6 +947,25 @@ async function main() {
     return pose;
   };
 
+  /**
+   * The orbit both camp beats fly — the daytime camp and the night-ridge hook.
+   * `__tOrbit` is written by `surveyOrbit`; `lift` raises eye and aim together,
+   * which is how the ridge shot buys sky without tipping into a top-down view.
+   */
+  const orbitCam = (u) => page.evaluate((k) => {
+      const o = window.__tOrbit, e = window.__engine, wd = window.__world;
+      const s = k * k * (3 - 2 * k);
+      // Smoothstep the push-in: a linear dolly reads as a jump cut at both ends.
+      const R = o.r0 + (o.r1 - o.r0) * s;
+      const az = o.az0 + k * o.sweep;
+      const x = o.cx + Math.sin(az) * R, z = o.cz + Math.cos(az) * R;
+      // Near eye level. A camp seen from above is the artifact this project
+      // already keeps a note about, and the ground between lens and fire is
+      // dead frame in 9:16.
+      e.camera.position.set(x, wd.getHeight(x, z) + 1.9 + R * 0.055 + (o.lift ?? 0), z);
+      e.camera.lookAt(o.lx, wd.getHeight(o.lx, o.lz) + 1.5 + (o.lift ?? 0), o.lz);
+    }, u);
+
   // ── per-frame cameras, for the beats this tool poses ──────────────────────
   const cameras = {
     drive: (u) => page.evaluate((k) => {
@@ -755,7 +979,10 @@ async function main() {
       // rectangle with two tail lights; a couple of metres off the axis shows
       // the flank and the wheels and reads as a vehicle in half the time.
       const rx = Math.cos(yaw), rz = -Math.sin(yaw);
-      const d = 5.6 + 4.2 * s, lat = 1.15 + 1.45 * s, h = 1.35 + 1.25 * s;
+      // A short, tight move. The old range (5.6 -> 9.8 m) was tuned when this
+      // was a 2.8 s hook and had room to reveal; at 1.9 s in the middle of a
+      // cut, backing off 4 m just reads as the camper leaving. Hold it close.
+      const d = 5.4 + 1.8 * s, lat = 1.2 + 0.9 * s, h = 1.3 + 0.6 * s;
       const px = v.position.x - fx * d + rx * lat;
       const pz = v.position.z - fz * d + rz * lat;
       const gy = wd.getHeight(px, pz) + 1.15;
@@ -775,24 +1002,26 @@ async function main() {
       e.camera.position.set(px, wd.getHeight(px, pz) + 1.55, pz);
       e.camera.lookAt(s.x, wd.getHeight(s.x, s.z) + 0.95, s.z);
     }, u),
-    camp: (u) => orbitCam(u),
-    ridge: (u) => orbitCam(u),
-  };
-
-  /** The orbit both camp beats fly. `__tOrbit` is written by `surveyOrbit`. */
-  const orbitCam = (u) => page.evaluate((k) => {
-      const o = window.__tOrbit, e = window.__engine, wd = window.__world;
+    camp:  (u) => orbitCam(u),
+    ridge: (u) => page.evaluate((k) => {
+      const r = window.__tRidge, e = window.__engine, wd = window.__world;
       const s = k * k * (3 - 2 * k);
-      // Smoothstep the push-in: a linear dolly reads as a jump cut at both ends.
-      const R = o.r0 + (o.r1 - o.r0) * s;
-      const az = o.az0 + k * o.sweep;
-      const x = o.cx + Math.sin(az) * R, z = o.cz + Math.cos(az) * R;
-      // Near eye level. A camp seen from above is the artifact this project
-      // already keeps a note about, and the ground between lens and fire is
-      // dead frame in 9:16.
-      e.camera.position.set(x, wd.getHeight(x, z) + 1.9 + R * 0.055 + (o.lift ?? 0), z);
-      e.camera.lookAt(o.lx, wd.getHeight(o.lx, o.lz) + 1.5 + (o.lift ?? 0), o.lz);
-    }, u);
+      // A slow arc across the fall line with a touch of push-in. Small on
+      // purpose: the composition IS the shot, and a wide orbit would swing the
+      // valley out of frame in under a second.
+      const az = r.camAz + (s - 0.5) * r.sweep;
+      const d = r.d0 + (r.d1 - r.d0) * s;
+      const x = r.cx + Math.sin(az) * d, z = r.cz + Math.cos(az) * d;
+      // Above the camp, never inside the hill it stands on.
+      const y = Math.max(r.g + r.eye, wd.getHeight(x, z) + 1.6);
+      e.camera.position.set(x, y, z);
+      // Aim PAST the camp down the fall line, not at it. Aiming at the camp
+      // centres it and hands the top half of a 9:16 frame to empty sky; aiming
+      // out over the valley drops the camp into the lower third and fills the
+      // middle with what the bluff is for.
+      e.camera.lookAt(r.cx + Math.sin(r.viewAz) * r.aim, r.g + r.aimY,
+                      r.cz + Math.cos(r.viewAz) * r.aim);
+    }, u),
     vista: (u) => page.evaluate((k) => {
       const p = window.__tVista, e = window.__engine, wd = window.__world;
       // A slow lateral drift with a touch of rise. Nothing in a vista moves, so

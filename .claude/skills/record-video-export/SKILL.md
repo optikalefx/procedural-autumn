@@ -1,6 +1,6 @@
 ---
 name: record-video-export
-description: Film a video of the game for posting — a vertical 1080x1920 MP4 rendered offline, frame by frame, with words and the game's own music on it. Use whenever the user wants a video, trailer, clip, reel, short, teaser, or "something to post", and whenever they say record, film, capture, export a video, make a clip, TikTok, Reels, Shorts, YouTube Short, vertical video, or screen record. Two tools: tools/trailer.mjs films a seven-beat cut showing driving, kayaking, biking, wildlife photography, making camp, roasting marshmallows and a vista, and is what a trailer wants; tools/reel.mjs films one longer drive-and-make-camp choreography. tools/trailer_post.mjs puts the words and music on. Also use when a video exists and they want different words, different music, a different length, a different location or time of day, or a different beat order. Not for diagnosing a visual bug (that is debug-visual-video) and not for stills (shot.mjs, campshot.mjs, or in-game photo mode).
+description: Film a video of the game for posting — a vertical 1080x1920 MP4 rendered offline, frame by frame, with words and the game's own music on it. Use whenever the user wants a video, trailer, clip, reel, short, teaser, or "something to post", and whenever they say record, film, capture, export a video, make a clip, TikTok, Reels, Shorts, YouTube Short, vertical video, or screen record. Two tools: tools/trailer.mjs films a seven-beat cut opening on a night camp on a forested bluff with the dog, then kayaking, biking, wildlife photography, making camp, roasting marshmallows and a vista, and is what a trailer wants; tools/reel.mjs films one longer drive-and-make-camp choreography. tools/trailer_post.mjs puts the words and music on. Also use when a video exists and they want different words, different music, a different length, a different location or time of day, or a different beat order. Not for diagnosing a visual bug (that is debug-visual-video) and not for stills (shot.mjs, campshot.mjs, or in-game photo mode).
 ---
 
 # Record a Video for Export
@@ -105,12 +105,18 @@ with a roasting stick in it), so `--only roast` has nothing to sit at.
   `--vista-index/-height/-pitch/-fov` reframe the closing shot; `--species`
   picks the animal for the photo beat.
 
-**Keep the light an arc, not a montage.** The shipped hours run 17.4 → 15.0 →
-16.0 → 16.8 → 17.6 → 20.4 → 17.6: the hook keeps golden hour because it has half
-a second to hold a thumb and golden hour is this game's best face, and
-everything after slides into dusk so the cut reads as one long afternoon rather
-than seven unrelated postcards. Two beats step back an hour, which is invisible
-inside the same afternoon light; a jump to dawn would not be.
+**The light.** The shipped hours run 21.6 → 15.0 → 16.0 → 16.8 → 17.6 → 20.4 →
+17.6. The hook is a night cold-open — firelight against a dark ridge, which is
+the strongest thing this game can put in a first frame — and the six beats after
+it run as one afternoon sliding into dusk. Inside that run, keep the hours
+moving one way: two beats step back an hour, which is invisible in the same
+afternoon light, and a jump to dawn would not be.
+
+**Do not open a social video on a drive-away shot, and do not open it on black.**
+The hook was originally the drive beat, and it was the wrong hook twice over: a
+camper receding from a camera that is itself pulling back shrinks the subject
+from both ends, and the first frame is a rectangle with two tail lights. See the
+trap table for the black-frame half of it.
 
 ## Verifying a take
 

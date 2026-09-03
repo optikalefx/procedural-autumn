@@ -97,7 +97,10 @@ const AFADE_OUT = parseFloat(arg('afade-out', '1.2'));
 // the last beat with tail 0 holds to the final frame and fades out with the
 // picture.
 const DEFAULT_CARDS = [
-  { over: 'drive', lead: 0.65, tail: 0.20, y: 27, size: 104, text: 'NO MAP.<br>NO CLOCK.' },
+  // Over the night-ridge hook. The beat this used to name was `drive`; cards
+  // are placed by BEAT NAME, so renaming a beat orphans its card — the tool
+  // warns and skips rather than silently sliding it somewhere wrong.
+  { over: 'ridge', lead: 0.65, tail: 0.20, y: 27, size: 104, text: 'NO MAP.<br>NO CLOCK.' },
   { over: 'camp',  lead: 0.20, tail: 0.55, y: 27, size: 114, text: 'FIND A SPOT' },
   { over: 'roast', lead: 0.25, tail: 0.45, y: 27, size: 114, text: 'STAY A WHILE' },
   { over: 'vista', lead: 0.15, tail: 0.00, y: 33, size: 128, text: 'CAMPING<br>SEASON',
