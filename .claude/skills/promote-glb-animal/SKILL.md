@@ -102,12 +102,22 @@ Give the base coat **no** `col` at all: it then shares the authored material
 uncloned, which is one less program to compile and nothing to drift out of sync
 with the .blend.
 
-### 3. Nothing else
+### 3. Nothing else, except the sheet
 
 Registration in `SPECIES`, the `CFG` streaming row, habitat suitability in
-`Wildlife._suit`, the hunt item, the logbook — all of it is the same as for a
-procedural species (`create-animal` covers those), and all of it already works
-the moment the species file is right.
+`Wildlife._suit`, the logbook — all of it is the same as for a procedural
+species (`create-animal` covers those), and all of it already works the moment
+the species file is right.
+
+**The scavenger sheet does not.** A species with no row in
+`src/game/hunt_items.js` is not undetected — `hunt_detect.mammals()` adds it to
+the hit set like any other, and `detectSubjects` then discards it in its closing
+`HUNT_IDS.filter` without a word. So a photograph of a plainly framed animal
+counts for nothing, and it presents as a broken photo gate rather than as a
+missing line. Both alpine species shipped that way, because this paragraph used
+to list the hunt item among the things that come free. `create-animal`'s
+touchpoint 5 has the shape of the row; the `id` must be the `SPECIES` key, and
+it is a localStorage key, so it is forever.
 
 ## The traps, all of which have been paid for
 
@@ -229,6 +239,13 @@ curl -s http://127.0.0.1:<port>/src/wildlife/glb_rig.js | head -2
    (await import('/src/game/hunt_detect.js')).detectSubjects(ctx)  // -> ['fox']
    wildlife.nearestHint(x, z)                                      // compass paw
    stats._look(1/6); a._statSeen                                   // logbook credit
+   ```
+   An empty array on a squarely framed animal is almost never the gate — it is a
+   missing `hunt_items.js` row, filtered out on the way back (see *Nothing else,
+   except the sheet* above). Prove which before you touch a threshold; this must
+   print an empty array:
+   ```bash
+   node --input-type=module -e "import { HUNT_IDS } from './src/game/hunt_items.js'; import { SPECIES } from './src/wildlife/animal_species.js'; const ids = new Set(HUNT_IDS); console.log(Object.keys(SPECIES).filter(k => !ids.has(k)))"
    ```
 6. **Cost.** A hand-authored animal is not free. The fox is 6 primitives and
    8,652 triangles, which is **12 draw calls and 17.3k triangles per animal**

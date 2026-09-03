@@ -150,7 +150,7 @@ with confidence at all — so the fox was left as it was.
 comes due the first time the animal needs real work.** It applies here too the
 moment a species stops being pure numbers.
 
-## The six touchpoints
+## The seven touchpoints
 
 1. **`src/wildlife/mammals/<key>.js`** — a new file: the blueprint (`const
    BLUEPRINT = () => ({...})`) and one exported species object with `key`,
@@ -174,12 +174,37 @@ moment a species stops being pure numbers.
    the **deer's bleat**, so a silent species must be added to the explicit
    skip list in `update()` (rabbit/fox/squirrel are the pattern). The design
    bar for adding a real call is high — read the file header first.
-5. **`src/ui/hud_stats.js`** — nothing. The Wildlife logbook rows walk
+5. **`src/game/hunt_items.js`** — a row on the scavenger sheet, and it is
+   **required**. This is the touchpoint that looks like the two below it and is
+   not, which is exactly how it gets skipped: `hunt_detect.mammals()` walks the
+   pool and does `hit.add(key)` for every species it finds, so a new animal is
+   detected the moment it exists — and then `detectSubjects` closes with
+   `HUNT_IDS.filter(...)` and drops the hit, silently, because there is no row.
+   The player frames the animal squarely, presses the shutter, and photographs
+   nothing. That reads as a broken photo gate rather than as a missing line, so
+   the diagnosis starts in the wrong file. The goat and the ram both shipped
+   that way.
+
+   The row's `id` must BE the `SPECIES` key — the detector's lookup is an
+   identity and there is no translation table — and it is a localStorage key, so
+   it is forever; rename one and you un-tick a box on somebody's real save.
+   `animal: true` puts the line behind the dash's paw. `subject` completes the
+   sentence "Photo of ___", so it carries the indefinite article. Add new rows
+   in a block of their own rather than reordering lines a player has already
+   ticked: order is only page order, and the book paginates itself.
+6. **`src/ui/hud_stats.js`** — nothing. The Wildlife logbook rows walk
    `SPECIES`; the `plural` field is all it needs. (Non-mammal one-offs like
    the bald eagle keep hand-written rows.)
-6. **The gallery** (`gallery.html`) — nothing. Its animal adapter walks
+7. **The gallery** (`gallery.html`) — nothing. Its animal adapter walks
    `SPECIES`, so every variant appears with stand/graze/alert/walk/trot/run
    poses the moment the entry exists.
+
+The list is done when this prints an empty array. It is the only check that
+catches touchpoint 5, because nothing else in the tree will complain:
+
+```bash
+node --input-type=module -e "import { HUNT_IDS } from './src/game/hunt_items.js'; import { SPECIES } from './src/wildlife/animal_species.js'; const ids = new Set(HUNT_IDS); console.log(Object.keys(SPECIES).filter(k => !ids.has(k)))"
+```
 
 ## Blueprint traps (each of these shipped as a bug once)
 
