@@ -97,6 +97,22 @@ const BASE   = String(arg('url', process.env.AUTUMN_URL || 'http://localhost:517
 const STILLS = has('stills');
 const EXT    = has('png') ? 'png' : 'jpg';
 const ONLY   = arg('only', null);
+// Per-clip length override. The marketing backlog specifies a duration per row
+// ("`ridge` 10 s", "`drive` 60 s") and those are single-beat clips, so the
+// BEATS table's own `secs` — tuned for the eight-beat trailer — is the wrong
+// number for them. Applies to every beat rendered, so use it with `--only`.
+const SECS   = arg('secs', null) ? parseFloat(String(arg('secs'))) : null;
+// A cozy loop gets replayed, so it should return to where it started. Makes the
+// orbit a there-and-back — sin on the bearing, raised cosine on the radius — so
+// the last frame lands on the first and there is no seam.
+const LOOP   = has('loop');
+// Per-beat overrides: `--beat-secs camp=3,roast=2.2` and `--beat-hours camp=21.6`.
+// The backlog specifies clips as "`drive` 2 s -> `camp` 4 s hold, hour 17.6",
+// which `--secs` (one length for every beat) cannot express.
+const kv = (spec) => Object.fromEntries(String(spec || '').split(',').filter(Boolean)
+  .map((pair) => { const [k, v] = pair.split('='); return [k.trim(), parseFloat(v)]; }));
+const BEAT_SECS  = kv(arg('beat-secs', ''));
+const BEAT_HOURS = kv(arg('beat-hours', ''));
 const TMP    = resolve(String(arg('frames', `${OUT.replace(/\.[^.]+$/, '')}-frames`)));
 const TRACE  = resolve(OUT.replace(/\.[^.]+$/, '.json'));
 
@@ -134,6 +150,12 @@ const BEATS = [
   // 19.8 filmed the massif as black cut-outs against lavender — atmospheric,
   // and the wrong last word for a game whose brief opens with "cozy".
   { name: 'vista', secs: 1.9, hour: 17.6, fov: 58, pose: true  },
+  // `optional` beats are never in the default cut — they exist for the clips in
+  // marketing/video-ideas.md and only render when `--only` names them.
+  // `campwide` reuses the camp the `camp` beat already pitched rather than
+  // pitching its own, so the two are the same place from two distances.
+  { name: 'campwide', secs: 4.8, hour: 21.6, fov: 70, pose: true, optional: true },
+  { name: 'firelight', secs: 3.0, hour: 21.6, fov: 70, pose: true, optional: true },
 ];
 
 /** Refuse to film a tree that does not parse — reel.mjs's gate, same reason. */
@@ -286,8 +308,8 @@ async function main() {
    * one existed rather than copied, because every hard-won line below would
    * otherwise have to be re-learned in one of the two copies.
    */
-  const surveyOrbit = ({ cx, cz, r0 = 9.5, r1 = 7.0, sweep = 0.40, lift = 0 }) =>
-    page.evaluate(({ cx, cz, R0, R1, SWEEP, LIFT }) => {
+  const surveyOrbit = ({ cx, cz, r0 = 9.5, r1 = 7.0, sweep = 0.40, lift = 0, margin = 3.0 }) =>
+    page.evaluate(({ cx, cz, R0, R1, SWEEP, LIFT, MARGIN }) => {
       const THREE = window.__THREE, wd = window.__world, e = window.__engine;
       const v = window.__systems.vehicle;
       // Stand OPPOSITE the camper and orbit the camp: in 9:16 the composition
@@ -364,7 +386,12 @@ async function main() {
             const hits = ray.intersectObjects(e.scene.children, true)
               .filter((h) => h.distance > 0.05 && h.object.visible &&
                              h.object.name !== 'Sky' && !h.object.isPoints);
-            if (hits.length && hits[0].distance < rr - 3.0) blocked[i]++;
+            // MARGIN is how much nearer than the subject a hit has to be to
+            // count as blocking. 3 m is right for a 9-11 m standing orbit and
+            // far too permissive at 6 m: a cooler two metres off the lens sat
+            // at 4.2 m, the test wanted under 3.2, and the hook was filmed
+            // through a cool box. Scale it with the radius.
+            if (hits.length && hits[0].distance < rr - MARGIN) blocked[i]++;
           }
         }
       }
@@ -385,7 +412,7 @@ async function main() {
       window.__tOrbit = { cx, cz, lx, lz, az0: bestAz, sweep: SWEEP, r0: R0, r1: R1, lift: LIFT };
       return { clear: blocked.filter((b) => b === 0).length, cost: +bestCost.toFixed(2),
                buriedArc: buried.filter((b) => b > 0).length };
-    }, { cx, cz, R0: r0, R1: r1, SWEEP: sweep, LIFT: lift });
+    }, { cx, cz, R0: r0, R1: r1, SWEEP: sweep, LIFT: lift, MARGIN: margin });
 
   /**
    * Drive: find a meadow the camper can actually get out of, and open at speed.
@@ -522,7 +549,18 @@ async function main() {
    *    the other 20%.
    */
   setups.ridge = async () => {
-    const cands = await page.evaluate(({ MAX_SLOPE, MIN_Y, MAX_Y, MIN_DROP, STEP }) => {
+    // `--ridge-allow-compact` takes whatever the world offers; without it a
+    // bluff that cannot hold a full camp is skipped.
+    const FULL_OK = has('ridge-allow-compact');
+    // Found and pitched already? Re-use it. A clip that cuts between two
+    // distances of the same fire has to be the SAME fire, and re-running the
+    // search would pitch a second camp somewhere else entirely.
+    if (world.ridge) {
+      await page.evaluate(() => { window.__roast?.leave?.(); });
+      await grant(Math.round(FPS * 0.3));
+      return world.ridge;
+    }
+    const cands = await page.evaluate(({ MAX_SLOPE, MIN_Y, MAX_Y, MIN_DROP, FLAT_SPREAD, STEP }) => {
       const w = window.__world;
       // SCAN THE WORLD, do not ask the POI list.
       //
@@ -546,11 +584,24 @@ async function main() {
           if (!w.isInBounds(x, z)) continue;
           const y = w.getHeight(x, z);
           if (y < MIN_Y || y > MAX_Y) continue;
-          let sl = 0;
-          for (let a = 0; a < 8; a++) {
-            sl += w.getSlope(x + Math.cos(a * 0.785) * 10, z + Math.sin(a * 0.785) * 10);
+          // A PLATEAU, not one flat sample. `pitchNear` needs room for a full
+          // camp — tent, fire, chairs, cooler, log pile and the roasting stick
+          // the marshmallow shot depends on — and the first version tested a
+          // single ring at 10 m, passed a shelf, and got a 2-prop compact camp
+          // with no stick on it at radius 30. Sample three rings and take the
+          // WORST, plus the height spread across the disc.
+          let sl = 0, n = 0, lo = y, hi = y;
+          for (const r of [6, 12, 18]) {
+            for (let a = 0; a < 12; a++) {
+              const px = x + Math.cos(a * 0.524) * r, pz = z + Math.sin(a * 0.524) * r;
+              sl += w.getSlope(px, pz); n++;
+              const h = w.getHeight(px, pz);
+              lo = Math.min(lo, h); hi = Math.max(hi, h);
+            }
           }
-          if (sl / 8 < MAX_SLOPE) flat.push({ x, z, y, slope: sl / 8 });
+          if (sl / n < MAX_SLOPE && hi - lo < FLAT_SPREAD) {
+            flat.push({ x, z, y, slope: sl / n, spread: hi - lo });
+          }
         }
       }
       const out = [];
@@ -580,7 +631,11 @@ async function main() {
          MIN_Y: parseFloat(arg('ridge-min-y', '40')),
          MAX_Y: parseFloat(arg('ridge-max-y', '190')),
          MIN_DROP: parseFloat(arg('ridge-drop', '55')),
-         STEP: parseFloat(arg('ridge-step', '32')) });
+         // Metres of height variation allowed across a 36 m disc. This is what
+         // separates "a flat spot on a slope" from "a plateau you can put a
+         // whole camp on".
+         FLAT_SPREAD: parseFloat(arg('ridge-flat', '3.5')),
+         STEP: parseFloat(arg('ridge-step', '24')) });
     console.log(`[trailer]   ${cands.length} bluff candidate(s)` +
                 (cands.length ? `, best drop ${cands[0].drop.toFixed(0)}m at ` +
                                 `y+${cands[0].y.toFixed(0)}m` : ''));
@@ -599,18 +654,42 @@ async function main() {
       await hold('Space', false);
       const camp = await page.evaluate(() => {
         const v = window.__systems.vehicle;
-        for (const r of [14, 20, 28]) {
+        // Prefer a FULL camp. A compact site is three props and may not include
+        // the roasting stick, and `__roast.enter()` finds its fire by looking
+        // for a camp that has one — so a compact ridge camp makes a marshmallow
+        // shot at this location impossible. Probe wide first, keep the best.
+        let best = null;
+        for (const r of [30, 24, 18, 14]) {
           const c = window.__camp.pitchNear(v.position.x, v.position.z,
             { instant: true, radius: r });
           if (!c) continue;
-          c.hasDog = true;              // the 80% roll, forced
-          return { x: +c.x.toFixed(1), z: +c.z.toFixed(1), small: !!c.small, radius: r };
+          if (!c.small) { c.hasDog = true; return { x: +c.x.toFixed(1), z: +c.z.toFixed(1),
+                                                    small: false, radius: r,
+                                                    props: window.__camp.camps.at(-1)?.props?.length ?? 0 }; }
+          if (!best) best = { c, r };
+          window.__camp.strike();
         }
-        return null;
+        if (!best) return null;
+        const c = window.__camp.pitchNear(v.position.x, v.position.z,
+          { instant: true, radius: best.r });
+        if (!c) return null;
+        c.hasDog = true;
+        return { x: +c.x.toFixed(1), z: +c.z.toFixed(1), small: !!c.small, radius: best.r,
+                 props: window.__camp.camps.at(-1)?.props?.length ?? 0 };
       });
       if (!camp) {
         console.log(`[trailer]   ${c.kind}[${c.i}] y+${c.y.toFixed(0)}m ` +
                     `slope ${c.slope.toFixed(2)}  no camp site — next`);
+        continue;
+      }
+      // A compact camp is a REJECTED bluff, not a smaller one. Three props and
+      // no roasting stick, which is what `__roast.enter()` looks for — so a
+      // clip that cuts to a marshmallow cannot be filmed here. Walk on unless
+      // this is the last candidate.
+      if (camp.small && !FULL_OK) {
+        console.log(`[trailer]   ${c.kind}[${c.i}] y+${c.y.toFixed(0)}m ` +
+                    `compact (${camp.props} props) — next`);
+        await page.evaluate(() => window.__camp?.strike?.());
         continue;
       }
       // Wait for the dog to be built rather than assuming it, then let it walk
@@ -627,11 +706,12 @@ async function main() {
       // the valley behind it, so the camera has to stand on the uphill side and
       // look out THROUGH the camp along the fall line, slightly above it and
       // tilted down. The drop direction is the composition.
-      const arc = await page.evaluate(({ cx, cz, viewAz, D, EYE, AIM, AIMY, SWEEP }) => {
+      const arc = await page.evaluate(({ cx, cz, viewAz, D, EYE, AIM, AIMY, SWEEP, SWING }) => {
         const wd = window.__world;
         const g = wd.getHeight(cx, cz);
         window.__tRidge = { cx, cz, g, camAz: viewAz + Math.PI, viewAz,
-                            d0: D, d1: D - 1.6, eye: EYE, aim: AIM, aimY: AIMY, sweep: SWEEP };
+                            d0: D, d1: D - 1.6, eye: EYE, aim: AIM, aimY: AIMY, sweep: SWEEP,
+                            swingDir: SWING };
         // How much valley is actually behind the camp along that line?
         let lo = g;
         for (let d = 20; d <= 160; d += 10) {
@@ -648,15 +728,53 @@ async function main() {
            // and the sky above it, which is where they belong.
            D: parseFloat(arg('ridge-dist', '12')), EYE: parseFloat(arg('ridge-eye', '3.4')),
            AIM: parseFloat(arg('ridge-aim', '5')), AIMY: parseFloat(arg('ridge-aimy', '1.3')),
-           SWEEP: parseFloat(arg('ridge-sweep', '0.22')) });
+           SWEEP: parseFloat(arg('ridge-sweep', '0.22')),
+           SWING: parseFloat(arg('ridge-swing', '-1')) });
       console.log(`[trailer]   ${c.kind}[${c.i}] y+${c.y.toFixed(0)}m slope ${c.slope.toFixed(2)}` +
                   `  drop ${c.drop.toFixed(0)}m  camp (${camp.x}, ${camp.z})` +
-                  `${camp.small ? ' [compact]' : ''}  dog ${dog ? 'yes' : 'NO'}` +
+                  `${camp.small ? ' [compact]' : ''} ${camp.props} props  dog ${dog ? 'yes' : 'NO'}` +
                   `  valley behind the camp ${arc.viewDrop}m`);
       if (!dog) console.warn('[trailer]   the dog never appeared — the hook is meant to have one');
-      return { ...camp, ...arc, dog, y: c.y, from: `${c.kind}[${c.i}]` };
+      world.ridge = { ...camp, ...arc, dog, y: c.y, from: `${c.kind}[${c.i}]` };
+      world.camp = { x: camp.x, z: camp.z };
+      return world.ridge;
     }
     throw new Error('no high ground would take a camp');
+  };
+
+  /**
+   * The hook for a fireside clip: close and low on the FIRE, not on the camp.
+   *
+   * The camp beat's fall-line camera aims past the site along the drop, which
+   * is the right framing for a wide — it holds the tent, the bike, the valley
+   * and the stars — and the wrong one for a first frame, because at this site
+   * the fire ended up behind the tent and the hook had no fire in it at all.
+   *
+   * A camp's firepit is a prop with its own position, so orbit THAT: small
+   * radius, and `lift` negative so the eye drops to roughly a sitting height
+   * rather than the standing 1.9 m the orbit normally uses.
+   */
+  setups.firelight = async () => {
+    await setups.ridge();                       // pitches the bluff camp, once
+    const fire = await page.evaluate(() => {
+      const c = window.__camp?.camps?.at(-1);
+      const g = c?.fire?.group ?? c?.fire?.mesh ?? c?.fire;
+      const pos = g?.position;
+      if (pos && Number.isFinite(pos.x)) return { x: pos.x, z: pos.z, found: true };
+      return { x: c?.x ?? 0, z: c?.z ?? 0, found: false };
+    });
+    if (!fire.found) {
+      console.warn('[trailer]   no firepit position — orbiting the camp centre instead');
+    }
+    const arc = await surveyOrbit({
+      cx: fire.x, cz: fire.z,
+      r0: parseFloat(arg('fire-r0', '7.0')), r1: parseFloat(arg('fire-r1', '5.6')),
+      sweep: parseFloat(arg('fire-sweep', '0.20')), lift: parseFloat(arg('fire-lift', '-0.6')),
+      margin: parseFloat(arg('fire-margin', '1.5')),
+    });
+    console.log(`[trailer]   firelight on (${fire.x.toFixed(1)}, ${fire.z.toFixed(1)})` +
+                `  arc ${arc.clear}/72 clear, cost ${arc.cost}`);
+    return { ...fire, ...arc };
   };
 
   /** The drive beat, if the cut still has one: rehearse, then open at speed. */
@@ -1062,9 +1180,30 @@ async function main() {
     });
     if (camp) Object.assign(camp, await surveyOrbit({ cx: camp.x, cz: camp.z, r0: 9.5, r1: 7.0 }));
     if (!camp) throw new Error('pitchNear found no site');
+    world.camp = { x: camp.x, z: camp.z };   // `campwide` re-frames this camp
     console.log(`[trailer]   camp (${camp.x}, ${camp.z})${camp.small ? ' [compact]' : ''}` +
                 `  arc ${camp.clear}/72 clear, cost ${camp.cost}`);
     return camp;
+  };
+
+  /**
+   * The same camp, from further out. No pitching: it re-surveys an orbit around
+   * whatever `camp` already built, at a wider radius, so a clip can cut from
+   * close on the fire to the whole camp under the stars and have them be one
+   * place. Also stands the fireside view down, since the roast beat usually
+   * runs between the two.
+   */
+  setups.campwide = async () => {
+    if (!world.camp) throw new Error('campwide needs the camp beat before it');
+    await page.evaluate(() => { window.__roast?.leave?.(); });
+    await grant(Math.round(FPS * 0.4));
+    const arc = await surveyOrbit({
+      cx: world.camp.x, cz: world.camp.z,
+      r0: parseFloat(arg('wide-r0', '9')), r1: parseFloat(arg('wide-r1', '19')),
+      sweep: parseFloat(arg('wide-sweep', '0.30')), lift: parseFloat(arg('wide-lift', '1.2')),
+    });
+    console.log(`[trailer]   campwide arc ${arc.clear}/72 clear, cost ${arc.cost}`);
+    return arc;
   };
 
   /**
@@ -1077,6 +1216,10 @@ async function main() {
    * frame.
    */
   setups.roast = async () => {
+    // A marshmallow is the warmest, most specific frame this game owns, so it
+    // is often the HOOK rather than a middle beat — which means it can be the
+    // first thing rendered and cannot assume a camp already exists.
+    if (!world.ridge && !world.camp) await setups.ridge();
     const ok = await page.evaluate(() => window.__roast?.enter?.() ?? false);
     if (!ok) throw new Error('no roasting stick to sit at');
     // Widen the lens, and only the lens.
@@ -1184,14 +1327,30 @@ async function main() {
       e.camera.lookAt(s.x, wd.getHeight(s.x, s.z) + s.aimY, s.z);
     }, u),
     camp:  (u) => orbitCam(u),
-    ridge: (u) => page.evaluate((k) => {
+    campwide: (u) => orbitCam(u),
+    firelight: (u) => orbitCam(u),
+    ridge: (u) => page.evaluate(({ k, loop }) => {
       const r = window.__tRidge, e = window.__engine, wd = window.__world;
       const s = k * k * (3 - 2 * k);
       // A slow arc across the fall line with a touch of push-in. Small on
       // purpose: the composition IS the shot, and a wide orbit would swing the
       // valley out of frame in under a second.
-      const az = r.camAz + (s - 0.5) * r.sweep;
-      const d = r.d0 + (r.d1 - r.d0) * s;
+      // `loop` makes it a there-and-back so the clip replays with no seam: the
+      // bearing rides a sine and the radius a raised cosine, both exactly back
+      // where they began at k = 1. k = 0 is the CLOSE end on purpose — frame
+      // one is the thumbnail on every platform, so the shot opens on its best
+      // frame instead of easing into it.
+      // Swing ONE WAY, not both. A sine takes the bearing +sweep and then
+      // -sweep, so it visits both sides of the composition and only one of them
+      // has to be clear — at +0.22 rad this shot passed behind a conifer and
+      // put a trunk through the middle of the frame at the quarter point. A
+      // raised cosine on the bearing too keeps it on the side that was framed,
+      // and is still exactly back at the start on k = 1.
+      const swing = (1 - Math.cos(k * Math.PI * 2)) / 2;
+      const az = loop ? r.camAz + r.swingDir * swing * r.sweep
+                      : r.camAz + (s - 0.5) * r.sweep;
+      const d = loop ? r.d1 + (r.d0 - r.d1) * swing
+                     : r.d0 + (r.d1 - r.d0) * s;
       const x = r.cx + Math.sin(az) * d, z = r.cz + Math.cos(az) * d;
       // Above the camp, never inside the hill it stands on.
       const y = Math.max(r.g + r.eye, wd.getHeight(x, z) + 1.6);
@@ -1202,7 +1361,7 @@ async function main() {
       // middle with what the bluff is for.
       e.camera.lookAt(r.cx + Math.sin(r.viewAz) * r.aim, r.g + r.aimY,
                       r.cz + Math.cos(r.viewAz) * r.aim);
-    }, u),
+    }, { k: u, loop: LOOP }),
     vista: (u) => page.evaluate((k) => {
       const p = window.__tVista, e = window.__engine, wd = window.__world;
       // A slow lateral drift with a touch of rise. Nothing in a vista moves, so
@@ -1271,7 +1430,17 @@ async function main() {
     if (shot.driver) drivers[name] = shot.driver;
     console.log(`[trailer] registered shot '${name}' (${shot.beat.secs}s @ hour ${shot.beat.hour})`);
   }
-  const list = BEATS.filter((b) => !wanted || wanted.includes(b.name));
+  const list = BEATS
+    .filter((b) => (wanted ? wanted.includes(b.name) : !b.optional))
+    .map((b) => ({
+      ...b,
+      secs: BEAT_SECS[b.name] ?? SECS ?? b.secs,
+      hour: BEAT_HOURS[b.name] ?? b.hour,
+    }));
+  if (wanted) {
+    // Render in the order the caller asked for, not the table's.
+    list.sort((a, b) => wanted.indexOf(a.name) - wanted.indexOf(b.name));
+  }
   let f = 0;
   const t0 = Date.now();
   const report = [];

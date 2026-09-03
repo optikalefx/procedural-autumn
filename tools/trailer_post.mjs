@@ -123,7 +123,14 @@ const cardHtml = (c, W, H) => `<!doctype html><meta charset="utf-8"><style>
   html, body { margin: 0; width: ${W}px; height: ${H}px; background: transparent; }
   .scrim {
     position: absolute; left: 0; right: 0; top: ${c.y ?? 27}%;
-    height: ${c.sub ? 660 : 470}px; transform: translateY(-50%);
+    /* A scrim of 0 turns it off. A 470 px band at 34% behind a 46 px URL on a
+       night shot is a visible dark stripe protecting type that already had all
+       the contrast it needed - the scrim is for cream-on-cream sky, not for
+       small text on a dark frame. NB: no backticks in this comment. It sits
+       inside a template literal, and a backtick in comment prose closes it -
+       the same trap the shader files carry a warning about. */
+    height: ${c.scrim ?? (c.sub ? 660 : 470)}px; transform: translateY(-50%);
+    display: ${c.scrim === 0 ? 'none' : 'block'};
     background: linear-gradient(to bottom,
       rgba(38, 20, 12, 0) 0%, rgba(38, 20, 12, 0.34) 30%,
       rgba(38, 20, 12, 0.34) 70%, rgba(38, 20, 12, 0) 100%);
