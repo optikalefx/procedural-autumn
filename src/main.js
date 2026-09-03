@@ -101,10 +101,46 @@ const SYSTEMS = [
 const loaderEl = document.getElementById('loader');
 const barEl = document.querySelector('#bar > i');
 const statusEl = document.getElementById('status');
+// Where the loader is, for the abandonment report below. `p` and `label` are
+// whatever the bar last showed; nothing here is read by the game itself.
+const loadState = { p: 0, label: 'Waking the valley', t0: performance.now(), reported: false };
+
 const setProgress = (p, label) => {
   if (barEl) barEl.style.width = `${Math.round(Math.min(1, p) * 100)}%`;
   if (label && statusEl) statusEl.textContent = label;
+  loadState.p = Math.min(1, p);
+  if (label) loadState.label = label;
 };
+
+// Four in ten pageviews never reach `session_started`, and until this event
+// existed the only evidence of where they went was that they were gone. This
+// fires once, from the tab being hidden or the page unloading, but only while
+// the loader is still up: after `window.__ready` a hidden tab is a player
+// pausing, not a player leaving. `sendBeacon` because a fetch started from
+// `pagehide` is not guaranteed to survive the navigation.
+//
+// `effective_type` / `downlink_mbps` come from the Network Information API
+// where the browser offers it (Chromium does, Safari does not) — that is the
+// property that will say whether this is a bandwidth problem or a patience one.
+const reportLoadAbandoned = (reason) => {
+  if (loadState.reported || window.__ready) return;
+  loadState.reported = true;
+  const c = navigator.connection;
+  posthog.capture('load_abandoned', {
+    reason,
+    progress: Math.round(loadState.p * 100),
+    stage: loadState.label,
+    elapsed_s: Math.round((performance.now() - loadState.t0) / 100) / 10,
+    effective_type: c?.effectiveType ?? null,
+    downlink_mbps: c?.downlink ?? null,
+    save_data: c?.saveData ?? null,
+    touch_capable: touchCapable(),
+  }, { transport: 'sendBeacon' });
+};
+window.addEventListener('pagehide', () => reportLoadAbandoned('pagehide'));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') reportLoadAbandoned('hidden');
+});
 
 /**
  * Choose a quality tier from what the machine has to do, not only from what it

@@ -1186,7 +1186,7 @@ export class PhotoMode {
 
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
-    const name = `procedural-autumn-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+    const name = `camping-season-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
                  `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.png`;
     const a = document.createElement('a');
     a.href = url;
