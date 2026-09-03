@@ -69,6 +69,12 @@ import { mkdirSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { acquire } from './_lock.mjs';
 import { POSE_SRC } from './_pose.mjs';
+// Authored one-off shots live one-per-file under tools/shots/ so a later clip
+// can read how an earlier one was done. They are registered ONLY when --only
+// names them, so adding a shot never changes the length of the standard cut.
+import { makeCliffShot } from './clips/cliff.mjs';
+
+const SHOT_MODULES = { cliff: makeCliffShot };
 
 const argv = process.argv.slice(2);
 const arg = (n, d = null) => {
@@ -1252,6 +1258,19 @@ async function main() {
 
   // ── film ──────────────────────────────────────────────────────────────────
   const wanted = ONLY ? String(ONLY).split(',') : null;
+  // Register authored shots the run actually asked for. Gated on `wanted`
+  // deliberately: an unrequested shot must not join BEATS, or it would lengthen
+  // the standard fifteen-second cut and quietly break the length assertion at
+  // the bottom of this file.
+  for (const [name, make] of Object.entries(SHOT_MODULES)) {
+    if (!wanted?.includes(name)) continue;
+    const shot = make({ page, arg, hold, step, grant, settle, FPS });
+    BEATS.push(shot.beat);
+    setups[name] = shot.setup;
+    if (shot.camera) cameras[name] = shot.camera;
+    if (shot.driver) drivers[name] = shot.driver;
+    console.log(`[trailer] registered shot '${name}' (${shot.beat.secs}s @ hour ${shot.beat.hour})`);
+  }
   const list = BEATS.filter((b) => !wanted || wanted.includes(b.name));
   let f = 0;
   const t0 = Date.now();

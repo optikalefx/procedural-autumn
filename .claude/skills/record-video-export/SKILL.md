@@ -72,6 +72,31 @@ paying for all eight. **`roast` needs `camp` in the same run** — it sits down 
 fire the camp beat built (`__roast.enter()` finds the first camp in the world
 with a roasting stick in it), so `--only roast` has nothing to sit at.
 
+## One-off shots live in their own file
+
+A clip that is not part of the standard cut — a single joke, a single mechanic —
+goes in `tools/clips/<name>.mjs` rather than into `trailer.mjs`, so a later clip
+can read how it was done instead of archaeologising a diff. The module exports a
+factory taking the harness context (`page`, `arg`, `hold`, `step`, `grant`,
+`settle`, `FPS`) and returning `{ beat, setup, camera, driver }`;
+`trailer.mjs` registers it **only when `--only` names it**, so adding a shot
+never changes the length of the fifteen-second cut. `tools/clips/README.md` has
+the contract and the index.
+
+Shipped shots:
+
+| name | what it films | flags |
+|---|---|---|
+| `cliff` | the camper drives off a bluff, falls, lands, sits there | `--cliff-secs` `--cliff-back` `--cliff-side` `--cliff-eye` `--cliff-step` `--cliff-hour` |
+
+`cliff` finds a LIP (steep drop within 10-30 m) rather than reusing the ridge
+beat's bluff finder, which scores for a camp with a view and usually returns a
+long grade the camper would trundle down. It then REHEARSES every candidate —
+drives it for real and keeps the first that leaves the ground and falls >20 m —
+because the trap table's oldest entry is that every proxy for drivability passed
+a corridor the camper then failed. If no candidate goes over, the answer is
+another `--seed`, not a looser threshold.
+
 ## Changing the cut
 
 - **Beats** — the `BEATS` table at the top of `trailer.mjs`: name, seconds,
