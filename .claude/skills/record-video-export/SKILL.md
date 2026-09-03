@@ -1,12 +1,25 @@
 ---
 name: record-video-export
-description: Film a vertical short-form video of the game — a 9:16 1080x1920 MP4 rendered offline, frame by frame, with tools/reel.mjs. Use this whenever the user wants a video, clip, reel, short, trailer, or "something to post" of the game, and whenever they say record, film, capture, export a video, make a clip, TikTok, Reels, Shorts, vertical video, or screen record. Also use it when a clip already exists and they want a different location, time of day, length, or framing. Not for diagnosing a visual bug (that is debug-visual-video) and not for stills (shot.mjs, campshot.mjs, or in-game photo mode).
+description: Film a video of the game for posting — a vertical 1080x1920 MP4 rendered offline, frame by frame, with words and the game's own music on it. Use whenever the user wants a video, trailer, clip, reel, short, teaser, or "something to post", and whenever they say record, film, capture, export a video, make a clip, TikTok, Reels, Shorts, YouTube Short, vertical video, or screen record. Two tools: tools/trailer.mjs films a seven-beat cut showing driving, kayaking, biking, wildlife photography, making camp, roasting marshmallows and a vista, and is what a trailer wants; tools/reel.mjs films one longer drive-and-make-camp choreography. tools/trailer_post.mjs puts the words and music on. Also use when a video exists and they want different words, different music, a different length, a different location or time of day, or a different beat order. Not for diagnosing a visual bug (that is debug-visual-video) and not for stills (shot.mjs, campshot.mjs, or in-game photo mode).
 ---
 
 # Record a Video for Export
 
-The tool is `tools/reel.mjs`. Read its header before changing anything — it
-carries the flags and the reasoning behind each default.
+Three tools, one clock. Read the header of whichever you use — each carries its
+flags and the reasoning behind every default.
+
+| tool | films | length | wall clock |
+|---|---|---|---|
+| `tools/trailer.mjs` | **seven beats**: drive, kayak, bike, wildlife photo, make camp, marshmallow, vista | 15 s | ~40 min at delivery quality |
+| `tools/reel.mjs` | **one choreography**: drive, stop, make camp, slow orbit | ≤10 s | ~25 min at delivery quality |
+| `tools/trailer_post.mjs` | puts the words and the music on a rendered cut | — | ~20 s |
+
+**For anything promotional, use `trailer.mjs`.** A trailer has to say what is in
+the game, and what is in this game is a camper, a kayak, a mountain bike, a
+camera, a fire with a marshmallow over it, and a valley full of animals. `reel`
+films one shot of it beautifully; that is the right tool when the drive-and-camp
+beat *is* the subject, and the wrong one when the question is "what is this
+game".
 
 ## Do not reach for a screen recorder
 
@@ -18,127 +31,165 @@ seconds worth posting. The player can pin it (Settings → Picture → Resolutio
 bakes in every hitch, cannot repeat a take after a fix, and cannot fly a camera
 move no hand can perform.
 
-Offline rendering removes the coupling entirely. `reel.mjs` replaces
+Offline rendering removes the coupling entirely. Both tools replace
 `engine.clock.getDelta` with a budget granted one frame at a time, so a frame
-may cost a second of wall clock and still be exactly 1/fps of screen time.
-Every system hangs off that one dt (`Engine._loop`) and physics is a 1/120
+may cost a second of wall clock and still be exactly 1/fps of screen time. Every
+system hangs off that one dt (`Engine._loop`) and physics is a 1/120
 accumulator, so the motion is exact and reproducible. Slow frames cost wall
 clock, never quality.
 
-## The workflow: scout, look, ship
+## The pipeline
 
-Start your own vite server first — port 5178 serves the **main** checkout, so
-from a worktree every frame would be of main's code (AGENTS.md).
+Start your own vite server first — **port 5178 serves the MAIN checkout**, so
+from a worktree every frame would be of main's code (AGENTS.md). Pin a seed that
+has a bake on disk (`node tools/bake.mjs --seed 20261018`); a seed with no bake
+bakes a whole world before the first frame.
 
 ```bash
-npx vite --host 127.0.0.1 --port 5190 --strictPort
-node tools/reel.mjs --url http://127.0.0.1:5190 --scout
-node tools/reel.mjs --url http://127.0.0.1:5190 --site 0 --hour 17.4 --fps 24 --ss 1 --out shots/reel/look.mp4
-node tools/reel.mjs --url http://127.0.0.1:5190 --site 0 --hour 17.4 --fps 60 --ss 2 --out shots/reel/clip.mp4
+npx vite --host 127.0.0.1 --port 5193 --strictPort
+
+# 1. stills — one frame per beat, ~10 min, answers "is anything mis-framed"
+node tools/trailer.mjs --url http://127.0.0.1:5193 --stills --fps 30 --out shots/trailer/look.mp4
+
+# 2. look — the whole cut in motion at low quality, ~13 min
+node tools/trailer.mjs --url http://127.0.0.1:5193 --fps 24 --ss 1 --out shots/trailer/look.mp4
+
+# 3. ship — 1080x1920 60 fps, 2x supersampled, ~40 min
+node tools/trailer.mjs --url http://127.0.0.1:5193 --fps 60 --ss 2 --out shots/trailer/cut.mp4
+
+# 4. words and music, ~20 s — iterate here freely, it does not re-render
+node tools/trailer_post.mjs --cut shots/trailer/cut.mp4 --out shots/trailer/trailer.mp4
 ```
 
-Roughly 90 s, then 3 min, then 15 min. The order is the whole point: a delivery
-render costs fifteen minutes, so anything knowable for less should be known
-first.
+**The setups cost about ten minutes whatever quality you ask for** — the drive
+beat rehearses candidate meadows for real, the kayak beat scans the whole world
+for a paddleable reach, and every teleport has to let streaming catch up. So the
+stills pass is nearly all setup and the delivery is setup plus twenty-two
+minutes of capture. Budget accordingly, and run the long ones in the background.
 
-**`--scout` films nothing** and answers every mechanical question at once:
+`--only drive,camp` films a subset, which is how you iterate one beat without
+paying for seven. **`roast` needs `camp` in the same run** — it sits down at the
+fire the camp beat built (`__roast.enter()` finds the first camp in the world
+with a roasting stick in it), so `--only roast` has nothing to sit at.
 
-```
-site 0 road[ 4] slope 0.006 y-1m water 0  drive clean  camp 9 props  arc 0.55
-site 2 road[ 1] slope 0.009 y-3m water 1  drive clean  camp 8 props  arc 0.01
-   —   road[ 3] slope 1.166 y+199m water 0  drive IMPACT -12.5
-```
+## Changing the cut
 
-`drive` is a real rehearsal — the camper is driven down the corridor and its
-speed trace read. `camp` is the finished prop count (compact sites build 2–4,
-full ones 6–9). `arc` is how far the clearest orbit bearing sits, in radians,
-from the intended composition; above ~0.6 the camera is looking at the camp
-side-on.
+- **Beats** — the `BEATS` table at the top of `trailer.mjs`: name, seconds,
+  hour, fov, and whether this tool poses the camera or the game does. Durations
+  need not sum to 15; whatever they sum to is the video's length, and
+  `trailer_post.mjs` reads the beat lengths back out of the render's `.json` so
+  the words follow.
+- **Words** — `DEFAULT_CARDS` in `trailer_post.mjs`, or `--cards words.json`
+  with the same shape. A card is placed **against a beat**, not against a
+  timecode: `{ over: 'camp', lead: 0.2, tail: 0.55, text: 'FIND A SPOT' }` means
+  "over the camp beat, appearing 0.2 s in and leaving 0.55 s before it ends". A
+  hardcoded timecode slides off its beat the first time anybody retunes the
+  edit, and the failure is invisible until you watch it. The tool prints the
+  resolved table — read it.
+- **Music** — `--music <file> --music-ss <seconds>`. `--music-scan` prints the
+  bed's envelope so a start time is chosen rather than guessed; a trailer wants
+  a phrase ENTRY on frame one, which is a quiet window followed by the loudest
+  one you can find. On `Maple Road Loop.mp3` that is **t=96.0 s**, the default.
+  Output is normalised to −14 LUFS, which is what TikTok, Reels and Shorts all
+  normalise toward.
+- **Fades** — `--fade-in` defaults to **0 and should stay there**. See the trap
+  table: opening a social video on black throws away frame-one retention, the
+  moment the feed autoplays into, and the frame an auto-picked cover comes from.
+  `--fade-out` defaults to 0.25 s, short because these clips loop and a long
+  fade to black followed by a hard jump back to a bright first frame is a
+  visible seam. Audio is deliberately not symmetrical (`--afade-in` 0.12 s, just
+  enough to kill the click of starting mid-waveform; `--afade-out` 1.2 s,
+  because a truncated music phrase is far more noticeable than a picture cut).
+- **Where and when** — `--seed` changes the world and costs a bake; `--hour` per
+  beat in the table (7.5 dawn, 12 midday, 17.4 golden, 20.4 dusk, 1 night);
+  `--vista-index/-height/-pitch/-fov` reframe the closing shot; `--species`
+  picks the animal for the photo beat.
 
-**The look pass is not optional, because the scout's gates are mechanical.** On
-seed 20261018, site 2 passes every one of them — clean drive, 8-prop camp, an
-arc 0.01 rad off ideal — and films a chase camera hanging over a flat blue
-lake, because that road runs along a shoreline. Three minutes at 24 fps answers
-"does this look like anything"; fifteen answers it far too expensively.
-
-Within one world the free axes are `--site` (which clean candidate) and
-`--hour` (7.5 dawn, 12 midday, 17.4 golden, 19.6 dusk, 1 night). `--seed`
-changes the world and costs a bake.
-
-`--park` chooses what kind of place the drive starts from, and it matters more
-than it sounds. Meadows are the default because they win on measurement: on
-seed 20261018 they gave 6 good sites out of 8 candidates with orbit arcs
-0–0.04 rad off ideal, against roads' 1 good site and a best arc of 0.55. A
-meadow is scored as open, dry, low-slope ground — which is what both a drive
-and a full camp want — while roads climb hillsides and ford rivers. Use
-`--park road` when the dirt-track look is the point, and expect to scout harder.
-
-**When the scout reports zero good sites**, do not render the least-bad one and
-hope — the tool will do that and warn, but the result is a camper hitting
-something on camera. Switch `--park` or change `--seed`.
+**Keep the light an arc, not a montage.** The shipped hours run 17.4 → 15.0 →
+16.0 → 16.8 → 17.6 → 20.4 → 17.6: the hook keeps golden hour because it has half
+a second to hold a thumb and golden hour is this game's best face, and
+everything after slides into dusk so the cut reads as one long afternoon rather
+than seven unrelated postcards. Two beats step back an hour, which is invisible
+inside the same afternoon light; a jump to dawn would not be.
 
 ## Verifying a take
 
-This is where the tool has actually failed, twice, so spend the effort here.
-
-**Read the telemetry first.** Every run writes a `.json` beside the video with
-a per-frame trace. The one number that matters is deceleration under throttle:
+This is where these tools have actually failed, repeatedly, so spend the effort
+here. **Watch it densely and read the numbers.**
 
 ```bash
-node -e "const t=require('./shots/reel/clip.json'); console.log(t.stall, t.topSpeed, t.distance)"
+# Dense contact sheet. Sample at 5-10 fps, never 1 — a 1 fps sheet is 15 of 900
+# frames and steps straight over a quarter-second collision.
+ffmpeg -y -loglevel error -i shots/trailer/cut.mp4 \
+  -vf "select='not(mod(n\,10))',scale=124:220,tile=15x6" -frames:v 1 sheet.png
+
+# Then pull FULL-RES frames of anything that looks off. A 124 px thumbnail
+# cannot tell you whether the camp is behind a tree or whether the viewfinder
+# brackets rendered.
+ffmpeg -y -loglevel error -ss 10.2 -i shots/trailer/cut.mp4 -frames:v 1 f.png
 ```
 
-`stall: null` means clean. The test is deceleration, **not** a speed floor — a
-take shipped where the camper hit a boulder at 20.8 m/s and carried on at 14.5,
-which any "did it stop" check passes happily.
+Read the sheet as an image, and check the beat trace beside the video
+(`cut.json`) — it records the site each beat chose, the camp's clearance survey,
+and for `reel.mjs` a per-frame speed trace whose one number that matters is
+deceleration under throttle (`stall: null` means clean; the test is
+deceleration, **not** a speed floor — a take shipped where the camper hit a
+boulder at 20.8 m/s and carried on at 14.5).
 
-**Then watch it, densely.** A contact sheet sampled at one frame per second is
-10 of 600 frames and steps straight over a quarter-second collision. Sample at
-5–10 fps:
-
-```bash
-ffmpeg -y -loglevel error -i shots/reel/clip.mp4 \
-  -vf "select='not(mod(n\,12))',scale=140:249,tile=10x5" -frames:v 1 sheet.png
-```
-
-Read the sheet as an image, then pull one or two full-resolution frames of any
-moment that looks off. A thumbnail will not tell you whether the camera is
-aimed at the camp or six metres past it.
+An `--stills` frame is taken **60% of the way through** each beat, not on frame
+one, and that matters: the camp raises over RAISE_TIME with the build queue
+draining one prop per frame, so a frame-one still is a correctly composed orbit
+around a clearing where nothing has appeared yet.
 
 ## Traps
 
+Every row cost a take or a round.
+
 | trap | what happens |
 |---|---|
-| `poi.best('road')` ranks by its own score, not drivability | the top road can be a slope-1.12 switchback; the tool scores candidates itself and rehearses them |
-| three.js `fov` is **vertical** | CameraRig's 52° reads as 78° horizontal at 16:9 and 31° at 9:16 — a telephoto. Pinned to 70° from an `onLateUpdate` registered last |
-| `.pa-camp-prompt` lives on `document.body`, not `#pa-hud` | hiding the HUD root leaves "E pitch a camp here" in frame |
-| `__forceCamera` hides the HUD **and** takes the camera off the chase rig | no good for a driving beat; hide the HUD root directly instead |
+| **the first-run journal eats the keys** | a fresh headless context is a brand-new player, so `HUD.maybeShowIntro()` opens the journal 400 ms after boot on a REAL `setTimeout` — the granted clock cannot hold it off — and the open book takes the keyboard. `reel --scout` reported **0 good sites of 8, every one `drive IMPACT -0`**: not eight collisions, a camper that never moved. Both tools now pre-seed `localStorage['pa.hud']`. **Any new harness that drives with keys must too.** |
+| `__forceCamera` left raised | `reel`'s `pitchAndSurvey` raises it and used not to lower it, and it runs during candidate selection — so `CameraRig.update` returned early at its capture check and the whole drive beat was filmed off a camera nobody was driving |
+| three.js `fov` is **vertical** | so every authored composition is a narrow crop at 9:16. CameraRig's 52° is 78° horizontal at 16:9 and 31° at 9:16 — a telephoto. World views are pinned to 70. The roast view's `POSE.fov` 24 is 13.6° horizontal at 9:16 and the frame becomes the fire's bloom with the marshmallow in a corner; 34 holds both |
+| `wildlife.debugSpawn` spawns off the **camera** | `cam.position + forward*dist`, not the camper — it will happily put a deer next to wherever the previous beat left the lens. Pose the camera first |
+| a ride camera opens **banked** | a kayak dropped at the head of a reach is not going anywhere yet and the mounted eye rolls with the hull. Paddle ~3 s off camera before the beat starts; granting still frames does not fix it |
+| picking a camp site by **slope** | landed a correct 10-prop camp behind a trunk in a wooded clearing. The 72-bearing survey called the arc clear and was right — canopy overhead and a trunk *beside* the camera are on no ray between camera and subject. Pitch on the ground the drive beat already rehearsed |
+| `poi.best('road')` ranks by its own score | not by drivability — the top road can be a slope-1.12 switchback. `--park meadow` beats roads badly (6 good sites vs 1 on seed 20261018) |
+| `poi.anchor('vista')` index 0 | stands at 356 m on this seed, above the treeline, and films grey rock. `--vista-index 1` looks across a braided river valley |
+| `.pa-camp-prompt`, `.pa-roast-tip` | live on `document.body`, not `#pa-hud`, so hiding the HUD root leaves "E pitch a camp here" and "drag or A/D to turn it" in frame |
+| `__forceCamera` also hides the HUD | so a beat that wants photo mode's viewfinder brackets must set `window.__hudForce = true` as well |
 | PNG frames at `--ss 2` are ~8 MB each | frame encoding, not rendering, sets the capture rate. JPEG q96 is 5× faster and invisible after a 2:1 downsample |
-| no bitrate cap | this world is high-frequency detail everywhere; crf 16 uncapped gave 80 MB for 10 s. TikTok re-encodes to 10–20 Mbit/s anyway |
-| headless capture has no audio | normal practice is a trending sound over silent footage; the game's synth audio would need a separate real-time pass |
-
-## Changing the shot
-
-The choreography is the `SHOT` table near the top of `reel.mjs` — beats in
-seconds, with the camera handed to the game's own chase rig for the drive and
-to the harness for the orbit. Two rules earned the hard way:
-
-- **Rehearse, do not predict.** Four rounds went into predicting whether a
-  start was drivable — slope, run-out drop, a downward raycast for obstacles, a
-  water-depth query — and every proxy passed a corridor the camper then failed.
-  A raycast cannot see a river (a cut in the ground with nothing standing proud
-  of it); a water query cannot see a boulder. Driving it costs two seconds.
-- **Normalise the terms in any camera-placement cost.** Adding a raw
-  blocked-ray count (0–30) to `radians * 0.9` made the composition term noise
-  and sent the orbit 55° off-axis to save two rays. Blockage as a 0..1 fraction
-  times ~3, plus angular error in radians, behaves.
-
-Survey clearance once per site, at both ends of a dolly, with several rays —
-per-frame raycasting jitters the camera, and stepping the camera outward to
-escape an obstacle shrinks the subject.
+| no bitrate cap | this world is high-frequency detail everywhere; crf 16 uncapped gave 80 MB for 10 s. crf 19 under 24 Mbit/s is still visually lossless as a re-encode source |
+| **opening on black** | the first cut shipped with a 0.30 s fade-in, which is ~18 frames of nothing in the only second that matters. TikTok and Reels count a view almost immediately and measure retention from frame one; feeds autoplay as the viewer scrolls in, so they arrive DURING the fade; and an auto-picked cover frame comes from the first frames. Cut in hot — `--fade-in 0`, which is now the default |
+| **no `drawtext`** | the ffmpeg here is built without libfreetype, and there is no libass either. `overlay` works, so cards are RGBA PNGs rendered in Chromium — which also gets the game's own `ui-rounded` font stack. Cream type over a cream sky needs the feathered scrim, not just a shadow |
+| headless capture has **no audio** | the game's synth would need a separate real-time pass. `trailer_post.mjs` lays the authored bed on instead |
+| **rehearse, do not predict** | four rounds went into predicting whether a start was drivable — slope, run-out drop, a downward raycast, a water query — and every proxy passed a corridor the camper then failed. A raycast cannot see a river (a cut in the ground with nothing standing proud of it); a water query cannot see a boulder. Driving it costs two seconds |
 
 ## Delivery
 
-1080×1920, 60 fps, H.264 yuv420p, `+faststart`, ~23 Mbit/s, under 30 MB for
-10 s. Output goes in `shots/` (gitignored). Hand the user the file with the
-file-delivery tool rather than only naming the path.
+1080×1920, 60 fps, H.264 yuv420p + AAC, `+faststart`, ~27 MB for 15 s. Output
+goes in `shots/` (gitignored). **Hand the user the file with the file-delivery
+tool rather than only naming the path**, and tidy the intermediate `look*.mp4`
+and `*-frames/` directories — `shots/` is already ~2.8 GB.
+
+### Posting it
+
+The live game is **https://camping-season.pages.dev/** — every description and
+caption should link it. There is also an itch.io page at
+https://optikalefx.itch.io/camping-season.
+
+Reconnaissance done 2026-09-03, not a completed flow:
+
+- Chrome (Claude in Chrome) is connected locally, and **both `studio.youtube.com`
+  and `tiktok.com/tiktokstudio/upload` are already signed in** as `optikalefx`,
+  so no credentials are needed — TikTok's uploader loaded with no bot-check.
+- **The YouTube channel is a developer channel** (11.1k subscribers; recent
+  videos are Node, jQuery, Svelte/Convex deploys), not a gaming channel. Copy
+  that leads with "built with three.js, procedurally generated, runs in the
+  browser" will land better there than generic cozy-game marketing.
+- **`file_upload` caps at 10 MB combined and the delivered trailer is 27 MB.**
+  Either re-encode a smaller upload copy — and know that both platforms
+  re-encode to 10–20 Mbit/s anyway, so a ~5 Mbit/s source compounds the loss on
+  a picture that is high-frequency detail everywhere — or have the user drop the
+  file in and do the rest of the form yourself.
+- **TikTok captions do not render clickable links.** The URL goes in the caption
+  as plain text and the real link belongs in the profile bio.

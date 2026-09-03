@@ -128,8 +128,15 @@ const SHOT = {
   drive:  [0.00, 2.40],   // throttle held, chase camera
   brake:  [2.40, 3.40],   // off throttle, on the brake
   latch:  [3.40, 4.00],   // park brake down — also what dips the headlights
-  pitch:   4.00,          // camp begins to raise (RAISE_TIME 1.15 s)
+  // Camp begins to raise (RAISE_TIME 1.15 s). `--pitch` moves it, and a value
+  // past `--seconds` gives a take that is nothing but the drive — which is what
+  // an editor wants for the head of a cut, where the camp beat belongs to the
+  // NEXT shot and repeating it here would just be the same beat twice.
+  pitch:   parseFloat(arg('pitch', '4.0')),
 };
+// The three keyed beats only make sense before the camp goes up. A drive-only
+// take keeps them; it simply never reaches the pitch.
+const DRIVE_ONLY = SHOT.pitch >= SECONDS;
 
 function assertTreeParses() {
   try {
@@ -163,6 +170,19 @@ async function main() {
   // Six checkouts share one machine; a save mid-film reloads the page and
   // throws out the run. Same stub campshot uses.
   await page.addInitScript(() => {
+    // A fresh headless context is a brand-new player, so HUD.maybeShowIntro
+    // opens the first-run journal 400 ms after boot — on a REAL setTimeout, so
+    // the granted clock cannot hold it off — and the open book takes the keys.
+    // The rehearsal then holds KeyW into a journal and every candidate in the
+    // world reports the same verdict: `drive IMPACT -0`, which reads like eight
+    // separate collisions and is actually a camper that never left 0 m/s.
+    // shot.mjs has carried this three lines since the popup shipped.
+    try {
+      const k = 'pa.hud';
+      const st = JSON.parse(localStorage.getItem(k) ?? '{}') || {};
+      st.introSeen = true; st.seenHint = true; st.escSeen = true;
+      localStorage.setItem(k, JSON.stringify(st));
+    } catch { /* storage unavailable; the run is still worth attempting */ }
     const Real = window.WebSocket;
     window.WebSocket = function (url, protocols) {
       if (protocols === 'vite-hmr' || String(protocols).includes('vite')) {
@@ -540,7 +560,7 @@ async function main() {
       // Only worth pitching a camp where the drive works, but where it does,
       // the camp and the arc are the rest of the answer — and in SCOUT mode
       // they are the whole point, so pay for them there.
-      if (SCOUT || cleanSeen === SITE) {
+      if (SCOUT || (cleanSeen === SITE && !DRIVE_ONLY)) {
         await hold('KeyS', true);
         for (let i = 0; i < Math.round(FPS * 1.2); i++) await step();
         await hold('KeyS', false);
@@ -608,6 +628,19 @@ async function main() {
 
   const start = chosen ?? fallback;
   if (!start) { console.error(`[reel] no ${PARK} candidate survived`); process.exit(3); }
+
+  // Give the camera back before filming.
+  //
+  // `pitchAndSurvey` ends by raising `__forceCamera` — correct for the orbit,
+  // which poses the camera itself, and wrong for everything before it. But the
+  // survey also runs during candidate selection (for the chosen site, and for
+  // every clean site under --scout), so by the time the first frame is written
+  // the flag has been up for minutes and `CameraRig.update` has been returning
+  // early at its capture check. The drive beat was filmed off a camera nobody
+  // was driving. The framing block below says out loud that the driving beat
+  // wants the game's own chase rig; this is what makes that true.
+  await page.evaluate(() => { window.__forceCamera = false; });
+
   await settle(start);
   await page.evaluate((hour) => {
     window.__lighting.hour = hour;
