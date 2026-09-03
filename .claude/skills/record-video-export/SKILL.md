@@ -195,7 +195,7 @@ Every row cost a take or a round.
 
 ## Delivery
 
-1080×1920, 60 fps, H.264 yuv420p + AAC, `+faststart`, ~27 MB for 15 s. Output
+1080×1920, 60 fps, yuv420p + AAC, `+faststart`, **under 10 MB** — `trailer_post.mjs` budgets the encode to `--max-mb` (default 9.5) with two-pass HEVC when ffmpeg has libx265, because the posting tool refuses files over 10 MB and a re-encode after the fact is a second generation. `--max-mb 0` restores the ~27 MB crf-19 H.264 master. Output
 goes in `shots/` (gitignored). **Hand the user the file with the file-delivery
 tool rather than only naming the path**, and tidy the intermediate `look*.mp4`
 and `*-frames/` directories — `shots/` is already ~2.8 GB.

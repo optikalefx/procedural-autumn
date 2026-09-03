@@ -40,7 +40,7 @@
  */
 import { chromium } from 'playwright';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -57,6 +57,12 @@ const OUT   = resolve(String(arg('out', CUT.replace(/\.mp4$/, '-final.mp4'))));
 const TRACE = resolve(String(arg('trace', CUT.replace(/\.[^.]+$/, '.json'))));
 const MUSIC = resolve(String(arg('music', 'public/audio/Maple Road Loop.mp3')));
 const CRF   = String(arg('crf', '19'));
+// Size budget for the delivered file, in MB. The posting tool that hands a file
+// to YouTube's and TikTok's web uploaders refuses anything over 10 MB, and a
+// re-encode after the fact is a second generation nobody asked for — so the
+// master itself is made to fit. `--max-mb 0` disables the budget and falls back
+// to the old crf/24 Mbit/s encode (visually lossless, ~27 MB for 15 s).
+const MAX_MB = parseFloat(arg('max-mb', '9.5')) || 0;
 const TMP   = resolve(String(arg('cards-dir', `${dirname(OUT)}/cards`)));
 
 // Where in the bed to start.
@@ -241,13 +247,33 @@ async function main() {
   }
 
   mkdirSync(dirname(OUT), { recursive: true });
-  execFileSync('ffmpeg', [
-    '-y', '-loglevel', 'error', ...inputs,
-    '-filter_complex', chain.join(';'), ...map,
-    '-c:v', 'libx264', '-preset', 'slow', '-crf', CRF,
-    '-maxrate', '24M', '-bufsize', '48M',
-    '-movflags', '+faststart', '-shortest', OUT,
-  ], { stdio: 'inherit' });
+  const common = ['-y', '-loglevel', 'error', ...inputs, '-filter_complex', chain.join(';'), ...map];
+  if (MAX_MB > 0) {
+    // Two-pass ABR at whatever bitrate the budget allows, HEVC when this ffmpeg
+    // has it (x265 holds roughly twice the detail of x264 at the same size on
+    // a picture that is high-frequency everywhere), x264 otherwise. 5% headroom
+    // for container overhead; the audio's 192k is taken off the top.
+    const budgetBits = MAX_MB * 8 * 1024 * 1024 * 0.95 - (has('no-music') ? 0 : 192_000 * total);
+    const vbr = Math.max(1_000_000, Math.floor(budgetBits / total));
+    const encs = execFileSync('ffmpeg', ['-hide_banner', '-encoders'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    const hevc = /\blibx265\b/.test(encs);
+    const passlog = `${OUT}.2pass`;
+    const codec = hevc
+      ? ['-c:v', 'libx265', '-preset', 'medium', '-tag:v', 'hvc1', '-b:v', String(vbr), '-maxrate', String(Math.floor(vbr * 1.2)), '-bufsize', String(vbr * 2)]
+      : ['-c:v', 'libx264', '-preset', 'slow', '-b:v', String(vbr), '-maxrate', String(Math.floor(vbr * 1.2)), '-bufsize', String(vbr * 2)];
+    const passArg = (n) => hevc ? ['-x265-params', `pass=${n}:stats=${passlog}:log-level=error`] : ['-pass', String(n), '-passlogfile', passlog];
+    console.log(`[post] size budget ${MAX_MB} MB over ${total.toFixed(2)} s -> ${(vbr / 1e6).toFixed(2)} Mbit/s video, ${hevc ? 'hevc' : 'h264'}, two-pass`);
+    execFileSync('ffmpeg', [...common, ...codec, ...passArg(1), '-an', '-f', 'null', process.platform === 'win32' ? 'NUL' : '/dev/null'], { stdio: 'inherit' });
+    execFileSync('ffmpeg', [...common, ...codec, ...passArg(2), '-movflags', '+faststart', '-shortest', OUT], { stdio: 'inherit' });
+    for (const f of readdirSync(dirname(OUT))) if (f.startsWith(`${OUT.split('/').pop()}.2pass`)) rmSync(`${dirname(OUT)}/${f}`, { force: true });
+  } else {
+    execFileSync('ffmpeg', [
+      ...common,
+      '-c:v', 'libx264', '-preset', 'slow', '-crf', CRF,
+      '-maxrate', '24M', '-bufsize', '48M',
+      '-movflags', '+faststart', '-shortest', OUT,
+    ], { stdio: 'inherit' });
+  }
 
   const info = execFileSync('ffprobe', ['-v', 'error', '-show_entries',
     'format=duration,size', '-of', 'default=nw=1', OUT]).toString().trim().replace(/\n/g, '  ');
