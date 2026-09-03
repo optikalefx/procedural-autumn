@@ -723,13 +723,47 @@ async function main() {
     return site;
   };
 
-  /** Bike: park one on open meadow ground and ride a gentle arc out of it. */
+  /**
+   * Bike: park one on open ground, get on, and actually go somewhere.
+   *
+   * Four passes went into this and every wrong theory fit the evidence, so the
+   * order they were eliminated in is worth keeping:
+   *
+   *  · **Still aboard the kayak.** `Bike.mount()` is guarded only by "is there
+   *    a bike and am I already riding" and takes `controlsHeldBy`
+   *    unconditionally, so mounting from the water succeeds and hands the
+   *    camera to the saddle — the shot looks right and the boat is still the
+   *    thing being paddled. Real, fixed, and NOT the cause.
+   *  · **Nothing re-asserted the throttle.** `drive()` sets `_script` once; it
+   *    is not a held key, and `Boat.exit()` can decline (a kayak mid-channel
+   *    has no bank to step onto) leaving the pedals with the boat. Real, fixed,
+   *    and not the cause either.
+   *  · **The camp spawns its own bike**, and the ridge beat pitches a camp.
+   *    Plausible, instrumented, and false: `had null` every time.
+   *  · **The actual cause: the spawn point was against an obstacle, and the
+   *    scrub penalty is per-STEP.** `_advance` refuses, `bike_physics` slides
+   *    along the obstacle normal, the slide succeeds — so `blocked` stays FALSE
+   *    — and `speed *= 0.90` is applied per step rather than per unit time. At
+   *    60 fps that bleeds speed about two and a half times faster per second
+   *    than at 24, so the SAME spawn rode away cleanly in a 24 fps look pass
+   *    and sat still in the 60 fps delivery. Three renders were spent on a bug
+   *    that only exists at delivery frame rate.
+   *
+   * The tell was `made === 0` while `speed` was 2.2 — the bike reporting a
+   * speed it was not travelling at. So `made` is the acceptance test here, not
+   * `speed`, and the heading is rehearsed rather than predicted, which is the
+   * same rule the camper beat already carries.
+   */
   setups.bike = async (taken = []) => {
+    await page.evaluate(() => {
+      window.__boat?.drive?.(null);
+      window.__boat?.exit?.();
+      const v = window.__systems?.vehicle;
+      if (v) v.controlsHeldBy = null;
+    });
+    await grant(Math.round(FPS * 0.4));
     const spot = await page.evaluate((skip) => {
       const poi = window.__poi, w = window.__world;
-      // Not the same meadow the drive used: two beats of the same clearing is
-      // one location pretending to be two, and the drive picks its meadow by
-      // rehearsal, so which one it took is only known at run time.
       for (let i = 0; i < 12; i++) {
         if (skip.includes(i)) continue;
         const q = poi.best('meadow', i);
@@ -743,16 +777,89 @@ async function main() {
       return null;
     }, taken);
     if (!spot) throw new Error('no meadow for the bike');
-    console.log(`[trailer]   bike meadow[${spot.i}] (${spot.x.toFixed(0)}, ${spot.z.toFixed(0)})`);
     await page.evaluate(({ x, z }) => window.__vehicleTeleport?.(x, z, 0), spot);
     await settle(1.8);
-    await page.evaluate(({ x, z }) => {
-      window.__bike.parkAt(x + 4, z + 4, {});
-      window.__bike.mount();
-      window.__bike.drive(1, 0.10);
-    }, spot);
-    await grant(Math.round(FPS * 1.0));
-    return spot;
+
+    let start = null;
+    const attempts = [];
+    for (let rank = 0; rank < 8 && !start; rank++) {
+      const cand = await page.evaluate(({ x, z, rank }) => {
+        const w = window.__world;
+        // Rank headings by the flattest 70 m run out of the clearing, then walk
+        // that ranking one at a time.
+        const scored = [];
+        for (let a = 0; a < 16; a++) {
+          const ang = a * (Math.PI / 8);
+          let lo = Infinity, hi = -Infinity;
+          for (let d = 0; d <= 70; d += 7) {
+            const h = w.getHeight(x + Math.sin(ang) * d, z + Math.cos(ang) * d);
+            lo = Math.min(lo, h); hi = Math.max(hi, h);
+          }
+          scored.push({ ang, run: hi - lo });
+        }
+        scored.sort((p, q) => p.run - q.run);
+        const az = scored[Math.min(rank, scored.length - 1)].ang;
+        // Eight metres down the chosen run, pointing away — the camper is about
+        // five long and parking beside it boxes the bike in.
+        const bx = x + Math.sin(az) * 8, bz = z + Math.cos(az) * 8;
+        if (window.__bike.state().riding) window.__bike.dismount();
+        window.__tBike = { tx: x + Math.sin(az) * 90, tz: z + Math.cos(az) * 90 };
+        window.__bike.parkAt(bx, bz, { yaw: az });
+        window.__bike.mount();
+        return { az: +az.toFixed(2), riding: !!window.__bike.state().riding };
+      }, { x: spot.x, z: spot.z, rank });
+      if (!cand.riding) continue;
+      // Measure DISPLACEMENT, not `made`.
+      //
+      // `bike_physics` publishes a `made` field documented as ground covered
+      // per second, and it reads 0 on every heading including ones genuinely
+      // travelling at 3.9 m/s — so it cannot be used as an acceptance test.
+      // Sampling the position either side of a real pedal cannot be wrong
+      // about this, and it is two lines.
+      const p0 = await page.evaluate(() => {
+        const b = window.__bike.state().bike; return b ? [b.x, b.z] : null;
+      });
+      for (let i = 0; i < Math.round(FPS * 1.0); i++) { await drivers.bike(); await step(); }
+      const m = await page.evaluate((p) => {
+        const b = window.__bike.state().bike;
+        if (!b) return null;
+        return { speed: +Math.abs(b.speed).toFixed(2),
+                 moved: +Math.hypot(b.x - p[0], b.z - p[1]).toFixed(2) };
+      }, p0);
+      attempts.push(`${cand.az}rad ${m?.speed}m/s moved ${m?.moved}m`);
+      // Ground actually covered in a second of pedalling. A bike scrubbing a
+      // boulder reports a speed it is not travelling at, and `blocked` stays
+      // false while it happens.
+      if ((m?.moved ?? 0) > 1.5 && (m?.speed ?? 0) > 1.5) start = { ...cand, ...m };
+    }
+    if (!start) {
+      console.warn(`[trailer]   no clear run: ${attempts.join(' | ')}`);
+      throw new Error('the bike cannot get out of this meadow');
+    }
+    console.log(`[trailer]   bike rehearsal: ${attempts.join(' | ')}`);
+
+    // Finish accelerating on the heading that proved out.
+    for (let i = 0; i < Math.round(FPS * 1.5); i++) { await drivers.bike(); await step(); }
+    const st = await page.evaluate(() => {
+      const b = window.__bike.state().bike;
+      if (!b) return null;
+      return { speed: +Math.abs(b.speed ?? 0).toFixed(2), made: +(b.made ?? 0).toFixed(2),
+               blocked: !!b.blocked, effort: +(b.effort ?? 0).toFixed(2), wading: !!b.wading,
+               held: window.__systems?.vehicle?.controlsHeldBy ?? null,
+               afloat: !!window.__boat?.state?.().active };
+    });
+    const sp = st?.speed ?? 0;
+    console.log(`[trailer]   bike meadow[${spot.i}] (${spot.x.toFixed(0)}, ${spot.z.toFixed(0)})` +
+                `  heading ${start.az} rad  speed ${sp} m/s  made ${st?.made}` +
+                `  blocked ${st?.blocked}  pedals held by ${st?.held}` +
+                `${st?.afloat ? '  STILL AFLOAT' : ''}${st?.wading ? '  WADING' : ''}`);
+    // NB: `made` is printed above for the record and is always 0 — do not gate
+    // on it. The rehearsal above already proved displacement; this is a floor
+    // on the speed the beat is filmed at.
+    if (sp < 1.5) {
+      console.warn('[trailer]   this beat will look PARKED.');
+    }
+    return { ...spot, ...st };
   };
 
   /**
@@ -765,13 +872,32 @@ async function main() {
    * has to be written BEFORE it is entered, not after.
    */
   setups.photo = async () => {
+    // Hand the camera back BEFORE composing anything.
+    //
+    // This beat poses its own camera and then asks `debugSpawn` for an animal
+    // in front of it — and `debugSpawn` reads `cam.position`. The bike beat
+    // runs immediately before and leaves the bike MOUNTED, and a mounted
+    // rideable holds `CameraRig`'s takeover, which outranks `__forceCamera`:
+    // the pose written here was overwritten by the saddle on the next frame, so
+    // the spawn searched wherever the bike had ridden to and came back null.
+    // The whole beat was dropped from the cut — 810 frames instead of 900 —
+    // and the only reason it was noticed is that the frame count did not match.
+    await page.evaluate(() => {
+      window.__bike?.drive?.(null);
+      window.__bike?.dismount?.();
+      window.__boat?.drive?.(null);
+      window.__boat?.exit?.();
+      const v = window.__systems?.vehicle;
+      if (v) v.controlsHeldBy = null;
+    });
+    await grant(Math.round(FPS * 0.5));
     const at = await page.evaluate(() => {
       const a = window.__anchorAt('meadow', 1) ?? window.__cameraAnchors.meadow();   // spent below
       window.__vehicleTeleport?.(a.x, a.z, a.yaw ?? 0);
       return a;
     });
     await settle(2.0);
-    const shot = await page.evaluate(({ species, a }) => {
+    let shot = await page.evaluate(({ species, a }) => {
       // `debugSpawn` walks out from THE CAMERA — `cam.position + forward*dist`
       // — not from the camper, and this beat inherits whatever camera the bike
       // ride left behind, most of a valley away. Stand the camera where the
@@ -783,25 +909,68 @@ async function main() {
                       a.z + Math.cos(yaw) * 20);
       e.camera.updateMatrixWorld(true);
       const wl = window.__systems.wildlife;
-      const sp = wl.debugSpawn(species, { dist: 14, clear: 9 });
-      if (!sp) return null;
-      return { x: sp.x, y: sp.y, z: sp.z, n: sp.n };
+      // Try a LIST, and say what happened.
+      //
+      // `debugSpawn` returns a bare null for several different reasons — the
+      // species has no SLEEPING site left (every one already streamed in and
+      // live), or `_activate` refused — and one null taught nothing. The photo
+      // beat died on `deer` mid-sequence while working in isolation, and the
+      // whole beat was silently dropped from the cut. So walk the fallbacks and
+      // report the roll call; a trailer wants a photogenic animal, not
+      // specifically a deer.
+      const tried = [];
+      const S = wl.sites, ki = wl.keys.indexOf(String(species));
+      let live = 0, asleep = 0;
+      for (let i = 0; i < S.n; i++) {
+        if (S.spec[i] !== ki) continue;
+        if (S.live[i]) live++; else asleep++;
+      }
+      // Ordered by whether the animal READS at eight metres in knee-high
+      // meadow grass, not by preference. The first fallback list was
+      // fox-first and filmed a fox: correct, spawned, in frame, and about
+      // fifteen pixels of ear above the grass. A deer stands above the sward
+      // and a rabbit never will, so big-bodied species come first and the
+      // camera closes in for the small ones (see SMALL below).
+      for (const k of [species, 'bear', 'ram', 'goat', 'raccoon', 'fox', 'rabbit']) {
+        if (tried.includes(k)) continue;
+        const sp = wl.debugSpawn(k, { dist: 14, clear: 9 });
+        tried.push(k);
+        if (sp) return { x: sp.x, y: sp.y, z: sp.z, n: sp.n, species: k, tried };
+      }
+      return { failed: true, tried, firstChoice: String(species), live, asleep };
     }, { species: String(arg('species', 'deer')), a: at });
+    if (shot?.failed) {
+      console.warn(`[trailer]   nothing would spawn. tried ${shot.tried.join(', ')}; ` +
+                   `${shot.firstChoice} sites: ${shot.live} live, ${shot.asleep} asleep`);
+    } else if (shot) {
+      console.log(`[trailer]   ${shot.species} x${shot.n}` +
+                  (shot.tried.length > 1 ? ` (after ${shot.tried.slice(0, -1).join(', ')})` : ''));
+    }
+    if (shot?.failed) shot = null;
     // Spend the meadow so the camp beat does not pitch a tent in the clearing
     // this one just photographed a deer in. Two beats of one clearing is one
     // location pretending to be two, and on the first pass it was exactly that.
     if (shot) shot.i = 1;
-    if (!shot) throw new Error('wildlife would not spawn');
+    if (!shot) throw new Error('wildlife would not spawn — is a rideable still ' +
+      'holding the camera rig? `debugSpawn` searches out from `cam.position`');
     await grant(Math.round(FPS * 0.6));
+    // How close to stand depends on the animal. A deer at 9.5 m fills a third
+    // of a 9:16 frame; a fox at 9.5 m is lost in the grass.
+    const SMALL = ['fox', 'rabbit', 'raccoon', 'squirrel'];
+    const near = SMALL.includes(shot.species);
+    shot.r0 = near ? 6.0 : 9.8;
+    shot.r1 = near ? 4.6 : 8.2;
+    shot.aimY = near ? 0.45 : 0.95;
+
     // Compose on the animal from a low three-quarter stand-off, then hand the
     // frame to photo mode so the viewfinder is what the beat is shot through.
     await page.evaluate((s) => {
       const THREE = window.__THREE, e = window.__engine, wd = window.__world;
       const az = 2.1;
-      const R = 9.5;
+      const R = s.r0;
       const px = s.x + Math.sin(az) * R, pz = s.z + Math.cos(az) * R;
-      e.camera.position.set(px, wd.getHeight(px, pz) + 1.55, pz);
-      e.camera.lookAt(s.x, wd.getHeight(s.x, s.z) + 0.95, s.z);
+      e.camera.position.set(px, wd.getHeight(px, pz) + (s.aimY < 0.6 ? 1.05 : 1.55), pz);
+      e.camera.lookAt(s.x, wd.getHeight(s.x, s.z) + s.aimY, s.z);
       window.__tSubject = s;
       window.__tAz = az;
       window.__systems.hud.photo.setActive(true);
@@ -979,10 +1148,16 @@ async function main() {
       // rectangle with two tail lights; a couple of metres off the axis shows
       // the flank and the wheels and reads as a vehicle in half the time.
       const rx = Math.cos(yaw), rz = -Math.sin(yaw);
-      // A short, tight move. The old range (5.6 -> 9.8 m) was tuned when this
-      // was a 2.8 s hook and had room to reveal; at 1.9 s in the middle of a
-      // cut, backing off 4 m just reads as the camper leaving. Hold it close.
-      const d = 5.4 + 1.8 * s, lat = 1.2 + 0.9 * s, h = 1.3 + 0.6 * s;
+      // A short move, held wide of the axis.
+      //
+      // Two failures tuned this. The 2.8 s version dollied 5.6 -> 9.8 m, which
+      // at 1.9 s in the middle of a cut just reads as the camper leaving. Then
+      // pulling the dolly in without widening the offset put the lens 5.4 m
+      // dead astern, and a rear elevation of a van filling half a 9:16 frame
+      // reads as PARKED — there is no ground in shot moving past to say
+      // otherwise. So: a short push, but far enough off the axis to hold the
+      // flank and the wheels, and low enough that the meadow streams by.
+      const d = 6.8 + 1.7 * s, lat = 2.8 + 1.0 * s, h = 1.5 + 0.55 * s;
       const px = v.position.x - fx * d + rx * lat;
       const pz = v.position.z - fz * d + rz * lat;
       const gy = wd.getHeight(px, pz) + 1.15;
@@ -997,10 +1172,10 @@ async function main() {
       const s = window.__tSubject, az = window.__tAz;
       // A slow push-in on the animal. The viewfinder is the frame; the move is
       // what makes it read as photographing rather than as a still.
-      const R = 9.8 - 1.6 * (k * k * (3 - 2 * k));
+      const R = s.r0 + (s.r1 - s.r0) * (k * k * (3 - 2 * k));
       const px = s.x + Math.sin(az) * R, pz = s.z + Math.cos(az) * R;
-      e.camera.position.set(px, wd.getHeight(px, pz) + 1.55, pz);
-      e.camera.lookAt(s.x, wd.getHeight(s.x, s.z) + 0.95, s.z);
+      e.camera.position.set(px, wd.getHeight(px, pz) + (s.aimY < 0.6 ? 1.05 : 1.55), pz);
+      e.camera.lookAt(s.x, wd.getHeight(s.x, s.z) + s.aimY, s.z);
     }, u),
     camp:  (u) => orbitCam(u),
     ridge: (u) => page.evaluate((k) => {
@@ -1037,6 +1212,25 @@ async function main() {
 
   /** Per-frame world driving that has to happen on the granted clock. */
   const drivers = {
+    bike: () => page.evaluate(() => {
+      const t = window.__tBike, st = window.__bike?.state?.().bike;
+      if (!st || !t) return;
+      // Steer toward the run picked at setup, and re-assert the throttle every
+      // frame. `drive()` is not a held key — one call before the beat is one
+      // call, and anything that runs `dismount()` clears it silently.
+      let d = Math.atan2(t.tx - st.x, t.tz - st.z) - (st.heading ?? 0);
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      window.__bike.drive(1, Math.max(-1, Math.min(1, d * 1.4)));
+      // Hold the pedals every frame. `controlsHeldBy` is the game's system of
+      // record for who is driving what, and `Boat.exit()` can decline to give
+      // it up — a kayak mid-channel has no bank to step onto. When that happens
+      // the bike mounts, the camera moves to the saddle, and `Bike._pedal`
+      // never runs, so the shot is a perfectly framed stationary bicycle
+      // reporting `blocked false, effort 1, speed 0`. Filmed exactly that.
+      const v = window.__systems?.vehicle;
+      if (v && v.controlsHeldBy !== 'bike') v.controlsHeldBy = 'bike';
+    }),
     kayak: () => page.evaluate(() => {
       const w = window.__world, st = window.__boat?.state?.().boats?.[0];
       if (!st) return;
@@ -1122,8 +1316,27 @@ async function main() {
     await page.evaluate(() => { window.__bike?.drive?.(null); window.__boat?.drive?.(null); });
   }
 
+  // A DROPPED BEAT MUST NOT BE QUIET.
+  //
+  // The photo beat failed to set up once and the tool did what it was written
+  // to do: warned on one line, skipped it, and encoded a perfectly valid
+  // 13.5-second video where 15 was asked for. Nothing downstream objected, and
+  // the only reason it was caught is that 810 did not look like 900. Say it in
+  // a block, put it in the trace, and exit non-zero so a script cannot treat a
+  // short cut as a finished one.
+  const failed = report.filter((r) => r.error);
+  const want = list.reduce((n, b) => n + Math.round(b.secs * FPS), 0);
+  if (failed.length || (!STILLS && f !== want)) {
+    console.error('\n[trailer] ── INCOMPLETE CUT ──────────────────────────────');
+    for (const r of failed) console.error(`[trailer]   ${r.beat}: ${r.error}`);
+    console.error(`[trailer]   ${f} frames of ${want} — ${(f / FPS).toFixed(2)}s ` +
+                  `instead of ${(want / FPS).toFixed(2)}s`);
+    console.error('[trailer] ────────────────────────────────────────────────\n');
+  }
   if (errors.length) console.warn(`[trailer] ${errors.length} page error(s): ${errors[0]}`);
-  writeFileSync(TRACE, JSON.stringify({ seed: SEED, fps: FPS, beats: report }, null, 1));
+  writeFileSync(TRACE, JSON.stringify({ seed: SEED, fps: FPS, frames: f, wantFrames: want,
+                                        incomplete: failed.length > 0 || f !== want,
+                                        beats: report }, null, 1));
   await browser.close();
   release();
 
@@ -1145,6 +1358,7 @@ async function main() {
   ], { stdio: 'inherit' });
   if (!has('keep-frames')) rmSync(TMP, { recursive: true, force: true });
   console.log(`[trailer] wrote ${OUT} (${f} frames, ${(f / FPS).toFixed(2)}s)`);
+  if (failed.length) process.exitCode = 4;      // the file exists; it is not finished
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

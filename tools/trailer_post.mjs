@@ -97,10 +97,16 @@ const AFADE_OUT = parseFloat(arg('afade-out', '1.2'));
 // the last beat with tail 0 holds to the final frame and fades out with the
 // picture.
 const DEFAULT_CARDS = [
-  // Over the night-ridge hook. The beat this used to name was `drive`; cards
-  // are placed by BEAT NAME, so renaming a beat orphans its card — the tool
-  // warns and skips rather than silently sliding it somewhere wrong.
-  { over: 'ridge', lead: 0.65, tail: 0.20, y: 27, size: 104, text: 'NO MAP.<br>NO CLOCK.' },
+  // Cards are placed by BEAT NAME, so renaming a beat orphans its card — the
+  // tool warns and skips rather than sliding it somewhere wrong.
+  //
+  // Two cards where there was one, and they split across the first two beats
+  // rather than both landing on the hook: 2.6 s cannot carry two statements,
+  // and the pairing is already in the edit — the line about the season belongs
+  // over a camp at night, the one about going belongs over the camper pulling
+  // out in the morning.
+  { over: 'ridge', lead: 0.55, tail: 0.20, y: 27, size: 96,  text: "IT'S<br>CAMPING SEASON" },
+  { over: 'drive', lead: 0.25, tail: 0.20, y: 27, size: 114, text: 'GO EXPLORE' },
   { over: 'camp',  lead: 0.20, tail: 0.55, y: 27, size: 114, text: 'FIND A SPOT' },
   { over: 'roast', lead: 0.25, tail: 0.45, y: 27, size: 114, text: 'STAY A WHILE' },
   { over: 'vista', lead: 0.15, tail: 0.00, y: 33, size: 128, text: 'CAMPING<br>SEASON',
@@ -141,6 +147,16 @@ async function main() {
                                           'against the beats it lists'); process.exit(2); }
 
   const trace = JSON.parse(readFileSync(TRACE, 'utf8'));
+  // Refuse to dress a cut that is missing a beat. The render says so in its
+  // trace now; without this check the words and music go cleanly onto a short
+  // video and it looks finished.
+  const broken = (trace.beats ?? []).filter((b) => b.error);
+  if ((trace.incomplete || broken.length) && !has('allow-partial')) {
+    console.error(`[post] ${TRACE} reports an INCOMPLETE cut:`);
+    for (const b of broken) console.error(`[post]   ${b.beat}: ${b.error}`);
+    console.error('[post] re-render, or pass --allow-partial to dress it anyway');
+    process.exit(3);
+  }
   const fps = trace.fps || 60;
   // Beat start times, in seconds, from the frame counts the render wrote.
   const at = {};

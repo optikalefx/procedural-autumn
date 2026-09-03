@@ -1,6 +1,6 @@
 ---
 name: record-video-export
-description: Film a video of the game for posting — a vertical 1080x1920 MP4 rendered offline, frame by frame, with words and the game's own music on it. Use whenever the user wants a video, trailer, clip, reel, short, teaser, or "something to post", and whenever they say record, film, capture, export a video, make a clip, TikTok, Reels, Shorts, YouTube Short, vertical video, or screen record. Two tools: tools/trailer.mjs films a seven-beat cut opening on a night camp on a forested bluff with the dog, then kayaking, biking, wildlife photography, making camp, roasting marshmallows and a vista, and is what a trailer wants; tools/reel.mjs films one longer drive-and-make-camp choreography. tools/trailer_post.mjs puts the words and music on. Also use when a video exists and they want different words, different music, a different length, a different location or time of day, or a different beat order. Not for diagnosing a visual bug (that is debug-visual-video) and not for stills (shot.mjs, campshot.mjs, or in-game photo mode).
+description: Film a video of the game for posting — a vertical 1080x1920 MP4 rendered offline, frame by frame, with words and the game's own music on it. Use whenever the user wants a video, trailer, clip, reel, short, teaser, or "something to post", and whenever they say record, film, capture, export a video, make a clip, TikTok, Reels, Shorts, YouTube Short, vertical video, or screen record. Two tools: tools/trailer.mjs films an eight-beat cut opening on a night camp on a forested bluff with the dog, then driving, kayaking, biking, wildlife photography, making camp, roasting marshmallows and a vista, and is what a trailer wants; tools/reel.mjs films one longer drive-and-make-camp choreography. tools/trailer_post.mjs puts the words and music on. Also use when a video exists and they want different words, different music, a different length, a different location or time of day, or a different beat order. Not for diagnosing a visual bug (that is debug-visual-video) and not for stills (shot.mjs, campshot.mjs, or in-game photo mode).
 ---
 
 # Record a Video for Export
@@ -10,7 +10,7 @@ flags and the reasoning behind every default.
 
 | tool | films | length | wall clock |
 |---|---|---|---|
-| `tools/trailer.mjs` | **seven beats**: drive, kayak, bike, wildlife photo, make camp, marshmallow, vista | 15 s | ~40 min at delivery quality |
+| `tools/trailer.mjs` | **eight beats**: night ridge camp (the hook), drive, kayak, bike, wildlife photo, make camp, marshmallow, vista | 15 s | ~40 min at delivery quality |
 | `tools/reel.mjs` | **one choreography**: drive, stop, make camp, slow orbit | ≤10 s | ~25 min at delivery quality |
 | `tools/trailer_post.mjs` | puts the words and the music on a rendered cut | — | ~20 s |
 
@@ -68,7 +68,7 @@ stills pass is nearly all setup and the delivery is setup plus twenty-two
 minutes of capture. Budget accordingly, and run the long ones in the background.
 
 `--only drive,camp` films a subset, which is how you iterate one beat without
-paying for seven. **`roast` needs `camp` in the same run** — it sits down at the
+paying for all eight. **`roast` needs `camp` in the same run** — it sits down at the
 fire the camp beat built (`__roast.enter()` finds the first camp in the world
 with a roasting stick in it), so `--only roast` has nothing to sit at.
 
@@ -105,12 +105,32 @@ with a roasting stick in it), so `--only roast` has nothing to sit at.
   `--vista-index/-height/-pitch/-fov` reframe the closing shot; `--species`
   picks the animal for the photo beat.
 
-**The light.** The shipped hours run 21.6 → 15.0 → 16.0 → 16.8 → 17.6 → 20.4 →
-17.6. The hook is a night cold-open — firelight against a dark ridge, which is
+**The light.** The shipped hours run 21.6 → 8.2 → 15.0 → 16.0 → 16.8 →
+17.6 → 20.4 → 17.6. The hook is a night cold-open — firelight against a dark ridge, which is
 the strongest thing this game can put in a first frame — and the six beats after
 it run as one afternoon sliding into dusk. Inside that run, keep the hours
 moving one way: two beats step back an hour, which is invisible in the same
 afternoon light, and a jump to dawn would not be.
+
+**Do not open on a drive-away shot, and do not open on black.** The hook was
+originally the drive beat and it was the wrong hook twice over: a camper
+receding from a camera that is itself pulling back shrinks the subject from both
+ends, and the first frame is a rectangle with two tail lights. It plays well as
+beat TWO, where it reads as leaving in the morning and is the only footage of
+the game's core verb — a trailer for "a cozy drive" that never shows the camper
+moving is arguing with its own subtitle. See the trap table for the black-frame
+half of it.
+
+**Beat length changes the camera, not just the duration.** The drive dolly was
+5.6 → 9.8 m as a 2.8 s hook; at 1.9 s that same move only reads as the camper
+leaving. Shortening it without also widening the lateral offset then put the lens
+5.4 m dead astern, and a rear elevation filling half a 9:16 frame reads as
+PARKED, because no ground is in shot moving past to say otherwise. Retune the
+framing whenever you retime a beat.
+
+**Make the beat table's sum an assertion.** It was allowed to total 15.6 s once;
+nothing checks it, and a wrong-length master takes forty-five minutes to
+discover.
 
 **Do not open a social video on a drive-away shot, and do not open it on black.**
 The hook was originally the drive beat, and it was the wrong hook twice over: a
@@ -157,6 +177,9 @@ Every row cost a take or a round.
 | `__forceCamera` left raised | `reel`'s `pitchAndSurvey` raises it and used not to lower it, and it runs during candidate selection — so `CameraRig.update` returned early at its capture check and the whole drive beat was filmed off a camera nobody was driving |
 | three.js `fov` is **vertical** | so every authored composition is a narrow crop at 9:16. CameraRig's 52° is 78° horizontal at 16:9 and 31° at 9:16 — a telephoto. World views are pinned to 70. The roast view's `POSE.fov` 24 is 13.6° horizontal at 9:16 and the frame becomes the fire's bloom with the marshmallow in a corner; 34 holds both |
 | `wildlife.debugSpawn` spawns off the **camera** | `cam.position + forward*dist`, not the camper — it will happily put a deer next to wherever the previous beat left the lens. Pose the camera first |
+| a rideable parked **next to the camper** does not move | the bike beat filmed a stationary bike for three passes. `parkAt(x + 3, z + 3)` puts it three metres diagonally off a vehicle about five long, facing back across it — boxed in, and the camper's rear wheel was in shot the whole beat. Park it 8 m down the run it is meant to ride, pointing away. `bike_physics.state()` publishes **`blocked`**, plus `speed`, `effort` and `wading`: read them and warn, or you will judge this from thumbnails three times |
+| `Bike.mount()` succeeds **from the kayak** | it is guarded only by "is there a bike and am I already riding" and takes `controlsHeldBy` unconditionally, so mounting while still aboard a boat works, hands the camera to the saddle, and films a shot that looks right and is not being pedalled. Exit the boat and clear `controlsHeldBy` first |
+| `drive()` is not a held key | one call before a beat is one call; anything that runs `dismount()` clears `_script` silently and the shot coasts. Both rideables need a per-frame driver, the way `drivers.kayak` re-asserts every frame |
 | a ride camera opens **banked** | a kayak dropped at the head of a reach is not going anywhere yet and the mounted eye rolls with the hull. Paddle ~3 s off camera before the beat starts; granting still frames does not fix it |
 | picking a camp site by **slope** | landed a correct 10-prop camp behind a trunk in a wooded clearing. The 72-bearing survey called the arc clear and was right — canopy overhead and a trunk *beside* the camera are on no ray between camera and subject. Pitch on the ground the drive beat already rehearsed |
 | `poi.best('road')` ranks by its own score | not by drivability — the top road can be a slope-1.12 switchback. `--park meadow` beats roads badly (6 good sites vs 1 on seed 20261018) |
