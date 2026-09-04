@@ -19,7 +19,6 @@
 //  journal's empty slots already use for exactly that thing.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, polar, ICON } from './hud_dom.js';
-import { RHYTHM_TARGET, RHYTHM_TOL } from '../boat/boat_physics.js';
 
 // The compass strip's paw, at readout size. Shared rather than redrawn so the
 // three places that mean "animal" — strip pin, journal slot, this counter —
@@ -62,15 +61,21 @@ const HOLD_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' 
 // a sliver held back at the top for a boosted hull riding a fast current.
 //
 // The bike gets its own, and the same arithmetic decides it. A mountain bike in
-// this model settles around 7.6 m/s (27 km/h) on the flat, walks a climb at
-// 4-8 km/h and will touch 45 downhill before the rider sits up. A 60 km/h dial
-// puts the flat cruise at 45% of the sweep, leaves the whole top half for a
-// descent — which is the reading a rider actually watches — and never sends the
-// needle to the floor the way the camper's 120 would.
+// this model settles around 7.6 m/s (27 km/h) on the flat and walks a climb at
+// 4-8 km/h. It used to sit on a 60 km/h dial, which was right when the coast
+// ceiling was 13 m/s.
+//
+// That ceiling is 26 m/s now (TOP_SPEED, 94 km/h) and the bike has a rhythm
+// bonus on top. MEASURED over 40 minutes of riding: descents reach 17.5 m/s
+// (63 km/h), which pegged the old dial outright, and a sustained on-beat streak
+// on the flat runs to 15.6 m/s (56 km/h). 100 km/h full scale keeps the flat
+// cruise readable at 29% of the sweep — a touch under where the boat's rebuild
+// left its own cruise — puts a fast descent around two-thirds, and holds the
+// last third for a boosted rider on a long one.
 const SCALES = {
   camper: { max: 120, minor: 10, major: 40 },
   boat: { max: 40, minor: 4, major: 8 },
-  bike: { max: 60, minor: 5, major: 20 },
+  bike: { max: 100, minor: 10, major: 25 },
 };
 // Degrees clockwise from 12 o'clock. The gap belongs at the *bottom* — the
 // first version started the sweep at 148° and the needle sat pointing at the
@@ -179,17 +184,19 @@ export class Dash {
     this.node.appendChild(reads);
     root.appendChild(this.node);
 
-    this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null, beat: null };
+    this._shown = { kmh: -1, trip: -1, found: -1, total: -1, hold: null,
+      beat: null, beatTarget: -1 };
   }
 
   /**
    * @param {number} found — animals crossed off the scavenger sheet.
    * @param {number} total — animal lines on the sheet; see `HUNT_ANIMALS`.
    * @param {'camper'|'boat'|'bike'} scale — full scale of the dial; see SCALES.
-   * @param {number} beatT — s since the last W press edge; drives the boat's
-   *   once-a-second dial glow. Ignored for every other scale.
+   * @param {?{t:number,target:number,tol:number}} beat — the craft's rhythm
+   *   meter, from `RhythmMeter.beat()`: seconds since the last press edge, and
+   *   the tempo to judge it against. Null for anything with no beat to keep.
    */
-  update(speedMs, tripM, found, total, hold = false, scale = 'camper', beatT = 0) {
+  update(speedMs, tripM, found, total, hold = false, scale = 'camper', beat = null) {
     const sc = SCALES[scale] ?? SCALES.camper;
     if (sc !== this.scale) {
       this.scale = sc;
@@ -212,19 +219,28 @@ export class Dash {
       this.hold.classList.toggle('pa-on', held);
     }
 
-    // ── paddle-beat glow ─────────────────────────────────────────────────
-    // Boat mode only: the dial itself flashes once every RHYTHM_TARGET
-    // seconds, on the same window boat_physics.js judges a tap by, instead of
-    // a separate widget — see RHYTHM_TOL there for the window's width.
-    const beat = scale === 'boat' && (() => {
-      const lap = ((beatT % RHYTHM_TARGET) + RHYTHM_TARGET) % RHYTHM_TARGET;
+    // ── beat glow ────────────────────────────────────────────────────────
+    // The dial itself flashes once per beat, on the same window the physics
+    // judges a tap by, instead of a separate widget. The tempo arrives with the
+    // beat rather than being imported, because the kayak's is a second and the
+    // bike's is half of one — one indicator, whichever craft is under you.
+    // The glow's fade has to fit inside the dark half of the beat — see
+    // `--pa-beat-off` in hud.css. Written only when the tempo changes, because
+    // this runs every frame and setting a custom property is a style
+    // recalculation whether or not the value differs.
+    if (beat && beat.target !== this._shown.beatTarget) {
+      this._shown.beatTarget = beat.target;
+      this.speedo.style.setProperty('--pa-beat-off', `${(beat.target * 0.35).toFixed(2)}s`);
+    }
+    const lit = !!beat && (() => {
+      const lap = ((beat.t % beat.target) + beat.target) % beat.target;
       // Straddles the wrap — a beat right on target sits at both lap≈0 and
-      // lap≈RHYTHM_TARGET — so both ends of the lap light up.
-      return lap <= RHYTHM_TOL || lap >= RHYTHM_TARGET - RHYTHM_TOL;
+      // lap≈target — so both ends of the lap light up.
+      return lap <= beat.tol || lap >= beat.target - beat.tol;
     })();
-    if (beat !== this._shown.beat) {
-      this._shown.beat = beat;
-      this.speedo.classList.toggle('pa-beat', beat);
+    if (lit !== this._shown.beat) {
+      this._shown.beat = lit;
+      this.speedo.classList.toggle('pa-beat', lit);
     }
 
     const shown = Math.round(kmh);

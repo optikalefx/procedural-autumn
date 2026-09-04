@@ -12,7 +12,7 @@
 //      sides, with a small yaw wobble per stroke. The rhythm is the feel;
 //      constant thrust reads as an electric trolley motor. Holding W rides
 //      that auto-repeating catch as a floor; releasing and re-pressing to a
-//      ~1 s beat stacks a speed bonus on top of it — see RHYTHM_TARGET below.
+//      ~1 s beat stacks a speed bonus on top of it — see RHYTHM below.
 //    · drag is quadratic (plus a small linear term so the glide dies out
 //      rather than asymptoting);
 //    · the shore is a wall: the hydro sdf supplies a signed distance and a
@@ -33,6 +33,7 @@
 //  down a real reach parks against an invisible wall in open water and grinds.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, damp, lerp, smoothstep } from '../core/MathUtils.js';
+import { RhythmMeter } from '../core/rhythm.js';
 import { sdfGrad } from './boat_site.js';
 
 // Stroke cycle. The surge occupies the front ~35% of the cycle; the rest is
@@ -47,7 +48,7 @@ const SURGE = 0.35;                // fraction of the cycle that is the pull
 // is what makes simply holding W work at all — it is the floor, not the game.
 // On top of it, a player who lets go and re-presses W to their own ~1 s beat
 // can paddle faster than that floor: each RELEASE-then-PRESS edge is timed
-// against the last one, and a beat inside RHYTHM_TOL of RHYTHM_TARGET builds a
+// against the last one, and a beat inside `tol` of `target` builds a
 // meter that (a) kicks the hull's speed directly, on the spot, and (b) raises
 // how high that speed is allowed to sit. Too fast a double-tap or too slow a
 // gap both read as off-beat and knock the meter back down rather than
@@ -63,18 +64,25 @@ const SURGE = 0.35;                // fraction of the cycle that is the pull
 // Holding W through the whole paddle only ever produces ONE press edge (the
 // initial one), so it is untouched: this is a bonus stacked on the existing
 // feel, not a replacement for it.
-// Exported so a HUD beat indicator reads the same numbers the physics judges
-// taps against, rather than a second copy that could drift out of tune with
-// this file.
-export const RHYTHM_TARGET = 1.0;  // s between taps for an on-beat stroke
-export const RHYTHM_TOL = 0.22;    // s either side of target that still counts
-const RHYTHM_GAIN = 0.35;          // meter gained per on-beat tap, 0..1
-const RHYTHM_PUNISH = 0.5;         // fraction of the meter lost on an off-beat tap
-const RHYTHM_DECAY = 0.15;         // 1/s ambient fade — a banked bonus doesn't
-                                    // outlive the rhythm that earned it. Net of
-                                    // gain and a beat's worth of decay is still
-                                    // positive, so ~5 on-beat taps in a row ramp
-                                    // the meter from empty to full.
+// The judging itself — edges, timing, the meter's build and decay — lives in
+// `src/core/rhythm.js`, because the BIKE plays the same game at its own tempo.
+// What stays here is what a landed beat is worth, which only means anything
+// against this hull's drag model and top speed.
+//
+// The HUD reads `beat()` off the meter rather than importing these, so a dial
+// flashing for a kayak and a dial flashing for a bike are the same code reading
+// two different tempos instead of two copies that can drift.
+const RHYTHM = {
+  target: 1.0,                     // s between taps for an on-beat stroke
+  tol: 0.22,                       // s either side of target that still counts
+  gain: 0.35,                      // meter gained per on-beat tap, 0..1
+  punish: 0.5,                     // fraction of the meter lost on an off-beat tap
+  decay: 0.15,                     // 1/s ambient fade — a banked bonus doesn't
+                                   // outlive the rhythm that earned it. Net of
+                                   // gain and a beat's worth of decay is still
+                                   // positive, so ~5 on-beat taps in a row ramp
+                                   // the meter from empty to full.
+};
 const RHYTHM_KICK = 3.2;           // m/s added on a good tap, scaled by the
                                     // meter AFTER that tap's gain — so the
                                     // kicks grow as the streak builds
@@ -212,10 +220,8 @@ export class BoatPhysics {
     this._phase = 1;             // 1 = between strokes; wraps 0..1 during one
     this._side = 1;              // which side the NEXT forward stroke pulls on
     this._stroking = false;
-    // Rhythm-bonus state — see RHYTHM_TARGET above.
-    this._fwdHeld = false;       // was fwd active last frame? (edge detector)
-    this._tapT = 0;              // s since the last press edge
-    this._tapCount = 0;          // presses seen since place() — first has no interval to judge
+    // Rhythm-bonus state — see RHYTHM above and src/core/rhythm.js.
+    this._beat = new RhythmMeter(RHYTHM);
     this.rhythm = 0;             // 0..1 meter, published for HUD/audio
     // Visual-only phase, but still deterministic: the caller hands in a draw
     // from the site rng, so the same launch spot bobs the same way.
@@ -243,9 +249,7 @@ export class BoatPhysics {
     this.riverness = clamp01(smoothstep(RIVER_IN, RIVER_FULL,
                                         this.world.getRiver?.(x, z) ?? 0));
     this.current = 0;
-    this._fwdHeld = false;
-    this._tapT = 0;
-    this._tapCount = 0;
+    this._beat.reset();
     this.rhythm = 0;
     this._surface(0, 0);
   }
@@ -281,27 +285,15 @@ export class BoatPhysics {
     // again, which is a different question from the auto-repeating catch below
     // firing on its own timer while the key stays down. Only edges are judged,
     // so holding W produces exactly one (the first) and is never punished or
-    // rewarded by this — see RHYTHM_TARGET above. Gated on `!beached` the same
+    // rewarded by this — see src/core/rhythm.js. Gated on `!beached` the same
     // way the strokes below are: there is no paddling to time from a beach.
     const fwdActive = fwd > 0.02 && !this.beached;
-    if (fwdActive && !this._fwdHeld) {
-      if (this._tapCount > 0) {
-        const off = Math.abs(this._tapT - RHYTHM_TARGET);
-        if (off <= RHYTHM_TOL) {
-          this.rhythm = clamp01(this.rhythm + RHYTHM_GAIN);
-          // The kick itself, scaled by the meter it just topped up — later
-          // taps in a streak land bigger kicks than the one that started it.
-          this.speed += RHYTHM_KICK * this.rhythm;
-        } else {
-          this.rhythm *= (1 - RHYTHM_PUNISH);
-        }
-      }
-      this._tapCount++;
-      this._tapT = 0;
+    if (this._beat.update(dt, fwdActive)) {
+      // The kick itself, scaled by the meter it just topped up — later taps in
+      // a streak land bigger kicks than the one that started it.
+      this.speed += RHYTHM_KICK * this._beat.hitValue;
     }
-    this._fwdHeld = fwdActive;
-    this._tapT += dt;
-    this.rhythm = Math.max(0, this.rhythm - RHYTHM_DECAY * dt);
+    this.rhythm = this._beat.value;
     // How far a full meter is allowed to push `speed` past the hull's usual
     // ceiling — without this the drag+integrate clamp below would clip every
     // kick straight back down to maxSpeed the instant it landed.

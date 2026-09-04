@@ -788,6 +788,10 @@ export class Bike extends System {
       cadence: this._riding ? p.cadence : 0,
       wading: p.wading, wade: p.wade, blocked: p.blocked, grade: p.grade,
       airborne: this._riding && p.airborne, airT: p.airT, airPeak: p.airPeak,
+      // The dial's beat glow, and the meter behind it. Null when nobody is on
+      // it, so a parked bike does not sit there flashing at the camper's HUD.
+      beat: this._riding ? p._beat.beat() : null,
+      rhythm: this._riding ? p.rhythm : 0,
       grassiness: p.grassiness, grassCover: p.grassCover,
       colorway: b.colorway, style: b.style, group: b.group,
     };

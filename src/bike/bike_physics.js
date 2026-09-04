@@ -72,6 +72,7 @@
 //  `pitch`/`roll` are the frame's attitude in radians.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, damp, lerp, smoothstep } from '../core/MathUtils.js';
+import { RhythmMeter } from '../core/rhythm.js';
 import { grassCoverAt, makeGrassField } from '../vegetation/grass_scatter.js';
 
 // ── the rider ────────────────────────────────────────────────────────────────
@@ -162,6 +163,18 @@ const ROLL_SOFT = 0.80;            // m/s² — the same through meadow grass
 const BRAKE = 7.2;                 // m/s² with the brakes on
 const WALK_BACK = 1.1;             // m/s of walking the bike backwards
 const G = 9.81;
+
+// The soft ceiling on the coast. Not a clamp on the physics — gravity may still
+// exceed it briefly on a real plunge — it is the point past which a rider stops
+// pedalling, sits up and lets the bike run.
+//
+// 13 m/s was a sensible cadence on a mountain bike; 26 is not, and is the point.
+// The rhythm bonus below only means something if there is room above the cruise
+// for it to push into, and the model's own flat top speed is set far lower than
+// this anyway — POWER/v = roll + DRAG·v² settles a bike at 8.2 m/s on firm flat
+// ground whatever this number says. So this governs DESCENTS and boosted runs,
+// which is where a bicycle is fast in the first place.
+const TOP_SPEED = 26.0;            // m/s — 94 km/h, twice what it was
 
 // ── steering ─────────────────────────────────────────────────────────────────
 //
@@ -419,6 +432,52 @@ const AIR_POP = 2.6;               // m/s of upward velocity at a full-speed lip
 const POP_MIN = 3.0;               // m/s — under this the rider is not popping
 const POP_FULL = 9.0;              // m/s — and here they get all of it
 
+// ── the rhythm bonus ─────────────────────────────────────────────────────────
+//
+// The same game the kayak plays, at a bike's tempo. The judging — press edges,
+// the timing window, how a streak builds and fades — is `src/core/rhythm.js`
+// and is written once for both; what is here is what a landed beat is WORTH,
+// which only means anything against this model's own drag and top speed.
+//
+// HALF-SECOND beats, against the kayak's one second, and the difference is the
+// craft: a paddle stroke is a whole-body movement at roughly one a second, and
+// a rider standing on the pedals is turning the cranks at twice that. The
+// tolerance scales with the tempo rather than staying at the kayak's 0.22 s —
+// at a 0.5 s target that window would accept anything from a double-tap to a
+// lazy gap and there would be no beat left to keep. Held at the same FRACTION
+// of the interval, 22%, so the game is exactly as forgiving and just faster.
+const RHYTHM = {
+  target: 0.5,                     // s between taps — twice the kayak's cadence
+  tol: 0.11,                       // s either side, the same 22% of the interval
+  gain: 0.35,                      // meter gained per on-beat tap, 0..1
+  punish: 0.5,                     // fraction lost on an off-beat tap
+  // Per second, and it has to be read against the tempo: beats arrive twice as
+  // often here, so the kayak's 0.15 would let a streak build on half the effort.
+  // Doubled, one beat's worth of decay is the same bite it is on the water.
+  decay: 0.30,
+};
+// What a beat pays. A bike is not a hull: it has no glide worth speaking of and
+// its resistance is mostly ROLLING, which is linear and constant rather than
+// quadratic, so the kayak's trick of cancelling quadratic drag would buy almost
+// nothing at cruise. Cutting the rolling term is the bike's equivalent — a
+// rider in rhythm is out of the saddle and light on the tyres — and it is the
+// half that makes a streak a STATE the bike is in rather than a line of
+// unrelated shoves.
+// MEASURED over 24 flat starts, 40 s each (tools/_scratch/bikerhythm.mjs):
+// holding W settles at 3.59 m/s, tapping on the beat at 4.90 (+37%), and
+// mashing at half the interval collapses to 0.26 — worse than holding, which is
+// the point of the punish and matches what the kayak already does to a masher.
+const RHYTHM_KICK = 1.9;           // m/s added on a good tap, scaled by the meter
+const RHYTHM_ROLL = 0.70;          // fraction of rolling resistance cancelled at full
+// The raised ceiling is HEADROOM here, not the main lever, and that is a real
+// difference from the kayak. A hull's `maxSpeed` clamp binds at cruise, so
+// raising it is most of what its bonus does; the bike's flat cruise is set by
+// POWER against drag at around 8 m/s, far below TOP_SPEED, so this only ever
+// shows up where the bike is already near the ceiling — a boosted rider on a
+// long descent, which is exactly where it should not be the thing that stops
+// them.
+const RHYTHM_BONUS = 0.85;         // fraction the coast ceiling rises by at full
+
 // ── a NOTE ON A SMOOTHED RIDE SURFACE, AND WHY THERE ISN'T ONE ───────────────
 //
 // The first working launch test flew far too much — 13.8% of all ride time
@@ -594,6 +653,10 @@ export class BikePhysics {
     this._vyPrev = 0;        // the rate that ground was moving, last step
     this._parked = false;
 
+    // The rhythm bonus — see RHYTHM above and src/core/rhythm.js.
+    this._beat = new RhythmMeter(RHYTHM);
+    this.rhythm = 0;         // 0..1 meter, published for the HUD
+
     this._crossRoll = 0;     // the ground's cross-slope alone — see _settle
     this._probeT = 0;        // seconds since the obstacle list was refreshed
     this._trunks = [];
@@ -608,6 +671,7 @@ export class BikePhysics {
     this.lastAir = 0; this.landImpact = 0;
     this._parked = false;
     this._gyPrev = null; this._vyPrev = 0;
+    this._beat.reset(); this.rhythm = 0;
     // Put it down flat, HERE rather than inside `_settle` — a dt-0 settle means
     // "no time passed", which is not the same statement as "this bike is on the
     // ground", and conflating the two cancelled every jump that a zero-dt frame
@@ -684,7 +748,20 @@ export class BikePhysics {
     const wet = clamp01(W.getMoisture(this.x, this.z));
     this.wading = W.getWaterContactDepth(this.x, this.z);
     this.wade = clamp01(this.wading / WADE_REF);
-    const roll = lerp(ROLL_HARD, ROLL_SOFT, this.grassiness) * (1 + wet * 0.25);
+    // ── rhythm: judge press edges, not the held level ────────────────────────
+    //
+    // A rising edge on the throttle is the rider CHOOSING to put another stroke
+    // in. Holding W produces exactly one edge, so simply holding it keeps the
+    // feel it always had and is neither punished nor rewarded — the bonus is
+    // stacked on top, not a replacement. Gated on being ridden and on having the
+    // wheels down: there is no stroke to time from a parked bike or a jump.
+    // `inp.parked` and not `this._parked`: the latter is written at the END of
+    // step, so reading it here judges this frame against last frame's answer.
+    const pedalEdge = fwd > 0.02 && inp.parked !== true && !this.airborne;
+    const beatHit = this._beat.update(dtc, pedalEdge);
+    this.rhythm = this._beat.value;
+    const roll = lerp(ROLL_HARD, ROLL_SOFT, this.grassiness) * (1 + wet * 0.25)
+      * (1 - RHYTHM_ROLL * this.rhythm);
     // Per (m/s) — applied against the speed below, never as a flat deceleration.
     const wadeDrag = WADE_DRAG * this.wade * this.wade;
 
@@ -725,10 +802,21 @@ export class BikePhysics {
     }
     this._parked = inp.parked === true;
     this.speed = v + a * dtc;
+    // The kick lands on `speed` directly, AFTER the acceleration above rather
+    // than as a thrust term, and for the reason boat_physics gives: a real
+    // keyboard tap is down for a handful of frames, so a thrust multiplier would
+    // mostly starve before it paid. A direct kick pays the instant the beat
+    // lands however briefly the key was held. Scaled by the meter it just topped
+    // up, so later taps in a streak land bigger kicks than the one that started
+    // it. Not while airborne: nothing the pedals do reaches the ground there.
+    if (beatHit && !air) this.speed += RHYTHM_KICK * this._beat.hitValue;
     // A rider does not pedal past a sensible cadence downhill; they coast, and
     // then they brake. This is a soft ceiling on the coast, not a clamp on the
-    // physics — gravity may still exceed it briefly on a real plunge.
-    if (this.speed > 13) this.speed = damp(this.speed, 13, 2.2, dtc);
+    // physics — gravity may still exceed it briefly on a real plunge. A hot
+    // streak raises where that ceiling sits, or the clamp would take every kick
+    // straight back off a bike that was already running near it.
+    const top = TOP_SPEED * (1 + RHYTHM_BONUS * this.rhythm);
+    if (this.speed > top) this.speed = damp(this.speed, top, 2.2, dtc);
     if (this.speed < -WALK_BACK) this.speed = -WALK_BACK;
 
     // ── steering and lean ───────────────────────────────────────────────────
@@ -1189,6 +1277,7 @@ export class BikePhysics {
       x: this.x, y: this.y, z: this.z,
       heading: this.heading, speed: this.speed, made: this.made,
       lean: this.lean, pitch: this.pitch, roll: this.roll,
+      rhythm: this.rhythm,
       vy: this.vy, airborne: this.airborne, airT: this.airT, airPeak: this.airPeak,
       lastAir: this.lastAir, landImpact: this.landImpact,
       grade: this.grade, wading: this.wading, wade: this.wade, blocked: this.blocked,
