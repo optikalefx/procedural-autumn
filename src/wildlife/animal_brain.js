@@ -166,7 +166,13 @@ export class Brain {
     this._lookT = 2 + this.rnd() * 5;
     this.headUp = false;
     this._watchMove = 0;       // seconds left of the current wary drift
-    this._watchSide = 1;       // which way it is drifting across your line
+    // Which way it is drifting across your line — and, since `_watch` shares
+    // one side between the drift and the standing shoulder, which shoulder it
+    // keeps you on. Per slot rather than a constant, because that is where the
+    // variety used to come from: the shoulder was `slot & 1` while the drift
+    // started at +1 for everybody, so a band that shared one number here would
+    // swing as one block. Same parity as the shoulder had.
+    this._watchSide = (slot & 1) ? 1 : -1;
     this._avoid = 0;
     // Seconds spent wanting to move and going nowhere, and the countdown that
     // says the way out is closed. See the blocked-step guard in _steer.
@@ -334,7 +340,31 @@ export class Brain {
     const holding = (this._cornered > 0 && this.state === ST.WATCH)
       || (this.state === ST.PERCH && dEff > c.fleeDist);
     if (this.state !== ST.FLEE && !holding) {
-      if (dEff < c.fleeDist || (herdAlarm > 0.5 && this.state !== ST.ALERT && dEff < c.alertDist)) {
+      // ── the herd alarm may not re-freeze a watcher ────────────────────────
+      // `!== ST.WATCH` here is the same rule the `dEff < alertDist` branch
+      // below spells out, and this branch simply did not have it. Missing it
+      // deadlocks the band, because the alarm and the freeze are each other's
+      // cause: `_enterAlert` writes `group.alarm = 1`, and `Wildlife`'s decay
+      // only clears the alarm when NO member is in ALERT or FLEE. So a watcher
+      // re-frozen by the alarm re-raises the alarm that re-froze it, and the
+      // group holds itself at 1 for as long as the player stands inside
+      // `alertDist`. Measured on a goat band with a camper 17 m off: 324 of
+      // 330 `_enterAlert` calls interrupted WATCH, `group.alarm` never left 1,
+      // and the animals stood still turning on the spot at the 29 deg/s
+      // standing shuffle with the walk clip at weight zero for the whole
+      // minute (`tools/_scratch/_goatalarm.mjs`, `goatfilm.mjs`).
+      //
+      // It is the alpine pair that lives in it rather than the deer, and that
+      // is structural: the only writer that clears the alarm outright is
+      // `_flee`'s exit, and a goat whose `fleeDist` is 9 m never runs. A deer
+      // bolts at 28 m, clears the alarm and breaks the cycle by accident.
+      //
+      // A watcher genuinely inside `fleeDist` still alerts — that is the first
+      // term, and it is the real close approach rather than a neighbour's
+      // second-hand fright.
+      if (dEff < c.fleeDist
+          || (herdAlarm > 0.5 && this.state !== ST.ALERT && this.state !== ST.WATCH
+              && dEff < c.alertDist)) {
         // Deer and rabbits freeze first — that beat of stillness before the
         // bolt is the whole reason a deer sighting feels like a sighting.
         if (this.state !== ST.ALERT) this._enterAlert();
@@ -680,18 +710,42 @@ export class Brain {
     } else {
       this.wantSpeed = 0;
       // Squared up but off the shoulder, so the head reads against the sky
-      // and the flank still reads against the ground.
-      this.wantHeading = bearing + (this.slot & 1 ? 1.15 : -1.15);
+      // and the flank still reads against the ground — and off the shoulder it
+      // is ALREADY drifting over, which is the whole of the fix here.
+      //
+      // The shoulder used to be chosen by `slot & 1` while the drift above is
+      // chosen by `_watchSide`, and the two disagree half the time. When they
+      // do, every stand->drift handover is a 90 + 66 = 156 degree reversal and
+      // the next handover reverses it back, four seconds later, for as long as
+      // the player stands there. Sharing the side makes it 1.571 - 1.15 = 0.42
+      // rad, a quarter turn of settling rather than an about-face.
+      this.wantHeading = bearing + 1.15 * this._watchSide;
       if (this.timer < 0) {
-        // Drift back toward home if the last few steps took it too far out,
-        // otherwise alternate so the animal stays roughly where it lives.
+        // ── the drift keeps going the way it was going ────────────────────
+        // This used to flip `_watchSide` on every pause, which is a metronome
+        // rather than a drift: 2-4.4 s one way, 2-4.4 s back, through 180
+        // degrees each time. An animal cannot come round 180 degrees inside
+        // one drift phase — at the walk its turn radius gives it about 45
+        // deg/s — so it spent every phase turning, covered no ground, and its
+        // `facing` brake held it at roughly half a walk the whole time, which
+        // is below the band its own walk clip plays in. On film that is an
+        // animal spinning on the spot with a stuttering walk, which is the
+        // report.
+        //
+        // Holding the side turns it into the arc the state was described as:
+        // the animal works its way across the player's line, and because
+        // `bearing` rotates with it, a held side is a slow constant curve
+        // around the threat rather than a straight line away from it.
+        //
+        // What keeps it near where it lives is still the leash below, and that
+        // is what the alternation was really for. It fires roughly every fifth
+        // phase instead of every one, so the reversal it costs is an event the
+        // player can read — it worked across, then it came back — rather than
+        // a tick.
         const hx = this.home.x - this.pos.x, hz = this.home.z - this.pos.z;
-        const far = Math.hypot(hx, hz) > this.cfg.wanderRadius * 1.15;
-        if (far) {
+        if (Math.hypot(hx, hz) > this.cfg.wanderRadius * 1.15) {
           const toHome = Math.atan2(hx, hz);
           this._watchSide = wrapAngle(toHome - bearing) > 0 ? 1 : -1;
-        } else {
-          this._watchSide = -this._watchSide;
         }
         this._watchMove = 2.0 + this.rnd() * 2.4;
       }
