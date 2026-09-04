@@ -329,6 +329,19 @@ export class Bike extends System {
         }
         this._wasBlocked = b.phys.blocked;
         if (!b.phys.blocked) this._preBlockSpeed = wasMoving;
+        // Landing is the same shape of problem as blocking — an EVENT the
+        // physics can only publish as state — but it needs no edge detection
+        // here, because `landImpact` is already a one-frame value written on
+        // the touchdown frame and zero on every other. Below AIR_REPORT the
+        // physics reports no flight at all, so a rut does not thud.
+        if (b.phys.lastAir > 0) {
+          this._cue('land', {
+            x: b.phys.x, z: b.phys.z,
+            // A landing that matches the slope it lands on is silent, so the
+            // strength is the impact and not the flight — see `_vertical`.
+            strength: clamp01(b.phys.landImpact / 7),
+          });
+        }
       }
     }
 
@@ -774,6 +787,7 @@ export class Bike extends System {
       wheelRate: this._riding ? p.wheelRate : 0,
       cadence: this._riding ? p.cadence : 0,
       wading: p.wading, wade: p.wade, blocked: p.blocked, grade: p.grade,
+      airborne: this._riding && p.airborne, airT: p.airT, airPeak: p.airPeak,
       grassiness: p.grassiness, grassCover: p.grassCover,
       colorway: b.colorway, style: b.style, group: b.group,
     };

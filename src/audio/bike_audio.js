@@ -223,6 +223,34 @@ const VOICES = {
   },
 
   /**
+   * Coming back down. Not `bump` with a different gain: a bump is the bike
+   * stopping against something and a landing is the bike CONTINUING, so there
+   * is no scuff of knobs skating and no fork loading against a wall — it is two
+   * tyres arriving a beat apart, the frame taking the load, and the rider's
+   * weight coming back onto the saddle.
+   *
+   * `c.strength` is the impact measured against the slope landed on (see
+   * `_vertical`), which is why a jump that meets a downslope is nearly silent
+   * and casing the flat is not. It moves the rear wheel's delay as well as the
+   * level: a heavy landing puts both wheels down almost together, a light one
+   * rolls through front-then-back.
+   */
+  land(c) {
+    const s = 0.35 + c.strength * 0.65;
+    const gap = 0.075 - c.strength * 0.045;
+    // front tyre
+    this._tone(c, 0.000, { f0: 96, f1: 62, peak: 0.055 * s, attack: 0.002, dur: 0.13, type: 'triangle' });
+    this._noise(c, 0.000, { f: 520, q: 1.6, peak: 0.038 * s, attack: 0.001, dur: 0.05 });
+    // rear tyre, with the rider's weight on it
+    this._tone(c, gap, { f0: 104, f1: 58, peak: 0.070 * s, attack: 0.002, dur: 0.17, type: 'triangle' });
+    this._noise(c, gap, { f: 430, q: 1.6, peak: 0.050 * s, attack: 0.001, dur: 0.07 });
+    // the frame and the fork taking it, only when there is something to take
+    if (c.strength > 0.45) {
+      this._sweep(c, gap + 0.02, { f0: 1250, f1: 520, q: 1.1, peak: 0.030 * s, attack: 0.010, dur: 0.24 });
+    }
+  },
+
+  /**
    * Water off a wheel. The vehicle-splash recipe (pink, a high band falling),
    * twice, because a bicycle puts two wheels in a few tenths of a second apart.
    *
@@ -622,7 +650,7 @@ export class BikeAudio {
   /**
    * Sound one bike event.
    *
-   * @param {string} kind  'mount' | 'dismount' | 'bump' | 'splash'
+   * @param {string} kind  'mount' | 'dismount' | 'bump' | 'land' | 'splash'
    * @param {object} opts  x/z default to the live bike's position.
    */
   cue(kind, opts = {}) {

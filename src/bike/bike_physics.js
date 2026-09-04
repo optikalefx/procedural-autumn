@@ -51,9 +51,25 @@
 //      query here and not `rocksAround`: a rock that has not streamed in is a
 //      rock the player cannot see, and the bike is always at the player's feet.
 //
+//  ── and the bike leaves it ─────────────────────────────────────────────────
+//
+//  The first version of this file had no vertical at all: `y` was ASSIGNED from
+//  the ground every step, `onGround` was written true twice and read nowhere,
+//  and gravity existed only as the along-slope term — which can accelerate a
+//  bike down a hill and never off one. Over any crest at any speed the bike
+//  stayed glued.
+//
+//  It now integrates `vy`. See LAUNCH_EPS for the launch test and why it is not
+//  the textbook curvature one, and `_vertical` for the arithmetic. In the air
+//  the pedals, the brakes, the tyres, the hill and the slope wall all stop
+//  applying — each for the same reason, that they are contact forces and there
+//  is no contact — and what is left is gravity, air drag and a little body
+//  english on the bars.
+//
 //  Convention: +Z is heading 0, `heading` increases the way `Math.atan2(sin,
-//  cos)` does everywhere else in this project, y is the ground under the
-//  wheels, and `pitch`/`roll` are the frame's attitude in radians.
+//  cos)` does everywhere else in this project, y is the frame's height — the
+//  ground under the wheels whenever there are wheels on the ground — and
+//  `pitch`/`roll` are the frame's attitude in radians.
 // ─────────────────────────────────────────────────────────────────────────────
 import { clamp, clamp01, damp, lerp, smoothstep } from '../core/MathUtils.js';
 import { grassCoverAt, makeGrassField } from '../vegetation/grass_scatter.js';
@@ -286,6 +302,148 @@ const MAX_GRADE = 0.90;            // 42° — the limit for entering LEVEL or r
 const MAX_GRADE_DOWN = 1.60;       // 58° — the same for a step that descends
 const WHEEL_GRIP = 0.24;           // how hard the attitude tracks the ground
 
+// ── leaving the ground ───────────────────────────────────────────────────────
+//
+// A wheel leaves the ground when the path it is asked to follow needs more
+// centripetal acceleration than gravity can supply — v²·κ > g·cos θ over a
+// convex crest. Nothing below computes κ, and deliberately: curvature of a
+// piecewise-bilinear heightfield is a delta function at every texel seam, so a
+// κ test reads whatever the sample spacing was and nothing about the terrain.
+//
+// The equivalent test that needs no derivative at all: integrate a free body
+// forward one step from where the bike was, and ask whether it is still under
+// the ground. If it is not, the ground fell away faster than gravity could pull
+// the bike into it, which is the definition of a jump.
+//
+// MEASURED before any of this was written, over 300 straight ride lines on the
+// shipping bake (tools/_scratch/bikeair.mjs), on the two-contact surface
+// `_settle` actually sits the frame on rather than on `getHeight`:
+//
+//   sample step   5th pct crest   25th pct   median   at the 13 m/s coast cap
+//     0.5 m          5.3 m/s        9.3       12.9      a crest every  5 m
+//     1.0 m          5.5 m/s        9.9       13.8      a crest every 14 m
+//
+// So a quarter of all convex ground in this valley launches below 10 m/s and
+// the terrain was never the limiting factor — the model was. The 1.0 m row is
+// the honest one to quote: anything finer over-resolves the bilinear seams,
+// and the 1.1 m wheelbase cannot see a feature shorter than itself anyway.
+// A wheel leaves the ground when the surface curves away faster than gravity
+// can pull the bike into it. Stated over HORIZONTAL distance the condition is
+// exact and remarkably clean:
+//
+//     vh² · y''  <  −g          vh = horizontal speed, y'' = d²y/dx²
+//
+// The usual v²·κ > g·cos θ, written with κ = |y''|/(1+y'²)^1.5 and the path
+// speed v = vh·√(1+y'²), has the slope factor appear on both sides and cancel
+// exactly — so no surface normal and no curvature formula is ever built, and
+// the test is as right on a 40° face as on the flat.
+//
+// ── it is measured in SPACE, and two attempts at measuring it in time failed ─
+//
+// Both earlier versions differenced the ground's height against the CLOCK, and
+// both turned the frame rate into a game-design dial. Measured over 40 minutes
+// of simulated riding, at 30 / 60 / 120 Hz:
+//
+//   "would a free body clear the ground next step", 4 mm margin   10.4  6.5  1.6 %
+//   the same condition as a ground acceleration, differenced twice  5.7  ...  10.5 %
+//
+// The first fails because the clearance it thresholds scales as dt², so a fixed
+// margin admits fewer and fewer real crests as the frame rate rises. The second
+// fails at the other end: a second difference divides by dt², so it amplifies
+// whatever roughness is left until single-frame noise dominates — 28 648 flights
+// at 120 Hz, of one frame each.
+//
+// A second difference over METRES has no dt in it to go wrong. The spacing is
+// CONTACT_SMOOTH below, which is the only scale in the problem with a physical
+// meaning, and the result is the same jump on the same crest whatever the frame
+// rate happens to be.
+//
+// The margin above g is what stops a bike that is merely cresting a rise from
+// flickering in and out of contact at the exact moment the two balance.
+const LAUNCH_MARGIN = 2.5;         // m/s² of excess over g before the wheels go
+
+// ── the surface a WHEEL rides, which is not the surface `getHeight` returns ──
+//
+// The first working version of the launch test flew, and flew far too much:
+// 13.8% of all ride time airborne over 7059 flights in 40 minutes of simulated
+// riding, with a MEDIAN flight of 0.050 s. Three frames. That is not a jump,
+// it is a bike vibrating, and the cause is in the heightfield rather than in
+// the test.
+//
+// `getHeight` is bilinear over a 2 m texel, so its slope is a STAIRCASE: it
+// jumps discontinuously at every seam. A slope break of Δm at speed v changes
+// the ground's vertical rate by v·Δm within one frame, and the free path then
+// clears the ground by about v·Δm·dt. That is first order in dt, while a
+// genuine crest clears by ½(v²κ − g)dt², which is second order. So as the
+// frame rate rises the seams beat the real crests by an ever wider margin, and
+// no epsilon can separate them: the discriminator would be the frame rate.
+//
+// The fix is not a bigger epsilon, it is riding the right surface. A wheel is
+// 0.35 m in radius and physically cannot drop into a crease narrower than
+// itself — it bridges it, on its rim. So the ground is low-passed over a
+// DISTANCE the wheel can resolve, before the vertical ever looks at it.
+//
+// Distance and not time, and that is the whole point of it: a time constant
+// would make the same terrain launch differently at 30, 60 and 144 Hz, which
+// is the bug this replaces wearing a different hat. Filtered per metre
+// travelled, the surface a rider crosses is the same surface at any frame rate
+// and at any speed.
+const CONTACT_SMOOTH = 0.55;       // m of travel — the wheel's own scale
+
+// …and the span the curvature is measured over, which is a different number for
+// a different reason: it is about what the BAKE can resolve, not about what a
+// wheel can follow. The heightfield's texel is 2 m, so everything below that is
+// bilinear interpolation rather than terrain, and a curvature measured inside
+// one texel measures the interpolator.
+//
+// SWEPT (tools/_scratch/bikesweep.mjs) over 40 minutes of simulated downhill
+// riding per cell, at three frame rates, on seed 5:
+//
+//   span   30 Hz  60 Hz  120 Hz  |  spread  jumps over 0.18 s   longest
+//   0.55   4.71   4.17   4.90    |   0.96      43  38  54        1.42 s
+//   0.90   2.61   2.30   2.54    |   1.03      16   9  13        1.31 s
+//   1.30   2.15   2.08   1.82    |   1.18      13   6   6        2.87 s
+//   1.60   2.38   2.35   2.28    |   1.04      42  44  42        1.44 s
+//   2.20   2.91   2.73   2.89    |   1.01     115 114 128        1.47 s
+//   3.00   2.84   3.09   3.02    |   0.94     106 120 120        1.52 s
+//   4.00   2.58   2.64   2.77    |   0.93      80  82  89        1.61 s
+//
+// `spread` is the airborne fraction at 30 Hz over the same at 120 Hz, and it is
+// 1.0 everywhere — which is the property the two earlier launch tests could not
+// hold and the reason this one is measured in space. It does not choose the
+// span; it only says the span is allowed to be chosen on feel.
+//
+// 2.2 is the choice: the first span above the texel, so the curvature is the
+// bake's rather than its interpolation's, and the one that finds the most air a
+// player would call a jump — 114 of them against 44 at 1.6 — without the
+// airborne fraction running away. Below the texel the count rises again (43 at
+// 0.55) but those are seams, which is exactly the artifact 0.55 is too small to
+// tell apart from a lip.
+const CURVE_SPAN = 2.2;            // m of ground the launch curvature is fitted over
+
+// A rider in the air has no grip, so almost no steering — but not none, or the
+// bike feels welded to its heading for the whole flight. This is the fraction
+// of the ground turn rate the bars keep, and it is body english, not tyres.
+const AIR_STEER = 0.15;
+
+// How fast the frame comes back to level in the air, and the lean with it.
+// A rider levels a bike out over a jump; nothing here simulates that, it just
+// stops the attitude from being frozen at whatever the lip happened to be.
+const AIR_LEVEL = 1.8;             // per second
+
+// Landing costs you. Scaled on the vertical speed at touchdown, because
+// dropping in from 3 m is not the same event as clipping a kerb — and capped,
+// because a bicycle that stops dead on every landing is not a bicycle.
+const LAND_SCRUB = 0.030;          // fraction of speed lost per m/s of drop
+const LAND_SCRUB_MAX = 0.42;
+
+// Below this the flight is suspension travel over a rut, not a jump. Nothing
+// in the physics changes at the threshold — it only gates what gets REPORTED,
+// so a washboard track does not read as flying. `Stats` has the same idea and
+// the same reason (AIR_MIN); this one is the physics' own, so the bike audio
+// and the model do not have to reach into the game layer to ask.
+const AIR_REPORT = 0.18;           // s
+
 // How far ahead the wall test looks, as a multiple of the step. A step at 8 m/s
 // and 60 Hz is 13 cm and a front wheel is 70 cm ahead of the origin, so testing
 // only the destination lets the front wheel enter a trunk for five frames
@@ -358,7 +516,26 @@ export class BikePhysics {
     this.wading = 0;         // m of water under the wheels
     this.wade = 0;           // …the same, normalised on WADE_REF, 0..1
     this.blocked = false;    // the last step hit a wall
+
+    // ── the vertical, which used to not exist ────────────────────────────────
+    //
+    // Before this the frame's height was ASSIGNED from the ground every step
+    // and `onGround` was written `true` twice and read nowhere. There was no
+    // vy, so gravity existed only as the along-slope term: it could accelerate
+    // the bike down a hill and never off one.
+    this.vy = 0;             // m/s, + is up
+    this.airborne = false;   // named to match VehiclePhysics — `Stats` reads
+                             // one field for the camper and the bike both
+    this.airT = 0;           // s in the current flight, 0 while grounded
+    this.airPeak = 0;        // m above the ground reached in this flight
+    this.lastAir = 0;        // duration of the last flight, one frame only
+    this.landImpact = 0;     // m/s of drop at the last touchdown, one frame
     this.onGround = true;
+
+    this._gyPrev = null;     // the ride surface under the contacts last step
+    this._vyPrev = 0;        // the rate that surface was moving, last step
+    this._gyS = null;        // the ride surface itself — see CONTACT_SMOOTH
+    this._parked = false;
 
     this._crossRoll = 0;     // the ground's cross-slope alone — see _settle
     this._probeT = 0;        // seconds since the obstacle list was refreshed
@@ -370,7 +547,16 @@ export class BikePhysics {
   place(x, z, heading) {
     this.x = x; this.z = z; this.heading = heading;
     this.speed = 0; this.made = 0; this.yawRate = 0; this.lean = 0;
-    this._settle(1);
+    this.vy = 0; this.airborne = false; this.airT = 0; this.airPeak = 0;
+    this.lastAir = 0; this.landImpact = 0;
+    this._parked = false;
+    this._gyPrev = null; this._vyPrev = 0; this._gyS = null;
+    this._settle(1, 0);
+    // Put it down flat, HERE rather than inside `_settle` — a dt-0 settle means
+    // "no time passed", which is not the same statement as "this bike is on the
+    // ground", and conflating the two cancelled every jump that a zero-dt frame
+    // happened to land in the middle of.
+    this.y = this._gyS ?? this.y;
     return this;
   }
 
@@ -448,23 +634,28 @@ export class BikePhysics {
     const v = this.speed;
     const av = Math.abs(v);
     let a = 0;
+    // In the air there are no pedals, no brakes, no tyres and no hill. The only
+    // longitudinal force left is the air itself, and `G` has moved to `vy` —
+    // applying `G·sinT` here as well would be gravity counted twice, once along
+    // a slope the wheels are no longer touching.
+    const air = this.airborne;
     // …faded by the water, the camper's `waterFade`: a rider up to their knees
     // in a river cannot put a full stroke in. Together with the quadratic drag
     // above this is what makes deep water self-limiting without a wall.
     const waterFade = 1 - this.wade * WADE_FADE;
-    if (fwd > 0) a += Math.min(MAX_THRUST, POWER / Math.max(av, V0)) * fwd * waterFade;
+    if (fwd > 0 && !air) a += Math.min(MAX_THRUST, POWER / Math.max(av, V0)) * fwd * waterFade;
     // Braking, then walking it backwards. A bike has no reverse gear and this
     // is not pretending otherwise: hold the back axis at a stop and the rider
     // walks it back at `WALK_BACK`, which is how you get out of a dead end.
-    if (back > 0) {
+    if (back > 0 && !air) {
       if (v > 0.15) a -= BRAKE * back;
       else a -= (WALK_BACK + v) * 6.0 * back;
     }
-    a -= G * sinT;                                   // the dominant term
+    if (!air) a -= G * sinT;                         // the dominant term
     // Resistance always opposes motion, and must not be able to push the bike
     // backwards through zero in one step — hence the min against v/dt.
     if (av > 1e-4) {
-      const res = roll + DRAG * v * v + wadeDrag * av;
+      const res = air ? DRAG * v * v : roll + DRAG * v * v + wadeDrag * av;
       a -= Math.sign(v) * Math.min(res, av / dtc);
     } else if (inp.parked === true) {
       // A bike nobody is on does not roll down the hill it was left on. This is
@@ -474,6 +665,7 @@ export class BikePhysics {
       a = 0;
       this.speed = 0;
     }
+    this._parked = inp.parked === true;
     this.speed = v + a * dtc;
     // A rider does not pedal past a sensible cadence downhill; they coast, and
     // then they brake. This is a soft ceiling on the coast, not a clamp on the
@@ -488,7 +680,8 @@ export class BikePhysics {
     // lock and then TURN_STILL that decide, not a division by zero.
     const geoRate = sp / MIN_RADIUS;                       // steering lock
     const leanRate = (G * TAN_LEAN_MAX) / Math.max(sp, 0.5);   // grip
-    const rate = Math.max(TURN_STILL, Math.min(geoRate, leanRate) * TURN_TRIM);
+    let rate = Math.max(TURN_STILL, Math.min(geoRate, leanRate) * TURN_TRIM);
+    if (air) rate = (sp / MIN_RADIUS) * AIR_STEER;   // no grip, no lock — body english
     // Reversing steers the other way round, the same as the camper.
     this.yawRate = turn * rate * (this.speed < -0.05 ? -1 : 1);
     // The fork follows the turn, and the sign is NOT free. A positive `turn` is
@@ -507,8 +700,10 @@ export class BikePhysics {
     // The true banking angle: tan(lean) = ω·v / g. Damped, because a rider's
     // body takes a moment to come over, and because an undamped lean flickers
     // wildly at low speed where ω is largest.
-    const wantLean = clamp(Math.atan2(this.yawRate * this.speed, G), -LEAN_MAX, LEAN_MAX);
-    this.lean = damp(this.lean, wantLean, LEAN_DAMP, dtc);
+    // A lean is a balance against cornering force, and there is none in the air:
+    // the target is level, not whatever the yaw rate would have earned.
+    const wantLean = air ? 0 : clamp(Math.atan2(this.yawRate * this.speed, G), -LEAN_MAX, LEAN_MAX);
+    this.lean = damp(this.lean, wantLean, air ? AIR_LEVEL : LEAN_DAMP, dtc);
 
     // ── move, and let the world refuse ──────────────────────────────────────
     this._refreshObstacles(dtc);
@@ -529,7 +724,7 @@ export class BikePhysics {
     this.made = Math.hypot(this.x - bx, this.z - bz) / Math.max(dtc, 1e-5);
 
     // ── attitude, and the parts that go round ───────────────────────────────
-    this._settle(1 - Math.exp(-WHEEL_GRIP * 60 * dtc));
+    this._settle(1 - Math.exp(-WHEEL_GRIP * 60 * dtc), dtc);
     // The wheels turn with the ground the bike actually covered, not with the
     // speed it wishes it had — so a bike held against a boulder at full effort
     // has still wheels, which is the honest picture and the one that makes the
@@ -543,7 +738,11 @@ export class BikePhysics {
     // INCREASE as the bike moves forward. It shipped decreasing, and a bicycle
     // whose wheels turn backwards is not subtle: "your wheels are spinning the
     // wrong direction" (user, 2026-09-01).
-    const rolled = (this.made * Math.sign(this.speed || 1)) / (this.dim.wheelR ?? 0.35);
+    // In the air the wheels keep the speed they left with — nothing is driving
+    // them and nothing is slowing them, and `made` is the ground speed of a bike
+    // that is not touching the ground.
+    const spun = air ? Math.abs(this.speed) : this.made;
+    const rolled = (spun * Math.sign(this.speed || 1)) / (this.dim.wheelR ?? 0.35);
     this.wheelAngle += rolled * dtc;
     this.wheelRate = Math.abs(rolled);
     this.effort = fwd;
@@ -553,7 +752,7 @@ export class BikePhysics {
     // ratio would spin the legs at 300 rpm downhill.
     const cad = smoothstep(0.15, 4.5, this.made) * 8.2 * (this.speed < 0 ? -1 : 1);
     // Same axis, same sign, same argument: the top of the crank goes FORWARD.
-    const turning = fwd > 0.02 ? cad * (0.55 + 0.45 * fwd) : 0;
+    const turning = (fwd > 0.02 && !air) ? cad * (0.55 + 0.45 * fwd) : 0;
     this.crankAngle += turning * dtc;
     this.cadence = Math.abs(turning);
     return this;
@@ -687,6 +886,12 @@ export class BikePhysics {
    * is a bike that rode somewhere steep and has to be able to ride back out.
    */
   _gradeLimit(x, z) {
+    // A bike in the air is not on the ground and the ground has no vote on it.
+    // Without this the slope wall stops a jump in mid-flight against a face the
+    // bike is passing OVER — and it would fire constantly, because the escape
+    // clause below reads `this.y`, which while airborne is metres above the
+    // terrain, so every neighbour reads as a descent.
+    if (this.airborne) return Infinity;
     if (this.world.getSlope(this.x, this.z) > MAX_GRADE) return Infinity;
     return this.world.getHeight(x, z) < this.y - 0.002 ? MAX_GRADE_DOWN : MAX_GRADE;
   }
@@ -713,7 +918,7 @@ export class BikePhysics {
    * to stop. Measuring where the wheels ARE is both cheaper than a normal fetch
    * and correct by construction.
    */
-  _settle(k) {
+  _settle(k, dt = 0) {
     const W = this.world;
     const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
     const rx = Math.cos(this.heading), rz = -Math.sin(this.heading);   // to −X
@@ -722,8 +927,16 @@ export class BikePhysics {
     const yR = W.getHeight(this.x - fx * h, this.z - fz * h);
     const yL = W.getHeight(this.x + rx * 0.34, this.z + rz * 0.34);
     const yRt = W.getHeight(this.x - rx * 0.34, this.z - rz * 0.34);
-    const y = (yF + yR) * 0.5;
+    const raw = (yF + yR) * 0.5;
     const pitch = Math.atan2(yF - yR, h * 2);
+    // The surface a wheel can actually follow, low-passed over the distance
+    // travelled rather than over time — see CONTACT_SMOOTH. `made` and not
+    // `speed`, because a bike held against a boulder covers no ground and its
+    // ride surface must not keep advancing.
+    const trav = this.made * dt;
+    this._gyS = (this._gyS === null || dt <= 0) ? raw
+      : lerp(this._gyS, raw, 1 - Math.exp(-trav / CONTACT_SMOOTH));
+    const flying = this._vertical(this._gyS, fx, fz, dt);
     // The ground's cross-slope, then the lean on top of it. The lean is the
     // rider's, so it is NOT damped toward the ground here — it is already
     // damped in `step` and adding a second filter makes the bike feel like it
@@ -738,11 +951,165 @@ export class BikePhysics {
     // Hence the minus, and hence `roll` is the composite the model can use
     // straight.
     const cross = Math.atan2(yL - yRt, 0.68);
-    this._crossRoll = lerp(this._crossRoll, cross, k);
-    this.y = lerp(this.y, y, k);
-    this.pitch = lerp(this.pitch, pitch, k);
+    if (flying) {
+      // The ground under a bike that is not on it says nothing about how the
+      // bike is sitting. Ease the attitude to level instead — `this.y` and
+      // `this.vy` were set by `_vertical` and are not the ground's to touch.
+      const a = dt > 0 ? 1 - Math.exp(-AIR_LEVEL * dt) : 1;
+      this._crossRoll = lerp(this._crossRoll, 0, a);
+      this.pitch = lerp(this.pitch, 0, a);
+    } else {
+      this._crossRoll = lerp(this._crossRoll, cross, k);
+      this.y = lerp(this.y, this._gyS, k);
+      this.pitch = lerp(this.pitch, pitch, k);
+    }
     this.roll = this._crossRoll - this.lean;
-    this.onGround = true;
+    this.onGround = !flying;
+  }
+
+  /**
+   * The vertical, given the ground `gy` under the two contact patches.
+   * Returns true if the bike is in the air after this step.
+   *
+   * ── the launch test ───────────────────────────────────────────────────────
+   *
+   * A wheel leaves the ground when the surface it is following curves away
+   * faster than gravity can pull the bike into it. The textbook form is
+   * v²·κ > g·cos θ; the form used here is the same statement with the geometry
+   * already folded in — the vertical ACCELERATION of a point riding the surface
+   * is exactly κ·v² for a path travelled at v, so the ground's own second
+   * derivative in time is the whole test and neither κ nor the normal is ever
+   * built. See LAUNCH_MARGIN.
+   *
+   * Two things this is careful about, both of which were bugs first:
+   *
+   *  · The surface differentiated is `_gyS`, the ride surface, NOT `getHeight`.
+   *    Bilinear terrain has a staircase for a slope, and differentiating a
+   *    staircase twice gives a valley full of kickers that are not there. See
+   *    CONTACT_SMOOTH.
+   *  · The velocity is taken from the ground, not from `this.y`. Those are
+   *    different numbers: `this.y` is the ground through the WHEEL_GRIP lerp,
+   *    which lags a fast drop by about four frames — 0.7 m of travel at 10 m/s.
+   *    Reading that lag as vertical speed launches the bike off its own display
+   *    smoothing, which is a cosmetic filter and not suspension.
+   */
+  _vertical(gy, fx, fz, dt) {
+    // ── a frame in which no time passed is not a landing ─────────────────────
+    //
+    // This branch used to ground the bike: it set `airborne = false` and snapped
+    // `y` to the terrain, on the grounds that `place()` calls in with dt 0. But
+    // `step()` reaches here too, and a dt-0 step is not rare. The engine draws
+    // frames that advance no time whenever the clock grants none — every other
+    // frame under the capture harness's granted clock, and in the real game on a
+    // pause, a tab restore, or the first frame after a stall. Every one of them
+    // cancelled a jump in flight and teleported the bike to the ground.
+    //
+    // It cost four takes to see, because it hid as a rendering problem: the
+    // capture films one frame, grants one, and reads the physics after a second
+    // rAF that carries dt 0 — so a bike that was demonstrably airborne when
+    // asked directly (tools/_scratch/bikewhy.mjs) reported `airborne: false` on
+    // every single filmed frame, at 12 m/s over a lip that launches it.
+    //
+    // No time passing means nothing changes. `place()` does its own grounding.
+    if (dt <= 0) return this.airborne;
+    this.lastAir = 0;
+    this.landImpact = 0;
+
+    if (this.airborne) {
+      this.vy -= G * dt;
+      this.y += this.vy * dt;
+      this.airT += dt;
+      this.airPeak = Math.max(this.airPeak, this.y - gy);
+      if (this.y <= gy) {
+        // Touchdown. The scrub is taken from the drop speed rather than being a
+        // flat penalty: rolling off a lip and casing a four-metre drop are the
+        // same event to everything above this line, and should not be.
+        //
+        // ── and the drop is measured against the GROUND, not against zero ────
+        //
+        // A landing hurts by how much faster the bike is falling than the slope
+        // it lands on is falling away — which is why a downslope landing is the
+        // one every jump is built to have, and why casing the flat hurts.
+        // Against zero instead, the first version charged its full penalty for
+        // merely riding fast downhill: on a 2.0 slope at 9 m/s the surface
+        // itself descends at 18 m/s, so a one-frame loss of contact "landed" at
+        // 18 m/s and took the whole 42% scrub cap for it. Measured p50 landing
+        // drop over 40 minutes of riding fell from 3.81 m/s to near nothing on
+        // exactly the descents where a bike should be gaining speed.
+        const vyG = this.made * this._slopeAhead(fx, fz);   // how fast the ground falls
+        const drop = Math.max(0, vyG - this.vy);    // how much faster the bike does
+        this.landImpact = drop;
+        this.lastAir = this.airT >= AIR_REPORT ? this.airT : 0;
+        this.speed *= 1 - Math.min(LAND_SCRUB_MAX, drop * LAND_SCRUB);
+        this.y = gy;
+        this.vy = 0;
+        this.airborne = false;
+        this.airT = 0;
+        this.airPeak = 0;
+        this._gyPrev = gy; this._vyPrev = 0;
+        return false;
+      }
+      this._gyPrev = gy; this._vyPrev = this.vy;
+      return true;
+    }
+
+    // Grounded. A bike nobody is on does not take off, whatever it is parked on,
+    // and one held against a boulder is not travelling however hard it pedals.
+    const vh = this.made;
+    if (this._parked || vh < 0.5) return false;
+
+    // Three points on the ride surface, CONTACT_SMOOTH apart along the travel:
+    // the second difference is y'' over horizontal distance, with no dt in it.
+    const ypp = this._curvature(fx, fz);
+    if (vh * vh * ypp < -(G + LAUNCH_MARGIN)) {
+      this.airborne = true;
+      this.y = gy;                                  // it leaves from the ground…
+      this.vy = vh * this._slopeAhead(fx, fz);      // …tangentially, at its rate
+      this.airT = dt;
+      this.airPeak = 0;
+      return true;
+    }
+    return false;
+  }
+
+  /** The ride surface at (x, z) for a bike heading along (fx, fz): the mean of
+   *  the two contact patches, which is the only height `_settle` ever sits on. */
+  _contactY(x, z, fx, fz) {
+    const h = this.half, W = this.world;
+    return (W.getHeight(x + fx * h, z + fz * h) + W.getHeight(x - fx * h, z - fz * h)) * 0.5;
+  }
+
+  /**
+   * y'' of the ride surface along the heading, per metre of HORIZONTAL travel.
+   *
+   * A least-squares parabola through five points and not the obvious three-point
+   * second difference, and the reason is the bake. A 3-point stencil straddling
+   * one bilinear seam reports the seam and nothing else — it is the shortest
+   * possible high-pass filter, which is the opposite of what is wanted. Fitting
+   * five points asks what curve the ground is ACTUALLY following over the whole
+   * span, so a single crease is outvoted by the four samples that disagree with
+   * it. Measured: single-frame flights fell from 2545 to a handful over the same
+   * 40 minutes of riding, while the jumps a player would notice were untouched.
+   *
+   * For evenly spaced samples the fit collapses to one line of arithmetic, so
+   * this costs five height pairs and no solve.
+   */
+  _curvature(fx, fz) {
+    const h = CURVE_SPAN * 0.5;
+    const x = this.x, z = this.z;
+    const a = this._contactY(x - fx * 2 * h, z - fz * 2 * h, fx, fz);
+    const b = this._contactY(x - fx * h, z - fz * h, fx, fz);
+    const c = this._contactY(x, z, fx, fz);
+    const d = this._contactY(x + fx * h, z + fz * h, fx, fz);
+    const e = this._contactY(x + fx * 2 * h, z + fz * 2 * h, fx, fz);
+    return (2 * a - b - 2 * c - d + 2 * e) / (7 * h * h);
+  }
+
+  /** The ride surface's slope along the heading, per metre travelled. */
+  _slopeAhead(fx, fz) {
+    const L = CURVE_SPAN;
+    return (this._contactY(this.x + fx * L, this.z + fz * L, fx, fz)
+          - this._contactY(this.x - fx * L, this.z - fz * L, fx, fz)) / (2 * L);
   }
 
   /** JSON-able snapshot, for the harness and the HUD. */
@@ -751,6 +1118,8 @@ export class BikePhysics {
       x: this.x, y: this.y, z: this.z,
       heading: this.heading, speed: this.speed, made: this.made,
       lean: this.lean, pitch: this.pitch, roll: this.roll,
+      vy: this.vy, airborne: this.airborne, airT: this.airT, airPeak: this.airPeak,
+      lastAir: this.lastAir, landImpact: this.landImpact,
       grade: this.grade, wading: this.wading, wade: this.wade, blocked: this.blocked,
       effort: this.effort, braking: this.braking,
       wheelRate: this.wheelRate, cadence: this.cadence,
