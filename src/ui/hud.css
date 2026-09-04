@@ -313,15 +313,23 @@
 .pa-hold.pa-on { opacity: 1; transform: translate(-50%, 0); }
 .pa-hold svg { width: 1.15em; height: 1.15em; flex: none; }
 
-/* Paddle-beat glow — boat mode only. Rather than a separate widget, the dial
-   itself flashes gold once every RHYTHM_TARGET seconds (hud_dash.js), on the
-   same window boat_physics.js judges a tap against — a metronome that costs
-   nothing new to look at, because it lights up the instrument the player is
-   already reading for speed. Snaps on, eases off, so it reads as a pulse
-   rather than something fading in and out symmetrically. */
+/* Beat glow. Rather than a separate widget, the dial itself flashes gold once
+   per beat (hud_dash.js), on the same window the physics judges a tap against —
+   a metronome that costs nothing new to look at, because it lights up the
+   instrument the player is already reading for speed. Snaps on, eases off, so
+   it reads as a pulse rather than something fading in and out symmetrically.
+
+   The ease-off is a variable because the two craft keep different time. At the
+   kayak's one second the glow is lit for 0.44 s and dark for 0.56, and a 0.35 s
+   fade sits comfortably inside the dark half. The bike beats every 0.5 s, which
+   leaves only 0.28 s of dark — the same fade would still be running when the
+   next beat arrived and the dial would sit there permanently lit, which is a
+   metronome that has stopped telling you anything. `hud_dash` sets it from the
+   craft's own tempo; the fallback is the kayak's. */
 .pa-speedo {
+  --pa-beat-off: 0.35s;
   filter: drop-shadow(0 0 0 rgba(243, 207, 69, 0));
-  transition: filter 0.35s var(--ease);
+  transition: filter var(--pa-beat-off) var(--ease);
 }
 .pa-speedo.pa-beat {
   filter: drop-shadow(0 0 0.55em rgba(243, 207, 69, 0.9));

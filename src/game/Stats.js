@@ -134,7 +134,7 @@ export class Stats extends System {
     // MAX_CAMPS of them, and an entry outlives the camp by one frame.
     this._liveCamps = [];
 
-    this._air = 0;               // current airborne spell, seconds
+    this._airs = {};             // current airborne spell per vehicle, seconds
     this._sinceTeleport = 99;
     this._teleportSeq = -1;
     this._aboard = null;
@@ -176,6 +176,7 @@ export class Stats extends System {
     stats.hi('session.long', this._session);
 
     this._drive(dt);
+    this._bike(dt);
     this._water(dt);
     this._campsite(dt);
     this._telescope(dt);
@@ -208,7 +209,7 @@ export class Stats extends System {
     if (veh.teleportSeq !== this._teleportSeq) {
       this._teleportSeq = veh.teleportSeq;
       this._sinceTeleport = 0;
-      this._air = 0;
+      this._airs.camper = 0;
     } else {
       this._sinceTeleport += dt;
     }
@@ -244,20 +245,62 @@ export class Stats extends System {
     if (r > this._rescues) { stats.add('drive.rescues', r - this._rescues); this._rescues = r; }
 
     // ── airtime ──────────────────────────────────────────────────────────────
-    const air = !!veh.phys?.airborne && this._sinceTeleport > AIR_TELEPORT_LOCKOUT;
-    if (air) {
-      this._air += dt;
+    this._airtime('camper', !!veh.phys?.airborne && this._sinceTeleport > AIR_TELEPORT_LOCKOUT, dt);
+  }
+
+  /**
+   * One airborne spell, for whichever thing the player is on.
+   *
+   * Shared between the camper and the bike because `air.jumps` and `air.long`
+   * are one line in the logbook and mean the same thing either way — a jump is
+   * a jump. The per-vehicle keys sit alongside them for the same reason
+   * `drive.time.${id}` does: the total is the headline and the breakdown is
+   * there when the leaderboard wants it.
+   *
+   * The spells are kept apart per vehicle, so dismounting mid-flight cannot
+   * hand the bike's hang time to the camper.
+   */
+  _airtime(id, aloft, dt) {
+    const held = (this._airs ??= {});
+    const cur = held[id] ?? 0;
+    if (aloft) {
+      held[id] = cur + dt;
       stats.add('air.time', dt);
-    } else if (this._air > 0) {
-      if (this._air >= AIR_MIN) {
+      stats.add(`air.time.${id}`, dt);
+    } else if (cur > 0) {
+      if (cur >= AIR_MIN) {
         stats.add('air.jumps');
-        stats.hi('air.long', this._air);
+        stats.add(`air.jumps.${id}`);
+        stats.hi('air.long', cur);
+        stats.hi(`air.long.${id}`, cur);
       } else {
         // Suspension travel, counted as airtime while it happened. Give it
         // back, or a washboard road reads as flying.
-        stats.add('air.time', -this._air);
+        stats.add('air.time', -cur);
+        stats.add(`air.time.${id}`, -cur);
       }
-      this._air = 0;
+      held[id] = 0;
+    }
+  }
+
+  /**
+   * The bike, which has no Rapier body and no teleport — it is ridden away from
+   * the camper rather than warped, so there is nothing here matching the
+   * lockout `_drive` needs.
+   *
+   * `Bike.current` is nulled the moment the player steps off, and `airborne` on
+   * it is already gated on riding: a bike parked on a lip is not in flight, and
+   * the physics refuses to launch an unridden one at all.
+   */
+  _bike(dt) {
+    const cur = this.ctx.systems?.bike?.current;
+    this._airtime('bike', !!cur?.airborne, dt);
+    if (!cur?.riding) return;
+    const sp = Math.abs(cur.speed ?? 0);
+    if (sp > DRIVING) {
+      stats.add('ride.time', dt);
+      stats.add('ride.dist', sp * dt);
+      stats.hi('ride.top', sp);
     }
   }
 

@@ -143,6 +143,19 @@
         "--strictPort"
       ],
       "port": 5261
+    },
+    {
+      "name": "bike-air",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5272",
+        "--strictPort"
+      ],
+      "port": 5272
     }
   ]
 }

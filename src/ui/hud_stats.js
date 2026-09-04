@@ -87,10 +87,21 @@ const GROUPS = [
     ['Furthest from the start', 'hi dist', 'range.far'],
     ['Rescues', 'n count', 'drive.rescues'],
   ]],
+  ['Riding', [
+    ['Time on the bike', 'n dur', 'ride.time'],
+    ['Distance ridden', 'n dist', 'ride.dist'],
+    ['Top speed on the bike', 'hi speed', 'ride.top'],
+  ], 'group'],
   ['In the air', [
     ['Total airtime', 'n dur', 'air.time'],
     ['Jumps', 'n count', 'air.jumps'],
     ['Longest hang', 'hi secs', 'air.long'],
+    // The breakdown, on the same argument as the canoe/kayak split below: the
+    // total is the headline and these earn their rows once there is something
+    // in them. A camper and a bike leave the ground for very different reasons
+    // and it is worth being able to see which one did it.
+    ['Jumps on the bike', 'n count', 'air.jumps.bike'],
+    ['Longest hang on the bike', 'hi secs', 'air.long.bike'],
   ], 'group'],
   ['On the water', [
     ['Time afloat', 'n dur', 'water.time'],
