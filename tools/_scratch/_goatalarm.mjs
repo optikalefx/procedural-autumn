@@ -1,18 +1,9 @@
 #!/usr/bin/env node
 /**
- * Who keeps re-freezing the band.
- *
- * A goat filmed with a camper 17 m away is a statue for the whole minute:
- * `group.alarm` pinned at 1, `Brain.timer` counting to zero and jumping back,
- * heading creeping at the 29 deg/s standing shuffle and the walk clip at
- * weight 0. This counts every `_enterAlert` by the state it interrupted, which
- * separates the three call sites without touching them:
- *
- *   from watch   only the herd-alarm branch can do this -- the direct
- *                `dEff < alertDist` branch excludes WATCH by hand.
- *   from graze/idle/wander   a first sighting, which is what should happen.
- *
- * Also reports what fraction of the encounter each species spends frozen.
+ * Who keeps re-freezing the band. Counts every `_enterAlert` by the state it
+ * interrupted: only the herd-alarm branch can interrupt WATCH, so a nonzero
+ * `from watch` is the deadlock this was written to catch (324 of 330 before the
+ * fix, 0 after). The gate for that regression.
  *
  *   AUTUMN_URL=http://127.0.0.1:5188 node tools/_scratch/_goatalarm.mjs --threat 18
  */

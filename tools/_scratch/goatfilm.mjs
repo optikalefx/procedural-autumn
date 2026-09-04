@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 /**
- * Film one goat, camera locked on it, telemetry per frame.
- *
- * Reported: "constantly spinning instantly 360deg, his walk doesn't seem like
- * it's looping properly, he's switching directions all the time." Every
- * aggregate says the goat turns LESS than the deer (`_goatturn.mjs`), so the
- * numbers are measuring the wrong thing and the film is the instrument.
+ * Film one goat, camera locked on it, brain and rig telemetry per frame. Pass
+ * `--threat` to put a camper in the picture: the threat states are where both
+ * of this animal's reported faults lived, and every aggregate harness in here
+ * runs threat-free.
  *
  *   AUTUMN_URL=http://127.0.0.1:5188 node tools/_scratch/goatfilm.mjs \
- *       --seconds 60 --rock yes --out tools/_scratch/goatfilm
+ *       --seconds 60 --rock yes --threat 32 --out tools/_scratch/goatfilm
  */
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'fs';

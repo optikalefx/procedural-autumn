@@ -1,29 +1,14 @@
 #!/usr/bin/env node
 /**
- * How much of a goat's life is spent TURNING, against the deer's.
+ * How much of an animal's life is spent TURNING. Replaces `_aboutface.mjs`,
+ * whose 150-degrees-in-2.5 s counter has been saturated at zero since the turn
+ * radius started growing with speed and reads 0.00 for every species however
+ * bad they look. Reports yaw budget per state, net winding over a window,
+ * SUSTAINED reversals (>=0.6 s and >=25 deg one way then the other), path
+ * efficiency, and the share of moving frames below 55% of the animal's own
+ * walk -- the band where the walk clip is crossfaded rather than played.
  *
- * `_aboutface.mjs`'s reversal counter is saturated at zero since the turn
- * radius started growing with speed: nothing in the cast can now move 150
- * degrees inside a 2.5 s window, so a metric written against that threshold
- * says every species is perfect while the report says otherwise. These
- * measure the shape of the motion instead, which is what the eye reads:
- *
- *   yawDegPerMin   integral of |yawRate|. A goat that walks a straight line
- *                  and a goat that circles cover the same ground; only this
- *                  separates them.
- *   windingMax     the largest NET heading change inside `--wind` seconds.
- *                  360 here is a literal spin.
- *   reversalsPerMin  a sustained turn one way (>= 0.6 s, >= 25 deg) followed
- *                  by a sustained turn the other. This is "switching
- *                  directions all the time" as a number.
- *   pathEff        net displacement / distance walked over `--wind` s, over
- *                  moving frames only. 1.0 is a straight line.
- *   stallPct       moving frames whose speed is under 55% of the animal's own
- *                  cruising walk -- the band where the walk clip is being
- *                  crossfaded against Stand instead of played, which is what
- *                  "the walk doesn't loop properly" looks like from here.
- *
- *   AUTUMN_URL=http://127.0.0.1:5188 node tools/_scratch/_goatturn.mjs
+ *   AUTUMN_URL=http://127.0.0.1:5188 node tools/_scratch/_goatturn.mjs --threat 18
  */
 import { chromium } from 'playwright';
 
