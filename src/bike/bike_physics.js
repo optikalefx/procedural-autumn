@@ -362,6 +362,64 @@ const WHEEL_GRIP = 0.24;           // how hard the attitude tracks the ground
 // flickering in and out of contact at the exact moment the two balance.
 const LAUNCH_MARGIN = 2.5;         // m/s² of excess over g before the wheels go
 
+// ── the gravity a jump is flown under, which is not 9.81 ─────────────────────
+//
+// Shipping this at true g was right for the physics and wrong for the game.
+// MEASURED over 50 rides x 60 s with three riders (tools/_scratch/bikeplay.mjs),
+// at 9.81 a player riding around normally got:
+//
+//   rider     jumps per minute   hang p50 / max   height p50 / max
+//   cruise          0.30          0.28 / 0.83 s     0.09 / 0.32 m
+//   explore         0.38          0.30 / 1.80 s     0.12 / 6.46 m
+//
+// One jump every three minutes, and the median one is nine centimetres and a
+// quarter of a second — a kerb, not a jump. The rare good one is a cliff.
+// "It's not really jumping much" is exactly what those numbers say.
+//
+// Air gravity is the one lever that moves both halves at once: it lowers the
+// speed a crest needs, v_min = sqrt((AIR_G + margin) / |y''|), AND stretches the
+// flight that follows, since hang and height both go as 1/AIR_G. Nothing else
+// does both — the margin only moves the threshold, and shortening the curvature
+// span only re-admits the bilinear seams the span exists to reject.
+//
+// It is deliberately SEPARATE from `G` above. `G` carries the along-slope term,
+// which is the dominant force in this model and was tuned as a system against
+// this valley's slope distribution (see the POWER block); moving it would
+// re-tune every climb in the game to buy a jump. This one is read in `_vertical`
+// and nowhere else, so it can only change what happens between the wheels
+// leaving the ground and touching it again.
+const AIR_G = 6.2;                 // m/s² — gravity while the wheels are off
+
+// ── the pop, which is the rider and not the hill ─────────────────────────────
+//
+// Gravity alone could not fix the complaint, and the sweep says exactly why.
+// Taking it from 9.81 down to 4.5 — under half g, floatier than anyone would
+// want — moved the median jump from 0.28 s and 0.09 m only as far as 0.42 s and
+// 0.15 m. Three times the jump RATE, and still nothing you would call a jump:
+//
+//   AIR_G   jumps/min (cruise)   hang p50   height p50
+//    9.81         0.30            0.28 s      0.09 m
+//    6.20         0.68            0.33 s      0.11 m
+//    4.50         0.90            0.35 s      0.11 m
+//
+// The reason is in the launch itself. A wheel leaves a crest TANGENTIALLY, and
+// the condition first bites at the apex where the slope — and therefore the
+// bike's vertical velocity — is near zero. So the bike leaves with vy ≈ 0 every
+// time, and lowering gravity stretches a skim into a longer skim. Height needs
+// vy at the lip, and no amount of gravity supplies it.
+//
+// On a real bike that vy is the RIDER: they preload the suspension coming into
+// the lip and extend at the top. It is the whole difference between rolling off
+// a crest and jumping off one, it is the thing a player is doing when they say
+// they jumped, and nothing in this model had it.
+//
+// Speed-gated, because it is a body movement and not a spring: a bike being
+// walked over a hump does not pop, one arriving at speed does. Below POP_MIN
+// there is none at all and it comes in over the range to POP_FULL.
+const AIR_POP = 2.6;               // m/s of upward velocity at a full-speed lip
+const POP_MIN = 3.0;               // m/s — under this the rider is not popping
+const POP_FULL = 9.0;              // m/s — and here they get all of it
+
 // ── the surface a WHEEL rides, which is not the surface `getHeight` returns ──
 //
 // The first working version of the launch test flew, and flew far too much:
@@ -1016,7 +1074,7 @@ export class BikePhysics {
     this.landImpact = 0;
 
     if (this.airborne) {
-      this.vy -= G * dt;
+      this.vy -= AIR_G * dt;
       this.y += this.vy * dt;
       this.airT += dt;
       this.airPeak = Math.max(this.airPeak, this.y - gy);
@@ -1061,10 +1119,14 @@ export class BikePhysics {
     // Three points on the ride surface, CONTACT_SMOOTH apart along the travel:
     // the second difference is y'' over horizontal distance, with no dt in it.
     const ypp = this._curvature(fx, fz);
-    if (vh * vh * ypp < -(G + LAUNCH_MARGIN)) {
+    if (vh * vh * ypp < -(AIR_G + LAUNCH_MARGIN)) {
       this.airborne = true;
       this.y = gy;                                  // it leaves from the ground…
-      this.vy = vh * this._slopeAhead(fx, fz);      // …tangentially, at its rate
+      // …tangentially, at the rate the ground was falling, PLUS the rider's own
+      // extension at the lip. The tangential term alone is near zero at a crest
+      // — see AIR_POP — so without the pop this is a skim and not a jump.
+      const pop = AIR_POP * clamp01((vh - POP_MIN) / (POP_FULL - POP_MIN));
+      this.vy = vh * this._slopeAhead(fx, fz) + pop;
       this.airT = dt;
       this.airPeak = 0;
       return true;
