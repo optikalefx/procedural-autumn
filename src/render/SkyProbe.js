@@ -57,6 +57,32 @@ const REBAKE_HOUR_DELTA = 0.04;
 // a varnished gunwale that swims as the boat yaws.
 const BAKE_SIGMA = 0.08;
 
+// Size of the cube the bake renders into — 128, not three's 256 default.
+//
+// three's blur kernel is capped at 20 taps (MAX_SAMPLES in PMREMGenerator). It
+// spends them across 3 standard deviations of the requested sigma measured in
+// TEXELS, so how many it wants depends on the size of the map: at 256 the top
+// mip is 255 px across, 0.08 rad is 13 texels, and it asks for 39. It doesn't
+// get them — it truncates the Gaussian at 20 and warns
+//   "sigmaRadians, 0.08, is too large and will clip"
+// once per direction, per bake, per probe. With the boat's and the bike's both
+// alive and re-baking every few seconds that is a console flood, and the blur
+// on screen was never the one this file asked for.
+//
+// At 128 the same 0.08 rad is 20 taps exactly: same angular blur, run in full.
+// Nothing is lost by halving the map, because a 0.08 rad blur is already wider
+// than 39 texels of a 256 cube — the top mip held no detail a 128 cube can't.
+//
+// Measured against the material kits this probe actually feeds, worst case bike
+// chrome (roughness 0.18 at metalness 0.96, the shiniest thing either mounted
+// camera frames): the swap moves at most 5/255, on one pixel of a blown
+// highlight. It cannot do more, because three anchors roughness→mip to FIXED
+// tile sizes — everything down to roughness 0.21 reads the same 16 px tiles at
+// either bake size. A material under roughness ~0.076 WOULD clamp an octave
+// lower at CUBEUV_MAX_MIP and lose real sharpness here; nothing on the boat or
+// the bike is within a factor of two of that.
+const BAKE_SIZE = 128;
+
 const VERT = /* glsl */`
 varying vec3 vDir;
 void main() {
@@ -184,7 +210,7 @@ export class SkyProbe {
     this._uni.uSunDir.value.copy(s.sunDir);
 
     const old = this._rt;
-    this._rt = this._pmrem.fromScene(this._scene, BAKE_SIGMA);
+    this._rt = this._pmrem.fromScene(this._scene, BAKE_SIGMA, 0.1, 100, { size: BAKE_SIZE });
     // Re-point BEFORE the old target is freed, so no consumer holds a disposed
     // texture even for an instant. See the onBake note in the constructor.
     this._onBake?.(this._rt.texture);
