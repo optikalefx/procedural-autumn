@@ -659,15 +659,20 @@ export function buildWaterSurface(world, debug = null) {
   // dilation may grow — see the note at the vertex field for why the CONTOUR
   // may not be cut on a quantity gathered this widely.
   const bedLo = new Float32Array(G * G).fill(Infinity);
+  // The HIGHEST texel under each quad, gathered in the same walk. Read only by
+  // the hole fill below, which needs to know whether any ground inside the cell
+  // reaches the surface — see the note there.
+  const bedHi = new Float32Array(G * G).fill(-Infinity);
   for (let cz = 0; cz < G; cz++) {
     for (let cx = 0; cx < G; cx++) {
-      let n = 0, sum = 0, lo = Infinity, standing = 0;
+      let n = 0, sum = 0, lo = Infinity, hiG = -Infinity, standing = 0;
       for (let j = 0; j < S; j++) {
         const row = (cz * S + j) * R;
         for (let i = 0; i < S; i++) {
           const gi = row + cx * S + i;
           const h = world.height[gi];
           if (h < lo) lo = h;
+          if (h > hiG) hiG = h;
           const v = world.water[gi];
           if (v < -9000) continue;
           n++; sum += v;
@@ -676,6 +681,7 @@ export function buildWaterSurface(world, debug = null) {
       }
       const k = cz * G + cx;
       bedLo[k] = lo;
+      bedHi[k] = hiG;
       if (!n) continue;
       hasW[k] = 1;
       wet[k] = standing;
@@ -1364,13 +1370,169 @@ export function buildWaterSurface(world, debug = null) {
   // predicted here, so it can never claim surface the mesh does not have.
   const drawn = new Uint8Array(G * G);
 
+  // ── which cells get geometry, decided for the whole map first ───────────
+  //
+  // These tests used to sit inline in the chunked emit loop below. They are
+  // hoisted because the rule under them has to ask whether a cell's NEIGHBOURS
+  // get geometry, and inside a loop that walks the map in 512 m blocks that is
+  // only answerable for the blocks already walked. Same tests, same order, same
+  // counters — the loop below now only asks whether the answer was yes.
+  //
+  // One thing did move: the hang test is now made after the dead and contour
+  // tests rather than before them, so cullHang counts only cells that would
+  // otherwise have drawn. That is what the fill below needs to know, and it
+  // shifts 1 758 cells on seed 5 from cullHang into cullDead. Same mesh.
+  let cullVOk = 0, cullStep = 0, cullNp = 0, cullDead = 0, cullHang = 0;
+  const emit = new Uint8Array(G * G);
+  // Cells the ring-hang rule alone rejected. Everything else about them was
+  // fine, which is what makes them the only candidates for the fill below.
+  const hung = new Uint8Array(G * G);
+  for (let cz = 0; cz < G; cz++) {
+    for (let cx = 0; cx < G; cx++) {
+      const kc = cz * G + cx;
+      if (!mask[kc]) continue;
+      const ci = [cz * VG + cx, (cz + 1) * VG + cx,
+                  (cz + 1) * VG + cx + 1, cz * VG + cx + 1];
+      if (!vOk[ci[0]] || !vOk[ci[1]] || !vOk[ci[2]] || !vOk[ci[3]]) { cullVOk++; continue; }
+
+      // A water surface does not stand on end. Reject any cell whose corners
+      // disagree about where the surface is by more than a step: the baked grid
+      // marks the pool above a lip and the pool below it as water, sixty metres
+      // apart in height, and one quad joining them is a near-vertical wall of
+      // water hanging down a cliff face. Two of them across one gorge is the
+      // floating pale-blue X a critic pass logged in the waterfall view.
+      let lo = Infinity, hi = -Infinity;
+      for (let q = 0; q < 4; q++) {
+        const L = vLevel[ci[q]];
+        if (L < lo) lo = L;
+        if (L > hi) hi = L;
+      }
+      if (hi - lo > SURF_LEVEL_STEP && !hasWD[kc]
+          && lo - bedLo[kc] > 3.5) { cullStep++; continue; }
+
+      // A quad whose four corners are ALL further out on the dry side than the
+      // shader's outer alpha guard reaches is multiplied by exactly zero over
+      // its whole area — bilinear interpolation of four values below the
+      // threshold cannot rise above it — and the damp band is gated by the same
+      // distance, so nothing else can draw there either. MEASURED over the map:
+      // 23 370 quads, 46 740 triangles, 8.5% of the surface, rendering nothing.
+      if (vShore[ci[0]] < -SURF_DEAD_M && vShore[ci[1]] < -SURF_DEAD_M
+       && vShore[ci[2]] < -SURF_DEAD_M && vShore[ci[3]] < -SURF_DEAD_M) { cullDead++; continue; }
+
+      // The contour, counted rather than built: inside corners contribute
+      // themselves and every edge whose ends disagree contributes its crossing,
+      // exactly as the emission below fans them. Under three and there is no
+      // polygon to draw.
+      let np = 0;
+      for (let q = 0; q < 4; q++) {
+        const inA = vDepth[ci[q]] > SURF_ISO;
+        const inB = vDepth[ci[(q + 1) & 3]] > SURF_ISO;
+        if (inA) np++;
+        if (inA !== inB) np++;
+      }
+      if (np < 3) { cullNp++; continue; }
+
+      // ── and the ring may not hang ──────────────────────────────────────
+      //
+      // The step test above catches a quad that stands ON END. This one catches
+      // the far commoner thing, which stands perfectly level and is just as
+      // wrong: a ring cell lying flat, several metres up in the air, over ground
+      // that has fallen away underneath it.
+      //
+      // The contour is cut at SURF_ISO = -1.4 m, which is a bound on how far the
+      // surface may go UNDER the ground. There has never been a bound the other
+      // way, and downhill of a channel there needs to be one, because the ring
+      // carries the water's level outward while the hill drops away from it: the
+      // depth field the contour tests grows instead of crossing the iso, so the
+      // polygon never closes and the mesh runs the full SURF_DEAD_M of ring.
+      // MEASURED on the bank of the reach at (615, -765), sampling straight down
+      // the fall line from the last baked-wet texel: the mesh carries a level of
+      // 49.9 over ground at 46.6, and four metres further down, 50.3 over 43.4 —
+      // a sheet of water geometry standing seven metres in the air.
+      //
+      // It is not a small defect and it is invisible from above, which is why it
+      // survived: in plan it is a band a few metres wide beside the river, and
+      // the alpha ramps that are supposed to withdraw it are all functions of
+      // PLAN distance. Seen along the hill it is the whole hillside — a metre of
+      // ground costs a metre of screen when you are looking down the slope, and
+      // Fresnel at that angle hands back the sky at almost full strength however
+      // low the alpha is.
+      //
+      // On `hasW`, the cell's OWN baked water, and not on the one-cell growth
+      // `hasWD` used above: hasWD is the right reach for a per-pixel guard and
+      // the wrong one here, where the question is whether the BAKE put water in
+      // this cell. It did not, and the bake already refuses to write channel
+      // water more than three metres above its own bed.
+      if (!hasW[kc] && lo - bedLo[kc] > SURF_RING_HANG) { cullHang++; hung[kc] = 1; continue; }
+
+      emit[kc] = 1;
+    }
+  }
+
+  // ── ...but it may not punch a hole in water that IS drawn ────────────────
+  //
+  // The rule above asks its question of one cell in isolation, and on a
+  // shoreline that is not enough, because the BAKE'S WATER MASK IS INSET FROM
+  // THE WATERLINE. Sampled at the island at (1110, -258), seed 5, against a lake
+  // standing at 161.45: the texels at 161.18, 160.13 and 158.95 are all marked
+  // dry, and the first wet one is four metres further out. So a cell sitting on
+  // that line has no baked water of its own (hasW is 0) while the ground under
+  // its outer corner is 2.33 m below the surface — it reads as a sheet hanging
+  // in the air, and it is deleted. What is left is a 4 m square hole in the
+  // middle of a lake with the dry bed drawn through it, which is what a player
+  // reported as "square pieces of land ruining the immersion".
+  //
+  // MEASURED on seed 5: 4 601 cells meet the hang rule, and 538 of them have
+  // three or four drawn four-neighbours — i.e. they are holes, not rims. The
+  // other 4 063 are the hillside sheet the rule exists for, and they stay dead:
+  // a sheet is a contiguous region, so its cells' neighbours are culled too and
+  // none of them can pass this test.
+  //
+  // One pass, off a snapshot, deliberately: filling a hole must not make its
+  // neighbour eligible and let the fill walk back out along the ring it just
+  // came from.
+  let holeFill = 0, holePasses = 0;
+  for (let pass = 0; pass < 8; pass++) {
+    const before = emit.slice();
+    let filled = 0;
+    for (let cz = 1; cz < G - 1; cz++) {
+      for (let cx = 1; cx < G - 1; cx++) {
+        const kc = cz * G + cx;
+        if (!hung[kc] || emit[kc]) continue;
+        let n = 0;
+        if (before[kc - 1]) n++;
+        if (before[kc + 1]) n++;
+        if (before[kc - G]) n++;
+        if (before[kc + G]) n++;
+        if (n < 3) continue;
+        // ...and never at the cost of the invariant the rule above buys: the
+        // cell must have ground of its own that comes within the hang allowance
+        // of the surface, so what gets filled is a shoreline the bake mask
+        // undercut and never a sheet standing clear of everything beneath it.
+        // MEASURED on seed 5, filling on enclosure alone: 676 cells, of which
+        // 69 stood more than 2 m above every texel in their own footprint, the
+        // worst by 7.82 m at (-1442, 586) — the exact defect the hang rule was
+        // written for, coming back in through the fill. With this line the
+        // count of drawn ring cells standing clear of all their own ground is
+        // zero, before and after.
+        let lo2 = Infinity;
+        const ci2 = [cz * VG + cx, (cz + 1) * VG + cx,
+                     (cz + 1) * VG + cx + 1, cz * VG + cx + 1];
+        for (let q = 0; q < 4; q++) if (vLevel[ci2[q]] < lo2) lo2 = vLevel[ci2[q]];
+        if (lo2 - bedHi[kc] > SURF_RING_HANG) continue;
+        emit[kc] = 1; cullHang--; holeFill++; filled++;
+      }
+    }
+    if (!filled) break;
+    holePasses = pass + 1;
+  }
+
   // ── emit, chunked for frustum culling ───────────────────────────────────
   const perChunk = Math.max(8, Math.round(SURF_CHUNK / quadM));
   const chunks = Math.ceil(G / perChunk);
   const vmap = new Int32Array((perChunk + 1) * (perChunk + 1));
   let quadCount = 0, tris = 0;
   const outChunks = [];
-  let cullVOk = 0, cullStep = 0, cullNp = 0, cullDead = 0, cullHang = 0;
 
   // Corners are walked 00 -> 01 -> 11 -> 10, which is the reverse of the
   // natural order and is what the quad emission always used; keep it, or every
@@ -1432,79 +1594,9 @@ export function buildWaterSurface(world, debug = null) {
       for (let cz = cz0; cz < cz1; cz++) {
         for (let cx = cx0; cx < cx1; cx++) {
           const kc = cz * G + cx;
-          if (!mask[kc]) continue;
+          if (!emit[kc]) continue;
           const ci = [cz * VG + cx, (cz + 1) * VG + cx,
                       (cz + 1) * VG + cx + 1, cz * VG + cx + 1];
-          if (!vOk[ci[0]] || !vOk[ci[1]] || !vOk[ci[2]] || !vOk[ci[3]]) { cullVOk++; continue; }
-
-          // A water surface does not stand on end. Reject any cell whose
-          // corners disagree about where the surface is by more than a step:
-          // the baked grid marks the pool above a lip and the pool below it as
-          // water, sixty metres apart in height, and one quad joining them is
-          // a near-vertical wall of water hanging down a cliff face. Two of
-          // them across one gorge is the floating pale-blue X a critic pass
-          // logged in the waterfall view.
-          let lo = Infinity, hi = -Infinity;
-          for (let q = 0; q < 4; q++) {
-            const L = vLevel[ci[q]];
-            if (L < lo) lo = L;
-            if (L > hi) hi = L;
-          }
-          if (hi - lo > SURF_LEVEL_STEP && !hasWD[kc]
-              && lo - bedLo[kc] > 3.5) { cullStep++; continue; }
-
-          // ── and the ring may not hang ────────────────────────────────────
-          //
-          // The test above catches a quad that stands ON END. This one catches
-          // the far commoner thing, which stands perfectly level and is just as
-          // wrong: a ring cell lying flat, several metres up in the air, over
-          // ground that has fallen away underneath it.
-          //
-          // The contour is cut at SURF_ISO = -1.4 m, which is a bound on how
-          // far the surface may go UNDER the ground. There has never been a
-          // bound the other way, and downhill of a channel there needs to be
-          // one, because the ring carries the water's level outward while the
-          // hill drops away from it: the depth field the contour tests grows
-          // instead of crossing the iso, so the polygon never closes and the
-          // mesh runs the full SURF_DEAD_M of ring. MEASURED on the bank of the
-          // reach at (615, -765), sampling straight down the fall line from the
-          // last baked-wet texel: the mesh carries a level of 49.9 over ground
-          // at 46.6, and four metres further down, 50.3 over 43.4 — a sheet of
-          // water geometry standing seven metres in the air.
-          //
-          // It is not a small defect and it is invisible from above, which is
-          // why it survived: in plan it is a band a few metres wide beside the
-          // river, and the alpha ramps that are supposed to withdraw it are all
-          // functions of PLAN distance. Seen along the hill it is the whole
-          // hillside — a metre of ground costs a metre of screen when you are
-          // looking down the slope, and Fresnel at that angle hands back the
-          // sky at almost full strength however low the alpha is. It is the
-          // slab of water lying on the mountainside in every eye-level frame of
-          // this map.
-          //
-          // Bounded on `hasWD`, so this only ever removes cells the bake itself
-          // does not call water: over a real body, however deep, hasWD is set
-          // and nothing here fires.
-          // On `hasW`, the cell's OWN baked water, and not on the one-cell
-          // growth `hasWD` used above. hasWD exists because the shader reads
-          // the baked grid through a linear filter and a cell one texel out
-          // still sees water in it; that is the right reach for a per-pixel
-          // guard and the wrong one here, where the question is whether the
-          // BAKE put water in this cell. It did not, and the bake already
-          // refuses to write channel water more than three metres above its own
-          // bed — so a cell it declined, standing higher than a bank above the
-          // ground, is exactly the geometry that has no business existing.
-          if (!hasW[kc] && lo - bedLo[kc] > SURF_RING_HANG) { cullHang++; continue; }
-
-          // A quad whose four corners are ALL further out on the dry side
-          // than the shader's outer alpha guard reaches is multiplied by
-          // exactly zero over its whole area — bilinear interpolation of four
-          // values below the threshold cannot rise above it — and the damp
-          // band is gated by the same distance, so nothing else can draw
-          // there either. MEASURED over the map: 23 370 quads, 46 740
-          // triangles, 8.5% of the surface, rendering nothing.
-          if (vShore[ci[0]] < -SURF_DEAD_M && vShore[ci[1]] < -SURF_DEAD_M
-           && vShore[ci[2]] < -SURF_DEAD_M && vShore[ci[3]] < -SURF_DEAD_M) { cullDead++; continue; }
 
           let np = 0;
           for (let q = 0; q < 4; q++) {
@@ -1516,7 +1608,9 @@ export function buildWaterSurface(world, debug = null) {
               poly[np++] = cross(cx + CX[q], cz + CZ[q], cx + CX[qn], cz + CZ[qn]);
             }
           }
-          if (np < 3) { cullNp++; continue; }
+          // Cannot fire: the pre-pass counted the same contour and refused the
+          // cell. Kept because the emission below indexes poly[0..np-1].
+          if (np < 3) continue;
           for (let q = 1; q < np - 1; q++) idx.push(poly[0], poly[q], poly[q + 1]);
           drawn[kc] = 1;
           quadCount++;
@@ -1628,7 +1722,7 @@ export function buildWaterSurface(world, debug = null) {
     // an instrument that indexed it at R either way would be reading a
     // quarter of the map at four times the scale and reporting it as a result.
     sdf, sdfAt, span, sdfRes: SR, sdfTexel: ST, sdfFromHydro: !!HY,
-    cullVOk, cullStep, cullNp, cullDead, cullHang,
+    cullVOk, cullStep, cullNp, cullDead, cullHang, emit, hung, holeFill, holePasses,
   });
 
   void clamp01;
