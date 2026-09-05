@@ -200,12 +200,35 @@ async function main() {
   }
   console.log(`[post] ${CUT} — ${W}x${H}, ${fps}fps, ${total.toFixed(2)}s, ` +
               `${trace.beats.length} beats`);
+
+  // HOW LONG IS THE TEXT ACTUALLY READABLE?
+  //
+  // Not the same as how long the card exists. A card spanning 2.2 s with a
+  // 0.32 s fade at each end is legible for about 1.6 s, and four words at phone
+  // size need more than that — Sean's note after the first overnight batch was
+  // "humans need more than 1 second to read text", and every clip in it failed
+  // this. Measure the FULL-OPACITY window and say the number, because "it looked
+  // fine scrubbing the timeline" is how it got shipped five times.
+  const MIN_DWELL = parseFloat(arg('card-min', '2.5'));
   console.log(`[post] picture fade in ${FADE_IN}s / out ${FADE_OUT}s, ` +
               `audio ${AFADE_IN}s / ${AFADE_OUT}s` +
               (FADE_IN > 0 ? '  — NOTE: a social video opening on black loses frame-one retention' : ''));
+  const FADE_EST = 0.32;
+  let thin = 0;
   for (const c of cards) {
+    const span = (c.holdsToEnd ? total : c.outAt) - c.inAt;
+    const dwell = span - FADE_EST * (c.holdsToEnd ? 1 : 2);
+    const words = String(c.text).replace(/<br>/g, ' ').trim().split(/\s+/).length;
+    const flag = dwell < MIN_DWELL ? `  <-- ONLY ${dwell.toFixed(2)}s READABLE` : '';
+    if (dwell < MIN_DWELL) thin++;
     console.log(`[post]   "${String(c.text).replace(/<br>/g, ' ')}" over ${c.over}: ` +
-                `${c.inAt.toFixed(2)}s → ${c.holdsToEnd ? 'end' : c.outAt.toFixed(2) + 's'}`);
+                `${c.inAt.toFixed(2)}s → ${c.holdsToEnd ? 'end' : c.outAt.toFixed(2) + 's'}` +
+                `  (${words}w, ${dwell.toFixed(2)}s full opacity)${flag}`);
+  }
+  if (thin) {
+    console.warn(`[post] ${thin} card(s) are on screen for less than ${MIN_DWELL}s at full ` +
+                 'opacity. Give them more room or lengthen the beat — a card nobody finishes ' +
+                 'reading is a card that did not run.');
   }
 
   // ── render the cards ──────────────────────────────────────────────────────
@@ -242,15 +265,44 @@ async function main() {
   chain.push(`[${last}]${vf.join(',')}[v]`);
 
   const map = ['-map', '[v]'];
+  // `--ambience <file>` lays a looped world sound under the bed, and
+  // `--music-gain` gets out of its way.
+  //
+  // `campfire.mp3` is 1.11 s long. Looping something that short ticks — the
+  // repo's own audio note measures one voice autocorrelating ~0.94 at the loop
+  // period AND every multiple. The fix it already found is two voices at
+  // incommensurable playback rates started half a buffer apart, which drops it
+  // to ~0.55 and decays across multiples; that is what the game itself does, so
+  // it is what this does. `atempo=0.87` and a 550 ms offset on the second copy.
+  const AMB = arg('ambience', null) ? resolve(String(arg('ambience'))) : null;
+  const MUSIC_GAIN = parseFloat(arg('music-gain', '1'));
+  const AMB_GAIN = parseFloat(arg('ambience-gain', '1'));
   if (!has('no-music')) {
     inputs.push('-ss', MUSIC_SS, '-t', String(total), '-i', MUSIC);
+    if (AMB) {
+      inputs.push('-stream_loop', '-1', '-t', String(total), '-i', AMB);
+      inputs.push('-stream_loop', '-1', '-t', String(total), '-i', AMB);
+    }
     // loudnorm to -14 LUFS: what TikTok, Reels and Shorts all normalise toward,
     // so a louder master only gets turned down and a quieter one gets turned up
     // with its noise floor.
-    chain.push(`[${cards.length + 1}:a]afade=t=in:st=0:d=${AFADE_IN},` +
+    const mi = cards.length + 1;
+    chain.push(`[${mi}:a]afade=t=in:st=0:d=${AFADE_IN},` +
                `afade=t=out:st=${(total - AFADE_OUT).toFixed(3)}:d=${AFADE_OUT},` +
-               'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[a]');
+               `volume=${MUSIC_GAIN}[mus]`);
+    if (AMB) {
+      chain.push(`[${mi + 1}:a]volume=${(AMB_GAIN * 0.62).toFixed(3)}[amb1]`);
+      chain.push(`[${mi + 2}:a]atempo=0.87,adelay=550|550,` +
+                 `volume=${(AMB_GAIN * 0.55).toFixed(3)}[amb2]`);
+      chain.push('[mus][amb1][amb2]amix=inputs=3:normalize=0:duration=first[amix]');
+      chain.push(`[amix]afade=t=out:st=${(total - AFADE_OUT).toFixed(3)}:d=${AFADE_OUT},` +
+                 'loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[a]');
+    } else {
+      chain.push('[mus]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[a]');
+    }
     map.push('-map', '[a]', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000');
+    if (AMB) console.log(`[post] ambience ${AMB} looped (two voices, 1.0/0.87) ` +
+                         `under music at gain ${MUSIC_GAIN}`);
   }
 
   mkdirSync(dirname(OUT), { recursive: true });

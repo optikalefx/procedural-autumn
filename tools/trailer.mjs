@@ -73,8 +73,9 @@ import { POSE_SRC } from './_pose.mjs';
 // can read how an earlier one was done. They are registered ONLY when --only
 // names them, so adding a shot never changes the length of the standard cut.
 import { makeCliffShot } from './clips/cliff.mjs';
+import { makeMooseShot } from './clips/moose.mjs';
 
-const SHOT_MODULES = { cliff: makeCliffShot };
+const SHOT_MODULES = { cliff: makeCliffShot, moose: makeMooseShot };
 
 const argv = process.argv.slice(2);
 const arg = (n, d = null) => {
@@ -106,6 +107,20 @@ const SECS   = arg('secs', null) ? parseFloat(String(arg('secs'))) : null;
 // orbit a there-and-back — sin on the bearing, raised cosine on the radius — so
 // the last frame lands on the first and there is no seam.
 const LOOP   = has('loop');
+// `--hour-ramp "12,25.5"` — start and end hour for a time-lapse beat. The end
+// may exceed 24 so a ramp can cross midnight monotonically.
+const HOUR_RAMP = arg('hour-ramp', null)
+  ? String(arg('hour-ramp')).split(',').map(Number)
+  : null;
+const HOUR_RAMP_BEAT = String(arg('hour-ramp-beat', 'campwide'));
+// `--at "x,z"` or `--at "x,z,heading"` pins a clip to a spot somebody found by
+// PLAYING, instead of searching for one. The search beats (meadow rehearsal,
+// bluff plateau scan) are there because a tool cannot see a good place; when a
+// human has already stood somewhere and said "here", the search is only a way
+// to end up somewhere else.
+const AT = arg('at', null)
+  ? String(arg('at')).split(',').map(Number)
+  : null;
 // Per-beat overrides: `--beat-secs camp=3,roast=2.2` and `--beat-hours camp=21.6`.
 // The backlog specifies clips as "`drive` 2 s -> `camp` 4 s hold, hour 17.6",
 // which `--secs` (one length for every beat) cannot express.
@@ -156,6 +171,9 @@ const BEATS = [
   // pitching its own, so the two are the same place from two distances.
   { name: 'campwide', secs: 4.8, hour: 21.6, fov: 70, pose: true, optional: true },
   { name: 'firelight', secs: 3.0, hour: 21.6, fov: 70, pose: true, optional: true },
+  { name: 'scope', secs: 3.5, hour: 22.0, fov: null, pose: false, optional: true },
+  { name: 'scopeprop', secs: 2.2, hour: 22.0, fov: 70, pose: true, optional: true },
+  { name: 'skylook', secs: 3.0, hour: 2.0, fov: 70, pose: true, optional: true },
 ];
 
 /** Refuse to film a tree that does not parse — reel.mjs's gate, same reason. */
@@ -214,7 +232,19 @@ async function main() {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));
 
-  const url = `${BASE}/?seed=${SEED}&car=${CAR}&quality=high&pixelratio=native&iscale=1`;
+  // QUALITY TIER, and it is a FLAG rather than a constant because it was
+  // hardcoded to `high` for a long time without anybody deciding that.
+  //
+  // A plain load on this machine picks `ultra` — pixelRatioCap 2 against high's
+  // 1.35, 4 shadow cascades against 3, full grass and tree density — so the
+  // capture had quietly been shipping a lower preset than a player sees. Worth
+  // knowing; not worth paying for. Measured on the seed-5 camp clip, ultra
+  // captures at ~0.55 fps against high's ~0.67, about 20% more wall clock for a
+  // difference nobody watching a 9:16 phone video will find. Sean's call
+  // (2026-09-03): stay on `high`, and pass `--quality ultra` for a still or a
+  // hero frame where the shadows and the grass density actually get looked at.
+  const QUALITY = String(arg('quality', 'high'));
+  const url = `${BASE}/?seed=${SEED}&car=${CAR}&quality=${QUALITY}&pixelratio=native&iscale=1`;
   console.log(`[trailer] ${url}`);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__ready === true, null, { timeout: 240000, polling: 250 });
@@ -276,7 +306,7 @@ async function main() {
     // `.pa-camp-prompt`; the vignette and glow beside it are part of the
     // composed fireside look and stay.
     window.__tHide = '.pa-camp-prompt, .pa-toast, .pa-hint, .pa-roast-tip, ' +
-      '.pa-roast-result { display: none !important; }';
+      '.pa-roast-result, .pa-scope-tip { display: none !important; }';
     css.textContent = `#pa-hud { display: none !important; } ${window.__tHide}`;
     document.head.appendChild(css);
     // Pinned from a late updater registered LAST, so it lands after CameraRig
@@ -308,8 +338,9 @@ async function main() {
    * one existed rather than copied, because every hard-won line below would
    * otherwise have to be re-learned in one of the two copies.
    */
-  const surveyOrbit = ({ cx, cz, r0 = 9.5, r1 = 7.0, sweep = 0.40, lift = 0, margin = 3.0 }) =>
-    page.evaluate(({ cx, cz, R0, R1, SWEEP, LIFT, MARGIN }) => {
+  const surveyOrbit = ({ cx, cz, r0 = 9.5, r1 = 7.0, sweep = 0.40, lift = 0, margin = 3.0,
+                        bias = null }) =>
+    page.evaluate(({ cx, cz, R0, R1, SWEEP, LIFT, MARGIN, BIAS }) => {
       const THREE = window.__THREE, wd = window.__world, e = window.__engine;
       const v = window.__systems.vehicle;
       // Stand OPPOSITE the camper and orbit the camp: in 9:16 the composition
@@ -321,7 +352,12 @@ async function main() {
       // ORBIT RADIUS rather than of the separation: a bias tuned as a fraction
       // of separation put the aim 6 m past a camp that was only 7.5 m away.
       const sep = Math.hypot(v.position.x - cx, v.position.z - cz) || 1;
-      const bias = Math.min(0.20 * R0, 0.25 * sep);
+      // `BIAS` pins the aim instead of deriving it. The derived value leans the
+      // look-at toward the camper by up to a fifth of the orbit radius, which
+      // is right for a wide shot holding both — and wrong for a move that has
+      // to ARRIVE somewhere: at a 5.5 m finish a 2.6 m offset puts the fire off
+      // centre exactly when it should be the subject.
+      const bias = BIAS === null ? Math.min(0.20 * R0, 0.25 * sep) : BIAS;
       const lx = cx + (v.position.x - cx) / sep * bias;
       const lz = cz + (v.position.z - cz) / sep * bias;
       const look = new THREE.Vector3(lx, wd.getHeight(lx, lz) + 1.5 + LIFT, lz);
@@ -412,7 +448,7 @@ async function main() {
       window.__tOrbit = { cx, cz, lx, lz, az0: bestAz, sweep: SWEEP, r0: R0, r1: R1, lift: LIFT };
       return { clear: blocked.filter((b) => b === 0).length, cost: +bestCost.toFixed(2),
                buriedArc: buried.filter((b) => b > 0).length };
-    }, { cx, cz, R0: r0, R1: r1, SWEEP: sweep, LIFT: lift, MARGIN: margin });
+    }, { cx, cz, R0: r0, R1: r1, SWEEP: sweep, LIFT: lift, MARGIN: margin, BIAS: bias });
 
   /**
    * Drive: find a meadow the camper can actually get out of, and open at speed.
@@ -755,7 +791,10 @@ async function main() {
    * rather than the standing 1.9 m the orbit normally uses.
    */
   setups.firelight = async () => {
-    await setups.ridge();                       // pitches the bluff camp, once
+    // Whatever camp already exists. `camp` pitches one in a meadow and `ridge`
+    // on a bluff; this beat frames whichever ran, so a clip can be all one
+    // place. Only falls back to finding a bluff if nothing has pitched yet.
+    if (!world.camp) await setups.ridge();
     const fire = await page.evaluate(() => {
       const c = window.__camp?.camps?.at(-1);
       const g = c?.fire?.group ?? c?.fire?.mesh ?? c?.fire;
@@ -768,13 +807,207 @@ async function main() {
     }
     const arc = await surveyOrbit({
       cx: fire.x, cz: fire.z,
-      r0: parseFloat(arg('fire-r0', '7.0')), r1: parseFloat(arg('fire-r1', '5.6')),
-      sweep: parseFloat(arg('fire-sweep', '0.20')), lift: parseFloat(arg('fire-lift', '-0.6')),
-      margin: parseFloat(arg('fire-margin', '1.5')),
+      // Standing height, not fire height. `lift: -0.6` drops the lens to a
+      // sitting eye, which is lovely on an open bluff and puts a TENT between
+      // camera and fire in a full meadow camp — a camp packs its props around
+      // the fire, so at knee level something is always in front of it. The camp
+      // beat's own orbit frames this same camp cleanly; match it.
+      r0: parseFloat(arg('fire-r0', '9.5')), r1: parseFloat(arg('fire-r1', '7.6')),
+      sweep: parseFloat(arg('fire-sweep', '0.24')), lift: parseFloat(arg('fire-lift', '0.2')),
+      // 2.5, not 1.5: at the meadow camp a TENT sat between lens and fire and
+      // the shot was a dark blob with a vehicle behind it. A tent is 2 m of
+      // solid nothing and has to count as blocking from further out.
+      margin: parseFloat(arg('fire-margin', '3.0')),
     });
     console.log(`[trailer]   firelight on (${fire.x.toFixed(1)}, ${fire.z.toFixed(1)})` +
                 `  arc ${arc.clear}/72 clear, cost ${arc.cost}`);
     return { ...fire, ...arc };
+  };
+
+  /**
+   * The telescope. Camp props carry `userData.telescope` and `ScopeView.enter`
+   * takes the object itself, so this is the same shape as the roast beat: find
+   * the prop in whatever camp is standing, step into the eyepiece, and let the
+   * view pose its own camera. Nothing here composes the shot — the eyepiece is
+   * the composition, and re-framing it would be showing the player something
+   * they never see.
+   */
+  /**
+   * The telescope as an OBJECT, before the eyepiece.
+   *
+   * Cutting straight to a circle of sky asks the viewer to work out what they
+   * are looking through. This shot answers that first: push in on the tube
+   * standing on the flank of the camp, with the camp behind it, and then cut
+   * inside. The camera stands on the far side of the scope from the camp centre
+   * so the camp reads BEHIND the instrument rather than the instrument floating
+   * in a field.
+   */
+  setups.scopeprop = async () => {
+    if (!world.camp && !world.ridge) await setups.camp();
+    // LET GO OF THE FIRESIDE FIRST.
+    //
+    // This beat follows `roast`, and a roast view holds `CameraRig`'s takeover
+    // — which outranks `__forceCamera`, so posing a camera here does nothing at
+    // all while it is up. The symptom is not an error: the beat renders, the
+    // frames are fine, and they are two more seconds of the marshmallow. It
+    // shipped in a preview looking like the telescope shot had been dropped.
+    // Exactly the failure the photo beat had with the bike still mounted.
+    await page.evaluate(() => {
+      window.__roast?.leave?.();
+      window.__systems?.camp?.scope?.leave?.();
+    });
+    await grant(Math.round(FPS * 0.4));
+    const found = await page.evaluate(() => {
+      const THREE = window.__THREE;
+      for (const camp of window.__camp?.camps ?? []) {
+        for (const pr of camp.props ?? []) {
+          if (!pr.obj?.userData?.telescope) continue;
+          const w = pr.obj.getWorldPosition(new THREE.Vector3());
+          return { x: w.x, y: w.y, z: w.z, cx: camp.x ?? w.x, cz: camp.z ?? w.z };
+        }
+      }
+      return null;
+    });
+    if (!found) throw new Error('no telescope to push in on');
+    await page.evaluate((t) => {
+      const wd = window.__world;
+      // Away from the camp centre, so the camp sits behind the tube.
+      let dx = t.x - t.cx, dz = t.z - t.cz;
+      const m = Math.hypot(dx, dz) || 1;
+      dx /= m; dz /= m;
+      // `fx/fz` is the fire — where the shot STARTS looking, before the aim
+      // sweeps across to the tube.
+      window.__tScopeProp = { x: t.x, y: t.y, z: t.z, dx, dz, g: wd.getHeight(t.x, t.z),
+                              fx: t.cx, fz: t.cz };
+    }, found);
+    console.log(`[trailer]   telescope prop at (${found.x.toFixed(1)}, ${found.z.toFixed(1)})`);
+    return found;
+  };
+
+  /**
+   * The sky itself, from beside the camp, tilted up.
+   *
+   * Not the eyepiece. `camp_scope_view` renders a sparse field that does not
+   * change between hour 1 and hour 2 even though `Lighting` ramps `milkyWay`
+   * from 1.10 to 2.90 — so the band the sky HAS never reaches the circle. This
+   * beat points an ordinary camera at the same sky instead, which is where the
+   * stars actually are, and pans a little so they read as a field rather than
+   * a photograph.
+   */
+  setups.skylook = async () => {
+    if (!world.camp && !world.ridge) await setups.camp();
+    const at = await page.evaluate(({ EL0, EL1, PAN, AIM }) => {
+      const c = window.__camp?.camps?.[window.__camp.camps.length - 1];
+      const L = window.__lighting;
+      const md = L?.computeMoonDir ? L.computeMoonDir(L.hour) : L?.moonDir;
+      const wd = window.__world;
+      const x = c?.x ?? 0, z = c?.z ?? 0;
+      window.__tSky = {
+        x, z, g: wd.getHeight(x, z),
+        // `--sky-aim moon` points AT it instead of away. The eyepiece will not
+        // draw the moon or the galaxy sprites — verified against a normal
+        // camera at the same direction and hour, which shows a crescent moon
+        // and two galaxies where the scope shows bare stars — so a clip whose
+        // premise is "point it at the moon" has to be filmed with a camera
+        // rather than through the instrument.
+        az: (AIM === 'moon' ? Math.atan2(md?.x ?? 0, md?.z ?? 1)
+                            : (md ? Math.atan2(-md.x, -md.z) : 0)),
+        el0: AIM === 'moon' && md ? Math.asin(md.y) - 0.12 : EL0,
+        el1: AIM === 'moon' && md ? Math.asin(md.y) + 0.10 : EL1,
+        pan: PAN,
+        milky: +(L?.state?.milkyWay ?? L?.milkyWay ?? -1),
+      };
+      return window.__tSky;
+    }, { EL0: parseFloat(arg('sky-el0', '0.30')), EL1: parseFloat(arg('sky-el1', '0.62')),
+         PAN: parseFloat(arg('sky-pan', '0.40')),
+         AIM: arg('sky-aim', null) ? String(arg('sky-aim')) : null });
+    console.log(`[trailer]   skylook over the camp, milkyWay = ${at.milky}`);
+    return at;
+  };
+
+  setups.scope = async () => {
+    if (!world.camp && !world.ridge) await setups.camp();
+    const ok = await page.evaluate(() => {
+      window.__roast?.leave?.();
+      const scope = window.__systems?.camp?.scope;
+      if (!scope) return 'no scope view';
+      for (const camp of window.__camp?.camps ?? []) {
+        for (const pr of camp.props ?? []) {
+          if (pr.obj?.userData?.telescope) { scope.enter(pr.obj); return true; }
+        }
+      }
+      return 'no telescope in this camp';
+    });
+    if (ok !== true) throw new Error(String(ok));
+    // Point it at the moon if there is one.
+    //
+    // A telescope aimed at empty sky is a black circle with four stars in it —
+    // true to the instrument and a poor two seconds of video. `camp_scope_view`
+    // keeps the bottom of its magnification range "for the moon, which IS worth
+    // 6 degrees", so this is the shot the view was built for. `Lighting`
+    // computes the moon's direction for any hour, so ask, and only re-aim when
+    // it is actually above the horizon.
+    // KEEP THE TUBE'S OWN AIM.
+    //
+    // Two earlier versions overrode `_aim` — first at the moon, then anti-moon
+    // at 52 degrees — and both produced a sparse field, while simply walking up
+    // to the scope in game and looking gives stars, planets and a galaxy. The
+    // prop publishes `userData.telescope.aim` and `enter()` carries it into
+    // world space precisely so this file never has to guess (camp_scope_view's
+    // own header says so). Where the tube points is authored; pointing it
+    // somewhere else is how you end up looking at an empty patch.
+    //
+    // So: read the aim it settled on, use that as the centre of the pan, and
+    // only touch the magnification.
+    const aimed = await page.evaluate(({ FOV, RANGE, RISE, AIM }) => {
+      const scope = window.__systems?.camp?.scope;
+      if (!scope) return null;
+      // `--scope-aim x,y,z` overrides with a direction somebody found by
+      // dragging in game. Everything this file guessed about where to point a
+      // telescope — at the moon, anti-moon, at 52 degrees — was worse than the
+      // tube's own aim, and the tube's own aim is worse than a person who
+      // looked around. Paste `__systems.camp.scope._aim` and use it.
+      // `--scope-aim moon` asks Lighting where the moon actually is. The shot
+      // list names it that way because "point it at the moon" is the premise,
+      // and the tube's authored aim is somewhere else entirely.
+      if (AIM === 'moon') {
+        const L = window.__lighting;
+        const md = L?.computeMoonDir ? L.computeMoonDir(L.hour) : L?.moonDir;
+        if (md) scope._aim.set(md.x, md.y, md.z).normalize();
+      } else if (Array.isArray(AIM)) {
+        scope._aim.set(AIM[0], AIM[1], AIM[2]).normalize();
+      }
+      const a = scope._aim;
+      const az = Math.atan2(a.x, a.z);
+      const el = Math.asin(Math.max(-1, Math.min(1, a.y)));
+      scope.fov = scope.fovTarget = FOV;
+      window.__tScopePan = { az, el, range: RANGE, rise: RISE };
+      return { az: +az.toFixed(2), el: +(el * 180 / Math.PI).toFixed(1) };
+      // DEFAULT 62, NOT 34.
+      //
+      // three.js fov is VERTICAL, and the eyepiece inherits that. FOV_MAX is 34,
+      // which at a 16:9 window is about 57 degrees of sky ACROSS the circle —
+      // and at 9:16 the same number is 19. Filming portrait at the view's own
+      // maximum therefore shows a third of the sky a player sees, which is why
+      // five separate theories about missing stars all came up empty: the
+      // bright ones were simply outside the slice. 62 vertical restores roughly
+      // the horizontal field the view was composed for. Same trap reel.mjs
+      // documents for the chase camera, one file over.
+    }, { FOV: parseFloat(arg('scope-fov', '62')),
+         RANGE: parseFloat(arg('scope-pan', '0.75')),
+         RISE: parseFloat(arg('scope-rise', '0.10')),
+         AIM: arg('scope-aim', null)
+           ? (String(arg('scope-aim')) === 'moon' ? 'moon'
+              : String(arg('scope-aim')).split(',').map(Number))
+           : null });
+    console.log(`[trailer]   eyepiece on the tube's own aim: ` +
+                `az ${aimed?.az}, ${aimed?.el} deg up, fov ${arg('scope-fov', '20')}`);
+    // Let the step-in run rather than snapping: the move to the eyepiece is
+    // part of what the beat shows.
+    await grant(Math.round(FPS * 1.2));
+    const st = await page.evaluate(() => !!window.__systems?.camp?.scope?.active);
+    console.log(`[trailer]   telescope entered, view ${st ? 'active' : 'INACTIVE'}`);
+    return { active: st };
   };
 
   /** The drive beat, if the cut still has one: rehearse, then open at speed. */
@@ -1015,13 +1248,19 @@ async function main() {
       if (v) v.controlsHeldBy = null;
     });
     await grant(Math.round(FPS * 0.5));
-    const at = await page.evaluate(() => {
+    const at = await page.evaluate((pin) => {
+      // `--at` wins. The meadow anchor is a guess at open ground and on seed 5
+      // it lands inside dense autumn woods — a moose spawned there is behind
+      // three trunks and the shot has no subject. A spot somebody stood on
+      // beats an anchor scored for something else.
+      if (pin) return { x: pin[0], z: pin[1], yaw: pin[2] ?? 0, pinned: true };
       const a = window.__anchorAt('meadow', 1) ?? window.__cameraAnchors.meadow();   // spent below
       window.__vehicleTeleport?.(a.x, a.z, a.yaw ?? 0);
       return a;
-    });
+    }, AT);
+    if (at.pinned) await page.evaluate((a) => window.__vehicleTeleport?.(a.x, a.z, a.yaw), at);
     await settle(2.0);
-    let shot = await page.evaluate(({ species, a }) => {
+    let shot = await page.evaluate(({ species, a, DIST, ST }) => {
       // `debugSpawn` walks out from THE CAMERA — `cam.position + forward*dist`
       // — not from the camper, and this beat inherits whatever camera the bike
       // ride left behind, most of a valley away. Stand the camera where the
@@ -1057,12 +1296,20 @@ async function main() {
       // camera closes in for the small ones (see SMALL below).
       for (const k of [species, 'bear', 'ram', 'goat', 'raccoon', 'fox', 'rabbit']) {
         if (tried.includes(k)) continue;
-        const sp = wl.debugSpawn(k, { dist: 14, clear: 9 });
+        // `--photo-state 6` is WATCH: animal_brain.js describes it as the
+        // animal stopping feeding, swinging broadside, watching you and
+        // drifting a few steps across your line — "the only one of the six
+        // that is here for the player's eyes rather than the animal's". That
+        // is both the motion a static spawn lacks and the beat the card names.
+        const sp = ST === null ? wl.debugSpawn(k, { dist: DIST, clear: 9 })
+                               : wl.debugSpawn(k, { dist: DIST, clear: 9, state: ST });
         tried.push(k);
         if (sp) return { x: sp.x, y: sp.y, z: sp.z, n: sp.n, species: k, tried };
       }
       return { failed: true, tried, firstChoice: String(species), live, asleep };
-    }, { species: String(arg('species', 'deer')), a: at });
+    }, { species: String(arg('species', 'deer')), a: at,
+         DIST: parseFloat(arg('photo-dist', '14')) ,
+         ST: arg('photo-state', null) === null ? null : parseInt(arg('photo-state'), 10) });
     if (shot?.failed) {
       console.warn(`[trailer]   nothing would spawn. tried ${shot.tried.join(', ')}; ` +
                    `${shot.firstChoice} sites: ${shot.live} live, ${shot.asleep} asleep`);
@@ -1082,13 +1329,15 @@ async function main() {
     // of a 9:16 frame; a fox at 9.5 m is lost in the grass.
     const SMALL = ['fox', 'rabbit', 'raccoon', 'squirrel'];
     const near = SMALL.includes(shot.species);
-    shot.r0 = near ? 6.0 : 9.8;
-    shot.r1 = near ? 4.6 : 8.2;
-    shot.aimY = near ? 0.45 : 0.95;
+    // Overridable: a clip ABOUT photographing an animal needs it big enough to
+    // fill a phone frame, which is closer than the trailer's stand-off.
+    shot.r0 = parseFloat(arg('photo-r0', near ? '6.0' : '9.8'));
+    shot.r1 = parseFloat(arg('photo-r1', near ? '4.6' : '8.2'));
+    shot.aimY = parseFloat(arg('photo-aimy', near ? '0.45' : '0.95'));
 
     // Compose on the animal from a low three-quarter stand-off, then hand the
     // frame to photo mode so the viewfinder is what the beat is shot through.
-    await page.evaluate((s) => {
+    await page.evaluate(({ NOVF, RAIL, ...s }) => {
       const THREE = window.__THREE, e = window.__engine, wd = window.__world;
       const az = 2.1;
       const R = s.r0;
@@ -1108,12 +1357,21 @@ async function main() {
       // up (HUD.js: `!!window.__forceCamera && !window.__hudForce`) — which
       // this beat needs up, because it poses its own camera — so the override
       // is what lets the brackets through at all.
-      window.__hudForce = true;
-      // The photo UI lives inside #pa-hud, which every other beat wants gone.
-      document.getElementById('pa-trailer-hide').textContent = window.__tHide +
-        '#pa-hud > *:not(.pa-photo-frame) { display: none !important; }' +
-        '.pa-photo-frame .pa-rail, .pa-photo-frame .pa-cam-desk { display: none !important; }';
-    }, shot);
+      // `--no-viewfinder` for clips that only borrow this beat to put an animal
+      // in front of a camera (moose, how-many); `--photo-rail` keeps the camera
+      // BACK — the dials and the desk — for the clip that is about the camera.
+      window.__hudForce = !NOVF;
+      if (NOVF) {
+        window.__systems.hud.photo.setActive(false);
+        document.getElementById('pa-trailer-hide').textContent =
+          `#pa-hud { display: none !important; } ${window.__tHide}`;
+      } else {
+        document.getElementById('pa-trailer-hide').textContent = window.__tHide +
+          '#pa-hud > *:not(.pa-photo-frame) { display: none !important; }' +
+          (RAIL ? '' : '.pa-photo-frame .pa-rail, .pa-photo-frame .pa-cam-desk ' +
+                       '{ display: none !important; }');
+      }
+    }, { ...shot, NOVF: has('no-viewfinder'), RAIL: has('photo-rail') });
     await grant(Math.round(FPS * 0.5));
     return shot;
   };
@@ -1140,12 +1398,19 @@ async function main() {
     // with no water in it, which is exactly what a camp wants. Use that.
     const site = await page.evaluate((d) => {
       const w = window.__world;
-      const x = d ? d.x + Math.sin(d.yaw) * 45 : window.__poi.best('meadow', 0).x;
-      const z = d ? d.z + Math.cos(d.yaw) * 45 : window.__poi.best('meadow', 0).z;
+      // `at` is an exact spot; `d` is the rehearsed meadow's run-out.
+      const x = d.at ? d.at[0] : (d.drive ? d.drive.x + Math.sin(d.drive.yaw) * 45
+                                          : window.__poi.best('meadow', 0).x);
+      const z = d.at ? d.at[1] : (d.drive ? d.drive.z + Math.cos(d.drive.yaw) * 45
+                                          : window.__poi.best('meadow', 0).z);
+      const yaw = d.at ? (d.at[2] ?? 0) : (d.drive ? d.drive.yaw : 0);
       window.__camp?.strike?.();
-      window.__vehicleTeleport?.(x, z, d ? d.yaw : 0);
-      return { x, z, y: w.getHeight(x, z) };
-    }, await proveMeadow());
+      window.__vehicleTeleport?.(x, z, yaw);
+      return { x, z, y: w.getHeight(x, z), slope: w.getSlope(x, z) };
+    }, { at: AT, drive: AT ? null : await proveMeadow() });
+    console.log(`[trailer]   camp ground (${site.x.toFixed(1)}, ${site.z.toFixed(1)}) ` +
+                `y+${site.y.toFixed(0)}m slope ${site.slope.toFixed(3)}` +
+                `${AT ? '  [pinned with --at]' : ''}`);
     await settle(2.0);
     // Latch the park brake with a REAL keypress. Not decoration: at dusk the
     // headlights flood the camp from 8-18 m away and latching the brake is what
@@ -1153,7 +1418,7 @@ async function main() {
     await hold('Space', true);
     await grant(Math.round(FPS * 0.8));
     await hold('Space', false);
-    const camp = await page.evaluate(() => {
+    const camp = await page.evaluate(({ DELAY, NEEDS }) => {
       const v = window.__systems.vehicle;
       // `pitchNear`'s radius is the whole control over full-vs-compact, and a
       // compact site is 3 props where a full one is 6-11. Probe with
@@ -1173,12 +1438,62 @@ async function main() {
         if (!small) break;
       }
       if (!radius) return null;
-      const s = window.__camp.pitchNear(v.position.x, v.position.z, { instant: false, radius });
+
+      // `--camp-needs telescope`: pitch until the camp HAS one.
+      //
+      // The telescope is a 0.40 roll per camp (camp_site.js: "somebody's hobby
+      // rather than their kit"), and the roll is seeded by the SITE — so the
+      // way to get one is to try other sites, not to ask again at the same one.
+      // Jitter the origin, probe instantly, strike, and keep the offset that
+      // won. Doing it here rather than in the scope beat is what keeps all the
+      // shots in one clip pointed at the SAME camp.
+      let ox = v.position.x, oz = v.position.z;
+      if (NEEDS === 'telescope') {
+        let found = false;
+        for (let i = 0; i < 28 && !found; i++) {
+          const a = i * 0.9, r = (i % 7) * 3.0;
+          const tx = v.position.x + Math.cos(a) * r, tz = v.position.z + Math.sin(a) * r;
+          const probe = window.__camp.pitchNear(tx, tz, { instant: true, radius });
+          if (probe) {
+            const c = window.__camp.camps[window.__camp.camps.length - 1];
+            found = (c?.props ?? []).some((pr) => pr.obj?.userData?.telescope);
+            if (found) { ox = tx; oz = tz; }
+          }
+          window.__camp.strike();
+        }
+        if (!found) return { noTelescope: true };
+      }
+      // `--camp-delay` leaves the ground BARE and hands the pitch to the
+      // per-frame driver instead.
+      //
+      // The whole claim of this clip is that bare dirt becomes a camp, and a
+      // CUT between the two states does not prove it — a viewer can fairly
+      // assume they are two different places. One continuous shot in which the
+      // same ground visibly changes is the proof. So probe for the site, strike
+      // the probe, survey an orbit around where the camp WILL be, and film the
+      // empty clearing until the driver fires.
+      if (DELAY > 0) {
+        const probe = window.__camp.pitchNear(ox, oz, { instant: true, radius });
+        const at = probe ? { x: probe.x, z: probe.z } : { x: ox, z: oz };
+        window.__camp.strike();
+        window.__tPitch = { x: ox, z: oz, radius, at: DELAY, done: false };
+        return { x: +at.x.toFixed(1), z: +at.z.toFixed(1), small: false, deferred: true };
+      }
+      const s = window.__camp.pitchNear(ox, oz, { instant: false, radius });
       if (!s) return null;
 
       return { x: +s.x.toFixed(1), z: +s.z.toFixed(1), small: !!s.small };
-    });
-    if (camp) Object.assign(camp, await surveyOrbit({ cx: camp.x, cz: camp.z, r0: 9.5, r1: 7.0 }));
+    }, { DELAY: parseFloat(arg('camp-delay', '0')), NEEDS: String(arg('camp-needs', '')) });
+    if (camp) Object.assign(camp, await surveyOrbit({
+      cx: camp.x, cz: camp.z,
+      r0: parseFloat(arg('camp-r0', '9.5')), r1: parseFloat(arg('camp-r1', '7.0')),
+      sweep: parseFloat(arg('camp-sweep', '0.40')),
+      bias: arg('camp-bias', null) === null ? null : parseFloat(arg('camp-bias')),
+    }));
+    if (camp?.noTelescope) {
+      throw new Error('no camp near here rolls a telescope — try another meadow, ' +
+                      'or drop --camp-needs');
+    }
     if (!camp) throw new Error('pitchNear found no site');
     world.camp = { x: camp.x, z: camp.z };   // `campwide` re-frames this camp
     console.log(`[trailer]   camp (${camp.x}, ${camp.z})${camp.small ? ' [compact]' : ''}` +
@@ -1194,7 +1509,11 @@ async function main() {
    * runs between the two.
    */
   setups.campwide = async () => {
-    if (!world.camp) throw new Error('campwide needs the camp beat before it');
+    // Pitch its own camp if nothing has. A clip whose hook IS this shot cannot
+    // afford a half-second establishing beat in front of it just to satisfy a
+    // dependency — that cut is what made the first `one-day` break its hook
+    // inside a second.
+    if (!world.camp) await setups.camp();
     await page.evaluate(() => { window.__roast?.leave?.(); });
     await grant(Math.round(FPS * 0.4));
     const arc = await surveyOrbit({
@@ -1235,9 +1554,64 @@ async function main() {
     // horizontal view and the frame is the fire's bloom column with the
     // marshmallow in a corner; at 46 the whole fireside fits and the
     // marshmallow is a speck. 34 is the one that holds both.
-    await page.evaluate(() => window.__roast.pose({ fov: 34 }));
+    // The trailer wants the whole fireside at 34; a clip ABOUT the marshmallow
+    // wants the marshmallow. `right` is where the hold sits across the frame
+    // (authored at 0.142, off to one side) and naming it PINS the hold, which
+    // is what centring requires.
+    await page.evaluate(({ FOV, RIGHT }) => {
+      const p = { fov: FOV };
+      if (RIGHT !== null) p.right = RIGHT;
+      window.__roast.pose(p);
+    }, { FOV: parseFloat(arg('roast-fov', '34')),
+         RIGHT: arg('roast-right', null) === null ? null : parseFloat(arg('roast-right')) });
     for (let i = 0; i < FPS * 3 && await page.evaluate(
       () => (window.__roast.state()?.t ?? 1) < 0.999); i++) await step();
+    // `--roast-lower` holds the marshmallow DOWN in the heat for the beat.
+    //
+    // `marshmallow_toast.js` runs the cook as 1/r^2 about the flame's hot
+    // point, and the authored resting hold is a comfortable 0.8 m above it —
+    // safe, and essentially raw. Filmed for eight and a half seconds at that
+    // height the mallow does not visibly change colour at all, which is fatal
+    // for a clip whose entire premise is watching it go gold, then brown, then
+    // catch. S is the game's own "down into the heat"; nothing here fakes a
+    // doneness value.
+    // `--roast-precook <doneness>` cooks it off camera first.
+    //
+    // Measured (tools/_scratch/mallowcook.mjs): doneness runs 0..1 — gold at
+    // 0.35, brown 0.55, black 0.80 — and advances at 0.0141/s at the authored
+    // resting height, 0.0247/s held down in the heat with S. A full cook is
+    // therefore about forty seconds, and a ten-second clip can show a QUARTER
+    // of it. Filmed from raw, the marshmallow visibly does not change, which is
+    // fatal for a clip whose whole premise is watching it turn.
+    //
+    // Sim time is free here — the granted clock advances the world with no
+    // frames written — so spend thirty seconds of it before the first frame and
+    // film the part worth watching: brown, black, and catching.
+    const PRE = parseFloat(arg('roast-precook', '0')) || 0;
+    if (PRE > 0) {
+      let d = 0;
+      for (let i = 0; i < FPS * 90; i++) {
+        await step();
+        if (i % 6 === 0) {
+          d = await page.evaluate(() => window.__roast.state()?.doneness ?? 1);
+          if (d >= PRE) break;
+        }
+      }
+      const st = await page.evaluate(() => window.__roast.state() ?? {});
+      console.log(`[trailer]   pre-cooked to doneness ${d.toFixed(2)} (target ${PRE}) ` +
+                  `alight=${st.alight} ruined=${st.ruined} result=${st.result}`);
+    }
+
+    // LOWER IT ONLY ONCE FILMING STARTS.
+    //
+    // Order matters and the first version had it backwards. Held down in the
+    // heat the marshmallow goes ALIGHT at doneness 0.60 — well before the 0.80
+    // the toast scale calls black — so pre-cooking with S burns it, the view
+    // plays its result and hands the camera back, and the beat cuts to an
+    // exterior shot of the camper mid-clip. Pre-cook at the authored resting
+    // height, which is slow and safe, and lower it on camera: the fire is the
+    // punchline and it should happen where the audience can see it.
+    if (has('roast-lower')) await hold('KeyS', true);
     await grant(Math.round(FPS * 0.3));
     return { entered: true };
   };
@@ -1328,6 +1702,42 @@ async function main() {
     }, u),
     camp:  (u) => orbitCam(u),
     campwide: (u) => orbitCam(u),
+    skylook: (u) => page.evaluate((k) => {
+      const t = window.__tSky, e = window.__engine;
+      // Stand at the camp and look up. A small drift across the field, not a
+      // sweep — the stars are the subject and a fast pan smears them.
+      // Start low enough to hold the treeline, then climb. Context first: a
+      // circle of bare sky says nothing about where you are, and the tops of
+      // the conifers are what make it a sky ABOVE A CAMP.
+      const el = t.el0 + (t.el1 - t.el0) * (k * k * (3 - 2 * k));
+      const az = t.az + (k - 0.5) * t.pan;
+      e.camera.position.set(t.x, t.g + 1.6, t.z);
+      e.camera.lookAt(t.x + Math.sin(az) * Math.cos(el) * 100,
+                      t.g + 1.6 + Math.sin(el) * 100,
+                      t.z + Math.cos(az) * Math.cos(el) * 100);
+    }, u),
+    scopeprop: (u) => page.evaluate(({ k, A }) => {
+      const t = window.__tScopeProp, e = window.__engine;
+      // FIND IT, THEN GO TO IT — two moves in one shot.
+      //
+      // A straight push-in on the tube asks the viewer to already know what
+      // they are looking at. Sweeping the AIM from the fire across the site
+      // discovers the telescope the way a person would, and only then does the
+      // camera close on it. Cutting to the eyepiece after that is motivated;
+      // cutting to it from the fire is a non sequitur, which is exactly how the
+      // first version played.
+      const pan  = Math.min(1, k / A);
+      const push = Math.max(0, (k - A) / (1 - A));
+      const sp = pan * pan * (3 - 2 * pan);
+      const sq = push * push * (3 - 2 * push);
+      const d = 8.8 + (2.7 - 8.8) * sq;
+      const x = t.x + t.dx * d, z = t.z + t.dz * d;
+      e.camera.position.set(x, t.g + 1.75 - 0.40 * sq, z);
+      const ax = t.fx + (t.x - t.fx) * sp;
+      const az = t.fz + (t.z - t.fz) * sp;
+      const ay = (t.g + 0.85) + ((t.y + 0.15) - (t.g + 0.85)) * sp;
+      e.camera.lookAt(ax, ay, az);
+    }, { k: u, A: parseFloat(arg('scope-find', '0.55')) }),
     firelight: (u) => orbitCam(u),
     ridge: (u) => page.evaluate(({ k, loop }) => {
       const r = window.__tRidge, e = window.__engine, wd = window.__world;
@@ -1377,6 +1787,41 @@ async function main() {
 
   /** Per-frame world driving that has to happen on the granted clock. */
   const drivers = {
+    // `--hour-ramp "from,to"` steps `__lighting.hour` every frame, which is
+    // what a day-in-N-seconds clip is: one fixed camera and the sun moving.
+    // Beat hours set a single frozen hour; this overrides it per frame. Runs
+    // for whichever beat is named by `--hour-ramp-beat` (default `campwide`).
+    __ramp: (u) => page.evaluate(({ k, a, b }) => {
+      const L = window.__lighting;
+      L.cycleSpeed = 0;                       // we are the clock, not the cycle
+      let h = a + (b - a) * k;
+      while (h >= 24) h -= 24;
+      while (h < 0) h += 24;
+      L.hour = h;
+    }, { k: u, a: HOUR_RAMP[0], b: HOUR_RAMP[1] }),
+    // Sweep the eyepiece slowly. A fixed star field reads as a photograph; a
+    // little drift reads as somebody looking. The view damps `fov` toward
+    // `fovTarget` every frame, so the aim is what moves, not the zoom.
+    scope: (u) => page.evaluate(({ k }) => {
+      const p = window.__tScopePan, scope = window.__systems?.camp?.scope;
+      if (!p || !scope) return;
+      // A monotonic sweep that STARTS at the given aim rather than centring on
+      // it. Anchoring the start is what lets the shot open with the treeline in
+      // the bottom of the circle — context for what you are looking through —
+      // and then climb off it into open sky. Centred, half the move is spent
+      // below the horizon.
+      const az = p.az + k * p.range;
+      const el = p.el + k * p.rise;
+      scope._aim.set(Math.sin(az) * Math.cos(el), Math.sin(el),
+                     Math.cos(az) * Math.cos(el)).normalize();
+    }, { k: u }),
+    // Fires the deferred pitch once, mid-shot. See the note in `setups.camp`.
+    camp: (u, secs) => page.evaluate(({ t }) => {
+      const p = window.__tPitch;
+      if (!p || p.done || t < p.at) return;
+      p.done = true;
+      window.__camp.pitchNear(p.x, p.z, { instant: false, radius: p.radius });
+    }, { t: u * secs }),
     bike: () => page.evaluate(() => {
       const t = window.__tBike, st = window.__bike?.state?.().bike;
       if (!st || !t) return;
@@ -1470,6 +1915,22 @@ async function main() {
       window.__tFov = fov;
       window.__forceCamera = !!pose;
     }, beat);
+    // A view holding the rig outranks `__forceCamera`, so a beat that poses its
+    // own camera and does not own the rig will film whatever the view is
+    // showing — silently, with no error and a full frame count.
+    if (beat.pose) {
+      const held = await page.evaluate(() => ({
+        roast: !!window.__systems?.camp?.roast?.active,
+        scope: !!window.__systems?.camp?.scope?.active,
+        bike:  !!window.__bike?.state?.().riding,
+        boat:  !!window.__boat?.state?.().active,
+      }));
+      const who = Object.entries(held).filter(([, v]) => v).map(([k]) => k);
+      if (who.length) {
+        console.warn(`[trailer]   WARNING: ${who.join(', ')} still holds the camera — ` +
+                     `beat "${beat.name}" poses its own and will be overridden`);
+      }
+    }
 
     // A still has to be taken at the same point in the beat the eye will judge
     // it at, which means RUNNING the beat and photographing the end of it — not
@@ -1481,7 +1942,8 @@ async function main() {
     const n = STILLS ? Math.max(1, Math.round(full * 0.6)) : full;
     for (let i = 0; i < n; i++) {
       const u = full > 1 ? i / (full - 1) : 0;
-      if (drivers[beat.name]) await drivers[beat.name]();
+      if (HOUR_RAMP && beat.name === HOUR_RAMP_BEAT) await drivers.__ramp(u);
+      if (drivers[beat.name]) await drivers[beat.name](u, beat.secs);
       if (cameras[beat.name]) await cameras[beat.name](u);
       await step();
       if (STILLS && i < n - 1) continue;

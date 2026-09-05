@@ -35,8 +35,12 @@
 
 export function makeCliffShot({ page, arg, hold, step, settle, FPS }) {
   const BACK = parseFloat(arg('cliff-back', '34'));
-  const SIDE = parseFloat(arg('cliff-side', '30'));
-  const EYE  = parseFloat(arg('cliff-eye', '4'));
+  const SIDE = parseFloat(arg('cliff-side', '26'));
+  const FWD  = parseFloat(arg('cliff-fwd', '10'));    // out past the lip, over the void
+  // Metres short of the lip where filming starts. Everything before this is
+  // driven on the granted clock with no frames written.
+  const LEAD = parseFloat(arg('cliff-lead', '13'));
+  const DROP = parseFloat(arg('cliff-drop', '0.30')); // fraction of the fall to sit below the lip
   const STEP = parseFloat(arg('cliff-step', '24'));
 
   const beat = {
@@ -50,7 +54,7 @@ export function makeCliffShot({ page, arg, hold, step, settle, FPS }) {
   };
 
   const setup = async () => {
-    const cands = await page.evaluate(({ STEP, RUNUP }) => {
+    const cands = await page.evaluate(({ STEP, RUNUP, WANT }) => {
       const w = window.__world;
       const flat = [];
       for (let x = -1150; x <= 1150; x += STEP) {
@@ -78,7 +82,7 @@ export function makeCliffShot({ page, arg, hold, step, settle, FPS }) {
           for (let d = 30; d <= 140; d += 12) {
             far = Math.max(far, c.y - w.getHeight(c.x + sx * d, c.z + sz * d));
           }
-          if (near < 12 || far < 35) continue;
+          if (near < 9 || far < 20) continue;
           // The run-up must be drivable or the camper never reaches the lip.
           let ok = true;
           for (let d = 6; d <= RUNUP; d += 6) {
@@ -89,14 +93,22 @@ export function makeCliffShot({ page, arg, hold, step, settle, FPS }) {
           out.push({ x: c.x, z: c.z, y: c.y, yaw: ang, near, far });
         }
       }
-      out.sort((a, b) => (b.near * 2 + b.far) - (a.near * 2 + a.far));
+      // PREFER A DROP THE FRAME CAN HOLD, not the biggest one.
+      //
+      // Ranking by size put the camper off a 28 m lip, and 28 m of fall with a
+      // 4 m vehicle in a 9:16 frame is a few dozen pixels travelling further
+      // than any fixed lens can follow — seven camera placements failed on it.
+      // A 12-16 m drop keeps lip and landing in one frame at a distance where
+      // the camper still reads. Rank on closeness to that, not on magnitude.
+      out.sort((a, b) => (Math.abs(a.near - WANT) + a.far * 0.02)
+                       - (Math.abs(b.near - WANT) + b.far * 0.02));
       const spread = [];
       for (const c of out) {
         if (spread.every((k) => Math.hypot(k.x - c.x, k.z - c.z) > 150)) spread.push(c);
         if (spread.length >= 6) break;
       }
       return spread;
-    }, { STEP, RUNUP: BACK });
+    }, { STEP, RUNUP: BACK, WANT: parseFloat(arg('cliff-want', '14')) });
 
     console.log(`[cliff]   ${cands.length} lip candidate(s)` +
       (cands.length ? `, best near ${cands[0].near.toFixed(0)}m far ${cands[0].far.toFixed(0)}m` : ''));
@@ -122,6 +134,12 @@ export function makeCliffShot({ page, arg, hold, step, settle, FPS }) {
       }
       await hold('w', false);
       const fell = y0 - minY;
+      // Where it ended up. Read BEFORE teleporting back — the stand search needs
+      // to see the landing, not just the lip.
+      const land = await page.evaluate(() => {
+        const p = window.__systems.vehicle.position;
+        return { x: p.x, y: p.y, z: p.z };
+      });
       console.log(`[cliff]   rehearsal at (${c.x.toFixed(0)}, ${c.z.toFixed(0)}): fell ${fell.toFixed(1)}m` +
                   ` ${fell > 20 ? '— went over' : '— did NOT go over, next candidate'}`);
       if (fell <= 20) continue;
@@ -132,39 +150,125 @@ export function makeCliffShot({ page, arg, hold, step, settle, FPS }) {
         { x: startX, z: startZ, yaw: c.yaw });
       await settle(1.8);
 
-      await page.evaluate(({ c2, SIDE, EYE }) => {
+      // SEARCH FOR THE STAND. Do not place it.
+      //
+      // Three hand-placed stands failed in three different ways: behind the lip
+      // filmed the plateau, 18 m out lost the camper after it landed, and 42 m
+      // out put the lens inside a rock face. The heuristic they shared was
+      // "pick the side with lower ground", which never asks the only question
+      // that matters — is anything BETWEEN the camera and the fall?
+      //
+      // `getHeight` answers that with no scene and no streaming, so sweep a
+      // grid of stands and keep the one that can see BOTH ends of the drop: the
+      // lip the camper leaves and the ground it lands on. Same segment test the
+      // camp orbit uses to keep a hillside out of a shot.
+      const stand = await page.evaluate(({ lip, land, fell }) => {
         const w = window.__world;
-        const sx = Math.sin(c2.yaw), sz = Math.cos(c2.yaw);
+        const sx = Math.sin(lip.yaw), sz = Math.cos(lip.yaw);
         const px = sz, pz = -sx;
-        const lo = w.getHeight(c2.x + px * SIDE, c2.z + pz * SIDE);
-        const hi = w.getHeight(c2.x - px * SIDE, c2.z - pz * SIDE);
-        const sgn = lo <= hi ? 1 : -1;
-        const cx = c2.x + px * SIDE * sgn - sx * 6;
-        const cz = c2.z + pz * SIDE * sgn - sz * 6;
-        window.__tCliff = {
-          cx, cz,
-          cy: Math.max(w.getHeight(cx, cz) + 2.2, c2.y + EYE),
-          aim: null,
+        const clear = (cx, cy, cz, tx, ty, tz) => {
+          let worst = 0;
+          for (let t = 0.05; t < 0.98; t += 0.03) {
+            const gx = cx + (tx - cx) * t, gz = cz + (tz - cz) * t;
+            worst = Math.max(worst, w.getHeight(gx, gz) - (cy + (ty - cy) * t));
+          }
+          return worst;                       // <=0 means nothing in the way
         };
-      }, { c2: c, SIDE, EYE });
+        let best = null;
+        for (const sgn of [1, -1]) {
+          for (const side of [16, 22, 28, 34, 40]) {
+            for (const fwd of [-4, 4, 12, 20]) {
+              // Past 1.0 the lens is BELOW the landing looking up the face,
+              // which is the framing a fall wants: the camper comes down toward
+              // the camera instead of away from it.
+              for (const dropF of [0.35, 0.65, 0.95, 1.15]) {
+                const cx = lip.x + px * side * sgn + sx * fwd;
+                const cz = lip.z + pz * side * sgn + sz * fwd;
+                if (!w.isInBounds(cx, cz)) continue;
+                const g = w.getHeight(cx, cz);
+                const cy = Math.max(g + 3.0, lip.y - fell * dropF);
+                const a = clear(cx, cy, cz, lip.x, lip.y + 1.5, lip.z);
+                const b = clear(cx, cy, cz, land.x, land.y + 1.5, land.z);
+                const d = Math.hypot(cx - lip.x, cz - lip.z);
+                if (d < 14 || d > 40) continue;             // too close looms, too far is a dot
+                // SCORE the blockage, do not veto on it.
+                //
+                // The first version required the sight line to clear the ground
+                // by half a metre for its whole length, which rejected every
+                // stand on every candidate — because the line to the lip grazes
+                // the lip, and the lip is terrain. A cliff edge is always
+                // "blocking" the view of itself. So take the worst intrusion on
+                // the two lines and prefer the least of it, with distance as a
+                // tie-break; a stand is only refused when something stands
+                // metres proud of the line, which is a hill, not an edge.
+                const worst = Math.max(a, b);
+                if (worst > 3.0) continue;
+                const score = -worst - Math.abs(d - 30) * 0.05;
+                if (!best || score > best.score) best = { cx, cy, cz, d, score, side, fwd, dropF, sgn,
+                                                          worst: +worst.toFixed(2) };
+              }
+            }
+          }
+        }
+        if (!best) return null;
+        window.__tCliff = { cx: best.cx, cy: best.cy, cz: best.cz, aim: null };
+        return best;
+      }, { lip: c, land, fell });
+      if (!stand) {
+        console.log('[cliff]   no stand can see both the lip and the landing — next candidate');
+        continue;
+      }
+      console.log(`[cliff]   stand ${stand.d.toFixed(0)}m out ` +
+                  `(side ${stand.side}, fwd ${stand.fwd}, drop ${stand.dropF}, ` +
+                  `worst intrusion ${stand.worst}m)`);
 
       // Throttle on for the whole beat. There is nothing to re-assert per frame
       // — a held key IS the drive — and the main loop releases held keys when
       // the beat ends.
       await hold('w', true);
+
+      // SPEND THE APPROACH OFF CAMERA.
+      //
+      // The run-up has to be long enough that the camper is at speed and
+      // tracking straight when it reaches the lip, and a 34 m approach at
+      // walking pace is four seconds of empty meadow — filmed, that was 60% of
+      // the clip with no camper in it, and the fall crammed into the last
+      // second. Same trick as the drive beat's preroll: advance on the granted
+      // clock until the lip is `LEAD` metres away, photographing nothing, so
+      // frame 1 is already rolling and the wheels leave at about 1.4 s.
+      for (let i = 0; i < Math.round(FPS * 10); i++) {
+        const d = await page.evaluate(({ x, z }) => {
+          const p = window.__systems.vehicle.position;
+          return Math.hypot(p.x - x, p.z - z);
+        }, { x: c.x, z: c.z });
+        if (d <= LEAD) break;
+        await step();
+      }
       return { ...c, startX, startZ, fell };
     }
     throw new Error('no candidate actually drove off — try a smaller --cliff-back, or another --seed');
   };
 
   const camera = () => page.evaluate(() => {
-    const c = window.__tCliff, e = window.__engine, p = window.__systems.vehicle.position;
-    if (!c.aim) c.aim = { x: p.x, y: p.y, z: p.z };
+    const c = window.__tCliff, e = window.__engine, w = window.__world;
+    const p = window.__systems.vehicle.position;
+    if (!c.aim) { c.aim = { x: p.x, y: p.y, z: p.z }; c.y = c.cy; }
     const k = 0.12;
     c.aim.x += (p.x - c.aim.x) * k;
     c.aim.y += (p.y - c.aim.y) * k;
     c.aim.z += (p.z - c.aim.z) * k;
-    e.camera.position.set(c.cx, c.cy, c.cz);
+    // THE STAND HOLDS IN PLAN, THE HEIGHT RIDES DOWN.
+    //
+    // A stand fixed in all three axes is what the shot wants in principle — the
+    // fall reads against stationary ground — and it is why the camper vanished
+    // in four separate takes: it drops 28 m, and a lens that stays level with
+    // the lip ends up looking down through the hillside it is standing beside.
+    // Keeping x and z fixed preserves the stationary-ground read; letting y
+    // trail the camper (damped, and never below the local ground) keeps the
+    // subject in the picture, which outranks it.
+    const want = Math.max(w.getHeight(c.cx, c.cz) + 3.0, c.aim.y + 7.0);
+    c.y += (want - c.y) * 0.10;
+    e.camera.position.set(c.cx, c.y, c.cz);
     e.camera.lookAt(c.aim.x, c.aim.y + 0.8, c.aim.z);
   });
 

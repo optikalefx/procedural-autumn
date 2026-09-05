@@ -137,6 +137,40 @@ it run as one afternoon sliding into dusk. Inside that run, keep the hours
 moving one way: two beats step back an hour, which is invisible in the same
 afternoon light, and a jump to dawn would not be.
 
+## Pacing: this is a cozy game, and the first batch was all cut like a trailer
+
+Sean's review of the first overnight batch (2026-09-04) rejected four of five
+clips for the same reason, in different clothes. Read this before choosing a
+single duration.
+
+**Everything should be about twice as long as feels right.** Trailer instinct is
+2-3 s a shot. That instinct is wrong here: the product is calm, and a cut every
+two seconds tells the viewer it is not. When in doubt, double it.
+
+| what | the batch shipped | what it should be |
+|---|---|---|
+| the hook (first shot) | 0.5-3 s, often under 1 s before the first cut | **3-5 s, uncut** |
+| any other shot | 2-3 s | 4-6 s |
+| a card, at FULL opacity | 0.6-2.0 s | **>= 2.5 s**, and more for >4 words |
+| camera moves | orbit 1.15 rad in 5.4 s, pushes of 5+ m | roughly half that rate |
+
+**Card dwell is not card span.** A card from 11.90 s to 13.15 s with a 0.32 s
+fade at each end is legible for 0.61 s. `trailer_post.mjs` now measures the
+full-opacity window, prints it per card with the word count, and warns under
+`--card-min` (2.5 s default). It flagged every card in the shipped batch.
+
+**Do not cut while something is still moving.** The moose clip cut while the
+animal was mid-stride out of frame. Let the motion FINISH — let him leave, hold
+the empty frame a beat, then card or fade. The hold is not dead time in a cozy
+clip; it is the point.
+
+**Two clips must not share a beat.** `fireflies` shot 2 and `one-day` were the
+same camp from nearly the same camera, and read as one clip pasted into another.
+Check what is already rendered in `marketing/queue/` before reusing a beat at a
+similar hour and radius.
+
+**Do not open on black.**
+
 **Do not open on a drive-away shot, and do not open on black.** The hook was
 originally the drive beat and it was the wrong hook twice over: a camper
 receding from a camera that is itself pulling back shrinks the subject from both
