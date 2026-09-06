@@ -261,23 +261,13 @@ and `*-frames/` directories — `shots/` is already ~2.8 GB.
 
 ### Posting it
 
-The live game is **https://camping-season.pages.dev/** — every description and
-caption should link it. There is also an itch.io page at
-https://optikalefx.itch.io/camping-season.
+**Use the `post-video-social` skill.** It owns the whole flow for both
+platforms: the hidden file-input trick each site needs, how to make an upload
+copy under the 10 MB cap, the hashtag autocomplete trap, TikTok's content
+review, YouTube's Escape-closes-the-dialog trap, and which channel the uploads
+land on. Everything that used to live here moved there so the two cannot drift.
 
-Reconnaissance done 2026-09-03, not a completed flow:
-
-- Chrome (Claude in Chrome) is connected locally, and **both `studio.youtube.com`
-  and `tiktok.com/tiktokstudio/upload` are already signed in** as `optikalefx`,
-  so no credentials are needed — TikTok's uploader loaded with no bot-check.
-- **The YouTube channel is a developer channel** (11.1k subscribers; recent
-  videos are Node, jQuery, Svelte/Convex deploys), not a gaming channel. Copy
-  that leads with "built with three.js, procedurally generated, runs in the
-  browser" will land better there than generic cozy-game marketing.
-- **`file_upload` caps at 10 MB combined and the delivered trailer is 27 MB.**
-  Either re-encode a smaller upload copy — and know that both platforms
-  re-encode to 10–20 Mbit/s anyway, so a ~5 Mbit/s source compounds the loss on
-  a picture that is high-frequency detail everywhere — or have the user drop the
-  file in and do the rest of the form yourself.
-- **TikTok captions do not render clickable links.** The URL goes in the caption
-  as plain text and the real link belongs in the profile bio.
+The live game is **https://itscampingseason.com/** and there is an itch.io page
+at https://optikalefx.itch.io/camping-season. Each clip's caption, title and
+description are written into `marketing/queue/<slug>/post.md` when it is
+rendered — write them there, and the posting skill will use them.
