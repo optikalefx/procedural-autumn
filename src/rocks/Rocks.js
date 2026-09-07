@@ -595,6 +595,40 @@ export class Rocks extends System {
    * It costs what one streamer job costs, and only a button press pays it.
    */
   rocksAround(x, z, r, minSize = 0.45, out = []) {
+    return this._around(x, z, r, minSize, out, true);
+  }
+
+  /**
+   * `rocksAround`'s sibling that answers only about rock the camera DREW.
+   *
+   * Same cell walk, with the probe taken out: a cell that has not streamed in
+   * contributes nothing, and a resident cell contributes exactly the instances
+   * it was built with. That is the wrong answer for anything asking where the
+   * world is — which is why `rocksAround` probes — and the right one for the
+   * photo detector, whose whole question is what is in the picture. A boulder
+   * that has not streamed in is not hiding an animal, because it is not on
+   * screen; a boulder a coarse cell dropped is not hiding one either.
+   *
+   * It is also the reason this exists rather than a `liveOnly` flag on the
+   * other: the probe is what makes `rocksAround` too expensive to call from
+   * the shutter path. `minSize 0` over a riverbed cell generates a gravel bar,
+   * which is thousands of instances of shingle — and the header note on that
+   * call site (`Wildlife._findPerches`) says why a cheaper cutoff cannot be
+   * asked for instead: `minSize` changes the cell's random stream, so a query
+   * at 0.8 is a different field of rock and not a subset of the one at 0.
+   * Here the cut is made after the walk, on whatever the live cell holds.
+   *
+   * `boulderNear` also walks the live set, but walks ALL of it — every cell in
+   * memory — because it is a yes/no about one point. This is cell-indexed for
+   * the same reason `rocksAround` is: a line of sight asks about a corridor,
+   * not a neighbourhood.
+   */
+  drawnRocksAround(x, z, r, minSize = 0.45, out = []) {
+    return this._around(x, z, r, minSize, out, false);
+  }
+
+  /** The cell walk both of the above share; `probe` is the only difference. */
+  _around(x, z, r, minSize, out, probe) {
     const cx0 = Math.floor((x - r) / CELL), cx1 = Math.floor((x + r) / CELL);
     const cz0 = Math.floor((z - r) / CELL), cz1 = Math.floor((z + r) / CELL);
     for (let cz = cz0; cz <= cz1; cz++) {
@@ -604,7 +638,9 @@ export class Rocks extends System {
         // A resident cell built at a coarser LOD than we are asking about has
         // dropped exactly the rocks in question, so it is generated too.
         const list = (live && live.minSize <= minSize)
-          ? live.instances : this._probeCell(cx, cz, key, minSize);
+          ? live.instances
+          : (probe ? this._probeCell(cx, cz, key, minSize) : (live?.instances ?? null));
+        if (!list) continue;
         for (let i = 0; i < list.length; i++) {
           const inst = list[i];
           if (inst.size < minSize) continue;

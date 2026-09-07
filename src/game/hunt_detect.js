@@ -1297,6 +1297,40 @@ const OCC_MAX = 64;       // hard cap, so a 320 m waterfall ray is still cheap
 // and well below anything that actually blocks a view.
 const OCC_TOL = 0.75;
 
+// ── the rocks, which the march above cannot see ─────────────────────────────
+//
+// `clearLine` samples the heightmap and nothing else, so for as long as this
+// file has existed the only thing that could hide a subject was the SHAPE OF
+// THE GROUND. Rocks are not in the heightmap — they are scattered props
+// standing on it (`rocks/Rocks.js`) — so a boulder the size of a car was worth
+// exactly nothing to the gate. That is how a photograph of three herons on a
+// river credited the moose: there genuinely was one, thirty metres on, stood
+// behind the slabs on the left of the frame, in frustum and big enough to
+// pass `MIN_SHARE`, and the only test that could have said "you cannot see
+// that" was asking the terrain about ground the moose was not behind.
+//
+// The rock is a vertical cylinder: `Rocks.reachOf` for the radius in plan,
+// `Rocks.topOf` for the summit, and the ray is blocked when it passes under
+// that summit inside that radius. Both of those numbers already exist for the
+// goats, and both are approximations that read a little LOW on a tilted
+// instance (see their notes), which is the right direction to be wrong in
+// here: a gate that is unsure lets the photograph through.
+//
+// Everything else about the shape is deliberately not modelled. A rock is not
+// a cylinder, so `ROCK_R` pulls the radius in — a ray grazing the silhouette
+// edge of a boulder is a photograph with the animal's shoulder showing past
+// it, and refusing that costs a real picture, where passing a ray that clips
+// six inches of stone costs nothing anybody can see.
+const ROCK_R = 0.8;
+// Cost guard, not a rule about what hides an animal — the cylinder test
+// decides that, and it decides it correctly for a cobble (the ray passes over
+// the top). This is the cut that keeps a gravel bar's shingle out of the loop
+// before either footprint lookup runs.
+const ROCK_MIN = 0.4;
+// Slack on the query circle, so a crag whose CENTRE is outside the corridor
+// but whose flank is in it still gets asked.
+const ROCK_PAD = 16;
+
 // ── fireflies ────────────────────────────────────────────────────────────────
 //
 // The swarm has no objects to test. It is one draw call of GPU-resident points
@@ -1365,6 +1399,9 @@ const _aim = new THREE.Vector3();
 // pointed" rather than "is the subject in the frame".
 const _fwd = new THREE.Vector3();
 const _toSubject = new THREE.Vector3();
+// Scratch for `clearRocks`. One array for the file, refilled per call: the
+// detector is synchronous, single-threaded and never holds two rays at once.
+const _rocks = [];
 
 /**
  * The per-call frame: everything the gates need, resolved once.
@@ -1399,6 +1436,9 @@ function frameOf(ctx) {
     proj: cam.projectionMatrix,
     vfov,
     world: ctx.world ?? null,
+    // The rock scatter, for `clearRocks`. A system rather than part of the
+    // world, and optional like every other peer this file reaches for.
+    rocks: ctx.systems?.rocks ?? null,
   };
 }
 
@@ -1541,6 +1581,88 @@ function clearLine(world, from, to, radius) {
 }
 
 /**
+ * Is there a ROCK between the lens and `pos`?
+ *
+ * `clearLine`'s other sibling — the constants block above says why it had to
+ * exist and what a rock is modelled as. This is the same ray, aimed at the
+ * same point on the subject (`AIM`), tested against cylinders instead of the
+ * heightmap.
+ *
+ * ── it asks for the rock that was DRAWN ─────────────────────────────────────
+ *
+ * `drawnRocksAround`, not `rocksAround`. The photograph contains what the
+ * renderer put in it, so a boulder in a cell that has not streamed in cannot
+ * be hiding anything — and asking anyway would generate that cell at
+ * `minSize` 0, which over a riverbed is a gravel bar of several thousand
+ * instances, inside the shutter path. See the note on that method.
+ *
+ * ── the two subjects it must NOT refuse ─────────────────────────────────────
+ *
+ *  * **An animal standing on a rock.** The mountain goat's whole line is a
+ *    boulder with a goat on top of it, and that boulder is between the lens
+ *    and the goat's own feet by definition. Any rock whose plan disc contains
+ *    the subject is skipped: it is not an occluder, it is the ground.
+ *  * **An animal beside a rock.** Same test, same skip — a deer at the foot of
+ *    a slab is a photograph of a deer.
+ *
+ * The chord is sampled at its middle — the point of closest approach in plan —
+ * rather than at whichever end the ray is lowest over. Both are one line of
+ * arithmetic; the middle is the one that does not turn a ray skimming a summit
+ * into a refusal.
+ */
+function clearRocks(rocks, from, to, radius) {
+  if (typeof rocks?.drawnRocksAround !== 'function') return true;  // no query, no claim
+  const ax = from.x, az = from.z;
+  const dx = to.x - ax, dz = to.z - az;
+  const flat = Math.hypot(dx, dz);
+  if (flat < 6) return true;                     // as `clearLine`: nothing fits
+
+  const aimY = to.y + radius * AIM;
+  const hits = _rocks;
+  hits.length = 0;
+  rocks.drawnRocksAround((ax + to.x) * 0.5, (az + to.z) * 0.5,
+    flat * 0.5 + ROCK_PAD, 0, hits);
+
+  for (let i = 0; i < hits.length; i++) {
+    const inst = hits[i];
+    if (inst.size < ROCK_MIN) continue;
+    const reach = rocks.reachOf(inst);
+    if (!(reach > 0)) continue;
+
+    // Either end of the ray standing inside the rock's own plan disc — the
+    // goat on the boulder, the deer at the foot of the slab, and the
+    // photographer up on the crag looking down off it. In none of those is
+    // this rock between the two, and the summit being above the line of sight
+    // means only that somebody is standing on the thing.
+    //
+    // The FULL reach here against `ROCK_R`'s pulled-in one below, and the two
+    // radii err in opposite directions on purpose: both err toward letting the
+    // photograph count. `Brain._groundY` keeps a perched animal inside half a
+    // rock's reach, so this covers every goat — with the margin spent on the
+    // crags, whose reach is ten metres and more and whose flank is somewhere a
+    // player genuinely stands.
+    const sx = inst.x - to.x, sz = inst.z - to.z;
+    if (sx * sx + sz * sz < reach * reach) continue;
+    const ex = inst.x - ax, ez = inst.z - az;
+    if (ex * ex + ez * ez < reach * reach) continue;
+
+    // Closest approach in plan, on the segment rather than the infinite line:
+    // a rock behind the photographer, or behind the subject, is not in the way.
+    const rad = reach * ROCK_R;
+    const t = Math.max(0, Math.min(1, (ex * dx + ez * dz) / (flat * flat)));
+    const px = ax + dx * t - inst.x, pz = az + dz * t - inst.z;
+    if (px * px + pz * pz > rad * rad) continue;
+
+    // How high the line of sight is where it crosses the rock, against how
+    // high the rock is. `OCC_TOL` is the same slack the terrain march allows,
+    // and `topOf`'s own note says it reads low on a tilted instance.
+    const y = from.y + (aimY - from.y) * t;
+    if (rocks.topOf(inst) > y + OCC_TOL) return false;
+  }
+  return true;
+}
+
+/**
  * Is there ground between the lens and a point at infinity in direction `dir`?
  *
  * `clearLine`'s sibling, and separate from it because the ray does not end on
@@ -1568,10 +1690,21 @@ function clearSky(world, eye, dir) {
   return true;
 }
 
-/** Both gates, in the order that rejects fastest. */
+/**
+ * All three gates, in the order that rejects fastest and cheapest: the framing
+ * arithmetic, then the terrain march, then the rocks — which is the only one
+ * that asks another system for a list.
+ *
+ * `waterfalls` and `fireflies` call `clearLine` directly and so do not get the
+ * rock test. Neither wants it: a waterfall is a landform in the heightmap and
+ * the boulders around a plunge pool are part of the subject, and a firefly
+ * swarm is a population count over seventy sample points rather than an object
+ * standing somewhere.
+ */
 function visible(f, pos, radius, minShare = MIN_SHARE, maxDist = Infinity) {
   if (!share(f, pos, radius, minShare, maxDist)) return false;
-  return clearLine(f.world, f.eye, pos, radius);
+  if (!clearLine(f.world, f.eye, pos, radius)) return false;
+  return clearRocks(f.rocks, f.eye, pos, radius);
 }
 
 /**
@@ -2244,7 +2377,7 @@ function warn(where, e) {
  * count" without reimplementing the arithmetic — `tools/` scripts and the
  * console are the only callers.
  */
-export const _internals = { share, clearLine, clearSky, visible, frameOf,
+export const _internals = { share, clearLine, clearRocks, clearSky, visible, frameOf,
   meshHeight, ffCount, MIN_SHARE, DUCK_SHARE, EDGE, HIGH_CAMP, FOLD_R, FALL_SHARE, FALL_W,
   CAMP_SHARE, FF_MIN, LIP_R, SKY_ITEM, SKY_MIN, SKY_NIGHT, SKY_STEP,
   SKY_REACH };
