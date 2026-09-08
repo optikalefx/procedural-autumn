@@ -1,0 +1,191 @@
+{
+  "results": [
+    {
+      "name": "river",
+      "quality": "ultra",
+      "hour": 16.7,
+      "settled": {
+        "frames": 107,
+        "triangles": 4936336,
+        "calls": 528,
+        "converged": true
+      },
+      "comparison": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "control": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "resolution": {
+        "scale": 1,
+        "internalScale": 1,
+        "basePixelRatio": 2,
+        "presented": 2,
+        "effective": 2,
+        "megapixels": 4.1,
+        "presentedMegapixels": 4.1
+      },
+      "brokenPrograms": 0
+    },
+    {
+      "name": "forest",
+      "quality": "ultra",
+      "hour": 16.7,
+      "settled": {
+        "frames": 73,
+        "triangles": 4549750,
+        "calls": 555,
+        "converged": true
+      },
+      "comparison": {
+        "changedPixels": 19,
+        "maxChannelDelta": 9,
+        "meanChannelDelta": 0.000006022135416666667
+      },
+      "control": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "resolution": {
+        "scale": 1,
+        "internalScale": 1,
+        "basePixelRatio": 2,
+        "presented": 2,
+        "effective": 2,
+        "megapixels": 4.1,
+        "presentedMegapixels": 4.1
+      },
+      "brokenPrograms": 0
+    },
+    {
+      "name": "vista",
+      "quality": "ultra",
+      "hour": 16.7,
+      "settled": {
+        "frames": 66,
+        "triangles": 3165287,
+        "calls": 457,
+        "converged": true
+      },
+      "comparison": {
+        "changedPixels": 33,
+        "maxChannelDelta": 3,
+        "meanChannelDelta": 0.000004638671875
+      },
+      "control": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "resolution": {
+        "scale": 1,
+        "internalScale": 1,
+        "basePixelRatio": 2,
+        "presented": 2,
+        "effective": 2,
+        "megapixels": 4.1,
+        "presentedMegapixels": 4.1
+      },
+      "brokenPrograms": 0
+    },
+    {
+      "name": "night",
+      "quality": "ultra",
+      "hour": 0,
+      "settled": {
+        "frames": 25,
+        "triangles": 3165287,
+        "calls": 457,
+        "converged": true
+      },
+      "comparison": {
+        "changedPixels": 4,
+        "maxChannelDelta": 1,
+        "meanChannelDelta": 3.255208333333333e-7
+      },
+      "control": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "resolution": {
+        "scale": 1,
+        "internalScale": 1,
+        "basePixelRatio": 2,
+        "presented": 2,
+        "effective": 2,
+        "megapixels": 4.1,
+        "presentedMegapixels": 4.1
+      },
+      "brokenPrograms": 0
+    },
+    {
+      "name": "high",
+      "quality": "high",
+      "hour": 16.7,
+      "settled": {
+        "frames": 92,
+        "triangles": 4804263,
+        "calls": 443,
+        "converged": true
+      },
+      "comparison": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "control": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "resolution": {
+        "scale": 1,
+        "internalScale": 0.926,
+        "basePixelRatio": 1.35,
+        "presented": 1.35,
+        "effective": 1.25,
+        "megapixels": 1.6,
+        "presentedMegapixels": 1.87
+      },
+      "brokenPrograms": 0
+    },
+    {
+      "name": "low",
+      "quality": "low",
+      "hour": 16.7,
+      "settled": {
+        "frames": 99,
+        "triangles": 4350774,
+        "calls": 455,
+        "converged": true
+      },
+      "comparison": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "control": {
+        "changedPixels": 0,
+        "maxChannelDelta": 0,
+        "meanChannelDelta": 0
+      },
+      "resolution": {
+        "scale": 1,
+        "internalScale": 1,
+        "basePixelRatio": 1,
+        "presented": 1,
+        "effective": 1,
+        "megapixels": 1.02,
+        "presentedMegapixels": 1.02
+      },
+      "brokenPrograms": 0
+    }
+  ],
+  "errors": []
+}

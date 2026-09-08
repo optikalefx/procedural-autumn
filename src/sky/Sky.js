@@ -392,14 +392,16 @@ export class Sky {
       fragmentShader: FRAG,
       side: THREE.BackSide,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
       fog: false,
       toneMapped: true,
     });
 
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = -1000;
+    // Far-plane depth rejects pixels already covered by opaque geometry.
+    // Stay in the opaque queue, before water, glass and other transparencies.
+    this.mesh.renderOrder = 1000;
     this.mesh.name = 'Sky';
     scene.add(this.mesh);
     this.scene = scene;

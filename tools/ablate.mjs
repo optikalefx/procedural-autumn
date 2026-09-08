@@ -16,6 +16,11 @@
  *   node tools/ablate.mjs --mode motion --rounds 3   # reproducible movement
  *   node tools/ablate.mjs --only fx.dof,fx.ssao      # price two things quickly
  *   node tools/ablate.mjs --only tier.low,tier.medium --rounds 2
+ *   node tools/ablate.mjs --mode still --fixed-camera --anchor river --only fx.skyEarly
+ *
+ * --fixed-camera uses review/anchors.json, freezes the vehicle and holds an
+ * eye-level camera (--height defaults to 5.5 m). --settle-ms adds a pre-sweep
+ * warm-up. The sun is frozen at 16.7 for all modes. Reports retain each pair.
  *
  * ── WHAT IT MEASURES ────────────────────────────────────────────────────────
  *
@@ -102,13 +107,9 @@
  *    from 36 ms to 70 ms. Let the GPU rest between long runs.
  *  - HIDING AN OBJECT ALSO REMOVES ITS OCCLUSION. `draw.trees` measures as
  *    NEGATIVE 5.2 ms — hiding the trees exposes the whole hillside behind them,
- *    and shading that costs more than the trees did. `fx.flatShade` and
- *    `px.half` change nothing about what is drawn and have no such confound;
- *    they are the trustworthy global diagnostics. Prefer them.
- *  - `fx.flatShade` (`scene.overrideMaterial` = flat MeshBasicMaterial) keeps
- *    every draw call, triangle and overlapping fragment and removes only the
- *    shading. It is the single most informative knob here, and the hard upper
- *    bound on what any material change can buy.
+ *    and shading that costs more than the trees did. Prefer fx.shadeOnly for
+ *    the shading ceiling: fx.flatShade also replaces custom vertex shaders,
+ *    so procedural foliage disappears and its saving is NOT shading alone.
  *  - The anchor a mode teleports to depends on `--res`, because POI ranking
  *    reads the heightmap. Only compare runs taken at the same `--res`.
  *
@@ -138,7 +139,7 @@
  * drift rather than as a bug.
  */
 import { chromium } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { acquire } from './_lock.mjs';
 
@@ -164,6 +165,9 @@ const ONLY     = arg('only', null);             // comma list of knob names
 const LADDER   = has('ladder');
 // Where the camper is parked / laps. Any key of window.__cameraAnchors.
 const ANCHOR   = arg('anchor', 'meadow');
+const FIXED = has('fixed-camera');
+if (FIXED && MODES.some(m => m !== 'still')) throw new Error('--fixed-camera requires --mode still');
+const PINNED = FIXED ? JSON.parse(readFileSync(new URL('../review/anchors.json', import.meta.url), 'utf8')) : null;
 const STEER    = parseFloat(arg('steer', '0.42'));
 const RADIUS   = parseFloat(arg('radius', '70'));    // motion mode: metres
 const SPEED    = parseFloat(arg('speed', '14'));     // motion mode: m/s (~50 km/h)
@@ -180,6 +184,10 @@ const page = await browser.newPage({ viewport: { width: W, height: H }, deviceSc
 // Stub the HMR socket. A peer saving a file mid-run destroys the execution
 // context and takes a ten-minute measurement with it.
 await page.addInitScript(() => {
+  // Match shot.mjs: first-run onboarding otherwise opens over the benchmark.
+  const hud = JSON.parse(localStorage.getItem('pa.hud') ?? '{}') || {};
+  Object.assign(hud, { introSeen: true, seenHint: true, escSeen: true });
+  localStorage.setItem('pa.hud', JSON.stringify(hud));
   const R = window.WebSocket;
   window.WebSocket = function (u, p) {
     if (typeof u === 'string' && /[?&]token=|vite-hmr|__vite/.test(u)) {
@@ -226,6 +234,8 @@ await page.evaluate(() => {
   // dropping a tier, the measurement reports the rescue, not the cost.
   e.adaptive = false;
   e.autoQuality = false;
+  window.__lighting.cycleSpeed = 0;
+  window.__lighting.hour = 16.7;
 
   const byName = (...names) => {
     const set = new Set(names);
@@ -283,6 +293,23 @@ await page.evaluate(() => {
   };
 
   // ── render features ───────────────────────────────────────────────────────
+  // Re-enable the old full-screen sky work. A negative saving is its cost.
+  K['fx.skyEarly'] = {
+    group: 'fx',
+    off() {
+      this._objects = byName('Sky', 'Clouds');
+      this._was = this._objects.map(o => [o.renderOrder, o.material.depthTest]);
+      for (const o of this._objects) {
+        o.renderOrder = o.name === 'Sky' ? -1000 : -999;
+        o.material.depthTest = false;
+      }
+    },
+    on() {
+      this._objects.forEach((o, i) => {
+        [o.renderOrder, o.material.depthTest] = this._was[i];
+      });
+    },
+  };
   K['fx.postAll'] = {
     group: 'fx',
     off() {
@@ -350,7 +377,10 @@ await page.evaluate(() => {
     const p = new Ctor(e.camera, ...keep);
     p.needsDepthTexture = true;
     postfx.mainPass = p;
-    postfx.composer.addPass(p);
+    const at = postfx.upscale ? postfx.composer.passes.indexOf(postfx.upscale) : -1;
+    postfx.composer.addPass(p, at >= 0 ? at : undefined);
+    postfx._applySizes();
+    fixRenderToScreen();
     return true;
   };
   for (const [n, get] of [['bloom', () => postfx.bloom], ['smaa', () => postfx.smaa],
@@ -721,6 +751,9 @@ await page.evaluate(() => {
         n: rec.t.length,
         p50: +pct(rec.t, 0.50).toFixed(3),
         p95: +pct(rec.t, 0.95).toFixed(3),
+        p99: +pct(rec.t, 0.99).toFixed(3),
+        hitch50: rec.t.filter(t => t > 50).length,
+        hitch100: rec.t.filter(t => t > 100).length,
         fps: +(1000 / (pct(rec.t, 0.50) || 1)).toFixed(2),
         updMs: +mean(rec.upd).toFixed(3),
         lateMs: +mean(rec.late).toFixed(3),
@@ -924,7 +957,8 @@ async function sweep(arms, label) {
       baselines.push(nextBase.p50);
       baseStats.push(nextBase);
       const localBase = (prevBase.p50 + nextBase.p50) / 2;
-      acc.get(a.name).push({ ...s, base: localBase, save: localBase - s.p50 });
+      acc.get(a.name).push({ ...s, base: localBase, save: localBase - s.p50,
+        baseBefore: prevBase, baseAfter: nextBase });
       prevBase = nextBase;
       process.stdout.write(`\r  ${label} round ${r + 1}/${ROUNDS}  [${String(i + 1).padStart(2)}/${arms.length}] ` +
         `${a.name.padEnd(22)} ${s.p50.toFixed(1)} vs base ${localBase.toFixed(1)}      `);
@@ -936,6 +970,7 @@ async function sweep(arms, label) {
     const saves = runs.map((x) => x.save);
     out.push({
       name,
+      runs,
       p50: +median(runs.map((x) => x.p50)).toFixed(2),
       base: +median(runs.map((x) => x.base)).toFixed(2),
       save: +median(saves).toFixed(2),
@@ -963,7 +998,7 @@ async function sweep(arms, label) {
   return { out, drift, baseSplit };
 }
 
-const report = { env, viewport: [W, H], dpr: DPR, rounds: ROUNDS, blockMs: BLOCK_MS, modes: {} };
+const report = { anchor: ANCHOR, fixedCamera: FIXED, seed: SEED, hour: 16.7, env, viewport: [W, H], dpr: DPR, rounds: ROUNDS, blockMs: BLOCK_MS, modes: {} };
 
 const names = ONLY ? ONLY.split(',') : knobs.names;
 const LOO = [{ name: 'baseline', off: [] }, ...names.map((n) => ({ name: n, off: [n] }))];
@@ -983,6 +1018,18 @@ for (const mode of MODES) {
   else if (mode === 'motion') await page.evaluate((c) => window.__ab.motion(c.a, c.r, c.v, c.h),
                                                   { a: ANCHOR, r: RADIUS, v: SPEED, h: 5.5 });
   else await page.evaluate(() => window.__ab.stand());
+  if (mode === 'still' && FIXED) {
+    await page.evaluate(({ anchor, pinned, height }) => {
+      const a = pinned ?? (window.__cameraAnchors[anchor] ?? window.__cameraAnchors.road)();
+      const e = window.__engine, w = window.__world;
+      window.__forceCamera = true;
+      if (window.__systems.cameraRig) window.__systems.cameraRig.enabled = false;
+      if (window.__systems.vehicle) window.__systems.vehicle.enabled = false;
+      e.camera.position.set(a.x, w.getHeight(a.x, a.z) + height, a.z);
+      e.camera.lookAt(a.x + Math.sin(a.yaw ?? 0) * 50,
+        e.camera.position.y - 8, a.z + Math.cos(a.yaw ?? 0) * 50);
+    }, { anchor: ANCHOR, pinned: PINNED[ANCHOR], height: Number(arg('height', '5.5')) });
+  }
 
   // Wait for streaming to CONVERGE, not for a fixed number of frames. Grass
   // rings, ground-cover cells and terrain LOD all rebuild on a per-frame
@@ -991,7 +1038,7 @@ for (const mode of MODES) {
   // holds until the drawn triangle and draw-call counts stop moving, which is
   // what "streaming has caught up" actually means.
   const settled = await page.evaluate(() => window.__settleStable());
-  await sleep(1500);
+  await sleep(Number(arg('settle-ms', '1500')));
   // A frame-time number is meaningless without the frame it was measured on.
   // The first version of this had no shot, and two runs of the same command
   // disagreed by 27 ms on the cost of grass — because they were pointed at
@@ -1010,7 +1057,7 @@ for (const mode of MODES) {
   });
   console.log(`  camera     ${JSON.stringify(pose.cam)} yaw ${pose.yaw}   camper ${JSON.stringify(pose.veh)} ` +
               `speed ${pose.speed} m/s   anchor ${ANCHOR} ${JSON.stringify(at)}`);
-  if (mode === 'still' && Math.abs(pose.speed) > 0.5) {
+  if (mode === 'still' && !FIXED && Math.abs(pose.speed) > 0.5) {
     console.log(`  WARNING    the camper has not come to rest (${pose.speed} m/s). ` +
                 `The "still" view is drifting and these numbers are not reproducible.`);
   }

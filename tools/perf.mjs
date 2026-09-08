@@ -91,6 +91,10 @@ const page = await browser.newPage({ viewport: { width: W, height: H }, deviceSc
   // this tree concurrently, and a peer saving a file mid-run reloads the page
   // and kills the run with "Execution context was destroyed".
   await page.addInitScript(() => {
+    // Match shot.mjs: first-run onboarding otherwise opens over the benchmark.
+    const hud = JSON.parse(localStorage.getItem('pa.hud') ?? '{}') || {};
+    Object.assign(hud, { introSeen: true, seenHint: true, escSeen: true });
+    localStorage.setItem('pa.hud', JSON.stringify(hud));
     const RealWS = window.WebSocket;
     window.WebSocket = function (url, protocols) {
       if (typeof url === 'string' && /[?&]token=|vite-hmr|__vite/.test(url)) {

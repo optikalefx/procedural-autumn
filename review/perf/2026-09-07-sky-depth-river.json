@@ -1,0 +1,145 @@
+{
+ "env": {
+  "quality": "ultra",
+  "pixelRatio": 2,
+  "basePixelRatio": 2,
+  "internalScale": 1,
+  "effectivePixelRatio": 2,
+  "buffer": [
+   2560,
+   1600
+  ],
+  "megapixels": 4.1,
+  "internalMegapixels": 4.1,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 3072,
+  "preset": {
+   "shadowMapSize": 3072,
+   "cascades": 4,
+   "grassMul": 1,
+   "ssao": false,
+   "dof": false,
+   "volumetric": true,
+   "reflections": true,
+   "pixelRatioCap": 2,
+   "preferredEffectiveRatio": 2,
+   "treeMul": 1,
+   "terrainDetailDistance": 0
+  }
+ },
+ "viewport": [
+  1280,
+  800
+ ],
+ "dpr": 2,
+ "rounds": 5,
+ "blockMs": 4000,
+ "modes": {
+  "still": {
+   "rows": [
+    {
+     "name": "fx.skyDepth",
+     "runs": [
+      {
+       "n": 145,
+       "p50": 28.6,
+       "p95": 35.4,
+       "fps": 34.97,
+       "updMs": 1.091,
+       "lateMs": 0.011,
+       "submitMs": 26.086,
+       "calls": 571,
+       "tris": 5037756,
+       "base": 32.6,
+       "save": 4
+      },
+      {
+       "n": 138,
+       "p50": 30,
+       "p95": 36.4,
+       "fps": 33.33,
+       "updMs": 1.108,
+       "lateMs": 0.02,
+       "submitMs": 27.483,
+       "calls": 571,
+       "tris": 5036238,
+       "base": 32.55,
+       "save": 2.549999999999997
+      },
+      {
+       "n": 118,
+       "p50": 31.9,
+       "p95": 51,
+       "fps": 31.35,
+       "updMs": 1.085,
+       "lateMs": 0.015,
+       "submitMs": 32.223,
+       "calls": 571,
+       "tris": 5033934,
+       "base": 35.55,
+       "save": 3.6499999999999986
+      },
+      {
+       "n": 107,
+       "p50": 38,
+       "p95": 52.8,
+       "fps": 26.32,
+       "updMs": 1.246,
+       "lateMs": 0.02,
+       "submitMs": 35.656,
+       "calls": 571,
+       "tris": 5032832,
+       "base": 40.1,
+       "save": 2.1000000000000014
+      },
+      {
+       "n": 102,
+       "p50": 40.1,
+       "p95": 52.8,
+       "fps": 24.94,
+       "updMs": 1.67,
+       "lateMs": 0.016,
+       "submitMs": 36.863,
+       "calls": 571,
+       "tris": 5030113,
+       "base": 42.9,
+       "save": 2.799999999999997
+      }
+     ],
+     "p50": 31.9,
+     "base": 35.55,
+     "save": 2.8,
+     "spread": 1.9,
+     "fps": 31.3,
+     "p95": 51,
+     "updMs": 1.11,
+     "lateMs": 0.02,
+     "submitMs": 32.22,
+     "calls": 571,
+     "tris": 5033934
+    }
+   ],
+   "drift": {
+    "n": 10,
+    "min": 32,
+    "max": 43.8,
+    "median": 35.8,
+    "first": 32.2,
+    "last": 42
+   },
+   "baseSplit": {
+    "updMs": 1.16,
+    "lateMs": 0.02,
+    "submitMs": 33.61
+   },
+   "settled": {
+    "frames": 117,
+    "triangles": 5029259,
+    "calls": 567,
+    "converged": true
+   }
+  }
+ }
+}

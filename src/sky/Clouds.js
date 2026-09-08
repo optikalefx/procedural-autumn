@@ -44,8 +44,9 @@
 //  buildShadowTexture.
 //
 //  Ordering note: the dome is `transparent: false` with CustomBlending, which
-//  keeps it in three's opaque queue (so renderOrder actually applies and the
-//  terrain draws over it) while still alpha-blending onto the sky.
+//  keeps it in three's opaque queue, after terrain and immediately after the
+//  sky. Far-plane depth skips hidden fragments; custom blending composites the
+//  surviving cloud pixels onto the sky before transparent water and glass.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
@@ -832,10 +833,10 @@ export class Clouds extends System {
       fragmentShader: FRAG,
       side: THREE.BackSide,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
       fog: false,
       toneMapped: true,
-      // See the header: opaque queue (so renderOrder wins over the terrain)
+      // Opaque queue: draw after terrain, depth-tested against its silhouette.
       // but still alpha-blended over the sky dome.
       transparent: false,
       blending: THREE.CustomBlending,
@@ -846,7 +847,9 @@ export class Clouds extends System {
 
     this.mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 24), mat);
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = -999;
+    // Far-plane depth rejects pixels already covered by opaque geometry.
+    // Stay in the opaque queue, before water, glass and other transparencies.
+    this.mesh.renderOrder = 1001;
     this.mesh.name = 'Clouds';
     scene.add(this.mesh);
 

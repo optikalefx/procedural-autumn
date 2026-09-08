@@ -1,0 +1,508 @@
+{
+ "anchor": "vista",
+ "fixedCamera": true,
+ "seed": "20261018",
+ "hour": 16.7,
+ "env": {
+  "quality": "ultra",
+  "pixelRatio": 2,
+  "basePixelRatio": 2,
+  "internalScale": 1,
+  "effectivePixelRatio": 2,
+  "buffer": [
+   2560,
+   1600
+  ],
+  "megapixels": 4.1,
+  "internalMegapixels": 4.1,
+  "devicePixelRatio": 2,
+  "gpuTimerQuery": true,
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+  "shadowMapSize": 3072,
+  "preset": {
+   "shadowMapSize": 3072,
+   "cascades": 4,
+   "grassMul": 1,
+   "ssao": false,
+   "dof": false,
+   "volumetric": true,
+   "reflections": true,
+   "pixelRatioCap": 2,
+   "preferredEffectiveRatio": 2,
+   "treeMul": 1,
+   "terrainDetailDistance": 0
+  }
+ },
+ "viewport": [
+  1280,
+  800
+ ],
+ "dpr": 2,
+ "rounds": 3,
+ "blockMs": 2000,
+ "modes": {
+  "still": {
+   "rows": [
+    {
+     "name": "fx.skyEarly",
+     "runs": [
+      {
+       "n": 51,
+       "p50": 37.9,
+       "p95": 52.7,
+       "fps": 26.39,
+       "updMs": 0.882,
+       "lateMs": 0.018,
+       "submitMs": 37.059,
+       "calls": 441,
+       "tris": 3102896,
+       "base": 38.75,
+       "save": 0.8500000000000014
+      },
+      {
+       "n": 49,
+       "p50": 41,
+       "p95": 69.3,
+       "fps": 24.39,
+       "updMs": 0.998,
+       "lateMs": 0.022,
+       "submitMs": 39.557,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 39.05,
+       "save": -1.9500000000000028
+      },
+      {
+       "n": 51,
+       "p50": 40.7,
+       "p95": 75.8,
+       "fps": 24.57,
+       "updMs": 0.959,
+       "lateMs": 0.012,
+       "submitMs": 38.582,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 38.95,
+       "save": -1.75
+      }
+     ],
+     "p50": 40.7,
+     "base": 38.95,
+     "save": -1.75,
+     "spread": 2.8,
+     "fps": 24.6,
+     "p95": 69.3,
+     "updMs": 0.96,
+     "lateMs": 0.02,
+     "submitMs": 38.58,
+     "calls": 443,
+     "tris": 3104731
+    },
+    {
+     "name": "fx.shadeOnly",
+     "runs": [
+      {
+       "n": 90,
+       "p50": 26.1,
+       "p95": 48.9,
+       "fps": 38.31,
+       "updMs": 0.836,
+       "lateMs": 0.014,
+       "submitMs": 20.832,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 38.599999999999994,
+       "save": 12.499999999999993
+      },
+      {
+       "n": 61,
+       "p50": 32.2,
+       "p95": 48.3,
+       "fps": 31.06,
+       "updMs": 0.962,
+       "lateMs": 0.02,
+       "submitMs": 30.89,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 39.25,
+       "save": 7.049999999999997
+      },
+      {
+       "n": 59,
+       "p50": 35.2,
+       "p95": 67.7,
+       "fps": 28.41,
+       "updMs": 0.954,
+       "lateMs": 0.015,
+       "submitMs": 32.897,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 39.55,
+       "save": 4.349999999999994
+      }
+     ],
+     "p50": 32.2,
+     "base": 39.25,
+     "save": 7.05,
+     "spread": 8.15,
+     "fps": 31.1,
+     "p95": 48.9,
+     "updMs": 0.95,
+     "lateMs": 0.01,
+     "submitMs": 30.89,
+     "calls": 443,
+     "tris": 3104731
+    },
+    {
+     "name": "draw.clouds",
+     "runs": [
+      {
+       "n": 54,
+       "p50": 38.2,
+       "p95": 60.8,
+       "fps": 26.18,
+       "updMs": 0.957,
+       "lateMs": 0.024,
+       "submitMs": 35.517,
+       "calls": 442,
+       "tris": 3102523,
+       "base": 39.5,
+       "save": 1.2999999999999972
+      },
+      {
+       "n": 53,
+       "p50": 39.4,
+       "p95": 72.1,
+       "fps": 25.38,
+       "updMs": 1.055,
+       "lateMs": 0.013,
+       "submitMs": 36.591,
+       "calls": 442,
+       "tris": 3102523,
+       "base": 38.95,
+       "save": -0.44999999999999574
+      },
+      {
+       "n": 51,
+       "p50": 39.1,
+       "p95": 56,
+       "fps": 25.58,
+       "updMs": 1.02,
+       "lateMs": 0.018,
+       "submitMs": 37.649,
+       "calls": 442,
+       "tris": 3102523,
+       "base": 38.7,
+       "save": -0.3999999999999986
+      }
+     ],
+     "p50": 39.1,
+     "base": 38.95,
+     "save": -0.4,
+     "spread": 1.75,
+     "fps": 25.6,
+     "p95": 60.8,
+     "updMs": 1.02,
+     "lateMs": 0.02,
+     "submitMs": 36.59,
+     "calls": 442,
+     "tris": 3102523
+    },
+    {
+     "name": "draw.grass",
+     "runs": [
+      {
+       "n": 51,
+       "p50": 37.1,
+       "p95": 84.6,
+       "fps": 26.95,
+       "updMs": 1.037,
+       "lateMs": 0.018,
+       "submitMs": 36.939,
+       "calls": 440,
+       "tris": 3097441,
+       "base": 39.5,
+       "save": 2.3999999999999986
+      },
+      {
+       "n": 53,
+       "p50": 38.4,
+       "p95": 71.4,
+       "fps": 26.04,
+       "updMs": 1.074,
+       "lateMs": 0.015,
+       "submitMs": 36.638,
+       "calls": 441,
+       "tris": 3105583,
+       "base": 38.35,
+       "save": -0.04999999999999716
+      },
+      {
+       "n": 52,
+       "p50": 38.6,
+       "p95": 62.3,
+       "fps": 25.91,
+       "updMs": 1.031,
+       "lateMs": 0.006,
+       "submitMs": 36.496,
+       "calls": 440,
+       "tris": 3097441,
+       "base": 38.1,
+       "save": -0.5
+      }
+     ],
+     "p50": 38.4,
+     "base": 38.35,
+     "save": -0.05,
+     "spread": 2.9,
+     "fps": 26,
+     "p95": 71.4,
+     "updMs": 1.04,
+     "lateMs": 0.01,
+     "submitMs": 36.64,
+     "calls": 440,
+     "tris": 3097441
+    },
+    {
+     "name": "draw.groundCover",
+     "runs": [
+      {
+       "n": 57,
+       "p50": 35.9,
+       "p95": 72.9,
+       "fps": 27.86,
+       "updMs": 0.921,
+       "lateMs": 0.011,
+       "submitMs": 33.907,
+       "calls": 408,
+       "tris": 1294875,
+       "base": 37.45,
+       "save": 1.5500000000000043
+      },
+      {
+       "n": 59,
+       "p50": 34,
+       "p95": 59.4,
+       "fps": 29.41,
+       "updMs": 0.932,
+       "lateMs": 0.015,
+       "submitMs": 32.28,
+       "calls": 409,
+       "tris": 1303865,
+       "base": 37.85,
+       "save": 3.8500000000000014
+      },
+      {
+       "n": 57,
+       "p50": 34.7,
+       "p95": 67.8,
+       "fps": 28.82,
+       "updMs": 0.988,
+       "lateMs": 0.019,
+       "submitMs": 33.898,
+       "calls": 408,
+       "tris": 1294875,
+       "base": 37.5,
+       "save": 2.799999999999997
+      }
+     ],
+     "p50": 34.7,
+     "base": 37.5,
+     "save": 2.8,
+     "spread": 2.3,
+     "fps": 28.8,
+     "p95": 67.8,
+     "updMs": 0.93,
+     "lateMs": 0.01,
+     "submitMs": 33.9,
+     "calls": 408,
+     "tris": 1294875
+    },
+    {
+     "name": "draw.water",
+     "runs": [
+      {
+       "n": 57,
+       "p50": 35.8,
+       "p95": 64,
+       "fps": 27.93,
+       "updMs": 1.005,
+       "lateMs": 0.012,
+       "submitMs": 34.007,
+       "calls": 433,
+       "tris": 2966123,
+       "base": 37.5,
+       "save": 1.7000000000000028
+      },
+      {
+       "n": 56,
+       "p50": 36.4,
+       "p95": 80.8,
+       "fps": 27.47,
+       "updMs": 0.946,
+       "lateMs": 0.021,
+       "submitMs": 34.352,
+       "calls": 434,
+       "tris": 2975113,
+       "base": 37.1,
+       "save": 0.7000000000000028
+      },
+      {
+       "n": 57,
+       "p50": 35.5,
+       "p95": 69.2,
+       "fps": 28.17,
+       "updMs": 0.996,
+       "lateMs": 0.007,
+       "submitMs": 33.114,
+       "calls": 433,
+       "tris": 2966123,
+       "base": 38,
+       "save": 2.5
+      }
+     ],
+     "p50": 35.8,
+     "base": 37.5,
+     "save": 1.7,
+     "spread": 1.8,
+     "fps": 27.9,
+     "p95": 69.2,
+     "updMs": 1,
+     "lateMs": 0.01,
+     "submitMs": 34.01,
+     "calls": 433,
+     "tris": 2966123
+    },
+    {
+     "name": "cpu.grass",
+     "runs": [
+      {
+       "n": 52,
+       "p50": 39.1,
+       "p95": 75.9,
+       "fps": 25.58,
+       "updMs": 1.019,
+       "lateMs": 0.021,
+       "submitMs": 37.325,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 38.6,
+       "save": -0.5
+      },
+      {
+       "n": 52,
+       "p50": 37.6,
+       "p95": 74.1,
+       "fps": 26.6,
+       "updMs": 0.948,
+       "lateMs": 0.012,
+       "submitMs": 37.483,
+       "calls": 444,
+       "tris": 3113721,
+       "base": 38.3,
+       "save": 0.6999999999999957
+      },
+      {
+       "n": 52,
+       "p50": 39.7,
+       "p95": 66,
+       "fps": 25.19,
+       "updMs": 1.246,
+       "lateMs": 0.019,
+       "submitMs": 38.86,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 39.35,
+       "save": -0.3500000000000014
+      }
+     ],
+     "p50": 39.1,
+     "base": 38.6,
+     "save": -0.35,
+     "spread": 1.2,
+     "fps": 25.6,
+     "p95": 74.1,
+     "updMs": 1.02,
+     "lateMs": 0.02,
+     "submitMs": 37.48,
+     "calls": 443,
+     "tris": 3104731
+    },
+    {
+     "name": "cpu.terrainStream",
+     "runs": [
+      {
+       "n": 51,
+       "p50": 39,
+       "p95": 75.8,
+       "fps": 25.64,
+       "updMs": 1.018,
+       "lateMs": 0.018,
+       "submitMs": 38.463,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 39.3,
+       "save": 0.29999999999999716
+      },
+      {
+       "n": 50,
+       "p50": 38.6,
+       "p95": 76.4,
+       "fps": 25.91,
+       "updMs": 0.992,
+       "lateMs": 0.014,
+       "submitMs": 38.02,
+       "calls": 444,
+       "tris": 3113721,
+       "base": 39.1,
+       "save": 0.5
+      },
+      {
+       "n": 52,
+       "p50": 39.3,
+       "p95": 71.8,
+       "fps": 25.45,
+       "updMs": 1.163,
+       "lateMs": 0.017,
+       "submitMs": 37.2,
+       "calls": 443,
+       "tris": 3104731,
+       "base": 39.1,
+       "save": -0.19999999999999574
+      }
+     ],
+     "p50": 39,
+     "base": 39.1,
+     "save": 0.3,
+     "spread": 0.7,
+     "fps": 25.6,
+     "p95": 75.8,
+     "updMs": 1.02,
+     "lateMs": 0.02,
+     "submitMs": 38.02,
+     "calls": 443,
+     "tris": 3104731
+    }
+   ],
+   "drift": {
+    "n": 27,
+    "min": 36.5,
+    "max": 41.1,
+    "median": 38.5,
+    "first": 38.2,
+    "last": 38.2
+   },
+   "baseSplit": {
+    "updMs": 1.01,
+    "lateMs": 0.02,
+    "submitMs": 37.09
+   },
+   "settled": {
+    "frames": 98,
+    "triangles": 3100051,
+    "calls": 439,
+    "converged": true
+   }
+  }
+ }
+}
