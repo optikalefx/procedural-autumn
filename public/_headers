@@ -1,7 +1,7 @@
 # Cloudflare Pages reads this from the build output root; Vite copies public/
-# into dist/ verbatim, so it lands where Pages expects it. Vercel ignores it
-# and uses vercel.json instead — the two are kept in sync deliberately so the
-# repo deploys correctly on either host.
+# into dist/ verbatim, so it lands where Pages expects it. This is the only
+# host config in the repo — the build command and NODE_VERSION live in the
+# Pages dashboard, not here (see docs/DEPLOY.md).
 #
 # Content-Encoding is load-bearing: the .pab files in dist/ hold brotli bytes
 # under their original filename (see compressBakesForBuild in vite.config.js).

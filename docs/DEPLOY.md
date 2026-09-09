@@ -1,6 +1,6 @@
 # Deploying
 
-Referenced from `src/main.js`, `vite.config.js`, and `vercel.json`. The subject
+Referenced from `src/main.js`, `vite.config.js`, and `public/_headers`. The subject
 of this document is really one thing: **the world bakes are generated, not
 tracked**, and everything below follows from that.
 
@@ -14,19 +14,22 @@ first-time visitor downloads a whole world, and on Vercel's free tier that
 capped the site at roughly 5,700 visitors a month before the project was
 throttled. Pages has no such ceiling.
 
-The Vercel config is deliberately kept working. [`../vercel.json`](../vercel.json)
-and [`../public/_headers`](../public/_headers) carry the same rules in each
-host's format; Vercel ignores `_headers` and Cloudflare ignores `vercel.json`,
-so either host can serve this repo without a code change.
+Vercel is gone as of 2026-09-09 — the project was deleted, the GitHub App
+disconnected, and `vercel.json` removed. The repo now describes one host:
 
-| | Cloudflare Pages | Vercel |
-| --- | --- | --- |
-| Header config | `public/_headers` | `vercel.json` |
-| Egress | free | 100 GB/mo on the free plan |
-| Per-file upload cap | 25 MiB | 100 MB |
-| Build command | `node tools/bake.mjs --res 1536 && npm run build` | same |
-| Output | `dist` | `dist` |
-| Node | `NODE_VERSION=22` | auto |
+| | Cloudflare Pages |
+| --- | --- |
+| Header config | [`../public/_headers`](../public/_headers) |
+| Egress | free |
+| Per-file upload cap | 25 MiB |
+| Build command | `node tools/bake.mjs --res 1536 && npm run build` |
+| Output | `dist` |
+| Node | `NODE_VERSION=22` |
+
+**The build command and `NODE_VERSION` live only in the Pages dashboard.**
+Nothing in the repo sets them, which is the one thing `vercel.json` used to do
+that `_headers` does not — if a fresh Pages project is ever wired up, those two
+settings have to be typed in by hand or the deploy ships a bake-less `dist/`.
 
 `--res 1536` is what the game actually loads; 768 and 512 exist for the local
 capture tools and only cost build time and deploy size in production.
@@ -37,8 +40,8 @@ capture tools and only cost build time and deploy size in production.
 
 `public/bakes/` is gitignored (44 MB of incompressible, frequently-invalidated
 binary once bloated `.git` to 637 MB — see `.gitignore` for the history). So a
-fresh checkout, including Vercel's build container, has no bakes. The build
-command in [`../vercel.json`](../vercel.json) creates them:
+fresh checkout, including Cloudflare's build container, has no bakes. The
+build command configured on the Pages project creates them:
 
 ```
 node tools/bake.mjs && npm run build
@@ -50,33 +53,33 @@ into `dist/` verbatim. Its defaults — seed, world size, altitude — are read
 from `src/world/WorldConfig.js`, so the build always bakes the world the game
 actually loads.
 
-Vercel's per-file deployment limit is 100 MB; the 1536 bake is 44 MB. The
-`assetSizeCap` plugin in [`../vite.config.js`](../vite.config.js) fails the
-build if any file in `dist/` crosses the limit, so an oversized asset is caught
-locally rather than by a refused deploy. If it fires, host the file off the
-bundle rather than shrinking it.
+Cloudflare's per-file upload limit is 25 MiB. The 1536 bake is 44.5 MB raw and
+**16.3 MB after brotli**, which is the only reason it fits — the headroom is
+8.9 MB, not 84 MB as it was on Vercel. The `assetSizeCap` plugin in
+[`../vite.config.js`](../vite.config.js) runs `enforce: 'post'`, so it measures
+files after compression and fails the build if any crosses 25 MiB, catching an
+oversized asset locally rather than at a refused deploy. If it fires, host the
+file off the bundle rather than shrinking it.
 
 ## Bandwidth, and why it is the thing to watch
 
 Every **first-time** visitor downloads the whole world. Caching does not help
 them — an HTTP cache only ever helps the *second* visit, and in a traffic spike
-almost everyone is a first visit. Vercel bills edge→client transfer, which is
-exactly the part a cache header does not touch. So the per-visitor payload is
-the bill:
+almost everyone is a first visit. Pages does not bill egress, so this is no
+longer a bill — but it is still the number that decides how long a first-time
+visitor stares at the loading screen, and on a phone connection that is the
+whole first impression:
 
 | | per fresh visitor |
 | --- | --- |
 | 1536 bake, brotli (what ships) | 16.1 MB |
-| JS bundle (Vercel compresses) | ~1.7 MB |
+| JS bundle (Pages compresses) | ~1.7 MB |
 | `Maple Road Loop.mp3`, only if the player stays ~20 s | 4.9 MB |
 | **Typical total** | **~18 MB** (~23 MB if the music enters) |
 
-Before compression and lazy audio this was ~51 MB. At Vercel Pro's 1 TB
-included transfer that is the difference between roughly 20,000 and 60,000
-visitors a month, and overage is billed per GB.
-
-**Set a spend cap.** The optimisations lower the slope; only Vercel's spend
-management bounds the worst case. A front-page day at 100k visitors is ~1.8 TB.
+Before compression and lazy audio this was ~51 MB — so the same first load
+used to take nearly three times as long. This is why the compression work was
+worth doing even though the free-egress move made the bandwidth itself free.
 
 ## Compression
 
@@ -86,7 +89,7 @@ compresses (quality 5) every `.pab` in `dist/` after the bundle:
 build time per bake, which is not a good trade when build minutes are billed
 too.
 
-The compressed bytes **keep the `.pab` filename**, and `vercel.json` sets
+The compressed bytes **keep the `.pab` filename**, and `_headers` sets
 `Content-Encoding: br` on `/bakes/*.pab` so the browser inflates them
 transparently. `loadCachedBake` needs no change — `arrayBuffer()` hands it the
 original bytes, `PAB1` magic and all.
@@ -96,20 +99,20 @@ Two consequences worth knowing:
 - **`public/bakes/` stays raw.** Everything in `tools/` reads those files off
   disk with `decodeBake` and would choke on compressed bytes. Only `dist/` is
   rewritten, so dev and every capture harness are untouched.
-- **`vite preview` shows the bake failing.** It does not read `vercel.json`, so
+- **`vite preview` shows the bake failing.** It does not read `_headers`, so
   no `Content-Encoding` is set, the magic check fails and the game live-bakes.
   That is the intended graceful degradation, not a bug — but it means preview
-  is not a test of production. Use `tools/vercel-sim.mjs` instead:
+  is not a test of production. Use `tools/pages-sim.mjs` instead:
 
 ```bash
-npm run build && node tools/vercel-sim.mjs
+npm run build && node tools/pages-sim.mjs
 ```
 
-That serves `dist/` applying `vercel.json`'s header rules on
+That serves `dist/` applying `dist/_headers`' rules on
 `http://127.0.0.1:5224`. A correct run logs `[world] loaded cached bake` and
 the Network panel shows ~16 MB transferred against ~44 MB decoded.
 
-**Verify once after the first real deploy** that Vercel passes the header
+**Verify once after the first real deploy** that Pages passes the header
 through rather than stripping it or double-compressing:
 
 ```bash
@@ -118,8 +121,8 @@ curl -sI https://YOURSITE/bakes/world-<seed>-1536-<hash>.pab | grep -i 'content-
 
 Expect `content-encoding: br` and a length near 16 MB. If the header is absent
 you are shipping the full 44.5 MB; if the game live-bakes in production while
-the header *is* present, Vercel is compressing on top of the brotli and the
-plugin should be dropped in favour of letting Vercel do it alone. (Note some
+the header *is* present, Pages is compressing on top of the brotli and the
+plugin should be dropped in favour of letting Pages do it alone. (Note some
 `curl` builds lack brotli support, so `--compressed` may fail where a browser
 succeeds — trust the headers and the browser, not `curl --compressed`.)
 
@@ -127,7 +130,7 @@ succeeds — trust the headers and the browser, not `curl --compressed`.)
 
 The bake filenames are content-addressed — `world-<seed>-<res>-<genhash>.pab`,
 where the hash is of `src/world/TerrainGen.js` — so a given URL's bytes never
-change. `vercel.json` exploits that:
+change. `public/_headers` exploits that:
 
 | Path | Cache-Control | Why |
 | --- | --- | --- |
@@ -169,7 +172,7 @@ The bake cache key is a hash of `src/world/TerrainGen.js` (`sourceHash` in
 design — it is what stops a stale bake silently serving the previous
 algorithm.
 
-In production this is self-healing: every Vercel build starts clean and bakes
+In production this is self-healing: every Pages build starts clean and bakes
 from current source, so the deployed bake always matches the deployed
 generator. Just push. Locally you re-bake by hand:
 
@@ -201,9 +204,9 @@ Force a live bake regardless of what is cached with `?nocache=1`.
 **Every production load logs `baked live` and sits ~30 s on the loading
 screen.**
 The deployed `dist/` has no bakes — the build command that generates them did
-not run. Check that the Vercel project is using `vercel.json`'s `buildCommand`
-(a dashboard override wins over the file) and that `node tools/bake.mjs`
-succeeded in the build log.
+not run. The command lives only in the Pages project settings (Settings →
+Builds & deployments), so check it still starts with `node tools/bake.mjs` and
+that the step succeeded in the build log.
 
 **`cached bake unusable, baking live: not a Camping Season bake`, on a
 machine that has a perfectly good bake on disk.**

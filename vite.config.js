@@ -64,8 +64,8 @@ function glslBacktickGuard() {
  * bill, since every first-time visitor pays the full download and an HTTP
  * cache only ever helps the *second* visit.
  *
- * The compressed bytes keep the original .pab filename, and vercel.json sets
- * `Content-Encoding: br` on that path so the browser transparently inflates
+ * The compressed bytes keep the original .pab filename, and public/_headers
+ * sets `Content-Encoding: br` on that path so the browser transparently inflates
  * them. `loadCachedBake` therefore needs no change: `arrayBuffer()` hands it
  * the original bytes, magic number and all.
  *
@@ -74,7 +74,7 @@ function glslBacktickGuard() {
  * would choke on a compressed file. Dev serves public/ raw and is untouched.
  *
  * Quality 5 is deliberate: q9 saves a further 0.2 MB for 11 s more build
- * time per bake, and Vercel bills build minutes too.
+ * time per bake, and Cloudflare Pages bills build minutes too.
  */
 function compressBakesForBuild() {
   let outDir = 'dist';
@@ -109,53 +109,63 @@ function compressBakesForBuild() {
       if (n) {
         this.info(`brotli: ${n} bake(s) ${(from / 1048576).toFixed(1)} MB -> ` +
                   `${(to / 1048576).toFixed(1)} MB (${(from / to).toFixed(2)}x). ` +
-                  `vercel.json must serve /bakes/*.pab with Content-Encoding: br.`);
+                  `public/_headers must serve /bakes/*.pab with Content-Encoding: br.`);
       }
     },
   };
 }
 
 /**
- * Fail the build if any single file in dist/ exceeds Vercel's 100 MB
- * per-file deployment limit. The .pab world bakes ship in dist/ deliberately
- * (the 1536 bake is 44 MB — see docs/DEPLOY.md), so the headroom is real but
- * finite; this catches whatever large asset shows up next before a deploy
- * refuses it. Build-only.
+ * Fail the build if any single file in dist/ exceeds Cloudflare Pages' 25 MiB
+ * per-file upload limit.
+ *
+ * It must measure files as they will be *uploaded*, i.e. after
+ * compressBakesForBuild — that compression is the only reason the bakes fit at
+ * all (the 1536 bake is 44.5 MB raw, 16.3 MB brotli'd, so the headroom is
+ * 8.9 MB, not 84 MB as it was under Vercel's 100 MB limit).
+ *
+ * `enforce: 'post'` does NOT achieve that: rollup runs `closeBundle` for every
+ * plugin in parallel, so ordering only exists for hooks declared
+ * `sequential: true`. Without it this raced the compressor and read whichever
+ * bytes happened to be on disk — which under the old 100 MB cap looked like it
+ * worked, because 44.5 MB passed either way. Build-only.
  */
-function assetSizeCap(limitBytes = 100 * 1024 * 1024) {
+function assetSizeCap(limitBytes = 25 * 1024 * 1024) {
   let outDir = 'dist';
   return {
     name: 'asset-size-cap',
     apply: 'build',
     enforce: 'post',
     configResolved(cfg) { outDir = cfg.build.outDir; },
-    async closeBundle() {
-      const { readdir, stat } = await import('node:fs/promises');
-      const { join, resolve, relative } = await import('node:path');
-      const root = resolve(outDir);
-      const over = [];
-      async function walk(dir) {
-        let entries;
-        try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
-        for (const e of entries) {
-          const p = join(dir, e.name);
-          if (e.isDirectory()) await walk(p);
-          else {
-            const { size } = await stat(p);
-            if (size > limitBytes) over.push(`${relative(root, p)} (${(size / 1048576).toFixed(1)} MB)`);
-          }
+    closeBundle: { order: 'post', sequential: true, handler: closeBundleHandler },
+  };
+  async function closeBundleHandler() {
+    const { readdir, stat } = await import('node:fs/promises');
+    const { join, resolve, relative } = await import('node:path');
+    const root = resolve(outDir);
+    const over = [];
+    async function walk(dir) {
+      let entries;
+      try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) await walk(p);
+        else {
+          const { size } = await stat(p);
+          if (size > limitBytes) over.push(`${relative(root, p)} (${(size / 1048576).toFixed(1)} MB)`);
         }
       }
-      await walk(root);
-      if (over.length) {
-        this.error(
-          `${over.length} file(s) in ${outDir}/ exceed Vercel's 100 MB per-file limit ` +
-          `and the deploy will be rejected:\n  ${over.join('\n  ')}\n` +
-          `  Host the file off the bundle (see docs/DEPLOY.md) rather than shrinking it.`
-        );
-      }
-    },
-  };
+    }
+    await walk(root);
+    if (over.length) {
+      this.error(
+        `${over.length} file(s) in ${outDir}/ exceed Cloudflare Pages' ` +
+        `${(limitBytes / 1048576).toFixed(0)} MiB per-file limit ` +
+        `and the deploy will be rejected:\n  ${over.join('\n  ')}\n` +
+        `  Host the file off the bundle (see docs/DEPLOY.md) rather than shrinking it.`
+      );
+    }
+  }
 }
 
 export default defineConfig({
