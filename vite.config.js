@@ -171,7 +171,24 @@ function assetSizeCap(limitBytes = 25 * 1024 * 1024) {
 export default defineConfig({
   plugins: [glslBacktickGuard(), compressBakesForBuild(), assetSizeCap()],
   server: { host: '127.0.0.1', port: 5178, strictPort: true },
-  build: { target: 'esnext', sourcemap: true },
+  build: {
+    target: 'esnext',
+    // Off by default: the map for the main bundle is 15.9 MB, and nothing
+    // reads it. There is no error tracking that symbolicates a production
+    // stack (src/posthog.js captures gameplay events only, no exceptions), so
+    // the map was deployed on every push purely to sit there — and it publishes
+    // the unminified source while doing it. It is not visitor bandwidth: a
+    // browser only fetches a .map with DevTools open.
+    //
+    // The cost of turning it off is that a stack trace from a production build
+    // is minified. When that is what you are chasing, opt back in for the one
+    // build:
+    //
+    //   BUILD_SOURCEMAP=1 npm run build && node tools/pages-sim.mjs
+    //
+    // The dev server is unaffected either way — esbuild always maps there.
+    sourcemap: process.env.BUILD_SOURCEMAP === '1',
+  },
   worker: { format: 'es' },
   optimizeDeps: { exclude: ['@dimforge/rapier3d-compat'] },
 });

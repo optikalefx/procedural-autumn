@@ -81,6 +81,25 @@ Before compression and lazy audio this was ~51 MB — so the same first load
 used to take nearly three times as long. This is why the compression work was
 worth doing even though the free-egress move made the bandwidth itself free.
 
+### Sourcemaps are off
+
+`build.sourcemap` is `false`. The main bundle's map is **15.9 MB** and nothing
+reads it: the game has no error tracking that symbolicates a production stack
+(`src/posthog.js` captures gameplay events, not exceptions), so it was deployed
+on every push to sit unused while publishing the unminified source. Dropping it
+took `dist/` from **114 MB to 98 MB** and the build from 3.8 s to 2.9 s.
+
+It was never visitor bandwidth — a browser fetches a `.map` only with DevTools
+open — so this is a deploy-size and source-exposure change, not a load-time one.
+The cost is that a production stack trace is minified. When that is what you are
+chasing, opt back in for one build:
+
+```bash
+BUILD_SOURCEMAP=1 npm run build && node tools/pages-sim.mjs
+```
+
+The dev server is unaffected either way; esbuild always maps there.
+
 ## Compression
 
 `compressBakesForBuild` in [`../vite.config.js`](../vite.config.js) brotli-
