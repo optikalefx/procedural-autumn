@@ -21,8 +21,37 @@ const STONE = [
   tintFrom(0x7d7871, 0x9a8b76), tintFrom(0x7d7871, 0x5c5e60),
   tintFrom(0x7d7871, 0x968e83), tintFrom(0x7d7871, 0x7a6f63),
 ];
-const ASH = tintFrom(0x7d7871, 0x8a847c);
-const ASH_COOL = tintFrom(0x7d7871, 0x6a6560);
+const ASH = tintFrom(0x7d7871, 0x9a948c);
+const ASH_COOL = tintFrom(0x7d7871, 0x7a756e);
+
+/**
+ * A new MeshStandardMaterial matching the camp kit, not the kit singleton.
+ *
+ * Camp pre-warms a fire under the loader and harvests `campMaterials().stone`
+ * against that geometry. Reusing the compiled singleton on these leftovers
+ * drew a black slab — vertex colours (0.56–1.43) and normals were fine; a
+ * fresh standard material harvested in place lights like a cobble. Same
+ * albedo and roughness so they still sit in the same valley as a live ring.
+ */
+function traceMat(key) {
+  const src = campMaterials()[key];
+  return new THREE.MeshStandardMaterial({
+    color: src.color.clone(),
+    roughness: src.roughness,
+    metalness: src.metalness,
+    envMapIntensity: src.envMapIntensity,
+    vertexColors: true,
+  });
+}
+
+function flushTrace(P, parent, opts) {
+  const made = P.flush(parent, opts);
+  for (const mesh of made) {
+    const key = mesh.name.slice(mesh.name.lastIndexOf('_') + 1);
+    if (campMaterials()[key]) mesh.material = traceMat(key);
+  }
+  return made;
+}
 
 /** A lumpy cobble — same primitive the fire ring uses, kept local so that
  *  file does not have to export its workshop. */
@@ -128,7 +157,7 @@ export function buildColdRing(rnd) {
          rnd() * TAU, rnd() * TAU, rnd() * TAU, 1.2, 0.7, 1.0),
       [1.05, 1.0, 0.96]);
   }
-  P.flush(g);
+  flushTrace(P, g);
   g.userData.trace = { kind: 'ring', pickR: 0.72 };
   return g;
 }
@@ -162,7 +191,7 @@ export function buildStakeHoles(rnd) {
       at(jx + Math.cos(sa) * 0.08, 0.012, jz + Math.sin(sa) * 0.08, 0.25, rnd(), 0.12, 1, 0.48, 1),
       DIRT);
   }
-  P.flush(g, { cast: false, receive: true });
+  flushTrace(P, g, { cast: false, receive: true });
   g.userData.trace = { kind: 'stakes', pickR: 1.15 };
   return g;
 }
@@ -184,7 +213,7 @@ export function buildCairn(rnd) {
       STONE[Math.floor(rnd() * STONE.length)]);
     y += s * sy * 0.40;
   }
-  P.flush(g);
+  flushTrace(P, g);
   g.userData.trace = { kind: 'cairn', pickR: 0.42 };
   return g;
 }
