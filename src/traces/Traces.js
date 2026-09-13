@@ -29,7 +29,7 @@ import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
 import { seedFeatures, pickWeekend, assignScraps } from './prior_notes.js';
 import {
-  buildColdRing, buildStakeHoles, buildCairn, buildScuff, seatJournal, placeOnGround,
+  buildColdRing, buildStakeHoles, buildCairn, seatJournal, placeOnGround,
   buildTreeNote, buildTippedBike, buildBeachedCanoe, buildLeanedPaddle,
   buildCoffeeTin, buildLaidStick, buildTireTracks, buildTrunkRope,
 } from './trace_props.js';
@@ -507,7 +507,6 @@ export class Traces extends System {
       note.position.set(hx, hy, hz);
       note.lookAt(tree.x, hy, tree.z);
       this.root.add(note);
-      this._scuffAt(tree.x + nx * 0.55, tree.z + nz * 0.55, rnd, 0.55);
       p.x = hx; p.z = hz;
       this._spot(note, 'tree-note', hx, hy, hz, scrap);
       return true;
@@ -524,7 +523,6 @@ export class Traces extends System {
       const hz = tree.z + nz * 0.36;
       const y = placeOnGround(world, rope, hx, hz, Math.atan2(nx, nz), 0.08, 0.25);
       this.root.add(rope);
-      this._scuffAt(hx, hz, rnd, 0.5);
       p.x = hx; p.z = hz;
       this._spot(rope, 'rope', hx, y + 0.85, hz);
       return true;
@@ -686,12 +684,6 @@ export class Traces extends System {
     }
     this._rockMemo.set(key, crowded);
     return crowded;
-  }
-
-  _scuffAt(x, z, rnd, radius = 0.55) {
-    const scuff = buildScuff(rnd, radius);
-    placeOnGround(this.ctx.world, scuff, x, z, rnd() * Math.PI * 2, 0.7, radius);
-    this.root.add(scuff);
   }
 
   _spot(obj, kind, x, y, z, scrap = null) {
