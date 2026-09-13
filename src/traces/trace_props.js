@@ -317,14 +317,14 @@ export function buildTreeNote(rnd) {
   g.name = 'trace_tree_note';
   // A darker back sheet gives the cream an edge against bark — not a glow.
   const back = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.30, 0.40),
+    new THREE.PlaneGeometry(0.34, 0.44),
     propMat(0x6a5340, { roughness: 0.96, metalness: 0, side: THREE.DoubleSide }),
   );
   back.position.z = 0.002;
   back.rotation.z = (rnd() - 0.5) * 0.08;
   g.add(back);
   const paper = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.28, 0.38),
+    new THREE.PlaneGeometry(0.32, 0.42),
     propMat(0xf6ecd2, { roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
   );
   paper.position.z = 0.008;
@@ -387,14 +387,14 @@ export function buildLeanedPaddle(rnd) {
   wrap.add(buildScuff(rnd, 0.48));
   const g = new THREE.Group();
   const wood = propMat(0xd8b06a, { roughness: 0.7 });
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 1.28, 8), wood);
-  shaft.position.y = 0.64;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.034, 1.46, 8), wood);
+  shaft.position.y = 0.73;
   const blade = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 8, 6),
+    new THREE.SphereGeometry(0.14, 8, 6),
     propMat(0xc49a58, { roughness: 0.68 }),
   );
-  blade.scale.set(0.78, 2.05, 0.16);
-  blade.position.y = 1.46;
+  blade.scale.set(0.82, 2.15, 0.16);
+  blade.position.y = 1.64;
   g.add(shaft, blade);
   // Lean lives on the child. Keep it upright enough to read against water/sky.
   g.rotation.z = 0.38 + rnd() * 0.10;

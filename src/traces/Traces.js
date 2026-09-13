@@ -329,7 +329,7 @@ export class Traces extends System {
       return null;
     }
     if (kind === 'paddle') {
-      const bank = this._bankNear(p);
+      const bank = this._bankClear(p);
       if (bank && this._free(bank, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...bank };
       return null;
     }
@@ -341,6 +341,11 @@ export class Traces extends System {
     if (kind === 'bike' || kind === 'tracks') {
       const off = this._offPath(p, rnd);
       if (this._free(off, taken, MIN_SEP - PAIR_MIN)) return off;
+      return null;
+    }
+    if (kind === 'cairn') {
+      const seat = this._seatCairn(p, rnd);
+      if (seat && this._free(seat, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...seat };
       return null;
     }
     const nudged = this._nudgeClear(p.x, p.z, rnd);
@@ -450,6 +455,51 @@ export class Traces extends System {
   }
 
   /**
+   * Bank leftover that a walk from camp to the water can actually see —
+   * dry, near the waterline, out from under leaf clumps.
+   */
+  _bankClear(p) {
+    const world = this.ctx.world;
+    const origin = this.origin;
+    const seed = this._bankNear(p);
+    if (!seed) return null;
+    const toCamp = Math.atan2(origin.x - seed.x, origin.z - seed.z);
+    let best = null, bestS = -Infinity;
+    for (const da of [-1.2, -0.7, 0, 0.7, 1.2, Math.PI]) {
+      const a = (seed.yaw ?? toCamp) + da;
+      for (let d = 0; d <= 28; d += 1.6) {
+        const x = seed.x + Math.sin(a) * d;
+        const z = seed.z + Math.cos(a) * d;
+        if (!world.isInBounds(x, z)) continue;
+        if (world.getWaterDepth(x, z) > 0.02) continue;
+        if (world.getSlope(x, z) > 0.5) continue;
+        if (!this._nearWater(x, z, 7)) continue;
+        if (!this._leafClear(x, z)) continue;
+        const toward = Math.cos(toCamp - Math.atan2(x - origin.x, z - origin.z));
+        const s = toward * 8 - d * 0.08;
+        if (s > bestS) { bestS = s; best = { x, z, yaw: a }; }
+      }
+    }
+    return best ?? (this._leafClear(seed.x, seed.z) ? seed : null);
+  }
+
+  _nearWater(x, z, maxR) {
+    const world = this.ctx.world;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      if (world.getWaterDepth(x + Math.sin(a) * maxR, z + Math.cos(a) * maxR) > 0.04) return true;
+    }
+    return world.getWaterDepth(x, z) > 0.01;
+  }
+
+  _leafClear(x, z) {
+    const tree = this._nearTree(x, z, 16);
+    if (!tree) return true;
+    const d = Math.hypot(tree.x - x, tree.z - z);
+    return d > (tree.crownR ?? 3.2) + 2.4;
+  }
+
+  /**
    * Nearest tree by walking the 64 m buckets around a point — not the 120k
    * list. Trees init before Traces, so the arrays are already filled.
    */
@@ -479,10 +529,12 @@ export class Traces extends System {
     }
     if (best < 0) return null;
     const sp = SPECIES[pspec[best]];
-    const trunkR = Math.max(0.07, (pImpH[best] ?? 10) * (sp?.trunkRadiusK ?? 0.02));
+    const H = pImpH[best] ?? 10;
+    const trunkR = Math.max(0.07, H * (sp?.trunkRadiusK ?? 0.02));
+    const crownR = Math.max(2.2, H * (sp?.crownR ?? 0.22));
     return {
       x: px[best], y: py[best], z: pz[best],
-      scale: pscale[best], trunkR, i: best,
+      scale: pscale[best], trunkR, crownR, H, i: best,
     };
   }
 
@@ -583,20 +635,19 @@ export class Traces extends System {
 
     if (kind === 'paddle') {
       const paddle = buildLeanedPaddle(rnd);
-      const y = placeOnGround(world, paddle, p.x, p.z, yaw, 0.08, 0.4);
+      const y = placeOnGround(world, paddle, p.x, p.z, yaw, 0.06, 0.4);
       this.root.add(paddle);
-      this._spot(paddle, 'paddle', p.x, y + 0.7, p.z, scrap);
+      this._spot(paddle, 'paddle', p.x, y + 0.75, p.z, scrap);
       return true;
     }
 
     if (kind === 'cairn') {
-      const q = this._seatCairn(p, rnd);
-      this.clearings.push({ x: q.x, z: q.z, radius: 1.65, feather: 0.52 });
+      if (!this._cairnClear(p.x, p.z)) return false;
+      this.clearings.push({ x: p.x, z: p.z, radius: 1.85, feather: 0.55 });
       const cairn = buildCairn(rnd);
-      const y = placeOnGround(world, cairn, q.x, q.z, rnd() * Math.PI * 2, 0.16, 0.42);
+      const y = placeOnGround(world, cairn, p.x, p.z, rnd() * Math.PI * 2, 0.10, 0.42);
       this.root.add(cairn);
-      this._spot(cairn, 'cairn', q.x, y + 0.35, q.z);
-      p.x = q.x; p.z = q.z;
+      this._spot(cairn, 'cairn', p.x, y + 0.4, p.z);
       return true;
     }
 
@@ -631,59 +682,86 @@ export class Traces extends System {
   }
 
   /**
-   * Sit the cairn on the inland side of the lip — the wait, not the rock
-   * pile on the drop. Still the same vista/peak; just a few metres back
-   * onto flatter ground so the stack reads against sky.
+   * Inland of the lip, on dirt you can see — not inside a slab. Searches
+   * toward camp (the wait) out to ~70 m. Returns null if this POI is only
+   * rock chaos; the caller then tries the next vista or skips the cairn.
    */
   _seatCairn(p, rnd) {
     const world = this.ctx.world;
-    let downA = 0, downDrop = -Infinity;
+    const origin = this.origin;
+    const toCamp = Math.atan2(origin.x - p.x, origin.z - p.z);
+    let downA = toCamp;
+    let downDrop = -Infinity;
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2;
-      const hx = p.x + Math.sin(a) * 18;
-      const hz = p.z + Math.cos(a) * 18;
+      const hx = p.x + Math.sin(a) * 22;
+      const hz = p.z + Math.cos(a) * 22;
       if (!world.isInBounds(hx, hz)) continue;
       const drop = world.getHeight(p.x, p.z) - world.getHeight(hx, hz);
       if (drop > downDrop) { downDrop = drop; downA = a; }
     }
     const inland = downA + Math.PI;
+    const axes = [toCamp, inland, (toCamp + inland) * 0.5];
     let best = null, bestS = -Infinity;
-    for (let d = 6; d <= 16; d += 1.5) {
-      for (const da of [-0.7, -0.35, 0, 0.35, 0.7]) {
-        const x = p.x + Math.sin(inland + da) * d;
-        const z = p.z + Math.cos(inland + da) * d;
-        if (!world.isInBounds(x, z)) continue;
-        if (world.getWaterDepth(x, z) > 0.02) continue;
-        const sl = world.getSlope(x, z);
-        if (sl > 0.38) continue;
-        let lo = Infinity, hi = -Infinity;
-        for (let k = 0; k < 6; k++) {
-          const aa = (k / 6) * Math.PI * 2;
-          const h = world.getHeight(x + Math.sin(aa) * 2.2, z + Math.cos(aa) * 2.2);
-          lo = Math.min(lo, h); hi = Math.max(hi, h);
+    for (const axis of axes) {
+      for (let d = 14; d <= 72; d += 4) {
+        for (const da of [-0.85, -0.4, 0, 0.4, 0.85]) {
+          const x = p.x + Math.sin(axis + da) * d;
+          const z = p.z + Math.cos(axis + da) * d;
+          const clear = this._cairnClear(x, z);
+          if (!clear) continue;
+          const towardCamp = -Math.hypot(x - origin.x, z - origin.z) * 0.01;
+          const lower = Math.max(0, world.getHeight(p.x, p.z) - world.getHeight(x, z));
+          const s = clear.score + towardCamp + lower * 0.15 - Math.abs(d - 32) * 0.04 + rnd() * 0.2;
+          if (s > bestS) { bestS = s; best = { x, z }; }
         }
-        const rough = hi - lo;
-        if (rough > 1.6) continue;
-        if (this._rockCrowds(x, z)) continue;
-        const s = -sl * 36 - rough * 7 - Math.abs(d - 10) * 0.25 + rnd() * 0.4;
-        if (s > bestS) { bestS = s; best = { x, z }; }
       }
     }
-    return best ?? this._nudgeClear(p.x, p.z, rnd);
+    return best;
   }
 
-  _rockCrowds(x, z) {
-    const key = `${(x / 2) | 0},${(z / 2) | 0}`;
+  /** Flat, dry, no slab overlap — the stack has to read against dirt/sky. */
+  _cairnClear(x, z) {
+    const world = this.ctx.world;
+    if (!world.isInBounds(x, z)) return null;
+    if (world.getWaterDepth(x, z) > 0.02) return null;
+    const sl = world.getSlope(x, z);
+    if (sl > 0.30) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      const h = world.getHeight(x + Math.sin(a) * 2.6, z + Math.cos(a) * 2.6);
+      lo = Math.min(lo, h); hi = Math.max(hi, h);
+    }
+    const here = world.getHeight(x, z);
+    const rough = hi - lo;
+    if (rough > 1.15) return null;
+    if (hi - here > 1.4) return null;
+    if (this._rockHit(x, z, 5.2)) return null;
+    return { score: -sl * 40 - rough * 10 };
+  }
+
+  /**
+   * True if a boulder *extent* (not just its origin) comes within `pad`
+   * metres. Giant lip slabs are 10–20 m across; a 6 m origin check misses them.
+   */
+  _rockHit(x, z, pad = 5) {
+    const key = `${(x / 3) | 0},${(z / 3) | 0},${pad | 0}`;
     if (this._rockMemo.has(key)) return this._rockMemo.get(key);
     const rocks = this.ctx.systems?.rocks;
-    let crowded = false;
+    let hit = false;
     if (rocks?.rocksAround) {
       try {
-        crowded = (rocks.rocksAround(x, z, 6.2, 0.9, [])?.length ?? 0) > 0;
-      } catch { crowded = false; }
+        const list = rocks.rocksAround(x, z, 24, 0.7, []);
+        for (const inst of list) {
+          const reach = (rocks.reachOf?.(inst) ?? inst.size * 0.5) + pad;
+          const dx = inst.x - x, dz = inst.z - z;
+          if (dx * dx + dz * dz < reach * reach) { hit = true; break; }
+        }
+      } catch { hit = false; }
     }
-    this._rockMemo.set(key, crowded);
-    return crowded;
+    this._rockMemo.set(key, hit);
+    return hit;
   }
 
   _spot(obj, kind, x, y, z, scrap = null) {
