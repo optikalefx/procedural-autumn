@@ -1,16 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  trace_props — the quiet things a prior camper left on the ground.
 //
-//  Cold ring, stake holes, a small cairn, and the journal lying where it was
-//  put down. Built from the camp material kit so they sit in the same light
-//  as a fire someone is still using. Nothing here smokes, glows, or asks to
-//  be collected.
+//  The start scuff (cold ring, stake holes, journal) plus the wider leftover
+//  pool: a pinned note, a tipped bike, tracks, a tin, a stick, a rope, a
+//  second night, and — when the seed has them — a canoe, a paddle, a cairn.
+//  Nothing here smokes, glows, or asks to be collected.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { Parts, at, campMaterials, tintOf } from '../camp/camp_materials.js';
 import { standOn, groundLift } from '../camp/camp_site.js';
 import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 import { buildJournal, BOOK, HIDE_LIFT } from '../journal/journal_model.js';
+import { buildBike, BIKE_DIM } from '../bike/bike_model.js';
+import { buildCanoe, CANOE_DIM } from '../boat/boat_canoe.js';
 
 const TAU = Math.PI * 2;
 
@@ -266,4 +268,183 @@ export function placeOnGround(world, group, x, z, yaw = 0, tilt = 0.82, footprin
   group.position.set(x, y, z);
   group.quaternion.copy(_q);
   return y;
+}
+
+// ── the wider leftover pool ──────────────────────────────────────────────────
+//
+// These sit out in the valley, not on the start dirt. They use their own
+// materials (or the bike / canoe builders') so they do not inherit the camp
+// stone singleton — that product went black in daylight once already.
+
+function propMat(color, extra = {}) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.84,
+    metalness: 0.03,
+    envMapIntensity: 0.32,
+    vertexColors: false,
+    ...extra,
+  });
+}
+
+/** Cream scrap pinned to a trunk. The words live on the overlay, not the mesh. */
+export function buildTreeNote(rnd) {
+  const g = new THREE.Group();
+  g.name = 'trace_tree_note';
+  const paper = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.11, 0.15),
+    propMat(0xe8dcc4, { roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
+  );
+  paper.position.z = 0.004;
+  paper.rotation.z = (rnd() - 0.5) * 0.14;
+  g.add(paper);
+  const pin = new THREE.Mesh(
+    new THREE.SphereGeometry(0.008, 8, 6),
+    propMat(0x6a4030, { roughness: 0.55, metalness: 0.08 }),
+  );
+  pin.position.set(0, 0.062, 0.01);
+  g.add(pin);
+  g.userData.trace = { kind: 'tree-note', pickR: 0.24 };
+  return g;
+}
+
+/**
+ * A packer bike on its side. Origin stays on the ground; the wrap is what
+ * `placeOnGround` stands. Not a rideable Bike system object.
+ */
+export function buildTippedBike(rnd) {
+  const wrap = new THREE.Group();
+  wrap.name = 'trace_bike';
+  const bike = buildBike(rnd, {
+    style: 'packer',
+    colorway: 2 + Math.floor(rnd() * 2),
+    wear: 0.55 + rnd() * 0.32,
+    rack: true,
+  });
+  // Fall onto +X. After rot-z the bars' half-width is the height of the pile.
+  bike.rotation.z = Math.PI / 2 + (rnd() - 0.5) * 0.10;
+  bike.position.y = BIKE_DIM.width * 0.28;
+  bike.position.x = -0.06;
+  wrap.add(bike);
+  wrap.userData.trace = { kind: 'bike', pickR: 1.15 };
+  return wrap;
+}
+
+/**
+ * Canoe heeled on a bank. The pack paddle stays in the boat file; we hide
+ * those so the put-in leftover is a separate crumb, not a third blade.
+ */
+export function buildBeachedCanoe(rnd) {
+  const wrap = new THREE.Group();
+  wrap.name = 'trace_canoe';
+  const canoe = buildCanoe(rnd, { colorway: 1 + Math.floor(rnd() * 2) });
+  for (const p of Object.values(canoe.userData.paddles ?? {})) p.visible = false;
+  if (canoe.userData.paddle) canoe.userData.paddle.visible = false;
+  canoe.rotation.z = Math.PI * (0.52 + rnd() * 0.12);
+  canoe.position.y = CANOE_DIM.beam * 0.46;
+  wrap.add(canoe);
+  wrap.userData.trace = { kind: 'canoe', pickR: 2.15 };
+  return wrap;
+}
+
+/** Shaft and blade, leaned as if the rock it was against walked off. */
+export function buildLeanedPaddle(rnd) {
+  const g = new THREE.Group();
+  g.name = 'trace_paddle';
+  const wood = propMat(0xb08958, { roughness: 0.72 });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 1.08, 7), wood);
+  shaft.position.y = 0.54;
+  const blade = new THREE.Mesh(
+    new THREE.BoxGeometry(0.15, 0.44, 0.012),
+    propMat(0x8f6840, { roughness: 0.78 }),
+  );
+  blade.position.y = 1.20;
+  g.add(shaft, blade);
+  g.rotation.z = 0.36 + rnd() * 0.10;
+  g.userData.trace = { kind: 'paddle', pickR: 0.58 };
+  return g;
+}
+
+export function buildCoffeeTin(rnd) {
+  const g = new THREE.Group();
+  g.name = 'trace_tin';
+  const h = 0.112, r = 0.036;
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(r, r * 1.03, h, 12),
+    propMat(0xb45a3c, { roughness: 0.62 }),
+  );
+  body.position.y = h * 0.5;
+  const lid = new THREE.Mesh(
+    new THREE.CylinderGeometry(r * 1.05, r * 1.05, 0.007, 12),
+    propMat(0x8a6a50, { roughness: 0.7 }),
+  );
+  lid.position.set(0.068 + rnd() * 0.02, 0.004, 0.03 + rnd() * 0.02);
+  lid.rotation.set(0.18, rnd(), 0.12);
+  g.add(body, lid);
+  g.userData.trace = { kind: 'tin', pickR: 0.22 };
+  return g;
+}
+
+/** A spent roasting switch on the ground — not the camp's leaning hero prop. */
+export function buildLaidStick(rnd) {
+  const g = new THREE.Group();
+  g.name = 'trace_stick';
+  const L = 1.12 + rnd() * 0.10;
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.006, 0.013, L, 7),
+    propMat(0x6e5336, { roughness: 0.9 }),
+  );
+  shaft.rotation.z = Math.PI / 2;
+  shaft.position.set(L * 0.5, 0.012, 0);
+  const mallow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.022, 8, 6),
+    propMat(0xf2ebe0, { roughness: 0.96, metalness: 0 }),
+  );
+  mallow.scale.set(1, 0.68, 0.84);
+  mallow.position.set(L - 0.03, 0.026, 0);
+  g.add(shaft, mallow);
+  g.userData.trace = { kind: 'stick', pickR: 0.58 };
+  return g;
+}
+
+/** Two fading bicycle ruts. Soft, not a road decal. */
+export function buildTireTracks(rnd) {
+  const g = new THREE.Group();
+  g.name = 'trace_tracks';
+  const dirt = propMat(0x6a5340, { roughness: 0.95 });
+  const n = 7;
+  for (let s = -1; s <= 1; s += 2) {
+    for (let i = 0; i < n; i++) {
+      const fade = 1 - i / (n - 0.2);
+      const len = 0.52 + rnd() * 0.16;
+      const w = 0.058 * fade;
+      const h = 0.014 * fade;
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, len), dirt);
+      mesh.position.set(s * 0.41 + (rnd() - 0.5) * 0.05, h * 0.32, i * 0.60);
+      mesh.rotation.y = (rnd() - 0.5) * 0.09;
+      g.add(mesh);
+    }
+  }
+  g.userData.trace = { kind: 'tracks', pickR: 1.45 };
+  return g;
+}
+
+/** A loop of line left on a trunk, plus the trailing end. */
+export function buildTrunkRope(rnd, trunkR = 0.14) {
+  const g = new THREE.Group();
+  g.name = 'trace_rope';
+  const cord = propMat(0xc4b48a, { roughness: 0.88, metalness: 0 });
+  const R = Math.max(0.09, trunkR) + 0.014;
+  const loop = new THREE.Mesh(
+    new THREE.TorusGeometry(R, 0.009, 6, 16, Math.PI * 1.42),
+    cord,
+  );
+  loop.rotation.x = Math.PI / 2;
+  loop.position.y = 0.92 + rnd() * 0.08;
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.005, 0.58, 6), cord);
+  tail.position.set(R * 0.62, 0.66, 0.02);
+  tail.rotation.z = 0.42 + rnd() * 0.12;
+  g.add(loop, tail);
+  g.userData.trace = { kind: 'rope', pickR: 0.48 };
+  return g;
 }

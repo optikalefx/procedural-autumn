@@ -42,6 +42,18 @@ export function seedFeatures(ctx, origin = null) {
     nearCamp: true,
     waterNear: nearestOf(origin, [poi.river, poi.mouth, poi.waterfall], WATER_NEAR),
     ridgeNear: nearestOf(origin, [poi.vista, poi.peak], RIDGE_NEAR),
+    // Full landmark lists for placing crumbs away from spawn. Fail-line
+    // picking still uses the nearest-* facts above; this is just the map.
+    pois: {
+      road: poi.road ?? [],
+      meadow: poi.meadow ?? [],
+      forest: poi.forest ?? [],
+      river: poi.river ?? [],
+      mouth: poi.mouth ?? [],
+      waterfall: poi.waterfall ?? [],
+      vista: poi.vista ?? [],
+      peak: poi.peak ?? [],
+    },
     // Habitat, not a census. Moose and heron want water; a dry seed should not
     // write as if they were just over the next rise.
     usuals: {
@@ -150,3 +162,70 @@ export const TITLE_CUE = {
     'The other thing can wait.',
   ],
 };
+
+// ── crumbs ───────────────────────────────────────────────────────────────────
+//
+// The start scuff is always one. The rest of the pool is gated on the bake:
+// a dry valley never gets a canoe, a flat one never gets a lip cairn. Stick
+// is the fill so a typical seed still lands around eight to ten leftovers
+// without stacking extras at spawn.
+
+const ALWAYS_CRUMBS = [
+  'start', 'tree-note', 'bike', 'tracks', 'rope', 'tin', 'second-night',
+];
+
+/**
+ * Which leftover kinds this seed can honestly host.
+ *
+ * Order is the placement order, not a quest. Count varies a little with
+ * gates: dry and flat is eight, water or a lip pushes toward ten.
+ */
+export function pickCrumbs(features) {
+  const out = ALWAYS_CRUMBS.slice();
+  if (features.hasWater) out.push('canoe', 'paddle');
+  if (features.hasRidge) out.push('cairn');
+  if (out.length < 10) out.push('stick');
+  return out.slice(0, 10);
+}
+
+// Short human scraps. About one in three crumbs is readable; the rest are
+// silent props. Never name the unnamed thing.
+const SCRAP_COPY = {
+  'tree-note': (f) => f.hasRidge
+    ? ['M. — if you came this way.', 'I went up the lip.', 'The usuals first. —']
+    : ['M. — if you came this way.', 'I kept to the trees.', 'The usuals first. —'],
+  tin: () => ['grounds in the bottom.', 'still warm when I left it.', 'not really.'],
+  bike: () => ['The chain slipped on the last bend.', 'I walked it from here.'],
+  canoe: () => ['Too late to put in.', 'Something on the far bank.', 'just a log.'],
+  paddle: () => ['Left it for whoever comes next.', 'I did not go back on.'],
+  tracks: () => ['Heard it again past the trees.', 'nothing in the morning.'],
+  'second-night': () => ['Stayed one more night.', 'Same quiet. Same nothing.'],
+};
+
+/**
+ * About a third of the placed kinds get a readable scrap.
+ *
+ * The tree note is always one. Then one small camp leftover (tin or bike),
+ * then a water line if the seed has water, else a dry almost. The journal
+ * is a different object — it is not a scrap.
+ */
+export function assignScraps(kinds, features, rnd = Math.random) {
+  const have = new Set(kinds);
+  const out = new Map();
+  const take = (k) => {
+    const fn = SCRAP_COPY[k];
+    if (!fn || !have.has(k) || out.has(k)) return;
+    out.set(k, { lines: fn(features) });
+  };
+  take('tree-note');
+  const small = ['tin', 'bike'].filter((k) => have.has(k));
+  if (small.length) take(small[Math.min(small.length - 1, Math.floor(rnd() * small.length))]);
+  if (features.hasWater) {
+    const wet = ['canoe', 'paddle'].filter((k) => have.has(k));
+    if (wet.length) take(wet[Math.min(wet.length - 1, Math.floor(rnd() * wet.length))]);
+  } else {
+    const dry = ['tracks', 'second-night'].filter((k) => have.has(k) && !out.has(k));
+    if (dry.length) take(dry[Math.min(dry.length - 1, Math.floor(rnd() * dry.length))]);
+  }
+  return out;
+}
