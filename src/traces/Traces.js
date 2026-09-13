@@ -228,7 +228,7 @@ export class Traces extends System {
         continue;
       }
       if (kind === 'tree-note' || kind === 'rope') {
-        const tree = this._nearTree(p.x, p.z, 55);
+        const tree = this._nearTree(p.x, p.z, 55, { skipConifer: kind === 'rope' });
         if (tree && this._free(tree, taken, 12)) return { ...p, ...tree, tree };
         continue;
       }
@@ -309,7 +309,7 @@ export class Traces extends System {
    * Nearest tree by walking the 64 m buckets around a point — not the 120k
    * list. Trees init before Traces, so the arrays are already filled.
    */
-  _nearTree(x, z, maxR = 48) {
+  _nearTree(x, z, maxR = 48, opts = {}) {
     const T = this.ctx.systems?.trees?.trees;
     if (!T?.n) return null;
     const { BW, BS, half, order, bucketStart, px, pz, py, pscale, pspec, pImpH } = T;
@@ -326,6 +326,7 @@ export class Traces extends System {
         const b = zz * BW + xx;
         for (let o = bucketStart[b]; o < bucketStart[b + 1]; o++) {
           const t = order[o];
+          if (opts.skipConifer && SPECIES[pspec[t]]?.conifer) continue;
           const dx = px[t] - x, dz = pz[t] - z;
           const d2 = dx * dx + dz * dz;
           if (d2 < bestD) { bestD = d2; best = t; }
@@ -348,14 +349,21 @@ export class Traces extends System {
     if (kind === 'tree-note') {
       const tree = p.tree;
       if (!tree) return false;
-      const nx = Math.sin(yaw + 0.6), nz = Math.cos(yaw + 0.6);
+      // Face the paper toward camp so a walk out from the scuff finds it,
+      // not the blank far side of the trunk.
+      const dx = this.origin.x - tree.x, dz = this.origin.z - tree.z;
+      const len = Math.hypot(dx, dz) || 1;
+      const nx = dx / len, nz = dz / len;
+      // A fat maple bole is ~0.35 m at note height; sit the paper outside it
+      // so it cannot vanish inside the instance.
       const note = buildTreeNote(rnd);
-      const hx = tree.x + nx * (tree.trunkR + 0.02);
-      const hz = tree.z + nz * (tree.trunkR + 0.02);
-      const hy = (tree.y ?? world.getHeight(tree.x, tree.z)) + 1.36;
+      const hx = tree.x + nx * 0.42;
+      const hz = tree.z + nz * 0.42;
+      const hy = (tree.y ?? world.getHeight(tree.x, tree.z)) + 1.42;
       note.position.set(hx, hy, hz);
       note.lookAt(tree.x, hy, tree.z);
       this.root.add(note);
+      p.x = hx; p.z = hz;
       this._spot(note, 'tree-note', hx, hy, hz, scrap);
       return true;
     }
@@ -363,10 +371,16 @@ export class Traces extends System {
     if (kind === 'rope') {
       const tree = p.tree;
       if (!tree) return false;
+      const dx = this.origin.x - tree.x, dz = this.origin.z - tree.z;
+      const len = Math.hypot(dx, dz) || 1;
+      const nx = dx / len, nz = dz / len;
       const rope = buildTrunkRope(rnd, tree.trunkR);
-      const y = placeOnGround(world, rope, tree.x, tree.z, rnd() * Math.PI * 2, 0.15, tree.trunkR + 0.2);
+      const hx = tree.x + nx * 0.28;
+      const hz = tree.z + nz * 0.28;
+      const y = placeOnGround(world, rope, hx, hz, Math.atan2(nx, nz), 0.12, 0.25);
       this.root.add(rope);
-      this._spot(rope, 'rope', tree.x, y + 0.7, tree.z);
+      p.x = hx; p.z = hz;
+      this._spot(rope, 'rope', hx, y + 0.7, hz);
       return true;
     }
 
@@ -626,7 +640,7 @@ class ScrapCard {
     ].join(';');
     const card = document.createElement('div');
     card.style.cssText = [
-      'max-width:min(320px,78vw)', 'padding:22px 26px 20px',
+      'max-width:min(360px,82vw)', 'min-width:260px', 'padding:22px 26px 20px',
       'background:#efe4cc', 'color:#3a2b20',
       `font:400 22px/1.45 "${FONT_HAND}", "Bradley Hand", cursive`,
       'box-shadow:0 10px 28px rgba(20,14,10,.28)',
@@ -653,8 +667,16 @@ class ScrapCard {
     this.card.replaceChildren();
     for (const line of lines) {
       const p = document.createElement('p');
-      p.textContent = line;
-      p.style.margin = '0 0 0.35em';
+      p.style.margin = '0 0 0.4em';
+      p.style.whiteSpace = 'nowrap';
+      // Caveat's space glyph is thin in the DOM; keep words apart by hand.
+      for (const w of line.split(/\s+/)) {
+        const s = document.createElement('span');
+        s.textContent = w;
+        s.style.marginRight = '0.42em';
+        s.style.display = 'inline-block';
+        p.appendChild(s);
+      }
       this.card.appendChild(p);
     }
     this.el.style.display = 'grid';

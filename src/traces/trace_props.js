@@ -36,7 +36,7 @@ const ASH_COOL = tintOf(0x8a847c);
 function traceMat(key) {
   const src = campMaterials()[key];
   return new THREE.MeshStandardMaterial({
-    color: key === 'char' ? 0x3a322c : 0x8d8478,
+    color: key === 'char' ? 0x4a4038 : 0xa89f93,
     roughness: src.roughness,
     metalness: 0.02,
     envMapIntensity: 0.35,
@@ -202,21 +202,24 @@ export function buildStakeHoles(rnd) {
 export function buildCairn(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_cairn';
-  const P = new Parts('trace_cairn');
-  const n = 6 + Math.floor(rnd() * 2);
+  const n = 5 + Math.floor(rnd() * 2);
   let y = 0;
   for (let i = 0; i < n; i++) {
-    const s = 0.095 * (1 - i * 0.08) + rnd() * 0.022;
-    const geo = cobble(rnd, s);
-    const sy = 0.58 + rnd() * 0.22;
+    const s = 0.10 * (1 - i * 0.07) + rnd() * 0.02;
+    const stone = new THREE.Mesh(
+      cobble(rnd, s),
+      propMat(0xc2b8aa, { roughness: 0.9 }),
+    );
+    const sy = 0.58 + rnd() * 0.2;
     y += s * sy * 0.74;
-    P.add(geo, 'stone',
-      at((rnd() - 0.5) * 0.045, y, (rnd() - 0.5) * 0.045,
-        rnd() * 0.5, rnd() * TAU, rnd() * 0.4, 1, sy, 1),
-      STONE[Math.floor(rnd() * STONE.length)]);
+    stone.position.set((rnd() - 0.5) * 0.04, y, (rnd() - 0.5) * 0.04);
+    stone.rotation.set(rnd() * 0.5, rnd() * TAU, rnd() * 0.4);
+    stone.scale.y = sy;
+    stone.castShadow = false;
+    stone.receiveShadow = false;
+    g.add(stone);
     y += s * sy * 0.40;
   }
-  flushTrace(P, g);
   g.userData.trace = { kind: 'cairn', pickR: 0.42 };
   return g;
 }
@@ -292,19 +295,19 @@ export function buildTreeNote(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_tree_note';
   const paper = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.11, 0.15),
-    propMat(0xe8dcc4, { roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
+    new THREE.PlaneGeometry(0.16, 0.22),
+    propMat(0xf0e4cc, { roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
   );
-  paper.position.z = 0.004;
+  paper.position.z = 0.006;
   paper.rotation.z = (rnd() - 0.5) * 0.14;
   g.add(paper);
   const pin = new THREE.Mesh(
-    new THREE.SphereGeometry(0.008, 8, 6),
+    new THREE.SphereGeometry(0.01, 8, 6),
     propMat(0x6a4030, { roughness: 0.55, metalness: 0.08 }),
   );
-  pin.position.set(0, 0.062, 0.01);
+  pin.position.set(0, 0.09, 0.014);
   g.add(pin);
-  g.userData.trace = { kind: 'tree-note', pickR: 0.24 };
+  g.userData.trace = { kind: 'tree-note', pickR: 0.28 };
   return g;
 }
 
@@ -349,20 +352,24 @@ export function buildBeachedCanoe(rnd) {
 
 /** Shaft and blade, leaned as if the rock it was against walked off. */
 export function buildLeanedPaddle(rnd) {
+  const wrap = new THREE.Group();
+  wrap.name = 'trace_paddle';
   const g = new THREE.Group();
-  g.name = 'trace_paddle';
-  const wood = propMat(0xb08958, { roughness: 0.72 });
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 1.08, 7), wood);
+  const wood = propMat(0xc4a06a, { roughness: 0.72 });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.016, 1.08, 7), wood);
   shaft.position.y = 0.54;
   const blade = new THREE.Mesh(
-    new THREE.BoxGeometry(0.15, 0.44, 0.012),
-    propMat(0x8f6840, { roughness: 0.78 }),
+    new THREE.SphereGeometry(0.09, 8, 6),
+    propMat(0xb08950, { roughness: 0.7 }),
   );
-  blade.position.y = 1.20;
+  blade.scale.set(0.70, 1.9, 0.13);
+  blade.position.y = 1.22;
   g.add(shaft, blade);
-  g.rotation.z = 0.36 + rnd() * 0.10;
-  g.userData.trace = { kind: 'paddle', pickR: 0.58 };
-  return g;
+  // Lean lives on the child. placeOnGround writes the wrap's quaternion.
+  g.rotation.z = 0.95 + rnd() * 0.12;
+  wrap.add(g);
+  wrap.userData.trace = { kind: 'paddle', pickR: 0.62 };
+  return wrap;
 }
 
 export function buildCoffeeTin(rnd) {
@@ -411,40 +418,40 @@ export function buildLaidStick(rnd) {
 export function buildTireTracks(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_tracks';
-  const dirt = propMat(0x6a5340, { roughness: 0.95 });
-  const n = 7;
+  const dirt = propMat(0x6e4c34, { roughness: 0.96 });
+  const n = 5;
   for (let s = -1; s <= 1; s += 2) {
     for (let i = 0; i < n; i++) {
-      const fade = 1 - i / (n - 0.2);
-      const len = 0.52 + rnd() * 0.16;
-      const w = 0.058 * fade;
-      const h = 0.014 * fade;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, len), dirt);
-      mesh.position.set(s * 0.41 + (rnd() - 0.5) * 0.05, h * 0.32, i * 0.60);
-      mesh.rotation.y = (rnd() - 0.5) * 0.09;
+      const fade = 1 - i / n;
+      const len = 0.55 * fade + 0.28;
+      const w = 0.14 * (0.6 + 0.4 * fade);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 0.012, len), dirt);
+      mesh.position.set(s * 0.40 + (rnd() - 0.5) * 0.04, 0.006, i * 0.62);
+      mesh.rotation.y = (rnd() - 0.5) * 0.08;
+      mesh.castShadow = false;
       g.add(mesh);
     }
   }
-  g.userData.trace = { kind: 'tracks', pickR: 1.45 };
+  g.userData.trace = { kind: 'tracks', pickR: 1.55 };
   return g;
 }
 
-/** A loop of line left on a trunk, plus the trailing end. */
+/** A coil and trailing end on the facing side of a trunk — not a buried ring. */
 export function buildTrunkRope(rnd, trunkR = 0.14) {
   const g = new THREE.Group();
   g.name = 'trace_rope';
-  const cord = propMat(0xc4b48a, { roughness: 0.88, metalness: 0 });
-  const R = Math.max(0.09, trunkR) + 0.014;
+  const cord = propMat(0xe2d2a6, { roughness: 0.86, metalness: 0 });
+  const R = 0.11;
   const loop = new THREE.Mesh(
-    new THREE.TorusGeometry(R, 0.009, 6, 16, Math.PI * 1.42),
+    new THREE.TorusGeometry(R, 0.018, 6, 12),
     cord,
   );
-  loop.rotation.x = Math.PI / 2;
-  loop.position.y = 0.92 + rnd() * 0.08;
-  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.005, 0.58, 6), cord);
-  tail.position.set(R * 0.62, 0.66, 0.02);
-  tail.rotation.z = 0.42 + rnd() * 0.12;
+  loop.position.set(0, 1.05, 0.02);
+  loop.rotation.y = 0.18;
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.007, 0.72, 6), cord);
+  tail.position.set(0.08, 0.62, 0.04);
+  tail.rotation.z = 0.28 + rnd() * 0.1;
   g.add(loop, tail);
-  g.userData.trace = { kind: 'rope', pickR: 0.48 };
+  g.userData.trace = { kind: 'rope', pickR: 0.55 };
   return g;
 }
