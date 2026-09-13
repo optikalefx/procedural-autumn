@@ -14,6 +14,8 @@ import { System } from '../core/System.js';
 import { SEED } from '../world/WorldConfig.js';
 import { bestSite, siteRng } from '../camp/camp_site.js';
 import { campMaterials } from '../camp/camp_materials.js';
+import { CampGround } from '../camp/camp_ground.js';
+import { setCampSlots } from '../camp/camp_clearing.js';
 import { CampPrompt } from '../camp/camp_ui.js';
 import { picked, pointing } from '../core/Pointer.js';
 import { pickVerb } from '../core/verbs.js';
@@ -21,6 +23,10 @@ import { seedFeatures } from './prior_notes.js';
 import {
   buildColdRing, buildStakeHoles, buildCairn, seatJournal, placeOnGround,
 } from './trace_props.js';
+
+// Small enough that it reads as "a tent was here", not as a player camp.
+const START_R = 3.35;
+const START_FEATHER = 0.78;
 
 const LOOK_FAR = 22;
 const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
@@ -42,6 +48,8 @@ export class Traces extends System {
     this.spots = [];
     this.origin = null;
     this.features = null;
+    this.clearings = [];
+    this.ground = null;
     this._bookInHand = false;
     this.pointerClaim = false;
   }
@@ -64,6 +72,7 @@ export class Traces extends System {
     const rnd = siteRng(site.x, site.z, seed);
     this._placeStart(site, rnd);
     this._placeAnchors(rnd);
+    this._publishClearings();
 
     // Harness / probe seam. Same spirit as window.__camp.
     window.__traces = this;
@@ -96,8 +105,19 @@ export class Traces extends System {
     const cx = site.x, cz = site.z;
     const yaw = rnd() * Math.PI * 2;
 
+    // Grass and cover have to know about this scuff BEFORE the dirt mesh
+    // reads campCoverAt for its own edge — same order Camp uses.
+    this.clearings.push({ x: cx, z: cz, radius: START_R, feather: START_FEATHER });
+    this._publishClearings();
+
+    this.ground = new CampGround(this.ctx.scene, world);
+    this.ground.build(cx, cz, START_R, rnd, START_FEATHER, [{ x: cx, z: cz, radius: 0.58 }]);
+    this.ground.setReveal(1);
+
+    const floor = (x, z) => this.ground.surfaceAt(x, z);
+
     const ring = buildColdRing(rnd);
-    const ry = placeOnGround(world, ring, cx, cz, yaw, 0.9, 0.6);
+    const ry = placeOnGround(world, ring, cx, cz, yaw, 0.9, 0.6, floor(cx, cz));
     this.root.add(ring);
     this._spot(ring, 'ring', cx, ry, cz);
 
@@ -106,7 +126,7 @@ export class Traces extends System {
     const sx = cx + Math.sin(sa) * 2.4;
     const sz = cz + Math.cos(sa) * 2.4;
     const stakes = buildStakeHoles(rnd);
-    const sy = placeOnGround(world, stakes, sx, sz, sa, 0.7, 1.0);
+    const sy = placeOnGround(world, stakes, sx, sz, sa, 0.7, 1.0, floor(sx, sz));
     this.root.add(stakes);
     this._spot(stakes, 'stakes', sx, sy, sz);
 
@@ -116,7 +136,7 @@ export class Traces extends System {
     const jz = cz + Math.cos(yaw + 0.55) * 1.15;
     const pad = new THREE.Group();
     pad.name = 'trace_journal_pad';
-    const jy = placeOnGround(world, pad, jx, jz, yaw + 0.4, 0.75, 0.2);
+    const jy = placeOnGround(world, pad, jx, jz, yaw + 0.4, 0.75, 0.2, floor(jx, jz) + 0.004);
     this.root.add(pad);
     const holder = seatJournal(rnd, pad);
     if (holder) this._spot(holder, 'journal', jx, jy + 0.02, jz);
@@ -128,11 +148,20 @@ export class Traces extends System {
     // A cairn on a lip this seed actually has. Dry / flat seeds skip it.
     if (f.ridgeNear) {
       const p = this._nudgeClear(f.ridgeNear.x, f.ridgeNear.z, rnd);
+      this.clearings.push({ x: p.x, z: p.z, radius: 0.95, feather: 0.38 });
       const cairn = buildCairn(rnd);
       const y = placeOnGround(world, cairn, p.x, p.z, rnd() * Math.PI * 2, 0.88, 0.28);
       this.root.add(cairn);
       this._spot(cairn, 'cairn', p.x, y, p.z);
     }
+  }
+
+  _publishClearings() {
+    const camp = this.ctx.systems?.camp;
+    if (camp?._publishSlots) { camp._publishSlots(); return; }
+    setCampSlots(this.clearings.map((t) => ({
+      x: t.x, z: t.z, radius: t.radius, feather: t.feather, pad: t.pad ?? null,
+    })));
   }
 
   _nudgeClear(x, z, rnd) {
@@ -237,8 +266,12 @@ export class Traces extends System {
 
   dispose() {
     this.prompt?.dispose();
+    this.ground?.dispose();
+    this.ground = null;
     this.root?.parent?.remove(this.root);
     this.spots = [];
+    this.clearings = [];
+    this._publishClearings();
     if (window.__traces === this) delete window.__traces;
   }
 }

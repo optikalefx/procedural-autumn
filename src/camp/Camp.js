@@ -701,7 +701,7 @@ export class Camp extends System {
       if (!c.striking && c.raise >= 1 && c.hasDog && !c.dog) this._makeDog(c);
       if (c.dog) c.dog.update(dt, this.ctx.camera.position);
     }
-    if (this.camps.length) this._publishSlots();
+    if (this.camps.length || this.ctx.systems?.traces?.clearings?.length) this._publishSlots();
 
     // Which fire the pointer is on, decided ONCE and before anything reads it.
     // `_interact` needs it to know what to say and what a click means, the
@@ -2696,14 +2696,25 @@ export class Camp extends System {
    */
   _publishSlots() {
     const p = this.ctx.camera.position;
-    const near = this.camps
-      .map((c) => ({ c, d: (c.x - p.x) ** 2 + (c.z - p.z) ** 2 }))
+    const rows = this.camps.map((c) => ({
+      c, d: (c.x - p.x) ** 2 + (c.z - p.z) ** 2,
+    }));
+    // A prior camper's scuff uses the same grass/cover slots so the cold ring
+    // is not buried in the meadow. Soft, already-open, no tent pad.
+    for (const t of this.ctx.systems?.traces?.clearings ?? []) {
+      if (!(t.radius > 0)) continue;
+      rows.push({
+        c: { x: t.x, z: t.z, radius: t.radius, feather: t.feather, pad: t.pad ?? null, raise: 1 },
+        d: (t.x - p.x) ** 2 + (t.z - p.z) ** 2,
+      });
+    }
+    const near = rows
       .sort((a2, b2) => a2.d - b2.d)
       .slice(0, CAMP_SLOTS)
       // The published radius follows the build-in, which is what makes the
       // ground sweep open ahead of the props rather than appearing under them.
       .map(({ c }) => {
-        const k = smoothstep(0, 0.55, c.raise);
+        const k = smoothstep(0, 0.55, c.raise ?? 1);
         return {
           x: c.x, z: c.z, feather: c.feather,
           radius: c.radius * k,
