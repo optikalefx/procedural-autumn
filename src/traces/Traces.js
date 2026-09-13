@@ -681,7 +681,7 @@ export class Traces extends System {
     let crowded = false;
     if (rocks?.rocksAround) {
       try {
-        crowded = (rocks.rocksAround(x, z, 3.4, 0.75, [])?.length ?? 0) > 0;
+        crowded = (rocks.rocksAround(x, z, 6.2, 0.9, [])?.length ?? 0) > 0;
       } catch { crowded = false; }
     }
     this._rockMemo.set(key, crowded);

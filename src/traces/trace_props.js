@@ -203,13 +203,13 @@ export function buildScuff(rnd, radius = 0.62) {
   const g = new THREE.Group();
   g.name = 'trace_scuff';
   const mesh = new THREE.Mesh(
-    new THREE.CircleGeometry(radius, 10),
-    propMat(0xc8b48a, { roughness: 0.97 }),
+    new THREE.CircleGeometry(radius, 9),
+    propMat(0xb39a72, { roughness: 0.98 }),
   );
   mesh.rotation.x = -Math.PI / 2;
-  mesh.rotation.z = (rnd() - 0.5) * 0.5;
-  mesh.position.y = 0.014;
-  mesh.scale.set(1.18 + rnd() * 0.12, 1, 0.78 + rnd() * 0.14);
+  mesh.rotation.z = (rnd() - 0.5) * 0.8;
+  mesh.position.y = 0.01;
+  mesh.scale.set(1.35 + rnd() * 0.2, 1, 0.58 + rnd() * 0.16);
   mesh.castShadow = false;
   mesh.receiveShadow = false;
   g.add(mesh);
