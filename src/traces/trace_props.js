@@ -25,30 +25,31 @@ const ASH = tintOf(0xa39c94);
 const ASH_COOL = tintOf(0x8a847c);
 
 /**
- * A new MeshStandardMaterial matching the camp kit, not the kit singleton.
- *
- * Camp pre-warms a fire under the loader and harvests `campMaterials().stone`
- * against that geometry. Reusing the compiled singleton on these leftovers
- * drew a black slab — vertex colours (0.56–1.43) and normals were fine; a
- * fresh standard material harvested in place lights like a cobble. Same
- * albedo and roughness so they still sit in the same valley as a live ring.
+ * Own material, own program. Two things made a leftover cobble draw black
+ * in daylight: the camp stone singleton is compiled against the pre-warm
+ * fire, and its vertex-colour × #7d7871 product sits under the stylise
+ * floor without a fire to lift it. A fresh un-tinted standard material
+ * harvests cleanly and reads as river stone.
  */
 function traceMat(key) {
   const src = campMaterials()[key];
   return new THREE.MeshStandardMaterial({
-    color: 0xffffff,
+    color: key === 'char' ? 0x3a322c : 0x8d8478,
     roughness: src.roughness,
-    metalness: src.metalness,
-    envMapIntensity: src.envMapIntensity,
-    vertexColors: true,
+    metalness: 0.02,
+    envMapIntensity: 0.35,
+    vertexColors: false,
   });
 }
 
 function flushTrace(P, parent, opts) {
-  const made = P.flush(parent, opts);
+  const made = P.flush(parent, { receive: false, ...opts });
   for (const mesh of made) {
     const key = mesh.name.slice(mesh.name.lastIndexOf('_') + 1);
-    if (campMaterials()[key]) mesh.material = traceMat(key);
+    if (campMaterials()[key]) {
+      mesh.material = traceMat(key);
+      mesh.receiveShadow = false;
+    }
   }
   return made;
 }
