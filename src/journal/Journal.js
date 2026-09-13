@@ -81,6 +81,7 @@ import {
   PAPER_GAIN,
 } from './journal_model.js';
 import { hunt, makeThumb } from '../game/hunt_store.js';
+import { seedFeatures, pickPriorFails, priorNotesRng } from '../traces/prior_notes.js';
 
 // ── the script ───────────────────────────────────────────────────────────────
 // Every duration in the ceremony, in seconds, in one place. `gap` values are
@@ -743,13 +744,21 @@ export class Journal {
       specs.push({
         kind: 'list',
         index: k + 1,
-        heading: k === 0 ? 'Camp Scavenger Hunt' : null,
+        heading: k === 0 ? 'The usuals' : null,
         progress: k === 0 ? this._progressLine() : null,
         rows,
         seed: 2 + k,
       });
     }
-    specs.push({ kind: 'notes', index: nList + 1, seed: 9, rows: [] });
+    // The prior camper's failed almosts live on the first notes leaf, always
+    // — not gated on finishing the usuals. Animal photographs do not write
+    // here. The mystery leaf after this is still what the Bigfoot ending owns.
+    const origin = this.ctx.systems?.traces?.origin
+      ?? this.ctx.systems?.vehicle?._home
+      ?? { x: 0, z: 0 };
+    const feat = this.ctx.systems?.traces?.features ?? seedFeatures(this.ctx, origin);
+    const fails = pickPriorFails(feat, priorNotesRng(this.ctx));
+    specs.push({ kind: 'notes', index: nList + 1, seed: 9, rows: [], fails });
 
     // ── the mystery leaf ─────────────────────────────────────────────────────
     //

@@ -1061,6 +1061,23 @@ export class Camp extends System {
       return;
     }
 
+    // ── prior-camper leftovers ────────────────────────────────────────────
+    // After the live camp props — a telescope or a table journal the player
+    // pitched still wins — and before the placement aim, so looking at the
+    // left-behind book does not also offer to pitch a camp on top of it.
+    const prior = this.ctx.systems?.traces?.offer?.();
+    if (prior) {
+      this._suppressAim = true;
+      clearCampAim();
+      this._aim.ok = false;
+      this.prompt.set(prior.prompt);
+      if (this._click) {
+        this._click = false;
+        prior.act?.();
+      }
+      return;
+    }
+
     // ── the harness has the camera; do not aim with it ────────────────────
     //
     // Every capture tool poses the camera itself and sets `__forceCamera`, and

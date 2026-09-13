@@ -202,6 +202,19 @@ function rng(seed) {
   return () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
 }
 
+function _wrapLine(g, text, maxW) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const t = cur ? `${cur} ${w}` : w;
+    if (cur && g.measureText(t).width > maxW) { lines.push(cur); cur = w; }
+    else cur = t;
+  }
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [''];
+}
+
 /**
  * A line drawn by a hand: a slightly bowed polyline with per-vertex wobble,
  * drawn twice at low alpha so the overlaps darken the way a real pass does.
@@ -950,23 +963,19 @@ export class JournalPage {
     // it is the thing that closes the block.
     g.font = hand(58, 400);
     g.fillStyle = INK_SOFT;
-    g.fillText('scavenger hunt', cx, 546);
+    g.fillText('for M.', cx, 546);
     inkLine(g, cx - 190, 592, cx + 190, 595,
       { seed: 4, width: 2.6, alpha: 0.5, colour: '#5c452e' });
 
-    this._vignetteDoodle(g, cx, 800, 240);
+    this._vignetteDoodle(g, cx, 780, 220);
 
-    // How to play, in the keeper's own hand. This block replaced the
-    // "kept by / season" flyleaf lines: a player meeting the book for the
-    // first time needs the three keys more than they need a blank to admire.
+    // The prior camper's own hand — a cue, not a quest. The list after this
+    // leaf is the usuals; the last pages are the almosts they never closed.
     g.font = hand(40);
     g.fillStyle = INK_SOFT;
-    g.fillText('Welcome to Camping Season!', cx, 1032);
-    g.fillText('Enjoy a quiet drive through the forest.', cx, 1096);
-    g.fillText('See if you can find everything in this journal.', cx, 1160);
-    g.font = hand(32);
-    g.fillStyle = 'rgba(74,58,44,0.58)';
-    g.fillText('Good luck!', cx, 1230);
+    g.fillText('I will get the usuals first.', cx, 1008);
+    g.fillText('Deer, fox — the ones we know.', cx, 1072);
+    g.fillText('The other thing can wait.', cx, 1136);
 
     g.textAlign = 'center';
     g.font = hand(30);
@@ -1066,7 +1075,7 @@ export class JournalPage {
       g.textAlign = s.verso ? 'left' : 'right';
       g.font = hand(32);
       g.fillStyle = 'rgba(74,58,44,0.40)';
-      g.fillText('scavenger hunt', s.verso ? x0 : x1, M_TOP + 52);
+      g.fillText('field notes', s.verso ? x0 : x1, M_TOP + 52);
       inkLine(g, x0, M_TOP + 78, x1, M_TOP + 80, { seed: 5, width: 2.0, alpha: 0.30, colour: '#5c452e' });
     }
 
@@ -1652,13 +1661,51 @@ export class JournalPage {
 
   _paintNotes(g) {
     const x0 = this._x0, x1 = this._x1;
+    const fails = this.spec.fails;
     g.textAlign = 'left';
     g.fillStyle = INK;
     g.font = brush(64);
-    g.fillText('Notes', x0, M_TOP + 66);
+    g.fillText(fails?.length ? 'Later' : 'Notes', x0, M_TOP + 66);
     inkLine(g, x0, M_TOP + 96, x1, M_TOP + 98, { seed: 6, width: 2.6, alpha: 0.45, colour: '#5c452e' });
+
+    let ruledFrom = M_TOP + 190;
+    if (fails?.length) {
+      // Pencil, not pen — same argument as the mystery leaf: this was put
+      // down in the field, in a hurry, on the first blank page to hand.
+      g.save();
+      g.translate(x0 + 4, M_TOP + 168);
+      g.rotate(-0.012);
+      g.font = hand(34);
+      g.fillStyle = 'rgba(74,58,44,0.48)';
+      g.fillText('for M. — if I ever get a real one', 0, 0);
+      g.restore();
+
+      let y = M_TOP + 230;
+      const tw = x1 - x0;
+      g.font = hand(38);
+      g.fillStyle = 'rgba(58,43,32,0.78)';
+      for (let i = 0; i < fails.length; i++) {
+        const entry = fails[i];
+        g.save();
+        g.translate(x0 + 6 + i * 3, 0);
+        g.rotate(-0.008 + i * 0.006);
+        for (const line of entry.lines) {
+          for (const w of _wrapLine(g, line, tw - 12)) {
+            g.fillText(w, 0, y);
+            y += 48;
+          }
+        }
+        g.restore();
+        y += 22;
+        inkLine(g, x0 + 8, y - 10, x0 + 220, y - 8,
+          { seed: 70 + i, width: 1.4, alpha: 0.22, wobble: 2.0, colour: GRAPHITE });
+        y += 18;
+      }
+      ruledFrom = y + 8;
+    }
+
     for (let i = 0; i < 18; i++) {
-      const y = M_TOP + 190 + i * 62;
+      const y = ruledFrom + i * 62;
       if (y > PAGE_H - M_BOT) break;
       inkLine(g, x0, y, x1, y + 1, { seed: 40 + i, width: 1.6, alpha: 0.18, wobble: 1.2, colour: '#6b5238' });
     }

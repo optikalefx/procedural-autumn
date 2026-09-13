@@ -43,6 +43,7 @@ import { Vehicle }     from './vehicle/Vehicle.js';
 import { Boat }        from './boat/Boat.js';
 import { Bike }        from './bike/Bike.js';
 import { Camp }        from './camp/Camp.js';
+import { Traces }      from './traces/Traces.js';
 import { CameraRig }   from './vehicle/CameraRig.js';
 import { Audio }       from './audio/Audio.js';
 import { HUD }         from './ui/HUD.js';
@@ -90,6 +91,10 @@ const SYSTEMS = [
   // the same frame they are written, and before CameraRig so the reticle has
   // been placed by the time the boom decides what it is looking at.
   ['camp',        Camp],
+  // After Camp (shares the camp material kit and the prompt vocabulary) and
+  // after Vehicle (the start camp is placed off the camper's spawn). Before
+  // HUD so the journal can read the seed-gated fail lines at first paint.
+  ['traces',      Traces],
   ['cameraRig',   CameraRig],
   ['audio',       Audio],
   ['hud',         HUD],

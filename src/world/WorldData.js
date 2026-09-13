@@ -36,6 +36,7 @@ export class WorldData {
     this.minHeight = baked.minHeight;
     this.maxHeight = baked.maxHeight;
 
+    this.seed = seed;
     this.noise = new NoiseField(seed ^ 0xbeef);
     this._v = new THREE.Vector3();
     this.hydro = buildHydroField(this.height, this.water, this.res, this.worldSize);
