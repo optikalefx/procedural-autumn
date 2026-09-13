@@ -198,29 +198,50 @@ export function buildStakeHoles(rnd) {
   return g;
 }
 
-/** A small cairn — the dusk wait's patient marker, not a trail blaze. */
+/** Pale dirt oval — a foot-scuff, not a camp pad and not a marker disc. */
+export function buildScuff(rnd, radius = 0.62) {
+  const g = new THREE.Group();
+  g.name = 'trace_scuff';
+  const mesh = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, 10),
+    propMat(0xc8b48a, { roughness: 0.97 }),
+  );
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = (rnd() - 0.5) * 0.5;
+  mesh.position.y = 0.014;
+  mesh.scale.set(1.18 + rnd() * 0.12, 1, 0.78 + rnd() * 0.14);
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  g.add(mesh);
+  return g;
+}
+
+/** A cairn you can read against sky — the dusk wait's marker, not a trail blaze. */
 export function buildCairn(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_cairn';
-  const n = 5 + Math.floor(rnd() * 2);
-  let y = 0;
+  g.add(buildScuff(rnd, 0.72));
+  // Cooler, paler than autumn dirt so the stack does not vanish into the lip.
+  const tones = [0xe6ddd0, 0xd4cbb8, 0xe0d6c6];
+  const n = 6 + Math.floor(rnd() * 2);
+  let y = 0.02;
   for (let i = 0; i < n; i++) {
-    const s = 0.10 * (1 - i * 0.07) + rnd() * 0.02;
+    const s = 0.155 * (1 - i * 0.06) + rnd() * 0.025;
     const stone = new THREE.Mesh(
       cobble(rnd, s),
-      propMat(0xc2b8aa, { roughness: 0.9 }),
+      propMat(tones[i % tones.length], { roughness: 0.88, envMapIntensity: 0.42 }),
     );
-    const sy = 0.58 + rnd() * 0.2;
-    y += s * sy * 0.74;
-    stone.position.set((rnd() - 0.5) * 0.04, y, (rnd() - 0.5) * 0.04);
-    stone.rotation.set(rnd() * 0.5, rnd() * TAU, rnd() * 0.4);
+    const sy = 0.62 + rnd() * 0.18;
+    y += s * sy * 0.78;
+    stone.position.set((rnd() - 0.5) * 0.05, y, (rnd() - 0.5) * 0.05);
+    stone.rotation.set(rnd() * 0.45, rnd() * TAU, rnd() * 0.35);
     stone.scale.y = sy;
     stone.castShadow = false;
     stone.receiveShadow = false;
     g.add(stone);
-    y += s * sy * 0.40;
+    y += s * sy * 0.38;
   }
-  g.userData.trace = { kind: 'cairn', pickR: 0.42 };
+  g.userData.trace = { kind: 'cairn', pickR: 0.78 };
   return g;
 }
 
@@ -294,20 +315,28 @@ function propMat(color, extra = {}) {
 export function buildTreeNote(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_tree_note';
-  const paper = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.16, 0.22),
-    propMat(0xf0e4cc, { roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
+  // A darker back sheet gives the cream an edge against bark — not a glow.
+  const back = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.30, 0.40),
+    propMat(0x6a5340, { roughness: 0.96, metalness: 0, side: THREE.DoubleSide }),
   );
-  paper.position.z = 0.006;
-  paper.rotation.z = (rnd() - 0.5) * 0.14;
+  back.position.z = 0.002;
+  back.rotation.z = (rnd() - 0.5) * 0.08;
+  g.add(back);
+  const paper = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.28, 0.38),
+    propMat(0xf6ecd2, { roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
+  );
+  paper.position.z = 0.008;
+  paper.rotation.z = (rnd() - 0.5) * 0.12;
   g.add(paper);
   const pin = new THREE.Mesh(
-    new THREE.SphereGeometry(0.01, 8, 6),
-    propMat(0x6a4030, { roughness: 0.55, metalness: 0.08 }),
+    new THREE.SphereGeometry(0.016, 8, 6),
+    propMat(0x4a3024, { roughness: 0.5, metalness: 0.1 }),
   );
-  pin.position.set(0, 0.09, 0.014);
+  pin.position.set(0, 0.16, 0.018);
   g.add(pin);
-  g.userData.trace = { kind: 'tree-note', pickR: 0.28 };
+  g.userData.trace = { kind: 'tree-note', pickR: 0.58 };
   return g;
 }
 
@@ -351,25 +380,26 @@ export function buildBeachedCanoe(rnd) {
   return wrap;
 }
 
-/** Shaft and blade, leaned and left when they hauled out. */
+/** Shaft and blade, stood and left when they hauled out — not a stick on the dirt. */
 export function buildLeanedPaddle(rnd) {
   const wrap = new THREE.Group();
   wrap.name = 'trace_paddle';
+  wrap.add(buildScuff(rnd, 0.48));
   const g = new THREE.Group();
-  const wood = propMat(0xc4a06a, { roughness: 0.72 });
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.016, 1.08, 7), wood);
-  shaft.position.y = 0.54;
+  const wood = propMat(0xd8b06a, { roughness: 0.7 });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 1.28, 8), wood);
+  shaft.position.y = 0.64;
   const blade = new THREE.Mesh(
-    new THREE.SphereGeometry(0.09, 8, 6),
-    propMat(0xb08950, { roughness: 0.7 }),
+    new THREE.SphereGeometry(0.12, 8, 6),
+    propMat(0xc49a58, { roughness: 0.68 }),
   );
-  blade.scale.set(0.70, 1.9, 0.13);
-  blade.position.y = 1.22;
+  blade.scale.set(0.78, 2.05, 0.16);
+  blade.position.y = 1.46;
   g.add(shaft, blade);
-  // Lean lives on the child. placeOnGround writes the wrap's quaternion.
-  g.rotation.z = 0.95 + rnd() * 0.12;
+  // Lean lives on the child. Keep it upright enough to read against water/sky.
+  g.rotation.z = 0.38 + rnd() * 0.10;
   wrap.add(g);
-  wrap.userData.trace = { kind: 'paddle', pickR: 0.62 };
+  wrap.userData.trace = { kind: 'paddle', pickR: 1.15 };
   return wrap;
 }
 
@@ -377,20 +407,21 @@ export function buildLeanedPaddle(rnd) {
 export function buildCoffeeTin(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_tin';
-  const h = 0.112, r = 0.036;
+  g.add(buildScuff(rnd, 0.42));
+  const h = 0.175, r = 0.058;
   const body = new THREE.Mesh(
-    new THREE.CylinderGeometry(r, r * 1.03, h, 12),
-    propMat(0xb45a3c, { roughness: 0.62 }),
+    new THREE.CylinderGeometry(r, r * 1.04, h, 12),
+    propMat(0xc85a36, { roughness: 0.58 }),
   );
-  body.position.y = h * 0.5;
+  body.position.y = h * 0.5 + 0.01;
   const lid = new THREE.Mesh(
-    new THREE.CylinderGeometry(r * 1.05, r * 1.05, 0.007, 12),
-    propMat(0x8a6a50, { roughness: 0.7 }),
+    new THREE.CylinderGeometry(r * 1.06, r * 1.06, 0.012, 12),
+    propMat(0x9a7050, { roughness: 0.68 }),
   );
-  lid.position.set(0.068 + rnd() * 0.02, 0.004, 0.03 + rnd() * 0.02);
+  lid.position.set(0.11 + rnd() * 0.02, 0.008, 0.04 + rnd() * 0.02);
   lid.rotation.set(0.18, rnd(), 0.12);
   g.add(body, lid);
-  g.userData.trace = { kind: 'tin', pickR: 0.22 };
+  g.userData.trace = { kind: 'tin', pickR: 0.58 };
   return g;
 }
 
@@ -442,18 +473,24 @@ export function buildTireTracks(rnd) {
 export function buildTrunkRope(rnd, trunkR = 0.14) {
   const g = new THREE.Group();
   g.name = 'trace_rope';
-  const cord = propMat(0xe2d2a6, { roughness: 0.86, metalness: 0 });
-  const R = 0.11;
+  const cord = propMat(0xf2e4b8, { roughness: 0.84, metalness: 0 });
+  const R = 0.16;
   const loop = new THREE.Mesh(
-    new THREE.TorusGeometry(R, 0.018, 6, 12),
+    new THREE.TorusGeometry(R, 0.028, 7, 14),
     cord,
   );
-  loop.position.set(0, 1.05, 0.02);
-  loop.rotation.y = 0.18;
-  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.007, 0.72, 6), cord);
-  tail.position.set(0.08, 0.62, 0.04);
-  tail.rotation.z = 0.28 + rnd() * 0.1;
-  g.add(loop, tail);
-  g.userData.trace = { kind: 'rope', pickR: 0.55 };
+  loop.position.set(0, 1.18, 0.04);
+  loop.rotation.y = 0.22;
+  const loop2 = new THREE.Mesh(
+    new THREE.TorusGeometry(R * 0.82, 0.024, 7, 14),
+    cord,
+  );
+  loop2.position.set(0.02, 1.12, 0.03);
+  loop2.rotation.set(0.35, 0.15, 0.2);
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.011, 0.95, 6), cord);
+  tail.position.set(0.12, 0.62, 0.06);
+  tail.rotation.z = 0.32 + rnd() * 0.08;
+  g.add(loop, loop2, tail);
+  g.userData.trace = { kind: 'rope', pickR: 0.95 };
   return g;
 }

@@ -10,6 +10,10 @@
 //
 //  The book on the dirt is the same journal the J key opens. They left it
 //  for whoever came next. Clicking it goes through HUD.toggleJournal.
+//  That leftover mesh is a closed leather prop (no page canvases). Opening
+//  the overlay book is the existing 10×1024×1452 CanvasTexture path — a
+//  Chrome tab discard on a small GPU is that path, not an extra WebGL
+//  cost this system adds.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
@@ -25,7 +29,7 @@ import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
 import { seedFeatures, pickWeekend, assignScraps } from './prior_notes.js';
 import {
-  buildColdRing, buildStakeHoles, buildCairn, seatJournal, placeOnGround,
+  buildColdRing, buildStakeHoles, buildCairn, buildScuff, seatJournal, placeOnGround,
   buildTreeNote, buildTippedBike, buildBeachedCanoe, buildLeanedPaddle,
   buildCoffeeTin, buildLaidStick, buildTireTracks, buildTrunkRope,
 } from './trace_props.js';
@@ -34,7 +38,9 @@ import {
 const START_R = 3.35;
 const START_FEATHER = 0.78;
 
-const LOOK_FAR = 22;
+const LOOK_FAR = 28;
+const LOOK_FAR_SMALL = 34;
+const SMALL_LOOK = new Set(['tin', 'paddle', 'rope', 'tree-note', 'cairn']);
 const MIN_FROM_START = 52;
 const MIN_SEP = 70;
 const PAIR_MIN = 16;
@@ -97,6 +103,7 @@ export class Traces extends System {
     this.ground = null;
     this._bookInHand = false;
     this.pointerClaim = false;
+    this._rockMemo = new Map();
   }
 
   async init() {
@@ -494,12 +501,13 @@ export class Traces extends System {
       // A fat maple bole is ~0.35 m at note height; sit the paper outside it
       // so it cannot vanish inside the instance.
       const note = buildTreeNote(rnd);
-      const hx = tree.x + nx * 0.42;
-      const hz = tree.z + nz * 0.42;
-      const hy = (tree.y ?? world.getHeight(tree.x, tree.z)) + 1.42;
+      const hx = tree.x + nx * 0.50;
+      const hz = tree.z + nz * 0.50;
+      const hy = (tree.y ?? world.getHeight(tree.x, tree.z)) + 1.55;
       note.position.set(hx, hy, hz);
       note.lookAt(tree.x, hy, tree.z);
       this.root.add(note);
+      this._scuffAt(tree.x + nx * 0.55, tree.z + nz * 0.55, rnd, 0.55);
       p.x = hx; p.z = hz;
       this._spot(note, 'tree-note', hx, hy, hz, scrap);
       return true;
@@ -512,12 +520,13 @@ export class Traces extends System {
       const len = Math.hypot(dx, dz) || 1;
       const nx = dx / len, nz = dz / len;
       const rope = buildTrunkRope(rnd, tree.trunkR);
-      const hx = tree.x + nx * 0.28;
-      const hz = tree.z + nz * 0.28;
-      const y = placeOnGround(world, rope, hx, hz, Math.atan2(nx, nz), 0.12, 0.25);
+      const hx = tree.x + nx * 0.36;
+      const hz = tree.z + nz * 0.36;
+      const y = placeOnGround(world, rope, hx, hz, Math.atan2(nx, nz), 0.08, 0.25);
       this.root.add(rope);
+      this._scuffAt(hx, hz, rnd, 0.5);
       p.x = hx; p.z = hz;
-      this._spot(rope, 'rope', hx, y + 0.7, hz);
+      this._spot(rope, 'rope', hx, y + 0.85, hz);
       return true;
     }
 
@@ -539,11 +548,11 @@ export class Traces extends System {
     }
 
     if (kind === 'tin') {
-      this.clearings.push({ x: p.x, z: p.z, radius: 1.15, feather: 0.42 });
+      this.clearings.push({ x: p.x, z: p.z, radius: 1.45, feather: 0.48 });
       const tin = buildCoffeeTin(rnd);
-      const y = placeOnGround(world, tin, p.x, p.z, yaw, 0.7, 0.18);
+      const y = placeOnGround(world, tin, p.x, p.z, yaw, 0.55, 0.28);
       this.root.add(tin);
-      this._spot(tin, 'tin', p.x, y + 0.06, p.z, scrap);
+      this._spot(tin, 'tin', p.x, y + 0.10, p.z, scrap);
       return true;
     }
 
@@ -576,19 +585,19 @@ export class Traces extends System {
 
     if (kind === 'paddle') {
       const paddle = buildLeanedPaddle(rnd);
-      const y = placeOnGround(world, paddle, p.x, p.z, yaw, 0.2, 0.35);
+      const y = placeOnGround(world, paddle, p.x, p.z, yaw, 0.08, 0.4);
       this.root.add(paddle);
-      this._spot(paddle, 'paddle', p.x, y + 0.45, p.z, scrap);
+      this._spot(paddle, 'paddle', p.x, y + 0.7, p.z, scrap);
       return true;
     }
 
     if (kind === 'cairn') {
-      const q = this._nudgeClear(p.x, p.z, rnd);
-      this.clearings.push({ x: q.x, z: q.z, radius: 0.95, feather: 0.38 });
+      const q = this._seatCairn(p, rnd);
+      this.clearings.push({ x: q.x, z: q.z, radius: 1.65, feather: 0.52 });
       const cairn = buildCairn(rnd);
-      const y = placeOnGround(world, cairn, q.x, q.z, rnd() * Math.PI * 2, 0.88, 0.28);
+      const y = placeOnGround(world, cairn, q.x, q.z, rnd() * Math.PI * 2, 0.16, 0.42);
       this.root.add(cairn);
-      this._spot(cairn, 'cairn', q.x, y, q.z);
+      this._spot(cairn, 'cairn', q.x, y + 0.35, q.z);
       p.x = q.x; p.z = q.z;
       return true;
     }
@@ -621,6 +630,68 @@ export class Traces extends System {
       if (wet < bestWet && sl < 0.7) { bestWet = wet; bx = px; bz = pz; }
     }
     return { x: bx, z: bz };
+  }
+
+  /**
+   * Sit the cairn on the inland side of the lip — the wait, not the rock
+   * pile on the drop. Still the same vista/peak; just a few metres back
+   * onto flatter ground so the stack reads against sky.
+   */
+  _seatCairn(p, rnd) {
+    const world = this.ctx.world;
+    let downA = 0, downDrop = -Infinity;
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const hx = p.x + Math.sin(a) * 18;
+      const hz = p.z + Math.cos(a) * 18;
+      if (!world.isInBounds(hx, hz)) continue;
+      const drop = world.getHeight(p.x, p.z) - world.getHeight(hx, hz);
+      if (drop > downDrop) { downDrop = drop; downA = a; }
+    }
+    const inland = downA + Math.PI;
+    let best = null, bestS = -Infinity;
+    for (let d = 6; d <= 16; d += 1.5) {
+      for (const da of [-0.7, -0.35, 0, 0.35, 0.7]) {
+        const x = p.x + Math.sin(inland + da) * d;
+        const z = p.z + Math.cos(inland + da) * d;
+        if (!world.isInBounds(x, z)) continue;
+        if (world.getWaterDepth(x, z) > 0.02) continue;
+        const sl = world.getSlope(x, z);
+        if (sl > 0.38) continue;
+        let lo = Infinity, hi = -Infinity;
+        for (let k = 0; k < 6; k++) {
+          const aa = (k / 6) * Math.PI * 2;
+          const h = world.getHeight(x + Math.sin(aa) * 2.2, z + Math.cos(aa) * 2.2);
+          lo = Math.min(lo, h); hi = Math.max(hi, h);
+        }
+        const rough = hi - lo;
+        if (rough > 1.6) continue;
+        if (this._rockCrowds(x, z)) continue;
+        const s = -sl * 36 - rough * 7 - Math.abs(d - 10) * 0.25 + rnd() * 0.4;
+        if (s > bestS) { bestS = s; best = { x, z }; }
+      }
+    }
+    return best ?? this._nudgeClear(p.x, p.z, rnd);
+  }
+
+  _rockCrowds(x, z) {
+    const key = `${(x / 2) | 0},${(z / 2) | 0}`;
+    if (this._rockMemo.has(key)) return this._rockMemo.get(key);
+    const rocks = this.ctx.systems?.rocks;
+    let crowded = false;
+    if (rocks?.rocksAround) {
+      try {
+        crowded = (rocks.rocksAround(x, z, 3.4, 0.75, [])?.length ?? 0) > 0;
+      } catch { crowded = false; }
+    }
+    this._rockMemo.set(key, crowded);
+    return crowded;
+  }
+
+  _scuffAt(x, z, rnd, radius = 0.55) {
+    const scuff = buildScuff(rnd, radius);
+    placeOnGround(this.ctx.world, scuff, x, z, rnd() * Math.PI * 2, 0.7, radius);
+    this.root.add(scuff);
   }
 
   _spot(obj, kind, x, y, z, scrap = null) {
@@ -681,7 +752,8 @@ export class Traces extends System {
       const miss = rayMiss(ray, s.x, s.y + 0.04, s.z, s.pickR);
       if (miss < bestMiss) {
         const along = alongRay(ray, s.x, s.y, s.z);
-        if (along > 0.4 && along < LOOK_FAR) { bestMiss = miss; best = s; }
+        const far = SMALL_LOOK.has(s.kind) ? LOOK_FAR_SMALL : LOOK_FAR;
+        if (along > 0.4 && along < far) { bestMiss = miss; best = s; }
       }
     }
     return best;
