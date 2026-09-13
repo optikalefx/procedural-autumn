@@ -1,16 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  prior_notes — what this seed actually has, and the lines already in the book.
+//  prior_notes — the job for M., and what this seed can honestly host.
 //
-//  The left-behind journal is a field book addressed to someone at home. The
-//  usuals (deer, fox, moose…) get empty slots the player's own photographs
-//  fill. The last pages carry the prior camper's failed almosts of something
-//  they would not name. Those lines are written at boot, gated on the baked
-//  world — a dry seed does not get a river wake, a valley with no lip does
-//  not get prints on one.
+//  The left-behind journal is for M. M. wants documentation of something
+//  this valley may or may not have — never named in any copy we write.
+//  They also asked for an honest valley first. The usuals (deer, fox,
+//  moose…) are the control set: if you do not know what is supposed to be
+//  here, every shadow is the thing. The player's own photographs fill
+//  those slots. Later pages stay failed almosts until the existing
+//  mystery leaf — unchanged — can close that last page.
 //
-//  Animal photographs do not progress the creature pages. This module never
-//  mentions the unnamed thing by any popular name; the existing mystery leaf
-//  is still what closes that thread.
+//  The prior camper was doing that job for one weekend, then left. Traces
+//  are that weekend's work path. Animal photographs do not progress the
+//  creature pages. This module never uses a popular name for the unnamed
+//  thing.
 // ─────────────────────────────────────────────────────────────────────────────
 import { mulberry32 } from '../core/MathUtils.js';
 import { SEED } from '../world/WorldConfig.js';
@@ -158,24 +160,30 @@ export const TITLE_CUE = {
   for: 'for M.',
   lines: [
     'I will get the usuals first.',
-    'Deer, fox — the ones we know.',
+    'Deer, fox — so a shadow is a shadow.',
     'The other thing can wait.',
   ],
 };
 
-// ── one weekend ──────────────────────────────────────────────────────────────
+// ── one weekend of work for M. ───────────────────────────────────────────────
 //
-// The leftovers are one prior camper's path, in order. A dry seed skips the
-// water beat; a flat one skips the lip. Nothing is reshuffled to fill a
-// quota — a sparse bake just tells a shorter story.
+// Each beat has a reason. A dry seed skips water (no moose, no wake). A
+// flat one skips the lip. Nothing is replaced with unrelated junk.
 
 export const WEEKEND_BEATS = [
+  // Pitched here to work the book. Usuals first, other thing later.
   { id: 'camp', kinds: ['start'], need: () => true },
+  // Moose drink here — a usual — and something bigger might leave a wake.
+  // Canoe and paddle are a fast haul-out, not a wreck.
   { id: 'water', kinds: ['paddle', 'canoe'], need: (f) => f.hasWater },
+  // Covering ground for sightings. The bike is dropped when the trees moved.
   { id: 'ride', kinds: ['tracks', 'bike'], need: () => true },
+  // Dusk wait. Cairn is a patient marker. The note is for M.: a usual that
+  // landed, and an almost they would not name.
   { id: 'lip', kinds: ['cairn', 'tree-note'], need: (f) => f.hasRidge },
-  // Same slot as the lip note when there is no lip — they wrote from the trees.
+  // No lip this seed — they wrote from the trees, same mix of usual and almost.
   { id: 'trees', kinds: ['tree-note'], need: (f) => !f.hasRidge },
+  // Left in a hurry after the almost. The journal is still on the dirt.
   { id: 'exit', kinds: ['tin', 'stick', 'rope'], need: () => true },
 ];
 
@@ -202,24 +210,25 @@ export function pickCrumbs(features) {
   return pickWeekend(features).kinds;
 }
 
-// Same hand as the journal. Each scrap is a beat of the weekend, not a
-// caption on a prop. Never name the unnamed thing.
+// Same hand as the journal. Toggle: a useful usual, then an embarrassed
+// almost. Never a "nice camp" line. Never a name for the unnamed thing.
 const SCRAP_COPY = {
   'tree-note': (f) => f.hasRidge
-    ? ['M. — if you came this way.', 'I went up the lip after the bike.', 'The usuals first. —']
-    : ['M. — if you came this way.', 'I kept to the trees.', 'The usuals first. —'],
-  paddle: () => ['Too late to put in.', 'I left it leaned the wrong way.', 'The other thing can wait.'],
-  canoe: () => ['Something on the far bank.', 'just a log.', 'I did not go back on.'],
-  tin: () => ['grounds in the bottom.', 'walking back now.', 'still warm. not really.'],
-  bike: () => ['The chain slipped on the last bend.', 'I walked it from here.'],
+    ? ['M. —', 'Fox for you. Honest one.', 'Prints by the lip. Not a deer.', 'Too dark. —']
+    : ['M. —', 'Fox for you. Honest one.', 'Something at the trees. Too dark. —'],
+  paddle: () => ['Moose drink here. I know.', 'A wake, then nothing.', 'I hauled out. Light going.'],
+  canoe: () => ['Something on the far bank.', 'Just a log. I said it was a log.', 'Did not go back on.'],
+  tin: () => ['Left the book. For you if you come.', 'I am walking back.', 'It was not nothing.'],
+  bike: () => ['The trees moved.', 'I thought I had it.', 'I left the bike.'],
 };
 
 /**
  * About a third of the placed kinds get a readable scrap.
  *
- * The tree note is the letter home. The put-in gets one water line when
- * the seed has water. The tin (or the bike, if there is no tin) is the
- * walk back. The journal is a different object — it is not a scrap.
+ * The tree note is the dusk letter to M. (usual that landed + an almost).
+ * Water is moose, then a wake, then the haul-out. The tin is the hurried
+ * leave after that almost; the bike scrap is the drop if there is no tin.
+ * The journal is a different object — it is not a scrap.
  */
 export function assignScraps(kinds, features) {
   const have = new Set(kinds);

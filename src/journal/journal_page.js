@@ -44,6 +44,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { hand, brush } from './journal_fonts.js';
+import { TITLE_CUE } from '../traces/prior_notes.js';
 import { clamp01 } from '../core/MathUtils.js';
 
 // Page pixel size. 1024 x 1452 is 148:210 (A5) to within half a pixel, and 1024
@@ -973,9 +974,9 @@ export class JournalPage {
     // leaf is the usuals; the last pages are the almosts they never closed.
     g.font = hand(40);
     g.fillStyle = INK_SOFT;
-    g.fillText('I will get the usuals first.', cx, 1008);
-    g.fillText('Deer, fox — the ones we know.', cx, 1072);
-    g.fillText('The other thing can wait.', cx, 1136);
+    g.fillText(TITLE_CUE.lines[0], cx, 1008);
+    g.fillText(TITLE_CUE.lines[1], cx, 1072);
+    g.fillText(TITLE_CUE.lines[2], cx, 1136);
 
     g.textAlign = 'center';
     g.font = hand(30);

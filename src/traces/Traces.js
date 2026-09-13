@@ -1,16 +1,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Traces — silent leftovers from a prior camper.
+//  Traces — one weekend of work for M., then they left.
 //
-//  Not a quest. No pins, no timers, no "must read before you leave". The
-//  leftovers are one weekend, in order: they pitched here, they went to the
-//  water if this valley has one, they took the bike out, they climbed the
-//  lip if there is a lip, and they left a little mess on the way out.
-//  Discover by standing near them and looking. About one in three crumbs
-//  is a short readable scrap in the same hand as the journal.
+//  Not a quest. No pins, no leave-gate. The prior camper was documenting
+//  this valley for M.: usuals first (so a shadow is a shadow), the unnamed
+//  thing later. Each leftover is a beat of that job — a fast haul-out, a
+//  dropped bike, a dusk note — not camp dressing. Discover by standing
+//  near them and looking. About one in three crumbs is a short scrap in
+//  the same hand as the journal.
 //
-//  The book on the ground is the same journal the J key opens. Clicking it
-//  goes through HUD.toggleJournal so the chrome comes off the same way a
-//  click on a camp table does.
+//  The book on the dirt is the same journal the J key opens. They left it
+//  for whoever came next. Clicking it goes through HUD.toggleJournal.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
@@ -56,18 +55,17 @@ const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
 
 const LOOK = {
   journal: () => `${pickVerb()}&nbsp; open the journal`,
-  ring: () => 'a cold fire ring. ashes gone grey.',
-  stakes: () => 'stake holes. a tent was here.',
-  cairn: () => 'a small cairn. three stones, maybe four.',
-  'tree-note': () => `${pickVerb()}&nbsp; a note on the tree`,
-  bike: () => 'a bike on its side. nobody coming back for it.',
-  tracks: () => 'a tyre track, fading into the mud.',
-  rope: () => 'a line still on the trunk.',
-  tin: () => 'an empty tin. grounds in the bottom.',
-  stick: () => 'a roasting stick. the fire is gone.',
-  'second-night': () => 'grass laid down. someone slept here.',
-  canoe: () => 'a canoe on the bank. too late to put in.',
-  paddle: () => 'a paddle, leaned the wrong way.',
+  ring: () => 'a cold fire ring. they were working the book.',
+  stakes: () => 'stake holes. packed in a hurry.',
+  cairn: () => 'a cairn. someone waited here till dusk.',
+  'tree-note': () => `${pickVerb()}&nbsp; a note for M.`,
+  bike: () => 'a bike on its side. dropped, not parked.',
+  tracks: () => 'a tyre track. they were covering ground.',
+  rope: () => 'a line on the trunk. left as they went.',
+  tin: () => 'an empty tin. they did not stay to finish it.',
+  stick: () => 'a stick they left. they did not wait for morning.',
+  canoe: () => 'a canoe on the bank. hauled out fast.',
+  paddle: () => 'a paddle, leaned and left. they did not go back on.',
 };
 
 const ANCHOR_OF = {
@@ -178,8 +176,8 @@ export class Traces extends System {
     this.root.add(stakes);
     this._spot(stakes, 'stakes', sx, sy, sz);
 
-    // The book, on the ground beside the ring. Not on a table — nobody is
-    // still sitting here.
+    // The book, on the dirt beside the ring. They left it for M. — or for
+    // whoever came next. Not on a table. Nobody is still sitting here.
     const jx = cx + Math.sin(yaw + 0.55) * 1.15;
     const jz = cz + Math.cos(yaw + 0.55) * 1.15;
     const pad = new THREE.Group();
@@ -193,9 +191,10 @@ export class Traces extends System {
   }
 
   /**
-   * Place the rest of the weekend along one roamable path out from camp.
-   * Beats stay in authored order; a kind that cannot land is skipped, not
-   * swapped with a later beat.
+   * Place the rest of the job along one roamable path out from camp.
+   * Water is moose-and-wake, the bike is a drop, the lip is a dusk wait,
+   * the exit is a hurry. Beats stay in authored order; a kind that cannot
+   * land is skipped, not swapped for dressing.
    */
   _placeStory(rnd) {
     const weekend = pickWeekend(this.features);
@@ -647,13 +646,11 @@ export class Traces extends System {
   _look(hit) {
     if (hit.scrap?.lines?.length && hit.kind !== 'journal') {
       const quiet = {
-        'tree-note': 'a note on the tree',
-        tin: 'the note under the tin',
+        'tree-note': 'a note for M.',
+        tin: 'a scrap under the tin',
         bike: 'a scrap by the bike',
         canoe: 'a scrap in the canoe',
         paddle: 'a scrap by the paddle',
-        tracks: 'a scrap in the mud',
-        'second-night': 'a scrap by the ring',
       };
       return `${pickVerb()}&nbsp; ${quiet[hit.kind] ?? 'the note'}`;
     }

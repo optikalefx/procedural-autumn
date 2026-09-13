@@ -1,10 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  trace_props — the quiet things a prior camper left on the ground.
+//  trace_props — leftovers from one weekend of work for M.
 //
-//  The start scuff (cold ring, stake holes, journal) plus the wider leftover
-//  pool: a pinned note, a tipped bike, tracks, a tin, a stick, a rope, a
-//  second night, and — when the seed has them — a canoe, a paddle, a cairn.
-//  Nothing here smokes, glows, or asks to be collected.
+//  Each mesh has a reason: the book they were filling, a canoe hauled out
+//  fast, a bike dropped when the trees moved, a dusk note, the hurry they
+//  left in. Nothing here smokes, glows, or asks to be collected.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { Parts, at, campMaterials, tintOf } from '../camp/camp_materials.js';
@@ -165,7 +164,7 @@ export function buildColdRing(rnd) {
   return g;
 }
 
-/** Four holes where a tent's stakes came out. A rectangle, not a scatter. */
+/** Four holes where the tent came out in a hurry. A rectangle, not a scatter. */
 export function buildStakeHoles(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_stake_holes';
@@ -199,6 +198,7 @@ export function buildStakeHoles(rnd) {
   return g;
 }
 
+/** A small cairn — the dusk wait's patient marker, not a trail blaze. */
 export function buildCairn(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_cairn';
@@ -273,11 +273,11 @@ export function placeOnGround(world, group, x, z, yaw = 0, tilt = 0.82, footprin
   return y;
 }
 
-// ── the wider leftover pool ──────────────────────────────────────────────────
+// ── the rest of the weekend ─────────────────────────────────────────────────
 //
-// These sit out in the valley, not on the start dirt. They use their own
-// materials (or the bike / canoe builders') so they do not inherit the camp
-// stone singleton — that product went black in daylight once already.
+// Water, bike path, dusk note, hurried leave. Own materials (or the bike /
+// canoe builders') so they do not inherit the camp stone singleton — that
+// product went black in daylight once already.
 
 function propMat(color, extra = {}) {
   return new THREE.MeshStandardMaterial({
@@ -290,7 +290,7 @@ function propMat(color, extra = {}) {
   });
 }
 
-/** Cream scrap pinned to a trunk. The words live on the overlay, not the mesh. */
+/** Note for M., pinned at dusk. The words live on the overlay, not the mesh. */
 export function buildTreeNote(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_tree_note';
@@ -312,8 +312,8 @@ export function buildTreeNote(rnd) {
 }
 
 /**
- * A packer bike on its side. Origin stays on the ground; the wrap is what
- * `placeOnGround` stands. Not a rideable Bike system object.
+ * Dropped when the trees moved — not parked. Origin stays on the ground;
+ * the wrap is what `placeOnGround` stands. Not a rideable Bike system object.
  */
 export function buildTippedBike(rnd) {
   const wrap = new THREE.Group();
@@ -334,8 +334,9 @@ export function buildTippedBike(rnd) {
 }
 
 /**
- * Canoe heeled on a bank. The pack paddle stays in the boat file; we hide
- * those so the put-in leftover is a separate crumb, not a third blade.
+ * Hauled out fast (spooked, or the light going) — not a wreck. The pack
+ * paddle stays in the boat file; we hide those so the put-in leftover is
+ * a separate crumb, not a third blade.
  */
 export function buildBeachedCanoe(rnd) {
   const wrap = new THREE.Group();
@@ -350,7 +351,7 @@ export function buildBeachedCanoe(rnd) {
   return wrap;
 }
 
-/** Shaft and blade, leaned as if the rock it was against walked off. */
+/** Shaft and blade, leaned and left when they hauled out. */
 export function buildLeanedPaddle(rnd) {
   const wrap = new THREE.Group();
   wrap.name = 'trace_paddle';
@@ -372,6 +373,7 @@ export function buildLeanedPaddle(rnd) {
   return wrap;
 }
 
+/** Tin they did not stay to finish — the hurried leave after the almost. */
 export function buildCoffeeTin(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_tin';
@@ -392,7 +394,7 @@ export function buildCoffeeTin(rnd) {
   return g;
 }
 
-/** A spent roasting switch on the ground — not the camp's leaning hero prop. */
+/** Left on the dirt when they walked. Not the camp's leaning hero prop. */
 export function buildLaidStick(rnd) {
   const g = new THREE.Group();
   g.name = 'trace_stick';
