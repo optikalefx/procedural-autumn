@@ -163,53 +163,65 @@ export const TITLE_CUE = {
   ],
 };
 
-// ── crumbs ───────────────────────────────────────────────────────────────────
+// ── one weekend ──────────────────────────────────────────────────────────────
 //
-// The start scuff is always one. The rest of the pool is gated on the bake:
-// a dry valley never gets a canoe, a flat one never gets a lip cairn. Stick
-// is the fill so a typical seed still lands around eight to ten leftovers
-// without stacking extras at spawn.
+// The leftovers are one prior camper's path, in order. A dry seed skips the
+// water beat; a flat one skips the lip. Nothing is reshuffled to fill a
+// quota — a sparse bake just tells a shorter story.
 
-const ALWAYS_CRUMBS = [
-  'start', 'tree-note', 'bike', 'tracks', 'rope', 'tin', 'second-night',
+export const WEEKEND_BEATS = [
+  { id: 'camp', kinds: ['start'], need: () => true },
+  { id: 'water', kinds: ['paddle', 'canoe'], need: (f) => f.hasWater },
+  { id: 'ride', kinds: ['tracks', 'bike'], need: () => true },
+  { id: 'lip', kinds: ['cairn', 'tree-note'], need: (f) => f.hasRidge },
+  // Same slot as the lip note when there is no lip — they wrote from the trees.
+  { id: 'trees', kinds: ['tree-note'], need: (f) => !f.hasRidge },
+  { id: 'exit', kinds: ['tin', 'stick', 'rope'], need: () => true },
 ];
 
 /**
- * Which leftover kinds this seed can honestly host.
+ * The beats this seed can honestly host, in story order.
  *
- * Order is the placement order, not a quest. Count varies a little with
- * gates: dry and flat is eight, water or a lip pushes toward ten.
+ * `kinds` is the placement list. Count varies with gates: a wet ridge
+ * valley is ten crumbs, a dry flat one is seven. Fewer is the right
+ * answer when the land cannot carry a beat.
  */
-export function pickCrumbs(features) {
-  const out = ALWAYS_CRUMBS.slice();
-  if (features.hasWater) out.push('canoe', 'paddle');
-  if (features.hasRidge) out.push('cairn');
-  if (out.length < 10) out.push('stick');
-  return out.slice(0, 10);
+export function pickWeekend(features) {
+  const list = [];
+  const kinds = [];
+  for (const beat of WEEKEND_BEATS) {
+    if (!beat.need(features)) continue;
+    list.push({ id: beat.id, kinds: beat.kinds.slice() });
+    kinds.push(...beat.kinds);
+  }
+  return { list, kinds };
 }
 
-// Short human scraps. About one in three crumbs is readable; the rest are
-// silent props. Never name the unnamed thing.
+/** @deprecated use pickWeekend — kept so older probes still resolve. */
+export function pickCrumbs(features) {
+  return pickWeekend(features).kinds;
+}
+
+// Same hand as the journal. Each scrap is a beat of the weekend, not a
+// caption on a prop. Never name the unnamed thing.
 const SCRAP_COPY = {
   'tree-note': (f) => f.hasRidge
-    ? ['M. — if you came this way.', 'I went up the lip.', 'The usuals first. —']
+    ? ['M. — if you came this way.', 'I went up the lip after the bike.', 'The usuals first. —']
     : ['M. — if you came this way.', 'I kept to the trees.', 'The usuals first. —'],
-  tin: () => ['grounds in the bottom.', 'still warm when I left it.', 'not really.'],
+  paddle: () => ['Too late to put in.', 'I left it leaned the wrong way.', 'The other thing can wait.'],
+  canoe: () => ['Something on the far bank.', 'just a log.', 'I did not go back on.'],
+  tin: () => ['grounds in the bottom.', 'walking back now.', 'still warm. not really.'],
   bike: () => ['The chain slipped on the last bend.', 'I walked it from here.'],
-  canoe: () => ['Too late to put in.', 'Something on the far bank.', 'just a log.'],
-  paddle: () => ['Left it for whoever comes next.', 'I did not go back on.'],
-  tracks: () => ['Heard it again past the trees.', 'nothing in the morning.'],
-  'second-night': () => ['Stayed one more night.', 'Same quiet. Same nothing.'],
 };
 
 /**
  * About a third of the placed kinds get a readable scrap.
  *
- * The tree note is always one. Then one small camp leftover (tin or bike),
- * then a water line if the seed has water, else a dry almost. The journal
- * is a different object — it is not a scrap.
+ * The tree note is the letter home. The put-in gets one water line when
+ * the seed has water. The tin (or the bike, if there is no tin) is the
+ * walk back. The journal is a different object — it is not a scrap.
  */
-export function assignScraps(kinds, features, rnd = Math.random) {
+export function assignScraps(kinds, features) {
   const have = new Set(kinds);
   const out = new Map();
   const take = (k) => {
@@ -218,14 +230,10 @@ export function assignScraps(kinds, features, rnd = Math.random) {
     out.set(k, { lines: fn(features) });
   };
   take('tree-note');
-  const small = ['tin', 'bike'].filter((k) => have.has(k));
-  if (small.length) take(small[Math.min(small.length - 1, Math.floor(rnd() * small.length))]);
-  if (features.hasWater) {
-    const wet = ['canoe', 'paddle'].filter((k) => have.has(k));
-    if (wet.length) take(wet[Math.min(wet.length - 1, Math.floor(rnd() * wet.length))]);
-  } else {
-    const dry = ['tracks', 'second-night'].filter((k) => have.has(k) && !out.has(k));
-    if (dry.length) take(dry[Math.min(dry.length - 1, Math.floor(rnd() * dry.length))]);
-  }
+  if (have.has('paddle')) take('paddle');
+  else take('canoe');
+  if (have.has('tin')) take('tin');
+  else take('bike');
+  if (out.size < 3) take('bike');
   return out;
 }

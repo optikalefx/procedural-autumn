@@ -1,11 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  Traces — silent leftovers from a prior camper.
 //
-//  Not a quest. No pins, no timers, no "must read before you leave". A faded
-//  start scuff opens the book; the rest of the pool is spread through the
-//  valley, gated on what this seed actually has. Discover by standing near
-//  them and looking. About one in three crumbs is a short readable scrap;
-//  the others are just things someone left.
+//  Not a quest. No pins, no timers, no "must read before you leave". The
+//  leftovers are one weekend, in order: they pitched here, they went to the
+//  water if this valley has one, they took the bike out, they climbed the
+//  lip if there is a lip, and they left a little mess on the way out.
+//  Discover by standing near them and looking. About one in three crumbs
+//  is a short readable scrap in the same hand as the journal.
 //
 //  The book on the ground is the same journal the J key opens. Clicking it
 //  goes through HUD.toggleJournal so the chrome comes off the same way a
@@ -23,7 +24,7 @@ import { picked, pointing } from '../core/Pointer.js';
 import { pickVerb } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
-import { seedFeatures, pickCrumbs, assignScraps } from './prior_notes.js';
+import { seedFeatures, pickWeekend, assignScraps } from './prior_notes.js';
 import {
   buildColdRing, buildStakeHoles, buildCairn, seatJournal, placeOnGround,
   buildTreeNote, buildTippedBike, buildBeachedCanoe, buildLeanedPaddle,
@@ -35,9 +36,21 @@ const START_R = 3.35;
 const START_FEATHER = 0.78;
 
 const LOOK_FAR = 22;
-const MIN_FROM_START = 78;
-const MIN_SEP = 82;
+const MIN_FROM_START = 52;
+const MIN_SEP = 70;
+const PAIR_MIN = 16;
 const MAX_FROM_START = 720;
+
+// Distance-from-camp bands, in story order. Later beats want to sit farther
+// out; a hop that doubles back toward the scuff is the wrong weekend.
+const BAND = {
+  water: [70, 300],
+  ride: [120, 400],
+  lip: [180, 540],
+  trees: [150, 420],
+  exit: [220, 660],
+};
+const PAIR_AT = { water: 36, ride: 62, lip: 52, exit: 88 };
 
 const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
 
@@ -106,7 +119,7 @@ export class Traces extends System {
     const seed = (this.ctx.world?.seed ?? SEED) >>> 0;
     const rnd = siteRng(site.x, site.z, seed);
     this._placeStart(site, rnd);
-    this._placeSpread(rnd);
+    this._placeStory(rnd);
     this._publishClearings();
 
     // Harness / probe seam. Same spirit as window.__camp.
@@ -176,71 +189,196 @@ export class Traces extends System {
     const holder = seatJournal(rnd, pad);
     if (holder) this._spot(holder, 'journal', jx, jy + 0.02, jz);
 
-    this._addCrumb('start', cx, cz, false);
+    this._addCrumb('start', cx, cz, false, 'camp');
   }
 
-  _placeSpread(rnd) {
-    const plan = pickCrumbs(this.features);
-    const scraps = assignScraps(plan, this.features, rnd);
-    this.plan = plan;
+  /**
+   * Place the rest of the weekend along one roamable path out from camp.
+   * Beats stay in authored order; a kind that cannot land is skipped, not
+   * swapped with a later beat.
+   */
+  _placeStory(rnd) {
+    const weekend = pickWeekend(this.features);
+    const scraps = assignScraps(weekend.kinds, this.features);
+    this.plan = weekend.kinds;
+    this.beats = weekend.list.map((b) => b.id);
     this.scraps = scraps;
-    const taken = [{ x: this.origin.x, z: this.origin.z }];
+    const taken = [{ x: this.origin.x, z: this.origin.z, beat: 'camp', id: 'start' }];
+    let prev = { x: this.origin.x, z: this.origin.z, beat: 'camp', id: 'start' };
+    let heading = this._openingHeading();
 
-    for (const kind of plan) {
-      if (kind === 'start') continue;
-      const p = this._pickAnchor(kind, taken, rnd);
-      if (!p) continue;
-      if (!this._placeKind(kind, p, rnd, scraps.get(kind) ?? null)) continue;
-      taken.push({ x: p.x, z: p.z });
-      this._addCrumb(kind, p.x, p.z, scraps.has(kind));
+    for (const beat of weekend.list) {
+      if (beat.id === 'camp') continue;
+      for (const kind of beat.kinds) {
+        const p = this._pickStoryAnchor(kind, beat.id, prev, heading, taken, rnd);
+        if (!p) continue;
+        if (!this._placeKind(kind, p, rnd, scraps.get(kind) ?? null)) continue;
+        const row = { x: p.x, z: p.z, beat: beat.id, id: kind, yaw: p.yaw };
+        taken.push(row);
+        this._addCrumb(kind, p.x, p.z, scraps.has(kind), beat.id);
+        heading = Math.atan2(p.x - this.origin.x, p.z - this.origin.z);
+        prev = row;
+      }
     }
   }
 
-  _pickAnchor(kind, taken, rnd) {
+  /** First outing: the nearest honest water, or a road if the seed is dry. */
+  _openingHeading() {
+    const o = this.origin;
+    const w = this.features.waterNear;
+    if (w) return Math.atan2(w.x - o.x, w.z - o.z);
+    let best = null, bestD = Infinity;
+    for (const p of this.features.pois?.road ?? []) {
+      const d = Math.hypot(p.x - o.x, p.z - o.z);
+      if (d > 60 && d < 360 && d < bestD) { bestD = d; best = p; }
+    }
+    if (best) return Math.atan2(best.x - o.x, best.z - o.z);
+    return 0.4;
+  }
+
+  _pickStoryAnchor(kind, beat, prev, heading, taken, rnd) {
     const world = this.ctx.world;
     const origin = this.origin;
-    const prefer = kind === 'second-night' ? 280 : 180;
+
+    // Same-beat partners stay on the same feature: canoe off the paddle's
+    // bank, bike farther along the tracks' road, note on the way up to the cairn.
+    if (kind === 'canoe' && prev.id === 'paddle') {
+      const shore = this._shoreFrom(prev, 26, 48);
+      if (shore && this._free(shore, taken, MIN_SEP - PAIR_MIN)) return { ...prev, ...shore };
+    }
+    if (kind === 'bike' && prev.id === 'tracks') {
+      const along = this._fartherAlongRoad(prev, heading, taken);
+      if (along) return along;
+    }
+    if (kind === 'tree-note' && prev.id === 'cairn') {
+      const mid = {
+        x: prev.x * 0.62 + origin.x * 0.38,
+        z: prev.z * 0.62 + origin.z * 0.38,
+      };
+      const tree = this._nearTree(mid.x, mid.z, 70);
+      if (tree && this._free(tree, taken, MIN_SEP - PAIR_MIN)) return { ...tree, tree };
+    }
+
     const raw = this._candidates(kind);
     const scored = [];
     for (const p of raw) {
       if (!world.isInBounds(p.x, p.z)) continue;
       const d0 = Math.hypot(p.x - origin.x, p.z - origin.z);
-      if (d0 < MIN_FROM_START || d0 > MAX_FROM_START) continue;
+      const minD = beat === 'water' ? 48 : MIN_FROM_START;
+      if (d0 < minD || d0 > MAX_FROM_START) continue;
       if (world.getWaterDepth(p.x, p.z) > (kind === 'canoe' ? 0.55 : 0.18)) continue;
       if (world.getSlope(p.x, p.z) > 0.85) continue;
+      const pair = prev.beat === beat;
+      const need = pair ? PAIR_MIN : MIN_SEP;
       let near = false;
       for (const t of taken) {
-        if (Math.hypot(p.x - t.x, p.z - t.z) < MIN_SEP) { near = true; break; }
+        if (Math.hypot(p.x - t.x, p.z - t.z) < need) { near = true; break; }
       }
       if (near) continue;
-      scored.push({ p, rank: -Math.abs(d0 - prefer) + rnd() * 8 });
+      scored.push({ p, rank: this._storyRank(p, kind, beat, origin, prev, heading) + rnd() * 4 });
     }
     scored.sort((a, b) => b.rank - a.rank);
     for (const { p } of scored) {
-      if (kind === 'canoe') {
-        const shore = this._shoreNear(p);
-        if (shore && this._free(shore, taken)) return { ...p, ...shore };
-        continue;
-      }
-      if (kind === 'paddle') {
-        const bank = this._bankNear(p);
-        if (bank && this._free(bank, taken)) return { ...p, ...bank };
-        continue;
-      }
-      if (kind === 'tree-note' || kind === 'rope') {
-        const tree = this._nearTree(p.x, p.z, 55, { skipConifer: kind === 'rope' });
-        if (tree && this._free(tree, taken, 12)) return { ...p, ...tree, tree };
-        continue;
-      }
-      if (kind === 'bike' || kind === 'tracks') {
-        const off = this._offPath(p, rnd);
-        if (this._free(off, taken)) return off;
-        continue;
-      }
-      const nudged = this._nudgeClear(p.x, p.z, rnd);
-      if (this._free(nudged, taken)) return { ...p, ...nudged };
+      const resolved = this._resolvePoint(kind, p, taken, rnd);
+      if (resolved) return resolved;
     }
     return null;
+  }
+
+  _storyRank(p, kind, beat, origin, prev, heading) {
+    const d0 = Math.hypot(p.x - origin.x, p.z - origin.z);
+    const [lo, hi] = BAND[beat] ?? [80, 500];
+    let s = 0;
+    if (d0 < lo) s -= (lo - d0) * 0.08;
+    else if (d0 > hi) s -= (d0 - hi) * 0.04;
+    else s += 22;
+
+    const dPrev = Math.hypot(p.x - prev.x, p.z - prev.z);
+    if (prev.beat === beat) {
+      s -= Math.abs(dPrev - (PAIR_AT[beat] ?? 50)) * 0.35;
+    } else if (prev.id !== 'start') {
+      if (dPrev < 70) s -= (70 - dPrev) * 0.45;
+      else if (dPrev > 300) s -= (dPrev - 300) * 0.05;
+      else s += 14;
+      // Prefer not to walk back toward camp.
+      const dPrev0 = Math.hypot(prev.x - origin.x, prev.z - origin.z);
+      if (d0 + 18 < dPrev0) s -= (dPrev0 - d0) * 0.12;
+    }
+
+    if (heading != null) {
+      const a = Math.atan2(p.x - origin.x, p.z - origin.z);
+      const da = Math.abs(Math.atan2(Math.sin(a - heading), Math.cos(a - heading)));
+      s -= da * 16;
+    }
+    if (kind === 'tracks') s -= Math.max(0, d0 - 230) * 0.04;
+    if (kind === 'bike') s += Math.min(80, Math.max(0, d0 - 140)) * 0.05;
+    if (beat === 'exit') s += Math.min(d0, 500) * 0.025;
+    return s;
+  }
+
+  _resolvePoint(kind, p, taken, rnd) {
+    if (kind === 'canoe') {
+      const shore = this._shoreNear(p);
+      if (shore && this._free(shore, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...shore };
+      return null;
+    }
+    if (kind === 'paddle') {
+      const bank = this._bankNear(p);
+      if (bank && this._free(bank, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...bank };
+      return null;
+    }
+    if (kind === 'tree-note' || kind === 'rope') {
+      const tree = this._nearTree(p.x, p.z, 55, { skipConifer: kind === 'rope' });
+      if (tree && this._free(tree, taken, 12)) return { ...p, ...tree, tree };
+      return null;
+    }
+    if (kind === 'bike' || kind === 'tracks') {
+      const off = this._offPath(p, rnd);
+      if (this._free(off, taken, MIN_SEP - PAIR_MIN)) return off;
+      return null;
+    }
+    const nudged = this._nudgeClear(p.x, p.z, rnd);
+    if (this._free(nudged, taken)) return { ...p, ...nudged };
+    return null;
+  }
+
+  /** Walk the waterline from a put-in so the canoe is the same visit. */
+  _shoreFrom(from, lo, hi) {
+    const world = this.ctx.world;
+    const yaw = from.yaw ?? 0;
+    for (const a of [yaw, yaw + 1.1, yaw - 1.1, yaw + Math.PI * 0.5]) {
+      for (let d = lo; d <= hi; d += 3) {
+        const x = from.x + Math.sin(a) * d;
+        const z = from.z + Math.cos(a) * d;
+        if (!world.isInBounds(x, z)) continue;
+        const depth = world.getWaterDepth(x, z);
+        if (depth >= 0.03 && depth <= 0.24 && world.getSlope(x, z) < 0.6) {
+          return { x, z, yaw: a };
+        }
+      }
+    }
+    return this._shoreNear(from);
+  }
+
+  /** Next bend along the same track, farther from camp than the ruts. */
+  _fartherAlongRoad(tracks, heading, taken) {
+    const origin = this.origin;
+    const dTracks = Math.hypot(tracks.x - origin.x, tracks.z - origin.z);
+    const yaw = tracks.yaw ?? heading ?? 0;
+    let best = null, bestS = -Infinity;
+    for (const p of this.features.pois?.road ?? []) {
+      const d0 = Math.hypot(p.x - origin.x, p.z - origin.z);
+      if (d0 < dTracks + 28 || d0 > dTracks + 140) continue;
+      const dy = p.yaw != null
+        ? Math.abs(Math.atan2(Math.sin(p.yaw - yaw), Math.cos(p.yaw - yaw)))
+        : 2;
+      if (dy > 0.85) continue;
+      const off = this._offPath(p, () => 0.35);
+      if (!this._free(off, taken, PAIR_MIN)) continue;
+      const s = -dy * 20 - Math.abs(d0 - (dTracks + 70)) * 0.08;
+      if (s > bestS) { bestS = s; best = off; }
+    }
+    return best;
   }
 
   _candidates(kind) {
@@ -459,8 +597,8 @@ export class Traces extends System {
     return false;
   }
 
-  _addCrumb(id, x, z, readable) {
-    this.crumbs.push({ id, x, z, readable: !!readable });
+  _addCrumb(id, x, z, readable, beat = null) {
+    this.crumbs.push({ id, x, z, readable: !!readable, beat });
   }
 
   _publishClearings() {
