@@ -7,22 +7,22 @@
 //  be collected.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
-import { Parts, at, campMaterials, tintFrom } from '../camp/camp_materials.js';
+import { Parts, at, campMaterials, tintOf } from '../camp/camp_materials.js';
 import { standOn, groundLift } from '../camp/camp_site.js';
 import { clamp01, lerp, smoothstep } from '../core/MathUtils.js';
 import { buildJournal, BOOK, HIDE_LIFT } from '../journal/journal_model.js';
 
 const TAU = Math.PI * 2;
 
-// Multipliers through `stone` (#7d7871), same kit the live fire ring uses.
-// Absolute RGB here would double-darken: vertex colour × material colour.
+// Albedo in the vertex colour, on a white material. The live fire ring
+// multiplies through `stone` (#7d7871) and is saved by the firelight; the
+// same product in daylight fell into the stylise floor and read as coal.
 const STONE = [
-  tintFrom(0x7d7871, 0x8b8279), tintFrom(0x7d7871, 0x6e7278),
-  tintFrom(0x7d7871, 0x9a8b76), tintFrom(0x7d7871, 0x5c5e60),
-  tintFrom(0x7d7871, 0x968e83), tintFrom(0x7d7871, 0x7a6f63),
+  tintOf(0x8b8279), tintOf(0x6e7278), tintOf(0x9a8b76),
+  tintOf(0x7a7670), tintOf(0x968e83), tintOf(0x8a7f70),
 ];
-const ASH = tintFrom(0x7d7871, 0x9a948c);
-const ASH_COOL = tintFrom(0x7d7871, 0x7a756e);
+const ASH = tintOf(0xa39c94);
+const ASH_COOL = tintOf(0x8a847c);
 
 /**
  * A new MeshStandardMaterial matching the camp kit, not the kit singleton.
@@ -36,7 +36,7 @@ const ASH_COOL = tintFrom(0x7d7871, 0x7a756e);
 function traceMat(key) {
   const src = campMaterials()[key];
   return new THREE.MeshStandardMaterial({
-    color: src.color.clone(),
+    color: 0xffffff,
     roughness: src.roughness,
     metalness: src.metalness,
     envMapIntensity: src.envMapIntensity,
@@ -134,9 +134,9 @@ export function buildColdRing(rnd) {
         const facing = Math.max(0, (dx * inx + dz * inz) / l);
         const k = soot * facing * facing;
         return [
-          lerp(base[0], 0.42, k),
-          lerp(base[1], 0.40, k),
-          lerp(base[2], 0.38, k),
+          lerp(base[0], base[0] * 0.72, k),
+          lerp(base[1], base[1] * 0.70, k),
+          lerp(base[2], base[2] * 0.68, k),
         ];
       });
   }
@@ -155,7 +155,7 @@ export function buildColdRing(rnd) {
     P.add(new THREE.TetrahedronGeometry(s, 0), 'char',
       at(Math.cos(a) * r, 0.018 + s * 0.35, Math.sin(a) * r,
          rnd() * TAU, rnd() * TAU, rnd() * TAU, 1.2, 0.7, 1.0),
-      [1.05, 1.0, 0.96]);
+      tintOf(0x3a322c));
   }
   flushTrace(P, g);
   g.userData.trace = { kind: 'ring', pickR: 0.72 };
@@ -171,8 +171,8 @@ export function buildStakeHoles(rnd) {
   const D = 1.15 + rnd() * 0.20;
   const yaw0 = (rnd() - 0.5) * 0.35;
   const spots = [[-W / 2, -D / 2], [W / 2, -D / 2], [W / 2, D / 2], [-W / 2, D / 2]];
-  const DIRT = tintFrom(0x7d7871, 0x8a7358);
-  const HOLE = tintFrom(0x241d1c, 0x2a221c);
+  const DIRT = tintOf(0x8a7358);
+  const HOLE = tintOf(0x3a3028);
   for (const [lx, lz] of spots) {
     const jx = lx + (rnd() - 0.5) * 0.08;
     const jz = lz + (rnd() - 0.5) * 0.08;
