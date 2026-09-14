@@ -7,6 +7,8 @@
  * Small crumbs do not get a dirt disc; this ribbon is how you know
  * they are an AOI. Pretty faint (you have to look) and pretty close
  * (a drive-by does not see it). No pin, compass POI, `!`, or pulse.
+ * Cool white-blue, not cream — a warm ribbon read as a dirt ring
+ * on autumn grass.
  *
  * `gl_LineWidth` is a 1 px no-op on most browsers, so the ring is a
  * flat ribbon (camp's trick) rather than a GL line. Normal blend, not
@@ -17,7 +19,8 @@ import * as THREE from 'three';
 const SEGS = 56;
 const RIBBON = 0.14;
 const LIFT = 0.07;
-const COLOR = new THREE.Color(0xf2e2b8);
+/** Soft white-blue notice glow — not a cream/dirt ring. */
+const COLOR = new THREE.Color(0xd4eafc);
 /** Have to look at it — not a billboard. */
 const PEAK = 0.20;
 

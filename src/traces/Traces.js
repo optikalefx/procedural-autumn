@@ -8,7 +8,7 @@
 //  near them and looking. Split noticing: the burned start camp keeps
 //  its dirt pad (their leftover pitch — not player camp-placement UI).
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
-//  pretty-faint, pretty-close parchment ribbon — you have to look, and
+//  pretty-faint, pretty-close white-blue ribbon — you have to look, and
 //  a drive-by does not see it. No pin, compass POI, or `!`. About one
 //  in three crumbs is a short scrap in the same hand as the journal.
 //
