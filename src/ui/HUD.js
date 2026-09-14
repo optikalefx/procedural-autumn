@@ -844,17 +844,7 @@ export class HUD extends System {
   }
 
   _paintThought(text) {
-    const el = this.thoughtEl;
-    el.replaceChildren();
-    // Caveat's space glyph is thin in the DOM; keep words apart by hand.
-    // Same trick as the leftover scrap card.
-    for (const w of String(text).split(/\s+/)) {
-      const s = document.createElement('span');
-      s.textContent = w;
-      s.style.marginRight = '0.28em';
-      s.style.display = 'inline-block';
-      el.appendChild(s);
-    }
+    this.thoughtEl.textContent = text;
   }
 
   hideThought() {
