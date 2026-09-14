@@ -65,7 +65,7 @@ const PAIR_AT = { water: 36, ride: 62, lip: 52, exit: 88 };
 // Metres from leftover centre to the ribbon midline. Start is one ring
 // for the whole scuff (ring + stakes + journal), not three stacked.
 const HALO_R = {
-  start: 3.75,
+  start: 4.5,
   canoe: 2.5,
   bike: 2.0,
   tracks: 2.25,
