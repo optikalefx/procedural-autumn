@@ -11,11 +11,11 @@
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
 //  pretty-faint, pretty-close white-blue ribbon — you have to look, and
 //  a drive-by does not see it. A soft area circle on the minimap (cream
-//  dashes over a plum understroke, current beat only) is a different cue —
-//  region, not a pin, and not the leftover halo. The leftover sits
-//  somewhere in that circle, not at the centre. Camp dirt stays dirt-only: no UI halo on the
-//  burned scuff. No pin, compass POI, or `!`. About one
-//  in three crumbs is a short scrap in the same hand as the journal.
+//  dashes over a plum understroke) sits on the *next leftover* — a cozy
+//  neighborhood around that crumb, not a valley pad that swallows camp.
+//  Caption is beat-flavored ("out toward the water"). Camp dirt stays
+//  dirt-only: no UI halo on the burned scuff. No pin, compass POI, or `!`.
+//  About one in three crumbs is a short scrap in the same hand as the journal.
 //  At leftover hinges a thought tooltip (HUD.think) can fire once —
 //  private, not a look prompt, never a "go here". First walk into a
 //  beat's soft region fires one extra line so the circle is not empty.
@@ -66,9 +66,24 @@ const LOOK_FAR_SMALL = 34;
 // already in the region. A drive-by at speed does not get these.
 const LOOK_FAR_NOW = 40;
 const LOOK_FAR_SMALL_NOW = 44;
-// Inside the soft circle at camp is not "entering the water". The enter
-// cue waits until they have left the scuff.
+// Spawn guard: do not fire an enter thought while still on the scuff.
 const CAMP_LEAVE = 22;
+// Soft map neighborhood around the *next leftover*. Tens of metres, not a
+// valley pad — camp must not already be standing in it. Clamped down when
+// the crumb sits close so the ring never wraps spawn.
+const AREA_R = 80;
+const AREA_R_MIN = 32;
+const AREA_CAMP_GAP = 36;
+// Preferred crumb for the map circle, in beat order. Water's paddle (else
+// canoe); ride's bike (else tracks). Not a pin on the mesh — the radius
+// is the neighborhood.
+const GUIDE_KIND = {
+  water: ['paddle', 'canoe'],
+  ride: ['bike', 'tracks'],
+  lip: ['cairn', 'tree-note'],
+  trees: ['tree-note'],
+  exit: ['tin', 'rope', 'stick'],
+};
 const SMALL_LOOK = new Set(['tin', 'paddle', 'rope', 'tree-note', 'cairn', 'table-note']);
 const MIN_FROM_START = 52;
 const MIN_SEP = 70;
@@ -869,17 +884,16 @@ export class Traces extends System {
     });
   }
 
-  /** Soft region the HUD draws — current weekend beat, not a leftover pin. */
+  /** Soft region the HUD draws — neighborhood around the next leftover. */
   get guidance() {
     return this._area;
   }
 
   /**
-   * Fuzzy area for the current beat. Covers that beat's crumbs with padding
-   * so it reads as a stretch of valley, not a pin on the prop. The leftover
-   * is somewhere in the circle — the centroid is just how the circle is
-   * aimed, not a dig-here. Camp is never the circle (dirt is the cue there).
-   * Advances only in `_notice` — leftover look/click, never region occupancy.
+   * Fuzzy pad around the current beat's next un-noticed leftover.
+   * Centered on that crumb (paddle/canoe, then bike, …) with a cozy
+   * radius — a shore neighborhood, not a pin and not a map-wide AOE.
+   * Camp is never inside it. Advances only in `_notice`.
    */
   _refreshGuidance() {
     const order = (this.beats ?? []).filter((id) => id !== 'camp');
@@ -887,33 +901,37 @@ export class Traces extends System {
     if (i < 0) i = 0;
     for (; i < order.length; i++) {
       const id = order[i];
-      const pts = this.crumbs.filter((c) => c.beat === id);
-      if (!pts.length) continue;
+      const pt = this._targetOf(id);
+      if (!pt) continue;
       this._guideBeat = id;
-      this._area = this._areaOf(id, pts);
+      this._area = this._areaOf(id, pt);
       return;
     }
     this._guideBeat = null;
     this._area = null;
   }
 
-  _areaOf(beat, pts) {
-    let cx = 0, cz = 0;
-    for (const p of pts) { cx += p.x; cz += p.z; }
-    cx /= pts.length;
-    cz /= pts.length;
-    let span = 0;
-    for (const p of pts) span = Math.max(span, Math.hypot(p.x - cx, p.z - cz));
-    // Floor is wide on purpose: a single paddle must not become a pin, and
-    // the centroid is not the target — only a way to sit a pad around it.
-    const r = Math.min(720, Math.max(480, span + 220));
-    return { beat, x: cx, z: cz, r, label: BEAT_HINT[beat] ?? '' };
+  /** Primary leftover for a beat — first preferred kind that actually placed. */
+  _targetOf(beat) {
+    const pts = this.crumbs.filter((c) => c.beat === beat);
+    if (!pts.length) return null;
+    for (const id of (GUIDE_KIND[beat] ?? [])) {
+      const hit = pts.find((c) => c.id === id);
+      if (hit) return hit;
+    }
+    return pts[0];
+  }
+
+  _areaOf(beat, pt) {
+    const dCamp = Math.hypot(pt.x - this.origin.x, pt.z - this.origin.z);
+    const r = Math.min(AREA_R, Math.max(AREA_R_MIN, dCamp - AREA_CAMP_GAP));
+    return { beat, x: pt.x, z: pt.z, r, label: BEAT_HINT[beat] ?? '' };
   }
 
   /**
    * Leftover-only advance. Looking at or clicking a crumb of this beat
-   * marks it noticed and the circle moves on. Standing inside the region
-   * never advances — being in the pad is the handoff, not the gate.
+   * marks it noticed and the circle retargets the *next beat's* primary
+   * leftover. Standing inside the region never advances.
    * Camp is always already-behind. A second call for a past beat is a no-op.
    */
   _notice(beat) {
@@ -930,13 +948,10 @@ export class Traces extends System {
   }
 
   /**
-   * Once per beat: the player has left the journal scuff and is inside
-   * this beat's soft region. Camp sits *inside* the water circle, so a
-   * raw circumference-cross never fires at spawn — walking ~22 m off
-   * the origin while still in the circle is the enter. Later beats are
-   * far enough that CAMP_LEAVE is already true when you cross in.
-   *
-   * Sparse. One thought. Not while the book or a scrap is open.
+   * Once per beat: the player is approaching the next leftover's
+   * neighborhood. The circle is around that crumb, not around camp, so
+   * a circumference-cross is a real arrival. CAMP_LEAVE is only a spawn
+   * guard. Sparse. One thought. Not while the book or a scrap is open.
    */
   _tickRegion(px, pz, quiet) {
     if (quiet) return;
@@ -946,7 +961,8 @@ export class Traces extends System {
     if (this._entered.has(beat)) return;
     const dx = px - a.x;
     const dz = pz - a.z;
-    if (dx * dx + dz * dz > a.r * a.r) return;
+    const reach = a.r * 1.2;
+    if (dx * dx + dz * dz > reach * reach) return;
     if (Math.hypot(px - this.origin.x, pz - this.origin.z) < CAMP_LEAVE) return;
     const thought = ENTER_THOUGHT[beat];
     if (!thought) return;

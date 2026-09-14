@@ -400,8 +400,8 @@
 }
 
 /* Soft current-beat region. Cream dashes with a plum understroke so the
-   ring reads on both gold summits and plum hollows — still a fuzzy stretch
-   of valley, not a leftover pin and not a quest AOE. */
+   ring reads on both gold summits and plum hollows — a neighborhood
+   around the next leftover, not a leftover pin and not a valley AOE. */
 .pa-map-area {
   position: absolute;
   top: 0;

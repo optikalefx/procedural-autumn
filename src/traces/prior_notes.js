@@ -215,7 +215,7 @@ export const TITLE_CUE = {
   lines: [LETTER_M.to, ...LETTER_M.body, LETTER_M.close, LETTER_M.sign],
 };
 
-/** Whisper on the map for the current beat — area, not a pin. */
+/** Whisper on the map for the current beat — neighborhood, not a pin. */
 export const BEAT_HINT = {
   water: 'out toward the water',
   ride: 'the path they covered',
