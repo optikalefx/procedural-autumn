@@ -1,12 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  Traces — one weekend of work for M., then they left.
+//  Traces — one weekend of William's work for M., then he left.
 //
-//  Not a quest. No pins, no leave-gate. The prior camper was documenting
-//  this valley for M.: usuals first (so a shadow is a shadow), the unnamed
-//  thing later. Each leftover is a beat of that job — a fast haul-out, a
+//  Not a quest. No pins, no leave-gate. William was documenting this
+//  valley for M.: usuals first (so a shadow is a shadow), the unnamed
+//  "anything else" later. The player is neither of them — they found
+//  his book. Each leftover is a beat of that job — a fast haul-out, a
 //  dropped bike, a dusk note — not camp dressing. Discover by standing
 //  near them and looking. Split noticing: the burned start camp keeps
-//  its dirt pad (their leftover pitch — not player camp-placement UI).
+//  its dirt pad (his leftover pitch — not player camp-placement UI).
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
 //  pretty-faint, pretty-close white-blue ribbon — you have to look, and
 //  a drive-by does not see it. A soft area circle on the minimap (cream,
@@ -15,12 +16,13 @@
 //  burned scuff. No pin, compass POI, or `!`. About one
 //  in three crumbs is a short scrap in the same hand as the journal.
 //
-//  The book on the dirt is the same journal the J key opens. They left it
-//  for whoever came next. Clicking it goes through HUD.toggleJournal.
-//  That leftover mesh is a closed leather prop (no page canvases). Opening
-//  the overlay book is the existing 10×1024×1452 CanvasTexture path — a
-//  Chrome tab discard on a small GPU is that path, not an extra WebGL
-//  cost this system adds.
+//  The book on the dirt is William's field book (the same overlay the J
+//  key opens). He left it for whoever finds it. Clicking it goes through
+//  HUD.openFoundJournal so the first leaf is M.'s letter, not the
+//  checklist. That leftover mesh is a closed leather prop (no page
+//  canvases). Opening the overlay book is the existing 10×1024×1452
+//  CanvasTexture path — a Chrome tab discard on a small GPU is that
+//  path, not an extra WebGL cost this system adds.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { System } from '../core/System.js';
@@ -88,7 +90,7 @@ const _ndc = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 
 const LOOK = {
-  journal: () => `${pickVerb()}&nbsp; open the journal`,
+  journal: () => `${pickVerb()}&nbsp; William's journal`,
   ring: () => `${pickVerb()}&nbsp; the cold ring`,
   stakes: () => 'stake holes. packed in a hurry.',
   cairn: () => 'a cairn. someone waited here till dusk.',
@@ -220,8 +222,8 @@ export class Traces extends System {
     this.root.add(stakes);
     this._spot(stakes, 'stakes', sx, sy, sz, null, 'camp');
 
-    // The book, on the dirt beside the ring. They left it for M. — or for
-    // whoever came next. Not on a table. Nobody is still sitting here.
+    // William's book, on the dirt beside the ring. Left for whoever
+    // finds it. Not on a table. Nobody is still sitting here.
     const jx = cx + Math.sin(yaw + 0.55) * 1.15;
     const jz = cz + Math.cos(yaw + 0.55) * 1.15;
     const pad = new THREE.Group();
@@ -896,7 +898,7 @@ export class Traces extends System {
   _look(hit) {
     if (hit.kind === 'ring') {
       if (!this._ringRead) return `${pickVerb()}&nbsp; the cold ring`;
-      if (!this._ringOpenedBook) return `${pickVerb()}&nbsp; open the journal`;
+      if (!this._ringOpenedBook) return `${pickVerb()}&nbsp; open William's journal`;
       return this.features?.hasWater
         ? 'the ring is cold. they went toward the water.'
         : 'the ring is cold. they went covering ground.';
@@ -918,7 +920,7 @@ export class Traces extends System {
     this._notice(hit.beat);
     if (hit.kind === 'journal') {
       this._ringOpenedBook = true;
-      this.ctx.systems?.hud?.toggleJournal?.();
+      this.ctx.systems?.hud?.openFoundJournal?.();
       return;
     }
     if (hit.kind === 'ring') {
@@ -933,14 +935,14 @@ export class Traces extends System {
                 ? 'they went toward the water.'
                 : 'they went covering ground.');
             } else {
-              hud?.toast?.('the book is on the dirt. J opens it.');
+              hud?.toast?.("William's book is on the dirt. J opens it.");
             }
           },
         });
         return;
       }
       this._ringOpenedBook = true;
-      this.ctx.systems?.hud?.toggleJournal?.();
+      this.ctx.systems?.hud?.openFoundJournal?.();
       return;
     }
     if (hit.scrap?.lines?.length) {

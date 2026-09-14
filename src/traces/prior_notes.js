@@ -1,18 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  prior_notes — the job for M., and what this seed can honestly host.
+//  prior_notes — William's field book, M.'s letter, and what this seed
+//  can honestly host.
 //
-//  The left-behind journal is for M. M. wants documentation of something
-//  this valley may or may not have — never named in any copy we write.
-//  They also asked for an honest valley first. The usuals (deer, fox,
-//  moose…) are the control set: if you do not know what is supposed to be
-//  here, every shadow is the thing. The player's own photographs fill
-//  those slots. Later pages stay failed almosts until the existing
-//  mystery leaf — unchanged — can close that last page.
+//  The journal on the dirt is William's. M. wrote him a letter (tucked in
+//  the front) asking for wildlife photographs — the usuals — and, with
+//  hesitation, for anything else he might find. The player is neither of
+//  them. They found the book. William left a line for whoever did: finish
+//  the usuals for M. if you can.
 //
-//  The prior camper was doing that job for one weekend, then left. Traces
-//  are that weekend's work path. Animal photographs do not progress the
-//  creature pages. This module never uses a popular name for the unnamed
-//  thing.
+//  The player's own photographs fill those usuals slots. Later pages stay
+//  William's failed almosts of that unnamed "anything else" until the
+//  existing mystery leaf — unchanged — can close that last page. Traces
+//  are one weekend of his work path. This module never uses a popular
+//  name for the unnamed thing.
 // ─────────────────────────────────────────────────────────────────────────────
 import { mulberry32 } from '../core/MathUtils.js';
 import { SEED } from '../world/WorldConfig.js';
@@ -145,7 +145,7 @@ const FAIL_POOL = [
     lines: [
       'Something at the edge of the light. I did not go out.',
       'Morning: nothing. Packed anyway.',
-      'Book is still on the dirt. I am walking back.',
+      'Left the book. For whoever finds this.',
     ],
   },
 ];
@@ -179,15 +179,34 @@ export function priorNotesRng(ctx) {
   return mulberry32(seed ^ 0x71ace);
 }
 
-export const TITLE_CUE = {
-  for: 'for M.',
-  lines: [
-    'M. asked for the usuals first.',
-    'Deer, fox — so a shadow is a shadow.',
-    'Skip that and every shape is the other thing.',
-    'The other thing is why they sent me.',
-    'Leaving the book. Finish it if I don\'t.',
+/** Flyleaf of the found book — his name, then a line for whoever picks it up. */
+export const WILLIAM = {
+  name: 'William',
+  tag: 'field notes',
+  found: [
+    'Left for whoever finds this.',
+    'Finish the usuals for M. if you can.',
   ],
+};
+
+/**
+ * M.'s letter to William, tucked in the front. Warm, slightly formal;
+ * the unnamed ask sits in the hesitation, not in a name.
+ */
+export const LETTER_M = {
+  to: 'My dearest William,',
+  body: [
+    'Thank you for heading out into the open wilderness for me. My compendium of wildlife will be complete with the photos you will bring back for me. I could not thank you enough for your work here.',
+    'Please keep in mind, and I struggle to even put this in writing… If you find anything else while you\'re out there, well, I would be most interested in those photos as well. That is all I should say.',
+  ],
+  close: 'Yours truly,',
+  sign: '— M.',
+};
+
+/** @deprecated title leaf now paints LETTER_M inside William's book. */
+export const TITLE_CUE = {
+  for: WILLIAM.name,
+  lines: [LETTER_M.to, ...LETTER_M.body, LETTER_M.close, LETTER_M.sign],
 };
 
 /** Whisper on the map for the current beat — area, not a pin. */
@@ -201,20 +220,20 @@ export const BEAT_HINT = {
 
 /**
  * Charcoal scrap in the cold ring. The hinge: usuals as control, a direction
- * out of camp, and why the book is on the dirt. Seed-honest about water.
+ * out of camp, and why William left the book. Seed-honest about water.
  */
 export function ringNote(features) {
   if (features?.hasWater) {
     return [
       'Usuals first. M. was clear.',
       'Water in the morning — moose, a wake, maybe not.',
-      'The book stays. If I do not come back, this is the work.',
+      'Left the book. For whoever finds this.',
     ];
   }
   return [
     'Usuals first. M. was clear.',
     'Covering ground in the morning. Path, then the trees.',
-    'The book stays. If I do not come back, this is the work.',
+    'Left the book. For whoever finds this.',
   ];
 }
 
@@ -271,7 +290,7 @@ const SCRAP_COPY = {
     : ['M. —', 'Fox for you. Honest one.', 'Something at the trees. Too dark. —'],
   paddle: () => ['Moose drink here. I know.', 'A wake, then nothing.', 'I hauled out. Light going.'],
   canoe: () => ['Something on the far bank.', 'Just a log. I said it was a log.', 'Did not go back on.'],
-  tin: () => ['Left the book. For you if you come.', 'I am walking back.', 'It was not nothing.'],
+  tin: () => ['Left the book. For whoever finds this.', 'I am walking back.', 'It was not nothing. — W.'],
   bike: () => ['The trees moved.', 'I thought I had it.', 'I left the bike.'],
 };
 
