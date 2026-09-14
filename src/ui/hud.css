@@ -75,7 +75,6 @@
 #pa-hud.pa-hud-off .pa-map,
 #pa-hud.pa-hud-off .pa-hint,
 #pa-hud.pa-hud-off .pa-toast,
-#pa-hud.pa-hud-off .pa-thought,
 #pa-hud.pa-hud-off .pa-trace-whisper,
 #pa-hud.pa-hud-off .pa-chip:not(.pa-gear) {
   opacity: 0;
@@ -580,7 +579,10 @@
    so it reads as something they thought rather than something the game
    told them. */
 .pa-thought {
-  position: absolute;
+  /* Lives on document.body, not #pa-hud: journal / hud-off / capture-hidden
+     rules on the HUD root must not be able to swallow a private thought. */
+  position: fixed;
+  z-index: 41;
   left: 50%;
   top: 42%;
   transform: translate(-50%, 8px) rotate(-0.35deg);
@@ -604,19 +606,13 @@
   text-align: center;
   pointer-events: none;
   opacity: 0;
+  visibility: hidden;
   transition: opacity 0.85s var(--ease), transform 0.85s var(--ease);
 }
 .pa-thought.pa-show {
   opacity: 1;
   visibility: visible;
   transform: translate(-50%, 0) rotate(-0.35deg);
-}
-/* The book is in the way. More specific than `.pa-show` so a thought
-   queued during close cannot print on the leather. */
-#pa-hud.pa-journal .pa-thought,
-#pa-hud.pa-journal .pa-thought.pa-show {
-  opacity: 0;
-  visibility: hidden;
 }
 
 /* A toast that is also a button — on touch it is sometimes the only control

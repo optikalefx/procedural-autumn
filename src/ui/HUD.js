@@ -97,6 +97,7 @@ export class HUD extends System {
     this._thoughts = new Set();
     this._thoughtQueue = [];
     this._thoughtBusy = false;
+    this._thoughtHold = 0;
 
     try {
       const s = JSON.parse(localStorage.getItem(STORE) ?? 'null');
@@ -163,7 +164,9 @@ export class HUD extends System {
     this.thoughtEl = el('div', 'pa-thought');
     this.thoughtEl.setAttribute('aria-live', 'polite');
     this.thoughtEl.style.fontFamily = `"${FONT_HAND}", "Bradley Hand", cursive`;
-    root.appendChild(this.thoughtEl);
+    // Not inside `#pa-hud`: journal/hud-off/capture rules were swallowing it,
+    // and a private thought is not chrome. CampPrompt sits on the body too.
+    document.body.appendChild(this.thoughtEl);
 
     this.traceWhisper = el('div', 'pa-trace-whisper pa-game-only');
     this.traceWhisper.setAttribute('aria-hidden', 'true');
@@ -811,41 +814,46 @@ export class HUD extends System {
    * (bottom, "E the cold ring"). Copy lives in `THOUGHTS`. One id fires
    * once per session; a second call is a no-op. `delay` lets the book
    * finish putting itself down before the line appears.
+   *
+   * Timing is the HUD clock, not `setTimeout`: this system is in
+   * LIVE_WHILE_PAUSED, so the wait still runs while the world is frozen,
+   * and a headless capture cannot throttle it the way a timer can.
+   * A thought that is not ready to print stays queued — it is never
+   * unlatched just because the book is still in the way.
    */
   think(id, { delay = 0 } = {}) {
     if (this._thoughts.has(id)) return;
     const text = THOUGHTS[id];
     if (!text) return;
     this._thoughts.add(id);
-    this._thoughtQueue.push({ id, text, delay });
-    this._drainThoughts();
+    this._thoughtQueue.push({ id, text, wait: delay });
   }
 
-  _drainThoughts() {
+  _maybeThought(dt) {
+    if (this.journal.active) return;
+    if (this._thoughtHold > 0) {
+      this._thoughtHold -= dt;
+      if (this._thoughtHold <= 0) this.hideThought();
+    }
     if (this._thoughtBusy) return;
-    const next = this._thoughtQueue.shift();
+    const next = this._thoughtQueue[0];
     if (!next) return;
+    if (next.wait > 0) {
+      next.wait -= dt;
+      return;
+    }
+    this._thoughtQueue.shift();
+    this._showThought(next.text);
+  }
+
+  _showThought(text) {
     this._thoughtBusy = true;
-    const go = () => {
-      if (this.journal.active || window.__forceCamera) {
-        this._thoughts.delete(next.id);
-        this._thoughtBusy = false;
-        this._drainThoughts();
-        return;
-      }
-      this.root.classList.remove('pa-journal');
-      this._paintThought(next.text);
-      this.thoughtEl.classList.add('pa-show');
-      this.thoughtEl.style.opacity = '1';
-      this.thoughtEl.style.visibility = 'visible';
-      this._thoughtT = setTimeout(() => {
-        this.hideThought();
-        this._thoughtBusy = false;
-        this._drainThoughts();
-      }, 4800);
-    };
-    if (next.delay > 0) this._thoughtWait = setTimeout(go, next.delay * 1000);
-    else go();
+    this.root.classList.remove('pa-journal');
+    this._paintThought(text);
+    this.thoughtEl.classList.add('pa-show');
+    this.thoughtEl.style.opacity = '1';
+    this.thoughtEl.style.visibility = 'visible';
+    this._thoughtHold = 4.8;
   }
 
   _paintThought(text) {
@@ -853,7 +861,8 @@ export class HUD extends System {
   }
 
   hideThought() {
-    clearTimeout(this._thoughtT);
+    this._thoughtHold = 0;
+    this._thoughtBusy = false;
     this.thoughtEl?.classList.remove('pa-show');
     if (this.thoughtEl) {
       this.thoughtEl.style.opacity = '';
@@ -938,6 +947,7 @@ export class HUD extends System {
     // freeze the ceremony mid-page-turn.
     this.journal.update(dt);
     if (this.photo.active) this.photo.update(dt);
+    this._maybeThought(dt);
 
     // Invert look. CameraRig reads `mouse.dy` in lateUpdate and `axes.lookY` is
     // refilled by Input at the end of the frame, so flipping both here lands
@@ -1061,9 +1071,8 @@ export class HUD extends System {
   dispose() {
     window.removeEventListener('keydown', this._onKey);
     clearTimeout(this._toastT);
-    clearTimeout(this._thoughtT);
-    clearTimeout(this._thoughtWait);
     this.map?.dispose();
+    this.thoughtEl?.remove();
     this.root?.remove();
   }
 }
