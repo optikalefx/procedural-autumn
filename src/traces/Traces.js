@@ -12,8 +12,11 @@
 //  pretty-faint, pretty-close white-blue ribbon — you have to look, and
 //  a drive-by does not see it. A soft area circle on the minimap (cream
 //  dashes over a plum understroke) sits on the *next leftover* — a cozy
-//  neighborhood around that crumb, not a valley pad that swallows camp.
-//  Caption is beat-flavored ("out toward the water"). Camp dirt stays
+//  neighborhood around that crumb (paddle/canoe, then bike, …), never on
+//  the camp table, journal, ring, or scuff. It arms when William's table
+//  note is read, so camp is not already wearing the ring. Caption is
+//  beat-flavored plus a rough distance ("out toward the water · 220m").
+//  Camp dirt stays
 //  dirt-only: no UI halo on the burned scuff. No pin, compass POI, or `!`.
 //  About one in three crumbs is a short scrap in the same hand as the journal.
 //  At leftover hinges a thought tooltip (HUD.think) can fire once —
@@ -85,6 +88,8 @@ const GUIDE_KIND = {
   exit: ['tin', 'rope', 'stick'],
 };
 const SMALL_LOOK = new Set(['tin', 'paddle', 'rope', 'tree-note', 'cairn', 'table-note']);
+// Never a map target — the roam ring is the next leftover ahead, not the scuff.
+const GUIDE_SKIP = new Set(['start', 'ring', 'journal', 'table-note', 'stakes']);
 const MIN_FROM_START = 52;
 const MIN_SEP = 70;
 const PAIR_MIN = 16;
@@ -886,6 +891,9 @@ export class Traces extends System {
 
   /** Soft region the HUD draws — neighborhood around the next leftover. */
   get guidance() {
+    // Blank until the table note is read, so the ring *appears* as the
+    // handoff rather than sitting under the arrow from boot.
+    if (!this._ringRead) return null;
     return this._area;
   }
 
@@ -913,7 +921,7 @@ export class Traces extends System {
 
   /** Primary leftover for a beat — first preferred kind that actually placed. */
   _targetOf(beat) {
-    const pts = this.crumbs.filter((c) => c.beat === beat);
+    const pts = this.crumbs.filter((c) => c.beat === beat && !GUIDE_SKIP.has(c.id));
     if (!pts.length) return null;
     for (const id of (GUIDE_KIND[beat] ?? [])) {
       const hit = pts.find((c) => c.id === id);
@@ -925,7 +933,14 @@ export class Traces extends System {
   _areaOf(beat, pt) {
     const dCamp = Math.hypot(pt.x - this.origin.x, pt.z - this.origin.z);
     const r = Math.min(AREA_R, Math.max(AREA_R_MIN, dCamp - AREA_CAMP_GAP));
-    return { beat, x: pt.x, z: pt.z, r, label: BEAT_HINT[beat] ?? '' };
+    return {
+      beat,
+      kind: pt.id,
+      x: pt.x,
+      z: pt.z,
+      r,
+      label: BEAT_HINT[beat] ?? '',
+    };
   }
 
   /**
@@ -1028,6 +1043,7 @@ export class Traces extends System {
     }
     if (hit.kind === 'table-note') {
       this._ringRead = true;
+      this._refreshGuidance();
       const lines = hit.scrap?.lines?.length ? hit.scrap.lines : ringNote();
       this.scrap?.show(lines, {
         onHide: () => {

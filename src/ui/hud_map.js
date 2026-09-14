@@ -6,10 +6,13 @@
 //  *direction*, not for tactics, and it decides every question this file had to
 //  answer:
 //
-//   · **Whole world, always.** 3072 m fits in 165 px at 19 m per pixel. A
+//   · **Whole world, by default.** 3072 m fits in 165 px at 19 m per pixel. A
 //     scrolling window would answer "what is near me", which is what the
 //     windscreen is for; a fixed frame answers "where is the lake" and lets the
-//     player learn the shape of the valley over a session.
+//     player learn the shape of the valley over a session. Exception: when a
+//     leftover neighborhood is armed, the blit frames player + that crumb so
+//     two hundred metres is a gap on the topo, not a shared basin under the
+//     arrow. Off the guide, the valley returns.
 //   · **North up, never rotating.** A map that spins under a moving arrow is
 //     unreadable at this size and gives you nothing to remember. The arrow
 //     rotates instead — one moving thing, not two.
@@ -25,9 +28,10 @@
 //
 //  Cost. The map is a static picture of a static world, so it is rasterised
 //  once into an offscreen canvas during the loading screen and blitted into the
-//  visible canvas only when the element resizes. The per-frame cost of this
-//  whole file is one `transform` string on the marker, which never touches
-//  layout. Nothing here samples the heightfield while the game is running.
+//  visible canvas on resize and when a leftover guide re-frames the crop. The
+//  per-frame cost is still one `transform` string on the marker except on those
+//  quantized view changes. Nothing here samples the heightfield while the game
+//  is running.
 //
 //  `sampleWorld` and `paintMap` are pure and DOM-free on purpose: that is what
 //  lets `tools/_scratch/mapbake.mjs` render this exact raster from a `.pab`
@@ -153,6 +157,16 @@ const SIT_BACK = 0.15;
 const SCRIM = [43, 28, 51];
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** Beat hint plus a rounded range, so "out toward the water" cannot mean camp. */
+export function guideWhisper(area, x, z) {
+  if (!area) return '';
+  const base = area.label ?? '';
+  if (!base) return '';
+  const d = Math.hypot(x - area.x, z - area.z);
+  const metres = Math.max(10, Math.round(d / 10) * 10);
+  return metres > 30 ? `${base} · ${metres}m` : base;
+}
 
 function rampAt(t) {
   t = clamp01(t);
@@ -516,6 +530,8 @@ export class MiniMap {
     this._mx = this._my = this._mb = NaN;
     this._ax = this._ay = this._ar = this._ad = NaN;
     this._alabel = '';
+    this._view = null;
+    this._viewKey = '';
     this.off = null;
     this._bakeN = 0;
     this._hasWorld = !!(this.world?.height && this.world?.water);
@@ -564,8 +580,11 @@ export class MiniMap {
     if (!r.width || !r.height) return null;
     const u = clamp01((clientX - r.left) / r.width);
     const v = clamp01((clientY - r.top) / r.height);
-    const half = w.worldSize / 2;
-    return { x: u * w.worldSize - half, z: v * w.worldSize - half };
+    const view = this._view ?? { cx: 0, cz: 0, span: w.worldSize };
+    return {
+      x: (u - 0.5) * view.span + view.cx,
+      z: (v - 0.5) * view.span + view.cz,
+    };
   }
 
   setVisible(v) {
@@ -611,7 +630,8 @@ export class MiniMap {
 
   // ── presentation ──────────────────────────────────────────────────────────
 
-  /** Downscale the bake into the visible canvas. Runs on resize only. */
+  /** Downscale the bake into the visible canvas — full valley, or a crop
+   *  around player + leftover when a guide is armed. */
   _blit() {
     const css = this.canvas.clientWidth;
     if (!css || !this.off) return;
@@ -623,9 +643,38 @@ export class MiniMap {
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = 'high';
     g.clearRect(0, 0, p, p);
-    g.drawImage(this.off, 0, 0, p, p);
+    const w = this.world;
+    const N = this.off.width;
+    const worldSize = w?.worldSize ?? N;
+    const view = this._view ?? { cx: 0, cz: 0, span: worldSize };
+    const half = worldSize / 2;
+    const sx = ((view.cx - view.span / 2 + half) / worldSize) * N;
+    const sy = ((view.cz - view.span / 2 + half) / worldSize) * N;
+    const sw = (view.span / worldSize) * N;
+    g.drawImage(this.off, sx, sy, sw, sw, 0, 0, p, p);
     this._mx = NaN;                        // force the marker to re-place
     this._ar = NaN;
+  }
+
+  /**
+   * Frame that keeps the leftover a healthy fraction of the view from the
+   * player, so camp and a 200 m shore crumb cannot share one basin blob.
+   * Full valley when there is no guide.
+   */
+  _fitView(x, z, area, worldSize) {
+    if (!area || !(area.r > 0)) return { cx: 0, cz: 0, span: worldSize };
+    const dist = Math.hypot(area.x - x, area.z - z);
+    let span = Math.max(320, (dist + area.r) / 0.38);
+    span = Math.max(span, dist + area.r + 80);
+    span = Math.min(span, worldSize);
+    span = Math.round(span / 20) * 20;
+    const half = worldSize / 2;
+    const h = span / 2;
+    let cx = Math.round(((x + area.x) * 0.5) / 8) * 8;
+    let cz = Math.round(((z + area.z) * 0.5) / 8) * 8;
+    cx = Math.min(half - h, Math.max(-half + h, cx));
+    cz = Math.min(half - h, Math.max(-half + h, cz));
+    return { cx, cz, span };
   }
 
   /**
@@ -646,16 +695,24 @@ export class MiniMap {
    * `area` is an optional `{ x, z, r, label }` in world metres — a cozy
    * neighborhood around the current beat's next leftover. Centered on that
    * crumb with a fuzzy radius (tens of metres), not a pin on the mesh and
-   * not a valley-wide pad that already has camp inside it.
+   * not a valley-wide pad that already has camp inside it. When armed, the
+   * blit frames player + crumb so the ring sits elsewhere on the topo.
    */
   update(x, z, bearing, area = null) {
     const s = this._size;
     if (!s) { this._ensureBake(); return; }
     const w = this.world;
     if (!w) return;
-    const half = w.worldSize / 2;
-    const px = Math.round(clamp01((x + half) / w.worldSize) * s * 3);
-    const py = Math.round(clamp01((z + half) / w.worldSize) * s * 3);
+    const view = this._fitView(x, z, area, w.worldSize);
+    const key = `${view.cx}|${view.cz}|${view.span}`;
+    if (key !== this._viewKey) {
+      this._view = view;
+      this._viewKey = key;
+      this._blit();
+    }
+    this.node.classList.toggle('pa-map-guided', !!(area && area.r > 0));
+    const px = Math.round(((x - view.cx) / view.span + 0.5) * s * 3);
+    const py = Math.round(((z - view.cz) / view.span + 0.5) * s * 3);
     const pb = Math.round(bearing);
     if (px !== this._mx || py !== this._my || pb !== this._mb) {
       this._mx = px; this._my = py; this._mb = pb;
@@ -663,10 +720,10 @@ export class MiniMap {
         `translate(${(px / 3).toFixed(2)}px, ${(py / 3).toFixed(2)}px) `
         + `translate(-50%, -50%) rotate(${pb}deg)`;
     }
-    this._syncArea(area, s, half, w.worldSize, px, py);
+    this._syncArea(area, view, s, x, z);
   }
 
-  _syncArea(area, s, half, worldSize, mx, my) {
+  _syncArea(area, view, s, px, pz) {
     if (!area || !(area.r > 0)) {
       if (this._ar !== 0) {
         this._ar = 0;
@@ -676,21 +733,14 @@ export class MiniMap {
       }
       return;
     }
-    const ax = Math.round(clamp01((area.x + half) / worldSize) * s * 3);
-    const ay = Math.round(clamp01((area.z + half) / worldSize) * s * 3);
-    const ar = Math.round((area.r / worldSize) * s * 3);
-    const label = area.label ?? '';
-    // True-scale diameter. A 10 px floor keeps a far crumb drawable, but
-    // never large enough that the player marker sits inside the ring —
-    // that was the valley pad's whole complaint.
-    const trueD = (ar / 3) * 2;
-    const gap = Math.hypot(ax / 3 - mx / 3, ay / 3 - my / 3);
-    const floor = Math.min(10, Math.max(0, gap - 6) * 2);
-    const d = Math.max(trueD, floor);
+    const ax = Math.round(((area.x - view.cx) / view.span + 0.5) * s * 3);
+    const ay = Math.round(((area.z - view.cz) / view.span + 0.5) * s * 3);
+    const d = (area.r / view.span) * s * 2;
     const dr = Math.round(d * 10);
-    if (ax === this._ax && ay === this._ay && ar === this._ar
-        && label === this._alabel && dr === this._ad) return;
-    this._ax = ax; this._ay = ay; this._ar = ar; this._alabel = label; this._ad = dr;
+    const label = guideWhisper(area, px, pz);
+    if (ax === this._ax && ay === this._ay && dr === this._ad
+        && label === this._alabel) return;
+    this._ax = ax; this._ay = ay; this._ar = dr; this._alabel = label; this._ad = dr;
     this.area.classList.remove('pa-gone');
     this.area.style.width = `${d.toFixed(1)}px`;
     this.area.style.height = `${d.toFixed(1)}px`;

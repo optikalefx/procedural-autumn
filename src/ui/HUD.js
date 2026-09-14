@@ -30,7 +30,7 @@ import { Dash } from './hud_dash.js';
 import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
 import { Journal } from '../journal/Journal.js';
-import { MiniMap } from './hud_map.js';
+import { MiniMap, guideWhisper } from './hud_map.js';
 import { hunt } from '../game/hunt_store.js';
 import { touchCapable } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
@@ -1053,8 +1053,12 @@ export class HUD extends System {
         bearing = (Math.atan2(-m[8], m[10]) * 180) / Math.PI;
       }
       this.map.update(p.x, p.z, bearing, guide);
+      this._setTraceWhisper(guideWhisper(guide, p.x, p.z));
+    } else {
+      this._setTraceWhisper(guideWhisper(guide,
+        aboard?.x ?? veh?.position?.x ?? ctx.camera.position.x,
+        aboard?.z ?? veh?.position?.z ?? ctx.camera.position.z));
     }
-    this._setTraceWhisper(guide?.label ?? '');
     // HOLD is the camper's handbrake lamp, and boarding a boat *requires* the
     // camper parked with the hold armed (see the `parked` gate in Boat.update),
     // so left alone the lamp would burn for every second the player is on the
