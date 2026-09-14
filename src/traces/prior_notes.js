@@ -227,13 +227,13 @@ export const BEAT_HINT = {
 /**
  * Player thoughts. Private, sparse, one id once. Never a verb, never a name
  * for the unnamed thing. Identity is how the found frame lands; the rest
- * sit on leftover hinges. HUD.think(id) is the only caller.
+ * sit on leftover hinges. Ordinary Compendium wildlife photos are silent —
+ * a deer is a deer, not a line. HUD.think(id) is the only caller.
  */
 export const THOUGHTS = {
   identity: 'Who is William? Who is M.?',
   ring: 'They left in a hurry.',
   water: 'William was here for the water.',
-  usual: 'Usual. For the compendium.',
   lip: "Anything else. That's what M. wouldn't say.",
   exit: 'Not finished. Just gone.',
 };

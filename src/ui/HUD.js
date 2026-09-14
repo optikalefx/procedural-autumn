@@ -93,7 +93,6 @@ export class HUD extends System {
     this._pads = [];
     this._hintTimer = 0;
     this._letterSeen = false;
-    this._pendingUsual = false;
     this._thoughts = new Set();
     this._thoughtQueue = [];
     this._thoughtBusy = false;
@@ -215,10 +214,8 @@ export class HUD extends System {
       }
       const firstLetter = this._letterSeen && !this._thoughts.has('identity');
       if (firstLetter) this.think('identity', { delay: 0.62 });
-      else if (this._pendingUsual) {
-        this._pendingUsual = false;
-        this.think('usual', { delay: 0.62 });
-      }
+      // Usual Compendium wildlife awards are silent. Photo-triggered thoughts
+      // only if the shot relates to the story; leftover hinges own the rest.
     };
     // Ringing a line says so out loud. The toast is deliberately NOT
     // `pa-game-only`, so unlike the compass and the dash it is still on screen
@@ -735,7 +732,6 @@ export class HUD extends System {
     this.root.classList.add('pa-journal');
     this.journal.open({ award });
     this._showEscHint();
-    if (award?.id && !award.replace && hunt.isUsual(award.id)) this._pendingUsual = true;
     posthog.capture('journal_opened', { source: 'award', item: award?.id ?? null });
   }
 

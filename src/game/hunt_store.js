@@ -342,8 +342,7 @@ class HuntStore {
 
   /**
    * A wildlife line on the Compendium — not the mystery, not a landmark.
-   * The thought tooltip asks this so a deer photo can think "Usual" and
-   * a waterfall cannot.
+   * Usual awards are silent on the shutter; leftover hinges own the thoughts.
    */
   isUsual(id) {
     return HUNT_ANIMAL_IDS.has(id) && id !== (HUNT_MYSTERY?.id ?? '');
