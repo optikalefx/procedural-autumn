@@ -480,9 +480,16 @@ export class MiniMap {
     this.stage = el('div', 'pa-map-stage');
     this.stage.appendChild(this.canvas);
 
-    // Soft current-beat region. Fuzzy, cream — not the leftover white-blue
-    // halo, not a pin on a prop. Hidden until Traces has a beat to point at.
-    this.area = el('div', 'pa-map-area pa-gone');
+    // Soft current-beat region. SVG dashes (cream over plum) rather than a
+    // CSS border: `border: dashed` on a circle is four faint arcs, which is
+    // why the first pass vanished into the topo. Still a region, not a pin.
+    // Hidden until Traces has a beat to point at.
+    this.area = el('div', 'pa-map-area pa-gone',
+      '<svg viewBox="0 0 100 100" aria-hidden="true">'
+      + '<circle class="pa-map-area-wash" cx="50" cy="50" r="45.5"/>'
+      + '<circle class="pa-map-area-ink" cx="50" cy="50" r="45.5"/>'
+      + '<circle class="pa-map-area-cream" cx="50" cy="50" r="45.5"/>'
+      + '</svg>');
     this.area.setAttribute('aria-hidden', 'true');
     this.stage.appendChild(this.area);
 
@@ -637,7 +644,8 @@ export class MiniMap {
    * see.
    *
    * `area` is an optional `{ x, z, r, label }` in world metres — the current
-   * weekend beat's region, not a leftover pin.
+   * weekend beat's region. The leftover is *somewhere in* that circle, not
+   * at its centre; the map must not read as a dig-here pin.
    */
   update(x, z, bearing, area = null) {
     const s = this._size;

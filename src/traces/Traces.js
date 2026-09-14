@@ -10,9 +10,10 @@
 //  its dirt pad (his leftover pitch — not player camp-placement UI).
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
 //  pretty-faint, pretty-close white-blue ribbon — you have to look, and
-//  a drive-by does not see it. A soft area circle on the minimap (cream,
-//  fuzzy, current beat only) is a different cue — region, not a pin, and
-//  not the leftover halo. Camp dirt stays dirt-only: no UI halo on the
+//  a drive-by does not see it. A soft area circle on the minimap (cream
+//  dashes over a plum understroke, current beat only) is a different cue —
+//  region, not a pin, and not the leftover halo. The leftover sits
+//  somewhere in that circle, not at the centre. Camp dirt stays dirt-only: no UI halo on the
 //  burned scuff. No pin, compass POI, or `!`. About one
 //  in three crumbs is a short scrap in the same hand as the journal.
 //  At leftover hinges a thought tooltip (HUD.think) can fire once —
@@ -839,8 +840,10 @@ export class Traces extends System {
 
   /**
    * Fuzzy area for the current beat. Covers that beat's crumbs with padding
-   * so it reads as a stretch of valley, not a pin on the prop. Camp is never
-   * the circle (dirt is the cue there). Advances in `_notice`.
+   * so it reads as a stretch of valley, not a pin on the prop. The leftover
+   * is somewhere in the circle — the centroid is just how the circle is
+   * aimed, not a dig-here. Camp is never the circle (dirt is the cue there).
+   * Advances in `_notice`.
    */
   _refreshGuidance() {
     const order = (this.beats ?? []).filter((id) => id !== 'camp');
@@ -865,7 +868,8 @@ export class Traces extends System {
     cz /= pts.length;
     let span = 0;
     for (const p of pts) span = Math.max(span, Math.hypot(p.x - cx, p.z - cz));
-    // Floor is wide on purpose: a single paddle must not become a pin.
+    // Floor is wide on purpose: a single paddle must not become a pin, and
+    // the centroid is not the target — only a way to sit a pad around it.
     const r = Math.min(720, Math.max(480, span + 220));
     return { beat, x: cx, z: cz, r, label: BEAT_HINT[beat] ?? '' };
   }

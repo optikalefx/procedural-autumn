@@ -399,22 +399,48 @@
   overflow: hidden;
 }
 
-/* Soft current-beat region. Cream/amber, dashed, faint — not the leftover
-   white-blue halo, not a pin. */
+/* Soft current-beat region. Cream dashes with a plum understroke so the
+   ring reads on both gold summits and plum hollows — still a fuzzy stretch
+   of valley, not a leftover pin and not a quest AOE. */
 .pa-map-area {
   position: absolute;
   top: 0;
   left: 0;
-  border-radius: 50%;
-  border: 1.5px dashed rgba(255, 246, 234, 0.42);
-  background: rgba(240, 173, 70, 0.08);
-  box-shadow: inset 0 0 14px rgba(255, 246, 234, 0.10);
   pointer-events: none;
   z-index: 1;
-  opacity: 0.9;
+  opacity: 1;
   transition: opacity 0.6s var(--ease);
 }
 .pa-map-area.pa-gone { opacity: 0; }
+.pa-map-area svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.pa-map-area-wash {
+  fill: rgba(255, 246, 234, 0.14);
+  stroke: none;
+}
+.pa-map-area-ink,
+.pa-map-area-cream {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* Same dash/gap in viewBox units so the rhythm holds at any region size.
+     non-scaling-stroke keeps the weight in screen pixels so a small circle
+     does not go hairline. */
+  stroke-dasharray: 6.4 5.2;
+  vector-effect: non-scaling-stroke;
+}
+.pa-map-area-ink {
+  stroke: rgba(46, 18, 28, 0.78);
+  stroke-width: 4.6px;
+}
+.pa-map-area-cream {
+  stroke: rgba(255, 246, 234, 0.94);
+  stroke-width: 2.7px;
+}
 
 .pa-map-whisper {
   position: absolute;
