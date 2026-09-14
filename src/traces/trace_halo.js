@@ -1,14 +1,12 @@
 /**
- * A faint notice halo around a leftover AOI.
+ * A faint notice halo around a *small* leftover (paddle, canoe, cairn,
+ * tin, rope, tree-note, bike, …).
  *
- * Not a quest marker. No pin, no compass POI, no `!`. A thin parchment
- * ribbon on the ground, the same language as the camp fire-circle
- * (`src/camp/camp_ui.js`) taken down until it only says "something
- * here" — and only when the player is already nearby. Across the map
- * it is gone. Existing tiny dirt under a prop can stay as grounding —
- * this ring is the noticing cue, not a pressed-dirt disc. A leftover
- * dirt pad would read as "pitch here" (player camp already uses that
- * language). Do not grow scuffs to mean "inspect here."
+ * Split: the burned-out start camp keeps its dirt pad as the cue —
+ * that reads as their leftover pitch, not as player camp-placement UI.
+ * Small crumbs do not get a dirt disc; this ribbon is how you know
+ * they are an AOI. Pretty faint (you have to look) and pretty close
+ * (a drive-by does not see it). No pin, compass POI, `!`, or pulse.
  *
  * `gl_LineWidth` is a 1 px no-op on most browsers, so the ring is a
  * flat ribbon (camp's trick) rather than a GL line. Normal blend, not
@@ -20,12 +18,13 @@ const SEGS = 56;
 const RIBBON = 0.14;
 const LIFT = 0.07;
 const COLOR = new THREE.Color(0xf2e2b8);
-const PEAK = 0.38;
+/** Have to look at it — not a billboard. */
+const PEAK = 0.20;
 
 /** Full notice once the player is this close. */
-export const HALO_NEAR = 16;
-/** Start fading in. Beyond this the ring is gone. */
-export const HALO_FAR = 36;
+export const HALO_NEAR = 8;
+/** Start fading in. A drive-by past this does not see it. */
+export const HALO_FAR = 16;
 
 const VERT = /* glsl */`
   attribute float along;
@@ -104,12 +103,11 @@ export function updateNoticeHalo(group, dist, onScreen, elapsed) {
   const n = group.userData.notice;
   if (!n) return 0;
   const near = 1 - THREE.MathUtils.smoothstep(dist, HALO_NEAR, HALO_FAR);
-  // A 7 s breathe, 8 % of peak — enough to catch the eye once you're
-  // in the patch, not a pulse that reads as a quest ping.
-  const breath = 0.92 + 0.08 * (0.5 + 0.5 * Math.sin((elapsed ?? 0) * Math.PI * 2 / 7));
+  // A 9 s breathe, 5 % of peak — not a pulse.
+  const breath = 0.95 + 0.05 * (0.5 + 0.5 * Math.sin((elapsed ?? 0) * Math.PI * 2 / 9));
   const a = near * onScreen * breath * PEAK;
   n.vis.uniforms.uOpacity.value = a;
-  n.hid.uniforms.uOpacity.value = a * 0.42;
+  n.hid.uniforms.uOpacity.value = a * 0.38;
   return a;
 }
 

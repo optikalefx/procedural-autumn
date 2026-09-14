@@ -5,12 +5,12 @@
 //  this valley for M.: usuals first (so a shadow is a shadow), the unnamed
 //  thing later. Each leftover is a beat of that job — a fast haul-out, a
 //  dropped bike, a dusk note — not camp dressing. Discover by standing
-//  near them and looking. A faint parchment ribbon on the ground marks
-//  the patch once you are close — not a pin, not a compass POI, not a
-//  `!`. Player camp already speaks in dirt pads; leftover noticing
-//  must not. Tiny grounding under a prop can stay. Do not grow a dirt
-//  disc to mean "inspect here." About one in three crumbs is a short
-//  scrap in the same hand as the journal.
+//  near them and looking. Split noticing: the burned start camp keeps
+//  its dirt pad (their leftover pitch — not player camp-placement UI).
+//  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
+//  pretty-faint, pretty-close parchment ribbon — you have to look, and
+//  a drive-by does not see it. No pin, compass POI, or `!`. About one
+//  in three crumbs is a short scrap in the same hand as the journal.
 //
 //  The book on the dirt is the same journal the J key opens. They left it
 //  for whoever came next. Clicking it goes through HUD.toggleJournal.
@@ -64,10 +64,10 @@ const BAND = {
 };
 const PAIR_AT = { water: 36, ride: 62, lip: 52, exit: 88 };
 
-// Metres from leftover centre to the ribbon midline. Start is one ring
-// for the whole scuff (ring + stakes + journal), not three stacked.
+// Small leftovers only — the start camp does not get a halo.
+const HALO_SKIP = new Set(['start']);
+// Metres from leftover centre to the ribbon midline.
 const HALO_R = {
-  start: 4.5,
   canoe: 2.5,
   bike: 2.0,
   tracks: 2.25,
@@ -82,6 +82,7 @@ const HALO_R = {
 
 const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
 const _ndc = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
 
 const LOOK = {
   journal: () => `${pickVerb()}&nbsp; open the journal`,
@@ -685,17 +686,14 @@ export class Traces extends System {
   }
 
   /**
-   * One faint notice halo per leftover AOI. The start scuff + stakes
-   * + journal share a ring (they're one camp patch). Everything else
-   * gets its own. Tree-note / rope sit the ribbon on the ground at
-   * the tree, not up at the paper.
-   *
-   * This is the noticing cue. Do not add or grow dirt pads to do the
-   * same job — that language is camp placement.
+   * Faint close-only halo on small leftovers. The start camp is skipped
+   * — its dirt pad is the leftover pitch, and that is the cue. Tree-note
+   * / rope sit the ribbon on the ground at the tree, not at the paper.
    */
   _placeHalos() {
     const world = this.ctx.world;
     for (const c of this.crumbs) {
+      if (HALO_SKIP.has(c.id)) continue;
       const r = HALO_R[c.id] ?? 1.2;
       const g = buildNoticeHalo(world, c.x, c.z, r);
       g.userData.kind = c.id;
@@ -945,10 +943,16 @@ export class Traces extends System {
       const hy = (world.getHeight?.(n.x, n.z) ?? 0) + 0.4;
       _ndc.set(n.x, hy, n.z).project(cam);
       const off = Math.max(Math.abs(_ndc.x), Math.abs(_ndc.y));
-      // Soft edge past the frame, not a hard clip — a leftover just
-      // off-screen still whispers if you're standing in its range.
-      const onScreen = 1 - THREE.MathUtils.smoothstep(off, 0.95, 1.35);
-      updateNoticeHalo(g, dist, onScreen, elapsed);
+      const onScreen = 1 - THREE.MathUtils.smoothstep(off, 0.85, 1.15);
+      cam.getWorldDirection(_fwd);
+      const tx = n.x - cam.position.x;
+      const tz = n.z - cam.position.z;
+      const tlen = Math.hypot(tx, tz) || 1;
+      const flen = Math.hypot(_fwd.x, _fwd.z) || 1;
+      const align = (_fwd.x * tx + _fwd.z * tz) / (flen * tlen);
+      // Prefer looking toward it. Behind / hard-aside fades out.
+      const facing = THREE.MathUtils.smoothstep(align, 0.08, 0.55);
+      updateNoticeHalo(g, dist, onScreen * facing, elapsed);
     }
   }
 

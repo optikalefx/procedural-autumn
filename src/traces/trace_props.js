@@ -199,10 +199,10 @@ export function buildStakeHoles(rnd) {
 }
 
 /**
- * Tiny grounding under a leftover prop. Not a camp pad, not a
- * noticing disc — player camp already uses pressed dirt for "pitch
- * here." Keep this small. The faint UI halo is what says "something
- * here."
+ * Tiny grounding under a *small* leftover. Keep this small — the
+ * faint UI halo is what says "something here." The burned start
+ * camp is the exception: its dirt pad is their leftover pitch and
+ * is the noticing cue there. Do not grow these scuffs into pads.
  */
 export function buildScuff(rnd, radius = 0.62) {
   const g = new THREE.Group();
