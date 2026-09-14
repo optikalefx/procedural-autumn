@@ -751,6 +751,7 @@ export class HUD extends System {
     if (this._introSeen) return;
     this._introSeen = true;
     this._save();
+    this.hideThought();
     this.root.classList.add('pa-journal');
     this._letterSeen = true;
     this.journal.open({ holdTitle: true });
@@ -766,6 +767,7 @@ export class HUD extends System {
   openFoundJournal() {
     if (this.journal.active) return;
     if (this.settings.open) this.settings.setOpen(false);
+    this.hideThought();
     this.root.classList.add('pa-journal');
     this._letterSeen = true;
     this.journal.open({ holdTitle: true });
@@ -834,6 +836,8 @@ export class HUD extends System {
       this.root.classList.remove('pa-journal');
       this._paintThought(next.text);
       this.thoughtEl.classList.add('pa-show');
+      this.thoughtEl.style.opacity = '1';
+      this.thoughtEl.style.visibility = 'visible';
       this._thoughtT = setTimeout(() => {
         this.hideThought();
         this._thoughtBusy = false;
@@ -851,6 +855,10 @@ export class HUD extends System {
   hideThought() {
     clearTimeout(this._thoughtT);
     this.thoughtEl?.classList.remove('pa-show');
+    if (this.thoughtEl) {
+      this.thoughtEl.style.opacity = '';
+      this.thoughtEl.style.visibility = '';
+    }
   }
 
   _setTraceWhisper(label) {
