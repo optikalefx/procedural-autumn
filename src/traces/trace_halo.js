@@ -12,7 +12,10 @@
  *
  * `gl_LineWidth` is a 1 px no-op on most browsers, so the ring is a
  * flat ribbon (camp's trick) rather than a GL line. Normal blend, not
- * additive — on gold autumn grass an add wash disappears.
+ * additive — on gold autumn grass an add wash disappears. Do not
+ * premultiply RGB by alpha here: NormalBlending already does, and
+ * `uColor * a` crushed the ribbon into a dark pencil line that still
+ * read as dirt.
  */
 import * as THREE from 'three';
 
@@ -47,7 +50,7 @@ const FRAG = /* glsl */`
     float across = 1.0 - smoothstep(0.15, 1.0, abs(vAlong));
     float a = across * uOpacity;
     if (a < 0.004) discard;
-    gl_FragColor = vec4(uColor * a, a);
+    gl_FragColor = vec4(uColor, a);
   }
 `;
 
