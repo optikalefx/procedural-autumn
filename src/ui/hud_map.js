@@ -514,7 +514,7 @@ export class MiniMap {
 
     this._size = 0;
     this._mx = this._my = this._mb = NaN;
-    this._ax = this._ay = this._ar = NaN;
+    this._ax = this._ay = this._ar = this._ad = NaN;
     this._alabel = '';
     this.off = null;
     this._bakeN = 0;
@@ -643,9 +643,10 @@ export class MiniMap {
    * it unconditionally cost 0.8 ms a frame at dpr 2, for a change nobody could
    * see.
    *
-   * `area` is an optional `{ x, z, r, label }` in world metres — the current
-   * weekend beat's region. The leftover is *somewhere in* that circle, not
-   * at its centre; the map must not read as a dig-here pin.
+   * `area` is an optional `{ x, z, r, label }` in world metres — a cozy
+   * neighborhood around the current beat's next leftover. Centered on that
+   * crumb with a fuzzy radius (tens of metres), not a pin on the mesh and
+   * not a valley-wide pad that already has camp inside it.
    */
   update(x, z, bearing, area = null) {
     const s = this._size;
@@ -662,10 +663,10 @@ export class MiniMap {
         `translate(${(px / 3).toFixed(2)}px, ${(py / 3).toFixed(2)}px) `
         + `translate(-50%, -50%) rotate(${pb}deg)`;
     }
-    this._syncArea(area, s, half, w.worldSize);
+    this._syncArea(area, s, half, w.worldSize, px, py);
   }
 
-  _syncArea(area, s, half, worldSize) {
+  _syncArea(area, s, half, worldSize, mx, my) {
     if (!area || !(area.r > 0)) {
       if (this._ar !== 0) {
         this._ar = 0;
@@ -679,10 +680,18 @@ export class MiniMap {
     const ay = Math.round(clamp01((area.z + half) / worldSize) * s * 3);
     const ar = Math.round((area.r / worldSize) * s * 3);
     const label = area.label ?? '';
-    if (ax === this._ax && ay === this._ay && ar === this._ar && label === this._alabel) return;
-    this._ax = ax; this._ay = ay; this._ar = ar; this._alabel = label;
+    // True-scale diameter. A 10 px floor keeps a far crumb drawable, but
+    // never large enough that the player marker sits inside the ring —
+    // that was the valley pad's whole complaint.
+    const trueD = (ar / 3) * 2;
+    const gap = Math.hypot(ax / 3 - mx / 3, ay / 3 - my / 3);
+    const floor = Math.min(10, Math.max(0, gap - 6) * 2);
+    const d = Math.max(trueD, floor);
+    const dr = Math.round(d * 10);
+    if (ax === this._ax && ay === this._ay && ar === this._ar
+        && label === this._alabel && dr === this._ad) return;
+    this._ax = ax; this._ay = ay; this._ar = ar; this._alabel = label; this._ad = dr;
     this.area.classList.remove('pa-gone');
-    const d = Math.max(10, (ar / 3) * 2);
     this.area.style.width = `${d.toFixed(1)}px`;
     this.area.style.height = `${d.toFixed(1)}px`;
     this.area.style.transform =
