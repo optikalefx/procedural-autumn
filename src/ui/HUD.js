@@ -743,10 +743,10 @@ export class HUD extends System {
    * The one-time greeting: a brand-new player has never seen the book, so
    * main.js calls this the moment the world is up and lets it open itself
    * straight to the flyleaf (see `Journal.open`'s `holdTitle`) — William's
-   * name, M.'s letter to him, and his line for whoever finds it. J after
-   * that goes to the checklist. Every session after this one is a no-op —
-   * `_introSeen` latches on the first call and is saved immediately, not
-   * on close, so a refresh mid-read can't win the popup back.
+   * name and M.'s letter to him. J after that goes to the checklist. Every
+   * session after this one is a no-op — `_introSeen` latches on the first
+   * call and is saved immediately, not on close, so a refresh mid-read
+   * can't win the popup back.
    *
    * Deliberately bypasses `toggleJournal()`: that path calls `_dismissHint()`
    * on open, which would burn the bottom control legend's one showing while

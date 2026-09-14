@@ -1031,20 +1031,6 @@ export class JournalPage {
     g.fillText(LETTER_M.sign, tx, y);
     g.restore();
 
-    // William's graphite, on the flyleaf under the slip — not M.'s pen.
-    g.save();
-    g.translate(x0 + 8, slipY + slipH + 58);
-    g.rotate(-0.01);
-    g.textAlign = 'left';
-    g.font = hand(30);
-    g.fillStyle = 'rgba(73, 64, 55, 0.78)';
-    let fy = 0;
-    for (const line of WILLIAM.found) {
-      g.fillText(line, 0, fy);
-      fy += 38;
-    }
-    g.restore();
-
     g.textAlign = 'center';
     g.font = hand(30);
     g.fillStyle = 'rgba(74,58,44,0.44)';

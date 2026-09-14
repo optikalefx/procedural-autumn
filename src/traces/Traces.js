@@ -19,7 +19,8 @@
 //  private, not a look prompt, never a "go here".
 //
 //  The book on the dirt is William's field book (the same overlay the J
-//  key opens). He left it for whoever finds it. Clicking it goes through
+//  key opens). He did not leave it as a handoff — he left in a hurry.
+//  Clicking it goes through
 //  HUD.openFoundJournal so the first leaf is M.'s letter, not the
 //  checklist. That leftover mesh is a closed leather prop (no page
 //  canvases). Opening the overlay book is the existing 10×1024×1452
@@ -224,8 +225,8 @@ export class Traces extends System {
     this.root.add(stakes);
     this._spot(stakes, 'stakes', sx, sy, sz, null, 'camp');
 
-    // William's book, on the dirt beside the ring. Left for whoever
-    // finds it. Not on a table. Nobody is still sitting here.
+    // William's book, on the dirt beside the ring. Mid-job, not a
+    // handoff. Not on a table. Nobody is still sitting here.
     const jx = cx + Math.sin(yaw + 0.55) * 1.15;
     const jz = cz + Math.cos(yaw + 0.55) * 1.15;
     const pad = new THREE.Group();

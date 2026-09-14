@@ -5,8 +5,8 @@
 //  The journal on the dirt is William's. M. wrote him a letter (tucked in
 //  the front) asking for wildlife photographs — the usuals — and, with
 //  hesitation, for anything else he might find. The player is neither of
-//  them. They found the book. William left a line for whoever did: finish
-//  the usuals for M. if you can.
+//  them. They found the book. He did not leave it for them — he left
+//  because he was on the move. What happened to him is unknown.
 //
 //  The player's own photographs fill those usuals slots. Later pages stay
 //  William's failed almosts of that unnamed "anything else" until the
@@ -145,7 +145,7 @@ const FAIL_POOL = [
     lines: [
       'Something at the edge of the light. I did not go out.',
       'Morning: nothing. Packed anyway.',
-      'Left the book. For whoever finds this.',
+      'The page is not done. I am going.',
     ],
   },
 ];
@@ -179,14 +179,10 @@ export function priorNotesRng(ctx) {
   return mulberry32(seed ^ 0x71ace);
 }
 
-/** Flyleaf of the found book — his name, then a line for whoever picks it up. */
+/** Flyleaf of the found book — his name. Not a note to the finder. */
 export const WILLIAM = {
   name: 'William',
   tag: 'field notes',
-  found: [
-    'Left for whoever finds this.',
-    'Finish the usuals for M. if you can.',
-  ],
 };
 
 /**
@@ -233,21 +229,22 @@ export const THOUGHTS = {
 };
 
 /**
- * Charcoal scrap in the cold ring. The hinge: usuals as control, a direction
- * out of camp, and why William left the book. Seed-honest about water.
+ * Charcoal scrap in the cold ring. The hinge: usuals as control, a
+ * direction out of camp, and that he packed in a hurry. Seed-honest
+ * about water.
  */
 export function ringNote(features) {
   if (features?.hasWater) {
     return [
       'Usuals first. M. was clear.',
       'Water in the morning — moose, a wake, maybe not.',
-      'Left the book. For whoever finds this.',
+      'Could not stay. Packed what I could.',
     ];
   }
   return [
     'Usuals first. M. was clear.',
     'Covering ground in the morning. Path, then the trees.',
-    'Left the book. For whoever finds this.',
+    'Could not stay. Packed what I could.',
   ];
 }
 
@@ -304,7 +301,7 @@ const SCRAP_COPY = {
     : ['M. —', 'Fox for you. Honest one.', 'Something at the trees. Too dark. —'],
   paddle: () => ['Moose drink here. I know.', 'A wake, then nothing.', 'I hauled out. Light going.'],
   canoe: () => ['Something on the far bank.', 'Just a log. I said it was a log.', 'Did not go back on.'],
-  tin: () => ['Left the book. For whoever finds this.', 'I am walking back.', 'It was not nothing. — W.'],
+  tin: () => ['Packed fast. Did not look back.', 'I am walking back.', 'It was not nothing. — W.'],
   bike: () => ['The trees moved.', 'I thought I had it.', 'I left the bike.'],
 };
 
