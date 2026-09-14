@@ -964,19 +964,25 @@ export class JournalPage {
     // it is the thing that closes the block.
     g.font = hand(58, 400);
     g.fillStyle = INK_SOFT;
-    g.fillText('for M.', cx, 546);
+    g.fillText(TITLE_CUE.for, cx, 546);
     inkLine(g, cx - 190, 592, cx + 190, 595,
       { seed: 4, width: 2.6, alpha: 0.5, colour: '#5c452e' });
 
-    this._vignetteDoodle(g, cx, 780, 220);
+    this._vignetteDoodle(g, cx, 708, 168);
 
-    // The prior camper's own hand — a cue, not a quest. The list after this
-    // leaf is the usuals; the last pages are the almosts they never closed.
-    g.font = hand(40);
+    // The prior camper's own hand — expose, not a quest. Why the usuals
+    // (a control set), why the unnamed thing, and why the book is on the dirt.
+    // Wrapped so a denser block still sits in the same hand as the rest.
+    g.font = hand(36);
     g.fillStyle = INK_SOFT;
-    g.fillText(TITLE_CUE.lines[0], cx, 1008);
-    g.fillText(TITLE_CUE.lines[1], cx, 1072);
-    g.fillText(TITLE_CUE.lines[2], cx, 1136);
+    const cueW = (this._x1 - this._x0) - 24;
+    let cueY = 812;
+    for (const line of TITLE_CUE.lines) {
+      for (const w of _wrapLine(g, line, cueW)) {
+        g.fillText(w, cx, cueY);
+        cueY += 48;
+      }
+    }
 
     g.textAlign = 'center';
     g.font = hand(30);
@@ -1678,12 +1684,12 @@ export class JournalPage {
       g.rotate(-0.012);
       g.font = hand(34);
       g.fillStyle = 'rgba(74,58,44,0.48)';
-      g.fillText('for M. — if I ever get a real one', 0, 0);
+      g.fillText('for M. — not the usuals. the other thing.', 0, 0);
       g.restore();
 
-      let y = M_TOP + 230;
+      let y = M_TOP + 226;
       const tw = x1 - x0;
-      g.font = hand(38);
+      g.font = hand(36);
       g.fillStyle = 'rgba(58,43,32,0.78)';
       for (let i = 0; i < fails.length; i++) {
         const entry = fails[i];
@@ -1693,14 +1699,14 @@ export class JournalPage {
         for (const line of entry.lines) {
           for (const w of _wrapLine(g, line, tw - 12)) {
             g.fillText(w, 0, y);
-            y += 48;
+            y += 44;
           }
         }
         g.restore();
-        y += 22;
+        y += 18;
         inkLine(g, x0 + 8, y - 10, x0 + 220, y - 8,
           { seed: 70 + i, width: 1.4, alpha: 0.22, wobble: 2.0, colour: GRAPHITE });
-        y += 18;
+        y += 16;
       }
       ruledFrom = y + 8;
     }

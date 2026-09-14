@@ -75,6 +75,7 @@
 #pa-hud.pa-hud-off .pa-map,
 #pa-hud.pa-hud-off .pa-hint,
 #pa-hud.pa-hud-off .pa-toast,
+#pa-hud.pa-hud-off .pa-trace-whisper,
 #pa-hud.pa-hud-off .pa-chip:not(.pa-gear) {
   opacity: 0;
   /* Hidden, not merely transparent: an invisible mute chip that still takes
@@ -388,6 +389,52 @@
   image-rendering: auto;
 }
 
+/* Clip leftover region circles to the raster. Marker and whisper live here
+   too, so their coordinates match canvas CSS pixels (no panel-padding offset). */
+.pa-map-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 13px;
+  overflow: hidden;
+}
+
+/* Soft current-beat region. Cream/amber, dashed, faint — not the leftover
+   white-blue halo, not a pin. */
+.pa-map-area {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  border: 1.5px dashed rgba(255, 246, 234, 0.42);
+  background: rgba(240, 173, 70, 0.08);
+  box-shadow: inset 0 0 14px rgba(255, 246, 234, 0.10);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.9;
+  transition: opacity 0.6s var(--ease);
+}
+.pa-map-area.pa-gone { opacity: 0; }
+
+.pa-map-whisper {
+  position: absolute;
+  left: 50%;
+  bottom: 0.42em;
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: 92%;
+  font-size: 0.50em;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  color: var(--ink-dim);
+  text-shadow: 0 1px 4px rgba(46, 18, 28, 0.92), 0 0 3px rgba(46, 18, 28, 0.8);
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Debug warp — double-click the map to move the camper there. The panel
    inherits the HUD root's `pointer-events: none`; this turns it back on for the
    whole frame, so the raster, its border and the N all answer the gesture. No
@@ -414,13 +461,14 @@
 /* The player. Positioned entirely by transform — see the note in hud_map.js. */
 .pa-map-me {
   position: absolute;
-  top: 0.34em;
-  left: 0.34em;
+  top: 0;
+  left: 0;
   width: 1.05em;
   height: 1.05em;
   will-change: transform;
   filter: drop-shadow(0 1px 3px rgba(46, 18, 28, 0.75));
   pointer-events: none;
+  z-index: 2;
 }
 .pa-map-me svg { width: 100%; height: 100%; display: block; }
 
@@ -536,6 +584,34 @@
   -webkit-tap-highlight-color: transparent;
 }
 .pa-toast-action:active { transform: translate(-50%, 0) scale(0.96); }
+
+/* Soft next-area whisper — same text as the map caption, for when the map
+   is off or the player is not looking at the corner. Not a quest log. */
+.pa-trace-whisper {
+  position: absolute;
+  right: 2.2vw;
+  bottom: calc(2.6vh + 11.4em + 0.55em);
+  font-size: 0.62em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+  text-shadow: 0 1px 5px rgba(46, 18, 28, 0.85);
+  pointer-events: none;
+  opacity: 0;
+  max-width: 16em;
+  text-align: right;
+  transition: opacity 0.8s var(--ease);
+}
+.pa-trace-whisper.pa-show { opacity: 1; }
+@media (max-height: 620px), (max-width: 780px) {
+  .pa-trace-whisper {
+    right: auto;
+    left: 50%;
+    bottom: 11vh;
+    transform: translateX(-50%);
+    text-align: center;
+  }
+}
 
 /* ── panels (settings / photo rail) ──────────────────────────────────── */
 .pa-sheet {

@@ -152,6 +152,11 @@ export class HUD extends System {
     });
     root.appendChild(this.toastEl);
 
+    this.traceWhisper = el('div', 'pa-trace-whisper pa-game-only');
+    this.traceWhisper.setAttribute('aria-hidden', 'true');
+    this._traceWhisper = '';
+    root.appendChild(this.traceWhisper);
+
     // ── first-run hint ─────────────────────────────────────────────────────
     this.hint = el('div', 'pa-hint pa-panel pa-game-only',
       '<span><kbd>WASD</kbd>drive</span><span><kbd>Drag</kbd>look</span>' +
@@ -755,6 +760,15 @@ export class HUD extends System {
     this._toastT = setTimeout(() => this.hideToast(), 2200);
   }
 
+  _setTraceWhisper(label) {
+    const text = label || '';
+    if (text === this._traceWhisper) return;
+    this._traceWhisper = text;
+    if (!this.traceWhisper) return;
+    this.traceWhisper.textContent = text;
+    this.traceWhisper.classList.toggle('pa-show', !!text);
+  }
+
   _dismissHint() {
     if (this._seenHint) return;
     this._seenHint = true;
@@ -892,6 +906,7 @@ export class HUD extends System {
     // where you are and which way you are *pointed*, so the arrow takes the
     // ridden heading rather than the camera's. Headings arrive measured from
     // +Z; the map, like the compass, works clockwise from north, which is -Z.
+    const guide = ctx.systems?.traces?.guidance ?? null;
     if (this.showMap) {
       const p = aboard ?? veh?.position ?? ctx.camera.position;
       let bearing;
@@ -901,8 +916,9 @@ export class HUD extends System {
         const m = ctx.camera.matrixWorld.elements;
         bearing = (Math.atan2(-m[8], m[10]) * 180) / Math.PI;
       }
-      this.map.update(p.x, p.z, bearing);
+      this.map.update(p.x, p.z, bearing, guide);
     }
+    this._setTraceWhisper(guide?.label ?? '');
     // HOLD is the camper's handbrake lamp, and boarding a boat *requires* the
     // camper parked with the hold armed (see the `parked` gate in Boat.update),
     // so left alone the lamp would burn for every second the player is on the

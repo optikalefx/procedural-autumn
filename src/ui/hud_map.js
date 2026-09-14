@@ -477,7 +477,16 @@ export class MiniMap {
     this.node.setAttribute('aria-hidden', 'true');
 
     this.canvas = el('canvas', 'pa-map-canvas');
-    this.node.appendChild(this.canvas);
+    this.stage = el('div', 'pa-map-stage');
+    this.stage.appendChild(this.canvas);
+
+    // Soft current-beat region. Fuzzy, cream — not the leftover white-blue
+    // halo, not a pin on a prop. Hidden until Traces has a beat to point at.
+    this.area = el('div', 'pa-map-area pa-gone');
+    this.area.setAttribute('aria-hidden', 'true');
+    this.stage.appendChild(this.area);
+
+    this.node.appendChild(this.stage);
     this.node.appendChild(el('div', 'pa-map-north', 'N'));
 
     // The player. A stubby arrowhead rather than a dot with a stick: at 14 px a
@@ -487,7 +496,10 @@ export class MiniMap {
       '<svg viewBox="0 0 24 24" aria-hidden="true">' +
       '<path d="M12 2.6 L19.4 20.2 L12 15.7 L4.6 20.2 Z" ' +
       'fill="#e8622a" stroke="#fff6ea" stroke-width="1.9" stroke-linejoin="round"/></svg>');
-    this.node.appendChild(this.marker);
+    this.stage.appendChild(this.marker);
+
+    this.caption = el('div', 'pa-map-whisper');
+    this.stage.appendChild(this.caption);
 
     if (this.onPick) this._bindPick();
 
@@ -495,6 +507,8 @@ export class MiniMap {
 
     this._size = 0;
     this._mx = this._my = this._mb = NaN;
+    this._ax = this._ay = this._ar = NaN;
+    this._alabel = '';
     this.off = null;
     this._bakeN = 0;
     this._hasWorld = !!(this.world?.height && this.world?.water);
@@ -604,6 +618,7 @@ export class MiniMap {
     g.clearRect(0, 0, p, p);
     g.drawImage(this.off, 0, 0, p, p);
     this._mx = NaN;                        // force the marker to re-place
+    this._ar = NaN;
   }
 
   /**
@@ -620,8 +635,11 @@ export class MiniMap {
    * Measured against the interleaved A/B in tools/_scratch/postab.mjs, writing
    * it unconditionally cost 0.8 ms a frame at dpr 2, for a change nobody could
    * see.
+   *
+   * `area` is an optional `{ x, z, r, label }` in world metres — the current
+   * weekend beat's region, not a leftover pin.
    */
-  update(x, z, bearing) {
+  update(x, z, bearing, area = null) {
     const s = this._size;
     if (!s) { this._ensureBake(); return; }
     const w = this.world;
@@ -630,11 +648,38 @@ export class MiniMap {
     const px = Math.round(clamp01((x + half) / w.worldSize) * s * 3);
     const py = Math.round(clamp01((z + half) / w.worldSize) * s * 3);
     const pb = Math.round(bearing);
-    if (px === this._mx && py === this._my && pb === this._mb) return;
-    this._mx = px; this._my = py; this._mb = pb;
-    this.marker.style.transform =
-      `translate(${(px / 3).toFixed(2)}px, ${(py / 3).toFixed(2)}px) `
-      + `translate(-50%, -50%) rotate(${pb}deg)`;
+    if (px !== this._mx || py !== this._my || pb !== this._mb) {
+      this._mx = px; this._my = py; this._mb = pb;
+      this.marker.style.transform =
+        `translate(${(px / 3).toFixed(2)}px, ${(py / 3).toFixed(2)}px) `
+        + `translate(-50%, -50%) rotate(${pb}deg)`;
+    }
+    this._syncArea(area, s, half, w.worldSize);
+  }
+
+  _syncArea(area, s, half, worldSize) {
+    if (!area || !(area.r > 0)) {
+      if (this._ar !== 0) {
+        this._ar = 0;
+        this.area.classList.add('pa-gone');
+        this.caption.textContent = '';
+        this._alabel = '';
+      }
+      return;
+    }
+    const ax = Math.round(clamp01((area.x + half) / worldSize) * s * 3);
+    const ay = Math.round(clamp01((area.z + half) / worldSize) * s * 3);
+    const ar = Math.round((area.r / worldSize) * s * 3);
+    const label = area.label ?? '';
+    if (ax === this._ax && ay === this._ay && ar === this._ar && label === this._alabel) return;
+    this._ax = ax; this._ay = ay; this._ar = ar; this._alabel = label;
+    this.area.classList.remove('pa-gone');
+    const d = Math.max(10, (ar / 3) * 2);
+    this.area.style.width = `${d.toFixed(1)}px`;
+    this.area.style.height = `${d.toFixed(1)}px`;
+    this.area.style.transform =
+      `translate(${(ax / 3).toFixed(2)}px, ${(ay / 3).toFixed(2)}px) translate(-50%, -50%)`;
+    if (this.caption.textContent !== label) this.caption.textContent = label;
   }
 
   dispose() {

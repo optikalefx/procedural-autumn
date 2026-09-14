@@ -751,8 +751,9 @@ export class Journal {
       });
     }
     // The prior camper's failed almosts live on the first notes leaf, always
-    // — not gated on finishing the usuals. Animal photographs do not write
-    // here. The mystery leaf after this is still what the Bigfoot ending owns.
+    // — not gated on finishing the usuals. Animal photographs fill The usuals
+    // only; they never write here. The mystery leaf after this is still what
+    // the unnamed-thing ending owns.
     const origin = this.ctx.systems?.traces?.origin
       ?? this.ctx.systems?.vehicle?._home
       ?? { x: 0, z: 0 };

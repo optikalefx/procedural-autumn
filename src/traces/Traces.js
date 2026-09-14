@@ -9,7 +9,10 @@
 //  its dirt pad (their leftover pitch — not player camp-placement UI).
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
 //  pretty-faint, pretty-close white-blue ribbon — you have to look, and
-//  a drive-by does not see it. No pin, compass POI, or `!`. About one
+//  a drive-by does not see it. A soft area circle on the minimap (cream,
+//  fuzzy, current beat only) is a different cue — region, not a pin, and
+//  not the leftover halo. Camp dirt stays dirt-only: no UI halo on the
+//  burned scuff. No pin, compass POI, or `!`. About one
 //  in three crumbs is a short scrap in the same hand as the journal.
 //
 //  The book on the dirt is the same journal the J key opens. They left it
@@ -31,7 +34,7 @@ import { picked, pointing } from '../core/Pointer.js';
 import { pickVerb } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
-import { seedFeatures, pickWeekend, assignScraps } from './prior_notes.js';
+import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT } from './prior_notes.js';
 import {
   buildColdRing, buildStakeHoles, buildCairn, seatJournal, placeOnGround,
   buildTreeNote, buildTippedBike, buildBeachedCanoe, buildLeanedPaddle,
@@ -86,7 +89,7 @@ const _fwd = new THREE.Vector3();
 
 const LOOK = {
   journal: () => `${pickVerb()}&nbsp; open the journal`,
-  ring: () => 'a cold fire ring. they were working the book.',
+  ring: () => `${pickVerb()}&nbsp; the cold ring`,
   stakes: () => 'stake holes. packed in a hurry.',
   cairn: () => 'a cairn. someone waited here till dusk.',
   'tree-note': () => `${pickVerb()}&nbsp; a note for M.`,
@@ -130,6 +133,11 @@ export class Traces extends System {
     this._bookInHand = false;
     this.pointerClaim = false;
     this._rockMemo = new Map();
+    this._ringRead = false;
+    this._ringOpenedBook = false;
+    this._guideBeat = null;
+    this._area = null;
+    this.noticed = new Set();
   }
 
   async init() {
@@ -153,6 +161,7 @@ export class Traces extends System {
     this._placeStory(rnd);
     this._placeHalos();
     this._publishClearings();
+    this._refreshGuidance();
 
     // Harness / probe seam. Same spirit as window.__camp.
     window.__traces = this;
@@ -184,6 +193,7 @@ export class Traces extends System {
     const world = this.ctx.world;
     const cx = site.x, cz = site.z;
     const yaw = rnd() * Math.PI * 2;
+    this._placingBeat = 'camp';
 
     // Grass and cover have to know about this scuff BEFORE the dirt mesh
     // reads campCoverAt for its own edge — same order Camp uses.
@@ -199,7 +209,7 @@ export class Traces extends System {
     const ring = buildColdRing(rnd);
     const ry = placeOnGround(world, ring, cx, cz, yaw, 0.9, 0.6, floor(cx, cz));
     this.root.add(ring);
-    this._spot(ring, 'ring', cx, ry, cz);
+    this._spot(ring, 'ring', cx, ry, cz, { lines: ringNote(this.features) }, 'camp');
 
     // Stake holes off to one side — the tent, packed and gone.
     const sa = yaw + 1.15;
@@ -208,7 +218,7 @@ export class Traces extends System {
     const stakes = buildStakeHoles(rnd);
     const sy = placeOnGround(world, stakes, sx, sz, sa, 0.7, 1.0, floor(sx, sz));
     this.root.add(stakes);
-    this._spot(stakes, 'stakes', sx, sy, sz);
+    this._spot(stakes, 'stakes', sx, sy, sz, null, 'camp');
 
     // The book, on the dirt beside the ring. They left it for M. — or for
     // whoever came next. Not on a table. Nobody is still sitting here.
@@ -219,7 +229,7 @@ export class Traces extends System {
     const jy = placeOnGround(world, pad, jx, jz, yaw + 0.4, 0.75, 0.2, floor(jx, jz) + 0.004);
     this.root.add(pad);
     const holder = seatJournal(rnd, pad);
-    if (holder) this._spot(holder, 'journal', jx, jy + 0.02, jz);
+    if (holder) this._spot(holder, 'journal', jx, jy + 0.02, jz, null, 'camp');
 
     this._addCrumb('start', cx, cz, false, 'camp');
   }
@@ -245,6 +255,7 @@ export class Traces extends System {
       for (const kind of beat.kinds) {
         const p = this._pickStoryAnchor(kind, beat.id, prev, heading, taken, rnd);
         if (!p) continue;
+        this._placingBeat = beat.id;
         if (!this._placeKind(kind, p, rnd, scraps.get(kind) ?? null)) continue;
         const row = { x: p.x, z: p.z, beat: beat.id, id: kind, yaw: p.yaw };
         taken.push(row);
@@ -808,9 +819,63 @@ export class Traces extends System {
     return hit;
   }
 
-  _spot(obj, kind, x, y, z, scrap = null) {
+  _spot(obj, kind, x, y, z, scrap = null, beat = null) {
     const pickR = obj.userData?.trace?.pickR ?? 0.4;
-    this.spots.push({ kind, obj, x, y, z, pickR, scrap });
+    this.spots.push({
+      kind, obj, x, y, z, pickR, scrap,
+      beat: beat ?? this._placingBeat ?? 'camp',
+    });
+  }
+
+  /** Soft region the HUD draws — current weekend beat, not a leftover pin. */
+  get guidance() {
+    return this._area;
+  }
+
+  /**
+   * Fuzzy area for the current beat. Covers that beat's crumbs with padding
+   * so it reads as a stretch of valley, not a pin on the prop. Camp is never
+   * the circle (dirt is the cue there). Advances in `_notice`.
+   */
+  _refreshGuidance() {
+    const order = (this.beats ?? []).filter((id) => id !== 'camp');
+    let i = this._guideBeat ? order.indexOf(this._guideBeat) : 0;
+    if (i < 0) i = 0;
+    for (; i < order.length; i++) {
+      const id = order[i];
+      const pts = this.crumbs.filter((c) => c.beat === id);
+      if (!pts.length) continue;
+      this._guideBeat = id;
+      this._area = this._areaOf(id, pts);
+      return;
+    }
+    this._guideBeat = null;
+    this._area = null;
+  }
+
+  _areaOf(beat, pts) {
+    let cx = 0, cz = 0;
+    for (const p of pts) { cx += p.x; cz += p.z; }
+    cx /= pts.length;
+    cz /= pts.length;
+    let span = 0;
+    for (const p of pts) span = Math.max(span, Math.hypot(p.x - cx, p.z - cz));
+    // Floor is wide on purpose: a single paddle must not become a pin.
+    const r = Math.min(420, Math.max(260, span + 160));
+    return { beat, x: cx, z: cz, r, label: BEAT_HINT[beat] ?? '' };
+  }
+
+  _notice(beat) {
+    if (!beat) return;
+    this.noticed.add(beat);
+    if (beat === 'camp') return;
+    const order = (this.beats ?? []).filter((id) => id !== 'camp');
+    const i = order.indexOf(beat);
+    const cur = order.indexOf(this._guideBeat);
+    if (i < 0) return;
+    if (cur >= 0 && i < cur) return;
+    this._guideBeat = order[i + 1] ?? null;
+    this._refreshGuidance();
   }
 
   /**
@@ -829,6 +894,13 @@ export class Traces extends System {
   }
 
   _look(hit) {
+    if (hit.kind === 'ring') {
+      if (!this._ringRead) return `${pickVerb()}&nbsp; the cold ring`;
+      if (!this._ringOpenedBook) return `${pickVerb()}&nbsp; open the journal`;
+      return this.features?.hasWater
+        ? 'the ring is cold. they went toward the water.'
+        : 'the ring is cold. they went covering ground.';
+    }
     if (hit.scrap?.lines?.length && hit.kind !== 'journal') {
       const quiet = {
         'tree-note': 'a note for M.',
@@ -843,7 +915,31 @@ export class Traces extends System {
   }
 
   _act(hit) {
+    this._notice(hit.beat);
     if (hit.kind === 'journal') {
+      this._ringOpenedBook = true;
+      this.ctx.systems?.hud?.toggleJournal?.();
+      return;
+    }
+    if (hit.kind === 'ring') {
+      if (!this._ringRead) {
+        this._ringRead = true;
+        const lines = hit.scrap?.lines?.length ? hit.scrap.lines : ringNote(this.features);
+        this.scrap?.show(lines, {
+          onHide: () => {
+            const hud = this.ctx.systems?.hud;
+            if (this._ringOpenedBook) {
+              hud?.toast?.(this.features?.hasWater
+                ? 'they went toward the water.'
+                : 'they went covering ground.');
+            } else {
+              hud?.toast?.('the book is on the dirt. J opens it.');
+            }
+          },
+        });
+        return;
+      }
+      this._ringOpenedBook = true;
       this.ctx.systems?.hud?.toggleJournal?.();
       return;
     }
@@ -967,6 +1063,8 @@ export class Traces extends System {
     this.spots = [];
     this.crumbs = [];
     this.clearings = [];
+    this._area = null;
+    this._guideBeat = null;
     this._publishClearings();
     if (window.__traces === this) delete window.__traces;
   }
@@ -1023,13 +1121,14 @@ class ScrapCard {
     this.open = false;
   }
 
-  show(lines) {
+  show(lines, { onHide } = {}) {
     if (window.__forceCamera) return;
+    this._onHide = onHide ?? null;
     this.card.replaceChildren();
     for (const line of lines) {
       const p = document.createElement('p');
       p.style.margin = '0 0 0.4em';
-      p.style.whiteSpace = 'nowrap';
+      p.style.whiteSpace = 'normal';
       // Caveat's space glyph is thin in the DOM; keep words apart by hand.
       for (const w of line.split(/\s+/)) {
         const s = document.createElement('span');
@@ -1046,8 +1145,11 @@ class ScrapCard {
 
   hide(silent = false) {
     if (!this.open && silent) return;
+    const cb = this.open && !silent ? this._onHide : null;
     this.el.style.display = 'none';
     this.open = false;
+    this._onHide = null;
+    cb?.();
   }
 
   dispose() {

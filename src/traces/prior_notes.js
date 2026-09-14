@@ -92,37 +92,61 @@ const FAIL_POOL = [
     id: 'trees-moose',
     gated: true,
     need: (f) => f.hasWater && f.usuals.moose,
-    lines: ['Movement in the trees.', 'Just a moose when I looked again.'],
+    lines: [
+      'Had the camera up. Something in the trees, tall.',
+      'Then it was a moose. I laughed. Then I did not.',
+      'Wrote the moose down anyway. M. asked for usuals.',
+    ],
   },
   {
     id: 'lip-prints',
     gated: true,
     need: (f) => f.hasRidge,
-    lines: ['Prints by the lip.', 'Too big for the dog. Probably not.'],
+    lines: [
+      'Waited at the lip till the light went.',
+      'Prints on the way back. Too big for the dog.',
+      'I put my hand next to them and then I packed.',
+    ],
   },
   {
     id: 'wake',
     gated: true,
     need: (f) => f.hasWater,
-    lines: ['A wake, then nothing. Just a log.'],
+    lines: [
+      'Moose drink here. I know that part.',
+      'A wake with nothing in it. I said it was a log.',
+      'I hauled out. I did not go back on.',
+    ],
   },
   {
     id: 'thumb',
     gated: false,
     need: () => true,
-    lines: ['Too dark. Thumb on the lens.'],
+    lines: [
+      'I had it. Frame went black. Thumb on the lens.',
+      'Too dark, too slow — the usual excuses.',
+      'Left the empty shot in here anyway.',
+    ],
   },
   {
     id: 'treeline',
     gated: false,
     need: () => true,
-    lines: ['Something at the tree line.', 'Gone when I stood up.'],
+    lines: [
+      'Working the usuals and the treeline moved.',
+      'I stood up. Trees. I sat back down.',
+      'Did not finish the page. Hands were not steady.',
+    ],
   },
   {
     id: 'camp-edge',
     gated: false,
     need: () => true,
-    lines: ['At the edge of the light. Nothing in the morning.'],
+    lines: [
+      'Something at the edge of the light. I did not go out.',
+      'Morning: nothing. Packed anyway.',
+      'Book is still on the dirt. I am walking back.',
+    ],
   },
 ];
 
@@ -159,11 +183,41 @@ export function priorNotesRng(ctx) {
 export const TITLE_CUE = {
   for: 'for M.',
   lines: [
-    'I will get the usuals first.',
+    'M. asked for the usuals first.',
     'Deer, fox — so a shadow is a shadow.',
-    'The other thing can wait.',
+    'Skip that and every shape is the other thing.',
+    'The other thing is why they sent me.',
+    'Leaving the book. Finish it if I don\'t.',
   ],
 };
+
+/** Whisper on the map for the current beat — area, not a pin. */
+export const BEAT_HINT = {
+  water: 'out toward the water',
+  ride: 'the path they covered',
+  lip: 'up toward the lip',
+  trees: 'out toward the trees',
+  exit: 'where they left in a hurry',
+};
+
+/**
+ * Charcoal scrap in the cold ring. The hinge: usuals as control, a direction
+ * out of camp, and why the book is on the dirt. Seed-honest about water.
+ */
+export function ringNote(features) {
+  if (features?.hasWater) {
+    return [
+      'Usuals first. M. was clear.',
+      'Water in the morning — moose, a wake, maybe not.',
+      'The book stays. If I do not come back, this is the work.',
+    ];
+  }
+  return [
+    'Usuals first. M. was clear.',
+    'Covering ground in the morning. Path, then the trees.',
+    'The book stays. If I do not come back, this is the work.',
+  ];
+}
 
 // ── one weekend of work for M. ───────────────────────────────────────────────
 //
