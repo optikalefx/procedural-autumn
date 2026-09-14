@@ -7,7 +7,8 @@
 //  to photograph it with. Thought tooltips (`.pa-thought`) are the player's
 //  private voice — not toasts, not look prompts, never a "go here". After
 //  William's table note a pocket compass (`.pa-seek`) points at the next
-//  leftover; it is not a quest marker and it is not the minimap ring.
+//  leftover with his scrap of paper; it is not a quest marker and it is
+//  not the minimap ring.
 //
 //  Structure: this file owns the root element, input, and the per-frame data
 //  pull; the widgets (compass, dash, settings, photo mode) own their own DOM

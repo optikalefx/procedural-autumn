@@ -11,7 +11,8 @@
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
 //  pretty-faint, pretty-close white-blue ribbon — you have to look, and
 //  a drive-by does not see it. After the table note, a pocket compass on
-//  the HUD follows the *next leftover* (paddle/canoe, then bike, …) —
+//  the HUD — his scrap of paper — follows the *next leftover* (paddle/canoe,
+//  then bike, …) —
 //  never the camp table, journal, ring, or scuff. The valley map no
 //  longer carries that ring; the HUD chip is the source of truth.
 //  Camp dirt stays

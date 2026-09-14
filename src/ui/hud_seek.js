@@ -3,7 +3,7 @@
 //
 //  After William's table note the player needs a way to follow the weekend,
 //  and the minimap ring kept reading as camp. This is that way: a cream disc
-//  with a trail of crumbs and a tick that points at the current leftover
+//  with his scrap of paper and a tick that points at the current leftover
 //  (paddle, then bike, …). Not a pin, not a !, not a new compass POI.
 //
 //  It arrives as a moment in the middle of the view and then sits under the

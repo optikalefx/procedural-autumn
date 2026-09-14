@@ -238,9 +238,9 @@
   filter: drop-shadow(0 1px 4px rgba(46, 18, 28, 0.6));
 }
 
-/* Leftover seek — one pocket compass for the current crumb. Arrives in
-   the middle of the view after William's note, then sits under the strip.
-   Not a map ring, not a compass POI. */
+/* Leftover seek — William's scrap of paper, one leftover at a time.
+   Arrives in the middle of the view after the table note, then sits
+   under the strip. Not a map ring, not a compass POI. */
 .pa-seek {
   position: absolute;
   left: 50%;
@@ -289,10 +289,10 @@
 .pa-seek-glyph {
   position: relative;
   z-index: 1;
-  width: 1.05em;
-  height: 1.05em;
+  width: 1.18em;
+  height: 1.18em;
   color: var(--ink);
-  opacity: 0.92;
+  opacity: 0.94;
 }
 .pa-seek-glyph svg { width: 100%; height: 100%; display: block; }
 .pa-seek-dist {
