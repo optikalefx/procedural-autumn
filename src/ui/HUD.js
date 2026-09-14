@@ -98,6 +98,7 @@ export class HUD extends System {
     this._thoughtQueue = [];
     this._thoughtBusy = false;
     this._thoughtUntil = 0;
+    this._thoughtWait = 0;
 
     try {
       const s = JSON.parse(localStorage.getItem(STORE) ?? 'null');
@@ -162,10 +163,12 @@ export class HUD extends System {
     root.appendChild(this.toastEl);
 
     this.thoughtEl = el('div', 'pa-thought');
+    this.thoughtEl.id = 'pa-thought';
     this.thoughtEl.setAttribute('aria-live', 'polite');
     this.thoughtEl.style.fontFamily = `"${FONT_HAND}", "Bradley Hand", cursive`;
     // Not inside `#pa-hud`: journal/hud-off/capture rules were swallowing it,
     // and a private thought is not chrome. CampPrompt sits on the body too.
+    document.getElementById('pa-thought')?.remove();
     document.body.appendChild(this.thoughtEl);
 
     this.traceWhisper = el('div', 'pa-trace-whisper pa-game-only');
@@ -815,13 +818,13 @@ export class HUD extends System {
    * once per session; a second call is a no-op. `delay` lets the book
    * finish putting itself down before the line appears.
    *
-   * Timing is wall-clock sampled from the HUD update, not `setTimeout` and
-   * not world `dt`: this system is in LIVE_WHILE_PAUSED so the wait still
-   * runs while the world is frozen, a headless capture cannot throttle it
-   * the way a timer can, and a frame that arrives with `dt === 0` still
-   * notices that the book has been down long enough. A thought that is
-   * not ready to print stays queued — it is never unlatched just because
-   * the book is still in the way.
+   * Timing is wall-clock, armed on a timer and sampled from the HUD
+   * update. The book put-down is 0.46 s; the identity line waits 0.62 s
+   * so it prints on the valley, not on the leather. A starved animation
+   * loop (headless captures sit at a handful of frames) cannot be the
+   * only clock: `setTimeout` still fires. A thought that is not ready
+   * to print stays queued — it is never unlatched just because the book
+   * is still in the way.
    */
   think(id, { delay = 0 } = {}) {
     if (this._thoughts.has(id)) return;
@@ -829,16 +832,34 @@ export class HUD extends System {
     if (!text) return;
     this._thoughts.add(id);
     this._thoughtQueue.push({ id, text, at: performance.now() + delay * 1000 });
+    this._kickThoughts();
+  }
+
+  _kickThoughts() {
+    clearTimeout(this._thoughtWait);
+    if (this._thoughtBusy) return;
+    const next = this._thoughtQueue[0];
+    if (!next) return;
+    const wait = Math.max(0, next.at - performance.now());
+    this._thoughtWait = setTimeout(() => this._maybeThought(), wait);
   }
 
   _maybeThought() {
-    if (this.journal.active) return;
+    if (this.journal.active) {
+      if (this._thoughtQueue.length) {
+        this._thoughtWait = setTimeout(() => this._maybeThought(), 80);
+      }
+      return;
+    }
     const now = performance.now();
     if (this._thoughtUntil && now >= this._thoughtUntil) this.hideThought();
     if (this._thoughtBusy) return;
     const next = this._thoughtQueue[0];
     if (!next) return;
-    if (now < next.at) return;
+    if (now < next.at) {
+      this._kickThoughts();
+      return;
+    }
     this._thoughtQueue.shift();
     this._showThought(next.text);
   }
@@ -851,6 +872,8 @@ export class HUD extends System {
     this.thoughtEl.style.opacity = '1';
     this.thoughtEl.style.visibility = 'visible';
     this._thoughtUntil = performance.now() + 4800;
+    clearTimeout(this._thoughtWait);
+    this._thoughtWait = setTimeout(() => this._maybeThought(), 4800);
   }
 
   _paintThought(text) {
@@ -858,6 +881,8 @@ export class HUD extends System {
   }
 
   hideThought() {
+    clearTimeout(this._thoughtWait);
+    this._thoughtWait = 0;
     this._thoughtUntil = 0;
     this._thoughtBusy = false;
     this.thoughtEl?.classList.remove('pa-show');
@@ -865,6 +890,7 @@ export class HUD extends System {
       this.thoughtEl.style.opacity = '';
       this.thoughtEl.style.visibility = '';
     }
+    this._kickThoughts();
   }
 
   _setTraceWhisper(label) {
@@ -1068,6 +1094,7 @@ export class HUD extends System {
   dispose() {
     window.removeEventListener('keydown', this._onKey);
     clearTimeout(this._toastT);
+    clearTimeout(this._thoughtWait);
     this.map?.dispose();
     this.thoughtEl?.remove();
     this.root?.remove();

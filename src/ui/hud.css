@@ -606,7 +606,6 @@
   text-align: center;
   pointer-events: none;
   opacity: 0;
-  visibility: hidden;
   transition: opacity 0.85s var(--ease), transform 0.85s var(--ease);
 }
 .pa-thought.pa-show {
