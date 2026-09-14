@@ -5,8 +5,10 @@
  * ribbon on the ground, the same language as the camp fire-circle
  * (`src/camp/camp_ui.js`) taken down until it only says "something
  * here" — and only when the player is already nearby. Across the map
- * it is gone. Under a prop the existing dirt scuff stays; this is the
- * noticing cue on top of that grounding.
+ * it is gone. Existing tiny dirt under a prop can stay as grounding —
+ * this ring is the noticing cue, not a pressed-dirt disc. A leftover
+ * dirt pad would read as "pitch here" (player camp already uses that
+ * language). Do not grow scuffs to mean "inspect here."
  *
  * `gl_LineWidth` is a 1 px no-op on most browsers, so the ring is a
  * flat ribbon (camp's trick) rather than a GL line. Normal blend, not

@@ -7,8 +7,10 @@
 //  dropped bike, a dusk note — not camp dressing. Discover by standing
 //  near them and looking. A faint parchment ribbon on the ground marks
 //  the patch once you are close — not a pin, not a compass POI, not a
-//  `!`. Dirt scuffs stay as grounding under the props. About one in
-//  three crumbs is a short scrap in the same hand as the journal.
+//  `!`. Player camp already speaks in dirt pads; leftover noticing
+//  must not. Tiny grounding under a prop can stay. Do not grow a dirt
+//  disc to mean "inspect here." About one in three crumbs is a short
+//  scrap in the same hand as the journal.
 //
 //  The book on the dirt is the same journal the J key opens. They left it
 //  for whoever came next. Clicking it goes through HUD.toggleJournal.
@@ -687,6 +689,9 @@ export class Traces extends System {
    * + journal share a ring (they're one camp patch). Everything else
    * gets its own. Tree-note / rope sit the ribbon on the ground at
    * the tree, not up at the paper.
+   *
+   * This is the noticing cue. Do not add or grow dirt pads to do the
+   * same job — that language is camp placement.
    */
   _placeHalos() {
     const world = this.ctx.world;

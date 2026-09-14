@@ -198,7 +198,12 @@ export function buildStakeHoles(rnd) {
   return g;
 }
 
-/** Pale dirt oval — a foot-scuff, not a camp pad and not a marker disc. */
+/**
+ * Tiny grounding under a leftover prop. Not a camp pad, not a
+ * noticing disc — player camp already uses pressed dirt for "pitch
+ * here." Keep this small. The faint UI halo is what says "something
+ * here."
+ */
 export function buildScuff(rnd, radius = 0.62) {
   const g = new THREE.Group();
   g.name = 'trace_scuff';
