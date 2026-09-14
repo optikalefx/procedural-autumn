@@ -255,22 +255,14 @@ export const ENTER_THOUGHT = {
 };
 
 /**
- * Charcoal scrap in the cold ring. The hinge: usuals as control, a
- * direction out of camp, and that he packed in a hurry. Seed-honest
- * about water.
+ * Charcoal scrap on the leftover camp table. He is leaving mid-job;
+ * not a note to the finder. The table is the prop; the overlay is
+ * where the words live.
  */
-export function ringNote(features) {
-  if (features?.hasWater) {
-    return [
-      'Usuals first. M. was clear.',
-      'Water in the morning — moose, a wake, maybe not.',
-      'Could not stay. Packed what I could.',
-    ];
-  }
+export function ringNote() {
   return [
-    'Usuals first. M. was clear.',
-    'Covering ground in the morning. Path, then the trees.',
-    'Could not stay. Packed what I could.',
+    "I can't stay at this spot any longer. I feel like I'm never going to find it.",
+    '— William',
   ];
 }
 

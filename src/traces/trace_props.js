@@ -346,6 +346,46 @@ export function buildTreeNote(rnd) {
 }
 
 /**
+ * Cream scrap on the leftover camp table. Words live on the overlay,
+ * not the mesh — same split as the tree note. Parent this to the table
+ * at `journalRest` so slope and yaw come for free.
+ */
+export function buildTableNote(rnd) {
+  const g = new THREE.Group();
+  g.name = 'trace_table_note';
+  const w = 0.15 + rnd() * 0.02;
+  const h = 0.205 + rnd() * 0.02;
+  const back = new THREE.Mesh(
+    new THREE.PlaneGeometry(w + 0.01, h + 0.01),
+    propMat(0x6a5340, { roughness: 0.96, metalness: 0, side: THREE.DoubleSide }),
+  );
+  back.rotation.x = -Math.PI / 2;
+  back.position.y = 0.0005;
+  g.add(back);
+  const paper = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    propMat(0xf6ecd2, { roughness: 0.94, metalness: 0, side: THREE.DoubleSide }),
+  );
+  paper.rotation.x = -Math.PI / 2;
+  paper.rotation.z = (rnd() - 0.5) * 0.10;
+  paper.position.y = 0.0014;
+  g.add(paper);
+  g.userData.trace = { kind: 'table-note', pickR: 0.28 };
+  return g;
+}
+
+/** Seat the leftover note on a table, in the table's own space. */
+export function seatTableNote(rnd, table) {
+  const rest = table.userData?.journalRest;
+  if (!rest) return null;
+  const note = buildTableNote(rnd);
+  note.position.set(rest.x, rest.y + 0.0012, rest.z);
+  note.rotation.y = rest.yaw + (rnd() - 0.5) * 0.22;
+  table.add(note);
+  return note;
+}
+
+/**
  * Dropped when the trees moved — not parked. Origin stays on the ground;
  * the wrap is what `placeOnGround` stands. Not a rideable Bike system object.
  */

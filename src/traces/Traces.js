@@ -22,9 +22,11 @@
 //  The circle advances only when a leftover of that beat is noticed
 //  (look prompt or click), never by standing in the pad.
 //
-//  The book on the dirt is William's field book (the same overlay the J
-//  key opens). He did not leave it as a handoff — he left in a hurry.
-//  Clicking it goes through
+//  A folding table at the scuff holds a physical note; clicking the
+//  paper opens the scrap, not a click on the cold ring. The book on
+//  the dirt is William's field book (the same overlay the J key opens).
+//  He did not leave it as a handoff — he left in a hurry. Clicking it
+//  goes through
 //  HUD.openFoundJournal so the first leaf is M.'s letter, not the
 //  checklist. That leftover mesh is a closed leather prop (no page
 //  canvases). Opening the overlay book is the existing 10×1024×1452
@@ -44,8 +46,9 @@ import { pickVerb } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
 import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT, ENTER_THOUGHT } from './prior_notes.js';
+import { buildTable } from '../camp/camp_table.js';
 import {
-  buildColdRing, buildStakeHoles, buildCairn, seatJournal, placeOnGround,
+  buildColdRing, buildStakeHoles, buildCairn, seatJournal, seatTableNote, placeOnGround,
   buildTreeNote, buildTippedBike, buildBeachedCanoe, buildLeanedPaddle,
   buildCoffeeTin, buildLaidStick, buildTireTracks, buildTrunkRope,
 } from './trace_props.js';
@@ -66,7 +69,7 @@ const LOOK_FAR_SMALL_NOW = 44;
 // Inside the soft circle at camp is not "entering the water". The enter
 // cue waits until they have left the scuff.
 const CAMP_LEAVE = 22;
-const SMALL_LOOK = new Set(['tin', 'paddle', 'rope', 'tree-note', 'cairn']);
+const SMALL_LOOK = new Set(['tin', 'paddle', 'rope', 'tree-note', 'cairn', 'table-note']);
 const MIN_FROM_START = 52;
 const MIN_SEP = 70;
 const PAIR_MIN = 16;
@@ -105,7 +108,8 @@ const _fwd = new THREE.Vector3();
 
 const LOOK = {
   journal: () => `${pickVerb()}&nbsp; William's journal`,
-  ring: () => `${pickVerb()}&nbsp; the cold ring`,
+  ring: () => 'the ring is cold.',
+  'table-note': () => `${pickVerb()}&nbsp; William's note`,
   stakes: () => 'stake holes. packed in a hurry.',
   cairn: () => 'a cairn. someone waited here till dusk.',
   'tree-note': () => `${pickVerb()}&nbsp; a note for M.`,
@@ -226,7 +230,7 @@ export class Traces extends System {
     const ring = buildColdRing(rnd);
     const ry = placeOnGround(world, ring, cx, cz, yaw, 0.9, 0.6, floor(cx, cz));
     this.root.add(ring);
-    this._spot(ring, 'ring', cx, ry, cz, { lines: ringNote(this.features) }, 'camp');
+    this._spot(ring, 'ring', cx, ry, cz, null, 'camp');
 
     // Stake holes off to one side — the tent, packed and gone.
     const sa = yaw + 1.15;
@@ -237,8 +241,28 @@ export class Traces extends System {
     this.root.add(stakes);
     this._spot(stakes, 'stakes', sx, sy, sz, null, 'camp');
 
+    // Folding table he left standing, with a note on it. The scrap is
+    // the paper, not a click on the ring. Undressed — no mug, nobody
+    // is still sitting here.
+    const ta = yaw - 1.08;
+    const td = 1.58;
+    const tx = cx + Math.sin(ta) * td;
+    const tz = cz + Math.cos(ta) * td;
+    const table = buildTable(rnd, { wear: 0.62 });
+    table.name = 'trace_table';
+    const toward = Math.atan2(cx - tx, cz - tz);
+    placeOnGround(world, table, tx, tz, toward, 0.55, 0.40, floor(tx, tz));
+    this.root.add(table);
+    const note = seatTableNote(rnd, table);
+    if (note) {
+      table.updateMatrixWorld(true);
+      const np = new THREE.Vector3();
+      note.getWorldPosition(np);
+      this._spot(note, 'table-note', np.x, np.y, np.z, { lines: ringNote() }, 'camp');
+    }
+
     // William's book, on the dirt beside the ring. Mid-job, not a
-    // handoff. Not on a table. Nobody is still sitting here.
+    // handoff. The table holds the note; the book is the found frame.
     const jx = cx + Math.sin(yaw + 0.55) * 1.15;
     const jz = cz + Math.cos(yaw + 0.55) * 1.15;
     const pad = new THREE.Group();
@@ -959,7 +983,7 @@ export class Traces extends System {
 
   _look(hit) {
     if (hit.kind === 'ring') {
-      if (!this._ringRead) return `${pickVerb()}&nbsp; the cold ring`;
+      if (!this._ringRead) return LOOK.ring();
       if (!this._ringOpenedBook) return `${pickVerb()}&nbsp; open William's journal`;
       return this.features?.hasWater
         ? 'the ring is cold. they went toward the water.'
@@ -967,6 +991,7 @@ export class Traces extends System {
     }
     if (hit.scrap?.lines?.length && hit.kind !== 'journal') {
       const quiet = {
+        'table-note': "William's note",
         'tree-note': 'a note for M.',
         tin: 'a scrap under the tin',
         bike: 'a scrap by the bike',
@@ -985,25 +1010,28 @@ export class Traces extends System {
       this.ctx.systems?.hud?.openFoundJournal?.();
       return;
     }
+    if (hit.kind === 'table-note') {
+      this._ringRead = true;
+      const lines = hit.scrap?.lines?.length ? hit.scrap.lines : ringNote();
+      this.scrap?.show(lines, {
+        onHide: () => {
+          const hud = this.ctx.systems?.hud;
+          if (this._ringOpenedBook) {
+            hud?.toast?.(this.features?.hasWater
+              ? 'they went toward the water.'
+              : 'they went covering ground.');
+          } else {
+            hud?.toast?.("William's book is on the dirt. J opens it.");
+          }
+          hud?.think?.('ring');
+        },
+      });
+      return;
+    }
     if (hit.kind === 'ring') {
-      if (!this._ringRead) {
-        this._ringRead = true;
-        const lines = hit.scrap?.lines?.length ? hit.scrap.lines : ringNote(this.features);
-        this.scrap?.show(lines, {
-          onHide: () => {
-            const hud = this.ctx.systems?.hud;
-            if (this._ringOpenedBook) {
-              hud?.toast?.(this.features?.hasWater
-                ? 'they went toward the water.'
-                : 'they went covering ground.');
-            } else {
-              hud?.toast?.("William's book is on the dirt. J opens it.");
-            }
-            hud?.think?.('ring');
-          },
-        });
-        return;
-      }
+      // The scrap is the note on the table, not a click on empty air.
+      // After reading it, the ring can still open the found book.
+      if (!this._ringRead) return;
       this._ringOpenedBook = true;
       this.ctx.systems?.hud?.openFoundJournal?.();
       return;

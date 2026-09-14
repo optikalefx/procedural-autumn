@@ -762,7 +762,8 @@ export class HUD extends System {
   }
 
   /**
-   * Picking up William's book from the dirt (or the cold ring's second click).
+   * Picking up William's book from the dirt (or the cold ring after
+   * the table note has been read).
    * Rests on the flyleaf the same way the intro does, so the letter is the
    * first thing read. J still opens onto the checklist.
    */
