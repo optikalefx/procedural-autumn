@@ -831,6 +831,7 @@ export class HUD extends System {
         this._drainThoughts();
         return;
       }
+      this.root.classList.remove('pa-journal');
       this._paintThought(next.text);
       this.thoughtEl.classList.add('pa-show');
       this._thoughtT = setTimeout(() => {

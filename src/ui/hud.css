@@ -608,10 +608,16 @@
 }
 .pa-thought.pa-show {
   opacity: 1;
+  visibility: visible;
   transform: translate(-50%, 0) rotate(-0.35deg);
 }
-/* The book is in the way. Fade rather than fight it. */
-#pa-hud.pa-journal .pa-thought { opacity: 0; }
+/* The book is in the way. More specific than `.pa-show` so a thought
+   queued during close cannot print on the leather. */
+#pa-hud.pa-journal .pa-thought,
+#pa-hud.pa-journal .pa-thought.pa-show {
+  opacity: 0;
+  visibility: hidden;
+}
 
 /* A toast that is also a button — on touch it is sometimes the only control
    there is (see HUD.toast). Bigger tap target, and it has to read as pressable
