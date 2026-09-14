@@ -9,14 +9,16 @@
  * noticing cue on top of that grounding.
  *
  * `gl_LineWidth` is a 1 px no-op on most browsers, so the ring is a
- * flat ribbon (camp's trick) rather than a GL line.
+ * flat ribbon (camp's trick) rather than a GL line. Normal blend, not
+ * additive — on gold autumn grass an add wash disappears.
  */
 import * as THREE from 'three';
 
-const SEGS = 48;
-const RIBBON = 0.11;
-const LIFT = 0.055;
-const COLOR = new THREE.Color(0xd8c4a0);
+const SEGS = 56;
+const RIBBON = 0.14;
+const LIFT = 0.07;
+const COLOR = new THREE.Color(0xf2e2b8);
+const PEAK = 0.38;
 
 /** Full notice once the player is this close. */
 export const HALO_NEAR = 16;
@@ -64,7 +66,7 @@ export function buildNoticeHalo(world, x, z, radius) {
     transparent: true,
     depthWrite: false,
     depthTest: true,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.NormalBlending,
     side: THREE.DoubleSide,
   });
   const mesh = new THREE.Mesh(geo, vis);
@@ -103,9 +105,9 @@ export function updateNoticeHalo(group, dist, onScreen, elapsed) {
   // A 7 s breathe, 8 % of peak — enough to catch the eye once you're
   // in the patch, not a pulse that reads as a quest ping.
   const breath = 0.92 + 0.08 * (0.5 + 0.5 * Math.sin((elapsed ?? 0) * Math.PI * 2 / 7));
-  const a = near * onScreen * breath * 0.22;
+  const a = near * onScreen * breath * PEAK;
   n.vis.uniforms.uOpacity.value = a;
-  n.hid.uniforms.uOpacity.value = a * 0.22;
+  n.hid.uniforms.uOpacity.value = a * 0.42;
   return a;
 }
 
