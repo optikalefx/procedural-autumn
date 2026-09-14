@@ -10,12 +10,10 @@
 //  its dirt pad (his leftover pitch — not player camp-placement UI).
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
 //  pretty-faint, pretty-close white-blue ribbon — you have to look, and
-//  a drive-by does not see it. A soft area circle on the minimap (cream
-//  dashes over a plum understroke) sits on the *next leftover* — a cozy
-//  neighborhood around that crumb (paddle/canoe, then bike, …), never on
-//  the camp table, journal, ring, or scuff. It arms when William's table
-//  note is read, so camp is not already wearing the ring. Caption is
-//  beat-flavored plus a rough distance ("out toward the water · 220m").
+//  a drive-by does not see it. After the table note, a pocket compass on
+//  the HUD follows the *next leftover* (paddle/canoe, then bike, …) —
+//  never the camp table, journal, ring, or scuff. The valley map no
+//  longer carries that ring; the HUD chip is the source of truth.
 //  Camp dirt stays
 //  dirt-only: no UI halo on the burned scuff. No pin, compass POI, or `!`.
 //  About one in three crumbs is a short scrap in the same hand as the journal.
@@ -71,15 +69,15 @@ const LOOK_FAR_NOW = 40;
 const LOOK_FAR_SMALL_NOW = 44;
 // Spawn guard: do not fire an enter thought while still on the scuff.
 const CAMP_LEAVE = 22;
-// Soft map neighborhood around the *next leftover*. Tens of metres, not a
+// Soft neighborhood around the *next leftover* — used for enter thoughts
+// and as the HUD seek target, not drawn on the map. Tens of metres, not a
 // valley pad — camp must not already be standing in it. Clamped down when
-// the crumb sits close so the ring never wraps spawn.
+// the crumb sits close so the pad never wraps spawn.
 const AREA_R = 80;
 const AREA_R_MIN = 32;
 const AREA_CAMP_GAP = 36;
-// Preferred crumb for the map circle, in beat order. Water's paddle (else
-// canoe); ride's bike (else tracks). Not a pin on the mesh — the radius
-// is the neighborhood.
+// Preferred crumb for the HUD seek chip, in beat order. Water's paddle
+// (else canoe); ride's bike (else tracks). Not a pin on the mesh.
 const GUIDE_KIND = {
   water: ['paddle', 'canoe'],
   ride: ['bike', 'tracks'],
@@ -88,7 +86,7 @@ const GUIDE_KIND = {
   exit: ['tin', 'rope', 'stick'],
 };
 const SMALL_LOOK = new Set(['tin', 'paddle', 'rope', 'tree-note', 'cairn', 'table-note']);
-// Never a map target — the roam ring is the next leftover ahead, not the scuff.
+// Never a seek target — the HUD chip follows the next leftover ahead, not the scuff.
 const GUIDE_SKIP = new Set(['start', 'ring', 'journal', 'table-note', 'stakes']);
 const MIN_FROM_START = 52;
 const MIN_SEP = 70;
@@ -889,10 +887,10 @@ export class Traces extends System {
     });
   }
 
-  /** Soft region the HUD draws — neighborhood around the next leftover. */
+  /** Soft region the HUD seek chip follows — neighborhood around the next leftover. */
   get guidance() {
-    // Blank until the table note is read, so the ring *appears* as the
-    // handoff rather than sitting under the arrow from boot.
+    // Blank until the table note is read, so the chip *arrives* as the
+    // handoff rather than pointing from boot.
     if (!this._ringRead) return null;
     return this._area;
   }
@@ -988,7 +986,7 @@ export class Traces extends System {
   /**
    * One private thought per leftover hinge. Copy is in THOUGHTS; HUD latches
    * so a second click is silence. Ride has no line — covering ground is
-   * the map circle's job.
+   * the HUD chip's job.
    */
   _thinkBeat(hit) {
     const beat = hit?.beat;
@@ -1055,6 +1053,7 @@ export class Traces extends System {
           } else {
             hud?.toast?.("William's book is on the dirt. J opens it.");
           }
+          hud?.beginSeek?.();
           hud?.think?.('ring');
         },
       });

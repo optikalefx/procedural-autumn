@@ -67,6 +67,13 @@ export const ICON = {
   camera: S('<path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.2l1.4-2h7.8l1.4 2h2.2A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.4"/>'),
   sound: S('<path d="M4 9.5h3.2L12 5.5v13L7.2 14.5H4z"/><path d="M15.6 9.4a4 4 0 0 1 0 5.2"/><path d="M18.2 7a7.6 7.6 0 0 1 0 10"/>'),
   muted: S('<path d="M4 9.5h3.2L12 5.5v13L7.2 14.5H4z"/><path d="M16.5 10l4 4M20.5 10l-4 4"/>'),
+  // Three crumbs in a trail — leftover-following, not a landmark pin.
+  // Filled so the gaps survive at ~14 px the way the paw does.
+  seek: S('<g fill="currentColor" stroke="none">' +
+    '<circle cx="6.4" cy="17.0" r="2.05"/>' +
+    '<circle cx="11.4" cy="11.4" r="2.25"/>' +
+    '<circle cx="16.6" cy="6.2" r="2.45"/>' +
+    '</g>'),
 };
 
 /** Metres → the way a person would say it. */

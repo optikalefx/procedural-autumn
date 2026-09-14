@@ -5,7 +5,9 @@
 //  nothing for a HUD to warn you about. What is left is worth having: which way
 //  you are facing, what is out there, how fast you are going, and a good camera
 //  to photograph it with. Thought tooltips (`.pa-thought`) are the player's
-//  private voice — not toasts, not look prompts, never a "go here".
+//  private voice — not toasts, not look prompts, never a "go here". After
+//  William's table note a pocket compass (`.pa-seek`) points at the next
+//  leftover; it is not a quest marker and it is not the minimap ring.
 //
 //  Structure: this file owns the root element, input, and the per-frame data
 //  pull; the widgets (compass, dash, settings, photo mode) own their own DOM
@@ -30,7 +32,8 @@ import { Dash } from './hud_dash.js';
 import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
 import { Journal } from '../journal/Journal.js';
-import { MiniMap, guideWhisper } from './hud_map.js';
+import { MiniMap } from './hud_map.js';
+import { SeekCue } from './hud_seek.js';
 import { hunt } from '../game/hunt_store.js';
 import { touchCapable } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
@@ -128,6 +131,7 @@ export class HUD extends System {
     this.map = new MiniMap(root, this.ctx.world ?? globalThis.__world ?? null,
       (x, z) => this._warp(x, z));
     this.map.setVisible(this.showMap);
+    this.seek = new SeekCue(root);
 
     // ── corner chips ───────────────────────────────────────────────────────
     const corner = el('div', 'pa-corner pa-game-only');
@@ -546,6 +550,12 @@ export class HUD extends System {
     this.map?.setVisible(this.showMap);
     this._save();
     this.settings?.sync();
+  }
+
+  /** After William's table note: the leftover pocket-compass arrives. */
+  beginSeek() {
+    if (!this.ctx.systems?.traces?.guidance) return;
+    this.seek?.begin();
   }
 
   applyHudMode(v) {
@@ -1030,35 +1040,28 @@ export class HUD extends System {
 
     // The compass is the only per-frame DOM write of any size; 30 Hz is
     // indistinguishable from 60 for a strip that moves this slowly, and halves
-    // the layout cost.
-    if ((this._frame & 1) === 0) {
-      const e = ctx.camera.matrixWorld.elements;
-      // Camera forward is -(third basis column); bearing is clockwise from -Z.
-      const heading = (Math.atan2(-e[8], e[10]) * 180) / Math.PI;
-      this.compass.update(heading, this.marks);
-    }
+    // the layout cost. The leftover seek chip uses the same camera heading
+    // so its tick matches the caret: facing the crumb, the tick points up.
+    const e = ctx.camera.matrixWorld.elements;
+    const heading = (Math.atan2(-e[8], e[10]) * 180) / Math.PI;
+    if ((this._frame & 1) === 0) this.compass.update(heading, this.marks);
 
     // Free-look swings the compass strip, but the question the map answers is
     // where you are and which way you are *pointed*, so the arrow takes the
     // ridden heading rather than the camera's. Headings arrive measured from
     // +Z; the map, like the compass, works clockwise from north, which is -Z.
+    // Leftover following lives on the pocket compass, not the valley map.
+    // Passing null keeps the dashed next-area ring dark so it cannot
+    // read as camp again.
     const guide = ctx.systems?.traces?.guidance ?? null;
-    if (this.showMap) {
-      const p = aboard ?? veh?.position ?? ctx.camera.position;
-      let bearing;
-      if (aboard) bearing = 180 - (aboard.heading * 180) / Math.PI;
-      else if (veh) bearing = 180 - (veh.heading * 180) / Math.PI;
-      else {
-        const m = ctx.camera.matrixWorld.elements;
-        bearing = (Math.atan2(-m[8], m[10]) * 180) / Math.PI;
-      }
-      this.map.update(p.x, p.z, bearing, guide);
-      this._setTraceWhisper(guideWhisper(guide, p.x, p.z));
-    } else {
-      this._setTraceWhisper(guideWhisper(guide,
-        aboard?.x ?? veh?.position?.x ?? ctx.camera.position.x,
-        aboard?.z ?? veh?.position?.z ?? ctx.camera.position.z));
-    }
+    const p = aboard ?? veh?.position ?? ctx.camera.position;
+    let bearing;
+    if (aboard) bearing = 180 - (aboard.heading * 180) / Math.PI;
+    else if (veh) bearing = 180 - (veh.heading * 180) / Math.PI;
+    else bearing = heading;
+    this.seek?.update(p.x, p.z, heading, guide, dt);
+    if (this.showMap) this.map.update(p.x, p.z, bearing, null);
+    this._setTraceWhisper('');
     // HOLD is the camper's handbrake lamp, and boarding a boat *requires* the
     // camper parked with the hold armed (see the `parked` gate in Boat.update),
     // so left alone the lamp would burn for every second the player is on the
@@ -1097,6 +1100,7 @@ export class HUD extends System {
     clearTimeout(this._toastT);
     clearTimeout(this._thoughtWait);
     this.map?.dispose();
+    this.seek?.dispose();
     this.thoughtEl?.remove();
     this.root?.remove();
   }

@@ -9,16 +9,16 @@
 //   · **Whole world, by default.** 3072 m fits in 165 px at 19 m per pixel. A
 //     scrolling window would answer "what is near me", which is what the
 //     windscreen is for; a fixed frame answers "where is the lake" and lets the
-//     player learn the shape of the valley over a session. Exception: when a
-//     leftover neighborhood is armed, the blit frames player + that crumb so
-//     two hundred metres is a gap on the topo, not a shared basin under the
-//     arrow. Off the guide, the valley returns.
+//     player learn the shape of the valley over a session. Leftover-search
+//     used to zoom-to-fit a dashed neighborhood here. That ring kept failing
+//     in play, so SeekCue on the HUD is the cue now and this map stays the
+//     whole valley.
 //   · **North up, never rotating.** A map that spins under a moving arrow is
 //     unreadable at this size and gives you nothing to remember. The arrow
 //     rotates instead — one moving thing, not two.
 //   · **Contours, hillshade and a hypsometric tint, and nothing else.** No
-//     icons, no labels, no legend. Contour spacing *is* the information: wide
-//     bands are drivable ground, tight bands are a wall.
+//     icons, no labels, no leftover ring, no legend. Contour spacing *is* the
+//     information: wide bands are drivable ground, tight bands are a wall.
 //
 //  "Not much detail" is a specification, not a disclaimer, and it is why the
 //  height field is blurred before anything is drawn from it. The raw field
@@ -28,7 +28,7 @@
 //
 //  Cost. The map is a static picture of a static world, so it is rasterised
 //  once into an offscreen canvas during the loading screen and blitted into the
-//  visible canvas on resize and when a leftover guide re-frames the crop. The
+//  visible canvas on resize. Leftover-search no longer re-frames this crop. The
 //  per-frame cost is still one `transform` string on the marker except on those
 //  quantized view changes. Nothing here samples the heightfield while the game
 //  is running.
@@ -630,8 +630,7 @@ export class MiniMap {
 
   // ── presentation ──────────────────────────────────────────────────────────
 
-  /** Downscale the bake into the visible canvas — full valley, or a crop
-   *  around player + leftover when a guide is armed. */
+  /** Downscale the bake into the visible canvas — always the full valley. */
   _blit() {
     const css = this.canvas.clientWidth;
     if (!css || !this.off) return;
@@ -692,13 +691,12 @@ export class MiniMap {
    * it unconditionally cost 0.8 ms a frame at dpr 2, for a change nobody could
    * see.
    *
-   * `area` is an optional `{ x, z, r, label }` in world metres — a cozy
-   * neighborhood around the current beat's next leftover. Centered on that
-   * crumb with a fuzzy radius (tens of metres), not a pin on the mesh and
-   * not a valley-wide pad that already has camp inside it. When armed, the
-   * blit frames player + crumb so the ring sits elsewhere on the topo.
+   * `area` used to be a leftover neighborhood ring. That cue failed in
+   * play (read as camp, easy to miss). SeekCue on the HUD is the source
+   * of truth now; leftover areas are ignored so this map cannot show them.
    */
   update(x, z, bearing, area = null) {
+    area = null;
     const s = this._size;
     if (!s) { this._ensureBake(); return; }
     const w = this.world;

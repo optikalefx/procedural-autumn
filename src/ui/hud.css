@@ -76,6 +76,7 @@
 #pa-hud.pa-hud-off .pa-hint,
 #pa-hud.pa-hud-off .pa-toast,
 #pa-hud.pa-hud-off .pa-trace-whisper,
+#pa-hud.pa-hud-off .pa-seek,
 #pa-hud.pa-hud-off .pa-chip:not(.pa-gear) {
   opacity: 0;
   /* Hidden, not merely transparent: an invisible mute chip that still takes
@@ -235,6 +236,118 @@
   border-top: 0.4em solid var(--ink);
   opacity: 0.85;
   filter: drop-shadow(0 1px 4px rgba(46, 18, 28, 0.6));
+}
+
+/* Leftover seek — one pocket compass for the current crumb. Arrives in
+   the middle of the view after William's note, then sits under the strip.
+   Not a map ring, not a compass POI. */
+.pa-seek {
+  position: absolute;
+  left: 50%;
+  top: calc(2.1vh + 5.15em);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.18em;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-50%);
+}
+.pa-seek.pa-gone { opacity: 0; }
+.pa-seek-disc {
+  position: relative;
+  width: 2.25em;
+  height: 2.25em;
+  border-radius: 50%;
+  background: rgba(43, 28, 51, 0.58);
+  border: 1.5px solid rgba(255, 246, 234, 0.52);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(46, 18, 28, 0.38);
+  display: grid;
+  place-items: center;
+}
+.pa-seek-needle {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+.pa-seek-needle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0.14em;
+  width: 0;
+  height: 0;
+  border-left: 0.26em solid transparent;
+  border-right: 0.26em solid transparent;
+  border-bottom: 0.4em solid #fff6ea;
+  transform: translateX(-50%);
+  filter: drop-shadow(0 1px 3px rgba(46, 18, 28, 0.7));
+}
+.pa-seek-glyph {
+  position: relative;
+  z-index: 1;
+  width: 1.05em;
+  height: 1.05em;
+  color: var(--ink);
+  opacity: 0.92;
+}
+.pa-seek-glyph svg { width: 100%; height: 100%; display: block; }
+.pa-seek-dist {
+  font-size: 0.54em;
+  letter-spacing: 0.12em;
+  font-weight: 650;
+  color: var(--ink-dim);
+  text-shadow: 0 1px 5px rgba(46, 18, 28, 0.9), 0 0 2px rgba(46, 18, 28, 0.8);
+  white-space: nowrap;
+  min-height: 1em;
+}
+.pa-seek-near .pa-seek-disc {
+  border-color: var(--amber);
+  background: rgba(240, 173, 70, 0.22);
+}
+.pa-seek-near .pa-seek-dist { color: var(--ink); }
+
+@keyframes pa-seek-arrive {
+  0% {
+    opacity: 0;
+    top: 58%;
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+  16% {
+    opacity: 1;
+    top: 58%;
+    transform: translate(-50%, -50%) scale(1.62);
+  }
+  38% {
+    opacity: 1;
+    top: 58%;
+    transform: translate(-50%, -50%) scale(1.5);
+  }
+  100% {
+    opacity: 1;
+    top: calc(2.1vh + 5.15em);
+    transform: translateX(-50%) scale(1);
+  }
+}
+.pa-seek-enter {
+  animation: pa-seek-arrive 1.7s var(--ease) forwards;
+}
+.pa-seek-enter .pa-seek-dist { opacity: 0; }
+.pa-seek-docked {
+  opacity: 1;
+  top: calc(2.1vh + 5.15em);
+  transform: translateX(-50%) scale(1);
+}
+@keyframes pa-seek-nudge {
+  0% { transform: translateX(-50%) scale(1); }
+  40% { transform: translateX(-50%) scale(1.08); }
+  100% { transform: translateX(-50%) scale(1); }
+}
+.pa-seek-docked.pa-seek-retarget {
+  animation: pa-seek-nudge 0.55s var(--ease);
 }
 
 /* ── dash ─────────────────────────────────────────────────────────────────
