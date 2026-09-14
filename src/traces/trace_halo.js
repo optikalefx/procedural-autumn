@@ -102,16 +102,20 @@ export function buildNoticeHalo(world, x, z, radius) {
 
 /**
  * Fade the halo for this frame. `dist` is player-to-centre xz metres;
- * `onScreen` is 0..1 (1 = roughly in view). Returns the applied
+ * `onScreen` is 0..1 (1 = roughly in view). `gain` > 1 is for crumbs of
+ * the *current* beat — a slightly longer close falloff and a brighter
+ * peak, still metres, not a drive-by billboard. Returns the applied
  * visible opacity so a caller can skip work if it wants.
  */
-export function updateNoticeHalo(group, dist, onScreen, elapsed) {
+export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1) {
   const n = group.userData.notice;
   if (!n) return 0;
-  const near = 1 - THREE.MathUtils.smoothstep(dist, HALO_NEAR, HALO_FAR);
+  const far = HALO_FAR + (gain > 1 ? 7 : 0);
+  const peak = PEAK * gain;
+  const near = 1 - THREE.MathUtils.smoothstep(dist, HALO_NEAR, far);
   // A 9 s breathe, 5 % of peak — not a pulse.
   const breath = 0.95 + 0.05 * (0.5 + 0.5 * Math.sin((elapsed ?? 0) * Math.PI * 2 / 9));
-  const a = near * onScreen * breath * PEAK;
+  const a = near * onScreen * breath * peak;
   n.vis.uniforms.uOpacity.value = a;
   n.hid.uniforms.uOpacity.value = a * 0.38;
   return a;

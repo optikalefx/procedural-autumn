@@ -17,7 +17,10 @@
 //  burned scuff. No pin, compass POI, or `!`. About one
 //  in three crumbs is a short scrap in the same hand as the journal.
 //  At leftover hinges a thought tooltip (HUD.think) can fire once —
-//  private, not a look prompt, never a "go here".
+//  private, not a look prompt, never a "go here". First walk into a
+//  beat's soft region fires one extra line so the circle is not empty.
+//  The circle advances only when a leftover of that beat is noticed
+//  (look prompt or click), never by standing in the pad.
 //
 //  The book on the dirt is William's field book (the same overlay the J
 //  key opens). He did not leave it as a handoff — he left in a hurry.
@@ -40,7 +43,7 @@ import { picked, pointing } from '../core/Pointer.js';
 import { pickVerb } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
-import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT } from './prior_notes.js';
+import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT, ENTER_THOUGHT } from './prior_notes.js';
 import {
   buildColdRing, buildStakeHoles, buildCairn, seatJournal, placeOnGround,
   buildTreeNote, buildTippedBike, buildBeachedCanoe, buildLeanedPaddle,
@@ -56,6 +59,13 @@ const START_FEATHER = 0.78;
 
 const LOOK_FAR = 28;
 const LOOK_FAR_SMALL = 34;
+// Current-beat leftovers only — still close, just readable once you're
+// already in the region. A drive-by at speed does not get these.
+const LOOK_FAR_NOW = 40;
+const LOOK_FAR_SMALL_NOW = 44;
+// Inside the soft circle at camp is not "entering the water". The enter
+// cue waits until they have left the scuff.
+const CAMP_LEAVE = 22;
 const SMALL_LOOK = new Set(['tin', 'paddle', 'rope', 'tree-note', 'cairn']);
 const MIN_FROM_START = 52;
 const MIN_SEP = 70;
@@ -144,6 +154,7 @@ export class Traces extends System {
     this._guideBeat = null;
     this._area = null;
     this.noticed = new Set();
+    this._entered = new Set();
   }
 
   async init() {
@@ -714,6 +725,7 @@ export class Traces extends System {
       const r = HALO_R[c.id] ?? 1.2;
       const g = buildNoticeHalo(world, c.x, c.z, r);
       g.userData.kind = c.id;
+      g.userData.beat = c.beat;
       this.root.add(g);
       this.halos.push(g);
     }
@@ -843,7 +855,7 @@ export class Traces extends System {
    * so it reads as a stretch of valley, not a pin on the prop. The leftover
    * is somewhere in the circle — the centroid is just how the circle is
    * aimed, not a dig-here. Camp is never the circle (dirt is the cue there).
-   * Advances in `_notice`.
+   * Advances only in `_notice` — leftover look/click, never region occupancy.
    */
   _refreshGuidance() {
     const order = (this.beats ?? []).filter((id) => id !== 'camp');
@@ -874,6 +886,12 @@ export class Traces extends System {
     return { beat, x: cx, z: cz, r, label: BEAT_HINT[beat] ?? '' };
   }
 
+  /**
+   * Leftover-only advance. Looking at or clicking a crumb of this beat
+   * marks it noticed and the circle moves on. Standing inside the region
+   * never advances — being in the pad is the handoff, not the gate.
+   * Camp is always already-behind. A second call for a past beat is a no-op.
+   */
   _notice(beat) {
     if (!beat) return;
     this.noticed.add(beat);
@@ -885,6 +903,31 @@ export class Traces extends System {
     if (cur >= 0 && i < cur) return;
     this._guideBeat = order[i + 1] ?? null;
     this._refreshGuidance();
+  }
+
+  /**
+   * Once per beat: the player has left the journal scuff and is inside
+   * this beat's soft region. Camp sits *inside* the water circle, so a
+   * raw circumference-cross never fires at spawn — walking ~22 m off
+   * the origin while still in the circle is the enter. Later beats are
+   * far enough that CAMP_LEAVE is already true when you cross in.
+   *
+   * Sparse. One thought. Not while the book or a scrap is open.
+   */
+  _tickRegion(px, pz, quiet) {
+    if (quiet) return;
+    const a = this._area;
+    const beat = this._guideBeat;
+    if (!a || !beat || beat === 'camp') return;
+    if (this._entered.has(beat)) return;
+    const dx = px - a.x;
+    const dz = pz - a.z;
+    if (dx * dx + dz * dz > a.r * a.r) return;
+    if (Math.hypot(px - this.origin.x, pz - this.origin.z) < CAMP_LEAVE) return;
+    const thought = ENTER_THOUGHT[beat];
+    if (!thought) return;
+    this._entered.add(beat);
+    this.ctx.systems?.hud?.think?.(thought);
   }
 
   /**
@@ -987,7 +1030,10 @@ export class Traces extends System {
       const miss = rayMiss(ray, s.x, s.y + 0.04, s.z, s.pickR);
       if (miss < bestMiss) {
         const along = alongRay(ray, s.x, s.y, s.z);
-        const far = SMALL_LOOK.has(s.kind) ? LOOK_FAR_SMALL : LOOK_FAR;
+        const current = s.beat === this._guideBeat;
+        const far = current
+          ? (SMALL_LOOK.has(s.kind) ? LOOK_FAR_SMALL_NOW : LOOK_FAR_NOW)
+          : (SMALL_LOOK.has(s.kind) ? LOOK_FAR_SMALL : LOOK_FAR);
         if (along > 0.4 && along < far) { bestMiss = miss; best = s; }
       }
     }
@@ -1008,7 +1054,8 @@ export class Traces extends System {
 
   update(_dt, elapsed) {
     if (window.__forceCamera) this.scrap?.hide(true);
-    const bookOpen = !!this.ctx.systems?.hud?.journal?.visible;
+    const hud = this.ctx.systems?.hud;
+    const bookOpen = !!(hud?.journal?.visible || hud?.journal?.active);
     if (bookOpen !== this._bookInHand) {
       this._bookInHand = bookOpen;
       for (const s of this.spots) {
@@ -1020,6 +1067,12 @@ export class Traces extends System {
     // noticing cue QA is looking for.
     const overlay = (bookOpen || this.scrap?.open) && !window.__forceCamera;
     this._tickHalos(elapsed, overlay);
+    const veh = this.ctx.systems?.vehicle;
+    const cam = this.ctx.camera;
+    const px = window.__forceCamera ? cam.position.x : (veh?.position?.x ?? cam.position.x);
+    const pz = window.__forceCamera ? cam.position.z : (veh?.position?.z ?? cam.position.z);
+    this._tickRegion(px, pz, bookOpen || !!this.scrap?.open);
+
     if (bookOpen || this.scrap?.open) {
       this.prompt.set('');
       this.pointerClaim = false;
@@ -1029,7 +1082,6 @@ export class Traces extends System {
     // While the brake is latched Camp owns the prompt (it calls offer()).
     // Here we cover the other half: parked by the game's own hold, or just
     // looking around before anyone has pressed Space.
-    const veh = this.ctx.systems?.vehicle;
     if (veh?.brakeHold) { this.prompt.set(''); this.pointerClaim = false; return; }
     if (this.ctx.systems?.hud?.photo?.active) { this.prompt.set(''); return; }
     if (!pointing(this.ctx.input)) { this.prompt.set(''); this.pointerClaim = false; return; }
@@ -1037,6 +1089,10 @@ export class Traces extends System {
     const hit = this._pick();
     this.pointerClaim = !!hit;
     if (hit) {
+      // Look-prompt on a leftover of the *current* beat counts as
+      // notice — that's when the circle advances, not standing in
+      // the region. Click still fires the leftover thought.
+      if (hit.beat === this._guideBeat && hit.beat !== 'camp') this._notice(hit.beat);
       this.prompt.set(this._look(hit));
       if (picked(this.ctx.input)) this._act(hit);
     } else {
@@ -1061,10 +1117,13 @@ export class Traces extends System {
         continue;
       }
       const dist = Math.hypot(px - n.x, pz - n.z);
+      const current = g.userData.beat === this._guideBeat;
       const hy = (world.getHeight?.(n.x, n.z) ?? 0) + 0.4;
       _ndc.set(n.x, hy, n.z).project(cam);
       const off = Math.max(Math.abs(_ndc.x), Math.abs(_ndc.y));
-      const onScreen = 1 - THREE.MathUtils.smoothstep(off, 0.85, 1.15);
+      const onScreen = 1 - THREE.MathUtils.smoothstep(
+        off, current ? 1.0 : 0.85, current ? 1.38 : 1.15,
+      );
       cam.getWorldDirection(_fwd);
       const tx = n.x - cam.position.x;
       const tz = n.z - cam.position.z;
@@ -1072,8 +1131,12 @@ export class Traces extends System {
       const flen = Math.hypot(_fwd.x, _fwd.z) || 1;
       const align = (_fwd.x * tx + _fwd.z * tz) / (flen * tlen);
       // Prefer looking toward it. Behind / hard-aside fades out.
-      const facing = THREE.MathUtils.smoothstep(align, 0.08, 0.55);
-      updateNoticeHalo(g, dist, onScreen * facing, elapsed);
+      // Current-beat leftovers keep a looser facing so a shore roam
+      // still reads the ribbon without a billboard at drive-by range.
+      const facing = THREE.MathUtils.smoothstep(
+        align, current ? -0.12 : 0.08, current ? 0.38 : 0.55,
+      );
+      updateNoticeHalo(g, dist, onScreen * facing, elapsed, current ? 1.65 : 1);
     }
   }
 
@@ -1090,6 +1153,8 @@ export class Traces extends System {
     this.clearings = [];
     this._area = null;
     this._guideBeat = null;
+    this._entered.clear();
+    this.noticed.clear();
     this._publishClearings();
     if (window.__traces === this) delete window.__traces;
   }

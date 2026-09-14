@@ -227,15 +227,31 @@ export const BEAT_HINT = {
 /**
  * Player thoughts. Private, sparse, one id once. Never a verb, never a name
  * for the unnamed thing. Identity is how the found frame lands; the rest
- * sit on leftover hinges. Ordinary Compendium wildlife photos are silent —
- * a deer is a deer, not a line. HUD.think(id) is the only caller.
+ * sit on leftover hinges. Entering a beat's soft region fires one extra
+ * line (enter*), once, so being inside the circle is not empty. Ordinary
+ * Compendium wildlife photos are silent — a deer is a deer, not a line.
+ * HUD.think(id) is the only caller.
  */
 export const THOUGHTS = {
   identity: 'Who is William? Who is M.?',
   ring: 'They left in a hurry.',
+  enterWater: 'The water. He was out there.',
+  enterRide: 'The path they covered.',
+  enterLip: 'The lip from here.',
+  enterTrees: 'The trees from here.',
+  enterExit: 'This is where they went.',
   water: 'William was here for the water.',
   lip: "Anything else. That's what M. wouldn't say.",
   exit: 'Not finished. Just gone.',
+};
+
+/** Thought id for first entry into a beat's soft region. Once per beat. */
+export const ENTER_THOUGHT = {
+  water: 'enterWater',
+  ride: 'enterRide',
+  lip: 'enterLip',
+  trees: 'enterTrees',
+  exit: 'enterExit',
 };
 
 /**
