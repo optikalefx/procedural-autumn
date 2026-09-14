@@ -8,11 +8,11 @@
 //  them. They found the book. He did not leave it for them — he left
 //  because he was on the move. What happened to him is unknown.
 //
-//  The player's own photographs fill those usuals slots. Later pages stay
-//  William's failed almosts of that unnamed "anything else" until the
-//  existing mystery leaf — unchanged — can close that last page. Traces
-//  are one weekend of his work path. This module never uses a popular
-//  name for the unnamed thing.
+//  The player's own photographs fill those usuals slots. The Notes leaf
+//  carries two of his almosts as prints — too far, too blurred to name —
+//  until the existing mystery leaf — unchanged — can close that last page.
+//  Traces are one weekend of his work path. This module never uses a
+//  popular name for the unnamed thing.
 // ─────────────────────────────────────────────────────────────────────────────
 import { mulberry32 } from '../core/MathUtils.js';
 import { SEED } from '../world/WorldConfig.js';
@@ -178,6 +178,16 @@ export function priorNotesRng(ctx) {
   const seed = (ctx?.world?.seed ?? SEED) >>> 0;
   return mulberry32(seed ^ 0x71ace);
 }
+
+/**
+ * William's two almosts, taped into Notes. Field prints, not captions: a
+ * distant upright suggestion, too blurred to name. Never a popular name
+ * for the unnamed thing — the graphite is optional and one word at most.
+ */
+export const WILLIAM_ALMOSTS = [
+  { src: '/journal/william-almost-a.jpg', caption: 'too far' },
+  { src: '/journal/william-almost-b.jpg', caption: null },
+];
 
 /** Flyleaf of the found book — his name. Not a note to the finder. */
 export const WILLIAM = {

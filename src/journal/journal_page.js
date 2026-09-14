@@ -1646,47 +1646,41 @@ export class JournalPage {
 
   _paintNotes(g) {
     const x0 = this._x0, x1 = this._x1;
-    const fails = this.spec.fails;
+    const almosts = this.spec.almosts;
     g.textAlign = 'left';
     g.fillStyle = INK;
     g.font = brush(64);
-    g.fillText(fails?.length ? 'Later' : 'Notes', x0, M_TOP + 66);
+    g.fillText('Notes', x0, M_TOP + 66);
     inkLine(g, x0, M_TOP + 96, x1, M_TOP + 98, { seed: 6, width: 2.6, alpha: 0.45, colour: '#5c452e' });
 
     let ruledFrom = M_TOP + 190;
-    if (fails?.length) {
-      // Pencil, not pen — same argument as the mystery leaf: this was put
-      // down in the field, in a hurry, on the first blank page to hand.
-      g.save();
-      g.translate(x0 + 4, M_TOP + 168);
-      g.rotate(-0.012);
-      g.font = hand(34);
-      g.fillStyle = 'rgba(74,58,44,0.48)';
-      g.fillText('anything else — not the usuals.', 0, 0);
-      g.restore();
-
-      let y = M_TOP + 226;
+    if (almosts?.length) {
+      // Two taped prints and almost no writing. The page used to carry the
+      // almosts as dense graphite blocks; the prints do that work now, and
+      // they are too far and too blurred to name.
       const tw = x1 - x0;
-      g.font = hand(36);
-      g.fillStyle = 'rgba(58,43,32,0.78)';
-      for (let i = 0; i < fails.length; i++) {
-        const entry = fails[i];
-        g.save();
-        g.translate(x0 + 6 + i * 3, 0);
-        g.rotate(-0.008 + i * 0.006);
-        for (const line of entry.lines) {
-          for (const w of _wrapLine(g, line, tw - 12)) {
-            g.fillText(w, 0, y);
-            y += 44;
-          }
+      const slotW = tw - 4;
+      const slotH = 392;
+      let y = M_TOP + 124;
+      for (let i = 0; i < almosts.length; i++) {
+        const seed = this.spec.seed * 31 + 40 + i * 7;
+        const tilt = (i ? 0.018 : -0.022);
+        const slot = { x: x0, y, w: slotW, h: slotH };
+        this._paste(g, slot, almosts[i].photo, tilt, seed, 1);
+        const cap = almosts[i].caption;
+        if (cap) {
+          g.save();
+          g.translate(x0 + 18, y + slotH + 22);
+          g.rotate(-0.012);
+          g.font = hand(28);
+          g.fillStyle = 'rgba(73,64,55,0.42)';
+          g.textAlign = 'left';
+          g.fillText(cap, 0, 0);
+          g.restore();
         }
-        g.restore();
-        y += 18;
-        inkLine(g, x0 + 8, y - 10, x0 + 220, y - 8,
-          { seed: 70 + i, width: 1.4, alpha: 0.22, wobble: 2.0, colour: GRAPHITE });
-        y += 16;
+        y += slotH + 56;
       }
-      ruledFrom = y + 8;
+      ruledFrom = y + 10;
     }
 
     for (let i = 0; i < 18; i++) {

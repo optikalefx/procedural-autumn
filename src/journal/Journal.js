@@ -81,7 +81,7 @@ import {
   PAPER_GAIN,
 } from './journal_model.js';
 import { hunt, makeThumb } from '../game/hunt_store.js';
-import { seedFeatures, pickPriorFails, priorNotesRng } from '../traces/prior_notes.js';
+import { WILLIAM_ALMOSTS } from '../traces/prior_notes.js';
 
 // ── the script ───────────────────────────────────────────────────────────────
 // Every duration in the ceremony, in seconds, in one place. `gap` values are
@@ -752,15 +752,17 @@ export class Journal {
       });
     }
     // William's failed almosts of M.'s unnamed "anything else" live on the
-    // first notes leaf, always — not gated on finishing the Compendium. Animal
-    // photographs fill the Compendium only; they never write here. The mystery
-    // leaf after this is still what the unnamed-thing ending owns.
-    const origin = this.ctx.systems?.traces?.origin
-      ?? this.ctx.systems?.vehicle?._home
-      ?? { x: 0, z: 0 };
-    const feat = this.ctx.systems?.traces?.features ?? seedFeatures(this.ctx, origin);
-    const fails = pickPriorFails(feat, priorNotesRng(this.ctx));
-    specs.push({ kind: 'notes', index: nList + 1, seed: 9, rows: [], fails });
+    // first notes leaf, always — not gated on finishing the Compendium. Two
+    // prints, too far and too blurred to name. Animal photographs fill the
+    // Compendium only; they never write here. The mystery leaf after this is
+    // still what the unnamed-thing ending owns.
+    specs.push({
+      kind: 'notes',
+      index: nList + 1,
+      seed: 9,
+      rows: [],
+      almosts: WILLIAM_ALMOSTS.map((a) => ({ ...a, photo: null })),
+    });
 
     // ── the mystery leaf ─────────────────────────────────────────────────────
     //
@@ -946,6 +948,13 @@ export class Journal {
           p.spec.open = open;
           dirty.add(i);
         }
+      }
+      for (const almost of p.spec.almosts ?? []) {
+        if (almost.photo) continue;
+        jobs.push(loadPhoto(almost.src).then((im) => {
+          almost.photo = im;
+          dirty.add(i);
+        }));
       }
       for (const row of p.spec.rows ?? []) {
         const done = hunt.isDone(row.id);
