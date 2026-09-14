@@ -5,8 +5,10 @@
 //  this valley for M.: usuals first (so a shadow is a shadow), the unnamed
 //  thing later. Each leftover is a beat of that job — a fast haul-out, a
 //  dropped bike, a dusk note — not camp dressing. Discover by standing
-//  near them and looking. About one in three crumbs is a short scrap in
-//  the same hand as the journal.
+//  near them and looking. A faint parchment ribbon on the ground marks
+//  the patch once you are close — not a pin, not a compass POI, not a
+//  `!`. Dirt scuffs stay as grounding under the props. About one in
+//  three crumbs is a short scrap in the same hand as the journal.
 //
 //  The book on the dirt is the same journal the J key opens. They left it
 //  for whoever came next. Clicking it goes through HUD.toggleJournal.
@@ -33,6 +35,9 @@ import {
   buildTreeNote, buildTippedBike, buildBeachedCanoe, buildLeanedPaddle,
   buildCoffeeTin, buildLaidStick, buildTireTracks, buildTrunkRope,
 } from './trace_props.js';
+import {
+  buildNoticeHalo, updateNoticeHalo, disposeNoticeHalo,
+} from './trace_halo.js';
 
 // Small enough that it reads as "a tent was here", not as a player camp.
 const START_R = 3.35;
@@ -57,7 +62,24 @@ const BAND = {
 };
 const PAIR_AT = { water: 36, ride: 62, lip: 52, exit: 88 };
 
+// Metres from leftover centre to the ribbon midline. Start is one ring
+// for the whole scuff (ring + stakes + journal), not three stacked.
+const HALO_R = {
+  start: 3.0,
+  canoe: 2.3,
+  bike: 1.8,
+  tracks: 1.7,
+  paddle: 1.35,
+  cairn: 1.25,
+  rope: 1.2,
+  'tree-note': 1.1,
+  tin: 0.95,
+  stick: 1.05,
+  'second-night': 2.2,
+};
+
 const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
+const _ndc = new THREE.Vector3();
 
 const LOOK = {
   journal: () => `${pickVerb()}&nbsp; open the journal`,
@@ -97,6 +119,7 @@ export class Traces extends System {
     this.scrap = null;
     this.spots = [];
     this.crumbs = [];
+    this.halos = [];
     this.origin = null;
     this.features = null;
     this.clearings = [];
@@ -125,6 +148,7 @@ export class Traces extends System {
     const rnd = siteRng(site.x, site.z, seed);
     this._placeStart(site, rnd);
     this._placeStory(rnd);
+    this._placeHalos();
     this._publishClearings();
 
     // Harness / probe seam. Same spirit as window.__camp.
@@ -658,6 +682,23 @@ export class Traces extends System {
     this.crumbs.push({ id, x, z, readable: !!readable, beat });
   }
 
+  /**
+   * One faint notice halo per leftover AOI. The start scuff + stakes
+   * + journal share a ring (they're one camp patch). Everything else
+   * gets its own. Tree-note / rope sit the ribbon on the ground at
+   * the tree, not up at the paper.
+   */
+  _placeHalos() {
+    const world = this.ctx.world;
+    for (const c of this.crumbs) {
+      const r = HALO_R[c.id] ?? 1.2;
+      const g = buildNoticeHalo(world, c.x, c.z, r);
+      g.userData.kind = c.id;
+      this.root.add(g);
+      this.halos.push(g);
+    }
+  }
+
   _publishClearings() {
     const camp = this.ctx.systems?.camp;
     if (camp?._publishSlots) { camp._publishSlots(); return; }
@@ -841,7 +882,7 @@ export class Traces extends System {
     return _ray;
   }
 
-  update() {
+  update(_dt, elapsed) {
     if (window.__forceCamera) this.scrap?.hide(true);
     const bookOpen = !!this.ctx.systems?.hud?.journal?.visible;
     if (bookOpen !== this._bookInHand) {
@@ -850,6 +891,11 @@ export class Traces extends System {
         if (s.kind === 'journal') s.obj.visible = !bookOpen;
       }
     }
+    // Overlay scrap/journal covers the frame — don't billboard
+    // through it. Forced-camera shots keep the halo; that's the
+    // noticing cue QA is looking for.
+    const overlay = (bookOpen || this.scrap?.open) && !window.__forceCamera;
+    this._tickHalos(elapsed, overlay);
     if (bookOpen || this.scrap?.open) {
       this.prompt.set('');
       this.pointerClaim = false;
@@ -874,11 +920,40 @@ export class Traces extends System {
     }
   }
 
+  _tickHalos(elapsed, overlay) {
+    if (!this.halos.length) return;
+    const cam = this.ctx.camera;
+    const pos = this.ctx.systems?.vehicle?.position;
+    // Forced-camera QA poses the view, not the van — measure from
+    // the lens so a leftover shot still shows its own ring.
+    const px = window.__forceCamera ? cam.position.x : (pos?.x ?? cam.position.x);
+    const pz = window.__forceCamera ? cam.position.z : (pos?.z ?? cam.position.z);
+    const world = this.ctx.world;
+    for (const g of this.halos) {
+      const n = g.userData.notice;
+      if (!n) continue;
+      if (overlay) {
+        updateNoticeHalo(g, 1e6, 0, elapsed);
+        continue;
+      }
+      const dist = Math.hypot(px - n.x, pz - n.z);
+      const hy = (world.getHeight?.(n.x, n.z) ?? 0) + 0.4;
+      _ndc.set(n.x, hy, n.z).project(cam);
+      const off = Math.max(Math.abs(_ndc.x), Math.abs(_ndc.y));
+      // Soft edge past the frame, not a hard clip — a leftover just
+      // off-screen still whispers if you're standing in its range.
+      const onScreen = 1 - THREE.MathUtils.smoothstep(off, 0.95, 1.35);
+      updateNoticeHalo(g, dist, onScreen, elapsed);
+    }
+  }
+
   dispose() {
     this.prompt?.dispose();
     this.scrap?.dispose();
     this.ground?.dispose();
     this.ground = null;
+    for (const g of this.halos) disposeNoticeHalo(g);
+    this.halos = [];
     this.root?.parent?.remove(this.root);
     this.spots = [];
     this.crumbs = [];
