@@ -97,7 +97,7 @@ export class HUD extends System {
     this._thoughts = new Set();
     this._thoughtQueue = [];
     this._thoughtBusy = false;
-    this._thoughtHold = 0;
+    this._thoughtUntil = 0;
 
     try {
       const s = JSON.parse(localStorage.getItem(STORE) ?? 'null');
@@ -815,33 +815,30 @@ export class HUD extends System {
    * once per session; a second call is a no-op. `delay` lets the book
    * finish putting itself down before the line appears.
    *
-   * Timing is the HUD clock, not `setTimeout`: this system is in
-   * LIVE_WHILE_PAUSED, so the wait still runs while the world is frozen,
-   * and a headless capture cannot throttle it the way a timer can.
-   * A thought that is not ready to print stays queued — it is never
-   * unlatched just because the book is still in the way.
+   * Timing is wall-clock sampled from the HUD update, not `setTimeout` and
+   * not world `dt`: this system is in LIVE_WHILE_PAUSED so the wait still
+   * runs while the world is frozen, a headless capture cannot throttle it
+   * the way a timer can, and a frame that arrives with `dt === 0` still
+   * notices that the book has been down long enough. A thought that is
+   * not ready to print stays queued — it is never unlatched just because
+   * the book is still in the way.
    */
   think(id, { delay = 0 } = {}) {
     if (this._thoughts.has(id)) return;
     const text = THOUGHTS[id];
     if (!text) return;
     this._thoughts.add(id);
-    this._thoughtQueue.push({ id, text, wait: delay });
+    this._thoughtQueue.push({ id, text, at: performance.now() + delay * 1000 });
   }
 
-  _maybeThought(dt) {
+  _maybeThought() {
     if (this.journal.active) return;
-    if (this._thoughtHold > 0) {
-      this._thoughtHold -= dt;
-      if (this._thoughtHold <= 0) this.hideThought();
-    }
+    const now = performance.now();
+    if (this._thoughtUntil && now >= this._thoughtUntil) this.hideThought();
     if (this._thoughtBusy) return;
     const next = this._thoughtQueue[0];
     if (!next) return;
-    if (next.wait > 0) {
-      next.wait -= dt;
-      return;
-    }
+    if (now < next.at) return;
     this._thoughtQueue.shift();
     this._showThought(next.text);
   }
@@ -853,7 +850,7 @@ export class HUD extends System {
     this.thoughtEl.classList.add('pa-show');
     this.thoughtEl.style.opacity = '1';
     this.thoughtEl.style.visibility = 'visible';
-    this._thoughtHold = 4.8;
+    this._thoughtUntil = performance.now() + 4800;
   }
 
   _paintThought(text) {
@@ -861,7 +858,7 @@ export class HUD extends System {
   }
 
   hideThought() {
-    this._thoughtHold = 0;
+    this._thoughtUntil = 0;
     this._thoughtBusy = false;
     this.thoughtEl?.classList.remove('pa-show');
     if (this.thoughtEl) {
@@ -947,7 +944,7 @@ export class HUD extends System {
     // freeze the ceremony mid-page-turn.
     this.journal.update(dt);
     if (this.photo.active) this.photo.update(dt);
-    this._maybeThought(dt);
+    this._maybeThought();
 
     // Invert look. CameraRig reads `mouse.dy` in lateUpdate and `axes.lookY` is
     // refilled by Input at the end of the frame, so flipping both here lands
