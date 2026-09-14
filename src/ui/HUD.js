@@ -762,11 +762,16 @@ export class HUD extends System {
 
   _setTraceWhisper(label) {
     const text = label || '';
-    if (text === this._traceWhisper) return;
-    this._traceWhisper = text;
+    const mapUp = this.showMap && window.innerWidth > 780 && window.innerHeight > 620;
+    // Map caption already carries the line when the minimap is on screen.
+    // The floating whisper is the fallback for a hidden map, not a second copy.
+    const show = !!text && !mapUp;
+    const key = `${text}|${show}`;
+    if (key === this._traceWhisper) return;
+    this._traceWhisper = key;
     if (!this.traceWhisper) return;
     this.traceWhisper.textContent = text;
-    this.traceWhisper.classList.toggle('pa-show', !!text);
+    this.traceWhisper.classList.toggle('pa-show', show);
   }
 
   _dismissHint() {

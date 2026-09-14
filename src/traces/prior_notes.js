@@ -169,8 +169,7 @@ export function pickPriorFails(features, rnd = Math.random) {
   };
   if (gated.length) take(gated);
   if (pick.length < 2 && gated.length) take(gated);
-  if (pick.length < 2) take(always);
-  if (pick.length < 1) take(always);
+  while (pick.length < 2 && always.length) take(always);
   return pick.slice(0, 2);
 }
 

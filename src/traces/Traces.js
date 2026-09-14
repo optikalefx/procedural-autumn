@@ -861,7 +861,7 @@ export class Traces extends System {
     let span = 0;
     for (const p of pts) span = Math.max(span, Math.hypot(p.x - cx, p.z - cz));
     // Floor is wide on purpose: a single paddle must not become a pin.
-    const r = Math.min(420, Math.max(260, span + 160));
+    const r = Math.min(720, Math.max(480, span + 220));
     return { beat, x: cx, z: cz, r, label: BEAT_HINT[beat] ?? '' };
   }
 
