@@ -606,7 +606,10 @@
   text-align: center;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.85s var(--ease), transform 0.85s var(--ease);
+  /* Opacity snaps — a starved frame loop must not leave a thought at 0
+     while its 0.85 s fade waits for a frame that is not coming. Transform
+     still eases when the loop is alive. */
+  transition: transform 0.85s var(--ease);
 }
 .pa-thought.pa-show {
   opacity: 1;
