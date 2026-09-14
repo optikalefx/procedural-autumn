@@ -745,15 +745,15 @@ export class Journal {
       specs.push({
         kind: 'list',
         index: k + 1,
-        heading: k === 0 ? 'The usuals' : null,
+        heading: k === 0 ? 'Compendium' : null,
         progress: k === 0 ? this._progressLine() : null,
         rows,
         seed: 2 + k,
       });
     }
     // William's failed almosts of M.'s unnamed "anything else" live on the
-    // first notes leaf, always — not gated on finishing the usuals. Animal
-    // photographs fill The usuals only; they never write here. The mystery
+    // first notes leaf, always — not gated on finishing the Compendium. Animal
+    // photographs fill the Compendium only; they never write here. The mystery
     // leaf after this is still what the unnamed-thing ending owns.
     const origin = this.ctx.systems?.traces?.origin
       ?? this.ctx.systems?.vehicle?._home
