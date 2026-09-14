@@ -15,6 +15,8 @@
 //  not the leftover halo. Camp dirt stays dirt-only: no UI halo on the
 //  burned scuff. No pin, compass POI, or `!`. About one
 //  in three crumbs is a short scrap in the same hand as the journal.
+//  At leftover hinges a thought tooltip (HUD.think) can fire once —
+//  private, not a look prompt, never a "go here".
 //
 //  The book on the dirt is William's field book (the same overlay the J
 //  key opens). He left it for whoever finds it. Clicking it goes through
@@ -881,6 +883,18 @@ export class Traces extends System {
   }
 
   /**
+   * One private thought per leftover hinge. Copy is in THOUGHTS; HUD latches
+   * so a second click is silence. Ride has no line — covering ground is
+   * the map circle's job.
+   */
+  _thinkBeat(hit) {
+    const beat = hit?.beat;
+    if (!beat || beat === 'camp' || beat === 'ride') return;
+    const id = beat === 'trees' ? 'lip' : beat;
+    this.ctx.systems?.hud?.think?.(id);
+  }
+
+  /**
    * What the pointer is on, if anything. Camp asks this while the brake is
    * held so a click on the book does not also pitch a camp.
    */
@@ -937,6 +951,7 @@ export class Traces extends System {
             } else {
               hud?.toast?.("William's book is on the dirt. J opens it.");
             }
+            hud?.think?.('ring');
           },
         });
         return;
@@ -946,9 +961,12 @@ export class Traces extends System {
       return;
     }
     if (hit.scrap?.lines?.length) {
-      this.scrap?.show(hit.scrap.lines);
+      this.scrap?.show(hit.scrap.lines, {
+        onHide: () => this._thinkBeat(hit),
+      });
       return;
     }
+    this._thinkBeat(hit);
     // A look, not a pickup. One quiet line; no log, no tick.
     const line = LOOK[hit.kind]?.() ?? '';
     if (line) this.ctx.systems?.hud?.toast?.(line.replace(/<[^>]+>/g, ''));

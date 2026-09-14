@@ -219,6 +219,20 @@ export const BEAT_HINT = {
 };
 
 /**
+ * Player thoughts. Private, sparse, one id once. Never a verb, never a name
+ * for the unnamed thing. Identity is how the found frame lands; the rest
+ * sit on leftover hinges. HUD.think(id) is the only caller.
+ */
+export const THOUGHTS = {
+  identity: 'Who is William? Who is M.?',
+  ring: 'They left in a hurry.',
+  water: 'William was here for the water.',
+  usual: 'Usual. For the compendium.',
+  lip: "Anything else. That's what M. wouldn't say.",
+  exit: 'Not finished. Just gone.',
+};
+
+/**
  * Charcoal scrap in the cold ring. The hinge: usuals as control, a direction
  * out of camp, and why William left the book. Seed-honest about water.
  */

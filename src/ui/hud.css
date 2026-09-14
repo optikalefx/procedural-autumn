@@ -75,6 +75,7 @@
 #pa-hud.pa-hud-off .pa-map,
 #pa-hud.pa-hud-off .pa-hint,
 #pa-hud.pa-hud-off .pa-toast,
+#pa-hud.pa-hud-off .pa-thought,
 #pa-hud.pa-hud-off .pa-trace-whisper,
 #pa-hud.pa-hud-off .pa-chip:not(.pa-gear) {
   opacity: 0;
@@ -572,6 +573,42 @@
   transition: opacity 0.3s var(--ease), transform 0.3s var(--ease);
 }
 .pa-toast.pa-show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ── thought ───────────────────────────────────────────────────────────
+   The player's private voice. Not a toast (top, pill, letter-spaced), not
+   a look prompt (bottom, verb, panel). Handwritten, unboxed, mid-frame,
+   so it reads as something they thought rather than something the game
+   told them. */
+.pa-thought {
+  position: absolute;
+  left: 50%;
+  top: 54%;
+  transform: translate(-50%, 8px) rotate(-0.35deg);
+  max-width: min(22em, 78vw);
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+  font-family: "PA Caveat", "Bradley Hand", cursive;
+  font-size: clamp(1.2em, 1.35vw + 13px, 1.65em);
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  word-spacing: 0.14em;
+  color: rgba(255, 246, 234, 0.9);
+  text-shadow: 0 1px 12px rgba(46, 18, 28, 0.78);
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.85s var(--ease), transform 0.85s var(--ease);
+}
+.pa-thought.pa-show {
+  opacity: 1;
+  transform: translate(-50%, 0) rotate(-0.35deg);
+}
+/* The book is in the way. Fade rather than fight it. */
+#pa-hud.pa-journal .pa-thought { opacity: 0; }
 
 /* A toast that is also a button — on touch it is sometimes the only control
    there is (see HUD.toast). Bigger tap target, and it has to read as pressable

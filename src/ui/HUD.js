@@ -4,7 +4,8 @@
 //  This game has no fail state, no objectives and no resources, so there is
 //  nothing for a HUD to warn you about. What is left is worth having: which way
 //  you are facing, what is out there, how fast you are going, and a good camera
-//  to photograph it with.
+//  to photograph it with. Thought tooltips (`.pa-thought`) are the player's
+//  private voice — not toasts, not look prompts, never a "go here".
 //
 //  Structure: this file owns the root element, input, and the per-frame data
 //  pull; the widgets (compass, dash, settings, photo mode) own their own DOM
@@ -32,6 +33,8 @@ import { Journal } from '../journal/Journal.js';
 import { MiniMap } from './hud_map.js';
 import { hunt } from '../game/hunt_store.js';
 import { touchCapable } from '../core/verbs.js';
+import { FONT_HAND } from '../journal/journal_fonts.js';
+import { THOUGHTS } from '../traces/prior_notes.js';
 
 const STORE = 'pa.hud';
 // How many of each landmark kind are in the world's list of things to find.
@@ -89,6 +92,11 @@ export class HUD extends System {
     this._frame = 0;
     this._pads = [];
     this._hintTimer = 0;
+    this._letterSeen = false;
+    this._pendingUsual = false;
+    this._thoughts = new Set();
+    this._thoughtQueue = [];
+    this._thoughtBusy = false;
 
     try {
       const s = JSON.parse(localStorage.getItem(STORE) ?? 'null');
@@ -152,6 +160,11 @@ export class HUD extends System {
     });
     root.appendChild(this.toastEl);
 
+    this.thoughtEl = el('div', 'pa-thought');
+    this.thoughtEl.setAttribute('aria-live', 'polite');
+    this.thoughtEl.style.fontFamily = `"${FONT_HAND}", "Bradley Hand", cursive`;
+    root.appendChild(this.thoughtEl);
+
     this.traceWhisper = el('div', 'pa-trace-whisper pa-game-only');
     this.traceWhisper.setAttribute('aria-hidden', 'true');
     this._traceWhisper = '';
@@ -191,6 +204,15 @@ export class HUD extends System {
     this.journal.onClose = () => {
       this.root.classList.remove('pa-journal');
       this._dismissEscHint();
+      if (this.journal._holdTitle || Math.round(this.journal._pose?.leaf ?? 1) === 0) {
+        this._letterSeen = true;
+      }
+      const firstLetter = this._letterSeen && !this._thoughts.has('identity');
+      if (firstLetter) this.think('identity', { delay: 0.62 });
+      else if (this._pendingUsual) {
+        this._pendingUsual = false;
+        this.think('usual', { delay: 0.62 });
+      }
     };
     // Ringing a line says so out loud. The toast is deliberately NOT
     // `pa-game-only`, so unlike the compass and the dash it is still on screen
@@ -685,6 +707,7 @@ export class HUD extends System {
   toggleJournal() {
     if (this.journal.active) { this.journal.close(); return; }
     if (this.settings.open) this.settings.setOpen(false);
+    this.hideThought();
     this.root.classList.add('pa-journal');
     this.journal.open();
     this._showEscHint();
@@ -702,9 +725,11 @@ export class HUD extends System {
    * things wants.
    */
   openJournal(award) {
+    this.hideThought();
     this.root.classList.add('pa-journal');
     this.journal.open({ award });
     this._showEscHint();
+    if (award?.id && !award.replace && hunt.isUsual(award.id)) this._pendingUsual = true;
     posthog.capture('journal_opened', { source: 'award', item: award?.id ?? null });
   }
 
@@ -727,6 +752,7 @@ export class HUD extends System {
     this._introSeen = true;
     this._save();
     this.root.classList.add('pa-journal');
+    this._letterSeen = true;
     this.journal.open({ holdTitle: true });
     this._showEscHint();
     posthog.capture('journal_opened', { source: 'intro' });
@@ -741,6 +767,7 @@ export class HUD extends System {
     if (this.journal.active) return;
     if (this.settings.open) this.settings.setOpen(false);
     this.root.classList.add('pa-journal');
+    this._letterSeen = true;
     this.journal.open({ holdTitle: true });
     this._showEscHint();
     posthog.capture('journal_opened', { source: 'found' });
@@ -773,6 +800,66 @@ export class HUD extends System {
     clearTimeout(this._toastT);
     if (sticky) return;
     this._toastT = setTimeout(() => this.hideToast(), 2200);
+  }
+
+  /**
+   * A private thought. Soft, once, never a verb.
+   *
+   * Distinct from `toast` (system line, top pill) and from look prompts
+   * (bottom, "E the cold ring"). Copy lives in `THOUGHTS`. One id fires
+   * once per session; a second call is a no-op. `delay` lets the book
+   * finish putting itself down before the line appears.
+   */
+  think(id, { delay = 0 } = {}) {
+    if (this._thoughts.has(id)) return;
+    const text = THOUGHTS[id];
+    if (!text) return;
+    this._thoughts.add(id);
+    this._thoughtQueue.push({ id, text, delay });
+    this._drainThoughts();
+  }
+
+  _drainThoughts() {
+    if (this._thoughtBusy) return;
+    const next = this._thoughtQueue.shift();
+    if (!next) return;
+    this._thoughtBusy = true;
+    const go = () => {
+      if (this.journal.active || window.__forceCamera) {
+        this._thoughts.delete(next.id);
+        this._thoughtBusy = false;
+        this._drainThoughts();
+        return;
+      }
+      this._paintThought(next.text);
+      this.thoughtEl.classList.add('pa-show');
+      this._thoughtT = setTimeout(() => {
+        this.hideThought();
+        this._thoughtBusy = false;
+        this._drainThoughts();
+      }, 4800);
+    };
+    if (next.delay > 0) this._thoughtWait = setTimeout(go, next.delay * 1000);
+    else go();
+  }
+
+  _paintThought(text) {
+    const el = this.thoughtEl;
+    el.replaceChildren();
+    // Caveat's space glyph is thin in the DOM; keep words apart by hand.
+    // Same trick as the leftover scrap card.
+    for (const w of String(text).split(/\s+/)) {
+      const s = document.createElement('span');
+      s.textContent = w;
+      s.style.marginRight = '0.28em';
+      s.style.display = 'inline-block';
+      el.appendChild(s);
+    }
+  }
+
+  hideThought() {
+    clearTimeout(this._thoughtT);
+    this.thoughtEl?.classList.remove('pa-show');
   }
 
   _setTraceWhisper(label) {
@@ -975,6 +1062,8 @@ export class HUD extends System {
   dispose() {
     window.removeEventListener('keydown', this._onKey);
     clearTimeout(this._toastT);
+    clearTimeout(this._thoughtT);
+    clearTimeout(this._thoughtWait);
     this.map?.dispose();
     this.root?.remove();
   }

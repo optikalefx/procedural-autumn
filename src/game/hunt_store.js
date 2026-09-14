@@ -318,6 +318,16 @@ class HuntStore {
     for (const id of Object.keys(this.data.items)) if (HUNT_ANIMAL_IDS.has(id)) n++;
     return n;
   }
+
+  /**
+   * A wildlife line on The usuals — not the mystery, not a landmark.
+   * The thought tooltip asks this so a deer photo can think "Usual" and
+   * a waterfall cannot.
+   */
+  isUsual(id) {
+    return HUNT_ANIMAL_IDS.has(id) && id !== (HUNT_MYSTERY?.id ?? '');
+  }
+
   /**
    * True when every line is crossed off — the secret included, because by the
    * time there IS a secret it is a line like any other. The journal's one
