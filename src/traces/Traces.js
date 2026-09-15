@@ -5,14 +5,14 @@
 //  valley for M.: usuals first (so a shadow is a shadow), the unnamed
 //  "anything else" later. The player is neither of them — they found
 //  his book. Each leftover is a beat of that job — a fast haul-out, a
-//  dropped bike, a dusk note — not camp dressing. Discover by standing
-//  near them and looking. Split noticing: the burned start camp keeps
-//  its dirt pad (his leftover pitch — not player camp-placement UI).
-//  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
-//  close ice-white notice — a short wall that stands out of the grass,
-//  not a dirt-coloured ribbon on the dirt. A drive-by still does not
-//  see it. After the table note, a pocket compass on
-//  the HUD — his scrap of paper — follows the *next leftover* (paddle/canoe,
+//  dropped bike, a dusk note — not camp dressing. Discover by walking
+//  up and inspecting them — standing in the ring or glancing is not
+//  enough. Split noticing: the burned start camp keeps its dirt pad
+//  (his leftover pitch — not player camp-placement UI). Small crumbs
+//  (paddle, canoe, cairn, tin, rope, note, bike, …) get an ice-white
+//  notice — a wall that stands out of the grass, not a dirt-coloured
+//  ribbon on the dirt. After the table note, a pocket compass on the
+//  HUD — his scrap of paper — follows the *next leftover* (paddle/canoe,
 //  then bike, …) —
 //  never the camp table, journal, ring, or scuff. The valley map no
 //  longer carries that ring; the HUD chip is the source of truth.
@@ -20,10 +20,13 @@
 //  dirt-only: no UI halo on the burned scuff. No pin, compass POI, or `!`.
 //  About one in three crumbs is a short scrap in the same hand as the journal.
 //  At leftover hinges a thought tooltip (HUD.think) can fire once —
-//  private, not a look prompt, never a "go here". First walk into a
-//  beat's soft region fires one extra line so the circle is not empty.
-//  The circle advances only when a leftover of that beat is noticed
-//  (look prompt or click), never by standing in the pad.
+//  private, not a look prompt, never a "go here" — and only after the
+//  player inspects that leftover. Walking into the ring or looking at
+//  the crumb is silence: no thought, no scrap, no seek retarget.
+//  The circle advances only when a leftover of that beat is inspected
+//  (click / read the note), never by standing in the pad or a glance.
+//  After that inspect the HUD scrap chip plays the same arrive-and-dock
+//  it used after William's table note, now pointing at the next leftover.
 //
 //  A folding table at the scuff holds a physical note; clicking the
 //  paper opens the scrap, not a click on the cold ring. The book on
@@ -48,7 +51,7 @@ import { picked, pointing } from '../core/Pointer.js';
 import { pickVerb } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
-import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT, ENTER_THOUGHT } from './prior_notes.js';
+import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT } from './prior_notes.js';
 import { buildTable } from '../camp/camp_table.js';
 import {
   buildColdRing, buildStakeHoles, buildCairn, seatJournal, seatTableNote, placeOnGround,
@@ -69,12 +72,10 @@ const LOOK_FAR_SMALL = 34;
 // already in the region. A drive-by at speed does not get these.
 const LOOK_FAR_NOW = 40;
 const LOOK_FAR_SMALL_NOW = 44;
-// Spawn guard: do not fire an enter thought while still on the scuff.
-const CAMP_LEAVE = 22;
-// Soft neighborhood around the *next leftover* — used for enter thoughts
-// and as the HUD seek target, not drawn on the map. Tens of metres, not a
-// valley pad — camp must not already be standing in it. Clamped down when
-// the crumb sits close so the pad never wraps spawn.
+// Soft neighborhood around the *next leftover* — the HUD seek target,
+// not drawn on the map. Tens of metres, not a valley pad — camp must
+// not already be standing in it. Clamped down when the crumb sits close
+// so the pad never wraps spawn.
 const AREA_R = 80;
 const AREA_R_MIN = 32;
 const AREA_CAMP_GAP = 36;
@@ -108,18 +109,35 @@ const PAIR_AT = { water: 36, ride: 62, lip: 52, exit: 88 };
 
 // Small leftovers only — the start camp does not get a halo.
 const HALO_SKIP = new Set(['start']);
-// Metres from leftover centre to the ribbon midline.
+// Metres from leftover centre to the ribbon midline. ~2× the old pad
+// so the ice wall reads as "this patch" from the approach, not a hoop
+// around the crumb's own mesh.
 const HALO_R = {
-  canoe: 2.5,
-  bike: 2.0,
-  tracks: 2.25,
-  paddle: 1.55,
-  cairn: 1.55,
-  rope: 1.35,
-  'tree-note': 1.25,
-  tin: 1.55,
-  stick: 1.2,
-  'second-night': 2.2,
+  canoe: 5.0,
+  bike: 4.0,
+  tracks: 4.5,
+  paddle: 3.1,
+  cairn: 3.1,
+  rope: 2.7,
+  'tree-note': 2.5,
+  tin: 3.1,
+  stick: 2.4,
+  'second-night': 4.4,
+};
+
+// Metres of clear air from a leftover's origin to a rock *extent*
+// (reachOf + this pad). Cairn taught the lesson: origin-only checks
+// miss 10–20 m lip slabs. Canoe is the large case — a 4.6 m hull
+// needs enough gap that the silhouette reads against dirt, not granite.
+const ROCK_PAD = {
+  canoe: 4.4,
+  paddle: 2.0,
+  bike: 2.4,
+  tracks: 2.2,
+  tin: 1.5,
+  stick: 1.4,
+  'second-night': 2.0,
+  cairn: 5.2,
 };
 
 const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
@@ -178,7 +196,6 @@ export class Traces extends System {
     this._guideBeat = null;
     this._area = null;
     this.noticed = new Set();
-    this._entered = new Set();
   }
 
   async init() {
@@ -348,8 +365,10 @@ export class Traces extends System {
     // Same-beat partners stay on the same feature: canoe off the paddle's
     // bank, bike farther along the tracks' road, note on the way up to the cairn.
     if (kind === 'canoe' && prev.id === 'paddle') {
-      const shore = this._shoreFrom(prev, 26, 48);
+      const shore = this._seatCanoe(prev);
       if (shore && this._free(shore, taken, MIN_SEP - PAIR_MIN)) return { ...prev, ...shore };
+      // Same water visit or nothing — do not haul out on a different lake.
+      return null;
     }
     if (kind === 'bike' && prev.id === 'tracks') {
       const along = this._fartherAlongRoad(prev, heading, taken);
@@ -423,7 +442,7 @@ export class Traces extends System {
 
   _resolvePoint(kind, p, taken, rnd) {
     if (kind === 'canoe') {
-      const shore = this._shoreNear(p);
+      const shore = this._seatCanoe(p);
       if (shore && this._free(shore, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...shore };
       return null;
     }
@@ -439,7 +458,8 @@ export class Traces extends System {
     }
     if (kind === 'bike' || kind === 'tracks') {
       const off = this._offPath(p, rnd);
-      if (this._free(off, taken, MIN_SEP - PAIR_MIN)) return off;
+      const seat = this._nudgeClear(off.x, off.z, rnd, ROCK_PAD[kind]);
+      if (seat && this._free(seat, taken, MIN_SEP - PAIR_MIN)) return { ...off, ...seat };
       return null;
     }
     if (kind === 'cairn') {
@@ -447,27 +467,9 @@ export class Traces extends System {
       if (seat && this._free(seat, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...seat };
       return null;
     }
-    const nudged = this._nudgeClear(p.x, p.z, rnd);
-    if (this._free(nudged, taken)) return { ...p, ...nudged };
+    const nudged = this._nudgeClear(p.x, p.z, rnd, ROCK_PAD[kind] ?? 1.6);
+    if (nudged && this._free(nudged, taken)) return { ...p, ...nudged };
     return null;
-  }
-
-  /** Walk the waterline from a put-in so the canoe is the same visit. */
-  _shoreFrom(from, lo, hi) {
-    const world = this.ctx.world;
-    const yaw = from.yaw ?? 0;
-    for (const a of [yaw, yaw + 1.1, yaw - 1.1, yaw + Math.PI * 0.5]) {
-      for (let d = lo; d <= hi; d += 3) {
-        const x = from.x + Math.sin(a) * d;
-        const z = from.z + Math.cos(a) * d;
-        if (!world.isInBounds(x, z)) continue;
-        const depth = world.getWaterDepth(x, z);
-        if (depth >= 0.03 && depth <= 0.24 && world.getSlope(x, z) < 0.6) {
-          return { x, z, yaw: a };
-        }
-      }
-    }
-    return this._shoreNear(from);
   }
 
   /** Next bend along the same track, farther from camp than the ruts. */
@@ -484,9 +486,10 @@ export class Traces extends System {
         : 2;
       if (dy > 0.85) continue;
       const off = this._offPath(p, () => 0.35);
-      if (!this._free(off, taken, PAIR_MIN)) continue;
+      const seat = this._nudgeClear(off.x, off.z, () => 0.35, ROCK_PAD.bike);
+      if (!seat || !this._free(seat, taken, PAIR_MIN)) continue;
       const s = -dy * 20 - Math.abs(d0 - (dTracks + 70)) * 0.08;
-      if (s > bestS) { bestS = s; best = off; }
+      if (s > bestS) { bestS = s; best = { ...off, ...seat }; }
     }
     return best;
   }
@@ -520,21 +523,118 @@ export class Traces extends System {
     return { ...p, x, z };
   }
 
-  _shoreNear(p) {
-    const world = this.ctx.world;
-    const yaws = [p.yaw ?? 0, (p.yaw ?? 0) + 0.45, (p.yaw ?? 0) - 0.45, (p.yaw ?? 0) + Math.PI];
-    for (const a of yaws) {
-      for (let d = 2; d < 36; d += 1.4) {
-        const x = p.x + Math.sin(a) * d;
-        const z = p.z + Math.cos(a) * d;
-        if (!world.isInBounds(x, z)) continue;
-        const depth = world.getWaterDepth(x, z);
-        if (depth >= 0.03 && depth <= 0.24 && world.getSlope(x, z) < 0.6) {
-          return { x, z, yaw: a };
+  /**
+   * Haul-out seat: dry open bank near the waterline, clear of rock
+   * extents. The canoe is 4.6 m; a waterline first-hit sits it in the
+   * boulder fringe. Walk the shore, then step inland until the hull
+   * reads against dirt. Null means skip — the paddle still carries
+   * the water beat.
+   */
+  _seatCanoe(from) {
+    const seeds = this._shoreSeeds(from);
+    if (!seeds.length) return null;
+    const origin = this.origin;
+    let best = null, bestS = -Infinity;
+    const seen = new Set();
+    for (const seed of seeds) {
+      const inland = this._inlandOf(seed.x, seed.z);
+      const keel = inland + Math.PI * 0.5;
+      for (let d = 2; d <= 15; d += 2.2) {
+        for (const da of [-0.55, 0, 0.55]) {
+          const x = seed.x + Math.sin(inland + da) * d;
+          const z = seed.z + Math.cos(inland + da) * d;
+          const gk = `${(x / 2) | 0},${(z / 2) | 0}`;
+          if (seen.has(gk)) continue;
+          seen.add(gk);
+          const clear = this._canoeClear(x, z);
+          if (!clear) continue;
+          const toward = -Math.hypot(x - origin.x, z - origin.z) * 0.012;
+          const inlandPref = -Math.abs(d - 7) * 0.35;
+          const fromDist = Math.hypot(x - from.x, z - from.z);
+          const pairPref = -Math.abs(fromDist - 36) * 0.18;
+          const s = clear.score + toward + inlandPref + pairPref;
+          if (s > bestS) {
+            bestS = s;
+            best = { x, z, yaw: keel };
+          }
         }
       }
     }
-    return world.getWaterDepth(p.x, p.z) < 0.3 ? { x: p.x, z: p.z, yaw: p.yaw ?? 0 } : null;
+    return best;
+  }
+
+  /** Waterline samples around a put-in — seeds for the inland search. */
+  _shoreSeeds(from) {
+    const world = this.ctx.world;
+    const out = [];
+    const seen = new Set();
+    const add = (x, z, yaw) => {
+      if (!world.isInBounds(x, z)) return;
+      const depth = world.getWaterDepth(x, z);
+      if (depth < 0.02 || depth > 0.40) return;
+      if (world.getSlope(x, z) > 0.75) return;
+      const k = `${(x / 4) | 0},${(z / 4) | 0}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push({ x, z, yaw });
+    };
+    const yaw0 = from.yaw ?? 0;
+    for (const da of [0, 0.7, -0.7, 1.35, -1.35, 2.0, -2.0, Math.PI]) {
+      const a = yaw0 + da;
+      for (let d = 0; d <= 84; d += 4) {
+        add(from.x + Math.sin(a) * d, from.z + Math.cos(a) * d, a);
+      }
+    }
+    if (!out.length && world.getWaterDepth(from.x, from.z) < 0.5) {
+      out.push({ x: from.x, z: from.z, yaw: yaw0 });
+    }
+    if (out.length > 32) {
+      out.sort((a, b) => {
+        const da = (a.x - from.x) ** 2 + (a.z - from.z) ** 2;
+        const db = (b.x - from.x) ** 2 + (b.z - from.z) ** 2;
+        return da - db;
+      });
+      out.length = 32;
+    }
+    return out;
+  }
+
+  /** Direction that dries and rises — off the boulder fringe, onto the bank. */
+  _inlandOf(x, z) {
+    const world = this.ctx.world;
+    let bestA = 0, best = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const hx = x + Math.sin(a) * 8;
+      const hz = z + Math.cos(a) * 8;
+      if (!world.isInBounds(hx, hz)) continue;
+      const dry = -world.getWaterDepth(hx, hz);
+      const up = world.getHeight(hx, hz) - world.getHeight(x, z);
+      const s = dry * 6 + up;
+      if (s > best) { best = s; bestA = a; }
+    }
+    return bestA;
+  }
+
+  _canoeClear(x, z) {
+    const world = this.ctx.world;
+    if (!world.isInBounds(x, z)) return null;
+    if (world.getWaterDepth(x, z) > 0.08) return null;
+    if (world.getSlope(x, z) > 0.48) return null;
+    if (!this._nearWater(x, z, 11)) return null;
+    if (!this._leafClear(x, z)) return null;
+    if (this._rockHitFoot(x, z, ROCK_PAD.canoe, 2.05)) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      const h = world.getHeight(x + Math.sin(a) * 2.4, z + Math.cos(a) * 2.4);
+      lo = Math.min(lo, h); hi = Math.max(hi, h);
+    }
+    const here = world.getHeight(x, z);
+    const rough = hi - lo;
+    if (rough > 1.6) return null;
+    if (hi - here > 1.7) return null;
+    return { score: -world.getSlope(x, z) * 28 - rough * 8 };
   }
 
   _bankNear(p) {
@@ -574,12 +674,16 @@ export class Traces extends System {
         if (world.getSlope(x, z) > 0.5) continue;
         if (!this._nearWater(x, z, 7)) continue;
         if (!this._leafClear(x, z)) continue;
+        if (this._rockHit(x, z, ROCK_PAD.paddle)) continue;
         const toward = Math.cos(toCamp - Math.atan2(x - origin.x, z - origin.z));
         const s = toward * 8 - d * 0.08;
         if (s > bestS) { bestS = s; best = { x, z, yaw: a }; }
       }
     }
-    return best ?? (this._leafClear(seed.x, seed.z) ? seed : null);
+    if (best) return best;
+    if (!this._leafClear(seed.x, seed.z)) return null;
+    if (this._rockHit(seed.x, seed.z, ROCK_PAD.paddle)) return null;
+    return seed;
   }
 
   _nearWater(x, z, maxR) {
@@ -640,6 +744,11 @@ export class Traces extends System {
   _placeKind(kind, p, rnd, scrap) {
     const world = this.ctx.world;
     const yaw = p.yaw ?? rnd() * Math.PI * 2;
+    // Last-chance rock veto. Tree leftovers sit on a trunk, not the dirt.
+    if (kind !== 'tree-note' && kind !== 'rope' && ROCK_PAD[kind] != null) {
+      const extra = kind === 'canoe' ? 2.05 : 0;
+      if (this._rockHitFoot(p.x, p.z, ROCK_PAD[kind], extra)) return false;
+    }
 
     if (kind === 'tree-note') {
       const tree = p.tree;
@@ -758,7 +867,7 @@ export class Traces extends System {
   }
 
   /**
-   * Close-only notice on small leftovers. The start camp is skipped
+   * Notice ring on small leftovers. The start camp is skipped
    * — its dirt pad is the leftover pitch, and that is the cue. Tree-note
    * / rope sit the halo on the ground at the tree, not at the paper.
    */
@@ -766,7 +875,7 @@ export class Traces extends System {
     const world = this.ctx.world;
     for (const c of this.crumbs) {
       if (HALO_SKIP.has(c.id)) continue;
-      const r = HALO_R[c.id] ?? 1.2;
+      const r = HALO_R[c.id] ?? 2.4;
       const g = buildNoticeHalo(world, c.x, c.z, r);
       g.userData.kind = c.id;
       g.userData.beat = c.beat;
@@ -783,19 +892,25 @@ export class Traces extends System {
     })));
   }
 
-  _nudgeClear(x, z, rnd) {
+  _nudgeClear(x, z, rnd, pad = 1.6) {
     const world = this.ctx.world;
-    let bx = x, bz = z, bestWet = Infinity;
-    for (let i = 0; i < 8; i++) {
-      const a = rnd() * Math.PI * 2;
-      const r = 2 + rnd() * 5;
-      const px = x + Math.sin(a) * r, pz = z + Math.cos(a) * r;
-      if (!world.isInBounds(px, pz)) continue;
+    let best = null, bestS = -Infinity;
+    const consider = (px, pz, bonus = 0) => {
+      if (!world.isInBounds(px, pz)) return;
       const wet = world.getWaterDepth(px, pz);
       const sl = world.getSlope(px, pz);
-      if (wet < bestWet && sl < 0.7) { bestWet = wet; bx = px; bz = pz; }
+      if (wet > 0.12 || sl > 0.7) return;
+      if (this._rockHit(px, pz, pad)) return;
+      const s = -wet * 18 - sl * 8 + bonus;
+      if (s > bestS) { bestS = s; best = { x: px, z: pz }; }
+    };
+    consider(x, z, 2.4);
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2 + rnd() * 0.15;
+      const r = 1.8 + (i % 5) * 1.35;
+      consider(x + Math.sin(a) * r, z + Math.cos(a) * r);
     }
-    return { x: bx, z: bz };
+    return best;
   }
 
   /**
@@ -854,7 +969,7 @@ export class Traces extends System {
     const rough = hi - lo;
     if (rough > 1.15) return null;
     if (hi - here > 1.4) return null;
-    if (this._rockHit(x, z, 5.2)) return null;
+    if (this._rockHit(x, z, ROCK_PAD.cairn)) return null;
     return { score: -sl * 40 - rough * 10 };
   }
 
@@ -869,7 +984,10 @@ export class Traces extends System {
     let hit = false;
     if (rocks?.rocksAround) {
       try {
-        const list = rocks.rocksAround(x, z, 24, 0.7, []);
+        // Query far enough that a 20 m slab whose origin is off-pad
+        // still contributes its extent. 24 m missed house-sized lip rock.
+        const qR = Math.max(28, pad + 22);
+        const list = rocks.rocksAround(x, z, qR, 0.7, []);
         for (const inst of list) {
           const reach = (rocks.reachOf?.(inst) ?? inst.size * 0.5) + pad;
           const dx = inst.x - x, dz = inst.z - z;
@@ -879,6 +997,22 @@ export class Traces extends System {
     }
     this._rockMemo.set(key, hit);
     return hit;
+  }
+
+  /**
+   * Origin plus a ring — a 4.6 m hull is not a point. Same extent
+   * lesson as `_rockHit`; the ring catches a slab that only clips a bow.
+   */
+  _rockHitFoot(x, z, pad, radius = 0) {
+    if (this._rockHit(x, z, pad)) return true;
+    if (!(radius > 0)) return false;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      if (this._rockHit(x + Math.sin(a) * radius, z + Math.cos(a) * radius, pad * 0.55)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   _spot(obj, kind, x, y, z, scrap = null, beat = null) {
@@ -898,10 +1032,11 @@ export class Traces extends System {
   }
 
   /**
-   * Fuzzy pad around the current beat's next un-noticed leftover.
+   * Fuzzy pad around the current beat's next un-inspected leftover.
    * Centered on that crumb (paddle/canoe, then bike, …) with a cozy
    * radius — a shore neighborhood, not a pin and not a map-wide AOE.
-   * Camp is never inside it. Advances only in `_notice`.
+   * Camp is never inside it. Advances only in `_notice`, which is
+   * inspect-only.
    */
   _refreshGuidance() {
     const order = (this.beats ?? []).filter((id) => id !== 'camp');
@@ -944,9 +1079,9 @@ export class Traces extends System {
   }
 
   /**
-   * Leftover-only advance. Looking at or clicking a crumb of this beat
+   * Leftover-only advance. Inspecting (click / read) a crumb of this beat
    * marks it noticed and the circle retargets the *next beat's* primary
-   * leftover. Standing inside the region never advances.
+   * leftover. Standing in the ring or a look-prompt glance never advances.
    * Camp is always already-behind. A second call for a past beat is a no-op.
    */
   _notice(beat) {
@@ -963,32 +1098,9 @@ export class Traces extends System {
   }
 
   /**
-   * Once per beat: the player is approaching the next leftover's
-   * neighborhood. The circle is around that crumb, not around camp, so
-   * a circumference-cross is a real arrival. CAMP_LEAVE is only a spawn
-   * guard. Sparse. One thought. Not while the book or a scrap is open.
-   */
-  _tickRegion(px, pz, quiet) {
-    if (quiet) return;
-    const a = this._area;
-    const beat = this._guideBeat;
-    if (!a || !beat || beat === 'camp') return;
-    if (this._entered.has(beat)) return;
-    const dx = px - a.x;
-    const dz = pz - a.z;
-    const reach = a.r * 1.2;
-    if (dx * dx + dz * dz > reach * reach) return;
-    if (Math.hypot(px - this.origin.x, pz - this.origin.z) < CAMP_LEAVE) return;
-    const thought = ENTER_THOUGHT[beat];
-    if (!thought) return;
-    this._entered.add(beat);
-    this.ctx.systems?.hud?.think?.(thought);
-  }
-
-  /**
    * One private thought per leftover hinge. Copy is in THOUGHTS; HUD latches
    * so a second click is silence. Ride has no line — covering ground is
-   * the HUD chip's job.
+   * the HUD chip's job. Never called from a look or a walk-in.
    */
   _thinkBeat(hit) {
     const beat = hit?.beat;
@@ -1035,13 +1147,14 @@ export class Traces extends System {
   }
 
   _act(hit) {
-    this._notice(hit.beat);
     if (hit.kind === 'journal') {
+      this._notice(hit.beat);
       this._ringOpenedBook = true;
       this.ctx.systems?.hud?.openFoundJournal?.();
       return;
     }
     if (hit.kind === 'table-note') {
+      this._notice(hit.beat);
       this._ringRead = true;
       this._refreshGuidance();
       const lines = hit.scrap?.lines?.length ? hit.scrap.lines : ringNote();
@@ -1064,21 +1177,37 @@ export class Traces extends System {
     if (hit.kind === 'ring') {
       // The scrap is the note on the table, not a click on empty air.
       // After reading it, the ring can still open the found book.
+      this._notice(hit.beat);
       if (!this._ringRead) return;
       this._ringOpenedBook = true;
       this.ctx.systems?.hud?.openFoundJournal?.();
       return;
     }
+    // Leftovers: scrap, found-thought, and seek advance only after this
+    // inspect. Standing in the ring or a glance is not enough.
+    const finish = () => this._finishInspect(hit);
     if (hit.scrap?.lines?.length) {
-      this.scrap?.show(hit.scrap.lines, {
-        onHide: () => this._thinkBeat(hit),
-      });
+      this.scrap?.show(hit.scrap.lines, { onHide: finish });
       return;
     }
-    this._thinkBeat(hit);
+    finish();
     // A look, not a pickup. One quiet line; no log, no tick.
     const line = LOOK[hit.kind]?.() ?? '';
     if (line) this.ctx.systems?.hud?.toast?.(line.replace(/<[^>]+>/g, ''));
+  }
+
+  /**
+   * Inspect resolved: mark the beat, fire its leftover thought, and — if
+   * the HUD now has a next crumb — replay the table-note seek intro
+   * toward that leftover.
+   */
+  _finishInspect(hit) {
+    const before = this._guideBeat;
+    this._notice(hit.beat);
+    this._thinkBeat(hit);
+    if (hit.beat !== 'camp' && this._guideBeat !== before) {
+      this.ctx.systems?.hud?.beginSeek?.();
+    }
   }
 
   _pick(rayIn = null) {
@@ -1128,11 +1257,6 @@ export class Traces extends System {
     // noticing cue QA is looking for.
     const overlay = (bookOpen || this.scrap?.open) && !window.__forceCamera;
     this._tickHalos(elapsed, overlay);
-    const veh = this.ctx.systems?.vehicle;
-    const cam = this.ctx.camera;
-    const px = window.__forceCamera ? cam.position.x : (veh?.position?.x ?? cam.position.x);
-    const pz = window.__forceCamera ? cam.position.z : (veh?.position?.z ?? cam.position.z);
-    this._tickRegion(px, pz, bookOpen || !!this.scrap?.open);
 
     if (bookOpen || this.scrap?.open) {
       this.prompt.set('');
@@ -1143,6 +1267,7 @@ export class Traces extends System {
     // While the brake is latched Camp owns the prompt (it calls offer()).
     // Here we cover the other half: parked by the game's own hold, or just
     // looking around before anyone has pressed Space.
+    const veh = this.ctx.systems?.vehicle;
     if (veh?.brakeHold) { this.prompt.set(''); this.pointerClaim = false; return; }
     if (this.ctx.systems?.hud?.photo?.active) { this.prompt.set(''); return; }
     if (!pointing(this.ctx.input)) { this.prompt.set(''); this.pointerClaim = false; return; }
@@ -1150,10 +1275,6 @@ export class Traces extends System {
     const hit = this._pick();
     this.pointerClaim = !!hit;
     if (hit) {
-      // Look-prompt on a leftover of the *current* beat counts as
-      // notice — that's when the circle advances, not standing in
-      // the region. Click still fires the leftover thought.
-      if (hit.beat === this._guideBeat && hit.beat !== 'camp') this._notice(hit.beat);
       this.prompt.set(this._look(hit));
       if (picked(this.ctx.input)) this._act(hit);
     } else {
@@ -1214,7 +1335,6 @@ export class Traces extends System {
     this.clearings = [];
     this._area = null;
     this._guideBeat = null;
-    this._entered.clear();
     this.noticed.clear();
     this._publishClearings();
     if (window.__traces === this) delete window.__traces;
