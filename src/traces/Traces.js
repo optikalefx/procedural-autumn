@@ -9,8 +9,9 @@
 //  near them and looking. Split noticing: the burned start camp keeps
 //  its dirt pad (his leftover pitch — not player camp-placement UI).
 //  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
-//  pretty-faint, pretty-close white-blue ribbon — you have to look, and
-//  a drive-by does not see it. After the table note, a pocket compass on
+//  close ice-white notice — a short wall that stands out of the grass,
+//  not a dirt-coloured ribbon on the dirt. A drive-by still does not
+//  see it. After the table note, a pocket compass on
 //  the HUD — his scrap of paper — follows the *next leftover* (paddle/canoe,
 //  then bike, …) —
 //  never the camp table, journal, ring, or scuff. The valley map no
@@ -757,9 +758,9 @@ export class Traces extends System {
   }
 
   /**
-   * Faint close-only halo on small leftovers. The start camp is skipped
+   * Close-only notice on small leftovers. The start camp is skipped
    * — its dirt pad is the leftover pitch, and that is the cue. Tree-note
-   * / rope sit the ribbon on the ground at the tree, not at the paper.
+   * / rope sit the halo on the ground at the tree, not at the paper.
    */
   _placeHalos() {
     const world = this.ctx.world;
