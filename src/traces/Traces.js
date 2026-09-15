@@ -367,6 +367,8 @@ export class Traces extends System {
     if (kind === 'canoe' && prev.id === 'paddle') {
       const shore = this._seatCanoe(prev);
       if (shore && this._free(shore, taken, MIN_SEP - PAIR_MIN)) return { ...prev, ...shore };
+      // Same water visit or nothing — do not haul out on a different lake.
+      return null;
     }
     if (kind === 'bike' && prev.id === 'tracks') {
       const along = this._fartherAlongRoad(prev, heading, taken);
@@ -548,7 +550,9 @@ export class Traces extends System {
           if (!clear) continue;
           const toward = -Math.hypot(x - origin.x, z - origin.z) * 0.012;
           const inlandPref = -Math.abs(d - 7) * 0.35;
-          const s = clear.score + toward + inlandPref;
+          const fromDist = Math.hypot(x - from.x, z - from.z);
+          const pairPref = -Math.abs(fromDist - 36) * 0.18;
+          const s = clear.score + toward + inlandPref + pairPref;
           if (s > bestS) {
             bestS = s;
             best = { x, z, yaw: keel };
@@ -575,22 +579,22 @@ export class Traces extends System {
       out.push({ x, z, yaw });
     };
     const yaw0 = from.yaw ?? 0;
-    for (const da of [0, 0.95, -0.95, 1.75, -1.75, Math.PI]) {
+    for (const da of [0, 0.7, -0.7, 1.35, -1.35, 2.0, -2.0, Math.PI]) {
       const a = yaw0 + da;
-      for (let d = 0; d <= 48; d += 4) {
+      for (let d = 0; d <= 84; d += 4) {
         add(from.x + Math.sin(a) * d, from.z + Math.cos(a) * d, a);
       }
     }
     if (!out.length && world.getWaterDepth(from.x, from.z) < 0.5) {
       out.push({ x: from.x, z: from.z, yaw: yaw0 });
     }
-    if (out.length > 22) {
+    if (out.length > 32) {
       out.sort((a, b) => {
         const da = (a.x - from.x) ** 2 + (a.z - from.z) ** 2;
         const db = (b.x - from.x) ** 2 + (b.z - from.z) ** 2;
         return da - db;
       });
-      out.length = 22;
+      out.length = 32;
     }
     return out;
   }
