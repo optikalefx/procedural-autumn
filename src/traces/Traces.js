@@ -21,8 +21,8 @@
 //  About one in three crumbs is a short scrap in the same hand as the journal.
 //  At leftover hinges a thought tooltip (HUD.think) can fire once —
 //  private, not a look prompt, never a "go here" — and only after the
-//  player inspects that leftover. First walk into a beat's soft region
-//  fires one extra line so the approach is not empty.
+//  player inspects that leftover. Walking into the ring or looking at
+//  the crumb is silence: no thought, no scrap, no seek retarget.
 //  The circle advances only when a leftover of that beat is inspected
 //  (click / read the note), never by standing in the pad or a glance.
 //  After that inspect the HUD scrap chip plays the same arrive-and-dock
@@ -51,7 +51,7 @@ import { picked, pointing } from '../core/Pointer.js';
 import { pickVerb } from '../core/verbs.js';
 import { FONT_HAND } from '../journal/journal_fonts.js';
 import { SPECIES } from '../vegetation/tree_species.js';
-import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT, ENTER_THOUGHT } from './prior_notes.js';
+import { seedFeatures, pickWeekend, assignScraps, ringNote, BEAT_HINT } from './prior_notes.js';
 import { buildTable } from '../camp/camp_table.js';
 import {
   buildColdRing, buildStakeHoles, buildCairn, seatJournal, seatTableNote, placeOnGround,
@@ -72,12 +72,10 @@ const LOOK_FAR_SMALL = 34;
 // already in the region. A drive-by at speed does not get these.
 const LOOK_FAR_NOW = 40;
 const LOOK_FAR_SMALL_NOW = 44;
-// Spawn guard: do not fire an enter thought while still on the scuff.
-const CAMP_LEAVE = 22;
-// Soft neighborhood around the *next leftover* — used for enter thoughts
-// and as the HUD seek target, not drawn on the map. Tens of metres, not a
-// valley pad — camp must not already be standing in it. Clamped down when
-// the crumb sits close so the pad never wraps spawn.
+// Soft neighborhood around the *next leftover* — the HUD seek target,
+// not drawn on the map. Tens of metres, not a valley pad — camp must
+// not already be standing in it. Clamped down when the crumb sits close
+// so the pad never wraps spawn.
 const AREA_R = 80;
 const AREA_R_MIN = 32;
 const AREA_CAMP_GAP = 36;
@@ -183,7 +181,6 @@ export class Traces extends System {
     this._guideBeat = null;
     this._area = null;
     this.noticed = new Set();
-    this._entered = new Set();
   }
 
   async init() {
@@ -969,32 +966,9 @@ export class Traces extends System {
   }
 
   /**
-   * Once per beat: the player is approaching the next leftover's
-   * neighborhood. The circle is around that crumb, not around camp, so
-   * a circumference-cross is a real arrival. CAMP_LEAVE is only a spawn
-   * guard. Sparse. One thought. Not while the book or a scrap is open.
-   */
-  _tickRegion(px, pz, quiet) {
-    if (quiet) return;
-    const a = this._area;
-    const beat = this._guideBeat;
-    if (!a || !beat || beat === 'camp') return;
-    if (this._entered.has(beat)) return;
-    const dx = px - a.x;
-    const dz = pz - a.z;
-    const reach = a.r * 1.2;
-    if (dx * dx + dz * dz > reach * reach) return;
-    if (Math.hypot(px - this.origin.x, pz - this.origin.z) < CAMP_LEAVE) return;
-    const thought = ENTER_THOUGHT[beat];
-    if (!thought) return;
-    this._entered.add(beat);
-    this.ctx.systems?.hud?.think?.(thought);
-  }
-
-  /**
    * One private thought per leftover hinge. Copy is in THOUGHTS; HUD latches
    * so a second click is silence. Ride has no line — covering ground is
-   * the HUD chip's job.
+   * the HUD chip's job. Never called from a look or a walk-in.
    */
   _thinkBeat(hit) {
     const beat = hit?.beat;
@@ -1151,11 +1125,6 @@ export class Traces extends System {
     // noticing cue QA is looking for.
     const overlay = (bookOpen || this.scrap?.open) && !window.__forceCamera;
     this._tickHalos(elapsed, overlay);
-    const veh = this.ctx.systems?.vehicle;
-    const cam = this.ctx.camera;
-    const px = window.__forceCamera ? cam.position.x : (veh?.position?.x ?? cam.position.x);
-    const pz = window.__forceCamera ? cam.position.z : (veh?.position?.z ?? cam.position.z);
-    this._tickRegion(px, pz, bookOpen || !!this.scrap?.open);
 
     if (bookOpen || this.scrap?.open) {
       this.prompt.set('');
@@ -1166,6 +1135,7 @@ export class Traces extends System {
     // While the brake is latched Camp owns the prompt (it calls offer()).
     // Here we cover the other half: parked by the game's own hold, or just
     // looking around before anyone has pressed Space.
+    const veh = this.ctx.systems?.vehicle;
     if (veh?.brakeHold) { this.prompt.set(''); this.pointerClaim = false; return; }
     if (this.ctx.systems?.hud?.photo?.active) { this.prompt.set(''); return; }
     if (!pointing(this.ctx.input)) { this.prompt.set(''); this.pointerClaim = false; return; }
@@ -1233,7 +1203,6 @@ export class Traces extends System {
     this.clearings = [];
     this._area = null;
     this._guideBeat = null;
-    this._entered.clear();
     this.noticed.clear();
     this._publishClearings();
     if (window.__traces === this) delete window.__traces;
