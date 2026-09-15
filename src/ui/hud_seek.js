@@ -8,10 +8,11 @@
 //
 //  It arrives as a moment in the middle of the view — big, centred, readable
 //  — and then docks onto the heading strip as a peer of the paw and the tent:
-//  same disc, same chrome, same row. Facing the leftover, the tick points up
-//  — same language as the caret. Distance is a whisper under the disc, not a
-//  countdown. The settle has to land on those peer metrics; a leftover rest
-//  pose (bigger, lower, its own z-index) reads as a second HUD.
+//  same disc, same chrome, same row. The same intro plays again after each
+//  leftover inspect, now pointing at the next crumb. Facing the leftover, the
+//  tick points up — same language as the caret. Distance is a whisper under
+//  the disc, not a countdown. The settle has to land on those peer metrics;
+//  a leftover rest pose (bigger, lower, its own z-index) reads as a second HUD.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, ICON, distanceLabel } from './hud_dom.js';
 
@@ -37,18 +38,25 @@ export class SeekCue {
     this._arriveT = 0;
     this.node.addEventListener('animationend', (e) => {
       if (e.animationName !== 'pa-seek-arrive') return;
+      // Restarting the intro removes this class first — ignore a cancelled
+      // run so it cannot dock the replacement mid-flight.
+      if (!this.node.classList.contains('pa-seek-enter')) return;
       this._dock();
     });
   }
 
-  /** Call when the table note is put down. No-ops if already following. */
+  /**
+   * Play the scrap-arrives-then-docks intro. First call is William's
+   * table note; each leftover inspect replays it toward the *next*
+   * crumb. Safe to call while already following.
+   */
   begin() {
-    if (this._armed) return;
     this._armed = true;
     this._docked = false;
     this._ang = NaN;
     this._kind = null;
-    this.node.classList.remove('pa-gone', 'pa-seek-docked', 'pa-seek-retarget');
+    this.node.classList.remove('pa-gone', 'pa-seek-docked', 'pa-seek-retarget', 'pa-seek-enter');
+    void this.node.offsetWidth;
     this.node.classList.add('pa-seek-enter');
     clearTimeout(this._arriveT);
     this._arriveT = setTimeout(() => this._dock(), 1750);

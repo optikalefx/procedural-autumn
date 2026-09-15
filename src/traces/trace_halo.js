@@ -8,37 +8,41 @@
  * an AOI.
  *
  * It has to read in tall autumn grass. A flat ribbon on the dirt is
- * the grass's colour and is gone. The cue is a short ice-white wall
- * that stands above the blades, with a brighter ring at the foot and
- * a few soft shafts — the found-spot silhouette, not a sci-fi pad.
- * Close only: a drive-by still does not see it. No pin, compass POI,
- * `!`, or pulse.
+ * the grass's colour and is gone. The cue is an ice-white wall that
+ * stands above the blades, with a brighter ring at the foot and a few
+ * soft shafts — the found-spot silhouette, not a sci-fi pad. It starts
+ * to read from tens of metres and is full once you have walked in. No
+ * pin, compass POI, `!`, or pulse.
  *
  * Colour is ice-white over a cool blue, not neon cyan. The ground ribbon
  * is additive HDR (ONE, ONE — same as the camp fire) so gold meadow
  * lightens toward ice instead of crushing into a dirt line. The wall is
- * ordinary alpha, FrontSide only — DoubleSide plus a depth-test-off
- * ghost drew the far pane through the leftover and washed it out.
- * Ring ghost still punches the foot ribbon through grass. The middle
- * of the disc stays empty so the crumb stays readable.
+ * ordinary alpha and rim-only (no interior fill). The vis wall is
+ * DoubleSide so a player standing in the hole still sees the silhouette;
+ * the depth-test-off ghost stays FrontSide — a DoubleSide veil drew the
+ * far pane through the leftover and washed it out. Ring ghost still
+ * punches the foot ribbon through grass. The middle of the disc stays
+ * empty so the crumb stays readable.
  */
 import * as THREE from 'three';
 
 const SEGS = 64;
-const RIBBON = 0.20;
+const RIBBON = 0.32;
 const LIFT = 0.05;
 /** Shafts clear meadow grass; the body stays a foot-ring via falloff. */
-const WALL_H = 1.05;
-const MOTES = 12;
+const WALL_H = 2.1;
+const MOTES = 16;
 /** Blue-heavy ice. Additive ring on gold dirt peaches unless B outruns R;
  *  the wall itself is ordinary alpha, so this can stay a soft camp ice. */
 const ICE = new THREE.Color(0x7eb8d6);
 const HOT = new THREE.Color(0xe4f3ff);
 
-/** Full notice once the player is this close. */
-export const HALO_NEAR = 8;
-/** Start fading in. A drive-by past this does not see it. */
-export const HALO_FAR = 16;
+/** Full notice once the player is this close. ~3× the old 8 m. */
+export const HALO_NEAR = 24;
+/** Start fading in. ~3× the old 16 m. */
+export const HALO_FAR = 48;
+/** Extra reach on the leftover the HUD is currently seeking. */
+const HALO_NOW_EXTRA = 21;
 
 const ADD = {
   blending: THREE.CustomBlending,
@@ -104,8 +108,7 @@ const WALL_FRAG = /* glsl */`
   varying float vRim;
   void main() {
     // Circumference only. Face-on near/far walls would sit on the
-    // leftover; FrontSide already drops the far pane, and a hard rim
-    // drops the near pane. Shafts live on the same rim.
+    // leftover; a hard rim drops both panes. Shafts live on the same rim.
     float rim = pow(clamp(vRim, 0.0, 1.0), 6.8);
     float foot = pow(1.0 - vH, 2.6) * rim;
     float wall = rim * mix(0.10, 1.0, pow(1.0 - vH, 0.40));
@@ -182,13 +185,16 @@ export function buildNoticeHalo(world, x, z, radius) {
   const wallVis = _addMat(WALL_VERT, WALL_FRAG, {
     uColor, uHot, uCamX, uCamZ, uOpacity: { value: 0 },
   }, {
-    side: THREE.FrontSide,
+    // Rim-only on both sides so a player standing in the hole still
+    // sees the silhouette. A filled DoubleSide wall washed the crumb.
+    side: THREE.DoubleSide,
     blending: THREE.NormalBlending,
     transparent: true,
   });
-  // FrontSide + the same rim discard — through-grass silhouette only.
-  // DoubleSide ghost was the far pane sitting on the leftover.
+  // Ghost stays FrontSide + depth-off — a DoubleSide veil was the far
+  // pane sitting on the leftover.
   const wallHid = _ghost(wallVis);
+  wallHid.side = THREE.FrontSide;
   const moteVis = _addMat(MOTE_VERT, MOTE_FRAG, {
     uColor, uHot, uTime, uHeight: { value: WALL_H * 0.92 }, uOpacity: { value: 0 },
   });
@@ -237,17 +243,17 @@ export function buildNoticeHalo(world, x, z, radius) {
 export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1, cam = null) {
   const n = group.userData.notice;
   if (!n) return 0;
-  const far = HALO_FAR + (gain > 1 ? 7 : 0);
+  const far = HALO_FAR + (gain > 1 ? HALO_NOW_EXTRA : 0);
   const near = 1 - THREE.MathUtils.smoothstep(dist, HALO_NEAR, far);
   // A 9 s breathe, 5 % of peak — not a pulse.
   const breath = 0.95 + 0.05 * (0.5 + 0.5 * Math.sin((elapsed ?? 0) * Math.PI * 2 / 9));
   const a = near * onScreen * breath;
   const hot = gain > 1 ? 1.12 : 1;
-  n.vis.uniforms.uOpacity.value = a * 0.62 * hot;
-  n.hid.uniforms.uOpacity.value = a * 0.16 * hot;
-  n.wallVis.uniforms.uOpacity.value = a * 0.50 * hot;
-  n.wallHid.uniforms.uOpacity.value = a * 0.10 * hot;
-  n.moteVis.uniforms.uOpacity.value = a * 0.22 * hot;
+  n.vis.uniforms.uOpacity.value = a * 0.82 * hot;
+  n.hid.uniforms.uOpacity.value = a * 0.22 * hot;
+  n.wallVis.uniforms.uOpacity.value = a * 0.72 * hot;
+  n.wallHid.uniforms.uOpacity.value = a * 0.14 * hot;
+  n.moteVis.uniforms.uOpacity.value = a * 0.32 * hot;
   n.uTime.value = elapsed ?? 0;
   if (cam) {
     n.uCamX.value = cam.x;

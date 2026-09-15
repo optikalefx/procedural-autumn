@@ -5,14 +5,14 @@
 //  valley for M.: usuals first (so a shadow is a shadow), the unnamed
 //  "anything else" later. The player is neither of them — they found
 //  his book. Each leftover is a beat of that job — a fast haul-out, a
-//  dropped bike, a dusk note — not camp dressing. Discover by standing
-//  near them and looking. Split noticing: the burned start camp keeps
-//  its dirt pad (his leftover pitch — not player camp-placement UI).
-//  Small crumbs (paddle, canoe, cairn, tin, rope, note, bike, …) get a
-//  close ice-white notice — a short wall that stands out of the grass,
-//  not a dirt-coloured ribbon on the dirt. A drive-by still does not
-//  see it. After the table note, a pocket compass on
-//  the HUD — his scrap of paper — follows the *next leftover* (paddle/canoe,
+//  dropped bike, a dusk note — not camp dressing. Discover by walking
+//  up and inspecting them — standing in the ring or glancing is not
+//  enough. Split noticing: the burned start camp keeps its dirt pad
+//  (his leftover pitch — not player camp-placement UI). Small crumbs
+//  (paddle, canoe, cairn, tin, rope, note, bike, …) get an ice-white
+//  notice — a wall that stands out of the grass, not a dirt-coloured
+//  ribbon on the dirt. After the table note, a pocket compass on the
+//  HUD — his scrap of paper — follows the *next leftover* (paddle/canoe,
 //  then bike, …) —
 //  never the camp table, journal, ring, or scuff. The valley map no
 //  longer carries that ring; the HUD chip is the source of truth.
@@ -20,10 +20,13 @@
 //  dirt-only: no UI halo on the burned scuff. No pin, compass POI, or `!`.
 //  About one in three crumbs is a short scrap in the same hand as the journal.
 //  At leftover hinges a thought tooltip (HUD.think) can fire once —
-//  private, not a look prompt, never a "go here". First walk into a
-//  beat's soft region fires one extra line so the circle is not empty.
-//  The circle advances only when a leftover of that beat is noticed
-//  (look prompt or click), never by standing in the pad.
+//  private, not a look prompt, never a "go here" — and only after the
+//  player inspects that leftover. First walk into a beat's soft region
+//  fires one extra line so the approach is not empty.
+//  The circle advances only when a leftover of that beat is inspected
+//  (click / read the note), never by standing in the pad or a glance.
+//  After that inspect the HUD scrap chip plays the same arrive-and-dock
+//  it used after William's table note, now pointing at the next leftover.
 //
 //  A folding table at the scuff holds a physical note; clicking the
 //  paper opens the scrap, not a click on the cold ring. The book on
@@ -108,18 +111,20 @@ const PAIR_AT = { water: 36, ride: 62, lip: 52, exit: 88 };
 
 // Small leftovers only — the start camp does not get a halo.
 const HALO_SKIP = new Set(['start']);
-// Metres from leftover centre to the ribbon midline.
+// Metres from leftover centre to the ribbon midline. ~2× the old pad
+// so the ice wall reads as "this patch" from the approach, not a hoop
+// around the crumb's own mesh.
 const HALO_R = {
-  canoe: 2.5,
-  bike: 2.0,
-  tracks: 2.25,
-  paddle: 1.55,
-  cairn: 1.55,
-  rope: 1.35,
-  'tree-note': 1.25,
-  tin: 1.55,
-  stick: 1.2,
-  'second-night': 2.2,
+  canoe: 5.0,
+  bike: 4.0,
+  tracks: 4.5,
+  paddle: 3.1,
+  cairn: 3.1,
+  rope: 2.7,
+  'tree-note': 2.5,
+  tin: 3.1,
+  stick: 2.4,
+  'second-night': 4.4,
 };
 
 const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
@@ -758,7 +763,7 @@ export class Traces extends System {
   }
 
   /**
-   * Close-only notice on small leftovers. The start camp is skipped
+   * Notice ring on small leftovers. The start camp is skipped
    * — its dirt pad is the leftover pitch, and that is the cue. Tree-note
    * / rope sit the halo on the ground at the tree, not at the paper.
    */
@@ -766,7 +771,7 @@ export class Traces extends System {
     const world = this.ctx.world;
     for (const c of this.crumbs) {
       if (HALO_SKIP.has(c.id)) continue;
-      const r = HALO_R[c.id] ?? 1.2;
+      const r = HALO_R[c.id] ?? 2.4;
       const g = buildNoticeHalo(world, c.x, c.z, r);
       g.userData.kind = c.id;
       g.userData.beat = c.beat;
@@ -898,10 +903,11 @@ export class Traces extends System {
   }
 
   /**
-   * Fuzzy pad around the current beat's next un-noticed leftover.
+   * Fuzzy pad around the current beat's next un-inspected leftover.
    * Centered on that crumb (paddle/canoe, then bike, …) with a cozy
    * radius — a shore neighborhood, not a pin and not a map-wide AOE.
-   * Camp is never inside it. Advances only in `_notice`.
+   * Camp is never inside it. Advances only in `_notice`, which is
+   * inspect-only.
    */
   _refreshGuidance() {
     const order = (this.beats ?? []).filter((id) => id !== 'camp');
@@ -944,9 +950,9 @@ export class Traces extends System {
   }
 
   /**
-   * Leftover-only advance. Looking at or clicking a crumb of this beat
+   * Leftover-only advance. Inspecting (click / read) a crumb of this beat
    * marks it noticed and the circle retargets the *next beat's* primary
-   * leftover. Standing inside the region never advances.
+   * leftover. Standing in the ring or a look-prompt glance never advances.
    * Camp is always already-behind. A second call for a past beat is a no-op.
    */
   _notice(beat) {
@@ -1035,13 +1041,14 @@ export class Traces extends System {
   }
 
   _act(hit) {
-    this._notice(hit.beat);
     if (hit.kind === 'journal') {
+      this._notice(hit.beat);
       this._ringOpenedBook = true;
       this.ctx.systems?.hud?.openFoundJournal?.();
       return;
     }
     if (hit.kind === 'table-note') {
+      this._notice(hit.beat);
       this._ringRead = true;
       this._refreshGuidance();
       const lines = hit.scrap?.lines?.length ? hit.scrap.lines : ringNote();
@@ -1064,21 +1071,37 @@ export class Traces extends System {
     if (hit.kind === 'ring') {
       // The scrap is the note on the table, not a click on empty air.
       // After reading it, the ring can still open the found book.
+      this._notice(hit.beat);
       if (!this._ringRead) return;
       this._ringOpenedBook = true;
       this.ctx.systems?.hud?.openFoundJournal?.();
       return;
     }
+    // Leftovers: scrap, found-thought, and seek advance only after this
+    // inspect. Standing in the ring or a glance is not enough.
+    const finish = () => this._finishInspect(hit);
     if (hit.scrap?.lines?.length) {
-      this.scrap?.show(hit.scrap.lines, {
-        onHide: () => this._thinkBeat(hit),
-      });
+      this.scrap?.show(hit.scrap.lines, { onHide: finish });
       return;
     }
-    this._thinkBeat(hit);
+    finish();
     // A look, not a pickup. One quiet line; no log, no tick.
     const line = LOOK[hit.kind]?.() ?? '';
     if (line) this.ctx.systems?.hud?.toast?.(line.replace(/<[^>]+>/g, ''));
+  }
+
+  /**
+   * Inspect resolved: mark the beat, fire its leftover thought, and — if
+   * the HUD now has a next crumb — replay the table-note seek intro
+   * toward that leftover.
+   */
+  _finishInspect(hit) {
+    const before = this._guideBeat;
+    this._notice(hit.beat);
+    this._thinkBeat(hit);
+    if (hit.beat !== 'camp' && this._guideBeat !== before) {
+      this.ctx.systems?.hud?.beginSeek?.();
+    }
   }
 
   _pick(rayIn = null) {
@@ -1150,10 +1173,6 @@ export class Traces extends System {
     const hit = this._pick();
     this.pointerClaim = !!hit;
     if (hit) {
-      // Look-prompt on a leftover of the *current* beat counts as
-      // notice — that's when the circle advances, not standing in
-      // the region. Click still fires the leftover thought.
-      if (hit.beat === this._guideBeat && hit.beat !== 'camp') this._notice(hit.beat);
       this.prompt.set(this._look(hit));
       if (picked(this.ctx.input)) this._act(hit);
     } else {
