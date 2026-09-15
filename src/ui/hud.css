@@ -75,6 +75,8 @@
 #pa-hud.pa-hud-off .pa-map,
 #pa-hud.pa-hud-off .pa-hint,
 #pa-hud.pa-hud-off .pa-toast,
+#pa-hud.pa-hud-off .pa-trace-whisper,
+#pa-hud.pa-hud-off .pa-seek,
 #pa-hud.pa-hud-off .pa-chip:not(.pa-gear) {
   opacity: 0;
   /* Hidden, not merely transparent: an invisible mute chip that still takes
@@ -236,6 +238,125 @@
   filter: drop-shadow(0 1px 4px rgba(46, 18, 28, 0.6));
 }
 
+/* Leftover seek — William's scrap of paper, one leftover at a time.
+   Arrives big in the middle of the view after the table note, then
+   docks onto the compass strip as a peer of the paw and the tent:
+   same disc, same chrome, same row. The rest pose is `.pa-poi`
+   (1.55em at compass top + 2.35em). Not a map ring, not a new POI. */
+.pa-seek {
+  position: absolute;
+  left: 50%;
+  top: calc(2.1vh + 2.35em);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15em;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-50%);
+}
+.pa-seek.pa-gone { opacity: 0; }
+.pa-seek-disc {
+  position: relative;
+  width: 1.55em;
+  height: 1.55em;
+  border-radius: 50%;
+  background: rgba(43, 28, 51, 0.62);
+  border: 1px solid rgba(255, 246, 234, 0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 4px 14px rgba(46, 18, 28, 0.35);
+  display: grid;
+  place-items: center;
+}
+.pa-seek-needle {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+.pa-seek-needle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0.12em;
+  width: 0;
+  height: 0;
+  border-left: 0.22em solid transparent;
+  border-right: 0.22em solid transparent;
+  border-bottom: 0.34em solid #fff6ea;
+  transform: translateX(-50%);
+  filter: drop-shadow(0 1px 3px rgba(46, 18, 28, 0.7));
+}
+.pa-seek-glyph {
+  position: relative;
+  z-index: 1;
+  width: 0.85em;
+  height: 0.85em;
+  color: var(--ink);
+  opacity: 0.94;
+}
+.pa-seek-glyph svg { width: 100%; height: 100%; display: block; }
+.pa-seek-dist {
+  font-size: 0.54em;
+  letter-spacing: 0.13em;
+  font-weight: 600;
+  color: var(--ink-dim);
+  text-shadow: 0 1px 5px rgba(46, 18, 28, 0.9), 0 0 2px rgba(46, 18, 28, 0.8);
+  white-space: nowrap;
+  min-height: 1em;
+}
+.pa-seek-near .pa-seek-disc {
+  border-color: var(--amber);
+  background: rgba(240, 173, 70, 0.26);
+}
+.pa-seek-near .pa-seek-dist { color: var(--ink); }
+
+@keyframes pa-seek-arrive {
+  0% {
+    opacity: 0;
+    top: 58%;
+    transform: translate(-50%, -50%) scale(1.35);
+    z-index: 6;
+  }
+  16% {
+    opacity: 1;
+    top: 58%;
+    transform: translate(-50%, -50%) scale(2.35);
+    z-index: 6;
+  }
+  38% {
+    opacity: 1;
+    top: 58%;
+    transform: translate(-50%, -50%) scale(2.15);
+    z-index: 6;
+  }
+  100% {
+    opacity: 1;
+    top: calc(2.1vh + 2.35em);
+    transform: translateX(-50%) scale(1);
+    z-index: 1;
+  }
+}
+.pa-seek-enter {
+  animation: pa-seek-arrive 1.7s var(--ease) forwards;
+}
+.pa-seek-enter .pa-seek-dist { opacity: 0; }
+.pa-seek-docked {
+  opacity: 1;
+  top: calc(2.1vh + 2.35em);
+  transform: translateX(-50%) scale(1);
+  z-index: 1;
+}
+@keyframes pa-seek-nudge {
+  0% { transform: translateX(-50%) scale(1); }
+  40% { transform: translateX(-50%) scale(1.08); }
+  100% { transform: translateX(-50%) scale(1); }
+}
+.pa-seek-docked.pa-seek-retarget {
+  animation: pa-seek-nudge 0.55s var(--ease);
+}
+
 /* ── dash ─────────────────────────────────────────────────────────────────
    Bottom left, out of the way of both the camper (centre) and the compass. */
 .pa-dash {
@@ -388,6 +509,84 @@
   image-rendering: auto;
 }
 
+/* Clip leftover region circles to the raster. Marker and whisper live here
+   too, so their coordinates match canvas CSS pixels (no panel-padding offset). */
+.pa-map-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 13px;
+  overflow: hidden;
+}
+
+/* Soft current-beat region. Cream dashes with a plum understroke so the
+   ring reads on both gold summits and plum hollows — a neighborhood
+   around the next leftover, not a leftover pin and not a valley AOE. */
+.pa-map-area {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 1;
+  transition: opacity 0.6s var(--ease);
+}
+.pa-map-area.pa-gone { opacity: 0; }
+.pa-map-area svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.pa-map-area-wash {
+  fill: rgba(255, 246, 234, 0.14);
+  stroke: none;
+}
+.pa-map-area-ink,
+.pa-map-area-cream {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* Same dash/gap in viewBox units so the rhythm holds at any region size.
+     non-scaling-stroke keeps the weight in screen pixels so a small circle
+     does not go hairline. */
+  stroke-dasharray: 6.4 5.2;
+  vector-effect: non-scaling-stroke;
+}
+.pa-map-area-ink {
+  stroke: rgba(46, 18, 28, 0.78);
+  stroke-width: 4.6px;
+}
+.pa-map-area-cream {
+  stroke: rgba(255, 246, 234, 0.94);
+  stroke-width: 2.7px;
+}
+
+.pa-map-whisper {
+  position: absolute;
+  left: 50%;
+  bottom: 0.42em;
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: 92%;
+  font-size: 0.62em;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  color: var(--ink);
+  opacity: 0.92;
+  text-shadow: 0 1px 4px rgba(46, 18, 28, 0.92), 0 0 3px rgba(46, 18, 28, 0.8);
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pa-map-guided .pa-map-whisper {
+  font-size: 0.58em;
+  letter-spacing: 0.04em;
+  opacity: 0.96;
+}
+
 /* Debug warp — double-click the map to move the camper there. The panel
    inherits the HUD root's `pointer-events: none`; this turns it back on for the
    whole frame, so the raster, its border and the N all answer the gesture. No
@@ -414,13 +613,14 @@
 /* The player. Positioned entirely by transform — see the note in hud_map.js. */
 .pa-map-me {
   position: absolute;
-  top: 0.34em;
-  left: 0.34em;
+  top: 0;
+  left: 0;
   width: 1.05em;
   height: 1.05em;
   will-change: transform;
   filter: drop-shadow(0 1px 3px rgba(46, 18, 28, 0.75));
   pointer-events: none;
+  z-index: 2;
 }
 .pa-map-me svg { width: 100%; height: 100%; display: block; }
 
@@ -525,6 +725,50 @@
 }
 .pa-toast.pa-show { opacity: 1; transform: translate(-50%, 0); }
 
+/* ── thought ───────────────────────────────────────────────────────────
+   The player's private voice. Not a toast (top, pill, letter-spaced), not
+   a look prompt (bottom, verb, panel). Handwritten, unboxed, mid-frame,
+   so it reads as something they thought rather than something the game
+   told them. */
+.pa-thought {
+  /* Lives on document.body, not #pa-hud: journal / hud-off / capture-hidden
+     rules on the HUD root must not be able to swallow a private thought. */
+  position: fixed;
+  z-index: 41;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, 8px) rotate(-0.35deg);
+  max-width: min(24em, 78vw);
+  padding: 0.15em 0.4em;
+  background: none;
+  border: none;
+  box-shadow: none;
+  font-family: "PA Caveat", "Bradley Hand", cursive;
+  font-size: clamp(1.4em, 1.6vw + 14px, 1.95em);
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  word-spacing: 0.18em;
+  color: #fff6ea;
+  text-shadow:
+    0 0 6px rgba(43, 28, 51, 0.95),
+    0 0 16px rgba(43, 28, 51, 0.85),
+    0 1px 2px rgba(20, 12, 18, 1);
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  /* Opacity snaps — a starved frame loop must not leave a thought at 0
+     while its 0.85 s fade waits for a frame that is not coming. Transform
+     still eases when the loop is alive. */
+  transition: transform 0.85s var(--ease);
+}
+.pa-thought.pa-show {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0) rotate(-0.35deg);
+}
+
 /* A toast that is also a button — on touch it is sometimes the only control
    there is (see HUD.toast). Bigger tap target, and it has to read as pressable
    rather than as another line of narration. */
@@ -536,6 +780,34 @@
   -webkit-tap-highlight-color: transparent;
 }
 .pa-toast-action:active { transform: translate(-50%, 0) scale(0.96); }
+
+/* Soft next-area whisper — same text as the map caption, for when the map
+   is off or the player is not looking at the corner. Not a quest log. */
+.pa-trace-whisper {
+  position: absolute;
+  right: 2.2vw;
+  bottom: calc(2.6vh + 11.4em + 0.55em);
+  font-size: 0.68em;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  text-shadow: 0 1px 5px rgba(46, 18, 28, 0.85);
+  pointer-events: none;
+  opacity: 0;
+  max-width: 16em;
+  text-align: right;
+  transition: opacity 0.8s var(--ease);
+}
+.pa-trace-whisper.pa-show { opacity: 1; }
+@media (max-height: 620px), (max-width: 780px) {
+  .pa-trace-whisper {
+    right: auto;
+    left: 50%;
+    bottom: 11vh;
+    transform: translateX(-50%);
+    text-align: center;
+  }
+}
 
 /* ── panels (settings / photo rail) ──────────────────────────────────── */
 .pa-sheet {

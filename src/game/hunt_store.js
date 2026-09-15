@@ -97,6 +97,15 @@ const STORE = 'pa.hunt';
 const VERSION = 1;
 
 /**
+ * William's first print. He got a white-tailed deer before he left, so a
+ * found book is never "none of twenty-two" with an empty deer slot. Awarded
+ * only when the sheet has no deer yet — a player's own print is never
+ * overwritten. File URL, not a data URL: `award` decodes it the same way it
+ * does any other photograph.
+ */
+const WILLIAM_DEER = '/journal/william-deer.jpg';
+
+/**
  * Longest edge of a stored photograph, in pixels.
  *
  * 1024, up from 512, because the journal can now be leaned in on a single entry
@@ -202,6 +211,18 @@ class HuntStore {
     this._subs = new Set();
     this._warned = null;
     this._load();
+    this._seedWilliamDeer();
+  }
+
+  /**
+   * Cross off the deer and tape William's print beside it, once, on a sheet
+   * that does not already have one. Skipped in node (no `Image`) so harnesses
+   * that import the store still see an empty sheet until they award.
+   */
+  _seedWilliamDeer() {
+    if (typeof Image === 'undefined') return;
+    if (this.data.items.deer) return;
+    this.award('deer', WILLIAM_DEER);
   }
 
   _load() {
@@ -318,6 +339,15 @@ class HuntStore {
     for (const id of Object.keys(this.data.items)) if (HUNT_ANIMAL_IDS.has(id)) n++;
     return n;
   }
+
+  /**
+   * A wildlife line on the Compendium — not the mystery, not a landmark.
+   * Usual awards are silent on the shutter; leftover hinges own the thoughts.
+   */
+  isUsual(id) {
+    return HUNT_ANIMAL_IDS.has(id) && id !== (HUNT_MYSTERY?.id ?? '');
+  }
+
   /**
    * True when every line is crossed off — the secret included, because by the
    * time there IS a secret it is a line like any other. The journal's one

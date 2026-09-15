@@ -67,6 +67,15 @@ export const ICON = {
   camera: S('<path d="M3 8.5A1.5 1.5 0 0 1 4.5 7h2.2l1.4-2h7.8l1.4 2h2.2A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.4"/>'),
   sound: S('<path d="M4 9.5h3.2L12 5.5v13L7.2 14.5H4z"/><path d="M15.6 9.4a4 4 0 0 1 0 5.2"/><path d="M18.2 7a7.6 7.6 0 0 1 0 10"/>'),
   muted: S('<path d="M4 9.5h3.2L12 5.5v13L7.2 14.5H4z"/><path d="M16.5 10l4 4M20.5 10l-4 4"/>'),
+  // William's scrap — leftover-following, not a landmark pin.
+  // Filled so the folded corner and two lines of writing survive at ~16 px
+  // the way the paw does; a stroked outline at this size is a cream smudge.
+  seek: S('<g fill="currentColor" stroke="none" transform="rotate(-8 12 12)">' +
+    '<path fill-rule="evenodd" d="' +
+      'M6.9 5.1h6.9l4.3 4.3v9.5A1.55 1.55 0 0 1 16.55 20.5H6.9A1.55 1.55 0 0 1 5.35 18.95V6.65A1.55 1.55 0 0 1 6.9 5.1z' +
+      'M8.35 12.2h7.05v0.9H8.35z' +
+      'M8.35 15.25h5.2v0.9H8.35z"/>' +
+    '</g>'),
 };
 
 /** Metres → the way a person would say it. */

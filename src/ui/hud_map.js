@@ -6,16 +6,19 @@
 //  *direction*, not for tactics, and it decides every question this file had to
 //  answer:
 //
-//   · **Whole world, always.** 3072 m fits in 165 px at 19 m per pixel. A
+//   · **Whole world, by default.** 3072 m fits in 165 px at 19 m per pixel. A
 //     scrolling window would answer "what is near me", which is what the
 //     windscreen is for; a fixed frame answers "where is the lake" and lets the
-//     player learn the shape of the valley over a session.
+//     player learn the shape of the valley over a session. Leftover-search
+//     used to zoom-to-fit a dashed neighborhood here. That ring kept failing
+//     in play, so SeekCue on the HUD is the cue now and this map stays the
+//     whole valley.
 //   · **North up, never rotating.** A map that spins under a moving arrow is
 //     unreadable at this size and gives you nothing to remember. The arrow
 //     rotates instead — one moving thing, not two.
 //   · **Contours, hillshade and a hypsometric tint, and nothing else.** No
-//     icons, no labels, no legend. Contour spacing *is* the information: wide
-//     bands are drivable ground, tight bands are a wall.
+//     icons, no labels, no leftover ring, no legend. Contour spacing *is* the
+//     information: wide bands are drivable ground, tight bands are a wall.
 //
 //  "Not much detail" is a specification, not a disclaimer, and it is why the
 //  height field is blurred before anything is drawn from it. The raw field
@@ -25,9 +28,10 @@
 //
 //  Cost. The map is a static picture of a static world, so it is rasterised
 //  once into an offscreen canvas during the loading screen and blitted into the
-//  visible canvas only when the element resizes. The per-frame cost of this
-//  whole file is one `transform` string on the marker, which never touches
-//  layout. Nothing here samples the heightfield while the game is running.
+//  visible canvas on resize. Leftover-search no longer re-frames this crop. The
+//  per-frame cost is still one `transform` string on the marker except on those
+//  quantized view changes. Nothing here samples the heightfield while the game
+//  is running.
 //
 //  `sampleWorld` and `paintMap` are pure and DOM-free on purpose: that is what
 //  lets `tools/_scratch/mapbake.mjs` render this exact raster from a `.pab`
@@ -153,6 +157,16 @@ const SIT_BACK = 0.15;
 const SCRIM = [43, 28, 51];
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** Beat hint plus a rounded range, so "out toward the water" cannot mean camp. */
+export function guideWhisper(area, x, z) {
+  if (!area) return '';
+  const base = area.label ?? '';
+  if (!base) return '';
+  const d = Math.hypot(x - area.x, z - area.z);
+  const metres = Math.max(10, Math.round(d / 10) * 10);
+  return metres > 30 ? `${base} · ${metres}m` : base;
+}
 
 function rampAt(t) {
   t = clamp01(t);
@@ -477,7 +491,23 @@ export class MiniMap {
     this.node.setAttribute('aria-hidden', 'true');
 
     this.canvas = el('canvas', 'pa-map-canvas');
-    this.node.appendChild(this.canvas);
+    this.stage = el('div', 'pa-map-stage');
+    this.stage.appendChild(this.canvas);
+
+    // Soft current-beat region. SVG dashes (cream over plum) rather than a
+    // CSS border: `border: dashed` on a circle is four faint arcs, which is
+    // why the first pass vanished into the topo. Still a region, not a pin.
+    // Hidden until Traces has a beat to point at.
+    this.area = el('div', 'pa-map-area pa-gone',
+      '<svg viewBox="0 0 100 100" aria-hidden="true">'
+      + '<circle class="pa-map-area-wash" cx="50" cy="50" r="45.5"/>'
+      + '<circle class="pa-map-area-ink" cx="50" cy="50" r="45.5"/>'
+      + '<circle class="pa-map-area-cream" cx="50" cy="50" r="45.5"/>'
+      + '</svg>');
+    this.area.setAttribute('aria-hidden', 'true');
+    this.stage.appendChild(this.area);
+
+    this.node.appendChild(this.stage);
     this.node.appendChild(el('div', 'pa-map-north', 'N'));
 
     // The player. A stubby arrowhead rather than a dot with a stick: at 14 px a
@@ -487,7 +517,10 @@ export class MiniMap {
       '<svg viewBox="0 0 24 24" aria-hidden="true">' +
       '<path d="M12 2.6 L19.4 20.2 L12 15.7 L4.6 20.2 Z" ' +
       'fill="#e8622a" stroke="#fff6ea" stroke-width="1.9" stroke-linejoin="round"/></svg>');
-    this.node.appendChild(this.marker);
+    this.stage.appendChild(this.marker);
+
+    this.caption = el('div', 'pa-map-whisper');
+    this.stage.appendChild(this.caption);
 
     if (this.onPick) this._bindPick();
 
@@ -495,6 +528,10 @@ export class MiniMap {
 
     this._size = 0;
     this._mx = this._my = this._mb = NaN;
+    this._ax = this._ay = this._ar = this._ad = NaN;
+    this._alabel = '';
+    this._view = null;
+    this._viewKey = '';
     this.off = null;
     this._bakeN = 0;
     this._hasWorld = !!(this.world?.height && this.world?.water);
@@ -543,8 +580,11 @@ export class MiniMap {
     if (!r.width || !r.height) return null;
     const u = clamp01((clientX - r.left) / r.width);
     const v = clamp01((clientY - r.top) / r.height);
-    const half = w.worldSize / 2;
-    return { x: u * w.worldSize - half, z: v * w.worldSize - half };
+    const view = this._view ?? { cx: 0, cz: 0, span: w.worldSize };
+    return {
+      x: (u - 0.5) * view.span + view.cx,
+      z: (v - 0.5) * view.span + view.cz,
+    };
   }
 
   setVisible(v) {
@@ -590,7 +630,7 @@ export class MiniMap {
 
   // ── presentation ──────────────────────────────────────────────────────────
 
-  /** Downscale the bake into the visible canvas. Runs on resize only. */
+  /** Downscale the bake into the visible canvas — always the full valley. */
   _blit() {
     const css = this.canvas.clientWidth;
     if (!css || !this.off) return;
@@ -602,8 +642,38 @@ export class MiniMap {
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = 'high';
     g.clearRect(0, 0, p, p);
-    g.drawImage(this.off, 0, 0, p, p);
+    const w = this.world;
+    const N = this.off.width;
+    const worldSize = w?.worldSize ?? N;
+    const view = this._view ?? { cx: 0, cz: 0, span: worldSize };
+    const half = worldSize / 2;
+    const sx = ((view.cx - view.span / 2 + half) / worldSize) * N;
+    const sy = ((view.cz - view.span / 2 + half) / worldSize) * N;
+    const sw = (view.span / worldSize) * N;
+    g.drawImage(this.off, sx, sy, sw, sw, 0, 0, p, p);
     this._mx = NaN;                        // force the marker to re-place
+    this._ar = NaN;
+  }
+
+  /**
+   * Frame that keeps the leftover a healthy fraction of the view from the
+   * player, so camp and a 200 m shore crumb cannot share one basin blob.
+   * Full valley when there is no guide.
+   */
+  _fitView(x, z, area, worldSize) {
+    if (!area || !(area.r > 0)) return { cx: 0, cz: 0, span: worldSize };
+    const dist = Math.hypot(area.x - x, area.z - z);
+    let span = Math.max(320, (dist + area.r) / 0.38);
+    span = Math.max(span, dist + area.r + 80);
+    span = Math.min(span, worldSize);
+    span = Math.round(span / 20) * 20;
+    const half = worldSize / 2;
+    const h = span / 2;
+    let cx = Math.round(((x + area.x) * 0.5) / 8) * 8;
+    let cz = Math.round(((z + area.z) * 0.5) / 8) * 8;
+    cx = Math.min(half - h, Math.max(-half + h, cx));
+    cz = Math.min(half - h, Math.max(-half + h, cz));
+    return { cx, cz, span };
   }
 
   /**
@@ -620,21 +690,61 @@ export class MiniMap {
    * Measured against the interleaved A/B in tools/_scratch/postab.mjs, writing
    * it unconditionally cost 0.8 ms a frame at dpr 2, for a change nobody could
    * see.
+   *
+   * `area` used to be a leftover neighborhood ring. That cue failed in
+   * play (read as camp, easy to miss). SeekCue on the HUD is the source
+   * of truth now; leftover areas are ignored so this map cannot show them.
    */
-  update(x, z, bearing) {
+  update(x, z, bearing, area = null) {
+    area = null;
     const s = this._size;
     if (!s) { this._ensureBake(); return; }
     const w = this.world;
     if (!w) return;
-    const half = w.worldSize / 2;
-    const px = Math.round(clamp01((x + half) / w.worldSize) * s * 3);
-    const py = Math.round(clamp01((z + half) / w.worldSize) * s * 3);
+    const view = this._fitView(x, z, area, w.worldSize);
+    const key = `${view.cx}|${view.cz}|${view.span}`;
+    if (key !== this._viewKey) {
+      this._view = view;
+      this._viewKey = key;
+      this._blit();
+    }
+    this.node.classList.toggle('pa-map-guided', !!(area && area.r > 0));
+    const px = Math.round(((x - view.cx) / view.span + 0.5) * s * 3);
+    const py = Math.round(((z - view.cz) / view.span + 0.5) * s * 3);
     const pb = Math.round(bearing);
-    if (px === this._mx && py === this._my && pb === this._mb) return;
-    this._mx = px; this._my = py; this._mb = pb;
-    this.marker.style.transform =
-      `translate(${(px / 3).toFixed(2)}px, ${(py / 3).toFixed(2)}px) `
-      + `translate(-50%, -50%) rotate(${pb}deg)`;
+    if (px !== this._mx || py !== this._my || pb !== this._mb) {
+      this._mx = px; this._my = py; this._mb = pb;
+      this.marker.style.transform =
+        `translate(${(px / 3).toFixed(2)}px, ${(py / 3).toFixed(2)}px) `
+        + `translate(-50%, -50%) rotate(${pb}deg)`;
+    }
+    this._syncArea(area, view, s, x, z);
+  }
+
+  _syncArea(area, view, s, px, pz) {
+    if (!area || !(area.r > 0)) {
+      if (this._ar !== 0) {
+        this._ar = 0;
+        this.area.classList.add('pa-gone');
+        this.caption.textContent = '';
+        this._alabel = '';
+      }
+      return;
+    }
+    const ax = Math.round(((area.x - view.cx) / view.span + 0.5) * s * 3);
+    const ay = Math.round(((area.z - view.cz) / view.span + 0.5) * s * 3);
+    const d = (area.r / view.span) * s * 2;
+    const dr = Math.round(d * 10);
+    const label = guideWhisper(area, px, pz);
+    if (ax === this._ax && ay === this._ay && dr === this._ad
+        && label === this._alabel) return;
+    this._ax = ax; this._ay = ay; this._ar = dr; this._alabel = label; this._ad = dr;
+    this.area.classList.remove('pa-gone');
+    this.area.style.width = `${d.toFixed(1)}px`;
+    this.area.style.height = `${d.toFixed(1)}px`;
+    this.area.style.transform =
+      `translate(${(ax / 3).toFixed(2)}px, ${(ay / 3).toFixed(2)}px) translate(-50%, -50%)`;
+    if (this.caption.textContent !== label) this.caption.textContent = label;
   }
 
   dispose() {

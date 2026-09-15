@@ -81,6 +81,7 @@ import {
   PAPER_GAIN,
 } from './journal_model.js';
 import { hunt, makeThumb } from '../game/hunt_store.js';
+import { WILLIAM_ALMOSTS } from '../traces/prior_notes.js';
 
 // ── the script ───────────────────────────────────────────────────────────────
 // Every duration in the ceremony, in seconds, in one place. `gap` values are
@@ -726,6 +727,7 @@ export class Journal {
     const nList = Math.max(1, Math.ceil(items.length / ROWS_PER_PAGE));
     const specs = [];
 
+    // Flyleaf: William's nameplate, M.'s letter to him, his note for the finder.
     specs.push({ kind: 'title', index: null, seed: 1, rows: [] });
     for (let k = 0; k < nList; k++) {
       const rows = items.slice(k * ROWS_PER_PAGE, (k + 1) * ROWS_PER_PAGE).map((it) => ({
@@ -743,13 +745,24 @@ export class Journal {
       specs.push({
         kind: 'list',
         index: k + 1,
-        heading: k === 0 ? 'Camp Scavenger Hunt' : null,
+        heading: k === 0 ? 'Compendium' : null,
         progress: k === 0 ? this._progressLine() : null,
         rows,
         seed: 2 + k,
       });
     }
-    specs.push({ kind: 'notes', index: nList + 1, seed: 9, rows: [] });
+    // William's failed almosts of M.'s unnamed "anything else" live on the
+    // first notes leaf, always — not gated on finishing the Compendium. Two
+    // prints, too far and too blurred to name. Animal photographs fill the
+    // Compendium only; they never write here. The mystery leaf after this is
+    // still what the unnamed-thing ending owns.
+    specs.push({
+      kind: 'notes',
+      index: nList + 1,
+      seed: 9,
+      rows: [],
+      almosts: WILLIAM_ALMOSTS.map((a) => ({ ...a, photo: null })),
+    });
 
     // ── the mystery leaf ─────────────────────────────────────────────────────
     //
@@ -936,6 +949,13 @@ export class Journal {
           dirty.add(i);
         }
       }
+      for (const almost of p.spec.almosts ?? []) {
+        if (almost.photo) continue;
+        jobs.push(loadPhoto(almost.src).then((im) => {
+          almost.photo = im;
+          dirty.add(i);
+        }));
+      }
       for (const row of p.spec.rows ?? []) {
         const done = hunt.isDone(row.id);
         const url = done ? hunt.photoFor(row.id) : null;
@@ -982,9 +1002,10 @@ export class Journal {
    * of the two prints to keep instead; see the `CMP_*` block.
    *
    * @param holdTitle Skip the scripted flyleaf turn, so the ceremony rests on
-   * the title leaf instead of skipping past it to the checklist. Only HUD's
-   * one-time first-run popup passes this; every other caller wants the
-   * checklist. See `HUD.maybeShowIntro`.
+   * the title leaf (M.'s letter tucked in William's book) instead of skipping
+   * past it to the checklist. HUD's first-run popup and the dirt-book pickup
+   * pass this; J and awards still want the checklist. See `HUD.maybeShowIntro`
+   * and `HUD.openFoundJournal`.
    *
    * `photo` is accepted alongside `photoDataURL` and is anything `drawImage`
    * takes. It is converted HERE, synchronously, and not one turn of the event
@@ -1007,10 +1028,10 @@ export class Journal {
     this._visible = true;
     this._closing = false;
     this._t = 0;
-    // The one-time first-run open: the cover still rises and swings open, but
-    // the scripted flyleaf turn that would otherwise flip straight past the
-    // title into the checklist (see the docstring above) is held off, so the
-    // ceremony's rest state is the page a brand-new player needs to read.
+    // First-run and found-book opens: the cover still rises and swings open,
+    // but the scripted flyleaf turn that would otherwise flip straight past
+    // M.'s letter into the checklist (see the docstring above) is held off, so
+    // the ceremony's rest state is the page that says whose book this is.
     this._holdTitle = holdTitle;
     this._pose.leaf = 0;
     this._leafFrom = this._leafTo = 0;

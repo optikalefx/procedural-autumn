@@ -4,7 +4,11 @@
 //  This game has no fail state, no objectives and no resources, so there is
 //  nothing for a HUD to warn you about. What is left is worth having: which way
 //  you are facing, what is out there, how fast you are going, and a good camera
-//  to photograph it with.
+//  to photograph it with. Thought tooltips (`.pa-thought`) are the player's
+//  private voice — not toasts, not look prompts, never a "go here". After
+//  William's table note a pocket compass (`.pa-seek`) points at the next
+//  leftover with his scrap of paper; it is not a quest marker and it is
+//  not the minimap ring.
 //
 //  Structure: this file owns the root element, input, and the per-frame data
 //  pull; the widgets (compass, dash, settings, photo mode) own their own DOM
@@ -30,8 +34,11 @@ import { Settings } from './hud_settings.js';
 import { PhotoMode } from './hud_photo.js';
 import { Journal } from '../journal/Journal.js';
 import { MiniMap } from './hud_map.js';
+import { SeekCue } from './hud_seek.js';
 import { hunt } from '../game/hunt_store.js';
 import { touchCapable } from '../core/verbs.js';
+import { FONT_HAND } from '../journal/journal_fonts.js';
+import { THOUGHTS } from '../traces/prior_notes.js';
 
 const STORE = 'pa.hud';
 // How many of each landmark kind are in the world's list of things to find.
@@ -89,6 +96,12 @@ export class HUD extends System {
     this._frame = 0;
     this._pads = [];
     this._hintTimer = 0;
+    this._letterSeen = false;
+    this._thoughts = new Set();
+    this._thoughtQueue = [];
+    this._thoughtBusy = false;
+    this._thoughtUntil = 0;
+    this._thoughtWait = 0;
 
     try {
       const s = JSON.parse(localStorage.getItem(STORE) ?? 'null');
@@ -119,6 +132,7 @@ export class HUD extends System {
     this.map = new MiniMap(root, this.ctx.world ?? globalThis.__world ?? null,
       (x, z) => this._warp(x, z));
     this.map.setVisible(this.showMap);
+    this.seek = new SeekCue(root);
 
     // ── corner chips ───────────────────────────────────────────────────────
     const corner = el('div', 'pa-corner pa-game-only');
@@ -151,6 +165,20 @@ export class HUD extends System {
       act();
     });
     root.appendChild(this.toastEl);
+
+    this.thoughtEl = el('div', 'pa-thought');
+    this.thoughtEl.id = 'pa-thought';
+    this.thoughtEl.setAttribute('aria-live', 'polite');
+    this.thoughtEl.style.fontFamily = `"${FONT_HAND}", "Bradley Hand", cursive`;
+    // Not inside `#pa-hud`: journal/hud-off/capture rules were swallowing it,
+    // and a private thought is not chrome. CampPrompt sits on the body too.
+    document.getElementById('pa-thought')?.remove();
+    document.body.appendChild(this.thoughtEl);
+
+    this.traceWhisper = el('div', 'pa-trace-whisper pa-game-only');
+    this.traceWhisper.setAttribute('aria-hidden', 'true');
+    this._traceWhisper = '';
+    root.appendChild(this.traceWhisper);
 
     // ── first-run hint ─────────────────────────────────────────────────────
     this.hint = el('div', 'pa-hint pa-panel pa-game-only',
@@ -186,6 +214,13 @@ export class HUD extends System {
     this.journal.onClose = () => {
       this.root.classList.remove('pa-journal');
       this._dismissEscHint();
+      if (this.journal._holdTitle || Math.round(this.journal._pose?.leaf ?? 1) === 0) {
+        this._letterSeen = true;
+      }
+      const firstLetter = this._letterSeen && !this._thoughts.has('identity');
+      if (firstLetter) this.think('identity', { delay: 0.62 });
+      // Usual Compendium wildlife awards are silent. Photo-triggered thoughts
+      // only if the shot relates to the story; leftover hinges own the rest.
     };
     // Ringing a line says so out loud. The toast is deliberately NOT
     // `pa-game-only`, so unlike the compass and the dash it is still on screen
@@ -518,6 +553,12 @@ export class HUD extends System {
     this.settings?.sync();
   }
 
+  /** After William's table note: the leftover pocket-compass arrives. */
+  beginSeek() {
+    if (!this.ctx.systems?.traces?.guidance) return;
+    this.seek?.begin();
+  }
+
   applyHudMode(v) {
     this.hudOpacity = v;
     // "Off" is not the same as "faded to nothing". Turning the whole root
@@ -680,6 +721,7 @@ export class HUD extends System {
   toggleJournal() {
     if (this.journal.active) { this.journal.close(); return; }
     if (this.settings.open) this.settings.setOpen(false);
+    this.hideThought();
     this.root.classList.add('pa-journal');
     this.journal.open();
     this._showEscHint();
@@ -697,6 +739,7 @@ export class HUD extends System {
    * things wants.
    */
   openJournal(award) {
+    this.hideThought();
     this.root.classList.add('pa-journal');
     this.journal.open({ award });
     this._showEscHint();
@@ -706,10 +749,11 @@ export class HUD extends System {
   /**
    * The one-time greeting: a brand-new player has never seen the book, so
    * main.js calls this the moment the world is up and lets it open itself
-   * straight to the title leaf (see `Journal.open`'s `holdTitle`), rather than
-   * making them find J on their own first. Every session after this one is a
-   * no-op — `_introSeen` latches on the first call and is saved immediately,
-   * not on close, so a refresh mid-read can't win the popup back.
+   * straight to the flyleaf (see `Journal.open`'s `holdTitle`) — William's
+   * name and M.'s letter to him. J after that goes to the checklist. Every
+   * session after this one is a no-op — `_introSeen` latches on the first
+   * call and is saved immediately, not on close, so a refresh mid-read
+   * can't win the popup back.
    *
    * Deliberately bypasses `toggleJournal()`: that path calls `_dismissHint()`
    * on open, which would burn the bottom control legend's one showing while
@@ -720,10 +764,29 @@ export class HUD extends System {
     if (this._introSeen) return;
     this._introSeen = true;
     this._save();
+    this.hideThought();
     this.root.classList.add('pa-journal');
+    this._letterSeen = true;
     this.journal.open({ holdTitle: true });
     this._showEscHint();
     posthog.capture('journal_opened', { source: 'intro' });
+  }
+
+  /**
+   * Picking up William's book from the dirt (or the cold ring after
+   * the table note has been read).
+   * Rests on the flyleaf the same way the intro does, so the letter is the
+   * first thing read. J still opens onto the checklist.
+   */
+  openFoundJournal() {
+    if (this.journal.active) return;
+    if (this.settings.open) this.settings.setOpen(false);
+    this.hideThought();
+    this.root.classList.add('pa-journal');
+    this._letterSeen = true;
+    this.journal.open({ holdTitle: true });
+    this._showEscHint();
+    posthog.capture('journal_opened', { source: 'found' });
   }
 
   /**
@@ -753,6 +816,103 @@ export class HUD extends System {
     clearTimeout(this._toastT);
     if (sticky) return;
     this._toastT = setTimeout(() => this.hideToast(), 2200);
+  }
+
+  /**
+   * A private thought. Soft, once, never a verb.
+   *
+   * Distinct from `toast` (system line, top pill) and from look prompts
+   * (bottom, "E the cold ring"). Copy lives in `THOUGHTS`. One id fires
+   * once per session; a second call is a no-op. `delay` lets the book
+   * finish putting itself down before the line appears.
+   *
+   * Timing is wall-clock, armed on a timer and sampled from the HUD
+   * update. The book put-down is 0.46 s; the identity line waits 0.62 s
+   * so it prints on the valley, not on the leather. A starved animation
+   * loop (headless captures sit at a handful of frames) cannot be the
+   * only clock: `setTimeout` still fires. A thought that is not ready
+   * to print stays queued — it is never unlatched just because the book
+   * is still in the way.
+   */
+  think(id, { delay = 0 } = {}) {
+    if (this._thoughts.has(id)) return;
+    const text = THOUGHTS[id];
+    if (!text) return;
+    this._thoughts.add(id);
+    this._thoughtQueue.push({ id, text, at: performance.now() + delay * 1000 });
+    this._kickThoughts();
+  }
+
+  _kickThoughts() {
+    clearTimeout(this._thoughtWait);
+    if (this._thoughtBusy) return;
+    const next = this._thoughtQueue[0];
+    if (!next) return;
+    const wait = Math.max(0, next.at - performance.now());
+    this._thoughtWait = setTimeout(() => this._maybeThought(), wait);
+  }
+
+  _maybeThought() {
+    if (this.journal.active) {
+      if (this._thoughtQueue.length) {
+        this._thoughtWait = setTimeout(() => this._maybeThought(), 80);
+      }
+      return;
+    }
+    const now = performance.now();
+    if (this._thoughtUntil && now >= this._thoughtUntil) this.hideThought();
+    if (this._thoughtBusy) return;
+    const next = this._thoughtQueue[0];
+    if (!next) return;
+    if (now < next.at) {
+      this._kickThoughts();
+      return;
+    }
+    this._thoughtQueue.shift();
+    this._showThought(next.text);
+  }
+
+  _showThought(text) {
+    this._thoughtBusy = true;
+    this.root.classList.remove('pa-journal');
+    this._paintThought(text);
+    this.thoughtEl.classList.add('pa-show');
+    this.thoughtEl.style.opacity = '1';
+    this.thoughtEl.style.visibility = 'visible';
+    this._thoughtUntil = performance.now() + 4800;
+    clearTimeout(this._thoughtWait);
+    this._thoughtWait = setTimeout(() => this._maybeThought(), 4800);
+  }
+
+  _paintThought(text) {
+    this.thoughtEl.textContent = text;
+  }
+
+  hideThought() {
+    clearTimeout(this._thoughtWait);
+    this._thoughtWait = 0;
+    this._thoughtUntil = 0;
+    this._thoughtBusy = false;
+    this.thoughtEl?.classList.remove('pa-show');
+    if (this.thoughtEl) {
+      this.thoughtEl.style.opacity = '';
+      this.thoughtEl.style.visibility = '';
+    }
+    this._kickThoughts();
+  }
+
+  _setTraceWhisper(label) {
+    const text = label || '';
+    const mapUp = this.showMap && window.innerWidth > 780 && window.innerHeight > 620;
+    // Map caption already carries the line when the minimap is on screen.
+    // The floating whisper is the fallback for a hidden map, not a second copy.
+    const show = !!text && !mapUp;
+    const key = `${text}|${show}`;
+    if (key === this._traceWhisper) return;
+    this._traceWhisper = key;
+    if (!this.traceWhisper) return;
+    this.traceWhisper.textContent = text;
+    this.traceWhisper.classList.toggle('pa-show', show);
   }
 
   _dismissHint() {
@@ -818,6 +978,7 @@ export class HUD extends System {
     // freeze the ceremony mid-page-turn.
     this.journal.update(dt);
     if (this.photo.active) this.photo.update(dt);
+    this._maybeThought();
 
     // Invert look. CameraRig reads `mouse.dy` in lateUpdate and `axes.lookY` is
     // refilled by Input at the end of the frame, so flipping both here lands
@@ -880,29 +1041,28 @@ export class HUD extends System {
 
     // The compass is the only per-frame DOM write of any size; 30 Hz is
     // indistinguishable from 60 for a strip that moves this slowly, and halves
-    // the layout cost.
-    if ((this._frame & 1) === 0) {
-      const e = ctx.camera.matrixWorld.elements;
-      // Camera forward is -(third basis column); bearing is clockwise from -Z.
-      const heading = (Math.atan2(-e[8], e[10]) * 180) / Math.PI;
-      this.compass.update(heading, this.marks);
-    }
+    // the layout cost. The leftover seek chip uses the same camera heading
+    // so its tick matches the caret: facing the crumb, the tick points up.
+    const e = ctx.camera.matrixWorld.elements;
+    const heading = (Math.atan2(-e[8], e[10]) * 180) / Math.PI;
+    if ((this._frame & 1) === 0) this.compass.update(heading, this.marks);
 
     // Free-look swings the compass strip, but the question the map answers is
     // where you are and which way you are *pointed*, so the arrow takes the
     // ridden heading rather than the camera's. Headings arrive measured from
     // +Z; the map, like the compass, works clockwise from north, which is -Z.
-    if (this.showMap) {
-      const p = aboard ?? veh?.position ?? ctx.camera.position;
-      let bearing;
-      if (aboard) bearing = 180 - (aboard.heading * 180) / Math.PI;
-      else if (veh) bearing = 180 - (veh.heading * 180) / Math.PI;
-      else {
-        const m = ctx.camera.matrixWorld.elements;
-        bearing = (Math.atan2(-m[8], m[10]) * 180) / Math.PI;
-      }
-      this.map.update(p.x, p.z, bearing);
-    }
+    // Leftover following lives on the pocket compass, not the valley map.
+    // Passing null keeps the dashed next-area ring dark so it cannot
+    // read as camp again.
+    const guide = ctx.systems?.traces?.guidance ?? null;
+    const p = aboard ?? veh?.position ?? ctx.camera.position;
+    let bearing;
+    if (aboard) bearing = 180 - (aboard.heading * 180) / Math.PI;
+    else if (veh) bearing = 180 - (veh.heading * 180) / Math.PI;
+    else bearing = heading;
+    this.seek?.update(p.x, p.z, heading, guide, dt);
+    if (this.showMap) this.map.update(p.x, p.z, bearing, null);
+    this._setTraceWhisper('');
     // HOLD is the camper's handbrake lamp, and boarding a boat *requires* the
     // camper parked with the hold armed (see the `parked` gate in Boat.update),
     // so left alone the lamp would burn for every second the player is on the
@@ -939,7 +1099,10 @@ export class HUD extends System {
   dispose() {
     window.removeEventListener('keydown', this._onKey);
     clearTimeout(this._toastT);
+    clearTimeout(this._thoughtWait);
     this.map?.dispose();
+    this.seek?.dispose();
+    this.thoughtEl?.remove();
     this.root?.remove();
   }
 }

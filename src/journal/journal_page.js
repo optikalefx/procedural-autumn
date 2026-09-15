@@ -44,6 +44,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as THREE from 'three';
 import { hand, brush } from './journal_fonts.js';
+import { WILLIAM, LETTER_M } from '../traces/prior_notes.js';
 import { clamp01 } from '../core/MathUtils.js';
 
 // Page pixel size. 1024 x 1452 is 148:210 (A5) to within half a pixel, and 1024
@@ -200,6 +201,19 @@ export function disposePaperCache() { _paperCache.clear(); }
 function rng(seed) {
   let s = (seed | 0) * 1103515245 + 12345;
   return () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+}
+
+function _wrapLine(g, text, maxW) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const t = cur ? `${cur} ${w}` : w;
+    if (cur && g.measureText(t).width > maxW) { lines.push(cur); cur = w; }
+    else cur = t;
+  }
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [''];
 }
 
 /**
@@ -934,113 +948,93 @@ export class JournalPage {
   // ── the title leaf ────────────────────────────────────────────────────────
 
   _paintTitle(g) {
-    const cx = (this._x0 + this._x1) / 2;
-    g.textAlign = 'center';
+    const x0 = this._x0, x1 = this._x1;
+    const cx = (x0 + x1) / 2;
     g.textBaseline = 'alphabetic';
 
+    // Flyleaf nameplate — this is William's book, not the player's.
+    g.textAlign = 'center';
     g.fillStyle = INK;
-    g.font = brush(96);
-    g.fillText('Camping', cx, 372);
-    g.fillText('Season', cx, 470);
-
-    // The subtitle belongs to the title, so the rule goes UNDER BOTH. It used
-    // to sit between them, which cut the title block in half and made
-    // "scavenger hunt" read as a separate item further down the page rather
-    // than as the second line of the same masthead. Same ink, shorter, and now
-    // it is the thing that closes the block.
-    g.font = hand(58, 400);
+    g.font = brush(56);
+    g.fillText(WILLIAM.name, cx, 148);
+    g.font = hand(26, 400);
     g.fillStyle = INK_SOFT;
-    g.fillText('scavenger hunt', cx, 546);
-    inkLine(g, cx - 190, 592, cx + 190, 595,
-      { seed: 4, width: 2.6, alpha: 0.5, colour: '#5c452e' });
+    g.fillText(WILLIAM.tag, cx, 184);
+    inkLine(g, cx - 92, 214, cx + 92, 216,
+      { seed: 4, width: 2.2, alpha: 0.45, colour: '#5c452e' });
 
-    this._vignetteDoodle(g, cx, 800, 240);
+    // M.'s letter, tucked on the first leaf. Paler slip, tiny rotation, so
+    // it reads as stationery laid in — not as the flyleaf's own hand.
+    g.font = hand(30);
+    const innerPad = 36;
+    const slipL = x0 - 6;
+    const slipW = (x1 - x0) + 12;
+    const textW = slipW - innerPad * 2;
+    const bodyLead = 40;
+    const paras = LETTER_M.body.map((p) => _wrapLine(g, p, textW));
+    const bodyH = paras.reduce((h, ls) => h + ls.length * bodyLead, 0)
+      + Math.max(0, paras.length - 1) * 14;
+    const slipH = 28 + 42 + 18 + bodyH + 22 + 32 + 44 + 26;
+    const slipY = 248;
 
-    // How to play, in the keeper's own hand. This block replaced the
-    // "kept by / season" flyleaf lines: a player meeting the book for the
-    // first time needs the three keys more than they need a blank to admire.
-    g.font = hand(40);
+    g.save();
+    g.translate(cx, slipY + slipH / 2);
+    g.rotate(-0.014);
+    g.translate(-cx, -(slipY + slipH / 2));
+
+    g.fillStyle = 'rgba(72, 48, 24, 0.16)';
+    g.beginPath();
+    g.roundRect(slipL + 7, slipY + 9, slipW, slipH, 6);
+    g.fill();
+
+    g.fillStyle = '#f7efd8';
+    g.beginPath();
+    g.roundRect(slipL, slipY, slipW, slipH, 6);
+    g.fill();
+    const wash = g.createLinearGradient(slipL, slipY, slipL + slipW, slipY + slipH);
+    wash.addColorStop(0, 'rgba(255,252,240,0.45)');
+    wash.addColorStop(1, 'rgba(214,188,140,0.16)');
+    g.fillStyle = wash;
+    g.beginPath();
+    g.roundRect(slipL, slipY, slipW, slipH, 6);
+    g.fill();
+    g.strokeStyle = 'rgba(120, 92, 58, 0.22)';
+    g.lineWidth = 1.4;
+    g.beginPath();
+    g.roundRect(slipL + 0.7, slipY + 0.7, slipW - 1.4, slipH - 1.4, 5);
+    g.stroke();
+
+    const tx = slipL + innerPad;
+    let y = slipY + 62;
+    g.textAlign = 'left';
+    g.fillStyle = INK;
+    g.font = brush(38);
+    g.fillText(LETTER_M.to, tx, y);
+    y += 48;
+
+    g.font = hand(30);
+    g.fillStyle = 'rgba(58,43,32,0.88)';
+    for (let i = 0; i < paras.length; i++) {
+      for (const line of paras[i]) {
+        g.fillText(line, tx, y);
+        y += bodyLead;
+      }
+      if (i < paras.length - 1) y += 14;
+    }
+    y += 22;
+    g.font = hand(30);
     g.fillStyle = INK_SOFT;
-    g.fillText('Welcome to Camping Season!', cx, 1032);
-    g.fillText('Enjoy a quiet drive through the forest.', cx, 1096);
-    g.fillText('See if you can find everything in this journal.', cx, 1160);
-    g.font = hand(32);
-    g.fillStyle = 'rgba(74,58,44,0.58)';
-    g.fillText('Good luck!', cx, 1230);
+    g.fillText(LETTER_M.close, tx, y);
+    y += 44;
+    g.font = brush(34);
+    g.fillStyle = INK;
+    g.fillText(LETTER_M.sign, tx, y);
+    g.restore();
 
     g.textAlign = 'center';
     g.font = hand(30);
     g.fillStyle = 'rgba(74,58,44,0.44)';
     g.fillText('The letter "J" opens this book, any time', cx, PAGE_H - 168);
-  }
-
-  /**
-   * A pen sketch of a ridge with two firs and a tent, drawn as strokes.
-   *
-   * It exists because a title page with nothing but type on it reads as a
-   * splash screen. It is drawn very light and very small; it is a margin
-   * doodle, not an illustration, and the moment it competes with the type it
-   * has failed.
-   */
-  _vignetteDoodle(g, cx, cy, w) {
-    const h = w * 0.52;
-    g.save();
-    g.translate(cx - w / 2, cy - h / 2);
-    g.strokeStyle = '#5c452e';
-    g.globalAlpha = 0.55;
-    g.lineWidth = 2.6;
-    g.lineJoin = 'round';
-    g.lineCap = 'round';
-
-    // Ridge line
-    g.beginPath();
-    g.moveTo(0, h * 0.78);
-    g.lineTo(w * 0.16, h * 0.52);
-    g.lineTo(w * 0.28, h * 0.66);
-    g.lineTo(w * 0.46, h * 0.18);
-    g.lineTo(w * 0.60, h * 0.44);
-    g.lineTo(w * 0.72, h * 0.30);
-    g.lineTo(w * 0.88, h * 0.62);
-    g.lineTo(w, h * 0.50);
-    g.stroke();
-    // Snow hatching on the tallest peak
-    g.lineWidth = 1.6;
-    g.beginPath();
-    g.moveTo(w * 0.42, h * 0.28); g.lineTo(w * 0.50, h * 0.29);
-    g.moveTo(w * 0.44, h * 0.36); g.lineTo(w * 0.545, h * 0.37);
-    g.stroke();
-
-    // Two firs
-    g.lineWidth = 2.4;
-    for (const [fx, fs] of [[w * 0.20, 1.0], [w * 0.32, 0.72]]) {
-      const base = h * 0.98, top = base - h * 0.42 * fs;
-      g.beginPath();
-      g.moveTo(fx, base);
-      g.lineTo(fx, top);
-      for (let i = 0; i < 3; i++) {
-        const y = top + (base - top) * (0.22 + i * 0.26);
-        const sp = w * 0.035 * fs * (1 + i * 0.55);
-        g.moveTo(fx - sp, y + sp * 0.7); g.lineTo(fx, y - sp * 0.3); g.lineTo(fx + sp, y + sp * 0.7);
-      }
-      g.stroke();
-    }
-
-    // Tent
-    g.beginPath();
-    g.moveTo(w * 0.62, h * 0.98);
-    g.lineTo(w * 0.74, h * 0.66);
-    g.lineTo(w * 0.86, h * 0.98);
-    g.closePath();
-    g.moveTo(w * 0.74, h * 0.66); g.lineTo(w * 0.74, h * 0.98);
-    g.stroke();
-
-    // Ground
-    g.lineWidth = 2.0;
-    g.globalAlpha = 0.4;
-    g.beginPath();
-    g.moveTo(-w * 0.04, h * 0.99); g.lineTo(w * 1.04, h * 0.985);
-    g.stroke();
-    g.restore();
   }
 
   // ── the checklist ─────────────────────────────────────────────────────────
@@ -1066,7 +1060,7 @@ export class JournalPage {
       g.textAlign = s.verso ? 'left' : 'right';
       g.font = hand(32);
       g.fillStyle = 'rgba(74,58,44,0.40)';
-      g.fillText('scavenger hunt', s.verso ? x0 : x1, M_TOP + 52);
+      g.fillText('field notes', s.verso ? x0 : x1, M_TOP + 52);
       inkLine(g, x0, M_TOP + 78, x1, M_TOP + 80, { seed: 5, width: 2.0, alpha: 0.30, colour: '#5c452e' });
     }
 
@@ -1652,13 +1646,45 @@ export class JournalPage {
 
   _paintNotes(g) {
     const x0 = this._x0, x1 = this._x1;
+    const almosts = this.spec.almosts;
     g.textAlign = 'left';
     g.fillStyle = INK;
     g.font = brush(64);
     g.fillText('Notes', x0, M_TOP + 66);
     inkLine(g, x0, M_TOP + 96, x1, M_TOP + 98, { seed: 6, width: 2.6, alpha: 0.45, colour: '#5c452e' });
+
+    let ruledFrom = M_TOP + 190;
+    if (almosts?.length) {
+      // Two taped prints and almost no writing. The page used to carry the
+      // almosts as dense graphite blocks; the prints do that work now, and
+      // they are too far and too blurred to name.
+      const tw = x1 - x0;
+      const slotW = tw - 4;
+      const slotH = 392;
+      let y = M_TOP + 124;
+      for (let i = 0; i < almosts.length; i++) {
+        const seed = this.spec.seed * 31 + 40 + i * 7;
+        const tilt = (i ? 0.018 : -0.022);
+        const slot = { x: x0, y, w: slotW, h: slotH };
+        this._paste(g, slot, almosts[i].photo, tilt, seed, 1);
+        const cap = almosts[i].caption;
+        if (cap) {
+          g.save();
+          g.translate(x0 + 18, y + slotH + 22);
+          g.rotate(-0.012);
+          g.font = hand(28);
+          g.fillStyle = 'rgba(73,64,55,0.42)';
+          g.textAlign = 'left';
+          g.fillText(cap, 0, 0);
+          g.restore();
+        }
+        y += slotH + 56;
+      }
+      ruledFrom = y + 10;
+    }
+
     for (let i = 0; i < 18; i++) {
-      const y = M_TOP + 190 + i * 62;
+      const y = ruledFrom + i * 62;
       if (y > PAGE_H - M_BOT) break;
       inkLine(g, x0, y, x1, y + 1, { seed: 40 + i, width: 1.6, alpha: 0.18, wobble: 1.2, colour: '#6b5238' });
     }
