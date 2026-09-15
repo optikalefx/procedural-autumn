@@ -101,14 +101,15 @@ const WALL_FRAG = /* glsl */`
   varying float vAngle;
   varying float vRim;
   void main() {
-    // Foot ring + silhouette wall + four soft shafts. Body without
-    // rim would project as a booth from standing height.
-    float rim = pow(clamp(vRim, 0.0, 1.0), 1.55);
-    float foot = pow(1.0 - vH, 2.25) * (0.25 + 0.75 * rim);
-    float wall = pow(rim, 1.85) * mix(0.12, 1.0, pow(1.0 - vH, 0.52));
-    float pillar = pow(abs(sin(vAngle * 2.0 + 0.35)), 6.4);
-    float shaft = pillar * pow(1.0 - vH, 0.30) * (0.30 + 0.70 * rim);
-    float a = (foot * 0.45 + wall * 0.95 + shaft * 1.20) * uOpacity;
+    // Tight XZ silhouette so a 1.2 m wall does not project as a
+    // filled booth from standing height. Four thin shafts keep the
+    // vertical presence the flat ribbon never had.
+    float rim = pow(clamp(vRim, 0.0, 1.0), 6.5);
+    float foot = pow(1.0 - vH, 2.6) * pow(clamp(vRim, 0.0, 1.0), 2.4);
+    float wall = rim * mix(0.18, 1.0, pow(1.0 - vH, 0.48));
+    float pillar = pow(abs(sin(vAngle * 2.0 + 0.35)), 11.0);
+    float shaft = pillar * pow(1.0 - vH, 0.22);
+    float a = (foot * 0.40 + wall * 1.05 + shaft * 1.35) * uOpacity;
     if (a < 0.004) discard;
     vec3 col = mix(uColor, uHot, clamp(pillar * 0.75 + rim * 0.35, 0.0, 1.0));
     // Extra blue so additive on gold meadow still reads ice, not peach.
@@ -234,12 +235,12 @@ export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1) {
   const breath = 0.95 + 0.05 * (0.5 + 0.5 * Math.sin((elapsed ?? 0) * Math.PI * 2 / 9));
   const a = near * onScreen * breath;
   const hot = gain > 1 ? 1.12 : 1;
-  n.vis.uniforms.uOpacity.value = a * 0.58 * hot;
+  n.vis.uniforms.uOpacity.value = a * 0.62 * hot;
   n.hid.uniforms.uOpacity.value = a * 0.16 * hot;
-  n.wallVis.uniforms.uOpacity.value = a * 0.40 * hot;
+  n.wallVis.uniforms.uOpacity.value = a * 0.44 * hot;
   // Through-grass veil only — keep this quiet or the wall x-rays the van.
-  n.wallHid.uniforms.uOpacity.value = a * 0.12 * hot;
-  n.moteVis.uniforms.uOpacity.value = a * 0.30 * hot;
+  n.wallHid.uniforms.uOpacity.value = a * 0.11 * hot;
+  n.moteVis.uniforms.uOpacity.value = a * 0.34 * hot;
   n.uTime.value = elapsed ?? 0;
   return a;
 }
