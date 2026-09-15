@@ -1197,7 +1197,7 @@ export class Traces extends System {
       const facing = THREE.MathUtils.smoothstep(
         align, current ? -0.12 : 0.08, current ? 0.38 : 0.55,
       );
-      updateNoticeHalo(g, dist, onScreen * facing, elapsed, current ? 1.65 : 1);
+      updateNoticeHalo(g, dist, onScreen * facing, elapsed, current ? 1.65 : 1, cam.position);
     }
   }
 

@@ -72,22 +72,22 @@ const RING_FRAG = /* glsl */`
 
 const WALL_VERT = /* glsl */`
   attribute float along;
-  attribute float angle;
+  attribute float around;
+  uniform float uCamX;
+  uniform float uCamZ;
   varying float vH;
   varying float vAngle;
   varying float vRim;
   void main() {
     vH = along;
-    vAngle = angle;
-    // Rim in XZ only. View-space fresnel against a vertical normal
-    // lights the whole cylinder when the player looks down at their
-    // feet — that is the filled booth. The circle's silhouette is
-    // the found-spot wall; looking down still reads as a ring.
-    vec3 n = vec3(cos(angle), 0.0, sin(angle));
+    vAngle = around;
+    // Camera xz from JS — ShaderMaterial's cameraPosition is not a
+    // given, and a wrong space here lights the whole cylinder.
+    vec3 n = vec3(cos(around), 0.0, sin(around));
     vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz;
-    vec3 toCam = cameraPosition - wp;
-    float xz = length(toCam.xz);
-    vec2 toXZ = xz > 0.08 ? toCam.xz / xz : n.xz;
+    vec2 toXZ = vec2(uCamX - wp.x, uCamZ - wp.z);
+    float xz = length(toXZ);
+    toXZ = xz > 0.08 ? toXZ / xz : n.xz;
     vRim = 1.0 - abs(dot(n.xz, toXZ));
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
@@ -111,6 +111,7 @@ const WALL_FRAG = /* glsl */`
     float shaft = pillar * pow(1.0 - vH, 0.22);
     float a = (foot * 0.40 + wall * 1.05 + shaft * 1.35) * uOpacity;
     if (a < 0.004) discard;
+    if (rim < 0.08 && pillar < 0.06) discard;
     vec3 col = mix(uColor, uHot, clamp(pillar * 0.75 + rim * 0.35, 0.0, 1.0));
     // Extra blue so additive on gold meadow still reads ice, not peach.
     col *= vec3(0.58, 0.88, 1.22);
@@ -171,13 +172,17 @@ export function buildNoticeHalo(world, x, z, radius) {
   const uColor = { value: ICE.clone() };
   const uHot = { value: HOT.clone() };
   const uTime = { value: 0 };
+  const uCamX = { value: 0 };
+  const uCamZ = { value: 0 };
 
   const ringVis = _addMat(RING_VERT, RING_FRAG, { uColor, uHot, uOpacity: { value: 0 } }, {
     side: THREE.DoubleSide,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
   const ringHid = _ghost(ringVis);
-  const wallVis = _addMat(WALL_VERT, WALL_FRAG, { uColor, uHot, uOpacity: { value: 0 } }, {
+  const wallVis = _addMat(WALL_VERT, WALL_FRAG, {
+    uColor, uHot, uCamX, uCamZ, uOpacity: { value: 0 },
+  }, {
     side: THREE.DoubleSide,
   });
   const wallHid = _ghost(wallVis);
@@ -214,7 +219,7 @@ export function buildNoticeHalo(world, x, z, radius) {
     vis: ringVis, hid: ringHid,
     wallVis, wallHid, moteVis,
     ringGeo, wallGeo, moteGeo,
-    uTime, x, z, radius,
+    uTime, uCamX, uCamZ, x, z, radius,
   };
   return group;
 }
@@ -226,7 +231,7 @@ export function buildNoticeHalo(world, x, z, radius) {
  * peak, still metres, not a drive-by billboard. Returns the applied
  * visible opacity so a caller can skip work if it wants.
  */
-export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1) {
+export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1, cam = null) {
   const n = group.userData.notice;
   if (!n) return 0;
   const far = HALO_FAR + (gain > 1 ? 7 : 0);
@@ -242,6 +247,10 @@ export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1) {
   n.wallHid.uniforms.uOpacity.value = a * 0.11 * hot;
   n.moteVis.uniforms.uOpacity.value = a * 0.34 * hot;
   n.uTime.value = elapsed ?? 0;
+  if (cam) {
+    n.uCamX.value = cam.x;
+    n.uCamZ.value = cam.z;
+  }
   return a;
 }
 
@@ -315,7 +324,7 @@ function _ribbon(world, cx, cy, cz, radius) {
 function _wall(world, cx, cz, radius) {
   const pos = [];
   const along = [];
-  const angle = [];
+  const around = [];
   const idx = [];
   for (let i = 0; i <= SEGS; i++) {
     const t = (i / SEGS) * Math.PI * 2;
@@ -325,7 +334,7 @@ function _wall(world, cx, cz, radius) {
     const y0 = (world.getHeight?.(x, z) ?? 0) + LIFT;
     pos.push(x, y0, z, x, y0 + WALL_H, z);
     along.push(0, 1);
-    angle.push(t, t);
+    around.push(t, t);
     if (i < SEGS) {
       const a = i * 2;
       idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
@@ -334,7 +343,7 @@ function _wall(world, cx, cz, radius) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('along', new THREE.Float32BufferAttribute(along, 1));
-  geo.setAttribute('angle', new THREE.Float32BufferAttribute(angle, 1));
+  geo.setAttribute('around', new THREE.Float32BufferAttribute(around, 1));
   geo.setIndex(idx);
   return geo;
 }
