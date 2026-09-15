@@ -125,6 +125,21 @@ const HALO_R = {
   'second-night': 4.4,
 };
 
+// Metres of clear air from a leftover's origin to a rock *extent*
+// (reachOf + this pad). Cairn taught the lesson: origin-only checks
+// miss 10–20 m lip slabs. Canoe is the large case — a 4.6 m hull
+// needs enough gap that the silhouette reads against dirt, not granite.
+const ROCK_PAD = {
+  canoe: 4.4,
+  paddle: 2.0,
+  bike: 2.4,
+  tracks: 2.2,
+  tin: 1.5,
+  stick: 1.4,
+  'second-night': 2.0,
+  cairn: 5.2,
+};
+
 const _ray = { o: new THREE.Vector3(), d: new THREE.Vector3() };
 const _ndc = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
@@ -350,7 +365,7 @@ export class Traces extends System {
     // Same-beat partners stay on the same feature: canoe off the paddle's
     // bank, bike farther along the tracks' road, note on the way up to the cairn.
     if (kind === 'canoe' && prev.id === 'paddle') {
-      const shore = this._shoreFrom(prev, 26, 48);
+      const shore = this._seatCanoe(prev);
       if (shore && this._free(shore, taken, MIN_SEP - PAIR_MIN)) return { ...prev, ...shore };
     }
     if (kind === 'bike' && prev.id === 'tracks') {
@@ -425,7 +440,7 @@ export class Traces extends System {
 
   _resolvePoint(kind, p, taken, rnd) {
     if (kind === 'canoe') {
-      const shore = this._shoreNear(p);
+      const shore = this._seatCanoe(p);
       if (shore && this._free(shore, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...shore };
       return null;
     }
@@ -441,7 +456,8 @@ export class Traces extends System {
     }
     if (kind === 'bike' || kind === 'tracks') {
       const off = this._offPath(p, rnd);
-      if (this._free(off, taken, MIN_SEP - PAIR_MIN)) return off;
+      const seat = this._nudgeClear(off.x, off.z, rnd, ROCK_PAD[kind]);
+      if (seat && this._free(seat, taken, MIN_SEP - PAIR_MIN)) return { ...off, ...seat };
       return null;
     }
     if (kind === 'cairn') {
@@ -449,27 +465,9 @@ export class Traces extends System {
       if (seat && this._free(seat, taken, MIN_SEP - PAIR_MIN)) return { ...p, ...seat };
       return null;
     }
-    const nudged = this._nudgeClear(p.x, p.z, rnd);
-    if (this._free(nudged, taken)) return { ...p, ...nudged };
+    const nudged = this._nudgeClear(p.x, p.z, rnd, ROCK_PAD[kind] ?? 1.6);
+    if (nudged && this._free(nudged, taken)) return { ...p, ...nudged };
     return null;
-  }
-
-  /** Walk the waterline from a put-in so the canoe is the same visit. */
-  _shoreFrom(from, lo, hi) {
-    const world = this.ctx.world;
-    const yaw = from.yaw ?? 0;
-    for (const a of [yaw, yaw + 1.1, yaw - 1.1, yaw + Math.PI * 0.5]) {
-      for (let d = lo; d <= hi; d += 3) {
-        const x = from.x + Math.sin(a) * d;
-        const z = from.z + Math.cos(a) * d;
-        if (!world.isInBounds(x, z)) continue;
-        const depth = world.getWaterDepth(x, z);
-        if (depth >= 0.03 && depth <= 0.24 && world.getSlope(x, z) < 0.6) {
-          return { x, z, yaw: a };
-        }
-      }
-    }
-    return this._shoreNear(from);
   }
 
   /** Next bend along the same track, farther from camp than the ruts. */
@@ -486,9 +484,10 @@ export class Traces extends System {
         : 2;
       if (dy > 0.85) continue;
       const off = this._offPath(p, () => 0.35);
-      if (!this._free(off, taken, PAIR_MIN)) continue;
+      const seat = this._nudgeClear(off.x, off.z, () => 0.35, ROCK_PAD.bike);
+      if (!seat || !this._free(seat, taken, PAIR_MIN)) continue;
       const s = -dy * 20 - Math.abs(d0 - (dTracks + 70)) * 0.08;
-      if (s > bestS) { bestS = s; best = off; }
+      if (s > bestS) { bestS = s; best = { ...off, ...seat }; }
     }
     return best;
   }
@@ -522,21 +521,116 @@ export class Traces extends System {
     return { ...p, x, z };
   }
 
-  _shoreNear(p) {
-    const world = this.ctx.world;
-    const yaws = [p.yaw ?? 0, (p.yaw ?? 0) + 0.45, (p.yaw ?? 0) - 0.45, (p.yaw ?? 0) + Math.PI];
-    for (const a of yaws) {
-      for (let d = 2; d < 36; d += 1.4) {
-        const x = p.x + Math.sin(a) * d;
-        const z = p.z + Math.cos(a) * d;
-        if (!world.isInBounds(x, z)) continue;
-        const depth = world.getWaterDepth(x, z);
-        if (depth >= 0.03 && depth <= 0.24 && world.getSlope(x, z) < 0.6) {
-          return { x, z, yaw: a };
+  /**
+   * Haul-out seat: dry open bank near the waterline, clear of rock
+   * extents. The canoe is 4.6 m; a waterline first-hit sits it in the
+   * boulder fringe. Walk the shore, then step inland until the hull
+   * reads against dirt. Null means skip — the paddle still carries
+   * the water beat.
+   */
+  _seatCanoe(from) {
+    const seeds = this._shoreSeeds(from);
+    if (!seeds.length) return null;
+    const origin = this.origin;
+    let best = null, bestS = -Infinity;
+    const seen = new Set();
+    for (const seed of seeds) {
+      const inland = this._inlandOf(seed.x, seed.z);
+      const keel = inland + Math.PI * 0.5;
+      for (let d = 2; d <= 15; d += 2.2) {
+        for (const da of [-0.55, 0, 0.55]) {
+          const x = seed.x + Math.sin(inland + da) * d;
+          const z = seed.z + Math.cos(inland + da) * d;
+          const gk = `${(x / 2) | 0},${(z / 2) | 0}`;
+          if (seen.has(gk)) continue;
+          seen.add(gk);
+          const clear = this._canoeClear(x, z);
+          if (!clear) continue;
+          const toward = -Math.hypot(x - origin.x, z - origin.z) * 0.012;
+          const inlandPref = -Math.abs(d - 7) * 0.35;
+          const s = clear.score + toward + inlandPref;
+          if (s > bestS) {
+            bestS = s;
+            best = { x, z, yaw: keel };
+          }
         }
       }
     }
-    return world.getWaterDepth(p.x, p.z) < 0.3 ? { x: p.x, z: p.z, yaw: p.yaw ?? 0 } : null;
+    return best;
+  }
+
+  /** Waterline samples around a put-in — seeds for the inland search. */
+  _shoreSeeds(from) {
+    const world = this.ctx.world;
+    const out = [];
+    const seen = new Set();
+    const add = (x, z, yaw) => {
+      if (!world.isInBounds(x, z)) return;
+      const depth = world.getWaterDepth(x, z);
+      if (depth < 0.02 || depth > 0.40) return;
+      if (world.getSlope(x, z) > 0.75) return;
+      const k = `${(x / 4) | 0},${(z / 4) | 0}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push({ x, z, yaw });
+    };
+    const yaw0 = from.yaw ?? 0;
+    for (const da of [0, 0.95, -0.95, 1.75, -1.75, Math.PI]) {
+      const a = yaw0 + da;
+      for (let d = 0; d <= 48; d += 4) {
+        add(from.x + Math.sin(a) * d, from.z + Math.cos(a) * d, a);
+      }
+    }
+    if (!out.length && world.getWaterDepth(from.x, from.z) < 0.5) {
+      out.push({ x: from.x, z: from.z, yaw: yaw0 });
+    }
+    if (out.length > 22) {
+      out.sort((a, b) => {
+        const da = (a.x - from.x) ** 2 + (a.z - from.z) ** 2;
+        const db = (b.x - from.x) ** 2 + (b.z - from.z) ** 2;
+        return da - db;
+      });
+      out.length = 22;
+    }
+    return out;
+  }
+
+  /** Direction that dries and rises — off the boulder fringe, onto the bank. */
+  _inlandOf(x, z) {
+    const world = this.ctx.world;
+    let bestA = 0, best = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const hx = x + Math.sin(a) * 8;
+      const hz = z + Math.cos(a) * 8;
+      if (!world.isInBounds(hx, hz)) continue;
+      const dry = -world.getWaterDepth(hx, hz);
+      const up = world.getHeight(hx, hz) - world.getHeight(x, z);
+      const s = dry * 6 + up;
+      if (s > best) { best = s; bestA = a; }
+    }
+    return bestA;
+  }
+
+  _canoeClear(x, z) {
+    const world = this.ctx.world;
+    if (!world.isInBounds(x, z)) return null;
+    if (world.getWaterDepth(x, z) > 0.08) return null;
+    if (world.getSlope(x, z) > 0.48) return null;
+    if (!this._nearWater(x, z, 11)) return null;
+    if (!this._leafClear(x, z)) return null;
+    if (this._rockHitFoot(x, z, ROCK_PAD.canoe, 2.05)) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      const h = world.getHeight(x + Math.sin(a) * 2.4, z + Math.cos(a) * 2.4);
+      lo = Math.min(lo, h); hi = Math.max(hi, h);
+    }
+    const here = world.getHeight(x, z);
+    const rough = hi - lo;
+    if (rough > 1.6) return null;
+    if (hi - here > 1.7) return null;
+    return { score: -world.getSlope(x, z) * 28 - rough * 8 };
   }
 
   _bankNear(p) {
@@ -576,12 +670,16 @@ export class Traces extends System {
         if (world.getSlope(x, z) > 0.5) continue;
         if (!this._nearWater(x, z, 7)) continue;
         if (!this._leafClear(x, z)) continue;
+        if (this._rockHit(x, z, ROCK_PAD.paddle)) continue;
         const toward = Math.cos(toCamp - Math.atan2(x - origin.x, z - origin.z));
         const s = toward * 8 - d * 0.08;
         if (s > bestS) { bestS = s; best = { x, z, yaw: a }; }
       }
     }
-    return best ?? (this._leafClear(seed.x, seed.z) ? seed : null);
+    if (best) return best;
+    if (!this._leafClear(seed.x, seed.z)) return null;
+    if (this._rockHit(seed.x, seed.z, ROCK_PAD.paddle)) return null;
+    return seed;
   }
 
   _nearWater(x, z, maxR) {
@@ -642,6 +740,11 @@ export class Traces extends System {
   _placeKind(kind, p, rnd, scrap) {
     const world = this.ctx.world;
     const yaw = p.yaw ?? rnd() * Math.PI * 2;
+    // Last-chance rock veto. Tree leftovers sit on a trunk, not the dirt.
+    if (kind !== 'tree-note' && kind !== 'rope' && ROCK_PAD[kind] != null) {
+      const extra = kind === 'canoe' ? 2.05 : 0;
+      if (this._rockHitFoot(p.x, p.z, ROCK_PAD[kind], extra)) return false;
+    }
 
     if (kind === 'tree-note') {
       const tree = p.tree;
@@ -785,19 +888,25 @@ export class Traces extends System {
     })));
   }
 
-  _nudgeClear(x, z, rnd) {
+  _nudgeClear(x, z, rnd, pad = 1.6) {
     const world = this.ctx.world;
-    let bx = x, bz = z, bestWet = Infinity;
-    for (let i = 0; i < 8; i++) {
-      const a = rnd() * Math.PI * 2;
-      const r = 2 + rnd() * 5;
-      const px = x + Math.sin(a) * r, pz = z + Math.cos(a) * r;
-      if (!world.isInBounds(px, pz)) continue;
+    let best = null, bestS = -Infinity;
+    const consider = (px, pz, bonus = 0) => {
+      if (!world.isInBounds(px, pz)) return;
       const wet = world.getWaterDepth(px, pz);
       const sl = world.getSlope(px, pz);
-      if (wet < bestWet && sl < 0.7) { bestWet = wet; bx = px; bz = pz; }
+      if (wet > 0.12 || sl > 0.7) return;
+      if (this._rockHit(px, pz, pad)) return;
+      const s = -wet * 18 - sl * 8 + bonus;
+      if (s > bestS) { bestS = s; best = { x: px, z: pz }; }
+    };
+    consider(x, z, 2.4);
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2 + rnd() * 0.15;
+      const r = 1.8 + (i % 5) * 1.35;
+      consider(x + Math.sin(a) * r, z + Math.cos(a) * r);
     }
-    return { x: bx, z: bz };
+    return best;
   }
 
   /**
@@ -856,7 +965,7 @@ export class Traces extends System {
     const rough = hi - lo;
     if (rough > 1.15) return null;
     if (hi - here > 1.4) return null;
-    if (this._rockHit(x, z, 5.2)) return null;
+    if (this._rockHit(x, z, ROCK_PAD.cairn)) return null;
     return { score: -sl * 40 - rough * 10 };
   }
 
@@ -871,7 +980,10 @@ export class Traces extends System {
     let hit = false;
     if (rocks?.rocksAround) {
       try {
-        const list = rocks.rocksAround(x, z, 24, 0.7, []);
+        // Query far enough that a 20 m slab whose origin is off-pad
+        // still contributes its extent. 24 m missed house-sized lip rock.
+        const qR = Math.max(28, pad + 22);
+        const list = rocks.rocksAround(x, z, qR, 0.7, []);
         for (const inst of list) {
           const reach = (rocks.reachOf?.(inst) ?? inst.size * 0.5) + pad;
           const dx = inst.x - x, dz = inst.z - z;
@@ -881,6 +993,22 @@ export class Traces extends System {
     }
     this._rockMemo.set(key, hit);
     return hit;
+  }
+
+  /**
+   * Origin plus a ring — a 4.6 m hull is not a point. Same extent
+   * lesson as `_rockHit`; the ring catches a slab that only clips a bow.
+   */
+  _rockHitFoot(x, z, pad, radius = 0) {
+    if (this._rockHit(x, z, pad)) return true;
+    if (!(radius > 0)) return false;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      if (this._rockHit(x + Math.sin(a) * radius, z + Math.cos(a) * radius, pad * 0.55)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   _spot(obj, kind, x, y, z, scrap = null, beat = null) {
