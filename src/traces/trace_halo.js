@@ -17,9 +17,10 @@
  * Colour is ice-white over a cool blue, not neon cyan. The ground ribbon
  * is additive HDR (ONE, ONE — same as the camp fire) so gold meadow
  * lightens toward ice instead of crushing into a dirt line. The wall is
- * ordinary alpha — additive DoubleSide was stacking into a filled booth.
- * A depth-test-off ghost keeps the wall visible where grass wins the
- * z-buffer.
+ * ordinary alpha, FrontSide only — DoubleSide plus a depth-test-off
+ * ghost drew the far pane through the leftover and washed it out.
+ * Ring ghost still punches the foot ribbon through grass. The middle
+ * of the disc stays empty so the crumb stays readable.
  */
 import * as THREE from 'three';
 
@@ -28,7 +29,7 @@ const RIBBON = 0.20;
 const LIFT = 0.05;
 /** Shafts clear meadow grass; the body stays a foot-ring via falloff. */
 const WALL_H = 1.05;
-const MOTES = 20;
+const MOTES = 12;
 /** Blue-heavy ice. Additive ring on gold dirt peaches unless B outruns R;
  *  the wall itself is ordinary alpha, so this can stay a soft camp ice. */
 const ICE = new THREE.Color(0x7eb8d6);
@@ -102,16 +103,16 @@ const WALL_FRAG = /* glsl */`
   varying float vAngle;
   varying float vRim;
   void main() {
-    // Tight XZ silhouette so a 1.2 m wall does not project as a
-    // filled booth from standing height. Four thin shafts keep the
-    // vertical presence the flat ribbon never had.
-    float rim = pow(clamp(vRim, 0.0, 1.0), 5.2);
-    float foot = pow(1.0 - vH, 2.4) * pow(clamp(vRim, 0.0, 1.0), 2.2);
-    float wall = rim * mix(0.12, 1.0, pow(1.0 - vH, 0.42));
+    // Circumference only. Face-on near/far walls would sit on the
+    // leftover; FrontSide already drops the far pane, and a hard rim
+    // drops the near pane. Shafts live on the same rim.
+    float rim = pow(clamp(vRim, 0.0, 1.0), 6.8);
+    float foot = pow(1.0 - vH, 2.6) * rim;
+    float wall = rim * mix(0.10, 1.0, pow(1.0 - vH, 0.40));
     float pillar = pow(abs(sin(vAngle * 2.0 + 0.35)), 8.5);
-    float shaft = pillar * pow(1.0 - vH, 0.18);
-    float a = (foot * 0.30 + wall * 0.50 + shaft * 0.95) * uOpacity;
-    if (a < 0.018) discard;
+    float shaft = pillar * pow(1.0 - vH, 0.18) * rim;
+    float a = (foot * 0.28 + wall * 0.48 + shaft * 1.05) * uOpacity;
+    if (a < 0.02) discard;
     vec3 col = mix(uColor, uHot, clamp(pillar * 0.80 + rim * 0.40, 0.0, 1.0));
     gl_FragColor = vec4(col, a);
   }
@@ -181,10 +182,12 @@ export function buildNoticeHalo(world, x, z, radius) {
   const wallVis = _addMat(WALL_VERT, WALL_FRAG, {
     uColor, uHot, uCamX, uCamZ, uOpacity: { value: 0 },
   }, {
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     blending: THREE.NormalBlending,
     transparent: true,
   });
+  // FrontSide + the same rim discard — through-grass silhouette only.
+  // DoubleSide ghost was the far pane sitting on the leftover.
   const wallHid = _ghost(wallVis);
   const moteVis = _addMat(MOTE_VERT, MOTE_FRAG, {
     uColor, uHot, uTime, uHeight: { value: WALL_H * 0.92 }, uOpacity: { value: 0 },
@@ -242,10 +245,9 @@ export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1, cam =
   const hot = gain > 1 ? 1.12 : 1;
   n.vis.uniforms.uOpacity.value = a * 0.62 * hot;
   n.hid.uniforms.uOpacity.value = a * 0.16 * hot;
-  n.wallVis.uniforms.uOpacity.value = a * 0.55 * hot;
-  // Through-grass veil only — keep this quiet or the wall x-rays the van.
-  n.wallHid.uniforms.uOpacity.value = a * 0.16 * hot;
-  n.moteVis.uniforms.uOpacity.value = a * 0.34 * hot;
+  n.wallVis.uniforms.uOpacity.value = a * 0.50 * hot;
+  n.wallHid.uniforms.uOpacity.value = a * 0.10 * hot;
+  n.moteVis.uniforms.uOpacity.value = a * 0.22 * hot;
   n.uTime.value = elapsed ?? 0;
   if (cam) {
     n.uCamX.value = cam.x;
@@ -356,7 +358,8 @@ function _motes(cx, cy, cz, radius) {
   for (let i = 0; i < MOTES; i++) {
     const t = (i / MOTES) * Math.PI * 2 + 0.37;
     const u = ((i * 17) % MOTES) / MOTES;
-    const r = radius * (0.18 + 0.62 * u * u);
+    // On the ribbon, not in the hole — interior motes washed the leftover.
+    const r = radius * (0.90 + 0.08 * u);
     pos.push(cx + Math.cos(t) * r, cy, cz + Math.sin(t) * r);
     seed.push((i * 0.173 + 0.11) % 1);
     rad.push(r);
