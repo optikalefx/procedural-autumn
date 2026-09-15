@@ -14,11 +14,11 @@
  * Close only: a drive-by still does not see it. No pin, compass POI,
  * `!`, or pulse.
  *
- * Colour is ice-white over a cool blue, not neon cyan. Additive HDR
- * (ONE, ONE, energy in rgb — same as the camp fire) so gold meadow
- * lightens toward ice instead of the ribbon crushing into a dirt line.
- * The wall is a silhouette rim plus a few shafts — not a filled booth.
- * A depth-test-off ghost keeps the wall visible where grass wins the
+ * Colour is ice-white over a cool blue, not neon cyan. The ground ribbon
+ * is additive HDR (ONE, ONE — same as the camp fire) so gold meadow
+ * lightens toward ice instead of crushing into a dirt line. The wall is
+ * ordinary alpha: additive DoubleSide stacked into a filled booth. A
+ * depth-test-off ghost keeps the wall visible where grass wins the
  * z-buffer.
  */
 import * as THREE from 'three';
@@ -29,9 +29,10 @@ const LIFT = 0.05;
 /** Shafts clear meadow grass; the body stays a foot-ring via falloff. */
 const WALL_H = 1.22;
 const MOTES = 20;
-/** Blue-heavy ice. Additive on gold dirt peaches unless B outruns R. */
-const ICE = new THREE.Color(0x3a86c8);
-const HOT = new THREE.Color(0xc5e6ff);
+/** Blue-heavy ice. Additive ring on gold dirt peaches unless B outruns R;
+ *  the wall itself is ordinary alpha, so this can stay a soft camp ice. */
+const ICE = new THREE.Color(0x7eb8d6);
+const HOT = new THREE.Color(0xe4f3ff);
 
 /** Full notice once the player is this close. */
 export const HALO_NEAR = 8;
@@ -104,18 +105,15 @@ const WALL_FRAG = /* glsl */`
     // Tight XZ silhouette so a 1.2 m wall does not project as a
     // filled booth from standing height. Four thin shafts keep the
     // vertical presence the flat ribbon never had.
-    float rim = pow(clamp(vRim, 0.0, 1.0), 6.5);
-    float foot = pow(1.0 - vH, 2.6) * pow(clamp(vRim, 0.0, 1.0), 2.4);
-    float wall = rim * mix(0.18, 1.0, pow(1.0 - vH, 0.48));
-    float pillar = pow(abs(sin(vAngle * 2.0 + 0.35)), 11.0);
-    float shaft = pillar * pow(1.0 - vH, 0.22);
-    float a = (foot * 0.40 + wall * 1.05 + shaft * 1.35) * uOpacity;
-    if (a < 0.004) discard;
-    if (rim < 0.08 && pillar < 0.06) discard;
-    vec3 col = mix(uColor, uHot, clamp(pillar * 0.75 + rim * 0.35, 0.0, 1.0));
-    // Extra blue so additive on gold meadow still reads ice, not peach.
-    col *= vec3(0.58, 0.88, 1.22);
-    gl_FragColor = vec4(col * a, 1.0);
+    float rim = pow(clamp(vRim, 0.0, 1.0), 4.2);
+    float foot = pow(1.0 - vH, 2.4) * pow(clamp(vRim, 0.0, 1.0), 2.0);
+    float wall = rim * mix(0.16, 1.0, pow(1.0 - vH, 0.45));
+    float pillar = pow(abs(sin(vAngle * 2.0 + 0.35)), 9.0);
+    float shaft = pillar * pow(1.0 - vH, 0.20);
+    float a = (foot * 0.35 + wall * 0.62 + shaft * 0.90) * uOpacity;
+    if (a < 0.018) discard;
+    vec3 col = mix(uColor, uHot, clamp(pillar * 0.80 + rim * 0.40, 0.0, 1.0));
+    gl_FragColor = vec4(col, a);
   }
 `;
 
@@ -184,6 +182,8 @@ export function buildNoticeHalo(world, x, z, radius) {
     uColor, uHot, uCamX, uCamZ, uOpacity: { value: 0 },
   }, {
     side: THREE.DoubleSide,
+    blending: THREE.NormalBlending,
+    transparent: true,
   });
   const wallHid = _ghost(wallVis);
   const moteVis = _addMat(MOTE_VERT, MOTE_FRAG, {
@@ -242,9 +242,9 @@ export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1, cam =
   const hot = gain > 1 ? 1.12 : 1;
   n.vis.uniforms.uOpacity.value = a * 0.62 * hot;
   n.hid.uniforms.uOpacity.value = a * 0.16 * hot;
-  n.wallVis.uniforms.uOpacity.value = a * 0.44 * hot;
+  n.wallVis.uniforms.uOpacity.value = a * 0.72 * hot;
   // Through-grass veil only — keep this quiet or the wall x-rays the van.
-  n.wallHid.uniforms.uOpacity.value = a * 0.11 * hot;
+  n.wallHid.uniforms.uOpacity.value = a * 0.20 * hot;
   n.moteVis.uniforms.uOpacity.value = a * 0.34 * hot;
   n.uTime.value = elapsed ?? 0;
   if (cam) {
