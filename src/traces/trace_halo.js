@@ -14,9 +14,10 @@
  * Close only: a drive-by still does not see it. No pin, compass POI,
  * `!`, or pulse.
  *
- * Colour is cream-white over a cool ice, not neon cyan. Additive HDR
+ * Colour is ice-white over a cool blue, not neon cyan. Additive HDR
  * (ONE, ONE, energy in rgb — same as the camp fire) so gold meadow
  * lightens toward ice instead of the ribbon crushing into a dirt line.
+ * The wall is a silhouette rim plus a few shafts — not a filled booth.
  * A depth-test-off ghost keeps the wall visible where grass wins the
  * z-buffer.
  */
@@ -25,12 +26,12 @@ import * as THREE from 'three';
 const SEGS = 64;
 const RIBBON = 0.20;
 const LIFT = 0.05;
-/** Tall enough to clear meadow grass and peek through shoreline reeds. */
+/** Shafts clear meadow grass; the body stays a foot-ring via falloff. */
 const WALL_H = 1.22;
 const MOTES = 20;
-/** Soft ice — periwinkle of the game's own cool shadows, not a LED cyan. */
-const ICE = new THREE.Color(0xb9d4ea);
-const HOT = new THREE.Color(0xeef4fb);
+/** Blue-heavy ice. Additive on gold dirt peaches unless B outruns R. */
+const ICE = new THREE.Color(0x3a86c8);
+const HOT = new THREE.Color(0xc5e6ff);
 
 /** Full notice once the player is this close. */
 export const HALO_NEAR = 8;
@@ -64,6 +65,7 @@ const RING_FRAG = /* glsl */`
     float a = across * uOpacity;
     if (a < 0.004) discard;
     vec3 col = mix(uColor, uHot, across);
+    col *= vec3(0.62, 0.90, 1.18);
     gl_FragColor = vec4(col * a, 1.0);
   }
 `;
@@ -73,9 +75,20 @@ const WALL_VERT = /* glsl */`
   attribute float angle;
   varying float vH;
   varying float vAngle;
+  varying float vRim;
   void main() {
     vH = along;
     vAngle = angle;
+    // Rim in XZ only. View-space fresnel against a vertical normal
+    // lights the whole cylinder when the player looks down at their
+    // feet — that is the filled booth. The circle's silhouette is
+    // the found-spot wall; looking down still reads as a ring.
+    vec3 n = vec3(cos(angle), 0.0, sin(angle));
+    vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz;
+    vec3 toCam = cameraPosition - wp;
+    float xz = length(toCam.xz);
+    vec2 toXZ = xz > 0.08 ? toCam.xz / xz : n.xz;
+    vRim = 1.0 - abs(dot(n.xz, toXZ));
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
@@ -86,15 +99,20 @@ const WALL_FRAG = /* glsl */`
   uniform float uOpacity;
   varying float vH;
   varying float vAngle;
+  varying float vRim;
   void main() {
-    // Body falls off fast so the foot reads as a ring. Shafts keep a
-    // little height — four soft columns, not hard beams.
-    float body = pow(1.0 - vH, 1.55);
-    float pillar = pow(abs(sin(vAngle * 2.0 + 0.4)), 4.8);
-    float shaft = pillar * pow(1.0 - vH, 0.48);
-    float a = (body * 0.82 + shaft * 0.95) * uOpacity;
+    // Foot ring + silhouette wall + four soft shafts. Body without
+    // rim would project as a booth from standing height.
+    float rim = pow(clamp(vRim, 0.0, 1.0), 1.55);
+    float foot = pow(1.0 - vH, 2.25) * (0.25 + 0.75 * rim);
+    float wall = pow(rim, 1.85) * mix(0.12, 1.0, pow(1.0 - vH, 0.52));
+    float pillar = pow(abs(sin(vAngle * 2.0 + 0.35)), 6.4);
+    float shaft = pillar * pow(1.0 - vH, 0.30) * (0.30 + 0.70 * rim);
+    float a = (foot * 0.45 + wall * 0.95 + shaft * 1.20) * uOpacity;
     if (a < 0.004) discard;
-    vec3 col = mix(uColor, uHot, pillar * (1.0 - vH * 0.55));
+    vec3 col = mix(uColor, uHot, clamp(pillar * 0.75 + rim * 0.35, 0.0, 1.0));
+    // Extra blue so additive on gold meadow still reads ice, not peach.
+    col *= vec3(0.58, 0.88, 1.22);
     gl_FragColor = vec4(col * a, 1.0);
   }
 `;
@@ -133,6 +151,7 @@ const MOTE_FRAG = /* glsl */`
     float a = spot * vFade * uOpacity;
     if (a < 0.004) discard;
     vec3 col = mix(uColor, uHot, vFade);
+    col *= vec3(0.62, 0.90, 1.18);
     gl_FragColor = vec4(col * a, 1.0);
   }
 `;
@@ -213,14 +232,14 @@ export function updateNoticeHalo(group, dist, onScreen, elapsed, gain = 1) {
   const near = 1 - THREE.MathUtils.smoothstep(dist, HALO_NEAR, far);
   // A 9 s breathe, 5 % of peak — not a pulse.
   const breath = 0.95 + 0.05 * (0.5 + 0.5 * Math.sin((elapsed ?? 0) * Math.PI * 2 / 9));
-  const a = near * onScreen * breath * gain;
-  n.vis.uniforms.uOpacity.value = a * 0.62;
-  n.hid.uniforms.uOpacity.value = a * 0.22;
-  n.wallVis.uniforms.uOpacity.value = a * 0.48;
-  // Through-grass veil: stronger than the ring ghost, still quieter than
-  // the depth-tested wall so it does not x-ray the camper.
-  n.wallHid.uniforms.uOpacity.value = a * 0.28;
-  n.moteVis.uniforms.uOpacity.value = a * 0.40;
+  const a = near * onScreen * breath;
+  const hot = gain > 1 ? 1.12 : 1;
+  n.vis.uniforms.uOpacity.value = a * 0.58 * hot;
+  n.hid.uniforms.uOpacity.value = a * 0.16 * hot;
+  n.wallVis.uniforms.uOpacity.value = a * 0.40 * hot;
+  // Through-grass veil only — keep this quiet or the wall x-rays the van.
+  n.wallHid.uniforms.uOpacity.value = a * 0.12 * hot;
+  n.moteVis.uniforms.uOpacity.value = a * 0.30 * hot;
   n.uTime.value = elapsed ?? 0;
   return a;
 }
