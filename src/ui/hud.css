@@ -239,17 +239,19 @@
 }
 
 /* Leftover seek — William's scrap of paper, one leftover at a time.
-   Arrives in the middle of the view after the table note, then sits
-   under the strip. Not a map ring, not a compass POI. */
+   Arrives big in the middle of the view after the table note, then
+   docks onto the compass strip as a peer of the paw and the tent:
+   same disc, same chrome, same row. The rest pose is `.pa-poi`
+   (1.55em at compass top + 2.35em). Not a map ring, not a new POI. */
 .pa-seek {
   position: absolute;
   left: 50%;
-  top: calc(2.1vh + 5.15em);
-  z-index: 6;
+  top: calc(2.1vh + 2.35em);
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.18em;
+  gap: 0.15em;
   pointer-events: none;
   opacity: 0;
   transform: translateX(-50%);
@@ -257,14 +259,14 @@
 .pa-seek.pa-gone { opacity: 0; }
 .pa-seek-disc {
   position: relative;
-  width: 2.25em;
-  height: 2.25em;
+  width: 1.55em;
+  height: 1.55em;
   border-radius: 50%;
-  background: rgba(43, 28, 51, 0.58);
-  border: 1.5px solid rgba(255, 246, 234, 0.52);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 6px 18px rgba(46, 18, 28, 0.38);
+  background: rgba(43, 28, 51, 0.62);
+  border: 1px solid rgba(255, 246, 234, 0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 4px 14px rgba(46, 18, 28, 0.35);
   display: grid;
   place-items: center;
 }
@@ -277,28 +279,28 @@
   content: "";
   position: absolute;
   left: 50%;
-  top: 0.14em;
+  top: 0.12em;
   width: 0;
   height: 0;
-  border-left: 0.26em solid transparent;
-  border-right: 0.26em solid transparent;
-  border-bottom: 0.4em solid #fff6ea;
+  border-left: 0.22em solid transparent;
+  border-right: 0.22em solid transparent;
+  border-bottom: 0.34em solid #fff6ea;
   transform: translateX(-50%);
   filter: drop-shadow(0 1px 3px rgba(46, 18, 28, 0.7));
 }
 .pa-seek-glyph {
   position: relative;
   z-index: 1;
-  width: 1.18em;
-  height: 1.18em;
+  width: 0.85em;
+  height: 0.85em;
   color: var(--ink);
   opacity: 0.94;
 }
 .pa-seek-glyph svg { width: 100%; height: 100%; display: block; }
 .pa-seek-dist {
   font-size: 0.54em;
-  letter-spacing: 0.12em;
-  font-weight: 650;
+  letter-spacing: 0.13em;
+  font-weight: 600;
   color: var(--ink-dim);
   text-shadow: 0 1px 5px rgba(46, 18, 28, 0.9), 0 0 2px rgba(46, 18, 28, 0.8);
   white-space: nowrap;
@@ -306,7 +308,7 @@
 }
 .pa-seek-near .pa-seek-disc {
   border-color: var(--amber);
-  background: rgba(240, 173, 70, 0.22);
+  background: rgba(240, 173, 70, 0.26);
 }
 .pa-seek-near .pa-seek-dist { color: var(--ink); }
 
@@ -314,22 +316,26 @@
   0% {
     opacity: 0;
     top: 58%;
-    transform: translate(-50%, -50%) scale(1.15);
+    transform: translate(-50%, -50%) scale(1.35);
+    z-index: 6;
   }
   16% {
     opacity: 1;
     top: 58%;
-    transform: translate(-50%, -50%) scale(1.62);
+    transform: translate(-50%, -50%) scale(2.35);
+    z-index: 6;
   }
   38% {
     opacity: 1;
     top: 58%;
-    transform: translate(-50%, -50%) scale(1.5);
+    transform: translate(-50%, -50%) scale(2.15);
+    z-index: 6;
   }
   100% {
     opacity: 1;
-    top: calc(2.1vh + 5.15em);
+    top: calc(2.1vh + 2.35em);
     transform: translateX(-50%) scale(1);
+    z-index: 1;
   }
 }
 .pa-seek-enter {
@@ -338,8 +344,9 @@
 .pa-seek-enter .pa-seek-dist { opacity: 0; }
 .pa-seek-docked {
   opacity: 1;
-  top: calc(2.1vh + 5.15em);
+  top: calc(2.1vh + 2.35em);
   transform: translateX(-50%) scale(1);
+  z-index: 1;
 }
 @keyframes pa-seek-nudge {
   0% { transform: translateX(-50%) scale(1); }

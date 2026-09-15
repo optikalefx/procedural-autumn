@@ -6,9 +6,12 @@
 //  with his scrap of paper and a tick that points at the current leftover
 //  (paddle, then bike, …). Not a pin, not a !, not a new compass POI.
 //
-//  It arrives as a moment in the middle of the view and then sits under the
-//  heading strip. Facing the leftover, the tick points up — same language as
-//  the caret. Distance is a whisper under the disc, not a countdown.
+//  It arrives as a moment in the middle of the view — big, centred, readable
+//  — and then docks onto the heading strip as a peer of the paw and the tent:
+//  same disc, same chrome, same row. Facing the leftover, the tick points up
+//  — same language as the caret. Distance is a whisper under the disc, not a
+//  countdown. The settle has to land on those peer metrics; a leftover rest
+//  pose (bigger, lower, its own z-index) reads as a second HUD.
 // ─────────────────────────────────────────────────────────────────────────────
 import { el, ICON, distanceLabel } from './hud_dom.js';
 
